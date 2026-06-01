@@ -5,6 +5,10 @@
   "workspaces": [
     "apps/*"
   ],
+  "overrides": {
+    "react": "$react",
+    "react-dom": "$react-dom"
+  },
   "scripts": {
     "dev:desktop": "npm run dev --workspace @omni/desktop",
     "dev:desktop-shell": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/development/run-desktop-shell-elevated.ps1",

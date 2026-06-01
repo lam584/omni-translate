@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "Salvar",
+    "cancel": "Cancelar",
+    "confirm": "Confirmar",
+    "back": "Voltar",
+    "next": "Próximo",
+    "finish": "Concluir",
+    "close": "Fechar",
+    "retry": "Tentar novamente",
+    "loading": "Carregando…",
+    "language": "Idioma da interface"
+  },
+  "brand": {
+    "title": "Console de tradução em tempo real",
+    "kicker": "Console do desktop"
+  },
+  "nav": {
+    "dashboard": "Painel",
+    "dashboardHint": "",
+    "quickSetup": "Configuração rápida",
+    "quickSetupHint": "",
+    "providers": "Provedores",
+    "providersHint": "",
+    "session": "Sessão ao vivo",
+    "sessionHint": "",
+    "audioRouting": "Roteamento de áudio",
+    "audioRoutingHint": "",
+    "glossary": "Glossário",
+    "glossaryHint": "",
+    "diagnostics": "Diagnóstico",
+    "diagnosticsHint": "",
+    "settings": "Ajustes",
+    "settingsHint": "Idioma e preferências gerais",
+    "sectionMain": "Principal",
+    "ariaMain": "Navegação principal"
+  },
+  "statusCards": {
+    "bridge": "Bridge",
+    "provider": "Provedor",
+    "inbound": "Entrada",
+    "outbound": "Saída"
+  },
+  "bridgeState": {
+    "running": "Em execução",
+    "starting": "Iniciando",
+    "error": "Erro",
+    "stopped": "Parado"
+  },
+  "bridgeStatus": {
+    "tauriShell": "Runtime do desktop",
+    "runtimeError": "Erro de runtime",
+    "browserPreview": "Pré-visualização"
+  },
+  "configStatus": {
+    "ready": "Pronto",
+    "warning": "Atenção",
+    "unsupported": "Sem suporte",
+    "unknown": "Desconhecido",
+    "draft": "Pendente"
+  },
+  "captureState": {
+    "capturing": "Capturando",
+    "buffering": "Em buffer",
+    "armed": "Pronto",
+    "muted": "Silenciado",
+    "idle": "Ocioso"
+  },
+  "settings": {
+    "title": "Ajustes",
+    "subtitle": "Ajuste o idioma da interface e as preferências gerais. Aplicado na hora, sem reiniciar.",
+    "sectionLanguage": "Idioma da interface",
+    "languageHint": "Escolha o idioma da interface do desktop. É aplicado imediatamente e não altera o idioma de tradução das legendas.",
+    "languageLabel": "Idioma de exibição",
+    "currentLanguage": "Idioma atual: {{name}}",
+    "resetWelcome": "Redefinir assistente inicial",
+    "resetWelcomeHint": "Limpa o marcador local para que o seletor de idioma apareça na próxima inicialização.",
+    "resetWelcomeDone": "Redefinido. O seletor aparecerá na próxima vez.",
+    "resetWelcomeAction": "Redefinir"
+  },
+  "welcome": {
+    "title": "Bem-vindo ao Omni Translate",
+    "subtitle": "Escolha o idioma da interface. Você pode alterá-lo em Ajustes a qualquer momento.",
+    "confirm": "Usar este idioma",
+    "hint": "Selecione um idioma na lista; a pré-visualização à direita é atualizada.",
+    "previewHeading": "Pré-visualização",
+    "previewBody": "É assim que o app ficará aproximadamente no idioma escolhido."
+  },
+  "overlay": {
+    "previewTitle": "Modo de pré-visualização",
+    "previewBody": "As legendas ao vivo aparecerão aqui",
+    "dragHint": "Arraste para mover o overlay"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

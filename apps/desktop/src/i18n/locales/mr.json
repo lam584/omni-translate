@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "जतन करा",
+    "cancel": "रद्द करा",
+    "confirm": "पुष्टी करा",
+    "back": "मागे",
+    "next": "पुढे",
+    "finish": "समाप्त",
+    "close": "बंद करा",
+    "retry": "पुन्हा प्रयत्न करा",
+    "loading": "लोड होत आहे…",
+    "language": "इंटरफेस भाषा"
+  },
+  "brand": {
+    "title": "रीअलटाइम अनुवाद कन्सोल",
+    "kicker": "डेस्कटॉप कन्सोल"
+  },
+  "nav": {
+    "dashboard": "डॅशबोर्ड",
+    "dashboardHint": "",
+    "quickSetup": "त्वरित सेटअप",
+    "quickSetupHint": "",
+    "providers": "प्रदाते",
+    "providersHint": "",
+    "session": "थेट सत्र",
+    "sessionHint": "",
+    "audioRouting": "ऑडिओ राउटिंग",
+    "audioRoutingHint": "",
+    "glossary": "शब्दकोश",
+    "glossaryHint": "",
+    "diagnostics": "निदान",
+    "diagnosticsHint": "",
+    "settings": "सेटिंग्ज",
+    "settingsHint": "भाषा आणि सामान्य प्राधान्ये",
+    "sectionMain": "मुख्य",
+    "ariaMain": "मुख्य नेव्हिगेशन"
+  },
+  "statusCards": {
+    "bridge": "ब्रिज",
+    "provider": "प्रदाता",
+    "inbound": "इनबाउंड",
+    "outbound": "आउटबाउंड"
+  },
+  "bridgeState": {
+    "running": "चालू आहे",
+    "starting": "सुरू होत आहे",
+    "error": "त्रुटी",
+    "stopped": "थांबले"
+  },
+  "bridgeStatus": {
+    "tauriShell": "डेस्कटॉप रनटाइम",
+    "runtimeError": "रनटाइम त्रुटी",
+    "browserPreview": "ब्राउझर पूर्वावलोकन"
+  },
+  "configStatus": {
+    "ready": "तयार",
+    "warning": "लक्ष आवश्यक",
+    "unsupported": "समर्थित नाही",
+    "unknown": "अज्ञात",
+    "draft": "प्रलंबित"
+  },
+  "captureState": {
+    "capturing": "कॅप्चर करत आहे",
+    "buffering": "बफरिंग",
+    "armed": "सज्ज",
+    "muted": "म्यूट केलेले",
+    "idle": "निष्क्रिय"
+  },
+  "settings": {
+    "title": "सेटिंग्ज",
+    "subtitle": "इंटरफेस भाषा आणि सामान्य प्राधान्ये समायोजित करा. पुन्हा सुरू न करता बदल लगेच लागू होतात.",
+    "sectionLanguage": "इंटरफेस भाषा",
+    "languageHint": "डेस्कटॉप UI ची भाषा निवडा. ती त्वरित लागू होते आणि उपशीर्षक अनुवादाच्या लक्ष्यावर परिणाम करत नाही.",
+    "languageLabel": "प्रदर्शन भाषा",
+    "currentLanguage": "सध्याची भाषा: {{name}}",
+    "resetWelcome": "स्वागत विझार्ड रीसेट करा",
+    "resetWelcomeHint": "स्थानिक ध्वज साफ करा जेणेकरून पुढील सुरुवातीस भाषा निवडक पुन्हा दिसेल.",
+    "resetWelcomeDone": "रीसेट पूर्ण झाले. पुढील वेळी भाषा निवडक दिसेल.",
+    "resetWelcomeAction": "रीसेट"
+  },
+  "welcome": {
+    "title": "Omni Translate मध्ये आपले स्वागत आहे",
+    "subtitle": "आपल्याला आवडणारी इंटरफेस भाषा निवडा. आपण ती कधीही सेटिंग्जमध्ये बदलू शकता.",
+    "confirm": "ही भाषा वापरा",
+    "hint": "सूचीमधून भाषा निवडा; निवडीनुसार उजवीकडील पूर्वावलोकन अपडेट होते.",
+    "previewHeading": "पूर्वावलोकन",
+    "previewBody": "निवडलेल्या भाषेत अॅप अंदाजे असेच दिसेल."
+  },
+  "overlay": {
+    "previewTitle": "ब्राउझर पूर्वावलोकन मोड",
+    "previewBody": "थेट उपशीर्षक येथे दिसतील",
+    "dragHint": "ओव्हरले हलविण्यासाठी ड्रॅग करा"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

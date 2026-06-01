@@ -1,0 +1,528 @@
+{
+  "activeProviderTemplateId": "template-dashscope-realtime",
+  "providers": [{
+    "templateId": "template-openai-compatible-realtime",
+    "templateVersion": "2026.05.10",
+    "templateSource": "official",
+    "providerId": "provider-openai-compatible",
+    "kind": "openai-compatible",
+    "displayName": "OpenAI Compatible",
+    "mode": "template",
+    "model": "qwen3.5-omni-plus-realtime",
+    "baseUrl": "https://api.openai-compatible.local/v1",
+    "transport": "streaming-http",
+    "authRef": {
+      "kind": "credential-ref",
+      "reference": "credential://provider/openai-compatible/default",
+      "headerName": "Authorization",
+      "scheme": "bearer"
+    },
+    "streamEnabled": true,
+    "timeoutMs": 15000,
+    "systemPromptTemplate": "video-realtime-cn",
+    "temperature": 0.2,
+    "maxOutputTokens": 256,
+    "responseModalities": [
+      "text"
+    ],
+    "customHeaders": [],
+    "sceneModelAssignments": [
+      {
+        "scenario": "watch",
+        "modelIds": [
+          "qwen3.5-omni-plus-realtime"
+        ]
+      },
+      {
+        "scenario": "game",
+        "modelIds": [
+          "qwen3.5-omni-plus-realtime"
+        ]
+      },
+      {
+        "scenario": "voice-room",
+        "modelIds": []
+      }
+    ],
+    "localModelCapabilityRegistry": [
+      {
+        "id": "seed-qwen3-asr-flash-realtime",
+        "modelId": "qwen3-asr-flash-realtime",
+        "capabilities": [
+          "speech-to-text"
+        ]
+      },
+      {
+        "id": "seed-qwen3-asr-flash",
+        "modelId": "qwen3-asr-flash",
+        "capabilities": [
+          "speech-to-text"
+        ]
+      },
+      {
+        "id": "seed-fun-asr-realtime",
+        "modelId": "fun-asr-realtime",
+        "capabilities": [
+          "speech-to-text"
+        ]
+      },
+      {
+        "id": "seed-fun-asr",
+        "modelId": "fun-asr",
+        "capabilities": [
+          "speech-to-text"
+        ]
+      },
+      {
+        "id": "seed-qwen3-tts-flash",
+        "modelId": "qwen3-tts-flash",
+        "capabilities": [
+          "text-to-speech"
+        ]
+      },
+      {
+        "id": "seed-cosyvoice-v3.5-plus",
+        "modelId": "cosyvoice-v3.5-plus",
+        "capabilities": [
+          "text-to-speech"
+        ]
+      },
+      {
+        "id": "seed-minimax-speech-2.8-hd",
+        "modelId": "MiniMax/speech-2.8-hd",
+        "capabilities": [
+          "text-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-livetranslate-flash-realtime",
+        "modelId": "qwen3-livetranslate-flash-realtime",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-livetranslate-flash-realtime-2025-09-22",
+        "modelId": "qwen3-livetranslate-flash-realtime-2025-09-22",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-livetranslate-flash",
+        "modelId": "qwen3-livetranslate-flash",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-livetranslate-flash-2025-12-01",
+        "modelId": "qwen3-livetranslate-flash-2025-12-01",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3.5-omni-plus-realtime",
+        "modelId": "qwen3.5-omni-plus-realtime",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3.5-omni-plus-realtime-2026-03-15",
+        "modelId": "qwen3.5-omni-plus-realtime-2026-03-15",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3.5-omni-plus",
+        "modelId": "qwen3.5-omni-plus",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3.5-omni-plus-2026-03-15",
+        "modelId": "qwen3.5-omni-plus-2026-03-15",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3.5-omni-flash-realtime",
+        "modelId": "qwen3.5-omni-flash-realtime",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3.5-omni-flash-realtime-2026-03-15",
+        "modelId": "qwen3.5-omni-flash-realtime-2026-03-15",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3.5-omni-flash",
+        "modelId": "qwen3.5-omni-flash",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3.5-omni-flash-2026-03-15",
+        "modelId": "qwen3.5-omni-flash-2026-03-15",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-omni-flash-realtime",
+        "modelId": "qwen3-omni-flash-realtime",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-omni-flash-realtime-2025-12-01",
+        "modelId": "qwen3-omni-flash-realtime-2025-12-01",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-omni-flash-realtime-2025-09-15",
+        "modelId": "qwen3-omni-flash-realtime-2025-09-15",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-omni-flash",
+        "modelId": "qwen3-omni-flash",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-omni-flash-2025-12-01",
+        "modelId": "qwen3-omni-flash-2025-12-01",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen3-omni-flash-2025-09-15",
+        "modelId": "qwen3-omni-flash-2025-09-15",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen2.5-omni-7b",
+        "modelId": "qwen2.5-omni-7b",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen-omni-turbo-realtime",
+        "modelId": "qwen-omni-turbo-realtime",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen-omni-turbo-realtime-latest",
+        "modelId": "qwen-omni-turbo-realtime-latest",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen-omni-turbo-realtime-2025-05-08",
+        "modelId": "qwen-omni-turbo-realtime-2025-05-08",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen-omni-turbo",
+        "modelId": "qwen-omni-turbo",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen-omni-turbo-latest",
+        "modelId": "qwen-omni-turbo-latest",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      },
+      {
+        "id": "seed-qwen-omni-turbo-2025-03-26",
+        "modelId": "qwen-omni-turbo-2025-03-26",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ]
+      }
+    ],
+    "modelCatalogCache": {
+      "signature": "",
+      "source": "preset",
+      "endpoint": null,
+      "fetchedAt": null,
+      "error": null,
+      "models": []
+    },
+    "probe": {
+      "profileId": "probe-openai-compatible-baseline",
+      "verdict": "realtime-risk",
+      "checkedAt": "2026-05-10T10:20:00+08:00",
+      "streamSupported": true,
+      "errorShapeStable": true,
+      "responseShapeStable": true
+    },
+    "status": "draft"
+  }],
+  "devices": {
+    "routeMode": "watch",
+    "inputDeviceId": "microphone-default",
+    "outputDeviceId": "speaker-default",
+    "playbackDeviceId": "system-output-default",
+    "virtualMicState": "pending",
+    "inboundRoute": {
+      "routeId": "audio-route-inbound-watch",
+      "direction": "inbound",
+      "input": {
+        "sourceId": "system-output-default",
+        "kind": "system-output",
+        "deviceId": "system-output-default",
+        "state": "capturing",
+        "muted": false,
+        "bufferAheadMs": 160,
+        "preBufferState": "ready"
+      },
+      "outputs": [
+        {
+          "targetId": "subtitle-engine-default",
+          "kind": "subtitle-engine",
+          "enabled": true
+        },
+        {
+          "targetId": "speaker-monitor-default",
+          "kind": "speaker",
+          "deviceId": "speaker-default",
+          "enabled": true
+        }
+      ],
+      "mixControl": {
+        "keepOriginalAudio": true,
+        "translatedAudioEnabled": false,
+        "translatedAudioGainDb": -3,
+        "originalAudioGainDb": 0,
+        "duckingEnabled": true,
+        "duckingDepthPercent": 35,
+        "monitorMode": "original-and-translated"
+      },
+      "latencyControl": {
+        "captureBufferMs": 80,
+        "translationBufferMs": 120,
+        "playbackBufferMs": 40,
+        "compensationMs": 120
+      }
+    },
+    "outboundRoute": {
+      "routeId": "audio-route-outbound-mic",
+      "direction": "outbound",
+      "input": {
+        "sourceId": "microphone-default",
+        "kind": "microphone",
+        "deviceId": "microphone-default",
+        "state": "armed",
+        "muted": false,
+        "bufferAheadMs": 60,
+        "preBufferState": "primed"
+      },
+      "outputs": [
+        {
+          "targetId": "virtual-mic-default",
+          "kind": "virtual-mic",
+          "deviceId": "virtual-mic-default",
+          "enabled": true
+        },
+        {
+          "targetId": "speaker-local-monitor",
+          "kind": "monitor",
+          "deviceId": "speaker-default",
+          "enabled": true
+        }
+      ],
+      "mixControl": {
+        "keepOriginalAudio": true,
+        "translatedAudioEnabled": true,
+        "translatedAudioGainDb": -1,
+        "originalAudioGainDb": -4,
+        "duckingEnabled": true,
+        "duckingDepthPercent": 45,
+        "monitorMode": "original-and-translated"
+      },
+      "latencyControl": {
+        "captureBufferMs": 50,
+        "translationBufferMs": 90,
+        "playbackBufferMs": 50,
+        "compensationMs": 110
+      },
+      "pushToTalk": {
+        "enabled": true,
+        "hotkey": "Alt+V",
+        "state": "armed",
+        "releaseDelayMs": 180
+      }
+    },
+    "supportProfileId": "support-watch-system-audio",
+    "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+    "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+    "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
+    "subtitleTranslationMode": "secondary",
+    "subtitleTranslationModelId": "",
+    "inputLevel": 100,
+    "aecEnabled": true,
+    "ansEnabled": true,
+    "agcEnabled": true,
+    "outputLevel": 100,
+    "outputSpeechEnabled": true,
+    "outputSubtitlesEnabled": true,
+    "virtualMicOutputEnabled": true,
+    "status": "warning"
+  },
+  "subtitles": {
+    "sourceLanguage": "auto",
+    "targetLanguage": "zh-CN",
+    "mode": "bilingual",
+    "captionDensity": "balanced",
+    "priority": "subtitle-first",
+    "overlayOpacity": 0.88,
+    "overlayLocked": false,
+    "overlayTextColor": "#fff8ef",
+    "overlayBackgroundColor": "#111827",
+    "overlayFontFamily": "\"Segoe UI\", \"Microsoft YaHei UI\", sans-serif",
+    "overlayX": 50,
+    "overlayY": 78,
+    "status": "ready"
+  },
+  "speech": {
+    "enabled": true,
+    "targetLanguage": "zh-CN",
+    "voicePresetId": "voice-cn-neutral",
+    "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
+    "outputTarget": "virtual-mic",
+    "localPlaybackEnabled": true,
+    "virtualMicOutputEnabled": true,
+    "dispatchState": "waiting-subtitle",
+    "status": "warning"
+  },
+  "driver": {
+    "protocolVersion": "2026-05-10",
+    "installChannel": "development",
+    "installPhase": "rollback-required",
+    "targetDeviceId": "virtual-mic-default",
+    "expectedDriverVersion": "0.9.0-dev",
+    "expectedBridgeVersion": "0.1.0",
+    "bridgeState": "degraded",
+    "driverHealth": "version-mismatch",
+    "rollbackSupported": true,
+    "lastErrorCode": "driver.version-mismatch",
+    "recommendedAction": "rollback-driver",
+    "status": "warning"
+  },
+  "glossary": {
+    "templateId": "glossary-template-watch",
+    "scenario": "watch",
+    "injectionStrategy": "scenario-first",
+    "injectionOrder": [
+      "scenario-template",
+      "user-package",
+      "community-package"
+    ],
+    "activePackageIds": [
+      "glossary-video-default"
+    ],
+    "communityPackageIds": [
+      "community-anime-cn-v1"
+    ],
+    "gameDictionaryId": "game-discord-default",
+    "importStrategy": "merge",
+    "exportFormat": "json",
+    "status": "draft"
+  },
+  "diagnostics": {
+    "installStatus": "warning",
+    "driverStatus": "warning",
+    "providerStatus": "warning",
+    "deviceStatus": "warning",
+    "lastExportScope": "summary",
+    "supportTier": "experimental",
+    "status": "warning"
+  },
+  "onboarding": {
+    "activePresetId": "preset-watch-mode",
+    "completedStepIds": [
+      "check-system-audio"
+    ],
+    "unresolvedRiskIds": [
+      "risk-driver-bridge-not-ready",
+      "risk-provider-not-tested"
+    ],
+    "checklistStatus": "warning"
+  }
+}

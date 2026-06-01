@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "I-save",
+    "cancel": "Kanselahin",
+    "confirm": "Kumpirmahin",
+    "back": "Bumalik",
+    "next": "Susunod",
+    "finish": "Tapos na",
+    "close": "Isara",
+    "retry": "Subukan muli",
+    "loading": "Naglo-load…",
+    "language": "Wika ng interface"
+  },
+  "brand": {
+    "title": "Realtime Translation Console",
+    "kicker": "Desktop Console"
+  },
+  "nav": {
+    "dashboard": "Dashboard",
+    "dashboardHint": "",
+    "quickSetup": "Mabilis na Setup",
+    "quickSetupHint": "",
+    "providers": "Mga Provider",
+    "providersHint": "",
+    "session": "Live na Sesyon",
+    "sessionHint": "",
+    "audioRouting": "Audio Routing",
+    "audioRoutingHint": "",
+    "glossary": "Glosaryo",
+    "glossaryHint": "",
+    "diagnostics": "Diagnostics",
+    "diagnosticsHint": "",
+    "settings": "Mga Setting",
+    "settingsHint": "Wika at pangkalahatang kagustuhan",
+    "sectionMain": "Pangunahing",
+    "ariaMain": "Pangunahing nabigasyon"
+  },
+  "statusCards": {
+    "bridge": "Tulay",
+    "provider": "Provider",
+    "inbound": "Papasok",
+    "outbound": "Palabas"
+  },
+  "bridgeState": {
+    "running": "Tumatakbo",
+    "starting": "Nagsisimula",
+    "error": "Error",
+    "stopped": "Nahinto"
+  },
+  "bridgeStatus": {
+    "tauriShell": "Runtime ng desktop",
+    "runtimeError": "Error sa runtime",
+    "browserPreview": "Preview sa browser"
+  },
+  "configStatus": {
+    "ready": "Handa",
+    "warning": "Kailangan ng atensyon",
+    "unsupported": "Hindi suportado",
+    "unknown": "Hindi alam",
+    "draft": "Nakabinbin"
+  },
+  "captureState": {
+    "capturing": "Kumukuha",
+    "buffering": "Nag-buffer",
+    "armed": "Handa",
+    "muted": "Naka-mute",
+    "idle": "Walang ginagawa"
+  },
+  "settings": {
+    "title": "Mga Setting",
+    "subtitle": "Ayusin ang wika ng interface at pangkalahatang kagustuhan. Agad na magkabisa nang hindi na kailangang i-restart.",
+    "sectionLanguage": "Wika ng interface",
+    "languageHint": "Pumili ng wika para sa desktop UI. Agad na magkakabisa at hindi nito babaguhin ang target na wika ng subtitle.",
+    "languageLabel": "Wika ng display",
+    "currentLanguage": "Kasalukuyang wika: {{name}}",
+    "resetWelcome": "I-reset ang welcome wizard",
+    "resetWelcomeHint": "I-clear ang lokal na flag upang muling lumabas ang language picker sa susunod na pag-launch.",
+    "resetWelcomeDone": "Tapos na ang pag-reset. Lalabas ang language picker sa susunod.",
+    "resetWelcomeAction": "I-reset"
+  },
+  "welcome": {
+    "title": "Maligayang pagdating sa Omni Translate",
+    "subtitle": "Piliin ang wika ng interface na gusto mo. Maaari mo itong baguhin anumang oras sa Settings.",
+    "confirm": "Gamitin ang wikang ito",
+    "hint": "Pumili ng wika mula sa listahan; mag-a-update ang preview sa kanan habang pumipili ka.",
+    "previewHeading": "Preview",
+    "previewBody": "Ganito ang magiging hitsura ng app sa napiling wika."
+  },
+  "overlay": {
+    "previewTitle": "Mode ng preview sa browser",
+    "previewBody": "Lalabas dito ang mga live na subtitle",
+    "dragHint": "I-drag upang igalaw ang overlay"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

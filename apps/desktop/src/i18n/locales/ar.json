@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "حفظ",
+    "cancel": "إلغاء",
+    "confirm": "تأكيد",
+    "back": "رجوع",
+    "next": "التالي",
+    "finish": "إنهاء",
+    "close": "إغلاق",
+    "retry": "إعادة المحاولة",
+    "loading": "جارٍ التحميل…",
+    "language": "لغة الواجهة"
+  },
+  "brand": {
+    "title": "وحدة الترجمة الفورية",
+    "kicker": "وحدة سطح المكتب"
+  },
+  "nav": {
+    "dashboard": "لوحة التحكم",
+    "dashboardHint": "",
+    "quickSetup": "الإعداد السريع",
+    "quickSetupHint": "",
+    "providers": "مزوّدو الخدمة",
+    "providersHint": "",
+    "session": "جلسة مباشرة",
+    "sessionHint": "",
+    "audioRouting": "توجيه الصوت",
+    "audioRoutingHint": "",
+    "glossary": "المعجم",
+    "glossaryHint": "",
+    "diagnostics": "التشخيص",
+    "diagnosticsHint": "",
+    "settings": "الإعدادات",
+    "settingsHint": "اللغة والتفضيلات العامة",
+    "sectionMain": "الرئيسية",
+    "ariaMain": "التنقل الرئيسي"
+  },
+  "statusCards": {
+    "bridge": "الجسر",
+    "provider": "المزوّد",
+    "inbound": "الوارد",
+    "outbound": "الصادر"
+  },
+  "bridgeState": {
+    "running": "قيد التشغيل",
+    "starting": "جارٍ البدء",
+    "error": "خطأ",
+    "stopped": "متوقف"
+  },
+  "bridgeStatus": {
+    "tauriShell": "بيئة سطح المكتب",
+    "runtimeError": "خطأ في التشغيل",
+    "browserPreview": "معاينة المتصفح"
+  },
+  "configStatus": {
+    "ready": "جاهز",
+    "warning": "يحتاج انتباهًا",
+    "unsupported": "غير مدعوم",
+    "unknown": "غير معروف",
+    "draft": "قيد الإعداد"
+  },
+  "captureState": {
+    "capturing": "جارٍ الالتقاط",
+    "buffering": "تخزين مؤقت",
+    "armed": "جاهز للبدء",
+    "muted": "مكتوم",
+    "idle": "خامل"
+  },
+  "settings": {
+    "title": "الإعدادات",
+    "subtitle": "اضبط لغة الواجهة والتفضيلات العامة، وتُطبَّق التغييرات فورًا دون إعادة تشغيل.",
+    "sectionLanguage": "لغة الواجهة",
+    "languageHint": "اختر لغة واجهة سطح المكتب. تُطبَّق فورًا ولا تؤثر على لغة ترجمة الترجمة النصية.",
+    "languageLabel": "لغة العرض",
+    "currentLanguage": "اللغة الحالية: {{name}}",
+    "resetWelcome": "إعادة تعيين معالج الترحيب",
+    "resetWelcomeHint": "امسح العلامة المحلية ليظهر منتقي اللغة عند التشغيل القادم.",
+    "resetWelcomeDone": "تمت إعادة التعيين. سيظهر منتقي اللغة في المرة القادمة.",
+    "resetWelcomeAction": "إعادة تعيين"
+  },
+  "welcome": {
+    "title": "مرحبًا بك في Omni Translate",
+    "subtitle": "اختر لغة الواجهة المفضلة لديك، ويمكنك تغييرها لاحقًا من الإعدادات.",
+    "confirm": "استخدم هذه اللغة",
+    "hint": "اختر لغة من القائمة، وسيتحدّث العرض على اليمين فورًا.",
+    "previewHeading": "معاينة",
+    "previewBody": "هكذا يبدو التطبيق باللغة المختارة تقريبًا."
+  },
+  "overlay": {
+    "previewTitle": "وضع المعاينة",
+    "previewBody": "ستظهر هنا الترجمة الفورية",
+    "dragHint": "اسحب لتحريك النافذة العائمة"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

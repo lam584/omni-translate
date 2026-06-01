@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "Сохранить",
+    "cancel": "Отмена",
+    "confirm": "Подтвердить",
+    "back": "Назад",
+    "next": "Далее",
+    "finish": "Готово",
+    "close": "Закрыть",
+    "retry": "Повторить",
+    "loading": "Загрузка…",
+    "language": "Язык интерфейса"
+  },
+  "brand": {
+    "title": "Консоль перевода в реальном времени",
+    "kicker": "Десктоп-консоль"
+  },
+  "nav": {
+    "dashboard": "Панель",
+    "dashboardHint": "",
+    "quickSetup": "Быстрая настройка",
+    "quickSetupHint": "",
+    "providers": "Провайдеры",
+    "providersHint": "",
+    "session": "Прямая сессия",
+    "sessionHint": "",
+    "audioRouting": "Маршрутизация аудио",
+    "audioRoutingHint": "",
+    "glossary": "Глоссарий",
+    "glossaryHint": "",
+    "diagnostics": "Диагностика",
+    "diagnosticsHint": "",
+    "settings": "Настройки",
+    "settingsHint": "Язык и общие параметры",
+    "sectionMain": "Главное",
+    "ariaMain": "Главная навигация"
+  },
+  "statusCards": {
+    "bridge": "Мост",
+    "provider": "Провайдер",
+    "inbound": "Входящий",
+    "outbound": "Исходящий"
+  },
+  "bridgeState": {
+    "running": "Работает",
+    "starting": "Запускается",
+    "error": "Ошибка",
+    "stopped": "Остановлен"
+  },
+  "bridgeStatus": {
+    "tauriShell": "Десктоп-рантайм",
+    "runtimeError": "Ошибка рантайма",
+    "browserPreview": "Превью в браузере"
+  },
+  "configStatus": {
+    "ready": "Готово",
+    "warning": "Требует внимания",
+    "unsupported": "Не поддерживается",
+    "unknown": "Неизвестно",
+    "draft": "Ожидает"
+  },
+  "captureState": {
+    "capturing": "Захват",
+    "buffering": "Буферизация",
+    "armed": "Готов",
+    "muted": "Без звука",
+    "idle": "Простаивает"
+  },
+  "settings": {
+    "title": "Настройки",
+    "subtitle": "Измените язык интерфейса и общие параметры. Применяется сразу, без перезапуска.",
+    "sectionLanguage": "Язык интерфейса",
+    "languageHint": "Выберите язык интерфейса. Применяется сразу и не меняет язык перевода субтитров.",
+    "languageLabel": "Отображаемый язык",
+    "currentLanguage": "Текущий язык: {{name}}",
+    "resetWelcome": "Сбросить мастер приветствия",
+    "resetWelcomeHint": "Очистите локальный флаг, чтобы при следующем запуске снова появился выбор языка.",
+    "resetWelcomeDone": "Сброшено. В следующий раз появится выбор языка.",
+    "resetWelcomeAction": "Сбросить"
+  },
+  "welcome": {
+    "title": "Добро пожаловать в Omni Translate",
+    "subtitle": "Выберите удобный язык интерфейса. Его можно сменить в настройках в любое время.",
+    "confirm": "Использовать этот язык",
+    "hint": "Выберите язык из списка; предпросмотр справа обновится автоматически.",
+    "previewHeading": "Предпросмотр",
+    "previewBody": "Примерно так будет выглядеть приложение на выбранном языке."
+  },
+  "overlay": {
+    "previewTitle": "Режим превью",
+    "previewBody": "Здесь будут отображаться живые субтитры",
+    "dragHint": "Перетащите, чтобы переместить оверлей"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

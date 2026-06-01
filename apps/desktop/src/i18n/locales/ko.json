@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "저장",
+    "cancel": "취소",
+    "confirm": "확인",
+    "back": "뒤로",
+    "next": "다음",
+    "finish": "완료",
+    "close": "닫기",
+    "retry": "다시 시도",
+    "loading": "불러오는 중…",
+    "language": "인터페이스 언어"
+  },
+  "brand": {
+    "title": "실시간 번역 콘솔",
+    "kicker": "데스크톱 콘솔"
+  },
+  "nav": {
+    "dashboard": "대시보드",
+    "dashboardHint": "",
+    "quickSetup": "빠른 설정",
+    "quickSetupHint": "",
+    "providers": "공급자",
+    "providersHint": "",
+    "session": "실시간 세션",
+    "sessionHint": "",
+    "audioRouting": "오디오 라우팅",
+    "audioRoutingHint": "",
+    "glossary": "용어집",
+    "glossaryHint": "",
+    "diagnostics": "진단",
+    "diagnosticsHint": "",
+    "settings": "설정",
+    "settingsHint": "언어 및 일반 환경설정",
+    "sectionMain": "주요 메뉴",
+    "ariaMain": "메인 내비게이션"
+  },
+  "statusCards": {
+    "bridge": "브리지",
+    "provider": "공급자",
+    "inbound": "인바운드",
+    "outbound": "아웃바운드"
+  },
+  "bridgeState": {
+    "running": "실행 중",
+    "starting": "시작 중",
+    "error": "오류",
+    "stopped": "중지됨"
+  },
+  "bridgeStatus": {
+    "tauriShell": "데스크톱 런타임",
+    "runtimeError": "런타임 오류",
+    "browserPreview": "브라우저 미리보기"
+  },
+  "configStatus": {
+    "ready": "준비됨",
+    "warning": "주의 필요",
+    "unsupported": "지원되지 않음",
+    "unknown": "알 수 없음",
+    "draft": "대기 중"
+  },
+  "captureState": {
+    "capturing": "캡처 중",
+    "buffering": "버퍼링",
+    "armed": "준비됨",
+    "muted": "음소거",
+    "idle": "대기"
+  },
+  "settings": {
+    "title": "설정",
+    "subtitle": "인터페이스 언어와 일반 환경설정을 조정합니다. 재시작 없이 즉시 적용됩니다.",
+    "sectionLanguage": "인터페이스 언어",
+    "languageHint": "데스크톱 UI에 사용할 언어를 선택하세요. 즉시 적용되며 자막 번역 대상 언어는 변경하지 않습니다.",
+    "languageLabel": "표시 언어",
+    "currentLanguage": "현재 언어: {{name}}",
+    "resetWelcome": "환영 마법사 초기화",
+    "resetWelcomeHint": "로컬 플래그를 지워 다음 실행 시 언어 선택을 다시 표시합니다.",
+    "resetWelcomeDone": "초기화되었습니다. 다음 실행 시 언어 선택이 표시됩니다.",
+    "resetWelcomeAction": "초기화"
+  },
+  "welcome": {
+    "title": "Omni Translate에 오신 것을 환영합니다",
+    "subtitle": "원하는 인터페이스 언어를 선택하세요. 설정에서 언제든 변경할 수 있습니다.",
+    "confirm": "이 언어 사용",
+    "hint": "목록에서 언어를 고르면 오른쪽 미리보기가 갱신됩니다.",
+    "previewHeading": "미리보기",
+    "previewBody": "선택한 언어로 앱이 이렇게 표시됩니다."
+  },
+  "overlay": {
+    "previewTitle": "미리보기 모드",
+    "previewBody": "실시간 자막이 여기에 표시됩니다",
+    "dragHint": "드래그하여 오버레이 이동"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

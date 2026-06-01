@@ -1,0 +1,13 @@
+; Development-only INF placeholder for Omni Translate Virtual Speaker.
+; Replace with the SYSVAD-derived INF before installing a real kernel driver.
+
+[Version]
+Signature="$WINDOWS NT$"
+Class=MEDIA
+ClassGuid={4d36e96c-e325-11ce-bfc1-08002be10318}
+Provider=%ProviderName%
+DriverVer=05/29/2026,0.9.0.0
+
+[Strings]
+ProviderName="Omni Translate"
+DeviceName="Omni Translate Virtual Speaker"

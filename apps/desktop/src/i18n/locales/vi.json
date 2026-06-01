@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "Lưu",
+    "cancel": "Hủy",
+    "confirm": "Xác nhận",
+    "back": "Quay lại",
+    "next": "Tiếp",
+    "finish": "Hoàn tất",
+    "close": "Đóng",
+    "retry": "Thử lại",
+    "loading": "Đang tải…",
+    "language": "Ngôn ngữ giao diện"
+  },
+  "brand": {
+    "title": "Bảng điều khiển dịch thời gian thực",
+    "kicker": "Bảng máy tính"
+  },
+  "nav": {
+    "dashboard": "Bảng điều khiển",
+    "dashboardHint": "",
+    "quickSetup": "Thiết lập nhanh",
+    "quickSetupHint": "",
+    "providers": "Nhà cung cấp",
+    "providersHint": "",
+    "session": "Phiên trực tiếp",
+    "sessionHint": "",
+    "audioRouting": "Định tuyến âm thanh",
+    "audioRoutingHint": "",
+    "glossary": "Thuật ngữ",
+    "glossaryHint": "",
+    "diagnostics": "Chẩn đoán",
+    "diagnosticsHint": "",
+    "settings": "Cài đặt",
+    "settingsHint": "Ngôn ngữ và tuỳ chọn chung",
+    "sectionMain": "Chính",
+    "ariaMain": "Điều hướng chính"
+  },
+  "statusCards": {
+    "bridge": "Bridge",
+    "provider": "Nhà cung cấp",
+    "inbound": "Đầu vào",
+    "outbound": "Đầu ra"
+  },
+  "bridgeState": {
+    "running": "Đang chạy",
+    "starting": "Đang khởi động",
+    "error": "Lỗi",
+    "stopped": "Đã dừng"
+  },
+  "bridgeStatus": {
+    "tauriShell": "Runtime máy tính",
+    "runtimeError": "Lỗi runtime",
+    "browserPreview": "Xem trước trình duyệt"
+  },
+  "configStatus": {
+    "ready": "Sẵn sàng",
+    "warning": "Cần chú ý",
+    "unsupported": "Không hỗ trợ",
+    "unknown": "Không rõ",
+    "draft": "Đang chờ"
+  },
+  "captureState": {
+    "capturing": "Đang thu",
+    "buffering": "Đệm",
+    "armed": "Sẵn sàng",
+    "muted": "Tắt tiếng",
+    "idle": "Nhàn rỗi"
+  },
+  "settings": {
+    "title": "Cài đặt",
+    "subtitle": "Điều chỉnh ngôn ngữ giao diện và tuỳ chọn chung. Áp dụng ngay, không cần khởi động lại.",
+    "sectionLanguage": "Ngôn ngữ giao diện",
+    "languageHint": "Chọn ngôn ngữ cho giao diện máy tính. Áp dụng ngay, không thay đổi ngôn ngữ dịch phụ đề.",
+    "languageLabel": "Ngôn ngữ hiển thị",
+    "currentLanguage": "Ngôn ngữ hiện tại: {{name}}",
+    "resetWelcome": "Đặt lại trình hướng dẫn chào mừng",
+    "resetWelcomeHint": "Xoá cờ cục bộ để bộ chọn ngôn ngữ xuất hiện lại ở lần khởi động sau.",
+    "resetWelcomeDone": "Đã đặt lại. Bộ chọn ngôn ngữ sẽ xuất hiện lần tới.",
+    "resetWelcomeAction": "Đặt lại"
+  },
+  "welcome": {
+    "title": "Chào mừng đến với Omni Translate",
+    "subtitle": "Hãy chọn ngôn ngữ giao diện bạn muốn. Bạn có thể đổi bất cứ lúc nào trong Cài đặt.",
+    "confirm": "Dùng ngôn ngữ này",
+    "hint": "Chọn một ngôn ngữ trong danh sách; bản xem trước bên phải sẽ cập nhật.",
+    "previewHeading": "Xem trước",
+    "previewBody": "Ứng dụng sẽ hiển thị khoảng như vậy với ngôn ngữ đã chọn."
+  },
+  "overlay": {
+    "previewTitle": "Chế độ xem trước",
+    "previewBody": "Phụ đề trực tiếp sẽ hiển thị tại đây",
+    "dragHint": "Kéo để di chuyển lớp phủ"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

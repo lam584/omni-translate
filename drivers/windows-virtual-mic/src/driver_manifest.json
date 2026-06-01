@@ -1,0 +1,8 @@
+{
+  "deviceId": "virtual-mic-default",
+  "deviceName": "Omni Translate Virtual Speaker",
+  "endpointDirection": "render",
+  "base": "SYSVAD-derived development scaffold",
+  "mode": "silent-render-sink",
+  "version": "0.9.0-dev"
+}

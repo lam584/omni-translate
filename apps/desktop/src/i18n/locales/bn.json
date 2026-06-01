@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "সংরক্ষণ",
+    "cancel": "বাতিল",
+    "confirm": "নিশ্চিত",
+    "back": "পেছনে",
+    "next": "পরবর্তী",
+    "finish": "শেষ",
+    "close": "বন্ধ",
+    "retry": "আবার চেষ্টা",
+    "loading": "লোড হচ্ছে…",
+    "language": "ইন্টারফেস ভাষা"
+  },
+  "brand": {
+    "title": "রিয়েল-টাইম অনুবাদ কনসোল",
+    "kicker": "ডেস্কটপ কনসোল"
+  },
+  "nav": {
+    "dashboard": "ড্যাশবোর্ড",
+    "dashboardHint": "",
+    "quickSetup": "দ্রুত সেটআপ",
+    "quickSetupHint": "",
+    "providers": "প্রোভাইডার",
+    "providersHint": "",
+    "session": "লাইভ সেশন",
+    "sessionHint": "",
+    "audioRouting": "অডিও রাউটিং",
+    "audioRoutingHint": "",
+    "glossary": "শব্দকোষ",
+    "glossaryHint": "",
+    "diagnostics": "ডায়াগনস্টিকস",
+    "diagnosticsHint": "",
+    "settings": "সেটিংস",
+    "settingsHint": "ভাষা ও সাধারণ পছন্দ",
+    "sectionMain": "প্রধান",
+    "ariaMain": "প্রধান নেভিগেশন"
+  },
+  "statusCards": {
+    "bridge": "ব্রিজ",
+    "provider": "প্রোভাইডার",
+    "inbound": "ইনবাউন্ড",
+    "outbound": "আউটবাউন্ড"
+  },
+  "bridgeState": {
+    "running": "চলছে",
+    "starting": "শুরু হচ্ছে",
+    "error": "ত্রুটি",
+    "stopped": "বন্ধ"
+  },
+  "bridgeStatus": {
+    "tauriShell": "ডেস্কটপ রানটাইম",
+    "runtimeError": "রানটাইম ত্রুটি",
+    "browserPreview": "ব্রাউজার প্রিভিউ"
+  },
+  "configStatus": {
+    "ready": "প্রস্তুত",
+    "warning": "মনোযোগ দরকার",
+    "unsupported": "অসমর্থিত",
+    "unknown": "অজানা",
+    "draft": "অপেক্ষমান"
+  },
+  "captureState": {
+    "capturing": "ক্যাপচার হচ্ছে",
+    "buffering": "বাফার হচ্ছে",
+    "armed": "প্রস্তুত",
+    "muted": "নিঃশব্দ",
+    "idle": "নিষ্ক্রিয়"
+  },
+  "settings": {
+    "title": "সেটিংস",
+    "subtitle": "ইন্টারফেসের ভাষা ও সাধারণ পছন্দ সামঞ্জস্য করুন; পরিবর্তন তাত্ক্ষণিকভাবে প্রযোজ্য হয়, পুনরায় চালু করার প্রয়োজন নেই।",
+    "sectionLanguage": "ইন্টারফেস ভাষা",
+    "languageHint": "ডেস্কটপ UI-এর ভাষা নির্বাচন করুন; তাত্ক্ষণিকভাবে প্রযোজ্য, সাবটাইটেল অনুবাদের লক্ষ্য ভাষা পরিবর্তন হয় না।",
+    "languageLabel": "প্রদর্শনের ভাষা",
+    "currentLanguage": "বর্তমান ভাষা: {{name}}",
+    "resetWelcome": "স্বাগত উইজার্ড রিসেট",
+    "resetWelcomeHint": "স্থানীয় চিহ্ন মুছে দিন যাতে পরবর্তী চালুতে ভাষা নির্বাচক আবার আসে।",
+    "resetWelcomeDone": "রিসেট হয়েছে। পরবর্তীতে ভাষা নির্বাচক আবার আসবে।",
+    "resetWelcomeAction": "রিসেট"
+  },
+  "welcome": {
+    "title": "Omni Translate-এ স্বাগতম",
+    "subtitle": "আপনার পছন্দের ইন্টারফেস ভাষা বেছে নিন; যেকোনো সময় সেটিংস থেকে পরিবর্তন করতে পারেন।",
+    "confirm": "এই ভাষাই ব্যবহার করি",
+    "hint": "তালিকা থেকে ভাষা নির্বাচন করুন; ডানদিকের প্রিভিউ আপডেট হবে।",
+    "previewHeading": "প্রিভিউ",
+    "previewBody": "নির্বাচিত ভাষায় অ্যাপটি প্রায় এভাবেই দেখাবে।"
+  },
+  "overlay": {
+    "previewTitle": "প্রিভিউ মোড",
+    "previewBody": "লাইভ সাবটাইটেল এখানে আসবে",
+    "dragHint": "ওভারলে সরাতে টেনে নিন"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

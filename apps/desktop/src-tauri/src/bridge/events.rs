@@ -1,0 +1,665 @@
+use std::io::BufRead;
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+use tauri::{AppHandle, State};
+use uuid::Uuid;
+
+use crate::diagnostics::events::append_diagnostics_log_quiet;
+use crate::log_debug;
+use crate::log_error;
+use crate::log_info;
+use crate::runtime::contracts::{RuntimeNotification, RuntimeSnapshot};
+use crate::runtime::events::{
+    build_runtime_snapshot, emit_runtime_notification, emit_runtime_snapshot,
+};
+use crate::runtime::state::{now_marker, RuntimeStateStore};
+
+use super::contracts::{reconcile_bridge_snapshot, BridgeMixControl, BridgeRuntimeSnapshot};
+use super::installer::{apply_driver_probe, probe_driver, run_elevated_driver_operation};
+use super::ipc::{
+    apply_query, bridge_cli_path, ensure_bridge_runtime_root, initialize_bridge, query_state,
+    stop_bridge_process, terminate_stale_bridge_process,
+};
+use super::state::BridgeStateStore;
+
+fn extract_driver_string(config: &Value, pointer: &str, default: &str) -> String {
+    config
+        .pointer(pointer)
+        .and_then(Value::as_str)
+        .unwrap_or(default)
+        .to_string()
+}
+
+fn apply_driver_config(snapshot: &mut BridgeRuntimeSnapshot, config: &Value) {
+    snapshot.install_channel =
+        extract_driver_string(config, "/driver/installChannel", &snapshot.install_channel);
+    snapshot.install_phase =
+        extract_driver_string(config, "/driver/installPhase", &snapshot.install_phase);
+    snapshot.target_device_id =
+        extract_driver_string(config, "/driver/targetDeviceId", &snapshot.target_device_id);
+    snapshot.virtual_render_device_id = extract_driver_string(
+        config,
+        "/devices/virtualRenderDeviceId",
+        &snapshot.virtual_render_device_id,
+    );
+    snapshot.physical_playback_device_id = extract_driver_string(
+        config,
+        "/devices/outputDeviceId",
+        &snapshot.physical_playback_device_id,
+    );
+    snapshot.physical_playback_level = config
+        .pointer("/devices/outputLevel")
+        .and_then(Value::as_u64)
+        .unwrap_or(snapshot.physical_playback_level)
+        .min(100);
+    snapshot.monitor_playback_enabled = config
+        .pointer("/speech/localPlaybackEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(snapshot.monitor_playback_enabled);
+    snapshot.mix_control = BridgeMixControl {
+        keep_original_audio: config
+            .pointer("/devices/inboundRoute/mixControl/keepOriginalAudio")
+            .and_then(Value::as_bool)
+            .unwrap_or(snapshot.mix_control.keep_original_audio),
+        translated_audio_enabled: config
+            .pointer("/devices/inboundRoute/mixControl/translatedAudioEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(snapshot.mix_control.translated_audio_enabled),
+        translated_audio_gain_db: config
+            .pointer("/devices/inboundRoute/mixControl/translatedAudioGainDb")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(snapshot.mix_control.translated_audio_gain_db),
+        original_audio_gain_db: config
+            .pointer("/devices/inboundRoute/mixControl/originalAudioGainDb")
+            .and_then(Value::as_f64)
+            .map(|value| value as f32)
+            .unwrap_or(snapshot.mix_control.original_audio_gain_db),
+        ducking_enabled: config
+            .pointer("/devices/inboundRoute/mixControl/duckingEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(snapshot.mix_control.ducking_enabled),
+        ducking_depth_percent: config
+            .pointer("/devices/inboundRoute/mixControl/duckingDepthPercent")
+            .and_then(Value::as_u64)
+            .unwrap_or(snapshot.mix_control.ducking_depth_percent),
+        monitor_mode: extract_driver_string(
+            config,
+            "/devices/inboundRoute/mixControl/monitorMode",
+            &snapshot.mix_control.monitor_mode,
+        ),
+    };
+    snapshot.expected_driver_version = extract_driver_string(
+        config,
+        "/driver/expectedDriverVersion",
+        &snapshot.expected_driver_version,
+    );
+    snapshot.expected_bridge_version = extract_driver_string(
+        config,
+        "/driver/expectedBridgeVersion",
+        &snapshot.expected_bridge_version,
+    );
+    reconcile_bridge_snapshot(snapshot);
+}
+
+fn record_driver_operation_error(state: &BridgeStateStore, error: &str) {
+    state.update_snapshot(|current| {
+        current.install_phase = "rollback-required".to_string();
+        current.last_error_code = Some(
+            error
+                .split(':')
+                .next()
+                .unwrap_or("driver.operation-failed")
+                .to_string(),
+        );
+        current.driver_detail = Some(error.to_string());
+        let log_path = error
+            .split("[logPath=")
+            .nth(1)
+            .and_then(|value| value.strip_suffix(']'))
+            .unwrap_or_default()
+            .to_string();
+        if !log_path.is_empty() {
+            current.last_driver_operation = Some(super::contracts::DriverOperationResult {
+                schema_version: 1,
+                operation_id: error
+                    .split("[operationId=")
+                    .nth(1)
+                    .and_then(|value| value.split(']').next())
+                    .unwrap_or("failed")
+                    .to_string(),
+                action: "failed".to_string(),
+                succeeded: false,
+                phase: "failed".to_string(),
+                error_code: current.last_error_code.clone(),
+                summary: error.to_string(),
+                log_path,
+                started_at: now_marker(),
+                finished_at: now_marker(),
+            });
+        }
+        reconcile_bridge_snapshot(current);
+    });
+}
+
+fn build_started_process(snapshot: &BridgeRuntimeSnapshot) -> Result<std::process::Child, String> {
+    let cli_path = bridge_cli_path();
+    if !cli_path.exists() {
+        return Err(format!(
+            "Bridge Service 构建产物不存在，请先执行 npm run build:bridge-service。missing={}.",
+            cli_path.display()
+        ));
+    }
+
+    /*
+        return Err(
+            "系统未安装 Node.js，Bridge 服务需要 Node.js 运行环境。请安装 Node.js 后重试。"
+                .to_string(),
+        );
+    */
+
+    Command::new(&cli_path)
+        .arg("--pipe-name")
+        .arg(&snapshot.pipe_name)
+        .arg("--runtime-root")
+        .arg(&snapshot.runtime_root)
+        .arg("--bridge-version")
+        .arg(&snapshot.expected_bridge_version)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("无法启动 Node.js 进程: {}", error))
+}
+
+fn stop_existing_process(state: &BridgeStateStore) {
+    if let Some(mut process) = state.take_process() {
+        let _ = process.child.kill();
+        let _ = process.child.wait();
+    }
+}
+
+fn cleanup_existing_bridge_process(
+    snapshot: &BridgeRuntimeSnapshot,
+    state: &BridgeStateStore,
+) -> Result<(), String> {
+    stop_existing_process(state);
+    let _ = stop_bridge_process(snapshot);
+    thread::sleep(Duration::from_millis(150));
+    terminate_stale_bridge_process(snapshot)
+}
+
+fn start_bridge_from_snapshot(
+    snapshot: &BridgeRuntimeSnapshot,
+    bridge_state: &BridgeStateStore,
+    app: &AppHandle,
+) -> Result<(), String> {
+    cleanup_existing_bridge_process(snapshot, bridge_state)?;
+    ensure_bridge_runtime_root(snapshot)?;
+    bridge_state.update_snapshot(|current| *current = snapshot.clone());
+
+    let mut child = build_started_process(snapshot)?;
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+    if let Some(stdout) = stdout {
+        let ready_tx_clone: std::sync::mpsc::Sender<Result<String, String>> = ready_tx.clone();
+        thread::spawn(move || {
+            let reader = std::io::BufReader::new(stdout);
+            for line in reader.lines().map_while(Result::ok) {
+                if line.contains("bridge-service.ready") {
+                    let _ = ready_tx_clone.send(Ok(line));
+                    return;
+                }
+            }
+        });
+    }
+
+    let startup_timeout = Duration::from_secs(8);
+    let ready_received = ready_rx.recv_timeout(startup_timeout).is_ok();
+
+    bridge_state.set_process(child);
+
+    if !ready_received {
+        let stderr_output = if let Some(stderr) = stderr {
+            let reader = std::io::BufReader::new(stderr);
+            reader
+                .lines()
+                .filter_map(Result::ok)
+                .collect::<Vec<_>>()
+                .join("\n")
+        } else {
+            String::new()
+        };
+
+        if !stderr_output.is_empty() {
+            log_bridge_event(
+                app,
+                "error",
+                "Bridge Service 启动失败，stderr 输出:",
+                Some(stderr_output.clone()),
+            );
+        }
+
+        log_bridge_event(
+            app,
+            "warning",
+            "Bridge Service 未在预期时间内返回就绪信号。",
+            Some(format!("timeoutMs={}", startup_timeout.as_millis())),
+        );
+        return Err(format!(
+            "Bridge Service 未在 {} 秒内就绪。{}",
+            startup_timeout.as_secs(),
+            if stderr_output.is_empty() {
+                String::new()
+            } else {
+                format!(
+                    " stderr: {}",
+                    &stderr_output[..stderr_output.len().min(500)]
+                )
+            }
+        ));
+    }
+
+    let initialized = initialize_bridge(snapshot)?;
+    bridge_state.update_snapshot(|current| *current = initialized);
+    Ok(())
+}
+
+fn emit_bridge_notification(
+    app: &AppHandle,
+    runtime_state: &RuntimeStateStore,
+    id: &str,
+    message: &str,
+) -> Result<(), String> {
+    emit_runtime_notification(
+        app,
+        runtime_state,
+        RuntimeNotification::info(id, "bridge-runtime", message, now_marker()),
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn log_bridge_event(
+    app: &AppHandle,
+    level: &str,
+    summary: impl Into<String>,
+    detail: Option<String>,
+) {
+    let _ = append_diagnostics_log_quiet(app, "bridge", level, summary, detail, None, None);
+}
+
+#[tauri::command]
+pub fn get_bridge_runtime_snapshot(
+    state: State<'_, BridgeStateStore>,
+) -> super::contracts::BridgeRuntimeSnapshot {
+    state.snapshot()
+}
+
+#[tauri::command]
+pub fn refresh_bridge_runtime(
+    app: AppHandle,
+    runtime_state: State<'_, RuntimeStateStore>,
+    bridge_state: State<'_, BridgeStateStore>,
+) -> Result<RuntimeSnapshot, String> {
+    let t0 = Instant::now();
+    let snapshot = bridge_state.snapshot();
+    log_debug!(
+        &app,
+        "bridge",
+        "refresh_bridge_runtime 开始",
+        format!(
+            "processStatus={} bridgeState={}",
+            snapshot.process_status, snapshot.bridge_state
+        )
+    );
+    bridge_state.update_snapshot(|current| {
+        current.driver_probe_state = "probing".to_string();
+    });
+    emit_runtime_snapshot(&app, &runtime_state).map_err(|error| error.to_string())?;
+    let probe_result = probe_driver(&snapshot, false);
+    bridge_state.update_snapshot(|current| match probe_result {
+        Ok(probe) => apply_driver_probe(current, probe),
+        Err(error) => {
+            current.driver_probe_state = "failed".to_string();
+            current.last_error_code = Some("driver.probe-failed".to_string());
+            current.driver_detail = Some(error);
+        }
+    });
+    let snapshot = bridge_state.snapshot();
+    if snapshot.process_status == "running" {
+        match query_state(&snapshot.pipe_path) {
+            Ok(query) => {
+                log_info!(
+                    &app,
+                    "bridge",
+                    "query_state 成功",
+                    format!(
+                        "driverHealth={} bridgeState={}",
+                        query.driver_health, query.bridge_state
+                    ),
+                    t0.elapsed().as_millis()
+                );
+                bridge_state.update_snapshot(|current| apply_query(current, query));
+            }
+            Err(error) => {
+                log_error!(
+                    &app,
+                    "bridge",
+                    "query_state 失败",
+                    format!("pipe={} error={}", snapshot.pipe_path, error),
+                    t0.elapsed().as_millis()
+                );
+                bridge_state.update_snapshot(|current| {
+                    current.process_status = "error".to_string();
+                    current.bridge_state = "degraded".to_string();
+                    current.lifecycle_state = "error".to_string();
+                    current.last_error_code = Some("bridge.timeout".to_string());
+                    current.recommended_action = Some("restart-bridge".to_string());
+                    current.status = "warning".to_string();
+                });
+                emit_runtime_notification(
+                    &app,
+                    &runtime_state,
+                    RuntimeNotification::warning(
+                        "bridge-refresh-failed",
+                        "bridge-runtime",
+                        &error,
+                        now_marker(),
+                    ),
+                )
+                .map_err(|emit_error| emit_error.to_string())?;
+                log_bridge_event(&app, "warning", "Bridge 状态刷新失败。", Some(error));
+            }
+        }
+    }
+
+    emit_runtime_snapshot(&app, &runtime_state).map_err(|error| error.to_string())?;
+    Ok(build_runtime_snapshot(&app, &runtime_state))
+}
+
+#[tauri::command]
+pub fn start_bridge_service(
+    app: AppHandle,
+    runtime_state: State<'_, RuntimeStateStore>,
+    bridge_state: State<'_, BridgeStateStore>,
+    config: Value,
+) -> Result<RuntimeSnapshot, String> {
+    let t0 = Instant::now();
+    let mut snapshot = bridge_state.snapshot();
+    apply_driver_config(&mut snapshot, &config);
+    log_info!(
+        &app,
+        "bridge",
+        "start_bridge_service 开始",
+        format!(
+            "runtimeRoot={} pipeName={}",
+            snapshot.runtime_root, snapshot.pipe_name
+        )
+    );
+    snapshot.session_id = Some(format!("bridge-session-{}", Uuid::new_v4()));
+    snapshot.process_status = "starting".to_string();
+    snapshot.pipe_path = format!(r"\\.\pipe\{}", snapshot.pipe_name);
+    start_bridge_from_snapshot(&snapshot, &bridge_state, &app)?;
+    log_info!(
+        &app,
+        "bridge",
+        "Bridge Service 已启动",
+        format!(
+            "pipe={} session={}",
+            snapshot.pipe_path,
+            snapshot.session_id.as_deref().unwrap_or("-")
+        ),
+        t0.elapsed().as_millis()
+    );
+    emit_bridge_notification(
+        &app,
+        &runtime_state,
+        "bridge-started",
+        "Bridge Service 已启动并完成 Driver Bridge Contract 握手。",
+    )?;
+    Ok(build_runtime_snapshot(&app, &runtime_state))
+}
+
+#[tauri::command]
+pub fn stop_bridge_service(
+    app: AppHandle,
+    runtime_state: State<'_, RuntimeStateStore>,
+    bridge_state: State<'_, BridgeStateStore>,
+) -> Result<RuntimeSnapshot, String> {
+    let snapshot = bridge_state.snapshot();
+    cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
+
+    bridge_state.update_snapshot(|current| {
+        current.process_status = "stopped".to_string();
+        current.bridge_state = "stopped".to_string();
+        current.lifecycle_state = "stopped".to_string();
+        current.session_id = None;
+        current.install_phase = if current.driver_health == "running" {
+            "ready".to_string()
+        } else {
+            current.install_phase.clone()
+        };
+        reconcile_bridge_snapshot(current);
+    });
+    log_bridge_event(&app, "info", "Bridge Service 已停止。", None);
+
+    emit_runtime_notification(
+        &app,
+        &runtime_state,
+        RuntimeNotification::info(
+            "bridge-stopped",
+            "bridge-runtime",
+            "Bridge Service 已停止。",
+            now_marker(),
+        ),
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(build_runtime_snapshot(&app, &runtime_state))
+}
+
+#[tauri::command]
+pub fn install_driver_runtime(
+    app: AppHandle,
+    runtime_state: State<'_, RuntimeStateStore>,
+    bridge_state: State<'_, BridgeStateStore>,
+    config: Value,
+) -> Result<RuntimeSnapshot, String> {
+    let mut snapshot = bridge_state.snapshot();
+    cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
+    apply_driver_config(&mut snapshot, &config);
+    log_bridge_event(
+        &app,
+        "info",
+        "收到驱动安装命令。",
+        Some(format!(
+            "runtimeRoot={} driverVersion={} bridgeVersion={}",
+            snapshot.runtime_root,
+            snapshot.expected_driver_version,
+            snapshot.expected_bridge_version
+        )),
+    );
+    snapshot.install_phase = "installing-driver".to_string();
+    bridge_state.update_snapshot(|current| *current = snapshot.clone());
+
+    let probe = probe_driver(&snapshot, false)?;
+    bridge_state.update_snapshot(|current| apply_driver_probe(current, probe.clone()));
+    if !probe.test_signing_enabled {
+        return Err(if probe.secure_boot_enabled == Some(true) {
+            "driver.secure-boot-enabled: Secure Boot 已开启。请先在 BIOS/UEFI 中关闭 Secure Boot，再以管理员 PowerShell 运行 .\\scripts\\installer\\enable-test-signing.ps1 并重启 Windows。".to_string()
+        } else {
+            "driver.testsigning-disabled: 请以管理员 PowerShell 运行 .\\scripts\\installer\\enable-test-signing.ps1，启用 TESTSIGNING 后重启 Windows，再次点击安装。".to_string()
+        });
+    }
+    bridge_state
+        .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
+    let operation = match run_elevated_driver_operation(&snapshot, "install") {
+        Ok(operation) => operation,
+        Err(error) => {
+            record_driver_operation_error(&bridge_state, &error);
+            return Err(error);
+        }
+    };
+    bridge_state.update_snapshot(|current| {
+        *current = snapshot.clone();
+        current.last_driver_operation = Some(operation.clone());
+        current.install_phase = "starting-bridge".to_string();
+    });
+    if let Ok(probe) = probe_driver(&bridge_state.snapshot(), false) {
+        bridge_state.update_snapshot(|current| apply_driver_probe(current, probe));
+    }
+
+    let mut started = bridge_state.snapshot();
+    started.session_id = Some(format!("bridge-session-{}", Uuid::new_v4()));
+    started.process_status = "starting".to_string();
+    start_bridge_from_snapshot(&started, &bridge_state, &app)?;
+    bridge_state.update_snapshot(|current| current.install_phase = "ready".to_string());
+    log_bridge_event(
+        &app,
+        "info",
+        "开发通道驱动安装与 Bridge 握手完成。",
+        Some(snapshot.runtime_root.clone()),
+    );
+
+    emit_bridge_notification(
+        &app,
+        &runtime_state,
+        "driver-installed",
+        "开发通道驱动资产、Bridge Service 和握手校验已完成。",
+    )?;
+    Ok(build_runtime_snapshot(&app, &runtime_state))
+}
+
+#[tauri::command]
+pub fn uninstall_driver_runtime(
+    app: AppHandle,
+    runtime_state: State<'_, RuntimeStateStore>,
+    bridge_state: State<'_, BridgeStateStore>,
+) -> Result<RuntimeSnapshot, String> {
+    let snapshot = bridge_state.snapshot();
+    log_bridge_event(
+        &app,
+        "info",
+        "收到驱动卸载命令。",
+        Some(format!("runtimeRoot={}", snapshot.runtime_root)),
+    );
+    cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
+    bridge_state
+        .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
+    let operation = match run_elevated_driver_operation(&snapshot, "uninstall") {
+        Ok(operation) => operation,
+        Err(error) => {
+            record_driver_operation_error(&bridge_state, &error);
+            return Err(error);
+        }
+    };
+    bridge_state.update_snapshot(|current| {
+        current.process_status = "stopped".to_string();
+        current.bridge_state = "stopped".to_string();
+        current.lifecycle_state = "idle".to_string();
+        current.driver_health = "not-installed".to_string();
+        current.driver_version = None;
+        current.install_phase = "planned".to_string();
+        current.session_id = None;
+        current.last_error_code = Some("driver.not-installed".to_string());
+        current.last_driver_operation = Some(operation.clone());
+        reconcile_bridge_snapshot(current);
+    });
+    if let Ok(probe) = probe_driver(&bridge_state.snapshot(), false) {
+        bridge_state.update_snapshot(|current| apply_driver_probe(current, probe));
+    }
+    log_bridge_event(
+        &app,
+        "info",
+        "开发通道驱动已卸载。",
+        Some(snapshot.runtime_root),
+    );
+
+    emit_bridge_notification(
+        &app,
+        &runtime_state,
+        "driver-uninstalled",
+        "开发通道驱动资产与 Bridge Service 已卸载。",
+    )?;
+    Ok(build_runtime_snapshot(&app, &runtime_state))
+}
+
+#[tauri::command]
+pub fn repair_driver_runtime(
+    app: AppHandle,
+    runtime_state: State<'_, RuntimeStateStore>,
+    bridge_state: State<'_, BridgeStateStore>,
+    config: Value,
+    action: String,
+) -> Result<RuntimeSnapshot, String> {
+    if action == "restart-bridge" {
+        let _ = stop_bridge_service(app.clone(), runtime_state.clone(), bridge_state.clone())?;
+        return start_bridge_service(app, runtime_state, bridge_state, config);
+    }
+
+    let mut snapshot = bridge_state.snapshot();
+    apply_driver_config(&mut snapshot, &config);
+    log_bridge_event(
+        &app,
+        "info",
+        "收到驱动修复命令。",
+        Some(format!(
+            "action={} runtimeRoot={}",
+            action, snapshot.runtime_root
+        )),
+    );
+    snapshot.install_phase = "verifying".to_string();
+    cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
+    let probe = probe_driver(&snapshot, false)?;
+    bridge_state.update_snapshot(|current| apply_driver_probe(current, probe.clone()));
+    if !probe.test_signing_enabled {
+        return Err(
+            "driver.testsigning-disabled: 请启用 TESTSIGNING 并重启 Windows 后再重新安装驱动。"
+                .to_string(),
+        );
+    }
+    bridge_state
+        .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
+    let elevated_action = if action == "rollback-driver" {
+        "reinstall"
+    } else {
+        "reinstall"
+    };
+    let operation = match run_elevated_driver_operation(&snapshot, elevated_action) {
+        Ok(operation) => operation,
+        Err(error) => {
+            record_driver_operation_error(&bridge_state, &error);
+            return Err(error);
+        }
+    };
+    bridge_state.update_snapshot(|current| {
+        *current = snapshot.clone();
+        current.last_driver_operation = Some(operation.clone());
+    });
+    if let Ok(probe) = probe_driver(&bridge_state.snapshot(), false) {
+        bridge_state.update_snapshot(|current| apply_driver_probe(current, probe));
+    }
+
+    let mut restarted = bridge_state.snapshot();
+    restarted.session_id = Some(format!("bridge-session-{}", Uuid::new_v4()));
+    restarted.process_status = "starting".to_string();
+    start_bridge_from_snapshot(&restarted, &bridge_state, &app)?;
+    bridge_state.update_snapshot(|current| current.install_phase = "ready".to_string());
+    log_bridge_event(
+        &app,
+        "info",
+        format!("已执行驱动修复动作：{}。", action),
+        Some(snapshot.runtime_root.clone()),
+    );
+
+    emit_bridge_notification(
+        &app,
+        &runtime_state,
+        "driver-repaired",
+        "驱动修复链路已执行，并重新完成 Bridge 握手。",
+    )?;
+    Ok(build_runtime_snapshot(&app, &runtime_state))
+}

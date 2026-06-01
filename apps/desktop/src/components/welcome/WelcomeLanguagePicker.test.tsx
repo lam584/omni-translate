@@ -1,0 +1,447 @@
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import '../../../src/i18n/config';
+import i18n from '../../../src/i18n/config';
+import { appConfigDraftMock } from '../../../src/mocks/app-config';
+import { runtimeSnapshotMock } from '../../../src/mocks/runtime-shell';
+import { useAppStore } from '../../../src/stores/app-store';
+import WelcomeLanguagePicker from './WelcomeLanguagePicker';
+
+const saveProviderSecretMock = vi.fn();
+const runProviderProbeMock = vi.fn();
+const readProviderSecretMock = vi.fn();
+const refreshBridgeRuntimeMock = vi.fn();
+
+vi.mock('../../runtime/provider-runtime', () => ({
+  saveProviderSecret: (...args: unknown[]) => saveProviderSecretMock(...args),
+  runProviderProbe: (...args: unknown[]) => runProviderProbeMock(...args),
+  readProviderSecret: (...args: unknown[]) => readProviderSecretMock(...args),
+}));
+
+vi.mock('../../runtime/bridge-runtime', () => ({
+  refreshBridgeRuntime: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
+  installDriverRuntime: vi.fn(),
+  repairDriverRuntime: vi.fn(),
+  startBridgeServiceRuntime: vi.fn(),
+  uninstallDriverRuntime: vi.fn(),
+}));
+
+function cloneStoreState() {
+  return {
+    configDraft: structuredClone(appConfigDraftMock),
+    runtimeSnapshot: structuredClone(runtimeSnapshotMock),
+  };
+}
+
+function setTauriRuntime(enabled: boolean) {
+  if (enabled) {
+    Object.defineProperty(globalThis, 'isTauri', {
+      value: true,
+      writable: true,
+      configurable: true,
+    });
+    return;
+  }
+
+  Reflect.deleteProperty(globalThis, 'isTauri');
+}
+
+function getFooterButtons(container: HTMLElement) {
+  return Array.from(container.querySelectorAll<HTMLButtonElement>('.welcome-language-foot-actions button'));
+}
+
+async function click(element: HTMLElement) {
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+}
+
+async function inputText(element: HTMLInputElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
+
+  await act(async () => {
+    valueSetter?.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+async function selectValue(element: HTMLSelectElement, value: string) {
+  const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
+
+  await act(async () => {
+    valueSetter?.call(element, value);
+    element.dispatchEvent(new Event('input', { bubbles: true }));
+    element.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+}
+
+describe('WelcomeLanguagePicker', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(async () => {
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    vi.useRealTimers();
+    saveProviderSecretMock.mockReset();
+    runProviderProbeMock.mockReset();
+    readProviderSecretMock.mockReset();
+    refreshBridgeRuntimeMock.mockReset();
+    refreshBridgeRuntimeMock.mockResolvedValue(structuredClone(runtimeSnapshotMock));
+    setTauriRuntime(false);
+    window.localStorage.clear();
+    await i18n.changeLanguage('zh-CN');
+
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft,
+      runtimeSnapshot,
+    }));
+
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    setTauriRuntime(false);
+    vi.useRealTimers();
+  });
+
+  it('blocks provider save until the desktop runtime and storage are ready', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'browser-preview';
+    runtimeSnapshot.storage.status = 'preview';
+
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft,
+      runtimeSnapshot,
+    }));
+
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+
+    await click(getFooterButtons(container)[0]!);
+
+    const input = container.querySelector('input[type="password"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    await inputText(input!, 'dashscope-secret');
+
+    const footerButtons = getFooterButtons(container);
+    expect(footerButtons[2]?.disabled).toBe(true);
+    expect(saveProviderSecretMock).not.toHaveBeenCalled();
+  });
+
+  it('saves the default provider key and advances to the driver step', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'tauri-shell';
+    runtimeSnapshot.storage.status = 'ready';
+
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft,
+      runtimeSnapshot,
+    }));
+
+    saveProviderSecretMock.mockResolvedValue({
+      reference: 'credential://provider/dashscope/default',
+      backend: 'windows-credential-manager',
+      hasSecret: true,
+    });
+
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+
+    await click(getFooterButtons(container)[0]!);
+
+    const input = container.querySelector('input[type="password"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    await inputText(input!, 'dashscope-secret');
+    await click(getFooterButtons(container)[2]!);
+
+    expect(saveProviderSecretMock).toHaveBeenCalledWith('credential://provider/dashscope/default', 'dashscope-secret');
+    expect(runProviderProbeMock).not.toHaveBeenCalled();
+    expect(container.querySelector('.driver-management-card')).not.toBeNull();
+  });
+
+  it('shows TESTSIGNING guidance on the driver step when the probe reports it disabled', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'tauri-shell';
+    runtimeSnapshot.storage.status = 'ready';
+    runtimeSnapshot.bridge.driverHealth = 'not-installed';
+    runtimeSnapshot.bridge.lastErrorCode = 'driver.testsigning-disabled';
+    refreshBridgeRuntimeMock.mockResolvedValue(structuredClone(runtimeSnapshot));
+
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft,
+      runtimeSnapshot,
+    }));
+
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+
+    await click(getFooterButtons(container)[0]!);
+    await click(getFooterButtons(container)[1]!);
+
+    expect(container.querySelector('.driver-management-card')).not.toBeNull();
+    expect(container.textContent).toContain('.\\scripts\\installer\\enable-test-signing.ps1');
+  });
+
+  it('shows the runtime bootstrap error instead of allowing provider completion', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'runtime-error';
+    runtimeSnapshot.coreState = 'degraded';
+    runtimeSnapshot.storage.status = 'preview';
+
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft,
+      runtimeSnapshot,
+      runtimeNotifications: [
+        {
+          id: 'runtime-bootstrap-failed',
+          level: 'error',
+          source: 'desktop-runtime',
+          message: 'Rust Core bridge bootstrap failed',
+          emittedAt: new Date().toISOString(),
+        },
+      ],
+    }));
+
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+
+    await click(getFooterButtons(container)[0]!);
+
+    expect(container.textContent).toContain('Rust Core bridge bootstrap failed');
+    expect(getFooterButtons(container)[2]?.disabled).toBe(true);
+  });
+
+  it('navigates back to language selection from the provider step', async () => {
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+
+    const languageButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('.welcome-language-item'));
+    await click(languageButtons[1]!);
+    await click(getFooterButtons(container)[0]!);
+    expect(container.querySelector('select')).not.toBeNull();
+
+    await click(getFooterButtons(container)[0]!);
+    expect(container.querySelectorAll('.welcome-language-item')).not.toHaveLength(0);
+  });
+
+  it('skips provider setup, returns from the driver step and completes the wizard', async () => {
+    const onDone = vi.fn();
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={onDone} />);
+    });
+
+    await click(getFooterButtons(container)[0]!);
+    await click(getFooterButtons(container)[1]!);
+    expect(container.querySelector('.driver-management-card')).not.toBeNull();
+
+    await click(getFooterButtons(container)[0]!);
+    expect(container.querySelector('select')).not.toBeNull();
+    await click(getFooterButtons(container)[1]!);
+    await click(getFooterButtons(container)[2]!);
+    expect(onDone).toHaveBeenCalledOnce();
+  });
+
+  it('finishes provider setup without persisting when the API key is empty', async () => {
+    const onDone = vi.fn();
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={onDone} />);
+    });
+
+    await click(getFooterButtons(container)[0]!);
+    await click(getFooterButtons(container)[2]!);
+
+    expect(saveProviderSecretMock).not.toHaveBeenCalled();
+    expect(onDone).toHaveBeenCalledOnce();
+  });
+
+  it('reveals and hides a stored API key through the credential backend', async () => {
+    readProviderSecretMock.mockResolvedValue({
+      reference: 'credential://provider/dashscope/default',
+      backend: 'windows-credential-manager',
+      secret: 'stored-secret',
+    });
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+
+    await click(getFooterButtons(container)[0]!);
+    const toggle = container.querySelector<HTMLButtonElement>('.welcome-secret-toggle')!;
+    await click(toggle);
+    expect(readProviderSecretMock).toHaveBeenCalledWith('credential://provider/dashscope/default');
+    expect(container.querySelector<HTMLInputElement>('input[type="text"]')?.value).toBe('stored-secret');
+
+    await click(toggle);
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe('stored-secret');
+  });
+
+  it('shows credential reveal errors from empty and failed backend reads', async () => {
+    readProviderSecretMock.mockResolvedValueOnce({
+      reference: 'credential://provider/dashscope/default',
+      backend: 'windows-credential-manager',
+      secret: null,
+    });
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+
+    await click(getFooterButtons(container)[0]!);
+    const toggle = container.querySelector<HTMLButtonElement>('.welcome-secret-toggle')!;
+    await click(toggle);
+    expect(container.textContent).toContain('API Key');
+
+    readProviderSecretMock.mockRejectedValueOnce(new Error('credential backend unavailable'));
+    await click(toggle);
+    expect(container.textContent).toContain('credential backend unavailable');
+  });
+
+  it('updates the provider template and API address before surfacing save timeouts', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'tauri-shell';
+    runtimeSnapshot.storage.status = 'ready';
+    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
+    saveProviderSecretMock.mockRejectedValue({ code: 'timeout', operation: 'credential-save' });
+
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+    await click(getFooterButtons(container)[0]!);
+    const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
+    const alternateTemplate = Array.from(templateSelect.options).find((option) => option.value !== templateSelect.value)!;
+    await selectValue(templateSelect, alternateTemplate.value);
+    const baseUrlInput = container.querySelector<HTMLInputElement>('input[type="url"]')!;
+    await inputText(baseUrlInput, 'https://custom.example/v1');
+    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'provider-secret');
+    await click(getFooterButtons(container)[2]!);
+
+    expect(saveProviderSecretMock).toHaveBeenCalledWith(expect.any(String), 'provider-secret');
+    expect(baseUrlInput.value).toBe('https://custom.example/v1');
+    expect(container.querySelector('.welcome-provider-form')).not.toBeNull();
+  });
+
+  it('reports asynchronous provider probe timeouts after saving a non-websocket provider', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'tauri-shell';
+    runtimeSnapshot.storage.status = 'ready';
+    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
+    saveProviderSecretMock.mockResolvedValue({
+      reference: 'credential://provider/openai-compatible/default',
+      backend: 'windows-credential-manager',
+      hasSecret: true,
+    });
+    runProviderProbeMock.mockRejectedValue({ code: 'timeout', operation: 'provider-probe' });
+
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+    await click(getFooterButtons(container)[0]!);
+    const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
+    const nonWebsocketTemplate = Array.from(templateSelect.options).find((option) => option.value.includes('openai-compatible'))!;
+    await selectValue(templateSelect, nonWebsocketTemplate.value);
+    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'provider-secret');
+    await click(getFooterButtons(container)[2]!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(runProviderProbeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('uses the translated runtime fallback when no bootstrap error notification exists', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'runtime-error';
+    runtimeSnapshot.coreState = 'degraded';
+    runtimeSnapshot.storage.status = 'preview';
+    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot, runtimeNotifications: [] }));
+
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+    await click(getFooterButtons(container)[0]!);
+
+    expect(container.textContent).toContain('桌面运行时');
+    expect(getFooterButtons(container)[2]?.disabled).toBe(true);
+  });
+
+  it('reveals an entered API key locally without reading the credential backend', async () => {
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+    await click(getFooterButtons(container)[0]!);
+    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'entered-secret');
+
+    const toggle = container.querySelector<HTMLButtonElement>('.welcome-secret-toggle')!;
+    await click(toggle);
+    expect(readProviderSecretMock).not.toHaveBeenCalled();
+    expect(container.querySelector<HTMLInputElement>('input[type="text"]')?.value).toBe('entered-secret');
+    await click(toggle);
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')?.value).toBe('entered-secret');
+  });
+
+  it('uses default endpoint and first provider when saving after active provider identity is stale', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'tauri-shell';
+    runtimeSnapshot.storage.status = 'ready';
+    configDraft.activeProviderTemplateId = 'missing-template';
+    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
+    saveProviderSecretMock.mockResolvedValue({ hasSecret: true });
+    runProviderProbeMock.mockResolvedValue({ verdict: 'unavailable', error: { message: '  denied  ' } });
+
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+    await click(getFooterButtons(container)[0]!);
+    const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
+    const nonWebsocketTemplate = Array.from(templateSelect.options).find((option) => option.value.includes('openai-compatible'))!;
+    await selectValue(templateSelect, nonWebsocketTemplate.value);
+    await inputText(container.querySelector<HTMLInputElement>('input[type="url"]')!, '   ');
+    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'provider-secret');
+    await click(getFooterButtons(container)[2]!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(runProviderProbeMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: expect.stringMatching(/^https?:/) }));
+    expect(container.textContent).toContain('denied');
+  });
+
+  it('shows non-error refresh failures after entering the driver step', async () => {
+    refreshBridgeRuntimeMock.mockRejectedValue('bridge refresh unavailable');
+    await act(async () => {
+      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
+    });
+    await click(getFooterButtons(container)[0]!);
+    await click(getFooterButtons(container)[1]!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('bridge refresh unavailable');
+  });
+});

@@ -1,0 +1,2 @@
+export { bridgeServiceScaffold, describeBridgeBootstrap, resolveBridgePaths, resolvePipePath, startBridgeService } from './service/bridge-service.js';
+export type { DriverBridgeCommand, DriverBridgeEvent, BridgeStateSnapshot, DriverInstallState } from './protocol.js';

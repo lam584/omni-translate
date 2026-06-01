@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "บันทึก",
+    "cancel": "ยกเลิก",
+    "confirm": "ยืนยัน",
+    "back": "ย้อนกลับ",
+    "next": "ถัดไป",
+    "finish": "เสร็จสิ้น",
+    "close": "ปิด",
+    "retry": "ลองอีกครั้ง",
+    "loading": "กำลังโหลด…",
+    "language": "ภาษาของอินเทอร์เฟซ"
+  },
+  "brand": {
+    "title": "คอนโซลแปลภาษาแบบเรียลไทม์",
+    "kicker": "คอนโซลเดสก์ท็อป"
+  },
+  "nav": {
+    "dashboard": "แดชบอร์ด",
+    "dashboardHint": "",
+    "quickSetup": "ตั้งค่าด่วน",
+    "quickSetupHint": "",
+    "providers": "ผู้ให้บริการ",
+    "providersHint": "",
+    "session": "เซสชันสด",
+    "sessionHint": "",
+    "audioRouting": "การกำหนดเส้นทางเสียง",
+    "audioRoutingHint": "",
+    "glossary": "อภิธานศัพท์",
+    "glossaryHint": "",
+    "diagnostics": "การวินิจฉัย",
+    "diagnosticsHint": "",
+    "settings": "การตั้งค่า",
+    "settingsHint": "ภาษาและการตั้งค่าทั่วไป",
+    "sectionMain": "หลัก",
+    "ariaMain": "การนำทางหลัก"
+  },
+  "statusCards": {
+    "bridge": "บริดจ์",
+    "provider": "ผู้ให้บริการ",
+    "inbound": "ขาเข้า",
+    "outbound": "ขาออก"
+  },
+  "bridgeState": {
+    "running": "กำลังทำงาน",
+    "starting": "กำลังเริ่ม",
+    "error": "ข้อผิดพลาด",
+    "stopped": "หยุดแล้ว"
+  },
+  "bridgeStatus": {
+    "tauriShell": "รันไทม์เดสก์ท็อป",
+    "runtimeError": "ข้อผิดพลาดรันไทม์",
+    "browserPreview": "ตัวอย่างเบราว์เซอร์"
+  },
+  "configStatus": {
+    "ready": "พร้อม",
+    "warning": "ต้องตรวจสอบ",
+    "unsupported": "ไม่รองรับ",
+    "unknown": "ไม่ทราบ",
+    "draft": "รอดำเนินการ"
+  },
+  "captureState": {
+    "capturing": "กำลังจับภาพ",
+    "buffering": "กำลังบัฟเฟอร์",
+    "armed": "พร้อม",
+    "muted": "ปิดเสียง",
+    "idle": "ว่าง"
+  },
+  "settings": {
+    "title": "การตั้งค่า",
+    "subtitle": "ปรับภาษาของอินเทอร์เฟซและการตั้งค่าทั่วไป การเปลี่ยนแปลงมีผลทันทีโดยไม่ต้องรีสตาร์ท",
+    "sectionLanguage": "ภาษาของอินเทอร์เฟซ",
+    "languageHint": "เลือกภาษาสำหรับ UI เดสก์ท็อป มีผลทันทีและไม่เปลี่ยนภาษาเป้าหมายของคำบรรยาย",
+    "languageLabel": "ภาษาที่แสดง",
+    "currentLanguage": "ภาษาปัจจุบัน: {{name}}",
+    "resetWelcome": "รีเซ็ตตัวช่วยต้อนรับ",
+    "resetWelcomeHint": "ล้างการตั้งค่าท้องถิ่นเพื่อให้ตัวเลือกภาษาปรากฏอีกครั้งเมื่อเปิดใช้ครั้งถัดไป",
+    "resetWelcomeDone": "รีเซ็ตเสร็จสิ้น ตัวเลือกภาษาจะปรากฏในครั้งต่อไป",
+    "resetWelcomeAction": "รีเซ็ต"
+  },
+  "welcome": {
+    "title": "ยินดีต้อนรับสู่ Omni Translate",
+    "subtitle": "เลือกภาษาของอินเทอร์เฟซที่คุณต้องการ คุณสามารถเปลี่ยนได้ตลอดเวลาในการตั้งค่า",
+    "confirm": "ใช้ภาษานี้",
+    "hint": "เลือกภาษาจากรายการ ตัวอย่างทางขวาจะอัปเดตตามที่คุณเลือก",
+    "previewHeading": "ตัวอย่าง",
+    "previewBody": "นี่คือภาพโดยประมาณของแอปในภาษาที่เลือก"
+  },
+  "overlay": {
+    "previewTitle": "โหมดตัวอย่างเบราว์เซอร์",
+    "previewBody": "คำบรรยายสดจะปรากฏที่นี่",
+    "dragHint": "ลากเพื่อย้ายโอเวอร์เลย์"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

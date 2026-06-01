@@ -1,0 +1,10 @@
+[package]
+name = "omni-realtime-diagnostic"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+base64 = "0.22"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+serde_json = "1"
+tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }

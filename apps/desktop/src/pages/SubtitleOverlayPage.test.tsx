@@ -1,0 +1,814 @@
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
+import { appConfigDraftMock } from '../mocks/app-config';
+import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import SubtitleOverlayPage from './SubtitleOverlayPage';
+import { useAppStore } from '../stores/app-store';
+
+const tauriMocks = vi.hoisted(() => {
+  let pointerPosition = { x: 0, y: 0 };
+
+  return {
+    currentMonitorMock: vi.fn(),
+    cursorPositionMock: vi.fn(async () => ({ ...pointerPosition })),
+    innerSizeMock: vi.fn(),
+    invokeMock: vi.fn(),
+    onResizedMock: vi.fn(),
+    outerPositionMock: vi.fn(),
+    outerSizeMock: vi.fn(),
+    scaleFactorMock: vi.fn(),
+    setDecorationsMock: vi.fn(),
+    setIgnoreCursorEventsMock: vi.fn(),
+    setPointerPosition: (next: { x: number; y: number }) => {
+      pointerPosition = next;
+    },
+    setPositionMock: vi.fn(),
+    setResizableMock: vi.fn(),
+    setShadowMock: vi.fn(),
+    setSizeMock: vi.fn(),
+    startDraggingMock: vi.fn(),
+    startResizeDraggingMock: vi.fn(),
+  };
+});
+
+const menuMocks = vi.hoisted(() => ({
+  closeMock: vi.fn(),
+  newMock: vi.fn(),
+  popupMock: vi.fn(),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: tauriMocks.invokeMock,
+}));
+
+vi.mock('@tauri-apps/api/dpi', () => ({
+  LogicalPosition: class LogicalPosition {
+    x: number;
+    y: number;
+
+    constructor(x: number, y: number) {
+      this.x = x;
+      this.y = y;
+    }
+  },
+  LogicalSize: class LogicalSize {
+    width: number;
+    height: number;
+
+    constructor(width: number, height: number) {
+      this.width = width;
+      this.height = height;
+    }
+  },
+}));
+
+vi.mock('@tauri-apps/api/menu', () => ({
+  Menu: {
+    new: menuMocks.newMock,
+  },
+}));
+
+vi.mock('@tauri-apps/api/window', () => {
+  const windowHandle = {
+    innerSize: tauriMocks.innerSizeMock,
+    onResized: tauriMocks.onResizedMock,
+    outerPosition: tauriMocks.outerPositionMock,
+    outerSize: tauriMocks.outerSizeMock,
+    scaleFactor: tauriMocks.scaleFactorMock,
+    setDecorations: tauriMocks.setDecorationsMock,
+    setIgnoreCursorEvents: tauriMocks.setIgnoreCursorEventsMock,
+    setPosition: tauriMocks.setPositionMock,
+    setResizable: tauriMocks.setResizableMock,
+    setShadow: tauriMocks.setShadowMock,
+    setSize: tauriMocks.setSizeMock,
+    startDragging: tauriMocks.startDraggingMock,
+    startResizeDragging: tauriMocks.startResizeDraggingMock,
+  };
+
+  return {
+    PhysicalPosition: class PhysicalPosition {
+      x: number;
+      y: number;
+
+      constructor(x: number, y: number) {
+        this.x = x;
+        this.y = y;
+      }
+    },
+    currentMonitor: tauriMocks.currentMonitorMock,
+    cursorPosition: tauriMocks.cursorPositionMock,
+    getCurrentWindow: () => windowHandle,
+  };
+});
+
+vi.mock('react-i18next', () => ({
+  useTranslation: () => ({
+    t: (key: string) => key,
+  }),
+}));
+
+vi.mock('../runtime/tauri-runtime', () => ({
+  isTauriRuntime: () => true,
+}));
+
+function cloneStoreState() {
+  const configDraft = structuredClone(appConfigDraftMock);
+  configDraft.subtitles.overlayLocked = true;
+
+  return {
+    audioRuntimeSnapshot: structuredClone(audioRuntimeSnapshotMock),
+    configDraft,
+    runtimeSnapshot: structuredClone(runtimeSnapshotMock),
+  };
+}
+
+async function advanceLockedRevealPoll() {
+  await act(async () => {
+    vi.advanceTimersByTime(160);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+function countInvokeCalls(command: string) {
+  return tauriMocks.invokeMock.mock.calls.filter(([nextCommand]) => nextCommand === command).length;
+}
+
+function createPointerEvent(type: string, init?: PointerEventInit) {
+  const PointerEventCtor = globalThis.PointerEvent ?? MouseEvent;
+  return new PointerEventCtor(type, {
+    bubbles: true,
+    button: 0,
+    pointerId: 1,
+    ...init,
+  } as PointerEventInit);
+}
+
+describe('SubtitleOverlayPage locked interaction', () => {
+  let container: HTMLDivElement;
+  let root: Root;
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+    if (!globalThis.PointerEvent) {
+      Object.assign(globalThis, { PointerEvent: MouseEvent });
+    }
+
+    if (!HTMLElement.prototype.setPointerCapture) {
+      HTMLElement.prototype.setPointerCapture = vi.fn();
+    }
+
+    if (!HTMLElement.prototype.releasePointerCapture) {
+      HTMLElement.prototype.releasePointerCapture = vi.fn();
+    }
+
+    if (!HTMLElement.prototype.hasPointerCapture) {
+      HTMLElement.prototype.hasPointerCapture = vi.fn(() => true);
+    }
+
+    tauriMocks.invokeMock.mockReset().mockResolvedValue(undefined);
+    menuMocks.closeMock.mockReset().mockResolvedValue(undefined);
+    menuMocks.popupMock.mockReset().mockResolvedValue(undefined);
+    menuMocks.newMock.mockReset().mockResolvedValue({
+      close: menuMocks.closeMock,
+      popup: menuMocks.popupMock,
+    });
+    tauriMocks.currentMonitorMock.mockReset().mockResolvedValue({
+      workArea: {
+        position: { x: 0, y: 0 },
+        size: { height: 1080, width: 1920 },
+      },
+    });
+    tauriMocks.cursorPositionMock.mockReset().mockImplementation(async () => ({ x: 0, y: 0 }));
+    tauriMocks.setDecorationsMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.setIgnoreCursorEventsMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.setPositionMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.setResizableMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.setShadowMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.setSizeMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.startDraggingMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.startResizeDraggingMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.outerPositionMock.mockReset().mockResolvedValue({ x: 100, y: 200 });
+    tauriMocks.outerSizeMock.mockReset().mockResolvedValue({ height: 220, width: 960 });
+    tauriMocks.innerSizeMock.mockReset().mockResolvedValue({ height: 220, width: 960 });
+    tauriMocks.onResizedMock.mockReset().mockResolvedValue(() => undefined);
+    tauriMocks.scaleFactorMock.mockReset().mockResolvedValue(1);
+
+    const { audioRuntimeSnapshot, configDraft, runtimeSnapshot } = cloneStoreState();
+    useAppStore.setState((state) => ({
+      ...state,
+      audioRuntimeSnapshot,
+      configDraft,
+      runtimeNotifications: runtimeSnapshot.notifications,
+      runtimeSnapshot,
+    }));
+
+    tauriMocks.setPointerPosition({ x: 20, y: 20 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 20, y: 20 }));
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+  });
+
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount();
+    });
+    container.remove();
+    vi.useRealTimers();
+  });
+
+  it('reveals the unlock button when the cursor enters the overlay bounds but keeps cursor passthrough outside the button hotspot', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    expect(container.querySelector('.subtitle-overlay-toggle-lock')).toBeNull();
+
+    tauriMocks.setPointerPosition({ x: 220, y: 280 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 220, y: 280 }));
+    await advanceLockedRevealPoll();
+
+    expect(container.querySelector('.subtitle-overlay-toggle-lock')).not.toBeNull();
+  });
+
+  it('syncs overlay border opacity with background opacity', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayBackgroundOpacity: 0,
+          overlayOpacity: 0.85,
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const lyrics = container.querySelector<HTMLElement>('.subtitle-overlay-lyrics');
+    expect(lyrics?.style.getPropertyValue('--subtitle-overlay-background')).toBe('rgba(17, 24, 39, 0)');
+    expect(lyrics?.style.getPropertyValue('--subtitle-overlay-border')).toBe('rgba(255, 255, 255, 0)');
+    expect(lyrics?.style.getPropertyValue('--subtitle-overlay-shadow')).toBe('rgba(0, 0, 0, 0)');
+    expect(lyrics?.style.getPropertyValue('--subtitle-overlay-blur')).toBe('0px');
+  });
+
+  it('stops passthrough inside the unlock hotspot and unlocks the overlay when the button is clicked', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    tauriMocks.setPointerPosition({ x: 940, y: 220 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
+    await advanceLockedRevealPoll();
+
+    const button = container.querySelector('.subtitle-overlay-toggle-lock');
+    expect(button).not.toBeNull();
+
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(false);
+  });
+
+  it('does not re-sync native chrome when the cursor leaves the unlock hotspot', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const chromeSyncCallsBeforeHover = countInvokeCalls('sync_subtitle_overlay_chrome');
+
+    tauriMocks.setPointerPosition({ x: 940, y: 220 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
+    await advanceLockedRevealPoll();
+
+    tauriMocks.setPointerPosition({ x: 220, y: 280 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 220, y: 280 }));
+    await advanceLockedRevealPoll();
+
+    expect(countInvokeCalls('sync_subtitle_overlay_chrome')).toBe(chromeSyncCallsBeforeHover);
+  });
+
+  it('re-syncs native window state only once when the lock button toggles overlayLocked', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    tauriMocks.setPointerPosition({ x: 940, y: 220 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
+    await advanceLockedRevealPoll();
+
+    const windowStateSyncCallsBeforeClick = countInvokeCalls('sync_subtitle_overlay_window_state');
+    const button = container.querySelector('.subtitle-overlay-toggle-lock');
+    expect(button).not.toBeNull();
+
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(countInvokeCalls('sync_subtitle_overlay_window_state')).toBe(windowStateSyncCallsBeforeClick + 1);
+  });
+
+  it('resizes the overlay from client-area handles after unlock without using native resize dragging', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        configDraft: {
+          ...state.configDraft,
+          subtitles: {
+            ...state.configDraft.subtitles,
+            overlayLocked: false,
+          },
+        },
+      }));
+    });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const eastHandle = container.querySelector('.subtitle-overlay-resize-handle-east');
+    expect(eastHandle).not.toBeNull();
+
+    await act(async () => {
+      eastHandle?.dispatchEvent(createPointerEvent('pointerdown', { pointerId: 7, screenX: 1060, screenY: 310 }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      eastHandle?.dispatchEvent(createPointerEvent('pointermove', { pointerId: 7, screenX: 1120, screenY: 310 }));
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      eastHandle?.dispatchEvent(createPointerEvent('pointerup', { pointerId: 7, screenX: 1120, screenY: 310 }));
+    });
+
+    expect(tauriMocks.setSizeMock).toHaveBeenCalled();
+    expect(tauriMocks.setPositionMock).toHaveBeenCalled();
+    expect(tauriMocks.startResizeDraggingMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().configDraft.subtitles.overlayWidth).toBeGreaterThan(960);
+  });
+
+  it('opens the native context menu and executes style and lock callbacks', async () => {
+    tauriMocks.invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'toggle_subtitle_overlay') {
+        return structuredClone(runtimeSnapshotMock);
+      }
+
+      if (command === 'clear_subtitle_cues') {
+        return structuredClone(audioRuntimeSnapshotMock);
+      }
+
+      return undefined;
+    });
+    menuMocks.closeMock.mockRejectedValueOnce(new Error('menu already closed'));
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayLocked: false,
+        },
+      },
+    }));
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const overlay = container.querySelector('.subtitle-overlay-root');
+    await act(async () => {
+      overlay?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 30 }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(menuMocks.newMock).toHaveBeenCalledTimes(1);
+    expect(menuMocks.popupMock).toHaveBeenCalledTimes(1);
+    expect(menuMocks.closeMock).toHaveBeenCalledTimes(1);
+
+    const items = menuMocks.newMock.mock.calls[0][0].items;
+    await act(async () => {
+      items[0].items[1].action();
+      items[1].items[3].action();
+      items[2].items[1].action();
+      items[3].items[4].action();
+      items[5].action();
+      items[6].action();
+      items[7].action();
+      await Promise.resolve();
+    });
+    expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
+      overlayBackgroundColor: '#0f172a',
+      overlayFontSize: 28,
+      overlayBackgroundOpacity: 0.25,
+      overlayTextColor: '#bae6fd',
+      overlayLocked: true,
+    });
+    expect(tauriMocks.invokeMock).toHaveBeenCalledWith('toggle_subtitle_overlay');
+    expect(tauriMocks.invokeMock).toHaveBeenCalledWith('clear_subtitle_cues');
+  });
+
+  it('drags an unlocked overlay and ignores unrelated pointer ids', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayLocked: false,
+        },
+      },
+    }));
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    const overlay = container.querySelector('.subtitle-overlay-root');
+    await act(async () => {
+      overlay?.dispatchEvent(createPointerEvent('pointermove', { pointerId: 99, screenX: 1, screenY: 1 }));
+      overlay?.dispatchEvent(createPointerEvent('pointerup', { pointerId: 99, screenX: 1, screenY: 1 }));
+      overlay?.dispatchEvent(createPointerEvent('pointerdown', { pointerId: 9, screenX: 100, screenY: 200 }));
+      await Promise.resolve();
+    });
+    await act(async () => {
+      overlay?.dispatchEvent(createPointerEvent('pointermove', { pointerId: 9, screenX: 180, screenY: 260 }));
+      vi.advanceTimersByTime(20);
+      await Promise.resolve();
+    });
+    await act(async () => {
+      overlay?.dispatchEvent(createPointerEvent('pointerup', { pointerId: 9, screenX: 180, screenY: 260 }));
+    });
+    expect(tauriMocks.setPositionMock).toHaveBeenCalled();
+    expect(useAppStore.getState().configDraft.subtitles.overlayX).not.toBe(appConfigDraftMock.subtitles.overlayX);
+  });
+
+  it('finishes overlay and resize drags through pointer cancellation', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayLocked: false,
+        },
+      },
+    }));
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const overlay = container.querySelector('.subtitle-overlay-root');
+    const eastHandle = container.querySelector('.subtitle-overlay-resize-handle-east');
+    await act(async () => {
+      overlay?.dispatchEvent(createPointerEvent('pointerdown', { pointerId: 10, screenX: 100, screenY: 200 }));
+      await Promise.resolve();
+      overlay?.dispatchEvent(createPointerEvent('pointercancel', { pointerId: 10, screenX: 140, screenY: 240 }));
+      eastHandle?.dispatchEvent(createPointerEvent('pointerdown', { pointerId: 11, screenX: 1060, screenY: 310 }));
+      await Promise.resolve();
+      eastHandle?.dispatchEvent(createPointerEvent('pointercancel', { pointerId: 11, screenX: 1100, screenY: 310 }));
+    });
+
+    expect(tauriMocks.setPositionMock).toHaveBeenCalled();
+    expect(tauriMocks.setSizeMock).toHaveBeenCalled();
+  });
+
+  it('updates the draft after native resizes and cancels pending work on cleanup', async () => {
+    let onResized: (() => Promise<void>) | undefined;
+    const unlisten = vi.fn();
+    tauriMocks.onResizedMock.mockImplementation(async (callback: () => Promise<void>) => {
+      onResized = callback;
+      return unlisten;
+    });
+    tauriMocks.innerSizeMock.mockResolvedValue({ height: 180, width: 720 });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+      await Promise.resolve();
+    });
+    expect(onResized).toBeDefined();
+
+    await act(async () => {
+      await onResized?.();
+      await onResized?.();
+      await onResized?.();
+      vi.advanceTimersByTime(301);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
+      overlayHeight: 180,
+      overlayWidth: 720,
+    });
+
+    tauriMocks.currentMonitorMock.mockResolvedValueOnce(null);
+    await act(async () => {
+      await onResized?.();
+      vi.advanceTimersByTime(301);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await onResized?.();
+      root.unmount();
+    });
+    expect(unlisten).toHaveBeenCalled();
+  });
+
+  it('runs locked reveal button hover and blur handlers', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    tauriMocks.setPointerPosition({ x: 940, y: 220 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
+    await advanceLockedRevealPoll();
+
+    const button = container.querySelector('.subtitle-overlay-toggle-lock');
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      button?.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      button?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+      button?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+    expect(button).not.toBeNull();
+  });
+
+  it('flushes client resize bounds through animation frames and ignores a missing monitor', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayLocked: false,
+        },
+      },
+    }));
+    tauriMocks.currentMonitorMock.mockResolvedValueOnce(null);
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+      await Promise.resolve();
+    });
+
+    const eastHandle = container.querySelector('.subtitle-overlay-resize-handle-east');
+    await act(async () => {
+      eastHandle?.dispatchEvent(createPointerEvent('pointerdown', { pointerId: 12, screenX: 1060, screenY: 310 }));
+      await Promise.resolve();
+      eastHandle?.dispatchEvent(createPointerEvent('pointermove', { pointerId: 12, screenX: 1130, screenY: 310 }));
+      vi.advanceTimersByTime(20);
+      await Promise.resolve();
+    });
+    expect(tauriMocks.setSizeMock).toHaveBeenCalled();
+  });
+
+  it('hides a revealed lock button when native cursor polling fails', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    tauriMocks.setPointerPosition({ x: 940, y: 220 });
+    tauriMocks.cursorPositionMock.mockResolvedValue({ x: 940, y: 220 });
+    await advanceLockedRevealPoll();
+    expect(container.querySelector('.subtitle-overlay-toggle-lock')).not.toBeNull();
+
+    tauriMocks.cursorPositionMock.mockRejectedValueOnce(new Error('cursor unavailable'));
+    await advanceLockedRevealPoll();
+    expect(container.querySelector('.subtitle-overlay-toggle-lock')).toBeNull();
+  });
+
+  it('restores document and app-root styles after unmount', async () => {
+    const appRoot = document.createElement('div');
+    appRoot.id = 'root';
+    appRoot.setAttribute('style', 'color: red');
+    document.body.appendChild(appRoot);
+    document.documentElement.setAttribute('style', 'color: blue');
+    document.body.setAttribute('style', 'color: green');
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    await act(async () => {
+      root.unmount();
+    });
+
+    expect(document.documentElement.getAttribute('style')).toContain('color: blue');
+    expect(document.body.getAttribute('style')).toContain('color: green');
+    expect(appRoot.getAttribute('style')).toContain('color: red');
+    appRoot.remove();
+    document.documentElement.removeAttribute('style');
+    document.body.removeAttribute('style');
+  });
+
+  it('prefers displaySourceText and preserves multiline subtitles', async () => {
+    useAppStore.setState((state) => {
+      const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+      const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+      cue.sourceText = 'Raw long source that should not be displayed';
+      cue.displaySourceText = 'First source line\nSecond source line';
+      cue.translatedText = '第一行\n第二行';
+      cue.displaySegments = undefined;
+      nextSnapshot.subtitleOverlay.activeCue = cue;
+
+      return {
+        ...state,
+        audioRuntimeSnapshot: nextSnapshot,
+      };
+    });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    expect(container.textContent).toContain('First source line');
+    expect(container.textContent).toContain('Second source line');
+    expect(container.textContent).toContain('第一行');
+    expect(container.textContent).not.toContain('Raw long source that should not be displayed');
+  });
+
+  it('renders display segments as paired source and translation rows', async () => {
+    useAppStore.setState((state) => {
+      const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+      const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+      cue.sourceText = 'Raw long source that should not be displayed';
+      cue.displaySourceText = 'First source\nSecond source';
+      cue.translatedText = '第一句\n第二句';
+      cue.displaySegments = [
+        { sourceText: 'First source', translatedText: '第一句', pending: false },
+        { sourceText: 'Second source', translatedText: '第二句', pending: false },
+      ];
+      nextSnapshot.subtitleOverlay.activeCue = cue;
+
+      return {
+        ...state,
+        audioRuntimeSnapshot: nextSnapshot,
+      };
+    });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const segmentTexts = Array.from(container.querySelectorAll('.subtitle-overlay-segment')).map((segment) => segment.textContent);
+    expect(segmentTexts).toEqual(['First source第一句', 'Second source第二句']);
+  });
+
+  it('keeps a pending translation row under its source segment', async () => {
+    useAppStore.setState((state) => {
+      const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+      const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+      cue.displaySegments = [
+        { sourceText: 'Already translated source', translatedText: '已有译文', pending: false },
+        { sourceText: 'Waiting source', translatedText: '', pending: true },
+      ];
+      nextSnapshot.subtitleOverlay.activeCue = cue;
+
+      return {
+        ...state,
+        audioRuntimeSnapshot: nextSnapshot,
+      };
+    });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const segments = Array.from(container.querySelectorAll('.subtitle-overlay-segment'));
+    expect(segments).toHaveLength(2);
+    expect(segments[1].textContent).toContain('Waiting source');
+    expect(segments[1].querySelector('.subtitle-overlay-translation')).not.toBeNull();
+    expect(segments[1].className).toContain('subtitle-overlay-segment-pending');
+  });
+
+  it('renders translated-only display segments without an empty source paragraph', async () => {
+    useAppStore.setState((state) => {
+      const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+      const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+      cue.displaySegments = [{ sourceText: '', translatedText: '仅译文', pending: false }];
+      nextSnapshot.subtitleOverlay.activeCue = cue;
+      return { ...state, audioRuntimeSnapshot: nextSnapshot };
+    });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    const segment = container.querySelector('.subtitle-overlay-segment');
+    expect(segment?.querySelector('.subtitle-overlay-source')).toBeNull();
+    expect(segment?.textContent).toContain('仅译文');
+  });
+
+  it('uses the configured subtitle font size as the overlay baseline', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayFontSize: 36,
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const source = container.querySelector<HTMLElement>('.subtitle-overlay-source');
+    const translation = container.querySelector<HTMLElement>('.subtitle-overlay-translation');
+    expect(source?.style.fontSize).toBe('36px');
+    expect(translation?.style.fontSize).toBe('30px');
+  });
+
+  it('uses friendly empty placeholder copy with the configured subtitle font size', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      audioRuntimeSnapshot: {
+        ...state.audioRuntimeSnapshot,
+        subtitleOverlay: {
+          ...state.audioRuntimeSnapshot.subtitleOverlay,
+          activeCue: null,
+          queueDepth: 0,
+          recentCues: [],
+        },
+      },
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayFontSize: 36,
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const source = container.querySelector<HTMLElement>('.subtitle-overlay-source');
+    const translation = container.querySelector<HTMLElement>('.subtitle-overlay-translation');
+    expect(source?.textContent).toBe('overlay.previewTitleEnglish');
+    expect(translation?.textContent).toBe('overlay.previewTitle');
+    expect(source?.style.fontSize).toBe('36px');
+    expect(translation?.style.fontSize).toBe('30px');
+  });
+
+  it('keeps dense subtitle queues above the minimum readable font scale', async () => {
+    useAppStore.setState((state) => {
+      const recentCues = Array.from({ length: 6 }, (_, index) => ({
+        cueId: `dense-cue-${index}`,
+        routeDirection: 'inbound' as const,
+        sourceText: `Source ${index}`,
+        translatedText: `Translation ${index}`,
+        displaySegments: [
+          {
+            sourceText: `Source ${index}`,
+            translatedText: `Translation ${index}`,
+            pending: false,
+          },
+        ],
+        startedAt: 'test',
+        endedAt: 'test',
+        committed: true,
+      }));
+
+      return {
+        ...state,
+        audioRuntimeSnapshot: {
+          ...state.audioRuntimeSnapshot,
+          subtitleOverlay: {
+            ...state.audioRuntimeSnapshot.subtitleOverlay,
+            activeCue: recentCues[recentCues.length - 1],
+            queueDepth: recentCues.length,
+            recentCues,
+          },
+        },
+        configDraft: {
+          ...state.configDraft,
+          subtitles: {
+            ...state.configDraft.subtitles,
+            overlayFontSize: 24,
+          },
+        },
+      };
+    });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    const sources = Array.from(container.querySelectorAll<HTMLElement>('.subtitle-overlay-source'));
+    const translations = Array.from(container.querySelectorAll<HTMLElement>('.subtitle-overlay-translation'));
+    expect(sources[0].style.fontSize).toBe('19px');
+    expect(translations[0].style.fontSize).toBe('15px');
+  });
+});

@@ -1,0 +1,26 @@
+node_modules/
+dist/
+target/
+coverage/
+artifacts/
+
+.trae/
+.VSCodeCounter/
+.DS_Store
+Thumbs.db
+
+*.log
+*.tmp
+*.bak
+*.local
+*.pid
+*.jsonl
+scripts/testing/llm-integration.config.json
+
+apps/desktop/.vite/
+apps/**/dist/
+apps/**/target/
+scripts/diagnostics/**/target/
+
+# Windows reserved device name accidentally created
+nul

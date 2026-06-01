@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "Kaydet",
+    "cancel": "İptal",
+    "confirm": "Onayla",
+    "back": "Geri",
+    "next": "İleri",
+    "finish": "Bitir",
+    "close": "Kapat",
+    "retry": "Yeniden dene",
+    "loading": "Yükleniyor…",
+    "language": "Arayüz dili"
+  },
+  "brand": {
+    "title": "Gerçek Zamanlı Çeviri Konsolu",
+    "kicker": "Masaüstü Konsolu"
+  },
+  "nav": {
+    "dashboard": "Kontrol Paneli",
+    "dashboardHint": "",
+    "quickSetup": "Hızlı Kurulum",
+    "quickSetupHint": "",
+    "providers": "Sağlayıcılar",
+    "providersHint": "",
+    "session": "Canlı Oturum",
+    "sessionHint": "",
+    "audioRouting": "Ses Yönlendirme",
+    "audioRoutingHint": "",
+    "glossary": "Sözlük",
+    "glossaryHint": "",
+    "diagnostics": "Tanılama",
+    "diagnosticsHint": "",
+    "settings": "Ayarlar",
+    "settingsHint": "Dil ve genel tercihler",
+    "sectionMain": "Ana",
+    "ariaMain": "Ana gezinme"
+  },
+  "statusCards": {
+    "bridge": "Köprü",
+    "provider": "Sağlayıcı",
+    "inbound": "Gelen",
+    "outbound": "Giden"
+  },
+  "bridgeState": {
+    "running": "Çalışıyor",
+    "starting": "Başlatılıyor",
+    "error": "Hata",
+    "stopped": "Durduruldu"
+  },
+  "bridgeStatus": {
+    "tauriShell": "Masaüstü çalışma zamanı",
+    "runtimeError": "Çalışma zamanı hatası",
+    "browserPreview": "Tarayıcı önizlemesi"
+  },
+  "configStatus": {
+    "ready": "Hazır",
+    "warning": "Dikkat gerekli",
+    "unsupported": "Desteklenmiyor",
+    "unknown": "Bilinmiyor",
+    "draft": "Bekliyor"
+  },
+  "captureState": {
+    "capturing": "Yakalanıyor",
+    "buffering": "Ara belleğe alınıyor",
+    "armed": "Hazır",
+    "muted": "Sessiz",
+    "idle": "Boşta"
+  },
+  "settings": {
+    "title": "Ayarlar",
+    "subtitle": "Arayüz dilini ve genel tercihleri ayarlayın. Değişiklikler yeniden başlatmadan anında uygulanır.",
+    "sectionLanguage": "Arayüz dili",
+    "languageHint": "Masaüstü arayüzü için dili seçin. Anında etki eder ve altyazı çeviri hedefini değiştirmez.",
+    "languageLabel": "Görüntüleme dili",
+    "currentLanguage": "Geçerli dil: {{name}}",
+    "resetWelcome": "Karşılama sihirbazını sıfırla",
+    "resetWelcomeHint": "Yerel işareti temizleyin; bir sonraki başlatmada dil seçici yeniden görünür.",
+    "resetWelcomeDone": "Sıfırlama tamamlandı. Bir sonraki açılışta dil seçici gösterilecek.",
+    "resetWelcomeAction": "Sıfırla"
+  },
+  "welcome": {
+    "title": "Omni Translate'e hoş geldiniz",
+    "subtitle": "Tercih ettiğiniz arayüz dilini seçin. İstediğiniz zaman Ayarlar'dan değiştirebilirsiniz.",
+    "confirm": "Bu dili kullan",
+    "hint": "Listeden bir dil seçin; sağdaki önizleme seçiminize göre güncellenir.",
+    "previewHeading": "Önizleme",
+    "previewBody": "Uygulama seçilen dilde yaklaşık olarak böyle görünecek."
+  },
+  "overlay": {
+    "previewTitle": "Tarayıcı önizleme modu",
+    "previewBody": "Canlı altyazılar burada görünecek",
+    "dragHint": "Yer paylaşımını taşımak için sürükleyin"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

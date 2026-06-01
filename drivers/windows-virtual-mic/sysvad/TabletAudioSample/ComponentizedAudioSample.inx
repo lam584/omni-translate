@@ -1,0 +1,118 @@
+[Version]
+Signature   = "$Windows NT$"
+Class       = MEDIA
+Provider    = %ProviderName%
+ClassGUID   = {4d36e96c-e325-11ce-bfc1-08002be10318}
+DriverVer   = 06/01/2026, 2.0.0.0
+CatalogFile = omni-virtual-speaker.cat
+PnpLockDown = 1
+
+[SourceDisksNames]
+222="Omni Translate Virtual Speaker Driver Disk","",222
+
+[SourceDisksFiles]
+omni-virtual-speaker.sys=222
+
+[SignatureAttributes]
+omni-virtual-speaker.sys=SignatureAttributes.DRM
+
+[SignatureAttributes.DRM]
+DRMLevel=1300
+
+[Manufacturer]
+%MfgName%=OMNI,NT$ARCH$.10.0...22621
+
+[OMNI.NT$ARCH$.10.0...22621]
+%OMNI.DeviceDesc%=OMNI_Device, Root\OmniTranslateVirtualSpeaker
+
+[DestinationDirs]
+OMNI.CopyList=13
+
+[OMNI.CopyList]
+omni-virtual-speaker.sys
+
+[OMNI.AddReg]
+HKR,,AssociatedFilters,,"wdmaud,swmidi,redbook"
+HKR,,Driver,,omni-virtual-speaker.sys
+HKR,PowerSettings,SingleComponentMultiFxStates,3,1,0,0,0
+HKR,PowerSettings,ConservationIdleTime,3,3,0,0,0
+HKR,PowerSettings,PerformanceIdleTime,3,3,0,0,0
+HKR,PowerSettings,IdlePowerState,3,3,0,0,0
+HKR,Drivers,SubClasses,,"wave,midi,mixer"
+HKR,Drivers\wave\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\midi\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\mixer\wdmaud.drv,Driver,,wdmaud.drv
+HKR,Drivers\wave\wdmaud.drv,Description,,%OMNI.DeviceDesc%
+HKR,Drivers\midi\wdmaud.drv,Description,,%OMNI.MIDI%
+HKR,Drivers\mixer\wdmaud.drv,Description,,%OMNI.DeviceDesc%
+
+[SYSVAD.I.WaveSpeaker]
+AddReg=SYSVAD.I.WaveSpeaker.AddReg
+
+[SYSVAD.I.WaveSpeaker.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%OMNI.WaveSpeaker.szPname%
+
+[SYSVAD.I.TopologySpeaker]
+AddReg=SYSVAD.I.TopologySpeaker.AddReg
+
+[SYSVAD.I.TopologySpeaker.AddReg]
+HKR,,CLSID,,%Proxy.CLSID%
+HKR,,FriendlyName,,%OMNI.TopologySpeaker.szPname%
+HKR,EP\0,%PKEY_AudioEndpoint_Association%,,%KSNODETYPE_ANY%
+HKR,EP\0,%PKEY_AudioEndpoint_Supports_EventDriven_Mode%,0x00010001,0x1
+
+[OMNI_Device.NT]
+Include=ks.inf,wdmaudio.inf
+Needs=KS.Registration, WDMAUDIO.Registration
+CopyFiles=OMNI.CopyList
+AddReg=OMNI.AddReg
+
+[OMNI_Device.NT.Interfaces]
+AddInterface=%KSCATEGORY_AUDIO%, %KSNAME_WaveSpeaker%, SYSVAD.I.WaveSpeaker
+AddInterface=%KSCATEGORY_RENDER%, %KSNAME_WaveSpeaker%, SYSVAD.I.WaveSpeaker
+AddInterface=%KSCATEGORY_REALTIME%, %KSNAME_WaveSpeaker%, SYSVAD.I.WaveSpeaker
+AddInterface=%KSCATEGORY_AUDIO%, %KSNAME_TopologySpeaker%, SYSVAD.I.TopologySpeaker
+AddInterface=%KSCATEGORY_TOPOLOGY%, %KSNAME_TopologySpeaker%, SYSVAD.I.TopologySpeaker
+
+[OMNI_Device.NT.Services]
+AddService=omni_translate_virtual_speaker,0x00000002,OMNI_Service_Inst
+
+[OMNI_Service_Inst]
+DisplayName=%OMNI.SvcDesc%
+ServiceType=1
+StartType=3
+ErrorControl=1
+ServiceBinary=%13%\omni-virtual-speaker.sys
+
+[OMNI_Device.NT.HW]
+AddReg=AUDIOHW.AddReg
+
+[AUDIOHW.AddReg]
+HKR,,DeviceType,0x10001,0x0000001D
+HKR,,Security,,"D:P(A;;GA;;;SY)(A;;GRGWGX;;;BA)(A;;GRGWGX;;;WD)(A;;GRGWGX;;;RC)"
+
+[OMNI_Device.NT.Wdf]
+KmdfService=omni_translate_virtual_speaker,OMNI_WdfSect
+
+[OMNI_WdfSect]
+KmdfLibraryVersion=$KMDFVERSION$
+
+[Strings]
+KSNAME_WaveSpeaker="WaveSpeaker"
+KSNAME_TopologySpeaker="TopologySpeaker"
+Proxy.CLSID="{17CCA71B-ECD7-11D0-B908-00A0C9223196}"
+KSCATEGORY_AUDIO="{6994AD04-93EF-11D0-A3CC-00A0C9223196}"
+KSCATEGORY_RENDER="{65E8773E-8F56-11D0-A3B9-00A0C9223196}"
+KSCATEGORY_REALTIME="{EB115FFC-10C8-4964-831D-6DCB02E6F23F}"
+KSCATEGORY_TOPOLOGY="{DDA54A40-1E4C-11D1-A050-405705C10000}"
+KSNODETYPE_ANY="{00000000-0000-0000-0000-000000000000}"
+PKEY_AudioEndpoint_Association="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},2"
+PKEY_AudioEndpoint_Supports_EventDriven_Mode="{1DA5D803-D492-4EDD-8C23-E0C0FFEE7F0E},7"
+ProviderName="Omni Translate"
+MfgName="Omni Translate"
+OMNI.DeviceDesc="Omni Translate Virtual Speaker"
+OMNI.SvcDesc="Omni Translate Virtual Speaker Driver"
+OMNI.MIDI="Omni Translate Virtual Speaker MIDI"
+OMNI.WaveSpeaker.szPname="Omni Translate Virtual Speaker Wave"
+OMNI.TopologySpeaker.szPname="Omni Translate Virtual Speaker"

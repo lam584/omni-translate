@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "சேமி",
+    "cancel": "ரத்து",
+    "confirm": "உறுதிப்படுத்து",
+    "back": "பின்",
+    "next": "அடுத்து",
+    "finish": "முடிக்க",
+    "close": "மூடு",
+    "retry": "மீண்டும் முயற்சி",
+    "loading": "ஏற்றுகிறது…",
+    "language": "இடைமுக மொழி"
+  },
+  "brand": {
+    "title": "நேரடி மொழிபெயர்ப்பு கட்டுப்பாட்டகம்",
+    "kicker": "டெஸ்க்டாப் கட்டுப்பாட்டகம்"
+  },
+  "nav": {
+    "dashboard": "டாஷ்போர்டு",
+    "dashboardHint": "",
+    "quickSetup": "விரைவு அமைப்பு",
+    "quickSetupHint": "",
+    "providers": "வழங்குநர்கள்",
+    "providersHint": "",
+    "session": "நேரடி அமர்வு",
+    "sessionHint": "",
+    "audioRouting": "ஆடியோ ரூட்டிங்",
+    "audioRoutingHint": "",
+    "glossary": "சொற்களஞ்சியம்",
+    "glossaryHint": "",
+    "diagnostics": "கண்டறிதல்",
+    "diagnosticsHint": "",
+    "settings": "அமைப்புகள்",
+    "settingsHint": "மொழி மற்றும் பொது விருப்பங்கள்",
+    "sectionMain": "முதன்மை",
+    "ariaMain": "முதன்மை வழிசெலுத்தல்"
+  },
+  "statusCards": {
+    "bridge": "பிரிட்ஜ்",
+    "provider": "வழங்குநர்",
+    "inbound": "உள்வரும்",
+    "outbound": "வெளிச்செல்லும்"
+  },
+  "bridgeState": {
+    "running": "இயங்குகிறது",
+    "starting": "தொடங்குகிறது",
+    "error": "பிழை",
+    "stopped": "நிறுத்தப்பட்டது"
+  },
+  "bridgeStatus": {
+    "tauriShell": "டெஸ்க்டாப் ரன்டைம்",
+    "runtimeError": "ரன்டைம் பிழை",
+    "browserPreview": "உலாவி முன்னோட்டம்"
+  },
+  "configStatus": {
+    "ready": "தயார்",
+    "warning": "கவனம் தேவை",
+    "unsupported": "ஆதரிக்கப்படவில்லை",
+    "unknown": "தெரியவில்லை",
+    "draft": "நிலுவையில்"
+  },
+  "captureState": {
+    "capturing": "பிடிக்கப்படுகிறது",
+    "buffering": "பஃபரிங்",
+    "armed": "தயார்",
+    "muted": "ஒலி நிறுத்தம்",
+    "idle": "செயலற்ற"
+  },
+  "settings": {
+    "title": "அமைப்புகள்",
+    "subtitle": "இடைமுக மொழி மற்றும் பொது விருப்பங்களை சரிசெய்யவும். மறுதொடக்கமின்றி உடனடியாக பயன்படும்.",
+    "sectionLanguage": "இடைமுக மொழி",
+    "languageHint": "டெஸ்க்டாப் UI க்கான மொழியை தேர்ந்தெடுக்கவும். உடனடியாக பயன்படும், வசன மொழிபெயர்ப்பு இலக்கு மாறாது.",
+    "languageLabel": "காட்சி மொழி",
+    "currentLanguage": "தற்போதைய மொழி: {{name}}",
+    "resetWelcome": "வரவேற்பு வழிகாட்டியை மீட்டமை",
+    "resetWelcomeHint": "உள்ளூர் குறியை அழித்து, அடுத்த முறை தொடக்கத்தில் மொழி தேர்வு மீண்டும் தோன்றும்.",
+    "resetWelcomeDone": "மீட்டமைக்கப்பட்டது. அடுத்த முறை மொழி தேர்வு தோன்றும்.",
+    "resetWelcomeAction": "மீட்டமை"
+  },
+  "welcome": {
+    "title": "Omni Translate க்கு வரவேற்கிறோம்",
+    "subtitle": "நீங்கள் விரும்பும் இடைமுக மொழியை தேர்ந்தெடுக்கவும். அமைப்புகளில் எப்போதும் மாற்றலாம்.",
+    "confirm": "இந்த மொழியை பயன்படுத்து",
+    "hint": "பட்டியலிலிருந்து மொழியை தேர்ந்தெடுக்கவும்; வலதுபுற முன்னோட்டம் புதுப்பிக்கப்படும்.",
+    "previewHeading": "முன்னோட்டம்",
+    "previewBody": "தேர்ந்தெடுக்கப்பட்ட மொழியில் பயன்பாடு ஏறத்தாழ இப்படி தோன்றும்."
+  },
+  "overlay": {
+    "previewTitle": "முன்னோட்ட முறை",
+    "previewBody": "நேரடி வசனம் இங்கே தோன்றும்",
+    "dragHint": "மிதவையை நகர்த்த இழுக்கவும்"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

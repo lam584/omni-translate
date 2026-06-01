@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "Simpan",
+    "cancel": "Batal",
+    "confirm": "Konfirmasi",
+    "back": "Kembali",
+    "next": "Lanjut",
+    "finish": "Selesai",
+    "close": "Tutup",
+    "retry": "Coba lagi",
+    "loading": "Memuat…",
+    "language": "Bahasa antarmuka"
+  },
+  "brand": {
+    "title": "Konsol Terjemahan Real-time",
+    "kicker": "Konsol Desktop"
+  },
+  "nav": {
+    "dashboard": "Dasbor",
+    "dashboardHint": "",
+    "quickSetup": "Persiapan Cepat",
+    "quickSetupHint": "",
+    "providers": "Penyedia",
+    "providersHint": "",
+    "session": "Sesi Langsung",
+    "sessionHint": "",
+    "audioRouting": "Perutean Audio",
+    "audioRoutingHint": "",
+    "glossary": "Glosarium",
+    "glossaryHint": "",
+    "diagnostics": "Diagnostik",
+    "diagnosticsHint": "",
+    "settings": "Pengaturan",
+    "settingsHint": "Bahasa dan preferensi umum",
+    "sectionMain": "Utama",
+    "ariaMain": "Navigasi utama"
+  },
+  "statusCards": {
+    "bridge": "Bridge",
+    "provider": "Penyedia",
+    "inbound": "Masuk",
+    "outbound": "Keluar"
+  },
+  "bridgeState": {
+    "running": "Berjalan",
+    "starting": "Memulai",
+    "error": "Galat",
+    "stopped": "Berhenti"
+  },
+  "bridgeStatus": {
+    "tauriShell": "Runtime desktop",
+    "runtimeError": "Galat runtime",
+    "browserPreview": "Pratinjau browser"
+  },
+  "configStatus": {
+    "ready": "Siap",
+    "warning": "Perlu perhatian",
+    "unsupported": "Tidak didukung",
+    "unknown": "Tidak diketahui",
+    "draft": "Menunggu"
+  },
+  "captureState": {
+    "capturing": "Merekam",
+    "buffering": "Menyangga",
+    "armed": "Siap",
+    "muted": "Bisu",
+    "idle": "Diam"
+  },
+  "settings": {
+    "title": "Pengaturan",
+    "subtitle": "Atur bahasa antarmuka dan preferensi umum. Perubahan langsung berlaku tanpa memulai ulang.",
+    "sectionLanguage": "Bahasa antarmuka",
+    "languageHint": "Pilih bahasa untuk antarmuka desktop. Berlaku seketika dan tidak mengubah bahasa target terjemahan subtitle.",
+    "languageLabel": "Bahasa tampilan",
+    "currentLanguage": "Bahasa saat ini: {{name}}",
+    "resetWelcome": "Setel ulang pemandu awal",
+    "resetWelcomeHint": "Hapus penanda lokal agar pemilih bahasa muncul lagi saat peluncuran berikutnya.",
+    "resetWelcomeDone": "Direset. Pemilih bahasa akan muncul lagi lain kali.",
+    "resetWelcomeAction": "Setel ulang"
+  },
+  "welcome": {
+    "title": "Selamat datang di Omni Translate",
+    "subtitle": "Pilih bahasa antarmuka kesukaan Anda. Anda dapat mengubahnya kapan saja di Pengaturan.",
+    "confirm": "Gunakan bahasa ini",
+    "hint": "Pilih bahasa dari daftar; pratinjau di kanan akan diperbarui.",
+    "previewHeading": "Pratinjau",
+    "previewBody": "Kira-kira seperti inilah tampilan aplikasi dalam bahasa yang dipilih."
+  },
+  "overlay": {
+    "previewTitle": "Mode pratinjau",
+    "previewBody": "Subtitle langsung akan muncul di sini",
+    "dragHint": "Seret untuk memindahkan overlay"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

@@ -1,0 +1,106 @@
+{
+  "common": {
+    "appName": "Omni Translate",
+    "save": "సేవ్",
+    "cancel": "రద్దు",
+    "confirm": "నిర్ధారించు",
+    "back": "వెనక్కి",
+    "next": "తర్వాత",
+    "finish": "ముగించు",
+    "close": "మూసివేయి",
+    "retry": "మళ్లీ ప్రయత్నించండి",
+    "loading": "లోడ్ అవుతోంది…",
+    "language": "ఇంటర్ఫేస్ భాష"
+  },
+  "brand": {
+    "title": "రియల్-టైమ్ అనువాద కన్సోల్",
+    "kicker": "డెస్క్‌టాప్ కన్సోల్"
+  },
+  "nav": {
+    "dashboard": "డ్యాష్‌బోర్డ్",
+    "dashboardHint": "",
+    "quickSetup": "వేగవంతమైన సెటప్",
+    "quickSetupHint": "",
+    "providers": "ప్రొవైడర్లు",
+    "providersHint": "",
+    "session": "లైవ్ సెషన్",
+    "sessionHint": "",
+    "audioRouting": "ఆడియో రూటింగ్",
+    "audioRoutingHint": "",
+    "glossary": "పదకోశం",
+    "glossaryHint": "",
+    "diagnostics": "డయాగ్నోస్టిక్స్",
+    "diagnosticsHint": "",
+    "settings": "సెట్టింగ్‌లు",
+    "settingsHint": "భాష మరియు సాధారణ ప్రాధాన్యతలు",
+    "sectionMain": "ప్రధానం",
+    "ariaMain": "ప్రధాన నావిగేషన్"
+  },
+  "statusCards": {
+    "bridge": "బ్రిడ్జ్",
+    "provider": "ప్రొవైడర్",
+    "inbound": "ఇన్‌బౌండ్",
+    "outbound": "ఔట్‌బౌండ్"
+  },
+  "bridgeState": {
+    "running": "నడుస్తోంది",
+    "starting": "ప్రారంభమవుతోంది",
+    "error": "లోపం",
+    "stopped": "ఆపివేయబడింది"
+  },
+  "bridgeStatus": {
+    "tauriShell": "డెస్క్‌టాప్ రన్‌టైమ్",
+    "runtimeError": "రన్‌టైమ్ లోపం",
+    "browserPreview": "బ్రౌజర్ ప్రివ్యూ"
+  },
+  "configStatus": {
+    "ready": "సిద్ధం",
+    "warning": "పరిశీలించండి",
+    "unsupported": "మద్దతు లేదు",
+    "unknown": "తెలియదు",
+    "draft": "పెండింగ్"
+  },
+  "captureState": {
+    "capturing": "క్యాప్చర్ చేస్తోంది",
+    "buffering": "బఫరింగ్",
+    "armed": "సిద్ధం",
+    "muted": "మ్యూట్",
+    "idle": "నిష్క్రియం"
+  },
+  "settings": {
+    "title": "సెట్టింగ్‌లు",
+    "subtitle": "ఇంటర్ఫేస్ భాష మరియు సాధారణ ప్రాధాన్యతలను సర్దుబాటు చేయండి. పున:ప్రారంభం లేకుండా తక్షణమే అమలవుతుంది.",
+    "sectionLanguage": "ఇంటర్ఫేస్ భాష",
+    "languageHint": "డెస్క్‌టాప్ UI భాషను ఎంచుకోండి. తక్షణమే అమలవుతుంది, సబ్‌టైటిల్ అనువాద లక్ష్య భాషను మార్చదు.",
+    "languageLabel": "ప్రదర్శన భాష",
+    "currentLanguage": "ప్రస్తుత భాష: {{name}}",
+    "resetWelcome": "స్వాగత విజార్డ్ రీసెట్",
+    "resetWelcomeHint": "లోకల్ ఫ్లాగ్‌ను తొలగించండి, తద్వారా తదుపరి ప్రారంభంలో భాష ఎంపిక మళ్లీ కనిపిస్తుంది.",
+    "resetWelcomeDone": "రీసెట్ చేయబడింది. తదుపరి సారి భాష ఎంపిక కనిపిస్తుంది.",
+    "resetWelcomeAction": "రీసెట్"
+  },
+  "welcome": {
+    "title": "Omni Translate కు స్వాగతం",
+    "subtitle": "మీకు నచ్చిన ఇంటర్ఫేస్ భాషను ఎంచుకోండి. సెట్టింగ్‌లలో ఎప్పుడైనా మార్చుకోవచ్చు.",
+    "confirm": "ఈ భాషను వాడండి",
+    "hint": "జాబితా నుండి భాషను ఎంచుకోండి; కుడివైపు ప్రివ్యూ అప్‌డేట్ అవుతుంది.",
+    "previewHeading": "ప్రివ్యూ",
+    "previewBody": "ఎంచుకున్న భాషలో యాప్ దాదాపు ఇలా కనిపిస్తుంది."
+  },
+  "overlay": {
+    "previewTitle": "ప్రివ్యూ మోడ్",
+    "previewBody": "లైవ్ సబ్‌టైటిల్స్ ఇక్కడ కనిపిస్తాయి",
+    "dragHint": "ఓవర్లే మార్చడానికి డ్రాగ్ చేయండి"
+  },
+  "audioRouting": {
+    "feedbackLoopPrevention": null,
+    "feedbackLoopPreventionDesc": null,
+    "feedbackLoopPreventionNone": null,
+    "feedbackLoopPreventionNoneDesc": null,
+    "feedbackLoopPreventionEchoCancel": null,
+    "feedbackLoopPreventionEchoCancelDesc": null,
+    "feedbackLoopPreventionVirtualDriver": null,
+    "feedbackLoopPreventionVirtualDriverDesc": null,
+    "feedbackLoopPreventionVirtualDriverDisabled": null
+  }
+}

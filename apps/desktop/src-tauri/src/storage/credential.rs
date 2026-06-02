@@ -40,9 +40,9 @@ impl CredentialVault for KeyringCredentialVault {
         #[cfg(target_os = "windows")]
         {
             let secret = secret.to_string();
-            return run_credential_operation("写入 API Key", move || {
+            run_credential_operation("写入 API Key", move || {
                 write_windows_credential(&normalized_reference, &secret)
-            });
+            })
         }
 
         #[cfg(not(target_os = "windows"))]
@@ -71,9 +71,9 @@ impl CredentialVault for KeyringCredentialVault {
 
         #[cfg(target_os = "windows")]
         {
-            return run_credential_operation("读取 API Key", move || {
+            run_credential_operation("读取 API Key", move || {
                 read_windows_credential(&normalized_reference)
-            });
+            })
         }
 
         #[cfg(not(target_os = "windows"))]

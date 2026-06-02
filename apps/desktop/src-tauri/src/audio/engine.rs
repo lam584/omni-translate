@@ -415,11 +415,10 @@ fn find_device_by_id(
 ) -> Option<Device> {
     let collection = enumerator.get_device_collection(direction).ok()?;
     for device_result in &collection {
-        if let Ok(device) = device_result {
-            if let Ok(device_id) = device.get_id() {
-                if device_id == target_id {
-                    return Some(device);
-                }
+        let Ok(device) = device_result else { continue };
+        if let Ok(device_id) = device.get_id() {
+            if device_id == target_id {
+                return Some(device);
             }
         }
     }

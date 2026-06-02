@@ -227,7 +227,6 @@ impl ConfigRepository {
         let content = fs::read_to_string(file_path).map_err(|error| error.to_string())?;
         let config: Value = serde_json::from_str(&content).map_err(|error| error.to_string())?;
         self.save_config(&config)?;
-
         let connection = self.open_connection()?;
         self.apply_migrations(&connection)?;
         self.upsert_metadata(
@@ -236,7 +235,7 @@ impl ConfigRepository {
             &file_path.to_string_lossy(),
             &current_timestamp(),
         )?;
-        Ok(self.load_config()?)
+        self.load_config()
     }
 
     pub fn create_snapshot(&self, reason: &str) -> Result<ConfigSnapshotRecord, String> {
@@ -282,7 +281,7 @@ impl ConfigRepository {
         let config: Value =
             serde_json::from_str(&config_json).map_err(|error| error.to_string())?;
         self.save_config(&config)?;
-        Ok(self.load_config()?)
+        self.load_config()
     }
 
     fn ensure_directories(&self) -> Result<(), String> {

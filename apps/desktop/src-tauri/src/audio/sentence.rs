@@ -291,8 +291,8 @@ fn find_subtitle_split_at(text: &str) -> Option<usize> {
         .copied()
         .filter(|idx| *idx >= min && *idx <= target)
         .max()
-        .or_else(|| candidates.iter().copied().filter(|idx| *idx >= min).min())
-        .or_else(|| Some(target))
+        .or(candidates.iter().copied().filter(|idx| *idx >= min).min())
+        .or(Some(target))
 }
 
 fn split_candidates(text: &str) -> Vec<usize> {

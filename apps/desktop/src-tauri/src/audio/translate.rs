@@ -160,7 +160,7 @@ fn run_translate_worker(
             }
         }
 
-        if loop_count % 160 == 0 {
+        if loop_count.is_multiple_of(160) {
             let _ = append_diagnostics_log(
                 &app,
                 "translate",

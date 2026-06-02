@@ -681,9 +681,11 @@ mod tests {
     #[test]
     fn load_install_state_marks_missing_driver_as_not_installed() {
         let temp_dir = TempDir::new().expect("temp dir should build");
-        let mut snapshot = BridgeRuntimeSnapshot::default();
-        snapshot.runtime_root = temp_dir.path().to_string_lossy().to_string();
-        snapshot.driver_health = "running".to_string();
+        let mut snapshot = BridgeRuntimeSnapshot {
+            runtime_root: temp_dir.path().to_string_lossy().to_string(),
+            driver_health: "running".to_string(),
+            ..Default::default()
+        };
 
         load_install_state(&mut snapshot).expect("missing install state should not fail");
 
@@ -699,8 +701,10 @@ mod tests {
     #[test]
     fn load_install_state_applies_saved_driver_state() {
         let temp_dir = TempDir::new().expect("temp dir should build");
-        let mut snapshot = BridgeRuntimeSnapshot::default();
-        snapshot.runtime_root = temp_dir.path().to_string_lossy().to_string();
+        let mut snapshot = BridgeRuntimeSnapshot {
+            runtime_root: temp_dir.path().to_string_lossy().to_string(),
+            ..Default::default()
+        };
 
         let state = DriverInstallStateFile {
             protocol_version: "2026-06-02".to_string(),

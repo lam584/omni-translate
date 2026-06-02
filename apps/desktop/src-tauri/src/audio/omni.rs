@@ -872,7 +872,7 @@ fn run_omni_worker(
                     None,
                 );
             }
-            if chunk_count % 100 == 0 {
+            if chunk_count.is_multiple_of(100) {
                 let _ = append_diagnostics_log(
                     &app,
                     "omni",
@@ -948,7 +948,7 @@ fn run_omni_worker(
 
         if chunk_count > 0
             && chunks_sent_this_tick == 0
-            && chunk_count % 500 == 0
+            && chunk_count.is_multiple_of(500)
             && last_waiting_log_chunk_count != chunk_count
         {
             last_waiting_log_chunk_count = chunk_count;
@@ -1153,7 +1153,7 @@ fn run_omni_worker(
                                             }
                                             pending_audio_buffer.extend_from_slice(&samples);
                                             if pending_audio_delta_count == 1
-                                                || pending_audio_delta_count % 25 == 0
+                                                || pending_audio_delta_count.is_multiple_of(25)
                                             {
                                                 let response_id = pending_audio_response_id
                                                     .as_deref()
@@ -1337,7 +1337,7 @@ fn run_omni_worker(
                     None, None, None);
                                 }
                                 let _ = append_diagnostics_log(&app, "omni", "debug",
-                  format!("[STATE] 重置: current_cue_id=None, pending_source_text cleared, pending_translated_text cleared"),
+                  "[STATE] 重置: current_cue_id=None, pending_source_text cleared, pending_translated_text cleared".to_string(),
                   None, None, None);
                                 pending_source_text.clear();
                                 pending_translated_text.clear();

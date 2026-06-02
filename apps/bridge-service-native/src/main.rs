@@ -1106,8 +1106,8 @@ mod windows_main {
                 .and_then(|builder| builder.open_sink_or_fallback())
                 .map_err(|error| error.to_string())?
         };
-        let source_player = Player::connect_new(&sink.mixer());
-        let translation_player = Player::connect_new(&sink.mixer());
+        let source_player = Player::connect_new(sink.mixer());
+        let translation_player = Player::connect_new(sink.mixer());
         Ok(PlaybackOutput {
             device_id: device_id.to_string(),
             _sink: sink,

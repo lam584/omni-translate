@@ -299,7 +299,7 @@ impl<T> AudioFramePacer<T> {
 }
 
 pub fn decode_pcm16le(bytes: &[u8]) -> Result<Vec<i16>, String> {
-    if bytes.len() % 2 != 0 {
+    if !bytes.len().is_multiple_of(2) {
         return Err("pcm16le payload must contain an even number of bytes".to_string());
     }
 

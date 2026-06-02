@@ -1322,9 +1322,9 @@ fn run_subtitle_translate_worker(
                 .any(|cue| !cue.committed);
 
         let should_log_heartbeat = if is_idle {
-            loop_count % 1000 == 0
+            loop_count.is_multiple_of(1000)
         } else {
-            loop_count % 50 == 0
+            loop_count.is_multiple_of(50)
         };
 
         if should_log_heartbeat {

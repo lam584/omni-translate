@@ -438,10 +438,12 @@ mod tests {
             "bridge.session-mismatch",
             "bridge.stale-process-path-mismatch",
         ] {
-            let mut snapshot = BridgeRuntimeSnapshot::default();
-            snapshot.bridge_state = "running".to_string();
-            snapshot.driver_health = "running".to_string();
-            snapshot.last_error_code = Some(error_code.to_string());
+            let mut snapshot = BridgeRuntimeSnapshot {
+                bridge_state: "running".to_string(),
+                driver_health: "running".to_string(),
+                last_error_code: Some(error_code.to_string()),
+                ..Default::default()
+            };
 
             reconcile_bridge_snapshot(&mut snapshot);
 
@@ -455,10 +457,11 @@ mod tests {
 
     #[test]
     fn reconcile_keeps_a_clean_running_bridge_ready() {
-        let mut snapshot = BridgeRuntimeSnapshot::default();
-        snapshot.bridge_state = "running".to_string();
-        snapshot.driver_health = "running".to_string();
-        snapshot.last_error_code = None;
+        let mut snapshot = BridgeRuntimeSnapshot {
+            bridge_state: "running".to_string(),
+            driver_health: "running".to_string(),
+            ..Default::default()
+        };
 
         reconcile_bridge_snapshot(&mut snapshot);
 

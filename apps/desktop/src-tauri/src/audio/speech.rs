@@ -687,7 +687,7 @@ pub(crate) fn play_to_speaker(
         }
         None => DeviceSinkBuilder::open_default_sink().map_err(|error| error.to_string())?,
     };
-    let player = Player::connect_new(&sink.mixer());
+    let player = Player::connect_new(sink.mixer());
     player.set_volume(playback_volume(output_level));
     let source = SamplesBuffer::new(
         NonZeroU16::new(channel_count).ok_or_else(|| "channel count cannot be zero".to_string())?,

@@ -470,7 +470,7 @@ impl ProviderGateway {
         apply_websocket_timeouts(&mut socket, websocket_timeout)?;
 
         let request_id = format!("realtime-audio-{}", now_marker());
-        let safe_id = request_id.replace(':', "_").replace('-', "_");
+        let safe_id = request_id.replace([':', '-'], "_");
         let mut session = json!({
           "event_id": format!("evt_{}_session", safe_id),
           "type": "session.update",
@@ -1090,7 +1090,7 @@ impl ProviderGateway {
         })?;
         apply_websocket_timeouts(&mut socket, websocket_timeout)?;
 
-        let safe_id = request_id.replace(':', "_").replace('-', "_");
+        let safe_id = request_id.replace([':', '-'], "_");
         let instructions = format!(
       "promptTemplateId={}\nsourceLanguage={}\ntargetLanguage={}\n请输出自然、简洁、可直接展示的翻译。",
       provider.system_prompt_template, source_language, target_language,
@@ -2985,7 +2985,7 @@ mod tests {
         apply_websocket_timeouts(&mut socket, websocket_timeout)?;
 
         let request_id = format!("audio-integration-{}", now_marker());
-        let safe_id = request_id.replace(':', "_").replace('-', "_");
+        let safe_id = request_id.replace([':', '-'], "_");
         let session_update = json!({
             "event_id": format!("evt_{}_session", safe_id),
             "type": "session.update",
@@ -3177,7 +3177,7 @@ mod tests {
                     .unwrap_or_else(|| "zh-CN".to_string()),
             );
 
-            println!("");
+            println!();
             println!("=== TEXT SMOKE RESULT for {} ===", provider_config.name);
             println!("  status:     {}", smoke.status);
             println!("  transcript: {}", smoke.transcript);
@@ -3191,7 +3191,7 @@ mod tests {
                 println!("    - {}: {}", event.event_type, event.summary);
             }
             println!("=== END TEXT SMOKE ===");
-            println!("");
+            println!();
 
             assert!(
                 smoke.error.is_none(),
@@ -3334,7 +3334,7 @@ mod tests {
                 )
             });
 
-            println!("");
+            println!();
             println!("=== AUDIO REALTIME RESULT for {} ===", audio_config.name);
             println!("  source:         {:?}", source);
             println!("  source_chars:   {}", source.chars().count());
@@ -3342,7 +3342,7 @@ mod tests {
             println!("  translation_chars: {}", translation.chars().count());
             println!("  response_count: {}", response_count);
             println!("=== END AUDIO REALTIME ===");
-            println!("");
+            println!();
 
             let source_len = source.chars().count();
             let translation_len = translation.chars().count();

@@ -281,7 +281,7 @@ fn main() {
 
             let storage_snapshot = storage
                 .ensure_initialized(&app_handle)
-                .map_err(|error| std::io::Error::other(error))?;
+                .map_err(std::io::Error::other)?;
 
             log_info!(
                 &app_handle,

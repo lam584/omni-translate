@@ -258,15 +258,14 @@ impl AudioStateStore {
                 }
             }
             if let Some(active) = overlay.active_cue.as_mut() {
-                if active.cue_id == cue_id {
-                    if !(active.committed
-                        && !committed
-                        && !source_text.is_empty()
-                        && source_text.len() < active.source_text.len())
-                    {
-                        active.source_text = source_text.to_string();
-                        active.committed = committed;
-                    }
+                if active.cue_id == cue_id
+                    && (!active.committed
+                        || committed
+                        || source_text.is_empty()
+                        || source_text.len() >= active.source_text.len())
+                {
+                    active.source_text = source_text.to_string();
+                    active.committed = committed;
                 }
             }
         } else {
@@ -277,8 +276,8 @@ impl AudioStateStore {
                 display_source_text: String::new(),
                 display_segments: Vec::new(),
                 translated_text: String::new(),
-                started_at: format!("unix-ms:0"),
-                ended_at: format!("unix-ms:0"),
+                started_at: "unix-ms:0".to_string(),
+                ended_at: "unix-ms:0".to_string(),
                 committed,
             };
             overlay.active_cue = Some(cue.clone());
@@ -314,8 +313,8 @@ impl AudioStateStore {
                 display_source_text: String::new(),
                 display_segments: Vec::new(),
                 translated_text: String::new(),
-                started_at: format!("unix-ms:0"),
-                ended_at: format!("unix-ms:0"),
+                started_at: "unix-ms:0".to_string(),
+                ended_at: "unix-ms:0".to_string(),
                 committed: true,
             };
             overlay.active_cue = Some(cue.clone());

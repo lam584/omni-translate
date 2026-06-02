@@ -164,7 +164,7 @@ pub fn start_stt(
                     display_source_text: String::new(),
                     display_segments: Vec::new(),
 
-                    translated_text: format!("[STT 连接断开]"),
+                    translated_text: "[STT 连接断开]".to_string(),
 
                     started_at: ms_marker(unix_ms()),
 
@@ -681,7 +681,6 @@ fn emit_audio_snapshot(app: &AppHandle, store: &AudioStateStore) -> Result<(), S
 }
 
 #[cfg(test)]
-
 mod tests {
 
     use super::*;

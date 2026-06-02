@@ -151,6 +151,7 @@ unsafe extern "system" fn subtitle_overlay_window_proc(
 
     if let Some(previous) = previous {
         return unsafe {
+            #[allow(clippy::missing_transmute_annotations)]
             CallWindowProcW(
                 Some(std::mem::transmute(previous)),
                 hwnd as _,

@@ -228,7 +228,7 @@ fn start_bridge_from_snapshot(
             let reader = std::io::BufReader::new(stderr);
             reader
                 .lines()
-                .filter_map(Result::ok)
+                .map_while(Result::ok)
                 .collect::<Vec<_>>()
                 .join("\n")
         } else {
@@ -623,11 +623,7 @@ pub fn repair_driver_runtime(
     }
     bridge_state
         .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
-    let elevated_action = if action == "rollback-driver" {
-        "reinstall"
-    } else {
-        "reinstall"
-    };
+    let elevated_action = "reinstall";
     let operation = match run_elevated_driver_operation(&snapshot, elevated_action) {
         Ok(operation) => operation,
         Err(error) => {

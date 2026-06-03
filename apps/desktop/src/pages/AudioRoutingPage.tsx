@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import AudioLevelMeter from '../components/audio/AudioLevelMeter';
 import AppIcon from '../components/icons/AppIcon';
@@ -9,6 +9,7 @@ import type { AudioInputProcessingContract } from '../schema/audio-contract';
 import type { DeviceDraft, FeedbackLoopPrevention, ProviderDraft, SpeechDraft, SubtitleTranslationMode } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
 import { buildAudioRuntimeBadges } from '../utils/audio-runtime-badges';
+import { debounce } from '../utils/debounce';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
 import { PROVIDER_TEMPLATE_CATALOG_UPDATED_EVENT, buildProviderTemplateCatalogEntries, readProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
@@ -122,6 +123,10 @@ type RoutingModelOption = ModelPreset & {
   rawModelId: string;
 };
 
+function optionDomId(modelId: string): string {
+  return modelId.replace(/[^a-zA-Z0-9_-]/g, '-');
+}
+
 function isVoiceModel(model: Pick<ModelPreset, 'capabilities'>) {
   return model.capabilities.some((capability) => capability === 'speech-to-text' || capability === 'text-to-speech' || capability === 'speech-to-speech');
 }
@@ -229,6 +234,7 @@ function ScenarioCard({
   enableLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState<number>(0);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const selectedOption = resolveSelectedModel(modelOptions, value);
   const displayName = selectedOption?.displayName ?? modelName;
@@ -245,6 +251,51 @@ function ScenarioCard({
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, [open]);
+
+  const handleSelectorKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const idx = modelOptions.findIndex((option) => option.model === value);
+      const target = idx >= 0 ? idx : 0;
+      setActiveIndex(Math.min(target, Math.max(modelOptions.length - 1, 0)));
+      setOpen(true);
+    } else if (event.key === 'Escape' && open) {
+      setOpen(false);
+    }
+  };
+
+  const handleListKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (modelOptions.length === 0) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      setActiveIndex((current) => {
+        const next = current < 0 ? 0 : (current + 1) % modelOptions.length;
+        return next;
+      });
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      setActiveIndex((current) => {
+        const next = current < 0 ? modelOptions.length - 1 : (current - 1 + modelOptions.length) % modelOptions.length;
+        return next;
+      });
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveIndex(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      setActiveIndex(modelOptions.length - 1);
+    } else if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const target = modelOptions[activeIndex];
+      if (target) {
+        onSelect(target.model);
+        setOpen(false);
+      }
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      setOpen(false);
+    }
+  };
 
   const cardEnabled = enabled ?? true;
 
@@ -264,8 +315,10 @@ function ScenarioCard({
         {onEnabledChange ? (
           <label className={['scenario-card-toggle', cardEnabled ? 'scenario-card-toggle-on' : ''].join(' ')}>
             <input
+              aria-checked={cardEnabled}
               checked={cardEnabled}
               onChange={(event) => onEnabledChange(event.target.checked)}
+              role="switch"
               type="checkbox"
             />
             <span>{enableLabel ?? ''}</span>
@@ -274,10 +327,14 @@ function ScenarioCard({
       </div>
       <div className="scenario-card-control">
         <button
+          aria-activedescendant={open && modelOptions[activeIndex] ? `scenario-option-${optionDomId(modelOptions[activeIndex]!.model)}` : undefined}
           aria-expanded={open}
+          aria-haspopup="listbox"
           className="scenario-card-selector"
           disabled={!cardEnabled || muted}
           onClick={() => setOpen((current) => !current)}
+          onKeyDown={handleSelectorKeyDown}
+          role="combobox"
           type="button"
         >
           <div className="scenario-card-model">
@@ -287,19 +344,28 @@ function ScenarioCard({
           <span className="scenario-card-caret" aria-hidden="true">▾</span>
         </button>
         {open && cardEnabled && !muted ? (
-          <div className="scenario-card-list" role="listbox">
+          <div
+            aria-activedescendant={modelOptions[activeIndex] ? `scenario-option-${optionDomId(modelOptions[activeIndex]!.model)}` : undefined}
+            className="scenario-card-list"
+            onKeyDown={handleListKeyDown}
+            role="listbox"
+            tabIndex={-1}
+          >
             {modelOptions.length === 0 ? (
               <div className="routing-empty">{emptyText}</div>
             ) : (
-              modelOptions.map((option) => (
+              modelOptions.map((option, index) => (
                 <button
-                  className={['scenario-card-option', option.model === value ? 'scenario-card-option-active' : ''].filter(Boolean).join(' ')}
+                  aria-selected={option.model === value}
+                  className={['scenario-card-option', option.model === value ? 'scenario-card-option-active' : '', index === activeIndex ? 'scenario-card-option-focused' : ''].filter(Boolean).join(' ')}
                   data-value={option.model}
+                  id={`scenario-option-${optionDomId(option.model)}`}
                   key={option.model}
                   onClick={() => {
                     onSelect(option.model);
                     setOpen(false);
                   }}
+                  onMouseEnter={() => setActiveIndex(index)}
                   role="option"
                   type="button"
                 >
@@ -472,7 +538,18 @@ function AudioRoutingPage() {
     },
   ), [audioRuntimeSnapshot, inboundModelOption, outboundModelOption, t]);
 
-  const markSaved = () => setSavedAt(Date.now());
+  const markSavedRef = useRef<((...args: []) => void) & { cancel: () => void; flush: () => void } | null>(null);
+  useEffect(() => {
+    const debounced = debounce(() => setSavedAt(Date.now()), 300);
+    markSavedRef.current = debounced;
+    return () => {
+      debounced.cancel();
+    };
+  }, []);
+
+  const markSaved = (...args: []) => {
+    markSavedRef.current?.(...args);
+  };
 
   const patchDeviceConfig = (patch: Partial<DeviceDraft>) => {
     updateDeviceDraft({ ...patch, status: 'ready' });
@@ -615,6 +692,13 @@ function AudioRoutingPage() {
   };
 
   const setSubtitleMode = (mode: SubtitleTranslationMode) => {
+    if (mode === 'native' && configDraft.devices.subtitleTranslationModelId) {
+      const stillSupported = textModelOptions.some((option) => option.model === configDraft.devices.subtitleTranslationModelId);
+      if (!stillSupported) {
+        patchDeviceConfig({ subtitleTranslationMode: mode, subtitleTranslationModelId: '' });
+        return;
+      }
+    }
     patchDeviceConfig({ subtitleTranslationMode: mode });
   };
 

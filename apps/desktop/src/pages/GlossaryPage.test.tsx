@@ -336,4 +336,13 @@ describe('GlossaryPage compact labels', () => {
       window.dispatchEvent(new Event('provider-template-catalog-updated'));
     });
   });
+
+  it('keeps shared routing classes available after CSS cleanup', async () => {
+    await act(async () => root.render(<GlossaryPage />));
+
+    expect(container.querySelector('.routing-hero-actions')).toBeTruthy();
+    expect(container.querySelector('.routing-primary-action')).toBeTruthy();
+    expect(container.querySelector('.routing-toggle')).toBeTruthy();
+    expect(container.querySelector('.routing-action-row')).toBeTruthy();
+  });
 });

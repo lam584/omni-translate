@@ -13,10 +13,12 @@ export type StatusTone =
 type StatusBadgeProps = {
   label: string;
   tone: StatusTone;
+  pulse?: boolean;
 };
 
-function StatusBadge({ label, tone }: StatusBadgeProps) {
-  return <span className={`status-badge status-badge-${tone}`}>{label}</span>;
+function StatusBadge({ label, tone, pulse = false }: StatusBadgeProps) {
+  const classes = ['status-badge', `status-badge-${tone}`, pulse ? 'status-badge-pulse' : ''].filter(Boolean).join(' ');
+  return <span className={classes}>{label}</span>;
 }
 
 export default StatusBadge;

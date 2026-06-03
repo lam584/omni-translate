@@ -4,6 +4,7 @@ type AudioLevelMeterProps = {
   energyDb: number;
   vadState: string;
   label: string;
+  captureActive?: boolean;
 };
 
 const DB_MIN = -90;
@@ -28,7 +29,7 @@ function levelToColor(level: number): string {
   return 'var(--audio-meter-high, #ef4444)';
 }
 
-function AudioLevelMeter({ energyDb, label, vadState }: AudioLevelMeterProps) {
+function AudioLevelMeter({ energyDb, label, vadState, captureActive = false }: AudioLevelMeterProps) {
   const [smoothedDb, setSmoothedDb] = useState(DB_MIN);
   const [peakDb, setPeakDb] = useState(DB_MIN);
   const peakTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -77,7 +78,7 @@ function AudioLevelMeter({ energyDb, label, vadState }: AudioLevelMeterProps) {
   });
 
   return (
-    <div className="audio-level-meter">
+    <div className={['audio-level-meter', captureActive ? 'audio-level-meter-active' : ''].filter(Boolean).join(' ')}>
       <div className="audio-level-meter-header">
         <span className="audio-level-meter-label">{label}</span>
         <span className={`audio-level-meter-vad ${isSpeech ? 'audio-level-meter-vad-speech' : 'audio-level-meter-vad-silence'}`}>

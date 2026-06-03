@@ -23,9 +23,16 @@ describe('AudioLevelMeter', () => {
     vi.useRealTimers();
   });
 
-  async function render(energyDb: number, vadState: string) {
+  async function render(energyDb: number, vadState: string, captureActive?: boolean) {
     await act(async () => {
-      root.render(<AudioLevelMeter energyDb={energyDb} label="input" vadState={vadState} />);
+      root.render(
+        <AudioLevelMeter
+          captureActive={captureActive}
+          energyDb={energyDb}
+          label="input"
+          vadState={vadState}
+        />,
+      );
     });
   }
 
@@ -46,5 +53,16 @@ describe('AudioLevelMeter', () => {
       vi.advanceTimersByTime(2000);
     });
     expect(container.querySelectorAll('.audio-level-meter-bar-peak')).toHaveLength(0);
+  });
+
+  it('omits the active class by default and applies it when captureActive is true', async () => {
+    await render(-30, 'speech');
+    expect(container.querySelector('.audio-level-meter')?.classList.contains('audio-level-meter-active')).toBe(false);
+
+    await render(-30, 'speech', true);
+    expect(container.querySelector('.audio-level-meter')?.classList.contains('audio-level-meter-active')).toBe(true);
+
+    await render(-30, 'speech', false);
+    expect(container.querySelector('.audio-level-meter')?.classList.contains('audio-level-meter-active')).toBe(false);
   });
 });

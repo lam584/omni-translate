@@ -61,6 +61,7 @@ const T_DEFAULTS: Record<string, string> = {
   'audioRouting.scenarioTtsRole': 'Standalone TTS',
   'audioRouting.outputChannelsHeader': 'Output channels · decide where the model output goes',
   'audioRouting.outputChannelsTitle': 'Output channels',
+  'audioRouting.outputChannelsKicker': 'Speak',
   'audioRouting.subtitleModeToggleLabel': 'Subtitle translation mode',
   'audioRouting.subtitleModeNativeShort': '⚡ Native',
   'audioRouting.subtitleModeSecondaryShort': '📋 Secondary',
@@ -920,14 +921,11 @@ function AudioRoutingPage() {
             />
             <ScenarioCard
               caption={tWithDefault(t, 'audioRouting.scenarioInboundSecondaryCaption')}
-              enableLabel={tWithDefault(t, 'audioRouting.secondaryAudioCardToggle')}
-              enabled={configDraft.devices.outputSubtitlesEnabled}
               icon="subtitles"
               modelName={resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId)?.displayName ?? '—'}
               modelOptions={voiceModelOptions}
               modelProvider={resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId)?.description ?? ''}
               mutedHint={mutedHint}
-              onEnabledChange={(enabled) => handleSubtitleOutputToggle(enabled)}
               onSelect={(modelId) => selectModel('inboundSecondary', modelId)}
               tags={detectScenarioCapabilities(resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId), 'inboundSecondary')}
               title={tWithDefault(t, 'audioRouting.scenarioInboundSecondaryTitle')}
@@ -947,15 +945,6 @@ function AudioRoutingPage() {
               tags={detectScenarioCapabilities(subtitleModelOption, 'subtitle')}
               title={tWithDefault(t, 'audioRouting.scenarioSubtitleTitle')}
               value={configDraft.devices.subtitleTranslationModelId}
-            />
-          </div>
-
-          <div className="routing-channel-section">
-            <OutputChannelToggle
-              checked={configDraft.devices.outputSpeechEnabled}
-              icon="🎙"
-              label={tWithDefault(t, 'audioRouting.outputTranslatedSpeech')}
-              onChange={handleSpeechOutputToggle}
             />
           </div>
         </article>
@@ -995,18 +984,35 @@ function AudioRoutingPage() {
               value={configDraft.devices.textToSpeechModelId}
             />
           </div>
-
-          <div className="routing-channel-section">
-            <OutputChannelToggle
-              checked={configDraft.devices.virtualMicOutputEnabled}
-              icon="🎤"
-              label={tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic')}
-              onChange={handleVirtualMicToggle}
-            />
-          </div>
-
-          <div className="routing-saved-indicator" aria-live="polite">{savedIndicator}</div>
         </article>
+      </section>
+
+      <section className="routing-channel-section routing-channel-section-unified" aria-label={tWithDefault(t, 'audioRouting.outputChannelsTitle')}>
+        <header className="routing-channel-section-head">
+          <div className="routing-panel-kicker">{tWithDefault(t, 'audioRouting.outputChannelsKicker')}</div>
+          <h3>{tWithDefault(t, 'audioRouting.outputChannelsTitle')}</h3>
+        </header>
+        <div className="routing-channel-section-grid">
+          <OutputChannelToggle
+            checked={configDraft.devices.outputSubtitlesEnabled}
+            icon="🔊"
+            label={tWithDefault(t, 'audioRouting.secondaryAudioCardToggle')}
+            onChange={handleSubtitleOutputToggle}
+          />
+          <OutputChannelToggle
+            checked={configDraft.devices.outputSpeechEnabled}
+            icon="🎙"
+            label={tWithDefault(t, 'audioRouting.outputTranslatedSpeech')}
+            onChange={handleSpeechOutputToggle}
+          />
+          <OutputChannelToggle
+            checked={configDraft.devices.virtualMicOutputEnabled}
+            icon="🎤"
+            label={tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic')}
+            onChange={handleVirtualMicToggle}
+          />
+        </div>
+        <div className="routing-saved-indicator" aria-live="polite">{savedIndicator}</div>
       </section>
     </div>
   );

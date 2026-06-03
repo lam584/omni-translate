@@ -11683,6 +11683,42 @@ body:not(:has(.subtitle-overlay-root)) .driver-management-primary:not(:disabled)
   border-top: 1px solid #f1f5f9;
 }
 
+.routing-channel-section-unified {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 16px;
+  padding: 16px 18px;
+  border: 1px solid #e2e8f0;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
+}
+
+.routing-channel-section-head {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.routing-channel-section-head h3 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #0f172a;
+}
+
+.routing-channel-section-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.routing-channel-section-grid .routing-channel {
+  margin: 0;
+}
+
 .routing-channel {
   display: flex;
   align-items: center;
@@ -11869,6 +11905,9 @@ body:not(:has(.subtitle-overlay-root)) .driver-management-primary:not(:disabled)
   .scenario-grid-three {
     grid-template-columns: 1fr 1fr;
   }
+  .routing-channel-section-grid {
+    grid-template-columns: 1fr 1fr;
+  }
   .chain-flow {
     flex-direction: column;
     align-items: stretch;
@@ -11882,6 +11921,9 @@ body:not(:has(.subtitle-overlay-root)) .driver-management-primary:not(:disabled)
 
 @media (max-width: 640px) {
   .scenario-grid-three {
+    grid-template-columns: 1fr;
+  }
+  .routing-channel-section-grid {
     grid-template-columns: 1fr;
   }
   .routing-workspace-v9 {

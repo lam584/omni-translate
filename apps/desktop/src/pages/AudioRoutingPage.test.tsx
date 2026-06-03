@@ -259,7 +259,7 @@ describe('AudioRoutingPage', () => {
     expect(joined).not.toContain('Qwen Omni');
   });
 
-  it('mutes the secondary and subtitle scenario cards in native subtitle mode', async () => {
+  it('mutes the subtitle scenario card in native subtitle mode', async () => {
     useAppStore.setState((state) => ({
       ...state,
       configDraft: {
@@ -280,9 +280,7 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const secondaryCard = scenarioCardByTitle(container, 'Listen to them · secondary audio');
     const subtitleCard = scenarioCardByTitle(container, 'Subtitle translation');
-    expect(secondaryCard.classList.contains('scenario-card-muted')).toBe(true);
     expect(subtitleCard.classList.contains('scenario-card-muted')).toBe(true);
     expect(container.textContent).toContain('This card is disabled');
   });
@@ -356,7 +354,7 @@ describe('AudioRoutingPage', () => {
     expect(speech.enabled).toBe(false);
   });
 
-  it('toggles the per-card enable switch for the secondary audio card', async () => {
+  it('toggles the secondary audio output channel in the unified section', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -365,24 +363,23 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const secondaryCard = scenarioCardByTitle(container, 'Listen to them · secondary audio');
-    const toggle = inputText(secondaryCard.querySelector('input[type="checkbox"]'));
-    expect(toggle.checked).toBe(true);
+    const section = container.querySelector('.routing-channel-section-unified');
+    expect(section).toBeTruthy();
+    const secondaryToggle = section?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    expect(secondaryToggle.checked).toBe(true);
 
     await act(async () => {
-      toggle.click();
+      secondaryToggle.click();
     });
 
     expect(useAppStore.getState().configDraft.devices.outputSubtitlesEnabled).toBe(false);
     expect(useAppStore.getState().configDraft.devices.inboundRoute.outputs.find((target) => target.kind === 'subtitle-engine')?.enabled).toBe(false);
-    expect(secondaryCard.classList.contains('scenario-card-muted')).toBe(true);
 
     await act(async () => {
-      toggle.click();
+      secondaryToggle.click();
     });
 
     expect(useAppStore.getState().configDraft.devices.outputSubtitlesEnabled).toBe(true);
-    expect(secondaryCard.classList.contains('scenario-card-muted')).toBe(false);
   });
 
   it('toggles the per-card enable switch for the subtitle translation card', async () => {
@@ -440,7 +437,7 @@ describe('AudioRoutingPage', () => {
     expect(selector?.disabled).toBe(true);
   });
 
-  it('places the virtual microphone output toggle inside the outbound model panel', async () => {
+  it('places the virtual microphone output toggle inside the unified output channel section', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -452,14 +449,14 @@ describe('AudioRoutingPage', () => {
     const virtualMicToggle = Array.from(container.querySelectorAll('label')).find((item) =>
       item.textContent?.includes('Send translated voice to virtual microphone'),
     );
-    const owningSection = virtualMicToggle?.closest('.routing-models-outbound-panel');
+    const owningSection = virtualMicToggle?.closest('.routing-channel-section-unified');
     const owningChannel = virtualMicToggle?.closest('.routing-channel-section');
 
     expect(owningSection).toBeTruthy();
     expect(owningChannel).toBeTruthy();
   });
 
-  it('places the speech output toggle inside the inbound model panel', async () => {
+  it('places the speech output toggle inside the unified output channel section', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -471,7 +468,7 @@ describe('AudioRoutingPage', () => {
     const speechToggle = Array.from(container.querySelectorAll('label')).find((item) =>
       item.textContent?.includes('Output translated speech'),
     );
-    const owningSection = speechToggle?.closest('.routing-models-inbound-panel');
+    const owningSection = speechToggle?.closest('.routing-channel-section-unified');
     const owningChannel = speechToggle?.closest('.routing-channel-section');
 
     expect(owningSection).toBeTruthy();
@@ -492,7 +489,7 @@ describe('AudioRoutingPage', () => {
     expect(owningSection).toBeTruthy();
   });
 
-  it('places the secondary audio card enable toggle inside the listening model panel', async () => {
+  it('places the secondary audio toggle in the unified section instead of the card', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -502,10 +499,11 @@ describe('AudioRoutingPage', () => {
     });
 
     const secondaryCard = scenarioCardByTitle(container, 'Listen to them · secondary audio');
-    const secondaryToggle = inputText(secondaryCard.querySelector('input[type="checkbox"]'));
-    const owningSection = secondaryCard.closest('.routing-models-inbound-panel');
-    expect(owningSection).toBeTruthy();
-    expect(secondaryToggle.checked).toBe(true);
+    const cardToggle = secondaryCard.querySelector('input[type="checkbox"]');
+    expect(cardToggle).toBeNull();
+    const section = container.querySelector('.routing-channel-section-unified');
+    const sectionToggles = Array.from(section?.querySelectorAll('input[type="checkbox"]') ?? []);
+    expect(sectionToggles.length).toBe(3);
   });
 
   it('places the subtitle translation card enable toggle inside the listening model panel', async () => {

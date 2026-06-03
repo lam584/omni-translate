@@ -335,6 +335,8 @@
     "secondaryAudioCardToggle": "启用副翻译音频",
     "subtitleTranslationCardToggle": "启用字幕翻译",
     "cardDisabledHint": "此卡已停用 · 启用后可编辑模型",
+    "outputChannelsTitle": "输出通道",
+    "outputChannelsKicker": "说",
     "feedbackTitle": "反馈抑制",
     "feedbackSubtitle": "防止译文被再次采集",
     "feedbackEchoLabel": "回声消除",

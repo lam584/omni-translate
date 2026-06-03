@@ -8,6 +8,7 @@ import { providerTemplates } from '../mocks/provider-templates';
 import type { AudioInputProcessingContract } from '../schema/audio-contract';
 import type { DeviceDraft, FeedbackLoopPrevention, ProviderDraft, SpeechDraft, SubtitleTranslationMode } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
+import { buildAudioRuntimeBadges } from '../utils/audio-runtime-badges';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
 import { PROVIDER_TEMPLATE_CATALOG_UPDATED_EVENT, buildProviderTemplateCatalogEntries, readProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
@@ -102,6 +103,14 @@ const T_DEFAULTS: Record<string, string> = {
   'audioRouting.status.needsSetup': 'Needs setup',
   'audioRouting.status.available': 'Available',
   'audioRouting.status.preview': 'Preview',
+  'audioRouting.status.capturing': 'Capturing',
+  'audioRouting.status.capturingReady': 'Live',
+  'audioRouting.status.playingReady': 'Live',
+  'audioRouting.status.armed': 'Armed',
+  'audioRouting.status.idle': 'Idle',
+  'audioRouting.status.error': 'Error',
+  'audioRouting.status.degraded': 'Degraded',
+  'audioRouting.status.missing': 'Not connected',
 };
 
 function tWithDefault(t: (key: string, options?: { defaultValue?: string }) => string, key: string): string {
@@ -428,6 +437,41 @@ function AudioRoutingPage() {
     isNativeSubtitle
     && !resolveSelectedModel(voiceModelOptions, configDraft.devices.textToSpeechModelId || configDraft.speech.textToSpeechModelId || configDraft.devices.outboundVoiceModelId)?.capabilities.includes('speech-to-speech');
 
+  const runtimeBadges = useMemo(() => buildAudioRuntimeBadges(
+    audioRuntimeSnapshot,
+    Boolean(inboundModelOption),
+    Boolean(outboundModelOption),
+    {
+      capture: {
+        ready: tWithDefault(t, 'audioRouting.status.capturingReady'),
+        capturing: tWithDefault(t, 'audioRouting.status.capturing'),
+        error: tWithDefault(t, 'audioRouting.status.error'),
+        armed: tWithDefault(t, 'audioRouting.status.armed'),
+        idle: tWithDefault(t, 'audioRouting.status.idle'),
+        preview: tWithDefault(t, 'audioRouting.status.preview'),
+      },
+      output: {
+        ready: tWithDefault(t, 'audioRouting.status.playingReady'),
+        error: tWithDefault(t, 'audioRouting.status.error'),
+        degraded: tWithDefault(t, 'audioRouting.status.degraded'),
+        preview: tWithDefault(t, 'audioRouting.status.preview'),
+        missing: tWithDefault(t, 'audioRouting.status.missing'),
+      },
+      inboundModels: {
+        ready: tWithDefault(t, 'audioRouting.status.ready'),
+        degraded: tWithDefault(t, 'audioRouting.status.degraded'),
+        preview: tWithDefault(t, 'audioRouting.status.preview'),
+        missing: tWithDefault(t, 'audioRouting.status.missing'),
+      },
+      outboundModels: {
+        ready: tWithDefault(t, 'audioRouting.status.ready'),
+        degraded: tWithDefault(t, 'audioRouting.status.degraded'),
+        preview: tWithDefault(t, 'audioRouting.status.preview'),
+        missing: tWithDefault(t, 'audioRouting.status.missing'),
+      },
+    },
+  ), [audioRuntimeSnapshot, inboundModelOption, outboundModelOption, t]);
+
   const markSaved = () => setSavedAt(Date.now());
 
   const patchDeviceConfig = (patch: Partial<DeviceDraft>) => {
@@ -590,7 +634,7 @@ function AudioRoutingPage() {
               <h3>{tWithDefault(t, 'audioRouting.capturePanelTitle')}</h3>
               <p className="routing-panel-subtitle">{tWithDefault(t, 'audioRouting.capturePanelSubtitle')}</p>
             </div>
-            <StatusBadge label={tWithDefault(t, 'audioRouting.status.ready')} tone="ready" />
+            <StatusBadge label={runtimeBadges.capture.label} pulse={runtimeBadges.capture.pulse} tone={runtimeBadges.capture.tone} />
           </div>
           <ChainFlow
             direction="inbound"
@@ -619,7 +663,7 @@ function AudioRoutingPage() {
               {micTestResult ? <span className="routing-inline-result">{micTestResult}</span> : null}
             </div>
             <div className="routing-test-meter">
-              <AudioLevelMeter energyDb={micEnergyDb} label="" vadState="speech" />
+              <AudioLevelMeter energyDb={micEnergyDb} label="" vadState="speech" captureActive={audioRuntimeSnapshot.inbound.captureState === 'capturing' && audioRuntimeSnapshot.inbound.streamBound} />
             </div>
           </div>
 
@@ -654,7 +698,7 @@ function AudioRoutingPage() {
               <h3>{tWithDefault(t, 'audioRouting.outputPanelTitle')}</h3>
               <p className="routing-panel-subtitle">{tWithDefault(t, 'audioRouting.outputPanelSubtitle')}</p>
             </div>
-            <StatusBadge label={tWithDefault(t, 'audioRouting.status.ready')} tone="ready" />
+            <StatusBadge label={runtimeBadges.output.label} pulse={runtimeBadges.output.pulse} tone={runtimeBadges.output.tone} />
           </div>
           <ChainFlow
             direction="outbound"
@@ -743,7 +787,7 @@ function AudioRoutingPage() {
               <h3>{tWithDefault(t, 'audioRouting.inboundModelsPanelTitle')}</h3>
               <p className="routing-panel-subtitle">{tWithDefault(t, 'audioRouting.inboundModelsPanelSubtitle')}</p>
             </div>
-            <StatusBadge label={tWithDefault(t, 'audioRouting.status.ready')} tone="ready" />
+            <StatusBadge label={runtimeBadges.inboundModels.label} pulse={runtimeBadges.inboundModels.pulse} tone={runtimeBadges.inboundModels.tone} />
           </div>
 
           {nativeAudioUnsupported ? <p className="routing-inline-result">{tWithDefault(t, 'audioRouting.unsupportedNativeAudio')}</p> : null}
@@ -809,7 +853,7 @@ function AudioRoutingPage() {
               <h3>{tWithDefault(t, 'audioRouting.outboundModelsPanelTitle')}</h3>
               <p className="routing-panel-subtitle">{tWithDefault(t, 'audioRouting.outboundModelsPanelSubtitle')}</p>
             </div>
-            <StatusBadge label={tWithDefault(t, 'audioRouting.status.ready')} tone="ready" />
+            <StatusBadge label={runtimeBadges.outboundModels.label} pulse={runtimeBadges.outboundModels.pulse} tone={runtimeBadges.outboundModels.tone} />
           </div>
 
           <div className="scenario-grid">

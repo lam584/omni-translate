@@ -359,7 +359,13 @@
       "available": "可用",
       "needsSetup": "需要设置",
       "current": "当前",
-      "option": "选项"
+      "option": "选项",
+      "capturing": "采集中",
+      "capturingReady": "采集中",
+      "playingReady": "播放中",
+      "armed": "待命",
+      "idle": "空闲",
+      "missing": "未连接"
     },
     "captureState": {
       "capturing": "采集中",

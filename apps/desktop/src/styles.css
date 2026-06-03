@@ -11054,12 +11054,34 @@ body:not(:has(.subtitle-overlay-root)) .driver-management-primary:not(:disabled)
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+  grid-template-rows: auto 1fr auto;
+  align-items: stretch;
+}
+
+.routing-top-grid > .routing-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.routing-top-grid > .routing-panel > .routing-panel-body {
+  flex: 1 1 auto;
 }
 
 .routing-models-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
+  grid-template-rows: auto 1fr auto;
+  align-items: stretch;
+}
+
+.routing-models-grid > .routing-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+.routing-models-grid > .routing-panel > .routing-panel-body {
+  flex: 1 1 auto;
 }
 
 .routing-workspace-v9 .routing-panel {
@@ -11692,6 +11714,24 @@ body:not(:has(.subtitle-overlay-root)) .driver-management-primary:not(:disabled)
   background: #ecfdf5;
   border-color: #10b981;
   color: #047857;
+}
+
+.routing-channel-disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.routing-channel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.routing-channel-section > .routing-channel {
+  margin: 0;
 }
 
 /* chain flow v2: source -> model -> target with signal pulse */

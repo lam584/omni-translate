@@ -392,6 +392,35 @@ function ScenarioCard({
   );
 }
 
+function OutputChannelToggle({
+  icon,
+  label,
+  checked,
+  onChange,
+  disabled,
+}: {
+  icon: string;
+  label: string;
+  checked: boolean;
+  onChange: (enabled: boolean) => void;
+  disabled?: boolean;
+}) {
+  return (
+    <label className={['routing-channel', checked ? 'routing-channel-on' : '', disabled ? 'routing-channel-disabled' : ''].filter(Boolean).join(' ')}>
+      <input
+        aria-checked={checked}
+        checked={checked}
+        disabled={disabled}
+        onChange={(event) => onChange(event.target.checked)}
+        role="switch"
+        type="checkbox"
+      />
+      <span className="routing-channel-icon" aria-hidden="true">{icon}</span>
+      <span className="routing-channel-text">{label}</span>
+    </label>
+  );
+}
+
 function AudioRoutingPage() {
   const { t } = useTranslation();
   const configDraft = useAppStore((state) => state.configDraft);
@@ -922,11 +951,12 @@ function AudioRoutingPage() {
           </div>
 
           <div className="routing-channel-section">
-            <label className={['routing-channel', configDraft.devices.outputSpeechEnabled ? 'routing-channel-on' : ''].join(' ')}>
-              <input checked={configDraft.devices.outputSpeechEnabled} onChange={(event) => handleSpeechOutputToggle(event.target.checked)} type="checkbox" />
-              <span className="routing-channel-icon" aria-hidden="true">🎙</span>
-              <span className="routing-channel-text">{tWithDefault(t, 'audioRouting.outputTranslatedSpeech')}</span>
-            </label>
+            <OutputChannelToggle
+              checked={configDraft.devices.outputSpeechEnabled}
+              icon="🎙"
+              label={tWithDefault(t, 'audioRouting.outputTranslatedSpeech')}
+              onChange={handleSpeechOutputToggle}
+            />
           </div>
         </article>
 
@@ -967,11 +997,12 @@ function AudioRoutingPage() {
           </div>
 
           <div className="routing-channel-section">
-            <label className={['routing-channel', configDraft.devices.virtualMicOutputEnabled ? 'routing-channel-on' : ''].join(' ')}>
-              <input checked={configDraft.devices.virtualMicOutputEnabled} onChange={(event) => handleVirtualMicToggle(event.target.checked)} type="checkbox" />
-              <span className="routing-channel-icon" aria-hidden="true">🎤</span>
-              <span className="routing-channel-text">{tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic')}</span>
-            </label>
+            <OutputChannelToggle
+              checked={configDraft.devices.virtualMicOutputEnabled}
+              icon="🎤"
+              label={tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic')}
+              onChange={handleVirtualMicToggle}
+            />
           </div>
 
           <div className="routing-saved-indicator" aria-live="polite">{savedIndicator}</div>

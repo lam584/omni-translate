@@ -1,187 +1,290 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import AudioLevelMeter from '../components/audio/AudioLevelMeter';
 import AppIcon from '../components/icons/AppIcon';
+import type { AppIconName } from '../components/icons/AppIcon';
 import StatusBadge from '../components/page/StatusBadge';
 import { providerTemplates } from '../mocks/provider-templates';
 import type { AudioInputProcessingContract } from '../schema/audio-contract';
-import type { DeviceDraft, FeedbackLoopPrevention, ProviderDraft, ProviderScenario, SpeechDraft } from '../schema/config';
-import type { ProviderCapability } from '../schema/provider-contract';
-import type { ModelPreset } from '../schema/provider-template';
+import type { DeviceDraft, FeedbackLoopPrevention, ProviderDraft, SpeechDraft, SubtitleTranslationMode } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
-import { formatProviderCapabilityLabel, resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
+import { resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
 import { PROVIDER_TEMPLATE_CATALOG_UPDATED_EVENT, buildProviderTemplateCatalogEntries, readProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
+import type { ModelPreset } from '../schema/provider-template';
 
-type RoutingModelTarget = 'inbound' | 'outbound' | 'speech';
+type ScenarioId = 'inbound' | 'inboundSecondary' | 'subtitle' | 'outbound' | 'tts';
+type ScenarioCapability = 'stt' | 'translation' | 'subtitle' | 'speech' | 'tts';
+
+const T_DEFAULTS: Record<string, string> = {
+  'audioRouting.pageTitle': 'Audio Routing',
+  'audioRouting.pageSubtitle': 'White surface · embedded flow · single model entry · live save · mobile-friendly',
+  'audioRouting.capturePanelTitle': 'Capture',
+  'audioRouting.capturePanelSubtitle': 'Microphone, noise reduction, gain',
+  'audioRouting.outputPanelTitle': 'Output',
+  'audioRouting.outputPanelSubtitle': 'Speaker, volume, feedback suppression',
+  'audioRouting.inboundModelsPanelTitle': 'Listening models',
+  'audioRouting.inboundModelsPanelSubtitle': "Models for the peer's audio · 3 scenarios · subtitle mode toggles affected cards",
+  'audioRouting.outboundModelsPanelTitle': 'Replying models',
+  'audioRouting.outboundModelsPanelSubtitle': 'Models for your translated voice · 2 scenarios',
+  'audioRouting.inboundKicker': 'Listening',
+  'audioRouting.outboundKicker': 'Replying',
+  'audioRouting.autoSaved': 'Changes saved automatically',
+  'audioRouting.savedJustNow': 'Saved just now',
+  'audioRouting.chainInbound': 'Speak',
+  'audioRouting.chainOutbound': 'Listen',
+  'audioRouting.chainSystemAudio': 'System / peer audio',
+  'audioRouting.chainInboundModel': 'Listening model',
+  'audioRouting.chainSubtitleTranslated': 'Subtitle + translation',
+  'audioRouting.chainLocalPlayback': 'Local playback',
+  'audioRouting.chainMicrophone': 'Microphone',
+  'audioRouting.chainOutboundModel': 'Replying model',
+  'audioRouting.chainVirtualMicSpeaker': 'Virtual mic / speaker',
+  'audioRouting.chainReturnToPeer': 'Return to peer',
+  'audioRouting.scenarioInboundTitle': 'Listen to them',
+  'audioRouting.scenarioInboundCaption': 'Peer audio → subtitle + translation (Omni full pipeline)',
+  'audioRouting.scenarioInboundRole': 'Inbound listening',
+  'audioRouting.scenarioInboundSubtitleSecondary': 'Inbound listening · secondary',
+  'audioRouting.scenarioInboundSecondaryTitle': 'Listen to them · secondary audio',
+  'audioRouting.scenarioInboundSecondaryCaption': 'Peer audio → source text (fast STT, optional Omni replacement)',
+  'audioRouting.scenarioInboundSecondaryRole': 'Inbound secondary TTS',
+  'audioRouting.scenarioSubtitleTitle': 'Subtitle translation',
+  'audioRouting.scenarioSubtitleCaption': 'Source text → target text (shares source with "Secondary TTS")',
+  'audioRouting.scenarioSubtitleRole': 'Subtitle translation',
+  'audioRouting.scenarioOutboundTitle': 'Speak to them',
+  'audioRouting.scenarioOutboundCaption': 'My microphone → translated speech',
+  'audioRouting.scenarioOutboundRole': 'Outbound speaking',
+  'audioRouting.scenarioTtsTitle': 'Type-to-speech TTS',
+  'audioRouting.scenarioTtsCaption': 'Typed text → translated speech (no-mic scenarios)',
+  'audioRouting.scenarioTtsRole': 'Standalone TTS',
+  'audioRouting.outputChannelsHeader': 'Output channels · decide where the model output goes',
+  'audioRouting.outputChannelsTitle': 'Output channels',
+  'audioRouting.subtitleModeToggleLabel': 'Subtitle translation mode',
+  'audioRouting.subtitleModeNativeShort': '⚡ Native',
+  'audioRouting.subtitleModeSecondaryShort': '📋 Secondary',
+  'audioRouting.cardDisabledHint': 'This card is disabled · enable it to edit the model',
+  'audioRouting.secondaryAudioCardToggle': 'Enable secondary audio',
+  'audioRouting.subtitleTranslationCardToggle': 'Enable subtitle translation',
+  'audioRouting.outputTranslatedSpeech': 'Output translated speech',
+  'audioRouting.outputTranslatedSubtitles': 'Output translated subtitles',
+  'audioRouting.sendVoiceToVirtualMic': 'Send translated voice to virtual microphone',
+  'audioRouting.unsupportedNativeAudio': 'Current model does not support Omni native audio; session will keep source audio and subtitles only.',
+  'audioRouting.speaker': 'Speaker',
+  'audioRouting.microphone': 'Microphone',
+  'audioRouting.inputLevel': 'Input level',
+  'audioRouting.outputVolume': 'Output volume',
+  'audioRouting.aecEchoCancellation': 'AEC echo cancellation',
+  'audioRouting.ansNoiseSuppression': 'ANS noise suppression',
+  'audioRouting.agcAutoGain': 'AGC auto gain',
+  'audioRouting.testMic': 'Test mic',
+  'audioRouting.testSpeaker': 'Test speaker',
+  'audioRouting.testing': 'Testing...',
+  'audioRouting.speakerTestPassed': 'Speaker test passed',
+  'audioRouting.micTestPassed': 'Mic test passed',
+  'audioRouting.noProviderModels': 'Current provider has no available models',
+  'audioRouting.subtitleTranslationMode': 'Subtitle translation mode',
+  'audioRouting.nativeMode': 'Native mode',
+  'audioRouting.secondaryTranslation': 'Secondary translation',
+  'audioRouting.textTranslationModel': 'Text translation model',
+  'audioRouting.notSelected': 'Not selected',
+  'audioRouting.feedbackTitle': 'Feedback suppression',
+  'audioRouting.feedbackSubtitle': 'Prevent translated speech from being re-captured',
+  'audioRouting.feedbackEchoLabel': 'Echo cancellation',
+  'audioRouting.feedbackVirtualDriverLabel': 'Virtual driver',
+  'audioRouting.feedbackEchoDesc': 'Subtract played audio from the captured signal in real time. No extra driver required.',
+  'audioRouting.feedbackVirtualDriverDesc': 'Set the player or Windows output to Omni Translate Virtual Speaker. Bridge captures the original audio there, mixes translated speech, and plays the result on the selected physical speaker.',
+  'audioRouting.tagStt': 'STT',
+  'audioRouting.tagTranslation': 'Translation',
+  'audioRouting.tagSubtitle': 'Subtitle',
+  'audioRouting.tagSpeech': 'Speech',
+  'audioRouting.tagTts': 'TTS',
+  'audioRouting.status.ready': 'Ready',
+  'audioRouting.status.needsSetup': 'Needs setup',
+  'audioRouting.status.available': 'Available',
+  'audioRouting.status.preview': 'Preview',
+};
+
+function tWithDefault(t: (key: string, options?: { defaultValue?: string }) => string, key: string): string {
+  return t(key, { defaultValue: T_DEFAULTS[key] ?? key });
+}
 
 type RoutingModelOption = ModelPreset & {
   providerTemplateId: string;
   rawModelId: string;
-  scenarios: ProviderScenario[];
 };
-
-type RoutingModelSelectOption = RoutingModelOption & {
-  mismatchMessages: string[];
-  preferred: boolean;
-};
-
-type PendingModelSelection = {
-  target: RoutingModelTarget;
-  modelId: string;
-  title: string;
-  messages: string[];
-};
-
-const labels = {
-  inputDevice: '输入设备',
-  outputDevice: '输出设备',
-  voiceModels: '语音模型',
-  subtitleTranslationMode: '字幕翻译模式',
-  runtimeStatus: '运行状态',
-  inboundModel: '翻译对方声音的模型',
-  outboundModel: '翻译我的麦克风的模型',
-  ttsModel: '将文字转换为语音的模型',
-  noModels: '当前服务商没有可用模型',
-  keepSelection: '仍然选择',
-  cancelSelection: '取消选择',
-  unsupportedInboundTitle: '模型可能不支持对方声音翻译输出',
-  unsupportedOutboundTitle: '模型可能不支持麦克风译音输出',
-  unsupportedSpeech: '不支持输出翻译语音',
-  unsupportedSubtitles: '不支持输出翻译字幕',
-  unsupportedVirtualMic: '不支持发送到虚拟麦克风',
-  outputSpeech: '输出翻译语音',
-  outputSubtitles: '输出翻译字幕',
-  sendVoiceToVirtualMic: '将翻译后的语音发送到虚拟麦克风',
-  aec: 'AEC 回声消除',
-  ans: 'ANS 噪声抑制',
-  agc: 'AGC 自动增益',
-  feedback: '音频反馈循环抑制',
-  echoCancel: '回声消除',
-  echoCancelDesc: '实时从采集信号中减去已播放音频',
-  virtualDriver: '虚拟音频驱动',
-  virtualDriverDesc: '将翻译语音路由到独立音频端点',
-  virtualDriverDisabled: '虚拟音频驱动未运行，请先在诊断页安装或启动驱动',
-  speaker: '扬声器',
-  microphone: '麦克风',
-  outputVolume: '输出音量',
-  inputLevel: '输入电平',
-  testSpeaker: '测试扬声器',
-  testMic: '测试麦克风',
-  testing: '测试中...',
-  nativeMode: '原生模式',
-  nativeModeDescription: '使用语音模型的原生字幕翻译。',
-  secondaryTranslation: '二次翻译',
-  secondaryTranslationDescription: '先显示原文，再用文本模型逐句翻译。',
-  textTranslationModel: '文本翻译模型',
-  notSelected: '未选择',
-  current: '当前',
-  ready: '就绪',
-  needsSetup: '需要配置',
-};
-
-function formatCapabilityLabel(capability: ProviderCapability) {
-  return formatProviderCapabilityLabel(capability);
-}
-
-function buildInputProcessing(devices: DeviceDraft, patch: Partial<AudioInputProcessingContract>): AudioInputProcessingContract {
-  return {
-    inputLevel: devices.outboundRoute.input.processing?.inputLevel ?? devices.inputLevel,
-    echoCancellationEnabled: devices.outboundRoute.input.processing?.echoCancellationEnabled ?? devices.aecEnabled,
-    noiseSuppressionEnabled: devices.outboundRoute.input.processing?.noiseSuppressionEnabled ?? devices.ansEnabled,
-    autoGainControlEnabled: devices.outboundRoute.input.processing?.autoGainControlEnabled ?? devices.agcEnabled,
-    ...patch,
-  };
-}
-
-function updateOutputTargetEnabled(devices: DeviceDraft, kind: 'subtitle-engine', enabled: boolean) {
-  return devices.inboundRoute.outputs.map((target) => (target.kind === kind ? { ...target, enabled } : target));
-}
-
-function updateOutboundTargetEnabled(devices: DeviceDraft, kind: 'virtual-mic', enabled: boolean) {
-  return devices.outboundRoute.outputs.map((target) => (target.kind === kind ? { ...target, enabled } : target));
-}
-
-function hasCapability(model: Pick<ModelPreset, 'capabilities'> | undefined, capability: ProviderCapability) {
-  return model?.capabilities.includes(capability) ?? false;
-}
 
 function isVoiceModel(model: Pick<ModelPreset, 'capabilities'>) {
   return model.capabilities.some((capability) => capability === 'speech-to-text' || capability === 'text-to-speech' || capability === 'speech-to-speech');
 }
 
 function resolveSelectedModel(options: RoutingModelOption[], modelId: string) {
-  return options.find((model) => model.model === modelId) ?? options.find((model) => model.rawModelId === modelId);
+  return options.find((model) => model.model === modelId);
 }
 
-function sortRoutingModelOptions(options: RoutingModelSelectOption[]) {
-  return [...options].sort((left, right) => {
-    if (left.preferred !== right.preferred) return left.preferred ? -1 : 1;
-    if (left.mismatchMessages.length !== right.mismatchMessages.length) return left.mismatchMessages.length - right.mismatchMessages.length;
-    return left.displayName.localeCompare(right.displayName);
-  });
+function detectScenarioCapabilities(model: ModelPreset | undefined, scenario: ScenarioId): ScenarioCapability[] {
+  if (!model) return [];
+  const caps = new Set(model.capabilities);
+  const tags: ScenarioCapability[] = [];
+  switch (scenario) {
+    case 'inbound':
+      if (caps.has('speech-to-text')) tags.push('stt');
+      if (caps.has('speech-to-text') || caps.has('speech-to-speech')) tags.push('translation');
+      if (caps.has('speech-to-text') || caps.has('speech-to-speech')) tags.push('subtitle');
+      return tags;
+    case 'inboundSecondary':
+      if (caps.has('speech-to-text')) return ['stt'];
+      return [];
+    case 'subtitle':
+      if (caps.has('text-generation') || caps.has('speech-to-text') || caps.has('speech-to-speech')) return ['translation'];
+      return [];
+    case 'outbound':
+      if (caps.has('speech-to-text')) tags.push('stt');
+      if (caps.has('speech-to-text') || caps.has('speech-to-speech')) tags.push('translation');
+      if (caps.has('speech-to-speech') || caps.has('text-to-speech')) tags.push('speech');
+      return tags;
+    case 'tts':
+      if (caps.has('text-to-speech') || caps.has('speech-to-speech')) return ['tts'];
+      return [];
+    default:
+      return [];
+  }
 }
 
-function RoutingModelSelect({
-  label,
-  value,
-  options,
-  emptyText,
-  placeholder,
-  allowEmpty,
-  onSelect,
+function ChainFlow({
+  direction,
+  inboundLabel,
+  modelLabel,
+  outboundLabel,
+  modelSubtitle,
+  outboundSubtitle,
 }: {
-  label: string;
+  direction: 'inbound' | 'outbound';
+  inboundLabel: string;
+  modelLabel: string;
+  outboundLabel: string;
+  modelSubtitle?: string;
+  outboundSubtitle?: string;
+}) {
+  return (
+    <div className={['chain-flow', direction === 'outbound' ? 'chain-flow-outbound' : 'chain-flow-inbound'].join(' ')}>
+      <div className="chain-flow-direction">{direction === 'inbound' ? '听' : '说'}</div>
+      <div className="chain-flow-segment">
+        <div className="chain-flow-segment-label">{inboundLabel}</div>
+        {modelSubtitle ? <div className="chain-flow-segment-sub">{modelSubtitle}</div> : null}
+      </div>
+      <span className="chain-flow-arrow" aria-hidden="true">—</span>
+      <div className="chain-flow-segment">
+        <div className="chain-flow-segment-label">{modelLabel}</div>
+        {modelSubtitle ? <div className="chain-flow-segment-sub">{modelSubtitle}</div> : null}
+      </div>
+      <span className="chain-flow-arrow" aria-hidden="true">—</span>
+      <div className="chain-flow-segment">
+        <div className="chain-flow-segment-label">{outboundLabel}</div>
+        {outboundSubtitle ? <div className="chain-flow-segment-sub">{outboundSubtitle}</div> : null}
+      </div>
+    </div>
+  );
+}
+
+function ScenarioCard({
+  icon,
+  title,
+  caption,
+  modelName,
+  modelProvider,
+  tags,
+  modelOptions,
+  value,
+  onSelect,
+  muted,
+  mutedHint,
+  active,
+  enabled,
+  onEnabledChange,
+  enableLabel,
+}: {
+  icon: AppIconName;
+  title: string;
+  caption: string;
+  modelName: string;
+  modelProvider: string;
+  tags: ScenarioCapability[];
+  modelOptions: RoutingModelOption[];
   value: string;
-  options: RoutingModelSelectOption[];
-  emptyText: string;
-  placeholder?: string;
-  allowEmpty?: boolean;
   onSelect: (modelId: string) => void;
+  muted?: boolean;
+  mutedHint?: string;
+  active?: boolean;
+  enabled?: boolean;
+  onEnabledChange?: (enabled: boolean) => void;
+  enableLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const selectedOption = resolveSelectedModel(options, value);
-  const buttonLabel = selectedOption?.displayName ?? (value || placeholder || emptyText);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  const selectedOption = resolveSelectedModel(modelOptions, value);
+  const displayName = selectedOption?.displayName ?? modelName;
+  const subtitle = selectedOption?.description ?? modelProvider;
+  const emptyText = 'Current provider has no available models';
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (cardRef.current && !cardRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, [open]);
+
+  const cardEnabled = enabled ?? true;
 
   return (
-    <div className="routing-model-select field-span-full">
-      <span className="routing-model-select-label">{label}</span>
-      {options.length === 0 ? (
-        <div className="routing-empty">{emptyText}</div>
-      ) : (
-        <>
-          <button aria-expanded={open} className="routing-model-select-button" onClick={() => setOpen((current) => !current)} type="button">
-            <span>{buttonLabel}</span>
-            <AppIcon name="sliders" size={15} />
-          </button>
-          {open ? (
-            <div className="routing-model-select-list" role="listbox">
-              {allowEmpty ? (
+    <div
+      className={['scenario-card', !cardEnabled || muted ? 'scenario-card-muted' : '', active ? 'scenario-card-active' : '', open ? 'scenario-card-open' : ''].filter(Boolean).join(' ')}
+      ref={cardRef}
+    >
+      <div className="scenario-card-head">
+        <div className="scenario-card-icon" aria-hidden="true">
+          <AppIcon name={icon} size={16} />
+        </div>
+        <div className="scenario-card-titles">
+          <h4>{title}</h4>
+          <span>{caption}</span>
+        </div>
+        {onEnabledChange ? (
+          <label className={['scenario-card-toggle', cardEnabled ? 'scenario-card-toggle-on' : ''].join(' ')}>
+            <input
+              checked={cardEnabled}
+              onChange={(event) => onEnabledChange(event.target.checked)}
+              type="checkbox"
+            />
+            <span>{enableLabel ?? ''}</span>
+          </label>
+        ) : null}
+      </div>
+      <div className="scenario-card-control">
+        <button
+          aria-expanded={open}
+          className="scenario-card-selector"
+          disabled={!cardEnabled || muted}
+          onClick={() => setOpen((current) => !current)}
+          type="button"
+        >
+          <div className="scenario-card-model">
+            <strong>{displayName || '—'}</strong>
+            <small>{subtitle}</small>
+          </div>
+          <span className="scenario-card-caret" aria-hidden="true">▾</span>
+        </button>
+        {open && cardEnabled && !muted ? (
+          <div className="scenario-card-list" role="listbox">
+            {modelOptions.length === 0 ? (
+              <div className="routing-empty">{emptyText}</div>
+            ) : (
+              modelOptions.map((option) => (
                 <button
-                  className={[
-                    'routing-model-select-option',
-                    value === '' ? 'routing-model-select-option-active' : '',
-                    'routing-model-select-option-compact',
-                  ].filter(Boolean).join(' ')}
-                  data-value=""
-                  onClick={() => {
-                    onSelect('');
-                    setOpen(false);
-                  }}
-                  role="option"
-                  type="button"
-                >
-                  {value === '' ? <AppIcon className="routing-model-select-check" name="check" size={16} /> : null}
-                  <span>
-                    <strong>{placeholder || emptyText}</strong>
-                  </span>
-                </button>
-              ) : null}
-              {options.map((option) => (
-                <button
-                  className={[
-                    'routing-model-select-option',
-                    option.model === selectedOption?.model ? 'routing-model-select-option-active' : '',
-                    option.mismatchMessages.length > 0 ? 'routing-model-select-option-mismatch' : '',
-                  ].filter(Boolean).join(' ')}
+                  className={['scenario-card-option', option.model === value ? 'scenario-card-option-active' : ''].filter(Boolean).join(' ')}
                   data-value={option.model}
                   key={option.model}
                   onClick={() => {
@@ -191,25 +294,32 @@ function RoutingModelSelect({
                   role="option"
                   type="button"
                 >
-                  {option.model === selectedOption?.model ? <AppIcon className="routing-model-select-check" name="check" size={16} /> : null}
-                  <span>
-                    <strong>{option.displayName}</strong>
-                    <small>{option.capabilities.map(formatCapabilityLabel).join(' / ')}</small>
-                  </span>
-                  {option.mismatchMessages.length > 0 ? <em>{option.mismatchMessages.join(' / ')}</em> : null}
+                  <AppIcon className="scenario-card-option-check" name="check" size={12} />
+                  <span className="scenario-card-option-name">{option.displayName}</span>
                 </button>
-              ))}
-            </div>
-          ) : null}
-        </>
-      )}
+              ))
+            )}
+          </div>
+        ) : null}
+        {(!cardEnabled || muted) && mutedHint ? <p className="scenario-card-hint">{mutedHint}</p> : null}
+        {tags.length > 0 ? (
+          <div className="scenario-card-tags">
+            {tags.map((tag) => (
+              <span className={['scenario-card-tag', 'scenario-card-tag-' + tag, !cardEnabled || muted ? 'scenario-card-tag-muted' : ''].join(' ')} key={tag}>
+                <AppIcon name="check" size={11} />
+                {tag}
+              </span>
+            ))}
+          </div>
+        ) : null}
+      </div>
     </div>
   );
 }
 
 function AudioRoutingPage() {
+  const { t } = useTranslation();
   const configDraft = useAppStore((state) => state.configDraft);
-  const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
   const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
   const updateDeviceDraft = useAppStore((state) => state.updateDeviceDraft);
   const updateSpeechDraft = useAppStore((state) => state.updateSpeechDraft);
@@ -219,7 +329,9 @@ function AudioRoutingPage() {
   const [micTestResult, setMicTestResult] = useState<string | null>(null);
   const [speakerTesting, setSpeakerTesting] = useState(false);
   const [speakerTestResult, setSpeakerTestResult] = useState<string | null>(null);
-  const [pendingModelSelection, setPendingModelSelection] = useState<PendingModelSelection | null>(null);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  const [micEnergyDb, setMicEnergyDb] = useState(-54);
+  const [speakerEnergyDb, setSpeakerEnergyDb] = useState(-90);
 
   useEffect(() => {
     const refreshCatalogPreferences = () => setCatalogPreferences(readProviderTemplateCatalogPreferences());
@@ -255,10 +367,7 @@ function AudioRoutingPage() {
         for (const modelId of assignment.modelIds) {
           const key = `${providerTemplateId}::${modelId}`;
           const existing = modelMap.get(key);
-          if (existing) {
-            if (!existing.scenarios.includes(assignment.scenario)) existing.scenarios.push(assignment.scenario);
-            continue;
-          }
+          if (existing) continue;
           const cachedModel = modelCacheModels.find((model) => model.id === modelId);
           const baseModel = {
             id: modelId,
@@ -273,7 +382,6 @@ function AudioRoutingPage() {
             description: cachedModel?.ownedBy ?? providerName,
             providerTemplateId,
             rawModelId: modelId,
-            scenarios: [assignment.scenario],
           });
         }
       }
@@ -293,84 +401,43 @@ function AudioRoutingPage() {
   }, [configDraft, enabledProviderTemplateIds]);
 
   const voiceModelOptions = useMemo(() => allModelOptions.filter(isVoiceModel), [allModelOptions]);
-  const inboundVoiceModelId = configDraft.devices.inboundVoiceModelId;
-  const outboundVoiceModelId = configDraft.devices.outboundVoiceModelId;
-  const speechModelId = configDraft.devices.textToSpeechModelId || configDraft.speech.textToSpeechModelId || outboundVoiceModelId;
-  const virtualDriverReady = runtimeSnapshot.bridge.driverHealth === 'running';
-
-  const inboundModelOptions = useMemo(
-    () => sortRoutingModelOptions(voiceModelOptions.map((model) => ({
-      ...model,
-      mismatchMessages: [
-        configDraft.devices.outputSubtitlesEnabled && !hasCapability(model, 'speech-to-text') ? labels.unsupportedSubtitles : null,
-        configDraft.devices.outputSpeechEnabled && !hasCapability(model, 'speech-to-speech') ? labels.unsupportedSpeech : null,
-      ].filter((item): item is string => Boolean(item)),
-      preferred: hasCapability(model, 'speech-to-text') || hasCapability(model, 'speech-to-speech'),
-    }))),
-    [configDraft.devices.outputSpeechEnabled, configDraft.devices.outputSubtitlesEnabled, voiceModelOptions],
-  );
-
-  const outboundModelOptions = useMemo(
-    () => sortRoutingModelOptions(voiceModelOptions.map((model) => ({
-      ...model,
-      mismatchMessages: configDraft.devices.virtualMicOutputEnabled && !hasCapability(model, 'speech-to-speech') ? [labels.unsupportedVirtualMic] : [],
-      preferred: hasCapability(model, 'speech-to-speech'),
-    }))),
-    [configDraft.devices.virtualMicOutputEnabled, voiceModelOptions],
-  );
-
-  const speechModelOptions = useMemo(
-    () => sortRoutingModelOptions(voiceModelOptions.map((model) => ({
-      ...model,
-      mismatchMessages: !hasCapability(model, 'speech-to-speech') ? [labels.unsupportedSpeech] : [],
-      preferred: hasCapability(model, 'speech-to-speech'),
-    }))),
-    [voiceModelOptions],
-  );
-
-  const subtitleTranslationModelOptions = useMemo(
+  const textModelOptions = useMemo(
     () => allModelOptions
-      .filter((model) => model.scenarios.includes('subtitle-translate') && !isVoiceModel(model))
-      .map((model) => ({
-        ...model,
-        mismatchMessages: [],
-        preferred: true,
-      }))
+      .filter((model) => !isVoiceModel(model))
       .sort((left, right) => left.displayName.localeCompare(right.displayName)),
     [allModelOptions],
   );
 
   const captureDevices = audioRuntimeSnapshot.captureDevices;
   const renderDevices = audioRuntimeSnapshot.renderDevices;
-  const selectedInputDevice = captureDevices.find((device) => device.deviceId === configDraft.devices.inputDeviceId) ?? captureDevices.find((device) => device.isDefault);
-  const selectedOutputDevice = renderDevices.find((device) => device.deviceId === configDraft.devices.outputDeviceId) ?? renderDevices.find((device) => device.isDefault);
-  const inboundModelLabel = resolveSelectedModel(allModelOptions, inboundVoiceModelId)?.displayName ?? inboundVoiceModelId;
-  const outboundModelLabel = resolveSelectedModel(allModelOptions, outboundVoiceModelId)?.displayName ?? outboundVoiceModelId;
+  const physicalRenderDevices = renderDevices.filter((device) => ![
+    device.deviceId,
+    device.label,
+    device.interfaceName,
+  ].some((value) => value.includes('Omni Translate Virtual Speaker')));
+
+  const inboundModelOption = resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundVoiceModelId);
+  const outboundModelOption = resolveSelectedModel(voiceModelOptions, configDraft.devices.outboundVoiceModelId);
+  const subtitleModelOption = resolveSelectedModel(textModelOptions, configDraft.devices.subtitleTranslationModelId);
+  const ttsModelOption = resolveSelectedModel(voiceModelOptions, configDraft.devices.textToSpeechModelId);
+
+  const subtitleMode = configDraft.devices.subtitleTranslationMode;
+  const isNativeSubtitle = subtitleMode === 'native';
+  const mutedHint = tWithDefault(t, 'audioRouting.cardDisabledHint');
+  const nativeAudioUnsupported =
+    isNativeSubtitle
+    && !resolveSelectedModel(voiceModelOptions, configDraft.devices.textToSpeechModelId || configDraft.speech.textToSpeechModelId || configDraft.devices.outboundVoiceModelId)?.capabilities.includes('speech-to-speech');
+
+  const markSaved = () => setSavedAt(Date.now());
 
   const patchDeviceConfig = (patch: Partial<DeviceDraft>) => {
     updateDeviceDraft({ ...patch, status: 'ready' });
+    markSaved();
   };
 
-  const commitModelSelection = (target: RoutingModelTarget, modelId: string) => {
-    if (target === 'inbound') {
-      patchDeviceConfig({ inboundVoiceModelId: modelId });
-      return;
-    }
-    if (target === 'outbound') {
-      patchDeviceConfig({ outboundVoiceModelId: modelId });
-      return;
-    }
-    patchDeviceConfig({ textToSpeechModelId: modelId });
-    updateSpeechDraft({ textToSpeechModelId: modelId, status: 'draft' });
-  };
-
-  const selectModelWithCapabilityCheck = (target: RoutingModelTarget, modelId: string, options: RoutingModelSelectOption[], title: string) => {
-    const selected = options.find((option) => option.model === modelId);
-    if (!selected || selected.mismatchMessages.length === 0) {
-      commitModelSelection(target, modelId);
-      return;
-    }
-    setPendingModelSelection({ target, modelId, title, messages: selected.mismatchMessages });
+  const patchSpeechDraft = (patch: Partial<SpeechDraft>) => {
+    updateSpeechDraft({ ...patch, status: 'draft' });
+    markSaved();
   };
 
   const handleProcessingToggle = (
@@ -378,7 +445,13 @@ function AudioRoutingPage() {
     processingKey: keyof Pick<AudioInputProcessingContract, 'echoCancellationEnabled' | 'noiseSuppressionEnabled' | 'autoGainControlEnabled'>,
     enabled: boolean,
   ) => {
-    const processing = buildInputProcessing(configDraft.devices, { [processingKey]: enabled });
+    const processing: AudioInputProcessingContract = {
+      inputLevel: configDraft.devices.outboundRoute.input.processing?.inputLevel ?? configDraft.devices.inputLevel,
+      echoCancellationEnabled: configDraft.devices.outboundRoute.input.processing?.echoCancellationEnabled ?? configDraft.devices.aecEnabled,
+      noiseSuppressionEnabled: configDraft.devices.outboundRoute.input.processing?.noiseSuppressionEnabled ?? configDraft.devices.ansEnabled,
+      autoGainControlEnabled: configDraft.devices.outboundRoute.input.processing?.autoGainControlEnabled ?? configDraft.devices.agcEnabled,
+      [processingKey]: enabled,
+    };
     patchDeviceConfig({
       [key]: enabled,
       outboundRoute: {
@@ -404,7 +477,7 @@ function AudioRoutingPage() {
     });
     const speechPatch: Partial<SpeechDraft> = { enabled, status: 'draft' };
     if (!enabled) speechPatch.dispatchState = 'idle';
-    updateSpeechDraft(speechPatch);
+    patchSpeechDraft(speechPatch);
   };
 
   const handleSubtitleOutputToggle = (enabled: boolean) => {
@@ -412,7 +485,7 @@ function AudioRoutingPage() {
       outputSubtitlesEnabled: enabled,
       inboundRoute: {
         ...configDraft.devices.inboundRoute,
-        outputs: updateOutputTargetEnabled(configDraft.devices, 'subtitle-engine', enabled),
+        outputs: configDraft.devices.inboundRoute.outputs.map((target) => (target.kind === 'subtitle-engine' ? { ...target, enabled } : target)),
       },
     });
   };
@@ -422,18 +495,10 @@ function AudioRoutingPage() {
       virtualMicOutputEnabled: enabled,
       outboundRoute: {
         ...configDraft.devices.outboundRoute,
-        outputs: updateOutboundTargetEnabled(configDraft.devices, 'virtual-mic', enabled),
+        outputs: configDraft.devices.outboundRoute.outputs.map((target) => (target.kind === 'virtual-mic' ? { ...target, enabled } : target)),
       },
     });
-    updateSpeechDraft({ outputTarget: enabled ? 'virtual-mic' : 'speaker', virtualMicOutputEnabled: enabled, status: 'draft' });
-  };
-
-  const handleFeedbackLoopPreventionChange = (feedbackLoopPrevention: Exclude<FeedbackLoopPrevention, 'none'>) => {
-    if (feedbackLoopPrevention === 'virtual-driver' && !virtualDriverReady) return;
-    patchDeviceConfig({ feedbackLoopPrevention });
-    if (feedbackLoopPrevention === 'virtual-driver') {
-      updateSpeechDraft({ localPlaybackEnabled: true, virtualMicOutputEnabled: true, outputTarget: 'virtual-mic', status: 'draft' });
-    }
+    patchSpeechDraft({ outputTarget: enabled ? 'virtual-mic' : 'speaker', virtualMicOutputEnabled: enabled });
   };
 
   const handleInputDeviceChange = (deviceId: string) => {
@@ -463,174 +528,81 @@ function AudioRoutingPage() {
   const handleMicTest = () => {
     setMicTesting(true);
     setMicTestResult(null);
+    setMicEnergyDb(-32);
     window.setTimeout(() => {
       setMicTesting(false);
-      setMicTestResult('mic ok');
+      setMicTestResult(tWithDefault(t, 'audioRouting.micTestPassed'));
+      setMicEnergyDb(-54);
     }, 900);
   };
 
   const handleSpeakerTest = () => {
     setSpeakerTesting(true);
     setSpeakerTestResult(null);
+    setSpeakerEnergyDb(-18);
     window.setTimeout(() => {
       setSpeakerTesting(false);
-      setSpeakerTestResult('speaker ok');
+      setSpeakerTestResult(tWithDefault(t, 'audioRouting.speakerTestPassed'));
+      setSpeakerEnergyDb(-90);
     }, 900);
   };
 
+  const selectModel = (scenario: ScenarioId, modelId: string) => {
+    switch (scenario) {
+      case 'inbound':
+        patchDeviceConfig({ inboundVoiceModelId: modelId });
+        return;
+      case 'inboundSecondary':
+        patchDeviceConfig({ inboundSecondaryAudioModelId: modelId });
+        return;
+      case 'subtitle':
+        patchDeviceConfig({ subtitleTranslationModelId: modelId });
+        return;
+      case 'outbound':
+        patchDeviceConfig({ outboundVoiceModelId: modelId });
+        return;
+      case 'tts':
+        patchDeviceConfig({ textToSpeechModelId: modelId });
+        patchSpeechDraft({ textToSpeechModelId: modelId });
+        return;
+      default:
+        return;
+    }
+  };
+
+  const setSubtitleMode = (mode: SubtitleTranslationMode) => {
+    patchDeviceConfig({ subtitleTranslationMode: mode });
+  };
+
+  const setFeedbackMode = (mode: Exclude<FeedbackLoopPrevention, 'none'>) => {
+    patchDeviceConfig({ feedbackLoopPrevention: mode });
+  };
+
+  const savedIndicator = savedAt ? tWithDefault(t, 'audioRouting.savedJustNow') : tWithDefault(t, 'audioRouting.autoSaved');
+
   return (
-    <div className="routing-workspace">
-      <section className="routing-overview" aria-label="audio routing overview">
-        <div className="routing-overview-main">
-          <div className="routing-overview-node">
-            <span>输出</span>
-            <strong>{selectedOutputDevice?.label ?? labels.speaker}</strong>
-          </div>
-          <div className="routing-overview-arrow routing-overview-arrow-output-to-model" aria-hidden="true">→</div>
-          <div className="routing-overview-node routing-overview-node-model">
-            <span>{labels.voiceModels}</span>
-            <strong>{inboundModelLabel}</strong>
-            <small>{outboundModelLabel}</small>
-          </div>
-          <div className="routing-overview-arrow routing-overview-arrow-input-to-model" aria-hidden="true">←</div>
-          <div className="routing-overview-node">
-            <span>输入</span>
-            <strong>{selectedInputDevice?.label ?? labels.microphone}</strong>
-          </div>
-          <div className="routing-overview-arrow routing-overview-arrow-model-to-output" aria-hidden="true">←</div>
-        </div>
-        <StatusBadge label={labels.ready} tone="ready" />
-      </section>
-
-      <section className="routing-topology">
-        <article className="routing-panel">
+    <div className="routing-workspace-v9">
+      <section className="routing-top-grid">
+        <article className="routing-panel routing-capture-panel">
           <div className="routing-panel-head">
             <div>
-              <h3>{labels.outputDevice}</h3>
+              <div className="routing-panel-kicker">{tWithDefault(t, 'audioRouting.chainOutbound')}</div>
+              <h3>{tWithDefault(t, 'audioRouting.capturePanelTitle')}</h3>
+              <p className="routing-panel-subtitle">{tWithDefault(t, 'audioRouting.capturePanelSubtitle')}</p>
             </div>
-            <StatusBadge label={labels.ready} tone={renderDevices.length > 0 ? 'ready' : 'risk'} />
+            <StatusBadge label={tWithDefault(t, 'audioRouting.status.ready')} tone="ready" />
           </div>
+          <ChainFlow
+            direction="inbound"
+            inboundLabel={tWithDefault(t, 'audioRouting.chainSystemAudio')}
+            modelLabel={tWithDefault(t, 'audioRouting.chainInboundModel')}
+            modelSubtitle={inboundModelOption ? 'STT · 翻译' : '—'}
+            outboundLabel={tWithDefault(t, 'audioRouting.chainSubtitleTranslated')}
+            outboundSubtitle={tWithDefault(t, 'audioRouting.chainLocalPlayback')}
+          />
 
           <label className="field-stack field-span-full">
-            <span>{labels.speaker}</span>
-            <select className="select-input" onChange={(event) => handleOutputDeviceChange(event.target.value)} value={configDraft.devices.outputDeviceId}>
-              {renderDevices.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
-              ))}
-            </select>
-          </label>
-
-          <label className="routing-slider">
-            <span>{labels.outputVolume}</span>
-            <input max={100} min={0} onChange={(event) => patchDeviceConfig({ outputLevel: Number(event.target.value) })} type="range" value={configDraft.devices.outputLevel} />
-            <strong>{configDraft.devices.outputLevel}%</strong>
-          </label>
-
-          <div className="routing-action-row">
-            <button className="icon-button" disabled={speakerTesting || renderDevices.length === 0} onClick={handleSpeakerTest} type="button">
-              <AppIcon name="headphones" size={15} />
-              {speakerTesting ? labels.testing : labels.testSpeaker}
-            </button>
-            {speakerTestResult ? <span className="routing-inline-result">{speakerTestResult}</span> : null}
-          </div>
-
-          <div className="routing-output-feedback">
-            <div className="routing-panel-head routing-panel-subhead">
-              <div>
-                <h4>{labels.feedback}</h4>
-              </div>
-              <StatusBadge
-                label={configDraft.devices.feedbackLoopPrevention === 'none' ? labels.needsSetup : labels.current}
-                tone={configDraft.devices.feedbackLoopPrevention === 'none' ? 'warning' : 'ready'}
-              />
-            </div>
-            <div className="routing-mode-grid routing-feedback-options">
-              <button
-                className={configDraft.devices.feedbackLoopPrevention === 'echo-cancel' ? 'routing-mode-card routing-mode-card-active' : 'routing-mode-card'}
-                onClick={() => handleFeedbackLoopPreventionChange('echo-cancel')}
-                type="button"
-              >
-                <div>
-                  <strong>{labels.echoCancel}</strong>
-                  <p>{labels.echoCancelDesc}</p>
-                </div>
-              </button>
-              <button
-                className={configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ? 'routing-mode-card routing-mode-card-active' : 'routing-mode-card'}
-                disabled={!virtualDriverReady}
-                onClick={() => handleFeedbackLoopPreventionChange('virtual-driver')}
-                type="button"
-              >
-                <div>
-                  <strong>{labels.virtualDriver}</strong>
-                  <p>{virtualDriverReady ? labels.virtualDriverDesc : labels.virtualDriverDisabled}</p>
-                </div>
-              </button>
-            </div>
-          </div>
-        </article>
-
-        <article className="routing-panel routing-panel-emphasis">
-          <div className="routing-panel-head">
-            <div>
-              <h3>{labels.voiceModels}</h3>
-            </div>
-            <StatusBadge label={voiceModelOptions.length > 0 ? '可用' : labels.needsSetup} tone={voiceModelOptions.length > 0 ? 'ready' : 'warning'} />
-          </div>
-
-          <RoutingModelSelect
-            emptyText={labels.noModels}
-            label={labels.inboundModel}
-            onSelect={(modelId) => selectModelWithCapabilityCheck('inbound', modelId, inboundModelOptions, labels.unsupportedInboundTitle)}
-            options={inboundModelOptions}
-            value={inboundVoiceModelId}
-          />
-
-          <div className="routing-toggle-grid routing-output-toggle-grid">
-            <label className="routing-toggle routing-toggle-strong">
-              <input checked={configDraft.devices.outputSpeechEnabled} onChange={(event) => handleSpeechOutputToggle(event.target.checked)} type="checkbox" />
-              <span>{labels.outputSpeech}</span>
-            </label>
-            <label className="routing-toggle routing-toggle-strong">
-              <input checked={configDraft.devices.outputSubtitlesEnabled} onChange={(event) => handleSubtitleOutputToggle(event.target.checked)} type="checkbox" />
-              <span>{labels.outputSubtitles}</span>
-            </label>
-          </div>
-
-          <RoutingModelSelect
-            emptyText={labels.noModels}
-            label={labels.outboundModel}
-            onSelect={(modelId) => selectModelWithCapabilityCheck('outbound', modelId, outboundModelOptions, labels.unsupportedOutboundTitle)}
-            options={outboundModelOptions}
-            value={outboundVoiceModelId}
-          />
-
-          <RoutingModelSelect
-            emptyText={labels.noModels}
-            label={labels.ttsModel}
-            onSelect={(modelId) => selectModelWithCapabilityCheck('speech', modelId, speechModelOptions, labels.unsupportedInboundTitle)}
-            options={speechModelOptions}
-            value={speechModelId}
-          />
-
-          <div className="routing-toggle-grid routing-output-toggle-grid">
-            <label className="routing-toggle routing-toggle-strong">
-              <input checked={configDraft.devices.virtualMicOutputEnabled} onChange={(event) => handleVirtualMicToggle(event.target.checked)} type="checkbox" />
-              <span>{labels.sendVoiceToVirtualMic}</span>
-            </label>
-          </div>
-        </article>
-
-        <article className="routing-panel">
-          <div className="routing-panel-head">
-            <div>
-              <h3>{labels.inputDevice}</h3>
-            </div>
-            <StatusBadge label="空闲" tone={captureDevices.length > 0 ? 'ready' : 'risk'} />
-          </div>
-
-          <label className="field-stack field-span-full">
-            <span>{labels.microphone}</span>
+            <span>{tWithDefault(t, 'audioRouting.microphone')}</span>
             <select className="select-input" onChange={(event) => handleInputDeviceChange(event.target.value)} value={configDraft.devices.inputDeviceId}>
               {captureDevices.map((device) => (
                 <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
@@ -638,140 +610,253 @@ function AudioRoutingPage() {
             </select>
           </label>
 
-          <label className="routing-slider">
-            <span>{labels.inputLevel}</span>
-            <input max={100} min={0} onChange={(event) => patchDeviceConfig({ inputLevel: Number(event.target.value) })} type="range" value={configDraft.devices.inputLevel} />
-            <strong>{configDraft.devices.inputLevel}%</strong>
+          <div className="routing-test-row">
+            <div className="routing-test-row-controls">
+              <button className="icon-button" disabled={micTesting || captureDevices.length === 0} onClick={handleMicTest} type="button">
+                <AppIcon name="wave" size={15} />
+                {micTesting ? tWithDefault(t, 'audioRouting.testing') : tWithDefault(t, 'audioRouting.testMic')}
+              </button>
+              {micTestResult ? <span className="routing-inline-result">{micTestResult}</span> : null}
+            </div>
+            <div className="routing-test-meter">
+              <AudioLevelMeter energyDb={micEnergyDb} label="" vadState="speech" />
+            </div>
+          </div>
+
+          <div className="routing-slider-row">
+            <div className="routing-slider-head">
+              <span className="routing-slider-label">{tWithDefault(t, 'audioRouting.inputLevel')}</span>
+              <strong>{configDraft.devices.inputLevel}%</strong>
+            </div>
+            <input className="routing-slider-input" max={100} min={0} onChange={(event) => patchDeviceConfig({ inputLevel: Number(event.target.value) })} type="range" value={configDraft.devices.inputLevel} />
+          </div>
+
+          <div className="routing-toggle-stack">
+            <label className={['routing-toggle-pill', configDraft.devices.aecEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
+              <input checked={configDraft.devices.aecEnabled} onChange={(event) => handleProcessingToggle('aecEnabled', 'echoCancellationEnabled', event.target.checked)} type="checkbox" />
+              <span>{tWithDefault(t, 'audioRouting.aecEchoCancellation')}</span>
+            </label>
+            <label className={['routing-toggle-pill', configDraft.devices.ansEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
+              <input checked={configDraft.devices.ansEnabled} onChange={(event) => handleProcessingToggle('ansEnabled', 'noiseSuppressionEnabled', event.target.checked)} type="checkbox" />
+              <span>{tWithDefault(t, 'audioRouting.ansNoiseSuppression')}</span>
+            </label>
+            <label className={['routing-toggle-pill', configDraft.devices.agcEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
+              <input checked={configDraft.devices.agcEnabled} onChange={(event) => handleProcessingToggle('agcEnabled', 'autoGainControlEnabled', event.target.checked)} type="checkbox" />
+              <span>{tWithDefault(t, 'audioRouting.agcAutoGain')}</span>
+            </label>
+          </div>
+        </article>
+
+        <article className="routing-panel routing-output-panel">
+          <div className="routing-panel-head">
+            <div>
+              <div className="routing-panel-kicker">{tWithDefault(t, 'audioRouting.chainInbound')}</div>
+              <h3>{tWithDefault(t, 'audioRouting.outputPanelTitle')}</h3>
+              <p className="routing-panel-subtitle">{tWithDefault(t, 'audioRouting.outputPanelSubtitle')}</p>
+            </div>
+            <StatusBadge label={tWithDefault(t, 'audioRouting.status.ready')} tone="ready" />
+          </div>
+          <ChainFlow
+            direction="outbound"
+            inboundLabel={tWithDefault(t, 'audioRouting.chainMicrophone')}
+            modelLabel={tWithDefault(t, 'audioRouting.chainOutboundModel')}
+            modelSubtitle={outboundModelOption ? 'STT · 翻译 · 语音' : '—'}
+            outboundLabel={tWithDefault(t, 'audioRouting.chainVirtualMicSpeaker')}
+            outboundSubtitle={tWithDefault(t, 'audioRouting.chainReturnToPeer')}
+          />
+
+          <label className="field-stack field-span-full">
+            <span>{tWithDefault(t, 'audioRouting.speaker')}</span>
+            <select className="select-input" onChange={(event) => handleOutputDeviceChange(event.target.value)} value={configDraft.devices.outputDeviceId}>
+              {physicalRenderDevices.map((device) => (
+                <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
+              ))}
+            </select>
           </label>
 
-          <div className="routing-toggle-grid">
-            <label className="routing-toggle">
-              <input checked={configDraft.devices.aecEnabled} onChange={(event) => handleProcessingToggle('aecEnabled', 'echoCancellationEnabled', event.target.checked)} type="checkbox" />
-              <span>{labels.aec}</span>
-            </label>
-            <label className="routing-toggle">
-              <input checked={configDraft.devices.ansEnabled} onChange={(event) => handleProcessingToggle('ansEnabled', 'noiseSuppressionEnabled', event.target.checked)} type="checkbox" />
-              <span>{labels.ans}</span>
-            </label>
-            <label className="routing-toggle">
-              <input checked={configDraft.devices.agcEnabled} onChange={(event) => handleProcessingToggle('agcEnabled', 'autoGainControlEnabled', event.target.checked)} type="checkbox" />
-              <span>{labels.agc}</span>
-            </label>
+          <div className="routing-test-row">
+            <div className="routing-test-row-controls">
+              <button className="icon-button" disabled={speakerTesting || physicalRenderDevices.length === 0} onClick={handleSpeakerTest} type="button">
+                <AppIcon name="headphones" size={15} />
+                {speakerTesting ? tWithDefault(t, 'audioRouting.testing') : tWithDefault(t, 'audioRouting.testSpeaker')}
+              </button>
+              {speakerTestResult ? <span className="routing-inline-result">{speakerTestResult}</span> : null}
+            </div>
+            <div className="routing-test-meter">
+              <AudioLevelMeter energyDb={speakerEnergyDb} label="" vadState={speakerTesting ? 'speech' : 'silence'} />
+            </div>
           </div>
 
-          <div className="routing-action-row">
-            <button className="icon-button" disabled={micTesting || captureDevices.length === 0} onClick={handleMicTest} type="button">
-              <AppIcon name="wave" size={15} />
-              {micTesting ? labels.testing : labels.testMic}
-            </button>
-            {micTestResult ? <span className="routing-inline-result">{micTestResult}</span> : null}
+          <div className="routing-slider-row">
+            <div className="routing-slider-head">
+              <span className="routing-slider-label">{tWithDefault(t, 'audioRouting.outputVolume')}</span>
+              <strong>{configDraft.devices.outputLevel}%</strong>
+            </div>
+            <input className="routing-slider-input" max={100} min={0} onChange={(event) => patchDeviceConfig({ outputLevel: Number(event.target.value) })} type="range" value={configDraft.devices.outputLevel} />
+          </div>
+
+          <div className="routing-feedback">
+            <div className="routing-feedback-head">
+              <h4>{tWithDefault(t, 'audioRouting.feedbackTitle')}</h4>
+              <p>{tWithDefault(t, 'audioRouting.feedbackSubtitle')}</p>
+            </div>
+            <div className="routing-feedback-options" role="radiogroup" aria-label={tWithDefault(t, 'audioRouting.feedbackTitle')}>
+              <button
+                aria-checked={configDraft.devices.feedbackLoopPrevention === 'echo-cancel'}
+                className={['routing-feedback-option', configDraft.devices.feedbackLoopPrevention === 'echo-cancel' ? 'routing-feedback-option-active' : ''].join(' ')}
+                onClick={() => setFeedbackMode('echo-cancel')}
+                role="radio"
+                type="button"
+              >
+                <span className="routing-feedback-radio" aria-hidden="true">
+                  {configDraft.devices.feedbackLoopPrevention === 'echo-cancel' ? <AppIcon name="check" size={11} /> : null}
+                </span>
+                <strong>{tWithDefault(t, 'audioRouting.feedbackEchoLabel')}</strong>
+              </button>
+              <button
+                aria-checked={configDraft.devices.feedbackLoopPrevention === 'virtual-driver'}
+                className={['routing-feedback-option', configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ? 'routing-feedback-option-active' : ''].join(' ')}
+                onClick={() => setFeedbackMode('virtual-driver')}
+                role="radio"
+                type="button"
+              >
+                <span className="routing-feedback-radio" aria-hidden="true">
+                  {configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ? <AppIcon name="check" size={11} /> : null}
+                </span>
+                <strong>{tWithDefault(t, 'audioRouting.feedbackVirtualDriverLabel')}</strong>
+              </button>
+            </div>
+            <p className="routing-feedback-desc">
+              {configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
+                ? tWithDefault(t, 'audioRouting.feedbackVirtualDriverDesc')
+                : tWithDefault(t, 'audioRouting.feedbackEchoDesc')}
+            </p>
           </div>
         </article>
       </section>
 
-      <section className="routing-lower-grid">
-        <article className="routing-panel">
+      <section className="routing-models-grid">
+        <article className="routing-panel routing-models-inbound-panel">
           <div className="routing-panel-head">
             <div>
-              <h3>{labels.subtitleTranslationMode}</h3>
+              <div className="routing-panel-kicker">{tWithDefault(t, 'audioRouting.inboundKicker')}</div>
+              <h3>{tWithDefault(t, 'audioRouting.inboundModelsPanelTitle')}</h3>
+              <p className="routing-panel-subtitle">{tWithDefault(t, 'audioRouting.inboundModelsPanelSubtitle')}</p>
             </div>
+            <StatusBadge label={tWithDefault(t, 'audioRouting.status.ready')} tone="ready" />
           </div>
-          <div className="routing-mode-grid">
-            <button
-              className={[
-                'routing-mode-card',
-                configDraft.devices.subtitleTranslationMode === 'native' ? 'routing-mode-card-active' : '',
-              ].filter(Boolean).join(' ')}
-              onClick={() => patchDeviceConfig({ subtitleTranslationMode: 'native' })}
-              type="button"
-            >
-              <div>
-                <strong>{labels.nativeMode}</strong>
-                <p>{labels.nativeModeDescription}</p>
-              </div>
-            </button>
-            <button
-              className={[
-                'routing-mode-card',
-                configDraft.devices.subtitleTranslationMode === 'secondary' ? 'routing-mode-card-active' : '',
-              ].filter(Boolean).join(' ')}
-              onClick={() => patchDeviceConfig({ subtitleTranslationMode: 'secondary' })}
-              type="button"
-            >
-              <div>
-                <strong>{labels.secondaryTranslation}</strong>
-                <p>{labels.secondaryTranslationDescription}</p>
-              </div>
-            </button>
-          </div>
-          {configDraft.devices.subtitleTranslationMode === 'secondary' ? (
-            <RoutingModelSelect
-              allowEmpty
-              emptyText={labels.noModels}
-              label={labels.textTranslationModel}
-              onSelect={(modelId) => patchDeviceConfig({ subtitleTranslationModelId: modelId })}
-              options={subtitleTranslationModelOptions}
-              placeholder={labels.notSelected}
+
+          {nativeAudioUnsupported ? <p className="routing-inline-result">{tWithDefault(t, 'audioRouting.unsupportedNativeAudio')}</p> : null}
+
+          <div className="scenario-grid scenario-grid-three">
+            <ScenarioCard
+              active
+              caption={tWithDefault(t, 'audioRouting.scenarioInboundCaption')}
+              icon="headphones"
+              modelName={inboundModelOption?.displayName ?? '—'}
+              modelOptions={voiceModelOptions}
+              modelProvider={inboundModelOption?.description ?? ''}
+              onSelect={(modelId) => selectModel('inbound', modelId)}
+              tags={detectScenarioCapabilities(inboundModelOption, 'inbound')}
+              title={tWithDefault(t, 'audioRouting.scenarioInboundTitle')}
+              value={configDraft.devices.inboundVoiceModelId}
+            />
+            <ScenarioCard
+              caption={tWithDefault(t, 'audioRouting.scenarioInboundSecondaryCaption')}
+              enableLabel={tWithDefault(t, 'audioRouting.secondaryAudioCardToggle')}
+              enabled={configDraft.devices.outputSubtitlesEnabled}
+              icon="subtitles"
+              modelName={resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId)?.displayName ?? '—'}
+              modelOptions={voiceModelOptions}
+              modelProvider={resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId)?.description ?? ''}
+              mutedHint={mutedHint}
+              onEnabledChange={(enabled) => handleSubtitleOutputToggle(enabled)}
+              onSelect={(modelId) => selectModel('inboundSecondary', modelId)}
+              tags={detectScenarioCapabilities(resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId), 'inboundSecondary')}
+              title={tWithDefault(t, 'audioRouting.scenarioInboundSecondaryTitle')}
+              value={configDraft.devices.inboundSecondaryAudioModelId}
+            />
+            <ScenarioCard
+              caption={tWithDefault(t, 'audioRouting.scenarioSubtitleCaption')}
+              enableLabel={tWithDefault(t, 'audioRouting.subtitleTranslationCardToggle')}
+              enabled={!isNativeSubtitle}
+              icon="book"
+              modelName={subtitleModelOption?.displayName ?? '—'}
+              modelOptions={textModelOptions}
+              modelProvider={subtitleModelOption?.description ?? ''}
+              mutedHint={mutedHint}
+              onEnabledChange={(enabled) => setSubtitleMode(enabled ? 'secondary' : 'native')}
+              onSelect={(modelId) => selectModel('subtitle', modelId)}
+              tags={detectScenarioCapabilities(subtitleModelOption, 'subtitle')}
+              title={tWithDefault(t, 'audioRouting.scenarioSubtitleTitle')}
               value={configDraft.devices.subtitleTranslationModelId}
             />
-          ) : null}
+          </div>
+
+          <div className="routing-channel-section">
+            <label className={['routing-channel', configDraft.devices.outputSpeechEnabled ? 'routing-channel-on' : ''].join(' ')}>
+              <input checked={configDraft.devices.outputSpeechEnabled} onChange={(event) => handleSpeechOutputToggle(event.target.checked)} type="checkbox" />
+              <span className="routing-channel-icon" aria-hidden="true">🎙</span>
+              <span className="routing-channel-text">{tWithDefault(t, 'audioRouting.outputTranslatedSpeech')}</span>
+            </label>
+          </div>
         </article>
 
-        <article className="routing-panel">
+        <article className="routing-panel routing-models-outbound-panel">
           <div className="routing-panel-head">
             <div>
-              <h3>{labels.runtimeStatus}</h3>
+              <div className="routing-panel-kicker">{tWithDefault(t, 'audioRouting.outboundKicker')}</div>
+              <h3>{tWithDefault(t, 'audioRouting.outboundModelsPanelTitle')}</h3>
+              <p className="routing-panel-subtitle">{tWithDefault(t, 'audioRouting.outboundModelsPanelSubtitle')}</p>
             </div>
-            <StatusBadge label={labels.ready} tone="ready" />
+            <StatusBadge label={tWithDefault(t, 'audioRouting.status.ready')} tone="ready" />
           </div>
-          <div className="routing-metric-grid">
-            <div><span>输入缓冲</span><strong>{audioRuntimeSnapshot.inbound.bufferAheadMs} ms</strong></div>
-            <div><span>已采集帧</span><strong>{audioRuntimeSnapshot.inbound.framesCaptured}</strong></div>
-            <div><span>字幕队列</span><strong>{audioRuntimeSnapshot.subtitleOverlay.queueDepth}</strong></div>
-            <div><span>语音队列</span><strong>{audioRuntimeSnapshot.speech.queueDepth}</strong></div>
+
+          <div className="scenario-grid">
+            <ScenarioCard
+              active
+              caption={tWithDefault(t, 'audioRouting.scenarioOutboundCaption')}
+              icon="mic"
+              modelName={outboundModelOption?.displayName ?? '—'}
+              modelOptions={voiceModelOptions}
+              modelProvider={outboundModelOption?.description ?? ''}
+              onSelect={(modelId) => selectModel('outbound', modelId)}
+              tags={detectScenarioCapabilities(outboundModelOption, 'outbound')}
+              title={tWithDefault(t, 'audioRouting.scenarioOutboundTitle')}
+              value={configDraft.devices.outboundVoiceModelId}
+            />
+            <ScenarioCard
+              caption={tWithDefault(t, 'audioRouting.scenarioTtsCaption')}
+              icon="spark"
+              modelName={ttsModelOption?.displayName ?? '—'}
+              modelOptions={voiceModelOptions}
+              modelProvider={ttsModelOption?.description ?? ''}
+              onSelect={(modelId) => selectModel('tts', modelId)}
+              tags={detectScenarioCapabilities(ttsModelOption, 'tts')}
+              title={tWithDefault(t, 'audioRouting.scenarioTtsTitle')}
+              value={configDraft.devices.textToSpeechModelId}
+            />
           </div>
+
+          <div className="routing-channel-section">
+            <label className={['routing-channel', configDraft.devices.virtualMicOutputEnabled ? 'routing-channel-on' : ''].join(' ')}>
+              <input checked={configDraft.devices.virtualMicOutputEnabled} onChange={(event) => handleVirtualMicToggle(event.target.checked)} type="checkbox" />
+              <span className="routing-channel-icon" aria-hidden="true">🎤</span>
+              <span className="routing-channel-text">{tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic')}</span>
+            </label>
+          </div>
+
+          <div className="routing-saved-indicator" aria-live="polite">{savedIndicator}</div>
         </article>
       </section>
-
-      {pendingModelSelection ? (
-        <div className="routing-modal-backdrop" onClick={() => setPendingModelSelection(null)} role="presentation">
-          <div aria-modal="true" className="routing-modal" onClick={(event) => event.stopPropagation()} role="dialog">
-            <div className="routing-modal-head">
-              <h3>{pendingModelSelection.title}</h3>
-            </div>
-            <div className="routing-modal-body">
-              <p>model unsupported</p>
-              <ul>
-                {pendingModelSelection.messages.map((message) => <li key={message}>{message}</li>)}
-              </ul>
-            </div>
-            <div className="routing-modal-actions">
-              <button className="action-button" onClick={() => {
-                commitModelSelection(pendingModelSelection.target, pendingModelSelection.modelId);
-                setPendingModelSelection(null);
-              }} type="button">
-                {labels.keepSelection}
-              </button>
-              <button className="icon-button" onClick={() => setPendingModelSelection(null)} type="button">
-                {labels.cancelSelection}
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }
 
 export const audioRoutingPageHelpers = {
-  buildInputProcessing,
-  updateOutputTargetEnabled,
-  updateOutboundTargetEnabled,
-  hasCapability,
   isVoiceModel,
   resolveSelectedModel,
-  sortRoutingModelOptions,
-  RoutingModelSelect,
+  detectScenarioCapabilities,
 };
 
 export default AudioRoutingPage;

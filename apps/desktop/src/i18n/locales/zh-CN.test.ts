@@ -13,4 +13,15 @@ describe('zh-CN locale', () => {
     expect(zhCN.audioRouting.outputDevice).toBe('输出设备');
     expect(zhCN.overlay.hideAction).toBe('隐藏字幕悬浮窗');
   });
+
+  it('uses unified peer/microphone terminology in the audio routing page', () => {
+    const audioRouting = zhCN.audioRouting as Record<string, string>;
+    expect(audioRouting.chainSystemAudio).toBe('系统/对方声音');
+    expect(audioRouting.chainReturnToPeer).toBe('返回对方');
+    expect(audioRouting.scenarioInboundSecondaryTitle).toBe('听对方 · 副翻译音频');
+    expect(audioRouting.translationAudioSecondary).toContain('副翻译音频');
+    expect(audioRouting.translationAudioSecondary).not.toContain('副 TTS');
+    const serialized = JSON.stringify(audioRouting);
+    expect(serialized).not.toContain('对端');
+  });
 });

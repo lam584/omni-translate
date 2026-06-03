@@ -54,8 +54,8 @@ Abstract:
 #define SPEAKER_MAX_INPUT_OFFLOAD_STREAMS           MAX_INPUT_OFFLOAD_STREAMS
 #define SPEAKER_MAX_OUTPUT_LOOPBACK_STREAMS         MAX_OUTPUT_LOOPBACK_STREAMS
 
-// Keep the render ring ABI fixed so Native Bridge can decode raw PCM without
-// consulting the endpoint format negotiated by each application.
+// Keep the virtual endpoint format fixed so the standard loopback pin and
+// diagnostics ABI expose one stable PCM representation.
 #define OMNI_SPEAKER_PCM48_STEREO_FORMAT \
     { \
         { \

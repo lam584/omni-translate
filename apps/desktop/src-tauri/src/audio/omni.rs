@@ -197,6 +197,20 @@ mod unit_tests {
     }
 
     #[test]
+    fn omni_speech_config_disables_native_playback_for_subtitle_tts_source() {
+        let speech = OmniSpeechConfig::from_config(&json!({
+            "speech": {
+                "enabled": true,
+                "localPlaybackEnabled": true,
+                "translationAudioSource": "subtitle-tts"
+            }
+        }));
+
+        assert!(!speech.any_output());
+        assert!(!speech.enabled);
+    }
+
+    #[test]
     fn base64_roundtrip_encode_decode() {
         let original: Vec<i16> = vec![0, 100, -100, i16::MAX, i16::MIN, 12345, -12345];
         let encoded = base64_encode_i16(&original);
@@ -346,8 +360,11 @@ impl OmniSpeechConfig {
             .pointer("/devices/outputSpeechEnabled")
             .and_then(Value::as_bool)
             .unwrap_or(false);
+        let native_audio_enabled =
+            super::speech::resolve_translation_audio_source(config_value, true)
+                == super::speech::TranslationAudioSource::OmniNative;
         Self {
-            enabled: speech_enabled || device_output_enabled,
+            enabled: native_audio_enabled && (speech_enabled || device_output_enabled),
             local_playback_enabled: super::speech::desktop_direct_playback_enabled_for_config(
                 config_value,
             ),

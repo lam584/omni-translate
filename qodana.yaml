@@ -22,12 +22,6 @@ profile:
 #  - name: <SomeDisabledInspectionId>
 #    paths:
 #      - <path/where/not/run/inspection>
-exclude:
-  - name: All
-    paths:
-      - apps/desktop/src-tauri/target
-      - apps/**/target
-      - scripts/diagnostics/**/target
 
 #Execute shell command before Qodana execution (Applied in CI/CD pipeline)
 #bootstrap: sh ./prepare-qodana.sh
@@ -39,7 +33,7 @@ exclude:
 # Quality gate. Will fail the CI/CD pipeline if any condition is not met
 # severityThresholds - configures maximum thresholds for different problem severities
 # testCoverageThresholds - configures minimum code coverage on a whole project and newly added code
-#  Coverage is available in Ultimate and Ultimate Plus plans
+# Code Coverage is available in Ultimate and Ultimate Plus plans
 #failureConditions:
 #  severityThresholds:
 #    any: 15

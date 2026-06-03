@@ -11,7 +11,7 @@ use windows_sys::Win32::Foundation::RECT;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Dwm::{
     DwmSetWindowAttribute, DWMNCRP_DISABLED, DWMWA_BORDER_COLOR, DWMWA_CAPTION_COLOR,
-    DWMWA_NCRENDERING_POLICY, DWMWA_SYSTEMBACKDROP_TYPE, DWMWA_TEXT_COLOR,
+    DWMWA_NCRENDERING_POLICY, DWMWA_SYSTEMBACKDROP_TYPE,
 };
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::Graphics::Gdi::{
@@ -201,7 +201,7 @@ fn suppress_subtitle_overlay_dwm_frame(hwnd: isize) {
             std::mem::size_of_val(&nc_rendering_policy) as u32,
         ) != 0
         {
-            log::error!(
+            log::debug!(
                 "DwmSetWindowAttribute NCRENDERING_POLICY failed hwnd={}",
                 hwnd
             );
@@ -213,7 +213,7 @@ fn suppress_subtitle_overlay_dwm_frame(hwnd: isize) {
             std::mem::size_of_val(&no_border) as u32,
         ) != 0
         {
-            log::error!("DwmSetWindowAttribute BORDER_COLOR failed hwnd={}", hwnd);
+            log::debug!("DwmSetWindowAttribute BORDER_COLOR failed hwnd={}", hwnd);
         }
         if DwmSetWindowAttribute(
             hwnd as _,
@@ -222,16 +222,7 @@ fn suppress_subtitle_overlay_dwm_frame(hwnd: isize) {
             std::mem::size_of_val(&no_border) as u32,
         ) != 0
         {
-            log::error!("DwmSetWindowAttribute CAPTION_COLOR failed hwnd={}", hwnd);
-        }
-        if DwmSetWindowAttribute(
-            hwnd as _,
-            DWMWA_TEXT_COLOR as u32,
-            &no_border as *const _ as _,
-            std::mem::size_of_val(&no_border) as u32,
-        ) != 0
-        {
-            log::error!("DwmSetWindowAttribute TEXT_COLOR failed hwnd={}", hwnd);
+            log::debug!("DwmSetWindowAttribute CAPTION_COLOR failed hwnd={}", hwnd);
         }
         if DwmSetWindowAttribute(
             hwnd as _,
@@ -240,7 +231,7 @@ fn suppress_subtitle_overlay_dwm_frame(hwnd: isize) {
             std::mem::size_of_val(&no_backdrop) as u32,
         ) != 0
         {
-            log::error!(
+            log::debug!(
                 "DwmSetWindowAttribute SYSTEMBACKDROP_TYPE failed hwnd={}",
                 hwnd
             );

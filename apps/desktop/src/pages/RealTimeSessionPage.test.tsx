@@ -1003,4 +1003,24 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('capture unavailable');
   });
+
+  it('shows degraded inbound capture and the bridge restart recommendation', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audioRuntimeSnapshot.inbound.streamBound = false;
+    audioRuntimeSnapshot.inbound.lastError = 'Bridge source pipe initialization timed out (10s).';
+    audioRuntimeSnapshot.inbound.recommendedAction = 'restart-bridge';
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain('系统音频采集异常');
+    expect(container.textContent).toContain('Bridge source pipe initialization timed out (10s).');
+    expect(container.textContent).toContain('建议重启 Bridge Service 后重试');
+  });
 });

@@ -15,10 +15,13 @@ import {
   toggleSubtitleOverlayWindow,
 } from '../runtime/audio-runtime';
 import { installDriverRuntime, repairDriverRuntime, startBridgeServiceRuntime } from '../runtime/bridge-runtime';
+import { appendFrontendDiagnosticsLog } from '../runtime/diagnostics-runtime';
 import { useAppStore } from '../stores/app-store';
 import type { SubtitleCueRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import type { SceneMode } from '../utils/scene-readiness';
+import type { RuntimeSnapshot } from '../schema/runtime-core';
+import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | null;
 
@@ -116,6 +119,292 @@ function resolveSceneSpeechPatch(mode: SceneMode, configDraft: AppConfigDraft, i
     virtualMicOutputEnabled: configDraft.speech?.virtualMicOutputEnabled ?? false,
     status: 'ready' as const,
   };
+}
+
+function logSceneLaunchConfig(
+  mode: SceneMode,
+  configDraft: AppConfigDraft,
+  runtimeSnapshot: RuntimeSnapshot,
+  audioRuntimeSnapshot: AudioRuntimeSnapshot,
+  extra?: { speechPatch?: Record<string, unknown>; isOmniModel?: boolean; secondarySubtitleTranslationEnabled?: boolean },
+) {
+  const label = resolveSceneLabel(mode);
+  const timestamp = new Date().toISOString();
+  const devices = configDraft.devices;
+  const subtitles = configDraft.subtitles;
+  const speech = configDraft.speech;
+  const driver = configDraft.driver;
+  const glossary = configDraft.glossary;
+  const diagnostics = configDraft.diagnostics;
+  const bridge = runtimeSnapshot.bridge;
+
+  const lines: string[] = [];
+
+  const formatValue = (v: unknown): string => {
+    if (v === null || v === undefined) return '(未设置)';
+    if (typeof v === 'object') {
+      try { return JSON.stringify(v); } catch { return String(v); }
+    }
+    return String(v);
+  };
+
+  const section = (title: string) => {
+    lines.push('');
+    lines.push(`== ${title} ==`);
+  };
+
+  const log = (key: string, value: unknown) => {
+    lines.push(`  ${key}: ${formatValue(value)}`);
+  };
+
+  // ---- 场景与模型判定 ----
+  section('场景信息');
+  log('场景模式 (mode)', mode);
+  log('场景标签', label);
+  log('是否为 Omni 模型', extra?.isOmniModel ?? false);
+  log('二级字幕翻译已启用', extra?.secondarySubtitleTranslationEnabled ?? false);
+  log('启动时间', timestamp);
+
+  // ---- Provider 配置 ----
+  section(`Provider 配置 (activeTemplateId: ${configDraft.activeProviderTemplateId}, 共 ${configDraft.providers.length} 个)`);
+  configDraft.providers.forEach((provider, index) => {
+    lines.push('');
+    lines.push(`  -- Provider[${index}]: ${provider.displayName || provider.providerId} --`);
+    log('templateId', provider.templateId);
+    log('templateVersion', provider.templateVersion);
+    log('providerId', provider.providerId);
+    log('kind', provider.kind);
+    log('mode', provider.mode);
+    log('model', provider.model);
+    log('baseUrl', provider.baseUrl);
+    log('transport', provider.transport);
+    log('region', provider.region ?? '(未设置)');
+    log('streamEnabled', provider.streamEnabled);
+    log('timeoutMs', provider.timeoutMs);
+    log('temperature', provider.temperature);
+    log('maxOutputTokens', provider.maxOutputTokens);
+    log('responseModalities', provider.responseModalities);
+    log('authRef.kind', provider.authRef.kind);
+    log('authRef.reference', provider.authRef.reference);
+    log('authRef.scheme', provider.authRef.scheme);
+    log('authRef.headerName', provider.authRef.headerName);
+    log('customHeaders', provider.customHeaders.length > 0 ? provider.customHeaders.map((h) => `${h.name}=${h.enabled ? 'enabled' : 'disabled'}`) : '(无)');
+    log('sceneModelAssignments', provider.sceneModelAssignments.map((a) => `${a.scenario}: [${a.modelIds.join(', ')}]`));
+    log('probe.verdict', provider.probe.verdict);
+    log('probe.profileId', provider.probe.profileId);
+    log('probe.checkedAt', provider.probe.checkedAt);
+    log('probe.streamSupported', provider.probe.streamSupported);
+    log('probe.errorShapeStable', provider.probe.errorShapeStable);
+    log('probe.responseShapeStable', provider.probe.responseShapeStable);
+    log('status', provider.status);
+  });
+
+  // ---- 设备与音频路由配置 ----
+  section('设备配置 (devices)');
+  log('routeMode', devices.routeMode);
+  log('inputDeviceId', devices.inputDeviceId || '(默认)');
+  log('outputDeviceId', devices.outputDeviceId || '(默认)');
+  log('virtualRenderDeviceId', devices.virtualRenderDeviceId || '(未设置)');
+  log('playbackDeviceId', devices.playbackDeviceId || '(默认)');
+  log('virtualMicState', devices.virtualMicState);
+  log('supportProfileId', devices.supportProfileId || '(未设置)');
+  log('inboundVoiceModelId', devices.inboundVoiceModelId || '(未设置)');
+  log('outboundVoiceModelId', devices.outboundVoiceModelId || '(未设置)');
+  log('textToSpeechModelId', devices.textToSpeechModelId || '(未设置)');
+  log('subtitleTranslationMode', devices.subtitleTranslationMode);
+  log('subtitleTranslationModelId', devices.subtitleTranslationModelId || '(未设置)');
+  log('inputLevel', devices.inputLevel);
+  log('aecEnabled', devices.aecEnabled);
+  log('ansEnabled', devices.ansEnabled);
+  log('agcEnabled', devices.agcEnabled);
+  log('outputLevel', devices.outputLevel);
+  log('outputSpeechEnabled', devices.outputSpeechEnabled);
+  log('outputSubtitlesEnabled', devices.outputSubtitlesEnabled);
+  log('virtualMicOutputEnabled', devices.virtualMicOutputEnabled);
+  log('feedbackLoopPrevention', devices.feedbackLoopPrevention);
+  log('status', devices.status);
+
+  section('Inbound Route');
+  log('routeId', devices.inboundRoute.routeId);
+  log('direction', devices.inboundRoute.direction);
+  log('input.sourceId', devices.inboundRoute.input.sourceId);
+  log('input.kind', devices.inboundRoute.input.kind);
+  log('input.deviceId', devices.inboundRoute.input.deviceId);
+  log('input.state', devices.inboundRoute.input.state);
+  log('input.muted', devices.inboundRoute.input.muted);
+  log('input.bufferAheadMs', devices.inboundRoute.input.bufferAheadMs);
+  log('input.preBufferState', devices.inboundRoute.input.preBufferState);
+  log('input.processing', devices.inboundRoute.input.processing);
+  log('outputs', devices.inboundRoute.outputs.map((o) => `${o.targetId}(${o.kind}, enabled=${o.enabled})`));
+  log('mixControl', devices.inboundRoute.mixControl);
+  log('latencyControl', devices.inboundRoute.latencyControl);
+
+  section('Outbound Route');
+  log('routeId', devices.outboundRoute.routeId);
+  log('direction', devices.outboundRoute.direction);
+  log('input.sourceId', devices.outboundRoute.input.sourceId);
+  log('input.kind', devices.outboundRoute.input.kind);
+  log('input.deviceId', devices.outboundRoute.input.deviceId);
+  log('input.state', devices.outboundRoute.input.state);
+  log('input.muted', devices.outboundRoute.input.muted);
+  log('input.bufferAheadMs', devices.outboundRoute.input.bufferAheadMs);
+  log('input.preBufferState', devices.outboundRoute.input.preBufferState);
+  log('input.processing', devices.outboundRoute.input.processing);
+  log('outputs', devices.outboundRoute.outputs.map((o) => `${o.targetId}(${o.kind}, enabled=${o.enabled})`));
+  log('mixControl', devices.outboundRoute.mixControl);
+  log('latencyControl', devices.outboundRoute.latencyControl);
+  log('pushToTalk', devices.outboundRoute.pushToTalk ?? '(未设置)');
+
+  // ---- 字幕配置 ----
+  section('字幕配置 (subtitles)');
+  log('sourceLanguage', subtitles.sourceLanguage);
+  log('targetLanguage', subtitles.targetLanguage);
+  log('translationLanguagePreference', subtitles.translationLanguagePreference);
+  log('mode', subtitles.mode);
+  log('captionDensity', subtitles.captionDensity);
+  log('priority', subtitles.priority);
+  log('instructions', subtitles.instructions || '(空)');
+  log('overlayOpacity', subtitles.overlayOpacity);
+  log('overlayLocked', subtitles.overlayLocked);
+  log('overlayTextColor', subtitles.overlayTextColor);
+  log('overlayTextOpacity', subtitles.overlayTextOpacity);
+  log('overlayBackgroundColor', subtitles.overlayBackgroundColor);
+  log('overlayBackgroundOpacity', subtitles.overlayBackgroundOpacity);
+  log('overlayFontFamily', subtitles.overlayFontFamily);
+  log('overlayFontSize', subtitles.overlayFontSize);
+  log('overlayWidth', subtitles.overlayWidth);
+  log('overlayHeight', subtitles.overlayHeight);
+  log('overlayX', subtitles.overlayX);
+  log('overlayY', subtitles.overlayY);
+  log('status', subtitles.status);
+
+  // ---- 语音/TTS 配置 ----
+  section('语音配置 (speech)');
+  if (speech) {
+    log('enabled', speech.enabled);
+    log('targetLanguage', speech.targetLanguage);
+    log('voicePresetId', speech.voicePresetId || '(未设置)');
+    log('textToSpeechModelId', speech.textToSpeechModelId || '(未设置)');
+    log('voice', speech.voice || '(未设置)');
+    log('outputTarget', speech.outputTarget);
+    log('localPlaybackEnabled', speech.localPlaybackEnabled);
+    log('virtualMicOutputEnabled', speech.virtualMicOutputEnabled);
+    log('translationAudioSource', speech.translationAudioSource);
+    log('dispatchState', speech.dispatchState);
+    log('status', speech.status);
+  } else {
+    lines.push('  (speech 配置未定义)');
+  }
+  if (extra?.speechPatch) {
+    log('本次 speechPatch', extra.speechPatch);
+  }
+
+  // ---- 驱动与 Bridge 状态 ----
+  section('驱动配置 (driver)');
+  log('protocolVersion', driver.protocolVersion);
+  log('installChannel', driver.installChannel);
+  log('installPhase', driver.installPhase);
+  log('targetDeviceId', driver.targetDeviceId || '(未设置)');
+  log('expectedDriverVersion', driver.expectedDriverVersion || '(未设置)');
+  log('expectedBridgeVersion', driver.expectedBridgeVersion || '(未设置)');
+  log('bridgeState', driver.bridgeState);
+  log('driverHealth', driver.driverHealth);
+  log('rollbackSupported', driver.rollbackSupported);
+  log('lastErrorCode', driver.lastErrorCode ?? '(无)');
+  log('recommendedAction', driver.recommendedAction ?? '(无)');
+  log('status', driver.status);
+
+  section('Bridge 运行时状态');
+  log('processStatus', bridge.processStatus);
+  log('bridgeState', bridge.bridgeState);
+  log('lifecycleState', bridge.lifecycleState);
+  log('driverHealth', bridge.driverHealth);
+  log('driverVersion', bridge.driverVersion ?? '(未知)');
+  log('bridgeVersion', bridge.bridgeVersion);
+  log('installChannel', bridge.installChannel);
+  log('installPhase', bridge.installPhase);
+  log('captureBackend', bridge.captureBackend);
+  log('captureLifecycleState', bridge.captureLifecycleState);
+  log('targetDeviceId', bridge.targetDeviceId);
+  log('virtualRenderDeviceId', bridge.virtualRenderDeviceId);
+  log('physicalPlaybackDeviceId', bridge.physicalPlaybackDeviceId);
+  log('resolvedPhysicalPlaybackDeviceId', bridge.resolvedPhysicalPlaybackDeviceId);
+  log('mixControl', bridge.mixControl);
+  log('monitorPlaybackEnabled', bridge.monitorPlaybackEnabled);
+  log('pipeName', bridge.pipeName);
+  log('sessionId', bridge.sessionId ?? '(无)');
+  log('lastHandshakeAt', bridge.lastHandshakeAt ?? '(无)');
+  log('lastErrorCode', bridge.lastErrorCode ?? '(无)');
+  log('recommendedAction', bridge.recommendedAction ?? '(无)');
+  log('rollbackSupported', bridge.rollbackSupported);
+  log('testSigningEnabled', bridge.testSigningEnabled);
+  log('signatureEnforcementBypassed', bridge.signatureEnforcementBypassed);
+  log('memoryIntegrityEnabled', bridge.memoryIntegrityEnabled);
+  log('secureBootEnabled', bridge.secureBootEnabled);
+  log('ioctlAvailable', bridge.ioctlAvailable);
+  log('endpointName', bridge.endpointName ?? '(无)');
+  log('abiVersion', bridge.abiVersion ?? '(无)');
+
+  // ---- 术语表配置 ----
+  section('术语表配置 (glossary)');
+  log('templateId', glossary.templateId || '(未设置)');
+  log('scenario', glossary.scenario);
+  log('injectionStrategy', glossary.injectionStrategy);
+  log('injectionOrder', glossary.injectionOrder);
+  log('processingMode', glossary.processingMode);
+  log('calibrationModelId', glossary.calibrationModelId || '(未设置)');
+  log('importStrategy', glossary.importStrategy);
+  log('libraries 数量', glossary.libraries.length);
+  log('activePackageIds', glossary.activePackageIds);
+  log('communityPackageIds', glossary.communityPackageIds);
+  log('status', glossary.status);
+
+  // ---- 诊断配置 ----
+  section('诊断配置 (diagnostics)');
+  log('installStatus', diagnostics.installStatus);
+  log('driverStatus', diagnostics.driverStatus);
+  log('providerStatus', diagnostics.providerStatus);
+  log('deviceStatus', diagnostics.deviceStatus);
+  log('lastExportScope', diagnostics.lastExportScope);
+  log('supportTier', diagnostics.supportTier);
+  log('status', diagnostics.status);
+
+  // ---- 当前音频运行时 ----
+  section('音频运行时快照');
+  log('status', audioRuntimeSnapshot.status);
+  log('host', audioRuntimeSnapshot.host);
+  log('sttConnected', audioRuntimeSnapshot.sttConnected);
+  log('sttBufferSize', audioRuntimeSnapshot.sttBufferSize);
+  log('sessionStartedAt', audioRuntimeSnapshot.sessionStartedAt ?? '(未开始)');
+  log('renderDevices', audioRuntimeSnapshot.renderDevices.map((d) => `${d.label} (${d.deviceId}, default=${d.isDefault}, state=${d.state})`));
+  log('captureDevices', audioRuntimeSnapshot.captureDevices.map((d) => `${d.label} (${d.deviceId}, default=${d.isDefault}, state=${d.state})`));
+  log('inbound.streamBound', audioRuntimeSnapshot.inbound.streamBound);
+  log('inbound.captureState', audioRuntimeSnapshot.inbound.captureState);
+  log('inbound.requestedDeviceId', audioRuntimeSnapshot.inbound.requestedDeviceId);
+  log('inbound.effectiveDeviceId', audioRuntimeSnapshot.inbound.effectiveDeviceId);
+  log('outbound.streamBound', audioRuntimeSnapshot.outbound.streamBound);
+  log('outbound.captureState', audioRuntimeSnapshot.outbound.captureState);
+  log('outbound.requestedDeviceId', audioRuntimeSnapshot.outbound.requestedDeviceId);
+  log('outbound.effectiveDeviceId', audioRuntimeSnapshot.outbound.effectiveDeviceId);
+  log('speech.dispatchState', audioRuntimeSnapshot.speech.dispatchState);
+  log('speech.outputTarget', audioRuntimeSnapshot.speech.outputTarget);
+  log('subtitleOverlay.queueDepth', audioRuntimeSnapshot.subtitleOverlay.queueDepth);
+
+  // ---- 完整配置 JSON 备份 ----
+  section('完整配置 (JSON)');
+  try {
+    lines.push(JSON.stringify(configDraft, null, 2));
+  } catch {
+    lines.push('(序列化失败)');
+  }
+
+  const detail = lines.join('\n');
+  appendFrontendDiagnosticsLog(
+    'runtime',
+    'info',
+    `[SceneLaunch] ${label} 启动配置 @ ${timestamp}`,
+    detail,
+  );
 }
 
 function CueStatusBadge({ cue }: { cue: SubtitleCueRuntime }) {
@@ -255,6 +544,23 @@ function RealTimeSessionPage() {
   };
 
   const startWatchFallback = async (fallback: 'subtitles-only' | 'aec') => {
+    const fallbackDetail = [
+      `fallback 类型: ${fallback}`,
+      `当前 bridge 状态: ${runtimeSnapshot.bridge.bridgeState} | driverHealth: ${runtimeSnapshot.bridge.driverHealth}`,
+      '',
+      '== 当前 configDraft ==',
+      (() => { try { return JSON.stringify(configDraft, null, 2); } catch { return '(序列化失败)'; } })(),
+      '',
+      '== 当前 audioRuntimeSnapshot ==',
+      (() => { try { return JSON.stringify(audioRuntimeSnapshot, null, 2); } catch { return '(序列化失败)'; } })(),
+    ].join('\n');
+    appendFrontendDiagnosticsLog(
+      'runtime',
+      'warning',
+      `[WatchFallback] 降级策略: ${fallback} @ ${new Date().toISOString()}`,
+      fallbackDetail,
+    );
+
     const subtitlesOnly = fallback === 'subtitles-only';
     const devicesPatch = {
       feedbackLoopPrevention: subtitlesOnly ? ('none' as const) : ('echo-cancel' as const),
@@ -301,6 +607,13 @@ function RealTimeSessionPage() {
     const secondarySubtitleTranslationEnabled =
       configDraft.devices.subtitleTranslationMode === 'secondary' &&
       Boolean(configDraft.devices.subtitleTranslationModelId);
+
+    // 启动前打印完整配置信息，便于排查问题
+    logSceneLaunchConfig(mode, configDraft, runtimeSnapshot, audioRuntimeSnapshot, {
+      speechPatch,
+      isOmniModel,
+      secondarySubtitleTranslationEnabled,
+    });
 
     const nextConfig = {
       ...configDraft,
@@ -492,6 +805,12 @@ function RealTimeSessionPage() {
                 </>
               )}
             </div>
+          )}
+          {audioRuntimeSnapshot.inbound.lastError && (
+            <p className="cue-queue-error" role="alert">
+              系统音频采集异常：{audioRuntimeSnapshot.inbound.lastError}
+              {audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && ' 建议重启 Bridge Service 后重试。'}
+            </p>
           )}
           <div className="control-toolbar">
             <button className={`icon-button ${isSessionRunning ? 'icon-button-danger' : ''}`} disabled={busyAction !== null || !canStopAll} onClick={() => void handleStopAll()} type="button">

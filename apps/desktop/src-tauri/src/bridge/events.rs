@@ -145,6 +145,42 @@ fn record_driver_operation_error(state: &BridgeStateStore, error: &str) {
     });
 }
 
+fn driver_signature_preflight_error(
+    probe: &super::contracts::DriverProbeResult,
+    repair: bool,
+) -> Option<String> {
+    if probe.signature_enforcement_bypassed && probe.memory_integrity_enabled {
+        return Some(
+            "driver.memory-integrity-enabled: 使用临时禁用驱动程序签名强制时，请先关闭 Windows 安全中心 > 设备安全性 > 内核隔离 > 内存完整性，重启后再次选择临时禁用签名强制。"
+                .to_string(),
+        );
+    }
+
+    if !probe.test_signing_enabled && !probe.signature_enforcement_bypassed {
+        return Some(if probe.secure_boot_enabled == Some(true) {
+            "driver.secure-boot-enabled: Secure Boot 已开启。请先在 BIOS/UEFI 中关闭 Secure Boot，再以管理员 PowerShell 运行 .\\scripts\\installer\\enable-test-signing.ps1 并重启 Windows。".to_string()
+        } else if repair {
+            "driver.testsigning-disabled: 请启用 TESTSIGNING 并重启 Windows 后再重新安装驱动。"
+                .to_string()
+        } else {
+            "driver.testsigning-disabled: 请以管理员 PowerShell 运行 .\\scripts\\installer\\enable-test-signing.ps1，启用 TESTSIGNING 后重启 Windows，再次点击安装。".to_string()
+        });
+    }
+
+    None
+}
+
+fn fail_driver_preflight(
+    app: &AppHandle,
+    runtime_state: &RuntimeStateStore,
+    bridge_state: &BridgeStateStore,
+    error: String,
+) -> Result<RuntimeSnapshot, String> {
+    record_driver_operation_error(bridge_state, &error);
+    let _ = emit_runtime_snapshot(app, runtime_state);
+    Err(error)
+}
+
 fn build_started_process(snapshot: &BridgeRuntimeSnapshot) -> Result<std::process::Child, String> {
     let cli_path = bridge_cli_path();
     if !cli_path.exists() {
@@ -274,13 +310,19 @@ fn emit_bridge_notification(
     runtime_state: &RuntimeStateStore,
     id: &str,
     message: &str,
-) -> Result<(), String> {
-    emit_runtime_notification(
+) {
+    if let Err(error) = emit_runtime_notification(
         app,
         runtime_state,
         RuntimeNotification::info(id, "bridge-runtime", message, now_marker()),
-    )
-    .map_err(|error| error.to_string())
+    ) {
+        log_bridge_event(
+            app,
+            "warning",
+            "Bridge runtime notification emit failed.",
+            Some(format!("id={id} error={error}")),
+        );
+    }
 }
 
 fn log_bridge_event(
@@ -420,7 +462,7 @@ pub fn start_bridge_service(
         &runtime_state,
         "bridge-started",
         "Bridge Service 已启动并完成 Driver Bridge Contract 握手。",
-    )?;
+    );
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
@@ -487,12 +529,8 @@ pub fn install_driver_runtime(
 
     let probe = probe_driver(&snapshot, false)?;
     bridge_state.update_snapshot(|current| apply_driver_probe(current, probe.clone()));
-    if !probe.test_signing_enabled {
-        return Err(if probe.secure_boot_enabled == Some(true) {
-            "driver.secure-boot-enabled: Secure Boot 已开启。请先在 BIOS/UEFI 中关闭 Secure Boot，再以管理员 PowerShell 运行 .\\scripts\\installer\\enable-test-signing.ps1 并重启 Windows。".to_string()
-        } else {
-            "driver.testsigning-disabled: 请以管理员 PowerShell 运行 .\\scripts\\installer\\enable-test-signing.ps1，启用 TESTSIGNING 后重启 Windows，再次点击安装。".to_string()
-        });
+    if let Some(error) = driver_signature_preflight_error(&probe, false) {
+        return fail_driver_preflight(&app, &runtime_state, &bridge_state, error);
     }
     bridge_state
         .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
@@ -529,7 +567,7 @@ pub fn install_driver_runtime(
         &runtime_state,
         "driver-installed",
         "开发通道驱动资产、Bridge Service 和握手校验已完成。",
-    )?;
+    );
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
@@ -583,7 +621,7 @@ pub fn uninstall_driver_runtime(
         &runtime_state,
         "driver-uninstalled",
         "开发通道驱动资产与 Bridge Service 已卸载。",
-    )?;
+    );
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
@@ -615,11 +653,8 @@ pub fn repair_driver_runtime(
     cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
     let probe = probe_driver(&snapshot, false)?;
     bridge_state.update_snapshot(|current| apply_driver_probe(current, probe.clone()));
-    if !probe.test_signing_enabled {
-        return Err(
-            "driver.testsigning-disabled: 请启用 TESTSIGNING 并重启 Windows 后再重新安装驱动。"
-                .to_string(),
-        );
+    if let Some(error) = driver_signature_preflight_error(&probe, true) {
+        return fail_driver_preflight(&app, &runtime_state, &bridge_state, error);
     }
     bridge_state
         .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
@@ -656,6 +691,6 @@ pub fn repair_driver_runtime(
         &runtime_state,
         "driver-repaired",
         "驱动修复链路已执行，并重新完成 Bridge 握手。",
-    )?;
+    );
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }

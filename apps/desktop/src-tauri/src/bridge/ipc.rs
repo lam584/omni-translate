@@ -2,7 +2,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::thread;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
@@ -318,6 +318,29 @@ fn write_command_with_retry(
     Err("Bridge Service named pipe 未在预期时间内就绪。".to_string())
 }
 
+fn write_command_once_quiet(
+    pipe_path: &str,
+    command: &DriverBridgeCommand,
+) -> Result<DriverBridgeEvent, String> {
+    let mut pipe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(pipe_path)
+        .map_err(|error| error.to_string())?;
+    let payload = serde_json::to_string(command).map_err(|error| error.to_string())?;
+    pipe.write_all(payload.as_bytes())
+        .map_err(|error| error.to_string())?;
+    pipe.write_all(b"\n").map_err(|error| error.to_string())?;
+    pipe.flush().map_err(|error| error.to_string())?;
+
+    let mut reader = BufReader::new(pipe);
+    let mut response = String::new();
+    reader
+        .read_line(&mut response)
+        .map_err(|error| error.to_string())?;
+    serde_json::from_str(response.trim()).map_err(|error| error.to_string())
+}
+
 pub fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -349,7 +372,7 @@ pub fn initialize_bridge(
         &snapshot.pipe_path,
         &DriverBridgeCommand::Init(BridgeInitRequest {
             request_id: format!("bridge-init-{}", now_unix_ms()),
-            protocol_version: "2026-06-02".to_string(),
+            protocol_version: "2026-06-02-loopback-v2".to_string(),
             session_id: session_id.clone(),
             install_channel: snapshot.install_channel.clone(),
             target_device_id: snapshot.target_device_id.clone(),
@@ -407,6 +430,19 @@ pub fn apply_query(snapshot: &mut BridgeRuntimeSnapshot, query: BridgeStateRespo
     snapshot.driver_health = query.driver_health;
     snapshot.driver_version = query.driver_version;
     snapshot.bridge_version = query.bridge_version;
+    snapshot.capture_backend = query.capture_backend;
+    snapshot.capture_lifecycle_state = query.capture_lifecycle_state;
+    snapshot.capture_restart_count = query.capture_restart_count;
+    snapshot.capture_packet_count = query.capture_packet_count;
+    snapshot.capture_frames_received = query.capture_frames_received;
+    snapshot.capture_peak = query.capture_peak;
+    snapshot.capture_rms = query.capture_rms;
+    snapshot.capture_silent_packet_count = query.capture_silent_packet_count;
+    snapshot.capture_invalid_sample_count = query.capture_invalid_sample_count;
+    snapshot.resolved_physical_playback_device_id = query.resolved_physical_playback_device_id;
+    snapshot.monitor_buffered_ms = query.monitor_buffered_ms;
+    snapshot.monitor_underrun_count = query.monitor_underrun_count;
+    snapshot.monitor_overrun_count = query.monitor_overrun_count;
     snapshot.queued_frames = query.queued_frames;
     snapshot.last_frame_timestamp_ms = query.last_frame_timestamp_ms;
     snapshot.source_frames_captured = query.source_frames_captured;
@@ -416,11 +452,20 @@ pub fn apply_query(snapshot: &mut BridgeRuntimeSnapshot, query: BridgeStateRespo
     snapshot.dropped_frame_count = query.dropped_frame_count;
     snapshot.driver_buffered_bytes = query.driver_buffered_bytes;
     snapshot.driver_max_buffered_bytes = query.driver_max_buffered_bytes;
+    snapshot.driver_captured_bytes = query.driver_captured_bytes;
+    snapshot.driver_delivered_bytes = query.driver_delivered_bytes;
     snapshot.driver_dropped_bytes = query.driver_dropped_bytes;
     snapshot.source_pending_bytes = query.source_pending_bytes;
     snapshot.source_pacer_queued_frames = query.source_pacer_queued_frames;
     snapshot.monitor_source_queued_frames = query.monitor_source_queued_frames;
     snapshot.stale_source_frames_dropped = query.stale_source_frames_dropped;
+    snapshot.source_subscriber_active = query.source_subscriber_active;
+    snapshot.source_generation = query.source_generation;
+    snapshot.source_worker_phase = query.source_worker_phase;
+    snapshot.source_worker_last_progress_timestamp_ms =
+        query.source_worker_last_progress_timestamp_ms;
+    snapshot.source_read_calls = query.source_read_calls;
+    snapshot.source_zero_byte_reads = query.source_zero_byte_reads;
     snapshot.monitor_playback_state = query.monitor_playback_state;
     snapshot.last_error_code = query.last_error_code;
     snapshot.process_status = if snapshot.bridge_state == "running" {
@@ -506,15 +551,46 @@ pub fn write_virtual_mic_frame(
     sample_rate_hz: u32,
     channel_count: u16,
 ) -> Result<u64, String> {
-    write_bridge_audio_frame(
-        app,
-        "bridge.translation.frame",
-        cue_id,
-        request_id,
-        samples,
-        sample_rate_hz,
-        channel_count,
-    )
+    let chunks = virtual_mic_pacing_chunks(samples, sample_rate_hz, channel_count)?;
+    let bridge_state = app.state::<BridgeStateStore>();
+    let expected_session_id = bridge_state.snapshot().session_id;
+    let started_at = Instant::now();
+    let mut accepted_frames = 0;
+    for (index, chunk) in chunks.iter().enumerate() {
+        if bridge_state.snapshot().session_id != expected_session_id {
+            return Err("Bridge session changed while virtual mic audio was paced; remaining stale audio was discarded.".to_string());
+        }
+        if index > 0 {
+            let deadline = started_at + Duration::from_millis(index as u64 * 20);
+            if let Some(delay) = deadline.checked_duration_since(Instant::now()) {
+                thread::sleep(delay);
+            }
+        }
+        accepted_frames += write_bridge_audio_frame(
+            app,
+            "bridge.translation.frame",
+            cue_id,
+            &format!("{request_id}-chunk-{index}"),
+            chunk,
+            sample_rate_hz,
+            channel_count,
+        )?;
+    }
+    Ok(accepted_frames)
+}
+
+fn virtual_mic_pacing_chunks(
+    samples: &[i16],
+    sample_rate_hz: u32,
+    channel_count: u16,
+) -> Result<Vec<&[i16]>, String> {
+    if sample_rate_hz == 0 || channel_count == 0 {
+        return Err(
+            "Virtual mic pacing requires a non-zero sample rate and channel count.".to_string(),
+        );
+    }
+    let samples_per_chunk = (sample_rate_hz as usize / 50).max(1) * channel_count as usize;
+    Ok(samples.chunks(samples_per_chunk).collect())
 }
 
 fn accepted_translation_frames(ack: &BridgeTranslationFrameAck) -> Result<u64, String> {
@@ -633,23 +709,16 @@ fn write_bridge_audio_frame(
 }
 
 pub fn stop_bridge_process(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
-    let _ = write_command_with_retry(
-        &snapshot.pipe_path,
-        &build_shutdown_command(snapshot),
-        1,
-        Duration::ZERO,
-    );
+    let _ = write_command_once_quiet(&snapshot.pipe_path, &build_shutdown_command(snapshot));
     Ok(())
 }
 
 pub fn flush_bridge_source(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
-    let _ = write_command_with_retry(
+    let _ = write_command_once_quiet(
         &snapshot.pipe_path,
         &DriverBridgeCommand::SourceFlush(BridgeSourceFlushRequest {
             request_id: format!("bridge-source-flush-{}", now_unix_ms()),
         }),
-        1,
-        Duration::ZERO,
     );
     Ok(())
 }
@@ -707,7 +776,7 @@ mod tests {
         };
 
         let state = DriverInstallStateFile {
-            protocol_version: "2026-06-02".to_string(),
+            protocol_version: "2026-06-02-loopback-v2".to_string(),
             install_channel: "release".to_string(),
             driver_version: "1.2.3".to_string(),
             bridge_version: "0.2.0".to_string(),
@@ -744,12 +813,25 @@ mod tests {
             &mut snapshot,
             BridgeStateResponse {
                 request_id: "bridge-state-1".to_string(),
-                protocol_version: "2026-06-02".to_string(),
+                protocol_version: "2026-06-02-loopback-v2".to_string(),
                 bridge_state: "running".to_string(),
                 lifecycle_state: "ready".to_string(),
                 driver_health: "running".to_string(),
                 driver_version: Some("1.2.3".to_string()),
                 bridge_version: "0.2.0".to_string(),
+                capture_backend: "wasapi-endpoint-loopback".to_string(),
+                capture_lifecycle_state: "wasapi-loopback-running".to_string(),
+                capture_restart_count: 1,
+                capture_packet_count: 2,
+                capture_frames_received: 1920,
+                capture_peak: 0.25,
+                capture_rms: 0.125,
+                capture_silent_packet_count: 3,
+                capture_invalid_sample_count: 4,
+                resolved_physical_playback_device_id: "real-speaker-1".to_string(),
+                monitor_buffered_ms: 80,
+                monitor_underrun_count: 0,
+                monitor_overrun_count: 0,
                 queued_frames: 4,
                 source_frames_captured: 10,
                 translated_frames_accepted: 8,
@@ -758,11 +840,19 @@ mod tests {
                 dropped_frame_count: 2,
                 driver_buffered_bytes: 3,
                 driver_max_buffered_bytes: 19_200,
+                driver_captured_bytes: 7,
+                driver_delivered_bytes: 6,
                 driver_dropped_bytes: 4,
                 source_pending_bytes: 5,
                 source_pacer_queued_frames: 1,
                 monitor_source_queued_frames: 2,
                 stale_source_frames_dropped: 6,
+                source_subscriber_active: true,
+                source_generation: 2,
+                source_worker_phase: "driver-read-returned".to_string(),
+                source_worker_last_progress_timestamp_ms: Some(122),
+                source_read_calls: 9,
+                source_zero_byte_reads: 1,
                 monitor_playback_state: "playing".to_string(),
                 last_frame_timestamp_ms: Some(123),
                 last_error_code: None,
@@ -772,6 +862,20 @@ mod tests {
         assert_eq!(snapshot.process_status, "running");
         assert_eq!(snapshot.install_phase, "ready");
         assert_eq!(snapshot.status, "ready");
+        assert_eq!(snapshot.driver_captured_bytes, 7);
+        assert_eq!(snapshot.driver_delivered_bytes, 6);
+        assert_eq!(snapshot.capture_peak, 0.25);
+        assert_eq!(snapshot.capture_rms, 0.125);
+        assert_eq!(snapshot.capture_silent_packet_count, 3);
+        assert_eq!(snapshot.capture_invalid_sample_count, 4);
+        assert_eq!(
+            snapshot.resolved_physical_playback_device_id,
+            "real-speaker-1"
+        );
+        assert!(snapshot.source_subscriber_active);
+        assert_eq!(snapshot.source_generation, 2);
+        assert_eq!(snapshot.source_read_calls, 9);
+        assert_eq!(snapshot.source_zero_byte_reads, 1);
         assert_eq!(
             snapshot.recommended_action.as_deref(),
             Some("open-diagnostics")
@@ -890,6 +994,19 @@ mod tests {
     }
 
     #[test]
+    fn quiet_cleanup_probe_does_not_retry_a_missing_pipe() {
+        let started_at = std::time::Instant::now();
+        let result = write_command_once_quiet(
+            r"\\.\pipe\omni-bridge-missing-cleanup-test-pipe",
+            &DriverBridgeCommand::StateQuery(BridgeStateQuery {
+                request_id: "quiet-cleanup".to_string(),
+            }),
+        );
+        assert!(result.is_err());
+        assert!(started_at.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
     fn translation_ack_surfaces_framed_nack_details() {
         let error = accepted_translation_frames(&BridgeTranslationFrameAck {
             event_type: "bridge.translation.nack".to_string(),
@@ -919,5 +1036,31 @@ mod tests {
             .expect("ack should succeed"),
             32
         );
+    }
+
+    #[test]
+    fn virtual_mic_pacing_uses_twenty_millisecond_mono_chunks() {
+        let samples = vec![0; 961];
+        let chunks = virtual_mic_pacing_chunks(&samples, 24_000, 1).unwrap();
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.len()).collect::<Vec<_>>(),
+            vec![480, 480, 1]
+        );
+    }
+
+    #[test]
+    fn virtual_mic_pacing_preserves_stereo_frame_boundaries() {
+        let samples = vec![0; 1_922];
+        let chunks = virtual_mic_pacing_chunks(&samples, 24_000, 2).unwrap();
+        assert_eq!(
+            chunks.iter().map(|chunk| chunk.len()).collect::<Vec<_>>(),
+            vec![960, 960, 2]
+        );
+    }
+
+    #[test]
+    fn virtual_mic_pacing_rejects_invalid_audio_format() {
+        assert!(virtual_mic_pacing_chunks(&[0], 0, 1).is_err());
+        assert!(virtual_mic_pacing_chunks(&[0], 24_000, 0).is_err());
     }
 }

@@ -345,7 +345,7 @@ Return Value:
         return ntStatus;
     }
 
-    if (m_bCapture)
+    if (m_bCapture && !m_pMiniport->IsVirtualSpeakerDevice())
     {
         ReadRegistrySettings();
             DWORD toneFrequency = 0;
@@ -592,6 +592,12 @@ NTSTATUS CMiniportWaveRTStream::AllocateBufferWithNotification
     //  A WaveRT miniport driver should not require software access to the audio buffer itself."
     //   
     m_pDmaBuffer = (BYTE*)m_pPortStream->MapAllocatedPages(pBufferMdl, MmCached);
+    if (m_pDmaBuffer == NULL)
+    {
+        m_pPortStream->FreePagesFromMdl(pBufferMdl);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(m_pDmaBuffer, RequestedSize_);
     m_ulNotificationsPerBuffer = NotificationCount_;
     m_ulDmaBufferSize = RequestedSize_;
     ulBufferDurationMs = (RequestedSize_ * 1000) / m_ulDmaMovementRate;
@@ -828,6 +834,12 @@ _Out_   MEMORY_CACHING_TYPE    *CacheType_
     //  A WaveRT miniport driver should not require software access to the audio buffer itself."
     //   
     m_pDmaBuffer = (BYTE*)m_pPortStream->MapAllocatedPages(pBufferMdl, MmCached);
+    if (m_pDmaBuffer == NULL)
+    {
+        m_pPortStream->FreePagesFromMdl(pBufferMdl);
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+    RtlZeroMemory(m_pDmaBuffer, RequestedSize_);
 
     m_ulDmaBufferSize = RequestedSize_;
     m_ulNotificationsPerBuffer = 0;
@@ -1212,6 +1224,15 @@ NTSTATUS CMiniportWaveRTStream::SetState
 
             KeReleaseSpinLock(&m_PositionSpinLock, oldIrql);
 
+            if (!m_bCapture && m_pMiniport->IsSystemRenderPin(m_ulPin))
+            {
+                OmniBridgeResetLoopbackPcm();
+            }
+            else if (m_bCapture && (m_pMiniport->IsLoopbackPin(m_ulPin) || m_pMiniport->IsVirtualSpeakerDevice()))
+            {
+                OmniBridgeResetLoopbackPcm();
+            }
+
             // Wait until all work items are completed.
             if (!m_bCapture && !g_DoNotCreateDataFiles)
             {
@@ -1312,6 +1333,11 @@ NTSTATUS CMiniportWaveRTStream::SetState
 
         case KSSTATE_RUN:
 
+            if (m_KsState != KSSTATE_RUN && m_bCapture && (m_pMiniport->IsLoopbackPin(m_ulPin) || m_pMiniport->IsVirtualSpeakerDevice()))
+            {
+                OmniBridgeResetLoopbackPcm();
+            }
+
 #if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND)
             if (m_pMiniport->IsSidebandDevice())
             {
@@ -1349,7 +1375,7 @@ NTSTATUS CMiniportWaveRTStream::SetState
             {
                 // Set timer for 1 ms. This will cause DPC to run every 1 ms but driver will send out 
                 // notification events only after notification interval. Render streams also need
-                // this timer when the client did not register notifications so the Omni bridge ring
+                // this timer when the client did not register notifications so the loopback FIFO
                 // receives continuous PCM instead of position-query-sized bursts. This timer is used by Sysvad to
                 // emulate hardware and send out notification event. Real hardware should not use this
                 // timer to fire notification event as it will drain power if the timer is running at 1 msec.
@@ -1472,8 +1498,10 @@ VOID CMiniportWaveRTStream::UpdatePosition
                                         0);
         }
 
-        // Feed the Omni bridge before physical playback mixing. Optional file
-        // capture remains a diagnostics-only behavior inside ReadBytes.
+        // Consume the emulated DMA buffer for SysVAD diagnostics only. Omni
+        // captures the endpoint mix through WASAPI loopback in Bridge Service;
+        // copying individual render streams here breaks on EOS and cannot
+        // represent the endpoint's final multi-stream mix.
         ReadBytes(ByteDisplacement);
     }
     
@@ -1503,7 +1531,7 @@ VOID CMiniportWaveRTStream::WriteBytes
 
 Routine Description:
 
-This function writes the audio buffer using a sine wave generator
+This function writes captured audio into the DMA buffer.
 Arguments:
 
 ByteDisplacement - # of bytes to process.
@@ -1517,7 +1545,14 @@ ByteDisplacement - # of bytes to process.
     while (ByteDisplacement > 0)
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
+        if (m_pMiniport->IsLoopbackPin(m_ulPin) || m_pMiniport->IsVirtualSpeakerDevice())
+        {
+            OmniBridgeReadLoopbackPcm(m_pDmaBuffer + bufferOffset, runWrite);
+        }
+        else
+        {
             m_ToneGenerator.GenerateSine(m_pDmaBuffer + bufferOffset, runWrite);
+        }
         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
         ByteDisplacement -= runWrite;
     }
@@ -1533,8 +1568,8 @@ VOID CMiniportWaveRTStream::ReadBytes
 
 Routine Description:
 
-This function reads rendered audio into the Omni bridge ring buffer and
-optionally saves the data in a diagnostics file.
+This function forwards the final system render stream to the standard
+loopback pin and optionally saves rendered data in a diagnostics file.
 
 Arguments:
 
@@ -1549,10 +1584,17 @@ ByteDisplacement - # of bytes to process.
     while (ByteDisplacement > 0)
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
-        OmniBridgeWriteRenderPcm(m_pDmaBuffer + bufferOffset, runWrite);
+        if (m_pMiniport->IsSystemRenderPin(m_ulPin))
+        {
+            OmniBridgeWriteRenderPcm(m_pDmaBuffer + bufferOffset, runWrite);
+        }
         if (!g_DoNotCreateDataFiles)
         {
             m_SaveData.WriteData(m_pDmaBuffer + bufferOffset, runWrite);
+        }
+        if (m_pMiniport->IsSystemRenderPin(m_ulPin))
+        {
+            RtlZeroMemory(m_pDmaBuffer + bufferOffset, runWrite);
         }
         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
         ByteDisplacement -= runWrite;

@@ -213,7 +213,7 @@ test('bridge service accepts driver install state files with utf-8 bom', async (
 test('bridge service exposes stable bootstrap defaults', () => {
   assert.equal(describeBridgeBootstrap(), bridgeServiceScaffold.startupSequence);
   assert.equal(resolvePipePath(), '\\\\.\\pipe\\omni-bridge-ipc');
-  assert.match(resolveBridgePaths().runtimeRoot, /OmniTranslate[\\/]bridge-runtime$/);
+  assert.match(resolveBridgePaths().runtimeRoot, /artifacts[\\/]diagnostics[\\/]logs$/);
 });
 
 test('bridge service reports unavailable and incompatible driver states', async () => {

@@ -1,6 +1,5 @@
 import { createServer, type Server, type Socket } from 'node:net';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 
 import type {
@@ -84,7 +83,7 @@ export function resolvePipePath(pipeName = bridgeServiceScaffold.defaultPipeName
 }
 
 export function resolveBridgePaths(options: BridgeServiceOptions = {}): BridgePaths {
-  const runtimeRoot = options.runtimeRoot ?? path.join(os.homedir(), 'AppData', 'Local', 'OmniTranslate', 'bridge-runtime');
+  const runtimeRoot = options.runtimeRoot ?? path.resolve(import.meta.dirname, '..', '..', '..', '..', 'artifacts', 'diagnostics', 'logs');
 
   return {
     runtimeRoot,

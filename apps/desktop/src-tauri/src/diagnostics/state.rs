@@ -315,15 +315,15 @@ impl DiagnosticsStateStore {
     }
 }
 
-pub fn format_log_timestamp() -> String {
+pub(crate) fn format_log_timestamp() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
 }
 
-fn app_log_path(logs_dir: &str) -> String {
+pub(crate) fn app_log_path(logs_dir: &str) -> String {
     format!(r"{}\app.log", logs_dir)
 }
 
-fn level_marker(level: &str) -> &'static str {
+pub(crate) fn level_marker(level: &str) -> &'static str {
     match level {
         "error" => "ERROR",
         "warning" => "WARNING",
@@ -366,7 +366,7 @@ fn write_app_log_line(logs_dir: &str, entry: &DiagnosticLogEntryRuntime) -> Resu
     Ok(())
 }
 
-fn rotate_app_log_if_needed(app_log_path: &str) {
+pub(crate) fn rotate_app_log_if_needed(app_log_path: &str) {
     let path = Path::new(app_log_path);
     let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     if file_size < APP_LOG_MAX_BYTES {
@@ -386,7 +386,7 @@ fn rotate_app_log_if_needed(app_log_path: &str) {
     }
 }
 
-fn default_diagnostics_root() -> String {
+pub(crate) fn default_diagnostics_root() -> String {
     if cfg!(debug_assertions) {
         if let Some(root_dir) = workspace_diagnostics_root() {
             return root_dir;
@@ -447,6 +447,12 @@ fn copy_directory_files(source_dir: &Path, target_dir: &Path) -> Result<usize, S
         let source_path = entry.path();
 
         if !source_path.is_file() {
+            continue;
+        }
+
+        // Skip legacy per-category JSONL logs — all categories are now
+        // consolidated into the single app.log file.
+        if source_path.extension().and_then(|ext| ext.to_str()) == Some("jsonl") {
             continue;
         }
 

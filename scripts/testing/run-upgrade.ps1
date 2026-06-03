@@ -3,7 +3,7 @@ param(
 )
 $ErrorActionPreference = "Continue"
 $workspaceRoot = (Resolve-Path ".").Path
-$outDir = "artifacts\testing\upgrade\$Label"
+$outDir = "artifacts\logs\testing\upgrade\$Label"
 New-Item -ItemType Directory -Force -Path $outDir | Out-Null
 $results = New-Object System.Collections.Generic.List[object]
 

@@ -1,6 +1,6 @@
 param(
   [string]$WorkspaceRoot = '.',
-  [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'OmniTranslate\bridge-runtime'),
+  [string]$RuntimeRoot = (Join-Path $WorkspaceRoot 'artifacts\diagnostics\logs'),
   [string]$PipeName = 'omni-bridge-ipc'
 )
 

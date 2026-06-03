@@ -31,6 +31,7 @@ fn write_diagnostics_bundle(
     storage_snapshot: &StorageRuntimeSnapshot,
     config_value: &Value,
     logs_dir: &str,
+    bridge_runtime_root: &str,
 ) -> Result<usize, String> {
     let diagnostics_json =
         serde_json::to_string_pretty(diagnostics_snapshot).map_err(|error| error.to_string())?;
@@ -66,7 +67,18 @@ fn write_diagnostics_bundle(
     fs::write(export_dir.join("config-draft.json"), config_json)
         .map_err(|error| error.to_string())?;
     fs::write(export_dir.join("environment.json"), env_json).map_err(|error| error.to_string())?;
-    let copied_logs = copy_logs_into(&export_dir.join("logs").to_string_lossy(), logs_dir)?;
+    let export_logs_dir = export_dir.join("logs");
+    let mut copied_logs = copy_logs_into(&export_logs_dir.to_string_lossy(), logs_dir)?;
+    let bridge_service_log = Path::new(bridge_runtime_root).join("bridge-service.log");
+    if bridge_service_log.exists() {
+        fs::create_dir_all(&export_logs_dir).map_err(|error| error.to_string())?;
+        fs::copy(
+            &bridge_service_log,
+            export_logs_dir.join("bridge-service.log"),
+        )
+        .map_err(|error| error.to_string())?;
+        copied_logs += 1;
+    }
     Ok(copied_logs + 6)
 }
 
@@ -430,6 +442,7 @@ pub fn export_diagnostics_bundle(
         &storage_snapshot,
         &config_value,
         &diagnostics.logs_dir(),
+        &bridge_snapshot.runtime_root,
     )?;
 
     diagnostics.mark_export(scope.clone(), export_dir.clone(), now_marker());
@@ -497,6 +510,7 @@ mod tests {
             &StorageRuntimeSnapshot::preview(),
             &json!({"provider": {"transport": "http"}}),
             &logs_dir.to_string_lossy(),
+            &root_dir.join("bridge-runtime").to_string_lossy(),
         )
         .expect("write diagnostics bundle");
 
@@ -509,6 +523,38 @@ mod tests {
         assert!(export_dir.join("environment.json").exists());
         assert!(export_dir.join("logs").join("app.log").exists());
 
+        let _ = fs::remove_dir_all(root_dir);
+    }
+
+    #[test]
+    fn write_diagnostics_bundle_copies_optional_bridge_service_log() {
+        let root_dir = temp_dir("bridge-log");
+        let logs_dir = root_dir.join("logs");
+        let bridge_runtime_root = root_dir.join("bridge-runtime");
+        let export_dir = root_dir.join("bundle");
+        fs::create_dir_all(&logs_dir).expect("create logs dir");
+        fs::create_dir_all(&bridge_runtime_root).expect("create bridge runtime dir");
+        fs::create_dir_all(&export_dir).expect("create export dir");
+        fs::write(logs_dir.join("app.log"), "app\n").expect("write app log");
+        fs::write(bridge_runtime_root.join("bridge-service.log"), "bridge\n")
+            .expect("write bridge log");
+
+        let file_count = write_diagnostics_bundle(
+            &export_dir,
+            "2025-01-01T00:00:00Z",
+            "full",
+            &DiagnosticsRuntimeSnapshot::preview(),
+            &AudioRuntimeSnapshot::preview(),
+            &BridgeRuntimeSnapshot::default(),
+            &StorageRuntimeSnapshot::preview(),
+            &json!({}),
+            &logs_dir.to_string_lossy(),
+            &bridge_runtime_root.to_string_lossy(),
+        )
+        .expect("write diagnostics bundle");
+
+        assert_eq!(file_count, 8);
+        assert!(export_dir.join("logs").join("bridge-service.log").exists());
         let _ = fs::remove_dir_all(root_dir);
     }
 }

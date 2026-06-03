@@ -32,6 +32,8 @@ pub fn apply_driver_probe(snapshot: &mut BridgeRuntimeSnapshot, probe: DriverPro
     snapshot.driver_version = probe.installed_driver_version;
     snapshot.last_error_code = probe.error_code;
     snapshot.test_signing_enabled = probe.test_signing_enabled;
+    snapshot.signature_enforcement_bypassed = probe.signature_enforcement_bypassed;
+    snapshot.memory_integrity_enabled = probe.memory_integrity_enabled;
     snapshot.secure_boot_enabled = probe.secure_boot_enabled;
     snapshot.secure_boot_probe_status = probe.secure_boot_probe_status;
     snapshot.root_device_count = probe.root_device_count;
@@ -159,7 +161,7 @@ pub fn run_elevated_driver_operation(
 mod tests {
     use super::parse_driver_probe_output;
 
-    const PROBE_JSON: &str = r#"{"schemaVersion":1,"driverHealth":"running","errorCode":null,"testSigningEnabled":true,"secureBootEnabled":null,"secureBootProbeStatus":"unavailable","rootDeviceCount":1,"rootInstanceIds":["ROOT\\MEDIA\\0000"],"endpointName":"扬声器 (Omni Translate Virtual Speaker)","abiVersion":"0X20260601","ioctlAvailable":true,"installedDriverVersion":"0.9.0-dev","detail":null}"#;
+    const PROBE_JSON: &str = r#"{"schemaVersion":1,"driverHealth":"running","errorCode":null,"testSigningEnabled":true,"signatureEnforcementBypassed":false,"memoryIntegrityEnabled":false,"secureBootEnabled":null,"secureBootProbeStatus":"unavailable","rootDeviceCount":1,"rootInstanceIds":["ROOT\\MEDIA\\0000"],"endpointName":"扬声器 (Omni Translate Virtual Speaker)","abiVersion":"0X20260602","ioctlAvailable":true,"installedDriverVersion":"0.10.0-dev","detail":null}"#;
 
     #[test]
     fn parses_utf8_driver_probe_with_localized_endpoint_name() {
@@ -170,7 +172,7 @@ mod tests {
             probe.endpoint_name.as_deref(),
             Some("扬声器 (Omni Translate Virtual Speaker)")
         );
-        assert_eq!(probe.abi_version.as_deref(), Some("0X20260601"));
+        assert_eq!(probe.abi_version.as_deref(), Some("0X20260602"));
     }
 
     #[test]

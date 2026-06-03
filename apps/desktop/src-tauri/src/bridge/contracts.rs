@@ -19,6 +19,19 @@ pub struct BridgeRuntimeSnapshot {
     pub driver_health: String,
     pub driver_version: Option<String>,
     pub bridge_version: String,
+    pub capture_backend: String,
+    pub capture_lifecycle_state: String,
+    pub capture_restart_count: u64,
+    pub capture_packet_count: u64,
+    pub capture_frames_received: u64,
+    pub capture_peak: f32,
+    pub capture_rms: f32,
+    pub capture_silent_packet_count: u64,
+    pub capture_invalid_sample_count: u64,
+    pub resolved_physical_playback_device_id: String,
+    pub monitor_buffered_ms: usize,
+    pub monitor_underrun_count: u64,
+    pub monitor_overrun_count: u64,
     pub queued_frames: usize,
     pub source_frames_captured: u64,
     pub translated_frames_accepted: u64,
@@ -27,11 +40,19 @@ pub struct BridgeRuntimeSnapshot {
     pub dropped_frame_count: u64,
     pub driver_buffered_bytes: u64,
     pub driver_max_buffered_bytes: u64,
+    pub driver_captured_bytes: u64,
+    pub driver_delivered_bytes: u64,
     pub driver_dropped_bytes: u64,
     pub source_pending_bytes: usize,
     pub source_pacer_queued_frames: usize,
     pub monitor_source_queued_frames: usize,
     pub stale_source_frames_dropped: u64,
+    pub source_subscriber_active: bool,
+    pub source_generation: u64,
+    pub source_worker_phase: String,
+    pub source_worker_last_progress_timestamp_ms: Option<u64>,
+    pub source_read_calls: u64,
+    pub source_zero_byte_reads: u64,
     pub monitor_playback_state: String,
     pub last_frame_timestamp_ms: Option<u64>,
     pub last_error_code: Option<String>,
@@ -47,6 +68,8 @@ pub struct BridgeRuntimeSnapshot {
     pub status: String,
     pub driver_probe_state: String,
     pub test_signing_enabled: bool,
+    pub signature_enforcement_bypassed: bool,
+    pub memory_integrity_enabled: bool,
     pub secure_boot_enabled: Option<bool>,
     pub secure_boot_probe_status: String,
     pub root_device_count: usize,
@@ -73,13 +96,26 @@ impl Default for BridgeRuntimeSnapshot {
             physical_playback_level: 100,
             mix_control: BridgeMixControl::default(),
             monitor_playback_enabled: true,
-            expected_driver_version: "0.9.0-dev".to_string(),
+            expected_driver_version: "0.10.0-dev".to_string(),
             expected_bridge_version: "0.1.0".to_string(),
             bridge_state: "stopped".to_string(),
             lifecycle_state: "idle".to_string(),
             driver_health: "not-installed".to_string(),
             driver_version: None,
             bridge_version: "0.1.0".to_string(),
+            capture_backend: "wasapi-endpoint-loopback".to_string(),
+            capture_lifecycle_state: "idle".to_string(),
+            capture_restart_count: 0,
+            capture_packet_count: 0,
+            capture_frames_received: 0,
+            capture_peak: 0.0,
+            capture_rms: 0.0,
+            capture_silent_packet_count: 0,
+            capture_invalid_sample_count: 0,
+            resolved_physical_playback_device_id: String::new(),
+            monitor_buffered_ms: 0,
+            monitor_underrun_count: 0,
+            monitor_overrun_count: 0,
             queued_frames: 0,
             source_frames_captured: 0,
             translated_frames_accepted: 0,
@@ -88,11 +124,19 @@ impl Default for BridgeRuntimeSnapshot {
             dropped_frame_count: 0,
             driver_buffered_bytes: 0,
             driver_max_buffered_bytes: 0,
+            driver_captured_bytes: 0,
+            driver_delivered_bytes: 0,
             driver_dropped_bytes: 0,
             source_pending_bytes: 0,
             source_pacer_queued_frames: 0,
             monitor_source_queued_frames: 0,
             stale_source_frames_dropped: 0,
+            source_subscriber_active: false,
+            source_generation: 0,
+            source_worker_phase: "idle".to_string(),
+            source_worker_last_progress_timestamp_ms: None,
+            source_read_calls: 0,
+            source_zero_byte_reads: 0,
             monitor_playback_state: "idle".to_string(),
             last_frame_timestamp_ms: None,
             last_error_code: Some("driver.not-installed".to_string()),
@@ -108,6 +152,8 @@ impl Default for BridgeRuntimeSnapshot {
             status: "warning".to_string(),
             driver_probe_state: "idle".to_string(),
             test_signing_enabled: false,
+            signature_enforcement_bypassed: false,
+            memory_integrity_enabled: false,
             secure_boot_enabled: None,
             secure_boot_probe_status: "idle".to_string(),
             root_device_count: 0,
@@ -128,6 +174,8 @@ pub struct DriverProbeResult {
     pub driver_health: String,
     pub error_code: Option<String>,
     pub test_signing_enabled: bool,
+    pub signature_enforcement_bypassed: bool,
+    pub memory_integrity_enabled: bool,
     pub secure_boot_enabled: Option<bool>,
     pub secure_boot_probe_status: String,
     pub root_device_count: usize,
@@ -248,6 +296,32 @@ pub struct BridgeStateResponse {
     pub driver_health: String,
     pub driver_version: Option<String>,
     pub bridge_version: String,
+    #[serde(default)]
+    pub capture_backend: String,
+    #[serde(default)]
+    pub capture_lifecycle_state: String,
+    #[serde(default)]
+    pub capture_restart_count: u64,
+    #[serde(default)]
+    pub capture_packet_count: u64,
+    #[serde(default)]
+    pub capture_frames_received: u64,
+    #[serde(default)]
+    pub capture_peak: f32,
+    #[serde(default)]
+    pub capture_rms: f32,
+    #[serde(default)]
+    pub capture_silent_packet_count: u64,
+    #[serde(default)]
+    pub capture_invalid_sample_count: u64,
+    #[serde(default)]
+    pub resolved_physical_playback_device_id: String,
+    #[serde(default)]
+    pub monitor_buffered_ms: usize,
+    #[serde(default)]
+    pub monitor_underrun_count: u64,
+    #[serde(default)]
+    pub monitor_overrun_count: u64,
     pub queued_frames: usize,
     #[serde(default)]
     pub source_frames_captured: u64,
@@ -264,6 +338,10 @@ pub struct BridgeStateResponse {
     #[serde(default)]
     pub driver_max_buffered_bytes: u64,
     #[serde(default)]
+    pub driver_captured_bytes: u64,
+    #[serde(default)]
+    pub driver_delivered_bytes: u64,
+    #[serde(default)]
     pub driver_dropped_bytes: u64,
     #[serde(default)]
     pub source_pending_bytes: usize,
@@ -273,6 +351,18 @@ pub struct BridgeStateResponse {
     pub monitor_source_queued_frames: usize,
     #[serde(default)]
     pub stale_source_frames_dropped: u64,
+    #[serde(default)]
+    pub source_subscriber_active: bool,
+    #[serde(default)]
+    pub source_generation: u64,
+    #[serde(default)]
+    pub source_worker_phase: String,
+    #[serde(default)]
+    pub source_worker_last_progress_timestamp_ms: Option<u64>,
+    #[serde(default)]
+    pub source_read_calls: u64,
+    #[serde(default)]
+    pub source_zero_byte_reads: u64,
     #[serde(default)]
     pub monitor_playback_state: String,
     pub last_frame_timestamp_ms: Option<u64>,
@@ -388,9 +478,12 @@ pub struct DriverBridgeErrorEvent {
 }
 
 pub fn default_runtime_root() -> String {
-    let base = std::env::var("LOCALAPPDATA")
-        .unwrap_or_else(|_| std::env::temp_dir().to_string_lossy().to_string());
-    format!(r"{}\OmniTranslate\bridge-runtime", base)
+    super::ipc::workspace_root()
+        .join("artifacts")
+        .join("diagnostics")
+        .join("logs")
+        .to_string_lossy()
+        .to_string()
 }
 
 pub fn reconcile_bridge_snapshot(snapshot: &mut BridgeRuntimeSnapshot) {

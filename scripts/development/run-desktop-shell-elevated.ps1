@@ -28,6 +28,11 @@ if (-not (Test-IsAdministrator)) {
 $workspaceRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot '..\..')).Path
 Push-Location $workspaceRoot
 try {
+  & 'npm.cmd' run build:bridge-service-native
+  if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
+  }
+
   & 'npm.cmd' run dev:tauri --workspace '@omni/desktop'
   exit $LASTEXITCODE
 } finally {

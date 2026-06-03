@@ -1,6 +1,6 @@
 param(
   [string]$WorkspaceRoot = (Join-Path $PSScriptRoot '..\..'),
-  [string]$RuntimeRoot = (Join-Path $env:LOCALAPPDATA 'OmniTranslate\bridge-runtime'),
+  [string]$RuntimeRoot = (Join-Path $WorkspaceRoot 'artifacts\diagnostics\logs'),
   [switch]$ProbeSecureBootElevated
 )
 
@@ -17,6 +17,17 @@ function Get-TestSigningEnabled {
   }
   $output = & (Join-Path $env:SystemRoot 'System32\bcdedit.exe') /enum 2>$null
   return [bool]($output -match '(?im)^\s*testsigning\s+(Yes|On|\u662F|\u5F00\u542F)\s*$')
+}
+
+function Get-SignatureEnforcementBypassed {
+  $startOptions = (Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control' -Name SystemStartOptions -ErrorAction SilentlyContinue).SystemStartOptions
+  return [bool]($startOptions -match '(?i)(^|\s)DISABLE_INTEGRITY_CHECKS(\s|$)')
+}
+
+function Get-MemoryIntegrityEnabled {
+  $scenario = Get-ItemProperty -Path 'HKLM:\SYSTEM\CurrentControlSet\Control\DeviceGuard\Scenarios\HypervisorEnforcedCodeIntegrity' -ErrorAction SilentlyContinue
+  $deviceGuard = Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' -ClassName Win32_DeviceGuard -ErrorAction SilentlyContinue
+  return [bool]($scenario.Enabled -eq 1 -or @($deviceGuard.SecurityServicesRunning) -contains 2)
 }
 
 function Get-SecureBootEnabled {
@@ -78,6 +89,8 @@ $rootDevices = @(Get-OmniVirtualSpeakerRootDevices)
 $endpoint = Get-OmniVirtualSpeakerEndpoint
 $metadata = Get-DriverPackageMetadata $workspacePath
 $testSigningEnabled = Get-TestSigningEnabled
+$signatureEnforcementBypassed = Get-SignatureEnforcementBypassed
+$memoryIntegrityEnabled = Get-MemoryIntegrityEnabled
 $secureBootProbe = Get-SecureBootProbeResult
 $secureBootEnabled = $secureBootProbe.Enabled
 $abiVersion = $null
@@ -102,16 +115,10 @@ if ($rootDevices.Count -gt 1) {
 } elseif ($rootDevices.Count -eq 1) {
   if ($rootDevices[0].Status -ne 'OK') {
     $driverHealth = 'damaged'
-    $errorCode = 'driver.operation-failed'
+    $errorCode = if ($rootDevices[0].Problem -eq 'CM_PROB_UNSIGNED_DRIVER' -and $memoryIntegrityEnabled) { 'driver.memory-integrity-enabled' } elseif ($rootDevices[0].Problem -eq 'CM_PROB_FAILED_START') { 'driver.reboot-required' } else { 'driver.operation-failed' }
   } elseif (-not $endpoint) {
     $driverHealth = 'damaged'
     $errorCode = 'driver.endpoint-missing'
-  } elseif (-not $ioctlAvailable) {
-    $driverHealth = 'damaged'
-    $errorCode = 'driver.ioctl-unavailable'
-  } elseif ($abiVersion -ne '0X20260601') {
-    $driverHealth = 'version-mismatch'
-    $errorCode = 'driver.abi-mismatch'
   } elseif ($runtimeState -and $runtimeState.driverBackend -ne 'sysvad-wave-rt') {
     $driverHealth = 'damaged'
     $errorCode = 'driver.operation-failed'
@@ -120,8 +127,12 @@ if ($rootDevices.Count -gt 1) {
   }
 }
 
-if ($driverHealth -eq 'not-installed' -and -not $testSigningEnabled) {
-  $errorCode = if ($secureBootEnabled -eq $true) { 'driver.secure-boot-enabled' } else { 'driver.testsigning-disabled' }
+if ($driverHealth -eq 'not-installed') {
+  if ($signatureEnforcementBypassed -and $memoryIntegrityEnabled) {
+    $errorCode = 'driver.memory-integrity-enabled'
+  } elseif (-not $testSigningEnabled -and -not $signatureEnforcementBypassed) {
+    $errorCode = if ($secureBootEnabled -eq $true) { 'driver.secure-boot-enabled' } else { 'driver.testsigning-disabled' }
+  }
 }
 
 [ordered]@{
@@ -129,6 +140,8 @@ if ($driverHealth -eq 'not-installed' -and -not $testSigningEnabled) {
   driverHealth = $driverHealth
   errorCode = $errorCode
   testSigningEnabled = $testSigningEnabled
+  signatureEnforcementBypassed = $signatureEnforcementBypassed
+  memoryIntegrityEnabled = $memoryIntegrityEnabled
   secureBootEnabled = $secureBootEnabled
   secureBootProbeStatus = $secureBootProbe.Status
   rootDeviceCount = $rootDevices.Count

@@ -1,5 +1,5 @@
 param(
-  [string]$OutputRoot = 'artifacts/testing/coverage'
+  [string]$OutputRoot = 'artifacts/logs/testing/coverage'
 )
 
 $ErrorActionPreference = 'Stop'

@@ -210,7 +210,7 @@ async fn debug_cred_direct(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn main() {
-    simple_logger::init_with_level(log::Level::Warn).expect("simple_logger should initialize");
+    diagnostics::file_logger::init(log::Level::Warn);
 
     tauri::Builder::default()
         .manage(AudioStateStore::new())

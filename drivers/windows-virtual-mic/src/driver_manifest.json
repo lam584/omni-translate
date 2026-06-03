@@ -4,5 +4,5 @@
   "endpointDirection": "render",
   "base": "SYSVAD-derived development scaffold",
   "mode": "silent-render-sink",
-  "version": "0.9.0-dev"
+  "version": "0.10.0-dev"
 }

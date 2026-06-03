@@ -3,6 +3,7 @@ dist/
 target/
 coverage/
 artifacts/
+artifacts/logs/
 
 .trae/
 .VSCodeCounter/

@@ -9,9 +9,7 @@ use std::sync::Mutex;
 use serde_json::Value;
 use tauri::{AppHandle, Manager};
 
-use self::contracts::{
-    ConfigExportArtifact, ConfigSnapshotRecord, StorageRuntimeSnapshot,
-};
+use self::contracts::{ConfigExportArtifact, ConfigSnapshotRecord, StorageRuntimeSnapshot};
 use self::repository::{ConfigRepository, RepositoryStats};
 
 struct StoragePaths {

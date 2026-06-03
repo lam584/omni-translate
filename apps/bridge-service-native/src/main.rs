@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 #[cfg(not(windows))]
 fn main() {
     eprintln!("omni-bridge-service is only supported on Windows");
@@ -28,6 +30,9 @@ mod windows_main {
     };
     use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, MixerDeviceSink, Player};
     use serde_json::{json, Value};
+    use wasapi::{
+        initialize_mta, Device, DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat,
+    };
     use windows_sys::Win32::Foundation::{
         CloseHandle, GetLastError, ERROR_ALREADY_EXISTS, ERROR_PIPE_CONNECTED, HANDLE,
         INVALID_HANDLE_VALUE,
@@ -46,8 +51,12 @@ mod windows_main {
     const OMNI_SOURCE_CHUNK_BYTES: usize = 960 * INTERNAL_CHANNEL_COUNT as usize * 2;
     const OMNI_SOURCE_FRAME_INTERVAL_MS: u64 = 20;
     const OMNI_SOURCE_QUEUE_CAPACITY: usize = 5;
-    const OMNI_SOURCE_STALE_AFTER_MS: u64 = 100;
+    const OMNI_MONITOR_SOURCE_QUEUE_CAPACITY: usize = 25;
+    const OMNI_SOURCE_STALE_AFTER_MS: u64 = 500;
     const OMNI_SOURCE_SUMMARY_INTERVAL_SECS: u64 = 5;
+    const OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS: u64 = 5;
+    const OMNI_SOURCE_RESTART_BACKOFF_MS: [u64; 4] = [250, 500, 1_000, 2_000];
+    const MONITOR_VIRTUAL_PLAYBACK_LOOP: &str = "monitor.virtual-playback-loop";
     const FILE_DEVICE_OMNI_TRANSLATE: u32 = 0x8337;
     const METHOD_BUFFERED: u32 = 0;
     const FILE_READ_DATA: u32 = 0x0001;
@@ -85,7 +94,9 @@ mod windows_main {
         driver_health: String,
         driver_version: Option<String>,
         bridge_version: String,
+        virtual_render_device_id: String,
         physical_playback_device_id: String,
+        resolved_physical_playback_device_id: String,
         physical_playback_level: u64,
         monitor_playback_enabled: bool,
         monitor_playback_state: String,
@@ -98,6 +109,8 @@ mod windows_main {
         dropped_frame_count: u64,
         driver_buffered_bytes: u64,
         driver_max_buffered_bytes: u64,
+        driver_captured_bytes: u64,
+        driver_delivered_bytes: u64,
         driver_dropped_bytes: u64,
         source_pending_bytes: usize,
         source_pacer_queued_frames: usize,
@@ -105,6 +118,21 @@ mod windows_main {
         stale_source_frames_dropped: u64,
         source_subscriber_active: bool,
         source_generation: u64,
+        source_worker_phase: String,
+        source_worker_last_progress_timestamp_ms: Option<u64>,
+        source_read_calls: u64,
+        source_zero_byte_reads: u64,
+        source_bytes_read: u64,
+        source_released_frames: u64,
+        capture_restart_count: u64,
+        capture_packet_count: u64,
+        capture_frames_received: u64,
+        capture_peak: f32,
+        capture_rms: f32,
+        capture_silent_packet_count: u64,
+        capture_invalid_sample_count: u64,
+        monitor_underrun_count: u64,
+        monitor_overrun_count: u64,
         last_frame_timestamp_ms: Option<u64>,
         last_error_code: Option<String>,
     }
@@ -117,6 +145,7 @@ mod windows_main {
                 driver_health: "not-installed".to_string(),
                 bridge_version,
                 monitor_playback_state: "idle".to_string(),
+                source_worker_phase: "starting".to_string(),
                 mix_control: MixControl::default(),
                 ..Self::default()
             }
@@ -141,6 +170,7 @@ mod windows_main {
 
     struct PlaybackOutput {
         device_id: String,
+        resolved_device_id: String,
         _sink: MixerDeviceSink,
         source_player: Player,
         translation_player: Player,
@@ -183,20 +213,23 @@ mod windows_main {
         let source_pipe = format!(r"\\.\pipe\{pipe_name}-source");
         let state = Arc::new(Mutex::new(BridgeState::new(bridge_version)));
         let (playback_tx, playback_rx) = mpsc::sync_channel::<PlaybackCommand>(128);
-        let (source_tx, source_rx) = mpsc::sync_channel::<Vec<u8>>(4);
+        let (source_tx, source_rx) = mpsc::sync_channel::<Vec<u8>>(32);
         let playback_state = state.clone();
         thread::spawn(move || run_playback_worker(playback_rx, playback_state));
         let driver_source_state = state.clone();
         let driver_source_playback_tx = playback_tx.clone();
         let driver_source_runtime_root = runtime_root_path.clone();
         thread::spawn(move || {
-            run_driver_source_worker(
+            run_wasapi_source_worker(
                 driver_source_state,
                 driver_source_runtime_root,
                 driver_source_playback_tx,
                 source_tx,
             )
         });
+        let watchdog_state = state.clone();
+        let watchdog_runtime_root = runtime_root_path.clone();
+        thread::spawn(move || run_source_watchdog(watchdog_state, watchdog_runtime_root));
         let audio_state = state.clone();
         let audio_playback_tx = playback_tx.clone();
         let audio_runtime_root = runtime_root_path.clone();
@@ -215,9 +248,16 @@ mod windows_main {
         let source_rx = Arc::new(Mutex::new(source_rx));
         let source_pipe_clone = source_pipe.clone();
         let source_playback_tx = playback_tx.clone();
+        let source_runtime_root = runtime_root_path.clone();
         thread::spawn(move || {
             serve_named_pipe(&source_pipe_clone, move |handle| {
-                handle_source_subscriber(handle, &source_state, &source_rx, &source_playback_tx)
+                handle_source_subscriber(
+                    handle,
+                    &source_state,
+                    &source_rx,
+                    &source_playback_tx,
+                    &source_runtime_root,
+                )
             });
         });
         println!(
@@ -412,6 +452,10 @@ mod windows_main {
                     .as_ref()
                     .map(|value| value.driver_version.clone());
                 current.session_id = command["sessionId"].as_str().map(str::to_string);
+                current.virtual_render_device_id = command["virtualRenderDeviceId"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_string();
                 current.physical_playback_device_id = command["physicalPlaybackDeviceId"]
                     .as_str()
                     .unwrap_or_default()
@@ -493,6 +537,19 @@ mod windows_main {
             "driverHealth": state.driver_health,
             "driverVersion": state.driver_version,
             "bridgeVersion": state.bridge_version,
+            "captureBackend": "wasapi-endpoint-loopback",
+            "captureLifecycleState": state.source_worker_phase,
+            "captureRestartCount": state.capture_restart_count,
+            "capturePacketCount": state.capture_packet_count,
+            "captureFramesReceived": state.capture_frames_received,
+            "capturePeak": state.capture_peak,
+            "captureRms": state.capture_rms,
+            "captureSilentPacketCount": state.capture_silent_packet_count,
+            "captureInvalidSampleCount": state.capture_invalid_sample_count,
+            "resolvedPhysicalPlaybackDeviceId": state.resolved_physical_playback_device_id,
+            "monitorBufferedMs": state.monitor_source_queued_frames * OMNI_SOURCE_FRAME_INTERVAL_MS as usize,
+            "monitorUnderrunCount": state.monitor_underrun_count,
+            "monitorOverrunCount": state.monitor_overrun_count,
             "queuedFrames": state.queued_frames,
             "sourceFramesCaptured": state.source_frames_captured,
             "translatedFramesAccepted": state.translated_frames_accepted,
@@ -501,11 +558,19 @@ mod windows_main {
             "droppedFrameCount": state.dropped_frame_count,
             "driverBufferedBytes": state.driver_buffered_bytes,
             "driverMaxBufferedBytes": state.driver_max_buffered_bytes,
+            "driverCapturedBytes": state.driver_captured_bytes,
+            "driverDeliveredBytes": state.driver_delivered_bytes,
             "driverDroppedBytes": state.driver_dropped_bytes,
             "sourcePendingBytes": state.source_pending_bytes,
             "sourcePacerQueuedFrames": state.source_pacer_queued_frames,
             "monitorSourceQueuedFrames": state.monitor_source_queued_frames,
             "staleSourceFramesDropped": state.stale_source_frames_dropped,
+            "sourceSubscriberActive": state.source_subscriber_active,
+            "sourceGeneration": state.source_generation,
+            "sourceWorkerPhase": state.source_worker_phase,
+            "sourceWorkerLastProgressTimestampMs": state.source_worker_last_progress_timestamp_ms,
+            "sourceReadCalls": state.source_read_calls,
+            "sourceZeroByteReads": state.source_zero_byte_reads,
             "monitorPlaybackState": state.monitor_playback_state,
             "lastFrameTimestampMs": state.last_frame_timestamp_ms,
             "lastErrorCode": state.last_error_code,
@@ -592,13 +657,277 @@ mod windows_main {
         let _ = write_framed_json(handle, &ack);
     }
 
+    fn run_wasapi_source_worker(
+        state: Arc<Mutex<BridgeState>>,
+        runtime_root: PathBuf,
+        playback_tx: mpsc::SyncSender<PlaybackCommand>,
+        source_tx: mpsc::SyncSender<Vec<u8>>,
+    ) {
+        let _ = initialize_mta();
+        let mut restart_index = 0_usize;
+        loop {
+            let (active, generation, device_id) = {
+                let current = state.lock().unwrap();
+                (
+                    current.source_subscriber_active,
+                    current.source_generation,
+                    current.virtual_render_device_id.clone(),
+                )
+            };
+            if !active || device_id.is_empty() {
+                state.lock().unwrap().source_worker_phase = "waiting-subscriber".to_string();
+                thread::sleep(Duration::from_millis(25));
+                continue;
+            }
+
+            {
+                let mut current = state.lock().unwrap();
+                current.source_worker_phase = "opening-wasapi-loopback".to_string();
+                current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+            }
+            match capture_wasapi_source_generation(
+                &state,
+                &runtime_root,
+                &playback_tx,
+                &source_tx,
+                generation,
+                &device_id,
+            ) {
+                Ok(()) => restart_index = 0,
+                Err(error) => {
+                    let delay_ms = OMNI_SOURCE_RESTART_BACKOFF_MS
+                        [restart_index.min(OMNI_SOURCE_RESTART_BACKOFF_MS.len() - 1)];
+                    restart_index =
+                        (restart_index + 1).min(OMNI_SOURCE_RESTART_BACKOFF_MS.len() - 1);
+                    {
+                        let mut current = state.lock().unwrap();
+                        current.capture_restart_count += 1;
+                        current.source_worker_phase = "wasapi-loopback-restarting".to_string();
+                        current.last_error_code =
+                            Some(format!("capture.wasapi-loopback-failed:{error}"));
+                    }
+                    append_bridge_service_log(
+                        &runtime_root,
+                        &format!(
+                            "event=wasapi_loopback_restart generation={generation} delayMs={delay_ms} error={error}"
+                        ),
+                    );
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+            }
+        }
+    }
+
+    fn capture_wasapi_source_generation(
+        state: &Arc<Mutex<BridgeState>>,
+        runtime_root: &Path,
+        playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+        source_tx: &mpsc::SyncSender<Vec<u8>>,
+        generation: u64,
+        requested_device_id: &str,
+    ) -> Result<(), String> {
+        let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
+        let device = find_render_device(&enumerator, requested_device_id)?;
+        let effective_device_id = device.get_id().map_err(|error| error.to_string())?;
+        let mut audio_client = device
+            .get_iaudioclient()
+            .map_err(|error| error.to_string())?;
+        let desired_format = WaveFormat::new(
+            32,
+            32,
+            &SampleType::Float,
+            INTERNAL_SAMPLE_RATE_HZ as usize,
+            INTERNAL_CHANNEL_COUNT as usize,
+            None,
+        );
+        let (_, min_time) = audio_client
+            .get_device_period()
+            .map_err(|error| error.to_string())?;
+        audio_client
+            .initialize_client(
+                &desired_format,
+                &Direction::Capture,
+                &StreamMode::EventsShared {
+                    autoconvert: true,
+                    buffer_duration_hns: min_time,
+                },
+            )
+            .map_err(|error| error.to_string())?;
+        let event_handle = audio_client
+            .set_get_eventhandle()
+            .map_err(|error| error.to_string())?;
+        let capture_client = audio_client
+            .get_audiocaptureclient()
+            .map_err(|error| error.to_string())?;
+        audio_client
+            .start_stream()
+            .map_err(|error| error.to_string())?;
+
+        append_bridge_service_log(
+            runtime_root,
+            &format!(
+                "event=wasapi_loopback_started generation={generation} device={effective_device_id}"
+            ),
+        );
+        {
+            let mut current = state.lock().unwrap();
+            current.source_worker_phase = "wasapi-loopback-running".to_string();
+            current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+            current.last_error_code = None;
+        }
+
+        let mut sample_bytes = VecDeque::new();
+        let bytes_per_frame = desired_format.get_blockalign() as usize;
+        let float_chunk_bytes = 960 * INTERNAL_CHANNEL_COUNT as usize * std::mem::size_of::<f32>();
+        let mut diagnostics_started_at = Instant::now();
+        let mut diagnostics_peak = 0.0_f32;
+        let mut diagnostics_square_sum = 0.0_f64;
+        let mut diagnostics_sample_count = 0_u64;
+        let mut diagnostics_silent_packets = 0_u64;
+        let mut diagnostics_invalid_samples = 0_u64;
+        loop {
+            let (active, current_generation) = {
+                let current = state.lock().unwrap();
+                (current.source_subscriber_active, current.source_generation)
+            };
+            if !active || current_generation != generation {
+                let _ = audio_client.stop_stream();
+                return Ok(());
+            }
+
+            while let Some(packet_frames) = capture_client
+                .get_next_packet_size()
+                .map_err(|error| error.to_string())?
+                .filter(|frames| *frames > 0)
+            {
+                let mut packet = vec![0_u8; packet_frames as usize * bytes_per_frame];
+                let (frames_read, buffer_info) = capture_client
+                    .read_from_device(&mut packet)
+                    .map_err(|error| error.to_string())?;
+                packet.truncate(frames_read as usize * bytes_per_frame);
+                if buffer_info.flags.silent {
+                    diagnostics_silent_packets += 1;
+                    state.lock().unwrap().capture_silent_packet_count += 1;
+                }
+                append_capture_packet(&mut sample_bytes, packet, buffer_info.flags.silent);
+            }
+            while sample_bytes.len() >= float_chunk_bytes {
+                let mut payload = Vec::with_capacity(OMNI_SOURCE_CHUNK_BYTES);
+                for _ in 0..(960 * INTERNAL_CHANNEL_COUNT as usize) {
+                    let bytes = [
+                        sample_bytes.pop_front().unwrap(),
+                        sample_bytes.pop_front().unwrap(),
+                        sample_bytes.pop_front().unwrap(),
+                        sample_bytes.pop_front().unwrap(),
+                    ];
+                    let (sample, invalid) = sanitize_capture_sample(f32::from_le_bytes(bytes));
+                    if invalid {
+                        diagnostics_invalid_samples += 1;
+                    }
+                    diagnostics_peak = diagnostics_peak.max(sample.abs());
+                    diagnostics_square_sum += (sample as f64) * (sample as f64);
+                    diagnostics_sample_count += 1;
+                    payload.extend_from_slice(&((sample * i16::MAX as f32) as i16).to_le_bytes());
+                }
+                {
+                    let mut current = state.lock().unwrap();
+                    current.capture_packet_count += 1;
+                    current.capture_frames_received += 960;
+                    current.capture_peak = diagnostics_peak;
+                    current.capture_rms =
+                        capture_rms(diagnostics_square_sum, diagnostics_sample_count);
+                    current.capture_invalid_sample_count += diagnostics_invalid_samples;
+                    current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+                }
+                diagnostics_invalid_samples = 0;
+                dispatch_source_frame(state, runtime_root, playback_tx, source_tx, payload);
+            }
+            if diagnostics_started_at.elapsed()
+                >= Duration::from_secs(OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS)
+            {
+                let rms = capture_rms(diagnostics_square_sum, diagnostics_sample_count);
+                append_bridge_service_log(
+                    runtime_root,
+                    &format!(
+                        "event=wasapi_capture_summary generation={generation} peak={diagnostics_peak:.6} rms={rms:.6} silentPackets={diagnostics_silent_packets} invalidSamples={} samples={diagnostics_sample_count}",
+                        state.lock().unwrap().capture_invalid_sample_count
+                    ),
+                );
+                diagnostics_started_at = Instant::now();
+                diagnostics_peak = 0.0;
+                diagnostics_square_sum = 0.0;
+                diagnostics_sample_count = 0;
+                diagnostics_silent_packets = 0;
+            }
+            event_handle
+                .wait_for_event(100)
+                .map_err(|error| error.to_string())?;
+        }
+    }
+
+    fn append_capture_packet(sample_bytes: &mut VecDeque<u8>, mut packet: Vec<u8>, silent: bool) {
+        if silent {
+            packet.fill(0);
+        }
+        sample_bytes.extend(packet);
+    }
+
+    fn sanitize_capture_sample(sample: f32) -> (f32, bool) {
+        if sample.is_finite() {
+            (sample.clamp(-1.0, 1.0), false)
+        } else {
+            (0.0, true)
+        }
+    }
+
+    fn capture_rms(square_sum: f64, sample_count: u64) -> f32 {
+        if sample_count == 0 {
+            0.0
+        } else {
+            (square_sum / sample_count as f64).sqrt() as f32
+        }
+    }
+
+    fn find_render_device(
+        enumerator: &DeviceEnumerator,
+        requested_device_id: &str,
+    ) -> Result<Device, String> {
+        let collection = enumerator
+            .get_device_collection(&Direction::Render)
+            .map_err(|error| error.to_string())?;
+        for device_result in &collection {
+            let device = device_result.map_err(|error| error.to_string())?;
+            let id_matches = device
+                .get_id()
+                .map(|id| id == requested_device_id)
+                .unwrap_or(false);
+            let name_matches = device
+                .get_friendlyname()
+                .map(|name| name.contains("Omni Translate Virtual Speaker"))
+                .unwrap_or(false);
+            if id_matches || name_matches {
+                return Ok(device);
+            }
+        }
+        Err(format!(
+            "configured virtual render endpoint was not found: {requested_device_id}"
+        ))
+    }
+
+    #[allow(dead_code)]
     fn run_driver_source_worker(
         state: Arc<Mutex<BridgeState>>,
         runtime_root: PathBuf,
         playback_tx: mpsc::SyncSender<PlaybackCommand>,
         source_tx: mpsc::SyncSender<Vec<u8>>,
     ) {
+        let mut last_driver_open_error = None;
         loop {
+            {
+                let mut current = state.lock().unwrap();
+                current.source_worker_phase = "opening-driver".to_string();
+                current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+            }
             let driver = match OpenOptions::new()
                 .read(true)
                 .write(true)
@@ -606,13 +935,55 @@ mod windows_main {
             {
                 Ok(driver) => driver,
                 Err(error) => {
+                    let error = error.to_string();
                     let mut current = state.lock().unwrap();
                     current.last_error_code = Some(format!("driver.open-failed:{error}"));
+                    current.source_worker_phase = "driver-open-failed".to_string();
+                    current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+                    let generation = current.source_generation;
                     drop(current);
+                    if last_driver_open_error.as_deref() != Some(error.as_str()) {
+                        append_bridge_service_log(
+                            &runtime_root,
+                            &format!("driver open failed: generation={generation} error={error}"),
+                        );
+                        last_driver_open_error = Some(error);
+                    }
                     thread::sleep(Duration::from_secs(1));
                     continue;
                 }
             };
+            if last_driver_open_error.take().is_some() {
+                append_bridge_service_log(&runtime_root, "driver open recovered");
+            }
+            {
+                let mut current = state.lock().unwrap();
+                current.source_worker_phase = "driver-open".to_string();
+                current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+            }
+            append_bridge_service_log(&runtime_root, "event=driver_open_success");
+            match query_driver_status(&driver) {
+                Ok(status) => {
+                    update_driver_status(&state, &status);
+                    append_bridge_service_log(
+                        &runtime_root,
+                        &format!(
+                            "event=driver_status abiVersion={} ringCapacityBytes={} maxBufferedBytes={} capturedBytes={} deliveredBytes={} bufferedBytes={} droppedBytes={}",
+                            status.abi_version,
+                            status.ring_capacity_bytes,
+                            status.max_buffered_bytes,
+                            status.captured_bytes,
+                            status.delivered_bytes,
+                            status.buffered_bytes,
+                            status.dropped_bytes,
+                        ),
+                    );
+                }
+                Err(error) => append_bridge_service_log(
+                    &runtime_root,
+                    &format!("event=driver_status_failed error={error}"),
+                ),
+            }
             let started_at = Instant::now();
             let mut pending_bytes = VecDeque::new();
             let mut pacer = AudioFramePacer::new(
@@ -625,12 +996,21 @@ mod windows_main {
             let mut last_summary_at = Instant::now();
             let mut source_generation = u64::MAX;
             let mut idle_since = Instant::now();
+            let mut first_read_generation = u64::MAX;
+            let mut first_non_empty_generation = u64::MAX;
             loop {
                 let (active, current_generation) = {
                     let current = state.lock().unwrap();
                     (current.source_subscriber_active, current.source_generation)
                 };
                 if !active {
+                    {
+                        let mut current = state.lock().unwrap();
+                        if current.source_worker_phase != "waiting-subscriber" {
+                            current.source_worker_phase = "waiting-subscriber".to_string();
+                            current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+                        }
+                    }
                     if source_generation != current_generation {
                         pacer.clear();
                         pending_bytes.clear();
@@ -646,6 +1026,12 @@ mod windows_main {
                     let _ = reset_driver_ring(&driver);
                     source_generation = current_generation;
                     idle_since = Instant::now();
+                    first_read_generation = u64::MAX;
+                    first_non_empty_generation = u64::MAX;
+                    append_bridge_service_log(
+                        &runtime_root,
+                        &format!("event=source_generation_active generation={source_generation}"),
+                    );
                 }
                 let mut released = false;
                 if let Some(frame) = pacer.poll(started_at.elapsed()) {
@@ -668,15 +1054,54 @@ mod windows_main {
                 let mut bytes_read = 0;
                 if pacer.queued_frames() < OMNI_SOURCE_QUEUE_CAPACITY {
                     let mut payload = vec![0_u8; OMNI_SOURCE_CHUNK_BYTES];
+                    {
+                        let mut current = state.lock().unwrap();
+                        current.source_worker_phase = "reading-driver".to_string();
+                        current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+                        current.source_read_calls += 1;
+                    }
+                    if first_read_generation != source_generation {
+                        append_bridge_service_log(
+                            &runtime_root,
+                            &format!("event=driver_read_begin generation={source_generation}"),
+                        );
+                        first_read_generation = source_generation;
+                    }
                     bytes_read = match read_driver_pcm(&driver, &mut payload) {
-                        Ok(bytes_read) => bytes_read - (bytes_read % 4),
+                        Ok(bytes_read) => {
+                            let bytes_read = bytes_read - (bytes_read % 4);
+                            let mut current = state.lock().unwrap();
+                            current.source_worker_phase = "driver-read-returned".to_string();
+                            current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+                            record_source_read_result(&mut current, bytes_read);
+                            bytes_read
+                        }
                         Err(error) => {
-                            state.lock().unwrap().last_error_code =
-                                Some(format!("driver.read-failed:{error}"));
+                            let mut current = state.lock().unwrap();
+                            current.last_error_code = Some(format!("driver.read-failed:{error}"));
+                            current.source_worker_phase = "driver-read-failed".to_string();
+                            current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
+                            let generation = current.source_generation;
+                            drop(current);
+                            append_bridge_service_log(
+                                &runtime_root,
+                                &format!(
+                                    "driver read failed: generation={generation} error={error}"
+                                ),
+                            );
                             break;
                         }
                     };
                     payload.truncate(bytes_read);
+                    if bytes_read > 0 && first_non_empty_generation != source_generation {
+                        append_bridge_service_log(
+                            &runtime_root,
+                            &format!(
+                                "event=driver_read_first_pcm generation={source_generation} bytesRead={bytes_read}"
+                            ),
+                        );
+                        first_non_empty_generation = source_generation;
+                    }
                     if !payload.is_empty() {
                         idle_since = Instant::now();
                         pending_bytes.extend(payload);
@@ -745,11 +1170,22 @@ mod windows_main {
                     >= Duration::from_secs(OMNI_SOURCE_SUMMARY_INTERVAL_SECS)
                 {
                     if let Ok(status) = query_driver_status(&driver) {
-                        let mut current = state.lock().unwrap();
-                        current.driver_buffered_bytes = status.buffered_bytes as u64;
-                        current.driver_max_buffered_bytes = status.max_buffered_bytes as u64;
-                        current.driver_dropped_bytes = status.dropped_bytes;
+                        update_driver_status(&state, &status);
                     }
+                    let (
+                        driver_buffered_bytes,
+                        driver_dropped_bytes,
+                        monitor_source_queued_frames,
+                        stale_source_frames_dropped,
+                    ) = {
+                        let current = state.lock().unwrap();
+                        (
+                            current.driver_buffered_bytes,
+                            current.driver_dropped_bytes,
+                            current.monitor_source_queued_frames,
+                            current.stale_source_frames_dropped,
+                        )
+                    };
                     append_bridge_service_log(
                         &runtime_root,
                         &format!(
@@ -759,10 +1195,10 @@ mod windows_main {
                             pending_bytes.len(),
                             pacer.underrun_count(),
                             pacer.dropped_frame_count(),
-                            state.lock().unwrap().driver_buffered_bytes,
-                            state.lock().unwrap().driver_dropped_bytes,
-                            state.lock().unwrap().monitor_source_queued_frames,
-                            state.lock().unwrap().stale_source_frames_dropped,
+                            driver_buffered_bytes,
+                            driver_dropped_bytes,
+                            monitor_source_queued_frames,
+                            stale_source_frames_dropped,
                         ),
                     );
                     last_summary_at = Instant::now();
@@ -777,7 +1213,7 @@ mod windows_main {
 
     fn dispatch_source_frame(
         state: &Arc<Mutex<BridgeState>>,
-        runtime_root: &Path,
+        _runtime_root: &Path,
         playback_tx: &mpsc::SyncSender<PlaybackCommand>,
         source_tx: &mpsc::SyncSender<Vec<u8>>,
         payload: Vec<u8>,
@@ -788,6 +1224,7 @@ mod windows_main {
         let frame_count = samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
         let mut current = state.lock().unwrap();
         current.source_frames_captured += frame_count;
+        current.source_released_frames += 1;
         current.last_frame_timestamp_ms = Some(unix_ms());
         let monitor_samples = mix_for_monitor(
             &samples,
@@ -815,8 +1252,6 @@ mod windows_main {
             current.dropped_frame_count += frame_count;
         }
         drop(current);
-        let _ = fs::create_dir_all(runtime_root);
-        let _ = fs::write(runtime_root.join("last-source-frame.pcm"), payload);
     }
 
     fn append_bridge_service_log(runtime_root: &Path, message: &str) {
@@ -828,6 +1263,68 @@ mod windows_main {
         {
             let _ = writeln!(log, "{} {}", unix_ms(), message);
         }
+    }
+
+    fn update_driver_status(state: &Arc<Mutex<BridgeState>>, status: &DriverStatus) {
+        let mut current = state.lock().unwrap();
+        current.driver_buffered_bytes = status.buffered_bytes as u64;
+        current.driver_max_buffered_bytes = status.max_buffered_bytes as u64;
+        current.driver_captured_bytes = status.captured_bytes;
+        current.driver_delivered_bytes = status.delivered_bytes;
+        current.driver_dropped_bytes = status.dropped_bytes;
+    }
+
+    fn run_source_watchdog(state: Arc<Mutex<BridgeState>>, runtime_root: PathBuf) {
+        loop {
+            thread::sleep(Duration::from_secs(OMNI_SOURCE_SUMMARY_INTERVAL_SECS));
+            let summary = {
+                let current = state.lock().unwrap();
+                source_watchdog_summary(&current, unix_ms())
+            };
+            append_bridge_service_log(&runtime_root, &summary);
+        }
+    }
+
+    fn record_source_read_result(state: &mut BridgeState, bytes_read: usize) {
+        state.source_bytes_read += bytes_read as u64;
+        if bytes_read == 0 {
+            state.source_zero_byte_reads += 1;
+        }
+    }
+
+    fn source_watchdog_summary(state: &BridgeState, now_ms: u64) -> String {
+        let last_progress_age_ms = state
+            .source_worker_last_progress_timestamp_ms
+            .map(|timestamp| now_ms.saturating_sub(timestamp))
+            .unwrap_or(0);
+        format!(
+            "event=source_watchdog captureBackend=wasapi-endpoint-loopback sourceSubscriberActive={} sourceGeneration={} workerPhase={} lastProgressAgeMs={} captureRestarts={} capturePackets={} captureFrames={} capturePeak={:.6} captureRms={:.6} captureSilentPackets={} captureInvalidSamples={} monitorBufferedMs={} monitorUnderruns={} monitorOverruns={} readCalls={} zeroByteReads={} bytesRead={} capturedBytes={} deliveredBytes={} bufferedBytes={} droppedBytes={} pacerQueuedFrames={} pendingBytes={} releasedFrames={} underruns={}",
+            state.source_subscriber_active,
+            state.source_generation,
+            state.source_worker_phase,
+            last_progress_age_ms,
+            state.capture_restart_count,
+            state.capture_packet_count,
+            state.capture_frames_received,
+            state.capture_peak,
+            state.capture_rms,
+            state.capture_silent_packet_count,
+            state.capture_invalid_sample_count,
+            state.monitor_source_queued_frames * OMNI_SOURCE_FRAME_INTERVAL_MS as usize,
+            state.monitor_underrun_count,
+            state.monitor_overrun_count,
+            state.source_read_calls,
+            state.source_zero_byte_reads,
+            state.source_bytes_read,
+            state.driver_captured_bytes,
+            state.driver_delivered_bytes,
+            state.driver_buffered_bytes,
+            state.driver_dropped_bytes,
+            state.source_pacer_queued_frames,
+            state.source_pending_bytes,
+            state.source_released_frames,
+            state.underrun_count,
+        )
     }
 
     fn read_driver_pcm(driver: &fs::File, payload: &mut [u8]) -> Result<usize, io::Error> {
@@ -899,37 +1396,70 @@ mod windows_main {
         state: &Arc<Mutex<BridgeState>>,
         source_rx: &Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
         playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+        runtime_root: &Path,
     ) {
-    let my_generation;
-   {
-       let mut current = state.lock().unwrap();
-       current.source_subscriber_active = true;
-        my_generation = current.source_generation.wrapping_add(1);
-        current.source_generation = my_generation;
-        eprintln!("source subscriber connected gen={my_generation}");
-   }
-   while source_rx.lock().unwrap().try_recv().is_ok() {}
-        let _ = playback_tx.try_send(PlaybackCommand::FlushSource);
+        let (my_generation, previous_generation) = {
+            let source_rx = source_rx.lock().unwrap();
+            let mut current = state.lock().unwrap();
+            let generations = begin_source_subscription(&mut current);
+            drop(current);
+            while source_rx.try_recv().is_ok() {}
+            generations
+        };
+        append_bridge_service_log(
+            runtime_root,
+            &format!(
+                "source subscriber connected: generation={my_generation} previousGeneration={previous_generation}"
+            ),
+        );
+        if source_subscription_is_owner(&state.lock().unwrap(), my_generation) {
+            let _ = playback_tx.try_send(PlaybackCommand::FlushSource);
+        }
         let mut frame_index = 0_u64;
         loop {
-            let (event_type, payload) = match source_rx
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_millis(250))
-            {
-                Ok(payload) => ("bridge.source.frame", payload),
-                Err(mpsc::RecvTimeoutError::Timeout) => ("bridge.source.heartbeat", Vec::new()),
-                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            if !source_subscription_is_owner(&state.lock().unwrap(), my_generation) {
+                append_bridge_service_log(
+                    runtime_root,
+                    &format!("source subscriber handoff: generation={my_generation}"),
+                );
+                break;
+            }
+            let payload = {
+                let source_rx = source_rx.lock().unwrap();
+                let current = state.lock().unwrap();
+                if !source_subscription_is_owner(&current, my_generation) {
+                    drop(current);
+                    drop(source_rx);
+                    append_bridge_service_log(
+                        runtime_root,
+                        &format!("source subscriber handoff: generation={my_generation}"),
+                    );
+                    break;
+                }
+                source_rx.try_recv()
             };
-       let session_id = state.lock().unwrap().session_id.clone();
-       let Some(session_id) = session_id else {
-           continue;
-       };
-        if state.lock().unwrap().source_generation != my_generation {
-            eprintln!("source subscriber handoff detected my_gen={my_generation} current_gen={}", state.lock().unwrap().source_generation);
-            break;
-        }
-       frame_index += 1;
+            let (event_type, payload) = match payload {
+                Ok(payload) => ("bridge.source.frame", payload),
+                Err(mpsc::TryRecvError::Empty) => {
+                    thread::sleep(Duration::from_millis(25));
+                    ("bridge.source.heartbeat", Vec::new())
+                }
+                Err(mpsc::TryRecvError::Disconnected) => break,
+            };
+            let current = state.lock().unwrap();
+            if !source_subscription_is_owner(&current, my_generation) {
+                drop(current);
+                append_bridge_service_log(
+                    runtime_root,
+                    &format!("source subscriber handoff: generation={my_generation}"),
+                );
+                break;
+            }
+            let Some(session_id) = current.session_id.clone() else {
+                continue;
+            };
+            drop(current);
+            frame_index += 1;
             let frame_id = format!("driver-source-{frame_index}");
             let header = AudioFrameHeader {
                 event_type: event_type.to_string(),
@@ -947,15 +1477,38 @@ mod windows_main {
                 break;
             }
         }
-   let mut current = state.lock().unwrap();
-    if current.source_generation == my_generation {
-        current.source_subscriber_active = false;
-        current.source_generation = current.source_generation.wrapping_add(1);
-        let _ = playback_tx.try_send(PlaybackCommand::FlushSource);
-        eprintln!("source subscriber disconnected my_gen={my_generation}");
-    } else {
-        eprintln!("source subscriber handoff exit my_gen={my_generation} current_gen={}", current.source_generation);
+        let mut current = state.lock().unwrap();
+        if end_source_subscription(&mut current, my_generation) {
+            let next_generation = current.source_generation;
+            drop(current);
+            let _ = playback_tx.try_send(PlaybackCommand::FlushSource);
+            append_bridge_service_log(
+                runtime_root,
+                &format!(
+                    "source subscriber disconnected: generation={my_generation} nextGeneration={next_generation}"
+                ),
+            );
+        }
     }
+
+    fn begin_source_subscription(state: &mut BridgeState) -> (u64, u64) {
+        let previous_generation = state.source_generation;
+        state.source_generation = state.source_generation.wrapping_add(1);
+        state.source_subscriber_active = true;
+        (state.source_generation, previous_generation)
+    }
+
+    fn source_subscription_is_owner(state: &BridgeState, generation: u64) -> bool {
+        state.source_subscriber_active && state.source_generation == generation
+    }
+
+    fn end_source_subscription(state: &mut BridgeState, generation: u64) -> bool {
+        if !source_subscription_is_owner(state, generation) {
+            return false;
+        }
+        state.source_subscriber_active = false;
+        state.source_generation = state.source_generation.wrapping_add(1);
+        true
     }
 
     fn write_framed_audio(
@@ -1001,13 +1554,19 @@ mod windows_main {
                     Ok(next) => Some(next),
                     Err(error) => {
                         let mut current = state.lock().unwrap();
-                        current.last_error_code = Some(format!("monitor.playback-failed:{error}"));
-                        current.monitor_playback_state = "error".to_string();
+                        current.last_error_code = Some(if error == MONITOR_VIRTUAL_PLAYBACK_LOOP {
+                            error
+                        } else {
+                            format!("monitor.playback-failed:{error}")
+                        });
+                        current.monitor_playback_state = "blocked".to_string();
                         continue;
                     }
                 };
             }
             if let Some(output) = output.as_mut() {
+                state.lock().unwrap().resolved_physical_playback_device_id =
+                    output.resolved_device_id.clone();
                 let frames = job.samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
                 if job.source_frame {
                     let generation = state.lock().unwrap().source_generation;
@@ -1019,12 +1578,11 @@ mod windows_main {
                         state.lock().unwrap().stale_source_frames_dropped += frames;
                         continue;
                     }
-                    if monitor_source_queue_needs_flush(output.source_player.len()) {
-                        let dropped = output.source_player.len() as u64
-                            * (OMNI_SOURCE_CHUNK_BYTES as u64 / 4);
-                        output.source_player.clear();
-                        output.source_player.play();
-                        state.lock().unwrap().stale_source_frames_dropped += dropped;
+                    if monitor_source_queue_needs_drop(output.source_player.len()) {
+                        let mut current = state.lock().unwrap();
+                        current.monitor_overrun_count += 1;
+                        current.stale_source_frames_dropped += frames;
+                        continue;
                     }
                 }
                 if job.source_frame
@@ -1084,37 +1642,56 @@ mod windows_main {
             || queued_for > Duration::from_millis(OMNI_SOURCE_STALE_AFTER_MS)
     }
 
-    fn monitor_source_queue_needs_flush(queued_sources: usize) -> bool {
-        queued_sources >= OMNI_SOURCE_QUEUE_CAPACITY
+    fn monitor_source_queue_needs_drop(queued_sources: usize) -> bool {
+        queued_sources >= OMNI_MONITOR_SOURCE_QUEUE_CAPACITY
     }
 
     fn open_playback_output(device_id: &str) -> Result<PlaybackOutput, String> {
-        let sink = if device_id.trim().is_empty()
+        let host = cpal::default_host();
+        let device = if device_id.trim().is_empty()
             || matches!(
                 device_id.trim(),
                 "default" | "speaker-default" | "system-output-default"
             ) {
-            DeviceSinkBuilder::open_default_sink().map_err(|error| error.to_string())?
+            host.default_output_device()
+                .ok_or_else(|| "default playback device not found".to_string())?
         } else {
-            let host = cpal::default_host();
-            let device = host
-                .output_devices()
+            host.output_devices()
                 .map_err(|error| error.to_string())?
                 .find(|device| device.id().map(|id| id.1 == device_id).unwrap_or(false))
-                .ok_or_else(|| format!("configured playback device not found: {device_id}"))?;
-            DeviceSinkBuilder::from_device(device)
-                .and_then(|builder| builder.open_sink_or_fallback())
-                .map_err(|error| error.to_string())?
+                .ok_or_else(|| format!("configured playback device not found: {device_id}"))?
         };
+        if is_omni_virtual_playback_device(&device) {
+            return Err(MONITOR_VIRTUAL_PLAYBACK_LOOP.to_string());
+        }
+        let resolved_device_id = device
+            .id()
+            .map(|id| id.1)
+            .unwrap_or_else(|_| device_id.to_string());
+        let sink = DeviceSinkBuilder::from_device(device)
+            .and_then(|builder| builder.open_sink_or_fallback())
+            .map_err(|error| error.to_string())?;
         let source_player = Player::connect_new(sink.mixer());
         let translation_player = Player::connect_new(sink.mixer());
         Ok(PlaybackOutput {
             device_id: device_id.to_string(),
+            resolved_device_id,
             _sink: sink,
             source_player,
             translation_player,
             duck_until: None,
         })
+    }
+
+    fn is_omni_virtual_playback_device(device: &cpal::Device) -> bool {
+        device
+            .description()
+            .map(|description| is_omni_virtual_playback_device_name(description.name()))
+            .unwrap_or(false)
+    }
+
+    fn is_omni_virtual_playback_device_name(name: &str) -> bool {
+        name.contains("Omni Translate Virtual Speaker")
     }
 
     fn write_framed_json<T: serde::Serialize>(handle: HANDLE, value: &T) -> Result<(), io::Error> {
@@ -1183,7 +1760,10 @@ mod windows_main {
         use std::time::Duration;
 
         use super::{
-            monitor_source_queue_needs_flush, playback_volume, source_playback_job_is_stale,
+            append_capture_packet, begin_source_subscription, end_source_subscription,
+            is_omni_virtual_playback_device_name, monitor_source_queue_needs_drop, playback_volume,
+            record_source_read_result, sanitize_capture_sample, source_playback_job_is_stale,
+            source_subscription_is_owner, source_watchdog_summary, state_snapshot, BridgeState,
         };
 
         #[test]
@@ -1204,74 +1784,98 @@ mod windows_main {
             assert!(source_playback_job_is_stale(
                 4,
                 4,
-                Duration::from_millis(101)
+                Duration::from_millis(501)
             ));
             assert!(source_playback_job_is_stale(3, 4, Duration::from_millis(1)));
         }
 
         #[test]
-        fn monitor_source_queue_flushes_at_low_latency_limit() {
-            assert!(!monitor_source_queue_needs_flush(4));
-        assert!(monitor_source_queue_needs_flush(5));
+        fn monitor_source_queue_drops_new_frames_at_emergency_limit() {
+            assert!(!monitor_source_queue_needs_drop(24));
+            assert!(monitor_source_queue_needs_drop(25));
+        }
+
+        #[test]
+        fn silent_wasapi_capture_packet_is_zero_filled() {
+            let mut sample_bytes = std::collections::VecDeque::new();
+            append_capture_packet(&mut sample_bytes, vec![0x3f, 0x80, 0x00, 0x00], true);
+            assert_eq!(sample_bytes, [0, 0, 0, 0]);
+        }
+
+        #[test]
+        fn audible_wasapi_capture_packet_is_preserved() {
+            let mut sample_bytes = std::collections::VecDeque::new();
+            append_capture_packet(&mut sample_bytes, vec![1, 2, 3, 4], false);
+            assert_eq!(sample_bytes, [1, 2, 3, 4]);
+        }
+
+        #[test]
+        fn invalid_wasapi_capture_samples_are_replaced_with_silence() {
+            assert_eq!(sanitize_capture_sample(f32::NAN), (0.0, true));
+            assert_eq!(sanitize_capture_sample(f32::INFINITY), (0.0, true));
+            assert_eq!(sanitize_capture_sample(2.0), (1.0, false));
+        }
+
+        #[test]
+        fn virtual_speaker_is_rejected_as_monitor_playback_device() {
+            assert!(is_omni_virtual_playback_device_name(
+                "扬声器 (Omni Translate Virtual Speaker)"
+            ));
+            assert!(!is_omni_virtual_playback_device_name("USB Audio Device"));
+        }
+
+        #[test]
+        fn source_subscriber_generation_ownership_prevents_stale_cleanup() {
+            let mut state = BridgeState::new("0.1.0".to_string());
+            let (gen_a, _) = begin_source_subscription(&mut state);
+            assert!(gen_a > 0);
+            let (gen_b, _) = begin_source_subscription(&mut state);
+            assert_ne!(gen_a, gen_b);
+            assert!(!source_subscription_is_owner(&state, gen_a));
+            assert!(!end_source_subscription(&mut state, gen_a));
+            assert!(source_subscription_is_owner(&state, gen_b));
+            assert!(end_source_subscription(&mut state, gen_b));
+            assert!(!state.source_subscriber_active);
+        }
+
+        #[test]
+        fn source_read_result_tracks_zero_and_non_empty_reads() {
+            let mut state = BridgeState::new("0.1.0".to_string());
+            record_source_read_result(&mut state, 0);
+            record_source_read_result(&mut state, 3840);
+            assert_eq!(state.source_zero_byte_reads, 1);
+            assert_eq!(state.source_bytes_read, 3840);
+        }
+
+        #[test]
+        fn source_watchdog_reports_stalled_driver_read() {
+            let mut state = BridgeState::new("0.1.0".to_string());
+            state.source_subscriber_active = true;
+            state.source_generation = 7;
+            state.source_worker_phase = "reading-driver".to_string();
+            state.source_worker_last_progress_timestamp_ms = Some(1000);
+            state.source_read_calls = 1;
+            let summary = source_watchdog_summary(&state, 7000);
+            assert!(summary.contains("event=source_watchdog"));
+            assert!(summary.contains("sourceSubscriberActive=true"));
+            assert!(summary.contains("workerPhase=reading-driver"));
+            assert!(summary.contains("lastProgressAgeMs=6000"));
+        }
+
+        #[test]
+        fn state_snapshot_includes_source_diagnostics() {
+            let mut state = BridgeState::new("0.1.0".to_string());
+            state.driver_captured_bytes = 12;
+            state.driver_delivered_bytes = 8;
+            state.source_generation = 3;
+            state.source_read_calls = 4;
+            let snapshot = state_snapshot("request-1", &state);
+            assert_eq!(snapshot["driverCapturedBytes"], 12);
+            assert_eq!(snapshot["driverDeliveredBytes"], 8);
+            assert_eq!(snapshot["sourceGeneration"], 3);
+            assert_eq!(snapshot["sourceReadCalls"], 4);
+        }
     }
-
-    #[test]
-    fn source_subscriber_generation_ownership_prevents_stale_cleanup() {
-        use std::sync::{Arc, Mutex};
-        use super::BridgeState;
-        let state = Arc::new(Mutex::new(BridgeState::new("0.1.0".to_string())));
-        // Subscriber A connects: generation advances, active set to true.
-        let gen_a = {
-            let mut s = state.lock().unwrap();
-            s.source_subscriber_active = true;
-            let gen = s.source_generation.wrapping_add(1);
-            s.source_generation = gen;
-            gen
-        };
-        assert!(gen_a > 0);
-
-        // Subscriber B connects (handoff).
-        let gen_b = {
-            let mut s = state.lock().unwrap();
-            s.source_subscriber_active = true;
-            let gen = s.source_generation.wrapping_add(1);
-            s.source_generation = gen;
-            gen
-        };
-        assert_ne!(gen_a, gen_b);
-
-        // Subscriber A disconnects: should be a no-op because generation changed.
-        {
-            let mut s = state.lock().unwrap();
-            if s.source_generation == gen_a {
-                s.source_subscriber_active = false;
-            }
-        }
-        {
-            let s = state.lock().unwrap();
-            assert!(
-                s.source_subscriber_active,
-                "subscriber B should remain active after stale-A disconnects (gen_a={gen_a} gen_b={gen_b} active={})",
-                s.source_subscriber_active
-            );
-        }
-
-        // Subscriber B disconnects: should clear active state.
-        {
-            let mut s = state.lock().unwrap();
-            if s.source_generation == gen_b {
-                s.source_subscriber_active = false;
-            }
-        }
-        {
-            let s = state.lock().unwrap();
-            assert!(
-                !s.source_subscriber_active,
-                "subscriber should be inactive after current owner exits"
-            );
-        }
-    }
-}
 }
 
 #[cfg(windows)]

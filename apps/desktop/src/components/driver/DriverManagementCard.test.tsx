@@ -126,8 +126,105 @@ describe('DriverManagementCard', () => {
     });
 
     await click(findButtonByText(container, '重新检测')!);
-    expect(container.textContent).toContain('驱动操作失败。请展开高级详情查看错误码和最近日志。');
+    expect(container.textContent).toContain('驱动操作未完成。请查看诊断摘要中的具体失败原因并按提示处理。');
     expect(container.textContent).not.toContain('driver.elevation-cancelled');
+    expect(container.querySelector('.driver-management-feedback-error')).not.toBeNull();
+  });
+
+  it('surfaces WASAPI probe failures as actionable status and feedback', async () => {
+    const staleSnapshot = structuredClone(runtimeSnapshotMock);
+    staleSnapshot.bridge.driverHealth = 'running';
+    staleSnapshot.bridge.bridgeState = 'stopped';
+    staleSnapshot.bridge.lastErrorCode = null;
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: staleSnapshot }));
+
+    const refreshedSnapshot = structuredClone(staleSnapshot);
+    refreshedSnapshot.bridge.bridgeState = 'degraded';
+    refreshedSnapshot.bridge.driverDetail =
+      'driver.operation-failed: The WASAPI audio probe failed. ExitCode=1 Detail=idle peak 0.499969 exceeds 0.002000';
+    refreshedSnapshot.bridge.lastDriverOperation = {
+      schemaVersion: 1,
+      operationId: 'operation-wasapi',
+      action: 'install',
+      succeeded: false,
+      phase: 'failed',
+      errorCode: 'driver.audio-probe-failed',
+      summary: refreshedSnapshot.bridge.driverDetail,
+      logPath: 'E:\\omni-translate\\artifacts\\diagnostics\\logs\\driver-operations\\wasapi.log',
+      startedAt: '2026-06-01T00:00:00Z',
+      finishedAt: '2026-06-01T00:00:01Z',
+    };
+    startBridgeServiceRuntimeMock.mockRejectedValue(new Error('bridge failed'));
+    refreshBridgeRuntimeMock.mockResolvedValue(refreshedSnapshot);
+
+    await act(async () => {
+      root.render(<DriverManagementCard />);
+    });
+
+    await click(findButtonByText(container, '启动桥接')!);
+
+    expect(container.textContent).toContain('虚拟扬声器音频自检失败');
+    expect(container.textContent).toContain('虚拟扬声器自检失败。请重启 Windows');
+    expect(container.textContent).not.toContain('驱动操作失败。请展开高级详情');
+
+    await click(container.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!);
+    expect(container.textContent).toContain('驱动设备已出现，但安装自检没有捕获到预期的 1 kHz 测试音');
+    expect(container.textContent).toContain('The WASAPI audio probe failed');
+    expect(container.textContent).toContain('wasapi.log');
+  });
+
+  it('shows bridge degraded separately from a stopped bridge', async () => {
+    const snapshot = structuredClone(runtimeSnapshotMock);
+    snapshot.bridge.driverHealth = 'running';
+    snapshot.bridge.bridgeState = 'degraded';
+    snapshot.bridge.lastErrorCode = null;
+    snapshot.bridge.driverDetail = null;
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
+
+    await act(async () => {
+      root.render(<DriverManagementCard />);
+    });
+
+    expect(container.textContent).toContain('Bridge 服务异常');
+    expect(container.textContent).not.toContain('Bridge 服务未运行');
+  });
+
+  it('refreshes diagnostics after a failed repair action', async () => {
+    const damagedSnapshot = structuredClone(runtimeSnapshotMock);
+    damagedSnapshot.bridge.driverHealth = 'damaged';
+    damagedSnapshot.bridge.bridgeState = 'stopped';
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: damagedSnapshot }));
+
+    const refreshedSnapshot = structuredClone(damagedSnapshot);
+    refreshedSnapshot.bridge.lastErrorCode = 'driver.reboot-required';
+    refreshedSnapshot.bridge.driverDetail = 'Root\\OmniTranslateVirtualSpeaker is present but not running. Problem=CM_PROB_FAILED_START';
+    refreshedSnapshot.bridge.lastDriverOperation = {
+      schemaVersion: 1,
+      operationId: 'operation-reboot',
+      action: 'reinstall',
+      succeeded: false,
+      phase: 'failed',
+      errorCode: 'driver.reboot-required',
+      summary: 'Problem=CM_PROB_FAILED_START',
+      logPath: 'C:\\temp\\repair.log',
+      startedAt: '2026-06-01T00:00:00Z',
+      finishedAt: '2026-06-01T00:00:01Z',
+    };
+    repairDriverRuntimeMock.mockRejectedValue(new Error('driver.reboot-required: reboot first'));
+    refreshBridgeRuntimeMock.mockResolvedValue(refreshedSnapshot);
+
+    await act(async () => {
+      root.render(<DriverManagementCard />);
+    });
+
+    await click(container.querySelector<HTMLButtonElement>('.driver-management-primary')!);
+    await click(container.querySelector<HTMLButtonElement>('button[aria-expanded="false"]')!);
+
+    expect(refreshBridgeRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain('需要重启 Windows 后继续');
+    expect(container.textContent).toContain('Windows 仍有待完成的驱动配置。请重启 Windows 后重新检测或重新安装。');
+    expect(container.textContent).toContain('C:\\temp\\repair.log');
+    expect(container.textContent).toContain('CM_PROB_FAILED_START');
     expect(container.querySelector('.driver-management-feedback-error')).not.toBeNull();
   });
 

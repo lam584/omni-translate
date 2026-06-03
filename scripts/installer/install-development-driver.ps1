@@ -119,13 +119,13 @@ do {
 if (-not $virtualSpeaker) {
   throw 'The ROOT device was installed, but the Omni Translate Virtual Speaker endpoint did not appear within 20 seconds.'
 }
-& (Join-Path $PSScriptRoot 'test-development-driver.ps1')
+& (Join-Path $PSScriptRoot 'test-development-driver.ps1') -WorkspaceRoot $WorkspaceRoot
 if (-not $?) {
-  throw 'The Omni Translate Virtual Speaker IOCTL probe failed.'
+  throw 'The Omni Translate Virtual Speaker endpoint audio validation failed.'
 }
 
 $state = [ordered]@{
-  protocolVersion = '2026-06-02'
+  protocolVersion = '2026-06-02-loopback-v2'
   installChannel = $InstallChannel
   driverVersion = $DriverVersion
   bridgeVersion = $BridgeVersion

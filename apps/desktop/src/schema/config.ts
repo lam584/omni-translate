@@ -32,6 +32,7 @@ export type SubtitleMode = 'bilingual' | 'translation-only';
 export type CaptionDensity = 'compact' | 'balanced' | 'detailed';
 
 export type SubtitlePriority = 'subtitle-first' | 'balanced';
+export type TranslationAudioSource = 'auto' | 'omni-native' | 'subtitle-tts';
 
 export type GlossaryImportStrategy = 'replace' | 'merge';
 
@@ -136,6 +137,7 @@ export type DeviceDraft = {
   textToSpeechModelId: string;
   subtitleTranslationMode: SubtitleTranslationMode;
   subtitleTranslationModelId: string;
+  inboundSecondaryAudioModelId: string;
   // Audio processing
   inputLevel: number;
   aecEnabled: boolean;
@@ -182,6 +184,7 @@ export type SpeechDraft = {
   outputTarget: TtsOutputTarget;
   localPlaybackEnabled: boolean;
   virtualMicOutputEnabled: boolean;
+  translationAudioSource: TranslationAudioSource;
   dispatchState: TtsDispatchState;
   status: ConfigStatus;
 };
@@ -312,6 +315,7 @@ export const appConfigFieldMappings: SQLiteFieldMapping[] = [
   { draftPath: 'speech.targetLanguage', sqliteTable: 'speech_preferences', sqliteColumn: 'target_language', note: 'TTS target language.' },
   { draftPath: 'speech.textToSpeechModelId', sqliteTable: 'speech_preferences', sqliteColumn: 'text_to_speech_model_id', note: 'Text-to-speech model for speech dispatch.' },
   { draftPath: 'speech.outputTarget', sqliteTable: 'speech_preferences', sqliteColumn: 'output_target', note: 'TTS output target.' },
+  { draftPath: 'speech.translationAudioSource', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Translated audio source policy; document fallback keeps older SQLite schemas compatible.' },
   { draftPath: 'driver.targetDeviceId', sqliteTable: 'driver_preferences', sqliteColumn: 'target_device_id', note: 'Configured virtual driver target.' },
   { draftPath: 'driver.driverHealth', sqliteTable: 'runtime_state_cache', sqliteColumn: 'driver.driverHealth', note: 'Runtime cache entry.' },
   { draftPath: 'driver.bridgeState', sqliteTable: 'runtime_state_cache', sqliteColumn: 'driver.bridgeState', note: 'Runtime cache entry.' },

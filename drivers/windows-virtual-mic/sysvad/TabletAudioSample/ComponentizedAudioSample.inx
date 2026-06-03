@@ -84,6 +84,11 @@ ServiceType=1
 StartType=3
 ErrorControl=1
 ServiceBinary=%13%\omni-virtual-speaker.sys
+AddReg=OMNI_Service_Inst.AddReg
+
+[OMNI_Service_Inst.AddReg]
+HKR,Parameters,DisableToneGenerator,0x00010001,1
+HKR,Parameters,DoNotCreateDataFiles,0x00010001,1
 
 [OMNI_Device.NT.HW]
 AddReg=AUDIOHW.AddReg

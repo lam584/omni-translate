@@ -4,6 +4,7 @@
 
 #define OMNI_BRIDGE_RING_CAPACITY (4 * 1024 * 1024)
 #define OMNI_BRIDGE_MAX_BUFFERED_BYTES 19200
+#define OMNI_LOOPBACK_RING_CAPACITY OMNI_BRIDGE_MAX_BUFFERED_BYTES
 #define OMNI_BRIDGE_POOL_TAG 'RbmO'
 
 static PDEVICE_OBJECT g_OmniBridgeDevice = nullptr;
@@ -14,6 +15,10 @@ static ULONG g_OmniBridgeBufferedBytes = 0;
 static ULONGLONG g_OmniBridgeCapturedBytes = 0;
 static ULONGLONG g_OmniBridgeDeliveredBytes = 0;
 static ULONGLONG g_OmniBridgeDroppedBytes = 0;
+static PUCHAR g_OmniLoopbackRing = nullptr;
+static ULONG g_OmniLoopbackReadOffset = 0;
+static ULONG g_OmniLoopbackWriteOffset = 0;
+static ULONG g_OmniLoopbackBufferedBytes = 0;
 static KSPIN_LOCK g_OmniBridgeLock;
 static PDRIVER_DISPATCH g_OriginalCreate = nullptr;
 static PDRIVER_DISPATCH g_OriginalClose = nullptr;
@@ -32,6 +37,13 @@ static VOID ResetRingLocked()
     g_OmniBridgeReadOffset = 0;
     g_OmniBridgeWriteOffset = 0;
     g_OmniBridgeBufferedBytes = 0;
+}
+
+static VOID ResetLoopbackRingLocked()
+{
+    g_OmniLoopbackReadOffset = 0;
+    g_OmniLoopbackWriteOffset = 0;
+    g_OmniLoopbackBufferedBytes = 0;
 }
 
 static ULONG ReadRingLocked(_Out_writes_bytes_(ByteCount) PUCHAR Buffer, _In_ ULONG ByteCount)
@@ -80,6 +92,54 @@ static VOID WriteRingLocked(_In_reads_bytes_(ByteCount) const UCHAR* Buffer, _In
         RtlCopyMemory(g_OmniBridgeRing + g_OmniBridgeWriteOffset, cursor, run);
         g_OmniBridgeWriteOffset = (g_OmniBridgeWriteOffset + run) % OMNI_BRIDGE_RING_CAPACITY;
         g_OmniBridgeBufferedBytes += run;
+        cursor += run;
+        remaining -= run;
+    }
+}
+
+static ULONG ReadLoopbackRingLocked(_Out_writes_bytes_(ByteCount) PUCHAR Buffer, _In_ ULONG ByteCount)
+{
+    ULONG copied = 0;
+    ULONG remaining = min(ByteCount, g_OmniLoopbackBufferedBytes);
+
+    while (remaining > 0)
+    {
+        ULONG run = min(remaining, OMNI_LOOPBACK_RING_CAPACITY - g_OmniLoopbackReadOffset);
+        RtlCopyMemory(Buffer + copied, g_OmniLoopbackRing + g_OmniLoopbackReadOffset, run);
+        g_OmniLoopbackReadOffset = (g_OmniLoopbackReadOffset + run) % OMNI_LOOPBACK_RING_CAPACITY;
+        g_OmniLoopbackBufferedBytes -= run;
+        copied += run;
+        remaining -= run;
+    }
+
+    return copied;
+}
+
+static VOID WriteLoopbackRingLocked(_In_reads_bytes_(ByteCount) const UCHAR* Buffer, _In_ ULONG ByteCount)
+{
+    ULONG remaining = ByteCount;
+    const UCHAR* cursor = Buffer;
+
+    if (remaining > OMNI_LOOPBACK_RING_CAPACITY)
+    {
+        ULONG skipped = remaining - OMNI_LOOPBACK_RING_CAPACITY;
+        cursor += skipped;
+        remaining -= skipped;
+    }
+
+    if (remaining > OMNI_LOOPBACK_RING_CAPACITY - g_OmniLoopbackBufferedBytes)
+    {
+        ULONG dropped = remaining - (OMNI_LOOPBACK_RING_CAPACITY - g_OmniLoopbackBufferedBytes);
+        g_OmniLoopbackReadOffset = (g_OmniLoopbackReadOffset + dropped) % OMNI_LOOPBACK_RING_CAPACITY;
+        g_OmniLoopbackBufferedBytes -= dropped;
+    }
+
+    while (remaining > 0)
+    {
+        ULONG run = min(remaining, OMNI_LOOPBACK_RING_CAPACITY - g_OmniLoopbackWriteOffset);
+        RtlCopyMemory(g_OmniLoopbackRing + g_OmniLoopbackWriteOffset, cursor, run);
+        g_OmniLoopbackWriteOffset = (g_OmniLoopbackWriteOffset + run) % OMNI_LOOPBACK_RING_CAPACITY;
+        g_OmniLoopbackBufferedBytes += run;
         cursor += run;
         remaining -= run;
     }
@@ -155,6 +215,7 @@ static NTSTATUS DispatchDeviceControl(_In_ PDEVICE_OBJECT DeviceObject, _In_ PIR
         {
             KeAcquireSpinLock(&g_OmniBridgeLock, &oldIrql);
             ResetRingLocked();
+            ResetLoopbackRingLocked();
             g_OmniBridgeCapturedBytes = 0;
             g_OmniBridgeDeliveredBytes = 0;
             g_OmniBridgeDroppedBytes = 0;
@@ -176,6 +237,14 @@ NTSTATUS OmniBridgeInitialize(_In_ PDRIVER_OBJECT DriverObject)
         ExAllocatePool2(POOL_FLAG_NON_PAGED, OMNI_BRIDGE_RING_CAPACITY, OMNI_BRIDGE_POOL_TAG));
     if (g_OmniBridgeRing == nullptr)
     {
+        return STATUS_INSUFFICIENT_RESOURCES;
+    }
+
+    g_OmniLoopbackRing = static_cast<PUCHAR>(
+        ExAllocatePool2(POOL_FLAG_NON_PAGED, OMNI_LOOPBACK_RING_CAPACITY, OMNI_BRIDGE_POOL_TAG));
+    if (g_OmniLoopbackRing == nullptr)
+    {
+        OmniBridgeCleanup();
         return STATUS_INSUFFICIENT_RESOURCES;
     }
 
@@ -231,6 +300,12 @@ VOID OmniBridgeCleanup()
         ExFreePoolWithTag(g_OmniBridgeRing, OMNI_BRIDGE_POOL_TAG);
         g_OmniBridgeRing = nullptr;
     }
+
+    if (g_OmniLoopbackRing != nullptr)
+    {
+        ExFreePoolWithTag(g_OmniLoopbackRing, OMNI_BRIDGE_POOL_TAG);
+        g_OmniLoopbackRing = nullptr;
+    }
 }
 
 VOID OmniBridgeWriteRenderPcm(_In_reads_bytes_(ByteCount) const UCHAR* Buffer, _In_ ULONG ByteCount)
@@ -244,5 +319,41 @@ VOID OmniBridgeWriteRenderPcm(_In_reads_bytes_(ByteCount) const UCHAR* Buffer, _
     KeAcquireSpinLock(&g_OmniBridgeLock, &oldIrql);
     g_OmniBridgeCapturedBytes += ByteCount;
     WriteRingLocked(Buffer, ByteCount);
+    WriteLoopbackRingLocked(Buffer, ByteCount);
+    KeReleaseSpinLock(&g_OmniBridgeLock, oldIrql);
+}
+
+VOID OmniBridgeReadLoopbackPcm(_Out_writes_bytes_(ByteCount) UCHAR* Buffer, _In_ ULONG ByteCount)
+{
+    if (Buffer == nullptr || ByteCount == 0)
+    {
+        return;
+    }
+
+    ULONG copied = 0;
+    if (g_OmniLoopbackRing != nullptr)
+    {
+        KIRQL oldIrql;
+        KeAcquireSpinLock(&g_OmniBridgeLock, &oldIrql);
+        copied = ReadLoopbackRingLocked(Buffer, ByteCount);
+        KeReleaseSpinLock(&g_OmniBridgeLock, oldIrql);
+    }
+
+    if (copied < ByteCount)
+    {
+        RtlZeroMemory(Buffer + copied, ByteCount - copied);
+    }
+}
+
+VOID OmniBridgeResetLoopbackPcm()
+{
+    if (g_OmniLoopbackRing == nullptr)
+    {
+        return;
+    }
+
+    KIRQL oldIrql;
+    KeAcquireSpinLock(&g_OmniBridgeLock, &oldIrql);
+    ResetLoopbackRingLocked();
     KeReleaseSpinLock(&g_OmniBridgeLock, oldIrql);
 }

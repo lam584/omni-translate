@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
 
-pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-06-02";
+pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-06-02-loopback-v2";
 pub const INTERNAL_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const INTERNAL_CHANNEL_COUNT: u16 = 2;
 
@@ -563,7 +563,7 @@ mod tests {
     fn driver_health_requires_sysvad_backend_and_matching_versions() {
         let matching = DriverInstallState {
             driver_backend: "sysvad-wave-rt".to_string(),
-            driver_version: "0.9.0-dev".to_string(),
+            driver_version: "0.10.0-dev".to_string(),
             bridge_version: "0.1.0".to_string(),
         };
         let placeholder = DriverInstallState {
@@ -571,11 +571,11 @@ mod tests {
             ..matching.clone()
         };
         assert_eq!(
-            classify_driver_health(None, "0.9.0-dev", "0.1.0"),
+            classify_driver_health(None, "0.10.0-dev", "0.1.0"),
             "not-installed"
         );
         assert_eq!(
-            classify_driver_health(Some(&placeholder), "0.9.0-dev", "0.1.0"),
+            classify_driver_health(Some(&placeholder), "0.10.0-dev", "0.1.0"),
             "damaged"
         );
         assert_eq!(
@@ -583,7 +583,7 @@ mod tests {
             "version-mismatch"
         );
         assert_eq!(
-            classify_driver_health(Some(&matching), "0.9.0-dev", "0.1.0"),
+            classify_driver_health(Some(&matching), "0.10.0-dev", "0.1.0"),
             "running"
         );
     }

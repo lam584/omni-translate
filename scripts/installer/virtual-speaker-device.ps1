@@ -98,6 +98,29 @@ public static class OmniVirtualAudioProbe
   [OmniVirtualAudioProbe]::Query()
 }
 
+function Invoke-OmniWasapiAudioProbe([string]$WorkspaceRoot = (Join-Path $PSScriptRoot '..\..')) {
+  $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+  $probePath = Join-Path $workspacePath 'apps\bridge-service-native\target\release\omni-driver-audio-probe.exe'
+  if (-not (Test-Path -LiteralPath $probePath -PathType Leaf)) {
+    throw "The WASAPI audio probe has not been built: $probePath. Run npm run build:bridge-service-native first."
+  }
+
+  $probeOutput = & $probePath
+  $probeExitCode = $LASTEXITCODE
+  if (-not $probeOutput) {
+    throw "The WASAPI audio probe returned no JSON output. ExitCode=$probeExitCode"
+  }
+  try {
+    $probe = ($probeOutput -join [Environment]::NewLine) | ConvertFrom-Json
+  } catch {
+    throw "The WASAPI audio probe returned invalid JSON. ExitCode=$probeExitCode Output=$probeOutput"
+  }
+  if ($probeExitCode -ne 0 -or -not $probe.passed) {
+    throw "The WASAPI audio probe failed. ExitCode=$probeExitCode Detail=$($probe.detail) Restart Windows and rerun the driver installation if the driver package was just replaced."
+  }
+  return $probe
+}
+
 function Assert-OmniVirtualSpeakerRootDeviceCount([int]$ExpectedCount) {
   $devices = @(Get-OmniVirtualSpeakerRootDevices)
   if ($devices.Count -ne $ExpectedCount) {

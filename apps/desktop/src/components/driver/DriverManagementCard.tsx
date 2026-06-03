@@ -7,8 +7,10 @@ import {
   startBridgeServiceRuntime,
   uninstallDriverRuntime,
 } from '../../runtime/bridge-runtime';
+import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import { useAppStore } from '../../stores/app-store';
 import { resolveRecommendedDriverAction, type DriverManagementAction } from '../../utils/driver-management';
+import { resolveDriverDiagnosis } from '../../utils/driver-diagnostics';
 import AppIcon from '../icons/AppIcon';
 
 type DriverAction = DriverManagementAction;
@@ -33,22 +35,12 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
   const ready = isDriverReady(bridge.driverHealth, bridge.bridgeState);
   const probing = bridge.driverProbeState === 'probing';
   const primaryAction = resolveRecommendedDriverAction(bridge);
+  const diagnosis = resolveDriverDiagnosis(bridge);
+  const rawDiagnosticSummary = bridge.driverDetail ?? bridge.lastDriverOperation?.summary ?? null;
 
-  const statusKey =
-    bridge.lastErrorCode === 'driver.testsigning-disabled'
-      ? 'testSigningDisabled'
-      : bridge.lastErrorCode === 'driver.secure-boot-enabled'
-        ? 'secureBootEnabled'
-        : bridge.driverHealth === 'not-installed'
-          ? 'notInstalled'
-          : needsRepair
-            ? 'needsRepair'
-            : bridge.bridgeState !== 'running'
-              ? 'bridgeStopped'
-              : 'ready';
   const actionKey =
     needsRepair ? 'repair' : primaryAction === 'start-bridge' ? 'startBridge' : primaryAction === 'refresh' ? 'refresh' : 'install';
-  const statusTone = ready ? 'success' : bridge.lastErrorCode || needsRepair ? 'error' : 'warning';
+  const statusTone = diagnosis.tone;
   const statusIcon = ready ? 'check' : statusTone === 'error' ? 'alert' : 'wrench';
 
   const run = async (action: DriverAction) => {
@@ -72,7 +64,15 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
         message: t(nextReady ? 'driverManagement.feedbackReady' : 'driverManagement.feedbackNeedsAttention'),
       });
     } catch {
-      setFeedback({ tone: 'error', message: t('driverManagement.feedbackFailed') });
+      let refreshedSnapshot: RuntimeSnapshot | null = null;
+      try {
+        refreshedSnapshot = await refreshBridgeRuntime();
+        setRuntimeSnapshot(refreshedSnapshot);
+      } catch {
+        // Keep the original action failure visible even if the follow-up refresh also fails.
+      }
+      const feedbackKey = refreshedSnapshot ? resolveDriverDiagnosis(refreshedSnapshot.bridge).key : 'operationFailed';
+      setFeedback({ tone: 'error', message: t(`driverManagement.feedback.${feedbackKey}`) });
     } finally {
       setBusy(null);
     }
@@ -85,8 +85,8 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
           <AppIcon name={statusIcon} size={18} />
         </span>
         <div>
-          <h3>{t(`driverManagement.status.${statusKey}`)}</h3>
-          <p>{t(`driverManagement.description.${statusKey}`)}</p>
+          <h3>{t(`driverManagement.status.${diagnosis.key}`)}</h3>
+          <p>{t(`driverManagement.description.${diagnosis.key}`)}</p>
           {bridge.driverVersion ? <span className="driver-management-version">{bridge.driverVersion}</span> : null}
         </div>
       </div>
@@ -132,12 +132,15 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
           <div><dt>{t('driverManagement.detail.endpoint')}</dt><dd>{bridge.endpointName ?? t('driverManagement.value.notFound')}</dd></div>
           <div><dt>{t('driverManagement.detail.abi')}</dt><dd>{bridge.abiVersion ?? t('driverManagement.value.unavailable')}</dd></div>
           <div><dt>TESTSIGNING</dt><dd>{t(bridge.testSigningEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
+          <div><dt>{t('driverManagement.detail.signatureEnforcementBypass')}</dt><dd>{t(bridge.signatureEnforcementBypassed ? 'driverManagement.value.enabledUntilRestart' : 'driverManagement.value.disabled')}</dd></div>
+          <div><dt>{t('driverManagement.detail.memoryIntegrity')}</dt><dd>{t(bridge.memoryIntegrityEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
           <div><dt>Secure Boot</dt><dd>{bridge.secureBootEnabled == null ? t('driverManagement.value.unknown') : t(bridge.secureBootEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
           <div><dt>{t('driverManagement.detail.secureBootProbe')}</dt><dd>{t(`driverManagement.value.${bridge.secureBootProbeStatus}`)}</dd></div>
           <div><dt>Bridge</dt><dd>{bridge.bridgeState}</dd></div>
           <div><dt>{t('driverManagement.detail.errorCode')}</dt><dd>{bridge.lastErrorCode ?? t('driverManagement.value.none')}</dd></div>
-          <div><dt>{t('driverManagement.detail.recentLog')}</dt><dd>{bridge.lastDriverOperation?.logPath ?? t('driverManagement.value.none')}</dd></div>
-          <div><dt>{t('driverManagement.detail.summary')}</dt><dd>{bridge.driverDetail ?? bridge.lastDriverOperation?.summary ?? t('driverManagement.value.none')}</dd></div>
+          <div><dt>{t('driverManagement.detail.recentLog')}</dt><dd>{bridge.lastDriverOperation?.logPath || t('driverManagement.value.none')}</dd></div>
+          <div><dt>{t('driverManagement.detail.summary')}</dt><dd>{t(`driverManagement.description.${diagnosis.key}`)}</dd></div>
+          <div><dt>{t('driverManagement.detail.rawSummary')}</dt><dd>{rawDiagnosticSummary ?? t('driverManagement.value.none')}</dd></div>
         </dl>
       ) : null}
     </section>

@@ -9,8 +9,8 @@ function Run-Step {
     [int]$TimeoutSec = 600
   )
   Write-Host ">>> $Name : $Command"
-  $log = "artifacts\testing\baseline\$Name.log"
-  $err = "artifacts\testing\baseline\$Name.err"
+  $log = "artifacts\logs\testing\baseline\$Name.log"
+  $err = "artifacts\logs\testing\baseline\$Name.err"
   $psi = New-Object System.Diagnostics.ProcessStartInfo
   $psi.FileName = "cmd.exe"
   $psi.Arguments = "/d /s /c " + $Command
@@ -52,7 +52,7 @@ Run-Step "cargo-build-tests-bridge-native" "cargo test --manifest-path apps/brid
 Write-Host ""
 Write-Host "=== BASELINE SUMMARY ==="
 $results | Format-Table -AutoSize
-$results | Export-Csv -LiteralPath "artifacts/testing/baseline/summary.csv" -NoTypeInformation
+$results | Export-Csv -LiteralPath "artifacts\logs\testing\baseline\summary.csv" -NoTypeInformation
 $fail = $results | Where-Object { $_.Status -ne "PASS" }
 Write-Host ""
 Write-Host "Failed steps: $($fail.Count)"

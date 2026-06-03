@@ -78,6 +78,6 @@ virtual audio driver and play audio. Confirm that:
 - Translated speech is audible after translated subtitle cues appear.
 - `artifacts/diagnostics/logs/app.log` contains
   `watch route ensured subtitle overlay visible`.
-- `%LOCALAPPDATA%\OmniTranslate\bridge-runtime\bridge-service.log` contains
+- `artifacts/diagnostics/logs/bridge-service.log` contains
   `source pacer summary` entries whose `queuedFrames` remain near zero during
   steady playback and do not grow continuously.

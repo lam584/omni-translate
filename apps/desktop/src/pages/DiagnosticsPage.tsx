@@ -220,6 +220,10 @@ function getRuntimeEnvironmentSummary(
     actualIssues.push(`Bridge Service 返回错误：${runtimeSnapshot.bridge.lastErrorCode}`);
   }
 
+  if (runtimeSnapshot.bridge.lastErrorCode === 'monitor.virtual-playback-loop') {
+    actualIssues.push('监听输出不能使用 Omni 虚拟扬声器。请在音频路由页面的输出设备卡片中选择真实耳机或扬声器。');
+  }
+
   if (audioRuntimeSnapshot.inbound.lastError) {
     actualIssues.push(`系统音频采集异常：${audioRuntimeSnapshot.inbound.lastError}`);
   }
@@ -697,6 +701,11 @@ function DiagnosticsPage() {
               <li>扬声器播放: {String(envDiagnostic.speechLocalPlayback)}</li>
               <li>虚拟麦克风: {String(envDiagnostic.speechVirtualMic)}</li>
               <li>扬声器已写帧: {audioRuntimeSnapshot.speech.speakerFramesWritten.toLocaleString()}</li>
+              <li>监听物理输出: {runtimeSnapshot.bridge.resolvedPhysicalPlaybackDeviceId || '未解析'}</li>
+              <li>捕获峰值: {runtimeSnapshot.bridge.capturePeak.toFixed(6)}</li>
+              <li>捕获 RMS: {runtimeSnapshot.bridge.captureRms.toFixed(6)}</li>
+              <li>静音 packet: {runtimeSnapshot.bridge.captureSilentPacketCount.toLocaleString()}</li>
+              <li>非法样本: {runtimeSnapshot.bridge.captureInvalidSampleCount.toLocaleString()}</li>
             </ul>
           </details>
       </section>

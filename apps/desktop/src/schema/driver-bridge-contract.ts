@@ -1,4 +1,4 @@
-export type DriverBridgeProtocolVersion = '2026-06-02';
+export type DriverBridgeProtocolVersion = '2026-06-02-loopback-v2';
 
 export type BridgeAudioEncoding = 'pcm16le';
 
@@ -108,6 +108,19 @@ export type BridgeStateSnapshot = {
   driverHealth: DriverHealthState;
   driverVersion?: string;
   bridgeVersion: string;
+  captureBackend: string;
+  captureLifecycleState: string;
+  captureRestartCount: number;
+  capturePacketCount: number;
+  captureFramesReceived: number;
+  capturePeak: number;
+  captureRms: number;
+  captureSilentPacketCount: number;
+  captureInvalidSampleCount: number;
+  resolvedPhysicalPlaybackDeviceId: string;
+  monitorBufferedMs: number;
+  monitorUnderrunCount: number;
+  monitorOverrunCount: number;
   queuedFrames: number;
   sourceFramesCaptured: number;
   translatedFramesAccepted: number;
@@ -116,11 +129,19 @@ export type BridgeStateSnapshot = {
   droppedFrameCount: number;
   driverBufferedBytes: number;
   driverMaxBufferedBytes: number;
+  driverCapturedBytes: number;
+  driverDeliveredBytes: number;
   driverDroppedBytes: number;
   sourcePendingBytes: number;
   sourcePacerQueuedFrames: number;
   monitorSourceQueuedFrames: number;
   staleSourceFramesDropped: number;
+  sourceSubscriberActive: boolean;
+  sourceGeneration: number;
+  sourceWorkerPhase: string;
+  sourceWorkerLastProgressTimestampMs?: number;
+  sourceReadCalls: number;
+  sourceZeroByteReads: number;
   monitorPlaybackState: string;
   lastFrameTimestampMs?: number;
   lastErrorCode?: DriverBridgeErrorCode;
@@ -139,6 +160,9 @@ export type DriverBridgeErrorCode =
   | 'driver.write-failed'
   | 'driver.testsigning-disabled'
   | 'driver.secure-boot-enabled'
+  | 'driver.memory-integrity-enabled'
+  | 'driver.reboot-required'
+  | 'driver.audio-probe-failed'
   | 'driver.duplicate-root-devices'
   | 'driver.endpoint-missing'
   | 'driver.ioctl-unavailable'
@@ -152,6 +176,7 @@ export type DriverBridgeErrorCode =
   | 'bridge.timeout'
   | 'bridge.session-mismatch'
   | 'bridge.singleton-already-running'
+  | 'monitor.virtual-playback-loop'
   | 'installer.rollback-triggered';
 
 export type DriverBridgeErrorEvent = {

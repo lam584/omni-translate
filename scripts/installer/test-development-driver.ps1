@@ -1,5 +1,6 @@
 param(
-  [string]$ExpectedEndpointName = 'Omni Translate Virtual Speaker'
+  [string]$ExpectedEndpointName = 'Omni Translate Virtual Speaker',
+  [string]$WorkspaceRoot = (Join-Path $PSScriptRoot '..\..')
 )
 
 $ErrorActionPreference = 'Stop'
@@ -19,9 +20,7 @@ $status = Invoke-OmniVirtualAudioProbe
 if ($status.AbiVersion -ne 0x20260602) {
   throw ('Unexpected driver ABI version: 0x{0:X8}' -f $status.AbiVersion)
 }
-if ($status.MaxBufferedBytes -ne 19200) {
-  throw "Unexpected driver low-latency buffer limit: $($status.MaxBufferedBytes)"
-}
+$audioProbe = Invoke-OmniWasapiAudioProbe $WorkspaceRoot
 [pscustomobject]@{
   Endpoint = $endpoint.FriendlyName
   RootInstanceId = $rootDevice.InstanceId
@@ -32,4 +31,18 @@ if ($status.MaxBufferedBytes -ne 19200) {
   CapturedBytes = $status.CapturedBytes
   DeliveredBytes = $status.DeliveredBytes
   DroppedBytes = $status.DroppedBytes
+  WasapiEndpointId = $audioProbe.endpointId
+  IdleFrames = $audioProbe.idleFrames
+  IdlePeak = $audioProbe.idlePeak
+  IdleRms = $audioProbe.idleRms
+  ToneFrames = $audioProbe.toneFrames
+  TonePeak = $audioProbe.tonePeak
+  ToneRms = $audioProbe.toneRms
+  ToneFrequencyHz = $audioProbe.toneFrequencyHz
+  ToneComponent = $audioProbe.toneComponent
+  PostToneIdleFrames = $audioProbe.postToneIdleFrames
+  PostToneIdlePeak = $audioProbe.postToneIdlePeak
+  PostToneIdleRms = $audioProbe.postToneIdleRms
+  SilentPackets = $audioProbe.silentPackets
+  InvalidSamples = $audioProbe.invalidSamples
 }

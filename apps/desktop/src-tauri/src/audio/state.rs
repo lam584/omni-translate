@@ -210,11 +210,11 @@ impl AudioStateStore {
         state.stt_buffer_size = buffer_size;
     }
 
-    pub fn store_stt_handle(&self, direction: &str, handle: SttHandle) {
+    pub fn store_stt_handle(&self, direction: &str, handle: SttHandle) -> Option<SttHandle> {
         self.stt_handles
             .lock()
             .expect("stt handles poisoned")
-            .insert(direction.to_string(), handle);
+            .insert(direction.to_string(), handle)
     }
 
     pub fn take_stt_handle(&self, direction: &str) -> Option<SttHandle> {
@@ -224,11 +224,11 @@ impl AudioStateStore {
             .remove(direction)
     }
 
-    pub fn store_omni_handle(&self, direction: &str, handle: OmniHandle) {
+    pub fn store_omni_handle(&self, direction: &str, handle: OmniHandle) -> Option<OmniHandle> {
         self.omni_handles
             .lock()
             .expect("omni handles poisoned")
-            .insert(direction.to_string(), handle);
+            .insert(direction.to_string(), handle)
     }
 
     pub fn take_omni_handle(&self, direction: &str) -> Option<OmniHandle> {

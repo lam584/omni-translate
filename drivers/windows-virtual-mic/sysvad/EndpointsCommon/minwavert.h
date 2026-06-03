@@ -599,6 +599,11 @@ protected:
 
     BOOL IsLoopbackPin(ULONG nPinId);
 
+    BOOL IsVirtualSpeakerDevice()
+    {
+        return (m_DeviceType == eSpeakerDevice) ? TRUE : FALSE;
+    }
+
     BOOL IsOffloadPin(ULONG nPinId);
 
     BOOL IsBridgePin(ULONG nPinId);

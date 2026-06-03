@@ -22,6 +22,22 @@ fn should_show_subtitle_overlay_for_route(direction: &str, config: &Value) -> bo
         && config.pointer("/devices/routeMode").and_then(Value::as_str) == Some("watch")
 }
 
+fn stop_existing_inbound_pipeline(app: &AppHandle, state: &AudioStateStore) -> Result<(), String> {
+    engine::stop_route(app.clone(), state, "inbound")?;
+    if let Some(bridge_state) = app.try_state::<BridgeStateStore>() {
+        let _ = flush_bridge_source(&bridge_state.snapshot());
+    }
+    if let Some(handle) = state.take_stt_handle("inbound") {
+        let _ = handle.stop_tx.send(());
+    }
+    if let Some(handle) = state.take_omni_handle("inbound") {
+        let _ = handle.stop_tx.send(());
+    }
+    let _ = subtitle_translate::stop_subtitle_translate(app.clone(), state);
+    let _ = speech::stop_dispatch(app.clone(), state);
+    Ok(())
+}
+
 fn start_route_with_overlay(
     app: AppHandle,
     state: &AudioStateStore,
@@ -85,6 +101,7 @@ pub fn start_audio_route(
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
     if direction == "inbound" {
+        stop_existing_inbound_pipeline(&app, &state)?;
         let requested_voice_model = config
             .pointer("/devices/inboundVoiceModelId")
             .and_then(Value::as_str)
@@ -157,17 +174,6 @@ pub fn start_audio_route(
                 None,
                 None,
             );
-            // Stop any existing workers before starting new Omni/STT so old
-            // WebSocket sessions don't leak and compete with the new one.
-            if let Some(handle) = state.take_stt_handle("inbound") {
-                let _ = handle.stop_tx.send(());
-            }
-            if let Some(handle) = state.take_omni_handle("inbound") {
-                let _ = handle.stop_tx.send(());
-            }
-            let _ = subtitle_translate::stop_subtitle_translate(app.clone(), &state);
-            let _ = speech::stop_dispatch(app.clone(), &state);
-
             if is_omni {
                 let voice = config
                     .pointer("/speech/voice")
@@ -199,6 +205,8 @@ pub fn start_audio_route(
                     .unwrap_or("zh")
                     .to_string();
                 let speech_enabled = speech::speech_output_enabled(&config);
+                let translation_audio_source =
+                    speech::resolve_translation_audio_source(&config, true);
                 let speech_dispatch_state = state.snapshot().speech.dispatch_state;
                 let should_start_speech_dispatch = should_start_secondary_speech_dispatch(
                     &config,
@@ -217,7 +225,7 @@ pub fn start_audio_route(
                     "audio",
                     "info",
                     format!(
-                        "start_audio_route secondary speech decision: speech.enabled={} devices.outputSpeechEnabled={} speechEnabled={speech_enabled} speechDispatchState={speech_dispatch_state}",
+                        "start_audio_route secondary speech decision: speech.enabled={} devices.outputSpeechEnabled={} speechEnabled={speech_enabled} translationAudioSource={translation_audio_source:?} speechDispatchState={speech_dispatch_state}",
                         config
                             .pointer("/speech/enabled")
                             .and_then(Value::as_bool)
@@ -242,7 +250,9 @@ pub fn start_audio_route(
                     st_active,
                     omni::OmniSpeechConfig::from_config(&config),
                 )?;
-                state.store_omni_handle("inbound", handle);
+                if let Some(previous) = state.store_omni_handle("inbound", handle) {
+                    let _ = previous.stop_tx.send(());
+                }
 
                 if st_active {
                     match resolve_model_provider_from_config(
@@ -357,7 +367,9 @@ pub fn start_audio_route(
                 start_route_with_overlay(app, &state, &direction, config, Some(omni_sender))
             } else if is_dashscope {
                 let (stt_sender, handle) = stt::start_stt(app.clone(), &state, voice_provider)?;
-                state.store_stt_handle("inbound", handle);
+                if let Some(previous) = state.store_stt_handle("inbound", handle) {
+                    let _ = previous.stop_tx.send(());
+                }
                 start_route_with_overlay(app, &state, &direction, config, Some(stt_sender))
             } else {
                 let _ = append_diagnostics_log(
@@ -431,7 +443,11 @@ fn should_start_secondary_speech_dispatch(
     st_active: bool,
     speech_dispatch_state: &str,
 ) -> bool {
-    st_active && speech::speech_output_enabled(config) && speech_dispatch_state == "idle"
+    st_active
+        && speech::speech_output_enabled(config)
+        && speech_dispatch_state == "idle"
+        && speech::resolve_translation_audio_source(config, true)
+            == speech::TranslationAudioSource::SubtitleTts
 }
 
 fn resolve_model_provider_from_config(
@@ -829,11 +845,28 @@ mod tests {
                 "outputSpeechEnabled": true
             },
             "speech": {
-                "enabled": false
+                "enabled": false,
+                "translationAudioSource": "subtitle-tts"
             }
         });
 
         assert!(should_start_secondary_speech_dispatch(
+            &config, true, "idle"
+        ));
+    }
+
+    #[test]
+    fn secondary_speech_dispatch_stays_off_when_auto_prefers_omni_native_audio() {
+        let config = json!({
+            "devices": {
+                "outputSpeechEnabled": true
+            },
+            "speech": {
+                "enabled": false
+            }
+        });
+
+        assert!(!should_start_secondary_speech_dispatch(
             &config, true, "idle"
         ));
     }
@@ -894,19 +927,11 @@ pub async fn stop_audio_route(
     std::thread::spawn(move || {
         let state = app.state::<AudioStateStore>();
         let result = (|| -> Result<AudioRuntimeSnapshot, String> {
-            engine::stop_route(app.clone(), &state, &direction)?;
             if direction == "inbound" {
-                if let Some(bridge_state) = app.try_state::<BridgeStateStore>() {
-                    let _ = flush_bridge_source(&bridge_state.snapshot());
-                }
+                stop_existing_inbound_pipeline(&app, &state)?;
+            } else {
+                engine::stop_route(app.clone(), &state, &direction)?;
             }
-            if let Some(handle) = state.take_stt_handle(&direction) {
-                let _ = handle.stop_tx.send(());
-            }
-            if let Some(handle) = state.take_omni_handle(&direction) {
-                let _ = handle.stop_tx.send(());
-            }
-            let _ = subtitle_translate::stop_subtitle_translate(app.clone(), &state);
             Ok(state.snapshot())
         })();
         let _ = tx.send(result);

@@ -32,6 +32,16 @@ function Write-OperationResult([bool]$Succeeded, [string]$Phase, [string]$ErrorC
   [System.IO.File]::WriteAllText($ResultPath, ($result | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
 }
 
+function Get-DriverOperationErrorCode([string]$Message) {
+  if ($Message -match 'CM_PROB_FAILED_START') {
+    return 'driver.reboot-required'
+  }
+  if ($Message -match 'WASAPI audio probe failed') {
+    return 'driver.audio-probe-failed'
+  }
+  return 'driver.operation-failed'
+}
+
 try {
   $common = @{
     WorkspaceRoot = $WorkspaceRoot
@@ -55,6 +65,6 @@ try {
   Write-OperationResult $true 'completed' $null "$Action completed."
 } catch {
   $_ | Out-String | Add-Content -LiteralPath $logPath
-  Write-OperationResult $false 'failed' 'driver.operation-failed' $_.Exception.Message
+  Write-OperationResult $false 'failed' (Get-DriverOperationErrorCode $_.Exception.Message) $_.Exception.Message
   exit 1
 }

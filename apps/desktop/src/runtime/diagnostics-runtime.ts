@@ -61,3 +61,29 @@ export async function exportDiagnosticsBundleRuntime(
   const snapshot = await invoke<RuntimeSnapshot>('get_runtime_snapshot');
   return { artifact, snapshot };
 }
+
+export function appendFrontendDiagnosticsLog(
+  category: string,
+  level: 'debug' | 'info' | 'warning' | 'error',
+  summary: string,
+  detail?: string,
+): void {
+  if (!isTauriRuntime()) {
+    const prefix = `[${level.toUpperCase()}] [${category}]`;
+    if (detail) {
+      console.log(`${prefix} ${summary}\n${detail}`);
+    } else {
+      console.log(`${prefix} ${summary}`);
+    }
+    return;
+  }
+
+  invoke('append_frontend_diagnostics_log', {
+    category,
+    level,
+    summary,
+    detail: detail ?? null,
+  }).catch((err) => {
+    console.warn('[diagnostics] append_frontend_diagnostics_log failed:', err);
+  });
+}

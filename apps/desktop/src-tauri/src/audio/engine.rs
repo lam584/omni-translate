@@ -121,12 +121,16 @@ pub fn start_route(
             device.get_id().map_err(|error| error.to_string())?
         };
 
-    store.mark_route_started(
-        direction,
-        &spec.route_id,
-        &spec.requested_device_id,
-        &effective_device_id,
-    );
+    let waits_for_bridge_source =
+        direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver";
+    if !waits_for_bridge_source {
+        store.mark_route_started(
+            direction,
+            &spec.route_id,
+            &spec.requested_device_id,
+            &effective_device_id,
+        );
+    }
     let _ = append_diagnostics_log(
         &app,
         "audio",
@@ -366,7 +370,7 @@ fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device
             if spec.feedback_loop_prevention == "virtual-driver"
                 && device
                     .get_friendlyname()
-                    .map(|name| name == "Omni Translate Virtual Speaker")
+                    .map(|name| name.contains("Omni Translate Virtual Speaker"))
                     .unwrap_or(false)
             {
                 return Ok(device);
@@ -1109,6 +1113,15 @@ fn run_bridge_source_route_worker(
     let mut sample_queue = VecDeque::new();
     let mut initialized = false;
     let init_start = Instant::now();
+    let mut last_not_ready_log_at = None;
+    let mut heartbeat_count = 0_u64;
+    let mut pcm_frame_count = 0_u64;
+    let mut pcm_bytes = 0_u64;
+    let mut ignored_envelope_count = 0_u64;
+    let mut last_pcm_at: Option<Instant> = None;
+    let mut last_summary_at = Instant::now();
+    let mut first_heartbeat_logged = false;
+    let mut first_pcm_logged = false;
     loop {
         let mut source_pipe = loop {
             if stop_rx.try_recv().is_ok() {
@@ -1120,28 +1133,41 @@ fn run_bridge_source_route_worker(
             {
                 Ok(pipe) => break pipe,
                 Err(error) => {
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "warning",
-                        "Bridge source pipe is not ready.",
-                        Some(error.to_string()),
-                        None,
-                        None,
-                    );
-                    if !initialized && init_start.elapsed() > Duration::from_secs(10) {
-                        store.mark_route_error(
-                            direction,
-                            "Bridge source pipe initialization timed out (10s).".to_string(),
-                            Some("restart-bridge".to_string()),
+                    let elapsed = init_start.elapsed();
+                    if last_not_ready_log_at
+                        .map(|logged_at: Instant| logged_at.elapsed() >= Duration::from_secs(2))
+                        .unwrap_or(true)
+                    {
+                        let _ = append_diagnostics_log(
+                            &app,
+                            "audio",
+                            "warning",
+                            "Bridge source pipe is not ready.",
+                            Some(error.to_string()),
+                            None,
+                            None,
                         );
-                        return Err("Bridge source pipe initialization timed out (10s). | recommended: restart-bridge".to_string());
+                        last_not_ready_log_at = Some(Instant::now());
+                    }
+                    if !initialized {
+                        if let Some(timeout_error) = bridge_source_timeout_error(elapsed) {
+                            return Err(timeout_error);
+                        }
                     }
                     thread::sleep(Duration::from_millis(250));
                 }
             }
         };
         if !initialized {
+            let _ = append_diagnostics_log(
+                &app,
+                "audio",
+                "info",
+                "event=bridge_source_pipe_connected",
+                Some(format!("pipe={}", bridge_snapshot.source_pipe_path)),
+                None,
+                None,
+            );
             if let Some(ref flag) = init_done {
                 flag.store(true, Ordering::Relaxed);
             }
@@ -1159,8 +1185,66 @@ fn run_bridge_source_route_worker(
                 return Ok(());
             }
             let payload = match read_bridge_source_payload(&mut source_pipe) {
-                Ok(Some(payload)) => payload,
-                Ok(None) => continue,
+                Ok(BridgeSourceEnvelope::Frame(payload)) => {
+                    pcm_frame_count += 1;
+                    pcm_bytes += payload.len() as u64;
+                    last_pcm_at = Some(Instant::now());
+                    if !first_pcm_logged {
+                        let _ = append_diagnostics_log(
+                            &app,
+                            "audio",
+                            "info",
+                            "event=bridge_source_first_pcm",
+                            Some(format!(
+                                "frameCount={} payloadBytes={}",
+                                pcm_frame_count,
+                                payload.len()
+                            )),
+                            None,
+                            None,
+                        );
+                        first_pcm_logged = true;
+                    }
+                    payload
+                }
+                Ok(BridgeSourceEnvelope::Heartbeat) => {
+                    heartbeat_count += 1;
+                    if !first_heartbeat_logged {
+                        let _ = append_diagnostics_log(
+                            &app,
+                            "audio",
+                            "info",
+                            "event=bridge_source_first_heartbeat",
+                            Some("payloadBytes=0".to_string()),
+                            None,
+                            None,
+                        );
+                        first_heartbeat_logged = true;
+                    }
+                    log_bridge_source_consumer_summary(
+                        &app,
+                        &mut last_summary_at,
+                        heartbeat_count,
+                        pcm_frame_count,
+                        pcm_bytes,
+                        ignored_envelope_count,
+                        last_pcm_at,
+                    );
+                    continue;
+                }
+                Ok(BridgeSourceEnvelope::Ignored(reason)) => {
+                    ignored_envelope_count += 1;
+                    let _ = append_diagnostics_log(
+                        &app,
+                        "audio",
+                        "warning",
+                        "event=bridge_source_envelope_ignored",
+                        Some(reason),
+                        None,
+                        None,
+                    );
+                    continue;
+                }
                 Err(error) => {
                     sample_queue.clear();
                     let _ = append_diagnostics_log(
@@ -1175,6 +1259,15 @@ fn run_bridge_source_route_worker(
                     break;
                 }
             };
+            log_bridge_source_consumer_summary(
+                &app,
+                &mut last_summary_at,
+                heartbeat_count,
+                pcm_frame_count,
+                pcm_bytes,
+                ignored_envelope_count,
+                last_pcm_at,
+            );
             sample_queue.extend(pcm16le_to_f32le(&payload));
             let chunk_len = CHUNK_FRAMES * CHANNEL_COUNT * std::mem::size_of::<f32>();
             while sample_queue.len() >= chunk_len {
@@ -1196,7 +1289,56 @@ fn run_bridge_source_route_worker(
     }
 }
 
-fn read_bridge_source_payload(source_pipe: &mut impl Read) -> Result<Option<Vec<u8>>, String> {
+fn log_bridge_source_consumer_summary(
+    app: &AppHandle,
+    last_summary_at: &mut Instant,
+    heartbeat_count: u64,
+    pcm_frame_count: u64,
+    pcm_bytes: u64,
+    ignored_envelope_count: u64,
+    last_pcm_at: Option<Instant>,
+) {
+    if last_summary_at.elapsed() < Duration::from_secs(5) {
+        return;
+    }
+    let _ = append_diagnostics_log(
+        app,
+        "audio",
+        "info",
+        "event=bridge_source_consumer_summary",
+        Some(format!(
+            "heartbeats={} pcmFrames={} pcmBytes={} ignoredEnvelopes={} lastPcmAgeMs={}",
+            heartbeat_count,
+            pcm_frame_count,
+            pcm_bytes,
+            ignored_envelope_count,
+            last_pcm_at
+                .map(|timestamp| timestamp.elapsed().as_millis().to_string())
+                .unwrap_or_else(|| "none".to_string()),
+        )),
+        None,
+        None,
+    );
+    *last_summary_at = Instant::now();
+}
+
+fn bridge_source_timeout_error(elapsed: Duration) -> Option<String> {
+    (elapsed >= Duration::from_secs(DEVICE_INIT_TIMEOUT_SECS)).then(|| {
+        format!(
+            "Bridge source pipe initialization timed out ({}s). | recommended: restart-bridge",
+            DEVICE_INIT_TIMEOUT_SECS
+        )
+    })
+}
+
+#[derive(Debug, PartialEq)]
+enum BridgeSourceEnvelope {
+    Frame(Vec<u8>),
+    Heartbeat,
+    Ignored(String),
+}
+
+fn read_bridge_source_payload(source_pipe: &mut impl Read) -> Result<BridgeSourceEnvelope, String> {
     let mut header_size = [0_u8; 4];
     source_pipe
         .read_exact(&mut header_size)
@@ -1215,13 +1357,28 @@ fn read_bridge_source_payload(source_pipe: &mut impl Read) -> Result<Option<Vec<
     source_pipe
         .read_exact(&mut payload)
         .map_err(|error| format!("Bridge source payload read failed: {error}"))?;
-    if header.event_type != "bridge.source.frame"
-        || header.sample_rate_hz != SAMPLE_RATE_HZ as u32
-        || header.channel_count != CHANNEL_COUNT as u16
-    {
-        return Ok(None);
+    if header.event_type == "bridge.source.heartbeat" {
+        return Ok(BridgeSourceEnvelope::Heartbeat);
     }
-    Ok(Some(payload))
+    if header.event_type != "bridge.source.frame" {
+        return Ok(BridgeSourceEnvelope::Ignored(format!(
+            "reason=unexpected-event-type eventType={}",
+            header.event_type
+        )));
+    }
+    if header.sample_rate_hz != SAMPLE_RATE_HZ as u32 {
+        return Ok(BridgeSourceEnvelope::Ignored(format!(
+            "reason=sample-rate-mismatch actual={} expected={}",
+            header.sample_rate_hz, SAMPLE_RATE_HZ
+        )));
+    }
+    if header.channel_count != CHANNEL_COUNT as u16 {
+        return Ok(BridgeSourceEnvelope::Ignored(format!(
+            "reason=channel-count-mismatch actual={} expected={}",
+            header.channel_count, CHANNEL_COUNT
+        )));
+    }
+    Ok(BridgeSourceEnvelope::Frame(payload))
 }
 
 fn pcm16le_to_f32le(payload: &[u8]) -> Vec<u8> {
@@ -1751,7 +1908,7 @@ mod tests {
         envelope.extend_from_slice(&payload);
         assert_eq!(
             read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap(),
-            Some(payload)
+            BridgeSourceEnvelope::Frame(payload)
         );
     }
 
@@ -1775,7 +1932,47 @@ mod tests {
         envelope.extend_from_slice(&header);
         assert_eq!(
             read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap(),
-            None
+            BridgeSourceEnvelope::Heartbeat
+        );
+    }
+
+    #[test]
+    fn bridge_source_envelope_reports_sample_rate_mismatch() {
+        let header = BridgeTranslationFrameHeader {
+            event_type: "bridge.source.frame".to_string(),
+            request_id: "request-1".to_string(),
+            session_id: "session-1".to_string(),
+            frame_id: "frame-1".to_string(),
+            stream_id: "stream-1".to_string(),
+            sample_rate_hz: 16_000,
+            channel_count: CHANNEL_COUNT as u16,
+            frame_count: 0,
+            timestamp_ms: 1,
+            payload_bytes: 0,
+        };
+        let header = serde_json::to_vec(&header).unwrap();
+        let mut envelope = Vec::new();
+        envelope.extend_from_slice(&(header.len() as u32).to_le_bytes());
+        envelope.extend_from_slice(&header);
+        assert_eq!(
+            read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap(),
+            BridgeSourceEnvelope::Ignored(
+                "reason=sample-rate-mismatch actual=16000 expected=48000".to_string()
+            )
+        );
+    }
+
+    #[test]
+    fn bridge_source_timeout_recommends_bridge_restart() {
+        assert!(
+            bridge_source_timeout_error(Duration::from_secs(DEVICE_INIT_TIMEOUT_SECS - 1))
+                .is_none()
+        );
+        assert_eq!(
+            bridge_source_timeout_error(Duration::from_secs(DEVICE_INIT_TIMEOUT_SECS)).as_deref(),
+            Some(
+                "Bridge source pipe initialization timed out (10s). | recommended: restart-bridge"
+            )
         );
     }
 

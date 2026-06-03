@@ -24,6 +24,30 @@ const SPEECH_POLL_INTERVAL_MS: u64 = 120;
 const MAX_PROCESSED_CUES: usize = 32;
 const PROMPT_TONE_MS: u32 = 90;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TranslationAudioSource {
+    None,
+    OmniNative,
+    SubtitleTts,
+}
+
+pub(crate) fn resolve_translation_audio_source(
+    config: &Value,
+    omni_native_supported: bool,
+) -> TranslationAudioSource {
+    match config
+        .pointer("/speech/translationAudioSource")
+        .and_then(Value::as_str)
+        .unwrap_or("auto")
+    {
+        "omni-native" if omni_native_supported => TranslationAudioSource::OmniNative,
+        "omni-native" => TranslationAudioSource::None,
+        "subtitle-tts" => TranslationAudioSource::SubtitleTts,
+        _ if omni_native_supported => TranslationAudioSource::OmniNative,
+        _ => TranslationAudioSource::SubtitleTts,
+    }
+}
+
 pub fn start_dispatch(
     app: AppHandle,
     store: &AudioStateStore,
@@ -887,6 +911,50 @@ pub(crate) fn speech_output_enabled(config: &Value) -> bool {
             .pointer("/devices/outputSpeechEnabled")
             .and_then(Value::as_bool)
             .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod translation_audio_source_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn legacy_config_automatically_prefers_omni_native_audio() {
+        assert_eq!(
+            resolve_translation_audio_source(&json!({}), true),
+            TranslationAudioSource::OmniNative
+        );
+    }
+
+    #[test]
+    fn automatic_source_falls_back_to_subtitle_tts_without_native_audio() {
+        assert_eq!(
+            resolve_translation_audio_source(&json!({}), false),
+            TranslationAudioSource::SubtitleTts
+        );
+    }
+
+    #[test]
+    fn explicit_unsupported_omni_native_source_stays_silent() {
+        assert_eq!(
+            resolve_translation_audio_source(
+                &json!({ "speech": { "translationAudioSource": "omni-native" } }),
+                false
+            ),
+            TranslationAudioSource::None
+        );
+    }
+
+    #[test]
+    fn explicit_subtitle_tts_ignores_available_native_audio() {
+        assert_eq!(
+            resolve_translation_audio_source(
+                &json!({ "speech": { "translationAudioSource": "subtitle-tts" } }),
+                true
+            ),
+            TranslationAudioSource::SubtitleTts
+        );
+    }
 }
 
 fn resolve_model_provider_from_config_value(

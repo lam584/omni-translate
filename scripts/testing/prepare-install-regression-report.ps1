@@ -16,7 +16,7 @@ $lines = @(
   "",
   "- GeneratedAt: $(Get-Date -Format s)",
   "- Operator: TODO",
-  "- RuntimeRoot: %LOCALAPPDATA%/OmniTranslate/bridge-runtime",
+  "- RuntimeRoot: ./artifacts/diagnostics/logs",
   "",
   "## Checklist",
   "",

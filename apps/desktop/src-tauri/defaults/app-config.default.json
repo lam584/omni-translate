@@ -476,7 +476,7 @@
     "installChannel": "development",
     "installPhase": "rollback-required",
     "targetDeviceId": "virtual-mic-default",
-    "expectedDriverVersion": "0.9.0-dev",
+    "expectedDriverVersion": "0.10.0-dev",
     "expectedBridgeVersion": "0.1.0",
     "bridgeState": "degraded",
     "driverHealth": "version-mismatch",

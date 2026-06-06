@@ -166,27 +166,40 @@ fn run_dispatch_worker(
     let storage = app.state::<StorageStateStore>();
     let mut processed = HashSet::new();
     let mut processed_order = VecDeque::new();
+    let mut processed_segment_slots = HashSet::new();
+    let mut processed_segment_slot_order = VecDeque::new();
+   let initial_speech_config = SpeechConfig::from_value(&initial_config)?;
+   // When the dispatch worker is started with speech enabled (e.g. secondary
+   // subtitle TTS is active), pin to the initial config regardless of the
+   // OMNI_WATCH_MODE_AUTOSTART env var. Elevated desktop shell processes may
+   // not inherit the runner's env vars, causing the worker to reload a stale
+   // stored config that lacks outputSpeechEnabled/translationAudioSource.
+   let use_initial_config = initial_speech_config.enabled
+       || std::env::var("OMNI_WATCH_MODE_AUTOSTART")
+       .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+       .unwrap_or(false);
 
-    loop {
+   loop {
         if stop_rx.try_recv().is_ok() {
             break;
         }
 
-        let config_value = storage
-            .load_config()
-            .unwrap_or_else(|_| initial_config.clone());
+        let config_value = if use_initial_config {
+            initial_config.clone()
+        } else {
+            storage
+                .load_config()
+                .unwrap_or_else(|_| initial_config.clone())
+        };
         let config = SpeechConfig::from_value(&config_value)?;
         let snapshot = store.snapshot();
-        let pending_cues: Vec<SubtitleCueRuntime> = snapshot
+        let pending_tasks: Vec<SpeechDispatchTask> = snapshot
             .subtitle_overlay
             .recent_cues
             .iter()
             .rev()
-            .filter(|cue| {
-                let dispatch_key = build_speech_dispatch_key(cue);
-                is_speech_ready_cue(cue) && !processed.contains(&dispatch_key)
-            })
-            .cloned()
+            .flat_map(|cue| speech_dispatch_tasks_for_cue(cue, &config))
+            .filter(|task| !is_processed_task(task, &processed, &processed_segment_slots))
             .collect();
         let ptt_gate_open =
             !config.outbound_ptt_enabled || config.outbound_ptt_state == "recording";
@@ -195,24 +208,24 @@ fn run_dispatch_worker(
             speech.status = "ready".to_string();
             speech.policy = config.priority.clone();
             speech.output_target = config.output_target.clone();
-            speech.queue_depth = pending_cues.len();
+            speech.queue_depth = pending_tasks.len();
             speech.ptt_gate_open = ptt_gate_open;
             if !config.enabled {
                 speech.dispatch_state = "idle".to_string();
-            } else if pending_cues.is_empty() && speech.dispatch_state != "playing" {
+            } else if pending_tasks.is_empty() && speech.dispatch_state != "playing" {
                 speech.dispatch_state = "waiting-subtitle".to_string();
             }
         });
         emit_audio_snapshot(&app, store)?;
 
-        if !config.enabled || pending_cues.is_empty() {
+        if !config.enabled || pending_tasks.is_empty() {
             thread::sleep(Duration::from_millis(SPEECH_POLL_INTERVAL_MS));
             continue;
         }
 
         let mut blocked_by_ptt = false;
-        for cue in pending_cues {
-            if cue.route_direction == "outbound"
+        for task in pending_tasks {
+            if task.cue.route_direction == "outbound"
                 && config.outbound_ptt_enabled
                 && config.outbound_ptt_state != "recording"
             {
@@ -223,7 +236,7 @@ fn run_dispatch_worker(
                         speech,
                         "speech.ptt-blocked",
                         "Push-to-talk 未打开，出站译音继续排队。".to_string(),
-                        Some(cue.cue_id.clone()),
+                        Some(task.cue.cue_id.clone()),
                         None,
                     );
                 });
@@ -232,7 +245,7 @@ fn run_dispatch_worker(
                     "audio",
                     "warning",
                     "Push-to-talk 未打开，出站译音继续排队。",
-                    Some(format!("cue={}", cue.cue_id)),
+                    Some(format!("cue={}", task.cue.cue_id)),
                     None,
                     None,
                 );
@@ -240,19 +253,22 @@ fn run_dispatch_worker(
                 break;
             }
 
-            match process_cue(&app, store, &gateway, &cue, &config) {
+            let dispatch_key = task.dispatch_key();
+            match process_task(&app, store, &gateway, &task, &config) {
                 Ok(()) => {
-                    remember_processed(
-                        &mut processed,
-                        &mut processed_order,
-                        &build_speech_dispatch_key(&cue),
+                    remember_processed(&mut processed, &mut processed_order, &dispatch_key);
+                    remember_segment_slot_processed(
+                        &task,
+                        &mut processed_segment_slots,
+                        &mut processed_segment_slot_order,
                     );
                 }
                 Err(error) => {
-                    remember_processed(
-                        &mut processed,
-                        &mut processed_order,
-                        &build_speech_dispatch_key(&cue),
+                    remember_processed(&mut processed, &mut processed_order, &dispatch_key);
+                    remember_segment_slot_processed(
+                        &task,
+                        &mut processed_segment_slots,
+                        &mut processed_segment_slot_order,
                     );
                     let diagnostics_error = error.clone();
                     store.update_speech(|speech| {
@@ -263,7 +279,7 @@ fn run_dispatch_worker(
                             speech,
                             "speech.error",
                             error,
-                            Some(cue.cue_id.clone()),
+                            Some(task.cue.cue_id.clone()),
                             None,
                         );
                     });
@@ -272,7 +288,10 @@ fn run_dispatch_worker(
                         "audio",
                         "error",
                         "译音任务失败。",
-                        Some(format!("cue={} error={}", cue.cue_id, diagnostics_error)),
+                        Some(format!(
+                            "cue={} segmentIndex={} error={}",
+                            task.cue.cue_id, task.segment_index, diagnostics_error
+                        )),
                         None,
                         None,
                     );
@@ -292,13 +311,61 @@ fn run_dispatch_worker(
     Ok(())
 }
 
-fn process_cue(
+#[derive(Clone)]
+struct SpeechDispatchTask {
+    cue: SubtitleCueRuntime,
+    segment_index: usize,
+    source_text: String,
+    translated_text: String,
+    segment_mode: bool,
+}
+
+impl SpeechDispatchTask {
+    fn dispatch_key(&self) -> String {
+        let mut hasher = DefaultHasher::new();
+        self.cue.cue_id.hash(&mut hasher);
+        self.segment_index.hash(&mut hasher);
+        self.source_text.hash(&mut hasher);
+        self.translated_text.hash(&mut hasher);
+        format!(
+            "{}:{}:{:016x}",
+            self.cue.cue_id,
+            self.segment_index,
+            hasher.finish()
+        )
+    }
+
+    fn cache_key(&self, config: &SpeechConfig) -> String {
+        let mut hasher = DefaultHasher::new();
+        self.translated_text.hash(&mut hasher);
+        format!(
+            "{}:{}:{}:{}:{}:{:016x}",
+            self.cue.cue_id,
+            self.segment_index,
+            config.voice,
+            config.target_language,
+            config.provider.model,
+            hasher.finish(),
+        )
+    }
+
+    fn segment_slot_key(&self) -> Option<String> {
+        if self.segment_mode {
+            Some(format!("{}:{}", self.cue.cue_id, self.segment_index))
+        } else {
+            None
+        }
+    }
+}
+
+fn process_task(
     app: &AppHandle,
     store: &AudioStateStore,
     gateway: &ProviderGateway,
-    cue: &SubtitleCueRuntime,
+    task: &SpeechDispatchTask,
     config: &SpeechConfig,
 ) -> Result<(), String> {
+    let cue = &task.cue;
     let delay_ms = config.dispatch_delay_ms(&cue.route_direction);
     if delay_ms > 0 {
         store.update_speech(|speech| {
@@ -317,7 +384,24 @@ fn process_cue(
         thread::sleep(Duration::from_millis(delay_ms));
     }
 
-    let cache_key = build_tts_cache_key(cue, config);
+    let _ = append_diagnostics_log(
+        app,
+        "audio",
+        "info",
+        "speech.segment_tts_queued",
+        Some(format!(
+            "cue={} segmentIndex={} segmentMode={} sourceChars={} translatedChars={}",
+            cue.cue_id,
+            task.segment_index,
+            task.segment_mode,
+            task.source_text.chars().count(),
+            task.translated_text.chars().count()
+        )),
+        None,
+        None,
+    );
+
+    let cache_key = task.cache_key(config);
     let (request_id, sample_rate_hz, channel_count, translated_pcm, cache_hit) =
         if let Some(cached) = store.tts_audio(&cache_key) {
             (
@@ -328,10 +412,26 @@ fn process_cue(
                 true,
             )
         } else {
+            let _ = append_diagnostics_log(
+                app,
+                "audio",
+                "info",
+                "speech.segment_tts_requested",
+                Some(format!(
+                    "cue={} segmentIndex={} translatedChars={} provider={} model={}",
+                    cue.cue_id,
+                    task.segment_index,
+                    task.translated_text.chars().count(),
+                    config.provider.provider_id,
+                    config.provider.model
+                )),
+                None,
+                None,
+            );
             let synthesis = gateway
                 .synthesize_realtime_audio(
                     config.provider.clone(),
-                    cue.translated_text.clone(),
+                    task.translated_text.clone(),
                     config.target_language.clone(),
                     config.voice.clone(),
                 )
@@ -392,14 +492,57 @@ fn process_cue(
     let speaker_frames = if output_route.play_to_speaker {
         let echo_reference = i16_to_f32(&mix.speaker_samples);
         store.push_echo_reference(&echo_reference, mix.sample_rate_hz, mix.channel_count);
-        play_to_speaker(
+        let frames = play_to_speaker(
             &mix.speaker_samples,
             mix.sample_rate_hz,
             mix.channel_count,
             config.speaker_device_id.as_deref(),
             config.speaker_output_level,
-        )?
+        )?;
+        let _ = append_diagnostics_log(
+            app,
+            "audio",
+            "info",
+            if task.segment_mode {
+                "speech.segment_playback_written"
+            } else {
+                "speech.speaker_playback_written"
+            },
+            Some(format!(
+                "cue={} segmentIndex={} frames={} sampleRateHz={} channels={} outputLevel={} deviceId={}",
+                cue.cue_id,
+                task.segment_index,
+                frames,
+                mix.sample_rate_hz,
+                mix.channel_count,
+                config.speaker_output_level,
+                config.speaker_device_id.as_deref().unwrap_or("default")
+            )),
+            None,
+            None,
+        );
+        frames
     } else {
+        let _ = append_diagnostics_log(
+            app,
+            "audio",
+            "warning",
+            if task.segment_mode {
+                "speech.segment_playback_skipped"
+            } else {
+                "speech.speaker_playback_skipped"
+            },
+            Some(format!(
+                "cue={} segmentIndex={} localPlaybackEnabled={} outputTarget={} deviceId={}",
+                cue.cue_id,
+                task.segment_index,
+                config.local_playback_enabled,
+                config.output_target,
+                config.speaker_device_id.as_deref().unwrap_or("default")
+            )),
+            None,
+            None,
+        );
         0
     };
     let virtual_mic_frames = if output_route.write_to_virtual_mic {
@@ -461,6 +604,34 @@ fn remember_processed(processed: &mut HashSet<String>, order: &mut VecDeque<Stri
     }
 }
 
+fn is_processed_task(
+    task: &SpeechDispatchTask,
+    processed: &HashSet<String>,
+    processed_segment_slots: &HashSet<String>,
+) -> bool {
+    processed.contains(&task.dispatch_key())
+        || task
+            .segment_slot_key()
+            .is_some_and(|slot_key| processed_segment_slots.contains(&slot_key))
+}
+
+fn remember_segment_slot_processed(
+    task: &SpeechDispatchTask,
+    processed_segment_slots: &mut HashSet<String>,
+    order: &mut VecDeque<String>,
+) {
+    let Some(slot_key) = task.segment_slot_key() else {
+        return;
+    };
+    processed_segment_slots.insert(slot_key.clone());
+    order.push_back(slot_key);
+    while order.len() > MAX_PROCESSED_CUES {
+        if let Some(expired) = order.pop_front() {
+            processed_segment_slots.remove(&expired);
+        }
+    }
+}
+
 fn is_speech_ready_cue(cue: &SubtitleCueRuntime) -> bool {
     if cue.translated_text.trim().is_empty() {
         return false;
@@ -476,11 +647,36 @@ fn is_speech_ready_cue(cue: &SubtitleCueRuntime) -> bool {
             .all(|segment| !segment.pending)
 }
 
-fn build_speech_dispatch_key(cue: &SubtitleCueRuntime) -> String {
-    let mut hasher = DefaultHasher::new();
-    cue.cue_id.hash(&mut hasher);
-    cue.translated_text.hash(&mut hasher);
-    format!("{}:{:016x}", cue.cue_id, hasher.finish())
+fn speech_dispatch_tasks_for_cue(
+    cue: &SubtitleCueRuntime,
+    config: &SpeechConfig,
+) -> Vec<SpeechDispatchTask> {
+    if config.secondary_segment_tts_enabled {
+        return cue
+            .display_segments
+            .iter()
+            .enumerate()
+            .filter(|(_, segment)| !segment.pending && !segment.translated_text.trim().is_empty())
+            .map(|(index, segment)| SpeechDispatchTask {
+                cue: cue.clone(),
+                segment_index: index,
+                source_text: segment.source_text.clone(),
+                translated_text: segment.translated_text.clone(),
+                segment_mode: true,
+            })
+            .collect();
+    }
+
+    if !is_speech_ready_cue(cue) {
+        return Vec::new();
+    }
+    vec![SpeechDispatchTask {
+        cue: cue.clone(),
+        segment_index: 0,
+        source_text: cue.display_source_text.clone(),
+        translated_text: cue.translated_text.clone(),
+        segment_mode: false,
+    }]
 }
 
 fn push_event(
@@ -502,19 +698,6 @@ fn push_event(
     if speech.recent_events.len() > 8 {
         speech.recent_events.truncate(8);
     }
-}
-
-fn build_tts_cache_key(cue: &SubtitleCueRuntime, config: &SpeechConfig) -> String {
-    let mut hasher = DefaultHasher::new();
-    cue.translated_text.hash(&mut hasher);
-    format!(
-        "{}:{}:{}:{}:{:016x}",
-        cue.cue_id,
-        config.voice,
-        config.target_language,
-        config.provider.model,
-        hasher.finish(),
-    )
 }
 
 struct MixPlan {
@@ -569,7 +752,7 @@ fn build_mix_plan(
         Vec::new()
     };
     let virtual_mic_samples = if config.virtual_mic_output_enabled {
-        mixed.clone()
+        scale_i16_by_output_level(&mixed, config.speaker_output_level)
     } else {
         Vec::new()
     };
@@ -593,6 +776,14 @@ fn apply_i16_gain(samples: &[i16], gain_db: f32) -> Vec<i16> {
     samples
         .iter()
         .map(|sample| ((*sample as f32) * gain).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
+        .collect()
+}
+
+pub(crate) fn scale_i16_by_output_level(samples: &[i16], output_level: u64) -> Vec<i16> {
+    let volume = playback_volume(output_level);
+    samples
+        .iter()
+        .map(|sample| ((*sample as f32) * volume).clamp(i16::MIN as f32, i16::MAX as f32) as i16)
         .collect()
 }
 
@@ -676,12 +867,17 @@ pub(crate) fn desktop_direct_playback_enabled_for_config(config: &Value) -> bool
         .pointer("/speech/localPlaybackEnabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let explicit_physical_output = config
+        .pointer("/devices/outputDeviceId")
+        .and_then(Value::as_str)
+        .filter(|value| !is_default_output_device_alias(value))
+        .is_some();
     let virtual_driver_isolation = config
         .pointer("/devices/feedbackLoopPrevention")
         .and_then(Value::as_str)
         == Some("virtual-driver");
 
-    local_playback_enabled && !virtual_driver_isolation
+    local_playback_enabled && (!virtual_driver_isolation || explicit_physical_output)
 }
 
 pub(crate) fn play_to_speaker(
@@ -701,7 +897,7 @@ pub(crate) fn play_to_speaker(
             let device = host
                 .output_devices()
                 .map_err(|error| error.to_string())?
-                .find(|device| device.id().map(|id| id.1 == device_id).unwrap_or(false))
+                .find(|device| speaker_output_device_matches(device, device_id))
                 .ok_or_else(|| {
                     format!("configured speaker output device not found: {device_id}")
                 })?;
@@ -737,6 +933,25 @@ fn is_default_output_device_alias(device_id: &str) -> bool {
     )
 }
 
+fn speaker_output_device_matches(device: &cpal::Device, requested: &str) -> bool {
+    device.id().map(|id| id.1 == requested).unwrap_or(false)
+        || device
+            .description()
+            .map(|description| {
+                normalized_device_name(description.name())
+                    .contains(&normalized_device_name(requested))
+            })
+            .unwrap_or(false)
+}
+
+fn normalized_device_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| !ch.is_whitespace())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
 pub(crate) fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
     samples
         .iter()
@@ -744,15 +959,7 @@ pub(crate) fn i16_to_f32(samples: &[i16]) -> Vec<f32> {
         .collect()
 }
 
-fn now_marker() -> String {
-    format!(
-        "unix:{}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    )
-}
+use super::time_utils::now_marker;
 
 #[derive(Clone)]
 #[allow(dead_code)]
@@ -785,6 +992,7 @@ struct SpeechConfig {
     outbound_ptt_state: String,
     inbound_mix: RouteMixConfig,
     outbound_mix: RouteMixConfig,
+    secondary_segment_tts_enabled: bool,
 }
 
 impl SpeechConfig {
@@ -797,28 +1005,64 @@ impl SpeechConfig {
             .unwrap_or_else(|| {
                 serde_json::from_value(Value::Null).expect("default provider should parse")
             });
-        let tts_model_id = config
-            .pointer("/speech/textToSpeechModelId")
+        let secondary_translation_active = config
+            .pointer("/devices/subtitleTranslationMode")
             .and_then(Value::as_str)
-            .filter(|model| !model.trim().is_empty())
-            .or_else(|| {
-                config
-                    .pointer("/devices/textToSpeechModelId")
-                    .and_then(Value::as_str)
-                    .filter(|model| !model.trim().is_empty())
-            })
-            .or_else(|| {
-                config
-                    .pointer("/devices/outboundVoiceModelId")
-                    .and_then(Value::as_str)
-                    .filter(|model| !model.trim().is_empty())
-            });
-        let provider = tts_model_id
-            .and_then(|model| resolve_model_provider_from_config_value(config, model))
+            == Some("secondary")
+            && config
+                .pointer("/devices/subtitleTranslationModelId")
+                .and_then(Value::as_str)
+                .map(|value| !value.trim().is_empty())
+                .unwrap_or(false);
+        let secondary_audio_enabled = config
+            .pointer("/devices/outputSpeechEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let tts_model_candidates = [
+            config
+                .pointer("/devices/inboundSecondaryAudioModelId")
+                .and_then(Value::as_str)
+                .filter(|model| {
+                    secondary_translation_active
+                        && secondary_audio_enabled
+                        && !model.trim().is_empty()
+                }),
+            config
+                .pointer("/speech/textToSpeechModelId")
+                .and_then(Value::as_str)
+                .filter(|model| !model.trim().is_empty()),
+            config
+                .pointer("/devices/textToSpeechModelId")
+                .and_then(Value::as_str)
+                .filter(|model| !model.trim().is_empty()),
+            config
+                .pointer("/devices/outboundVoiceModelId")
+                .and_then(Value::as_str)
+                .filter(|model| !model.trim().is_empty()),
+        ];
+        let mut provider = tts_model_candidates
+            .into_iter()
+            .flatten()
+            .filter(|model| !is_livetranslate_model_id(model))
+            .find_map(|model| resolve_model_provider_from_config_value(config, model))
             .unwrap_or(provider);
+        let secondary_segment_tts_enabled = secondary_translation_active
+            && secondary_audio_enabled
+            && resolve_translation_audio_source(config, true)
+                == TranslationAudioSource::SubtitleTts;
+        if secondary_segment_tts_enabled
+            && provider.kind == "dashscope"
+            && is_livetranslate_model_id(&provider.model)
+        {
+            provider.model = "qwen3.5-omni-plus-realtime".to_string();
+        }
         Ok(Self {
             provider,
-            enabled: speech_output_enabled(config),
+            enabled: config
+                .pointer("/speech/enabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+                || secondary_segment_tts_enabled,
             target_language: config
                 .pointer("/speech/targetLanguage")
                 .and_then(Value::as_str)
@@ -886,6 +1130,7 @@ impl SpeechConfig {
                 .to_string(),
             inbound_mix: parse_mix(config, "/devices/inboundRoute/mixControl"),
             outbound_mix: parse_mix(config, "/devices/outboundRoute/mixControl"),
+            secondary_segment_tts_enabled,
         })
     }
 
@@ -961,13 +1206,17 @@ fn resolve_model_provider_from_config_value(
     config: &Value,
     composite_model_id: &str,
 ) -> Option<ProviderDraftInput> {
+    let requested_model = composite_model_id.trim();
+    if requested_model.is_empty() {
+        return None;
+    }
     let providers = config
         .get("providers")
         .and_then(Value::as_array)
         .cloned()
         .unwrap_or_default();
 
-    if let Some((template_id, model_id)) = composite_model_id.split_once("::") {
+    if let Some((template_id, model_id)) = requested_model.split_once("::") {
         for provider_value in &providers {
             let parsed: Option<ProviderDraftInput> =
                 serde_json::from_value(provider_value.clone()).ok();
@@ -981,7 +1230,21 @@ fn resolve_model_provider_from_config_value(
         return None;
     }
 
-    None
+    providers
+        .iter()
+        .filter_map(|provider_value| {
+            serde_json::from_value::<ProviderDraftInput>(provider_value.clone()).ok()
+        })
+        .find(|provider| provider.kind == "dashscope")
+        .map(|mut provider| {
+            provider.model = requested_model.to_string();
+            provider
+        })
+}
+
+fn is_livetranslate_model_id(model_id: &str) -> bool {
+    let lower = model_id.to_ascii_lowercase();
+    lower.contains("livetranslate")
 }
 
 fn parse_mix(config: &Value, prefix: &str) -> RouteMixConfig {
@@ -1093,6 +1356,7 @@ mod tests {
                 ducking_enabled: true,
                 ducking_depth_percent: 30,
             },
+            secondary_segment_tts_enabled: false,
         };
         let captured = CapturedSegmentAudio {
             cue_id: cue.cue_id.clone(),
@@ -1145,6 +1409,21 @@ mod tests {
         });
 
         assert!(!desktop_direct_playback_enabled_for_config(&config));
+    }
+
+    #[test]
+    fn virtual_driver_feedback_prevention_keeps_explicit_physical_output() {
+        let config = json!({
+            "devices": {
+                "feedbackLoopPrevention": "virtual-driver",
+                "outputDeviceId": "耳机 (iBasso-DC-Series)"
+            },
+            "speech": {
+                "localPlaybackEnabled": true
+            }
+        });
+
+        assert!(desktop_direct_playback_enabled_for_config(&config));
     }
 
     #[test]
@@ -1230,6 +1509,132 @@ mod tests {
         };
 
         assert!(!is_speech_ready_cue(&cue));
+    }
+
+    #[test]
+    fn native_route_uses_single_cue_task_without_segment_tts() {
+        let config = SpeechConfig::from_value(&json!({
+            "speech": {
+                "enabled": true,
+                "translationAudioSource": "auto"
+            },
+            "devices": {
+                "subtitleTranslationMode": "native",
+                "outputSpeechEnabled": false
+            }
+        }))
+        .unwrap();
+        let cue = SubtitleCueRuntime {
+            cue_id: "cue-native".to_string(),
+            route_direction: "inbound".to_string(),
+            source_text: "hello".to_string(),
+            display_source_text: "hello".to_string(),
+            display_segments: vec![SubtitleDisplaySegmentRuntime {
+                source_text: "hello".to_string(),
+                translated_text: "你好。".to_string(),
+                pending: false,
+            }],
+            translated_text: "你好。".to_string(),
+            started_at: "unix-ms:1".to_string(),
+            ended_at: "unix-ms:2".to_string(),
+            committed: true,
+        };
+
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
+
+        assert_eq!(tasks.len(), 1);
+        assert!(!tasks[0].segment_mode);
+        assert_eq!(tasks[0].translated_text, "你好。");
+    }
+
+    #[test]
+    fn secondary_route_dispatches_only_final_display_segments() {
+        let config = SpeechConfig::from_value(&json!({
+            "speech": {
+                "translationAudioSource": "subtitle-tts"
+            },
+            "devices": {
+                "subtitleTranslationMode": "secondary",
+                "subtitleTranslationModelId": "template::text-model",
+                "outputSpeechEnabled": true
+            }
+        }))
+        .unwrap();
+        let cue = SubtitleCueRuntime {
+            cue_id: "cue-secondary".to_string(),
+            route_direction: "inbound".to_string(),
+            source_text: "hello then wait".to_string(),
+            display_source_text: "hello\nthen wait".to_string(),
+            display_segments: vec![
+                SubtitleDisplaySegmentRuntime {
+                    source_text: "hello".to_string(),
+                    translated_text: "你好。".to_string(),
+                    pending: false,
+                },
+                SubtitleDisplaySegmentRuntime {
+                    source_text: "then wait".to_string(),
+                    translated_text: "然后等等".to_string(),
+                    pending: true,
+                },
+            ],
+            translated_text: "你好。\n然后等等".to_string(),
+            started_at: "unix-ms:1".to_string(),
+            ended_at: "unix-ms:2".to_string(),
+            committed: false,
+        };
+
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
+
+        assert_eq!(tasks.len(), 1);
+        assert!(tasks[0].segment_mode);
+        assert_eq!(tasks[0].segment_index, 0);
+        assert_eq!(tasks[0].translated_text, "你好。");
+    }
+
+    #[test]
+    fn secondary_segment_slot_blocks_replacement_replay() {
+        let cue = SubtitleCueRuntime {
+            cue_id: "cue-secondary".to_string(),
+            route_direction: "inbound".to_string(),
+            source_text: "hello".to_string(),
+            display_source_text: "hello".to_string(),
+            display_segments: Vec::new(),
+            translated_text: "hello translated".to_string(),
+            started_at: "unix-ms:1".to_string(),
+            ended_at: "unix-ms:2".to_string(),
+            committed: false,
+        };
+        let first = SpeechDispatchTask {
+            cue: cue.clone(),
+            segment_index: 0,
+            source_text: "hello".to_string(),
+            translated_text: "hello translated".to_string(),
+            segment_mode: true,
+        };
+        let replacement = SpeechDispatchTask {
+            cue,
+            segment_index: 0,
+            source_text: "hello there".to_string(),
+            translated_text: "hello there translated".to_string(),
+            segment_mode: true,
+        };
+        let mut processed = HashSet::new();
+        let mut processed_order = VecDeque::new();
+        let mut processed_slots = HashSet::new();
+        let mut processed_slot_order = VecDeque::new();
+
+        assert_ne!(first.dispatch_key(), replacement.dispatch_key());
+        assert_eq!(first.segment_slot_key(), replacement.segment_slot_key());
+
+        let dispatch_key = first.dispatch_key();
+        remember_processed(&mut processed, &mut processed_order, &dispatch_key);
+        remember_segment_slot_processed(&first, &mut processed_slots, &mut processed_slot_order);
+
+        assert!(is_processed_task(
+            &replacement,
+            &processed,
+            &processed_slots
+        ));
     }
 
     #[test]
@@ -1366,6 +1771,107 @@ mod tests {
     }
 
     #[test]
+    fn secondary_tts_prefers_inbound_secondary_audio_model() {
+        let config = SpeechConfig::from_value(&json!({
+          "providers": [
+            {
+              "templateId": "template-default",
+              "providerId": "provider-default",
+              "kind": "openai-compatible",
+              "displayName": "Default Provider",
+              "model": "default-model",
+              "baseUrl": "http://default.test",
+              "transport": "http",
+              "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
+              "region": null,
+              "streamEnabled": false,
+              "timeoutMs": 1000,
+              "systemPromptTemplate": "video-realtime-cn"
+            },
+            {
+              "templateId": "template-secondary",
+              "providerId": "provider-secondary",
+              "kind": "dashscope",
+              "displayName": "Secondary Provider",
+              "model": "old-model",
+              "baseUrl": "http://secondary.test",
+              "transport": "websocket",
+              "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
+              "region": null,
+              "streamEnabled": false,
+              "timeoutMs": 1000,
+              "systemPromptTemplate": "video-realtime-cn"
+            }
+          ],
+          "devices": {
+            "subtitleTranslationMode": "secondary",
+            "subtitleTranslationModelId": "template-default::text-model",
+            "outputSpeechEnabled": true,
+            "inboundSecondaryAudioModelId": "template-secondary::secondary-tts",
+            "inboundRoute": { "latencyControl": {}, "mixControl": {} },
+            "outboundRoute": { "latencyControl": {}, "pushToTalk": {}, "mixControl": {} }
+          },
+          "speech": {
+            "translationAudioSource": "subtitle-tts"
+          }
+        }))
+        .expect("speech config should parse");
+
+        assert!(config.secondary_segment_tts_enabled);
+        assert_eq!(config.provider.provider_id, "provider-secondary");
+        assert_eq!(config.provider.model, "secondary-tts");
+    }
+
+    #[test]
+    fn secondary_tts_skips_livetranslate_and_uses_bare_tts_model() {
+        let config = SpeechConfig::from_value(&json!({
+          "providers": [
+            {
+              "templateId": "template-dashscope-realtime",
+              "providerId": "provider-dashscope",
+              "kind": "dashscope",
+              "displayName": "DashScope",
+              "model": "qwen3.5-livetranslate-flash-realtime",
+              "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
+              "transport": "websocket",
+              "authRef": { "kind": "credential-ref", "reference": "credential://provider/dashscope/default", "headerName": "Authorization", "scheme": "Bearer" },
+              "region": null,
+              "streamEnabled": false,
+              "timeoutMs": 1000,
+              "systemPromptTemplate": "video-realtime-cn"
+            }
+          ],
+          "devices": {
+            "subtitleTranslationMode": "secondary",
+            "subtitleTranslationModelId": "template-deepseek::deepseek-v4-flash",
+            "outputSpeechEnabled": true,
+            "inboundSecondaryAudioModelId": "template-dashscope-realtime::qwen3.5-livetranslate-flash-realtime",
+            "inboundRoute": { "latencyControl": {}, "mixControl": {} },
+            "outboundRoute": { "latencyControl": {}, "pushToTalk": {}, "mixControl": {} }
+          },
+          "speech": {
+            "translationAudioSource": "subtitle-tts",
+            "textToSpeechModelId": "qwen3.5-omni-plus-realtime"
+          }
+        }))
+        .expect("speech config should parse");
+
+        assert!(config.secondary_segment_tts_enabled);
+        assert_eq!(config.provider.provider_id, "provider-dashscope");
+        assert_eq!(config.provider.model, "qwen3.5-omni-plus-realtime");
+    }
+
+    #[test]
+    fn output_level_scales_virtual_mic_samples() {
+        assert_eq!(
+            scale_i16_by_output_level(&[1000, -1000], 50),
+            vec![500, -500]
+        );
+        assert_eq!(scale_i16_by_output_level(&[1000], 0), vec![0]);
+        assert_eq!(scale_i16_by_output_level(&[1000], 200), vec![1000]);
+    }
+
+    #[test]
     fn resolve_model_provider_composite_id_matches_linked_by_template() {
         let config = json!({
             "providers": [
@@ -1460,5 +1966,13 @@ mod tests {
         assert_eq!(playback_volume(66), 0.66);
         assert_eq!(playback_volume(100), 1.0);
         assert_eq!(playback_volume(101), 1.0);
+    }
+
+    #[test]
+    fn speaker_output_name_matching_ignores_case_and_spaces() {
+        let resolved = normalized_device_name("Headphones (iBasso-DC-Series)");
+        let requested = normalized_device_name("ibasso-dc-series");
+
+        assert!(resolved.contains(&requested));
     }
 }

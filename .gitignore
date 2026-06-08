@@ -51,6 +51,8 @@ nul
 # Logs & diagnostics
 # =============================================================================
 *.log
+scripts/diagnostics/CODEX_PLUGIN_REPAIR.md
+scripts/diagnostics/repair-codex-app-plugins.ps1
 
 # =============================================================================
 # Temporary, cache & local config files
@@ -60,6 +62,8 @@ nul
 *.local
 *.pid
 *.jsonl
+apps/desktop/src/i18n/locales/.translation-cache-*.json
+i18n-flat-*.txt
 
 # =============================================================================
 # Sensitive / credential files
@@ -95,6 +99,7 @@ drivers/windows-virtual-mic/package/*.inf
 drivers/windows-virtual-mic/package/*.sys
 drivers/windows-virtual-mic/package/*.cat
 drivers/windows-virtual-mic/package/*.cer
+drivers/windows-virtual-mic/sysvad/**/x64/
 drivers/windows-virtual-mic/sysvad/TabletAudioSample/x64/
 
 # =============================================================================

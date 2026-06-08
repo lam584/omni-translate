@@ -87,7 +87,7 @@ pub(super) fn build_client(timeout_ms: u64) -> Result<Client, ProviderRuntimeErr
 
 pub(super) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool) {
     match provider.kind.as_str() {
-        "openai-compatible" => match provider.transport.as_str() {
+        kind if is_openai_compatible_kind(kind) => match provider.transport.as_str() {
             "http" => ("http".to_string(), false),
             "streaming-http" => {
                 if provider.stream_enabled {
@@ -119,6 +119,13 @@ pub(super) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool)
 pub(super) fn is_dashscope_realtime_websocket_model(model: &str) -> bool {
     let normalized = model.to_ascii_lowercase();
     normalized.contains("realtime") || normalized.contains("live")
+}
+
+fn is_openai_compatible_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "openai-compatible" | "openrouter" | "ollama" | "lmstudio" | "nvidia"
+    )
 }
 
 pub(super) fn join_url(base_url: &str, path: &str) -> Result<String, ProviderRuntimeError> {

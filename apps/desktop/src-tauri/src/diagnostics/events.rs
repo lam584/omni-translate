@@ -465,6 +465,14 @@ pub fn export_diagnostics_bundle(
     })
 }
 
+#[tauri::command]
+pub fn get_live_session_events(
+    audio_state: State<'_, AudioStateStore>,
+) -> Result<String, String> {
+    let snapshot = audio_state.live_session_events.snapshot();
+    serde_json::to_string(&snapshot).map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use std::fs;

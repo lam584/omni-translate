@@ -338,7 +338,7 @@ impl ProviderGateway {
         let started_at = Instant::now();
 
         let execution = match provider.kind.as_str() {
-            "openai-compatible" => self.execute_openai(
+            kind if is_openai_compatible_kind(kind) => self.execute_openai(
                 &provider,
                 &transport_effective,
                 &request_id,
@@ -404,7 +404,7 @@ impl ProviderGateway {
                 input_tokens: None,
                 output_tokens: None,
                 audio_seconds: None,
-                routing_decision: build_routing_decision(
+                routing_decision: ProviderRoutingDecision::for_verdict(
                     "unavailable",
                     LATENCY_BUDGET_MS,
                     fallback_applied,
@@ -448,26 +448,7 @@ impl ProviderGateway {
             ));
         }
 
-        let websocket_timeout = resolve_websocket_timeout(provider.timeout_ms);
-        let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
-        let mut request = websocket_url
-            .as_str()
-            .into_client_request()
-            .map_err(|error| {
-                ProviderRuntimeError::new(
-                    "transport.unavailable",
-                    format!("failed to create realtime audio websocket request: {error}"),
-                )
-            })?;
-        apply_ws_auth(&provider, request.headers_mut())?;
-        apply_ws_custom_headers(&provider, request.headers_mut())?;
-        let (mut socket, _) = connect(request).map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("realtime audio websocket connect failed: {error}"),
-            )
-        })?;
-        apply_websocket_timeouts(&mut socket, websocket_timeout)?;
+        let (mut socket, websocket_timeout) = establish_websocket_connection(&provider)?;
 
         let request_id = format!("realtime-audio-{}", now_marker());
         let safe_id = request_id.replace([':', '-'], "_");
@@ -480,7 +461,7 @@ impl ProviderGateway {
               "You are a speech synthesizer. Read the user-provided {} text aloud exactly. Do not translate, explain, summarize, or add words.",
               target_language
             ),
-            "input_audio_format": "pcm",
+            "input_audio_format": "pcm16",
             "output_audio_format": "pcm",
             "sample_rate": 24000,
             "turn_detection": null
@@ -541,14 +522,10 @@ impl ProviderGateway {
         let started_at = Instant::now();
         let mut pcm_i16 = Vec::new();
         let mut audio_delta_count = 0_u64;
-        let mut event_log = vec![ProviderStreamEventRecord {
-            event_type: "realtime-audio.requested".to_string(),
-            summary: format!("{} realtime audio request started.", provider.display_name),
-            segment_id: None,
-            text_delta: None,
-            text: None,
-            audio_chunk_ref: None,
-        }];
+        let mut event_log = vec![ProviderStreamEventRecord::new(
+            "realtime-audio.requested",
+            &format!("{} realtime audio request started.", provider.display_name),
+        )];
 
         loop {
             let message = socket
@@ -605,18 +582,16 @@ impl ProviderGateway {
 
         let duration_ms = started_at.elapsed().as_millis() as u64;
         let audio_seconds = pcm_i16.len() as f64 / 24_000_f64;
-        event_log.push(ProviderStreamEventRecord {
-            event_type: "realtime-audio.completed".to_string(),
-            summary: format!(
+        event_log.push(ProviderStreamEventRecord::with_audio(
+            "realtime-audio.completed",
+            &format!(
                 "Realtime audio completed: deltas={} samples={}.",
                 audio_delta_count,
                 pcm_i16.len()
             ),
-            segment_id: None,
-            text_delta: None,
-            text: None,
-            audio_chunk_ref: Some(request_id.clone()),
-        });
+            None,
+            request_id.clone(),
+        ));
 
         Ok(TtsSynthesisResult {
             request_id: request_id.clone(),
@@ -665,33 +640,21 @@ impl ProviderGateway {
             return Err(parse_openai_error(response));
         }
 
-        let mut result = ProviderSmokeResult {
-            request_id: request_id.to_string(),
-            provider_id: provider.provider_id.clone(),
-            status: "completed".to_string(),
-            transport_requested: transport_effective.to_string(),
-            transport_effective: transport_effective.to_string(),
-            fallback_applied: false,
-            stream_observed: false,
-            duration_ms: 0,
-            first_event_latency_ms: None,
-            transcript: String::new(),
-            source_language: source_language.to_string(),
-            target_language: target_language.to_string(),
-            event_log: vec![ProviderStreamEventRecord {
-                event_type: "session.started".to_string(),
-                summary: format!("{} 已建立请求会话。", provider.display_name),
-                segment_id: None,
-                text_delta: None,
-                text: None,
-                audio_chunk_ref: None,
-            }],
-            input_tokens: None,
-            output_tokens: None,
-            audio_seconds: None,
-            routing_decision: build_routing_decision("available", 0, false),
-            error: None,
-        };
+        let mut result = ProviderSmokeResult::new_success(
+            request_id.to_string(),
+            provider.provider_id.clone(),
+            transport_effective.to_string(),
+            source_language.to_string(),
+            target_language.to_string(),
+            vec![ProviderStreamEventRecord::new(
+                "session.started",
+                &format!("{} 已建立请求会话。", provider.display_name),
+            )],
+            None,
+            String::new(),
+            None,
+            None,
+        );
         let started = Instant::now();
 
         if transport_effective == "streaming-http" {
@@ -716,41 +679,29 @@ impl ProviderGateway {
                 })?;
 
                 if let Some(delta) = extract_openai_delta(&value) {
-                    if result.first_event_latency_ms.is_none() {
-                        result.first_event_latency_ms = Some(started.elapsed().as_millis() as u64);
-                    }
-                    result.stream_observed = true;
+                    record_first_event_latency(&mut result, &started);
                     result.transcript.push_str(&delta);
-                    result.event_log.push(ProviderStreamEventRecord {
-                        event_type: "translation.delta".to_string(),
-                        summary: format!("收到增量文本: {}", delta),
-                        segment_id: Some("segment-1".to_string()),
-                        text_delta: Some(delta),
-                        text: None,
-                        audio_chunk_ref: None,
-                    });
+                    result.event_log.push(ProviderStreamEventRecord::with_delta(
+                        "translation.delta",
+                        format!("收到增量文本: {}", delta),
+                        "segment-1",
+                        delta,
+                    ));
                 } else if let Some(delta) = extract_openai_reasoning_delta(&value) {
-                    if result.first_event_latency_ms.is_none() {
-                        result.first_event_latency_ms = Some(started.elapsed().as_millis() as u64);
-                    }
-                    result.stream_observed = true;
+                    record_first_event_latency(&mut result, &started);
                     reasoning_transcript.push_str(&delta);
                 }
 
                 if let Some((input_tokens, output_tokens)) = extract_openai_usage(&value) {
                     result.input_tokens = Some(input_tokens);
                     result.output_tokens = Some(output_tokens);
-                    result.event_log.push(ProviderStreamEventRecord {
-                        event_type: "usage.updated".to_string(),
-                        summary: format!(
+                    result.event_log.push(ProviderStreamEventRecord::new(
+                        "usage.updated",
+                        &format!(
                             "usage 已更新: input={} / output={}",
                             input_tokens, output_tokens
                         ),
-                        segment_id: None,
-                        text_delta: None,
-                        text: None,
-                        audio_chunk_ref: None,
-                    });
+                    ));
                 }
             }
 
@@ -761,14 +712,12 @@ impl ProviderGateway {
             }
 
             if !result.transcript.is_empty() {
-                result.event_log.push(ProviderStreamEventRecord {
-                    event_type: "translation.completed".to_string(),
-                    summary: "流式翻译分段已完成。".to_string(),
-                    segment_id: Some("segment-1".to_string()),
-                    text_delta: None,
-                    text: Some(result.transcript.clone()),
-                    audio_chunk_ref: None,
-                });
+                result.event_log.push(ProviderStreamEventRecord::with_text(
+                    "translation.completed",
+                    "流式翻译分段已完成。",
+                    "segment-1",
+                    result.transcript.clone(),
+                ));
             }
         } else {
             let value: Value = response.json().map_err(normalize_transport_error)?;
@@ -779,24 +728,18 @@ impl ProviderGateway {
                 result.input_tokens = Some(input_tokens);
                 result.output_tokens = Some(output_tokens);
             }
-            result.event_log.push(ProviderStreamEventRecord {
-                event_type: "translation.completed".to_string(),
-                summary: "HTTP 请求已完成整段翻译。".to_string(),
-                segment_id: Some("segment-1".to_string()),
-                text_delta: None,
-                text: Some(text),
-                audio_chunk_ref: None,
-            });
+            result.event_log.push(ProviderStreamEventRecord::with_text(
+                "translation.completed",
+                "HTTP 请求已完成整段翻译。",
+                "segment-1",
+                text,
+            ));
         }
 
-        result.event_log.push(ProviderStreamEventRecord {
-            event_type: "response.completed".to_string(),
-            summary: "Provider 响应已结束。".to_string(),
-            segment_id: None,
-            text_delta: None,
-            text: None,
-            audio_chunk_ref: None,
-        });
+        result.event_log.push(ProviderStreamEventRecord::new(
+            "response.completed",
+            "Provider 响应已结束。",
+        ));
 
         Ok(result)
     }
@@ -850,53 +793,32 @@ impl ProviderGateway {
 
         let value: Value = response.json().map_err(normalize_transport_error)?;
         let text = extract_dashscope_text(&value)?;
-        Ok(ProviderSmokeResult {
-            request_id: request_id.to_string(),
-            provider_id: provider.provider_id.clone(),
-            status: "completed".to_string(),
-            transport_requested: transport_effective.to_string(),
-            transport_effective: transport_effective.to_string(),
-            fallback_applied: false,
-            stream_observed: false,
-            duration_ms: 0,
-            first_event_latency_ms: Some(0),
-            transcript: text.clone(),
-            source_language: source_language.to_string(),
-            target_language: target_language.to_string(),
-            event_log: vec![
-                ProviderStreamEventRecord {
-                    event_type: "session.started".to_string(),
-                    summary: format!("{} 已建立请求会话。", provider.display_name),
-                    segment_id: None,
-                    text_delta: None,
-                    text: None,
-                    audio_chunk_ref: None,
-                },
-                ProviderStreamEventRecord {
-                    event_type: "translation.completed".to_string(),
-                    summary: "DashScope HTTP 返回完整文本。".to_string(),
-                    segment_id: Some("segment-1".to_string()),
-                    text_delta: None,
-                    text: Some(text),
-                    audio_chunk_ref: None,
-                },
-                ProviderStreamEventRecord {
-                    event_type: "response.completed".to_string(),
-                    summary: "Provider 响应已结束。".to_string(),
-                    segment_id: None,
-                    text_delta: None,
-                    text: None,
-                    audio_chunk_ref: None,
-                },
+        Ok(ProviderSmokeResult::new_success(
+            request_id.to_string(),
+            provider.provider_id.clone(),
+            transport_effective.to_string(),
+            source_language.to_string(),
+            target_language.to_string(),
+            vec![
+                ProviderStreamEventRecord::new(
+                    "session.started",
+                    &format!("{} 已建立请求会话。", provider.display_name),
+                ),
+                ProviderStreamEventRecord::with_text(
+                    "translation.completed",
+                    "DashScope HTTP 返回完整文本。",
+                    "segment-1",
+                    text.clone(),
+                ),
+                ProviderStreamEventRecord::new("response.completed", "Provider 响应已结束。"),
             ],
-            input_tokens: value.pointer("/usage/input_tokens").and_then(Value::as_u64),
-            output_tokens: value
+            Some(0),
+            text,
+            value.pointer("/usage/input_tokens").and_then(Value::as_u64),
+            value
                 .pointer("/usage/output_tokens")
                 .and_then(Value::as_u64),
-            audio_seconds: None,
-            routing_decision: build_routing_decision("available", 0, false),
-            error: None,
-        })
+        ))
     }
 
     fn execute_dashscope_websocket(
@@ -917,26 +839,7 @@ impl ProviderGateway {
             );
         }
 
-        let websocket_timeout = resolve_websocket_timeout(provider.timeout_ms);
-        let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
-        let mut request = websocket_url
-            .as_str()
-            .into_client_request()
-            .map_err(|error| {
-                ProviderRuntimeError::new(
-                    "transport.unavailable",
-                    format!("无法创建 WebSocket 请求: {error}"),
-                )
-            })?;
-        apply_ws_auth(provider, request.headers_mut())?;
-        apply_ws_custom_headers(provider, request.headers_mut())?;
-        let (mut socket, _) = connect(request).map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("DashScope WebSocket 建链失败: {error}"),
-            )
-        })?;
-        apply_websocket_timeouts(&mut socket, websocket_timeout)?;
+        let (mut socket, websocket_timeout) = establish_websocket_connection(provider)?;
         let payload = json!({
           "request_id": request_id,
           "model": provider.model,
@@ -958,33 +861,21 @@ impl ProviderGateway {
             })?;
 
         let started = Instant::now();
-        let mut result = ProviderSmokeResult {
-            request_id: request_id.to_string(),
-            provider_id: provider.provider_id.clone(),
-            status: "completed".to_string(),
-            transport_requested: "websocket".to_string(),
-            transport_effective: "websocket".to_string(),
-            fallback_applied: false,
-            stream_observed: false,
-            duration_ms: 0,
-            first_event_latency_ms: None,
-            transcript: String::new(),
-            source_language: source_language.to_string(),
-            target_language: target_language.to_string(),
-            event_log: vec![ProviderStreamEventRecord {
-                event_type: "session.started".to_string(),
-                summary: format!("{} WebSocket 会话已建立。", provider.display_name),
-                segment_id: None,
-                text_delta: None,
-                text: None,
-                audio_chunk_ref: None,
-            }],
-            input_tokens: None,
-            output_tokens: None,
-            audio_seconds: None,
-            routing_decision: build_routing_decision("available", 0, false),
-            error: None,
-        };
+        let mut result = ProviderSmokeResult::new_success(
+            request_id.to_string(),
+            provider.provider_id.clone(),
+            "websocket".to_string(),
+            source_language.to_string(),
+            target_language.to_string(),
+            vec![ProviderStreamEventRecord::new(
+                "session.started",
+                &format!("{} WebSocket 会话已建立。", provider.display_name),
+            )],
+            None,
+            String::new(),
+            None,
+            None,
+        );
 
         loop {
             let message = socket
@@ -1000,47 +891,35 @@ impl ProviderGateway {
                     })?;
 
                     if let Some(delta) = extract_dashscope_delta(&value) {
-                        if result.first_event_latency_ms.is_none() {
-                            result.first_event_latency_ms =
-                                Some(started.elapsed().as_millis() as u64);
-                        }
-                        result.stream_observed = true;
+                        record_first_event_latency(&mut result, &started);
                         result.transcript.push_str(&delta);
-                        result.event_log.push(ProviderStreamEventRecord {
-                            event_type: "translation.delta".to_string(),
-                            summary: format!("收到 DashScope 增量文本: {}", delta),
-                            segment_id: Some("segment-1".to_string()),
-                            text_delta: Some(delta),
-                            text: None,
-                            audio_chunk_ref: None,
-                        });
+                        result.event_log.push(ProviderStreamEventRecord::with_delta(
+                            "translation.delta",
+                            format!("收到 DashScope 增量文本: {}", delta),
+                            "segment-1",
+                            delta,
+                        ));
                     }
 
                     if let Some((input_tokens, output_tokens)) = extract_dashscope_usage(&value) {
                         result.input_tokens = Some(input_tokens);
                         result.output_tokens = Some(output_tokens);
-                        result.event_log.push(ProviderStreamEventRecord {
-                            event_type: "usage.updated".to_string(),
-                            summary: format!(
+                        result.event_log.push(ProviderStreamEventRecord::new(
+                            "usage.updated",
+                            &format!(
                                 "usage 已更新: input={} / output={}",
                                 input_tokens, output_tokens
                             ),
-                            segment_id: None,
-                            text_delta: None,
-                            text: None,
-                            audio_chunk_ref: None,
-                        });
+                        ));
                     }
 
                     if extract_dashscope_completed(&value) {
-                        result.event_log.push(ProviderStreamEventRecord {
-                            event_type: "translation.completed".to_string(),
-                            summary: "DashScope WebSocket 分段已完成。".to_string(),
-                            segment_id: Some("segment-1".to_string()),
-                            text_delta: None,
-                            text: Some(result.transcript.clone()),
-                            audio_chunk_ref: None,
-                        });
+                        result.event_log.push(ProviderStreamEventRecord::with_text(
+                            "translation.completed",
+                            "DashScope WebSocket 分段已完成。",
+                            "segment-1",
+                            result.transcript.clone(),
+                        ));
                         break;
                     }
                 }
@@ -1049,14 +928,10 @@ impl ProviderGateway {
             }
         }
 
-        result.event_log.push(ProviderStreamEventRecord {
-            event_type: "response.completed".to_string(),
-            summary: "Provider 响应已结束。".to_string(),
-            segment_id: None,
-            text_delta: None,
-            text: None,
-            audio_chunk_ref: None,
-        });
+        result.event_log.push(ProviderStreamEventRecord::new(
+            "response.completed",
+            "Provider 响应已结束。",
+        ));
 
         Ok(result)
     }
@@ -1069,26 +944,7 @@ impl ProviderGateway {
         source_language: &str,
         target_language: &str,
     ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
-        let websocket_timeout = resolve_websocket_timeout(provider.timeout_ms);
-        let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
-        let mut request = websocket_url
-            .as_str()
-            .into_client_request()
-            .map_err(|error| {
-                ProviderRuntimeError::new(
-                    "transport.unavailable",
-                    format!("无法创建 WebSocket 请求: {error}"),
-                )
-            })?;
-        apply_ws_auth(provider, request.headers_mut())?;
-        apply_ws_custom_headers(provider, request.headers_mut())?;
-        let (mut socket, _) = connect(request).map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("DashScope Realtime WebSocket 建链失败: {error}"),
-            )
-        })?;
-        apply_websocket_timeouts(&mut socket, websocket_timeout)?;
+        let (mut socket, websocket_timeout) = establish_websocket_connection(provider)?;
 
         let safe_id = request_id.replace([':', '-'], "_");
         let instructions = format!(
@@ -1151,33 +1007,21 @@ impl ProviderGateway {
             })?;
 
         let started = Instant::now();
-        let mut result = ProviderSmokeResult {
-            request_id: request_id.to_string(),
-            provider_id: provider.provider_id.clone(),
-            status: "completed".to_string(),
-            transport_requested: "websocket".to_string(),
-            transport_effective: "websocket".to_string(),
-            fallback_applied: false,
-            stream_observed: false,
-            duration_ms: 0,
-            first_event_latency_ms: None,
-            transcript: String::new(),
-            source_language: source_language.to_string(),
-            target_language: target_language.to_string(),
-            event_log: vec![ProviderStreamEventRecord {
-                event_type: "session.started".to_string(),
-                summary: format!("{} Realtime WebSocket 会话已建立。", provider.display_name),
-                segment_id: None,
-                text_delta: None,
-                text: None,
-                audio_chunk_ref: None,
-            }],
-            input_tokens: None,
-            output_tokens: None,
-            audio_seconds: None,
-            routing_decision: build_routing_decision("available", 0, false),
-            error: None,
-        };
+        let mut result = ProviderSmokeResult::new_success(
+            request_id.to_string(),
+            provider.provider_id.clone(),
+            "websocket".to_string(),
+            source_language.to_string(),
+            target_language.to_string(),
+            vec![ProviderStreamEventRecord::new(
+                "session.started",
+                &format!("{} Realtime WebSocket 会话已建立。", provider.display_name),
+            )],
+            None,
+            String::new(),
+            None,
+            None,
+        );
 
         loop {
             let message = socket
@@ -1196,20 +1040,14 @@ impl ProviderGateway {
 
                     if event_type == "response.text.delta" {
                         if let Some(delta) = value.pointer("/delta").and_then(Value::as_str) {
-                            if result.first_event_latency_ms.is_none() {
-                                result.first_event_latency_ms =
-                                    Some(started.elapsed().as_millis() as u64);
-                            }
-                            result.stream_observed = true;
+                            record_first_event_latency(&mut result, &started);
                             result.transcript.push_str(delta);
-                            result.event_log.push(ProviderStreamEventRecord {
-                                event_type: "translation.delta".to_string(),
-                                summary: format!("收到 DashScope Realtime 增量文本: {}", delta),
-                                segment_id: Some("segment-1".to_string()),
-                                text_delta: Some(delta.to_string()),
-                                text: None,
-                                audio_chunk_ref: None,
-                            });
+                            result.event_log.push(ProviderStreamEventRecord::with_delta(
+                                "translation.delta",
+                                format!("收到 DashScope Realtime 增量文本: {}", delta),
+                                "segment-1",
+                                delta.to_string(),
+                            ));
                         }
                     }
 
@@ -1227,26 +1065,17 @@ impl ProviderGateway {
                                 usage.pointer("/output_tokens").and_then(Value::as_u64);
                             let input = result.input_tokens.unwrap_or(0);
                             let output = result.output_tokens.unwrap_or(0);
-                            result.event_log.push(ProviderStreamEventRecord {
-                                event_type: "usage.updated".to_string(),
-                                summary: format!(
-                                    "usage 已更新: input={} / output={}",
-                                    input, output
-                                ),
-                                segment_id: None,
-                                text_delta: None,
-                                text: None,
-                                audio_chunk_ref: None,
-                            });
+                            result.event_log.push(ProviderStreamEventRecord::new(
+                                "usage.updated",
+                                &format!("usage 已更新: input={} / output={}", input, output),
+                            ));
                         }
-                        result.event_log.push(ProviderStreamEventRecord {
-                            event_type: "translation.completed".to_string(),
-                            summary: "DashScope Realtime 响应已完成。".to_string(),
-                            segment_id: Some("segment-1".to_string()),
-                            text_delta: None,
-                            text: Some(result.transcript.clone()),
-                            audio_chunk_ref: None,
-                        });
+                        result.event_log.push(ProviderStreamEventRecord::with_text(
+                            "translation.completed",
+                            "DashScope Realtime 响应已完成。",
+                            "segment-1",
+                            result.transcript.clone(),
+                        ));
                         break;
                     }
                 }
@@ -1255,14 +1084,10 @@ impl ProviderGateway {
             }
         }
 
-        result.event_log.push(ProviderStreamEventRecord {
-            event_type: "response.completed".to_string(),
-            summary: "Provider 响应已结束。".to_string(),
-            segment_id: None,
-            text_delta: None,
-            text: None,
-            audio_chunk_ref: None,
-        });
+        result.event_log.push(ProviderStreamEventRecord::new(
+            "response.completed",
+            "Provider 响应已结束。",
+        ));
 
         Ok(result)
     }
@@ -1300,6 +1125,40 @@ fn apply_tcp_stream_timeouts(
         )
     })?;
     Ok(())
+}
+
+fn establish_websocket_connection(
+    provider: &ProviderDraftInput,
+) -> Result<(WebSocket<MaybeTlsStream<TcpStream>>, Duration), ProviderRuntimeError> {
+    let websocket_timeout = resolve_websocket_timeout(provider.timeout_ms);
+    let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
+    let mut request = websocket_url
+        .as_str()
+        .into_client_request()
+        .map_err(|error| {
+            ProviderRuntimeError::new(
+                "transport.unavailable",
+                format!("无法创建 WebSocket 请求: {error}"),
+            )
+        })?;
+    apply_ws_auth(provider, request.headers_mut())?;
+    apply_ws_custom_headers(provider, request.headers_mut())?;
+    let (socket, _) = connect(request).map_err(|error| {
+        ProviderRuntimeError::new(
+            "transport.unavailable",
+            format!("WebSocket 建链失败: {error}"),
+        )
+    })?;
+    let mut socket = socket;
+    apply_websocket_timeouts(&mut socket, websocket_timeout)?;
+    Ok((socket, websocket_timeout))
+}
+
+fn record_first_event_latency(result: &mut ProviderSmokeResult, started: &Instant) {
+    if result.first_event_latency_ms.is_none() {
+        result.first_event_latency_ms = Some(started.elapsed().as_millis() as u64);
+    }
+    result.stream_observed = true;
 }
 
 fn normalize_websocket_read_error(
@@ -1368,27 +1227,51 @@ fn build_reqwest_headers(provider: &ProviderDraftInput) -> Result<HeaderMap, Pro
     Ok(headers)
 }
 
-fn apply_auth_header(
+fn resolve_auth_header(
     provider: &ProviderDraftInput,
-    headers: &mut HeaderMap,
-) -> Result<(), ProviderRuntimeError> {
+) -> Result<Option<(String, String)>, ProviderRuntimeError> {
     let secret = resolve_secret(&provider.auth_ref)?;
     if let Some(secret) = secret {
-        let header_name = HeaderName::from_bytes(provider.auth_ref.header_name.as_bytes())
-            .map_err(|error| {
-                ProviderRuntimeError::new("request.invalid", format!("非法认证头字段: {error}"))
-            })?;
         let value = match provider.auth_ref.scheme.as_str() {
             "bearer" => format!("Bearer {secret}"),
             "api-key" => secret,
             _ => secret,
         };
+        Ok(Some((provider.auth_ref.header_name.clone(), value)))
+    } else {
+        Ok(None)
+    }
+}
+
+fn resolve_custom_headers(
+    provider: &ProviderDraftInput,
+) -> Result<Vec<(String, String)>, ProviderRuntimeError> {
+    provider
+        .custom_headers
+        .iter()
+        .filter(|item| item.enabled && !item.name.trim().is_empty())
+        .map(|header| {
+            Ok((
+                header.name.trim().to_string(),
+                header.value.trim().to_string(),
+            ))
+        })
+        .collect()
+}
+
+fn apply_auth_header(
+    provider: &ProviderDraftInput,
+    headers: &mut HeaderMap,
+) -> Result<(), ProviderRuntimeError> {
+    if let Some((name, value)) = resolve_auth_header(provider)? {
+        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+            ProviderRuntimeError::new("request.invalid", format!("非法认证头字段: {error}"))
+        })?;
         let header_value = HeaderValue::from_str(&value).map_err(|error| {
             ProviderRuntimeError::new("request.invalid", format!("非法认证头值: {error}"))
         })?;
         headers.insert(header_name, header_value);
     }
-
     Ok(())
 }
 
@@ -1396,25 +1279,16 @@ pub(crate) fn apply_ws_auth(
     provider: &ProviderDraftInput,
     headers: &mut tungstenite::http::HeaderMap,
 ) -> Result<(), ProviderRuntimeError> {
-    let secret = resolve_secret(&provider.auth_ref)?;
-    if let Some(secret) = secret {
-        let header_name = tungstenite::http::header::HeaderName::from_bytes(
-            provider.auth_ref.header_name.as_bytes(),
-        )
-        .map_err(|error| {
-            ProviderRuntimeError::new("request.invalid", format!("非法认证头字段: {error}"))
-        })?;
-        let value = match provider.auth_ref.scheme.as_str() {
-            "bearer" => format!("Bearer {secret}"),
-            "api-key" => secret,
-            _ => secret,
-        };
+    if let Some((name, value)) = resolve_auth_header(provider)? {
+        let header_name = tungstenite::http::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|error| {
+                ProviderRuntimeError::new("request.invalid", format!("非法认证头字段: {error}"))
+            })?;
         let header_value = tungstenite::http::HeaderValue::from_str(&value).map_err(|error| {
             ProviderRuntimeError::new("request.invalid", format!("非法认证头值: {error}"))
         })?;
         headers.insert(header_name, header_value);
     }
-
     Ok(())
 }
 
@@ -1422,21 +1296,15 @@ fn apply_custom_headers(
     provider: &ProviderDraftInput,
     headers: &mut HeaderMap,
 ) -> Result<(), ProviderRuntimeError> {
-    for header in provider
-        .custom_headers
-        .iter()
-        .filter(|item| item.enabled && !item.name.trim().is_empty())
-    {
-        let header_name =
-            HeaderName::from_bytes(header.name.trim().as_bytes()).map_err(|error| {
-                ProviderRuntimeError::new("request.invalid", format!("非法自定义头字段: {error}"))
-            })?;
-        let header_value = HeaderValue::from_str(header.value.trim()).map_err(|error| {
+    for (name, value) in resolve_custom_headers(provider)? {
+        let header_name = HeaderName::from_bytes(name.as_bytes()).map_err(|error| {
+            ProviderRuntimeError::new("request.invalid", format!("非法自定义头字段: {error}"))
+        })?;
+        let header_value = HeaderValue::from_str(&value).map_err(|error| {
             ProviderRuntimeError::new("request.invalid", format!("非法自定义头值: {error}"))
         })?;
         headers.insert(header_name, header_value);
     }
-
     Ok(())
 }
 
@@ -1444,26 +1312,16 @@ fn apply_ws_custom_headers(
     provider: &ProviderDraftInput,
     headers: &mut tungstenite::http::HeaderMap,
 ) -> Result<(), ProviderRuntimeError> {
-    for header in provider
-        .custom_headers
-        .iter()
-        .filter(|item| item.enabled && !item.name.trim().is_empty())
-    {
-        let header_name =
-            tungstenite::http::header::HeaderName::from_bytes(header.name.trim().as_bytes())
-                .map_err(|error| {
-                    ProviderRuntimeError::new(
-                        "request.invalid",
-                        format!("非法自定义头字段: {error}"),
-                    )
-                })?;
-        let header_value =
-            tungstenite::http::HeaderValue::from_str(header.value.trim()).map_err(|error| {
-                ProviderRuntimeError::new("request.invalid", format!("非法自定义头值: {error}"))
+    for (name, value) in resolve_custom_headers(provider)? {
+        let header_name = tungstenite::http::header::HeaderName::from_bytes(name.as_bytes())
+            .map_err(|error| {
+                ProviderRuntimeError::new("request.invalid", format!("非法自定义头字段: {error}"))
             })?;
+        let header_value = tungstenite::http::HeaderValue::from_str(&value).map_err(|error| {
+            ProviderRuntimeError::new("request.invalid", format!("非法自定义头值: {error}"))
+        })?;
         headers.insert(header_name, header_value);
     }
-
     Ok(())
 }
 
@@ -1527,7 +1385,7 @@ fn build_messages(
 
 fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool) {
     match provider.kind.as_str() {
-        "openai-compatible" => match provider.transport.as_str() {
+        kind if is_openai_compatible_kind(kind) => match provider.transport.as_str() {
             "http" => ("http".to_string(), false),
             "streaming-http" => {
                 if provider.stream_enabled {
@@ -1560,30 +1418,7 @@ fn build_routing_decision(
     latency_ms: u64,
     fallback_applied: bool,
 ) -> ProviderRoutingDecision {
-    match verdict {
-        "available" => ProviderRoutingDecision {
-            subtitle_priority: "balanced".to_string(),
-            speech_disposition: "ready".to_string(),
-            rationale: if fallback_applied {
-                "已做传输回退，但当前延迟和结构稳定性仍满足实时要求。".to_string()
-            } else {
-                format!("当前延迟 {} ms，允许字幕与译音并行。", latency_ms)
-            },
-        },
-        "realtime-risk" => ProviderRoutingDecision {
-            subtitle_priority: "subtitle-first".to_string(),
-            speech_disposition: "deferred".to_string(),
-            rationale: format!(
-                "当前延迟 {} ms 超过预算，优先保证字幕不断流，译音进入 deferred。",
-                latency_ms
-            ),
-        },
-        _ => ProviderRoutingDecision {
-            subtitle_priority: "subtitle-first".to_string(),
-            speech_disposition: "queued".to_string(),
-            rationale: "当前 Provider 不可用或响应结构不稳定，禁止进入实时主链路。".to_string(),
-        },
-    }
+    ProviderRoutingDecision::for_verdict(verdict, latency_ms, fallback_applied)
 }
 
 fn build_probe_guidance(
@@ -1627,7 +1462,10 @@ fn resolve_models_endpoint(provider: &ProviderDraftInput) -> Result<String, Prov
             &normalize_dashscope_compatible_base_url(&provider.base_url),
             "models",
         ),
-        "openai-compatible" => join_url(&provider.base_url, "models"),
+        kind if is_openai_compatible_kind(kind) => join_url(
+            &normalize_openai_compatible_base_url(&provider.base_url),
+            "models",
+        ),
         _ => Err(ProviderRuntimeError::new(
             "request.invalid",
             "当前 Provider 不支持拉取模型目录。",
@@ -1648,6 +1486,137 @@ fn normalize_dashscope_compatible_base_url(base_url: &str) -> String {
     }
 
     format!("{}/compatible-mode/v1", base_url.trim_end_matches('/'))
+}
+
+fn normalize_openai_compatible_base_url(base_url: &str) -> String {
+    let trimmed = base_url.trim_end_matches('/');
+    if trimmed.ends_with("/models") {
+        return trimmed
+            .trim_end_matches("/models")
+            .trim_end_matches('/')
+            .to_string();
+    }
+    trimmed.to_string()
+}
+
+fn is_openai_compatible_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "openai-compatible" | "openrouter" | "ollama" | "lmstudio" | "nvidia"
+    )
+}
+
+#[allow(dead_code)]
+fn resolve_openrouter_audio_endpoint(
+    provider: &ProviderDraftInput,
+    api_mode: &str,
+) -> Result<String, ProviderRuntimeError> {
+    if provider.kind != "openrouter" {
+        return Err(ProviderRuntimeError::new(
+            "request.invalid",
+            format!(
+                "OpenRouter audio endpoint requires provider kind openrouter, got {}",
+                provider.kind
+            ),
+        ));
+    }
+
+    let path = match api_mode {
+        "transcription" | "audio/transcriptions" | "openrouter-transcription" => {
+            "audio/transcriptions"
+        }
+        "speech" | "audio/speech" | "openrouter-audio" => "audio/speech",
+        other => {
+            return Err(ProviderRuntimeError::new(
+                "request.invalid",
+                format!("unsupported OpenRouter audio API mode: {other}"),
+            ))
+        }
+    };
+
+    join_url(&normalize_openai_compatible_base_url(&provider.base_url), path)
+}
+
+#[allow(dead_code)]
+fn build_qwen_tts_realtime_session_update(mode: &str) -> Result<Value, ProviderRuntimeError> {
+    if !matches!(mode, "server_commit" | "commit") {
+        return Err(ProviderRuntimeError::new(
+            "request.invalid",
+            format!("unsupported Qwen TTS realtime mode: {mode}"),
+        ));
+    }
+
+    Ok(json!({
+        "type": "session.update",
+        "session": {
+            "mode": mode
+        }
+    }))
+}
+
+#[allow(dead_code)]
+fn build_qwen_tts_realtime_text_append(event_id: &str, text: &str) -> Value {
+    json!({
+        "event_id": event_id,
+        "type": "input_text_buffer.append",
+        "text": text
+    })
+}
+
+#[allow(dead_code)]
+fn build_qwen_tts_realtime_text_commit(event_id: &str) -> Value {
+    json!({
+        "event_id": event_id,
+        "type": "input_text_buffer.commit"
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[allow(dead_code)]
+struct NvidiaPipelinePlan {
+    asr_model: String,
+    mt_model: String,
+    tts_model: String,
+    transport: String,
+}
+
+#[allow(dead_code)]
+fn build_nvidia_pipeline_plan(
+    provider: &ProviderDraftInput,
+) -> Result<NvidiaPipelinePlan, ProviderRuntimeError> {
+    if provider.kind != "nvidia" {
+        return Err(ProviderRuntimeError::new(
+            "request.invalid",
+            format!(
+                "NVIDIA pipeline adapter requires provider kind nvidia, got {}",
+                provider.kind
+            ),
+        ));
+    }
+
+    let model = provider.model.to_ascii_lowercase();
+    let asr_model = if model.contains("parakeet") || model.contains("whisper") {
+        provider.model.clone()
+    } else {
+        "nvidia/parakeet-tdt-0.6b-v3".to_string()
+    };
+    let tts_model = if model.contains("magpie") {
+        provider.model.clone()
+    } else {
+        "nvidia/magpie-tts-multilingual".to_string()
+    };
+    let mt_model = if is_text_generation_model_name(&model) && !model.contains("magpie") {
+        provider.model.clone()
+    } else {
+        "nvidia/llama-3.1-nemotron-70b-instruct".to_string()
+    };
+
+    Ok(NvidiaPipelinePlan {
+        asr_model,
+        mt_model,
+        tts_model,
+        transport: "pipeline_asr_mt_tts".to_string(),
+    })
 }
 
 fn parse_model_catalog_response(
@@ -1699,22 +1668,89 @@ fn parse_model_catalog_response(
 
 fn derive_model_capabilities(model_id: &str) -> Vec<String> {
     let normalized = model_id.to_ascii_lowercase();
-    let mut capabilities = vec!["translation".to_string()];
+    let mut capabilities: Vec<String> = Vec::new();
 
-    if normalized.contains("realtime") || normalized.contains("live") {
-        capabilities.push("realtime-translation".to_string());
+    if is_stt_model_name(&normalized) {
+        push_capability(&mut capabilities, "speech-to-text");
     }
 
-    if normalized.contains("tts")
+    if is_tts_model_name(&normalized) {
+        push_capability(&mut capabilities, "text-to-speech");
+    }
+
+    if is_s2s_model_name(&normalized) {
+        push_capability(&mut capabilities, "speech-to-speech");
+    }
+
+    if is_text_generation_model_name(&normalized) && capabilities.is_empty() {
+        push_capability(&mut capabilities, "text-generation");
+    }
+
+    capabilities
+}
+
+fn push_capability(capabilities: &mut Vec<String>, capability: &str) {
+    if !capabilities.iter().any(|item| item == capability) {
+        capabilities.push(capability.to_string());
+    }
+}
+
+fn is_stt_model_name(normalized: &str) -> bool {
+    normalized.contains("asr")
+        || normalized.contains("transcribe")
+        || normalized.contains("whisper")
+        || normalized.contains("parakeet")
+        || normalized.contains("chirp")
+        || normalized.contains("voxtral")
+        || normalized.contains("sensevoice")
+        || normalized.contains("paraformer")
+        || normalized.contains("gummy")
+        || normalized.contains("omni")
+        || normalized.contains("livetranslate")
+        || normalized.contains("realtime")
+        || (normalized.contains("gemini")
+            && (normalized.contains("live") || normalized.contains("native-audio")))
+}
+
+fn is_tts_model_name(normalized: &str) -> bool {
+    normalized.contains("tts")
         || normalized.contains("speech")
         || normalized.contains("audio")
         || normalized.contains("cosyvoice")
         || normalized.contains("sambert")
-    {
-        capabilities.push("text-to-speech".to_string());
-    }
+        || normalized.contains("magpie")
+        || normalized.contains("omni")
+        || normalized.contains("gpt-realtime")
+        || (normalized.contains("gemini")
+            && (normalized.contains("live") || normalized.contains("native-audio")))
+}
 
-    capabilities
+fn is_s2s_model_name(normalized: &str) -> bool {
+    normalized.contains("omni")
+        || normalized.contains("livetranslate")
+       || normalized.contains("gpt-realtime")
+        || normalized.contains("gpt-4o-realtime")
+       || normalized.contains("gpt-audio")
+        || (normalized.contains("gemini")
+            && (normalized.contains("live") || normalized.contains("native-audio")))
+}
+
+fn is_text_generation_model_name(normalized: &str) -> bool {
+    normalized.contains("chat")
+        || normalized.contains("completion")
+        || normalized.contains("qwen")
+        || normalized.contains("gpt")
+        || normalized.contains("deepseek")
+        || normalized.contains("claude")
+        || normalized.contains("gemini")
+        || normalized.contains("glm")
+        || normalized.contains("llama")
+        || normalized.contains("mistral")
+        || normalized.contains("yi")
+        || normalized.contains("nemotron")
+        || normalized.contains("local")
+        || normalized.contains("ollama")
+        || normalized.contains("lmstudio")
 }
 
 pub(crate) fn to_websocket_url(base_url: &str, model: &str) -> Result<Url, ProviderRuntimeError> {
@@ -1761,32 +1797,35 @@ fn normalize_transport_error(error: reqwest::Error) -> ProviderRuntimeError {
 }
 
 fn parse_openai_error(response: Response) -> ProviderRuntimeError {
-    let status = response.status().as_u16();
-    let body = response.text().unwrap_or_default();
-    let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-    let provider_code = value
-        .pointer("/error/code")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let message = value
-        .pointer("/error/message")
-        .and_then(Value::as_str)
-        .unwrap_or("OpenAI Compatible 上游返回错误");
-    map_error_from_status_and_code(status, provider_code, message).with_http_status(status)
+    parse_provider_error(
+        response,
+        "/error/code",
+        "/error/message",
+        "OpenAI Compatible 上游返回错误",
+    )
 }
 
 fn parse_dashscope_error(response: Response) -> ProviderRuntimeError {
+    parse_provider_error(response, "/code", "/message", "DashScope 上游返回错误")
+}
+
+fn parse_provider_error(
+    response: Response,
+    code_pointer: &str,
+    message_pointer: &str,
+    default_message: &str,
+) -> ProviderRuntimeError {
     let status = response.status().as_u16();
     let body = response.text().unwrap_or_default();
     let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     let provider_code = value
-        .pointer("/code")
+        .pointer(code_pointer)
         .and_then(Value::as_str)
         .unwrap_or_default();
     let message = value
-        .pointer("/message")
+        .pointer(message_pointer)
         .and_then(Value::as_str)
-        .unwrap_or("DashScope 上游返回错误");
+        .unwrap_or(default_message);
     map_error_from_status_and_code(status, provider_code, message).with_http_status(status)
 }
 
@@ -2572,7 +2611,74 @@ mod tests {
         assert!(catalog.models[1]
             .capabilities
             .iter()
-            .any(|item| item == "realtime-translation"));
+            .any(|item| item == "speech-to-speech"));
+        assert!(catalog.models[1]
+            .capabilities
+            .iter()
+            .any(|item| item == "speech-to-text"));
+    }
+
+    #[test]
+    fn openrouter_model_catalog_reads_openai_compatible_models_endpoint() {
+        let endpoint = resolve_models_endpoint(&ProviderDraftInput {
+            kind: "openrouter".to_string(),
+            base_url: "https://openrouter.ai/api/v1/models".to_string(),
+            ..openai_provider("https://openrouter.ai/api/v1".to_string())
+        })
+        .expect("models endpoint should resolve");
+
+        assert_eq!(endpoint, "https://openrouter.ai/api/v1/models");
+        assert_eq!(
+            derive_model_capabilities("nvidia/parakeet-tdt-0.6b-v3"),
+            vec!["speech-to-text".to_string()]
+        );
+        assert_eq!(
+            derive_model_capabilities("openai/gpt-audio"),
+            vec!["text-to-speech".to_string(), "speech-to-speech".to_string()]
+        );
+    }
+
+    #[test]
+    fn protocol_adapters_build_http_audio_tts_and_pipeline_shapes() {
+        let openrouter = ProviderDraftInput {
+            kind: "openrouter".to_string(),
+            ..openai_provider("https://openrouter.ai/api/v1".to_string())
+        };
+        assert_eq!(
+            resolve_openrouter_audio_endpoint(&openrouter, "openrouter-transcription")
+                .expect("OpenRouter transcription endpoint should resolve"),
+            "https://openrouter.ai/api/v1/audio/transcriptions"
+        );
+        assert_eq!(
+            resolve_openrouter_audio_endpoint(&openrouter, "openrouter-audio")
+                .expect("OpenRouter speech endpoint should resolve"),
+            "https://openrouter.ai/api/v1/audio/speech"
+        );
+
+        let server_commit = build_qwen_tts_realtime_session_update("server_commit")
+            .expect("Qwen TTS server_commit should build");
+        assert_eq!(
+            server_commit.pointer("/session/mode").and_then(Value::as_str),
+            Some("server_commit")
+        );
+        assert_eq!(
+            build_qwen_tts_realtime_text_append("evt-1", "hello")["type"],
+            "input_text_buffer.append"
+        );
+        assert_eq!(
+            build_qwen_tts_realtime_text_commit("evt-2")["type"],
+            "input_text_buffer.commit"
+        );
+
+        let nvidia = ProviderDraftInput {
+            kind: "nvidia".to_string(),
+            model: "nvidia/parakeet-tdt-0.6b-v3".to_string(),
+            ..openai_provider("https://integrate.api.nvidia.com/v1".to_string())
+        };
+        let plan = build_nvidia_pipeline_plan(&nvidia).expect("NVIDIA pipeline should plan");
+        assert_eq!(plan.asr_model, "nvidia/parakeet-tdt-0.6b-v3");
+        assert_eq!(plan.tts_model, "nvidia/magpie-tts-multilingual");
+        assert_eq!(plan.transport, "pipeline_asr_mt_tts");
     }
 
     #[test]
@@ -2963,26 +3069,7 @@ mod tests {
             ));
         }
 
-        let websocket_timeout = resolve_websocket_timeout(provider.timeout_ms);
-        let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
-        let mut request = websocket_url
-            .as_str()
-            .into_client_request()
-            .map_err(|error| {
-                ProviderRuntimeError::new(
-                    "transport.unavailable",
-                    format!("failed to create realtime audio websocket request: {error}"),
-                )
-            })?;
-        apply_ws_auth(&provider, request.headers_mut())?;
-        apply_ws_custom_headers(&provider, request.headers_mut())?;
-        let (mut socket, _) = connect(request).map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("realtime audio websocket connect failed: {error}"),
-            )
-        })?;
-        apply_websocket_timeouts(&mut socket, websocket_timeout)?;
+        let (mut socket, websocket_timeout) = establish_websocket_connection(&provider)?;
 
         let request_id = format!("audio-integration-{}", now_marker());
         let safe_id = request_id.replace([':', '-'], "_");
@@ -2993,7 +3080,7 @@ mod tests {
                 "modalities": ["text", "audio"],
                 "voice": "Ethan",
                 "instructions": "Transcribe the input audio and translate it to Chinese. Keep the response concise.",
-                "input_audio_format": "pcm",
+                "input_audio_format": "pcm16",
                 "sample_rate": 16000,
                 "output_audio_format": "pcm",
                 "turn_detection": null

@@ -1,6 +1,7 @@
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -26,6 +27,7 @@ use super::state::BridgeStateStore;
 
 const BRIDGE_CONNECT_RETRIES: usize = 40;
 const BRIDGE_CONNECT_DELAY_MS: u64 = 100;
+const IPC_READ_TIMEOUT_SECS: u64 = 5;
 
 pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -274,16 +276,44 @@ fn write_command_with_retry(
                     error.to_string()
                 })?;
 
-                let mut reader = BufReader::new(pipe);
-                let mut response = String::new();
-                reader.read_line(&mut response).map_err(|error| {
-                    log::error!(
-                        "[omni][bridge-ipc] pipe read failed pipe={} err={}",
-                        pipe_path,
-                        error
-                    );
-                    error.to_string()
-                })?;
+                let pipe_path_owned = pipe_path.to_string();
+                let pipe_for_read = pipe;
+                let (tx, rx) = mpsc::channel();
+                thread::spawn(move || {
+                    let mut reader = BufReader::new(pipe_for_read);
+                    let mut response = String::new();
+                    let result = reader.read_line(&mut response).map(|_| response);
+                    let _ = tx.send(result);
+                });
+                let response = match rx.recv_timeout(Duration::from_secs(IPC_READ_TIMEOUT_SECS)) {
+                    Ok(Ok(response)) => response,
+                    Ok(Err(error)) => {
+                        log::error!(
+                            "[omni][bridge-ipc] pipe read failed pipe={} err={}",
+                            pipe_path_owned,
+                            error
+                        );
+                        return Err(error.to_string());
+                    }
+                    Err(mpsc::RecvTimeoutError::Timeout) => {
+                        log::error!(
+                            "[omni][bridge-ipc] pipe read timed out after {}s pipe={}",
+                            IPC_READ_TIMEOUT_SECS,
+                            pipe_path_owned
+                        );
+                        return Err(format!(
+                            "Bridge Service IPC read timed out ({}s).",
+                            IPC_READ_TIMEOUT_SECS
+                        ));
+                    }
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        log::error!(
+                            "[omni][bridge-ipc] pipe read thread disconnected pipe={}",
+                            pipe_path_owned
+                        );
+                        return Err("Bridge Service IPC read thread disconnected.".to_string());
+                    }
+                };
                 return serde_json::from_str(response.trim()).map_err(|error| {
                     log::error!(
                         "[omni][bridge-ipc] pipe response parse failed pipe={} response={} err={}",
@@ -333,11 +363,28 @@ fn write_command_once_quiet(
     pipe.write_all(b"\n").map_err(|error| error.to_string())?;
     pipe.flush().map_err(|error| error.to_string())?;
 
-    let mut reader = BufReader::new(pipe);
-    let mut response = String::new();
-    reader
-        .read_line(&mut response)
-        .map_err(|error| error.to_string())?;
+    let pipe_path_owned = pipe_path.to_string();
+    let pipe_for_read = pipe;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(pipe_for_read);
+        let mut response = String::new();
+        let result = reader.read_line(&mut response).map(|_| response);
+        let _ = tx.send(result);
+    });
+    let response = match rx.recv_timeout(Duration::from_secs(IPC_READ_TIMEOUT_SECS)) {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => return Err(error.to_string()),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err(format!(
+                "Bridge Service IPC read timed out ({}s) on pipe {}.",
+                IPC_READ_TIMEOUT_SECS, pipe_path_owned
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("Bridge Service IPC read thread disconnected.".to_string());
+        }
+    };
     serde_json::from_str(response.trim()).map_err(|error| error.to_string())
 }
 
@@ -358,6 +405,81 @@ pub fn query_state(pipe_path: &str) -> Result<BridgeStateResponse, String> {
         DriverBridgeEvent::StateSnapshot(snapshot) => Ok(snapshot),
         DriverBridgeEvent::Error(error) => Err(format!("{}: {}", error.code, error.message)),
         _ => Err("Bridge Service 返回了意外响应。".to_string()),
+    }
+}
+
+pub fn query_state_fast(pipe_path: &str) -> Result<BridgeStateResponse, String> {
+    match write_command_with_retry(
+        pipe_path,
+        &DriverBridgeCommand::StateQuery(BridgeStateQuery {
+            request_id: format!("bridge-state-fast-{}", now_unix_ms()),
+        }),
+        1,
+        Duration::ZERO,
+    )? {
+        DriverBridgeEvent::StateSnapshot(snapshot) => Ok(snapshot),
+        DriverBridgeEvent::Error(error) => Err(format!("{}: {}", error.code, error.message)),
+        _ => Err("Bridge Service 返回了意外响应。".to_string()),
+    }
+}
+
+/// Performs a fast bridge health check with a short timeout.
+///
+/// This opens the bridge pipe, sends a state query, and reads the response
+/// with a timeout to detect zombie bridge processes that accept connections
+/// but never respond.
+pub fn check_bridge_health(pipe_path: &str) -> Result<(), String> {
+    let mut pipe = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(pipe_path)
+        .map_err(|error| format!("Bridge pipe not available: {}", error))?;
+
+    let command = DriverBridgeCommand::StateQuery(BridgeStateQuery {
+        request_id: format!("bridge-health-{}", now_unix_ms()),
+    });
+    let payload = serde_json::to_string(&command).map_err(|error| error.to_string())?;
+    pipe.write_all(payload.as_bytes())
+        .map_err(|error| format!("Bridge pipe write failed: {}", error))?;
+    pipe.write_all(b"\n")
+        .map_err(|error| format!("Bridge pipe write newline failed: {}", error))?;
+    pipe.flush()
+        .map_err(|error| format!("Bridge pipe flush failed: {}", error))?;
+
+    let pipe_path_owned = pipe_path.to_string();
+    let pipe_for_read = pipe;
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(pipe_for_read);
+        let mut response = String::new();
+        let result = reader.read_line(&mut response).map(|_| response);
+        let _ = tx.send(result);
+    });
+
+    let response = match rx.recv_timeout(Duration::from_secs(IPC_READ_TIMEOUT_SECS)) {
+        Ok(Ok(response)) => response,
+        Ok(Err(error)) => return Err(format!("Bridge pipe read failed: {}", error)),
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err(format!(
+                "Bridge health check timed out ({}s): pipe {} accepted connection but never responded.",
+                IPC_READ_TIMEOUT_SECS, pipe_path_owned
+            ));
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            return Err("Bridge health check read thread disconnected.".to_string());
+        }
+    };
+
+    match serde_json::from_str::<DriverBridgeEvent>(response.trim()) {
+        Ok(DriverBridgeEvent::StateSnapshot(_)) => Ok(()),
+        Ok(DriverBridgeEvent::Error(error)) => {
+            Err(format!("{}: {}", error.code, error.message))
+        }
+        Ok(_) => Err("Bridge health check returned unexpected event type.".to_string()),
+        Err(error) => Err(format!(
+            "Bridge health check response parse failed: {}",
+            error
+        )),
     }
 }
 
@@ -1002,6 +1124,14 @@ mod tests {
                 request_id: "quiet-cleanup".to_string(),
             }),
         );
+        assert!(result.is_err());
+        assert!(started_at.elapsed() < Duration::from_millis(500));
+    }
+
+    #[test]
+    fn fast_state_query_does_not_retry_a_missing_pipe() {
+        let started_at = std::time::Instant::now();
+        let result = query_state_fast(r"\\.\pipe\omni-bridge-missing-fast-test-pipe");
         assert!(result.is_err());
         assert!(started_at.elapsed() < Duration::from_millis(500));
     }

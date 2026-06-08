@@ -3706,6 +3706,7 @@ dependencies = [
  "tauri",
  "tauri-build",
  "tempfile",
+ "tokio",
  "tungstenite",
  "url",
  "uuid",

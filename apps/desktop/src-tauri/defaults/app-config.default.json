@@ -95,6 +95,14 @@
         ]
       },
       {
+        "id": "seed-qwen3.5-livetranslate-flash-realtime",
+        "modelId": "qwen3.5-livetranslate-flash-realtime",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ]
+      },
+      {
         "id": "seed-qwen3-livetranslate-flash-realtime",
         "modelId": "qwen3-livetranslate-flash-realtime",
         "capabilities": [
@@ -472,7 +480,7 @@
     "status": "warning"
   },
   "driver": {
-    "protocolVersion": "2026-05-10",
+    "protocolVersion": "2026-06-02-loopback-v2",
     "installChannel": "development",
     "installPhase": "rollback-required",
     "targetDeviceId": "virtual-mic-default",

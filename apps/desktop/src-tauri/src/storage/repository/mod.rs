@@ -6,55 +6,19 @@ use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
 use super::contracts::{ConfigExportArtifact, ConfigSnapshotRecord};
+use crate::common::MapErrToString;
 
-const CURRENT_SCHEMA_VERSION: i64 = 1;
-const RELATIONAL_SCHEMA_NAME: &str = "0001_relational_config_storage";
-const DEFAULT_CONFIG_JSON: &str = include_str!("../../defaults/app-config.default.json");
+mod json_merge;
+mod schema;
 
-const OLD_CONFIG_TABLES: [&str; 10] = [
-    "provider_settings",
-    "provider_probe_cache",
-    "audio_preferences",
-    "driver_runtime",
-    "glossary_bindings",
-    "diagnostic_preferences",
-    // These names are reused by the relational schema, but old versions used
-    // incompatible single-row payload_json definitions.
-    "audio_routes",
-    "subtitle_preferences",
-    "speech_preferences",
-    "onboarding_state",
-];
-
-const RELATIONAL_TABLES: [&str; 27] = [
-    "config_documents",
-    "runtime_state_cache",
-    "provider_model_catalog_item_capabilities",
-    "provider_model_catalog_items",
-    "provider_model_catalog_cache",
-    "provider_model_capabilities",
-    "provider_scene_model_ids",
-    "provider_scene_model_assignments",
-    "provider_response_modalities",
-    "provider_custom_headers",
-    "provider_auth_refs",
-    "providers",
-    "audio_route_outputs",
-    "audio_routes",
-    "audio_device_preferences",
-    "subtitle_preferences",
-    "speech_preferences",
-    "driver_preferences",
-    "diagnostic_preferences",
-    "glossary_injection_order",
-    "glossary_community_packages",
-    "glossary_active_packages",
-    "glossary_preferences",
-    "onboarding_unresolved_risks",
-    "onboarding_completed_steps",
-    "onboarding_state",
-    "config_snapshots",
-];
+use self::json_merge::{
+    bool_at, bool_to_i64, default_config_value, enforce_current_driver_contract, f64_at, i64_at,
+    merge_objects, string_at, write_json_file,
+};
+use self::schema::{
+    CREATE_RELATIONAL_SCHEMA_SQL, CURRENT_SCHEMA_VERSION, OLD_CONFIG_TABLES,
+    RELATIONAL_SCHEMA_NAME, RELATIONAL_TABLES,
+};
 
 #[derive(Clone)]
 pub struct ConfigRepository {
@@ -93,16 +57,15 @@ impl ConfigRepository {
 
     pub fn initialize(&self) -> Result<RepositoryStats, String> {
         self.ensure_directories()?;
-        let connection = self.open_connection()?;
-        self.apply_migrations(&connection)?;
+        let connection = self.migrated_connection()?;
         self.read_stats(&connection)
     }
 
     pub fn load_config(&self) -> Result<Value, String> {
-        let connection = self.open_connection()?;
-        self.apply_migrations(&connection)?;
+        let connection = self.migrated_connection()?;
 
-        let mut root = default_config_value()?;
+        let defaults = default_config_value()?;
+        let mut root = defaults.clone();
         let persisted: Option<String> = connection
             .query_row(
                 "SELECT config_json FROM config_documents WHERE id = 1",
@@ -110,12 +73,12 @@ impl ConfigRepository {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         if let Some(config_json) = persisted {
-            let stored: Value =
-                serde_json::from_str(&config_json).map_err(|error| error.to_string())?;
+            let stored: Value = serde_json::from_str(&config_json).map_err_str()?;
             merge_objects(&mut root, &stored);
+            enforce_current_driver_contract(&mut root, &defaults);
         }
 
         Ok(root)
@@ -132,12 +95,11 @@ impl ConfigRepository {
         timestamp: &str,
         fail_on_step: Option<&str>,
     ) -> Result<RepositoryStats, String> {
-        let mut connection = self.open_connection()?;
-        self.apply_migrations(&connection)?;
+        let mut connection = self.migrated_connection()?;
 
-        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        let tx = connection.transaction().map_err_str()?;
         self.persist_config_with_failpoint(&tx, config, timestamp, fail_on_step)?;
-        tx.commit().map_err(|e| e.to_string())?;
+        tx.commit().map_err_str()?;
 
         self.read_stats(&connection)
     }
@@ -202,8 +164,7 @@ impl ConfigRepository {
 
     pub fn export_config(&self) -> Result<ConfigExportArtifact, String> {
         let config = self.load_config()?;
-        let connection = self.open_connection()?;
-        self.apply_migrations(&connection)?;
+        let connection = self.migrated_connection()?;
         let stats = self.read_stats(&connection)?;
         let exported_at = current_timestamp();
         let file_name = format!("config-export-{}.json", normalize_timestamp(&exported_at));
@@ -224,11 +185,10 @@ impl ConfigRepository {
     }
 
     pub fn import_config(&self, file_path: &Path) -> Result<Value, String> {
-        let content = fs::read_to_string(file_path).map_err(|error| error.to_string())?;
-        let config: Value = serde_json::from_str(&content).map_err(|error| error.to_string())?;
+        let content = fs::read_to_string(file_path).map_err_str()?;
+        let config: Value = serde_json::from_str(&content).map_err_str()?;
         self.save_config(&config)?;
-        let connection = self.open_connection()?;
-        self.apply_migrations(&connection)?;
+        let connection = self.migrated_connection()?;
         self.upsert_metadata(
             &connection,
             "last_import_path",
@@ -240,8 +200,7 @@ impl ConfigRepository {
 
     pub fn create_snapshot(&self, reason: &str) -> Result<ConfigSnapshotRecord, String> {
         let config = self.load_config()?;
-        let connection = self.open_connection()?;
-        self.apply_migrations(&connection)?;
+        let connection = self.migrated_connection()?;
         let created_at = current_timestamp();
         let snapshot_id = format!("snapshot-{}", normalize_timestamp(&created_at));
 
@@ -251,11 +210,11 @@ impl ConfigRepository {
                 params![
                     snapshot_id,
                     reason,
-                    serde_json::to_string_pretty(&config).map_err(|error| error.to_string())?,
+                    serde_json::to_string_pretty(&config).map_err_str()?,
                     created_at
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         let snapshot_file = self.snapshot_dir.join(format!("{}.json", snapshot_id));
         write_json_file(&snapshot_file, &config)?;
@@ -268,33 +227,37 @@ impl ConfigRepository {
     }
 
     pub fn rollback_snapshot(&self, snapshot_id: &str) -> Result<Value, String> {
-        let connection = self.open_connection()?;
-        self.apply_migrations(&connection)?;
+        let connection = self.migrated_connection()?;
         let config_json: String = connection
             .query_row(
                 "SELECT config_json FROM config_snapshots WHERE snapshot_id = ?1",
                 params![snapshot_id],
                 |row| row.get(0),
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
-        let config: Value =
-            serde_json::from_str(&config_json).map_err(|error| error.to_string())?;
+        let config: Value = serde_json::from_str(&config_json).map_err_str()?;
         self.save_config(&config)?;
         self.load_config()
     }
 
     fn ensure_directories(&self) -> Result<(), String> {
         if let Some(parent) = self.db_path.parent() {
-            fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+            fs::create_dir_all(parent).map_err_str()?;
         }
-        fs::create_dir_all(&self.export_dir).map_err(|error| error.to_string())?;
-        fs::create_dir_all(&self.snapshot_dir).map_err(|error| error.to_string())?;
+        fs::create_dir_all(&self.export_dir).map_err_str()?;
+        fs::create_dir_all(&self.snapshot_dir).map_err_str()?;
         Ok(())
     }
 
+    fn migrated_connection(&self) -> Result<Connection, String> {
+        let connection = self.open_connection()?;
+        self.apply_migrations(&connection)?;
+        Ok(connection)
+    }
+
     fn open_connection(&self) -> Result<Connection, String> {
-        Connection::open(&self.db_path).map_err(|error| error.to_string())
+        Connection::open(&self.db_path).map_err_str()
     }
 
     fn apply_migrations(&self, connection: &Connection) -> Result<(), String> {
@@ -314,7 +277,7 @@ impl ConfigRepository {
                 );
                 ",
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         if self.schema_needs_reset(connection)? {
             self.rebuild_schema(connection)?;
@@ -331,7 +294,7 @@ impl ConfigRepository {
                     current_timestamp()
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         Ok(())
     }
@@ -384,22 +347,22 @@ impl ConfigRepository {
     fn rebuild_schema(&self, connection: &Connection) -> Result<(), String> {
         connection
             .execute_batch("PRAGMA foreign_keys = OFF;")
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         for table in RELATIONAL_TABLES {
             connection
                 .execute(&format!("DROP TABLE IF EXISTS {table}"), [])
-                .map_err(|error| error.to_string())?;
+                .map_err_str()?;
         }
         for table in OLD_CONFIG_TABLES {
             connection
                 .execute(&format!("DROP TABLE IF EXISTS {table}"), [])
-                .map_err(|error| error.to_string())?;
+                .map_err_str()?;
         }
 
         connection
             .execute_batch(CREATE_RELATIONAL_SCHEMA_SQL)
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
         Ok(())
     }
 
@@ -408,12 +371,12 @@ impl ConfigRepository {
             .query_row("SELECT COUNT(*) FROM config_documents", [], |row| {
                 row.get(0)
             })
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
         let snapshot_count: i64 = connection
             .query_row("SELECT COUNT(*) FROM config_snapshots", [], |row| {
                 row.get(0)
             })
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         Ok(RepositoryStats {
             schema_version: CURRENT_SCHEMA_VERSION,
@@ -433,7 +396,7 @@ impl ConfigRepository {
                 |row| row.get(0),
             )
             .optional()
-            .map_err(|error| error.to_string())
+            .map_err_str()
     }
 
     fn upsert_metadata(
@@ -450,7 +413,7 @@ impl ConfigRepository {
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at",
                 params![key, value, timestamp],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         Ok(())
     }
@@ -486,7 +449,7 @@ impl ConfigRepository {
         ] {
             connection
                 .execute(&format!("DELETE FROM {table}"), [])
-                .map_err(|error| error.to_string())?;
+                .map_err_str()?;
         }
 
         Ok(())
@@ -498,14 +461,14 @@ impl ConfigRepository {
         config: &Value,
         timestamp: &str,
     ) -> Result<(), String> {
-        let config_json = serde_json::to_string(config).map_err(|error| error.to_string())?;
+        let config_json = serde_json::to_string(config).map_err_str()?;
         connection
             .execute(
                 "INSERT INTO config_documents (id, schema_version, config_json, updated_at)
                  VALUES (1, ?1, ?2, ?3)",
                 params![CURRENT_SCHEMA_VERSION, config_json, timestamp],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
         Ok(())
     }
 
@@ -597,7 +560,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         if let Some(auth_ref) = provider.get("authRef") {
             connection
@@ -612,7 +575,7 @@ impl ConfigRepository {
                         string_at(auth_ref, "/scheme"),
                     ],
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err_str()?;
         }
 
         insert_string_array(
@@ -639,7 +602,7 @@ impl ConfigRepository {
                             bool_at(header, "/enabled").map(bool_to_i64),
                         ],
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err_str()?;
             }
         }
 
@@ -656,7 +619,7 @@ impl ConfigRepository {
                          VALUES (?1, ?2, ?3)",
                         params![provider_key, scenario, position as i64],
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err_str()?;
 
                 if let Some(model_ids) = assignment.get("modelIds").and_then(Value::as_array) {
                     for (model_position, model_id) in model_ids.iter().enumerate() {
@@ -667,7 +630,7 @@ impl ConfigRepository {
                                      VALUES (?1, ?2, ?3, ?4)",
                                     params![provider_key, scenario, model_id, model_position as i64],
                                 )
-                                .map_err(|error| error.to_string())?;
+                                .map_err_str()?;
                         }
                     }
                 }
@@ -696,7 +659,7 @@ impl ConfigRepository {
                                         capability_position as i64,
                                     ],
                                 )
-                                .map_err(|error| error.to_string())?;
+                                .map_err_str()?;
                         }
                     }
                 }
@@ -717,7 +680,7 @@ impl ConfigRepository {
                         string_at(cache, "/error"),
                     ],
                 )
-                .map_err(|error| error.to_string())?;
+                .map_err_str()?;
 
             if let Some(models) = cache.get("models").and_then(Value::as_array) {
                 for (position, model) in models.iter().enumerate() {
@@ -740,7 +703,7 @@ impl ConfigRepository {
                                 string_at(model, "/providerTemplateName"),
                             ],
                         )
-                        .map_err(|error| error.to_string())?;
+                        .map_err_str()?;
 
                     if let Some(capabilities) = model.get("capabilities").and_then(Value::as_array)
                     {
@@ -752,7 +715,7 @@ impl ConfigRepository {
                                          VALUES (?1, ?2, ?3, ?4)",
                                         params![provider_key, model_id, capability, capability_position as i64],
                                     )
-                                    .map_err(|error| error.to_string())?;
+                                    .map_err_str()?;
                             }
                         }
                     }
@@ -797,7 +760,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         self.persist_audio_route(
             connection,
@@ -862,7 +825,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         if let Some(outputs) = route.get("outputs").and_then(Value::as_array) {
             for (position, output) in outputs.iter().enumerate() {
@@ -879,7 +842,7 @@ impl ConfigRepository {
                             bool_at(output, "/enabled").map(bool_to_i64),
                         ],
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err_str()?;
             }
         }
 
@@ -925,7 +888,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
         Ok(())
     }
 
@@ -957,7 +920,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
         Ok(())
     }
 
@@ -989,7 +952,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
         Ok(())
     }
 
@@ -1017,7 +980,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         insert_string_array(
             connection,
@@ -1066,7 +1029,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
         Ok(())
     }
 
@@ -1087,7 +1050,7 @@ impl ConfigRepository {
                     timestamp,
                 ],
             )
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
         insert_string_array(
             connection,
             "onboarding_completed_steps",
@@ -1137,329 +1100,12 @@ impl ConfigRepository {
                         "INSERT INTO runtime_state_cache (key, value, updated_at) VALUES (?1, ?2, ?3)",
                         params![key, value, timestamp],
                     )
-                    .map_err(|error| error.to_string())?;
+                    .map_err_str()?;
             }
         }
         Ok(())
     }
 }
-
-const CREATE_RELATIONAL_SCHEMA_SQL: &str = r#"
-CREATE TABLE IF NOT EXISTS storage_migrations (
-  version INTEGER PRIMARY KEY,
-  name TEXT NOT NULL,
-  applied_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS storage_metadata (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE config_documents (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  schema_version INTEGER NOT NULL,
-  config_json TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE providers (
-  provider_key TEXT PRIMARY KEY,
-  position INTEGER NOT NULL,
-  is_primary INTEGER NOT NULL CHECK (is_primary IN (0, 1)),
-  template_id TEXT,
-  template_version TEXT,
-  template_source TEXT,
-  provider_id TEXT,
-  kind TEXT,
-  display_name TEXT,
-  mode TEXT,
-  model TEXT,
-  base_url TEXT,
-  transport TEXT,
-  region TEXT,
-  stream_enabled INTEGER,
-  timeout_ms INTEGER,
-  system_prompt_template TEXT,
-  temperature REAL,
-  max_output_tokens INTEGER,
-  probe_profile_id TEXT,
-  probe_verdict TEXT,
-  probe_checked_at TEXT,
-  probe_stream_supported INTEGER,
-  probe_error_shape_stable INTEGER,
-  probe_response_shape_stable INTEGER,
-  status TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE provider_auth_refs (
-  provider_key TEXT PRIMARY KEY,
-  kind TEXT,
-  reference TEXT,
-  header_name TEXT,
-  scheme TEXT
-);
-
-CREATE TABLE provider_custom_headers (
-  provider_key TEXT NOT NULL,
-  header_id TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  name TEXT,
-  value TEXT,
-  enabled INTEGER,
-  PRIMARY KEY (provider_key, header_id)
-);
-
-CREATE TABLE provider_response_modalities (
-  provider_key TEXT NOT NULL,
-  modality TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (provider_key, position)
-);
-
-CREATE TABLE provider_scene_model_assignments (
-  provider_key TEXT NOT NULL,
-  scenario TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (provider_key, scenario)
-);
-
-CREATE TABLE provider_scene_model_ids (
-  provider_key TEXT NOT NULL,
-  scenario TEXT NOT NULL,
-  model_id TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (provider_key, scenario, position)
-);
-
-CREATE TABLE provider_model_capabilities (
-  provider_key TEXT NOT NULL,
-  entry_id TEXT NOT NULL,
-  model_id TEXT,
-  capability TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (provider_key, entry_id, capability)
-);
-
-CREATE TABLE provider_model_catalog_cache (
-  provider_key TEXT PRIMARY KEY,
-  signature TEXT,
-  source TEXT,
-  endpoint TEXT,
-  fetched_at TEXT,
-  error TEXT
-);
-
-CREATE TABLE provider_model_catalog_items (
-  provider_key TEXT NOT NULL,
-  item_id TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  display_name TEXT,
-  owned_by TEXT,
-  created_at INTEGER,
-  provider_template_id TEXT,
-  provider_template_name TEXT,
-  PRIMARY KEY (provider_key, item_id)
-);
-
-CREATE TABLE provider_model_catalog_item_capabilities (
-  provider_key TEXT NOT NULL,
-  item_id TEXT NOT NULL,
-  capability TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (provider_key, item_id, capability)
-);
-
-CREATE TABLE audio_device_preferences (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  route_mode TEXT,
-  input_device_id TEXT,
-  output_device_id TEXT,
-  virtual_render_device_id TEXT,
-  playback_device_id TEXT,
-  virtual_mic_state TEXT,
-  support_profile_id TEXT,
-  subtitle_translation_mode TEXT,
-  subtitle_translation_model_id TEXT,
-  inbound_voice_model_id TEXT,
-  outbound_voice_model_id TEXT,
-  text_to_speech_model_id TEXT,
-  feedback_loop_prevention TEXT,
-  status TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE audio_routes (
-  direction_key TEXT PRIMARY KEY,
-  route_id TEXT,
-  direction TEXT,
-  input_source_id TEXT,
-  input_kind TEXT,
-  input_device_id TEXT,
-  input_state TEXT,
-  input_muted INTEGER,
-  input_buffer_ahead_ms INTEGER,
-  input_pre_buffer_state TEXT,
-  keep_original_audio INTEGER,
-  translated_audio_enabled INTEGER,
-  translated_audio_gain_db REAL,
-  original_audio_gain_db REAL,
-  ducking_enabled INTEGER,
-  ducking_depth_percent INTEGER,
-  monitor_mode TEXT,
-  capture_buffer_ms INTEGER,
-  translation_buffer_ms INTEGER,
-  playback_buffer_ms INTEGER,
-  compensation_ms INTEGER,
-  push_to_talk_enabled INTEGER,
-  push_to_talk_hotkey TEXT,
-  push_to_talk_state TEXT,
-  push_to_talk_release_delay_ms INTEGER,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE audio_route_outputs (
-  direction_key TEXT NOT NULL,
-  target_id TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  kind TEXT,
-  device_id TEXT,
-  enabled INTEGER,
-  PRIMARY KEY (direction_key, target_id)
-);
-
-CREATE TABLE subtitle_preferences (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  source_language TEXT,
-  target_language TEXT,
-  translation_language_preference TEXT,
-  display_mode TEXT,
-  caption_density TEXT,
-  priority_mode TEXT,
-  instructions TEXT,
-  overlay_opacity REAL,
-  overlay_locked INTEGER,
-  overlay_text_color TEXT,
-  overlay_text_opacity REAL,
-  overlay_background_color TEXT,
-  overlay_background_opacity REAL,
-  overlay_font_family TEXT,
-  overlay_width INTEGER,
-  overlay_height INTEGER,
-  overlay_x INTEGER,
-  overlay_y INTEGER,
-  status TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE speech_preferences (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  speech_enabled INTEGER,
-  target_language TEXT,
-  voice_preset_id TEXT,
-  text_to_speech_model_id TEXT,
-  voice TEXT,
-  output_target TEXT,
-  local_playback_enabled INTEGER,
-  virtual_mic_output_enabled INTEGER,
-  dispatch_state TEXT,
-  status TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE driver_preferences (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  protocol_version TEXT,
-  install_channel TEXT,
-  install_phase TEXT,
-  target_device_id TEXT,
-  expected_driver_version TEXT,
-  expected_bridge_version TEXT,
-  rollback_supported INTEGER,
-  last_error_code TEXT,
-  recommended_action TEXT,
-  status TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE diagnostic_preferences (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  install_status TEXT,
-  last_export_scope TEXT,
-  support_tier TEXT,
-  status TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE glossary_preferences (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  template_id TEXT,
-  scenario TEXT,
-  injection_strategy TEXT,
-  game_dictionary_id TEXT,
-  import_strategy TEXT,
-  export_format TEXT,
-  status TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE glossary_active_packages (
-  config_id TEXT NOT NULL,
-  package_id TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (config_id, position)
-);
-
-CREATE TABLE glossary_community_packages (
-  config_id TEXT NOT NULL,
-  package_id TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (config_id, position)
-);
-
-CREATE TABLE glossary_injection_order (
-  config_id TEXT NOT NULL,
-  source TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (config_id, position)
-);
-
-CREATE TABLE onboarding_state (
-  id INTEGER PRIMARY KEY CHECK (id = 1),
-  active_preset_id TEXT,
-  checklist_status TEXT,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE onboarding_completed_steps (
-  config_id TEXT NOT NULL,
-  step_id TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (config_id, position)
-);
-
-CREATE TABLE onboarding_unresolved_risks (
-  config_id TEXT NOT NULL,
-  risk_id TEXT NOT NULL,
-  position INTEGER NOT NULL,
-  PRIMARY KEY (config_id, position)
-);
-
-CREATE TABLE runtime_state_cache (
-  key TEXT PRIMARY KEY,
-  value TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
-CREATE TABLE config_snapshots (
-  snapshot_id TEXT PRIMARY KEY,
-  reason TEXT NOT NULL,
-  config_json TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-"#;
 
 fn table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
     let exists: Option<i64> = connection
@@ -1469,20 +1115,20 @@ fn table_exists(connection: &Connection, table: &str) -> Result<bool, String> {
             |row| row.get(0),
         )
         .optional()
-        .map_err(|error| error.to_string())?;
+        .map_err_str()?;
     Ok(exists.is_some())
 }
 
 fn table_has_column(connection: &Connection, table: &str, column: &str) -> Result<bool, String> {
     let mut statement = connection
         .prepare(&format!("PRAGMA table_info({table})"))
-        .map_err(|error| error.to_string())?;
+        .map_err_str()?;
     let rows = statement
         .query_map([], |row| row.get::<_, String>(1))
-        .map_err(|error| error.to_string())?;
+        .map_err_str()?;
 
     for row in rows {
-        if row.map_err(|error| error.to_string())? == column {
+        if row.map_err_str()? == column {
             return Ok(true);
         }
     }
@@ -1505,66 +1151,11 @@ fn insert_string_array(
                 );
                 connection
                     .execute(&sql, params![owner_value, item, position as i64])
-                    .map_err(|error| error.to_string())?;
+                    .map_err_str()?;
             }
         }
     }
     Ok(())
-}
-
-fn default_config_value() -> Result<Value, String> {
-    serde_json::from_str(DEFAULT_CONFIG_JSON).map_err(|error| error.to_string())
-}
-
-fn write_json_file(path: &Path, value: &Value) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
-    let content = serde_json::to_string_pretty(value).map_err(|error| error.to_string())?;
-    fs::write(path, content).map_err(|error| error.to_string())
-}
-
-fn merge_objects(target: &mut Value, patch: &Value) {
-    match (target, patch) {
-        (Value::Object(target_map), Value::Object(patch_map)) => {
-            for (key, patch_value) in patch_map {
-                merge_objects(
-                    target_map.entry(key.clone()).or_insert(Value::Null),
-                    patch_value,
-                );
-            }
-        }
-        (target_value, patch_value) => {
-            *target_value = patch_value.clone();
-        }
-    }
-}
-
-fn string_at(root: &Value, pointer: &str) -> Option<String> {
-    root.pointer(pointer)
-        .and_then(Value::as_str)
-        .map(ToString::to_string)
-}
-
-fn bool_at(root: &Value, pointer: &str) -> Option<bool> {
-    root.pointer(pointer).and_then(Value::as_bool)
-}
-
-fn i64_at(root: &Value, pointer: &str) -> Option<i64> {
-    root.pointer(pointer).and_then(Value::as_i64)
-}
-
-fn f64_at(root: &Value, pointer: &str) -> Option<f64> {
-    root.pointer(pointer).and_then(Value::as_f64)
-}
-
-fn bool_to_i64(value: bool) -> i64 {
-    if value {
-        1
-    } else {
-        0
-    }
 }
 
 fn current_timestamp() -> String {
@@ -1581,7 +1172,7 @@ fn normalize_timestamp(timestamp: &str) -> String {
 #[cfg(test)]
 mod tests {
     use rusqlite::{params, OptionalExtension};
-    use serde_json::json;
+    use serde_json::{json, Value};
     use tempfile::TempDir;
 
     use super::{default_config_value, table_exists, ConfigRepository};
@@ -1673,6 +1264,48 @@ mod tests {
             default
                 .pointer("/providers/0/model")
                 .and_then(|value| value.as_str())
+        );
+    }
+
+    #[test]
+    fn load_config_upgrades_stale_driver_contract_versions() {
+        let (_temp_dir, repository) = test_repository();
+        repository
+            .initialize()
+            .expect("repository should initialize");
+        let connection = repository
+            .open_connection()
+            .expect("connection should open");
+        connection
+            .execute(
+                "INSERT INTO config_documents (id, schema_version, config_json, updated_at)
+                 VALUES (1, 1, ?1, 'test')",
+                params![
+                    r#"{"driver":{"protocolVersion":"2026-05-10","expectedDriverVersion":"0.9.0-dev","expectedBridgeVersion":"0.1.0","targetDeviceId":"custom-device"}}"#
+                ],
+            )
+            .expect("stale config should insert");
+
+        let loaded = repository.load_config().expect("config should load");
+        let default = default_config_value().expect("default config should parse");
+
+        assert_eq!(
+            loaded.pointer("/driver/protocolVersion"),
+            default.pointer("/driver/protocolVersion")
+        );
+        assert_eq!(
+            loaded.pointer("/driver/expectedDriverVersion"),
+            default.pointer("/driver/expectedDriverVersion")
+        );
+        assert_eq!(
+            loaded.pointer("/driver/expectedBridgeVersion"),
+            default.pointer("/driver/expectedBridgeVersion")
+        );
+        assert_eq!(
+            loaded
+                .pointer("/driver/targetDeviceId")
+                .and_then(Value::as_str),
+            Some("custom-device")
         );
     }
 

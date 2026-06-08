@@ -486,9 +486,17 @@ pub fn default_runtime_root() -> String {
         .to_string()
 }
 
+fn has_installed_driver_evidence(snapshot: &BridgeRuntimeSnapshot) -> bool {
+    snapshot.root_device_count > 0
+        || snapshot.endpoint_name.is_some()
+        || snapshot.abi_version.is_some()
+        || snapshot.ioctl_available
+}
+
 pub fn reconcile_bridge_snapshot(snapshot: &mut BridgeRuntimeSnapshot) {
     let bridge_ok = snapshot.bridge_state == "running";
     let driver_ok = snapshot.driver_health == "running";
+    let driver_present = driver_ok || has_installed_driver_evidence(snapshot);
     let restart_required = snapshot
         .last_error_code
         .as_deref()
@@ -508,7 +516,7 @@ pub fn reconcile_bridge_snapshot(snapshot: &mut BridgeRuntimeSnapshot) {
     snapshot.recommended_action = if restart_required {
         Some("restart-bridge".to_string())
     } else if !bridge_ok {
-        if snapshot.driver_health == "not-installed" {
+        if snapshot.driver_health == "not-installed" && !driver_present {
             Some("reinstall-driver".to_string())
         } else if snapshot.driver_health == "version-mismatch" {
             Some("rollback-driver".to_string())
@@ -562,6 +570,29 @@ mod tests {
         assert_eq!(
             snapshot.recommended_action.as_deref(),
             Some("open-diagnostics")
+        );
+    }
+
+    #[test]
+    fn reconcile_prefers_bridge_restart_when_driver_probe_evidence_exists() {
+        let mut snapshot = BridgeRuntimeSnapshot {
+            bridge_state: "degraded".to_string(),
+            driver_health: "not-installed".to_string(),
+            last_error_code: Some("driver.not-installed".to_string()),
+            root_device_count: 1,
+            root_instance_ids: vec!["ROOT\\MEDIA\\0000".to_string()],
+            endpoint_name: Some("Speakers (Omni Translate Virtual Speaker)".to_string()),
+            abi_version: Some("0x20260604".to_string()),
+            ioctl_available: true,
+            ..Default::default()
+        };
+
+        reconcile_bridge_snapshot(&mut snapshot);
+
+        assert_eq!(snapshot.status, "warning");
+        assert_eq!(
+            snapshot.recommended_action.as_deref(),
+            Some("restart-bridge")
         );
     }
 }

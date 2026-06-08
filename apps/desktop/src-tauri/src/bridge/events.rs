@@ -1,7 +1,9 @@
 use std::io::BufRead;
 use std::process::{Command, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
+use std::path::Path;
 
 use serde_json::Value;
 use tauri::{AppHandle, State};
@@ -21,7 +23,7 @@ use super::contracts::{reconcile_bridge_snapshot, BridgeMixControl, BridgeRuntim
 use super::installer::{apply_driver_probe, probe_driver, run_elevated_driver_operation};
 use super::ipc::{
     apply_query, bridge_cli_path, ensure_bridge_runtime_root, initialize_bridge, query_state,
-    stop_bridge_process, terminate_stale_bridge_process,
+    query_state_fast, stop_bridge_process, terminate_stale_bridge_process,
 };
 use super::state::BridgeStateStore;
 
@@ -145,6 +147,18 @@ fn record_driver_operation_error(state: &BridgeStateStore, error: &str) {
     });
 }
 
+fn record_bridge_start_error(state: &BridgeStateStore, error_code: &str, detail: String) {
+    state.update_snapshot(|current| {
+        current.process_status = "error".to_string();
+        current.bridge_state = "degraded".to_string();
+        current.lifecycle_state = "error".to_string();
+        current.install_phase = "rollback-required".to_string();
+        current.last_error_code = Some(error_code.to_string());
+        current.driver_detail = Some(detail);
+        reconcile_bridge_snapshot(current);
+    });
+}
+
 fn driver_signature_preflight_error(
     probe: &super::contracts::DriverProbeResult,
     repair: bool,
@@ -185,7 +199,7 @@ fn build_started_process(snapshot: &BridgeRuntimeSnapshot) -> Result<std::proces
     let cli_path = bridge_cli_path();
     if !cli_path.exists() {
         return Err(format!(
-            "Bridge Service 构建产物不存在，请先执行 npm run build:bridge-service。missing={}.",
+            "Bridge Service 构建产物不存在，请先执行 npm run build:bridge-service-native。missing={}.",
             cli_path.display()
         ));
     }
@@ -227,6 +241,68 @@ fn cleanup_existing_bridge_process(
     terminate_stale_bridge_process(snapshot)
 }
 
+/// Returns true when the cached driver state is stale or unhealthy enough
+/// to warrant a full driver probe. On startup refresh, healthy cached state
+/// (driver_health=running, no errors) skips the expensive probe_driver call.
+fn should_probe_driver_on_startup_refresh(snapshot: &BridgeRuntimeSnapshot) -> bool {
+    if snapshot.driver_health == "not-installed"
+        || snapshot.driver_health == "version-mismatch"
+        || snapshot.driver_health == "unknown"
+        || snapshot.driver_probe_state == "failed"
+        || snapshot.driver_probe_state == "idle"
+        || snapshot
+            .last_error_code
+            .as_deref()
+            .map(|code| code.starts_with("driver."))
+            .unwrap_or(false)
+    {
+        return true;
+    }
+
+    // Check if the cached driver state file is missing or stale (>5 min).
+    let state_path = Path::new(&snapshot.runtime_root).join("driver-install-state.json");
+    let stale = match std::fs::metadata(&state_path) {
+        Ok(meta) => {
+            let age = SystemTime::now()
+                .duration_since(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH))
+                .unwrap_or_default();
+            age > std::time::Duration::from_secs(300)
+        }
+        Err(_) => true,
+    };
+    if stale {
+        return true;
+    }
+
+    false
+}
+
+fn should_probe_bridge_pipe_on_refresh(snapshot: &BridgeRuntimeSnapshot) -> bool {
+    snapshot.process_status == "running"
+        || snapshot.driver_health == "running"
+        || snapshot.ioctl_available
+        || snapshot.bridge_state == "degraded"
+        || snapshot
+            .last_error_code
+            .as_deref()
+            .map(|code| code.starts_with("bridge."))
+            .unwrap_or(false)
+}
+
+fn should_report_bridge_query_failure(snapshot: &BridgeRuntimeSnapshot) -> bool {
+    snapshot.process_status == "running"
+        || snapshot.bridge_state == "degraded"
+        || snapshot
+            .last_error_code
+            .as_deref()
+            .map(|code| code.starts_with("bridge."))
+            .unwrap_or(false)
+}
+
+fn should_use_full_bridge_pipe_query(snapshot: &BridgeRuntimeSnapshot) -> bool {
+    snapshot.process_status == "running" && snapshot.session_id.is_some()
+}
+
 fn start_bridge_from_snapshot(
     snapshot: &BridgeRuntimeSnapshot,
     bridge_state: &BridgeStateStore,
@@ -239,6 +315,7 @@ fn start_bridge_from_snapshot(
     let mut child = build_started_process(snapshot)?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
+    let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     if let Some(stdout) = stdout {
@@ -253,23 +330,29 @@ fn start_bridge_from_snapshot(
             }
         });
     }
+    if let Some(stderr) = stderr {
+        let stderr_lines = Arc::clone(&stderr_lines);
+        thread::spawn(move || {
+            let reader = std::io::BufReader::new(stderr);
+            for line in reader.lines().map_while(Result::ok) {
+                if let Ok(mut lines) = stderr_lines.lock() {
+                    lines.push(line);
+                }
+            }
+        });
+    }
 
     let startup_timeout = Duration::from_secs(8);
     let ready_received = ready_rx.recv_timeout(startup_timeout).is_ok();
 
-    bridge_state.set_process(child);
-
     if !ready_received {
-        let stderr_output = if let Some(stderr) = stderr {
-            let reader = std::io::BufReader::new(stderr);
-            reader
-                .lines()
-                .map_while(Result::ok)
-                .collect::<Vec<_>>()
-                .join("\n")
-        } else {
-            String::new()
-        };
+        let _ = child.kill();
+        let _ = child.wait();
+        thread::sleep(Duration::from_millis(50));
+        let stderr_output = stderr_lines
+            .lock()
+            .map(|lines| lines.join("\n"))
+            .unwrap_or_default();
 
         if !stderr_output.is_empty() {
             log_bridge_event(
@@ -286,6 +369,22 @@ fn start_bridge_from_snapshot(
             "Bridge Service 未在预期时间内返回就绪信号。",
             Some(format!("timeoutMs={}", startup_timeout.as_millis())),
         );
+        record_bridge_start_error(
+            bridge_state,
+            "bridge.start-timeout",
+            format!(
+                "Bridge Service startup timed out after {} seconds.{}",
+                startup_timeout.as_secs(),
+                if stderr_output.is_empty() {
+                    String::new()
+                } else {
+                    format!(
+                        " stderr: {}",
+                        &stderr_output[..stderr_output.len().min(500)]
+                    )
+                }
+            ),
+        );
         return Err(format!(
             "Bridge Service 未在 {} 秒内就绪。{}",
             startup_timeout.as_secs(),
@@ -300,6 +399,7 @@ fn start_bridge_from_snapshot(
         ));
     }
 
+    bridge_state.set_process(child);
     let initialized = initialize_bridge(snapshot)?;
     bridge_state.update_snapshot(|current| *current = initialized);
     Ok(())
@@ -358,22 +458,43 @@ pub fn refresh_bridge_runtime(
             snapshot.process_status, snapshot.bridge_state
         )
     );
-    bridge_state.update_snapshot(|current| {
-        current.driver_probe_state = "probing".to_string();
-    });
-    emit_runtime_snapshot(&app, &runtime_state).map_err(|error| error.to_string())?;
-    let probe_result = probe_driver(&snapshot, false);
-    bridge_state.update_snapshot(|current| match probe_result {
-        Ok(probe) => apply_driver_probe(current, probe),
-        Err(error) => {
-            current.driver_probe_state = "failed".to_string();
-            current.last_error_code = Some("driver.probe-failed".to_string());
-            current.driver_detail = Some(error);
-        }
-    });
+    let skip_probe = !should_probe_driver_on_startup_refresh(&snapshot);
+    if skip_probe {
+        log_debug!(
+            &app,
+            "bridge",
+            "refresh_bridge_runtime skipping driver probe (cached healthy state)",
+            format!("driverHealth={}", snapshot.driver_health)
+        );
+        bridge_state.update_snapshot(|current| {
+            current.driver_probe_state = "cached".to_string();
+        });
+        emit_runtime_snapshot(&app, &runtime_state).map_err(|error| error.to_string())?;
+    } else {
+        bridge_state.update_snapshot(|current| {
+            current.driver_probe_state = "probing".to_string();
+        });
+        emit_runtime_snapshot(&app, &runtime_state).map_err(|error| error.to_string())?;
+    }
+    if !skip_probe {
+            let probe_result = probe_driver(&snapshot, false);
+        bridge_state.update_snapshot(|current| match probe_result {
+            Ok(probe) => apply_driver_probe(current, probe),
+            Err(error) => {
+                current.driver_probe_state = "failed".to_string();
+                current.last_error_code = Some("driver.probe-failed".to_string());
+                current.driver_detail = Some(error);
+            }
+        });
+    }
     let snapshot = bridge_state.snapshot();
-    if snapshot.process_status == "running" {
-        match query_state(&snapshot.pipe_path) {
+    if should_probe_bridge_pipe_on_refresh(&snapshot) {
+        let query_result = if should_use_full_bridge_pipe_query(&snapshot) {
+            query_state(&snapshot.pipe_path)
+        } else {
+            query_state_fast(&snapshot.pipe_path)
+        };
+        match query_result {
             Ok(query) => {
                 log_info!(
                     &app,
@@ -388,6 +509,17 @@ pub fn refresh_bridge_runtime(
                 bridge_state.update_snapshot(|current| apply_query(current, query));
             }
             Err(error) => {
+                if !should_report_bridge_query_failure(&snapshot) {
+                    log_debug!(
+                        &app,
+                        "bridge",
+                        "query_state skipped missing idle bridge",
+                        format!("pipe={} error={}", snapshot.pipe_path, error)
+                    );
+                    emit_runtime_snapshot(&app, &runtime_state)
+                        .map_err(|error| error.to_string())?;
+                    return Ok(build_runtime_snapshot(&app, &runtime_state));
+                }
                 log_error!(
                     &app,
                     "bridge",
@@ -445,7 +577,17 @@ pub fn start_bridge_service(
     snapshot.session_id = Some(format!("bridge-session-{}", Uuid::new_v4()));
     snapshot.process_status = "starting".to_string();
     snapshot.pipe_path = format!(r"\\.\pipe\{}", snapshot.pipe_name);
-    start_bridge_from_snapshot(&snapshot, &bridge_state, &app)?;
+    if let Err(error) = start_bridge_from_snapshot(&snapshot, &bridge_state, &app) {
+        let current_error = bridge_state.snapshot().last_error_code;
+        if !current_error
+            .as_deref()
+            .map(|code| code.starts_with("bridge."))
+            .unwrap_or(false)
+        {
+            record_bridge_start_error(&bridge_state, "bridge.start-failed", error.clone());
+        }
+        return Err(error);
+    }
     log_info!(
         &app,
         "bridge",

@@ -27,10 +27,19 @@ fn parse_driver_probe_output(output: &[u8]) -> Result<DriverProbeResult, String>
 }
 
 pub fn apply_driver_probe(snapshot: &mut BridgeRuntimeSnapshot, probe: DriverProbeResult) {
+    let preserved_bridge_error = if probe.error_code.is_none() {
+        snapshot
+            .last_error_code
+            .as_deref()
+            .filter(|code| code.starts_with("bridge."))
+            .map(str::to_string)
+    } else {
+        None
+    };
     snapshot.driver_health = probe.driver_health;
     snapshot.driver_probe_state = "ready".to_string();
     snapshot.driver_version = probe.installed_driver_version;
-    snapshot.last_error_code = probe.error_code;
+    snapshot.last_error_code = probe.error_code.or(preserved_bridge_error);
     snapshot.test_signing_enabled = probe.test_signing_enabled;
     snapshot.signature_enforcement_bypassed = probe.signature_enforcement_bypassed;
     snapshot.memory_integrity_enabled = probe.memory_integrity_enabled;
@@ -159,7 +168,8 @@ pub fn run_elevated_driver_operation(
 
 #[cfg(test)]
 mod tests {
-    use super::parse_driver_probe_output;
+    use super::{apply_driver_probe, parse_driver_probe_output};
+    use crate::bridge::contracts::{BridgeRuntimeSnapshot, DriverProbeResult};
 
     const PROBE_JSON: &str = r#"{"schemaVersion":1,"driverHealth":"running","errorCode":null,"testSigningEnabled":true,"signatureEnforcementBypassed":false,"memoryIntegrityEnabled":false,"secureBootEnabled":null,"secureBootProbeStatus":"unavailable","rootDeviceCount":1,"rootInstanceIds":["ROOT\\MEDIA\\0000"],"endpointName":"扬声器 (Omni Translate Virtual Speaker)","abiVersion":"0X20260602","ioctlAvailable":true,"installedDriverVersion":"0.10.0-dev","detail":null}"#;
 
@@ -201,5 +211,40 @@ mod tests {
         };
 
         assert!(error.starts_with("driver.probe-invalid-json:"));
+    }
+
+    #[test]
+    fn successful_driver_probe_preserves_bridge_startup_error() {
+        let mut snapshot = BridgeRuntimeSnapshot {
+            last_error_code: Some("bridge.start-failed".to_string()),
+            driver_detail: Some("Bridge failed to start.".to_string()),
+            ..Default::default()
+        };
+
+        apply_driver_probe(
+            &mut snapshot,
+            DriverProbeResult {
+                schema_version: 1,
+                driver_health: "running".to_string(),
+                error_code: None,
+                test_signing_enabled: true,
+                signature_enforcement_bypassed: false,
+                memory_integrity_enabled: false,
+                secure_boot_enabled: Some(false),
+                secure_boot_probe_status: "ready".to_string(),
+                root_device_count: 1,
+                root_instance_ids: vec!["ROOT\\MEDIA\\0000".to_string()],
+                endpoint_name: Some("Speakers (Omni Translate Virtual Speaker)".to_string()),
+                abi_version: Some("0X20260604".to_string()),
+                ioctl_available: true,
+                installed_driver_version: Some("0.10.0-dev".to_string()),
+                detail: None,
+            },
+        );
+
+        assert_eq!(
+            snapshot.last_error_code.as_deref(),
+            Some("bridge.start-failed")
+        );
     }
 }

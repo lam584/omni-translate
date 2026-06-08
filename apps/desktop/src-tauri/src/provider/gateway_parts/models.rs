@@ -11,7 +11,7 @@ pub(super) fn resolve_models_endpoint(
             &normalize_dashscope_compatible_base_url(&provider.base_url),
             "models",
         ),
-        "openai-compatible" => join_url(
+        kind if is_openai_compatible_kind(kind) => join_url(
             &normalize_openai_compatible_base_url(&provider.base_url),
             "models",
         ),
@@ -99,34 +99,90 @@ pub(super) fn parse_model_catalog_response(
 
 pub(super) fn derive_model_capabilities(model_id: &str) -> Vec<String> {
     let normalized = model_id.to_ascii_lowercase();
-    let mut capabilities = vec!["text-generation".to_string()];
+    let mut capabilities: Vec<String> = Vec::new();
 
-    if normalized.contains("realtime") || normalized.contains("live") {
-        capabilities.push("speech-to-speech".to_string());
+    if is_stt_model_name(&normalized) {
+        push_capability(&mut capabilities, "speech-to-text");
     }
 
-    if normalized.contains("tts")
-        || normalized.contains("speech")
-        || normalized.contains("audio")
-        || normalized.contains("cosyvoice")
-        || normalized.contains("sambert")
-    {
-        capabilities.push("text-to-speech".to_string());
+    if is_tts_model_name(&normalized) {
+        push_capability(&mut capabilities, "text-to-speech");
     }
 
-    if normalized.contains("asr")
+    if is_s2s_model_name(&normalized) {
+        push_capability(&mut capabilities, "speech-to-speech");
+    }
+
+    if is_text_generation_model_name(&normalized) && capabilities.is_empty() {
+        push_capability(&mut capabilities, "text-generation");
+    }
+
+    capabilities
+}
+
+fn is_openai_compatible_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "openai-compatible" | "openrouter" | "ollama" | "lmstudio" | "nvidia"
+    )
+}
+
+fn push_capability(capabilities: &mut Vec<String>, capability: &str) {
+    if !capabilities.iter().any(|item| item == capability) {
+        capabilities.push(capability.to_string());
+    }
+}
+
+fn is_stt_model_name(normalized: &str) -> bool {
+    normalized.contains("asr")
+        || normalized.contains("transcribe")
+        || normalized.contains("whisper")
+        || normalized.contains("parakeet")
+        || normalized.contains("chirp")
+        || normalized.contains("voxtral")
         || normalized.contains("sensevoice")
         || normalized.contains("paraformer")
         || normalized.contains("gummy")
         || normalized.contains("omni")
         || normalized.contains("livetranslate")
-    {
-        capabilities.push("speech-to-text".to_string());
-    }
+        || normalized.contains("realtime")
+        || (normalized.contains("gemini") && (normalized.contains("live") || normalized.contains("native-audio")))
+}
 
-    if normalized.contains("omni") || normalized.contains("livetranslate") {
-        capabilities.push("speech-to-speech".to_string());
-    }
+fn is_tts_model_name(normalized: &str) -> bool {
+    normalized.contains("tts")
+        || normalized.contains("speech")
+        || normalized.contains("audio")
+        || normalized.contains("cosyvoice")
+        || normalized.contains("sambert")
+        || normalized.contains("magpie")
+        || normalized.contains("omni")
+        || normalized.contains("gpt-realtime")
+        || (normalized.contains("gemini") && (normalized.contains("live") || normalized.contains("native-audio")))
+}
 
-    capabilities
+fn is_s2s_model_name(normalized: &str) -> bool {
+    normalized.contains("omni")
+        || normalized.contains("livetranslate")
+        || normalized.contains("gpt-realtime")
+        || normalized.contains("gpt-audio")
+        || (normalized.contains("gemini") && (normalized.contains("live") || normalized.contains("native-audio")))
+}
+
+fn is_text_generation_model_name(normalized: &str) -> bool {
+    normalized.contains("chat")
+        || normalized.contains("completion")
+        || normalized.contains("qwen")
+        || normalized.contains("gpt")
+        || normalized.contains("deepseek")
+        || normalized.contains("claude")
+        || normalized.contains("gemini")
+        || normalized.contains("glm")
+        || normalized.contains("llama")
+        || normalized.contains("mistral")
+        || normalized.contains("yi")
+        || normalized.contains("nemotron")
+        || normalized.contains("local")
+        || normalized.contains("ollama")
+        || normalized.contains("lmstudio")
 }

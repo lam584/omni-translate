@@ -231,6 +231,11 @@ struct AudioAppendTraceSummary {
     audio_base64_length_min: Option<u64>,
     audio_base64_length_max: Option<u64>,
     audio_base64_length_last: Option<u64>,
+    audio_rms_min: Option<f64>,
+    audio_rms_max: Option<f64>,
+    audio_rms_last: Option<f64>,
+    audio_rms_total: f64,
+    audio_rms_count: u64,
     first_elapsed_ms: Option<u128>,
     last_elapsed_ms: Option<u128>,
 }
@@ -277,6 +282,22 @@ impl AudioAppendTraceSummary {
             );
             self.audio_base64_length_last = Some(audio_length);
         }
+
+        if let Some(rms) = value.get("rms").and_then(Value::as_f64) {
+            self.audio_rms_min = Some(
+                self.audio_rms_min
+                    .map(|current| current.min(rms))
+                    .unwrap_or(rms),
+            );
+            self.audio_rms_max = Some(
+                self.audio_rms_max
+                    .map(|current| current.max(rms))
+                    .unwrap_or(rms),
+            );
+            self.audio_rms_last = Some(rms);
+            self.audio_rms_total += rms;
+            self.audio_rms_count = self.audio_rms_count.saturating_add(1);
+        }
     }
 
     fn take_payload(&mut self) -> Option<Value> {
@@ -297,6 +318,16 @@ impl AudioAppendTraceSummary {
                 "min": self.audio_base64_length_min,
                 "max": self.audio_base64_length_max,
                 "last": self.audio_base64_length_last,
+            },
+            "audioRms": {
+                "min": self.audio_rms_min,
+                "max": self.audio_rms_max,
+                "last": self.audio_rms_last,
+                "avg": if self.audio_rms_count > 0 {
+                    Some(self.audio_rms_total / self.audio_rms_count as f64)
+                } else {
+                    None
+                },
             },
             "elapsedMs": {
                 "first": self.first_elapsed_ms,
@@ -481,6 +512,7 @@ mod tests {
                     "resampledSamples": 320,
                     "audio": "abcdef",
                     "chunkCount": chunk_count,
+                    "rms": if chunk_count <= 100 { 0.01 } else { 0.02 },
                 }),
                 chunk_count as u128,
             );
@@ -500,6 +532,16 @@ mod tests {
         assert_eq!(flushed[0]["audioBase64Length"]["min"], 6);
         assert_eq!(flushed[0]["audioBase64Length"]["max"], 6);
         assert_eq!(flushed[0]["audioBase64Length"]["last"], 6);
+        let f64_close = |left: &serde_json::Value, expected: f64| {
+            let actual = left.as_f64().unwrap();
+            assert!((actual - expected).abs() < 1e-6,
+                "expected ~{expected}, got {actual}");
+        };
+        f64_close(&flushed[0]["audioRms"]["min"], 0.01);
+        f64_close(&flushed[0]["audioRms"]["max"], 0.01);
+        f64_close(&flushed[0]["audioRms"]["last"], 0.01);
+        f64_close(&flushed[0]["audioRms"]["avg"], 0.01);
+        assert_eq!(flushed[1]["audioRms"]["min"], 0.02);
         assert_eq!(flushed[0]["elapsedMs"]["first"], 1);
         assert_eq!(flushed[0]["elapsedMs"]["last"], 100);
         assert_eq!(flushed[1]["chunks"]["firstChunkCount"], 101);

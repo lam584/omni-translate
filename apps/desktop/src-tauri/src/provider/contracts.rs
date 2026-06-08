@@ -44,6 +44,14 @@ pub struct ProviderModelCapabilityRegistryEntryInput {
     pub id: String,
     pub model_id: String,
     pub capabilities: Vec<String>,
+    pub realtime_audio_mode: Option<String>,
+    #[serde(default)]
+    pub interaction_capabilities: Vec<String>,
+    #[serde(default)]
+    pub api_modes: Vec<String>,
+    pub released_at: Option<String>,
+    pub source: Option<String>,
+    pub notes: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -152,6 +160,35 @@ pub struct ProviderRoutingDecision {
     pub rationale: String,
 }
 
+impl ProviderRoutingDecision {
+    pub fn for_verdict(verdict: &str, latency_ms: u64, fallback_applied: bool) -> Self {
+        match verdict {
+            "available" => Self {
+                subtitle_priority: "balanced".to_string(),
+                speech_disposition: "ready".to_string(),
+                rationale: if fallback_applied {
+                    "已做传输回退，但当前延迟和结构稳定性仍满足实时要求。".to_string()
+                } else {
+                    format!("当前延迟 {} ms，允许字幕与译音并行。", latency_ms)
+                },
+            },
+            "realtime-risk" => Self {
+                subtitle_priority: "subtitle-first".to_string(),
+                speech_disposition: "deferred".to_string(),
+                rationale: format!(
+                    "当前延迟 {} ms 超过预算，优先保证字幕不断流，译音进入 deferred。",
+                    latency_ms
+                ),
+            },
+            _ => Self {
+                subtitle_priority: "subtitle-first".to_string(),
+                speech_disposition: "queued".to_string(),
+                rationale: "当前 Provider 不可用或响应结构不稳定，禁止进入实时主链路。".to_string(),
+            },
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProbeCheckRuntime {
@@ -195,6 +232,62 @@ pub struct ProviderStreamEventRecord {
     pub audio_chunk_ref: Option<String>,
 }
 
+impl ProviderStreamEventRecord {
+    pub fn new(event_type: &str, summary: &str) -> Self {
+        Self {
+            event_type: event_type.to_string(),
+            summary: summary.to_string(),
+            segment_id: None,
+            text_delta: None,
+            text: None,
+            audio_chunk_ref: None,
+        }
+    }
+
+    pub fn with_text(event_type: &str, summary: &str, segment_id: &str, text: String) -> Self {
+        Self {
+            event_type: event_type.to_string(),
+            summary: summary.to_string(),
+            segment_id: Some(segment_id.to_string()),
+            text_delta: None,
+            text: Some(text),
+            audio_chunk_ref: None,
+        }
+    }
+
+    pub fn with_delta(
+        event_type: &str,
+        summary: String,
+        segment_id: &str,
+        text_delta: String,
+    ) -> Self {
+        Self {
+            event_type: event_type.to_string(),
+            summary,
+            segment_id: Some(segment_id.to_string()),
+            text_delta: Some(text_delta),
+            text: None,
+            audio_chunk_ref: None,
+        }
+    }
+
+    pub fn with_audio(
+        event_type: &str,
+        summary: &str,
+        segment_id: Option<&str>,
+        audio_chunk_ref: String,
+    ) -> Self {
+        Self {
+            event_type: event_type.to_string(),
+            summary: summary.to_string(),
+            segment_id: segment_id.map(|s| s.to_string()),
+            text_delta: None,
+            text: None,
+            audio_chunk_ref: Some(audio_chunk_ref),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSmokeResult {
@@ -216,6 +309,43 @@ pub struct ProviderSmokeResult {
     pub audio_seconds: Option<f64>,
     pub routing_decision: ProviderRoutingDecision,
     pub error: Option<ProviderRuntimeError>,
+}
+
+impl ProviderSmokeResult {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_success(
+        request_id: String,
+        provider_id: String,
+        transport_effective: String,
+        source_language: String,
+        target_language: String,
+        event_log: Vec<ProviderStreamEventRecord>,
+        first_event_latency_ms: Option<u64>,
+        transcript: String,
+        input_tokens: Option<u64>,
+        output_tokens: Option<u64>,
+    ) -> Self {
+        Self {
+            request_id,
+            provider_id,
+            status: "completed".to_string(),
+            transport_requested: transport_effective.clone(),
+            transport_effective,
+            fallback_applied: false,
+            stream_observed: false,
+            duration_ms: 0,
+            first_event_latency_ms,
+            transcript,
+            source_language,
+            target_language,
+            event_log,
+            input_tokens,
+            output_tokens,
+            audio_seconds: None,
+            routing_decision: ProviderRoutingDecision::for_verdict("available", 0, false),
+            error: None,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize)]

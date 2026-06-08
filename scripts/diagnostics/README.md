@@ -46,5 +46,19 @@ Optional arguments:
 cargo run --manifest-path scripts/diagnostics/omni-realtime/Cargo.toml -- --pcm c:\path\sample_16k_mono.pcm --manual --model qwen3.5-omni-plus-realtime-2026-03-15
 ```
 
-The tool expects raw little-endian signed 16-bit PCM at 16 kHz mono. It does
-not convert OGG/MP3/WAV input.
+The tool accepts raw little-endian signed 16-bit PCM at 16 kHz mono via
+`--pcm`, or MP3 input via `--mp3`.
+
+### `omni-benchmark`
+
+Runs repeatable DashScope Omni realtime timing benchmarks.
+
+```powershell
+$env:DASHSCOPE_API_KEY = "<your key>"
+cargo run --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml -- --audio c:\path\sample.wav --model qwen3.5-omni-plus-realtime --manual --json
+```
+
+Use `--audio` for format-agnostic input. Supported extensions are `.mp3`,
+`.wav`, `.pcm`, `.s16le`, and `.raw`. Raw PCM-style inputs are interpreted as
+16 kHz mono signed 16-bit little-endian audio. The old `--mp3` flag remains as
+a compatibility alias for `--audio`.

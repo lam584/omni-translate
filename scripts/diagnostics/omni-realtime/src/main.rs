@@ -15,9 +15,50 @@ const CHUNK_SAMPLES: usize = 320;
 #[derive(Debug)]
 struct Config {
     api_key: String,
-    pcm_path: PathBuf,
+    audio_input: AudioInput,
     model: String,
-    manual: bool,
+    mode: RealtimeMode,
+    input_audio_format: String,
+    readiness: ReadinessMode,
+    limit_seconds: Option<f32>,
+}
+
+#[derive(Debug)]
+enum AudioInput {
+    Pcm(PathBuf),
+    Mp3(PathBuf),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RealtimeMode {
+    Manual,
+    ServerVad,
+    SemanticVad,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadinessMode {
+    UpdatedOnly,
+    CreatedOrUpdated,
+}
+
+impl RealtimeMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::ServerVad => "server_vad",
+            Self::SemanticVad => "semantic_vad",
+        }
+    }
+}
+
+impl ReadinessMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::UpdatedOnly => "updated_only",
+            Self::CreatedOrUpdated => "created_or_updated",
+        }
+    }
 }
 
 fn main() {
@@ -45,16 +86,55 @@ fn parse_args() -> Result<Config, String> {
         return Err("DASHSCOPE_API_KEY is empty".to_string());
     }
 
-    let mut pcm_path: Option<PathBuf> = None;
+    let mut audio_input: Option<AudioInput> = None;
     let mut model = DEFAULT_MODEL.to_string();
-    let mut manual = false;
+    let mut mode = RealtimeMode::ServerVad;
+    let mut input_audio_format: Option<String> = None;
+    let mut readiness = ReadinessMode::UpdatedOnly;
+    let mut limit_seconds = None;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--pcm" => pcm_path = Some(PathBuf::from(next_value(&mut args, "--pcm")?)),
+            "--pcm" => {
+                audio_input = Some(AudioInput::Pcm(PathBuf::from(next_value(
+                    &mut args, "--pcm",
+                )?)))
+            }
+            "--mp3" => {
+                audio_input = Some(AudioInput::Mp3(PathBuf::from(next_value(
+                    &mut args, "--mp3",
+                )?)))
+            }
             "--model" => model = next_value(&mut args, "--model")?,
-            "--manual" => manual = true,
+            "--mode" => {
+                let raw = next_value(&mut args, "--mode")?;
+                mode = parse_realtime_mode(&raw)?;
+            }
+            "--input-audio-format" => {
+                let raw = next_value(&mut args, "--input-audio-format")?;
+                if raw != "pcm" && raw != "pcm16" {
+                    return Err(format!(
+                        "invalid --input-audio-format '{raw}'; expected pcm or pcm16"
+                    ));
+                }
+                input_audio_format = Some(raw);
+            }
+            "--readiness" => {
+                let raw = next_value(&mut args, "--readiness")?;
+                readiness = parse_readiness_mode(&raw)?;
+            }
+            "--limit-seconds" => {
+                let raw = next_value(&mut args, "--limit-seconds")?;
+                let value = raw
+                    .parse::<f32>()
+                    .map_err(|error| format!("invalid --limit-seconds '{raw}': {error}"))?;
+                if value <= 0.0 {
+                    return Err("--limit-seconds must be greater than 0".to_string());
+                }
+                limit_seconds = Some(value);
+            }
+            "--manual" => mode = RealtimeMode::Manual,
             "--help" | "-h" => {
                 print_usage();
                 std::process::exit(0);
@@ -63,13 +143,46 @@ fn parse_args() -> Result<Config, String> {
         }
     }
 
-    let pcm_path = pcm_path.ok_or_else(|| "--pcm <path> is required".to_string())?;
+    let audio_input =
+        audio_input.ok_or_else(|| "--pcm <path> or --mp3 <path> is required".to_string())?;
+    let input_audio_format = input_audio_format.unwrap_or_else(|| {
+        if is_livetranslate_model(&model) {
+            "pcm"
+        } else {
+            "pcm16"
+        }
+        .to_string()
+    });
     Ok(Config {
         api_key,
-        pcm_path,
+        audio_input,
         model,
-        manual,
+        mode,
+        input_audio_format,
+        readiness,
+        limit_seconds,
     })
+}
+
+fn parse_realtime_mode(value: &str) -> Result<RealtimeMode, String> {
+    match value {
+        "manual" => Ok(RealtimeMode::Manual),
+        "server_vad" => Ok(RealtimeMode::ServerVad),
+        "semantic_vad" => Ok(RealtimeMode::SemanticVad),
+        other => Err(format!(
+            "invalid --mode '{other}'; expected manual, server_vad, or semantic_vad"
+        )),
+    }
+}
+
+fn parse_readiness_mode(value: &str) -> Result<ReadinessMode, String> {
+    match value {
+        "updated_only" => Ok(ReadinessMode::UpdatedOnly),
+        "created_or_updated" => Ok(ReadinessMode::CreatedOrUpdated),
+        other => Err(format!(
+            "invalid --readiness '{other}'; expected updated_only or created_or_updated"
+        )),
+    }
 }
 
 fn next_value(args: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
@@ -79,15 +192,23 @@ fn next_value(args: &mut impl Iterator<Item = String>, name: &str) -> Result<Str
 }
 
 fn print_usage() {
-    eprintln!("Usage: omni-realtime-diagnostic --pcm <16k_mono_pcm> [--manual] [--model <model>]");
+    eprintln!("Usage: omni-realtime-diagnostic (--pcm <16k_mono_pcm> | --mp3 <path>) [--manual | --mode manual|server_vad|semantic_vad] [--input-audio-format pcm|pcm16] [--readiness updated_only|created_or_updated] [--model <model>] [--limit-seconds <seconds>]");
 }
 
 fn run(config: Config) -> Result<(), String> {
-    let samples = read_pcm_samples(&config.pcm_path)?;
+    let mut samples = read_audio_samples(&config.audio_input)?;
+    if let Some(limit_seconds) = config.limit_seconds {
+        let max_samples = (limit_seconds * 16_000.0).ceil() as usize;
+        if samples.len() > max_samples {
+            samples.truncate(max_samples);
+        }
+    }
     let chunks: Vec<&[i16]> = samples.chunks(CHUNK_SAMPLES).collect();
     println!("Omni Realtime Diagnostic");
     println!("model={}", config.model);
-    println!("mode={}", if config.manual { "manual" } else { "semantic_vad" });
+    println!("mode={}", config.mode.as_str());
+    println!("input_audio_format={}", config.input_audio_format);
+    println!("readiness={}", config.readiness.as_str());
     println!(
         "pcm_samples={} duration={:.1}s chunks={}",
         samples.len(),
@@ -110,11 +231,11 @@ fn run(config: Config) -> Result<(), String> {
     let (mut socket, _) = connect(request).map_err(|error| format!("connect failed: {error}"))?;
     set_read_timeout(&mut socket);
 
-    let session_cfg = session_update(config.manual);
+    let session_cfg = session_update(&config.model, config.mode, &config.input_audio_format);
     socket
         .send(Message::Text(session_cfg.to_string().into()))
         .map_err(|error| format!("failed to send session.update: {error}"))?;
-    wait_for_session_ready(&mut socket)?;
+    wait_for_session_ready(&mut socket, config.readiness)?;
 
     println!("streaming audio...");
     let audio_start = Instant::now();
@@ -132,18 +253,35 @@ fn run(config: Config) -> Result<(), String> {
         thread::sleep(Duration::from_millis(18));
     }
 
-    if config.manual {
+    if config.mode == RealtimeMode::Manual {
         socket
-            .send(Message::Text(json!({ "type": "input_audio_buffer.commit" }).to_string().into()))
+            .send(Message::Text(
+                json!({ "type": "input_audio_buffer.commit" })
+                    .to_string()
+                    .into(),
+            ))
             .map_err(|error| format!("failed to send commit: {error}"))?;
         socket
-            .send(Message::Text(json!({ "type": "response.create" }).to_string().into()))
+            .send(Message::Text(
+                json!({ "type": "response.create" }).to_string().into(),
+            ))
             .map_err(|error| format!("failed to send response.create: {error}"))?;
     }
 
-    receive_result(&mut socket, audio_start, config.manual)?;
+    receive_result(
+        &mut socket,
+        audio_start,
+        config.mode == RealtimeMode::Manual,
+    )?;
     let _ = socket.close(None);
     Ok(())
+}
+
+fn read_audio_samples(input: &AudioInput) -> Result<Vec<i16>, String> {
+    match input {
+        AudioInput::Pcm(path) => read_pcm_samples(path),
+        AudioInput::Mp3(path) => read_mp3_samples(path),
+    }
 }
 
 fn read_pcm_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
@@ -163,33 +301,111 @@ fn read_pcm_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
         .collect())
 }
 
-fn session_update(manual: bool) -> Value {
-    let turn_detection = if manual {
-        Value::Null
-    } else {
-        json!({
-            "type": "semantic_vad",
-            "threshold": 0.5,
-            "silence_duration_ms": 800,
+fn read_mp3_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|error| format!("failed to open MP3 file '{}': {error}", path.display()))?;
+    let mut decoder = minimp3::Decoder::new(file);
+    let mut mono = Vec::new();
+    let mut sample_rate: Option<u32> = None;
+
+    loop {
+        match decoder.next_frame() {
+            Ok(frame) => {
+                sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
+                let channels = frame.channels.max(1);
+                mono.extend(frame.data.chunks(channels).map(|frame| {
+                    frame
+                        .iter()
+                        .copied()
+                        .map(|sample| sample as f32 / i16::MAX as f32)
+                        .sum::<f32>()
+                        / frame.len().max(1) as f32
+                }));
+            }
+            Err(minimp3::Error::Eof) => break,
+            Err(error) => {
+                return Err(format!(
+                    "failed to decode MP3 file '{}': {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+
+    Ok(resample_mono_to_16k_i16(
+        &mono,
+        sample_rate.unwrap_or(16_000),
+    ))
+}
+
+fn resample_mono_to_16k_i16(samples: &[f32], source_rate: u32) -> Vec<i16> {
+    const TARGET_RATE: u32 = 16_000;
+    if samples.is_empty() {
+        return Vec::new();
+    }
+
+    let target_len =
+        ((samples.len() as u64 * TARGET_RATE as u64) / source_rate.max(1) as u64).max(1);
+    let ratio = source_rate as f64 / TARGET_RATE as f64;
+    (0..target_len as usize)
+        .map(|index| {
+            let source_pos = index as f64 * ratio;
+            let left_index = source_pos.floor() as usize;
+            let right_index = (left_index + 1).min(samples.len() - 1);
+            let fraction = (source_pos - left_index as f64) as f32;
+            let sample = samples[left_index] * (1.0 - fraction) + samples[right_index] * fraction;
+            (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
         })
+        .collect()
+}
+
+fn is_livetranslate_model(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("livetranslate")
+}
+
+fn session_update(model: &str, mode: RealtimeMode, input_audio_format: &str) -> Value {
+    let turn_detection = match mode {
+        RealtimeMode::Manual => Value::Null,
+        RealtimeMode::ServerVad => json!({
+            "type": "server_vad",
+            "threshold": 0.0,
+            "silence_duration_ms": 800,
+        }),
+        RealtimeMode::SemanticVad => json!({
+            "type": "semantic_vad",
+            "eagerness": "auto",
+        }),
     };
 
-    json!({
+    let mut session = json!({
         "type": "session.update",
         "session": {
             "modalities": ["text", "audio"],
             "voice": "Ethan",
-            "instructions": "Transcribe the audio and translate it to English.",
-            "input_audio_format": "pcm",
+            "instructions": "Transcribe the input audio and translate it to Chinese. Keep the response concise.",
+            "input_audio_format": input_audio_format,
             "sample_rate": 16000,
             "output_audio_format": "pcm",
             "turn_detection": turn_detection,
         }
-    })
+    });
+
+    if is_livetranslate_model(model) {
+        session["session"]["input_audio_transcription"] = json!({
+            "model": "qwen3-asr-flash-realtime",
+            "language": "en"
+        });
+        session["session"]["translation"] = json!({
+            "language": "zh"
+        });
+    }
+
+    session
 }
 
 fn wait_for_session_ready(
     socket: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+    readiness: ReadinessMode,
 ) -> Result<(), String> {
     let start = Instant::now();
     while start.elapsed() < Duration::from_secs(15) {
@@ -198,7 +414,12 @@ fn wait_for_session_ready(
                 let event: Value = serde_json::from_str(&text)
                     .map_err(|error| format!("invalid JSON from server: {error}"))?;
                 match event["type"].as_str().unwrap_or("?") {
-                    "session.created" => println!("session.created"),
+                    "session.created" => {
+                        println!("session.created");
+                        if readiness == ReadinessMode::CreatedOrUpdated {
+                            return Ok(());
+                        }
+                    }
                     "session.updated" => {
                         println!("session.updated");
                         return Ok(());
@@ -207,14 +428,19 @@ fn wait_for_session_ready(
                     _ => {}
                 }
             }
-            Ok(Message::Close(_)) => return Err("server closed before session was ready".to_string()),
+            Ok(Message::Close(_)) => {
+                return Err("server closed before session was ready".to_string())
+            }
             Err(error) if is_timeout(&error.to_string()) => continue,
             Err(error) => return Err(format!("read failed while waiting for session: {error}")),
             _ => {}
         }
     }
 
-    Err("timed out waiting for session.updated".to_string())
+    Err(format!(
+        "timed out waiting for readiness event mode={}",
+        readiness.as_str()
+    ))
 }
 
 fn receive_result(
@@ -242,9 +468,30 @@ fn receive_result(
                 match event["type"].as_str().unwrap_or("?") {
                     "input_audio_buffer.speech_started" => println!("speech_started"),
                     "input_audio_buffer.speech_stopped" => println!("speech_stopped"),
+                    "conversation.item.input_audio_transcription.text" => {
+                        let text = event["text"]
+                            .as_str()
+                            .or_else(|| event["delta"].as_str())
+                            .unwrap_or("");
+                        source = text.to_string();
+                        println!("source.text={source}");
+                    }
                     "conversation.item.input_audio_transcription.completed" => {
                         source = event["transcript"].as_str().unwrap_or("").to_string();
                         println!("source={source}");
+                    }
+                    "response.text.delta" => {
+                        if let Some(delta) = event["delta"].as_str() {
+                            translation.push_str(delta);
+                        }
+                    }
+                    "response.text.done" => {
+                        if let Some(text) = event["text"].as_str() {
+                            if !text.is_empty() {
+                                translation = text.to_string();
+                            }
+                        }
+                        println!("translation={translation}");
                     }
                     "response.audio_transcript.delta" => {
                         if let Some(delta) = event["delta"].as_str() {
@@ -297,7 +544,9 @@ fn set_read_timeout(
             let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
         }
         tungstenite::stream::MaybeTlsStream::Rustls(stream) => {
-            let _ = stream.get_mut().set_read_timeout(Some(Duration::from_secs(10)));
+            let _ = stream
+                .get_mut()
+                .set_read_timeout(Some(Duration::from_secs(10)));
         }
         _ => {}
     }

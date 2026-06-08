@@ -14,6 +14,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $RuntimeRoot = [System.IO.Path]::GetFullPath($RuntimeRoot)
+$ResultPath = [System.IO.Path]::GetFullPath($ResultPath)
 $startedAt = (Get-Date).ToUniversalTime().ToString('o')
 $logPath = [System.IO.Path]::ChangeExtension($ResultPath, '.log')
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ResultPath) | Out-Null

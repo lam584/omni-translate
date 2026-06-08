@@ -2,43 +2,43 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const rootDir = process.cwd();
+const projectDocsDir = path.join('docs', '项目');
+const legacyBridgeName = ['bridge', 'service'].join('-');
 
 const requiredFiles = [
   'README.md',
-  'CONTRIBUTING.md',
-  'docs/项目/社区术语包格式规范.md',
-  'docs/项目/发布自动化.md',
-  'docs/项目/测试与质量门禁.md',
-  'docs/项目/正式版签名流程.md',
-  'docs/项目/发布说明-0.1.0.md',
-  'docs/项目/安装手册.md',
-  'docs/项目/支持手册.md',
-  'docs/项目/故障排查手册.md',
-  'docs/项目/灰度发布与问题收敛.md',
-  'docs/项目/发布检查清单.md',
-  'docs/项目/OBS集成边界.md',
+  'README.en.md',
+  path.join(projectDocsDir, 'Watch Mode 真实链路自动化测试.md'),
+  path.join(projectDocsDir, '架构说明.md'),
+  path.join(projectDocsDir, '测试与质量门禁.md'),
+  path.join(projectDocsDir, '社区术语包格式规范.md'),
   'apps/desktop/package.json',
-  'apps/bridge-service/package.json',
   'apps/bridge-service-native/Cargo.toml',
   'scripts/release/prepare-installer-layout.mjs',
   'scripts/release/create-release-package.mjs',
+  'scripts/release/generate-release-manifest.mjs',
   'scripts/release/generate-signing-manifest.mjs',
   'scripts/release/finalize-signed-package.mjs',
   'scripts/installer/install-development-driver.ps1',
   'scripts/installer/uninstall-development-driver.ps1',
   'scripts/installer/repair-driver.ps1',
+  'scripts/testing/verify-contracts.mjs',
 ];
 
-const readJson = (relativePath) => JSON.parse(fs.readFileSync(path.join(rootDir, relativePath), 'utf8'));
+const readText = (relativePath) => fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
+const readJson = (relativePath) => JSON.parse(readText(relativePath));
+
+function readCargoVersion(relativePath) {
+  const match = readText(relativePath).match(/^\s*version\s*=\s*"([^"]+)"/m);
+  if (!match) {
+    throw new Error(`Unable to read Cargo package version from ${relativePath}`);
+  }
+  return match[1];
+}
 
 const rootPackage = readJson('package.json');
 const desktopPackage = readJson(path.join('apps', 'desktop', 'package.json'));
-const bridgePackage = readJson(path.join('apps', 'bridge-service', 'package.json'));
-const versionedReleaseNotes = `docs/项目/发布说明-${rootPackage.version}.md`;
-
-if (!requiredFiles.includes(versionedReleaseNotes)) {
-  requiredFiles.push(versionedReleaseNotes);
-}
+const nativeBridgeVersion = readCargoVersion(path.join('apps', 'bridge-service-native', 'Cargo.toml'));
 
 const missingFiles = requiredFiles.filter((relativePath) => !fs.existsSync(path.join(rootDir, relativePath)));
 
@@ -47,11 +47,11 @@ const requiredRootScripts = [
   'check:desktop',
   'verify:desktop',
   'quality:gate',
-  'check:bridge-service',
-  'test:bridge-service',
+  'test:contracts',
   'check:bridge-service-native',
   'build:bridge-service-native',
   'test:bridge-service-native',
+  'test:watch-mode-report',
   'test:desktop-shell',
   'release:manifest',
   'release:verify',
@@ -63,9 +63,25 @@ const requiredRootScripts = [
 ];
 const missingRootScripts = requiredRootScripts.filter((scriptName) => !rootPackage.scripts?.[scriptName]);
 
-const versionMismatch = [desktopPackage.version, bridgePackage.version].some((version) => version !== rootPackage.version);
+const removedLegacyScripts = ['check', 'build', 'test', 'test:coverage'].map((prefix) => `${prefix}:${legacyBridgeName}`);
+const staleLegacyScripts = removedLegacyScripts.filter((scriptName) => rootPackage.scripts?.[scriptName]);
+const legacyWorkspacePath = path.join(rootDir, 'apps', legacyBridgeName);
+const legacyWorkspacePresent = fs.existsSync(legacyWorkspacePath);
+const installerLayoutScript = readText('scripts/release/prepare-installer-layout.mjs');
+const installerStillCopiesLegacyBridge =
+  new RegExp(`path\\.join\\(['"]apps['"],\\s*['"]${legacyBridgeName}['"]\\)`).test(installerLayoutScript) ||
+  installerLayoutScript.includes(['bridge', 'Dist'].join('')) ||
+  installerLayoutScript.includes(['bridge', 'Package'].join(''));
+const versionMismatch = [desktopPackage.version, nativeBridgeVersion].some((version) => version !== rootPackage.version);
 
-if (missingFiles.length || missingRootScripts.length || versionMismatch) {
+if (
+  missingFiles.length ||
+  missingRootScripts.length ||
+  staleLegacyScripts.length ||
+  legacyWorkspacePresent ||
+  installerStillCopiesLegacyBridge ||
+  versionMismatch
+) {
   if (missingFiles.length) {
     console.error(`Missing files: ${missingFiles.join(', ')}`);
   }
@@ -74,13 +90,25 @@ if (missingFiles.length || missingRootScripts.length || versionMismatch) {
     console.error(`Missing root scripts: ${missingRootScripts.join(', ')}`);
   }
 
+  if (staleLegacyScripts.length) {
+    console.error(`Removed legacy bridge scripts are still present: ${staleLegacyScripts.join(', ')}`);
+  }
+
+  if (legacyWorkspacePresent) {
+    console.error(`Legacy bridge workspace still exists: ${path.relative(rootDir, legacyWorkspacePath)}`);
+  }
+
+  if (installerStillCopiesLegacyBridge) {
+    console.error('Installer layout script still contains legacy bridge copy logic.');
+  }
+
   if (versionMismatch) {
     console.error(
-      `Version mismatch: root=${rootPackage.version}, desktop=${desktopPackage.version}, bridge-service=${bridgePackage.version}`,
+      `Version mismatch: root=${rootPackage.version}, desktop=${desktopPackage.version}, nativeBridge=${nativeBridgeVersion}`,
     );
   }
 
   process.exit(1);
 }
 
-console.log('Release automation and support baseline is present.');
+console.log('Release automation and native bridge baseline is present.');

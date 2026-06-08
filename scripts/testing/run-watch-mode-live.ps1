@@ -1,0 +1,2610 @@
+param(
+  [switch]$DryRun,
+  [string]$Fixture = "pass",
+  [string]$OutputRoot = "artifacts/testing/watch-mode-live",
+  [string]$RuntimeRoot = "artifacts/diagnostics/logs",
+  [int]$WarmupSeconds = 12,
+  [int]$PlaybackSeconds = 0,
+  [int]$PostPlaybackWaitSeconds = 120,
+  [int]$SessionReadyTimeoutSeconds = 180,
+  [switch]$SkipDesktopLaunch,
+  [switch]$SkipDriverRepair,
+  [switch]$AllowDriverRepair,
+  [switch]$UseDefaultEndpointPlayback,
+  [switch]$StopDesktopAfterPlayback,
+  [switch]$AllowElevatedDesktopLaunch,
+  [switch]$SkipPhysicalOutputContentStt,
+  [string]$MediaPath = "scripts/testing/Test.mp3",
+  [string]$WatchModelId = "",
+  [string]$SubtitleTranslationModelId = "template-dashscope-realtime::qwen3.6-flash-2026-04-16",
+  [string]$InboundSecondaryAudioModelId = "template-dashscope-realtime::qwen3.5-omni-plus-realtime",
+  [string]$PhysicalPlaybackDeviceId = "default",
+  [string]$ExpectedPhysicalPlaybackDeviceName = ""
+)
+
+$ErrorActionPreference = 'Stop'
+
+function New-WatchModeOutputDirectory {
+  param([string]$Root)
+  $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
+  $modelSuffix = if ($WatchModelId) { "-$($WatchModelId -replace '[^A-Za-z0-9_.-]', '_')" } else { "" }
+  $target = Join-Path (Resolve-Path ".").Path (Join-Path $Root "$timestamp$modelSuffix")
+  New-Item -ItemType Directory -Force -Path $target | Out-Null
+  return $target
+}
+
+function Invoke-Step {
+  param(
+    [string]$Name,
+    [scriptblock]$Script,
+    [switch]$ContinueOnError
+  )
+  Write-Host "==> $Name"
+  try {
+    $global:LASTEXITCODE = 0
+    $result = & $Script
+    if ($LASTEXITCODE -ne 0) {
+      throw "$Name failed with exit code $LASTEXITCODE"
+    }
+    return [pscustomobject]@{
+      name = $Name
+      ok = $true
+      result = $result
+      error = $null
+    }
+  } catch {
+    if (-not $ContinueOnError) {
+      throw
+    }
+    return [pscustomobject]@{
+      name = $Name
+      ok = $false
+      result = $null
+      error = $_.Exception.Message
+    }
+  }
+}
+
+function Copy-IfExists {
+  param([string]$Source, [string]$Destination)
+  if (Test-Path -LiteralPath $Source -PathType Leaf) {
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+    return $Destination
+  }
+  return $null
+}
+
+function Set-Utf8NoBomContent {
+  param([string]$Path, [string]$Value)
+  $encoding = [System.Text.UTF8Encoding]::new($false)
+  [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+}
+
+function Test-IsAdministrator {
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+  return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+function Add-CoreAudioPolicyConfig {
+  if ([type]::GetType("OmniTranslate.AudioPolicyConfigClient", $false)) {
+    return
+  }
+  Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+
+namespace OmniTranslate {
+  public enum EDataFlow { eRender = 0, eCapture = 1, eAll = 2 }
+  public enum ERole { eConsole = 0, eMultimedia = 1, eCommunications = 2 }
+
+  [ComImport]
+  [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IMMDeviceEnumerator {
+    int NotImpl1();
+    int GetDefaultAudioEndpoint(EDataFlow dataFlow, ERole role, out IMMDevice endpoint);
+  }
+
+  [ComImport]
+  [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IMMDevice {
+    int Activate(ref Guid iid, int dwClsCtx, IntPtr activationParams, out IntPtr interfacePointer);
+    int OpenPropertyStore(int stgmAccess, out IntPtr properties);
+    int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
+    int GetState(out int state);
+  }
+
+  [ComImport]
+  [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+  public class MMDeviceEnumerator {}
+
+  [ComImport]
+  [Guid("F8679F50-850A-41CF-9C72-430F290290C8")]
+  [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+  public interface IPolicyConfig {
+    int GetMixFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, out IntPtr format);
+    int GetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int defaultFormat, out IntPtr format);
+    int ResetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId);
+    int SetDeviceFormat([MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr endpointFormat, IntPtr mixFormat);
+    int GetProcessingPeriod([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int defaultPeriod, out long defaultProcessingPeriod, out long minimumProcessingPeriod);
+    int SetProcessingPeriod([MarshalAs(UnmanagedType.LPWStr)] string deviceId, ref long processingPeriod);
+    int GetShareMode([MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr mode);
+    int SetShareMode([MarshalAs(UnmanagedType.LPWStr)] string deviceId, IntPtr mode);
+    int GetPropertyValue([MarshalAs(UnmanagedType.LPWStr)] string deviceId, ref Guid key, IntPtr value);
+    int SetPropertyValue([MarshalAs(UnmanagedType.LPWStr)] string deviceId, ref Guid key, IntPtr value);
+    int SetDefaultEndpoint([MarshalAs(UnmanagedType.LPWStr)] string deviceId, ERole role);
+    int SetEndpointVisibility([MarshalAs(UnmanagedType.LPWStr)] string deviceId, int visible);
+  }
+
+  [ComImport]
+  [Guid("870AF99C-171D-4F9E-AF0D-E63DF40C2BC9")]
+  public class AudioPolicyConfigClient {}
+
+  public static class AudioEndpointSwitcher {
+    public static string GetDefaultRenderEndpointId() {
+      var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumerator());
+      IMMDevice device;
+      enumerator.GetDefaultAudioEndpoint(EDataFlow.eRender, ERole.eMultimedia, out device);
+      if (device == null) {
+        return null;
+      }
+      string id;
+      device.GetId(out id);
+      return id;
+    }
+
+    public static void SetDefaultRenderEndpoint(string endpointId) {
+      if (String.IsNullOrWhiteSpace(endpointId)) {
+        return;
+      }
+      var policy = (IPolicyConfig)(new AudioPolicyConfigClient());
+      policy.SetDefaultEndpoint(endpointId, ERole.eConsole);
+      policy.SetDefaultEndpoint(endpointId, ERole.eMultimedia);
+      policy.SetDefaultEndpoint(endpointId, ERole.eCommunications);
+    }
+  }
+}
+"@
+}
+
+function Convert-ComObjectToInterface {
+  param([object]$ComObject, [type]$InterfaceType)
+  $unknown = [System.Runtime.InteropServices.Marshal]::GetIUnknownForObject($ComObject)
+  try {
+    return [System.Runtime.InteropServices.Marshal]::GetTypedObjectForIUnknown($unknown, $InterfaceType)
+  } finally {
+    [void][System.Runtime.InteropServices.Marshal]::Release($unknown)
+  }
+}
+
+function Get-DefaultRenderEndpointId {
+  Add-CoreAudioPolicyConfig
+  return [OmniTranslate.AudioEndpointSwitcher]::GetDefaultRenderEndpointId()
+}
+
+function Set-DefaultRenderEndpoint {
+  param([string]$EndpointId)
+  if (-not $EndpointId) {
+    return
+  }
+  Add-CoreAudioPolicyConfig
+  [OmniTranslate.AudioEndpointSwitcher]::SetDefaultRenderEndpoint($EndpointId)
+}
+
+function Set-DesktopAutostartEnvFile {
+  param([string]$RunMarker, [string]$OutputDirectory)
+  $envPath = Join-Path $workspaceRoot "apps/desktop/.env.local"
+  $backupPath = Join-Path $OutputDirectory "desktop-env.local.backup"
+  $hadFile = Test-Path -LiteralPath $envPath -PathType Leaf
+  $original = if ($hadFile) { Get-Content -LiteralPath $envPath -Raw } else { "" }
+  if ($hadFile) {
+    Set-Utf8NoBomContent $backupPath $original
+  }
+  $lines = @()
+  if ($original.Length -gt 0) {
+    $lines = @($original -split "`r?`n" | Where-Object {
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_AUTOSTART=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_RUN_MARKER=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_OUTPUT_DEVICE_ID=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_OUTPUT_LEVEL=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_MODEL_ID=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID='
+    })
+  }
+  $expiresAtMs = [DateTimeOffset]::UtcNow.AddMinutes(45).ToUnixTimeMilliseconds()
+  $next = @($lines | Where-Object { $_ -ne "" })
+  $next += "VITE_OMNI_WATCH_MODE_AUTOSTART=1"
+  $next += "VITE_OMNI_WATCH_MODE_RUN_MARKER=$RunMarker"
+  $next += "VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS=$expiresAtMs"
+  $next += "VITE_OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE=subtitle-tts"
+  if ($PhysicalPlaybackDeviceId) {
+    $next += "VITE_OMNI_WATCH_MODE_OUTPUT_DEVICE_ID=$PhysicalPlaybackDeviceId"
+    $next += "VITE_OMNI_WATCH_MODE_OUTPUT_LEVEL=50"
+  }
+  if ($WatchModelId) {
+    $next += "VITE_OMNI_WATCH_MODE_MODEL_ID=$WatchModelId"
+  }
+  if ($SubtitleTranslationModelId) {
+    $next += "VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID=$SubtitleTranslationModelId"
+  }
+  if ($InboundSecondaryAudioModelId) {
+    $next += "VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID=$InboundSecondaryAudioModelId"
+  }
+  Set-Utf8NoBomContent $envPath (($next -join "`r`n") + "`r`n")
+  return [pscustomobject]@{
+    path = $envPath
+    backupPath = if ($hadFile) { $backupPath } else { $null }
+    hadFile = $hadFile
+  }
+}
+
+function Restore-DesktopAutostartEnvFile {
+  param($State)
+  if (-not $State) {
+    return
+  }
+  if ($State.hadFile -and $State.backupPath -and (Test-Path -LiteralPath $State.backupPath -PathType Leaf)) {
+    Copy-Item -LiteralPath $State.backupPath -Destination $State.path -Force
+    return
+  }
+  if (Test-Path -LiteralPath $State.path -PathType Leaf) {
+    Remove-Item -LiteralPath $State.path -Force
+  }
+}
+
+function Set-DesktopPhysicalPlaybackOverride {
+  param([string]$DeviceId)
+  if (-not $DeviceId) {
+    return
+  }
+  $envPath = Join-Path $workspaceRoot "apps/desktop/.env.local"
+  if (-not (Test-Path -LiteralPath $envPath -PathType Leaf)) {
+    return
+  }
+  $lines = @(Get-Content -LiteralPath $envPath | Where-Object {
+    $_ -notmatch '^VITE_OMNI_WATCH_MODE_OUTPUT_DEVICE_ID='
+  })
+  $lines += "VITE_OMNI_WATCH_MODE_OUTPUT_DEVICE_ID=$DeviceId"
+  Set-Utf8NoBomContent $envPath (($lines -join "`r`n") + "`r`n")
+}
+
+function Get-PhysicalOutputResolvedDeviceId {
+  param($PhysicalOutputProbeStep)
+  if (-not ($PhysicalOutputProbeStep -and $PhysicalOutputProbeStep.ok -and $PhysicalOutputProbeStep.result)) {
+    return $null
+  }
+  return [string]$PhysicalOutputProbeStep.result.resolvedPhysicalPlaybackDeviceId
+}
+
+function Convert-DriverProbeToJsonFile {
+  param($DriverProbe, [string]$TargetPath)
+  if ($DriverProbe.ok) {
+    $DriverProbe.result | ConvertTo-Json -Depth 8 | Set-Content -Path $TargetPath -Encoding UTF8
+  } else {
+    [pscustomobject]@{ error = $DriverProbe.error } | ConvertTo-Json -Depth 8 | Set-Content -Path $TargetPath -Encoding UTF8
+  }
+}
+
+function Stop-StaleBridgeService {
+  param([string]$RootForRuntime)
+  $resolvedRuntimeRoot = if ([System.IO.Path]::IsPathRooted($RootForRuntime)) {
+    $RootForRuntime
+  } else {
+    Join-Path $workspaceRoot $RootForRuntime
+  }
+  & (Join-Path $workspaceRoot "scripts/installer/stop-stale-bridge-service.ps1") -WorkspaceRoot $workspaceRoot -RuntimeRoot $resolvedRuntimeRoot
+}
+
+function Stop-ElevatedWatchModeProcesses {
+  $command = "Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
+  $process = Start-Process -FilePath "powershell.exe" `
+    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command) `
+    -Verb RunAs `
+    -WindowStyle Hidden `
+    -Wait `
+    -PassThru
+  return [pscustomobject]@{
+    exitCode = $process.ExitCode
+  }
+}
+
+function Invoke-ReportGenerator {
+  param([string]$InputDirectory, [string]$Mode)
+  node ./scripts/testing/watch-mode-report.mjs --input $InputDirectory --output $InputDirectory --mode $Mode
+  if ($LASTEXITCODE -ne 0) {
+    throw "watch-mode report generator failed with exit code $LASTEXITCODE"
+  }
+  if ($Mode -eq "live") {
+    Write-LatestWatchModeSummary $InputDirectory
+  }
+}
+
+function Ensure-ObjectProperty {
+  param($Object, [string]$Name)
+  if (-not $Object.PSObject.Properties[$Name] -or $null -eq $Object.$Name) {
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue ([pscustomobject]@{}) -Force
+  }
+  return $Object.$Name
+}
+
+function Set-WatchModelOnConfig {
+  param($Config, [string]$ModelId)
+  if (-not $ModelId) {
+    return
+  }
+  if (-not $Config.devices) {
+    $Config | Add-Member -NotePropertyName devices -NotePropertyValue ([pscustomobject]@{})
+  }
+  $Config.devices.inboundVoiceModelId = $ModelId
+  $Config.devices.outboundVoiceModelId = $ModelId
+  $Config.devices.textToSpeechModelId = $ModelId
+  if (-not $Config.speech) {
+    $Config | Add-Member -NotePropertyName speech -NotePropertyValue ([pscustomobject]@{})
+  }
+  $Config.speech.textToSpeechModelId = $ModelId
+}
+
+function Set-WatchModeSecondaryConfig {
+  param(
+    $Config,
+    [string]$SubtitleModelId,
+    [string]$SecondaryAudioModelId
+  )
+  if (-not $Config.devices) {
+    $Config | Add-Member -NotePropertyName devices -NotePropertyValue ([pscustomobject]@{})
+  }
+  if (-not $Config.speech) {
+    $Config | Add-Member -NotePropertyName speech -NotePropertyValue ([pscustomobject]@{})
+  }
+  $inboundRoute = Ensure-ObjectProperty $Config.devices "inboundRoute"
+  $mixControl = Ensure-ObjectProperty $inboundRoute "mixControl"
+  $Config.devices.subtitleTranslationMode = "secondary"
+  if ($SubtitleModelId) {
+    $Config.devices.subtitleTranslationModelId = $SubtitleModelId
+  }
+  if ($SecondaryAudioModelId) {
+    $Config.devices.inboundSecondaryAudioModelId = $SecondaryAudioModelId
+    $Config.devices.textToSpeechModelId = $SecondaryAudioModelId
+    $Config.speech.textToSpeechModelId = $SecondaryAudioModelId
+  }
+  $Config.devices.outputSpeechEnabled = $true
+  $Config.devices.feedbackLoopPrevention = "virtual-driver"
+  $mixControl.keepOriginalAudio = $true
+  $mixControl.translatedAudioEnabled = $true
+  $mixControl.originalAudioGainDb = 0
+  $mixControl.translatedAudioGainDb = 0
+  $mixControl.duckingEnabled = $true
+  $mixControl.monitorMode = "original-and-translated"
+  $Config.speech.enabled = $true
+  $Config.speech.outputTarget = "speaker"
+  $Config.speech.localPlaybackEnabled = $true
+  $Config.speech.virtualMicOutputEnabled = $false
+  $Config.speech.translationAudioSource = "subtitle-tts"
+}
+
+function Write-LatestWatchModeSummary {
+  param([string]$RunDirectory)
+  $reportPath = Join-Path $RunDirectory "report.json"
+  if (-not (Test-Path -LiteralPath $reportPath -PathType Leaf)) {
+    throw "watch-mode report was not generated: $reportPath"
+  }
+  $report = Get-Content -LiteralPath $reportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $summaryPath = Join-Path (Split-Path -Parent $RunDirectory) "latest-watch-mode-live.json"
+  [ordered]@{
+    timestamp = Split-Path -Leaf $RunDirectory
+    reportPath = $reportPath
+    verdict = $report.verdict
+    failureLayer = $report.failureLayer
+    modelId = $report.modelId
+  } | ConvertTo-Json -Depth 4 | Set-Content -Path $summaryPath -Encoding UTF8
+}
+
+function Invoke-ElevatedDriverReinstall {
+  param([string]$OutputDirectory)
+  $operationId = "watch-mode-live-reinstall-$([System.Guid]::NewGuid().ToString('N'))"
+  $resultPath = Join-Path $OutputDirectory "driver-reinstall-result.json"
+  & (Join-Path $workspaceRoot "scripts/installer/request-elevated-driver-operation.ps1") `
+    -Action reinstall `
+    -OperationId $operationId `
+    -ResultPath $resultPath `
+    -WorkspaceRoot $workspaceRoot `
+    -RuntimeRoot $RuntimeRoot `
+    -InstallChannel development `
+    -DriverVersion 0.10.0-dev `
+    -BridgeVersion 0.1.0 `
+    -TargetDeviceId virtual-mic-default `
+    -VirtualRenderDeviceId omni-virtual-speaker-default
+  if (Test-Path -LiteralPath $resultPath -PathType Leaf) {
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  throw "driver.elevated-reinstall-result-missing: $resultPath"
+}
+
+function Invoke-NativeProcessToLog {
+  param(
+    [string]$FilePath,
+    [string[]]$ArgumentList,
+    [string]$WorkingDirectory,
+    [string]$StdoutPath,
+    [string]$StderrPath,
+    [int]$TimeoutSeconds = 0
+  )
+  $process = Start-Process -FilePath $FilePath `
+    -ArgumentList $ArgumentList `
+    -WorkingDirectory $WorkingDirectory `
+    -RedirectStandardOutput $StdoutPath `
+    -RedirectStandardError $StderrPath `
+    -WindowStyle Hidden `
+    -PassThru
+  if ($TimeoutSeconds -gt 0) {
+    $exited = $process.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $exited) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+      return 124
+    }
+  } else {
+    $process.WaitForExit()
+  }
+  try {
+    $process.Refresh()
+  } catch {
+  }
+  if ($null -eq $process.ExitCode) {
+    return 0
+  }
+  return $process.ExitCode
+}
+
+function Set-UserEnvironmentVariable {
+  param([string]$Name, [string]$Value)
+  [System.Environment]::SetEnvironmentVariable($Name, $Value, [System.EnvironmentVariableTarget]::User)
+}
+
+function Get-UserEnvironmentVariable {
+  param([string]$Name)
+  return [System.Environment]::GetEnvironmentVariable($Name, [System.EnvironmentVariableTarget]::User)
+}
+
+function Start-DesktopFrontendServer {
+  param([string]$OutputDirectory)
+  Stop-DesktopFrontendServer $null
+  $stdout = Join-Path $OutputDirectory "desktop-frontend.stdout.log"
+  $stderr = Join-Path $OutputDirectory "desktop-frontend.stderr.log"
+  $process = Start-Process -FilePath "node.exe" `
+    -ArgumentList @((Join-Path $workspaceRoot "scripts/testing/watch-mode-diagnostic-devurl-server.mjs")) `
+    -WorkingDirectory $workspaceRoot `
+    -RedirectStandardOutput $stdout `
+    -RedirectStandardError $stderr `
+    -WindowStyle Hidden `
+    -PassThru
+  $deadline = (Get-Date).AddSeconds(25)
+  do {
+    try {
+      $response = Invoke-WebRequest -Uri "http://127.0.0.1:4173" -UseBasicParsing -TimeoutSec 2
+      if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 500) {
+        return [pscustomobject]@{
+          pid = $process.Id
+          stdout = $stdout
+          stderr = $stderr
+          url = "http://127.0.0.1:4173"
+        }
+      }
+    } catch {
+      if ($process.HasExited) {
+        $err = if (Test-Path -LiteralPath $stderr -PathType Leaf) { Get-Content -LiteralPath $stderr -Raw -ErrorAction SilentlyContinue } else { "" }
+        throw "desktop frontend dev server exited before it became ready. ExitCode=$($process.ExitCode) Error=$err"
+      }
+      Start-Sleep -Milliseconds 500
+    }
+  } while ((Get-Date) -lt $deadline)
+  Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+  throw "timed out waiting for desktop frontend dev server at http://127.0.0.1:4173"
+}
+
+function Stop-DesktopFrontendServer {
+  param($Server)
+  if ($Server -and $Server.pid) {
+    Stop-Process -Id $Server.pid -Force -ErrorAction SilentlyContinue
+    Start-Process -FilePath "taskkill.exe" -ArgumentList @("/PID", "$($Server.pid)", "/F", "/T") -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+  }
+  Get-CimInstance Win32_Process -Filter "name = 'node.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -like "*watch-mode-diagnostic-devurl-server.mjs*" } |
+    ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
+
+function Start-WatchModeDesktopShell {
+  param([string]$OutputDirectory, [string]$RunMarker, [string]$PhysicalDeviceId)
+  if ($SkipDesktopLaunch) {
+    $existing = Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue | Select-Object -First 1
+    if (-not $existing) {
+      throw "SkipDesktopLaunch was provided but no existing omni-desktop-shell process is running"
+    }
+    return [pscustomobject]@{
+      pid = $existing.Id
+      external = $true
+      stdout = $null
+      stderr = $null
+      buildLog = $null
+      cargoBuildLog = $null
+      buildErrorLog = $null
+      cargoBuildErrorLog = $null
+      frontendServer = $null
+    }
+  }
+  $stdout = Join-Path $OutputDirectory "desktop-shell.stdout.log"
+  $stderr = Join-Path $OutputDirectory "desktop-shell.stderr.log"
+  $buildLog = Join-Path $OutputDirectory "desktop-shell.build.log"
+  $buildErrLog = Join-Path $OutputDirectory "desktop-shell.build.stderr.log"
+  $buildExit = Invoke-NativeProcessToLog "npm.cmd" @("run", "build", "--workspace", "@omni/desktop") (Resolve-Path ".").Path $buildLog $buildErrLog
+  if ($buildExit -ne 0) {
+    throw "desktop frontend build failed with exit code $buildExit; see $buildLog and $buildErrLog"
+  }
+  $cargoLog = Join-Path $OutputDirectory "desktop-shell.cargo-build.log"
+  $cargoErrLog = Join-Path $OutputDirectory "desktop-shell.cargo-build.stderr.log"
+  $cargoExit = Invoke-NativeProcessToLog "cargo.exe" @("build", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml") (Resolve-Path ".").Path $cargoLog $cargoErrLog
+  if ($cargoExit -ne 0) {
+    throw "desktop shell build failed with exit code $cargoExit; see $cargoLog and $cargoErrLog"
+  }
+  $frontendServer = Start-DesktopFrontendServer $OutputDirectory
+  $exe = Join-Path $workspaceRoot "apps/desktop/src-tauri/target/debug/omni-desktop-shell.exe"
+  if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+    throw "desktop shell executable was not built: $exe"
+  }
+  $providerInputPcmPath = Join-Path $OutputDirectory "provider-input-16k-mono.pcm"
+  $previousAutostart = $env:OMNI_WATCH_MODE_AUTOSTART
+  $previousRunMarker = $env:OMNI_WATCH_MODE_RUN_MARKER
+  $previousOutputDevice = $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID
+  $previousOutputLevel = $env:OMNI_WATCH_MODE_OUTPUT_LEVEL
+  $previousTranslationAudioSource = $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE
+  $previousProviderInputPcmPath = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH
+  $previousWatchModelId = $env:OMNI_WATCH_MODE_MODEL_ID
+  $previousSubtitleTranslationModelId = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID
+  $previousInboundSecondaryAudioModelId = $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID
+  $previousUserAutostart = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART"
+  $previousUserRunMarker = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER"
+  $previousUserOutputDevice = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID"
+  $previousUserOutputLevel = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_LEVEL"
+  $previousUserTranslationAudioSource = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE"
+  $previousUserProviderInputPcmPath = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH"
+  $previousUserWatchModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_MODEL_ID"
+  $previousUserSubtitleTranslationModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID"
+  $previousUserInboundSecondaryAudioModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID"
+  try {
+    $env:OMNI_WATCH_MODE_AUTOSTART = "1"
+    $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
+    if ($PhysicalDeviceId) {
+      $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID = $PhysicalDeviceId
+      $env:OMNI_WATCH_MODE_OUTPUT_LEVEL = "50"
+    }
+    $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = "subtitle-tts"
+    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $providerInputPcmPath
+    if ($WatchModelId) {
+      $env:OMNI_WATCH_MODE_MODEL_ID = $WatchModelId
+    }
+    if ($SubtitleTranslationModelId) {
+      $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $SubtitleTranslationModelId
+    }
+    if ($InboundSecondaryAudioModelId) {
+      $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $InboundSecondaryAudioModelId
+    }
+    if ($AllowElevatedDesktopLaunch) {
+      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART" "1"
+      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER" $RunMarker
+      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID" $PhysicalDeviceId
+      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_LEVEL" "50"
+      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE" "subtitle-tts"
+      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH" $providerInputPcmPath
+      if ($WatchModelId) {
+        Set-UserEnvironmentVariable "OMNI_WATCH_MODE_MODEL_ID" $WatchModelId
+      }
+      if ($SubtitleTranslationModelId) {
+        Set-UserEnvironmentVariable "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID" $SubtitleTranslationModelId
+      }
+      if ($InboundSecondaryAudioModelId) {
+        Set-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID" $InboundSecondaryAudioModelId
+      }
+      $process = Start-Process -FilePath $exe -WorkingDirectory (Join-Path $workspaceRoot "apps/desktop/src-tauri") -Verb RunAs -PassThru
+    } else {
+      try {
+        $process = Start-Process -FilePath $exe -WorkingDirectory (Join-Path $workspaceRoot "apps/desktop/src-tauri") -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+      } catch {
+        if ($_.Exception.Message -match "requires elevation|requires elevated|740") {
+          throw "desktop shell requires elevation; rerun with -AllowElevatedDesktopLaunch so the runner can start it via UAC"
+        }
+        throw
+      }
+    }
+  } finally {
+    $env:OMNI_WATCH_MODE_AUTOSTART = $previousAutostart
+    $env:OMNI_WATCH_MODE_RUN_MARKER = $previousRunMarker
+    $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID = $previousOutputDevice
+    $env:OMNI_WATCH_MODE_OUTPUT_LEVEL = $previousOutputLevel
+    $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = $previousTranslationAudioSource
+    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $previousProviderInputPcmPath
+    $env:OMNI_WATCH_MODE_MODEL_ID = $previousWatchModelId
+    $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $previousSubtitleTranslationModelId
+    $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $previousInboundSecondaryAudioModelId
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART" $previousUserAutostart
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER" $previousUserRunMarker
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID" $previousUserOutputDevice
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_LEVEL" $previousUserOutputLevel
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE" $previousUserTranslationAudioSource
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH" $previousUserProviderInputPcmPath
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_MODEL_ID" $previousUserWatchModelId
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID" $previousUserSubtitleTranslationModelId
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID" $previousUserInboundSecondaryAudioModelId
+  }
+  Start-Sleep -Seconds $WarmupSeconds
+  return [pscustomobject]@{
+    pid = $process.Id
+    stdout = $stdout
+    stderr = $stderr
+    buildLog = $buildLog
+    cargoBuildLog = $cargoLog
+    buildErrorLog = $buildErrLog
+    cargoBuildErrorLog = $cargoErrLog
+    frontendServer = $frontendServer
+  }
+}
+
+function Stop-WatchModeDesktopShell {
+  param($DesktopProcessStep)
+  if ($DesktopProcessStep -and $DesktopProcessStep.ok -and $DesktopProcessStep.result) {
+    Stop-DesktopFrontendServer $DesktopProcessStep.result.frontendServer
+  }
+  if ($DesktopProcessStep -and $DesktopProcessStep.ok -and $DesktopProcessStep.result -and $DesktopProcessStep.result.external) {
+    return Invoke-StopWatchRouteViaTauriCli
+  }
+  if ($AllowElevatedDesktopLaunch) {
+    return Stop-ElevatedWatchModeProcesses
+  }
+  if ($DesktopProcessStep -and $DesktopProcessStep.ok -and $DesktopProcessStep.result -and $DesktopProcessStep.result.pid) {
+    Stop-Process -Id $DesktopProcessStep.result.pid -ErrorAction SilentlyContinue
+    Start-Process -FilePath "taskkill.exe" -ArgumentList @("/PID", "$($DesktopProcessStep.result.pid)", "/F", "/T") -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+    Start-Sleep -Milliseconds 500
+  }
+  Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue | ForEach-Object {
+    Start-Process -FilePath "taskkill.exe" -ArgumentList @("/PID", "$($_.Id)", "/F", "/T") -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+  }
+}
+
+function Invoke-ProcessWithTimeout {
+  param(
+    [string]$FilePath,
+    [string[]]$ArgumentList,
+    [int]$TimeoutSeconds = 5
+  )
+  function Read-TrimmedTextFile {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) {
+      return ""
+    }
+    $content = Get-Content -LiteralPath $Path -Raw -ErrorAction SilentlyContinue
+    if ($null -eq $content) {
+      return ""
+    }
+    return ([string]$content).Trim()
+  }
+  $stdout = [System.IO.Path]::GetTempFileName()
+  $stderr = [System.IO.Path]::GetTempFileName()
+  $process = $null
+  try {
+    $process = Start-Process -FilePath $FilePath `
+      -ArgumentList $ArgumentList `
+      -RedirectStandardOutput $stdout `
+      -RedirectStandardError $stderr `
+      -WindowStyle Hidden `
+      -PassThru
+    $exited = $process.WaitForExit($TimeoutSeconds * 1000)
+    if (-not $exited) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+    return [pscustomobject]@{
+      exitCode = if ($exited) { $process.ExitCode } else { $null }
+      timedOut = -not $exited
+      stdout = Read-TrimmedTextFile $stdout
+      stderr = Read-TrimmedTextFile $stderr
+    }
+  } finally {
+    Remove-Item -LiteralPath $stdout, $stderr -Force -ErrorAction SilentlyContinue
+  }
+}
+
+function Invoke-StopWatchRouteViaTauriCli {
+  $candidates = @(
+    (Join-Path $workspaceRoot "apps/desktop/src-tauri/target/debug/omni-desktop-shell.exe"),
+    (Join-Path $workspaceRoot "apps/desktop/src-tauri/target/release/omni-desktop-shell.exe")
+  )
+  $exe = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  if (-not $exe) {
+    return [pscustomobject]@{
+      ok = $false
+      error = "omni-desktop-shell.exe was not found"
+    }
+  }
+  try {
+    $ping = Invoke-ProcessWithTimeout -FilePath $exe -ArgumentList @("tauri", "invoke", "debug_ipc_ping") -TimeoutSeconds 5
+    $stop = Invoke-ProcessWithTimeout -FilePath $exe -ArgumentList @("tauri", "invoke", "stop_audio_route", "--args", '{"direction":"inbound"}') -TimeoutSeconds 5
+    return [pscustomobject]@{
+      ok = ($ping.exitCode -eq 0 -and $stop.exitCode -eq 0 -and -not $ping.timedOut -and -not $stop.timedOut)
+      exe = $exe
+      pingExitCode = $ping.exitCode
+      stopExitCode = $stop.exitCode
+      pingTimedOut = $ping.timedOut
+      stopTimedOut = $stop.timedOut
+      pingOutput = $ping.stdout
+      pingError = $ping.stderr
+      stopOutput = $stop.stdout
+      stopError = $stop.stderr
+    }
+  } catch {
+    return [pscustomobject]@{
+      ok = $false
+      exe = $exe
+      error = $_.Exception.Message
+    }
+  }
+}
+
+function Invoke-StartWatchModeViaTauriCli {
+  param($DesktopProcessStep, [string]$PhysicalDeviceId)
+  if (-not ($DesktopProcessStep -and $DesktopProcessStep.ok -and $DesktopProcessStep.result -and $DesktopProcessStep.result.pid)) {
+    throw "desktop shell is not running; cannot start watch mode via Tauri CLI"
+  }
+  $exe = Join-Path $workspaceRoot "apps/desktop/src-tauri/target/debug/omni-desktop-shell.exe"
+  $ping = Invoke-ProcessWithTimeout -FilePath $exe -ArgumentList @("tauri", "invoke", "debug_ipc_ping") -TimeoutSeconds 10
+  if ($ping.exitCode -ne 0 -or $ping.timedOut) {
+    throw "desktop shell IPC ping failed. ExitCode=$($ping.exitCode) TimedOut=$($ping.timedOut) Stdout=$($ping.stdout) Stderr=$($ping.stderr)"
+  }
+  $loaded = Invoke-ProcessWithTimeout -FilePath $exe -ArgumentList @("tauri", "invoke", "load_config_draft") -TimeoutSeconds 10
+  if ($loaded.exitCode -ne 0 -or $loaded.timedOut -or -not $loaded.stdout) {
+    throw "load_config_draft failed. ExitCode=$($loaded.exitCode) TimedOut=$($loaded.timedOut) Stdout=$($loaded.stdout) Stderr=$($loaded.stderr)"
+  }
+  try {
+    $config = $loaded.stdout | ConvertFrom-Json
+  } catch {
+    throw "load_config_draft returned invalid JSON: $($loaded.stdout)"
+  }
+  if (-not $config.devices) {
+    $config | Add-Member -NotePropertyName devices -NotePropertyValue ([pscustomobject]@{})
+  }
+  $config.devices.routeMode = "watch"
+  if (-not $config.speech) {
+    $config | Add-Member -NotePropertyName speech -NotePropertyValue ([pscustomobject]@{})
+  }
+  $config.speech.translationAudioSource = "subtitle-tts"
+  Set-WatchModelOnConfig $config $WatchModelId
+  Set-WatchModeSecondaryConfig $config $SubtitleTranslationModelId $InboundSecondaryAudioModelId
+  if ($PhysicalDeviceId) {
+    $config.devices.outputDeviceId = $PhysicalDeviceId
+    $config.devices.outputLevel = 50
+  }
+  $configJson = $config | ConvertTo-Json -Depth 100 -Compress
+  $argsJson = (@{ config = $config } | ConvertTo-Json -Depth 100 -Compress)
+  $preconnect = Invoke-ProcessWithTimeout -FilePath $exe -ArgumentList @("tauri", "invoke", "preconnect_omni_realtime", "--args", $argsJson) -TimeoutSeconds 20
+  if ($preconnect.exitCode -ne 0 -or $preconnect.timedOut) {
+    throw "preconnect_omni_realtime failed. ExitCode=$($preconnect.exitCode) TimedOut=$($preconnect.timedOut) ModelId=$WatchModelId PhysicalDeviceId=$PhysicalDeviceId Stdout=$($preconnect.stdout) Stderr=$($preconnect.stderr)"
+  }
+  $bridge = Invoke-ProcessWithTimeout -FilePath $exe -ArgumentList @("tauri", "invoke", "start_bridge_service", "--args", $argsJson) -TimeoutSeconds 20
+  if ($bridge.exitCode -ne 0 -or $bridge.timedOut) {
+    throw "start_bridge_service failed. ExitCode=$($bridge.exitCode) TimedOut=$($bridge.timedOut) Stdout=$($bridge.stdout) Stderr=$($bridge.stderr)"
+  }
+  $routeArgsJson = (@{ direction = "inbound"; config = $config } | ConvertTo-Json -Depth 100 -Compress)
+  $route = Invoke-ProcessWithTimeout -FilePath $exe -ArgumentList @("tauri", "invoke", "start_audio_route", "--args", $routeArgsJson) -TimeoutSeconds 30
+  if ($route.exitCode -ne 0 -or $route.timedOut) {
+    throw "start_audio_route failed. ExitCode=$($route.exitCode) TimedOut=$($route.timedOut) Stdout=$($route.stdout) Stderr=$($route.stderr)"
+  }
+  return [pscustomobject]@{
+    ping = $ping
+    preconnect = $preconnect
+    bridge = $bridge
+    route = $route
+    outputDeviceId = $PhysicalDeviceId
+  }
+}
+
+function Stop-StaleWatchModeDesktopShell {
+  if ($AllowElevatedDesktopLaunch) {
+    return [pscustomobject]@{
+      routeStop = $null
+      elevatedCleanup = Stop-ElevatedWatchModeProcesses
+    }
+  }
+  $routeStop = Invoke-StopWatchRouteViaTauriCli
+  Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+  Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue | ForEach-Object {
+    Start-Process -FilePath "taskkill.exe" -ArgumentList @("/PID", "$($_.Id)", "/F", "/T") -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
+  }
+  Start-Sleep -Milliseconds 500
+  $remaining = @(Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue)
+  if ($remaining.Count -gt 0) {
+    $ids = ($remaining | ForEach-Object { "$($_.Id)" }) -join ","
+    $routeStopJson = ($routeStop | ConvertTo-Json -Depth 6 -Compress)
+    throw "stale omni-desktop-shell could not be stopped; pid=$ids; routeStop=$routeStopJson"
+  }
+  return [pscustomobject]@{
+    routeStop = $routeStop
+  }
+}
+
+function Get-LogTextAfterMarker {
+  param([string]$Path, [string]$RunMarker)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return ""
+  }
+  $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+  if (-not $text) {
+    return ""
+  }
+  $text = [string]$text
+  if ($RunMarker) {
+    $markerIndex = $text.IndexOf($RunMarker)
+    if ($markerIndex -ge 0) {
+      return $text.Substring($markerIndex)
+    }
+  }
+  return $text
+}
+
+function Get-DiagnosticLogLines {
+  param(
+    [string]$Text,
+    [string[]]$Patterns,
+    [int]$Limit = 8
+  )
+  if (-not $Text) {
+    return @()
+  }
+  $matchedLines = @()
+  foreach ($line in ($Text -split "`r?`n")) {
+    if (-not $line.Trim()) {
+      continue
+    }
+    foreach ($pattern in $Patterns) {
+      if ($line -match $pattern) {
+        $matchedLines += $line
+        break
+      }
+    }
+  }
+  if ($matchedLines.Count -le $Limit) {
+    return $matchedLines
+  }
+  return $matchedLines[($matchedLines.Count - $Limit)..($matchedLines.Count - 1)]
+}
+
+function Format-DiagnosticLogLines {
+  param([object[]]$Lines)
+  if (-not $Lines -or $Lines.Count -eq 0) {
+    return "-"
+  }
+  return (($Lines | ForEach-Object { [string]$_ }) -join " || ")
+}
+
+function Wait-AppLogPattern {
+  param(
+    [string]$Path,
+    [string]$RunMarker,
+    [string]$Pattern,
+    [int]$TimeoutSeconds = 45
+  )
+  $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+  do {
+    $text = Get-LogTextAfterMarker $Path $RunMarker
+    if ($text -match $Pattern) {
+      return [pscustomobject]@{
+        matched = $true
+        pattern = $Pattern
+        path = $Path
+      }
+    }
+    Start-Sleep -Milliseconds 500
+  } while ((Get-Date) -lt $deadline)
+  $fullText = ""
+  if (Test-Path -LiteralPath $Path -PathType Leaf) {
+    $fullText = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+  }
+  $markerFound = $false
+  if ($RunMarker -and $fullText) {
+    $markerFound = $fullText.IndexOf($RunMarker) -ge 0
+  }
+  $scopedText = Get-LogTextAfterMarker $Path $RunMarker
+  $readinessLines = Get-DiagnosticLogLines $scopedText @(
+    "watch_mode\.diagnostic_autostart",
+    "watch_mode\.omni_preconnect",
+    "watch_mode\.omni_session",
+    "watch_mode\.route",
+    "ws\.recv\.session",
+    "start_audio_route",
+    "preconnect_omni_realtime"
+  ) 12
+  $providerLines = Get-DiagnosticLogLines $scopedText @(
+    "provider",
+    "dashscope",
+    "openai",
+    "model_trace",
+    "401|403|429|quota|rate limit|timeout|timed out|websocket|authentication|authorization"
+  ) 12
+  $tailLines = Get-DiagnosticLogLines $scopedText @(".+") 16
+  throw "timed out waiting for app log pattern. Pattern=$Pattern TimeoutSeconds=$TimeoutSeconds Path=$Path MarkerFound=$markerFound RunMarker=$RunMarker ReadinessLines=$(Format-DiagnosticLogLines $readinessLines) ProviderLines=$(Format-DiagnosticLogLines $providerLines) Tail=$(Format-DiagnosticLogLines $tailLines)"
+}
+
+function Start-TestMediaPlayback {
+  param([string]$PathToMedia, [string]$PlaybackEndpointId, [string]$OutputDirectory)
+  if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
+    throw "Test media file not found: $PathToMedia"
+  }
+  $injectorExe = Join-Path $workspaceRoot "apps/bridge-service-native/target/release/omni-watch-media-injector.exe"
+  if (Test-Path -LiteralPath $injectorExe -PathType Leaf) {
+    $args = @("--media", (Resolve-Path -LiteralPath $PathToMedia).Path)
+    $referencePcmPath = $null
+    if ($OutputDirectory) {
+      $referencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
+      $args += @("--reference-pcm16k-mono-path", $referencePcmPath)
+    }
+    if ($PlaybackEndpointId) {
+      $args += @("--endpoint-id", $PlaybackEndpointId)
+    }
+    if ($PlaybackSeconds -gt 0) {
+      $args += @("--max-seconds", "$PlaybackSeconds")
+    }
+    $output = & $injectorExe @args
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -ne 0 -or -not $output) {
+      throw "watch media injector failed. ExitCode=$exitCode Output=$output"
+    }
+    $result = ($output -join [Environment]::NewLine) | ConvertFrom-Json
+    if (-not $result.passed) {
+      throw "watch media injector failed: $($result.detail)"
+    }
+    return [pscustomobject]@{
+      playbackMode = "wasapi-media-injector"
+      endpointId = $result.endpointId
+      mediaPath = $result.mediaPath
+      renderedFrames = $result.renderedFrames
+      renderedSeconds = $result.renderedSeconds
+      referencePcmPath = $referencePcmPath
+    }
+  }
+
+  throw "watch media injector was not built: $injectorExe. Run npm run build:bridge-service-native first."
+}
+
+function Start-TestMediaPlaybackViaDefaultEndpoint {
+  param([string]$PathToMedia, [string]$PlaybackEndpointId)
+  if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
+    throw "Test media file not found: $PathToMedia"
+  }
+  $previousEndpointId = $null
+  $defaultEndpointSwitched = $false
+  if ($PlaybackEndpointId) {
+    $previousEndpointId = Get-DefaultRenderEndpointId
+    Set-DefaultRenderEndpoint $PlaybackEndpointId
+    $defaultEndpointSwitched = $true
+    Start-Sleep -Milliseconds 500
+  }
+  if (-not ([type]::GetType("OmniTranslate.WinmmMci", $false))) {
+    Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+using System.Text;
+
+namespace OmniTranslate {
+  public static class WinmmMci {
+    [DllImport("winmm.dll", CharSet = CharSet.Unicode)]
+    private static extern int mciSendString(string command, StringBuilder returnValue, int returnLength, IntPtr hwndCallback);
+
+    public static string Send(string command, int returnLength) {
+      var buffer = new StringBuilder(returnLength);
+      int result = mciSendString(command, buffer, returnLength, IntPtr.Zero);
+      if (result != 0) {
+        throw new InvalidOperationException("mciSendString failed result=" + result + " command=" + command);
+      }
+      return buffer.ToString();
+    }
+  }
+}
+"@
+  }
+  $alias = "omni_watch_test_$PID"
+  $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
+  $durationSeconds = $null
+  try {
+    [void][OmniTranslate.WinmmMci]::Send("open `"$resolvedMediaPath`" alias $alias", 0)
+    $lengthMsText = [OmniTranslate.WinmmMci]::Send("status $alias length", 64)
+    $lengthMs = 0
+    if ([int]::TryParse($lengthMsText.Trim(), [ref]$lengthMs) -and $lengthMs -gt 0) {
+      $durationSeconds = [Math]::Round($lengthMs / 1000.0, 3)
+    }
+    [void][OmniTranslate.WinmmMci]::Send("setaudio $alias volume to 600", 0)
+    [void][OmniTranslate.WinmmMci]::Send("play $alias from 0", 0)
+    $sleepSeconds = if ($PlaybackSeconds -gt 0) {
+      $PlaybackSeconds
+    } elseif ($durationSeconds -and $durationSeconds -gt 0) {
+      [Math]::Ceiling($durationSeconds)
+    } else {
+      0
+    }
+    if ($sleepSeconds -gt 0) {
+      Start-Sleep -Seconds $sleepSeconds
+    }
+    [void][OmniTranslate.WinmmMci]::Send("stop $alias", 0)
+  } finally {
+    try {
+      [void][OmniTranslate.WinmmMci]::Send("close $alias", 0)
+    } catch {
+    }
+    if ($defaultEndpointSwitched -and $previousEndpointId) {
+      Set-DefaultRenderEndpoint $previousEndpointId
+    }
+  }
+  return [pscustomobject]@{
+    playbackMode = "mci-default-endpoint"
+    endpointId = $PlaybackEndpointId
+    mediaPath = $resolvedMediaPath
+    playedSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { $durationSeconds }
+    naturalDurationSeconds = $durationSeconds
+    defaultEndpointSwitched = $defaultEndpointSwitched
+  }
+}
+
+function Write-NamedPipeJsonLine {
+  param(
+    [string]$PipeName,
+    [object]$Payload,
+    [int]$TimeoutMs = 5000
+  )
+  $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [System.IO.Pipes.PipeDirection]::InOut)
+  $client.Connect($TimeoutMs)
+  try {
+    $writer = [System.IO.StreamWriter]::new($client)
+    $writer.AutoFlush = $true
+    $reader = [System.IO.StreamReader]::new($client)
+    $writer.WriteLine(($Payload | ConvertTo-Json -Depth 12 -Compress))
+    $line = $reader.ReadLine()
+    if (-not $line) {
+      throw "named pipe $PipeName returned no response"
+    }
+    return $line | ConvertFrom-Json
+  } finally {
+    $client.Dispose()
+  }
+}
+
+function Read-BridgeSourceFrame {
+  param(
+    [string]$PipeName,
+    [int]$TimeoutMs = 8000
+  )
+  $client = [System.IO.Pipes.NamedPipeClientStream]::new('.', $PipeName, [System.IO.Pipes.PipeDirection]::In)
+  $client.Connect($TimeoutMs)
+  try {
+    $reader = [System.IO.BinaryReader]::new($client)
+    $started = [DateTimeOffset]::UtcNow
+    while (([DateTimeOffset]::UtcNow - $started).TotalMilliseconds -lt $TimeoutMs) {
+      $headerLength = $reader.ReadUInt32()
+      $headerBytes = $reader.ReadBytes($headerLength)
+      $header = [System.Text.Encoding]::UTF8.GetString($headerBytes) | ConvertFrom-Json
+      $payloadBytes = 0
+      if ($header.payloadBytes -gt 0) {
+        $payload = $reader.ReadBytes($header.payloadBytes)
+        $payloadBytes = $payload.Length
+      }
+      if ($header.type -eq 'bridge.source.frame' -and $payloadBytes -gt 0) {
+        return [pscustomobject]@{
+          eventType = $header.type
+          frameId = $header.frameId
+          frameCount = $header.frameCount
+          payloadBytes = $payloadBytes
+          sampleRateHz = $header.sampleRateHz
+          channelCount = $header.channelCount
+        }
+      }
+    }
+    throw "timed out waiting for a bridge.source.frame"
+  } finally {
+    $client.Dispose()
+  }
+}
+
+function Invoke-BridgeSourceProbe {
+  param([string]$OutputDirectory)
+  $bridgeExe = Join-Path $workspaceRoot "apps/bridge-service-native/target/release/omni-bridge-service.exe"
+  if (-not (Test-Path -LiteralPath $bridgeExe -PathType Leaf)) {
+    throw "Bridge executable not found: $bridgeExe"
+  }
+  $probeRuntimeRoot = Join-Path $OutputDirectory "bridge-source-probe-runtime"
+  New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
+  $installStateJson = [ordered]@{
+    protocolVersion = '2026-06-02-loopback-v2'
+    installChannel = 'development'
+    driverVersion = '0.10.0-dev'
+    bridgeVersion = '0.1.0'
+    driverHealth = 'running'
+    installedAt = (Get-Date -Format s)
+    targetDeviceId = 'virtual-mic-default'
+    virtualRenderDeviceId = 'virtual-speaker-default'
+    driverBackend = 'sysvad-wave-rt'
+  } | ConvertTo-Json -Depth 6
+  Set-Utf8NoBomContent (Join-Path $probeRuntimeRoot "driver-install-state.json") $installStateJson
+  $pipeName = "omni-watch-mode-probe-$PID"
+  $stdout = Join-Path $OutputDirectory "bridge-source-probe.stdout.log"
+  $stderr = Join-Path $OutputDirectory "bridge-source-probe.stderr.log"
+  $diagnosticsPath = Join-Path $OutputDirectory "bridge-source-probe-diagnostics.json"
+  $process = Start-Process -FilePath $bridgeExe -ArgumentList @(
+    "--pipe-name", $pipeName,
+    "--runtime-root", $probeRuntimeRoot,
+    "--bridge-version", "0.1.0"
+  ) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+  $init = $null
+  $state = $null
+  $frame = $null
+  $phase = "init"
+  try {
+    Start-Sleep -Milliseconds 600
+    $phase = "init"
+    $init = Write-NamedPipeJsonLine $pipeName ([ordered]@{
+      type = 'bridge.init'
+      requestId = "watch-mode-probe-init-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+      protocolVersion = '2026-06-02-loopback-v2'
+      sessionId = "watch-mode-probe-session-$PID"
+      installChannel = 'development'
+      targetDeviceId = 'virtual-mic-default'
+      virtualRenderDeviceId = 'virtual-speaker-default'
+      physicalPlaybackDeviceId = 'default'
+      physicalPlaybackLevel = 50
+      monitorPlaybackEnabled = $false
+      expectedDriverVersion = '0.10.0-dev'
+      expectedBridgeVersion = '0.1.0'
+      mixControl = [ordered]@{
+        keepOriginalAudio = $true
+        translatedAudioEnabled = $true
+        translatedAudioGainDb = 0
+        originalAudioGainDb = 0
+        duckingEnabled = $false
+        duckingDepthPercent = 0
+        monitorMode = 'translated-only'
+      }
+    })
+    $phase = "source_frame"
+    $frame = Read-BridgeSourceFrame "$pipeName-source"
+    $phase = "state_query"
+    $state = Write-NamedPipeJsonLine $pipeName ([ordered]@{
+      type = 'bridge.state.query'
+      requestId = "watch-mode-probe-state-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+    })
+    $phase = "shutdown"
+    [void](Write-NamedPipeJsonLine $pipeName ([ordered]@{
+      type = 'bridge.shutdown'
+      requestId = "watch-mode-probe-shutdown-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+      sessionId = "watch-mode-probe-session-$PID"
+      reason = 'watch-mode-probe-complete'
+    }))
+    return [pscustomobject]@{
+      passed = $true
+      init = $init
+      state = $state
+      sourceFrame = $frame
+      pipeName = $pipeName
+      sourcePipeName = "$pipeName-source"
+      stdout = $stdout
+      stderr = $stderr
+    }
+  } catch {
+    $errorMessage = $_.Exception.Message
+    $stateQueryError = $null
+    if ($init -and -not $state) {
+      try {
+        $state = Write-NamedPipeJsonLine $pipeName ([ordered]@{
+          type = 'bridge.state.query'
+          requestId = "watch-mode-probe-state-after-failure-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+        })
+      } catch {
+        $stateQueryError = $_.Exception.Message
+      }
+    }
+    if ($init) {
+      try {
+        [void](Write-NamedPipeJsonLine $pipeName ([ordered]@{
+          type = 'bridge.shutdown'
+          requestId = "watch-mode-probe-shutdown-after-failure-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+          sessionId = "watch-mode-probe-session-$PID"
+          reason = 'watch-mode-probe-failed'
+        }))
+      } catch {
+        if (-not $stateQueryError) {
+          $stateQueryError = "shutdown failed: $($_.Exception.Message)"
+        }
+      }
+    }
+    [pscustomobject]@{
+      passed = $false
+      phase = $phase
+      error = $errorMessage
+      init = $init
+      state = $state
+      stateQueryError = $stateQueryError
+      pipeName = $pipeName
+      sourcePipeName = "$pipeName-source"
+      stdout = $stdout
+      stderr = $stderr
+    } | ConvertTo-Json -Depth 12 | Set-Content -Path $diagnosticsPath -Encoding UTF8
+    throw "bridge source probe failed during ${phase}: $errorMessage Diagnostics=$diagnosticsPath"
+  } finally {
+    if (-not $process.HasExited) {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
+function Invoke-PhysicalOutputProbe {
+  param([string]$OutputDirectory)
+  $probeExe = Join-Path $workspaceRoot "apps/bridge-service-native/target/release/omni-physical-output-probe.exe"
+  $bridgeExe = Join-Path $workspaceRoot "apps/bridge-service-native/target/release/omni-bridge-service.exe"
+  if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf)) {
+    throw "Physical output probe executable not found: $probeExe"
+  }
+  if (-not (Test-Path -LiteralPath $bridgeExe -PathType Leaf)) {
+    throw "Bridge executable not found: $bridgeExe"
+  }
+  $probeRuntimeRoot = Join-Path $OutputDirectory "physical-output-probe-runtime"
+  New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
+  $stdout = Join-Path $OutputDirectory "physical-output-probe.stdout.log"
+  $stderr = Join-Path $OutputDirectory "physical-output-probe.stderr.log"
+  $probeDeviceId = $PhysicalPlaybackDeviceId
+  if (($probeDeviceId -eq "default" -or [string]::IsNullOrWhiteSpace($probeDeviceId)) -and $ExpectedPhysicalPlaybackDeviceName) {
+    $probeDeviceId = $ExpectedPhysicalPlaybackDeviceName
+  }
+  $output = & $probeExe `
+    --bridge-exe $bridgeExe `
+    --runtime-root $probeRuntimeRoot `
+    --physical-playback-device-id $probeDeviceId `
+    --physical-playback-level 50 `
+    2> $stderr
+  $exitCode = $LASTEXITCODE
+  $text = ($output -join [Environment]::NewLine)
+  Set-Utf8NoBomContent $stdout $text
+  if (-not $text) {
+    throw "physical output probe returned no JSON output. ExitCode=$exitCode"
+  }
+  try {
+    $result = $text | ConvertFrom-Json
+  } catch {
+    throw "physical output probe returned invalid JSON. ExitCode=$exitCode Output=$text"
+  }
+  if ($exitCode -ne 0 -or -not $result.passed) {
+    throw "physical output probe failed. ExitCode=$exitCode Detail=$($result.detail)"
+  }
+  if ($ExpectedPhysicalPlaybackDeviceName) {
+    $resolvedName = [string]$result.resolvedPhysicalPlaybackDeviceName
+    if ($resolvedName -notlike "*$ExpectedPhysicalPlaybackDeviceName*") {
+      throw "physical output probe resolved '$resolvedName', expected device name containing '$ExpectedPhysicalPlaybackDeviceName'"
+    }
+  }
+  return $result
+}
+
+function Start-PhysicalOutputContentRecorder {
+  param([string]$OutputDirectory, [string]$PhysicalDeviceId)
+  $probeExe = Join-Path $workspaceRoot "apps/bridge-service-native/target/release/omni-physical-output-probe.exe"
+  if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf)) {
+    throw "Physical output recorder executable not found: $probeExe"
+  }
+  if (-not $PhysicalDeviceId) {
+    throw "Physical output recorder requires a resolved physical playback endpoint id"
+  }
+  $mediaBudgetSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { 90 }
+  $recordSeconds = [Math]::Max(8, $mediaBudgetSeconds + $PostPlaybackWaitSeconds + 8)
+  $recordingPath = Join-Path $OutputDirectory "physical-output-recording.wav"
+  $transcriptionPcmPath = Join-Path $OutputDirectory "physical-output-recording-16k-mono.pcm"
+  $stdout = Join-Path $OutputDirectory "physical-output-recorder.stdout.log"
+  $stderr = Join-Path $OutputDirectory "physical-output-recorder.stderr.log"
+  $process = Start-Process -FilePath $probeExe -ArgumentList @(
+    "--record-only",
+    "--record-seconds", "$recordSeconds",
+    "--physical-playback-device-id", $PhysicalDeviceId,
+    "--record-path", $recordingPath,
+    "--transcription-pcm-path", $transcriptionPcmPath
+  ) -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+  return [pscustomobject]@{
+    pid = $process.Id
+    process = $process
+    recordSeconds = $recordSeconds
+    recordingPath = $recordingPath
+    transcriptionPcmPath = $transcriptionPcmPath
+    stdout = $stdout
+    stderr = $stderr
+  }
+}
+
+function Complete-PhysicalOutputContentRecorder {
+  param($Recorder)
+  if (-not $Recorder) {
+    return $null
+  }
+  $timeoutMs = ([int]$Recorder.recordSeconds + 20) * 1000
+  $exited = $Recorder.process.WaitForExit($timeoutMs)
+  if (-not $exited) {
+    Stop-Process -Id $Recorder.pid -Force -ErrorAction SilentlyContinue
+  }
+  $text = if (Test-Path -LiteralPath $Recorder.stdout -PathType Leaf) {
+    Get-Content -LiteralPath $Recorder.stdout -Raw -ErrorAction SilentlyContinue
+  } else {
+    ""
+  }
+  $parsed = $null
+  if ($text) {
+    $jsonLine = @($text -split "`r?`n" | Where-Object { $_.Trim().StartsWith("{") } | Select-Object -Last 1)
+    if ($jsonLine.Count -gt 0) {
+      try {
+        $parsed = $jsonLine[0] | ConvertFrom-Json
+      } catch {
+        $parsed = $null
+      }
+    }
+  }
+  if (-not $parsed) {
+    $stderrText = if (Test-Path -LiteralPath $Recorder.stderr -PathType Leaf) { Get-Content -LiteralPath $Recorder.stderr -Raw -ErrorAction SilentlyContinue } else { "" }
+    $parsed = [pscustomobject]@{
+      passed = $false
+      error = "physical output recorder returned no JSON output"
+      stderr = $stderrText
+      recordingPath = $Recorder.recordingPath
+      transcriptionPcmPath = $Recorder.transcriptionPcmPath
+    }
+  }
+  $quality = Measure-PcmAudioQuality $Recorder.transcriptionPcmPath 16000
+  if ($quality) {
+    $parsed | Add-Member -NotePropertyName audioQuality -NotePropertyValue $quality -Force
+  }
+  $parsed | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path (Split-Path -Parent $Recorder.recordingPath) "physical-output-recording.json") -Encoding UTF8
+  return $parsed
+}
+
+function Measure-PcmAudioQuality {
+  param([string]$PcmPath, [int]$SampleRateHz)
+  if (-not (Test-Path -LiteralPath $PcmPath -PathType Leaf)) {
+    return $null
+  }
+  $bytes = [System.IO.File]::ReadAllBytes($PcmPath)
+  $sampleCount = [Math]::Floor($bytes.Length / 2)
+  if ($sampleCount -le 0) {
+    return [pscustomobject]@{
+      passed = $false
+      error = "PCM file contains no samples"
+      sampleCount = 0
+    }
+  }
+  $sumSquares = 0.0
+  $peak = 0.0
+  $clipped = 0
+  $zeroCrossings = 0
+  $discontinuities = 0
+  $previous = 0.0
+  $nonSilent = 0
+  for ($i = 0; $i -lt $sampleCount; $i++) {
+    $offset = $i * 2
+    $sample = [System.BitConverter]::ToInt16($bytes, $offset)
+    $value = $sample / 32768.0
+    $abs = [Math]::Abs($value)
+    $sumSquares += $value * $value
+    if ($abs -gt $peak) { $peak = $abs }
+    if ([Math]::Abs($sample) -ge 32700) { $clipped++ }
+    if ($i -gt 0 -and (($value -ge 0 -and $previous -lt 0) -or ($value -lt 0 -and $previous -ge 0))) {
+      $zeroCrossings++
+    }
+    if ($i -gt 0 -and [Math]::Abs($value - $previous) -ge 0.35) {
+      $discontinuities++
+    }
+    if ($abs -ge 0.003) { $nonSilent++ }
+    $previous = $value
+  }
+  $rms = [Math]::Sqrt($sumSquares / [Math]::Max(1, $sampleCount))
+  $clippingRatio = $clipped / [Math]::Max(1, $sampleCount)
+  $zeroCrossingRate = $zeroCrossings / [Math]::Max(1, $sampleCount - 1)
+  $discontinuityRate = $discontinuities / [Math]::Max(1, $sampleCount - 1)
+  $nonSilentRatio = $nonSilent / [Math]::Max(1, $sampleCount)
+  $crestFactor = if ($rms -gt 0) { $peak / $rms } else { 0.0 }
+  $hardFailure = ($clippingRatio -gt 0.01 -or $peak -ge 0.9999 -or $discontinuityRate -gt 0.005)
+  $noiseRisk = ($zeroCrossingRate -gt 0.28 -and $rms -gt 0.015)
+  return [pscustomobject]@{
+    passed = -not $hardFailure
+    sampleRateHz = $SampleRateHz
+    sampleCount = $sampleCount
+    durationSeconds = [Math]::Round($sampleCount / [Math]::Max(1, $SampleRateHz), 3)
+    rms = [Math]::Round($rms, 6)
+    peak = [Math]::Round($peak, 6)
+    crestFactor = [Math]::Round($crestFactor, 3)
+    clippingRatio = [Math]::Round($clippingRatio, 6)
+    clippedSamples = $clipped
+    zeroCrossingRate = [Math]::Round($zeroCrossingRate, 6)
+    discontinuityRate = [Math]::Round($discontinuityRate, 6)
+    discontinuities = $discontinuities
+    nonSilentRatio = [Math]::Round($nonSilentRatio, 6)
+    noiseRisk = $noiseRisk
+    detail = if ($clippingRatio -gt 0.01 -or $peak -ge 0.9999) { "physical output recording is clipped: clippingRatio=$([Math]::Round($clippingRatio, 6)) peak=$([Math]::Round($peak, 6))" } elseif ($discontinuityRate -gt 0.005) { "physical output recording has discontinuities: discontinuityRate=$([Math]::Round($discontinuityRate, 6))" } elseif ($noiseRisk) { "physical output recording has high zero-crossing noise risk" } else { $null }
+  }
+}
+
+function Copy-PcmWindow {
+  param(
+    [string]$SourcePath,
+    [string]$DestinationPath,
+    [int]$SampleRateHz,
+    [int]$Seconds
+  )
+  if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) {
+    return $null
+  }
+  $bytes = [System.IO.File]::ReadAllBytes($SourcePath)
+  $maxBytes = [Math]::Min($bytes.Length, [Math]::Max(1, $SampleRateHz) * [Math]::Max(1, $Seconds) * 2)
+  $windowBytes = New-Object byte[] $maxBytes
+  [Array]::Copy($bytes, 0, $windowBytes, 0, $maxBytes)
+  [System.IO.File]::WriteAllBytes($DestinationPath, $windowBytes)
+  return [pscustomobject]@{
+    path = $DestinationPath
+    sampleRateHz = $SampleRateHz
+    seconds = $Seconds
+    bytes = $maxBytes
+  }
+}
+
+function Get-PcmRmsEnvelope {
+  param([string]$PcmPath, [int]$FrameSamples)
+  if (-not (Test-Path -LiteralPath $PcmPath -PathType Leaf)) {
+    return @()
+  }
+  $bytes = [System.IO.File]::ReadAllBytes($PcmPath)
+  $sampleCount = [Math]::Floor($bytes.Length / 2)
+  if ($sampleCount -lt $FrameSamples) {
+    return @()
+  }
+  $frames = [Math]::Floor($sampleCount / $FrameSamples)
+  $envelope = New-Object double[] $frames
+  for ($frame = 0; $frame -lt $frames; $frame++) {
+    $sumSquares = 0.0
+    $base = $frame * $FrameSamples * 2
+    for ($i = 0; $i -lt $FrameSamples; $i++) {
+      $sample = [System.BitConverter]::ToInt16($bytes, $base + ($i * 2))
+      $value = $sample / 32768.0
+      $sumSquares += $value * $value
+    }
+    $envelope[$frame] = [Math]::Sqrt($sumSquares / [Math]::Max(1, $FrameSamples))
+  }
+  return @($envelope)
+}
+
+function Get-PearsonCorrelation {
+  param([double[]]$Left, [double[]]$Right, [int]$LeftStart, [int]$RightStart, [int]$Count)
+  if ($Count -lt 12) {
+    return 0.0
+  }
+  $sumL = 0.0
+  $sumR = 0.0
+  for ($i = 0; $i -lt $Count; $i++) {
+    $sumL += $Left[$LeftStart + $i]
+    $sumR += $Right[$RightStart + $i]
+  }
+  $meanL = $sumL / $Count
+  $meanR = $sumR / $Count
+  $num = 0.0
+  $denL = 0.0
+  $denR = 0.0
+  for ($i = 0; $i -lt $Count; $i++) {
+    $l = $Left[$LeftStart + $i] - $meanL
+    $r = $Right[$RightStart + $i] - $meanR
+    $num += $l * $r
+    $denL += $l * $l
+    $denR += $r * $r
+  }
+  $den = [Math]::Sqrt($denL * $denR)
+  if ($den -le 0) {
+    return 0.0
+  }
+  return $num / $den
+}
+
+function Measure-PcmReferenceSimilarity {
+  param(
+    [string]$ReferencePcmPath,
+    [string]$RecordedPcmPath,
+    [int]$SampleRateHz
+  )
+  if (-not (Test-Path -LiteralPath $ReferencePcmPath -PathType Leaf)) {
+    return [pscustomobject]@{
+      passed = $false
+      error = "source reference PCM was not created"
+      referencePcmPath = $ReferencePcmPath
+      recordedPcmPath = $RecordedPcmPath
+    }
+  }
+  if (-not (Test-Path -LiteralPath $RecordedPcmPath -PathType Leaf)) {
+    return [pscustomobject]@{
+      passed = $false
+      error = "physical output PCM window was not created"
+      referencePcmPath = $ReferencePcmPath
+      recordedPcmPath = $RecordedPcmPath
+    }
+  }
+  $frameSamples = [Math]::Max(80, [Math]::Floor($SampleRateHz * 0.02))
+  $reference = @(Get-PcmRmsEnvelope $ReferencePcmPath $frameSamples)
+  $recorded = @(Get-PcmRmsEnvelope $RecordedPcmPath $frameSamples)
+  if ($reference.Count -lt 40 -or $recorded.Count -lt 40) {
+    return [pscustomobject]@{
+      passed = $false
+      error = "not enough PCM frames for similarity analysis"
+      referenceFrames = $reference.Count
+      recordedFrames = $recorded.Count
+      referencePcmPath = $ReferencePcmPath
+      recordedPcmPath = $RecordedPcmPath
+    }
+  }
+  $maxOffset = [Math]::Min($recorded.Count - 20, [Math]::Floor($SampleRateHz * 8 / $frameSamples))
+  $bestCorrelation = -1.0
+  $bestOffset = 0
+  $bestCount = 0
+  for ($offset = 0; $offset -le $maxOffset; $offset++) {
+    $count = [Math]::Min($reference.Count, $recorded.Count - $offset)
+    if ($count -lt 40) { continue }
+    $corr = Get-PearsonCorrelation $reference $recorded 0 $offset $count
+    if ($corr -gt $bestCorrelation) {
+      $bestCorrelation = $corr
+      $bestOffset = $offset
+      $bestCount = $count
+    }
+  }
+  $refMean = (($reference | Measure-Object -Average).Average)
+  $recMean = (($recorded | Measure-Object -Average).Average)
+  $levelRatio = if ($refMean -gt 0) { $recMean / $refMean } else { 0.0 }
+  $passed = ($bestCorrelation -ge 0.35 -and $levelRatio -ge 0.05 -and $levelRatio -le 8.0)
+  return [pscustomobject]@{
+    passed = $passed
+    referencePcmPath = $ReferencePcmPath
+    recordedPcmPath = $RecordedPcmPath
+    sampleRateHz = $SampleRateHz
+    frameMilliseconds = [Math]::Round($frameSamples * 1000 / $SampleRateHz, 3)
+    referenceFrames = $reference.Count
+    recordedFrames = $recorded.Count
+    comparedFrames = $bestCount
+    bestOffsetFrames = $bestOffset
+    bestOffsetSeconds = [Math]::Round($bestOffset * $frameSamples / $SampleRateHz, 3)
+    envelopeCorrelation = [Math]::Round($bestCorrelation, 4)
+    levelRatio = [Math]::Round($levelRatio, 4)
+    detail = if (-not $passed) { "physical output original passthrough does not resemble source media reference: correlation=$([Math]::Round($bestCorrelation, 4)) levelRatio=$([Math]::Round($levelRatio, 4))" } else { $null }
+  }
+}
+
+function Get-RecentSubtitleText {
+  param([string]$AppLogPath, [string]$RunMarker)
+  if (-not (Test-Path -LiteralPath $AppLogPath -PathType Leaf)) {
+    return ""
+  }
+  $raw = Get-LogTextAfterMarker $AppLogPath $RunMarker
+  $items = New-Object System.Collections.Generic.List[string]
+  foreach ($match in [regex]::Matches($raw, 'translated="((?:\\.|[^"\\])*)"', [Text.RegularExpressions.RegexOptions]::Multiline)) {
+    $decoded = Convert-LoggedTranslationText $match.Groups[1].Value
+    if ($decoded.Length -ge 2) {
+      [void]$items.Add($decoded)
+    }
+  }
+  foreach ($match in [regex]::Matches($raw, '"translatedText"\s*:\s*"((?:\\.|[^"\\])*)"', [Text.RegularExpressions.RegexOptions]::Multiline)) {
+    $decoded = Convert-LoggedTranslationText $match.Groups[1].Value
+    if ($decoded.Length -ge 2) {
+      [void]$items.Add($decoded)
+    }
+  }
+  return (($items | Select-Object -Last 12) -join "`n")
+}
+
+function Convert-LoggedTranslationText {
+  param([string]$Text)
+  if ($null -eq $Text) {
+    return ""
+  }
+  $value = $Text -replace '\\r', "`r"
+  $value = $value -replace '\\n', "`n"
+  $value = $value -replace '\\"', '"'
+  $value = $value -replace '\\\\', '\'
+  return $value
+}
+
+function Get-RecentFinalSegmentTranslationText {
+  param([string]$AppLogPath, [string]$RunMarker)
+  if (-not (Test-Path -LiteralPath $AppLogPath -PathType Leaf)) {
+    return ""
+  }
+  $raw = Get-LogTextAfterMarker $AppLogPath $RunMarker
+  $items = New-Object System.Collections.Generic.List[string]
+  foreach ($match in [regex]::Matches($raw, '(?ms)^[^\r\n]*rank=(Final|Replacement|Forced)[^\r\n]*translated="((?:\\.|[^"\\])*)"', [Text.RegularExpressions.RegexOptions]::Multiline)) {
+    $decoded = Convert-LoggedTranslationText $match.Groups[2].Value
+    if ($decoded.Length -ge 2) {
+      [void]$items.Add($decoded)
+    }
+  }
+  return (($items | Select-Object -Last 12) -join "`n")
+}
+
+function Read-SubtitleQueueTimeline {
+  param([string]$AppLogPath, [string]$RunMarker)
+  if (-not (Test-Path -LiteralPath $AppLogPath -PathType Leaf)) {
+    return [pscustomobject]@{
+      eventCount = 0
+      cueOrderInversions = 0
+      duplicateFinalTranslations = 0
+      events = @()
+      error = "app.log not found"
+    }
+  }
+  $raw = Get-LogTextAfterMarker $AppLogPath $RunMarker
+  $events = New-Object System.Collections.Generic.List[object]
+  foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech_started received[^\r\n]*cue_id=(omni-cue-\d+)', [Text.RegularExpressions.RegexOptions]::Multiline)) {
+    [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "cue_started"; cueId = $match.Groups[2].Value; rank = $null; seq = $null; text = "" })
+  }
+  foreach ($match in [regex]::Matches($raw, '(?ms)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*\[TRANS_WRITE\]\s+cue_id=(omni-cue-\d+)\s+rank=(\w+)\s+seq=(\d+)\s+translated="((?:\\.|[^"\\])*)"', [Text.RegularExpressions.RegexOptions]::Multiline)) {
+    [void]$events.Add([pscustomobject]@{
+      index = $match.Index
+      at = $match.Groups[1].Value
+      kind = "translation_write"
+      cueId = $match.Groups[2].Value
+      rank = $match.Groups[3].Value
+      seq = [int]$match.Groups[4].Value
+      text = Convert-LoggedTranslationText $match.Groups[5].Value
+    })
+  }
+  foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech\.segment_tts_queued\s+\|\s+cue=(omni-cue-\d+)\s+segmentIndex=(\d+)', [Text.RegularExpressions.RegexOptions]::Multiline)) {
+    [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "segment_tts_queued"; cueId = $match.Groups[2].Value; rank = $null; seq = [int]$match.Groups[3].Value; text = "" })
+  }
+  foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech\.segment_playback_written\s+\|\s+cue=(omni-cue-\d+)\s+segmentIndex=(\d+)', [Text.RegularExpressions.RegexOptions]::Multiline)) {
+    [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "segment_playback_written"; cueId = $match.Groups[2].Value; rank = $null; seq = [int]$match.Groups[3].Value; text = "" })
+  }
+  $orderedEvents = @($events | Sort-Object index)
+  $finalWrites = @($orderedEvents | Where-Object { $_.kind -eq "translation_write" -and $_.rank -match '^(Final|Forced)$' })
+  $lastCueTs = 0L
+  $inversions = 0
+  foreach ($event in $finalWrites) {
+    $cueMatch = [regex]::Match([string]$event.cueId, '(\d+)$')
+    if (-not $cueMatch.Success) { continue }
+    $cueTs = [int64]$cueMatch.Groups[1].Value
+    if ($lastCueTs -gt 0 -and $cueTs -lt $lastCueTs) {
+      $inversions++
+    }
+    $lastCueTs = $cueTs
+  }
+  $seenFinalText = @{}
+  $duplicates = 0
+  $duplicateDetails = @()
+  foreach ($event in $finalWrites) {
+    $normalized = (([string]$event.text).Normalize([Text.NormalizationForm]::FormKC).ToLowerInvariant() -replace '[^\p{L}\p{N}]+', '')
+    if ($normalized.Length -lt 8) { continue }
+    if ($seenFinalText.ContainsKey($normalized)) {
+      $duplicates++
+      $duplicateDetails += [pscustomobject]@{
+        at = $event.at
+        cueId = $event.cueId
+        seq = $event.seq
+        text = $event.text
+      }
+    } else {
+      $seenFinalText[$normalized] = $true
+    }
+  }
+  $startedCueCount = 0
+  $queuedSegmentCount = 0
+  $playedSegmentCount = 0
+  foreach ($event in $orderedEvents) {
+    if ($event.kind -eq "cue_started") { $startedCueCount++ }
+    elseif ($event.kind -eq "segment_tts_queued") { $queuedSegmentCount++ }
+    elseif ($event.kind -eq "segment_playback_written") { $playedSegmentCount++ }
+  }
+  $firstCueStarted = @($orderedEvents | Where-Object { $_.kind -eq "cue_started" } | Select-Object -First 1)
+  $firstTranslationWrite = @($orderedEvents | Where-Object { $_.kind -eq "translation_write" } | Select-Object -First 1)
+  $firstFinalTranslationWrite = @($orderedEvents | Where-Object { $_.kind -eq "translation_write" -and $_.rank -match '^(Final|Forced|Replacement)$' } | Select-Object -First 1)
+  $firstTtsQueued = @($orderedEvents | Where-Object { $_.kind -eq "segment_tts_queued" } | Select-Object -First 1)
+  $firstPlaybackWritten = @($orderedEvents | Where-Object { $_.kind -eq "segment_playback_written" } | Select-Object -First 1)
+  function Get-EventLatencySeconds {
+    param($StartEvent, $EndEvent)
+    if (-not ($StartEvent -and $EndEvent)) { return $null }
+    try {
+      $start = [DateTime]::ParseExact([string]$StartEvent.at, "yyyy-MM-dd HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
+      $end = [DateTime]::ParseExact([string]$EndEvent.at, "yyyy-MM-dd HH:mm:ss", [Globalization.CultureInfo]::InvariantCulture)
+      return [Math]::Round(($end - $start).TotalSeconds, 3)
+    } catch {
+      return $null
+    }
+  }
+  $firstVisibleTranslationLatencySeconds = Get-EventLatencySeconds $firstCueStarted $firstTranslationWrite
+  $firstFinalTranslationLatencySeconds = Get-EventLatencySeconds $firstCueStarted $firstFinalTranslationWrite
+  $firstTtsQueuedLatencySeconds = Get-EventLatencySeconds $firstCueStarted $firstTtsQueued
+  $firstPlaybackLatencySeconds = Get-EventLatencySeconds $firstCueStarted $firstPlaybackWritten
+  $recentEvents = @()
+  $skip = [Math]::Max(0, $orderedEvents.Count - 80)
+  for ($i = $skip; $i -lt $orderedEvents.Count; $i++) {
+    $event = $orderedEvents[$i]
+    $recentEvents += [pscustomobject]@{
+      at = $event.at
+      kind = $event.kind
+      cueId = $event.cueId
+      rank = $event.rank
+      seq = $event.seq
+      text = $event.text
+    }
+  }
+  return [pscustomobject]@{
+    eventCount = $orderedEvents.Count
+    startedCueCount = $startedCueCount
+    finalWriteCount = $finalWrites.Count
+    queuedSegmentCount = $queuedSegmentCount
+    playedSegmentCount = $playedSegmentCount
+    cueOrderInversions = $inversions
+    duplicateFinalTranslations = $duplicates
+    duplicateFinalTranslationDetails = @($duplicateDetails)
+    firstVisibleTranslationLatencySeconds = $firstVisibleTranslationLatencySeconds
+    firstFinalTranslationLatencySeconds = $firstFinalTranslationLatencySeconds
+    firstTtsQueuedLatencySeconds = $firstTtsQueuedLatencySeconds
+    firstPlaybackLatencySeconds = $firstPlaybackLatencySeconds
+    displayOrder = "newest-first"
+    events = @($recentEvents)
+  }
+}
+
+function Get-PhysicalOutputSttApiKey {
+  $configPath = Join-Path $workspaceRoot "scripts/testing/llm-integration.config.json"
+  $envName = "OMNI_TEST_DASHSCOPE_API_KEY"
+  $apiKey = [System.Environment]::GetEnvironmentVariable($envName)
+  if ($apiKey) {
+    return $apiKey
+  }
+  if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+    try {
+      $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+      $configuredEnv = [string]$config.audio.apiKeyEnv
+      if ($configuredEnv) {
+        $apiKey = [System.Environment]::GetEnvironmentVariable($configuredEnv)
+        if ($apiKey) {
+          return $apiKey
+        }
+        if ($config.environment -and $config.environment.$configuredEnv) {
+          return [string]$config.environment.$configuredEnv
+        }
+      }
+    } catch {
+    }
+  }
+  return $null
+}
+
+function Build-OmniRealtimeDiagnostic {
+  param([string]$OutputDirectory)
+  $buildLog = Join-Path $OutputDirectory "omni-realtime-diagnostic.build.log"
+  $buildErr = Join-Path $OutputDirectory "omni-realtime-diagnostic.build.stderr.log"
+  $buildExit = Invoke-NativeProcessToLog "cargo.exe" @("build", "--manifest-path", "scripts/diagnostics/omni-realtime/Cargo.toml") $workspaceRoot $buildLog $buildErr
+  if ($buildExit -ne 0) {
+    throw "omni realtime STT diagnostic build failed with exit code $buildExit; see $buildLog and $buildErr"
+  }
+  $exe = Join-Path $workspaceRoot "scripts/diagnostics/omni-realtime/target/debug/omni-realtime-diagnostic.exe"
+  if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+    $exe = Join-Path $workspaceRoot "target/debug/omni-realtime-diagnostic.exe"
+  }
+  if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+    throw "omni realtime STT diagnostic executable was not built"
+  }
+  return $exe
+}
+
+function Parse-OmniRealtimeDiagnosticText {
+  param([string]$Text)
+  $source = ""
+  $translation = ""
+  $sourceMatch = [regex]::Matches($Text, "source='([^']*)'") | Select-Object -Last 1
+  if ($sourceMatch) { $source = $sourceMatch.Groups[1].Value }
+  $translationMatch = [regex]::Matches($Text, "translation='([^']*)'") | Select-Object -Last 1
+  if ($translationMatch) { $translation = $translationMatch.Groups[1].Value }
+  return [pscustomobject]@{
+    source = $source
+    translation = $translation
+  }
+}
+
+function Get-TextClauses {
+  param([string]$Text)
+  $items = New-Object System.Collections.Generic.List[string]
+  $normalized = ([string]$Text).Normalize([Text.NormalizationForm]::FormKC)
+  foreach ($piece in ($normalized -split '[\u3002\uff01\uff1f\uff1b\uff0c!?;,?\.\r\n]+')) {
+    $clean = ($piece -replace '[^\p{L}\p{N}]+', '').Trim().ToLowerInvariant()
+    if ($clean.Length -ge 2) {
+      [void]$items.Add($clean)
+    }
+  }
+  return @($items)
+}
+
+function Get-UniqueClauseText {
+  param([string[]]$Texts)
+  $seen = @{}
+  $items = New-Object System.Collections.Generic.List[string]
+  foreach ($text in $Texts) {
+    foreach ($clause in @(Get-TextClauses $text)) {
+      if (-not $seen.ContainsKey($clause)) {
+        $seen[$clause] = $true
+        [void]$items.Add($clause)
+      }
+    }
+  }
+  return ($items -join "`n")
+}
+
+function Get-CharacterOverlapScore {
+  param([string]$Left, [string]$Right)
+  $a = (($Left.Normalize([Text.NormalizationForm]::FormKC).ToLowerInvariant()) -replace '[^\p{L}\p{N}]+', '')
+  $b = (($Right.Normalize([Text.NormalizationForm]::FormKC).ToLowerInvariant()) -replace '[^\p{L}\p{N}]+', '')
+  if (-not $a -or -not $b) { return 0.0 }
+  $counts = @{}
+  foreach ($ch in $b.ToCharArray()) {
+    $key = [string]$ch
+    $current = 0
+    if ($counts.ContainsKey($key)) {
+      $current = [int]$counts[$key]
+    }
+    $counts[$key] = 1 + $current
+  }
+  $overlap = 0
+  foreach ($ch in $a.ToCharArray()) {
+    $key = [string]$ch
+    $count = 0
+    if ($counts.ContainsKey($key)) {
+      $count = [int]$counts[$key]
+    }
+    if ($count -gt 0) {
+      $overlap += 1
+      $counts[$key] = $count - 1
+    }
+  }
+  return $overlap / [Math]::Max(1, [Math]::Min($a.Length, $b.Length))
+}
+
+function Compare-WatchModeContent {
+  param(
+    $ReferenceTranscript,
+    [string]$OutputSource,
+    [string]$OutputTranslation,
+    [string]$StructuredEvidence = ""
+  )
+  $sourceReferenceText = [string]$ReferenceTranscript.source
+  $translationReferenceText = [string]$ReferenceTranscript.translation
+  if (-not $sourceReferenceText -and -not $translationReferenceText) {
+    return [pscustomobject]@{
+      passed = $false
+      error = "source media reference transcript was empty"
+    }
+  }
+  $physicalSourceText = Get-UniqueClauseText @([string]$OutputSource)
+  $physicalTranslationText = Get-UniqueClauseText @([string]$OutputTranslation)
+  $structuredText = Get-UniqueClauseText @([string]$StructuredEvidence)
+  $translationEvidenceText = Get-UniqueClauseText @($physicalTranslationText, $structuredText)
+  $warnings = New-Object System.Collections.Generic.List[string]
+  $sourceResult = if ($sourceReferenceText) { Compare-WatchModeTextPair $sourceReferenceText $physicalSourceText } else { $null }
+  $translationPhysicalResult = if ($translationReferenceText) { Compare-WatchModeTextPair $translationReferenceText $physicalTranslationText } else { $null }
+  $translationStructuredResult = if ($translationReferenceText) { Compare-WatchModeTextPair $translationReferenceText $structuredText } else { $null }
+  $translationCombinedResult = if ($translationReferenceText) { Compare-WatchModeTextPair $translationReferenceText $translationEvidenceText } else { $null }
+  if ($sourceResult -and -not $sourceResult.passed) {
+    [void]$warnings.Add("physical source transcript did not cover the source media reference")
+  }
+  if ($translationPhysicalResult -and -not $translationPhysicalResult.passed) {
+    [void]$warnings.Add("physical translation transcript alone did not cover the translated source reference; using structured subtitle/TTS evidence for overlapped audio")
+  }
+  if ($translationStructuredResult -and -not $translationStructuredResult.passed) {
+    [void]$warnings.Add("structured subtitle/TTS evidence alone did not cover the translated source reference")
+  }
+  $sourceSevereRepetition = ($sourceResult -and $sourceResult.lengthRatio -gt 2.2)
+  $translationSevereRepetition = ($translationPhysicalResult -and $translationPhysicalResult.lengthRatio -gt 2.2)
+  $sourceTooManyExtras = ($sourceResult -and @($sourceResult.extraClauses).Count -gt 2)
+  $translationTooManyExtras = ($translationPhysicalResult -and @($translationPhysicalResult.extraClauses).Count -gt 2)
+  if ($sourceSevereRepetition -or $translationSevereRepetition) {
+    [void]$warnings.Add("physical recording transcript is much longer than the matching source reference")
+  }
+  if ($sourceTooManyExtras -or $translationTooManyExtras) {
+    [void]$warnings.Add("physical recording transcript has too many extra clauses")
+  }
+  $sourceCoverage = if ($sourceResult) { [double]$sourceResult.coverage } else { 1.0 }
+  $translationCoverage = if ($translationCombinedResult) { [double]$translationCombinedResult.coverage } else { 1.0 }
+  $missingClauses = @()
+  if ($sourceResult) { $missingClauses += @($sourceResult.missingClauses) }
+  if ($translationCombinedResult) { $missingClauses += @($translationCombinedResult.missingClauses) }
+  $extraClauses = @()
+  if ($sourceResult) { $extraClauses += @($sourceResult.extraClauses) }
+  if ($translationPhysicalResult) { $extraClauses += @($translationPhysicalResult.extraClauses) }
+  $referenceClauseCount = 0
+  if ($sourceResult) { $referenceClauseCount += [int]$sourceResult.referenceClauseCount }
+  if ($translationCombinedResult) { $referenceClauseCount += [int]$translationCombinedResult.referenceClauseCount }
+  $outputClauseCount = 0
+  if ($sourceResult) { $outputClauseCount += [int]$sourceResult.outputClauseCount }
+  if ($translationCombinedResult) { $outputClauseCount += [int]$translationCombinedResult.outputClauseCount }
+  $referenceChars = 0
+  if ($sourceResult) { $referenceChars += [int]$sourceResult.referenceChars }
+  if ($translationCombinedResult) { $referenceChars += [int]$translationCombinedResult.referenceChars }
+  $outputChars = 0
+  if ($sourceResult) { $outputChars += [int]$sourceResult.outputChars }
+  if ($translationPhysicalResult) { $outputChars += [int]$translationPhysicalResult.outputChars }
+  $passed = ($sourceCoverage -ge 0.85 -and $translationCoverage -ge 0.72 -and @($missingClauses).Count -le 2 -and @($extraClauses).Count -le 2 -and -not $sourceSevereRepetition -and -not $translationSevereRepetition -and -not $sourceTooManyExtras -and -not $translationTooManyExtras)
+  return [pscustomobject]@{
+    passed = $passed
+    coverage = [Math]::Round([Math]::Min($sourceCoverage, $translationCoverage), 3)
+    lengthRatio = if ($referenceChars -gt 0) { [Math]::Round($outputChars / $referenceChars, 3) } else { 0.0 }
+    referenceClauseCount = $referenceClauseCount
+    outputClauseCount = $outputClauseCount
+    missingClauses = @($missingClauses)
+    extraClauses = @($extraClauses)
+    referenceChars = $referenceChars
+    outputChars = $outputChars
+    physicalTranscript = $sourceResult
+    physicalTranslation = $translationPhysicalResult
+    structuredEvidence = $translationStructuredResult
+    combinedEvidence = $translationCombinedResult
+    warnings = @($warnings)
+  }
+}
+
+function Compare-WatchModeTextPair {
+  param([string]$ReferenceText, [string]$OutputText)
+  $referenceClauses = @(Get-TextClauses $referenceText)
+  $outputClauses = @(Get-TextClauses $outputText)
+  $missing = New-Object System.Collections.Generic.List[string]
+  foreach ($clause in $referenceClauses) {
+    $best = 0.0
+    foreach ($candidate in $outputClauses) {
+      $best = [Math]::Max($best, (Get-CharacterOverlapScore $clause $candidate))
+    }
+    if ($best -lt 0.45) {
+      [void]$missing.Add($clause)
+    }
+  }
+  $extra = New-Object System.Collections.Generic.List[string]
+  foreach ($clause in $outputClauses) {
+    $best = 0.0
+    foreach ($candidate in $referenceClauses) {
+      $best = [Math]::Max($best, (Get-CharacterOverlapScore $clause $candidate))
+    }
+    if ($best -lt 0.35 -and $clause.Length -ge 4) {
+      [void]$extra.Add($clause)
+    }
+  }
+  $refChars = (($referenceText.Normalize([Text.NormalizationForm]::FormKC).ToLowerInvariant()) -replace '[^\p{L}\p{N}]+', '').Length
+  $outChars = (($outputText.Normalize([Text.NormalizationForm]::FormKC).ToLowerInvariant()) -replace '[^\p{L}\p{N}]+', '').Length
+  $coverage = if ($referenceClauses.Count -gt 0) { ($referenceClauses.Count - $missing.Count) / $referenceClauses.Count } else { 0.0 }
+  $lengthRatio = if ($refChars -gt 0) { $outChars / $refChars } else { 0.0 }
+  $passed = ($referenceClauses.Count -gt 0 -and $coverage -ge 0.72 -and $missing.Count -le 1 -and $extra.Count -le 2 -and $lengthRatio -le 2.2)
+  return [pscustomobject]@{
+    passed = $passed
+    coverage = [Math]::Round($coverage, 3)
+    lengthRatio = [Math]::Round($lengthRatio, 3)
+    referenceClauseCount = $referenceClauses.Count
+    outputClauseCount = $outputClauses.Count
+    missingClauses = @($missing)
+    extraClauses = @($extra)
+    referenceChars = $refChars
+    outputChars = $outChars
+  }
+}
+
+function Get-SourceMediaReferenceTranscript {
+  param([string]$OutputDirectory, [string]$MediaPath)
+  $resultPath = Join-Path $OutputDirectory "source-media-transcript.json"
+  if (-not (Test-Path -LiteralPath $MediaPath -PathType Leaf)) {
+    [pscustomobject]@{ passed = $false; error = "source media file not found: $MediaPath" } | ConvertTo-Json -Depth 8 | Set-Content -Path $resultPath -Encoding UTF8
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  $apiKey = Get-PhysicalOutputSttApiKey
+  if (-not $apiKey) {
+    [pscustomobject]@{ passed = $false; error = "DASHSCOPE_API_KEY or OMNI_TEST_DASHSCOPE_API_KEY is required for source media STT" } | ConvertTo-Json -Depth 8 | Set-Content -Path $resultPath -Encoding UTF8
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  $resolvedMediaPath = (Resolve-Path -LiteralPath $MediaPath).Path
+  $hash = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $cacheDir = Join-Path $workspaceRoot "artifacts/testing/watch-mode-live/cache/source-transcripts"
+  New-Item -ItemType Directory -Force -Path $cacheDir | Out-Null
+  $cacheLimitLabel = if ($PlaybackSeconds -gt 0) { "$PlaybackSeconds-limit" } else { "full" }
+  $cachePath = Join-Path $cacheDir "$hash-$cacheLimitLabel-v2.json"
+  if (Test-Path -LiteralPath $cachePath -PathType Leaf) {
+    Copy-Item -LiteralPath $cachePath -Destination $resultPath -Force
+    return Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  }
+  try {
+    $exe = Build-OmniRealtimeDiagnostic $OutputDirectory
+    $stdout = Join-Path $OutputDirectory "source-media-stt.stdout.log"
+    $stderr = Join-Path $OutputDirectory "source-media-stt.stderr.log"
+    $previous = $env:DASHSCOPE_API_KEY
+    try {
+      $env:DASHSCOPE_API_KEY = $apiKey
+      $args = @("--mp3", $resolvedMediaPath, "--manual")
+      if ($PlaybackSeconds -gt 0) {
+        $args += @("--limit-seconds", "$PlaybackSeconds")
+      }
+      $exit = Invoke-NativeProcessToLog $exe $args $workspaceRoot $stdout $stderr 240
+    } finally {
+      $env:DASHSCOPE_API_KEY = $previous
+    }
+    $text = if (Test-Path -LiteralPath $stdout -PathType Leaf) { Get-Content -LiteralPath $stdout -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } else { "" }
+    $parsed = Parse-OmniRealtimeDiagnosticText $text
+    $result = [pscustomobject]@{
+      passed = ($exit -eq 0 -and ([string]$parsed.source).Trim().Length -gt 0)
+      exitCode = $exit
+      mediaPath = $resolvedMediaPath
+      mediaSha256 = $hash
+      playbackSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { $null }
+      fullMedia = ($PlaybackSeconds -le 0)
+      source = $parsed.source
+      translation = $parsed.translation
+      stdout = $stdout
+      stderr = $stderr
+    }
+  } catch {
+    $result = [pscustomobject]@{
+      passed = $false
+      error = $_.Exception.Message
+      mediaPath = $resolvedMediaPath
+      mediaSha256 = $hash
+      playbackSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { $null }
+      fullMedia = ($PlaybackSeconds -le 0)
+    }
+  }
+  $result | ConvertTo-Json -Depth 12 | Set-Content -Path $resultPath -Encoding UTF8
+  if ($result.passed) {
+    Copy-Item -LiteralPath $resultPath -Destination $cachePath -Force
+  }
+  return Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+
+function Invoke-PhysicalOutputContentStt {
+  param([string]$OutputDirectory, $Recording, [string]$AppLogPath, [string]$RunMarker, $SourceReferenceTranscript)
+  $resultPath = Join-Path $OutputDirectory "physical-output-content.json"
+  if (-not $Recording) {
+    [pscustomobject]@{ passed = $false; error = "physical output recording did not run" } | ConvertTo-Json -Depth 8 | Set-Content -Path $resultPath -Encoding UTF8
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  if ($SkipPhysicalOutputContentStt) {
+    [pscustomobject]@{
+      skipped = $true
+      reason = "SkipPhysicalOutputContentStt was provided"
+      recording = $Recording
+      subtitleText = Get-RecentSubtitleText $AppLogPath $RunMarker
+    } | ConvertTo-Json -Depth 12 | Set-Content -Path $resultPath -Encoding UTF8
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  $pcmPath = [string]$Recording.transcriptionPcmPath
+  if (-not (Test-Path -LiteralPath $pcmPath -PathType Leaf)) {
+    [pscustomobject]@{
+      passed = $false
+      error = "physical output transcription PCM file was not created"
+      recording = $Recording
+      subtitleText = Get-RecentSubtitleText $AppLogPath $RunMarker
+    } | ConvertTo-Json -Depth 12 | Set-Content -Path $resultPath -Encoding UTF8
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  $apiKey = Get-PhysicalOutputSttApiKey
+  if (-not $apiKey) {
+    [pscustomobject]@{
+      passed = $false
+      error = "DASHSCOPE_API_KEY or OMNI_TEST_DASHSCOPE_API_KEY is required for physical output content STT"
+      recording = $Recording
+      subtitleText = Get-RecentSubtitleText $AppLogPath $RunMarker
+    } | ConvertTo-Json -Depth 12 | Set-Content -Path $resultPath -Encoding UTF8
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  try {
+    $exe = Build-OmniRealtimeDiagnostic $OutputDirectory
+  } catch {
+    [pscustomobject]@{
+      passed = $false
+      error = $_.Exception.Message
+      recording = $Recording
+      subtitleText = Get-RecentSubtitleText $AppLogPath $RunMarker
+    } | ConvertTo-Json -Depth 12 | Set-Content -Path $resultPath -Encoding UTF8
+    return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  $stdout = Join-Path $OutputDirectory "physical-output-stt.stdout.log"
+  $stderr = Join-Path $OutputDirectory "physical-output-stt.stderr.log"
+  $sourceWindowSeconds = if ($PlaybackSeconds -gt 0) {
+    [Math]::Max(8, $PlaybackSeconds + 8)
+  } elseif ($Recording -and $Recording.audioQuality -and $Recording.audioQuality.durationSeconds) {
+    [Math]::Max(8, [Math]::Min([double]$Recording.audioQuality.durationSeconds, 90))
+  } else {
+    90
+  }
+  $sourceWindow = Copy-PcmWindow $pcmPath (Join-Path $OutputDirectory "physical-output-recording-source-window-16k-mono.pcm") 16000 $sourceWindowSeconds
+  $sourceReferencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
+  $originalSimilarity = if ($sourceWindow) {
+    Measure-PcmReferenceSimilarity $sourceReferencePcmPath ([string]$sourceWindow.path) 16000
+  } else {
+    [pscustomobject]@{
+      passed = $false
+      error = "physical output source window was not created"
+      referencePcmPath = $sourceReferencePcmPath
+      recordedPcmPath = $null
+    }
+  }
+  $sttPcmPath = if ($sourceWindow) { [string]$sourceWindow.path } else { $pcmPath }
+  $previous = $env:DASHSCOPE_API_KEY
+  try {
+    $env:DASHSCOPE_API_KEY = $apiKey
+    $exit = Invoke-NativeProcessToLog $exe @("--pcm", $sttPcmPath, "--manual") $workspaceRoot $stdout $stderr 240
+  } finally {
+    $env:DASHSCOPE_API_KEY = $previous
+  }
+  $text = if (Test-Path -LiteralPath $stdout -PathType Leaf) { Get-Content -LiteralPath $stdout -Raw -Encoding UTF8 -ErrorAction SilentlyContinue } else { "" }
+  $parsed = Parse-OmniRealtimeDiagnosticText $text
+  $source = $parsed.source
+  $translation = $parsed.translation
+  $segmentation = Read-SpeechSegmentationSummary $AppLogPath $RunMarker
+  $subtitleQueue = Read-SubtitleQueueTimeline $AppLogPath $RunMarker
+  $subtitleText = Get-RecentSubtitleText $AppLogPath $RunMarker
+  $segmentTranslationText = Get-RecentFinalSegmentTranslationText $AppLogPath $RunMarker
+  $originalPassed = ($exit -eq 0 -and $source.Trim().Length -gt 0)
+  $translatedSpeechPassed = ($segmentation.playedSegments -gt 0)
+  $contentConsistency = if ($SourceReferenceTranscript -and $SourceReferenceTranscript.passed) {
+    Compare-WatchModeContent $SourceReferenceTranscript $source $translation (Get-UniqueClauseText @($subtitleText, $segmentTranslationText))
+  } else {
+    [pscustomobject]@{
+      passed = $false
+      error = if ($SourceReferenceTranscript) { $SourceReferenceTranscript.error } else { "source media reference transcript was not collected" }
+    }
+  }
+  [pscustomobject]@{
+    passed = ($originalPassed -and $translatedSpeechPassed -and $contentConsistency.passed)
+    exitCode = $exit
+    source = $source
+    translation = $translation
+    sourceReference = $SourceReferenceTranscript
+    contentConsistency = $contentConsistency
+    subtitleText = $subtitleText
+    segmentTranslationText = $segmentTranslationText
+    subtitleQueue = $subtitleQueue
+    sttSourceWindow = $sourceWindow
+    originalPassthrough = [pscustomobject]@{
+      passed = ($originalPassed -and $originalSimilarity.passed)
+      transcriptChars = $source.Trim().Length
+      sourceSimilarity = $originalSimilarity
+    }
+    translatedSpeech = [pscustomobject]@{
+      passed = $translatedSpeechPassed
+      playedSegments = $segmentation.playedSegments
+      queuedSegments = $segmentation.queuedSegments
+      transcriptChars = $translation.Trim().Length
+    }
+    mixedOutput = [pscustomobject]@{
+      passed = ($Recording -and $Recording.rms -gt 0 -and $originalPassed)
+      rms = $Recording.rms
+      peak = $Recording.peak
+    }
+    recording = $Recording
+    audioQuality = $Recording.audioQuality
+    stdout = $stdout
+    stderr = $stderr
+  } | ConvertTo-Json -Depth 12 | Set-Content -Path $resultPath -Encoding UTF8
+  return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+}
+
+function Read-RecentProviderSummary {
+  param([string]$AppLog, [string]$RunMarker)
+  if (-not (Test-Path -LiteralPath $AppLog -PathType Leaf)) {
+    return [pscustomobject]@{
+      totalCalls = $null
+      failedCalls = $null
+      error = "app.log not found"
+    }
+  }
+  $raw = Get-LogTextAfterMarker $AppLog $RunMarker
+  $lines = $raw -split "`r?`n"
+  $providerLines = @($lines | Where-Object { $_ -match 'model_trace|provider|dashscope|openai|omni' })
+  $providerFailurePattern = '\b(?:status|httpStatus|code)=(?:401|403|429)\b|\bHTTP\s+(?:401|403|429)\b|"status"\s*:\s*"failed"|"error"\s*:\s*(?!"?null\b|null\b)[{\["0-9tfa-zA-Z_-]|unauthori[sz]ed|forbidden|invalid api key|credential|auth|rate limit|quota|insufficient|billing|timeout|timed out|ECONNRESET|ENOTFOUND|network error|websocket.*(?:failed|closed)|model_trace failed|provider.*failed'
+  $failedLines = @($providerLines | Where-Object {
+    $_ -match $providerFailurePattern
+  })
+  return [pscustomobject]@{
+    totalCalls = $providerLines.Count
+    failedCalls = $failedLines.Count
+    error = $null
+  }
+}
+
+function Read-WatchModeTranslationRoute {
+  param([string]$AppLog, [string]$RunMarker)
+  if (-not (Test-Path -LiteralPath $AppLog -PathType Leaf)) {
+    return "native"
+  }
+  $text = Get-LogTextAfterMarker $AppLog $RunMarker
+  $match = [regex]::Matches($text, "subtitleTranslationMode=(native|secondary)") | Select-Object -Last 1
+  if ($match) {
+    return $match.Groups[1].Value
+  }
+  if ($text -match "speech\.segment_tts_queued|speech\.segment_playback_written") {
+    return "secondary"
+  }
+  return "native"
+}
+
+function Read-SpeechSegmentationSummary {
+  param([string]$AppLog, [string]$RunMarker)
+  if (-not (Test-Path -LiteralPath $AppLog -PathType Leaf)) {
+    return [pscustomobject]@{
+      queuedSegments = 0
+      playedSegments = 0
+      maxSourceChars = 0
+      maxTranslatedChars = 0
+    }
+  }
+  $text = Get-LogTextAfterMarker $AppLog $RunMarker
+  $queued = [regex]::Matches($text, "speech\.segment_tts_queued[^\r\n]*")
+  $played = [regex]::Matches($text, "speech\.segment_playback_written[^\r\n]*")
+  $maxSource = 0
+  $maxTranslated = 0
+  foreach ($item in $queued) {
+    $sourceMatch = [regex]::Match($item.Value, "sourceChars=(\d+)")
+    if ($sourceMatch.Success) { $maxSource = [Math]::Max($maxSource, [int]$sourceMatch.Groups[1].Value) }
+    $translatedMatch = [regex]::Match($item.Value, "translatedChars=(\d+)")
+    if ($translatedMatch.Success) { $maxTranslated = [Math]::Max($maxTranslated, [int]$translatedMatch.Groups[1].Value) }
+  }
+  return [pscustomobject]@{
+    queuedSegments = $queued.Count
+    playedSegments = $played.Count
+    maxSourceChars = $maxSource
+    maxTranslatedChars = $maxTranslated
+  }
+}
+
+function Build-SnapshotsFile {
+  param(
+    [string]$OutputDirectory,
+    $DriverProbe,
+    [string]$AppLogPath,
+    [string]$BridgeLogPath,
+    [string]$RunMarker,
+    [string]$StartedAtLocal,
+    $Playback
+  )
+  $driver = if ($DriverProbe.ok) { $DriverProbe.result } else { [pscustomobject]@{ error = $DriverProbe.error } }
+  $bridgeProbePath = Join-Path $OutputDirectory "bridge-source-probe.json"
+  $bridgeProbe = if (Test-Path -LiteralPath $bridgeProbePath -PathType Leaf) {
+    Get-Content -LiteralPath $bridgeProbePath -Raw | ConvertFrom-Json
+  } else {
+    $null
+  }
+  $bridge = [pscustomobject]@{}
+  if (Test-Path -LiteralPath $BridgeLogPath -PathType Leaf) {
+    if ($bridgeProbe -and $bridgeProbe.state -and $bridgeProbe.sourceFrame) {
+      $bridge = [pscustomobject]@{
+        probePassed = $bridgeProbe.passed -ne $false
+        bridgeState = $bridgeProbe.state.bridgeState
+        driverHealth = $bridgeProbe.state.driverHealth
+        sourceSubscriberActive = $bridgeProbe.state.sourceSubscriberActive
+        sourceReadCalls = $bridgeProbe.state.sourceReadCalls
+        droppedFrameCount = $bridgeProbe.state.droppedFrameCount
+        lastErrorCode = $bridgeProbe.state.lastErrorCode
+        sourceFramePayloadBytes = $bridgeProbe.sourceFrame.payloadBytes
+        pipeName = $bridgeProbe.pipeName
+        sourcePipeName = $bridgeProbe.sourcePipeName
+      }
+    } elseif ($bridgeProbe) {
+      $bridge = [pscustomobject]@{
+        probePassed = $false
+        error = $bridgeProbe.error
+        phase = $bridgeProbe.phase
+        stateQueryError = $bridgeProbe.stateQueryError
+        init = $bridgeProbe.init
+        state = $bridgeProbe.state
+        pipeName = $bridgeProbe.pipeName
+        sourcePipeName = $bridgeProbe.sourcePipeName
+        stdout = $bridgeProbe.stdout
+        stderr = $bridgeProbe.stderr
+      }
+    } else {
+      $bridge = [pscustomobject]@{
+        probePassed = $false
+        error = "bridge-source-probe.json not found"
+      }
+    }
+  }
+  $physicalOutputProbePath = Join-Path $OutputDirectory "physical-output-probe.json"
+  $physicalOutput = if (Test-Path -LiteralPath $physicalOutputProbePath -PathType Leaf) {
+    Get-Content -LiteralPath $physicalOutputProbePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } else {
+    $null
+  }
+  $physicalOutputContentPath = Join-Path $OutputDirectory "physical-output-content.json"
+  $physicalOutputContent = if (Test-Path -LiteralPath $physicalOutputContentPath -PathType Leaf) {
+    Get-Content -LiteralPath $physicalOutputContentPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } else {
+    $null
+  }
+  $app = [pscustomobject]@{
+    routeState = $null
+    overlayVisible = $null
+    subtitleCueCount = $null
+    speechDispatchState = $null
+    subtitleQueue = Read-SubtitleQueueTimeline $AppLogPath $RunMarker
+  }
+  $provider = Read-RecentProviderSummary $AppLogPath $RunMarker
+  $translationRoute = Read-WatchModeTranslationRoute $AppLogPath $RunMarker
+  $speechSegmentation = Read-SpeechSegmentationSummary $AppLogPath $RunMarker
+  $snapshots = [pscustomobject]@{
+    runMarker = $RunMarker
+    startedAtLocal = $StartedAtLocal
+    modelId = if ($WatchModelId) { $WatchModelId } else { $null }
+    translationRoute = $translationRoute
+    driver = $driver
+    wasapi = $driver
+    bridge = $bridge
+    app = $app
+    provider = $provider
+    physicalOutput = $physicalOutput
+    physicalOutputContent = $physicalOutputContent
+    speechSegmentation = $speechSegmentation
+    playback = $Playback
+    diagnosticsBundle = $null
+  }
+  $path = Join-Path $OutputDirectory "snapshots.json"
+  $snapshots | ConvertTo-Json -Depth 12 | Set-Content -Path $path -Encoding UTF8
+  return $path
+}
+
+function Save-WatchModeRunArtifacts {
+  param(
+    [string]$OutputDirectory,
+    $DriverProbe,
+    $PlaybackStep,
+    $Steps,
+    [string]$RunMarker,
+    [string]$StartedAtLocal,
+    [string]$FailureMessage = $null
+  )
+  $runtimePath = Resolve-Path -LiteralPath $RuntimeRoot -ErrorAction SilentlyContinue
+  $appLogSource = if ($runtimePath) { Join-Path $runtimePath.Path "app.log" } else { Join-Path $RuntimeRoot "app.log" }
+  $bridgeLogSource = if ($runtimePath) { Join-Path $runtimePath.Path "bridge-service.log" } else { Join-Path $RuntimeRoot "bridge-service.log" }
+  $appLogTarget = Copy-IfExists $appLogSource (Join-Path $OutputDirectory "app.log")
+  $bridgeLogTarget = Copy-IfExists $bridgeLogSource (Join-Path $OutputDirectory "bridge-service.log")
+  if (-not $appLogTarget) {
+    "" | Set-Content -Path (Join-Path $OutputDirectory "app.log") -Encoding UTF8
+  }
+  if (-not $bridgeLogTarget) {
+    "" | Set-Content -Path (Join-Path $OutputDirectory "bridge-service.log") -Encoding UTF8
+  }
+  if ($FailureMessage) {
+    [pscustomobject]@{
+      message = $FailureMessage
+      generatedAt = Get-Date -Format o
+    } | ConvertTo-Json -Depth 4 | Set-Content -Path (Join-Path $OutputDirectory "failure.json") -Encoding UTF8
+  }
+  $effectiveDriverProbe = if ($DriverProbe) {
+    $DriverProbe
+  } else {
+    [pscustomobject]@{ ok = $false; result = $null; error = "driver probe did not run" }
+  }
+  $playbackSnapshot = if ($PlaybackStep -and $PlaybackStep.ok) { $PlaybackStep.result } else { $null }
+  Build-SnapshotsFile $OutputDirectory $effectiveDriverProbe (Join-Path $OutputDirectory "app.log") (Join-Path $OutputDirectory "bridge-service.log") $RunMarker $StartedAtLocal $playbackSnapshot | Out-Null
+  @($Steps) | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $OutputDirectory "steps.json") -Encoding UTF8
+  Invoke-ReportGenerator $OutputDirectory "live"
+}
+
+$workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
+Set-Location $workspaceRoot
+$outputDir = New-WatchModeOutputDirectory $OutputRoot
+$runMarker = "watch_mode_diagnostic.run_id=$([System.Guid]::NewGuid().ToString('N'))"
+$startedAtLocal = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+if ($DryRun) {
+  $fixtureDir = Join-Path $workspaceRoot (Join-Path "scripts/testing/fixtures/watch-mode-live" $Fixture)
+  if (-not (Test-Path -LiteralPath $fixtureDir -PathType Container)) {
+    throw "Watch-mode fixture not found: $fixtureDir"
+  }
+  Get-ChildItem -LiteralPath $fixtureDir | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $outputDir -Recurse -Force
+  }
+  Invoke-ReportGenerator $outputDir "dry-run"
+  Write-Output $outputDir
+  exit 0
+}
+
+$steps = @()
+$desktopProcess = $null
+$desktopEnvState = $null
+$driverProbe = $null
+$playbackStep = $null
+$physicalOutputRecorder = $null
+$physicalOutputRecorderStep = $null
+$physicalOutputRecordingStep = $null
+$physicalOutputContentStep = $null
+$sourceMediaTranscriptStep = $null
+$artifactsSaved = $false
+$criticalFailureMessage = $null
+try {
+  $runtimePathForMarker = Resolve-Path -LiteralPath $RuntimeRoot -ErrorAction SilentlyContinue
+  $appLogForMarker = if ($runtimePathForMarker) { Join-Path $runtimePathForMarker.Path "app.log" } else { Join-Path $RuntimeRoot "app.log" }
+  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $appLogForMarker) | Out-Null
+  Add-Content -LiteralPath $appLogForMarker -Value $runMarker -Encoding UTF8
+  $desktopEnvState = Set-DesktopAutostartEnvFile $runMarker $outputDir
+
+  $steps += Invoke-Step "build bridge service native" { npm run build:bridge-service-native } -ContinueOnError
+  if (-not $SkipDesktopLaunch) {
+    $steps += Invoke-Step "stop stale desktop shell before live run" {
+      Stop-StaleWatchModeDesktopShell
+    }
+    $steps += Invoke-Step "stop stale bridge service before driver probe" {
+      Stop-StaleBridgeService $RuntimeRoot
+    } -ContinueOnError
+  } else {
+    $steps += Invoke-Step "stop existing watch route before live run" {
+      Invoke-StopWatchRouteViaTauriCli
+    } -ContinueOnError
+  }
+  $driverProbe = Invoke-Step "driver probe" {
+    & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") -WorkspaceRoot $workspaceRoot
+  } -ContinueOnError
+
+  if (-not $driverProbe.ok -and -not $SkipDriverRepair -and $AllowDriverRepair) {
+    $steps += Invoke-Step "repair driver with explicit elevation" { Invoke-ElevatedDriverReinstall $outputDir } -ContinueOnError
+    $driverProbe = Invoke-Step "driver probe after repair" {
+      & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") -WorkspaceRoot $workspaceRoot
+    } -ContinueOnError
+  }
+  elseif (-not $driverProbe.ok -and -not $SkipDriverRepair -and -not $AllowDriverRepair) {
+    Write-Host "driver probe failed; skipping elevated repair because -AllowDriverRepair was not provided"
+  }
+  $steps += $driverProbe
+  Convert-DriverProbeToJsonFile $driverProbe (Join-Path $outputDir "driver.json")
+
+  $bridgeSourceProbe = Invoke-Step "bridge source frame probe" {
+    Invoke-BridgeSourceProbe $outputDir
+  } -ContinueOnError
+  $steps += $bridgeSourceProbe
+  if ($bridgeSourceProbe.ok) {
+    $bridgeSourceProbe.result | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "bridge-source-probe.json") -Encoding UTF8
+  } else {
+    $bridgeDiagnosticsPath = Join-Path $outputDir "bridge-source-probe-diagnostics.json"
+    if (Test-Path -LiteralPath $bridgeDiagnosticsPath -PathType Leaf) {
+      Get-Content -LiteralPath $bridgeDiagnosticsPath -Raw -Encoding UTF8 | Set-Content -Path (Join-Path $outputDir "bridge-source-probe.json") -Encoding UTF8
+    } else {
+      [pscustomobject]@{ passed = $false; error = $bridgeSourceProbe.error } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "bridge-source-probe.json") -Encoding UTF8
+    }
+  }
+
+  $physicalOutputProbe = Invoke-Step "physical output loopback probe" {
+    Invoke-PhysicalOutputProbe $outputDir
+  } -ContinueOnError
+  $steps += $physicalOutputProbe
+  if ($physicalOutputProbe.ok) {
+    $physicalOutputProbe.result | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "physical-output-probe.json") -Encoding UTF8
+    Set-DesktopPhysicalPlaybackOverride (Get-PhysicalOutputResolvedDeviceId $physicalOutputProbe)
+  } else {
+    [pscustomobject]@{ error = $physicalOutputProbe.error } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "physical-output-probe.json") -Encoding UTF8
+  }
+
+  $resolvedPhysicalDeviceId = Get-PhysicalOutputResolvedDeviceId $physicalOutputProbe
+  $desktopProcess = Invoke-Step "start desktop shell" { Start-WatchModeDesktopShell $outputDir $runMarker $resolvedPhysicalDeviceId } -ContinueOnError
+  $steps += $desktopProcess
+
+  if ($desktopProcess.ok) {
+    if ($SkipDesktopLaunch) {
+      $startViaCliStep = Invoke-Step "start watch mode via existing desktop shell" {
+        Invoke-StartWatchModeViaTauriCli $desktopProcess $resolvedPhysicalDeviceId
+      } -ContinueOnError
+      $steps += $startViaCliStep
+      if (-not $startViaCliStep.ok) {
+        $criticalFailureMessage = "start watch mode via existing desktop shell failed: $($startViaCliStep.error)"
+      }
+    }
+    if (-not $criticalFailureMessage) {
+      $watchPlaybackEndpointId = if ($driverProbe.ok) { $driverProbe.result.WasapiEndpointId } else { $null }
+      $runtimePathBeforePlayback = Resolve-Path -LiteralPath $RuntimeRoot -ErrorAction SilentlyContinue
+      $appLogBeforePlayback = if ($runtimePathBeforePlayback) { Join-Path $runtimePathBeforePlayback.Path "app.log" } else { Join-Path $RuntimeRoot "app.log" }
+      $readinessStep = Invoke-Step "wait for watch-mode app readiness" {
+        Wait-AppLogPattern $appLogBeforePlayback $runMarker "watch_mode\.omni_session_ready|ws\.recv\.session\.(?:created|updated)" $SessionReadyTimeoutSeconds
+      } -ContinueOnError
+      $steps += $readinessStep
+      if (-not $readinessStep.ok) {
+        $criticalFailureMessage = "wait for watch-mode app readiness failed: $($readinessStep.error)"
+      }
+    }
+    if (-not $criticalFailureMessage) {
+      $physicalOutputRecorderStep = Invoke-Step "start physical output content recording" {
+        $script:physicalOutputRecorder = Start-PhysicalOutputContentRecorder $outputDir $resolvedPhysicalDeviceId
+        [pscustomobject]@{
+          pid = $script:physicalOutputRecorder.pid
+          recordSeconds = $script:physicalOutputRecorder.recordSeconds
+          recordingPath = $script:physicalOutputRecorder.recordingPath
+          transcriptionPcmPath = $script:physicalOutputRecorder.transcriptionPcmPath
+        }
+      } -ContinueOnError
+      $steps += $physicalOutputRecorderStep
+
+      if (-not $physicalOutputRecorderStep.ok) {
+        $criticalFailureMessage = "start physical output content recording failed: $($physicalOutputRecorderStep.error)"
+      }
+
+      if (-not $criticalFailureMessage) {
+        if ($UseDefaultEndpointPlayback) {
+          $playbackStep = Invoke-Step "play watch-mode media via default endpoint" {
+            Start-TestMediaPlaybackViaDefaultEndpoint $MediaPath $watchPlaybackEndpointId
+          } -ContinueOnError
+        } else {
+          $playbackStep = Invoke-Step "play watch-mode media" { Start-TestMediaPlayback $MediaPath $watchPlaybackEndpointId $outputDir } -ContinueOnError
+        }
+        $steps += $playbackStep
+        if ($StopDesktopAfterPlayback) {
+          $steps += Invoke-Step "stop watch-mode desktop shell after playback" {
+            Stop-WatchModeDesktopShell $desktopProcess
+          } -ContinueOnError
+        } elseif ($PostPlaybackWaitSeconds -gt 0) {
+          $steps += Invoke-Step "observe watch-mode output after media playback" { Start-Sleep -Seconds $PostPlaybackWaitSeconds } -ContinueOnError
+        }
+        $sourceMediaTranscriptStep = Invoke-Step "transcribe source media reference" {
+          Get-SourceMediaReferenceTranscript $outputDir $MediaPath
+        } -ContinueOnError
+        $steps += $sourceMediaTranscriptStep
+        $physicalOutputRecordingStep = Invoke-Step "complete physical output content recording" {
+          Complete-PhysicalOutputContentRecorder $script:physicalOutputRecorder
+        } -ContinueOnError
+        $steps += $physicalOutputRecordingStep
+        $physicalOutputContentStep = Invoke-Step "transcribe and compare physical output content" {
+          Invoke-PhysicalOutputContentStt $outputDir $physicalOutputRecordingStep.result $appLogBeforePlayback $runMarker $sourceMediaTranscriptStep.result
+        } -ContinueOnError
+        $steps += $physicalOutputContentStep
+      }
+    }
+  } else {
+    $playbackStep = [pscustomobject]@{
+      name = "desktop shell did not start"
+      ok = $false
+      result = $null
+      error = $desktopProcess.error
+    }
+    $steps += $playbackStep
+    $criticalFailureMessage = "desktop shell did not start: $($desktopProcess.error)"
+  }
+
+  $steps += Invoke-Step "stop bridge service after live run" {
+    if ($AllowElevatedDesktopLaunch) {
+      Stop-ElevatedWatchModeProcesses
+    } elseif ($SkipDesktopLaunch) {
+      Invoke-StopWatchRouteViaTauriCli
+    } else {
+      Stop-StaleBridgeService $RuntimeRoot
+    }
+  } -ContinueOnError
+
+  Save-WatchModeRunArtifacts $outputDir $driverProbe $playbackStep $steps $runMarker $startedAtLocal $criticalFailureMessage
+  $artifactsSaved = $true
+  Write-Output $outputDir
+} catch {
+  $message = $_.Exception.Message
+  $steps += [pscustomobject]@{
+    name = "run failed"
+    ok = $false
+    result = $null
+    error = $message
+  }
+  try {
+    Save-WatchModeRunArtifacts $outputDir $driverProbe $playbackStep $steps $runMarker $startedAtLocal $message
+    $artifactsSaved = $true
+    Write-Output $outputDir
+  } catch {
+    Write-Warning "failed to save watch-mode run artifacts: $($_.Exception.Message)"
+  }
+  throw
+} finally {
+  Stop-WatchModeDesktopShell $desktopProcess | Out-Null
+  try {
+    if ($AllowElevatedDesktopLaunch) {
+      Stop-ElevatedWatchModeProcesses | Out-Null
+    } else {
+      Stop-StaleBridgeService $RuntimeRoot | Out-Null
+    }
+  } catch {
+    Write-Warning "failed to stop bridge service during cleanup: $($_.Exception.Message)"
+  }
+  Restore-DesktopAutostartEnvFile $desktopEnvState
+}

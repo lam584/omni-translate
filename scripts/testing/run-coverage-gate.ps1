@@ -46,21 +46,6 @@ function Assert-RustCoverage {
   }
 }
 
-function Assert-NodeMajorVersion {
-  param([int]$ExpectedMajor)
-
-  $version = (& node --version).Trim()
-  if ($LASTEXITCODE -ne 0) {
-    throw 'Unable to read the installed Node.js version.'
-  }
-  if ($version -notmatch '^v(?<major>\d+)\.') {
-    throw "Unable to parse Node.js version: $version"
-  }
-  if ([int]$Matches.major -ne $ExpectedMajor) {
-    throw "coverage:gate requires Node.js v$ExpectedMajor for native test coverage thresholds. Installed=$version"
-  }
-}
-
 if (-not (Test-IsAdministrator)) {
   throw 'coverage:gate must run from an administrator PowerShell because the desktop-shell test executable requires elevation.'
 }
@@ -70,8 +55,6 @@ $outputDir = Join-Path $workspaceRoot (Join-Path $OutputRoot $timestamp)
 New-Item -ItemType Directory -Force -Path $outputDir | Out-Null
 
 Invoke-CoverageStep 'desktop-frontend' 'npm run test:desktop-coverage'
-Assert-NodeMajorVersion 24
-Invoke-CoverageStep 'legacy-node-bridge' 'npm run test:bridge-service-coverage'
 
 $desktopShellReport = Join-Path $outputDir 'desktop-shell.json'
 Invoke-CoverageStep 'desktop-shell-rust' "cargo +nightly-2026-06-01 llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml --branch --json --output-path `"$desktopShellReport`""

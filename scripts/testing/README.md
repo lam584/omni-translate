@@ -14,12 +14,13 @@ Run the repository coverage gate from an administrator PowerShell:
 npm run coverage:gate
 ```
 
-The gate enforces 100% line, function, and branch coverage independently
-for the desktop frontend, legacy Node bridge workspace, desktop-shell Rust
-crate, and native Bridge Rust crate. Rust branch coverage uses the pinned
+The gate enforces the configured desktop frontend coverage thresholds and
+100% line, function, and branch coverage for the desktop-shell Rust crate
+and native Bridge Rust crate. Rust branch coverage uses the pinned
 `nightly-2026-06-01` toolchain with `cargo-llvm-cov 0.8.6`. Entrypoints,
-generated assets, vendored SYSVAD sources, and thin platform adapters remain
-outside the measured core logic surface.
+router, overlay, schema/contract files, generated assets, vendored SYSVAD
+sources, and thin platform adapters are explicitly governed by each local
+coverage config rather than claimed as implicit 100% evidence.
 
 Run Rust protocol, routing, and audio worker tests:
 
@@ -81,3 +82,110 @@ virtual audio driver and play audio. Confirm that:
 - `artifacts/diagnostics/logs/bridge-service.log` contains
   `source pacer summary` entries whose `queuedFrames` remain near zero during
   steady playback and do not grow continuously.
+
+## Startup readiness timing
+
+Measure how long the desktop shell takes from launch to the main window, and
+from the main window to usable bootstrap readiness:
+
+```powershell
+npm run perf:startup-readiness
+```
+
+The runner starts `npm run dev:tauri --workspace @omni/desktop`, injects a
+unique `VITE_OMNI_STARTUP_MEASURE_RUN_ID`, polls Windows for the `Omni
+Translate` main window, then waits for the frontend `startup.readiness_ready`
+diagnostic marker. Each run writes `report.json`, `report.md`, and captured
+Tauri dev stdout/stderr under
+`artifacts/testing/startup-readiness/<run-id>/`.
+Reports enforce a maximum `windowToReadyMs` of 10,000 ms and treat bootstrap
+error steps as not ready.
+
+Validate the startup-readiness threshold tests:
+
+```powershell
+npm run test:startup-readiness
+```
+
+Validate the latest measured report:
+
+```powershell
+node ./scripts/testing/verify-startup-readiness.mjs
+```
+
+Use `-NoStop` when you want to keep the app open after the measurement:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/measure-startup-readiness.ps1 -NoStop
+```
+
+If Vite is already running on the configured dev port, measure only the Tauri
+window-to-ready path against that server:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/measure-startup-readiness.ps1 -UseExistingDevServer
+```
+
+## Watch-mode live diagnostics
+
+Run the report classifier tests:
+
+```powershell
+npm run test:watch-mode-report
+```
+
+Check the latest complete live evidence without launching hardware diagnostics:
+
+```powershell
+npm run test:watch-mode-evidence
+```
+
+Check the strict release evidence gate. This requires the latest complete
+`scripts/testing/Test.mp3` live run for both required Watch Mode models:
+
+```powershell
+npm run test:watch-mode-evidence:strict
+```
+
+Run the fixture-backed dry run without administrator permissions:
+
+```powershell
+npm run test:watch-mode-live:dry-run
+```
+
+Run the live watch-mode diagnostic on Windows:
+
+```powershell
+npm run test:watch-mode-live
+```
+
+Run the strict two-model matrix on Windows:
+
+```powershell
+npm run test:watch-mode-live:matrix -- -SkipDriverRepair -AllowElevatedDesktopLaunch -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90
+```
+
+The live command builds the native bridge, probes the virtual speaker driver,
+attempts an explicit elevated repair if the probe fails, starts the desktop
+shell, plays the full `scripts/testing/Test.mp3`, copies `app.log` and
+`bridge-service.log`, and writes `report.json` plus `report.md` under
+`artifacts/testing/watch-mode-live/<timestamp>/`. Live runs also refresh
+`artifacts/testing/watch-mode-live/latest-watch-mode-live.json` with the
+latest report path, verdict, timestamp, failure layer, and model id.
+
+The report separates failures into `driver`, `wasapi`, `bridge`,
+`physicalOutput`, `physicalOutputContent`, `speechSegmentation`,
+`strictContent`, `app`, and `provider` layers. The `strictContent` layer is
+applicable to `Test.mp3` full-media live runs and checks deterministic Chinese
+reference coverage, required concepts, forbidden numeric mistranslations, at
+least eight final subtitle writes, at least eight queued translated speech
+segments, and at least eight played translated speech segments.
+
+Agents should read the timestamped `report.json` under
+`artifacts/testing/watch-mode-live/` first, then inspect the listed suspect
+files and copied logs instead of relying on root-level `report.json` or manual
+playback notes. Release verification uses
+`npm run test:watch-mode-evidence:strict` as an independent strict evidence
+gate for `qwen3.5-omni-flash-realtime` and
+`qwen3.5-livetranslate-flash-realtime`; `npm run quality:gate` does not launch
+the live hardware path.

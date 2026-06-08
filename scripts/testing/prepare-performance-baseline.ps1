@@ -13,6 +13,9 @@ $reportPath = Join-Path $targetDir ("desktop-perf-baseline-" + $timestamp + ".js
 
 $payload = [ordered]@{
   generatedAt = (Get-Date -Format s)
+  operator = ""
+  build = ""
+  verdict = "PENDING"
   environment = "Windows desktop shell"
   scenario = "Provider probe + subtitle display + speech dispatch + diagnostics export"
   thresholds = [ordered]@{

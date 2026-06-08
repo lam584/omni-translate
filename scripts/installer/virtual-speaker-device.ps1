@@ -70,8 +70,8 @@ public static class OmniVirtualAudioProbe
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool DeviceIoControl(
-        SafeFileHandle device, uint controlCode, IntPtr input, uint inputLength,
-        out Status output, uint outputLength, out uint bytesReturned, IntPtr overlapped);
+        SafeFileHandle device, uint controlCode, byte[] input, uint inputLength,
+        byte[] output, uint outputLength, out uint bytesReturned, IntPtr overlapped);
 
     public static Status Query()
     {
@@ -80,14 +80,26 @@ public static class OmniVirtualAudioProbe
             FileShareRead | FileShareWrite, IntPtr.Zero, OpenExisting, 0, IntPtr.Zero))
         {
             if (device.IsInvalid) throw new Win32Exception(Marshal.GetLastWin32Error());
-            Status status;
+            byte[] output = new byte[128];
             uint bytesReturned;
             if (!DeviceIoControl(
-                device, IoctlQueryStatus, IntPtr.Zero, 0, out status,
-                (uint)Marshal.SizeOf<Status>(), out bytesReturned, IntPtr.Zero))
+                device, IoctlQueryStatus, null, 0, output,
+                (uint)output.Length, out bytesReturned, IntPtr.Zero))
             {
                 throw new Win32Exception(Marshal.GetLastWin32Error());
             }
+            if (bytesReturned < Marshal.SizeOf<Status>())
+            {
+                throw new Win32Exception(122, "Driver returned an incomplete status buffer.");
+            }
+            Status status = new Status();
+            status.AbiVersion = BitConverter.ToUInt32(output, 0);
+            status.RingCapacityBytes = BitConverter.ToUInt32(output, 4);
+            status.BufferedBytes = BitConverter.ToUInt32(output, 8);
+            status.MaxBufferedBytes = BitConverter.ToUInt32(output, 12);
+            status.CapturedBytes = BitConverter.ToUInt64(output, 16);
+            status.DeliveredBytes = BitConverter.ToUInt64(output, 24);
+            status.DroppedBytes = BitConverter.ToUInt64(output, 32);
             return status;
         }
     }

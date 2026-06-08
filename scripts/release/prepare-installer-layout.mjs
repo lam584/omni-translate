@@ -3,21 +3,24 @@ import path from 'node:path';
 
 const rootDir = process.cwd();
 
-const readJson = (relativePath) => JSON.parse(fs.readFileSync(path.join(rootDir, relativePath), 'utf8'));
+const readText = (relativePath) => fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
+const readJson = (relativePath) => JSON.parse(readText(relativePath));
+const readCargoVersion = (relativePath) => {
+  const match = readText(relativePath).match(/^\s*version\s*=\s*"([^"]+)"/m);
+  if (!match) {
+    throw new Error(`Unable to read Cargo package version from ${relativePath}`);
+  }
+  return match[1];
+};
 
 const rootPackage = readJson('package.json');
 const desktopPackage = readJson(path.join('apps', 'desktop', 'package.json'));
-const bridgePackage = readJson(path.join('apps', 'bridge-service', 'package.json'));
+const nativeBridgeVersion = readCargoVersion(path.join('apps', 'bridge-service-native', 'Cargo.toml'));
 
 const copyTree = (source, target) => {
   fs.mkdirSync(target, { recursive: true });
   fs.cpSync(source, target, { recursive: true, force: true });
 };
-
-const bridgeDist = path.join(rootDir, 'apps', 'bridge-service', 'dist');
-if (!fs.existsSync(bridgeDist)) {
-  throw new Error('Bridge Service dist is missing. Run npm run build:bridge-service first.');
-}
 
 const nativeBridgeExecutable = path.join(rootDir, 'apps', 'bridge-service-native', 'target', 'release', 'omni-bridge-service.exe');
 if (!fs.existsSync(nativeBridgeExecutable)) {
@@ -73,7 +76,7 @@ const layout = {
   },
   packages: {
     desktop: desktopPackage.version,
-    bridgeService: bridgePackage.version,
+    nativeBridge: nativeBridgeVersion,
   },
   upgradePolicy: {
     keepBackups: 2,
@@ -81,7 +84,6 @@ const layout = {
   },
 };
 
-copyTree(bridgeDist, path.join(versionDir, 'bridge-service'));
 fs.mkdirSync(path.join(versionDir, 'bridge-service-native'), { recursive: true });
 fs.copyFileSync(nativeBridgeExecutable, path.join(versionDir, 'bridge-service-native', 'omni-bridge-service.exe'));
 copyTree(desktopDist, path.join(versionDir, 'desktop', 'web-assets'));

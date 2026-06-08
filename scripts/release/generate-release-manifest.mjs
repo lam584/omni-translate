@@ -2,26 +2,26 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const rootDir = process.cwd();
+const projectDocsDir = path.join('docs', '项目');
 
-const readJson = (relativePath) => {
-  const fullPath = path.join(rootDir, relativePath);
-  return JSON.parse(fs.readFileSync(fullPath, 'utf8'));
+const readText = (relativePath) => fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
+const readJson = (relativePath) => JSON.parse(readText(relativePath));
+const readCargoVersion = (relativePath) => {
+  const match = readText(relativePath).match(/^\s*version\s*=\s*"([^"]+)"/m);
+  if (!match) {
+    throw new Error(`Unable to read Cargo package version from ${relativePath}`);
+  }
+  return match[1];
 };
 
 const rootPackage = readJson('package.json');
 const desktopPackage = readJson(path.join('apps', 'desktop', 'package.json'));
-const bridgePackage = readJson(path.join('apps', 'bridge-service', 'package.json'));
-const releaseNotesPath = `docs/项目/发布说明-${rootPackage.version}.md`;
+const nativeBridgeVersion = readCargoVersion(path.join('apps', 'bridge-service-native', 'Cargo.toml'));
 const releaseDocs = [
-  'docs/项目/发布自动化.md',
-  'docs/项目/测试与质量门禁.md',
-  'docs/项目/正式版签名流程.md',
-  releaseNotesPath,
-  'docs/项目/安装手册.md',
-  'docs/项目/支持手册.md',
-  'docs/项目/故障排查手册.md',
-  'docs/项目/灰度发布与问题收敛.md',
-  'docs/项目/发布检查清单.md',
+  path.join(projectDocsDir, 'Watch Mode 真实链路自动化测试.md'),
+  path.join(projectDocsDir, '架构说明.md'),
+  path.join(projectDocsDir, '测试与质量门禁.md'),
+  path.join(projectDocsDir, '社区术语包格式规范.md'),
 ];
 
 const manifest = {
@@ -41,32 +41,33 @@ const manifest = {
       name: desktopPackage.name,
       version: desktopPackage.version,
     },
-    bridgeService: {
-      name: bridgePackage.name,
-      version: bridgePackage.version,
+    nativeBridge: {
+      name: 'omni-bridge-service',
+      version: nativeBridgeVersion,
     },
   },
   commands: {
     qualityGate: 'npm run quality:gate',
+    contractGate: 'npm run test:contracts',
     releaseVerify: 'npm run release:verify',
     releaseManifest: 'npm run release:manifest',
     releasePackage: 'npm run release:package',
     releaseSigningManifest: 'npm run release:signing-manifest',
     desktopVerify: 'npm run verify:desktop',
     desktopShellTest: 'npm run test:desktop-shell',
-    bridgeCheck: 'npm run check:bridge-service',
-    bridgeTest: 'npm run test:bridge-service',
     nativeBridgeCheck: 'npm run check:bridge-service-native',
     nativeBridgeBuild: 'npm run build:bridge-service-native',
     nativeBridgeTest: 'npm run test:bridge-service-native',
+    watchModeReportTest: 'npm run test:watch-mode-report',
     installerPrepare: 'npm run installer:prepare',
   },
   installer: {
     layoutScript: 'scripts/release/prepare-installer-layout.mjs',
     scriptsDir: 'scripts/installer',
     layoutOutput: `artifacts/installer/${rootPackage.version}`,
+    nativeBridgeExecutable: 'bridge-service-native/omni-bridge-service.exe',
   },
-  docs: ['CONTRIBUTING.md', 'docs/项目/社区术语包格式规范.md', 'docs/项目/OBS集成边界.md', ...releaseDocs],
+  docs: ['README.md', 'README.en.md', ...releaseDocs],
 };
 
 const outputDir = path.join(rootDir, 'artifacts', 'release', rootPackage.version);

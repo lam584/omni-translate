@@ -1,64 +1,106 @@
-param(
-  [string]$OutputRoot = "artifacts/logs/testing/quality-gate"
+﻿param(
+  [string]$OutputRoot = "artifacts/logs/testing/quality-gate",
+  [string]$ManualE2EReport = "",
+  [string]$PerformanceBaselineReport = "",
+  [string]$InstallRegressionReport = "",
+  [switch]$AllowPendingManual
 )
 
 $ErrorActionPreference = 'Stop'
 $workspaceRoot = Resolve-Path (Join-Path $PSScriptRoot "../..");
 Set-Location $workspaceRoot
 
-$timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
-$targetDir = Join-Path $workspaceRoot (Join-Path $OutputRoot $timestamp)
-New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
-
-$steps = @(
-  @{ Name = "verify-desktop"; Command = "npm run verify:desktop" },
-  @{ Name = "coverage-all"; Command = "npm run coverage:gate" },
-  @{ Name = "check-desktop-shell"; Command = "npm run check:desktop-shell" },
-  @{ Name = "test-desktop-shell"; Command = "npm run test:desktop-shell" },
-  @{ Name = "check-bridge-service"; Command = "npm run check:bridge-service" },
-  @{ Name = "test-bridge-service"; Command = "npm run test:bridge-service" },
-  @{ Name = "check-bridge-service-native"; Command = "npm run check:bridge-service-native" },
-  @{ Name = "test-bridge-service-native"; Command = "npm run test:bridge-service-native" }
-)
-
-$results = @()
-foreach ($step in $steps) {
-  $logPath = Join-Path $targetDir ($step.Name + ".log")
-  Write-Host ">>> $($step.Name): $($step.Command)"
-  $wrappedCommand = $step.Command + ' > "' + $logPath + '" 2>&1'
-  & cmd.exe /d /s /c $wrappedCommand
-  Get-Content -Path $logPath | Select-Object -Last 40
-  if ($LASTEXITCODE -ne 0) {
-    throw "Quality gate step failed: $($step.Name)"
-  }
-  $results += [ordered]@{
-    name = $step.Name
-    command = $step.Command
-    logPath = $logPath
-    status = "passed"
-  }
+# 1. Run automated quality gate first
+$autoScript = Join-Path $PSScriptRoot "run-quality-gate-auto.ps1"
+$autoSummaryPath = & $autoScript -OutputRoot $OutputRoot
+if ($LASTEXITCODE -ne 0) {
+  throw "Automated quality gate failed. See: $autoSummaryPath"
 }
 
+# 2. Generate and validate manual artifacts
+$autoSummary = Get-Content -LiteralPath $autoSummaryPath -Raw | ConvertFrom-Json
+$timestamp = Split-Path -Leaf (Split-Path -Parent $autoSummaryPath)
 $manualRoot = Join-Path $OutputRoot $timestamp
 $e2eRoot = Join-Path $manualRoot "manual-e2e"
 $perfRoot = Join-Path $manualRoot "perf-baseline"
 $installRoot = Join-Path $manualRoot "install-regression"
 
-$e2eReport = & (Join-Path $workspaceRoot "scripts/testing/prepare-manual-e2e-report.ps1") -OutputRoot $e2eRoot
-$perfReport = & (Join-Path $workspaceRoot "scripts/testing/prepare-performance-baseline.ps1") -OutputRoot $perfRoot
-$installReport = & (Join-Path $workspaceRoot "scripts/testing/prepare-install-regression-report.ps1") -OutputRoot $installRoot
+if ([string]::IsNullOrWhiteSpace($ManualE2EReport)) {
+  $e2eReport = & (Join-Path $workspaceRoot "scripts/testing/prepare-manual-e2e-report.ps1") -OutputRoot $e2eRoot
+} else {
+  $e2eReport = (Resolve-Path -LiteralPath $ManualE2EReport).Path
+}
+
+if ([string]::IsNullOrWhiteSpace($PerformanceBaselineReport)) {
+  $perfReport = & (Join-Path $workspaceRoot "scripts/testing/prepare-performance-baseline.ps1") -OutputRoot $perfRoot
+} else {
+  $perfReport = (Resolve-Path -LiteralPath $PerformanceBaselineReport).Path
+}
+
+if ([string]::IsNullOrWhiteSpace($InstallRegressionReport)) {
+  $installReport = & (Join-Path $workspaceRoot "scripts/testing/prepare-install-regression-report.ps1") -OutputRoot $installRoot
+} else {
+  $installReport = (Resolve-Path -LiteralPath $InstallRegressionReport).Path
+}
+
+function Test-MarkdownManualReport {
+  param([string]$ReportPath)
+
+  $content = Get-Content -LiteralPath $ReportPath -Raw
+  $issues = @()
+  if ($content -match 'TODO') { $issues += 'contains TODO placeholders' }
+  if ($content -match '(?m)^- Operator:\s*$') { $issues += 'operator is missing' }
+  if ($content -match '(?m)^- Build:\s*$') { $issues += 'build is missing' }
+  if ($content -match '(?m)^- \[ \] PASS$') { $issues += 'PASS checkbox is not selected' }
+  if ($content -notmatch '(?m)^- \[[xX]\] PASS$') { $issues += 'missing selected PASS verdict' }
+  if ($content -match '(?m)^- \[[xX]\] FAIL$') { $issues += 'FAIL verdict is selected' }
+  if ($content -match '(?m)^- \[ \] (?!FAIL$).+') { $issues += 'contains unchecked checklist items' }
+  return $issues
+}
+
+function Test-PerformanceReport {
+  param([string]$ReportPath)
+
+  $payload = Get-Content -LiteralPath $ReportPath -Raw | ConvertFrom-Json
+  $issues = @()
+  foreach ($property in $payload.measurements.PSObject.Properties) {
+    if ($null -eq $property.Value) { $issues += "missing measurement: $($property.Name)" }
+  }
+  if ($payload.verdict -ne 'PASS') { $issues += 'verdict is not PASS' }
+  if ([string]::IsNullOrWhiteSpace($payload.operator)) { $issues += 'operator is missing' }
+  if ([string]::IsNullOrWhiteSpace($payload.build)) { $issues += 'build is missing' }
+  return $issues
+}
+
+$manualArtifactResults = @(
+  [ordered]@{ name = 'manual-e2e'; path = $e2eReport; status = 'passed'; issues = @(Test-MarkdownManualReport $e2eReport) },
+  [ordered]@{ name = 'performance-baseline'; path = $perfReport; status = 'passed'; issues = @(Test-PerformanceReport $perfReport) },
+  [ordered]@{ name = 'install-regression'; path = $installReport; status = 'passed'; issues = @(Test-MarkdownManualReport $installReport) }
+)
+
+foreach ($artifact in $manualArtifactResults) {
+  if ($artifact.issues.Count -gt 0) { $artifact['status'] = 'pending' }
+}
+
+$manualVerificationStatus = if (($manualArtifactResults | Where-Object { $_.status -ne 'passed' }).Count -gt 0) { 'pending' } else { 'passed' }
 
 $summary = [ordered]@{
   generatedAt = (Get-Date -Format s)
   workspaceRoot = $workspaceRoot.Path
-  automatedResults = $results
+  automatedResults = $autoSummary.automatedResults
+  manualVerificationStatus = $manualVerificationStatus
   manualArtifacts = [ordered]@{
     e2eReport = $e2eReport
     performanceBaseline = $perfReport
     installRegression = $installReport
   }
+  manualArtifactResults = $manualArtifactResults
 }
 
-$summaryPath = Join-Path $targetDir "quality-gate-summary.json"
+$summaryPath = Join-Path (Split-Path -Parent $autoSummaryPath) "quality-gate-summary.json"
 $summary | ConvertTo-Json -Depth 6 | Set-Content -Path $summaryPath -Encoding UTF8
 Write-Output $summaryPath
+
+if ($manualVerificationStatus -ne 'passed' -and -not $AllowPendingManual) {
+  throw "Manual verification is pending. Fill operator/build/verdict and mark every manual checklist PASS before treating quality:gate as passed. Summary: $summaryPath"
+}

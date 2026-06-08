@@ -12,6 +12,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+$RuntimeRoot = [System.IO.Path]::GetFullPath($RuntimeRoot)
+$ResultPath = [System.IO.Path]::GetFullPath($ResultPath)
 $startedAt = (Get-Date).ToUniversalTime().ToString('o')
 $logPath = [System.IO.Path]::ChangeExtension($ResultPath, '.log')
 
@@ -33,7 +36,7 @@ function Write-OperationResult([bool]$Succeeded, [string]$Phase, [string]$ErrorC
 }
 
 function Get-DriverOperationErrorCode([string]$Message) {
-  if ($Message -match 'CM_PROB_FAILED_START') {
+  if ($Message -match 'CM_PROB_FAILED_START|CM_PROB_NEED_RESTART|pending system reboot|requires reboot|need restart') {
     return 'driver.reboot-required'
   }
   if ($Message -match 'WASAPI audio probe failed') {

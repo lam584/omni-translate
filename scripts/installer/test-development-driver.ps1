@@ -17,7 +17,7 @@ if (-not $endpoint) {
 }
 
 $status = Invoke-OmniVirtualAudioProbe
-if ($status.AbiVersion -ne 0x20260602) {
+if ($status.AbiVersion -notin @(0x20260602, 0x20260604)) {
   throw ('Unexpected driver ABI version: 0x{0:X8}' -f $status.AbiVersion)
 }
 $audioProbe = Invoke-OmniWasapiAudioProbe $WorkspaceRoot
@@ -31,7 +31,17 @@ $audioProbe = Invoke-OmniWasapiAudioProbe $WorkspaceRoot
   CapturedBytes = $status.CapturedBytes
   DeliveredBytes = $status.DeliveredBytes
   DroppedBytes = $status.DroppedBytes
+  RenderStreamsCreated = $status.RenderStreamsCreated
+  RenderRunTransitions = $status.RenderRunTransitions
+  RenderSetWritePacketCalls = $status.RenderSetWritePacketCalls
+  RenderReadBytesCalls = $status.RenderReadBytesCalls
+  LoopbackCaptureReadCalls = $status.LoopbackCaptureReadCalls
   WasapiEndpointId = $audioProbe.endpointId
+  CapturedBytesBeforeTone = $audioProbe.capturedBytesBeforeTone
+  CapturedBytesAfterTone = $audioProbe.capturedBytesAfterTone
+  DeliveredBytesBeforeTone = $audioProbe.deliveredBytesBeforeTone
+  DeliveredBytesAfterTone = $audioProbe.deliveredBytesAfterTone
+  DroppedBytesAfterTone = $audioProbe.droppedBytesAfterTone
   IdleFrames = $audioProbe.idleFrames
   IdlePeak = $audioProbe.idlePeak
   IdleRms = $audioProbe.idleRms

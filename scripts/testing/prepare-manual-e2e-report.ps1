@@ -23,7 +23,7 @@ $lines = @(
   "",
   "1. Run npm run verify:desktop.",
   "2. Run npm run quality:desktop-shell.",
-  "3. Run npm run test:bridge-service.",
+  "3. Run npm run test:bridge-service-native.",
   "",
   "## Scenario Checklist",
   "",

@@ -27,7 +27,21 @@ $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
 $expectedPath = [System.IO.Path]::GetFullPath(
   (Join-Path $workspacePath 'apps\bridge-service-native\target\release\omni-bridge-service.exe')
 )
-$actualPath = [System.IO.Path]::GetFullPath($process.Path)
+$actualProcessPath = $process.Path
+if ([string]::IsNullOrWhiteSpace($actualProcessPath)) {
+  $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $bridgePid" -ErrorAction SilentlyContinue
+  $actualProcessPath = $processInfo.ExecutablePath
+}
+if ([string]::IsNullOrWhiteSpace($actualProcessPath)) {
+  if ($process.ProcessName -eq 'omni-bridge-service') {
+    Stop-Process -Id $bridgePid -Force -ErrorAction Stop
+    [void]$process.WaitForExit(3000)
+    Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue
+    return
+  }
+  throw "bridge.stale-process-path-unavailable: pid=$bridgePid processName=$($process.ProcessName)"
+}
+$actualPath = [System.IO.Path]::GetFullPath($actualProcessPath)
 if (-not [string]::Equals($actualPath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase)) {
   throw "bridge.stale-process-path-mismatch: pid=$bridgePid actual=$actualPath expected=$expectedPath"
 }
@@ -66,5 +80,5 @@ if ($process.WaitForExit(1000)) {
 }
 
 Stop-Process -Id $bridgePid -Force -ErrorAction Stop
-$process.WaitForExit()
+[void]$process.WaitForExit(3000)
 Remove-Item -LiteralPath $pidPath -Force -ErrorAction SilentlyContinue

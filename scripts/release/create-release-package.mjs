@@ -8,7 +8,7 @@ const readJson = (relativePath) => JSON.parse(fs.readFileSync(path.join(rootDir,
 const rootPackage = readJson('package.json');
 
 const version = rootPackage.version;
-const releaseNotesPath = `docs/项目/发布说明-${version}.md`;
+const projectDocsDir = path.join('docs', '项目');
 const installerLayoutDir = path.join(rootDir, 'artifacts', 'installer', version);
 if (!fs.existsSync(installerLayoutDir)) {
   throw new Error(`Installer layout is missing at artifacts/installer/${version}. Run npm run installer:prepare first.`);
@@ -29,15 +29,10 @@ const summaryPath = path.join(releaseDir, 'release-package-summary.json');
 const manifestPath = path.join(releaseDir, 'release-manifest.json');
 
 const docsToCopy = [
-  'docs/项目/发布自动化.md',
-  'docs/项目/测试与质量门禁.md',
-  'docs/项目/正式版签名流程.md',
-  releaseNotesPath,
-  'docs/项目/安装手册.md',
-  'docs/项目/支持手册.md',
-  'docs/项目/故障排查手册.md',
-  'docs/项目/灰度发布与问题收敛.md',
-  'docs/项目/发布检查清单.md',
+  path.join(projectDocsDir, 'Watch Mode 真实链路自动化测试.md'),
+  path.join(projectDocsDir, '架构说明.md'),
+  path.join(projectDocsDir, '测试与质量门禁.md'),
+  path.join(projectDocsDir, '社区术语包格式规范.md'),
 ];
 
 const copyTree = (source, target) => {
@@ -92,6 +87,7 @@ const packageMetadata = {
   installEntry: 'scripts/installer/install-development-driver.ps1',
   uninstallEntry: 'scripts/installer/uninstall-development-driver.ps1',
   repairEntry: 'scripts/installer/repair-driver.ps1',
+  nativeBridgeExecutable: 'bridge-service-native/omni-bridge-service.exe',
   docs: docsToCopy.map((relativePath) => path.basename(relativePath)),
 };
 fs.writeFileSync(path.join(bundleDir, 'release-package.json'), `${JSON.stringify(packageMetadata, null, 2)}\n`, 'utf8');

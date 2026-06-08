@@ -2,9 +2,9 @@ export type AudioInputSourceKind = 'system-output' | 'microphone';
 
 export type AudioOutputTargetKind = 'speaker' | 'virtual-mic' | 'subtitle-engine' | 'monitor';
 
-export type AudioCaptureState = 'idle' | 'armed' | 'capturing' | 'buffering' | 'muted';
+export type AudioCaptureState = 'idle' | 'armed' | 'capturing' | 'buffering' | 'muted' | 'stopping';
 
-export type AudioPreBufferState = 'cold' | 'primed' | 'ready';
+export type AudioPreBufferState = 'cold' | 'primed' | 'ready' | 'draining';
 
 export type AudioFrameEncoding = 'pcm16le';
 

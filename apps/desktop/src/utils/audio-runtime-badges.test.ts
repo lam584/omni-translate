@@ -72,11 +72,47 @@ describe('buildAudioRuntimeBadges', () => {
     expect(badges.capture.pulse).toBe(false);
   });
 
+  it('reports armed and ready capture states without pulse', () => {
+    const armed = buildAudioRuntimeBadges(
+      baseSnapshot({ inbound: { ...baseSnapshot().inbound, captureState: 'armed' } }),
+      true,
+      true,
+      labels,
+    );
+    expect(armed.capture).toMatchObject({ label: labels.capture.armed, tone: 'warning', pulse: false });
+
+    const ready = buildAudioRuntimeBadges(
+      baseSnapshot({ inbound: { ...baseSnapshot().inbound, captureState: 'capturing', streamBound: false } }),
+      true,
+      true,
+      labels,
+    );
+    expect(ready.capture).toMatchObject({ label: labels.capture.ready, tone: 'ready', pulse: false });
+  });
+
   it('reports missing output when no physical render device exists', () => {
     const snap = baseSnapshot({ renderDevices: [] });
     const badges = buildAudioRuntimeBadges(snap, true, true, labels);
     expect(badges.output.tone).toBe('warning');
     expect(badges.output.label).toBe('未连接');
+  });
+
+  it('reports output errors and bound physical output as pulsing ready', () => {
+    const error = buildAudioRuntimeBadges(
+      baseSnapshot({ outbound: { ...baseSnapshot().outbound, lastError: 'render failed' } }),
+      true,
+      true,
+      labels,
+    );
+    expect(error.output).toMatchObject({ label: labels.output.error, tone: 'risk', pulse: false });
+
+    const bound = buildAudioRuntimeBadges(
+      baseSnapshot({ outbound: { ...baseSnapshot().outbound, streamBound: true } }),
+      true,
+      true,
+      labels,
+    );
+    expect(bound.output).toMatchObject({ label: labels.output.ready, tone: 'ready', pulse: true });
   });
 
   it('reports missing models when stt is not connected', () => {
@@ -100,5 +136,12 @@ describe('buildAudioRuntimeBadges', () => {
     const badges = buildAudioRuntimeBadges(snap, false, false, labels);
     expect(badges.inboundModels.tone).toBe('warning');
     expect(badges.outboundModels.tone).toBe('warning');
+  });
+
+  it('uses degraded labels when models exist but runtime is degraded', () => {
+    const snap = baseSnapshot({ status: 'degraded' });
+    const badges = buildAudioRuntimeBadges(snap, true, true, labels);
+    expect(badges.inboundModels).toMatchObject({ label: labels.inboundModels.degraded, tone: 'warning' });
+    expect(badges.outboundModels).toMatchObject({ label: labels.outboundModels.degraded, tone: 'warning' });
   });
 });

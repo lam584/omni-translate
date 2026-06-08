@@ -8,11 +8,11 @@ import type {
   DriverHealthState,
   DriverRepairAction,
 } from './driver-bridge-contract';
-import type { ProviderAuthRef, ProviderCapability, ProviderKind, ProviderTransport } from './provider-contract';
+import type { ProviderAuthRef, ProviderCapability, ProviderInteractionCapability, ProviderKind, ProviderTransport } from './provider-contract';
 import type { ProviderProbeSnapshot } from './provider-probe';
 import type { ProviderTemplateSource } from './provider-template';
 import type { GlossaryInjectionSource, GlossaryInjectionStrategy, GlossaryProcessingMode, GlossaryScenario } from './glossary-template';
-import type { GlossaryPackageEntry, GlossaryLibrary } from './glossary-package';
+import type { GlossaryLibrary } from './glossary-package';
 import type { TtsDispatchState, TtsOutputTarget } from './tts-contract';
 
 export type ProviderMode = 'template' | 'advanced';
@@ -79,7 +79,15 @@ export type ProviderModelCapabilityRegistryEntry = {
   id: string;
   modelId: string;
   capabilities: ProviderCapability[];
+  realtimeAudioMode?: RealtimeAudioMode;
+  interactionCapabilities?: ProviderInteractionCapability[];
+  apiModes?: string[];
+  releasedAt?: string;
+  source?: 'official' | 'runtime' | 'preset' | 'inferred' | 'manual';
+  notes?: string;
 };
+
+export type RealtimeAudioMode = 'manual' | 'server_vad' | 'semantic_vad' | 'gemini_auto_activity' | 'gemini_manual_activity';
 
 export type ProviderCustomHeaderDraft = {
   id: string;

@@ -13,4 +13,18 @@ describe('resolveRecommendedDriverAction', () => {
     bridge.bridgeState = 'running';
     expect(resolveRecommendedDriverAction(bridge)).toBe('refresh');
   });
+
+  it('treats device evidence as an installed driver when bridge reports stale missing-driver state', () => {
+    const bridge = structuredClone(runtimeSnapshotMock.bridge);
+    bridge.driverHealth = 'not-installed';
+    bridge.bridgeState = 'degraded';
+    bridge.lastErrorCode = 'driver.not-installed';
+    bridge.rootDeviceCount = 1;
+    bridge.rootInstanceIds = ['ROOT\\MEDIA\\0000'];
+    bridge.endpointName = 'Speakers (Omni Translate Virtual Speaker)';
+    bridge.abiVersion = '0x20260604';
+    bridge.ioctlAvailable = true;
+
+    expect(resolveRecommendedDriverAction(bridge)).toBe('start-bridge');
+  });
 });

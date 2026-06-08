@@ -40,6 +40,10 @@ function makeProtocolLabel(transport: ProviderTransport) {
   return '自定义HTTP';
 }
 
+function supportedTransportsForKind(kind: ProviderKind): ProviderTransport[] {
+  return kind === 'dashscope' ? ['http', 'websocket'] : ['http', 'streaming-http'];
+}
+
 function storageAvailable() {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';
 }
@@ -160,8 +164,7 @@ export function createCustomProviderTemplate(draft: CustomProviderTemplateDraft)
     description: `自定义 ${draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible'} 平台接入。`,
     protocolLabel: makeProtocolLabel(draft.transport),
     notes: '该模板由本地页面创建并保存在浏览器存储中，可继续使用系统凭据管理器保存 API Key。',
-    supportedTransports:
-      draft.kind === 'dashscope' ? ['http', 'websocket'] : ['http', 'streaming-http'],
+    supportedTransports: supportedTransportsForKind(draft.kind),
     defaultDraft: {
       providerId: `provider-custom-${slug}`,
       kind: draft.kind,
@@ -234,7 +237,7 @@ export function updateCustomProviderTemplate(template: ProviderTemplate, draft: 
     description: `自定义 ${draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible'} 平台接入。`,
     protocolLabel: makeProtocolLabel(draft.transport),
     notes: '该模板由本地页面创建并保存在浏览器存储中，可继续使用系统凭据管理器保存 API Key。',
-    supportedTransports: draft.kind === 'dashscope' ? ['http', 'websocket'] : ['http', 'streaming-http'],
+    supportedTransports: supportedTransportsForKind(draft.kind),
     defaultDraft: {
       providerId: template.defaultDraft.providerId || `provider-custom-${slug}`,
       kind: draft.kind,

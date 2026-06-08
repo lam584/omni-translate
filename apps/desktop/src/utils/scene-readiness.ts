@@ -1,8 +1,9 @@
 import type { StatusTone } from '../components/page/StatusBadge';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
-import type { AppConfigDraft } from '../schema/config';
+import type { AppConfigDraft, ProviderDraft } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
+import { resolveRealtimeAudioMode } from './provider-model-capabilities';
 
 export type SceneMode = 'watch' | 'game' | 'voice-room';
 
@@ -63,6 +64,51 @@ function hasVirtualMicOutputConfigured(configDraft: AppConfigDraft) {
   );
 }
 
+export function watchModeNeedsBridge(configDraft: AppConfigDraft) {
+  return (
+    configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ||
+    configDraft.devices.virtualMicOutputEnabled ||
+    configDraft.speech?.outputTarget === 'virtual-mic' ||
+    configDraft.speech?.outputTarget === 'both'
+  );
+}
+
+function resolveProviderForModel(configDraft: AppConfigDraft, compositeModelId: string): { provider: ProviderDraft; modelId: string } | null {
+  const [templateId, explicitModelId] = compositeModelId.includes('::') ? compositeModelId.split('::') : ['', compositeModelId];
+  if (templateId && explicitModelId) {
+    const provider = configDraft.providers.find((item) => item.templateId === templateId);
+    return provider ? { provider, modelId: explicitModelId } : null;
+  }
+
+  for (const provider of configDraft.providers) {
+    if (provider.model === compositeModelId) {
+      return { provider, modelId: compositeModelId };
+    }
+    if (provider.sceneModelAssignments.some((assignment) => assignment.modelIds.includes(compositeModelId))) {
+      return { provider, modelId: compositeModelId };
+    }
+  }
+
+  return null;
+}
+
+function getWatchRealtimeModeBlocker(configDraft: AppConfigDraft): SceneBlocker | null {
+  const modelId = configDraft.devices.inboundVoiceModelId;
+  if (!modelId.trim()) {
+    return null;
+  }
+
+  const resolved = resolveProviderForModel(configDraft, modelId);
+  if (!resolved) {
+    return null;
+  }
+
+  const mode = resolveRealtimeAudioMode(resolved.modelId, resolved.provider.localModelCapabilityRegistry ?? [], resolved.modelId);
+  void mode;
+
+  return null;
+}
+
 export function getWatchSceneReadiness(
   configDraft: AppConfigDraft,
   runtimeSnapshot: RuntimeSnapshot,
@@ -72,6 +118,11 @@ export function getWatchSceneReadiness(
 
   if (!hasProviderVerificationAttempt(configDraft)) {
     blockers.push({ id: 'watch-provider', title: '模型待完成验证', route: '/providers' });
+  }
+
+  const realtimeModeBlocker = getWatchRealtimeModeBlocker(configDraft);
+  if (realtimeModeBlocker) {
+    blockers.push(realtimeModeBlocker);
   }
 
   const runtimeBlocker = getRuntimeBlocker('watch', runtimeSnapshot);
@@ -87,13 +138,7 @@ export function getWatchSceneReadiness(
     };
   }
 
-  const watchNeedsBridge =
-    configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ||
-    configDraft.devices.virtualMicOutputEnabled ||
-    configDraft.speech?.outputTarget === 'virtual-mic' ||
-    configDraft.speech?.outputTarget === 'both';
-
-  if (watchNeedsBridge && runtimeSnapshot.bridge.bridgeState !== 'running') {
+  if (watchModeNeedsBridge(configDraft) && runtimeSnapshot.bridge.bridgeState !== 'running') {
     blockers.push({ id: 'watch-bridge', title: '虚拟音频驱动待启动（译音输出需要）', route: '/audio-routing' });
   }
 

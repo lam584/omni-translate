@@ -1,8 +1,20 @@
-export type ProviderKind = 'openai-compatible' | 'dashscope';
+export type ProviderKind = 'openai-compatible' | 'dashscope' | 'openrouter' | 'ollama' | 'lmstudio' | 'nvidia';
 
 export type ProviderTransport = 'http' | 'streaming-http' | 'websocket';
 
 export type ProviderCapability = 'speech-to-text' | 'text-to-speech' | 'speech-to-speech' | 'text-generation';
+
+export type ProviderInteractionCapability =
+  | 'auto_vad'
+  | 'manual_commit'
+  | 'client_activity'
+  | 'streaming'
+  | 'chunked_http_audio'
+  | 'push_to_talk'
+  | 'server_commit_tts'
+  | 'commit_tts'
+  | 'text_only_backend'
+  | 'pipeline_asr_mt_tts';
 
 export type ProviderAuthRefKind = 'credential-ref' | 'env-ref';
 

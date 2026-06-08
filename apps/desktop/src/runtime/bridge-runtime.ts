@@ -86,7 +86,9 @@ function appendBridgeTrace(level: BridgeRuntimeTrace['level'], summary: string, 
 }
 
 function createBridgeRuntimeTimeoutError(actionLabel: string, timeoutMs: number, operation: string) {
-  const error = new Error(`${actionLabel}超时，${Math.ceil(timeoutMs / 1000)} 秒内未收到 Rust 运行时结果。请查看 Desktop Shell 终端和 bridge 诊断日志。`);
+  const error = new Error(
+    `${actionLabel}超时：${Math.ceil(timeoutMs / 1000)} 秒内未收到 Rust 运行时结果。请查看 Desktop Shell 终端和 Bridge 诊断日志。`,
+  );
 
   Object.assign(error, {
     code: 'timeout',
@@ -105,7 +107,7 @@ async function invokeBridgeWithTimeout<T>(
   operation: string,
 ): Promise<T> {
   const startedAt = Date.now();
-  appendBridgeTrace('info', '前端发起桥接运行时命令。', `command=${command} operation=${operation} timeoutMs=${timeoutMs}`);
+  appendBridgeTrace('info', '前端发起 Bridge 运行时命令。', `command=${command} operation=${operation} timeoutMs=${timeoutMs}`);
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -115,7 +117,7 @@ async function invokeBridgeWithTimeout<T>(
       }
 
       settled = true;
-      appendBridgeTrace('error', '前端等待桥接运行时命令超时。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
+      appendBridgeTrace('error', '前端等待 Bridge 运行时命令超时。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
       reject(createBridgeRuntimeTimeoutError(actionLabel, timeoutMs, operation));
     }, timeoutMs);
 
@@ -127,7 +129,7 @@ async function invokeBridgeWithTimeout<T>(
 
         settled = true;
         window.clearTimeout(timer);
-        appendBridgeTrace('info', '前端收到桥接运行时命令结果。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
+        appendBridgeTrace('info', '前端收到 Bridge 运行时命令结果。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
         resolve(result);
       })
       .catch((error) => {
@@ -138,7 +140,7 @@ async function invokeBridgeWithTimeout<T>(
         settled = true;
         window.clearTimeout(timer);
         const detail = error instanceof Error ? error.message : String(error);
-        appendBridgeTrace('error', '前端桥接运行时命令失败。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt} error=${detail}`);
+        appendBridgeTrace('error', '前端 Bridge 运行时命令失败。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt} error=${detail}`);
         reject(error);
       });
   });
@@ -159,7 +161,7 @@ export async function refreshBridgeRuntime(): Promise<RuntimeSnapshot> {
     return runtimeSnapshotMock;
   }
 
-  return invokeBridgeWithTimeout<RuntimeSnapshot>('refresh_bridge_runtime', undefined, '刷新驱动与桥接状态', BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh');
+  return invokeBridgeWithTimeout<RuntimeSnapshot>('refresh_bridge_runtime', undefined, '刷新驱动与 Bridge 状态', BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh');
 }
 
 export async function startBridgeServiceRuntime(config: AppConfigDraft): Promise<RuntimeSnapshot> {

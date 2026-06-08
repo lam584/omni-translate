@@ -14,6 +14,7 @@ vi.mock('./tauri-runtime', () => ({
 }));
 
 import {
+  appendFrontendDiagnosticsLog,
   exportDiagnosticsBundleRuntime,
   runDiagnosticsSelfCheckRuntime,
   runSubtitleOverlaySelfCheckRuntime,
@@ -58,5 +59,32 @@ describe('diagnostics runtime', () => {
       ['export_diagnostics_bundle', { scope: 'quick' }],
       ['get_runtime_snapshot'],
     ]);
+  });
+
+  it('logs browser diagnostics locally with and without detail', () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    appendFrontendDiagnosticsLog('runtime', 'info', 'ready');
+    appendFrontendDiagnosticsLog('runtime', 'warning', 'degraded', 'driver missing');
+
+    expect(logSpy).toHaveBeenCalledWith('[INFO] [runtime] ready');
+    expect(logSpy).toHaveBeenCalledWith('[WARNING] [runtime] degraded\ndriver missing');
+  });
+
+  it('sends frontend diagnostics logs through Tauri and warns on failures', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke.mockRejectedValue(new Error('log unavailable'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    appendFrontendDiagnosticsLog('runtime', 'error', 'failed');
+    await Promise.resolve();
+
+    expect(mocks.invoke).toHaveBeenCalledWith('append_frontend_diagnostics_log', {
+      category: 'runtime',
+      level: 'error',
+      summary: 'failed',
+      detail: null,
+    });
+    expect(warnSpy).toHaveBeenCalledWith('[diagnostics] append_frontend_diagnostics_log failed:', expect.any(Error));
   });
 });

@@ -24,6 +24,18 @@ describe('resolveRuntimeBridgeStatus', () => {
     expect(resolveRuntimeBridgeStatus(structuredClone(runtimeSnapshotMock))).toBe('tauri-shell');
   });
 
+  it('treats a stale preview snapshot inside Tauri as a degraded desktop runtime instead of a runtime error', () => {
+    Object.defineProperty(window, '__TAURI_INTERNALS__', {
+      value: { invoke: () => {} },
+      configurable: true,
+    });
+    const snapshot = structuredClone(runtimeSnapshotMock);
+    snapshot.bridgeStatus = 'browser-preview';
+    snapshot.storage.status = 'preview';
+
+    expect(resolveRuntimeBridgeStatus(snapshot)).toBe('tauri-shell');
+  });
+
   it('treats a ready desktop snapshot as tauri shell even if bridgeStatus is stale', () => {
     const snapshot = structuredClone(runtimeSnapshotMock);
     snapshot.bridgeStatus = 'browser-preview';

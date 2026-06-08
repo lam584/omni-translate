@@ -67,7 +67,7 @@ export function appendFrontendDiagnosticsLog(
   level: 'debug' | 'info' | 'warning' | 'error',
   summary: string,
   detail?: string,
-): void {
+): Promise<void> {
   if (!isTauriRuntime()) {
     const prefix = `[${level.toUpperCase()}] [${category}]`;
     if (detail) {
@@ -75,10 +75,10 @@ export function appendFrontendDiagnosticsLog(
     } else {
       console.log(`${prefix} ${summary}`);
     }
-    return;
+    return Promise.resolve();
   }
 
-  invoke('append_frontend_diagnostics_log', {
+  return invoke<void>('append_frontend_diagnostics_log', {
     category,
     level,
     summary,

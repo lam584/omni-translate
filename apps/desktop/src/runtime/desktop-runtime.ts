@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+﻿import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
@@ -26,8 +26,22 @@ const INITIAL_RUNTIME_WAIT_TIMEOUT_MS = 800;
 const INITIAL_RUNTIME_WAIT_INTERVAL_MS = 25;
 const LATE_RUNTIME_HEAL_TIMEOUT_MS = 15000;
 const LATE_RUNTIME_HEAL_INTERVAL_MS = 100;
+const IPC_PING_TIMEOUT_MS = 1500;
 const BRIDGE_INVOKE_TIMEOUT_MS = 8000;
+export const BRIDGE_AUTOSTART_AFTER_READY_DELAY_MS = 0;
+const BRIDGE_STARTUP_REFRESH_TIMEOUT_MS = 3000;
+const BRIDGE_STARTUP_START_TIMEOUT_MS = 8000;
+const BRIDGE_AUTOSTART_TIMEOUT_MS = 20000;
 const DRIVER_PROBE_TIMEOUT_MS = 120000;
+
+function startupRefreshTimeoutMs(): number {
+  return BRIDGE_STARTUP_REFRESH_TIMEOUT_MS;
+}
+
+function startupStartTimeoutMs(): number {
+  return BRIDGE_STARTUP_START_TIMEOUT_MS;
+}
+
 const CONFIG_DRAFT_SYNC_STORAGE_KEY = 'omni.configDraftShadow';
 const CONFIG_DRAFT_FALLBACK_STORAGE_KEY = 'omni.configDraftFallback';
 export const CONFIG_DRAFT_SYNC_EVENT = 'config://draft-updated';
@@ -40,21 +54,23 @@ function writeConfigDraftShadow(serializedConfig: string) {
   if (!canUseLocalStorage()) {
     return;
   }
-
   if (window.localStorage.getItem(CONFIG_DRAFT_SYNC_STORAGE_KEY) === serializedConfig) {
     return;
   }
-
   window.localStorage.setItem(CONFIG_DRAFT_SYNC_STORAGE_KEY, serializedConfig);
 }
 
-function invokeWithTimeout<T>(command: string, timeoutMs: number = BRIDGE_INVOKE_TIMEOUT_MS): Promise<T> {
+function invokeWithTimeout<T>(
+  command: string,
+  timeoutMs: number = BRIDGE_INVOKE_TIMEOUT_MS,
+  payload?: Record<string, unknown>,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
       reject(new Error(`invoke '${command}' 超时（${timeoutMs}ms），IPC 通道可能未就绪或 Rust Core 未响应`));
     }, timeoutMs);
 
-    invoke<T>(command)
+    invoke<T>(command, payload)
       .then((result) => {
         clearTimeout(timeoutId);
         resolve(result);
@@ -64,6 +80,80 @@ function invokeWithTimeout<T>(command: string, timeoutMs: number = BRIDGE_INVOKE
         reject(error);
       });
   });
+}
+
+function isWatchModeAutostartRuntime() {
+  const runMarker = import.meta.env.VITE_OMNI_WATCH_MODE_RUN_MARKER;
+  const expiresAtMs = Number(import.meta.env.VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS);
+  return (
+    import.meta.env.VITE_OMNI_WATCH_MODE_AUTOSTART === '1' &&
+    typeof runMarker === 'string' &&
+    runMarker.startsWith('watch_mode_diagnostic.run_id=') &&
+    Number.isFinite(expiresAtMs) &&
+    expiresAtMs > Date.now()
+  );
+}
+
+function shouldAutostartBridge(snapshot: RuntimeSnapshot) {
+  return (
+    snapshot.bridgeStatus === 'tauri-shell' &&
+    snapshot.bridge.driverHealth === 'running' &&
+    (snapshot.bridge.processStatus === 'stopped' || snapshot.bridge.processStatus === 'error')
+  );
+}
+
+async function refreshAndAutostartBridge(config: AppConfigDraft) {
+  return _refreshAndAutostartBridge(config, DRIVER_PROBE_TIMEOUT_MS, BRIDGE_AUTOSTART_TIMEOUT_MS);
+}
+
+async function refreshAndAutostartBridgeStartup(config: AppConfigDraft) {
+  return _refreshAndAutostartBridge(config, startupRefreshTimeoutMs(), startupStartTimeoutMs());
+}
+
+async function _refreshAndAutostartBridge(
+  config: AppConfigDraft,
+  refreshTimeoutMs: number,
+  startTimeoutMs: number,
+) {
+  try {
+    const driverSnapshot = await invokeWithTimeout<RuntimeSnapshot>('refresh_bridge_runtime', refreshTimeoutMs);
+    useAppStore.getState().setRuntimeSnapshot(driverSnapshot);
+
+    if (isWatchModeAutostartRuntime() || !shouldAutostartBridge(driverSnapshot)) {
+      return;
+    }
+
+    const startedSnapshot = await invokeWithTimeout<RuntimeSnapshot>(
+      'start_bridge_service',
+      startTimeoutMs,
+      { config },
+    );
+    useAppStore.getState().setRuntimeSnapshot(startedSnapshot);
+  } catch (error) {
+    useAppStore.getState().pushRuntimeNotification({
+      id: `bridge-autostart-failed-${Date.now()}`,
+      level: 'warning',
+      source: 'desktop-runtime',
+      message: `Bridge Service 自动启动失败：${error instanceof Error ? error.message : String(error)}`,
+      emittedAt: new Date().toISOString(),
+    });
+  }
+}
+
+export function scheduleBridgeAutostartAfterStartup(
+  config: AppConfigDraft = useAppStore.getState().configDraft,
+  delayMs = BRIDGE_AUTOSTART_AFTER_READY_DELAY_MS,
+): { cleanup: RuntimeCleanup; promise: Promise<void> } {
+  let resolvePromise: (() => void) | undefined;
+  const promise = new Promise<void>((resolve) => { resolvePromise = resolve; });
+  const timer = setTimeout(() => {
+    void refreshAndAutostartBridgeStartup(config).finally(() => resolvePromise?.());
+  }, delayMs);
+
+  return {
+    cleanup: () => clearTimeout(timer),
+    promise,
+  };
 }
 
 function createRuntimeErrorSnapshot(error: unknown): RuntimeSnapshot {
@@ -86,208 +176,277 @@ function createRuntimeErrorSnapshot(error: unknown): RuntimeSnapshot {
   };
 }
 
-async function connectDesktopRuntimeBridge(): Promise<RuntimeCleanup> {
-  const store = useAppStore.getState();
+// ── Bootstrap step system ──
 
+function formatRuntimeError(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function pushDesktopRuntimeNotification(level: RuntimeNotification['level'], idPrefix: string, message: string) {
+  useAppStore.getState().pushRuntimeNotification({
+    id: `${idPrefix}-${Date.now()}`,
+    level,
+    source: 'desktop-runtime',
+    message,
+    emittedAt: new Date().toISOString(),
+  });
+}
+
+export type BootstrapStepId =
+  | 'detect-runtime'
+  | 'check-ipc'
+  | 'init-runtime'
+  | 'init-audio'
+  | 'load-config';
+
+export type BootstrapStepStatus = 'active' | 'done' | 'error';
+
+export type OnBootstrapStep = (stepId: BootstrapStepId, status: BootstrapStepStatus, detail?: string) => void;
+
+type BootstrapFlight = {
+  consumers: number;
+  listeners: Set<OnBootstrapStep>;
+  cleanup: RuntimeCleanup | null;
+  promise: Promise<RuntimeCleanup>;
+};
+
+let activeBootstrapFlight: BootstrapFlight | null = null;
+
+function markStep(onStep: OnBootstrapStep | undefined, stepId: BootstrapStepId, status: BootstrapStepStatus, detail?: string) {
+  onStep?.(stepId, status, detail);
+}
+
+// ── Core connect ──
+
+async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<RuntimeCleanup> {
+  const unlisteners: RuntimeCleanup[] = [];
+  const deferredNotifications: Array<{
+    level: RuntimeNotification['level'];
+    idPrefix: string;
+    message: string;
+  }> = [];
+
+  const deferDesktopRuntimeNotification = (
+    level: RuntimeNotification['level'],
+    idPrefix: string,
+    message: string,
+  ) => {
+    deferredNotifications.push({ level, idPrefix, message });
+  };
+
+  const flushDeferredNotifications = () => {
+    for (const notification of deferredNotifications.splice(0)) {
+      pushDesktopRuntimeNotification(notification.level, notification.idPrefix, notification.message);
+    }
+  };
+
+  const registerListener = async <T,>(eventName: string, handler: (event: { payload: T }) => void) => {
+    try {
+      const unlisten = await listen<T>(eventName, handler);
+      unlisteners.push(unlisten);
+    } catch (error) {
+      deferDesktopRuntimeNotification(
+        'warning',
+        'runtime-listener-failed',
+        `Runtime event listener failed (${eventName}): ${formatRuntimeError(error)}`,
+      );
+    }
+  };
+
+  await Promise.all([
+    registerListener<RuntimeSnapshot>(RUNTIME_SNAPSHOT_EVENT, (event) => {
+      useAppStore.getState().setRuntimeSnapshot(event.payload);
+    }),
+    registerListener<RuntimeNotification>(RUNTIME_NOTIFICATION_EVENT, (event) => {
+      useAppStore.getState().pushRuntimeNotification(event.payload);
+    }),
+    registerListener<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => {
+      useAppStore.getState().setAudioRuntimeSnapshot(event.payload);
+    }),
+  ]);
+
+  markStep(onStep, 'init-runtime', 'active');
   try {
     const snapshot = await invokeWithTimeout<RuntimeSnapshot>('bootstrap_runtime');
-    store.setRuntimeSnapshot(snapshot);
+    useAppStore.getState().setRuntimeSnapshot(snapshot);
+    markStep(onStep, 'init-runtime', 'done');
+  } catch (error) {
+    const message = formatRuntimeError(error);
+    markStep(onStep, 'init-runtime', 'error', message);
+    markStep(onStep, 'init-audio', 'error', message);
+    markStep(onStep, 'load-config', 'error', message);
+    useAppStore.getState().setRuntimeSnapshot(createRuntimeErrorSnapshot(error));
+    useAppStore.getState().setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
+    return () => {
+      unlisteners.forEach((unlisten) => unlisten());
+    };
+  }
+
+  markStep(onStep, 'init-audio', 'active');
+  try {
     const audioSnapshot = await invokeWithTimeout<AudioRuntimeSnapshot>('bootstrap_audio');
-    store.setAudioRuntimeSnapshot(audioSnapshot);
-    const unlistenSnapshot = await listen<RuntimeSnapshot>(RUNTIME_SNAPSHOT_EVENT, (event) => {
-      useAppStore.getState().setRuntimeSnapshot(event.payload);
-    });
+    useAppStore.getState().setAudioRuntimeSnapshot(audioSnapshot);
+    markStep(onStep, 'init-audio', 'done', `${audioSnapshot.renderDevices.length} devices`);
+  } catch (error) {
+    const message = formatRuntimeError(error);
+    markStep(onStep, 'init-audio', 'error', message);
+    deferDesktopRuntimeNotification('warning', 'audio-bootstrap-failed', `Audio runtime bootstrap failed: ${message}`);
+  }
 
-    const unlistenNotification = await listen<RuntimeNotification>(RUNTIME_NOTIFICATION_EVENT, (event) => {
-      useAppStore.getState().pushRuntimeNotification(event.payload);
-    });
+  let isHydrating = true;
+  markStep(onStep, 'load-config', 'active');
 
-    const unlistenAudioSnapshot = await listen<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => {
-      useAppStore.getState().setAudioRuntimeSnapshot(event.payload);
-    });
+  let persistedConfig: AppConfigDraft;
+  try {
+    persistedConfig = await invokeWithTimeout<AppConfigDraft>('load_config_draft');
+    useAppStore.getState().setConfigDraft(persistedConfig);
 
-    let isHydrating = true;
-    const persistedConfig = await invokeWithTimeout<AppConfigDraft>('load_config_draft');
-    store.setConfigDraft(persistedConfig);
-    const hydratedSnapshot = await invokeWithTimeout<RuntimeSnapshot>('get_runtime_snapshot');
-    store.setRuntimeSnapshot(hydratedSnapshot);
-    void invokeWithTimeout<RuntimeSnapshot>('refresh_bridge_runtime', DRIVER_PROBE_TIMEOUT_MS)
-      .then((driverSnapshot) => useAppStore.getState().setRuntimeSnapshot(driverSnapshot))
-      .catch((error) => {
-        useAppStore.getState().pushRuntimeNotification({
-          id: `driver-probe-failed-${Date.now()}`,
-          level: 'warning',
-          source: 'desktop-runtime',
-          message: `驱动检测失败：${error instanceof Error ? error.message : String(error)}`,
-          emittedAt: new Date().toISOString(),
-        });
-      });
-    isHydrating = false;
+    try {
+      const hydratedSnapshot = await invokeWithTimeout<RuntimeSnapshot>('get_runtime_snapshot');
+      useAppStore.getState().setRuntimeSnapshot(hydratedSnapshot);
+    } catch (snapshotError) {
+      pushDesktopRuntimeNotification(
+        'warning',
+        'runtime-snapshot-refresh-failed',
+        `Runtime snapshot refresh after config load failed: ${formatRuntimeError(snapshotError)}`,
+      );
+    }
 
-    const queueState: PersistQueueState = {
-      inflight: false,
-      pending: null,
-      lastSerializedConfig: JSON.stringify(persistedConfig),
-    };
-    let isApplyingExternalConfigSync = false;
+    markStep(onStep, 'load-config', 'done');
+  } catch (configError) {
+    const message = formatRuntimeError(configError);
+    markStep(onStep, 'load-config', 'error', message);
+    pushDesktopRuntimeNotification(
+      'warning',
+      'config-load-failed',
+      `Config load failed: ${message}. Runtime and audio bootstrap state were preserved.`,
+    );
+    persistedConfig = useAppStore.getState().configDraft;
+  }
 
-    writeConfigDraftShadow(queueState.lastSerializedConfig);
+  flushDeferredNotifications();
 
-    const applyExternalConfigSync = (nextConfig: AppConfigDraft) => {
-      const serializedConfig = JSON.stringify(nextConfig);
-      if (serializedConfig === queueState.lastSerializedConfig) {
-        return;
-      }
+  isHydrating = false;
 
-      isApplyingExternalConfigSync = true;
-      try {
-        useAppStore.getState().setConfigDraft(nextConfig);
-        queueState.lastSerializedConfig = JSON.stringify(useAppStore.getState().configDraft);
-        writeConfigDraftShadow(queueState.lastSerializedConfig);
-      } finally {
-        isApplyingExternalConfigSync = false;
-      }
-    };
+  const queueState: PersistQueueState = {
+    inflight: false,
+    pending: null,
+    lastSerializedConfig: JSON.stringify(persistedConfig),
+  };
+  let isApplyingExternalConfigSync = false;
 
-    // Persist queue flush: writes configDraft to SQLite via IPC.
-    // - Retries up to 3 times with exponential backoff (500/1000/2000ms)
-    // - Falls back to localStorage (omni.configDraftFallback) if all IPC retries fail
-    // - Only one in-flight write at a time (inflight flag guards concurrency)
-    const flushPersistQueue = async () => {
-      if (queueState.inflight || queueState.pending === null) {
-        return;
-      }
+  writeConfigDraftShadow(queueState.lastSerializedConfig);
 
-      queueState.inflight = true;
-      const nextConfig = queueState.pending;
-      queueState.pending = null;
+  const applyExternalConfigSync = (nextConfig: AppConfigDraft) => {
+    const sc = JSON.stringify(nextConfig);
+    if (sc === queueState.lastSerializedConfig) return;
+    isApplyingExternalConfigSync = true;
+    try {
+      useAppStore.getState().setConfigDraft(nextConfig);
+      queueState.lastSerializedConfig = JSON.stringify(useAppStore.getState().configDraft);
+      writeConfigDraftShadow(queueState.lastSerializedConfig);
+    } finally {
+      isApplyingExternalConfigSync = false;
+    }
+  };
 
-      const retryDelays = [500, 1000, 2000];
-      let lastError: unknown;
+  const flushPersistQueue = async () => {
+    if (queueState.inflight || queueState.pending === null) return;
+    queueState.inflight = true;
+    const nextConfig = queueState.pending;
+    queueState.pending = null;
+    const retryDelays = [500, 1000, 2000];
+    let lastError: unknown;
 
-      try {
-        for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
-          try {
-            await invoke('save_config_draft', { config: nextConfig });
-            const latestSnapshot = await invoke<RuntimeSnapshot>('get_runtime_snapshot');
-            useAppStore.getState().setRuntimeSnapshot(latestSnapshot);
-            lastError = undefined;
-            break;
-          } catch (error) {
-            lastError = error;
-            if (attempt < retryDelays.length) {
-              await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
-            }
-          }
-        }
-
-        if (lastError) {
-          try {
-            const serialized = JSON.stringify(nextConfig);
-            if (canUseLocalStorage()) {
-              window.localStorage.setItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY, serialized);
-            }
-          } catch {
-            // Silently fail
-          }
-
-          useAppStore.getState().pushRuntimeNotification({
-            id: `config-persist-failed-${Date.now()}`,
-            level: 'error',
-            source: 'desktop-runtime',
-            message: `配置写入 SQLite 失败：${lastError instanceof Error ? lastError.message : '未知错误'}，已将配置保存至 localStorage 作为后备方案`,
-            emittedAt: new Date().toISOString(),
-          });
-        }
-      } finally {
-        queueState.inflight = false;
-        if (queueState.pending !== null) {
-          void flushPersistQueue();
-        }
-      }
-    };
-
-    // Subscribes to all configDraft changes and queues them for persistence.
-    // This captures: provider, linkedProviders, devices, subtitles, speech,
-    // driver, glossary, diagnostics, onboarding — any field mutated via
-    // updateXxxDraft() is automatically persisted.
-    // EPHEMERAL fields (runtimeSnapshot, audioRuntimeSnapshot, activePageId)
-    // are NOT captured by this subscription — they are intentionally not persisted.
-    const unsubscribeConfig = useAppStore.subscribe((state, previousState) => {
-      if (isHydrating || isApplyingExternalConfigSync || state.configDraft === previousState.configDraft) {
-        return;
-      }
-
-      const serializedConfig = JSON.stringify(state.configDraft);
-      if (serializedConfig === queueState.lastSerializedConfig) {
-        return;
-      }
-
-      queueState.lastSerializedConfig = serializedConfig;
-      writeConfigDraftShadow(serializedConfig);
-      void emit(CONFIG_DRAFT_SYNC_EVENT, state.configDraft).catch(() => undefined);
-      queueState.pending = state.configDraft;
-      void flushPersistQueue();
-    });
-
-    const handleConfigDraftStorage = (event: StorageEvent) => {
-      if (event.key !== CONFIG_DRAFT_SYNC_STORAGE_KEY || !event.newValue) {
-        return;
-      }
-
-      if (event.newValue === queueState.lastSerializedConfig) {
-        return;
-      }
-
-      try {
-        applyExternalConfigSync(JSON.parse(event.newValue) as AppConfigDraft);
-      } catch (error) {
-        useAppStore.getState().pushRuntimeNotification({
-          id: `config-sync-failed-${Date.now()}`,
-          level: 'warning',
-          source: 'desktop-runtime',
-          message: `跨窗口配置同步失败：${error instanceof Error ? error.message : '未知错误'}`,
-          emittedAt: new Date().toISOString(),
-        });
-      }
-    };
-
-    window.addEventListener('storage', handleConfigDraftStorage);
-
-    // Flush any pending config changes to localStorage before page close.
-    // This prevents data loss if the IPC write hasn't completed yet.
-    const handleBeforeUnload = () => {
-      if (queueState.pending !== null) {
+    try {
+      for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
         try {
-          const serialized = JSON.stringify(queueState.pending);
+          await invoke('save_config_draft', { config: nextConfig });
+          const latestSnapshot = await invoke<RuntimeSnapshot>('get_runtime_snapshot');
+          useAppStore.getState().setRuntimeSnapshot(latestSnapshot);
+          lastError = undefined;
+          break;
+        } catch (error) {
+          lastError = error;
+          if (attempt < retryDelays.length) {
+            await new Promise(resolve => setTimeout(resolve, retryDelays[attempt]));
+          }
+        }
+      }
+
+      if (lastError) {
+        try {
+          const serialized = JSON.stringify(nextConfig);
           if (canUseLocalStorage()) {
             window.localStorage.setItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY, serialized);
           }
-        } catch {
-          // Silently fail
-        }
-      }
-    };
-    window.addEventListener('beforeunload', handleBeforeUnload);
+        } catch { /* silently fail */ }
 
-    const unlistenConfigDraft = await listen<AppConfigDraft>(CONFIG_DRAFT_SYNC_EVENT, (event) => {
+        useAppStore.getState().pushRuntimeNotification({
+          id: `config-persist-failed-${Date.now()}`,
+          level: 'error',
+          source: 'desktop-runtime',
+          message: `Config write to SQLite failed: ${lastError instanceof Error ? lastError.message : String(lastError)}. Saved a localStorage fallback.`,
+          emittedAt: new Date().toISOString(),
+        });
+      }
+    } finally {
+      queueState.inflight = false;
+      if (queueState.pending !== null) void flushPersistQueue();
+    }
+  };
+
+  const unsubscribeConfig = useAppStore.subscribe((state, previousState) => {
+    if (isHydrating || isApplyingExternalConfigSync || state.configDraft === previousState.configDraft) return;
+    const sc = JSON.stringify(state.configDraft);
+    if (sc === queueState.lastSerializedConfig) return;
+    queueState.lastSerializedConfig = sc;
+    writeConfigDraftShadow(sc);
+    void emit(CONFIG_DRAFT_SYNC_EVENT, state.configDraft).catch(() => undefined);
+    queueState.pending = state.configDraft;
+    void flushPersistQueue();
+  });
+
+  const handleConfigDraftStorage = (event: StorageEvent) => {
+    if (event.key !== CONFIG_DRAFT_SYNC_STORAGE_KEY || !event.newValue) return;
+    if (event.newValue === queueState.lastSerializedConfig) return;
+    try {
+      applyExternalConfigSync(JSON.parse(event.newValue) as AppConfigDraft);
+    } catch (error) {
+      pushDesktopRuntimeNotification('warning', 'config-sync-failed', `Cross-window config sync failed: ${formatRuntimeError(error)}`);
+    }
+  };
+
+  window.addEventListener('storage', handleConfigDraftStorage);
+
+  const handleBeforeUnload = () => {
+    if (queueState.pending !== null) {
+      try {
+        const serialized = JSON.stringify(queueState.pending);
+        if (canUseLocalStorage()) {
+          window.localStorage.setItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY, serialized);
+        }
+      } catch { /* silently fail */ }
+    }
+  };
+  window.addEventListener('beforeunload', handleBeforeUnload);
+
+  let unlistenConfigDraft: RuntimeCleanup = () => {};
+  try {
+    unlistenConfigDraft = await listen<AppConfigDraft>(CONFIG_DRAFT_SYNC_EVENT, (event) => {
       applyExternalConfigSync(event.payload);
     });
-
-    return () => {
-      unsubscribeConfig();
-      window.removeEventListener('storage', handleConfigDraftStorage);
-      window.removeEventListener('beforeunload', handleBeforeUnload);
-      unlistenSnapshot();
-      unlistenNotification();
-      unlistenAudioSnapshot();
-      unlistenConfigDraft();
-    };
   } catch (error) {
-    store.setRuntimeSnapshot(createRuntimeErrorSnapshot(error));
-    store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
-    return () => {};
+    pushDesktopRuntimeNotification('warning', 'config-sync-listener-failed', `Config sync listener failed: ${formatRuntimeError(error)}`);
   }
+
+  return () => {
+    unsubscribeConfig();
+    window.removeEventListener('storage', handleConfigDraftStorage);
+    window.removeEventListener('beforeunload', handleBeforeUnload);
+    unlisteners.forEach((unlisten) => unlisten());
+    unlistenConfigDraft();
+  };
 }
 
 export const desktopRuntimeTestHelpers = {
@@ -298,7 +457,7 @@ export const desktopRuntimeTestHelpers = {
   connectDesktopRuntimeBridge,
 };
 
-export async function bootstrapDesktopRuntimeBridge(): Promise<RuntimeCleanup> {
+async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<RuntimeCleanup> {
   const store = useAppStore.getState();
   let disposed = false;
   let cleanup: RuntimeCleanup = () => {};
@@ -310,12 +469,10 @@ export async function bootstrapDesktopRuntimeBridge(): Promise<RuntimeCleanup> {
     if (!fallbackActive || state.configDraft === previousState.configDraft) {
       return;
     }
-
     const serialized = JSON.stringify(state.configDraft);
     if (serialized === lastSerializedFallbackConfig) {
       return;
     }
-
     lastSerializedFallbackConfig = serialized;
     void fallbackBackend.save(CONFIG_DRAFT_FALLBACK_STORAGE_KEY, state.configDraft);
   });
@@ -323,12 +480,88 @@ export async function bootstrapDesktopRuntimeBridge(): Promise<RuntimeCleanup> {
   const tauriDetected = isTauriRuntime();
   console.log('[omni][desktop-runtime] bootstrapDesktopRuntimeBridge 开始，isTauriRuntime=', tauriDetected);
 
+  // Step 0: detect runtime
+  markStep(onStep, 'detect-runtime', 'active');
+
   const runtimeAvailable =
     tauriDetected ||
     (await waitForTauriRuntime(INITIAL_RUNTIME_WAIT_TIMEOUT_MS, INITIAL_RUNTIME_WAIT_INTERVAL_MS));
 
-  console.log('[omni][desktop-runtime] runtimeAvailable=', runtimeAvailable);
+  if (!runtimeAvailable) {
+    // Tauri runtime not available — this is a browser preview scenario.
+    // Report it clearly and proceed with mock data immediately.
+    markStep(onStep, 'detect-runtime', 'done', '浏览器预览模式');
+    markStep(onStep, 'check-ipc', 'done', '已跳过');
+    markStep(onStep, 'init-runtime', 'done', 'Mock 数据');
+    markStep(onStep, 'init-audio', 'done', 'Mock 数据');
+    markStep(onStep, 'load-config', 'done', 'Mock 数据');
 
+    store.setRuntimeSnapshot(runtimeSnapshotMock);
+    store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
+
+    // Still attempt late healing in background — but don't block.
+    void waitForTauriRuntime(LATE_RUNTIME_HEAL_TIMEOUT_MS, LATE_RUNTIME_HEAL_INTERVAL_MS).then(async (available) => {
+      if (!available || disposed) {
+        return;
+      }
+      // Tauri became available later — reconnect silently (no step reporting since overlay is gone).
+      try {
+        const nextCleanup = await connectDesktopRuntimeBridge();
+        if (disposed) {
+          nextCleanup();
+          return;
+        }
+        cleanup = nextCleanup;
+      } catch (error) {
+        console.error('[omni][desktop-runtime] late heal failed:', error);
+      }
+    });
+
+    return () => {
+      disposed = true;
+      fallbackActive = false;
+      unsubscribeFallback();
+      cleanup();
+    };
+  }
+
+  markStep(onStep, 'detect-runtime', 'done', 'Tauri 桌面环境');
+
+  // Step 1: check IPC
+  markStep(onStep, 'check-ipc', 'active');
+
+  let ipcOk = false;
+  const pingStart = performance.now();
+  try {
+    const pingResult = await invokeWithTimeout<string>('debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+    console.log('[omni][desktop-runtime] debug_ipc_ping 成功:', pingResult);
+    ipcOk = true;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('[omni][desktop-runtime] debug_ipc_ping 失败:', message);
+    store.setRuntimeSnapshot(createRuntimeErrorSnapshot(
+      new Error(`IPC 通道诊断失败：${message}`)
+    ));
+    store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
+  }
+
+  if (ipcOk) {
+    markStep(onStep, 'check-ipc', 'done', `${Math.round(performance.now() - pingStart)}ms`);
+  } else {
+    markStep(onStep, 'check-ipc', 'error', 'IPC 通道未响应');
+    markStep(onStep, 'init-runtime', 'error', 'IPC 未连通');
+    markStep(onStep, 'init-audio', 'error', 'IPC 未连通');
+    markStep(onStep, 'load-config', 'error', 'IPC 未连通');
+
+    return () => {
+      disposed = true;
+      fallbackActive = false;
+      unsubscribeFallback();
+      cleanup();
+    };
+  }
+
+  // Step 2: connect (handles init-runtime, init-audio, load-config)
   const connectIfAvailable = async () => {
     if (disposed || !isTauriRuntime()) {
       return;
@@ -338,10 +571,9 @@ export async function bootstrapDesktopRuntimeBridge(): Promise<RuntimeCleanup> {
       let fallbackData: AppConfigDraft | null = null;
       try {
         fallbackData = await fallbackBackend.load<AppConfigDraft>(CONFIG_DRAFT_FALLBACK_STORAGE_KEY);
-      } catch {
-        // Fallback recovery failure should not block bridge connection.
-      }
-      const nextCleanup = await connectDesktopRuntimeBridge();
+      } catch { /* ok */ }
+
+      const nextCleanup = await connectDesktopRuntimeBridge(onStep);
       if (disposed) {
         nextCleanup();
         return;
@@ -362,48 +594,20 @@ export async function bootstrapDesktopRuntimeBridge(): Promise<RuntimeCleanup> {
           }
           await fallbackBackend.delete(CONFIG_DRAFT_FALLBACK_STORAGE_KEY);
         }
-      } catch {
-        // Fallback sync failure should not break bridge connection
-      }
+      } catch { /* ok */ }
     } catch (error) {
       console.error('[omni][desktop-runtime] connectIfAvailable 异常:', error);
       if (!disposed) {
-        store.setRuntimeSnapshot(createRuntimeErrorSnapshot(error));
-        store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
+        pushDesktopRuntimeNotification(
+          'warning',
+          'runtime-connect-failed',
+          `Desktop runtime connect failed after IPC ping: ${formatRuntimeError(error)}`,
+        );
       }
     }
   };
 
-  if (runtimeAvailable) {
-    let ipcOk = false;
-    try {
-      const pingResult = await invokeWithTimeout<string>('debug_ipc_ping', BRIDGE_INVOKE_TIMEOUT_MS);
-      console.log('[omni][desktop-runtime] debug_ipc_ping 成功:', pingResult);
-      ipcOk = true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      console.error('[omni][desktop-runtime] debug_ipc_ping 失败:', message);
-      store.setRuntimeSnapshot(createRuntimeErrorSnapshot(
-        new Error(`IPC 通道诊断失败：${message}`)
-      ));
-      store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
-    }
-
-    if (ipcOk) {
-      await connectIfAvailable();
-    }
-  } else {
-    store.setRuntimeSnapshot(runtimeSnapshotMock);
-    store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
-
-    void waitForTauriRuntime(LATE_RUNTIME_HEAL_TIMEOUT_MS, LATE_RUNTIME_HEAL_INTERVAL_MS).then(async (available) => {
-      if (!available || disposed) {
-        return;
-      }
-
-      await connectIfAvailable();
-    });
-  }
+  await connectIfAvailable();
 
   return () => {
     disposed = true;
@@ -412,3 +616,81 @@ export async function bootstrapDesktopRuntimeBridge(): Promise<RuntimeCleanup> {
     cleanup();
   };
 }
+
+export async function bootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<RuntimeCleanup> {
+  if (activeBootstrapFlight) {
+    const flight = activeBootstrapFlight;
+    flight.consumers += 1;
+    if (onStep) {
+      flight.listeners.add(onStep);
+    }
+
+    await flight.promise;
+
+    return () => {
+      if (onStep) {
+        flight.listeners.delete(onStep);
+      }
+      flight.consumers -= 1;
+      if (flight.consumers <= 0) {
+        flight.cleanup?.();
+        if (activeBootstrapFlight === flight) {
+          activeBootstrapFlight = null;
+        }
+      }
+    };
+  }
+
+  const listeners = new Set<OnBootstrapStep>();
+  if (onStep) {
+    listeners.add(onStep);
+  }
+
+  const flight: BootstrapFlight = {
+    consumers: 1,
+    listeners,
+    cleanup: null,
+    promise: Promise.resolve(() => {}),
+  };
+  activeBootstrapFlight = flight;
+
+  const broadcastStep: OnBootstrapStep = (stepId, status, detail) => {
+    for (const listener of Array.from(flight.listeners)) {
+      listener(stepId, status, detail);
+    }
+  };
+
+  flight.promise = runBootstrapDesktopRuntimeBridge(broadcastStep)
+    .then((cleanup) => {
+      flight.cleanup = cleanup;
+      if (activeBootstrapFlight === flight) {
+        activeBootstrapFlight = null;
+      }
+      if (flight.consumers <= 0) {
+        cleanup();
+      }
+      return cleanup;
+    })
+    .catch((error) => {
+      if (activeBootstrapFlight === flight) {
+        activeBootstrapFlight = null;
+      }
+      throw error;
+    });
+
+  await flight.promise;
+
+  return () => {
+    if (onStep) {
+      flight.listeners.delete(onStep);
+    }
+    flight.consumers -= 1;
+    if (flight.consumers <= 0) {
+      flight.cleanup?.();
+      if (activeBootstrapFlight === flight) {
+        activeBootstrapFlight = null;
+      }
+    }
+  };
+}
+

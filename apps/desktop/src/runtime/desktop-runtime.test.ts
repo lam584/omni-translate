@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
@@ -821,3 +821,4 @@ describe('desktop runtime helpers', () => {
     await expect(desktopRuntimeTestHelpers.invokeWithTimeout('reject_now', 50)).rejects.toThrow('invoke failed');
   });
 });
+

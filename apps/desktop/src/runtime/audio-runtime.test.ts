@@ -19,6 +19,7 @@ import {
   refreshAudioDevicesRuntime,
   showSubtitleOverlayWindow,
   startAudioRouteRuntime,
+  preconnectOmniRealtimeRuntime,
   startSpeechDispatchRuntime,
   startTranslateWorkerRuntime,
   stopAudioRouteRuntime,
@@ -40,6 +41,7 @@ describe('audio runtime', () => {
     expect((await refreshAudioDevicesRuntime()).status).toBe('preview');
     expect((await startAudioRouteRuntime('inbound', config)).inbound).toMatchObject({ captureState: 'capturing', streamBound: true });
     expect((await startAudioRouteRuntime('outbound', config)).outbound).toMatchObject({ captureState: 'capturing', streamBound: true });
+    expect((await preconnectOmniRealtimeRuntime(config)).status).toBe('preview');
     expect((await stopAudioRouteRuntime('inbound')).status).toBe('preview');
     expect((await clearSubtitleCuesRuntime()).subtitleOverlay).toMatchObject({ queueDepth: 0, recentCues: [] });
     expect((await startSpeechDispatchRuntime(config)).speech).toMatchObject({ dispatchState: 'playing', outputTarget: 'virtual-mic' });
@@ -61,6 +63,7 @@ describe('audio runtime', () => {
 
     await refreshAudioDevicesRuntime();
     await startAudioRouteRuntime('inbound', config);
+    await preconnectOmniRealtimeRuntime(config);
     await stopAudioRouteRuntime('outbound');
     await clearSubtitleCuesRuntime();
     await startSpeechDispatchRuntime(config);
@@ -71,16 +74,45 @@ describe('audio runtime', () => {
     await showSubtitleOverlayWindow();
 
     expect(mocks.invoke.mock.calls).toEqual([
-      ['refresh_audio_devices'],
+      ['refresh_audio_devices', undefined],
       ['start_audio_route', { direction: 'inbound', config }],
+      ['preconnect_omni_realtime', { config }],
       ['stop_audio_route', { direction: 'outbound' }],
-      ['clear_subtitle_cues'],
+      ['clear_subtitle_cues', undefined],
       ['start_speech_dispatch', { config }],
-      ['stop_speech_dispatch'],
+      ['stop_speech_dispatch', undefined],
       ['start_translate_worker', { config }],
-      ['stop_translate_worker'],
-      ['toggle_subtitle_overlay'],
-      ['show_subtitle_overlay'],
+      ['stop_translate_worker', undefined],
+      ['toggle_subtitle_overlay', undefined],
+      ['show_subtitle_overlay', undefined],
     ]);
+  });
+
+  it('rejects with a timeout error when invoke does not respond in time', async () => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke.mockImplementation(() => new Promise(() => {})); // never resolves
+
+    const promise = refreshAudioDevicesRuntime();
+
+    vi.advanceTimersByTime(15_000);
+    await expect(promise).rejects.toThrow(/刷新音频设备超时/);
+
+    vi.useRealTimers();
+  });
+
+  it('clears timeout when invoke resolves before deadline', async () => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+
+    mocks.invoke.mockImplementation(async () => ({ status: 'ok' }));
+
+    const result = await startAudioRouteRuntime('inbound', structuredClone(appConfigDraftMock));
+    expect(result).toEqual({ status: 'ok' });
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+
+    clearTimeoutSpy.mockRestore();
+    vi.useRealTimers();
   });
 });

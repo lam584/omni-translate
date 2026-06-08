@@ -1,0 +1,152 @@
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import type { RealtimeAudioMode } from '../schema/config';
+import type { ProviderInteractionCapability } from '../schema/provider-contract';
+import { isTauriRuntime } from './tauri-runtime';
+
+export type BenchmarkOutputDelta = {
+  elapsedMs: number;
+  eventType: string;
+  stash: string;
+  committedText: string;
+  rawText: string;
+};
+
+export type BenchmarkAsrDelta = {
+  elapsedMs: number;
+  stash: string;
+  text: string;
+};
+
+export type BenchmarkRunResult = {
+  runIndex: number;
+  model: string;
+  connectMs: number;
+  sessionReadyMs: number;
+  audioSendMs: number;
+  audioChunksSent: number;
+  audioDurationSecs: number;
+  firstAsrMs: number | null;
+  asrDeltas: BenchmarkAsrDelta[];
+  asrFinal: string;
+  firstOutputMs: number | null;
+  firstCommittedMs: number | null;
+  outputDeltas: BenchmarkOutputDelta[];
+  translationFinal: string;
+  responseCreatedMs: number | null;
+  responseDoneMs: number | null;
+  responseDoneAudioChunksSent: number | null;
+  responseDoneAudioSentSecs: number | null;
+  responseCount: number;
+  speechStartedMs: number | null;
+  speechStoppedMs: number | null;
+  timeToFirstTokenMs: number | null;
+  timeToFirstCommittedMs: number | null;
+  totalOutputDurationMs: number | null;
+  outputDeltaCount: number;
+};
+
+export type BenchmarkSummary = {
+  runCount: number;
+  successfulRuns: number;
+  avgConnectMs: number;
+  avgSessionReadyMs: number;
+  avgTimeToFirstTokenMs: number | null;
+  avgTimeToFirstCommittedMs: number | null;
+  avgOutputDeltaIntervalMs: number | null;
+  avgOutputDeltasPerRun: number;
+  avgTotalOutputDurationMs: number | null;
+  p50DeltaIntervalMs: number | null;
+  p90DeltaIntervalMs: number | null;
+  p99DeltaIntervalMs: number | null;
+  minDeltaIntervalMs: number | null;
+  maxDeltaIntervalMs: number | null;
+};
+
+export type BenchmarkReport = {
+  model: string;
+  realtimeAudioMode?: RealtimeAudioMode;
+  interactionCapabilities?: ProviderInteractionCapability[];
+  audioFile: string;
+  audioDurationSecs: number;
+  runs: BenchmarkRunResult[];
+  summary: BenchmarkSummary;
+};
+
+export type BenchmarkProgressEvent = {
+  runId: string;
+  status: 'running' | 'completed' | 'error';
+  phase: string;
+  message: string;
+  report: BenchmarkReport;
+  error?: string | null;
+  audioChunksSent: number;
+  totalAudioChunks: number;
+};
+
+export type BenchmarkRunOptions = {
+  runId?: string;
+  realtimeAudioMode?: RealtimeAudioMode;
+  interactionCapabilities?: ProviderInteractionCapability[];
+  providerKind?: string;
+  baseUrl?: string;
+  authHeaderName?: string;
+  authScheme?: string;
+  onProgress?: (event: BenchmarkProgressEvent) => void;
+};
+
+export const BENCHMARK_PROGRESS_EVENT = 'benchmark://progress';
+
+const BENCHMARK_INVOKE_TIMEOUT_MS = 180_000;
+
+export async function runModelBenchmark(
+  model: string,
+  apiKey: string,
+  mp3Path: string,
+  options: BenchmarkRunOptions = {},
+): Promise<BenchmarkReport> {
+  if (!isTauriRuntime()) {
+    throw new Error('基准测试仅在桌面运行时可用。');
+  }
+
+  const runId = options.runId ?? `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const unlisten = await listen<BenchmarkProgressEvent>(BENCHMARK_PROGRESS_EVENT, (event) => {
+    if (event.payload.runId === runId) {
+      options.onProgress?.(event.payload);
+    }
+  });
+
+  return new Promise<BenchmarkReport>((resolve, reject) => {
+    const timeoutId = setTimeout(() => {
+      reject(new Error(`基准测试超时（${BENCHMARK_INVOKE_TIMEOUT_MS / 1000}s），请检查网络连接或模型配置。`));
+    }, BENCHMARK_INVOKE_TIMEOUT_MS);
+
+    invoke<string>('run_model_benchmark', {
+      model,
+      apiKey,
+      mp3Path,
+      runId,
+      realtimeAudioMode: options.realtimeAudioMode,
+      interactionCapabilities: options.interactionCapabilities,
+      providerKind: options.providerKind,
+      baseUrl: options.baseUrl,
+      authHeaderName: options.authHeaderName,
+      authScheme: options.authScheme,
+    })
+      .then((jsonString) => {
+        clearTimeout(timeoutId);
+        try {
+          resolve(JSON.parse(jsonString) as BenchmarkReport);
+        } catch (parseError) {
+          reject(new Error(`基准测试结果解析失败: ${parseError instanceof Error ? parseError.message : String(parseError)}`));
+        }
+      })
+      .catch((error) => {
+        clearTimeout(timeoutId);
+        reject(error);
+      })
+      .finally(() => {
+        unlisten();
+      });
+  });
+}

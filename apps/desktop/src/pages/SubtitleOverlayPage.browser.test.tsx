@@ -81,7 +81,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     await openContextMenu();
     const menu = container.querySelector('.subtitle-overlay-context-menu');
     await act(async () => {
-      menu?.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+      menu?.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
       menu?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
       window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }));
     });
@@ -108,6 +108,18 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     expect(container.querySelector('.subtitle-overlay-context-menu')).toBeNull();
   });
 
+  it('ignores outside menu events while the browser context menu is closed', async () => {
+    await renderOverlay();
+
+    await act(async () => {
+      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      window.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+    });
+
+    expect(container.querySelector('.subtitle-overlay-context-menu')).toBeNull();
+    expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(false);
+  });
+
   it('applies every browser menu setting and closes the menu after each action', async () => {
     await renderOverlay();
     await openContextMenu();
@@ -130,6 +142,48 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     await openContextMenu();
     await act(async () => findButton(container, '天蓝')?.click());
     expect(useAppStore.getState().configDraft.subtitles.overlayTextColor).toBe('#bae6fd');
+  });
+
+  it('falls back to the default preview font size when draft size is unset', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayFontSize: 0,
+        },
+      },
+    }));
+
+    await renderOverlay();
+
+    expect(container.querySelector<HTMLElement>('.subtitle-overlay-source')?.style.fontSize).toBe('24px');
+    expect(container.querySelector<HTMLElement>('.subtitle-overlay-translation')?.style.fontSize).toBe('20px');
+  });
+
+  it('keeps browser controls hidden while overlay is locked', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayLocked: true,
+        },
+      },
+    }));
+
+    await renderOverlay();
+    const overlay = container.querySelector('.subtitle-overlay-root');
+    await act(async () => {
+      overlay?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      overlay?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
+    });
+
+    expect(findButton(container, 'overlay.unlockAction')).toBeUndefined();
+    expect(container.querySelector('.subtitle-overlay-context-menu')).toBeNull();
+    expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
   });
 
   it('shows the hover lock control and forwards hide and clear actions', async () => {

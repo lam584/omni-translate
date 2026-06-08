@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef } from 'react';
+﻿import { useState, useEffect, useRef } from 'react';
 import AppIcon from '../components/icons/AppIcon';
+import { useTranslation } from 'react-i18next';
 import AudioLevelMeter from '../components/audio/AudioLevelMeter';
 import PageSectionHeader from '../components/page/PageSectionHeader';
 import StatusBadge from '../components/page/StatusBadge';
@@ -7,6 +8,7 @@ import {
   clearSubtitleCuesRuntime,
   showSubtitleOverlayWindow,
   startAudioRouteRuntime,
+  preconnectOmniRealtimeRuntime,
   startSpeechDispatchRuntime,
   startTranslateWorkerRuntime,
   stopAudioRouteRuntime,
@@ -14,16 +16,20 @@ import {
   stopTranslateWorkerRuntime,
   toggleSubtitleOverlayWindow,
 } from '../runtime/audio-runtime';
-import { installDriverRuntime, repairDriverRuntime, startBridgeServiceRuntime } from '../runtime/bridge-runtime';
+import { installDriverRuntime, refreshBridgeRuntime, repairDriverRuntime, startBridgeServiceRuntime } from '../runtime/bridge-runtime';
 import { appendFrontendDiagnosticsLog } from '../runtime/diagnostics-runtime';
 import { useAppStore } from '../stores/app-store';
 import type { SubtitleCueRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import type { SceneMode } from '../utils/scene-readiness';
+import { watchModeNeedsBridge } from '../utils/scene-readiness';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
+import i18n from '../i18n/config';
 
-type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | null;
+type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | null;
+
+const TRANSLATION_FAILED_PREFIX = '[\u7ffb\u8bd1\u5931\u8d25]';
 
 function parseRuntimeTimestampMs(value: string | null | undefined): number | null {
   if (!value) {
@@ -47,14 +53,14 @@ function parseRuntimeTimestampMs(value: string | null | undefined): number | nul
 
 function resolveSceneLabel(mode: SceneMode) {
   if (mode === 'watch') {
-    return '看片模式';
+    return i18n.t('session.watchMode');
   }
 
   if (mode === 'game') {
-    return '对话模式';
+    return i18n.t('session.conversationMode');
   }
 
-  return '对话模式';
+  return i18n.t('session.conversationMode');
 }
 
 function formatElapsed(seconds: number): string {
@@ -77,6 +83,28 @@ function formatLatencyMs(value: number | null | undefined): string {
   return `${Math.round(value)} ms`;
 }
 
+function formatRuntimeClock(value: string | null | undefined): string {
+  const ms = parseRuntimeTimestampMs(value);
+  if (ms == null) {
+    return '--:--:--';
+  }
+  return new Date(ms).toLocaleTimeString('zh-CN', {
+    hour12: false,
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  });
+}
+
+function formatCueTiming(cue: SubtitleCueRuntime): string {
+  const started = formatRuntimeClock(cue.startedAt);
+  const ended = formatRuntimeClock(cue.endedAt);
+  if (started === ended || ended === '--:--:--') {
+    return i18n.t('session.cueStartedAt', { started });
+  }
+  return i18n.t('session.cueTimeRange', { started, ended });
+}
+
 function resolveVoiceModelRuntime(inboundVoiceModelId: string) {
   const voiceModelRaw = inboundVoiceModelId.includes('::')
     ? inboundVoiceModelId.split('::').pop()!
@@ -87,6 +115,43 @@ function resolveVoiceModelRuntime(inboundVoiceModelId: string) {
     voiceModelRaw,
     isOmniModel: modelLower.includes('realtime') && (modelLower.includes('omni') || modelLower.includes('livetranslate')),
   };
+}
+
+function isBridgeStartupError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const lower = message.toLowerCase();
+  return (
+    lower.includes('bridge') ||
+    lower.includes('driver') ||
+    lower.includes('source pipe') ||
+    lower.includes('virtual') ||
+    lower.includes('sysvad') ||
+    lower.includes('package') ||
+    lower.includes('wasapi')
+  );
+}
+
+function describeSceneLaunchStage(stage: string | null) {
+  switch (stage) {
+    case 'omni-preconnect':
+      return 'Omni 预连接';
+    case 'bridge-ready':
+      return 'Bridge/驱动准备';
+    case 'inbound-route':
+      return '系统音频采集';
+    case 'outbound-route':
+      return '麦克风采集';
+    case 'translate-worker':
+      return '翻译引擎';
+    case 'speech-dispatch':
+      return '语音播报';
+    case 'subtitle-overlay':
+      return '字幕浮窗';
+    case 'fallback-route':
+      return '看片降级采集';
+    default:
+      return '启动流程';
+  }
 }
 
 function resolveSceneSpeechPatch(mode: SceneMode, configDraft: AppConfigDraft, isOmniModel: boolean) {
@@ -141,7 +206,7 @@ function logSceneLaunchConfig(
   const lines: string[] = [];
 
   const formatValue = (v: unknown): string => {
-    if (v === null || v === undefined) return '(未设置)';
+    if (v === null || v === undefined) return '(not set)';
     if (typeof v === 'object') {
       try { return JSON.stringify(v); } catch { return String(v); }
     }
@@ -157,16 +222,16 @@ function logSceneLaunchConfig(
     lines.push(`  ${key}: ${formatValue(value)}`);
   };
 
-  // ---- 场景与模型判定 ----
-  section('场景信息');
-  log('场景模式 (mode)', mode);
-  log('场景标签', label);
-  log('是否为 Omni 模型', extra?.isOmniModel ?? false);
-  log('二级字幕翻译已启用', extra?.secondarySubtitleTranslationEnabled ?? false);
-  log('启动时间', timestamp);
+  // ---- Scene and model selection ----
+  section('Scene information');
+  log('scene mode (mode)', mode);
+  log('scene label', label);
+  log('is Omni model', extra?.isOmniModel ?? false);
+  log('secondary subtitle translation enabled', extra?.secondarySubtitleTranslationEnabled ?? false);
+  log('launch time', timestamp);
 
-  // ---- Provider 配置 ----
-  section(`Provider 配置 (activeTemplateId: ${configDraft.activeProviderTemplateId}, 共 ${configDraft.providers.length} 个)`);
+  // ---- Provider configuration ----
+  section(`Provider configuration (activeTemplateId: ${configDraft.activeProviderTemplateId}, ${configDraft.providers.length} total)`);
   configDraft.providers.forEach((provider, index) => {
     lines.push('');
     lines.push(`  -- Provider[${index}]: ${provider.displayName || provider.providerId} --`);
@@ -178,7 +243,7 @@ function logSceneLaunchConfig(
     log('model', provider.model);
     log('baseUrl', provider.baseUrl);
     log('transport', provider.transport);
-    log('region', provider.region ?? '(未设置)');
+    log('region', provider.region ?? '(not set)');
     log('streamEnabled', provider.streamEnabled);
     log('timeoutMs', provider.timeoutMs);
     log('temperature', provider.temperature);
@@ -188,7 +253,7 @@ function logSceneLaunchConfig(
     log('authRef.reference', provider.authRef.reference);
     log('authRef.scheme', provider.authRef.scheme);
     log('authRef.headerName', provider.authRef.headerName);
-    log('customHeaders', provider.customHeaders.length > 0 ? provider.customHeaders.map((h) => `${h.name}=${h.enabled ? 'enabled' : 'disabled'}`) : '(无)');
+    log('customHeaders', provider.customHeaders.length > 0 ? provider.customHeaders.map((h) => `${h.name}=${h.enabled ? 'enabled' : 'disabled'}`) : '(none)');
     log('sceneModelAssignments', provider.sceneModelAssignments.map((a) => `${a.scenario}: [${a.modelIds.join(', ')}]`));
     log('probe.verdict', provider.probe.verdict);
     log('probe.profileId', provider.probe.profileId);
@@ -199,20 +264,20 @@ function logSceneLaunchConfig(
     log('status', provider.status);
   });
 
-  // ---- 设备与音频路由配置 ----
-  section('设备配置 (devices)');
+  // ---- Device and audio routing configuration ----
+  section('Device configuration (devices)');
   log('routeMode', devices.routeMode);
-  log('inputDeviceId', devices.inputDeviceId || '(默认)');
-  log('outputDeviceId', devices.outputDeviceId || '(默认)');
-  log('virtualRenderDeviceId', devices.virtualRenderDeviceId || '(未设置)');
-  log('playbackDeviceId', devices.playbackDeviceId || '(默认)');
+  log('inputDeviceId', devices.inputDeviceId || '(default)');
+  log('outputDeviceId', devices.outputDeviceId || '(default)');
+  log('virtualRenderDeviceId', devices.virtualRenderDeviceId || '(not set)');
+  log('playbackDeviceId', devices.playbackDeviceId || '(default)');
   log('virtualMicState', devices.virtualMicState);
-  log('supportProfileId', devices.supportProfileId || '(未设置)');
-  log('inboundVoiceModelId', devices.inboundVoiceModelId || '(未设置)');
-  log('outboundVoiceModelId', devices.outboundVoiceModelId || '(未设置)');
-  log('textToSpeechModelId', devices.textToSpeechModelId || '(未设置)');
+  log('supportProfileId', devices.supportProfileId || '(not set)');
+  log('inboundVoiceModelId', devices.inboundVoiceModelId || '(not set)');
+  log('outboundVoiceModelId', devices.outboundVoiceModelId || '(not set)');
+  log('textToSpeechModelId', devices.textToSpeechModelId || '(not set)');
   log('subtitleTranslationMode', devices.subtitleTranslationMode);
-  log('subtitleTranslationModelId', devices.subtitleTranslationModelId || '(未设置)');
+  log('subtitleTranslationModelId', devices.subtitleTranslationModelId || '(not set)');
   log('inputLevel', devices.inputLevel);
   log('aecEnabled', devices.aecEnabled);
   log('ansEnabled', devices.ansEnabled);
@@ -253,17 +318,17 @@ function logSceneLaunchConfig(
   log('outputs', devices.outboundRoute.outputs.map((o) => `${o.targetId}(${o.kind}, enabled=${o.enabled})`));
   log('mixControl', devices.outboundRoute.mixControl);
   log('latencyControl', devices.outboundRoute.latencyControl);
-  log('pushToTalk', devices.outboundRoute.pushToTalk ?? '(未设置)');
+  log('pushToTalk', devices.outboundRoute.pushToTalk ?? '(not set)');
 
-  // ---- 字幕配置 ----
-  section('字幕配置 (subtitles)');
+  // ---- Subtitle configuration ----
+  section('Subtitle configuration (subtitles)');
   log('sourceLanguage', subtitles.sourceLanguage);
   log('targetLanguage', subtitles.targetLanguage);
   log('translationLanguagePreference', subtitles.translationLanguagePreference);
   log('mode', subtitles.mode);
   log('captionDensity', subtitles.captionDensity);
   log('priority', subtitles.priority);
-  log('instructions', subtitles.instructions || '(空)');
+  log('instructions', subtitles.instructions || '(empty)');
   log('overlayOpacity', subtitles.overlayOpacity);
   log('overlayLocked', subtitles.overlayLocked);
   log('overlayTextColor', subtitles.overlayTextColor);
@@ -278,14 +343,14 @@ function logSceneLaunchConfig(
   log('overlayY', subtitles.overlayY);
   log('status', subtitles.status);
 
-  // ---- 语音/TTS 配置 ----
-  section('语音配置 (speech)');
+  // ---- Speech/TTS configuration ----
+  section('Speech configuration (speech)');
   if (speech) {
     log('enabled', speech.enabled);
     log('targetLanguage', speech.targetLanguage);
-    log('voicePresetId', speech.voicePresetId || '(未设置)');
-    log('textToSpeechModelId', speech.textToSpeechModelId || '(未设置)');
-    log('voice', speech.voice || '(未设置)');
+    log('voicePresetId', speech.voicePresetId || '(not set)');
+    log('textToSpeechModelId', speech.textToSpeechModelId || '(not set)');
+    log('voice', speech.voice || '(not set)');
     log('outputTarget', speech.outputTarget);
     log('localPlaybackEnabled', speech.localPlaybackEnabled);
     log('virtualMicOutputEnabled', speech.virtualMicOutputEnabled);
@@ -293,33 +358,33 @@ function logSceneLaunchConfig(
     log('dispatchState', speech.dispatchState);
     log('status', speech.status);
   } else {
-    lines.push('  (speech 配置未定义)');
+    lines.push('  (speech configuration undefined)');
   }
   if (extra?.speechPatch) {
-    log('本次 speechPatch', extra.speechPatch);
+    log('current speechPatch', extra.speechPatch);
   }
 
-  // ---- 驱动与 Bridge 状态 ----
-  section('驱动配置 (driver)');
+  // ---- Driver and Bridge state ----
+  section('Driver configuration (driver)');
   log('protocolVersion', driver.protocolVersion);
   log('installChannel', driver.installChannel);
   log('installPhase', driver.installPhase);
-  log('targetDeviceId', driver.targetDeviceId || '(未设置)');
-  log('expectedDriverVersion', driver.expectedDriverVersion || '(未设置)');
-  log('expectedBridgeVersion', driver.expectedBridgeVersion || '(未设置)');
+  log('targetDeviceId', driver.targetDeviceId || '(not set)');
+  log('expectedDriverVersion', driver.expectedDriverVersion || '(not set)');
+  log('expectedBridgeVersion', driver.expectedBridgeVersion || '(not set)');
   log('bridgeState', driver.bridgeState);
   log('driverHealth', driver.driverHealth);
   log('rollbackSupported', driver.rollbackSupported);
-  log('lastErrorCode', driver.lastErrorCode ?? '(无)');
-  log('recommendedAction', driver.recommendedAction ?? '(无)');
+  log('lastErrorCode', driver.lastErrorCode ?? '(none)');
+  log('recommendedAction', driver.recommendedAction ?? '(none)');
   log('status', driver.status);
 
-  section('Bridge 运行时状态');
+  section('Bridge runtime state');
   log('processStatus', bridge.processStatus);
   log('bridgeState', bridge.bridgeState);
   log('lifecycleState', bridge.lifecycleState);
   log('driverHealth', bridge.driverHealth);
-  log('driverVersion', bridge.driverVersion ?? '(未知)');
+  log('driverVersion', bridge.driverVersion ?? '(unknown)');
   log('bridgeVersion', bridge.bridgeVersion);
   log('installChannel', bridge.installChannel);
   log('installPhase', bridge.installPhase);
@@ -332,35 +397,35 @@ function logSceneLaunchConfig(
   log('mixControl', bridge.mixControl);
   log('monitorPlaybackEnabled', bridge.monitorPlaybackEnabled);
   log('pipeName', bridge.pipeName);
-  log('sessionId', bridge.sessionId ?? '(无)');
-  log('lastHandshakeAt', bridge.lastHandshakeAt ?? '(无)');
-  log('lastErrorCode', bridge.lastErrorCode ?? '(无)');
-  log('recommendedAction', bridge.recommendedAction ?? '(无)');
+  log('sessionId', bridge.sessionId ?? '(none)');
+  log('lastHandshakeAt', bridge.lastHandshakeAt ?? '(none)');
+  log('lastErrorCode', bridge.lastErrorCode ?? '(none)');
+  log('recommendedAction', bridge.recommendedAction ?? '(none)');
   log('rollbackSupported', bridge.rollbackSupported);
   log('testSigningEnabled', bridge.testSigningEnabled);
   log('signatureEnforcementBypassed', bridge.signatureEnforcementBypassed);
   log('memoryIntegrityEnabled', bridge.memoryIntegrityEnabled);
   log('secureBootEnabled', bridge.secureBootEnabled);
   log('ioctlAvailable', bridge.ioctlAvailable);
-  log('endpointName', bridge.endpointName ?? '(无)');
-  log('abiVersion', bridge.abiVersion ?? '(无)');
+  log('endpointName', bridge.endpointName ?? '(none)');
+  log('abiVersion', bridge.abiVersion ?? '(none)');
 
-  // ---- 术语表配置 ----
-  section('术语表配置 (glossary)');
-  log('templateId', glossary.templateId || '(未设置)');
+  // ---- Glossary configuration ----
+  section('Glossary configuration (glossary)');
+  log('templateId', glossary.templateId || '(not set)');
   log('scenario', glossary.scenario);
   log('injectionStrategy', glossary.injectionStrategy);
   log('injectionOrder', glossary.injectionOrder);
   log('processingMode', glossary.processingMode);
-  log('calibrationModelId', glossary.calibrationModelId || '(未设置)');
+  log('calibrationModelId', glossary.calibrationModelId || '(not set)');
   log('importStrategy', glossary.importStrategy);
-  log('libraries 数量', glossary.libraries.length);
+  log('libraries count', glossary.libraries.length);
   log('activePackageIds', glossary.activePackageIds);
   log('communityPackageIds', glossary.communityPackageIds);
   log('status', glossary.status);
 
-  // ---- 诊断配置 ----
-  section('诊断配置 (diagnostics)');
+  // ---- Diagnostics configuration ----
+  section('Diagnostics configuration (diagnostics)');
   log('installStatus', diagnostics.installStatus);
   log('driverStatus', diagnostics.driverStatus);
   log('providerStatus', diagnostics.providerStatus);
@@ -369,13 +434,13 @@ function logSceneLaunchConfig(
   log('supportTier', diagnostics.supportTier);
   log('status', diagnostics.status);
 
-  // ---- 当前音频运行时 ----
-  section('音频运行时快照');
+  // ---- Current audio runtime ----
+  section('Audio runtime snapshot');
   log('status', audioRuntimeSnapshot.status);
   log('host', audioRuntimeSnapshot.host);
   log('sttConnected', audioRuntimeSnapshot.sttConnected);
   log('sttBufferSize', audioRuntimeSnapshot.sttBufferSize);
-  log('sessionStartedAt', audioRuntimeSnapshot.sessionStartedAt ?? '(未开始)');
+  log('sessionStartedAt', audioRuntimeSnapshot.sessionStartedAt ?? '(not started)');
   log('renderDevices', audioRuntimeSnapshot.renderDevices.map((d) => `${d.label} (${d.deviceId}, default=${d.isDefault}, state=${d.state})`));
   log('captureDevices', audioRuntimeSnapshot.captureDevices.map((d) => `${d.label} (${d.deviceId}, default=${d.isDefault}, state=${d.state})`));
   log('inbound.streamBound', audioRuntimeSnapshot.inbound.streamBound);
@@ -390,34 +455,36 @@ function logSceneLaunchConfig(
   log('speech.outputTarget', audioRuntimeSnapshot.speech.outputTarget);
   log('subtitleOverlay.queueDepth', audioRuntimeSnapshot.subtitleOverlay.queueDepth);
 
-  // ---- 完整配置 JSON 备份 ----
-  section('完整配置 (JSON)');
+  // ---- Full configuration JSON backup ----
+  section('Full configuration (JSON)');
   try {
     lines.push(JSON.stringify(configDraft, null, 2));
   } catch {
-    lines.push('(序列化失败)');
+    lines.push('(serialization failed)');
   }
 
   const detail = lines.join('\n');
   appendFrontendDiagnosticsLog(
     'runtime',
     'info',
-    `[SceneLaunch] ${label} 启动配置 @ ${timestamp}`,
+    `[SceneLaunch] ${label} launch config @ ${timestamp}`,
     detail,
   );
 }
 
 function CueStatusBadge({ cue }: { cue: SubtitleCueRuntime }) {
+  const { t } = useTranslation();
+
   if (!cue.committed) {
-    return <span className="audio-level-meter-vad audio-level-meter-vad-speech">翻译中...</span>;
+    return <span className="audio-level-meter-vad audio-level-meter-vad-speech">{t('session.translating')}</span>;
   }
-  if (cue.translatedText.startsWith('[翻译失败]')) {
-    return <span className="cue-queue-error">失败</span>;
+  if (cue.translatedText.startsWith(TRANSLATION_FAILED_PREFIX)) {
+    return <span className="cue-queue-error">{t('session.failed')}</span>;
   }
   if (cue.translatedText) {
-    return <span className="audio-level-meter-vad audio-level-meter-vad-speech">已翻译</span>;
+    return <span className="audio-level-meter-vad audio-level-meter-vad-speech">{t('session.translated')}</span>;
   }
-  return <span className="cue-queue-error">翻译失败</span>;
+  return <span className="cue-queue-error">{t('session.translationFailed')}</span>;
 }
 
 export const realTimeSessionPageHelpers = {
@@ -425,12 +492,17 @@ export const realTimeSessionPageHelpers = {
   resolveSceneLabel,
   formatElapsed,
   formatLatencyMs,
+  formatRuntimeClock,
+  formatCueTiming,
   resolveVoiceModelRuntime,
+  describeSceneLaunchStage,
   resolveSceneSpeechPatch,
+  logSceneLaunchConfig,
   CueStatusBadge,
 };
 
 function RealTimeSessionPage() {
+  const { t } = useTranslation();
   const configDraft = useAppStore((state) => state.configDraft);
   const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
   const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
@@ -484,7 +556,7 @@ function RealTimeSessionPage() {
         clearInterval(timerRef.current);
         timerRef.current = null;
       }
-      setSessionElapsed(0);
+      queueMicrotask(() => setSessionElapsed(0));
     }
 
     return () => {
@@ -507,17 +579,28 @@ function RealTimeSessionPage() {
 
   const ensureBridgeReady = async (mode: SceneMode, nextConfig: typeof configDraft) => {
     if (mode === 'watch') {
-      const needsBridge =
-        nextConfig.devices.feedbackLoopPrevention === 'virtual-driver' ||
-        nextConfig.devices.virtualMicOutputEnabled ||
-        nextConfig.speech?.outputTarget === 'virtual-mic' ||
-        nextConfig.speech?.outputTarget === 'both';
-      if (!needsBridge) {
+      if (!watchModeNeedsBridge(nextConfig)) {
         return runtimeSnapshot;
       }
     }
 
-    let latestRuntime = runtimeSnapshot;
+    // Refresh live bridge state from the backend instead of relying on the
+    // cached snapshot, which may be stale (e.g. bridge crashed after last
+    // refresh but the frontend still thinks it is "running").
+    let latestRuntime: RuntimeSnapshot;
+    try {
+      latestRuntime = await refreshBridgeRuntime();
+      setRuntimeSnapshot(latestRuntime);
+    } catch (refreshError) {
+      // If refresh itself fails (e.g. timeout), the bridge is likely in a
+      // bad state — fall through to repair/restart logic using cached state.
+      appendFrontendDiagnosticsLog(
+        'runtime',
+        'warning',
+        `[BridgeReady] refresh failed, proceeding with cached snapshot: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`,
+      );
+      latestRuntime = runtimeSnapshot;
+    }
 
     if (latestRuntime.bridge.driverHealth === 'not-installed') {
       const installed = await installDriverRuntime(nextConfig);
@@ -526,10 +609,14 @@ function RealTimeSessionPage() {
     }
 
     if (latestRuntime.bridge.driverHealth !== 'running') {
-      const repaired = await repairDriverRuntime(
-        latestRuntime.bridge.recommendedAction === 'rollback-driver' ? 'rollback-driver' : 'reinstall-driver',
-        nextConfig,
-      );
+      const recommended = latestRuntime.bridge.recommendedAction;
+      const repairAction = recommended === 'rollback-driver'
+        ? 'rollback-driver' as const
+        : recommended === 'restart-bridge'
+          ? 'restart-bridge' as const
+          : 'reinstall-driver' as const;
+
+      const repaired = await repairDriverRuntime(repairAction, nextConfig);
       setRuntimeSnapshot(repaired);
       latestRuntime = repaired;
     }
@@ -543,21 +630,23 @@ function RealTimeSessionPage() {
     return latestRuntime;
   };
 
-  const startWatchFallback = async (fallback: 'subtitles-only' | 'aec') => {
+  const startWatchFallback = async (fallback: 'subtitles-only' | 'aec', originalError?: unknown) => {
+    const originalErrorMessage = originalError instanceof Error ? originalError.message : originalError == null ? '' : String(originalError);
     const fallbackDetail = [
-      `fallback 类型: ${fallback}`,
-      `当前 bridge 状态: ${runtimeSnapshot.bridge.bridgeState} | driverHealth: ${runtimeSnapshot.bridge.driverHealth}`,
+      `fallback type: ${fallback}`,
+      `original error: ${originalErrorMessage || '(none)'}`,
+      `current bridge state: ${runtimeSnapshot.bridge.bridgeState} | driverHealth: ${runtimeSnapshot.bridge.driverHealth}`,
       '',
-      '== 当前 configDraft ==',
-      (() => { try { return JSON.stringify(configDraft, null, 2); } catch { return '(序列化失败)'; } })(),
+      '== Current configDraft ==',
+      (() => { try { return JSON.stringify(configDraft, null, 2); } catch { return '(serialization failed)'; } })(),
       '',
-      '== 当前 audioRuntimeSnapshot ==',
-      (() => { try { return JSON.stringify(audioRuntimeSnapshot, null, 2); } catch { return '(序列化失败)'; } })(),
+      '== Current audioRuntimeSnapshot ==',
+      (() => { try { return JSON.stringify(audioRuntimeSnapshot, null, 2); } catch { return '(serialization failed)'; } })(),
     ].join('\n');
     appendFrontendDiagnosticsLog(
       'runtime',
       'warning',
-      `[WatchFallback] 降级策略: ${fallback} @ ${new Date().toISOString()}`,
+      `[WatchFallback] fallback strategy: ${fallback} @ ${new Date().toISOString()}`,
       fallbackDetail,
     );
 
@@ -593,14 +682,27 @@ function RealTimeSessionPage() {
       id: `watch-fallback-${fallback}-${Date.now()}`,
       level: 'warning',
       source: 'session',
-      message: subtitlesOnly
-        ? '虚拟音频链路不可用，已降级为仅字幕模式。'
-        : '虚拟音频链路不可用，已临时切换到物理扬声器直放加 AEC。该模式仍有回环风险。',
+      message: `${subtitlesOnly ? t('session.fallbackSubtitlesOnly') : t('session.fallbackAec')}${originalErrorMessage ? `（原始错误：${originalErrorMessage}）` : ''}`,
       emittedAt: new Date().toISOString(),
     });
   };
 
   const handleSceneLaunch = async (mode: SceneMode) => {
+    if (
+      mode === 'watch' &&
+      (audioRuntimeSnapshot.inbound.captureState === 'stopping' ||
+        audioRuntimeSnapshot.outbound.captureState === 'stopping')
+    ) {
+      pushRuntimeNotification({
+        id: `scene-launch-stopping-${Date.now()}`,
+        level: 'warning',
+        source: 'session',
+        message: '正在停止上一条链路，请稍后再启动看片模式。',
+        emittedAt: new Date().toISOString(),
+      });
+      return;
+    }
+
     const inboundVoiceModelId = configDraft.devices.inboundVoiceModelId;
     const { isOmniModel } = resolveVoiceModelRuntime(inboundVoiceModelId);
     const speechPatch = resolveSceneSpeechPatch(mode, configDraft, isOmniModel);
@@ -608,7 +710,7 @@ function RealTimeSessionPage() {
       configDraft.devices.subtitleTranslationMode === 'secondary' &&
       Boolean(configDraft.devices.subtitleTranslationModelId);
 
-    // 启动前打印完整配置信息，便于排查问题
+    // Log the full configuration before launch for diagnostics.
     logSceneLaunchConfig(mode, configDraft, runtimeSnapshot, audioRuntimeSnapshot, {
       speechPatch,
       isOmniModel,
@@ -628,9 +730,51 @@ function RealTimeSessionPage() {
       },
     };
 
+    let preconnectWarningMessage: string | null = null;
+    let launchStage: string | null = null;
+
     try {
       await runBusyAction(mode === 'watch' ? 'watch-start' : 'conversation-start', async () => {
-        await ensureBridgeReady(mode, nextConfig);
+        if (mode === 'watch' && isOmniModel) {
+          // Parallelize preconnect + bridge: they are independent operations.
+          // preconnect opens a WebSocket to DashScope, bridge starts the local
+          // bridge service/driver. Running them concurrently saves ~300-1000ms.
+          const bridgePromise = ensureBridgeReady(mode, nextConfig);
+          let preconnectPromise: Promise<AudioRuntimeSnapshot> | null = null;
+          try {
+            launchStage = 'omni-preconnect';
+            preconnectPromise = preconnectOmniRealtimeRuntime(nextConfig);
+          } catch (error) {
+            preconnectWarningMessage = `Omni 预连接失败，已改走普通启动路径：${error instanceof Error ? error.message : String(error)}`;
+            appendFrontendDiagnosticsLog(
+              'runtime',
+              'warning',
+              `[WatchPreconnect] Omni preconnect failed; retrying through the normal launch path: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+
+          // Await bridge completion (mandatory path).
+          launchStage = 'bridge-ready';
+          await bridgePromise;
+
+          // Await preconnect completion (best-effort; failure is non-fatal).
+          if (preconnectPromise) {
+            try {
+              const preconnected = await preconnectPromise;
+              setAudioRuntimeSnapshot(preconnected);
+            } catch (error) {
+              preconnectWarningMessage = `Omni 预连接失败，已改走普通启动路径：${error instanceof Error ? error.message : String(error)}`;
+              appendFrontendDiagnosticsLog(
+                'runtime',
+                'warning',
+                `[WatchPreconnect] Omni preconnect failed; retrying through the normal launch path: ${error instanceof Error ? error.message : String(error)}`,
+              );
+            }
+          }
+        } else {
+          launchStage = 'bridge-ready';
+          await ensureBridgeReady(mode, nextConfig);
+        }
 
         updateDeviceDraft({ routeMode: mode, status: 'ready' });
         updateSpeechDraft(speechPatch);
@@ -639,79 +783,147 @@ function RealTimeSessionPage() {
         let nextSnapshot = audioRuntimeSnapshot;
 
         if (mode !== 'voice-room') {
+          launchStage = 'inbound-route';
           nextSnapshot = await startAudioRouteRuntime('inbound', nextConfig);
           setAudioRuntimeSnapshot(nextSnapshot);
         }
 
         if (mode !== 'watch') {
+          launchStage = 'outbound-route';
           nextSnapshot = await startAudioRouteRuntime('outbound', nextConfig);
           setAudioRuntimeSnapshot(nextSnapshot);
         }
 
         if (!isOmniModel) {
+          launchStage = 'translate-worker';
           nextSnapshot = await startTranslateWorkerRuntime(nextConfig);
           setAudioRuntimeSnapshot(nextSnapshot);
         }
 
         const dispatchAlreadyRunning = nextSnapshot.speech.dispatchState !== 'idle';
         if (speechPatch.enabled && (!isOmniModel || secondarySubtitleTranslationEnabled) && !dispatchAlreadyRunning) {
+          launchStage = 'speech-dispatch';
           nextSnapshot = await startSpeechDispatchRuntime(nextConfig);
           setAudioRuntimeSnapshot(nextSnapshot);
         }
 
         if (!overlayWindow?.visible) {
-          const windowSnapshot = await showSubtitleOverlayWindow();
-          setRuntimeSnapshot(windowSnapshot);
+          try {
+            launchStage = 'subtitle-overlay';
+            const windowSnapshot = await showSubtitleOverlayWindow();
+            setRuntimeSnapshot(windowSnapshot);
+          } catch (overlayError) {
+            appendFrontendDiagnosticsLog(
+              'runtime',
+              'error',
+              `[SceneLaunch] subtitle overlay failed after route start: ${overlayError instanceof Error ? overlayError.message : String(overlayError)}`,
+            );
+            if (mode === 'watch') {
+              try {
+                const stopped = await stopAudioRouteRuntime('inbound');
+                setAudioRuntimeSnapshot(stopped);
+              } catch (stopError) {
+                appendFrontendDiagnosticsLog(
+                  'runtime',
+                  'error',
+                  `[SceneLaunch] failed to stop inbound route after overlay failure: ${stopError instanceof Error ? stopError.message : String(stopError)}`,
+                );
+              }
+            }
+            pushRuntimeNotification({
+              id: `scene-overlay-${mode}-${Date.now()}`,
+              level: 'error',
+              source: 'session',
+              message:
+                mode === 'watch'
+                  ? `字幕浮窗打开失败，已停止看片采集：${overlayError instanceof Error ? overlayError.message : String(overlayError)}`
+                  : `字幕浮窗打开失败：${overlayError instanceof Error ? overlayError.message : String(overlayError)}`,
+              emittedAt: new Date().toISOString(),
+            });
+          }
+        }
+        if (preconnectWarningMessage) {
+          pushRuntimeNotification({
+            id: `watch-preconnect-${Date.now()}`,
+            level: 'warning',
+            source: 'session',
+            message: preconnectWarningMessage,
+            emittedAt: new Date().toISOString(),
+          });
         }
       });
     } catch (error) {
-      if (mode === 'watch' && configDraft.devices.feedbackLoopPrevention === 'virtual-driver') {
+      if (mode === 'watch' && watchModeNeedsBridge(nextConfig) && isBridgeStartupError(error)) {
         const subtitlesOnly = window.confirm(
-          '虚拟音频驱动或 Bridge 尚不可用。点击“确定”进入仅字幕模式；点击“取消”临时回退到物理扬声器直放加 AEC。AEC 回退仍有回环风险。',
+          t('session.virtualDriverFallbackConfirm'),
         );
-        await startWatchFallback(subtitlesOnly ? 'subtitles-only' : 'aec');
+        await startWatchFallback(subtitlesOnly ? 'subtitles-only' : 'aec', error);
         return;
       }
       pushRuntimeNotification({
         id: `scene-launch-${mode}-${Date.now()}`,
         level: 'error',
         source: 'session',
-        message: `一键启动${resolveSceneLabel(mode)}失败：${error instanceof Error ? error.message : String(error)}`,
+        message: t('session.sceneLaunchFailed', {
+          scene: resolveSceneLabel(mode),
+          stage: describeSceneLaunchStage(launchStage),
+          error: error instanceof Error ? error.message : String(error),
+        }),
         emittedAt: new Date().toISOString(),
       });
     }
   };
 
-  const handleStopAll = () => {
+  const handleStopAll = async () => {
     const transcribe = hasSpeechActivity;
     const inboundBound = audioRuntimeSnapshot.inbound.streamBound;
     const outboundBound = audioRuntimeSnapshot.outbound.streamBound;
 
-    // 乐观更新 UI，立刻显示为已停止
-    setAudioRuntimeSnapshot({
-      ...audioRuntimeSnapshot,
-      inbound: { ...audioRuntimeSnapshot.inbound, streamBound: false, captureState: 'idle' },
-      outbound: { ...audioRuntimeSnapshot.outbound, streamBound: false, captureState: 'idle' },
-      speech: { ...audioRuntimeSnapshot.speech, dispatchState: 'idle' },
+    await runBusyAction('stop', async () => {
+      setAudioRuntimeSnapshot({
+        ...audioRuntimeSnapshot,
+        inbound: inboundBound
+          ? { ...audioRuntimeSnapshot.inbound, streamBound: false, captureState: 'stopping' }
+          : audioRuntimeSnapshot.inbound,
+        outbound: outboundBound
+          ? { ...audioRuntimeSnapshot.outbound, streamBound: false, captureState: 'stopping' }
+          : audioRuntimeSnapshot.outbound,
+        speech: { ...audioRuntimeSnapshot.speech, dispatchState: transcribe ? 'idle' : audioRuntimeSnapshot.speech.dispatchState },
+      });
+
+      const stopStep = async (label: string, action: () => Promise<AudioRuntimeSnapshot>) => {
+        try {
+          setAudioRuntimeSnapshot(await action());
+        } catch (error) {
+          appendFrontendDiagnosticsLog(
+            'runtime',
+            'error',
+            `[StopAll] ${label} stop failed: ${error instanceof Error ? error.message : String(error)}`,
+          );
+          pushRuntimeNotification({
+            id: `stop-${label}-${Date.now()}`,
+            level: 'error',
+            source: 'session',
+            message: `停止 ${label} 失败：${error instanceof Error ? error.message : String(error)}`,
+            emittedAt: new Date().toISOString(),
+          });
+        }
+      };
+
+      if (transcribe) {
+        await stopStep('speech', stopSpeechDispatchRuntime);
+      }
+
+      await stopStep('translate', stopTranslateWorkerRuntime);
+
+      if (outboundBound) {
+        await stopStep('outbound', () => stopAudioRouteRuntime('outbound'));
+      }
+
+      if (inboundBound) {
+        await stopStep('inbound', () => stopAudioRouteRuntime('inbound'));
+      }
     });
-
-    const stops: Promise<void>[] = [];
-
-    if (transcribe) {
-      stops.push(stopSpeechDispatchRuntime().then((s) => setAudioRuntimeSnapshot(s)));
-    }
-
-    stops.push(stopTranslateWorkerRuntime().then((s) => setAudioRuntimeSnapshot(s)));
-
-    if (outboundBound) {
-      stops.push(stopAudioRouteRuntime('outbound').then((s) => setAudioRuntimeSnapshot(s)));
-    }
-
-    if (inboundBound) {
-      stops.push(stopAudioRouteRuntime('inbound').then((s) => setAudioRuntimeSnapshot(s)));
-    }
-
-    Promise.allSettled(stops).catch(console.error);
   };
 
   return (
@@ -720,66 +932,66 @@ function RealTimeSessionPage() {
         <article className="content-card page-card compact-card control-hero-card">
           <PageSectionHeader
             className="control-hero-header"
-            title="会话控制"
+            title={t('session.controlTitle')}
           />
           <div className="provider-list">
             <button className={configDraft.devices.routeMode === 'watch' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null} onClick={() => void handleSceneLaunch('watch')} type="button">
-              {busyAction === 'watch-start' ? '启动中...' : '看片'}
+              {busyAction === 'watch-start' ? t('session.starting') : t('session.watchButton')}
             </button>
             <button className={configDraft.devices.routeMode === 'game' || configDraft.devices.routeMode === 'voice-room' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null} onClick={() => void handleSceneLaunch('game')} type="button">
-              {busyAction === 'conversation-start' ? '启动中...' : '对话模式'}
+              {busyAction === 'conversation-start' ? t('session.starting') : t('session.conversationMode')}
             </button>
           </div>
           {isSessionRunning && (
             <div className="session-timer">
               <AppIcon name="clock" size={14} />
-              <span className="session-timer-text">已运行 {formatElapsed(sessionElapsed)}</span>
+              <span className="session-timer-text">{t('session.runningFor', { elapsed: formatElapsed(sessionElapsed) })}</span>
             </div>
           )}
           {isSessionRunning && audioRuntimeSnapshot.inbound.streamBound && (
             <AudioLevelMeter
               energyDb={audioRuntimeSnapshot.inbound.lastEnergyDb}
-              label="系统音频"
+              label={t('session.systemAudio')}
               vadState={audioRuntimeSnapshot.inbound.vadState}
             />
           )}
           {isSessionRunning && audioRuntimeSnapshot.outbound.streamBound && (
             <AudioLevelMeter
               energyDb={audioRuntimeSnapshot.outbound.lastEnergyDb}
-              label="麦克风音频"
+              label={t('session.microphoneAudio')}
               vadState={audioRuntimeSnapshot.outbound.vadState}
             />
           )}
           {isSessionRunning && (
             <div className="audio-status-grid">
               <div className="audio-status-item">
-                <span className="audio-status-label">翻译首字平均时间</span>
+                <span className="audio-status-label">{t('session.avgFirstToken')}</span>
                 <span className="audio-status-value">{formatLatencyMs(firstTranslationAverageMs)}</span>
               </div>
               <div className="audio-status-item">
-                <span className="audio-status-label">最近首字耗时</span>
+                <span className="audio-status-label">{t('session.lastFirstToken')}</span>
                 <span className="audio-status-value">{formatLatencyMs(firstTranslationLastMs)}</span>
               </div>
               <div className="audio-status-item">
-                <span className="audio-status-label">首字样本</span>
+                <span className="audio-status-label">{t('session.firstTokenSamples')}</span>
                 <span className="audio-status-value">{firstTranslationSampleCount}</span>
               </div>
               {audioRuntimeSnapshot.inbound.streamBound && (
                 <>
                   <div className="audio-status-item">
-                    <span className="audio-status-label">采集状态</span>
+                    <span className="audio-status-label">{t('session.captureState')}</span>
                     <span className="audio-status-value">{audioRuntimeSnapshot.inbound.captureState}</span>
                   </div>
                   <div className="audio-status-item">
-                    <span className="audio-status-label">缓冲状态</span>
+                    <span className="audio-status-label">{t('session.bufferState')}</span>
                     <span className="audio-status-value">{audioRuntimeSnapshot.inbound.preBufferState}</span>
                   </div>
                   <div className="audio-status-item">
-                    <span className="audio-status-label">采集帧数</span>
+                    <span className="audio-status-label">{t('session.framesCaptured')}</span>
                     <span className="audio-status-value">{audioRuntimeSnapshot.inbound.framesCaptured.toLocaleString()}</span>
                   </div>
                   <div className="audio-status-item">
-                    <span className="audio-status-label">语音分段</span>
+                    <span className="audio-status-label">{t('session.speechSegments')}</span>
                     <span className="audio-status-value">{audioRuntimeSnapshot.inbound.segmentCount}</span>
                   </div>
                 </>
@@ -787,19 +999,19 @@ function RealTimeSessionPage() {
               {audioRuntimeSnapshot.outbound.streamBound && (
                 <>
                   <div className="audio-status-item">
-                    <span className="audio-status-label">采集状态</span>
+                    <span className="audio-status-label">{t('session.captureState')}</span>
                     <span className="audio-status-value">{audioRuntimeSnapshot.outbound.captureState}</span>
                   </div>
                   <div className="audio-status-item">
-                    <span className="audio-status-label">缓冲状态</span>
+                    <span className="audio-status-label">{t('session.bufferState')}</span>
                     <span className="audio-status-value">{audioRuntimeSnapshot.outbound.preBufferState}</span>
                   </div>
                   <div className="audio-status-item">
-                    <span className="audio-status-label">采集帧数</span>
+                    <span className="audio-status-label">{t('session.framesCaptured')}</span>
                     <span className="audio-status-value">{audioRuntimeSnapshot.outbound.framesCaptured.toLocaleString()}</span>
                   </div>
                   <div className="audio-status-item">
-                    <span className="audio-status-label">语音分段</span>
+                    <span className="audio-status-label">{t('session.speechSegments')}</span>
                     <span className="audio-status-value">{audioRuntimeSnapshot.outbound.segmentCount}</span>
                   </div>
                 </>
@@ -808,14 +1020,14 @@ function RealTimeSessionPage() {
           )}
           {audioRuntimeSnapshot.inbound.lastError && (
             <p className="cue-queue-error" role="alert">
-              系统音频采集异常：{audioRuntimeSnapshot.inbound.lastError}
-              {audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && ' 建议重启 Bridge Service 后重试。'}
+              {t('session.systemAudioError', { error: audioRuntimeSnapshot.inbound.lastError })}
+              {audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && t('session.restartBridgeHint')}
             </p>
           )}
           <div className="control-toolbar">
             <button className={`icon-button ${isSessionRunning ? 'icon-button-danger' : ''}`} disabled={busyAction !== null || !canStopAll} onClick={() => void handleStopAll()} type="button">
               <AppIcon name="stop" size={14} />
-              {isSessionRunning ? `停止 (${formatElapsed(sessionElapsed)})` : '停止全部链路'}
+              {isSessionRunning ? t('session.stopWithElapsed', { elapsed: formatElapsed(sessionElapsed) }) : t('session.stopAll')}
             </button>
             <button
               className="icon-button"
@@ -829,7 +1041,7 @@ function RealTimeSessionPage() {
               type="button"
             >
               <AppIcon name="subtitles" size={14} />
-              {overlayWindow?.visible ? '隐藏浮窗' : '显示浮窗'}
+              {overlayWindow?.visible ? t('session.hideOverlay') : t('session.showOverlay')}
             </button>
             <button
               className="icon-button icon-button-danger"
@@ -843,82 +1055,82 @@ function RealTimeSessionPage() {
               type="button"
             >
               <AppIcon name="trash" size={14} />
-              清空字幕
+              {t('session.clearSubtitles')}
             </button>
           </div>
         </article>
 
         <article className="content-card page-card compact-card live-text-card">
           <div className="section-heading compact-heading">
-            <h3>模型调用摘要</h3>
-            <StatusBadge label={modelTraceSummary.failedCalls > 0 ? `失败 ${modelTraceSummary.failedCalls}` : '正常'} tone={modelTraceSummary.failedCalls > 0 ? 'warning' : 'ready'} />
+            <h3>{t('session.modelTraceTitle')}</h3>
+            <StatusBadge label={modelTraceSummary.failedCalls > 0 ? t('session.failedCount', { count: modelTraceSummary.failedCalls }) : t('session.normal')} tone={modelTraceSummary.failedCalls > 0 ? 'warning' : 'ready'} />
           </div>
           {latestModelTraceCall ? (
             <div className="audio-status-grid">
               <div className="audio-status-item">
-                <span className="audio-status-label">调用总数</span>
+                <span className="audio-status-label">{t('session.totalCalls')}</span>
                 <span className="audio-status-value">{modelTraceSummary.totalCalls.toLocaleString()}</span>
               </div>
               <div className="audio-status-item">
-                <span className="audio-status-label">成功 / 失败</span>
+                <span className="audio-status-label">{t('session.successFailure')}</span>
                 <span className="audio-status-value">
                   {modelTraceSummary.succeededCalls.toLocaleString()} / {modelTraceSummary.failedCalls.toLocaleString()}
                 </span>
               </div>
               <div className="audio-status-item">
-                <span className="audio-status-label">当前模型</span>
+                <span className="audio-status-label">{t('session.currentModel')}</span>
                 <span className="audio-status-value">{latestModelTraceCall.model || '—'}</span>
               </div>
               <div className="audio-status-item">
-                <span className="audio-status-label">最近耗时</span>
+                <span className="audio-status-label">{t('session.lastDuration')}</span>
                 <span className="audio-status-value">{latestModelTraceCall.elapsedMs == null ? latestModelTraceCall.status : `${latestModelTraceCall.elapsedMs} ms`}</span>
               </div>
               <div className="audio-status-item">
-                <span className="audio-status-label">最近 Cue</span>
+                <span className="audio-status-label">{t('session.lastCue')}</span>
                 <span className="audio-status-value">{latestModelTraceCall.cueId ?? '-'}</span>
               </div>
             </div>
           ) : (
             <div className="console-event-item">
               <div className="compact-info-head">
-                <strong>暂无模型调用</strong>
-                <StatusBadge label="空" tone="pending" />
+                <strong>{t('session.noModelCalls')}</strong>
+                <StatusBadge label={t('session.empty')} tone="pending" />
               </div>
-              <p>启动看片模式后，这里会显示最近模型调用摘要</p>
+              <p>{t('session.modelTraceEmpty')}</p>
             </div>
           )}
-          {modelTraceSummary.lastError && <p className="cue-queue-error">最近错误：{modelTraceSummary.lastError}</p>}
+          {modelTraceSummary.lastError && <p className="cue-queue-error">{t('session.recentError', { error: modelTraceSummary.lastError })}</p>}
         </article>
 
         <article className="content-card page-card compact-card live-text-card">
           <div className="section-heading compact-heading">
-            <h3>当前字幕</h3>
+            <h3>{t('session.currentSubtitle')}</h3>
           </div>
           {activeCue ? (
             <div className="console-event-item live-text-card">
               <div className="live-text-head">
-                <strong>{activeCue.committed ? '已翻译' : '翻译中...'}</strong>
-                <StatusBadge label={`队列 ${audioRuntimeSnapshot.subtitleOverlay.queueDepth} 条`} tone={audioRuntimeSnapshot.subtitleOverlay.queueDepth > 0 ? 'warning' : 'ready'} />
+                <strong>{activeCue.committed ? t('session.translated') : t('session.translating')}</strong>
+                <StatusBadge label={t('session.queueDepth', { count: audioRuntimeSnapshot.subtitleOverlay.queueDepth })} tone={audioRuntimeSnapshot.subtitleOverlay.queueDepth > 0 ? 'warning' : 'ready'} />
               </div>
               <p className="live-text-source">{activeCueSourceText}</p>
-              <p className="live-text-translation">{activeCue.translatedText || (activeCue.committed ? '翻译失败' : '正在调用 LLM 翻译...')}</p>
+              <p className="live-text-translation">{activeCue.translatedText || (activeCue.committed ? t('session.translationFailed') : t('session.callingLlm'))}</p>
             </div>
           ) : (
             <div className="console-event-item">
               <div className="compact-info-head">
-                <strong>无活动字幕</strong>
-                <StatusBadge label="空" tone="pending" />
+                <strong>{t('session.noActiveSubtitle')}</strong>
+                <StatusBadge label={t('session.empty')} tone="pending" />
               </div>
-              <p>启动场景后，实时字幕会显示在这里。</p>
+              <p>{t('session.currentSubtitleEmpty')}</p>
             </div>
           )}
         </article>
 
         <article className="content-card page-card compact-card live-text-card">
           <div className="section-heading compact-heading">
-            <h3>字幕队列</h3>
+            <h3>{t('session.subtitleQueue')}</h3>
             {audioRuntimeSnapshot.subtitleOverlay.droppedCueCount > 0 && (
-              <StatusBadge label={`丢弃 ${audioRuntimeSnapshot.subtitleOverlay.droppedCueCount} 条`} tone="warning" />
+              <StatusBadge label={t('session.droppedCueCount', { count: audioRuntimeSnapshot.subtitleOverlay.droppedCueCount })} tone="warning" />
             )}
           </div>
           {audioRuntimeSnapshot.subtitleOverlay.recentCues.length > 0 ? (
@@ -929,9 +1141,10 @@ function RealTimeSessionPage() {
                     <span className="cue-queue-item-id">{cue.cueId}</span>
                     <CueStatusBadge cue={cue} />
                   </div>
+                  <div className="cue-queue-time">{formatCueTiming(cue)}</div>
                   <p className="cue-queue-source">{cue.displaySourceText || cue.sourceText}</p>
                   {cue.translatedText && (
-                    <p className={cue.translatedText.startsWith('[翻译失败]') ? 'cue-queue-error' : 'cue-queue-translation'}>
+                    <p className={cue.translatedText.startsWith(TRANSLATION_FAILED_PREFIX) ? 'cue-queue-error' : 'cue-queue-translation'}>
                       {cue.translatedText}
                     </p>
                   )}
@@ -941,10 +1154,10 @@ function RealTimeSessionPage() {
           ) : (
             <div className="console-event-item console-event-item-empty">
               <div className="compact-info-head">
-                <strong>暂无字幕事件</strong>
-                <StatusBadge label="空" tone="pending" />
+                <strong>{t('session.noSubtitleEvents')}</strong>
+                <StatusBadge label={t('session.empty')} tone="pending" />
               </div>
-              <p>语音检测到分段后将在此处显示。</p>
+              <p>{t('session.subtitleQueueEmpty')}</p>
             </div>
           )}
         </article>

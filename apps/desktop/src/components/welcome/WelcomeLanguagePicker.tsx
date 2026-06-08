@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../icons/AppIcon';
 import DriverManagementCard from '../driver/DriverManagementCard';
@@ -83,17 +83,13 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
   const providerRuntimeStatusMessage =
     effectiveBridgeStatus === 'runtime-error'
       ? latestRuntimeError?.message ??
-        t('welcome.desktopRuntimeUnavailable', {
-          defaultValue: '桌面运行时初始化失败。请先等待 Rust Core 与存储层恢复就绪后再保存 API Key；如果持续失败，请重启应用后重试。',
-        })
+        t('welcome.desktopRuntimeUnavailable')
       : providerRuntimePreparing
-        ? t('welcome.desktopRuntimePreparing', {
-            defaultValue: '桌面运行时或存储层仍在初始化。请等待状态变为桌面运行时且存储层就绪后，再保存 API Key。',
-          })
+        ? t('welcome.desktopRuntimePreparing')
         : null;
 
   useEffect(() => {
-    setApiBaseUrl(currentTemplate.defaultDraft.baseUrl);
+    queueMicrotask(() => setApiBaseUrl(currentTemplate.defaultDraft.baseUrl));
   }, [currentTemplate]);
 
   useEffect(() => {
@@ -261,7 +257,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
             <span>{t('welcome.stepProviderTitle')}</span>
             <span>›</span>
             <span className={isDriverStep ? 'welcome-step-dot welcome-step-dot-active' : 'welcome-step-dot'} />
-            <span>{t('welcome.stepDriverTitle', { defaultValue: '驱动与桥接' })}</span>
+            <span>{t('welcome.stepDriverTitle')}</span>
           </div>
         </header>
 
@@ -314,7 +310,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
               </label>
 
               <label className="welcome-provider-field">
-                <span>{t('welcome.apiBaseUrlLabel', { defaultValue: 'API 地址' })}</span>
+                <span>{t('welcome.apiBaseUrlLabel')}</span>
                 <input
                   type="url"
                   autoComplete="off"
@@ -366,11 +362,9 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
             </div>
           ) : (
             <div className="welcome-provider-form">
-              <h2 className="welcome-step-title">{t('welcome.stepDriverTitle', { defaultValue: '驱动与桥接' })}</h2>
+              <h2 className="welcome-step-title">{t('welcome.stepDriverTitle')}</h2>
               <p className="welcome-step-description">
-                {t('welcome.stepDriverDescription', {
-                  defaultValue: '首次启动先检测虚拟麦克风驱动和桥接状态；未安装时可直接在这里完成安装。',
-                })}
+                {t('welcome.stepDriverDescription')}
               </p>
 
               <DriverManagementCard variant="onboarding" />
@@ -386,7 +380,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
             {isLanguageStep
               ? t('welcome.hint')
               : isDriverStep
-                ? t('welcome.driverFootHint', { defaultValue: '可先进入看片模式，之后在设置 > 驱动管理中继续修复。' })
+                ? t('welcome.driverFootHint')
                 : t('welcome.providerFootHint')}
           </p>
           <div className="welcome-language-foot-actions">
@@ -400,7 +394,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
                   {t('common.back')}
                 </button>
                 <button type="button" className="welcome-language-secondary" onClick={finishWizard} disabled={saving || revealing}>
-                  {t('welcome.skip', { defaultValue: '稍后再说' })}
+                  {t('welcome.skip')}
                 </button>
                 <button type="button" className="welcome-language-confirm" onClick={finishWizard} disabled={saving || revealing}>
                   {t('common.finish')}

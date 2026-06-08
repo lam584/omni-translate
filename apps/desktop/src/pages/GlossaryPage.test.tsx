@@ -42,6 +42,10 @@ async function changeChecked(element: HTMLInputElement, checked: boolean) {
   });
 }
 
+function clickBySelector<T extends HTMLElement = HTMLElement>(container: HTMLElement, selector: string, index = 0) {
+  return Array.from(container.querySelectorAll<T>(selector))[index];
+}
+
 describe('GlossaryPage compact labels', () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -332,6 +336,153 @@ describe('GlossaryPage compact labels', () => {
 
     await click(container.querySelector<HTMLButtonElement>('.glossary-table [title="删除"]'));
     expect(useAppStore.getState().configDraft.glossary.libraries.find((library) => library.id === 'watch')?.entries).toHaveLength(14);
+    await act(async () => {
+      window.dispatchEvent(new Event('provider-template-catalog-updated'));
+    });
+  });
+
+  it('covers import warning, toast close and no-source drag fallback branches', async () => {
+    const readerResult = JSON.stringify({ invalid: true });
+    class MockFileReader {
+      result: string | null = null;
+      onerror: (() => void) | null = null;
+      onload: (() => void) | null = null;
+
+      readAsText() {
+        this.result = readerResult;
+        this.onload?.();
+      }
+    }
+    vi.stubGlobal('FileReader', MockFileReader);
+
+    const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.glossary.libraries = [
+      { id: 'first', name: 'First', enabled: true, priority: 0, entries: [] },
+      { id: 'second', name: 'Second', enabled: true, priority: 1, entries: [] },
+    ];
+    useAppStore.setState((state) => ({ ...state, configDraft }));
+
+    await act(async () => root.render(<GlossaryPage />));
+
+    const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
+    Object.defineProperty(input, 'files', { configurable: true, value: [new File(['test'], 'invalid.json', { type: 'application/json' })] });
+    await act(async () => {
+      input.dispatchEvent(new Event('change', { bubbles: true }));
+    });
+    expect(container.querySelector('.glossary-toast-warning')).toBeTruthy();
+    await click(container.querySelector<HTMLButtonElement>('.glossary-toast-close'));
+    expect(container.querySelector('.glossary-toast-warning')).toBeNull();
+
+    const cards = container.querySelectorAll<HTMLElement>('.glossary-library-item');
+    const transfer = {
+      effectAllowed: '',
+      getData: vi.fn(() => 'second'),
+      setData: vi.fn(),
+    };
+    const dragOver = new Event('dragover', { bubbles: true, cancelable: true });
+    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer });
+    await act(async () => {
+      cards[0]?.dispatchEvent(dragOver);
+    });
+    expect(transfer.getData).toHaveBeenCalledWith('text/plain');
+    expect(useAppStore.getState().configDraft.glossary.libraries[0]?.id).toBe('second');
+
+    const noSourceDragOver = new Event('dragover', { bubbles: true, cancelable: true });
+    Object.defineProperty(noSourceDragOver, 'dataTransfer', { value: { getData: vi.fn(() => ''), setData: vi.fn(), effectAllowed: '' } });
+    await act(async () => {
+      container.querySelector<HTMLElement>('.glossary-library-item')?.dispatchEvent(noSourceDragOver);
+    });
+    expect(useAppStore.getState().configDraft.glossary.libraries.map((library) => library.id)).toEqual(['second', 'first']);
+  });
+
+  it('closes entry and library dialogs from each dismiss target and blocks empty entry saves', async () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.glossary.libraries = [
+      { id: 'watch', name: 'Watch Terms', enabled: true, priority: 0, entries: [] },
+    ];
+    useAppStore.setState((state) => ({ ...state, configDraft }));
+
+    await act(async () => root.render(<GlossaryPage />));
+
+    await click(container.querySelector<HTMLButtonElement>('.glossary-table-panel .routing-primary-action'));
+    expect(container.querySelector('.glossary-modal')).toBeTruthy();
+    await click(container.querySelector<HTMLButtonElement>('.glossary-modal .routing-primary-action'));
+    expect(container.querySelector('.glossary-modal')).toBeTruthy();
+    await click(container.querySelector<HTMLButtonElement>('.glossary-modal .routing-action-row .icon-button:not(.routing-primary-action)'));
+    expect(container.querySelector('.glossary-modal')).toBeNull();
+
+    await click(container.querySelector<HTMLButtonElement>('.glossary-table-panel .routing-primary-action'));
+    await click(container.querySelector<HTMLButtonElement>('.glossary-modal .glossary-panel-head .icon-button'));
+    expect(container.querySelector('.glossary-modal')).toBeNull();
+
+    await click(container.querySelector<HTMLButtonElement>('.glossary-table-panel .routing-primary-action'));
+    await act(async () => {
+      container.querySelector<HTMLElement>('.glossary-modal-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container.querySelector('.glossary-modal')).toBeNull();
+
+    await click(container.querySelector<HTMLButtonElement>('.routing-hero-actions .routing-primary-action'));
+    expect(container.querySelector('.glossary-library-dialog')).toBeTruthy();
+    await click(container.querySelector<HTMLButtonElement>('.glossary-library-secondary-action'));
+    expect(container.querySelector('.glossary-library-dialog')).toBeNull();
+
+    await click(container.querySelector<HTMLButtonElement>('.routing-hero-actions .routing-primary-action'));
+    await click(container.querySelector<HTMLButtonElement>('.glossary-modal-close'));
+    expect(container.querySelector('.glossary-library-dialog')).toBeNull();
+
+    await click(container.querySelector<HTMLButtonElement>('.routing-hero-actions .routing-primary-action'));
+    await act(async () => {
+      container.querySelector<HTMLElement>('.glossary-modal-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(container.querySelector('.glossary-library-dialog')).toBeNull();
+  });
+
+  it('lists subtitle translation calibration models and saves the selection', async () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.providers[0] = {
+      ...configDraft.providers[0],
+      sceneModelAssignments: [
+        ...(configDraft.providers[0]?.sceneModelAssignments ?? []).filter((assignment) => assignment.scenario !== 'subtitle-translate'),
+        { scenario: 'subtitle-translate', modelIds: ['subtitle-main', 'subtitle-main', 'subtitle-backup'] },
+      ],
+      modelCatalogCache: {
+        signature: 'models',
+        source: 'runtime',
+        endpoint: null,
+        fetchedAt: '2026-06-07T00:00:00.000Z',
+        error: null,
+        models: [
+          {
+            id: 'subtitle-main',
+            displayName: 'Subtitle Main',
+            ownedBy: null,
+            createdAt: null,
+            capabilities: [],
+            providerTemplateId: configDraft.providers[0].templateId,
+            providerTemplateName: configDraft.providers[0].displayName,
+          },
+          {
+            id: 'subtitle-backup',
+            displayName: 'Subtitle Backup',
+            ownedBy: null,
+            createdAt: null,
+            capabilities: [],
+            providerTemplateId: configDraft.providers[0].templateId,
+            providerTemplateName: configDraft.providers[0].displayName,
+          },
+        ],
+      },
+    };
+    useAppStore.setState((state) => ({ ...state, configDraft }));
+
+    await act(async () => root.render(<GlossaryPage />));
+
+    const calibrationSelect = clickBySelector<HTMLSelectElement>(container, '.glossary-calibration-row select');
+    expect(Array.from(calibrationSelect.options).map((option) => option.value)).toEqual(['', 'subtitle-main', 'subtitle-backup']);
+    expect(calibrationSelect.textContent).toContain('Subtitle Main');
+    await selectValue(calibrationSelect, 'subtitle-backup');
+    expect(useAppStore.getState().configDraft.glossary.calibrationModelId).toBe('subtitle-backup');
+
     await act(async () => {
       window.dispatchEvent(new Event('provider-template-catalog-updated'));
     });

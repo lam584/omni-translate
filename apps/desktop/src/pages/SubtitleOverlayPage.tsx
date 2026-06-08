@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+﻿import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { Menu } from '@tauri-apps/api/menu';
@@ -44,9 +44,9 @@ const overlayStylePresets: Record<'classic' | 'glass' | 'contrast', OverlayStyle
 };
 
 const overlayThemeOptions = [
-  { id: 'classic', labelKey: 'overlay.styleClassic', labelFallback: '经典深色', preset: overlayStylePresets.classic },
-  { id: 'glass', labelKey: 'overlay.styleGlass', labelFallback: '玻璃轻透', preset: overlayStylePresets.glass },
-  { id: 'contrast', labelKey: 'overlay.styleContrast', labelFallback: '高对比', preset: overlayStylePresets.contrast },
+  { id: 'classic', labelKey: 'overlay.styleClassic', preset: overlayStylePresets.classic },
+  { id: 'glass', labelKey: 'overlay.styleGlass', preset: overlayStylePresets.glass },
+  { id: 'contrast', labelKey: 'overlay.styleContrast', preset: overlayStylePresets.contrast },
 ] as const;
 
 const overlayFontSizeOptions = [18, 22, 24, 28, 32, 36, 42, 48] as const;
@@ -54,12 +54,12 @@ const overlayFontSizeOptions = [18, 22, 24, 28, 32, 36, 42, 48] as const;
 const overlayBackgroundOpacityOptions = [0, 0.25, 0.45, 0.65, 0.84, 1] as const;
 
 const overlayTextColorOptions = [
-  { id: 'warm-white', labelKey: 'overlay.textColorWarmWhite', labelFallback: '暖白', value: '#fff8ef' },
-  { id: 'pure-white', labelKey: 'overlay.textColorPureWhite', labelFallback: '纯白', value: '#ffffff' },
-  { id: 'amber', labelKey: 'overlay.textColorAmber', labelFallback: '琥珀', value: '#fef3c7' },
-  { id: 'mint', labelKey: 'overlay.textColorMint', labelFallback: '薄荷绿', value: '#bbf7d0' },
-  { id: 'sky', labelKey: 'overlay.textColorSky', labelFallback: '天蓝', value: '#bae6fd' },
-  { id: 'rose', labelKey: 'overlay.textColorRose', labelFallback: '玫瑰粉', value: '#fecdd3' },
+  { id: 'warm-white', labelKey: 'overlay.textColorWarmWhite', value: '#fff8ef' },
+  { id: 'pure-white', labelKey: 'overlay.textColorPureWhite', value: '#ffffff' },
+  { id: 'amber', labelKey: 'overlay.textColorAmber', value: '#fef3c7' },
+  { id: 'mint', labelKey: 'overlay.textColorMint', value: '#bbf7d0' },
+  { id: 'sky', labelKey: 'overlay.textColorSky', value: '#bae6fd' },
+  { id: 'rose', labelKey: 'overlay.textColorRose', value: '#fecdd3' },
 ] as const;
 
 type OverlayContextMenuState = {
@@ -236,7 +236,7 @@ export const subtitleOverlayPageHelpers = {
 
 function SubtitleOverlayPage() {
   const { t } = useTranslation();
-  const menuText = (key: string, defaultValue: string) => t(key, { defaultValue });
+  const menuText = (key: string) => t(key);
   const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
   const configDraft = useAppStore((state) => state.configDraft);
   const setAudioRuntimeSnapshot = useAppStore((state) => state.setAudioRuntimeSnapshot);
@@ -610,7 +610,7 @@ function SubtitleOverlayPage() {
 
   useEffect(() => {
     if (!overlayLocked) {
-      setLockedReveal((current) => (current.visible || current.interactive ? { interactive: false, visible: false } : current));
+      queueMicrotask(() => setLockedReveal((current) => (current.visible || current.interactive ? { interactive: false, visible: false } : current)));
       return undefined;
     }
 
@@ -675,8 +675,10 @@ function SubtitleOverlayPage() {
     }
 
     if (overlayLocked) {
-      setHovered(false);
-      setContextMenu((current) => (current.open ? { ...current, open: false } : current));
+      queueMicrotask(() => {
+        setHovered(false);
+        setContextMenu((current) => (current.open ? { ...current, open: false } : current));
+      });
     }
 
     void syncNativeOverlayWindowState(overlayLocked, true, lockedReveal.interactive);
@@ -908,17 +910,17 @@ function SubtitleOverlayPage() {
         items: [
           {
             id: 'overlay-theme',
-            text: menuText('overlay.themeMenu', '主题'),
+            text: menuText('overlay.themeMenu'),
             items: overlayThemeOptions.map((option) => ({
               checked: matchesOverlayStylePreset(option.preset),
               id: `overlay-theme-${option.id}`,
-              text: menuText(option.labelKey, option.labelFallback),
+              text: menuText(option.labelKey),
               action: () => applyOverlayStylePreset(option.preset),
             })),
           },
           {
             id: 'overlay-font-size',
-            text: menuText('overlay.fontSizeMenu', '字号'),
+            text: menuText('overlay.fontSizeMenu'),
             items: overlayFontSizeOptions.map((fontSize) => ({
               checked: effectiveOverlayFontSize === fontSize,
               id: `overlay-font-size-${fontSize}`,
@@ -928,7 +930,7 @@ function SubtitleOverlayPage() {
           },
           {
             id: 'overlay-background-opacity',
-            text: menuText('overlay.backgroundOpacityMenu', '背景透明度'),
+            text: menuText('overlay.backgroundOpacityMenu'),
             items: overlayBackgroundOpacityOptions.map((opacity) => ({
               checked: Math.abs(overlayBackgroundOpacity - opacity) < 0.01,
               id: `overlay-background-opacity-${Math.round(opacity * 100)}`,
@@ -938,11 +940,11 @@ function SubtitleOverlayPage() {
           },
           {
             id: 'overlay-text-color',
-            text: menuText('overlay.textColorMenu', '字体颜色'),
+            text: menuText('overlay.textColorMenu'),
             items: overlayTextColorOptions.map((option) => ({
               checked: overlayTextColor.toLowerCase() === option.value,
               id: `overlay-text-color-${option.id}`,
-              text: menuText(option.labelKey, option.labelFallback),
+              text: menuText(option.labelKey),
               action: () => applyOverlayTextColor(option.value),
             })),
           },
@@ -956,14 +958,14 @@ function SubtitleOverlayPage() {
           },
           {
             id: 'overlay-hide',
-            text: menuText('overlay.hideAction', '隐藏字幕悬浮窗'),
+            text: menuText('overlay.hideAction'),
             action: () => {
               void hideSubtitleOverlayWindow();
             },
           },
           {
             id: 'overlay-clear',
-            text: menuText('overlay.clearAction', '清空字幕'),
+            text: menuText('overlay.clearAction'),
             action: () => {
               void clearSubtitleOverlayCues();
             },
@@ -1181,10 +1183,10 @@ function SubtitleOverlayPage() {
           onMouseDown={(event) => event.stopPropagation()}
           role="menu"
         >
-          <div className="subtitle-overlay-context-menu-title">{menuText('overlay.contextMenuTitle', '字幕悬浮窗')}</div>
+          <div className="subtitle-overlay-context-menu-title">{menuText('overlay.contextMenuTitle')}</div>
           <div className="subtitle-overlay-context-menu-submenu" role="none">
             <button className="subtitle-overlay-context-menu-item" type="button">
-              <span>{menuText('overlay.themeMenu', '主题')}</span>
+              <span>{menuText('overlay.themeMenu')}</span>
               <span aria-hidden="true">&gt;</span>
             </button>
             <div className="subtitle-overlay-context-submenu-panel" role="menu">
@@ -1196,14 +1198,14 @@ function SubtitleOverlayPage() {
                   type="button"
                 >
                   {matchesOverlayStylePreset(option.preset) ? '\u2713 ' : ''}
-                  {menuText(option.labelKey, option.labelFallback)}
+                  {menuText(option.labelKey)}
                 </button>
               ))}
             </div>
           </div>
           <div className="subtitle-overlay-context-menu-submenu" role="none">
             <button className="subtitle-overlay-context-menu-item" type="button">
-              <span>{menuText('overlay.fontSizeMenu', '字号')}</span>
+              <span>{menuText('overlay.fontSizeMenu')}</span>
               <span aria-hidden="true">&gt;</span>
             </button>
             <div className="subtitle-overlay-context-submenu-panel" role="menu">
@@ -1222,7 +1224,7 @@ function SubtitleOverlayPage() {
           </div>
           <div className="subtitle-overlay-context-menu-submenu" role="none">
             <button className="subtitle-overlay-context-menu-item" type="button">
-              <span>{menuText('overlay.backgroundOpacityMenu', '背景透明度')}</span>
+              <span>{menuText('overlay.backgroundOpacityMenu')}</span>
               <span aria-hidden="true">&gt;</span>
             </button>
             <div className="subtitle-overlay-context-submenu-panel" role="menu">
@@ -1241,7 +1243,7 @@ function SubtitleOverlayPage() {
           </div>
           <div className="subtitle-overlay-context-menu-submenu" role="none">
             <button className="subtitle-overlay-context-menu-item" type="button">
-              <span>{menuText('overlay.textColorMenu', '字体颜色')}</span>
+              <span>{menuText('overlay.textColorMenu')}</span>
               <span aria-hidden="true">&gt;</span>
             </button>
             <div className="subtitle-overlay-context-submenu-panel" role="menu">
@@ -1255,7 +1257,7 @@ function SubtitleOverlayPage() {
                   <span className="subtitle-overlay-color-swatch" style={{ backgroundColor: option.value }} />
                   <span>
                     {overlayTextColor.toLowerCase() === option.value ? '\u2713 ' : ''}
-                    {menuText(option.labelKey, option.labelFallback)}
+                    {menuText(option.labelKey)}
                   </span>
                 </button>
               ))}
@@ -1265,10 +1267,10 @@ function SubtitleOverlayPage() {
             {t('overlay.lockAction')}
           </button>
           <button className="subtitle-overlay-context-menu-item" onClick={() => void hideSubtitleOverlayWindow()} type="button">
-            {menuText('overlay.hideAction', '隐藏字幕悬浮窗')}
+            {menuText('overlay.hideAction')}
           </button>
           <button className="subtitle-overlay-context-menu-item" onClick={() => void clearSubtitleOverlayCues()} type="button">
-            {menuText('overlay.clearAction', '清空字幕')}
+            {menuText('overlay.clearAction')}
           </button>
         </div>
       ) : null}

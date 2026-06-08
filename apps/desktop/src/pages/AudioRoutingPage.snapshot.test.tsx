@@ -1,4 +1,4 @@
-import { act } from 'react';
+﻿import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -10,15 +10,6 @@ function bootstrap() {
   document.body.appendChild(container);
   const root = createRoot(container);
   return { container, root, cleanup: () => { root.unmount(); container.remove(); } };
-}
-
-function enableAllScenarioSwitches(container: HTMLElement) {
-  const switches = Array.from(container.querySelectorAll('input[role="switch"]')) as HTMLInputElement[];
-  for (const node of switches) {
-    if (!node.checked) {
-      node.click();
-    }
-  }
 }
 
 describe('AudioRoutingPage v9 layout snapshot', () => {
@@ -36,6 +27,10 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
           virtualMicOutputEnabled: true,
           subtitleTranslationMode: 'secondary',
         },
+        speech: {
+          ...state.configDraft.speech,
+          enabled: true,
+        },
       },
     }));
     host = bootstrap();
@@ -45,7 +40,7 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     host.cleanup();
   });
 
-  it('renders the v9 workspace with top-grid, models-grid, and unified channel section in order', async () => {
+  it('renders the v9 workspace with top-grid and models-grid in order', async () => {
     await act(async () => {
       host.root.render(
         <MemoryRouter>
@@ -56,16 +51,12 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
 
     const workspace = host.container.querySelector('.routing-workspace-v9');
     expect(workspace).toBeTruthy();
-    const orderedSections = Array.from(workspace?.querySelectorAll(':scope > section, :scope > article') ?? []).map((node) => node.className.split(' ').filter(Boolean)).flat();
-    expect(orderedSections).toEqual(expect.arrayContaining(['routing-top-grid', 'routing-models-grid', 'routing-channel-section-unified']));
-    const topGridIndex = orderedSections.indexOf('routing-top-grid');
-    const modelsGridIndex = orderedSections.indexOf('routing-models-grid');
-    const unifiedIndex = orderedSections.indexOf('routing-channel-section-unified');
-    expect(topGridIndex).toBeLessThan(modelsGridIndex);
-    expect(modelsGridIndex).toBeLessThan(unifiedIndex);
+    const orderedSections = Array.from(workspace?.querySelectorAll(':scope > section, :scope > article, :scope > div') ?? []).map((node) => node.className.split(' ').filter(Boolean)).flat();
+    expect(orderedSections).toEqual(expect.arrayContaining(['routing-top-grid', 'routing-models-grid']));
+    expect(orderedSections.indexOf('routing-top-grid')).toBeLessThan(orderedSections.indexOf('routing-models-grid'));
   });
 
-  it('exposes exactly 3 output channel toggles in the unified section with switch semantics', async () => {
+  it('exposes feature toggles inside their owning scenario cards', async () => {
     await act(async () => {
       host.root.render(
         <MemoryRouter>
@@ -74,25 +65,23 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
       );
     });
 
-    const unified = host.container.querySelector('.routing-channel-section-unified');
-    expect(unified).toBeTruthy();
-    const grid = unified?.querySelector('.routing-channel-section-grid');
-    expect(grid).toBeTruthy();
-    const checkboxes = Array.from(grid?.querySelectorAll('input[type="checkbox"]') ?? []);
-    expect(checkboxes).toHaveLength(3);
-    for (const node of checkboxes) {
-      expect(node.getAttribute('role')).toBe('switch');
-      expect(node.getAttribute('aria-checked')).toBe('true');
+    const toggleLabels = Array.from(host.container.querySelectorAll('.scenario-card-head .scenario-card-toggle'));
+    expect(toggleLabels.map((node) => node.textContent?.trim())).toEqual(expect.arrayContaining([
+      '启用字幕翻译',
+      '用二次字幕生成译音',
+      '将翻译语音发送到虚拟麦克风',
+      '文字转语音',
+    ]));
+
+    const switches = toggleLabels.map((label) => label.querySelector('input[type="checkbox"]'));
+    expect(switches).toHaveLength(4);
+    for (const node of switches) {
+      expect(node?.getAttribute('role')).toBe('switch');
+      expect(node?.getAttribute('aria-checked')).toBe('true');
     }
-    const labels = Array.from(grid?.querySelectorAll('.routing-channel-text') ?? []).map((node) => node.textContent?.trim());
-    expect(labels).toEqual([
-      'Enable secondary audio',
-      'Output translated speech',
-      'Send translated voice to virtual microphone',
-    ]);
   });
 
-  it('places saved indicator and section header inside the unified section', async () => {
+  it('does not render the auto-save indicator', async () => {
     await act(async () => {
       host.root.render(
         <MemoryRouter>
@@ -101,13 +90,10 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
       );
     });
 
-    const unified = host.container.querySelector('.routing-channel-section-unified');
-    expect(unified?.querySelector('.routing-channel-section-head h3')?.textContent).toBe('Output channels');
-    expect(unified?.querySelector('.routing-channel-section-head .routing-panel-kicker')?.textContent).toBe('Speak');
-    expect(unified?.querySelector('.routing-saved-indicator')?.textContent?.trim()).toBeTruthy();
+    expect(host.container.querySelector('.routing-saved-indicator')).toBeNull();
   });
 
-  it('has 2 panels in the top grid (capture + output) and 2 panels in the models grid (inbound + outbound)', async () => {
+  it('has 2 panels in the top grid and 2 panels in the models grid', async () => {
     await act(async () => {
       host.root.render(
         <MemoryRouter>
@@ -116,13 +102,11 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
       );
     });
 
-    const topPanels = host.container.querySelectorAll('.routing-top-grid > .routing-panel');
-    expect(topPanels).toHaveLength(2);
-    const modelPanels = host.container.querySelectorAll('.routing-models-grid > .routing-panel');
-    expect(modelPanels).toHaveLength(2);
+    expect(host.container.querySelectorAll('.routing-top-grid > .routing-panel')).toHaveLength(2);
+    expect(host.container.querySelectorAll('.routing-models-grid > .routing-panel')).toHaveLength(2);
   });
 
-  it('moves the secondary-audio scenario card out of the channel-toggle pattern', async () => {
+  it('groups secondary translation cards under card-level switches', async () => {
     await act(async () => {
       host.root.render(
         <MemoryRouter>
@@ -131,8 +115,15 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
       );
     });
 
-    const secondaryCard = Array.from(host.container.querySelectorAll('.scenario-card')).find((card) => card.textContent?.includes('Listen to them · secondary audio')) as HTMLElement | undefined;
-    expect(secondaryCard).toBeTruthy();
-    expect(secondaryCard?.querySelector('input[role="switch"]')).toBeNull();
+    const secondaryGroup = host.container.querySelector('.routing-secondary-group') as HTMLElement | null;
+    expect(secondaryGroup).toBeTruthy();
+    expect(secondaryGroup?.textContent).toContain('字幕翻译');
+    expect(secondaryGroup?.textContent).toContain('听对方 · 二次字幕译音');
+    const switches = secondaryGroup?.querySelectorAll('input[role="switch"]') ?? [];
+    expect(switches).toHaveLength(2);
+    for (const node of Array.from(switches) as HTMLInputElement[]) {
+      expect(node.checked).toBe(true);
+    }
   });
 });
+

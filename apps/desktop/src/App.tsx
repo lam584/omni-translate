@@ -1,36 +1,353 @@
-import { useEffect, useState } from 'react';
+﻿import { useCallback, useEffect, useRef, useState } from 'react';
 import { RouterProvider } from 'react-router-dom';
+import BootstrapOverlay, { type BootstrapStep, type BootstrapStepStatus } from './components/BootstrapOverlay';
 import WelcomeLanguagePicker from './components/welcome/WelcomeLanguagePicker';
-import { getCurrentLanguage, hasCompletedWelcome } from './i18n/config';
-import { bootstrapDesktopRuntimeBridge } from './runtime/desktop-runtime';
+import i18n, { getCurrentLanguage, hasCompletedWelcome } from './i18n/config';
+import {
+  bootstrapDesktopRuntimeBridge,
+  scheduleBridgeAutostartAfterStartup,
+  type BootstrapStepId,
+  type OnBootstrapStep,
+} from './runtime/desktop-runtime';
+import { appendFrontendDiagnosticsLog } from './runtime/diagnostics-runtime';
 import { router } from './router';
+import { onRouteReady } from './router-startup';
+import type { AppConfigDraft } from './schema/config';
+import { useAppStore } from './stores/app-store';
+
+const STEP_LABELS: Record<BootstrapStepId, string> = {
+  'detect-runtime': 'common.bootstrapDetecting',
+  'check-ipc': 'common.bootstrapConnecting',
+  'init-runtime': 'common.bootstrapPreparing',
+  'init-audio': 'common.bootstrapPreparingAudio',
+  'load-config': 'common.bootstrapLoadingConfig',
+};
+
+const STEP_ORDER: BootstrapStepId[] = [
+  'detect-runtime',
+  'check-ipc',
+  'init-runtime',
+  'init-audio',
+  'load-config',
+];
+
+const DEFAULT_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID =
+  'template-dashscope-realtime::qwen3.6-flash-2026-04-16';
+const DEFAULT_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID =
+  'template-dashscope-realtime::qwen3.5-omni-plus-realtime';
+const STARTUP_MEASURE_RUN_ID = watchModeEnvString(import.meta.env, 'VITE_OMNI_STARTUP_MEASURE_RUN_ID');
+const BOOTSTRAP_OVERLAY_COMPLETION_DELAY_MS = 0;
+const startedWatchModeAutostartMarkers = new Set<string>();
+
+type StartupStepTiming = {
+  activeAtMs?: number;
+  doneAtMs?: number;
+  errorAtMs?: number;
+  detail?: string;
+};
+
+function createInitialSteps(): BootstrapStep[] {
+  return STEP_ORDER.map((id) => ({
+    id,
+    label: i18n.t(STEP_LABELS[id]),
+    status: 'pending' as BootstrapStepStatus,
+  }));
+}
+
+export function isWatchModeDiagnosticAutostartAllowed(
+  env: Record<string, string | boolean | undefined>,
+  nowMs = Date.now(),
+) {
+  if (env.VITE_OMNI_WATCH_MODE_AUTOSTART !== '1') {
+    return false;
+  }
+  const runMarker = env.VITE_OMNI_WATCH_MODE_RUN_MARKER;
+  if (typeof runMarker !== 'string' || !runMarker.startsWith('watch_mode_diagnostic.run_id=')) {
+    return false;
+  }
+  const expiresAtMs = Number(env.VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS);
+  return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
+}
+
+function watchModeEnvString(
+  env: Record<string, string | boolean | undefined>,
+  key: string,
+  fallback = '',
+) {
+  const value = env[key];
+  if (typeof value === 'string' && value.trim()) {
+    return value.trim();
+  }
+  return fallback;
+}
+
+function nowMs() {
+  return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+function readPerformanceTimeOrigin() {
+  return typeof performance !== 'undefined' && Number.isFinite(performance.timeOrigin)
+    ? performance.timeOrigin
+    : Date.now();
+}
+
+function createStartupReadyDetail(payload: Record<string, unknown>) {
+  return `runId=${STARTUP_MEASURE_RUN_ID} payload=${encodeURIComponent(JSON.stringify(payload))}`;
+}
+
+export function buildWatchModeDiagnosticAutostartConfig(
+  currentConfig: AppConfigDraft,
+  env: Record<string, string | boolean | undefined> = import.meta.env,
+): AppConfigDraft {
+  const outputDeviceId = watchModeEnvString(env, 'VITE_OMNI_WATCH_MODE_OUTPUT_DEVICE_ID');
+  const outputLevel = Number(env.VITE_OMNI_WATCH_MODE_OUTPUT_LEVEL ?? currentConfig.devices.outputLevel);
+  const watchModelId = watchModeEnvString(env, 'VITE_OMNI_WATCH_MODE_MODEL_ID');
+  const subtitleTranslationModelId = watchModeEnvString(
+    env,
+    'VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID',
+    DEFAULT_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID,
+  );
+  const inboundSecondaryAudioModelId = watchModeEnvString(
+    env,
+    'VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID',
+    DEFAULT_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID,
+  );
+
+  return {
+    ...currentConfig,
+    devices: {
+      ...currentConfig.devices,
+      routeMode: 'watch',
+      outputDeviceId: outputDeviceId || currentConfig.devices.outputDeviceId,
+      outputLevel: Number.isFinite(outputLevel) ? Math.max(0, Math.min(100, outputLevel)) : currentConfig.devices.outputLevel,
+      inboundVoiceModelId: watchModelId || currentConfig.devices.inboundVoiceModelId,
+      outboundVoiceModelId: watchModelId || currentConfig.devices.outboundVoiceModelId,
+      textToSpeechModelId: inboundSecondaryAudioModelId,
+      subtitleTranslationMode: 'secondary',
+      subtitleTranslationModelId,
+      inboundSecondaryAudioModelId,
+      outputSpeechEnabled: true,
+      feedbackLoopPrevention: 'virtual-driver',
+      inboundRoute: {
+        ...currentConfig.devices.inboundRoute,
+        mixControl: {
+          ...currentConfig.devices.inboundRoute.mixControl,
+          keepOriginalAudio: true,
+          translatedAudioEnabled: true,
+          originalAudioGainDb: 0,
+          translatedAudioGainDb: 0,
+          duckingEnabled: true,
+          monitorMode: 'original-and-translated',
+        },
+      },
+    },
+    speech: {
+      ...currentConfig.speech,
+      enabled: true,
+      textToSpeechModelId: inboundSecondaryAudioModelId,
+      outputTarget: 'speaker',
+      localPlaybackEnabled: true,
+      virtualMicOutputEnabled: false,
+      translationAudioSource: 'subtitle-tts',
+    },
+  };
+}
+
+async function runWatchModeDiagnosticAutostart() {
+  if (!isWatchModeDiagnosticAutostartAllowed(import.meta.env)) {
+    return;
+  }
+
+  const currentConfig = useAppStore.getState().configDraft;
+  const config = buildWatchModeDiagnosticAutostartConfig(currentConfig);
+  const runMarker = import.meta.env.VITE_OMNI_WATCH_MODE_RUN_MARKER;
+  if (typeof runMarker === 'string' && startedWatchModeAutostartMarkers.has(runMarker)) {
+    appendFrontendDiagnosticsLog(
+      'runtime',
+      'info',
+      'watch_mode.diagnostic_autostart_already_started',
+      `runMarker=${runMarker}`,
+    );
+    return;
+  }
+  if (typeof runMarker === 'string') {
+    startedWatchModeAutostartMarkers.add(runMarker);
+  }
+  console.info('[omni][watch-mode-diagnostic] autostart', runMarker ? `runMarker=${runMarker}` : '');
+  appendFrontendDiagnosticsLog(
+    'runtime',
+    'info',
+    'watch_mode.diagnostic_frontend_autostart_skipped',
+    `runMarker=${typeof runMarker === 'string' ? runMarker : ''} backendAutostartAuthoritative=true config=${encodeURIComponent(JSON.stringify(config))}`,
+  );
+}
 
 function App() {
   const [welcomeVisible, setWelcomeVisible] = useState<boolean>(() => !hasCompletedWelcome());
+  const [steps, setSteps] = useState<BootstrapStep[]>(createInitialSteps);
+  const [bootstrapReady, setBootstrapReady] = useState(false);
+  const startupStartedAtRef = useRef(nowMs());
+  const startupStepTimingsRef = useRef<Record<string, StartupStepTiming>>({});
+  const startupReadyLoggedRef = useRef(false);
+  const startupReadyScheduledRef = useRef(false);
+  const bridgeAutostartScheduledRef = useRef(false);
+  const bridgeAutostartCleanupRef = useRef<(() => void) | null>(null);
+  const bridgeAutostartPromiseRef = useRef<Promise<void> | null>(null);
+  const bootstrapGenerationRef = useRef(0);
+  const appMountedAtEpochMsRef = useRef(Date.now());
+  const fullReadyLoggedRef = useRef(false);
+  const deferredStylesPromiseRef = useRef<Promise<unknown> | null>(null);
+
+  const logStartupReady = useCallback(async () => {
+    if (!STARTUP_MEASURE_RUN_ID || startupReadyLoggedRef.current) {
+      return;
+    }
+
+    startupReadyLoggedRef.current = true;
+    const readyAtMs = Math.round(nowMs() - startupStartedAtRef.current);
+    const readySignalAtEpochMs = Date.now();
+    await appendFrontendDiagnosticsLog(
+      'runtime',
+      'info',
+      'startup.readiness_ready',
+      createStartupReadyDetail({
+        runId: STARTUP_MEASURE_RUN_ID,
+        appMountedAtEpochMs: appMountedAtEpochMsRef.current,
+        readySignalAtEpochMs,
+        readyAfterAppMountMs: readyAtMs,
+        bootstrapOverlayCompletionDelayMs: BOOTSTRAP_OVERLAY_COMPLETION_DELAY_MS,
+        timeOriginMs: Math.round(readPerformanceTimeOrigin()),
+        steps: startupStepTimingsRef.current,
+      }),
+    );
+  }, []);
+
+  const handleBootstrapStep: OnBootstrapStep = useCallback((stepId, status, detail) => {
+    const stepTiming = startupStepTimingsRef.current[stepId] ?? {};
+    const elapsedMs = Math.round(nowMs() - startupStartedAtRef.current);
+    if (status === 'active') {
+      stepTiming.activeAtMs ??= elapsedMs;
+    } else if (status === 'done') {
+      stepTiming.doneAtMs = elapsedMs;
+    } else if (status === 'error') {
+      stepTiming.errorAtMs = elapsedMs;
+    }
+    if (detail) {
+      stepTiming.detail = detail;
+    }
+    startupStepTimingsRef.current[stepId] = stepTiming;
+
+    setSteps((prev) => {
+      const next = prev.map((s) =>
+        s.id === stepId ? { ...s, status, detail } : s,
+      );
+      const allDone = next.every((s) => s.status === 'done' || s.status === 'error');
+      if (allDone) {
+        if (startupReadyScheduledRef.current) {
+          return next;
+        }
+        startupReadyScheduledRef.current = true;
+        setTimeout(() => {
+          setBootstrapReady(true);
+          void logStartupReady().then(() => {
+            if (!bridgeAutostartScheduledRef.current) {
+              bridgeAutostartScheduledRef.current = true;
+              const scheduled = scheduleBridgeAutostartAfterStartup();
+              bridgeAutostartCleanupRef.current = scheduled.cleanup;
+              bridgeAutostartPromiseRef.current = scheduled.promise;
+            }
+          });
+        }, BOOTSTRAP_OVERLAY_COMPLETION_DELAY_MS);
+      }
+      return next;
+    });
+  }, [logStartupReady]);
 
   useEffect(() => {
+    const generation = bootstrapGenerationRef.current + 1;
+    bootstrapGenerationRef.current = generation;
     let disposed = false;
     let cleanup = () => {};
+    const guardedBootstrapStep: OnBootstrapStep = (stepId, status, detail) => {
+      if (disposed || bootstrapGenerationRef.current !== generation) {
+        return;
+      }
+      handleBootstrapStep(stepId, status, detail);
+    };
 
-    void bootstrapDesktopRuntimeBridge().then((nextCleanup) => {
+    void bootstrapDesktopRuntimeBridge(guardedBootstrapStep).then((nextCleanup) => {
       if (disposed) {
         nextCleanup();
         return;
       }
-
       cleanup = nextCleanup;
+      void runWatchModeDiagnosticAutostart().catch((error) => {
+        console.error('[omni][watch-mode-diagnostic] autostart failed', error);
+      });
     });
 
     return () => {
       disposed = true;
+      if (bootstrapGenerationRef.current === generation) {
+        bootstrapGenerationRef.current += 1;
+      }
+      bridgeAutostartCleanupRef.current?.();
+      bridgeAutostartCleanupRef.current = null;
+      bridgeAutostartScheduledRef.current = false;
       cleanup();
     };
-  }, []);
+  }, [handleBootstrapStep]);
+
+  // Full-ready coordinator: wait for deferred CSS + route + bridge startup convergence.
+  useEffect(() => {
+    if (!bootstrapReady || fullReadyLoggedRef.current) return;
+
+    deferredStylesPromiseRef.current = import('./styles/deferred.css');
+
+    if (!deferredStylesPromiseRef.current) return;
+
+    let stylesResolved = false;
+    let routeResolved = false;
+    let bridgeResolved = false;
+
+    const attemptFull = () => {
+      if (fullReadyLoggedRef.current) return;
+      if (!stylesResolved || !routeResolved || !bridgeResolved) return;
+      fullReadyLoggedRef.current = true;
+      void appendFrontendDiagnosticsLog('runtime', 'info', 'startup.full_ready', '');
+    };
+
+    deferredStylesPromiseRef.current.then(() => {
+      stylesResolved = true;
+      void appendFrontendDiagnosticsLog('runtime', 'info', 'startup.styles_ready', '');
+      attemptFull();
+    });
+
+    onRouteReady();
+    routeResolved = true;
+    void appendFrontendDiagnosticsLog('runtime', 'info', 'startup.route_ready', '');
+
+    if (bridgeAutostartPromiseRef.current) {
+      bridgeAutostartPromiseRef.current.then(() => {
+        bridgeResolved = true;
+        void appendFrontendDiagnosticsLog('runtime', 'info', 'startup.bridge_converged', '');
+      }).catch(() => {
+        bridgeResolved = true;
+        void appendFrontendDiagnosticsLog('runtime', 'info', 'startup.bridge_converged', 'convergence=error');
+      }).finally(() => {
+        attemptFull();
+      });
+    } else {
+      bridgeResolved = true;
+      attemptFull();
+    }
+  }, [bootstrapReady]);
 
   return (
     <>
       <RouterProvider router={router} />
-      {welcomeVisible ? (
+      <BootstrapOverlay steps={steps} visible={!bootstrapReady} />
+      {welcomeVisible && bootstrapReady ? (
         <WelcomeLanguagePicker
           initialLanguage={getCurrentLanguage()}
           onDone={() => setWelcomeVisible(false)}

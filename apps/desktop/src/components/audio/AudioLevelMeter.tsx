@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 type AudioLevelMeterProps = {
   energyDb: number;
@@ -30,6 +31,7 @@ function levelToColor(level: number): string {
 }
 
 function AudioLevelMeter({ energyDb, label, vadState, captureActive = false }: AudioLevelMeterProps) {
+  const { t } = useTranslation();
   const [smoothedDb, setSmoothedDb] = useState(DB_MIN);
   const [peakDb, setPeakDb] = useState(DB_MIN);
   const peakTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -82,7 +84,7 @@ function AudioLevelMeter({ energyDb, label, vadState, captureActive = false }: A
       <div className="audio-level-meter-header">
         <span className="audio-level-meter-label">{label}</span>
         <span className={`audio-level-meter-vad ${isSpeech ? 'audio-level-meter-vad-speech' : 'audio-level-meter-vad-silence'}`}>
-          {isSpeech ? '语音' : '静音'}
+          {isSpeech ? t('audioRouting.meterSpeech') : t('audioRouting.meterSilence')}
         </span>
         <span className="audio-level-meter-db">{smoothedDb.toFixed(1)} dB</span>
       </div>
@@ -99,7 +101,7 @@ function AudioLevelMeter({ energyDb, label, vadState, captureActive = false }: A
         <div
           className="audio-level-meter-threshold"
           style={{ left: `${thresholdLevel * 100}%` }}
-          title="VAD 阈值 -42 dB"
+          title={t('audioRouting.vadThresholdTitle', { value: '-42 dB' })}
         />
       </div>
     </div>

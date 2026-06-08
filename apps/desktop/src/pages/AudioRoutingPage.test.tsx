@@ -5,7 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { useAppStore } from '../stores/app-store';
-import AudioRoutingPage from './AudioRoutingPage';
+import type { ProviderCapability } from '../schema/provider-contract';
+import AudioRoutingPage, { audioRoutingPageHelpers } from './AudioRoutingPage';
+
+const { ChainFlow, ScenarioCard, tWithDefault } = audioRoutingPageHelpers;
 
 const providerCatalogPreferencesMock = vi.hoisted(() => ({
   value: [] as Array<{ templateId: string; enabled: boolean; order: number; hidden?: boolean }>,
@@ -230,7 +233,7 @@ describe('AudioRoutingPage', () => {
     });
 
     const headings = Array.from(container.querySelectorAll('h3')).map((h) => h.textContent);
-    expect(headings).toEqual(expect.arrayContaining(['Capture', 'Output', 'Listening models', 'Replying models']));
+    expect(headings).toEqual(expect.arrayContaining(['采集', '输出', '听译模型', '回复模型']));
 
     expect(container.querySelectorAll('.routing-top-grid > article')).toHaveLength(2);
     expect(container.querySelector('.routing-models-grid')).toBeTruthy();
@@ -250,7 +253,7 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const options = await scenarioOptionTexts(container, 'Subtitle translation');
+    const options = await scenarioOptionTexts(container, '字幕翻译');
     const joined = options.join(' ');
     expect(joined).toContain('Qwen3.6 Flash');
     expect(joined).not.toContain('STT Model');
@@ -280,9 +283,9 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const subtitleCard = scenarioCardByTitle(container, 'Subtitle translation');
+    const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     expect(subtitleCard.classList.contains('scenario-card-muted')).toBe(true);
-    expect(container.textContent).toContain('This card is disabled');
+    expect(container.textContent).toContain('当前功能未启用');
   });
 
   it('writes independent selections to inbound, outbound, secondary, subtitle, and tts fields', async () => {
@@ -294,11 +297,11 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    await chooseScenarioModel(container, 'Listen to them', 'STT Model');
-    await chooseScenarioModel(container, 'Speak to them', 'S2S Model');
-    await chooseScenarioModel(container, 'Listen to them · secondary audio', 'Qwen Omni');
-    await chooseScenarioModel(container, 'Subtitle translation', 'Qwen3.6 Flash');
-    await chooseScenarioModel(container, 'Type-to-speech TTS', 'TTS Model');
+    await chooseScenarioModel(container, '听对方', 'STT Model');
+    await chooseScenarioModel(container, '回复对方', 'S2S Model');
+    await chooseScenarioModel(container, '听对方 · 二次字幕译音', 'Qwen Omni');
+    await chooseScenarioModel(container, '字幕翻译', 'Qwen3.6 Flash');
+    await chooseScenarioModel(container, '文字转语音', 'TTS Model');
 
     const { devices, speech } = useAppStore.getState().configDraft;
     expect(devices.inboundVoiceModelId).toBe('template-dashscope-realtime::stt-model');
@@ -319,9 +322,9 @@ describe('AudioRoutingPage', () => {
     });
 
     await act(async () => {
-      clickCheckbox(container, 'AEC echo cancellation');
-      clickCheckbox(container, 'ANS noise suppression');
-      clickCheckbox(container, 'AGC auto gain');
+      clickCheckbox(container, '回声消除');
+      clickCheckbox(container, '噪声抑制');
+      clickCheckbox(container, '自动增益');
     });
 
     const { devices } = useAppStore.getState().configDraft;
@@ -335,7 +338,7 @@ describe('AudioRoutingPage', () => {
     }));
   });
 
-  it('writes output toggles into speech and route contracts from the output channels section', async () => {
+  it('writes the TTS card toggle into speech preferences', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -345,16 +348,14 @@ describe('AudioRoutingPage', () => {
     });
 
     await act(async () => {
-      clickCheckbox(container, 'Output translated speech');
+      clickCheckbox(container, '文字转语音');
     });
 
-    const { devices, speech } = useAppStore.getState().configDraft;
-    expect(devices.outputSpeechEnabled).toBe(false);
-    expect(devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(false);
+    const { speech } = useAppStore.getState().configDraft;
     expect(speech.enabled).toBe(false);
   });
 
-  it('toggles the secondary audio output channel in the unified section', async () => {
+  it('toggles the subtitle translation card switch', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -363,9 +364,8 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const section = container.querySelector('.routing-channel-section-unified');
-    expect(section).toBeTruthy();
-    const secondaryToggle = section?.querySelector('input[type="checkbox"]') as HTMLInputElement;
+    const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
+    const secondaryToggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
     expect(secondaryToggle.checked).toBe(true);
 
     await act(async () => {
@@ -382,7 +382,7 @@ describe('AudioRoutingPage', () => {
     expect(useAppStore.getState().configDraft.devices.outputSubtitlesEnabled).toBe(true);
   });
 
-  it('toggles the per-card enable switch for the subtitle translation card', async () => {
+  it('derives secondary translation mode from the two secondary card switches', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -391,24 +391,33 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const subtitleCard = scenarioCardByTitle(container, 'Subtitle translation');
-    const toggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
-    expect(toggle.checked).toBe(true);
+    const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
+    const subtitleToggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
+    const secondaryAudioToggle = inputText(scenarioCardByTitle(container, '听对方 · 二次字幕译音').querySelector('input[type="checkbox"]'));
+    expect(subtitleToggle.checked).toBe(true);
+    expect(secondaryAudioToggle.checked).toBe(true);
     expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('secondary');
 
     await act(async () => {
-      toggle.click();
+      subtitleToggle.click();
     });
 
-    expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('native');
+    expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('secondary');
     expect(subtitleCard.classList.contains('scenario-card-muted')).toBe(true);
 
     await act(async () => {
-      toggle.click();
+      secondaryAudioToggle.click();
+    });
+
+    expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('native');
+    expect(useAppStore.getState().configDraft.speech.translationAudioSource).toBe('auto');
+
+    await act(async () => {
+      secondaryAudioToggle.click();
     });
 
     expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('secondary');
-    expect(subtitleCard.classList.contains('scenario-card-muted')).toBe(false);
+    expect(useAppStore.getState().configDraft.speech.translationAudioSource).toBe('subtitle-tts');
   });
 
   it('disables the model selector on a muted scenario card', async () => {
@@ -432,12 +441,12 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const subtitleCard = scenarioCardByTitle(container, 'Subtitle translation');
+    const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const selector = subtitleCard.querySelector<HTMLButtonElement>('button.scenario-card-selector');
     expect(selector?.disabled).toBe(true);
   });
 
-  it('places the virtual microphone output toggle inside the unified output channel section', async () => {
+  it('places the virtual microphone output toggle inside the replying model card', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -447,16 +456,16 @@ describe('AudioRoutingPage', () => {
     });
 
     const virtualMicToggle = Array.from(container.querySelectorAll('label')).find((item) =>
-      item.textContent?.includes('Send translated voice to virtual microphone'),
+      item.textContent?.includes('将翻译语音发送到虚拟麦克风'),
     );
-    const owningSection = virtualMicToggle?.closest('.routing-channel-section-unified');
-    const owningChannel = virtualMicToggle?.closest('.routing-channel-section');
+    const owningSection = virtualMicToggle?.closest('.routing-models-outbound-panel');
+    const owningCard = virtualMicToggle?.closest('.scenario-card');
 
     expect(owningSection).toBeTruthy();
-    expect(owningChannel).toBeTruthy();
+    expect(owningCard?.textContent).toContain('回复对方');
   });
 
-  it('places the speech output toggle inside the unified output channel section', async () => {
+  it('places the secondary audio toggle inside the secondary audio card', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -466,13 +475,51 @@ describe('AudioRoutingPage', () => {
     });
 
     const speechToggle = Array.from(container.querySelectorAll('label')).find((item) =>
-      item.textContent?.includes('Output translated speech'),
+      item.textContent?.includes('用二次字幕生成译音'),
     );
-    const owningSection = speechToggle?.closest('.routing-channel-section-unified');
-    const owningChannel = speechToggle?.closest('.routing-channel-section');
+    const owningSection = speechToggle?.closest('.routing-models-inbound-panel');
+    const owningCard = speechToggle?.closest('.scenario-card');
 
     expect(owningSection).toBeTruthy();
-    expect(owningChannel).toBeTruthy();
+    expect(owningCard?.textContent).toContain('听对方 · 二次字幕译音');
+  });
+
+  it('highlights replying model cards only while their card switches are enabled', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          virtualMicOutputEnabled: true,
+        },
+        speech: {
+          ...state.configDraft.speech,
+          enabled: true,
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const outboundCard = scenarioCardByTitle(container, '回复对方');
+    const ttsCard = scenarioCardByTitle(container, '文字转语音');
+    expect(outboundCard.classList.contains('scenario-card-active')).toBe(true);
+    expect(ttsCard.classList.contains('scenario-card-active')).toBe(true);
+
+    await act(async () => {
+      inputText(outboundCard.querySelector('input[type="checkbox"]')).click();
+      inputText(ttsCard.querySelector('input[type="checkbox"]')).click();
+    });
+
+    expect(outboundCard.classList.contains('scenario-card-active')).toBe(false);
+    expect(ttsCard.classList.contains('scenario-card-active')).toBe(false);
   });
 
   it('places the subtitle translation model inside the inbound model panel', async () => {
@@ -484,12 +531,12 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const subtitleCard = scenarioCardByTitle(container, 'Subtitle translation');
+    const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const owningSection = subtitleCard.closest('.routing-models-inbound-panel');
     expect(owningSection).toBeTruthy();
   });
 
-  it('places the secondary audio toggle in the unified section instead of the card', async () => {
+  it('toggles the secondary audio switch from the scenario card', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -498,12 +545,18 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const secondaryCard = scenarioCardByTitle(container, 'Listen to them · secondary audio');
-    const cardToggle = secondaryCard.querySelector('input[type="checkbox"]');
-    expect(cardToggle).toBeNull();
-    const section = container.querySelector('.routing-channel-section-unified');
-    const sectionToggles = Array.from(section?.querySelectorAll('input[type="checkbox"]') ?? []);
-    expect(sectionToggles.length).toBe(3);
+    const secondaryGroup = container.querySelector('.routing-secondary-group');
+    const cardToggle = inputText(scenarioCardByTitle(container, '听对方 · 二次字幕译音').querySelector('input[type="checkbox"]'));
+    expect(cardToggle.getAttribute('role')).toBe('switch');
+    expect(cardToggle.checked).toBe(true);
+
+    await act(async () => {
+      cardToggle.click();
+    });
+
+    expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('secondary');
+    const secondaryCards = Array.from(secondaryGroup?.querySelectorAll('.scenario-card') ?? []);
+    expect(secondaryCards).toHaveLength(2);
   });
 
   it('places the subtitle translation card enable toggle inside the listening model panel', async () => {
@@ -515,7 +568,7 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    const subtitleCard = scenarioCardByTitle(container, 'Subtitle translation');
+    const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const subtitleToggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
     const owningSection = subtitleCard.closest('.routing-models-inbound-panel');
     expect(owningSection).toBeTruthy();
@@ -562,7 +615,7 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    expect((await scenarioOptionTexts(container, 'Subtitle translation')).join(' ')).not.toContain('Qwen3.6 Flash');
+    expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).not.toContain('Qwen3.6 Flash');
     expect(container.textContent).not.toContain('Qwen Omni');
   });
 
@@ -580,7 +633,7 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    expect((await scenarioOptionTexts(container, 'Subtitle translation')).join(' ')).not.toContain('Qwen3.6 Flash');
+    expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).not.toContain('Qwen3.6 Flash');
     expect(container.textContent).not.toContain('Qwen Omni');
   });
 
@@ -593,7 +646,7 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    expect(scenarioCardByTitle(container, 'Listen to them').textContent).toContain('Qwen Omni');
+    expect(scenarioCardByTitle(container, '听对方').textContent).toContain('Qwen Omni');
 
     providerCatalogPreferencesMock.value = [
       { templateId: 'template-openai-compatible-realtime', enabled: true, order: 0 },
@@ -604,7 +657,7 @@ describe('AudioRoutingPage', () => {
       window.dispatchEvent(new Event('omni.providerTemplateCatalogPrefs.updated'));
     });
 
-    expect((await scenarioOptionTexts(container, 'Subtitle translation')).join(' ')).not.toContain('Qwen3.6 Flash');
+    expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).not.toContain('Qwen3.6 Flash');
     expect(container.textContent).not.toContain('Qwen Omni');
   });
 
@@ -662,8 +715,7 @@ describe('AudioRoutingPage', () => {
     await changeValue(levels[0], '44');
     await changeValue(levels[1], '66');
     await act(async () => {
-      const voiceToggles = container.querySelectorAll<HTMLInputElement>('.routing-channel input[type="checkbox"]');
-      voiceToggles[voiceToggles.length - 1].click();
+      inputText(scenarioCardByTitle(container, '回复对方').querySelector('input[type="checkbox"]')).click();
     });
 
     const testButtons = container.querySelectorAll<HTMLButtonElement>('.routing-test-row button');
@@ -674,7 +726,7 @@ describe('AudioRoutingPage', () => {
     });
 
     const subtitleModeCheckbox = inputText(
-      scenarioCardByTitle(container, 'Subtitle translation').querySelector('input[type="checkbox"]') ?? null,
+      container.querySelector('.routing-secondary-group input[type="checkbox"]') ?? null,
     );
     await act(async () => {
       subtitleModeCheckbox.click();
@@ -687,8 +739,8 @@ describe('AudioRoutingPage', () => {
     expect(devices.virtualMicOutputEnabled).toBe(false);
     expect(speech.outputTarget).toBe('speaker');
     expect(devices.subtitleTranslationMode).toBe('secondary');
-    expect(container.textContent).toContain('Speaker test passed');
-    expect(container.textContent).toContain('Mic test passed');
+    expect(container.textContent).toContain('扬声器测试通过');
+    expect(container.textContent).toContain('麦克风测试通过');
     vi.useRealTimers();
   });
 
@@ -701,6 +753,7 @@ describe('AudioRoutingPage', () => {
           textToSpeechModelId: 'template-dashscope-realtime::tts-model',
           subtitleTranslationMode: 'native',
           outputSubtitlesEnabled: false,
+          outputSpeechEnabled: false,
         },
         speech: {
           ...state.configDraft.speech,
@@ -716,16 +769,15 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    expect(container.textContent).toContain('Current model does not support Omni native audio');
+    expect(container.textContent).toContain('当前模型不支持原生音频翻译');
 
-    const subtitleCard = scenarioCardByTitle(container, 'Subtitle translation');
-    const toggle = inputText(subtitleCard.querySelector('input[type="checkbox"]') ?? null);
+    const toggle = inputText(container.querySelector('.routing-secondary-group input[type="checkbox"]') ?? null);
     await act(async () => {
       toggle.click();
     });
 
     expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('secondary');
-    expect(container.textContent).not.toContain('Current model does not support Omni native audio');
+    expect(container.textContent).not.toContain('当前模型不支持原生音频翻译');
   });
 
   it('shows microphone and speaker test buttons with audio level meters', async () => {
@@ -738,11 +790,23 @@ describe('AudioRoutingPage', () => {
     });
 
     const buttons = Array.from(container.querySelectorAll('button')).map((button) => button.textContent ?? '');
-    expect(buttons).toEqual(expect.arrayContaining([expect.stringContaining('Test mic'), expect.stringContaining('Test speaker')]));
+    expect(buttons).toEqual(expect.arrayContaining([expect.stringContaining('测试麦克风'), expect.stringContaining('测试扬声器')]));
     expect(container.querySelectorAll('.audio-level-meter')).toHaveLength(2);
   });
 
-  it('saves model selections immediately without a save button', async () => {
+  it('marks the microphone level meter active while inbound capture is bound', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      audioRuntimeSnapshot: {
+        ...state.audioRuntimeSnapshot,
+        inbound: {
+          ...state.audioRuntimeSnapshot.inbound,
+          captureState: 'capturing',
+          streamBound: true,
+        },
+      },
+    }));
+
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -751,13 +815,25 @@ describe('AudioRoutingPage', () => {
       );
     });
 
-    expect(container.querySelector('.routing-saved-indicator')).toBeTruthy();
-    expect(container.textContent).toContain('Changes saved automatically');
+    expect(container.querySelector('.routing-capture-panel .audio-level-meter')?.classList.contains('audio-level-meter-active')).toBe(true);
+  });
 
-    await chooseScenarioModel(container, 'Listen to them', 'S2S Model');
+  it('saves model selections immediately without showing an auto-save indicator', async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.querySelector('.routing-saved-indicator')).toBeNull();
+    expect(container.textContent).not.toContain('已自动保存');
+    expect(container.textContent).not.toContain('更改会自动保存');
+
+    await chooseScenarioModel(container, '听对方', 'S2S Model');
     expect(useAppStore.getState().configDraft.devices.inboundVoiceModelId).toBe('template-dashscope-realtime::s2s-model');
-    await new Promise((resolve) => setTimeout(resolve, 350));
-    expect(container.querySelector('.routing-saved-indicator')?.textContent).toContain('Saved just now');
+    expect(container.textContent).not.toContain('刚刚已保存');
   });
 
   it('renders embedded chain flow segments with model and device labels', async () => {
@@ -773,9 +849,9 @@ describe('AudioRoutingPage', () => {
     const inboundFlow = container.querySelector('.chain-flow-inbound');
     expect(outboundFlow).toBeTruthy();
     expect(inboundFlow).toBeTruthy();
-    expect(container.textContent).toContain('System / peer audio');
-    expect(container.textContent).toContain('Local playback');
-    expect(container.textContent).toContain('Return to peer');
+    expect(container.textContent).toContain('系统/对方音频');
+    expect(container.textContent).toContain('本机播放');
+    expect(container.textContent).toContain('发送给对方');
   });
 
   it('exposes scenario toggles as ARIA switches with aria-checked', async () => {
@@ -828,4 +904,318 @@ describe('AudioRoutingPage', () => {
     });
     expect(useAppStore.getState().configDraft.devices.inboundVoiceModelId).toBeTruthy();
   });
+
+  it('handles scenario selector keyboard open, close and boundary navigation', async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const card = scenarioCardByTitle(container, '回复对方');
+    const selector = card.querySelector<HTMLButtonElement>('button.scenario-card-selector')!;
+    await act(async () => {
+      selector.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    });
+    let list = card.querySelector<HTMLElement>('[role="listbox"]')!;
+    expect(list).toBeTruthy();
+
+    await act(async () => {
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
+    });
+    expect(list.getAttribute('aria-activedescendant')).toBeTruthy();
+
+    await act(async () => {
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(card.querySelector('[role="listbox"]')).toBeNull();
+
+    await act(async () => {
+      selector.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(card.querySelector('[role="listbox"]')).not.toBeNull();
+    await act(async () => {
+      selector.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    });
+    expect(card.querySelector('[role="listbox"]')).toBeNull();
+
+    await act(async () => {
+      selector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    list = card.querySelector<HTMLElement>('[role="listbox"]')!;
+    const option = Array.from(list.querySelectorAll<HTMLButtonElement>('.scenario-card-option')).at(-1)!;
+    await act(async () => {
+      option.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+    });
+    expect(card.querySelector('[role="listbox"]')).toBeNull();
+  });
+
+  it('covers helper-rendered scenario fallback branches', async () => {
+    const onSelect = vi.fn();
+    const onEnabledChange = vi.fn();
+    const modelOptions = [
+      {
+        id: 'template-a::model-a',
+        model: 'template-a::model-a',
+        displayName: 'Alpha Model',
+        description: 'Provider A',
+        capabilities: ['speech-to-text'] satisfies ProviderCapability[],
+        providerTemplateId: 'template-a',
+        rawModelId: 'model-a',
+      },
+      {
+        id: 'template-a::model-b',
+        model: 'template-a::model-b',
+        displayName: 'Beta Model',
+        description: 'Provider A',
+        capabilities: ['speech-to-speech'] satisfies ProviderCapability[],
+        providerTemplateId: 'template-a',
+        rawModelId: 'model-b',
+      },
+    ];
+
+    expect(tWithDefault((_key, options) => options?.defaultValue ?? '', 'audioRouting.unknownKey')).toBe('audioRouting.unknownKey');
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <ChainFlow
+            direction="inbound"
+            inboundLabel="Input"
+            inboundSubtitle="System audio"
+            modelLabel="Model"
+            outboundLabel="Output"
+          />
+          <ScenarioCard
+            caption="Fallback caption"
+            enableChecked={false}
+            icon="headphones"
+            modelName=""
+            modelOptions={modelOptions}
+            modelProvider="Fallback provider"
+            onEnabledChange={onEnabledChange}
+            onSelect={onSelect}
+            tags={[]}
+            title="Fallback scenario"
+            value="missing-model"
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.querySelector('.chain-flow-segment-sub')?.textContent).toBe('System audio');
+    const card = scenarioCardByTitle(container, 'Fallback scenario');
+    expect(card.querySelector('strong')?.textContent).toBe('—');
+    expect(card.querySelector('.scenario-card-toggle span')?.textContent).toBe('');
+
+    const selector = card.querySelector<HTMLButtonElement>('button.scenario-card-selector')!;
+    await act(async () => {
+      selector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    let list = card.querySelector<HTMLElement>('[role="listbox"]')!;
+    expect(list.getAttribute('aria-activedescendant')).toContain('model-a');
+
+    const secondOption = Array.from(list.querySelectorAll<HTMLButtonElement>('.scenario-card-option'))[1]!;
+    await act(async () => {
+      secondOption.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    });
+    expect(list.getAttribute('aria-activedescendant')).toContain('model-b');
+
+    await act(async () => {
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
+    });
+    expect(onSelect).toHaveBeenCalledWith('template-a::model-b');
+
+    await act(async () => {
+      selector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+    });
+    list = card.querySelector<HTMLElement>('[role="listbox"]')!;
+    await act(async () => {
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(onSelect).toHaveBeenCalledWith('template-a::model-b');
+  });
+
+  it('uses legacy outbound processing values and turns virtual microphone output off', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          inputLevel: 42,
+          aecEnabled: true,
+          ansEnabled: false,
+          agcEnabled: true,
+          virtualMicOutputEnabled: true,
+          outboundRoute: {
+            ...state.configDraft.devices.outboundRoute,
+            input: {
+              ...state.configDraft.devices.outboundRoute.input,
+              processing: undefined as never,
+            },
+          },
+        },
+        speech: {
+          ...state.configDraft.speech,
+          outputTarget: 'virtual-mic',
+          virtualMicOutputEnabled: true,
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const aecToggle = inputText(container.querySelector('.routing-toggle-stack input[type="checkbox"]'));
+    await act(async () => {
+      aecToggle.click();
+    });
+    const processing = useAppStore.getState().configDraft.devices.outboundRoute.input.processing;
+    expect(processing).toEqual({
+      inputLevel: 42,
+      echoCancellationEnabled: false,
+      noiseSuppressionEnabled: false,
+      autoGainControlEnabled: true,
+    });
+
+    const outboundCard = scenarioCardByTitle(container, '回复对方');
+    const virtualMicSwitch = outboundCard.querySelector<HTMLInputElement>('input[role="switch"]')!;
+    await act(async () => {
+      virtualMicSwitch.click();
+    });
+
+    const state = useAppStore.getState();
+    expect(state.configDraft.devices.virtualMicOutputEnabled).toBe(false);
+    expect(state.configDraft.speech.outputTarget).toBe('speaker');
+    expect(state.configDraft.speech.virtualMicOutputEnabled).toBe(false);
+  });
+
+  it('falls back when optional provider model metadata is absent', async () => {
+    providerCatalogPreferencesMock.value = [
+      { templateId: 'template-openai-compatible-realtime', enabled: true, order: 0 },
+      { templateId: 'template-dashscope-realtime', enabled: true, order: 1 },
+    ];
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        providers: [
+          {
+            ...state.configDraft.providers[0]!,
+            displayName: 'Fallback Provider',
+            sceneModelAssignments: [
+              { scenario: 'subtitle-translate', modelIds: ['fallback-text'] },
+            ],
+            modelCatalogCache: undefined as never,
+            localModelCapabilityRegistry: undefined as never,
+          },
+          {
+            ...state.configDraft.providers[1]!,
+            sceneModelAssignments: undefined as never,
+            modelCatalogCache: undefined as never,
+            localModelCapabilityRegistry: undefined as never,
+          },
+        ],
+        devices: {
+          ...state.configDraft.devices,
+          subtitleTranslationModelId: 'template-openai-compatible-realtime::fallback-text',
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const card = await openScenarioSelect(container, '字幕翻译');
+    const optionTexts = Array.from(card.querySelectorAll('.scenario-card-option')).map((option) => option.textContent ?? '');
+    expect(optionTexts.some((text) => text.includes('Fallback Provider'))).toBe(true);
+    expect(optionTexts.some((text) => text.includes('DashScope'))).toBe(false);
+  });
+
+  it('shows an empty model selector state when no provider models are available', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        providers: state.configDraft.providers.map((provider) => ({
+          ...provider,
+          model: '',
+          modelCatalogCache: { ...provider.modelCatalogCache, models: [] },
+          sceneModelAssignments: [],
+          localModelCapabilityRegistry: [],
+        })),
+        devices: {
+          ...state.configDraft.devices,
+          inboundVoiceModelId: '',
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const card = scenarioCardByTitle(container, '听对方');
+    await act(async () => {
+      card.querySelector<HTMLButtonElement>('button.scenario-card-selector')?.click();
+    });
+    const list = card.querySelector<HTMLElement>('[role="listbox"]')!;
+    expect(list.textContent).toContain('当前服务商没有可用模型');
+    await act(async () => {
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
+      list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    });
+    expect(useAppStore.getState().configDraft.devices.inboundVoiceModelId).toBe('');
+  });
+
+  it('switches feedback loop prevention back to echo cancellation', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          feedbackLoopPrevention: 'virtual-driver',
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const outputPanel = container.querySelector('.routing-output-panel')!;
+    const radios = Array.from(outputPanel.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'));
+    await act(async () => {
+      radios[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('echo-cancel');
+  });
 });
+

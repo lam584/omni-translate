@@ -8,10 +8,12 @@ export type AppIconName =
   | 'clock'
   | 'close'
   | 'cloud'
+  | 'download'
   | 'eye'
   | 'eye-off'
   | 'globe'
   | 'headphones'
+  | 'help-circle'
   | 'key'
   | 'layers'
   | 'lock'
@@ -26,6 +28,8 @@ export type AppIconName =
   | 'sliders'
   | 'spark'
   | 'stop'
+  | 'star'
+  | 'star-fill'
   | 'subtitles'
   | 'trash'
   | 'wave'
@@ -95,6 +99,14 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
             <path {...commonProps} d="M7 18a4 4 0 1 1 .9-7.9A5.5 5.5 0 0 1 18.5 9a3.5 3.5 0 1 1 .5 7H7Z" />
           </>
         );
+      case 'download':
+        return (
+          <>
+            <path {...commonProps} d="M12 3v12" />
+            <path {...commonProps} d="M8 11l4 4 4-4" />
+            <path {...commonProps} d="M5 21h14" />
+          </>
+        );
       case 'eye':
         return (
           <>
@@ -126,6 +138,14 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
             <path {...commonProps} d="M4 13a8 8 0 0 1 16 0" />
             <path {...commonProps} d="M5 13h2a2 2 0 0 1 2 2v3H7a2 2 0 0 1-2-2v-3Z" />
             <path {...commonProps} d="M17 13h2v3a2 2 0 0 1-2 2h-2v-3a2 2 0 0 1 2-2Z" />
+          </>
+        );
+      case 'help-circle':
+        return (
+          <>
+            <circle {...commonProps} cx="12" cy="12" r="9" />
+            <path {...commonProps} d="M9.5 9.5a2.5 2.5 0 0 1 5 0c0 1.5-2.5 2-2.5 3.5" />
+            <path {...commonProps} d="M12 16.5h.01" />
           </>
         );
       case 'key':
@@ -232,6 +252,24 @@ function AppIcon({ className, name, size = 18, strokeWidth = 1.85, style }: AppI
         );
       case 'stop':
         return <rect {...commonProps} x="7" y="7" width="10" height="10" rx="1.5" />;
+      case 'star':
+        return (
+          <path
+            {...commonProps}
+            d="m12 3.6 2.62 5.31 5.86.85-4.24 4.13 1 5.83L12 16.9l-5.24 2.82 1-5.83-4.24-4.13 5.86-.85L12 3.6Z"
+          />
+        );
+      case 'star-fill':
+        return (
+          <path
+            fill="currentColor"
+            stroke="currentColor"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            strokeWidth={1.2}
+            d="m12 3.6 2.62 5.31 5.86.85-4.24 4.13 1 5.83L12 16.9l-5.24 2.82 1-5.83-4.24-4.13 5.86-.85L12 3.6Z"
+          />
+        );
       case 'subtitles':
         return (
           <>

@@ -9,6 +9,7 @@ import RealTimeSessionPage from './RealTimeSessionPage';
 import { useAppStore } from '../stores/app-store';
 
 const startAudioRouteRuntimeMock = vi.fn();
+const preconnectOmniRealtimeRuntimeMock = vi.fn();
 const startSpeechDispatchRuntimeMock = vi.fn();
 const startTranslateWorkerRuntimeMock = vi.fn();
 const stopAudioRouteRuntimeMock = vi.fn();
@@ -20,6 +21,17 @@ const toggleSubtitleOverlayWindowMock = vi.fn();
 const installDriverRuntimeMock = vi.fn();
 const repairDriverRuntimeMock = vi.fn();
 const startBridgeServiceRuntimeMock = vi.fn();
+const refreshBridgeRuntimeMock = vi.fn();
+
+function createDeferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
 
 vi.mock('../components/page/DiagnosticsQuickLink', () => ({
   default: () => <div data-testid="diagnostics-quick-link" />,
@@ -27,6 +39,7 @@ vi.mock('../components/page/DiagnosticsQuickLink', () => ({
 
 vi.mock('../runtime/audio-runtime', () => ({
   startAudioRouteRuntime: (...args: unknown[]) => startAudioRouteRuntimeMock(...args),
+  preconnectOmniRealtimeRuntime: (...args: unknown[]) => preconnectOmniRealtimeRuntimeMock(...args),
   startSpeechDispatchRuntime: (...args: unknown[]) => startSpeechDispatchRuntimeMock(...args),
   startTranslateWorkerRuntime: (...args: unknown[]) => startTranslateWorkerRuntimeMock(...args),
   stopAudioRouteRuntime: (...args: unknown[]) => stopAudioRouteRuntimeMock(...args),
@@ -41,6 +54,7 @@ vi.mock('../runtime/bridge-runtime', () => ({
   installDriverRuntime: (...args: unknown[]) => installDriverRuntimeMock(...args),
   repairDriverRuntime: (...args: unknown[]) => repairDriverRuntimeMock(...args),
   startBridgeServiceRuntime: (...args: unknown[]) => startBridgeServiceRuntimeMock(...args),
+  refreshBridgeRuntime: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
 }));
 
 describe('RealTimeSessionPage one-click launch', () => {
@@ -50,6 +64,7 @@ describe('RealTimeSessionPage one-click launch', () => {
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     startAudioRouteRuntimeMock.mockReset();
+    preconnectOmniRealtimeRuntimeMock.mockReset();
     startSpeechDispatchRuntimeMock.mockReset();
     startTranslateWorkerRuntimeMock.mockReset();
     stopAudioRouteRuntimeMock.mockReset();
@@ -61,6 +76,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     installDriverRuntimeMock.mockReset();
     repairDriverRuntimeMock.mockReset();
     startBridgeServiceRuntimeMock.mockReset();
+    refreshBridgeRuntimeMock.mockReset();
 
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
@@ -86,6 +102,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     bridgeReadySnapshot.bridge.bridgeState = 'running';
     bridgeReadySnapshot.bridge.installPhase = 'ready';
     installDriverRuntimeMock.mockResolvedValue(bridgeReadySnapshot);
+    refreshBridgeRuntimeMock.mockImplementation(async () => structuredClone(useAppStore.getState().runtimeSnapshot));
 
     const inboundReadySnapshot = structuredClone(audioRuntimeSnapshot);
     inboundReadySnapshot.inbound.streamBound = true;
@@ -98,6 +115,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       outboundReadySnapshot.outbound.streamBound = true;
       return outboundReadySnapshot;
     });
+    preconnectOmniRealtimeRuntimeMock.mockResolvedValue(audioRuntimeSnapshot);
 
     const speechReadySnapshot = structuredClone(audioRuntimeSnapshot);
     speechReadySnapshot.inbound.streamBound = true;
@@ -407,7 +425,11 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(installDriverRuntimeMock).not.toHaveBeenCalled();
     expect(repairDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
+    expect(preconnectOmniRealtimeRuntimeMock).toHaveBeenCalledTimes(1);
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(preconnectOmniRealtimeRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      startAudioRouteRuntimeMock.mock.invocationCallOrder[0],
+    );
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
       'inbound',
       expect.objectContaining({
@@ -423,6 +445,128 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     expect(useAppStore.getState().configDraft.devices.routeMode).toBe('watch');
     expect(useAppStore.getState().configDraft.speech.enabled).toBe(false);
+  });
+
+  it('continues through normal watch launch when Omni preconnect fails', async () => {
+    preconnectOmniRealtimeRuntimeMock.mockRejectedValue(new Error('preconnect denied'));
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        configDraft: {
+          ...state.configDraft,
+          devices: {
+            ...state.configDraft.devices,
+            outputSpeechEnabled: false,
+            virtualMicOutputEnabled: false,
+            feedbackLoopPrevention: 'none',
+          },
+          speech: {
+            ...state.configDraft.speech,
+            enabled: false,
+            outputTarget: 'speaker',
+            virtualMicOutputEnabled: false,
+          },
+        },
+      }));
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    await act(async () => {
+      (container.querySelector('button') as HTMLButtonElement | null)?.click();
+    });
+
+    expect(preconnectOmniRealtimeRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(useAppStore.getState().runtimeNotifications.some((item) =>
+      item.message.includes('Omni 预连接失败') && item.message.includes('preconnect denied'),
+    )).toBe(true);
+  });
+
+  it('stops the watch route and reports partial startup when the overlay fails to open', async () => {
+    showSubtitleOverlayWindowMock.mockRejectedValue(new Error('overlay denied'));
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        configDraft: {
+          ...state.configDraft,
+          devices: {
+            ...state.configDraft.devices,
+            outputSpeechEnabled: false,
+            virtualMicOutputEnabled: false,
+            feedbackLoopPrevention: 'none',
+          },
+          speech: {
+            ...state.configDraft.speech,
+            enabled: false,
+            outputTarget: 'speaker',
+            virtualMicOutputEnabled: false,
+          },
+        },
+      }));
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    await act(async () => {
+      (container.querySelector('button') as HTMLButtonElement | null)?.click();
+    });
+
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
+    expect(stopAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound');
+    expect(useAppStore.getState().runtimeNotifications.some((item) =>
+      item.message.includes('字幕浮窗打开失败') && item.message.includes('overlay denied'),
+    )).toBe(true);
+  });
+
+  it('does not reopen the subtitle overlay when it is already visible during watch launch', async () => {
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        configDraft: {
+          ...state.configDraft,
+          devices: {
+            ...state.configDraft.devices,
+            outputSpeechEnabled: false,
+            virtualMicOutputEnabled: false,
+            feedbackLoopPrevention: 'none',
+          },
+          speech: {
+            ...state.configDraft.speech,
+            enabled: false,
+            outputTarget: 'speaker',
+            virtualMicOutputEnabled: false,
+          },
+        },
+        runtimeSnapshot: {
+          ...state.runtimeSnapshot,
+          windows: state.runtimeSnapshot.windows.map((item) =>
+            item.label === 'subtitle-overlay' ? { ...item, visible: true } : item,
+          ),
+        },
+      }));
+    });
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
+    expect(showSubtitleOverlayWindowMock).not.toHaveBeenCalled();
   });
 
   it('starts speech dispatch for Omni watch mode when device translated speech output is enabled', async () => {
@@ -675,6 +819,77 @@ describe('RealTimeSessionPage one-click launch', () => {
     confirmMock.mockRestore();
   });
 
+  for (const scenario of [
+    {
+      name: 'devices.virtualMicOutputEnabled',
+      devices: { feedbackLoopPrevention: 'none' as const, virtualMicOutputEnabled: true },
+      speech: { outputTarget: 'speaker' as const },
+    },
+    {
+      name: 'speech outputTarget virtual-mic',
+      devices: { feedbackLoopPrevention: 'none' as const, virtualMicOutputEnabled: false },
+      speech: { outputTarget: 'virtual-mic' as const },
+    },
+    {
+      name: 'speech outputTarget both',
+      devices: { feedbackLoopPrevention: 'none' as const, virtualMicOutputEnabled: false },
+      speech: { outputTarget: 'both' as const },
+    },
+  ]) {
+    it(`falls back to subtitles-only when bridge startup fails for ${scenario.name}`, async () => {
+      const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(true);
+      installDriverRuntimeMock.mockRejectedValue(new Error('driver package missing'));
+      await act(async () => {
+        useAppStore.setState((state) => ({
+          ...state,
+          configDraft: {
+            ...state.configDraft,
+            devices: {
+              ...state.configDraft.devices,
+              outputSpeechEnabled: false,
+              ...scenario.devices,
+            },
+            speech: {
+              ...state.configDraft.speech,
+              enabled: false,
+              virtualMicOutputEnabled: false,
+              ...scenario.speech,
+            },
+          },
+        }));
+        root.render(
+          <MemoryRouter>
+            <RealTimeSessionPage />
+          </MemoryRouter>,
+        );
+      });
+
+      await act(async () => {
+        (container.querySelector('button') as HTMLButtonElement | null)?.dispatchEvent(
+          new MouseEvent('click', { bubbles: true }),
+        );
+      });
+
+      expect(confirmMock).toHaveBeenCalledTimes(1);
+      expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
+        'inbound',
+        expect.objectContaining({
+          devices: expect.objectContaining({
+            feedbackLoopPrevention: 'none',
+            outputSpeechEnabled: false,
+            virtualMicOutputEnabled: false,
+          }),
+          speech: expect.objectContaining({
+            enabled: false,
+            outputTarget: 'speaker',
+            virtualMicOutputEnabled: false,
+          }),
+        }),
+      );
+      confirmMock.mockRestore();
+    });
+  }
+
   it('starts bridge in watch mode when virtualMicOutputEnabled is true', async () => {
     await act(async () => {
       useAppStore.setState((state) => ({
@@ -775,6 +990,103 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     expect(installDriverRuntimeMock).toHaveBeenCalledTimes(1);
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks a new watch launch while the previous route is stopping', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audioRuntimeSnapshot.inbound.captureState = 'stopping';
+    audioRuntimeSnapshot.inbound.streamBound = false;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    await act(async () => {
+      (container.querySelector('button') as HTMLButtonElement | null)?.click();
+    });
+
+    expect(preconnectOmniRealtimeRuntimeMock).not.toHaveBeenCalled();
+    expect(startAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runtimeNotifications.some((item) =>
+      item.message.includes('正在停止上一条链路'),
+    )).toBe(true);
+  });
+
+  it('keeps launch buttons disabled and stops runtimes sequentially while stop is pending', async () => {
+    const activeAudioSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    activeAudioSnapshot.inbound.streamBound = true;
+    activeAudioSnapshot.outbound.streamBound = true;
+    activeAudioSnapshot.speech.dispatchState = 'playing';
+    const speechStop = createDeferred<typeof activeAudioSnapshot>();
+    const translateStop = createDeferred<typeof activeAudioSnapshot>();
+    const outboundStop = createDeferred<typeof activeAudioSnapshot>();
+    const inboundStop = createDeferred<typeof activeAudioSnapshot>();
+    stopSpeechDispatchRuntimeMock.mockReturnValue(speechStop.promise);
+    stopTranslateWorkerRuntimeMock.mockReturnValue(translateStop.promise);
+    stopAudioRouteRuntimeMock.mockImplementation((direction: 'inbound' | 'outbound') =>
+      direction === 'outbound' ? outboundStop.promise : inboundStop.promise,
+    );
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: activeAudioSnapshot }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const launchButtons = container.querySelectorAll<HTMLButtonElement>('.provider-list button');
+    const stopButton = container.querySelector<HTMLButtonElement>('.control-toolbar button');
+    await act(async () => {
+      stopButton?.click();
+      await Promise.resolve();
+    });
+
+    expect(launchButtons[0].disabled).toBe(true);
+    expect(launchButtons[1].disabled).toBe(true);
+    expect(stopSpeechDispatchRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(stopTranslateWorkerRuntimeMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      speechStop.resolve(activeAudioSnapshot);
+      await Promise.resolve();
+    });
+    expect(stopTranslateWorkerRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalled();
+
+    await act(async () => {
+      translateStop.resolve(activeAudioSnapshot);
+      await Promise.resolve();
+    });
+    expect(stopAudioRouteRuntimeMock).toHaveBeenCalledWith('outbound');
+    expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalledWith('inbound');
+
+    await act(async () => {
+      outboundStop.resolve(activeAudioSnapshot);
+      await Promise.resolve();
+    });
+    expect(stopAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound');
+
+    await act(async () => {
+      inboundStop.resolve(activeAudioSnapshot);
+      await Promise.resolve();
+    });
+    expect(launchButtons[0].disabled).toBe(false);
+    expect(stopSpeechDispatchRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      stopTranslateWorkerRuntimeMock.mock.invocationCallOrder[0],
+    );
+    expect(stopTranslateWorkerRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      stopAudioRouteRuntimeMock.mock.invocationCallOrder[0],
+    );
+    expect(stopAudioRouteRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
+      stopAudioRouteRuntimeMock.mock.invocationCallOrder[1],
+    );
   });
 
   it('toggles overlay, clears cues and stops every active runtime path', async () => {
@@ -923,6 +1235,59 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(container.textContent).toContain('[翻译失败] timeout');
     expect(container.textContent).toContain('translated text');
     expect(container.textContent).toContain('正在调用 LLM 翻译...');
+  });
+
+  it('renders ready empty subtitle and model trace states', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audioRuntimeSnapshot.subtitleOverlay.activeCue = null;
+    audioRuntimeSnapshot.subtitleOverlay.queueDepth = 0;
+    audioRuntimeSnapshot.subtitleOverlay.droppedCueCount = 0;
+    audioRuntimeSnapshot.subtitleOverlay.recentCues = [];
+    const runtimeSnapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
+    runtimeSnapshot.diagnostics.modelTraceSummary.recentCalls = [];
+    runtimeSnapshot.diagnostics.modelTraceSummary.failedCalls = 0;
+    runtimeSnapshot.diagnostics.modelTraceSummary.lastError = null;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot, runtimeSnapshot }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.querySelector('.console-event-item-empty')).not.toBeNull();
+    expect(container.querySelectorAll('.console-event-item')).toHaveLength(3);
+    expect(container.textContent).not.toContain('涓㈠純');
+  });
+
+  it('renders committed active subtitle failure and ready queue badge', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    const cue = audioRuntimeSnapshot.subtitleOverlay.recentCues[0];
+    audioRuntimeSnapshot.subtitleOverlay.activeCue = {
+      ...cue,
+      cueId: 'cue-committed-empty',
+      displaySourceText: '',
+      sourceText: 'committed source',
+      translatedText: '',
+      committed: true,
+    };
+    audioRuntimeSnapshot.subtitleOverlay.queueDepth = 0;
+    audioRuntimeSnapshot.subtitleOverlay.droppedCueCount = 0;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(container.textContent).toContain('committed source');
+    expect(container.textContent).toContain('翻译失败');
+    expect(container.textContent).toContain('队列 0');
   });
 
   it('starts the translation worker for a non-omni watch model', async () => {

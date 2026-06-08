@@ -9,7 +9,11 @@ import {
 } from '../../runtime/bridge-runtime';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import { useAppStore } from '../../stores/app-store';
-import { resolveRecommendedDriverAction, type DriverManagementAction } from '../../utils/driver-management';
+import {
+  hasInstalledDriverEvidence,
+  resolveRecommendedDriverAction,
+  type DriverManagementAction,
+} from '../../utils/driver-management';
 import { resolveDriverDiagnosis } from '../../utils/driver-diagnostics';
 import AppIcon from '../icons/AppIcon';
 
@@ -30,7 +34,7 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
   const [busy, setBusy] = useState<DriverAction | null>(null);
   const [feedback, setFeedback] = useState<{ tone: FeedbackTone; message: string } | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const installed = bridge.driverHealth !== 'not-installed';
+  const installed = bridge.driverHealth !== 'not-installed' || hasInstalledDriverEvidence(bridge);
   const needsRepair = bridge.driverHealth === 'damaged' || bridge.driverHealth === 'version-mismatch';
   const ready = isDriverReady(bridge.driverHealth, bridge.bridgeState);
   const probing = bridge.driverProbeState === 'probing';

@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export type ConsoleDockSection = {
   id: string;
@@ -54,10 +55,12 @@ export function useConsoleDock(sections: readonly ConsoleDockSection[]) {
   );
 
   useEffect(() => {
-    setActiveSectionId((current) => current || sections[0]?.id || '');
-    setCollapsedSections((current) => {
-      const next = Object.fromEntries(sections.map((section) => [section.id, current[section.id] ?? false]));
-      return next;
+    queueMicrotask(() => {
+      setActiveSectionId((current) => current || sections[0]?.id || '');
+      setCollapsedSections((current) => {
+        const next = Object.fromEntries(sections.map((section) => [section.id, current[section.id] ?? false]));
+        return next;
+      });
     });
   }, [idsKey, sections]);
 
@@ -146,6 +149,8 @@ function ConsoleDock({
   onExpandAll,
   onCollapseAll,
 }: ConsoleDockProps) {
+  const { t } = useTranslation();
+
   return (
     <section className="console-dock sticky-toolbar">
       <div className="console-dock-header">
@@ -155,10 +160,10 @@ function ConsoleDock({
         </div>
         <div className="console-dock-actions">
           <button className="action-button" onClick={onExpandAll} type="button">
-            全部展开
+            {t('consoleDock.expandAll')}
           </button>
           <button className="action-button" onClick={onCollapseAll} type="button">
-            全部折叠
+            {t('consoleDock.collapseAll')}
           </button>
         </div>
       </div>
@@ -179,7 +184,7 @@ function ConsoleDock({
                 <span>{section.label}</span>
               </button>
               <button className="console-dock-toggle" onClick={() => onToggleSection(section.id)} type="button">
-                {collapsed ? '展开' : '折叠'}
+                {collapsed ? t('consoleDock.expand') : t('consoleDock.collapse')}
               </button>
             </div>
           );
@@ -190,6 +195,8 @@ function ConsoleDock({
 }
 
 function ConsoleLane({ id, token, label, collapsed, layoutClassName, onExpand, children }: ConsoleLaneProps) {
+  const { t } = useTranslation();
+
   return (
     <section className={collapsed ? 'console-lane console-lane-collapsed' : 'console-lane'} id={id}>
       {collapsed ? (
@@ -199,7 +206,7 @@ function ConsoleLane({ id, token, label, collapsed, layoutClassName, onExpand, c
             <strong>{label}</strong>
           </div>
           <button className="action-button" onClick={onExpand} type="button">
-            展开分区
+            {t('consoleDock.expandSection')}
           </button>
         </div>
       ) : (

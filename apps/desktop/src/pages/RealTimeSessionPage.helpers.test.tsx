@@ -1,5 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
+import { appConfigDraftMock } from '../mocks/app-config';
+import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { SubtitleCueRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
@@ -9,6 +12,9 @@ const {
   CueStatusBadge,
   formatElapsed,
   formatLatencyMs,
+  formatCueTiming,
+  formatRuntimeClock,
+  logSceneLaunchConfig,
   parseRuntimeTimestampMs,
   resolveSceneLabel,
   resolveSceneSpeechPatch,
@@ -26,6 +32,10 @@ const baseCue: SubtitleCueRuntime = {
 };
 
 describe('realTimeSessionPageHelpers', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('parses runtime timestamps and rejects invalid values', () => {
     expect(parseRuntimeTimestampMs(null)).toBeNull();
     expect(parseRuntimeTimestampMs('')).toBeNull();
@@ -45,6 +55,20 @@ describe('realTimeSessionPageHelpers', () => {
     expect(resolveSceneLabel('watch')).toBe('看片模式');
     expect(resolveSceneLabel('game')).toBe('对话模式');
     expect(resolveSceneLabel('voice-room')).toBe('对话模式');
+  });
+
+  it('formats runtime clocks and cue timing fallbacks', () => {
+    expect(formatRuntimeClock(null)).toBe('--:--:--');
+    expect(formatRuntimeClock('invalid')).toBe('--:--:--');
+    expect(formatRuntimeClock('unix-ms:1779974788817')).not.toBe('--:--:--');
+
+    expect(formatCueTiming({ ...baseCue, startedAt: 'unix-ms:1779974788817', endedAt: 'unix-ms:1779974788817' })).toContain(
+      formatRuntimeClock('unix-ms:1779974788817'),
+    );
+    expect(formatCueTiming({ ...baseCue, startedAt: 'unix-ms:1779974788817', endedAt: '' })).not.toContain('unix-ms');
+    expect(formatCueTiming({ ...baseCue, startedAt: 'unix-ms:1779974788817', endedAt: 'unix-ms:1779974798817' })).toContain(
+      formatRuntimeClock('unix-ms:1779974798817'),
+    );
   });
 
   it('recognizes realtime omni models with and without provider prefixes', () => {
@@ -87,5 +111,84 @@ describe('realTimeSessionPageHelpers', () => {
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translatedText: '[翻译失败] timeout' }} />)).toContain('失败');
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translatedText: '你好' }} />)).toContain('已翻译');
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true }} />)).toContain('翻译失败');
+  });
+  it('logs scene launch config with populated optional fields', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
+    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    configDraft.providers[0].displayName = '';
+    configDraft.providers[0].customHeaders = [{ id: 'h1', name: 'X-Test', value: '1', enabled: false }];
+    configDraft.devices.inputDeviceId = '';
+    configDraft.devices.outputDeviceId = '';
+    configDraft.devices.virtualRenderDeviceId = '';
+    configDraft.devices.playbackDeviceId = '';
+    configDraft.devices.supportProfileId = '';
+    configDraft.devices.inboundVoiceModelId = '';
+    configDraft.devices.outboundVoiceModelId = '';
+    configDraft.devices.textToSpeechModelId = '';
+    configDraft.devices.subtitleTranslationModelId = '';
+    configDraft.devices.outboundRoute.pushToTalk = undefined;
+    configDraft.subtitles.instructions = '';
+    configDraft.speech.voicePresetId = '';
+    configDraft.speech.textToSpeechModelId = '';
+    configDraft.speech.voice = '';
+    configDraft.driver.targetDeviceId = '';
+    configDraft.driver.expectedDriverVersion = '';
+    configDraft.driver.expectedBridgeVersion = '';
+    configDraft.driver.lastErrorCode = undefined;
+    configDraft.driver.recommendedAction = undefined;
+    configDraft.glossary.templateId = '';
+    configDraft.glossary.calibrationModelId = '';
+    runtimeSnapshot.bridge.driverVersion = null;
+    runtimeSnapshot.bridge.sessionId = null;
+    runtimeSnapshot.bridge.lastHandshakeAt = null;
+    runtimeSnapshot.bridge.lastErrorCode = null;
+    runtimeSnapshot.bridge.recommendedAction = null;
+    runtimeSnapshot.bridge.endpointName = null;
+    runtimeSnapshot.bridge.abiVersion = null;
+    audioRuntimeSnapshot.sessionStartedAt = null;
+
+    logSceneLaunchConfig('watch', configDraft, runtimeSnapshot, audioRuntimeSnapshot, {
+      speechPatch: { enabled: true },
+      isOmniModel: true,
+      secondarySubtitleTranslationEnabled: true,
+    });
+
+    expect(consoleSpy).toHaveBeenCalledTimes(1);
+    const logOutput = String(consoleSpy.mock.calls[0]?.[0] ?? '');
+    expect(logOutput).toContain('Provider[0]');
+    expect(logOutput).toContain('X-Test=disabled');
+    expect(logOutput).toContain('speechPatch');
+  });
+
+  it('logs scene launch config when speech is missing and JSON backup fails', () => {
+    const configDraft = structuredClone(appConfigDraftMock) as AppConfigDraft & { circular?: unknown };
+    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
+    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    configDraft.speech = undefined as unknown as AppConfigDraft['speech'];
+    configDraft.circular = configDraft;
+
+    logSceneLaunchConfig('voice-room', configDraft, runtimeSnapshot, audioRuntimeSnapshot);
+
+    const logOutput = String(consoleSpy.mock.calls[0]?.[0] ?? '');
+    expect(logOutput).toContain('speech');
+    expect(logOutput).toContain('JSON');
+  });
+
+  it('logs enabled custom headers', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
+    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+
+    configDraft.providers[0].customHeaders = [{ id: 'h-enabled', name: 'X-Enabled', value: '1', enabled: true }];
+
+    logSceneLaunchConfig('watch', configDraft, runtimeSnapshot, audioRuntimeSnapshot);
+
+    expect(String(consoleSpy.mock.calls[0]?.[0] ?? '')).toContain('X-Enabled=enabled');
   });
 });

@@ -189,6 +189,29 @@ describe('DriverManagementCard', () => {
     expect(container.textContent).not.toContain('Bridge 服务未运行');
   });
 
+  it('starts bridge instead of installing when device evidence exists with a stale missing-driver error', async () => {
+    const snapshot = structuredClone(runtimeSnapshotMock);
+    snapshot.bridge.driverHealth = 'not-installed';
+    snapshot.bridge.bridgeState = 'degraded';
+    snapshot.bridge.lastErrorCode = 'driver.not-installed';
+    snapshot.bridge.rootDeviceCount = 1;
+    snapshot.bridge.rootInstanceIds = ['ROOT\\MEDIA\\0000'];
+    snapshot.bridge.endpointName = 'Speakers (Omni Translate Virtual Speaker)';
+    snapshot.bridge.abiVersion = '0x20260604';
+    snapshot.bridge.ioctlAvailable = true;
+    startBridgeServiceRuntimeMock.mockResolvedValue(snapshot);
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
+
+    await act(async () => {
+      root.render(<DriverManagementCard />);
+    });
+
+    await click(container.querySelector<HTMLButtonElement>('.driver-management-primary')!);
+
+    expect(startBridgeServiceRuntimeMock).toHaveBeenCalledWith(expect.any(Object));
+    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
+  });
+
   it('refreshes diagnostics after a failed repair action', async () => {
     const damagedSnapshot = structuredClone(runtimeSnapshotMock);
     damagedSnapshot.bridge.driverHealth = 'damaged';

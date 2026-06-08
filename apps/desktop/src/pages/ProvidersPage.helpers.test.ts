@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { providerTemplates } from '../mocks/provider-templates';
+import type { AudioRouteMode } from '../schema/config';
 import type { ProviderCapability } from '../schema/provider-contract';
 import { useAppStore } from '../stores/app-store';
 import { providersPageHelpers as helpers } from './ProvidersPage';
@@ -56,9 +57,17 @@ describe('ProvidersPage helpers', () => {
     expect(helpers.formatModelCatalogSourceLabel('runtime')).toBe('实时目录');
     expect(helpers.formatModelCatalogSourceLabel('preset')).toBe('预置回退');
     expect(helpers.defaultBaseUrlForKind('dashscope')).toContain('dashscope');
+    expect(helpers.defaultBaseUrlForKind('openrouter')).toContain('openrouter');
+    expect(helpers.defaultBaseUrlForKind('ollama')).toContain('11434');
+    expect(helpers.defaultBaseUrlForKind('lmstudio')).toContain('1234');
+    expect(helpers.defaultBaseUrlForKind('nvidia')).toContain('nvidia');
     expect(helpers.defaultBaseUrlForKind('openai-compatible')).toContain('openai');
     expect(helpers.defaultCompatibleDashscopeBaseUrl()).toContain('compatible-mode');
     expect(helpers.supportedTransportsForKind('dashscope')).toEqual(['http', 'websocket']);
+    expect(helpers.supportedTransportsForKind('openrouter')).toEqual(['http', 'streaming-http']);
+    expect(helpers.supportedTransportsForKind('ollama')).toEqual(['http', 'streaming-http']);
+    expect(helpers.supportedTransportsForKind('lmstudio')).toEqual(['http', 'streaming-http']);
+    expect(helpers.supportedTransportsForKind('nvidia')).toEqual(['http', 'streaming-http']);
     expect(helpers.supportedTransportsForKind('openai-compatible')).toEqual(['http', 'streaming-http']);
     expect(helpers.defaultTransportForKind('dashscope')).toBe('websocket');
     expect(helpers.defaultTransportForKind('openai-compatible')).toBe('streaming-http');
@@ -85,6 +94,8 @@ describe('ProvidersPage helpers', () => {
       deepseekTemplate.defaultDraft.baseUrl,
     );
     expect(helpers.resolveBaseUrlForApiFormat('openai-compatible', 'https://example.test/v1', dashscopeTemplate)).toContain('compatible-mode');
+    expect(helpers.resolveBaseUrlForApiFormat('dashscope', 'https://example.test/v1', { ...deepseekTemplate, defaultDraft: { ...deepseekTemplate.defaultDraft, baseUrl: 'https://custom.test/v1' } })).toContain('dashscope.aliyuncs.com');
+    expect(helpers.resolveBaseUrlForApiFormat('openai-compatible', 'https://example.test/v1', { ...dashscopeTemplate, defaultDraft: { ...dashscopeTemplate.defaultDraft, baseUrl: 'https://custom.test/v1' } })).toBe(helpers.defaultCompatibleDashscopeBaseUrl());
     expect(helpers.normalizeBaseUrlForComparison(' https://example.test/v1/// ')).toBe('https://example.test/v1');
     expect(helpers.shouldUseTemplatePresetModels(deepseekTemplate, `${deepseekTemplate.defaultDraft.baseUrl}/`)).toBe(true);
   });
@@ -169,10 +180,14 @@ describe('ProvidersPage helpers', () => {
       nextModel: 'model-a',
     });
     expect(helpers.removeSceneModel(assignments, 'game', 'model-a', 'watch', 'model-a', 'default-model').nextModel).toBeUndefined();
+    expect(helpers.removeSceneModel(assignments, 'game', 'model-a', 'watch', 'model-b', 'default-model').nextModel).toBeUndefined();
     expect(helpers.removeSceneModelFromAll(assignments, 'model-a', 'watch', 'model-a', 'default-model')).toMatchObject({
       nextModel: 'model-b',
     });
-    expect(helpers.removeSceneModelFromAll(assignments, 'model-a', 'missing' as any, 'model-a', 'default-model')).toMatchObject({
+    expect(helpers.removeSceneModelFromAll(assignments, 'model-a', 'watch', 'model-c', 'default-model')).toMatchObject({
+      nextModel: undefined,
+    });
+    expect(helpers.removeSceneModelFromAll(assignments, 'model-a', 'missing' as unknown as AudioRouteMode, 'model-a', 'default-model')).toMatchObject({
       nextModel: 'default-model',
     });
   });

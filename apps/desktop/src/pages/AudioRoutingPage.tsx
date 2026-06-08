@@ -6,10 +6,9 @@ import type { AppIconName } from '../components/icons/AppIcon';
 import StatusBadge from '../components/page/StatusBadge';
 import { providerTemplates } from '../mocks/provider-templates';
 import type { AudioInputProcessingContract } from '../schema/audio-contract';
-import type { DeviceDraft, FeedbackLoopPrevention, ProviderDraft, SpeechDraft, SubtitleTranslationMode } from '../schema/config';
+import type { DeviceDraft, FeedbackLoopPrevention, ProviderDraft, SpeechDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
 import { buildAudioRuntimeBadges } from '../utils/audio-runtime-badges';
-import { debounce } from '../utils/debounce';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
 import { PROVIDER_TEMPLATE_CATALOG_UPDATED_EVENT, buildProviderTemplateCatalogEntries, readProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
@@ -18,105 +17,10 @@ import type { ModelPreset } from '../schema/provider-template';
 type ScenarioId = 'inbound' | 'inboundSecondary' | 'subtitle' | 'outbound' | 'tts';
 type ScenarioCapability = 'stt' | 'translation' | 'subtitle' | 'speech' | 'tts';
 
-const T_DEFAULTS: Record<string, string> = {
-  'audioRouting.pageTitle': 'Audio Routing',
-  'audioRouting.pageSubtitle': 'White surface · embedded flow · single model entry · live save · mobile-friendly',
-  'audioRouting.capturePanelTitle': 'Capture',
-  'audioRouting.capturePanelSubtitle': 'Microphone, noise reduction, gain',
-  'audioRouting.outputPanelTitle': 'Output',
-  'audioRouting.outputPanelSubtitle': 'Speaker, volume, feedback suppression',
-  'audioRouting.inboundModelsPanelTitle': 'Listening models',
-  'audioRouting.inboundModelsPanelSubtitle': "Models for the peer's audio · 3 scenarios · subtitle mode toggles affected cards",
-  'audioRouting.outboundModelsPanelTitle': 'Replying models',
-  'audioRouting.outboundModelsPanelSubtitle': 'Models for your translated voice · 2 scenarios',
-  'audioRouting.inboundKicker': 'Listening',
-  'audioRouting.outboundKicker': 'Replying',
-  'audioRouting.autoSaved': 'Changes saved automatically',
-  'audioRouting.savedJustNow': 'Saved just now',
-  'audioRouting.chainInbound': 'Speak',
-  'audioRouting.chainOutbound': 'Listen',
-  'audioRouting.chainSystemAudio': 'System / peer audio',
-  'audioRouting.chainInboundModel': 'Listening model',
-  'audioRouting.chainSubtitleTranslated': 'Subtitle + translation',
-  'audioRouting.chainLocalPlayback': 'Local playback',
-  'audioRouting.chainMicrophone': 'Microphone',
-  'audioRouting.chainOutboundModel': 'Replying model',
-  'audioRouting.chainVirtualMicSpeaker': 'Virtual mic / speaker',
-  'audioRouting.chainReturnToPeer': 'Return to peer',
-  'audioRouting.scenarioInboundTitle': 'Listen to them',
-  'audioRouting.scenarioInboundCaption': 'Peer audio → subtitle + translation (Omni full pipeline)',
-  'audioRouting.scenarioInboundRole': 'Inbound listening',
-  'audioRouting.scenarioInboundSubtitleSecondary': 'Inbound listening · secondary',
-  'audioRouting.scenarioInboundSecondaryTitle': 'Listen to them · secondary audio',
-  'audioRouting.scenarioInboundSecondaryCaption': 'Peer audio → source text (fast STT, optional Omni replacement)',
-  'audioRouting.scenarioInboundSecondaryRole': 'Inbound secondary TTS',
-  'audioRouting.scenarioSubtitleTitle': 'Subtitle translation',
-  'audioRouting.scenarioSubtitleCaption': 'Source text → target text (shares source with "Secondary TTS")',
-  'audioRouting.scenarioSubtitleRole': 'Subtitle translation',
-  'audioRouting.scenarioOutboundTitle': 'Speak to them',
-  'audioRouting.scenarioOutboundCaption': 'My microphone → translated speech',
-  'audioRouting.scenarioOutboundRole': 'Outbound speaking',
-  'audioRouting.scenarioTtsTitle': 'Type-to-speech TTS',
-  'audioRouting.scenarioTtsCaption': 'Typed text → translated speech (no-mic scenarios)',
-  'audioRouting.scenarioTtsRole': 'Standalone TTS',
-  'audioRouting.outputChannelsHeader': 'Output channels · decide where the model output goes',
-  'audioRouting.outputChannelsTitle': 'Output channels',
-  'audioRouting.outputChannelsKicker': 'Speak',
-  'audioRouting.subtitleModeToggleLabel': 'Subtitle translation mode',
-  'audioRouting.subtitleModeNativeShort': '⚡ Native',
-  'audioRouting.subtitleModeSecondaryShort': '📋 Secondary',
-  'audioRouting.cardDisabledHint': 'This card is disabled · enable it to edit the model',
-  'audioRouting.secondaryAudioCardToggle': 'Enable secondary audio',
-  'audioRouting.subtitleTranslationCardToggle': 'Enable subtitle translation',
-  'audioRouting.outputTranslatedSpeech': 'Output translated speech',
-  'audioRouting.outputTranslatedSubtitles': 'Output translated subtitles',
-  'audioRouting.sendVoiceToVirtualMic': 'Send translated voice to virtual microphone',
-  'audioRouting.unsupportedNativeAudio': 'Current model does not support Omni native audio; session will keep source audio and subtitles only.',
-  'audioRouting.speaker': 'Speaker',
-  'audioRouting.microphone': 'Microphone',
-  'audioRouting.inputLevel': 'Input level',
-  'audioRouting.outputVolume': 'Output volume',
-  'audioRouting.aecEchoCancellation': 'AEC echo cancellation',
-  'audioRouting.ansNoiseSuppression': 'ANS noise suppression',
-  'audioRouting.agcAutoGain': 'AGC auto gain',
-  'audioRouting.testMic': 'Test mic',
-  'audioRouting.testSpeaker': 'Test speaker',
-  'audioRouting.testing': 'Testing...',
-  'audioRouting.speakerTestPassed': 'Speaker test passed',
-  'audioRouting.micTestPassed': 'Mic test passed',
-  'audioRouting.noProviderModels': 'Current provider has no available models',
-  'audioRouting.subtitleTranslationMode': 'Subtitle translation mode',
-  'audioRouting.nativeMode': 'Native mode',
-  'audioRouting.secondaryTranslation': 'Secondary translation',
-  'audioRouting.textTranslationModel': 'Text translation model',
-  'audioRouting.notSelected': 'Not selected',
-  'audioRouting.feedbackTitle': 'Feedback suppression',
-  'audioRouting.feedbackSubtitle': 'Prevent translated speech from being re-captured',
-  'audioRouting.feedbackEchoLabel': 'Echo cancellation',
-  'audioRouting.feedbackVirtualDriverLabel': 'Virtual driver',
-  'audioRouting.feedbackEchoDesc': 'Subtract played audio from the captured signal in real time. No extra driver required.',
-  'audioRouting.feedbackVirtualDriverDesc': 'Set the player or Windows output to Omni Translate Virtual Speaker. Bridge captures the original audio there, mixes translated speech, and plays the result on the selected physical speaker.',
-  'audioRouting.tagStt': 'STT',
-  'audioRouting.tagTranslation': 'Translation',
-  'audioRouting.tagSubtitle': 'Subtitle',
-  'audioRouting.tagSpeech': 'Speech',
-  'audioRouting.tagTts': 'TTS',
-  'audioRouting.status.ready': 'Ready',
-  'audioRouting.status.needsSetup': 'Needs setup',
-  'audioRouting.status.available': 'Available',
-  'audioRouting.status.preview': 'Preview',
-  'audioRouting.status.capturing': 'Capturing',
-  'audioRouting.status.capturingReady': 'Live',
-  'audioRouting.status.playingReady': 'Live',
-  'audioRouting.status.armed': 'Armed',
-  'audioRouting.status.idle': 'Idle',
-  'audioRouting.status.error': 'Error',
-  'audioRouting.status.degraded': 'Degraded',
-  'audioRouting.status.missing': 'Not connected',
-};
+
 
 function tWithDefault(t: (key: string, options?: { defaultValue?: string }) => string, key: string): string {
-  return t(key, { defaultValue: T_DEFAULTS[key] ?? key });
+  return t(key);
 }
 
 type RoutingModelOption = ModelPreset & {
@@ -168,6 +72,7 @@ function detectScenarioCapabilities(model: ModelPreset | undefined, scenario: Sc
 function ChainFlow({
   direction,
   inboundLabel,
+  inboundSubtitle,
   modelLabel,
   outboundLabel,
   modelSubtitle,
@@ -175,17 +80,20 @@ function ChainFlow({
 }: {
   direction: 'inbound' | 'outbound';
   inboundLabel: string;
+  inboundSubtitle?: string;
   modelLabel: string;
   outboundLabel: string;
   modelSubtitle?: string;
   outboundSubtitle?: string;
 }) {
+  const { t } = useTranslation();
+
   return (
     <div className={['chain-flow', direction === 'outbound' ? 'chain-flow-outbound' : 'chain-flow-inbound'].join(' ')}>
-      <div className="chain-flow-direction">{direction === 'inbound' ? '听' : '说'}</div>
+      <div className="chain-flow-direction">{direction === 'inbound' ? t('audioRouting.chainOutbound') : t('audioRouting.chainInbound')}</div>
       <div className="chain-flow-segment">
         <div className="chain-flow-segment-label">{inboundLabel}</div>
-        {modelSubtitle ? <div className="chain-flow-segment-sub">{modelSubtitle}</div> : null}
+        {inboundSubtitle ? <div className="chain-flow-segment-sub">{inboundSubtitle}</div> : null}
       </div>
       <span className="chain-flow-arrow" aria-hidden="true">—</span>
       <div className="chain-flow-segment">
@@ -217,6 +125,7 @@ function ScenarioCard({
   enabled,
   onEnabledChange,
   enableLabel,
+  enableChecked,
 }: {
   icon: AppIconName;
   title: string;
@@ -233,14 +142,23 @@ function ScenarioCard({
   enabled?: boolean;
   onEnabledChange?: (enabled: boolean) => void;
   enableLabel?: string;
+  enableChecked?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState<number>(0);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const selectedOption = resolveSelectedModel(modelOptions, value);
   const displayName = selectedOption?.displayName ?? modelName;
   const subtitle = selectedOption?.description ?? modelProvider;
-  const emptyText = 'Current provider has no available models';
+  const emptyText = t('audioRouting.noProviderModels');
+  const tagLabels: Record<ScenarioCapability, string> = {
+    stt: t('audioRouting.tagStt'),
+    translation: t('audioRouting.tagTranslation'),
+    subtitle: t('audioRouting.tagSubtitle'),
+    speech: t('audioRouting.tagSpeech'),
+    tts: t('audioRouting.tagTts'),
+  };
 
   useEffect(() => {
     if (!open) return undefined;
@@ -299,6 +217,7 @@ function ScenarioCard({
   };
 
   const cardEnabled = enabled ?? true;
+  const toggleChecked = enableChecked ?? cardEnabled;
 
   return (
     <div
@@ -314,10 +233,10 @@ function ScenarioCard({
           <span>{caption}</span>
         </div>
         {onEnabledChange ? (
-          <label className={['scenario-card-toggle', cardEnabled ? 'scenario-card-toggle-on' : ''].join(' ')}>
+          <label className={['scenario-card-toggle', toggleChecked ? 'scenario-card-toggle-on' : ''].join(' ')}>
             <input
-              aria-checked={cardEnabled}
-              checked={cardEnabled}
+              aria-checked={toggleChecked}
+              checked={toggleChecked}
               onChange={(event) => onEnabledChange(event.target.checked)}
               role="switch"
               type="checkbox"
@@ -383,42 +302,13 @@ function ScenarioCard({
             {tags.map((tag) => (
               <span className={['scenario-card-tag', 'scenario-card-tag-' + tag, !cardEnabled || muted ? 'scenario-card-tag-muted' : ''].join(' ')} key={tag}>
                 <AppIcon name="check" size={11} />
-                {tag}
+                {tagLabels[tag]}
               </span>
             ))}
           </div>
         ) : null}
       </div>
     </div>
-  );
-}
-
-function OutputChannelToggle({
-  icon,
-  label,
-  checked,
-  onChange,
-  disabled,
-}: {
-  icon: string;
-  label: string;
-  checked: boolean;
-  onChange: (enabled: boolean) => void;
-  disabled?: boolean;
-}) {
-  return (
-    <label className={['routing-channel', checked ? 'routing-channel-on' : '', disabled ? 'routing-channel-disabled' : ''].filter(Boolean).join(' ')}>
-      <input
-        aria-checked={checked}
-        checked={checked}
-        disabled={disabled}
-        onChange={(event) => onChange(event.target.checked)}
-        role="switch"
-        type="checkbox"
-      />
-      <span className="routing-channel-icon" aria-hidden="true">{icon}</span>
-      <span className="routing-channel-text">{label}</span>
-    </label>
   );
 }
 
@@ -434,7 +324,6 @@ function AudioRoutingPage() {
   const [micTestResult, setMicTestResult] = useState<string | null>(null);
   const [speakerTesting, setSpeakerTesting] = useState(false);
   const [speakerTestResult, setSpeakerTestResult] = useState<string | null>(null);
-  const [savedAt, setSavedAt] = useState<number | null>(null);
   const [micEnergyDb, setMicEnergyDb] = useState(-54);
   const [speakerEnergyDb, setSpeakerEnergyDb] = useState(-90);
 
@@ -568,27 +457,12 @@ function AudioRoutingPage() {
     },
   ), [audioRuntimeSnapshot, inboundModelOption, outboundModelOption, t]);
 
-  const markSavedRef = useRef<((...args: []) => void) & { cancel: () => void; flush: () => void } | null>(null);
-  useEffect(() => {
-    const debounced = debounce(() => setSavedAt(Date.now()), 300);
-    markSavedRef.current = debounced;
-    return () => {
-      debounced.cancel();
-    };
-  }, []);
-
-  const markSaved = (...args: []) => {
-    markSavedRef.current?.(...args);
-  };
-
   const patchDeviceConfig = (patch: Partial<DeviceDraft>) => {
     updateDeviceDraft({ ...patch, status: 'ready' });
-    markSaved();
   };
 
   const patchSpeechDraft = (patch: Partial<SpeechDraft>) => {
     updateSpeechDraft({ ...patch, status: 'draft' });
-    markSaved();
   };
 
   const handleProcessingToggle = (
@@ -626,7 +500,11 @@ function AudioRoutingPage() {
         },
       },
     });
-    const speechPatch: Partial<SpeechDraft> = { enabled, status: 'draft' };
+    const speechPatch: Partial<SpeechDraft> = {
+      enabled,
+      status: 'draft',
+      translationAudioSource: enabled ? 'subtitle-tts' : 'auto',
+    };
     if (!enabled) speechPatch.dispatchState = 'idle';
     patchSpeechDraft(speechPatch);
   };
@@ -650,6 +528,28 @@ function AudioRoutingPage() {
       },
     });
     patchSpeechDraft({ outputTarget: enabled ? 'virtual-mic' : 'speaker', virtualMicOutputEnabled: enabled });
+  };
+
+  const handleTtsEnabledToggle = (enabled: boolean) => {
+    const speechPatch: Partial<SpeechDraft> = { enabled, status: 'draft' };
+    if (!enabled) speechPatch.dispatchState = 'idle';
+    patchSpeechDraft(speechPatch);
+  };
+
+  const setSecondaryTranslationModeFromCards = (subtitleEnabled: boolean, secondaryAudioEnabled: boolean) => {
+    patchDeviceConfig({
+      subtitleTranslationMode: subtitleEnabled || secondaryAudioEnabled ? 'secondary' : 'native',
+    });
+  };
+
+  const handleSubtitleCardEnabledToggle = (enabled: boolean) => {
+    handleSubtitleOutputToggle(enabled);
+    setSecondaryTranslationModeFromCards(enabled, configDraft.devices.outputSpeechEnabled);
+  };
+
+  const handleSecondaryAudioCardEnabledToggle = (enabled: boolean) => {
+    handleSpeechOutputToggle(enabled);
+    setSecondaryTranslationModeFromCards(configDraft.devices.outputSubtitlesEnabled, enabled);
   };
 
   const handleInputDeviceChange = (deviceId: string) => {
@@ -721,22 +621,9 @@ function AudioRoutingPage() {
     }
   };
 
-  const setSubtitleMode = (mode: SubtitleTranslationMode) => {
-    if (mode === 'native' && configDraft.devices.subtitleTranslationModelId) {
-      const stillSupported = textModelOptions.some((option) => option.model === configDraft.devices.subtitleTranslationModelId);
-      if (!stillSupported) {
-        patchDeviceConfig({ subtitleTranslationMode: mode, subtitleTranslationModelId: '' });
-        return;
-      }
-    }
-    patchDeviceConfig({ subtitleTranslationMode: mode });
-  };
-
   const setFeedbackMode = (mode: Exclude<FeedbackLoopPrevention, 'none'>) => {
     patchDeviceConfig({ feedbackLoopPrevention: mode });
   };
-
-  const savedIndicator = savedAt ? tWithDefault(t, 'audioRouting.savedJustNow') : tWithDefault(t, 'audioRouting.autoSaved');
 
   return (
     <div className="routing-workspace-v9">
@@ -754,7 +641,7 @@ function AudioRoutingPage() {
             direction="inbound"
             inboundLabel={tWithDefault(t, 'audioRouting.chainSystemAudio')}
             modelLabel={tWithDefault(t, 'audioRouting.chainInboundModel')}
-            modelSubtitle={inboundModelOption ? 'STT · 翻译' : '—'}
+            modelSubtitle={inboundModelOption ? tWithDefault(t, 'audioRouting.modelSubtitleSttTranslation') : '—'}
             outboundLabel={tWithDefault(t, 'audioRouting.chainSubtitleTranslated')}
             outboundSubtitle={tWithDefault(t, 'audioRouting.chainLocalPlayback')}
           />
@@ -818,7 +705,7 @@ function AudioRoutingPage() {
             direction="outbound"
             inboundLabel={tWithDefault(t, 'audioRouting.chainMicrophone')}
             modelLabel={tWithDefault(t, 'audioRouting.chainOutboundModel')}
-            modelSubtitle={outboundModelOption ? 'STT · 翻译 · 语音' : '—'}
+            modelSubtitle={outboundModelOption ? tWithDefault(t, 'audioRouting.modelSubtitleSttTranslationSpeech') : '—'}
             outboundLabel={tWithDefault(t, 'audioRouting.chainVirtualMicSpeaker')}
             outboundSubtitle={tWithDefault(t, 'audioRouting.chainReturnToPeer')}
           />
@@ -906,7 +793,7 @@ function AudioRoutingPage() {
 
           {nativeAudioUnsupported ? <p className="routing-inline-result">{tWithDefault(t, 'audioRouting.unsupportedNativeAudio')}</p> : null}
 
-          <div className="scenario-grid scenario-grid-three">
+          <div className="scenario-grid scenario-grid-routing">
             <ScenarioCard
               active
               caption={tWithDefault(t, 'audioRouting.scenarioInboundCaption')}
@@ -919,33 +806,46 @@ function AudioRoutingPage() {
               title={tWithDefault(t, 'audioRouting.scenarioInboundTitle')}
               value={configDraft.devices.inboundVoiceModelId}
             />
-            <ScenarioCard
-              caption={tWithDefault(t, 'audioRouting.scenarioInboundSecondaryCaption')}
-              icon="subtitles"
-              modelName={resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId)?.displayName ?? '—'}
-              modelOptions={voiceModelOptions}
-              modelProvider={resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId)?.description ?? ''}
-              mutedHint={mutedHint}
-              onSelect={(modelId) => selectModel('inboundSecondary', modelId)}
-              tags={detectScenarioCapabilities(resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId), 'inboundSecondary')}
-              title={tWithDefault(t, 'audioRouting.scenarioInboundSecondaryTitle')}
-              value={configDraft.devices.inboundSecondaryAudioModelId}
-            />
-            <ScenarioCard
-              caption={tWithDefault(t, 'audioRouting.scenarioSubtitleCaption')}
-              enableLabel={tWithDefault(t, 'audioRouting.subtitleTranslationCardToggle')}
-              enabled={!isNativeSubtitle}
-              icon="book"
-              modelName={subtitleModelOption?.displayName ?? '—'}
-              modelOptions={textModelOptions}
-              modelProvider={subtitleModelOption?.description ?? ''}
-              mutedHint={mutedHint}
-              onEnabledChange={(enabled) => setSubtitleMode(enabled ? 'secondary' : 'native')}
-              onSelect={(modelId) => selectModel('subtitle', modelId)}
-              tags={detectScenarioCapabilities(subtitleModelOption, 'subtitle')}
-              title={tWithDefault(t, 'audioRouting.scenarioSubtitleTitle')}
-              value={configDraft.devices.subtitleTranslationModelId}
-            />
+            <section className={['routing-secondary-group', !isNativeSubtitle ? 'routing-secondary-group-on' : ''].join(' ')}>
+              <header className="routing-secondary-group-head">
+                <div>
+                  <div className="routing-panel-kicker">{tWithDefault(t, 'audioRouting.secondaryTranslation')}</div>
+                  <h4>{tWithDefault(t, 'audioRouting.secondaryTranslationGroupTitle')}</h4>
+                </div>
+              </header>
+              <div className="scenario-grid scenario-grid-routing routing-secondary-group-grid">
+                <ScenarioCard
+                  caption={tWithDefault(t, 'audioRouting.scenarioSubtitleCaption')}
+                  enabled={configDraft.devices.outputSubtitlesEnabled}
+                  enableLabel={tWithDefault(t, 'audioRouting.subtitleTranslationCardToggle')}
+                  icon="book"
+                  modelName={subtitleModelOption?.displayName ?? '—'}
+                  modelOptions={textModelOptions}
+                  modelProvider={subtitleModelOption?.description ?? ''}
+                  mutedHint={mutedHint}
+                  onEnabledChange={handleSubtitleCardEnabledToggle}
+                  onSelect={(modelId) => selectModel('subtitle', modelId)}
+                  tags={detectScenarioCapabilities(subtitleModelOption, 'subtitle')}
+                  title={tWithDefault(t, 'audioRouting.scenarioSubtitleTitle')}
+                  value={configDraft.devices.subtitleTranslationModelId}
+                />
+                <ScenarioCard
+                  caption={tWithDefault(t, 'audioRouting.scenarioInboundSecondaryCaption')}
+                  enabled={configDraft.devices.outputSpeechEnabled}
+                  enableLabel={tWithDefault(t, 'audioRouting.secondaryAudioCardToggle')}
+                  icon="subtitles"
+                  modelName={resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId)?.displayName ?? '—'}
+                  modelOptions={voiceModelOptions}
+                  modelProvider={resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId)?.description ?? ''}
+                  mutedHint={mutedHint}
+                  onEnabledChange={handleSecondaryAudioCardEnabledToggle}
+                  onSelect={(modelId) => selectModel('inboundSecondary', modelId)}
+                  tags={detectScenarioCapabilities(resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundSecondaryAudioModelId), 'inboundSecondary')}
+                  title={tWithDefault(t, 'audioRouting.scenarioInboundSecondaryTitle')}
+                  value={configDraft.devices.inboundSecondaryAudioModelId}
+                />
+              </div>
+            </section>
           </div>
         </article>
 
@@ -959,25 +859,32 @@ function AudioRoutingPage() {
             <StatusBadge label={runtimeBadges.outboundModels.label} pulse={runtimeBadges.outboundModels.pulse} tone={runtimeBadges.outboundModels.tone} />
           </div>
 
-          <div className="scenario-grid">
+          <div className="scenario-grid scenario-grid-routing">
             <ScenarioCard
-              active
+              active={configDraft.devices.virtualMicOutputEnabled}
               caption={tWithDefault(t, 'audioRouting.scenarioOutboundCaption')}
+              enableChecked={configDraft.devices.virtualMicOutputEnabled}
+              enableLabel={tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic')}
               icon="mic"
               modelName={outboundModelOption?.displayName ?? '—'}
               modelOptions={voiceModelOptions}
               modelProvider={outboundModelOption?.description ?? ''}
+              onEnabledChange={handleVirtualMicToggle}
               onSelect={(modelId) => selectModel('outbound', modelId)}
               tags={detectScenarioCapabilities(outboundModelOption, 'outbound')}
               title={tWithDefault(t, 'audioRouting.scenarioOutboundTitle')}
               value={configDraft.devices.outboundVoiceModelId}
             />
             <ScenarioCard
+              active={configDraft.speech.enabled}
               caption={tWithDefault(t, 'audioRouting.scenarioTtsCaption')}
+              enableChecked={configDraft.speech.enabled}
+              enableLabel={tWithDefault(t, 'audioRouting.scenarioTtsRole')}
               icon="spark"
               modelName={ttsModelOption?.displayName ?? '—'}
               modelOptions={voiceModelOptions}
               modelProvider={ttsModelOption?.description ?? ''}
+              onEnabledChange={handleTtsEnabledToggle}
               onSelect={(modelId) => selectModel('tts', modelId)}
               tags={detectScenarioCapabilities(ttsModelOption, 'tts')}
               title={tWithDefault(t, 'audioRouting.scenarioTtsTitle')}
@@ -987,38 +894,14 @@ function AudioRoutingPage() {
         </article>
       </section>
 
-      <section className="routing-channel-section routing-channel-section-unified" aria-label={tWithDefault(t, 'audioRouting.outputChannelsTitle')}>
-        <header className="routing-channel-section-head">
-          <div className="routing-panel-kicker">{tWithDefault(t, 'audioRouting.outputChannelsKicker')}</div>
-          <h3>{tWithDefault(t, 'audioRouting.outputChannelsTitle')}</h3>
-        </header>
-        <div className="routing-channel-section-grid">
-          <OutputChannelToggle
-            checked={configDraft.devices.outputSubtitlesEnabled}
-            icon="🔊"
-            label={tWithDefault(t, 'audioRouting.secondaryAudioCardToggle')}
-            onChange={handleSubtitleOutputToggle}
-          />
-          <OutputChannelToggle
-            checked={configDraft.devices.outputSpeechEnabled}
-            icon="🎙"
-            label={tWithDefault(t, 'audioRouting.outputTranslatedSpeech')}
-            onChange={handleSpeechOutputToggle}
-          />
-          <OutputChannelToggle
-            checked={configDraft.devices.virtualMicOutputEnabled}
-            icon="🎤"
-            label={tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic')}
-            onChange={handleVirtualMicToggle}
-          />
-        </div>
-        <div className="routing-saved-indicator" aria-live="polite">{savedIndicator}</div>
-      </section>
     </div>
   );
 }
 
 export const audioRoutingPageHelpers = {
+  ChainFlow,
+  ScenarioCard,
+  tWithDefault,
   isVoiceModel,
   resolveSelectedModel,
   detectScenarioCapabilities,

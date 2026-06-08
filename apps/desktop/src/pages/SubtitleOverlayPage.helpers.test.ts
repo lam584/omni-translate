@@ -47,6 +47,23 @@ describe('subtitle overlay page helpers', () => {
     });
   });
 
+  it('keeps translated-only fallback lines when source text is empty', () => {
+    const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    cue.displaySegments = undefined;
+    cue.displaySourceText = '';
+    cue.sourceText = '';
+    cue.translatedText = 'translated only';
+
+    expect(subtitleOverlayPageHelpers.getCueDisplaySegments(cue)).toEqual([
+      {
+        id: `${cue.cueId}-fallback-0`,
+        sourceText: '',
+        translatedText: 'translated only',
+        pending: false,
+      },
+    ]);
+  });
+
   it('calculates every resize direction and enforces minimum dimensions', () => {
     const base = {
       direction: 'SouthEast' as const,

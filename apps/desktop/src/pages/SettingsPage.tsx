@@ -23,7 +23,6 @@ function SettingsPage() {
   const configDraft = useAppStore((state) => state.configDraft);
   const updateDiagnosticsDraft = useAppStore((state) => state.updateDiagnosticsDraft);
   const updateProviders = useAppStore((state) => state.updateProviders);
-  const updateActiveProviderDraft = useAppStore((state) => state.updateActiveProviderDraft);
   const updateActiveProviderTemplateId = useAppStore((state) => state.updateActiveProviderTemplateId);
   const updateSubtitleDraft = useAppStore((state) => state.updateSubtitleDraft);
 
@@ -199,8 +198,8 @@ function SettingsPage() {
 
       <div className="settings-card settings-card-driver">
         <div className="settings-card-head">
-          <h3>驱动管理</h3>
-          <p>管理 Omni Translate 虚拟扬声器驱动与 Bridge Service。</p>
+          <h3>{t('settings.sectionDriverManagement')}</h3>
+          <p>{t('settings.driverManagementHint')}</p>
         </div>
         <div className="settings-card-body"><DriverManagementCard /></div>
       </div>

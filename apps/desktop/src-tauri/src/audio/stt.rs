@@ -4,7 +4,7 @@ use std::sync::mpsc;
 
 use std::thread::{self, JoinHandle};
 
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::Duration;
 
 use serde_json::{json, Value};
 
@@ -26,7 +26,11 @@ use crate::provider::gateway;
 
 use super::contracts::SubtitleCueRuntime;
 
+use super::engine::emit_audio_snapshot;
+
 use super::state::AudioStateStore;
+
+use super::time_utils::{ms_marker, unix_ms};
 
 const ASR_MODEL: &str = "qwen3-asr-flash-realtime";
 
@@ -117,6 +121,9 @@ pub fn start_stt(
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
     store.set_stt_connected(false, 0);
+    store
+        .live_session_events
+        .clear(ASR_MODEL, &crate::audio::time_utils::ms_marker(crate::audio::time_utils::unix_ms()));
 
     let _ = append_diagnostics_log(
         &app,
@@ -228,7 +235,7 @@ fn run_stt_worker(
 
         "modalities": ["text"],
 
-        "input_audio_format": "pcm",
+        "input_audio_format": "pcm16",
 
         "sample_rate": 16000,
 
@@ -394,6 +401,12 @@ fn run_stt_worker(
                                 if let Some(ref id) = current_cue_id {
                                     store.update_or_push_stt_cue(id, &pending_source_text, false);
                                 }
+
+                                store.live_session_events.push_asr_delta(
+                                    "conversation.item.input_audio_transcription.text",
+                                    stash,
+                                    &pending_source_text,
+                                );
                             }
 
                             Some("conversation.item.input_audio_transcription.completed") => {
@@ -404,6 +417,12 @@ fn run_stt_worker(
                                     .unwrap_or_else(|| format!("stt-cue-{}", unix_ms()));
 
                                 store.commit_stt_cue(&cue_id, transcript, "inbound");
+
+                                store.live_session_events.push_asr_delta(
+                                    "conversation.item.input_audio_transcription.completed",
+                                    "",
+                                    transcript,
+                                );
 
                                 pending_source_text.clear();
 
@@ -562,7 +581,7 @@ fn reconnect_socket(
 
         "modalities": ["text"],
 
-        "input_audio_format": "pcm",
+        "input_audio_format": "pcm16",
 
         "sample_rate": 16000,
 
@@ -627,18 +646,16 @@ fn resample_48k_stereo_to_16k_mono(input: &[u8]) -> Vec<i16> {
         mono.push((left + right) * 0.5);
     }
 
-    let ratio = 48_000.0 / 16_000.0;
+    let ratio = 48_000 / 16_000;
 
-    let out_len = (mono.len() as f64 / ratio).floor() as usize;
+    let out_len = mono.len() / ratio;
 
     let mut resampled = Vec::with_capacity(out_len);
 
     for i in 0..out_len {
-        let src_idx = (i as f64 * ratio) as usize;
-
-        if src_idx < mono.len() {
-            resampled.push(mono[src_idx]);
-        }
+        let start = i * ratio;
+        let window = &mono[start..start + ratio];
+        resampled.push(window.iter().sum::<f32>() / ratio as f32);
     }
 
     resampled
@@ -660,24 +677,6 @@ fn base64_encode_i16(samples: &[i16]) -> String {
     use base64::Engine;
 
     base64::engine::general_purpose::STANDARD.encode(&bytes)
-}
-
-fn unix_ms() -> u64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as u64,
-
-        Err(_) => 0,
-    }
-}
-
-fn ms_marker(value: u64) -> String {
-    format!("unix-ms:{}", value)
-}
-
-fn emit_audio_snapshot(app: &AppHandle, store: &AudioStateStore) -> Result<(), String> {
-    use crate::audio::engine;
-
-    engine::emit_audio_snapshot(app, store)
 }
 
 #[cfg(test)]

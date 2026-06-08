@@ -1,11 +1,17 @@
 pub mod contracts;
+mod diagnostics;
 mod echo_cancel;
 pub mod engine;
 pub mod events;
+pub mod gemini_live;
+pub mod live_session_events;
 pub mod omni;
+pub mod openai_realtime;
 pub mod sentence;
 pub mod speech;
+pub mod translation_route;
 pub mod state;
 pub mod stt;
 pub mod subtitle_translate;
+pub mod time_utils;
 pub mod translate;

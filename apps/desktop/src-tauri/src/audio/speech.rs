@@ -7,7 +7,7 @@ use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait};
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
-use serde_json::Value;
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
 use crate::bridge::ipc::write_virtual_mic_frame;
@@ -168,18 +168,18 @@ fn run_dispatch_worker(
     let mut processed_order = VecDeque::new();
     let mut processed_segment_slots = HashSet::new();
     let mut processed_segment_slot_order = VecDeque::new();
-   let initial_speech_config = SpeechConfig::from_value(&initial_config)?;
-   // When the dispatch worker is started with speech enabled (e.g. secondary
-   // subtitle TTS is active), pin to the initial config regardless of the
-   // OMNI_WATCH_MODE_AUTOSTART env var. Elevated desktop shell processes may
-   // not inherit the runner's env vars, causing the worker to reload a stale
-   // stored config that lacks outputSpeechEnabled/translationAudioSource.
-   let use_initial_config = initial_speech_config.enabled
-       || std::env::var("OMNI_WATCH_MODE_AUTOSTART")
-       .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
-       .unwrap_or(false);
+    let initial_speech_config = SpeechConfig::from_value(&initial_config)?;
+    // When the dispatch worker is started with speech enabled (e.g. secondary
+    // subtitle TTS is active), pin to the initial config regardless of the
+    // OMNI_WATCH_MODE_AUTOSTART env var. Elevated desktop shell processes may
+    // not inherit the runner's env vars, causing the worker to reload a stale
+    // stored config that lacks outputSpeechEnabled/translationAudioSource.
+    let use_initial_config = initial_speech_config.enabled
+        || std::env::var("OMNI_WATCH_MODE_AUTOSTART")
+            .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
+            .unwrap_or(false);
 
-   loop {
+    loop {
         if stop_rx.try_recv().is_ok() {
             break;
         }
@@ -351,7 +351,15 @@ impl SpeechDispatchTask {
 
     fn segment_slot_key(&self) -> Option<String> {
         if self.segment_mode {
-            Some(format!("{}:{}", self.cue.cue_id, self.segment_index))
+            let mut hasher = DefaultHasher::new();
+            self.source_text.hash(&mut hasher);
+            self.translated_text.hash(&mut hasher);
+            Some(format!(
+                "{}:{}:{:016x}",
+                self.cue.cue_id,
+                self.segment_index,
+                hasher.finish()
+            ))
         } else {
             None
         }
@@ -647,6 +655,51 @@ fn is_speech_ready_cue(cue: &SubtitleCueRuntime) -> bool {
             .all(|segment| !segment.pending)
 }
 
+fn split_tts_clauses(text: &str) -> Vec<String> {
+    let mut clauses = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        match ch {
+            '\r' => {}
+            '\n' | '。' | '！' | '？' | '!' | '?' | '；' | ';' => {
+                if !matches!(ch, '\n' | '\r' | '；' | ';') {
+                    current.push(ch);
+                }
+                let value = current.trim();
+                if !value.is_empty() {
+                    clauses.push(value.to_string());
+                }
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    let value = current.trim();
+    if !value.is_empty() {
+        clauses.push(value.to_string());
+    }
+    clauses
+}
+
+fn split_secondary_tts_segments(source_text: &str, translated_text: &str) -> Vec<(String, String)> {
+    let translated_parts = split_tts_clauses(translated_text);
+    if translated_parts.is_empty() {
+        return Vec::new();
+    }
+    let source_parts = split_tts_clauses(source_text);
+    if source_parts.len() == translated_parts.len() {
+        return source_parts.into_iter().zip(translated_parts).collect();
+    }
+    translated_parts
+        .into_iter()
+        .map(|translated| (source_text.trim().to_string(), translated))
+        .collect()
+}
+
+fn secondary_tts_segment_index(display_index: usize, part_index: usize) -> usize {
+    display_index.saturating_mul(1000).saturating_add(part_index)
+}
+
 fn speech_dispatch_tasks_for_cue(
     cue: &SubtitleCueRuntime,
     config: &SpeechConfig,
@@ -657,12 +710,17 @@ fn speech_dispatch_tasks_for_cue(
             .iter()
             .enumerate()
             .filter(|(_, segment)| !segment.pending && !segment.translated_text.trim().is_empty())
-            .map(|(index, segment)| SpeechDispatchTask {
-                cue: cue.clone(),
-                segment_index: index,
-                source_text: segment.source_text.clone(),
-                translated_text: segment.translated_text.clone(),
-                segment_mode: true,
+            .flat_map(|(index, segment)| {
+                split_secondary_tts_segments(&segment.source_text, &segment.translated_text)
+                    .into_iter()
+                    .enumerate()
+                    .map(move |(part_index, (source_text, translated_text))| SpeechDispatchTask {
+                        cue: cue.clone(),
+                        segment_index: secondary_tts_segment_index(index, part_index),
+                        source_text,
+                        translated_text,
+                        segment_mode: true,
+                    })
             })
             .collect();
     }
@@ -1002,9 +1060,26 @@ impl SpeechConfig {
             .and_then(Value::as_array)
             .and_then(|arr| arr.first())
             .and_then(|v| serde_json::from_value::<ProviderDraftInput>(v.clone()).ok())
-            .unwrap_or_else(|| {
-                serde_json::from_value(Value::Null).expect("default provider should parse")
-            });
+           .unwrap_or_else(|| {
+                serde_json::from_value(json!({
+                    "templateId": "default",
+                    "providerId": "default-provider",
+                    "kind": "dashscope",
+                    "displayName": "Default Provider",
+                    "model": "",
+                    "baseUrl": "",
+                    "transport": "websocket",
+                    "authRef": {
+                        "kind": "credential-ref",
+                        "reference": "none",
+                        "headerName": "Authorization",
+                        "scheme": "none"
+                    },
+                    "streamEnabled": true,
+                    "timeoutMs": 5000,
+                    "systemPromptTemplate": ""
+                })).expect("default provider should parse")
+           });
         let secondary_translation_active = config
             .pointer("/devices/subtitleTranslationMode")
             .and_then(Value::as_str)
@@ -1592,7 +1667,66 @@ mod tests {
     }
 
     #[test]
-    fn secondary_segment_slot_blocks_replacement_replay() {
+    fn secondary_route_splits_multiline_translation_into_tts_tasks() {
+        let config = SpeechConfig::from_value(&json!({
+            "speech": {
+                "translationAudioSource": "subtitle-tts"
+            },
+            "devices": {
+                "subtitleTranslationMode": "secondary",
+                "subtitleTranslationModelId": "template::text-model",
+                "outputSpeechEnabled": true
+            }
+        }))
+        .unwrap();
+        let cue = SubtitleCueRuntime {
+            cue_id: "cue-secondary".to_string(),
+            route_direction: "inbound".to_string(),
+            source_text: "rocket and future then pending".to_string(),
+            display_source_text: "rocket and future\nthen pending".to_string(),
+            display_segments: vec![
+                SubtitleDisplaySegmentRuntime {
+                    source_text: "rocket and future".to_string(),
+                    translated_text: "现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星".to_string(),
+                    pending: false,
+                },
+                SubtitleDisplaySegmentRuntime {
+                    source_text: "then pending".to_string(),
+                    translated_text: "还在等待".to_string(),
+                    pending: true,
+                },
+            ],
+            translated_text: "现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星\n还在等待".to_string(),
+            started_at: "unix-ms:1".to_string(),
+            ended_at: "unix-ms:2".to_string(),
+            committed: false,
+        };
+
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
+
+        assert_eq!(tasks.len(), 2);
+        assert_eq!(tasks[0].segment_index, 0);
+        assert_eq!(tasks[0].translated_text, "现在你看到的这艘火箭造价十亿美元");
+        assert_eq!(tasks[1].segment_index, 1);
+        assert_eq!(tasks[1].translated_text, "这项未来科技有朝一日将会带你远赴火星");
+    }
+
+    #[test]
+    fn secondary_tts_clause_splitter_preserves_sentence_punctuation() {
+        let parts = split_tts_clauses("我的天哪。在本期视频中 我们将展示未来！\n以及更多科技");
+
+        assert_eq!(
+            parts,
+            vec![
+                "我的天哪。".to_string(),
+                "在本期视频中 我们将展示未来！".to_string(),
+                "以及更多科技".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn secondary_segment_slot_allows_changed_replacement_replay() {
         let cue = SubtitleCueRuntime {
             cue_id: "cue-secondary".to_string(),
             route_direction: "inbound".to_string(),
@@ -1624,13 +1758,13 @@ mod tests {
         let mut processed_slot_order = VecDeque::new();
 
         assert_ne!(first.dispatch_key(), replacement.dispatch_key());
-        assert_eq!(first.segment_slot_key(), replacement.segment_slot_key());
+        assert_ne!(first.segment_slot_key(), replacement.segment_slot_key());
 
         let dispatch_key = first.dispatch_key();
         remember_processed(&mut processed, &mut processed_order, &dispatch_key);
         remember_segment_slot_processed(&first, &mut processed_slots, &mut processed_slot_order);
 
-        assert!(is_processed_task(
+        assert!(!is_processed_task(
             &replacement,
             &processed,
             &processed_slots

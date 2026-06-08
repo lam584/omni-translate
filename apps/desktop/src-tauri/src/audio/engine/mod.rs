@@ -4,7 +4,7 @@ use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::Value;
 use tauri::{AppHandle, Emitter, Manager};
@@ -12,15 +12,30 @@ use wasapi::{
     initialize_mta, Device, DeviceEnumerator, Direction, Role, SampleType, StreamMode, WaveFormat,
 };
 
-use crate::diagnostics::events::append_diagnostics_log;
+use super::diagnostics::{diag_log, diag_log_detail};
+use crate::common::MapErrToString;
 use crate::runtime::events::emit_runtime_snapshot;
 use crate::runtime::state::RuntimeStateStore;
 
 use super::contracts::{AudioDeviceRuntime, AudioRuntimeSnapshot, SubtitleCueRuntime};
 use super::events::AUDIO_RUNTIME_SNAPSHOT_EVENT;
 use super::state::{AudioRouteHandle, AudioStateStore, CapturedSegmentAudio};
+use super::time_utils::{ms_marker, now_marker, unix_ms};
 use crate::bridge::contracts::BridgeTranslationFrameHeader;
+use crate::bridge::ipc::check_bridge_health;
 use crate::bridge::state::BridgeStateStore;
+
+mod retry;
+mod samples;
+
+use self::retry::{
+    with_audio_init_retry, AudioInitError, RetryAction, AUDIO_INIT_BASE_DELAY_MS,
+    AUDIO_INIT_MAX_RETRIES, AUDIO_MAX_DEVICE_FALLBACK, DEVICE_INIT_TIMEOUT_SECS,
+};
+use self::samples::{
+    bytes_to_f32_stereo, calculate_chunk_db, drain_sample_chunks, f32_stereo_to_bytes,
+    pcm16le_to_f32le,
+};
 
 const SAMPLE_RATE_HZ: usize = 48_000;
 const CHANNEL_COUNT: usize = 2;
@@ -28,49 +43,7 @@ const CHUNK_FRAMES: usize = 960;
 const SPEECH_THRESHOLD_DB: f32 = -42.0;
 const SILENCE_HOLD_CHUNKS: usize = 6;
 const ECHO_CANCEL_DELAY_SAMPLES: usize = 9_600;
-const AUDIO_INIT_MAX_RETRIES: usize = 3;
-const AUDIO_INIT_BASE_DELAY_MS: u64 = 500;
-const AUDIO_MAX_DEVICE_FALLBACK: usize = 8;
-const DEVICE_INIT_TIMEOUT_SECS: u64 = 10;
-
-enum AudioInitError {
-    AccessDenied(String),
-    DeviceInUse(String),
-    Unknown(String),
-}
-
-impl AudioInitError {
-    fn from_string(message: String) -> Self {
-        if message.contains("0x80070005") || message.contains("拒绝访问") {
-            AudioInitError::AccessDenied(message)
-        } else if message.contains("0x88890003") {
-            AudioInitError::DeviceInUse(message)
-        } else {
-            AudioInitError::Unknown(message)
-        }
-    }
-
-    fn message(&self) -> &str {
-        match self {
-            AudioInitError::AccessDenied(msg)
-            | AudioInitError::DeviceInUse(msg)
-            | AudioInitError::Unknown(msg) => msg,
-        }
-    }
-
-    fn recommended_action(&self) -> &str {
-        match self {
-            AudioInitError::AccessDenied(_) => "grant-mic-permission",
-            AudioInitError::DeviceInUse(_) => "switch-audio-device",
-            AudioInitError::Unknown(_) => "retry",
-        }
-    }
-
-    fn is_retriable(&self) -> bool {
-        matches!(self, AudioInitError::DeviceInUse(_))
-    }
-}
-
+const BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS: u64 = 15;
 pub fn bootstrap_audio_runtime(
     app: &AppHandle,
     store: &AudioStateStore,
@@ -78,18 +51,16 @@ pub fn bootstrap_audio_runtime(
     let (render_devices, capture_devices) = enumerate_devices()?;
     store.replace_devices(render_devices, capture_devices);
     let snapshot = store.snapshot();
-    let _ = append_diagnostics_log(
+    diag_log_detail(
         app,
         "audio",
         "info",
         "已刷新音频设备列表。",
-        Some(format!(
+        format!(
             "render={} capture={}",
             snapshot.render_devices.len(),
             snapshot.capture_devices.len()
-        )),
-        None,
-        None,
+        ),
     );
     emit_audio_snapshot(app, store)?;
     Ok(snapshot)
@@ -116,13 +87,29 @@ pub fn start_route(
         if direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver" {
             spec.requested_device_id.clone()
         } else {
-            let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
+            let enumerator = DeviceEnumerator::new().map_err_str()?;
             let device = pick_device(&enumerator, &spec)?;
-            device.get_id().map_err(|error| error.to_string())?
+            device.get_id().map_err_str()?
         };
 
     let waits_for_bridge_source =
         direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver";
+    if waits_for_bridge_source {
+        let bridge_snapshot = app.state::<BridgeStateStore>().snapshot();
+        if let Err(error) = check_bridge_health(&bridge_snapshot.pipe_path) {
+            diag_log_detail(
+                &app,
+                "audio",
+                "warning",
+                "Bridge health check failed before starting inbound audio route.",
+                error.clone(),
+            );
+            return Err(format!(
+                "Bridge Service is not responding: {}. Please restart the bridge service before starting the audio route.",
+                error
+            ));
+        }
+    }
     if !waits_for_bridge_source {
         store.mark_route_started(
             direction,
@@ -131,25 +118,19 @@ pub fn start_route(
             &effective_device_id,
         );
     }
-    let _ = append_diagnostics_log(
+    diag_log_detail(
         &app,
         "audio",
         "info",
         format!("已启动 {} 音频采集。", direction),
-        Some(format!(
-            "routeId={} device={}",
-            spec.route_id, effective_device_id
-        )),
-        None,
-        None,
+        format!("routeId={} device={}", spec.route_id, effective_device_id),
     );
     if direction == "inbound" && stt_sender.is_none() {
-        let _ = append_diagnostics_log(
+        diag_log(
             &app,
             "audio",
             "warning",
             "inbound 音频采集已启动但没有 STT/Omni sender，音频将只做本地 VAD 而不进行语音识别，subtitles 不会产生任何 cue！",
-            None, None, None,
         );
     }
     emit_audio_snapshot(&app, store)?;
@@ -188,7 +169,7 @@ pub fn start_route(
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);
             }
         })
-        .map_err(|error| error.to_string())?;
+        .map_err_str()?;
 
     {
         let watchdog_app = app.clone();
@@ -198,7 +179,7 @@ pub fn start_route(
             .spawn(move || {
                 thread::sleep(Duration::from_secs(DEVICE_INIT_TIMEOUT_SECS));
                 if !init_done_for_watchdog.load(Ordering::Relaxed) {
-                    let _ = append_diagnostics_log(
+                    diag_log(
                         &watchdog_app,
                         "audio",
                         "warning",
@@ -206,9 +187,6 @@ pub fn start_route(
                             "{} 音频设备初始化已超过 {} 秒，设备驱动可能无响应，建议切换音频设备后重试。",
                             watchdog_dir, DEVICE_INIT_TIMEOUT_SECS,
                         ),
-                        None,
-                        None,
-                        None,
                     );
                 }
             })
@@ -231,30 +209,64 @@ pub fn stop_route(
     direction: &str,
 ) -> Result<AudioRuntimeSnapshot, String> {
     if let Some(handle) = store.take_session(direction) {
+        store.mark_route_stopping(direction);
+        emit_audio_snapshot(&app, store)?;
         let _ = handle.stop_tx.send(());
+        let (done_tx, done_rx) = mpsc::channel();
+        let join_app = app.clone();
+        let join_direction = direction.to_string();
+        let marked = Arc::new(AtomicBool::new(false));
+        let marked_for_join = marked.clone();
+        thread::Builder::new()
+            .name(format!("audio-stop-join-{direction}"))
+            .spawn(move || {
+                let _ = handle.join_handle.join();
+                let _ = done_tx.send(());
+                if !marked_for_join.swap(true, Ordering::SeqCst) {
+                    let audio_state = join_app.state::<AudioStateStore>();
+                    if audio_state.mark_route_stopped_if_stopping(&join_direction) {
+                        let _ = emit_audio_snapshot(&join_app, &audio_state);
+                    }
+                }
+            })
+            .map_err_str()?;
 
-        // 移除等待 `join_handle.join()`，实现点击后立即返回和停止
-        let _ = append_diagnostics_log(
+        match done_rx.recv_timeout(Duration::from_millis(1_500)) {
+            Ok(()) => {
+                if !marked.swap(true, Ordering::SeqCst) {
+                    let _ = store.mark_route_stopped_if_stopping(direction);
+                }
+                diag_log(
+                    &app,
+                    "audio",
+                    "info",
+                    format!("已停止 {} 音频采集。", direction),
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                let _ = diag_log_detail(
+                    &app,
+                    "audio",
+                    "warning",
+                    "watch_mode.route_stop_timeout",
+                    format!("direction={direction} timeoutMs=1500"),
+                );
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                if !marked.swap(true, Ordering::SeqCst) {
+                    let _ = store.mark_route_stopped_if_stopping(direction);
+                }
+            }
+        }
+    } else {
+        store.mark_route_stopped(direction);
+        diag_log(
             &app,
             "audio",
             "info",
-            format!("已发出 {} 音频采集线程停止信号（后台退出）。", direction),
-            None,
-            None,
-            None,
+            format!("已停止 {} 音频采集。", direction),
         );
     }
-
-    store.mark_route_stopped(direction);
-    let _ = append_diagnostics_log(
-        &app,
-        "audio",
-        "info",
-        format!("已停止 {} 音频采集。", direction),
-        None,
-        None,
-        None,
-    );
     emit_audio_snapshot(&app, store)?;
     Ok(store.snapshot())
 }
@@ -264,31 +276,23 @@ pub fn clear_cues(
     store: &AudioStateStore,
 ) -> Result<AudioRuntimeSnapshot, String> {
     store.clear_subtitle_cues();
-    let _ = append_diagnostics_log(
-        app,
-        "audio",
-        "info",
-        "已清空字幕与音频缓存队列。",
-        None,
-        None,
-        None,
-    );
+    diag_log(app, "audio", "info", "已清空字幕与音频缓存队列。");
     emit_audio_snapshot(app, store)?;
     Ok(store.snapshot())
 }
 
 pub fn emit_audio_snapshot(app: &AppHandle, store: &AudioStateStore) -> Result<(), String> {
     app.emit(AUDIO_RUNTIME_SNAPSHOT_EVENT, store.snapshot())
-        .map_err(|error| error.to_string())?;
+        .map_err_str()?;
     if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {
-        emit_runtime_snapshot(app, &runtime_state).map_err(|error| error.to_string())?;
+        emit_runtime_snapshot(app, &runtime_state).map_err_str()?;
     }
     Ok(())
 }
 
 fn enumerate_devices() -> Result<(Vec<AudioDeviceRuntime>, Vec<AudioDeviceRuntime>), String> {
     let _ = initialize_mta().ok();
-    let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
+    let enumerator = DeviceEnumerator::new().map_err_str()?;
 
     let default_render_id = enumerator
         .get_default_device_for_role(&Direction::Render, &Role::Console)
@@ -323,13 +327,11 @@ fn collect_direction_devices(
     direction: &Direction,
     default_device_id: Option<&str>,
 ) -> Result<Vec<AudioDeviceRuntime>, String> {
-    let collection = enumerator
-        .get_device_collection(direction)
-        .map_err(|error| error.to_string())?;
+    let collection = enumerator.get_device_collection(direction).map_err_str()?;
     let mut devices = Vec::new();
     for device_result in &collection {
-        let device = device_result.map_err(|error| error.to_string())?;
-        let device_id = device.get_id().map_err(|error| error.to_string())?;
+        let device = device_result.map_err_str()?;
+        let device_id = device.get_id().map_err_str()?;
         devices.push(AudioDeviceRuntime {
             device_id: device_id.clone(),
             label: device
@@ -358,12 +360,10 @@ fn collect_direction_devices(
 fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device, String> {
     let direction = spec.wasapi_direction();
     if !spec.requested_device_id.is_empty() {
-        let collection = enumerator
-            .get_device_collection(&direction)
-            .map_err(|error| error.to_string())?;
+        let collection = enumerator.get_device_collection(&direction).map_err_str()?;
         for device_result in &collection {
-            let device = device_result.map_err(|error| error.to_string())?;
-            let device_id = device.get_id().map_err(|error| error.to_string())?;
+            let device = device_result.map_err_str()?;
+            let device_id = device.get_id().map_err_str()?;
             if device_id == spec.requested_device_id {
                 return Ok(device);
             }
@@ -385,17 +385,13 @@ fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device
         );
     }
 
-    enumerator
-        .get_default_device(&direction)
-        .map_err(|error| error.to_string())
+    enumerator.get_default_device(&direction).map_err_str()
 }
 
 fn collect_render_device_ids(enumerator: &DeviceEnumerator) -> Result<Vec<String>, String> {
     let mut ids = Vec::new();
     let direction = Direction::Render;
-    let collection = enumerator
-        .get_device_collection(&direction)
-        .map_err(|error| error.to_string())?;
+    let collection = enumerator.get_device_collection(&direction).map_err_str()?;
     for device_result in &collection {
         match device_result {
             Ok(device) => {
@@ -449,7 +445,7 @@ fn run_route_worker(
 
     let device_fallback_ids: Vec<String> =
         if direction == "inbound" && spec.feedback_loop_prevention != "virtual-driver" {
-            let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
+            let enumerator = DeviceEnumerator::new().map_err_str()?;
             let default_id = enumerator
                 .get_default_device(&Direction::Render)
                 .ok()
@@ -477,7 +473,7 @@ fn run_route_worker(
         buffer_frame_count,
         desired_format,
     ) = 'outer: loop {
-        let enumerator = DeviceEnumerator::new().map_err(|error| error.to_string())?;
+        let enumerator = DeviceEnumerator::new().map_err_str()?;
         let device = if using_device_fallback && device_fallback_index < device_fallback_ids.len() {
             let target_id = &device_fallback_ids[device_fallback_index];
             match find_device_by_id(&enumerator, &spec.wasapi_direction(), target_id) {
@@ -489,9 +485,9 @@ fn run_route_worker(
                 }
             }
         } else {
-            pick_device(&enumerator, &spec).map_err(|error| error.to_string())?
+            pick_device(&enumerator, &spec).map_err_str()?
         };
-        let effective_device_id = device.get_id().map_err(|error| error.to_string())?;
+        let effective_device_id = device.get_id().map_err_str()?;
         let device_state = device
             .get_state()
             .map(|s| format!("{:?}", s))
@@ -500,7 +496,7 @@ fn run_route_worker(
             .get_friendlyname()
             .unwrap_or_else(|_| "Unknown".to_string());
 
-        let _ = append_diagnostics_log(
+        diag_log_detail(
             &app,
             "audio",
             "debug",
@@ -508,83 +504,36 @@ fn run_route_worker(
                 "尝试初始化设备: {} (id={} state={})",
                 device_label, effective_device_id, device_state
             ),
-            Some(format!("direction={}", direction)),
-            None,
-            None,
+            format!("direction={}", direction),
         );
 
-        let mut audio_client = match device.get_iaudioclient() {
+        let mut audio_client = match with_audio_init_retry(
+            device.get_iaudioclient(),
+            &app,
+            direction,
+            &effective_device_id,
+            "获取 AudioClient 失败",
+            &mut full_retry_count,
+            &mut device_fallback_index,
+            device_fallback_ids.len(),
+            using_device_fallback,
+        ) {
             Ok(client) => client,
-            Err(error) => {
-                let classified = AudioInitError::from_string(error.to_string());
-                if classified.is_retriable() && full_retry_count < AUDIO_INIT_MAX_RETRIES {
-                    full_retry_count += 1;
-                    let delay_ms =
-                        AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32);
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "debug",
-                        format!(
-                            "获取 AudioClient 失败 ({}/{} 次重试)，{}ms 后重试...",
-                            full_retry_count, AUDIO_INIT_MAX_RETRIES, delay_ms
-                        ),
-                        Some(format!(
-                            "direction={} device={} error={}",
-                            direction,
-                            effective_device_id,
-                            classified.message()
-                        )),
-                        None,
-                        None,
-                    );
-                    drop(device);
-                    drop(enumerator);
-                    thread::sleep(Duration::from_millis(delay_ms));
-                    continue;
-                }
-                if classified.is_retriable()
-                    && using_device_fallback
-                    && device_fallback_index + 1 < device_fallback_ids.len()
-                {
-                    device_fallback_index += 1;
-                    full_retry_count = 0;
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "debug",
-                        format!(
-                            "当前设备不可用（{}），切换到备用设备重试...",
-                            classified.message()
-                        ),
-                        Some(format!("direction={}", direction)),
-                        None,
-                        None,
-                    );
-                    drop(device);
-                    drop(enumerator);
-                    thread::sleep(Duration::from_millis(500));
-                    continue 'outer;
-                }
-                let _ = append_diagnostics_log(
-                    &app,
-                    "audio",
-                    "warning",
-                    format!("音频采集初始化最终失败: {}", classified.message()),
-                    Some(format!(
-                        "direction={} recommended={}",
-                        direction,
-                        classified.recommended_action()
-                    )),
-                    None,
-                    None,
-                );
-                break Err(format!(
-                    "{} | recommended: {}",
-                    classified.message(),
-                    classified.recommended_action()
+            Err(RetryAction::Retry) => {
+                drop(device);
+                drop(enumerator);
+                thread::sleep(Duration::from_millis(
+                    AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32),
                 ));
+                continue;
             }
+            Err(RetryAction::DeviceFallback) => {
+                drop(device);
+                drop(enumerator);
+                thread::sleep(Duration::from_millis(500));
+                continue 'outer;
+            }
+            Err(RetryAction::Fail(msg)) => break Err(msg),
         };
 
         let desired_format = WaveFormat::new(
@@ -595,80 +544,35 @@ fn run_route_worker(
             CHANNEL_COUNT,
             None,
         );
-        let (_, min_time) = match audio_client.get_device_period() {
+        let (_, min_time) = match with_audio_init_retry(
+            audio_client.get_device_period(),
+            &app,
+            direction,
+            &effective_device_id,
+            "获取设备周期失败",
+            &mut full_retry_count,
+            &mut device_fallback_index,
+            device_fallback_ids.len(),
+            using_device_fallback,
+        ) {
             Ok(period) => period,
-            Err(error) => {
-                let classified = AudioInitError::from_string(error.to_string());
-                if classified.is_retriable() && full_retry_count < AUDIO_INIT_MAX_RETRIES {
-                    full_retry_count += 1;
-                    let delay_ms =
-                        AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32);
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "debug",
-                        format!(
-                            "获取设备周期失败 ({}/{} 次重试)，{}ms 后重试...",
-                            full_retry_count, AUDIO_INIT_MAX_RETRIES, delay_ms
-                        ),
-                        Some(format!(
-                            "direction={} device={} error={}",
-                            direction,
-                            effective_device_id,
-                            classified.message()
-                        )),
-                        None,
-                        None,
-                    );
-                    drop(audio_client);
-                    drop(device);
-                    drop(enumerator);
-                    thread::sleep(Duration::from_millis(delay_ms));
-                    continue;
-                }
-                if classified.is_retriable()
-                    && using_device_fallback
-                    && device_fallback_index + 1 < device_fallback_ids.len()
-                {
-                    device_fallback_index += 1;
-                    full_retry_count = 0;
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "debug",
-                        format!(
-                            "当前设备不可用（{}），切换到备用设备重试...",
-                            classified.message()
-                        ),
-                        Some(format!("direction={}", direction)),
-                        None,
-                        None,
-                    );
-                    drop(audio_client);
-                    drop(device);
-                    drop(enumerator);
-                    thread::sleep(Duration::from_millis(500));
-                    continue 'outer;
-                }
-                let _ = append_diagnostics_log(
-                    &app,
-                    "audio",
-                    "warning",
-                    format!("音频采集初始化最终失败: {}", classified.message()),
-                    Some(format!(
-                        "direction={} recommended={}",
-                        direction,
-                        classified.recommended_action()
-                    )),
-                    None,
-                    None,
-                );
-                break Err(format!(
-                    "{} | recommended: {}",
-                    classified.message(),
-                    classified.recommended_action()
+            Err(RetryAction::Retry) => {
+                drop(audio_client);
+                drop(device);
+                drop(enumerator);
+                thread::sleep(Duration::from_millis(
+                    AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32),
                 ));
+                continue;
             }
+            Err(RetryAction::DeviceFallback) => {
+                drop(audio_client);
+                drop(device);
+                drop(enumerator);
+                thread::sleep(Duration::from_millis(500));
+                continue 'outer;
+            }
+            Err(RetryAction::Fail(msg)) => break Err(msg),
         };
         let mode = StreamMode::EventsShared {
             autoconvert: true,
@@ -686,7 +590,7 @@ fn run_route_worker(
                         init_retry_count += 1;
                         let delay_ms =
                             AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((init_retry_count - 1) as u32);
-                        let _ = append_diagnostics_log(
+                        diag_log_detail(
                             &app,
                             "audio",
                             "debug",
@@ -694,12 +598,7 @@ fn run_route_worker(
                                 "初始化客户端失败 ({}/{} 次重试)，{}ms 后重试...",
                                 init_retry_count, AUDIO_INIT_MAX_RETRIES, delay_ms
                             ),
-                            Some(format!(
-                                "direction={} device={}",
-                                direction, effective_device_id
-                            )),
-                            None,
-                            None,
+                            format!("direction={} device={}", direction, effective_device_id),
                         );
                         thread::sleep(Duration::from_millis(delay_ms));
                         continue;
@@ -708,7 +607,7 @@ fn run_route_worker(
                         full_retry_count += 1;
                         let delay_ms =
                             AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32);
-                        let _ = append_diagnostics_log(
+                        diag_log_detail(
                             &app,
                             "audio",
                             "debug",
@@ -716,14 +615,12 @@ fn run_route_worker(
                                 "初始化客户端失败（内层耗尽），全链路 {}/{} 次重试，{}ms 后重试...",
                                 full_retry_count, AUDIO_INIT_MAX_RETRIES, delay_ms
                             ),
-                            Some(format!(
+                            format!(
                                 "direction={} device={} error={}",
                                 direction,
                                 effective_device_id,
                                 classified.message()
-                            )),
-                            None,
-                            None,
+                            ),
                         );
                         drop(audio_client);
                         drop(device);
@@ -737,7 +634,7 @@ fn run_route_worker(
                     {
                         device_fallback_index += 1;
                         full_retry_count = 0;
-                        let _ = append_diagnostics_log(
+                        diag_log_detail(
                             &app,
                             "audio",
                             "debug",
@@ -745,9 +642,7 @@ fn run_route_worker(
                                 "当前设备初始化失败（{}），切换到备用设备重试...",
                                 classified.message()
                             ),
-                            Some(format!("direction={}", direction)),
-                            None,
-                            None,
+                            format!("direction={}", direction),
                         );
                         drop(audio_client);
                         drop(device);
@@ -763,18 +658,16 @@ fn run_route_worker(
         match init_result {
             Ok(()) => {}
             Err(classified) => {
-                let _ = append_diagnostics_log(
+                diag_log_detail(
                     &app,
                     "audio",
                     "warning",
                     format!("音频采集初始化最终失败: {}", classified.message()),
-                    Some(format!(
+                    format!(
                         "direction={} recommended={}",
                         direction,
                         classified.recommended_action()
-                    )),
-                    None,
-                    None,
+                    ),
                 );
                 break Err(format!(
                     "{} | recommended: {}",
@@ -784,155 +677,65 @@ fn run_route_worker(
             }
         }
 
-        let event_handle = match audio_client.set_get_eventhandle() {
+        let event_handle = match with_audio_init_retry(
+            audio_client.set_get_eventhandle(),
+            &app,
+            direction,
+            &effective_device_id,
+            "获取事件句柄失败",
+            &mut full_retry_count,
+            &mut device_fallback_index,
+            device_fallback_ids.len(),
+            using_device_fallback,
+        ) {
             Ok(handle) => handle,
-            Err(error) => {
-                let classified = AudioInitError::from_string(error.to_string());
-                if classified.is_retriable() && full_retry_count < AUDIO_INIT_MAX_RETRIES {
-                    full_retry_count += 1;
-                    let delay_ms =
-                        AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32);
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "debug",
-                        format!(
-                            "获取事件句柄失败 ({}/{} 次重试)，{}ms 后重试...",
-                            full_retry_count, AUDIO_INIT_MAX_RETRIES, delay_ms
-                        ),
-                        Some(format!(
-                            "direction={} device={} error={}",
-                            direction,
-                            effective_device_id,
-                            classified.message()
-                        )),
-                        None,
-                        None,
-                    );
-                    drop(audio_client);
-                    drop(device);
-                    drop(enumerator);
-                    thread::sleep(Duration::from_millis(delay_ms));
-                    continue;
-                }
-                if classified.is_retriable()
-                    && using_device_fallback
-                    && device_fallback_index + 1 < device_fallback_ids.len()
-                {
-                    device_fallback_index += 1;
-                    full_retry_count = 0;
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "debug",
-                        format!(
-                            "当前设备不可用（{}），切换到备用设备重试...",
-                            classified.message()
-                        ),
-                        Some(format!("direction={}", direction)),
-                        None,
-                        None,
-                    );
-                    drop(audio_client);
-                    drop(device);
-                    drop(enumerator);
-                    thread::sleep(Duration::from_millis(500));
-                    continue 'outer;
-                }
-                let _ = append_diagnostics_log(
-                    &app,
-                    "audio",
-                    "warning",
-                    format!("音频采集初始化最终失败: {}", classified.message()),
-                    Some(format!(
-                        "direction={} recommended={}",
-                        direction,
-                        classified.recommended_action()
-                    )),
-                    None,
-                    None,
-                );
-                break Err(format!(
-                    "{} | recommended: {}",
-                    classified.message(),
-                    classified.recommended_action()
+            Err(RetryAction::Retry) => {
+                drop(audio_client);
+                drop(device);
+                drop(enumerator);
+                thread::sleep(Duration::from_millis(
+                    AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32),
                 ));
+                continue;
             }
+            Err(RetryAction::DeviceFallback) => {
+                drop(audio_client);
+                drop(device);
+                drop(enumerator);
+                thread::sleep(Duration::from_millis(500));
+                continue 'outer;
+            }
+            Err(RetryAction::Fail(msg)) => break Err(msg),
         };
-        let buffer_frame_count = match audio_client.get_buffer_size() {
+        let buffer_frame_count = match with_audio_init_retry(
+            audio_client.get_buffer_size(),
+            &app,
+            direction,
+            &effective_device_id,
+            "获取缓冲区大小失败",
+            &mut full_retry_count,
+            &mut device_fallback_index,
+            device_fallback_ids.len(),
+            using_device_fallback,
+        ) {
             Ok(count) => count,
-            Err(error) => {
-                let classified = AudioInitError::from_string(error.to_string());
-                if classified.is_retriable() && full_retry_count < AUDIO_INIT_MAX_RETRIES {
-                    full_retry_count += 1;
-                    let delay_ms =
-                        AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32);
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "debug",
-                        format!(
-                            "获取缓冲区大小失败 ({}/{} 次重试)，{}ms 后重试...",
-                            full_retry_count, AUDIO_INIT_MAX_RETRIES, delay_ms
-                        ),
-                        Some(format!(
-                            "direction={} device={} error={}",
-                            direction,
-                            effective_device_id,
-                            classified.message()
-                        )),
-                        None,
-                        None,
-                    );
-                    drop(audio_client);
-                    drop(device);
-                    drop(enumerator);
-                    thread::sleep(Duration::from_millis(delay_ms));
-                    continue;
-                }
-                if classified.is_retriable()
-                    && using_device_fallback
-                    && device_fallback_index + 1 < device_fallback_ids.len()
-                {
-                    device_fallback_index += 1;
-                    full_retry_count = 0;
-                    let _ = append_diagnostics_log(
-                        &app,
-                        "audio",
-                        "debug",
-                        format!(
-                            "当前设备不可用（{}），切换到备用设备重试...",
-                            classified.message()
-                        ),
-                        Some(format!("direction={}", direction)),
-                        None,
-                        None,
-                    );
-                    drop(audio_client);
-                    drop(device);
-                    drop(enumerator);
-                    thread::sleep(Duration::from_millis(500));
-                    continue 'outer;
-                }
-                let _ = append_diagnostics_log(
-                    &app,
-                    "audio",
-                    "warning",
-                    format!("音频采集初始化最终失败: {}", classified.message()),
-                    Some(format!(
-                        "direction={} recommended={}",
-                        direction,
-                        classified.recommended_action()
-                    )),
-                    None,
-                    None,
-                );
-                break Err(format!(
-                    "{} | recommended: {}",
-                    classified.message(),
-                    classified.recommended_action()
+            Err(RetryAction::Retry) => {
+                drop(audio_client);
+                drop(device);
+                drop(enumerator);
+                thread::sleep(Duration::from_millis(
+                    AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32),
                 ));
+                continue;
             }
+            Err(RetryAction::DeviceFallback) => {
+                drop(audio_client);
+                drop(device);
+                drop(enumerator);
+                thread::sleep(Duration::from_millis(500));
+                continue 'outer;
+            }
+            Err(RetryAction::Fail(msg)) => break Err(msg),
         };
         let capture_client = match audio_client.get_audiocaptureclient() {
             Ok(client) => client,
@@ -945,7 +748,7 @@ fn run_route_worker(
                     device_fallback_index += 1;
                     full_retry_count = 0;
                     let next_id = &device_fallback_ids[device_fallback_index];
-                    let _ = append_diagnostics_log(
+                    diag_log_detail(
                         &app,
                         "audio",
                         "debug",
@@ -955,9 +758,7 @@ fn run_route_worker(
                             classified.message(),
                             next_id
                         ),
-                        Some(format!("direction={}", direction)),
-                        None,
-                        None,
+                        format!("direction={}", direction),
                     );
                     drop(audio_client);
                     drop(device);
@@ -969,7 +770,7 @@ fn run_route_worker(
                     full_retry_count += 1;
                     let delay_ms =
                         AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32);
-                    let _ = append_diagnostics_log(
+                    diag_log_detail(
                         &app,
                         "audio",
                         "debug",
@@ -977,14 +778,12 @@ fn run_route_worker(
                             "获取采集客户端失败 ({}/{} 次重试)，{}ms 后重试...",
                             full_retry_count, AUDIO_INIT_MAX_RETRIES, delay_ms
                         ),
-                        Some(format!(
+                        format!(
                             "direction={} device={} error={}",
                             direction,
                             effective_device_id,
                             classified.message()
-                        )),
-                        None,
-                        None,
+                        ),
                     );
                     drop(audio_client);
                     drop(device);
@@ -992,18 +791,16 @@ fn run_route_worker(
                     thread::sleep(Duration::from_millis(delay_ms));
                     continue;
                 }
-                let _ = append_diagnostics_log(
+                diag_log_detail(
                     &app,
                     "audio",
                     "warning",
                     format!("音频采集初始化最终失败: {}", classified.message()),
-                    Some(format!(
+                    format!(
                         "direction={} recommended={}",
                         direction,
                         classified.recommended_action()
-                    )),
-                    None,
-                    None,
+                    ),
                 );
                 break Err(format!(
                     "{} | recommended: {}",
@@ -1029,17 +826,12 @@ fn run_route_worker(
     }
     let init_elapsed = init_start.elapsed();
     if init_elapsed.as_secs() >= 2 {
-        let _ = append_diagnostics_log(
+        diag_log_detail(
             &app,
             "audio",
             "info",
             format!("设备初始化完成（耗时 {:.1}s）", init_elapsed.as_secs_f64(),),
-            Some(format!(
-                "direction={} device={}",
-                direction, effective_device_id
-            )),
-            None,
-            None,
+            format!("direction={} device={}", direction, effective_device_id),
         );
     }
 
@@ -1056,9 +848,7 @@ fn run_route_worker(
     );
     emit_audio_snapshot(&app, store)?;
 
-    audio_client
-        .start_stream()
-        .map_err(|error| error.to_string())?;
+    audio_client.start_stream().map_err_str()?;
     loop {
         if stop_rx.try_recv().is_ok() {
             let _ = audio_client.stop_stream();
@@ -1067,20 +857,17 @@ fn run_route_worker(
 
         capture_client
             .read_from_device_to_deque(&mut sample_queue)
-            .map_err(|error| error.to_string())?;
+            .map_err_str()?;
 
         let chunk_len = desired_format.get_blockalign() as usize * CHUNK_FRAMES;
-        while sample_queue.len() >= chunk_len {
-            let mut chunk = vec![0_u8; chunk_len];
-            for item in &mut chunk {
-                *item = sample_queue.pop_front().expect("chunk should be filled");
-            }
-
-            if spec.echo_cancel_enabled() {
+        for chunk in drain_sample_chunks(&mut sample_queue, chunk_len) {
+            let chunk = if spec.echo_cancel_enabled() {
                 let f32_chunk = bytes_to_f32_stereo(&chunk);
                 let cleaned = store.subtract_echo(&f32_chunk, ECHO_CANCEL_DELAY_SAMPLES);
-                chunk = f32_stereo_to_bytes(&cleaned);
-            }
+                f32_stereo_to_bytes(&cleaned)
+            } else {
+                chunk
+            };
 
             process_captured_chunk(
                 &app,
@@ -1114,6 +901,7 @@ fn run_bridge_source_route_worker(
     let mut initialized = false;
     let init_start = Instant::now();
     let mut last_not_ready_log_at = None;
+    let mut reconnect_started_at: Option<Instant> = None;
     let mut heartbeat_count = 0_u64;
     let mut pcm_frame_count = 0_u64;
     let mut pcm_bytes = 0_u64;
@@ -1138,14 +926,12 @@ fn run_bridge_source_route_worker(
                         .map(|logged_at: Instant| logged_at.elapsed() >= Duration::from_secs(2))
                         .unwrap_or(true)
                     {
-                        let _ = append_diagnostics_log(
+                        diag_log_detail(
                             &app,
                             "audio",
                             "warning",
                             "Bridge source pipe is not ready.",
-                            Some(error.to_string()),
-                            None,
-                            None,
+                            error.to_string(),
                         );
                         last_not_ready_log_at = Some(Instant::now());
                     }
@@ -1153,20 +939,27 @@ fn run_bridge_source_route_worker(
                         if let Some(timeout_error) = bridge_source_timeout_error(elapsed) {
                             return Err(timeout_error);
                         }
+                    } else if reconnect_started_at.is_none() {
+                        reconnect_started_at = Some(Instant::now());
+                        diag_log_detail(
+                            &app,
+                            "audio",
+                            "warning",
+                            "Bridge source reconnection started.",
+                            format!("timeoutSecs={}", BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS),
+                        );
                     }
                     thread::sleep(Duration::from_millis(250));
                 }
             }
         };
         if !initialized {
-            let _ = append_diagnostics_log(
+            diag_log_detail(
                 &app,
                 "audio",
                 "info",
                 "event=bridge_source_pipe_connected",
-                Some(format!("pipe={}", bridge_snapshot.source_pipe_path)),
-                None,
-                None,
+                format!("pipe={}", bridge_snapshot.source_pipe_path),
             );
             if let Some(ref flag) = init_done {
                 flag.store(true, Ordering::Relaxed);
@@ -1179,6 +972,15 @@ fn run_bridge_source_route_worker(
             );
             emit_audio_snapshot(&app, store)?;
             initialized = true;
+        } else if reconnect_started_at.is_some() {
+            reconnect_started_at = None;
+            diag_log_detail(
+                &app,
+                "audio",
+                "info",
+                "event=bridge_source_pipe_reconnected",
+                format!("pipe={}", bridge_snapshot.source_pipe_path),
+            );
         }
         loop {
             if stop_rx.try_recv().is_ok() {
@@ -1190,18 +992,16 @@ fn run_bridge_source_route_worker(
                     pcm_bytes += payload.len() as u64;
                     last_pcm_at = Some(Instant::now());
                     if !first_pcm_logged {
-                        let _ = append_diagnostics_log(
+                        diag_log_detail(
                             &app,
                             "audio",
                             "info",
                             "event=bridge_source_first_pcm",
-                            Some(format!(
+                            format!(
                                 "frameCount={} payloadBytes={}",
                                 pcm_frame_count,
                                 payload.len()
-                            )),
-                            None,
-                            None,
+                            ),
                         );
                         first_pcm_logged = true;
                     }
@@ -1210,14 +1010,12 @@ fn run_bridge_source_route_worker(
                 Ok(BridgeSourceEnvelope::Heartbeat) => {
                     heartbeat_count += 1;
                     if !first_heartbeat_logged {
-                        let _ = append_diagnostics_log(
+                        diag_log_detail(
                             &app,
                             "audio",
                             "info",
                             "event=bridge_source_first_heartbeat",
-                            Some("payloadBytes=0".to_string()),
-                            None,
-                            None,
+                            "payloadBytes=0".to_string(),
                         );
                         first_heartbeat_logged = true;
                     }
@@ -1234,28 +1032,33 @@ fn run_bridge_source_route_worker(
                 }
                 Ok(BridgeSourceEnvelope::Ignored(reason)) => {
                     ignored_envelope_count += 1;
-                    let _ = append_diagnostics_log(
+                    diag_log_detail(
                         &app,
                         "audio",
                         "warning",
                         "event=bridge_source_envelope_ignored",
-                        Some(reason),
-                        None,
-                        None,
+                        reason,
                     );
                     continue;
                 }
                 Err(error) => {
                     sample_queue.clear();
-                    let _ = append_diagnostics_log(
+                    diag_log_detail(
                         &app,
                         "audio",
                         "warning",
                         "Bridge source pipe disconnected. Reconnecting.",
-                        Some(error),
-                        None,
-                        None,
+                        error,
                     );
+                    if let Some(reconnect_start) = reconnect_started_at {
+                        let reconnect_elapsed = reconnect_start.elapsed();
+                        if reconnect_elapsed >= Duration::from_secs(BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS) {
+                            return Err(format!(
+                                "Bridge source pipe reconnection timed out after {}s. The bridge process may be a zombie. | recommended: restart-bridge",
+                                BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS
+                            ));
+                        }
+                    }
                     break;
                 }
             };
@@ -1270,11 +1073,7 @@ fn run_bridge_source_route_worker(
             );
             sample_queue.extend(pcm16le_to_f32le(&payload));
             let chunk_len = CHUNK_FRAMES * CHANNEL_COUNT * std::mem::size_of::<f32>();
-            while sample_queue.len() >= chunk_len {
-                let mut chunk = vec![0_u8; chunk_len];
-                for item in &mut chunk {
-                    *item = sample_queue.pop_front().expect("chunk should be filled");
-                }
+            for chunk in drain_sample_chunks(&mut sample_queue, chunk_len) {
                 process_captured_chunk(
                     &app,
                     store,
@@ -1301,12 +1100,12 @@ fn log_bridge_source_consumer_summary(
     if last_summary_at.elapsed() < Duration::from_secs(5) {
         return;
     }
-    let _ = append_diagnostics_log(
+    diag_log_detail(
         app,
         "audio",
         "info",
         "event=bridge_source_consumer_summary",
-        Some(format!(
+        format!(
             "heartbeats={} pcmFrames={} pcmBytes={} ignoredEnvelopes={} lastPcmAgeMs={}",
             heartbeat_count,
             pcm_frame_count,
@@ -1315,9 +1114,7 @@ fn log_bridge_source_consumer_summary(
             last_pcm_at
                 .map(|timestamp| timestamp.elapsed().as_millis().to_string())
                 .unwrap_or_else(|| "none".to_string()),
-        )),
-        None,
-        None,
+        ),
     );
     *last_summary_at = Instant::now();
 }
@@ -1352,7 +1149,7 @@ fn read_bridge_source_payload(source_pipe: &mut impl Read) -> Result<BridgeSourc
         .read_exact(&mut header_bytes)
         .map_err(|error| format!("Bridge source header read failed: {error}"))?;
     let header: BridgeTranslationFrameHeader =
-        serde_json::from_slice(&header_bytes).map_err(|error| error.to_string())?;
+        serde_json::from_slice(&header_bytes).map_err_str()?;
     let mut payload = vec![0_u8; header.payload_bytes];
     source_pipe
         .read_exact(&mut payload)
@@ -1381,15 +1178,6 @@ fn read_bridge_source_payload(source_pipe: &mut impl Read) -> Result<BridgeSourc
     Ok(BridgeSourceEnvelope::Frame(payload))
 }
 
-fn pcm16le_to_f32le(payload: &[u8]) -> Vec<u8> {
-    let mut output = Vec::with_capacity(payload.len() * 2);
-    for sample in payload.chunks_exact(2) {
-        let value = i16::from_le_bytes([sample[0], sample[1]]) as f32 / i16::MAX as f32;
-        output.extend_from_slice(&value.to_le_bytes());
-    }
-    output
-}
-
 fn process_captured_chunk(
     app: &AppHandle,
     store: &AudioStateStore,
@@ -1400,7 +1188,17 @@ fn process_captured_chunk(
     queued_bytes: usize,
 ) -> Result<(), String> {
     if let Some(stt_tx) = stt_sender {
-        let _ = stt_tx.send(chunk.clone());
+        if let Err(error) = stt_tx.send(chunk.clone()) {
+            let message = format!("audio route sender unavailable for {direction}: {error}");
+            let _ = diag_log_detail(
+                app,
+                "audio",
+                "error",
+                "watch_mode.omni_sender_unavailable",
+                format!("direction={direction} error={error}"),
+            );
+            return Err(format!("{message} | recommended: restart-route"));
+        }
     }
     let update = processor.ingest_chunk(&chunk, queued_bytes);
     store.update_route_metrics(
@@ -1692,53 +1490,6 @@ impl RouteProcessor {
             cue,
         })
     }
-}
-
-fn calculate_chunk_db(chunk: &[u8]) -> f32 {
-    let mut sample_count = 0_usize;
-    let mut power_sum = 0.0_f64;
-    for sample in chunk.chunks_exact(4) {
-        let value = f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as f64;
-        power_sum += value * value;
-        sample_count += 1;
-    }
-
-    if sample_count == 0 {
-        return -90.0;
-    }
-
-    let rms = (power_sum / sample_count as f64).sqrt().max(1e-6);
-    (20.0 * rms.log10()) as f32
-}
-
-fn bytes_to_f32_stereo(bytes: &[u8]) -> Vec<f32> {
-    bytes
-        .chunks_exact(4)
-        .map(|sample| f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]))
-        .collect()
-}
-
-fn f32_stereo_to_bytes(samples: &[f32]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(samples.len() * 4);
-    for sample in samples {
-        bytes.extend_from_slice(&sample.clamp(-1.0, 1.0).to_le_bytes());
-    }
-    bytes
-}
-
-fn unix_ms() -> u64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as u64,
-        Err(_) => 0,
-    }
-}
-
-fn now_marker() -> String {
-    format!("unix:{}", unix_ms())
-}
-
-fn ms_marker(value: u64) -> String {
-    format!("unix-ms:{}", value)
 }
 
 #[cfg(test)]

@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::sync::{mpsc::Sender, Mutex};
+use std::sync::{mpsc::Sender, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::Instant;
 
@@ -8,13 +8,33 @@ use super::contracts::{
     SubtitleCueRuntime, SubtitleDisplaySegmentRuntime, SubtitleOverlayRuntimeSnapshot,
 };
 use super::echo_cancel::EchoReferenceBuffer;
+use super::live_session_events::LiveSessionEventBuffer;
 
 use super::omni::OmniHandle;
 use super::stt::SttHandle;
+use super::time_utils::{ms_marker, unix_ms};
 
 pub struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
     pub join_handle: JoinHandle<()>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum OmniSessionLifecycle {
+    Starting,
+    Ready,
+    Failed,
+    Stopping,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct OmniSessionMetadata {
+    pub direction: String,
+    pub session_generation: u64,
+    pub model_id: String,
+    pub subtitle_translate_active: bool,
+    pub state: OmniSessionLifecycle,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone)]
@@ -42,11 +62,16 @@ pub struct AudioStateStore {
     sessions: Mutex<HashMap<String, AudioRouteHandle>>,
     stt_handles: Mutex<HashMap<String, SttHandle>>,
     omni_handles: Mutex<HashMap<String, OmniHandle>>,
+    omni_senders: Mutex<HashMap<String, Sender<Vec<u8>>>>,
+    omni_sessions: Mutex<HashMap<String, OmniSessionMetadata>>,
+    omni_generations: Mutex<HashMap<String, u64>>,
+    inbound_pipeline_lock: Mutex<()>,
     segment_audio: Mutex<HashMap<String, CapturedSegmentAudio>>,
     segment_audio_order: Mutex<VecDeque<String>>,
     tts_audio: Mutex<HashMap<String, CachedTtsAudio>>,
     tts_audio_order: Mutex<VecDeque<String>>,
     echo_buffer: Mutex<EchoReferenceBuffer>,
+    pub live_session_events: LiveSessionEventBuffer,
 }
 
 const MAX_RECENT_SUBTITLE_CUES: usize = 12;
@@ -136,16 +161,27 @@ impl AudioStateStore {
             sessions: Mutex::new(HashMap::new()),
             stt_handles: Mutex::new(HashMap::new()),
             omni_handles: Mutex::new(HashMap::new()),
+            omni_senders: Mutex::new(HashMap::new()),
+            omni_sessions: Mutex::new(HashMap::new()),
+            omni_generations: Mutex::new(HashMap::new()),
+            inbound_pipeline_lock: Mutex::new(()),
             segment_audio: Mutex::new(HashMap::new()),
             segment_audio_order: Mutex::new(VecDeque::new()),
             tts_audio: Mutex::new(HashMap::new()),
             tts_audio_order: Mutex::new(VecDeque::new()),
             echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
+            live_session_events: LiveSessionEventBuffer::new(),
         }
     }
 
     pub fn snapshot(&self) -> AudioRuntimeSnapshot {
         self.inner.lock().expect("audio state poisoned").clone()
+    }
+
+    pub(crate) fn lock_inbound_pipeline(&self) -> MutexGuard<'_, ()> {
+        self.inbound_pipeline_lock
+            .lock()
+            .expect("inbound pipeline lock poisoned")
     }
 
     pub(crate) fn push_echo_reference(
@@ -231,11 +267,192 @@ impl AudioStateStore {
             .insert(direction.to_string(), handle)
     }
 
+    pub fn store_omni_sender(&self, direction: &str, sender: Sender<Vec<u8>>) {
+        self.omni_senders
+            .lock()
+            .expect("omni senders poisoned")
+            .insert(direction.to_string(), sender);
+    }
+
+    pub fn has_omni_sender(&self, direction: &str) -> bool {
+        self.omni_senders
+            .lock()
+            .expect("omni senders poisoned")
+            .contains_key(direction)
+    }
+
+    pub fn take_omni_sender(&self, direction: &str) -> Option<Sender<Vec<u8>>> {
+        self.omni_senders
+            .lock()
+            .expect("omni senders poisoned")
+            .remove(direction)
+    }
+
     pub fn take_omni_handle(&self, direction: &str) -> Option<OmniHandle> {
+        let _ = self.take_omni_sender(direction);
+        self.omni_sessions
+            .lock()
+            .expect("omni sessions poisoned")
+            .remove(direction);
         self.omni_handles
             .lock()
             .expect("omni handles poisoned")
             .remove(direction)
+    }
+
+    pub(crate) fn begin_omni_session(
+        &self,
+        direction: &str,
+        model_id: &str,
+        subtitle_translate_active: bool,
+    ) -> u64 {
+        let mut generations = self
+            .omni_generations
+            .lock()
+            .expect("omni generations poisoned");
+        let generation = generations
+            .entry(direction.to_string())
+            .and_modify(|value| *value = value.saturating_add(1))
+            .or_insert(1);
+        let generation = *generation;
+        self.omni_sessions
+            .lock()
+            .expect("omni sessions poisoned")
+            .insert(
+                direction.to_string(),
+                OmniSessionMetadata {
+                    direction: direction.to_string(),
+                    session_generation: generation,
+                    model_id: model_id.to_string(),
+                    subtitle_translate_active,
+                    state: OmniSessionLifecycle::Starting,
+                    last_error: None,
+                },
+            );
+        generation
+    }
+
+    pub(crate) fn mark_omni_session_ready(&self, direction: &str, generation: u64) -> bool {
+        let mut sessions = self.omni_sessions.lock().expect("omni sessions poisoned");
+        let Some(session) = sessions.get_mut(direction) else {
+            return false;
+        };
+        if session.session_generation != generation {
+            return false;
+        }
+        session.state = OmniSessionLifecycle::Ready;
+        session.last_error = None;
+        true
+    }
+
+    pub(crate) fn mark_omni_session_failed(
+        &self,
+        direction: &str,
+        generation: u64,
+        error: impl Into<String>,
+    ) -> bool {
+        let mut sessions = self.omni_sessions.lock().expect("omni sessions poisoned");
+        let Some(session) = sessions.get_mut(direction) else {
+            return false;
+        };
+        if session.session_generation != generation {
+            return false;
+        }
+        session.state = OmniSessionLifecycle::Failed;
+        session.last_error = Some(error.into());
+        true
+    }
+
+    pub(crate) fn mark_omni_session_stopping(
+        &self,
+        direction: &str,
+        generation: u64,
+        reason: impl Into<String>,
+    ) -> bool {
+        let mut sessions = self.omni_sessions.lock().expect("omni sessions poisoned");
+        let Some(session) = sessions.get_mut(direction) else {
+            return false;
+        };
+        if session.session_generation != generation {
+            return false;
+        }
+        session.state = OmniSessionLifecycle::Stopping;
+        session.last_error = Some(reason.into());
+        true
+    }
+
+    pub(crate) fn clear_omni_session(
+        &self,
+        direction: &str,
+        generation: u64,
+        reason: impl Into<String>,
+    ) -> bool {
+        let reason = reason.into();
+        let should_clear = {
+            let mut sessions = self.omni_sessions.lock().expect("omni sessions poisoned");
+            match sessions.get(direction) {
+                Some(session) if session.session_generation == generation => {
+                    sessions.remove(direction);
+                    true
+                }
+                _ => false,
+            }
+        };
+        if !should_clear {
+            return false;
+        }
+        let _ = reason;
+        self.omni_senders
+            .lock()
+            .expect("omni senders poisoned")
+            .remove(direction);
+        self.omni_handles
+            .lock()
+            .expect("omni handles poisoned")
+            .remove(direction);
+        true
+    }
+
+    pub(crate) fn matching_ready_omni_session(
+        &self,
+        direction: &str,
+        model_id: &str,
+        subtitle_translate_active: bool,
+    ) -> Option<u64> {
+        self.omni_sessions
+            .lock()
+            .expect("omni sessions poisoned")
+            .get(direction)
+            .filter(|session| {
+                session.state == OmniSessionLifecycle::Ready
+                    && session.model_id == model_id
+                    && session.subtitle_translate_active == subtitle_translate_active
+            })
+            .map(|session| session.session_generation)
+    }
+
+    pub(crate) fn take_matching_omni_sender(
+        &self,
+        direction: &str,
+        model_id: &str,
+        subtitle_translate_active: bool,
+    ) -> Option<Sender<Vec<u8>>> {
+        self.matching_ready_omni_session(direction, model_id, subtitle_translate_active)?;
+        self.omni_senders
+            .lock()
+            .expect("omni senders poisoned")
+            .remove(direction)
+    }
+
+    pub(crate) fn omni_session_metadata(
+        &self,
+        direction: &str,
+    ) -> Option<OmniSessionMetadata> {
+        self.omni_sessions
+            .lock()
+            .expect("omni sessions poisoned")
+            .get(direction)
+            .cloned()
     }
 
     pub fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
@@ -269,6 +486,7 @@ impl AudioStateStore {
                 }
             }
         } else {
+            let now = ms_marker(unix_ms());
             let cue = SubtitleCueRuntime {
                 cue_id: cue_id.to_string(),
                 route_direction: "inbound".to_string(),
@@ -276,8 +494,8 @@ impl AudioStateStore {
                 display_source_text: String::new(),
                 display_segments: Vec::new(),
                 translated_text: String::new(),
-                started_at: "unix-ms:0".to_string(),
-                ended_at: "unix-ms:0".to_string(),
+                started_at: now.clone(),
+                ended_at: now,
                 committed,
             };
             overlay.active_cue = Some(cue.clone());
@@ -296,6 +514,7 @@ impl AudioStateStore {
                 if cue.cue_id == cue_id {
                     cue.source_text = source_text.to_string();
                     cue.committed = true;
+                    cue.ended_at = ms_marker(unix_ms());
                     break;
                 }
             }
@@ -303,9 +522,11 @@ impl AudioStateStore {
                 if active.cue_id == cue_id {
                     active.source_text = source_text.to_string();
                     active.committed = true;
+                    active.ended_at = ms_marker(unix_ms());
                 }
             }
         } else {
+            let now = ms_marker(unix_ms());
             let cue = SubtitleCueRuntime {
                 cue_id: cue_id.to_string(),
                 route_direction: direction.to_string(),
@@ -313,8 +534,8 @@ impl AudioStateStore {
                 display_source_text: String::new(),
                 display_segments: Vec::new(),
                 translated_text: String::new(),
-                started_at: "unix-ms:0".to_string(),
-                ended_at: "unix-ms:0".to_string(),
+                started_at: now.clone(),
+                ended_at: now,
                 committed: true,
             };
             overlay.active_cue = Some(cue.clone());
@@ -515,6 +736,29 @@ impl AudioStateStore {
         route.active_segment_id = None;
     }
 
+    pub fn mark_route_stopping(&self, direction: &str) {
+        let mut state = self.inner.lock().expect("audio state poisoned");
+        let route = route_mut(&mut state, direction);
+        route.capture_state = "stopping".to_string();
+        route.pre_buffer_state = "draining".to_string();
+        route.stream_bound = false;
+        route.active_segment_id = None;
+    }
+
+    pub fn mark_route_stopped_if_stopping(&self, direction: &str) -> bool {
+        let mut state = self.inner.lock().expect("audio state poisoned");
+        let route = route_mut(&mut state, direction);
+        if route.capture_state != "stopping" {
+            return false;
+        }
+        route.capture_state = "idle".to_string();
+        route.pre_buffer_state = "cold".to_string();
+        route.vad_state = "silence".to_string();
+        route.stream_bound = false;
+        route.active_segment_id = None;
+        true
+    }
+
     pub fn mark_route_error(
         &self,
         direction: &str,
@@ -543,6 +787,9 @@ impl AudioStateStore {
             if cue.cue_id == cue_id {
                 cue.translated_text = translated_text.clone();
                 cue.committed = committed || cue.committed;
+                if committed {
+                    cue.ended_at = ms_marker(unix_ms());
+                }
                 break;
             }
         }
@@ -550,6 +797,9 @@ impl AudioStateStore {
             if active.cue_id == cue_id {
                 active.translated_text = translated_text;
                 active.committed = committed || active.committed;
+                if committed {
+                    active.ended_at = ms_marker(unix_ms());
+                }
             }
         }
         self.note_first_translation_result(overlay, cue_id, &translated_for_metrics);
@@ -572,6 +822,9 @@ impl AudioStateStore {
                 cue.display_segments = display_segments.clone();
                 cue.translated_text = translated_text.clone();
                 cue.committed = committed || cue.committed;
+                if committed {
+                    cue.ended_at = ms_marker(unix_ms());
+                }
                 break;
             }
         }
@@ -581,6 +834,9 @@ impl AudioStateStore {
                 active.display_segments = display_segments;
                 active.translated_text = translated_text;
                 active.committed = committed || active.committed;
+                if committed {
+                    active.ended_at = ms_marker(unix_ms());
+                }
             }
         }
         self.note_first_translation_result(overlay, cue_id, &translated_for_metrics);
@@ -592,12 +848,14 @@ impl AudioStateStore {
         for cue in overlay.recent_cues.iter_mut() {
             if cue.cue_id == cue_id {
                 cue.committed = true;
+                cue.ended_at = ms_marker(unix_ms());
                 break;
             }
         }
         if let Some(active) = overlay.active_cue.as_mut() {
             if active.cue_id == cue_id {
                 active.committed = true;
+                active.ended_at = ms_marker(unix_ms());
             }
         }
     }
@@ -795,5 +1053,82 @@ mod tests {
             None
         );
         assert_eq!(restarted.subtitle_overlay.first_translation_last_ms, None);
+    }
+
+    #[test]
+    fn omni_session_reuse_requires_ready_matching_metadata() {
+        let store = AudioStateStore::new();
+        let (sender, _rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let generation = store.begin_omni_session("inbound", "qwen-omni-realtime", true);
+        store.store_omni_sender("inbound", sender);
+
+        assert_eq!(
+            store.matching_ready_omni_session("inbound", "qwen-omni-realtime", true),
+            None
+        );
+        assert!(store.mark_omni_session_ready("inbound", generation));
+        assert_eq!(
+            store.matching_ready_omni_session("inbound", "qwen-omni-realtime", true),
+            Some(generation)
+        );
+        assert!(store
+            .take_matching_omni_sender("inbound", "qwen-omni-realtime", false)
+            .is_none());
+        assert!(store.has_omni_sender("inbound"));
+        assert!(store
+            .take_matching_omni_sender("inbound", "qwen-omni-realtime", true)
+            .is_some());
+        assert!(!store.has_omni_sender("inbound"));
+    }
+
+    #[test]
+    fn stale_omni_generation_cannot_clear_new_session() {
+        let store = AudioStateStore::new();
+        let (old_sender, _old_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let old_generation = store.begin_omni_session("inbound", "old-model", false);
+        store.store_omni_sender("inbound", old_sender);
+        assert!(store.mark_omni_session_ready("inbound", old_generation));
+
+        let (new_sender, _new_rx) = std::sync::mpsc::channel::<Vec<u8>>();
+        let new_generation = store.begin_omni_session("inbound", "new-model", true);
+        store.store_omni_sender("inbound", new_sender);
+        assert!(store.mark_omni_session_ready("inbound", new_generation));
+
+        assert!(!store.clear_omni_session("inbound", old_generation, "old worker exit"));
+        let session = store
+            .omni_session_metadata("inbound")
+            .expect("new session should remain");
+        assert_eq!(session.session_generation, new_generation);
+        assert_eq!(session.model_id, "new-model");
+        assert!(store.has_omni_sender("inbound"));
+
+        assert!(store.clear_omni_session("inbound", new_generation, "new worker exit"));
+        assert!(store.omni_session_metadata("inbound").is_none());
+        assert!(!store.has_omni_sender("inbound"));
+    }
+
+    #[test]
+    fn omni_session_failure_records_error_without_matching_ready_reuse() {
+        let store = AudioStateStore::new();
+        let generation = store.begin_omni_session("inbound", "qwen-omni-realtime", false);
+
+        assert!(store.mark_omni_session_failed(
+            "inbound",
+            generation,
+            "websocket authentication failed"
+        ));
+
+        let session = store
+            .omni_session_metadata("inbound")
+            .expect("failed metadata should be diagnosable");
+        assert_eq!(session.state, OmniSessionLifecycle::Failed);
+        assert_eq!(
+            session.last_error.as_deref(),
+            Some("websocket authentication failed")
+        );
+        assert_eq!(
+            store.matching_ready_omni_session("inbound", "qwen-omni-realtime", false),
+            None
+        );
     }
 }

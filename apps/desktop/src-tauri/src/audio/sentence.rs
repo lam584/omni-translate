@@ -1,11 +1,13 @@
 use std::collections::VecDeque;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+
+use super::time_utils::unix_ms;
 
 const MAX_PENDING_DURATION: Duration = Duration::from_millis(700);
 const MAX_CONTEXT_SENTENCES: usize = 3;
-const MIN_FORCE_CHARS: usize = 40;
-const MIN_FORCE_WORDS: usize = 8;
-const MIN_FORCE_GROWTH_CHARS: usize = 24;
+const MIN_FORCE_CHARS: usize = 28;
+const MIN_FORCE_WORDS: usize = 6;
+const MIN_FORCE_GROWTH_CHARS: usize = 18;
 const MAX_SUBTITLE_CHARS: usize = 120;
 const MAX_SUBTITLE_WORDS: usize = 22;
 const MIN_SPLIT_HEAD_CHARS: usize = 36;
@@ -39,13 +41,6 @@ pub struct SentenceFeedResult {
 struct ForcedPending {
     id: String,
     text: String,
-}
-
-fn unix_ms() -> u64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as u64,
-        Err(_) => 0,
-    }
 }
 
 impl SentenceSplitter {
@@ -124,6 +119,10 @@ impl SentenceSplitter {
                 }
                 let end_byte = byte_i + ch.len_utf8();
                 let sentence = self.buffer[last_split..end_byte].trim().to_string();
+                if is_incomplete_final_clause(&sentence) {
+                    continue;
+                }
+                let sentence = drop_leading_incomplete_clause(&sentence);
                 if !sentence.is_empty() {
                     new_sentences.push(sentence);
                 }
@@ -173,8 +172,8 @@ impl SentenceSplitter {
             if let Some(start) = self.pending_start {
                 let pending_text = self.buffer[self.committed.len()..].trim().to_string();
                 if !pending_text.is_empty()
-                    && (start.elapsed() >= MAX_PENDING_DURATION
-                        || is_readable_pending_fragment(&pending_text))
+                    && start.elapsed() >= MAX_PENDING_DURATION
+                    && is_readable_pending_fragment(&pending_text)
                     && should_emit_forced_pending(
                         self.active_forced_pending
                             .as_ref()
@@ -246,6 +245,51 @@ fn is_readable_pending_fragment(text: &str) -> bool {
     text.chars().count() >= MIN_FORCE_CHARS || text.split_whitespace().count() >= MIN_FORCE_WORDS
 }
 
+fn drop_leading_incomplete_clause(text: &str) -> String {
+    let Some((head, tail)) = text.split_once(". ") else {
+        return text.trim().to_string();
+    };
+    let head_with_period = format!("{head}.");
+    if is_incomplete_final_clause(&head_with_period) {
+        return tail.trim().to_string();
+    }
+    text.trim().to_string()
+}
+
+fn is_incomplete_final_clause(text: &str) -> bool {
+    let normalized = text
+        .trim()
+        .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?' | ';' | ':' | ',' | '，'))
+        .to_ascii_lowercase()
+        .replace('’', "'");
+    if normalized.ends_with("about to be") && normalized.contains(" how ") {
+        return false;
+    }
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    if words.len() <= 4
+        && words
+            .last()
+            .is_some_and(|word| matches!(*word, "a" | "an" | "the" | "one" | "of"))
+    {
+        return true;
+    }
+    if words.len() < 3 {
+        return false;
+    }
+    let endings = [
+        "about to be",
+        "going to",
+        "will",
+        "to",
+        "how",
+        "see how",
+        "show you how",
+        "going to bring",
+        "going to show",
+    ];
+    endings.iter().any(|ending| normalized.ends_with(ending))
+}
+
 fn needs_subtitle_split(text: &str) -> bool {
     text.chars().count() > MAX_SUBTITLE_CHARS
         || text.split_whitespace().count() > MAX_SUBTITLE_WORDS
@@ -283,6 +327,16 @@ fn split_subtitle_chunks(sentence: &str) -> Vec<String> {
 
 fn find_subtitle_split_at(text: &str) -> Option<usize> {
     let candidates = split_candidates(text);
+    let safe_candidates: Vec<usize> = candidates
+        .iter()
+        .copied()
+        .filter(|idx| !breaks_numeric_money_phrase(text, *idx))
+        .collect();
+    let candidates = if safe_candidates.is_empty() {
+        &candidates
+    } else {
+        &safe_candidates
+    };
     let target = byte_after_char_count(text, MAX_SUBTITLE_CHARS)?;
     let min = byte_after_char_count(text, MIN_SPLIT_HEAD_CHARS).unwrap_or(0);
 
@@ -293,6 +347,48 @@ fn find_subtitle_split_at(text: &str) -> Option<usize> {
         .max()
         .or(candidates.iter().copied().filter(|idx| *idx >= min).min())
         .or(Some(target))
+}
+
+fn normalize_boundary_word(word: &str) -> String {
+    word.trim_matches(|ch: char| !ch.is_ascii_alphanumeric())
+        .to_ascii_lowercase()
+}
+
+fn boundary_word_before(text: &str, idx: usize) -> Option<String> {
+    text.get(..idx)?
+        .split_whitespace()
+        .last()
+        .map(normalize_boundary_word)
+        .filter(|word| !word.is_empty())
+}
+
+fn boundary_word_after(text: &str, idx: usize) -> Option<String> {
+    text.get(idx..)?
+        .split_whitespace()
+        .next()
+        .map(normalize_boundary_word)
+        .filter(|word| !word.is_empty())
+}
+
+fn breaks_numeric_money_phrase(text: &str, idx: usize) -> bool {
+    let Some(before) = boundary_word_before(text, idx) else {
+        return false;
+    };
+    let Some(after) = boundary_word_after(text, idx) else {
+        return false;
+    };
+
+    matches!(
+        (before.as_str(), after.as_str()),
+        (
+            "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine"
+                | "ten" | "hundred" | "thousand" | "million" | "billion",
+            "hundred" | "thousand" | "million" | "billion" | "dollar" | "dollars"
+        ) | (
+            "dollar" | "dollars",
+            "rocket" | "ship" | "biosphere" | "line" | "light"
+        ) | ("rocket", "ship")
+    )
 }
 
 fn split_candidates(text: &str) -> Vec<usize> {
@@ -423,8 +519,10 @@ mod tests {
     #[test]
     fn test_readable_fragment_forces_without_punctuation() {
         let mut splitter = SentenceSplitter::new();
-        let results = splitter
-            .feed("This is a long enough fragment that should translate before punctuation");
+        let text = "This is a long enough fragment that should translate before punctuation";
+        assert!(splitter.feed(text).is_empty());
+        splitter.age_pending_for_test(Duration::from_millis(800));
+        let results = splitter.feed(text);
 
         assert_eq!(results.len(), 1);
         assert!(results[0].is_forced);
@@ -439,28 +537,31 @@ mod tests {
         let mut splitter = SentenceSplitter::new();
         let text = "This is a long enough fragment that should translate before punctuation";
 
+        assert!(splitter.feed(text).is_empty());
+        splitter.age_pending_for_test(Duration::from_millis(800));
         assert_eq!(splitter.feed(text).len(), 1);
         assert!(splitter.feed(text).is_empty());
     }
 
     #[test]
-    fn test_aged_short_fragment_forces_once() {
+    fn test_aged_short_fragment_does_not_force() {
         let mut splitter = SentenceSplitter::new();
 
         assert!(splitter.feed("short fragment").is_empty());
         splitter.age_pending_for_test(Duration::from_millis(800));
         let forced = splitter.feed("short fragment plus");
 
-        assert_eq!(forced.len(), 1);
-        assert!(forced[0].is_forced);
+        assert!(forced.is_empty());
         assert!(splitter.feed("short fragment plus").is_empty());
     }
 
     #[test]
     fn test_complete_sentence_replaces_forced_fragment() {
         let mut splitter = SentenceSplitter::new();
-        let forced = splitter
-            .feed("This is a long enough fragment that should translate before punctuation");
+        let text = "This is a long enough fragment that should translate before punctuation";
+        assert!(splitter.feed(text).is_empty());
+        splitter.age_pending_for_test(Duration::from_millis(800));
+        let forced = splitter.feed(text);
         let pending_id = forced[0].pending_id.clone();
 
         let replacement = splitter.feed(
@@ -476,8 +577,10 @@ mod tests {
     #[test]
     fn test_multiple_forced_fragments_emit_single_latest_replacement() {
         let mut splitter = SentenceSplitter::new();
-        let first = splitter
-            .feed("This is a long enough fragment that should translate before punctuation");
+        let first_text = "This is a long enough fragment that should translate before punctuation";
+        assert!(splitter.feed(first_text).is_empty());
+        splitter.age_pending_for_test(Duration::from_millis(800));
+        let first = splitter.feed(first_text);
         let second = splitter.feed(
             "This is a long enough fragment that should translate before punctuation and keeps growing with many more words",
         );
@@ -550,6 +653,48 @@ mod tests {
     }
 
     #[test]
+    fn test_money_phrase_is_not_split_between_amount_and_unit() {
+        let mut splitter = SentenceSplitter::new();
+        let results = splitter.feed(
+            "A future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh.",
+        );
+
+        assert!(results
+            .iter()
+            .any(|result| result.sentence.contains("five hundred million dollar biosphere")));
+        assert!(!results
+            .iter()
+            .any(|result| result.sentence == "million dollar biosphere."));
+    }
+
+    #[test]
+    fn test_epic_future_sentence_is_complete() {
+        let mut splitter = SentenceSplitter::new();
+        let results = splitter
+            .feed("This video will show you just how epic the future is about to be.");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(
+            results[0].sentence,
+            "This video will show you just how epic the future is about to be."
+        );
+    }
+
+    #[test]
+    fn test_voice_chat_run_on_sentence_splits_before_it_gets_too_long() {
+        let mut splitter = SentenceSplitter::new();
+        let results = splitter.feed(
+            "We are pushing left side because they have two people watching mid and I need you to smoke the door before the next wave arrives, then rotate back when you hear the ultimate coming from spawn.",
+        );
+
+        assert!(results.len() >= 2);
+        assert!(results
+            .iter()
+            .all(|result| result.sentence.chars().count() <= MAX_SUBTITLE_CHARS));
+        assert!(results[0].sentence.ends_with(',') || results[0].sentence.ends_with("because "));
+    }
+
+    #[test]
     fn test_long_paragraph_does_not_repeat_committed_chunks() {
         let mut splitter = SentenceSplitter::new();
         let text = "First long enough sentence that should stay readable in the overlay and still only be emitted once. Second sentence follows cleanly.";
@@ -574,6 +719,34 @@ mod tests {
             revised[0].sentence,
             "You got Neuralink, and what has that changed?"
         );
+    }
+
+    #[test]
+    fn test_hanging_english_clause_is_not_finalized() {
+        let mut splitter = SentenceSplitter::new();
+
+        let results = splitter.feed("Teacher is about to be.");
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_short_article_fragment_is_not_finalized() {
+        let mut splitter = SentenceSplitter::new();
+
+        let results = splitter.feed("This is a one.");
+
+        assert!(results.is_empty());
+    }
+
+    #[test]
+    fn test_hanging_english_prefix_is_dropped_when_next_sentence_arrives() {
+        let mut splitter = SentenceSplitter::new();
+
+        let results = splitter.feed("Teacher is about to be. Oh my God!");
+
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].sentence, "Oh my God!");
     }
 
     #[test]

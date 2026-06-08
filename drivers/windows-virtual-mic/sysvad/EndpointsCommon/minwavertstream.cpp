@@ -1098,6 +1098,14 @@ NTSTATUS CMiniportWaveRTStream::SetWritePacket
         KeReleaseSpinLock(&m_PositionSpinLock, oldIrql);
     }
 
+    if (NT_SUCCESS(ntStatus) && !m_bCapture && m_pMiniport->IsSystemRenderPin(m_ulPin))
+    {
+        ULONG packetByteCount = (Flags & KSSTREAM_HEADER_OPTIONSF_ENDOFSTREAM)
+            ? EosPacketLength
+            : packetSize;
+        ForwardRenderPacketToBridge(packetIndex * packetSize, packetByteCount);
+    }
+
     if (!NT_SUCCESS(ntStatus))
     {
         m_ulLastOsWritePacket = oldLastOsWritePacket;
@@ -1584,7 +1592,7 @@ ByteDisplacement - # of bytes to process.
     while (ByteDisplacement > 0)
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
-        if (m_pMiniport->IsSystemRenderPin(m_ulPin))
+        if (m_pMiniport->IsSystemRenderPin(m_ulPin) && m_ulNotificationsPerBuffer == 0)
         {
             OmniBridgeWriteRenderPcm(m_pDmaBuffer + bufferOffset, runWrite);
         }
@@ -1598,6 +1606,45 @@ ByteDisplacement - # of bytes to process.
         }
         bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
         ByteDisplacement -= runWrite;
+    }
+}
+
+//=============================================================================
+#pragma code_seg()
+VOID CMiniportWaveRTStream::ForwardRenderPacketToBridge
+(
+    _In_ ULONG BufferOffset,
+    _In_ ULONG ByteCount
+)
+/*++
+
+Routine Description:
+
+For event-driven render streams, PortCls calls SetWritePacket only after the OS
+has written a complete packet into the WaveRT buffer. Forwarding from this point
+keeps the Omni bridge aligned with committed PCM instead of the emulated 1 ms
+hardware timer, which may advance across not-yet-written buffer regions.
+
+Arguments:
+
+BufferOffset - byte offset of the committed packet in the DMA buffer.
+ByteCount - number of committed bytes.
+
+--*/
+{
+    if (m_pDmaBuffer == NULL || ByteCount == 0 || BufferOffset >= m_ulDmaBufferSize)
+    {
+        return;
+    }
+
+    ULONG remaining = min(ByteCount, m_ulDmaBufferSize);
+    ULONG bufferOffset = BufferOffset;
+    while (remaining > 0)
+    {
+        ULONG runWrite = min(remaining, m_ulDmaBufferSize - bufferOffset);
+        OmniBridgeWriteRenderPcm(m_pDmaBuffer + bufferOffset, runWrite);
+        bufferOffset = (bufferOffset + runWrite) % m_ulDmaBufferSize;
+        remaining -= runWrite;
     }
 }
 

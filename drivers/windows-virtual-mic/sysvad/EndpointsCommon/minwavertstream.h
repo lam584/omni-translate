@@ -290,6 +290,12 @@ private:
     (
         _In_ ULONG ByteDisplacement
     );
+
+    VOID ForwardRenderPacketToBridge
+    (
+        _In_ ULONG BufferOffset,
+        _In_ ULONG ByteCount
+    );
     
     VOID UpdatePosition
     (

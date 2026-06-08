@@ -4,68 +4,85 @@
  * This module is side-effectful: importing it initializes i18next and wires
  * up persistent language storage, RTL toggling and fallback behavior.
  *
- * Resource bundles are statically imported so Vite can pre-bundle them for
- * offline desktop use (no runtime fetch required).
+ * Startup only imports the default and English resource bundles. Other
+ * offline locale bundles are loaded on demand when the UI language changes.
  */
 
 import i18n from 'i18next';
 import LanguageDetector from 'i18next-browser-languagedetector';
 import { initReactI18next } from 'react-i18next';
-import ar from './locales/ar.json';
-import bn from './locales/bn.json';
-import de from './locales/de.json';
 import en from './locales/en.json';
-import es from './locales/es.json';
-import fil from './locales/fil.json';
-import fr from './locales/fr.json';
-import hi from './locales/hi.json';
-import id from './locales/id.json';
-import ja from './locales/ja.json';
-import ko from './locales/ko.json';
-import mr from './locales/mr.json';
-import pt from './locales/pt.json';
-import ru from './locales/ru.json';
-import ta from './locales/ta.json';
-import te from './locales/te.json';
-import th from './locales/th.json';
-import tr from './locales/tr.json';
-import vi from './locales/vi.json';
 import zhCN from './locales/zh-CN.json';
-import { defaultLanguage, isSupportedLanguage, rtlLanguages } from './languages';
+import { defaultLanguage, isSupportedLanguage, rtlLanguages, supportedLanguageCodes } from './languages';
 
 export const LANGUAGE_STORAGE_KEY = 'omni-translate.uiLanguage';
 export const WELCOME_DONE_STORAGE_KEY = 'omni-translate.welcomeCompleted';
 
+function mergeLocaleFallback<T extends Record<string, unknown>>(fallback: T, locale: Record<string, unknown>): T {
+  const merged: Record<string, unknown> = { ...fallback };
+
+  for (const [key, value] of Object.entries(locale)) {
+    const fallbackValue = fallback[key];
+    if (
+      value &&
+      fallbackValue &&
+      typeof value === 'object' &&
+      typeof fallbackValue === 'object' &&
+      !Array.isArray(value) &&
+      !Array.isArray(fallbackValue)
+    ) {
+      merged[key] = mergeLocaleFallback(fallbackValue as Record<string, unknown>, value as Record<string, unknown>);
+    } else {
+      merged[key] = value;
+    }
+  }
+
+  return merged as T;
+}
+
 function withEnglishFallback(locale: Record<string, unknown>) {
-  return {
-    ...en,
-    ...locale,
-    welcome: { ...en.welcome, ...(locale.welcome as Record<string, unknown> | undefined) },
-  };
+  return mergeLocaleFallback(en, locale);
 }
 
 const resources = {
   'zh-CN': { translation: withEnglishFallback(zhCN) },
   en: { translation: en },
-  es: { translation: withEnglishFallback(es) },
-  ar: { translation: withEnglishFallback(ar) },
-  pt: { translation: withEnglishFallback(pt) },
-  ru: { translation: withEnglishFallback(ru) },
-  hi: { translation: withEnglishFallback(hi) },
-  bn: { translation: withEnglishFallback(bn) },
-  de: { translation: withEnglishFallback(de) },
-  id: { translation: withEnglishFallback(id) },
-  ko: { translation: withEnglishFallback(ko) },
-  fr: { translation: withEnglishFallback(fr) },
-  vi: { translation: withEnglishFallback(vi) },
-  ja: { translation: withEnglishFallback(ja) },
-  te: { translation: withEnglishFallback(te) },
-  ta: { translation: withEnglishFallback(ta) },
-  mr: { translation: withEnglishFallback(mr) },
-  th: { translation: withEnglishFallback(th) },
-  fil: { translation: withEnglishFallback(fil) },
-  tr: { translation: withEnglishFallback(tr) },
 } as const;
+
+const localeLoaders: Record<string, () => Promise<{ default: Record<string, unknown> }>> = {
+  ar: () => import('./locales/ar.json'),
+  bn: () => import('./locales/bn.json'),
+  de: () => import('./locales/de.json'),
+  es: () => import('./locales/es.json'),
+  fil: () => import('./locales/fil.json'),
+  fr: () => import('./locales/fr.json'),
+  hi: () => import('./locales/hi.json'),
+  id: () => import('./locales/id.json'),
+  ja: () => import('./locales/ja.json'),
+  ko: () => import('./locales/ko.json'),
+  mr: () => import('./locales/mr.json'),
+  pt: () => import('./locales/pt.json'),
+  ru: () => import('./locales/ru.json'),
+  ta: () => import('./locales/ta.json'),
+  te: () => import('./locales/te.json'),
+  th: () => import('./locales/th.json'),
+  tr: () => import('./locales/tr.json'),
+  vi: () => import('./locales/vi.json'),
+};
+
+async function ensureLocaleResource(code: string) {
+  if (i18n.hasResourceBundle(code, 'translation')) {
+    return;
+  }
+
+  const loadLocale = localeLoaders[code];
+  if (!loadLocale) {
+    return;
+  }
+
+  const locale = await loadLocale();
+  i18n.addResourceBundle(code, 'translation', withEnglishFallback(locale.default), true, true);
+}
 
 function readStoredLanguage(): string | null {
   try {
@@ -86,15 +103,16 @@ function applyDocumentDirection(code: string) {
 }
 
 const initialLanguage = readStoredLanguage() ?? defaultLanguage;
+const startupLanguage = initialLanguage in resources ? initialLanguage : defaultLanguage;
 
 void i18n
   .use(LanguageDetector)
   .use(initReactI18next)
   .init({
     resources,
-    lng: initialLanguage,
+    lng: startupLanguage,
     fallbackLng: defaultLanguage,
-    supportedLngs: Object.keys(resources),
+    supportedLngs: supportedLanguageCodes,
     interpolation: { escapeValue: false },
     detection: {
       order: ['localStorage', 'navigator'],
@@ -104,7 +122,11 @@ void i18n
     returnNull: false,
   });
 
-applyDocumentDirection(initialLanguage);
+applyDocumentDirection(startupLanguage);
+
+if (initialLanguage !== startupLanguage) {
+  void ensureLocaleResource(initialLanguage).then(() => i18n.changeLanguage(initialLanguage));
+}
 
 i18n.on('languageChanged', (code) => {
   applyDocumentDirection(code);
@@ -119,6 +141,7 @@ export async function setUiLanguage(code: string): Promise<void> {
   if (!isSupportedLanguage(code)) {
     return;
   }
+  await ensureLocaleResource(code);
   await i18n.changeLanguage(code);
 }
 

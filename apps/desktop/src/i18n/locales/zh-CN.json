@@ -1,4 +1,4 @@
-﻿{
+{
   "common": {
     "appName": "Omni Translate",
     "save": "保存",
@@ -10,7 +10,26 @@
     "close": "关闭",
     "retry": "重试",
     "loading": "加载中…",
-    "language": "界面语言"
+    "language": "界面语言",
+    "bootstrapDetecting": "正在检测运行环境…",
+    "bootstrapConnecting": "正在连接核心服务…",
+    "bootstrapLoadingConfig": "正在加载配置…",
+    "bootstrapPreparing": "正在准备音频引擎…",
+    "bootstrapReady": "就绪",
+    "bootstrapPreparingAudio": "初始化音频引擎…",
+    "add": "添加",
+    "bootstrapTitle": "Omni Translate 正在启动",
+    "delete": "删除",
+    "supported": "支持",
+    "unsupported": "不支持",
+    "applied": "已应用",
+    "notApplied": "未应用",
+    "observed": "已观察到",
+    "notObserved": "未观察到",
+    "edit": "编辑",
+    "previous": "上一页",
+    "create": "创建",
+    "notSelected": "未选择"
   },
   "brand": {
     "title": "实时翻译控制台",
@@ -28,7 +47,7 @@
     "diagnostics": "诊断",
     "diagnosticsHint": "",
     "settings": "设置",
-    "settingsHint": "",
+    "settingsHint": "语言与通用偏好",
     "sectionMain": "主要功能",
     "ariaMain": "主导航"
   },
@@ -109,7 +128,9 @@
     "resetWelcome": "重置欢迎向导",
     "resetWelcomeHint": "清除本地标记，让快速设置向导在下次启动时再次出现。",
     "resetWelcomeDone": "已重置。向导会在下次启动时出现。",
-    "resetWelcomeAction": "重置"
+    "resetWelcomeAction": "重置",
+    "sectionDriverManagement": "驱动管理",
+    "driverManagementHint": "管理 Omni Translate 虚拟扬声器驱动与 Bridge Service。"
   },
   "welcome": {
     "title": "欢迎使用 Omni Translate",
@@ -138,7 +159,10 @@
     "stepDriverTitle": "驱动与桥接",
     "stepDriverDescription": "首次启动先检测虚拟麦克风驱动和桥接状态；未安装或异常时可直接在这里处理。",
     "driverFootHint": "可先进入看片模式，之后在设置 > 驱动管理中继续修复。",
-    "skip": "暂时跳过"
+    "skip": "暂时跳过",
+    "desktopRuntimeUnavailable": "桌面运行时初始化失败。请先等待 Rust Core 与存储层恢复就绪后再保存 API Key；如果持续失败，请重启应用后重试。",
+    "desktopRuntimePreparing": "桌面运行时或存储层仍在初始化。请等待状态变为桌面运行时且存储层就绪后，再保存 API Key。",
+    "apiBaseUrlLabel": "API 地址"
   },
   "driverManagement": {
     "status": {
@@ -250,7 +274,10 @@
     "translationAudioAuto": "自动（优先 Omni 直接译音）",
     "translationAudioOmni": "Omni 直接译音",
     "translationAudioTts": "字幕二次 TTS",
-    "translationAudioSecondary": "📝 副翻译音频（与「二次翻译」同源）",
+    "translationAudioSecondary": "📝 二次字幕译音（使用「字幕翻译」结果做 TTS）",
+    "secondaryAudioCardToggle": "用二次字幕生成译音",
+    "subtitleTranslationCardToggle": "启用字幕翻译",
+    "cardDisabledHint": "此卡已停用 · 启用后可编辑模型",
     "unsupportedNativeAudio": "当前模型不支持 Omni 直接译音，会话将仅保留原声和字幕。",
     "outputVolume": "输出音量",
     "inputLevel": "输入电平",
@@ -292,8 +319,6 @@
     "outboundModelsPanelSubtitle": "生成对外翻译语音的模型 · 2 个场景",
     "inboundKicker": "听译",
     "outboundKicker": "回复",
-    "autoSaved": "已自动保存",
-    "savedJustNow": "刚刚已保存",
     "chainSource": "来源",
     "chainProcessor": "处理",
     "chainModel": "模型",
@@ -312,7 +337,7 @@
     "scenarioInboundCaption": "对方音频 → 字幕+译文（Omni 全流程）",
     "scenarioInboundRole": "入站听译",
     "scenarioInboundSubtitleSecondary": "入站听译 · 副翻译",
-    "scenarioInboundSecondaryTitle": "听对方 · 副翻译音频",
+    "scenarioInboundSecondaryTitle": "听对方 · 二次字幕译音",
     "scenarioInboundSecondaryCaption": "对方音频 → 原文本（快速 STT，可选替代 Omni）",
     "scenarioInboundSecondaryRole": "入站副 TTS",
     "scenarioSubtitleTitle": "字幕翻译",
@@ -331,12 +356,7 @@
     "subtitleModeSecondaryShort": "📋 二次翻译",
     "mutedInNativeMode": "仅在「二次翻译」模式启用",
     "secondaryTranslationToggle": "启用二次翻译卡片",
-    "secondaryTranslationToggleHint": "启用后，会使用上方的「副翻译音频」和「字幕翻译」卡片；关闭时由主听译模型直接翻译。",
-    "secondaryAudioCardToggle": "启用副翻译音频",
-    "subtitleTranslationCardToggle": "启用字幕翻译",
-    "cardDisabledHint": "此卡已停用 · 启用后可编辑模型",
-    "outputChannelsTitle": "输出通道",
-    "outputChannelsKicker": "说",
+    "secondaryTranslationToggleHint": "启用后，会使用上方的「二次字幕译音」和「字幕翻译」卡片；关闭时由主听译模型直接翻译。",
     "feedbackTitle": "反馈抑制",
     "feedbackSubtitle": "防止译文被再次采集",
     "feedbackEchoLabel": "回声消除",
@@ -374,7 +394,11 @@
       "armed": "待命",
       "idle": "空闲",
       "muted": "已静音"
-    }
+    },
+    "outputChannelsKicker": "说",
+    "vadThresholdTitle": "VAD 阈值 {{value}}",
+    "modelSubtitleSttTranslation": "语音识别 · 翻译",
+    "modelSubtitleSttTranslationSpeech": "语音识别 · 翻译 · 语音"
   },
   "overlay": {
     "contextMenuTitle": "悬浮窗控制",
@@ -398,5 +422,679 @@
     "textColorSky": "天空蓝",
     "textColorRose": "玫瑰色",
     "unlockAction": "解锁"
+  },
+  "diagnostics": {
+    "export": {
+      "title": "导出"
+    },
+    "quickLinkTitle": "查看诊断修复页",
+    "status": {
+      "ready": "已就绪",
+      "warning": "需关注",
+      "stable": "稳定",
+      "experimental": "实验性",
+      "unsupported": "不支持",
+      "draft": "未完成",
+      "unknown": "未知",
+      "running": "运行中",
+      "starting": "启动中",
+      "degraded": "降级",
+      "stopped": "已停止",
+      "capturing": "采集中",
+      "buffering": "缓冲中",
+      "armed": "待命",
+      "muted": "静音",
+      "idle": "空闲",
+      "driverRunning": "运行正常",
+      "versionMismatch": "版本不匹配",
+      "damaged": "已损坏",
+      "notInstalled": "未安装",
+      "notStarted": "未启动",
+      "overlayVisible": "浮窗显示中",
+      "overlayHidden": "浮窗未显示",
+      "abnormal": "异常",
+      "enabled": "已启用",
+      "unresolved": "未解析",
+      "completed": "已完成",
+      "failed": "失败"
+    },
+    "environment": {
+      "browserPreview": {
+        "label": "浏览器预览态",
+        "summary": "当前页面仍在浏览器预览模式，桥接、采集和字幕浮窗状态都不能当成真实桌面运行结果。",
+        "detailLaunchDesktop": "请改用桌面壳启动命令进入真实运行态。",
+        "detailPreviewOnly": "在这个模式下看到的桥接和采集 blocker 只可作为占位提示，不能直接判定故障。"
+      },
+      "runtimeError": {
+        "label": "桌面运行时未接通",
+        "summary": "前端已经进入桌面壳，但 invoke 或 event 通道没有稳定接通，当前不能确认桥接、采集和字幕浮窗的真实状态。",
+        "detailLogs": "优先查看 runtime 日志和一键诊断结果，确认 IPC 是否超时或 Rust Core 是否启动异常。",
+        "detailFallback": "在修复 runtime 之前，具体 blocker 可能混入 fallback 快照。"
+      },
+      "liveReady": {
+        "label": "桌面运行态已接通",
+        "detail": "会话页负责按需启动场景，诊断页只关注底层服务是否异常。"
+      },
+      "liveActionNeeded": {
+        "label": "桌面底层链路存在异常",
+        "summary": "当前已进入真实桌面壳，但底层桥接或采集链路返回了真实异常，需要处理。"
+      }
+    },
+    "issues": {
+      "driverDamaged": "虚拟麦驱动状态损坏，需要重新安装。",
+      "driverVersionMismatch": "桥接驱动版本不匹配，需要按推荐动作修复。",
+      "bridgeError": "Bridge Service 返回错误：{{code}}",
+      "virtualPlaybackLoop": "监听输出不能使用 Omni 虚拟扬声器。请在音频路由页面的输出设备卡片中选择真实耳机或扬声器。",
+      "inboundError": "系统音频采集异常：{{error}}",
+      "outboundError": "麦克风采集异常：{{error}}",
+      "speechError": "语音播报异常：{{error}}",
+      "bridgeRuntimeTitle": "桥接链路异常",
+      "audioRuntimeTitle": "音频链路异常",
+      "errorDetail": "错误详情：{{detail}}",
+      "errorCategory": "错误分类：{{category}}",
+      "keyEvents": "关键事件"
+    },
+    "signals": {
+      "environment": "运行环境",
+      "bridge": "桥接",
+      "capture": "采集",
+      "errorSummary": "错误摘要",
+      "errorCount": "{{count}} 条需关注",
+      "noRecentErrors": "最近无新错误",
+      "needsInvestigation": "需排查",
+      "stable": "平稳"
+    },
+    "services": {
+      "title": "底层运行态监控",
+      "desktopRuntime": "桌面运行时",
+      "bridgeService": "桥接服务",
+      "systemAudioCapture": "系统音频采集",
+      "microphoneCapture": "麦克风采集",
+      "speechAndOverlay": "播报与浮窗",
+      "stableCount": "{{stable}}/{{total}} 平稳"
+    },
+    "overview": {
+      "noCriticalBlockers": "当前无关键阻塞",
+      "criticalIssueCount": "{{count}} 个关键问题"
+    },
+    "repairs": {
+      "retryRuntime": "重试运行时连接",
+      "retryRuntimeSummary": "重新刷新 Rust runtime 快照，优先恢复 invoke 和 event 通道。",
+      "bridgeRecommended": "执行桥接推荐修复",
+      "bridgeRecommendedSummary": "按当前桥接状态执行推荐的驱动或 Bridge Service 修复动作。",
+      "running": "自动修复中...",
+      "runSelected": "自动修复已选项",
+      "title": "自动修复任务",
+      "noneNeeded": "无需修复",
+      "checklist": "自动修复清单",
+      "autoRepair": "自动修复",
+      "emptyTitle": "当前没有可执行的自动修复项",
+      "canContinue": "可继续",
+      "remainingIssues": "剩余问题需要按下方关键事件继续排查。",
+      "noRuntimeIssues": "当前没有真实底层异常，后续只需继续观察运行态。"
+    },
+    "health": {
+      "normal": "运行状态正常",
+      "issueCount": "发现 {{count}} 个运行问题",
+      "stableDetail": "{{count}} 项运行检查平稳，最近错误摘要未发现阻塞。",
+      "needsInvestigationDetail": "存在需要排查的运行问题，建议重新诊断或导出诊断包。"
+    },
+    "notifications": {
+      "autoRepairFailed": "自动修复失败：{{label}} - {{error}}",
+      "autoRepairSuccess": "已执行 {{count}} 项自动修复。"
+    },
+    "labels": {
+      "suggestion": "建议",
+      "currentIssue": "当前问题",
+      "needsAction": "需处理",
+      "watch": "关注",
+      "itemCount": "{{count}} 项"
+    },
+    "actions": {
+      "diagnosing": "诊断中...",
+      "rerunDiagnostics": "重新诊断",
+      "testing": "测试中...",
+      "testOverlay": "测试字幕浮窗",
+      "exporting": "导出中...",
+      "exportBundle": "导出诊断包",
+      "refreshing": "刷新中...",
+      "refreshRuntime": "刷新运行态",
+      "selectAll": "全选"
+    },
+    "actionsStripAria": "诊断与导出操作",
+    "sections": {
+      "conclusion": "诊断结论",
+      "modelDiagnostics": "模型诊断",
+      "evidence": "状态证据",
+      "runtimeStatus": "运行状态"
+    },
+    "environmentSignals": {
+      "title": "详细环境信号",
+      "runtimeEnvironment": "运行环境",
+      "browserPreviewRuntime": "浏览器 (Node.js / Vite)",
+      "storageStatus": "存储状态",
+      "credentialBackend": "凭证后端",
+      "schemaVersion": "Schema 版本",
+      "bridgeStatus": "桥接状态",
+      "normalizedStatus": "归一化环境态",
+      "omniSpeechEnabled": "Omni 语音输出开关",
+      "speakerPlayback": "扬声器播放",
+      "virtualMic": "虚拟麦克风",
+      "speakerFramesWritten": "扬声器已写帧",
+      "monitorOutput": "监听物理输出",
+      "capturePeak": "捕获峰值",
+      "captureRms": "捕获 RMS",
+      "silentPackets": "静音 packet",
+      "invalidSamples": "非法样本"
+    },
+    "liveEvents": {
+      "title": "实时事件明细",
+      "button": "查看实时事件",
+      "refresh": "刷新",
+      "loading": "正在加载事件数据...",
+      "empty": "暂无事件数据",
+      "summary": "ASR 事件 {{asrCount}} 条 · 输出事件 {{outputCount}} 条 · 会话持续 {{duration}}s",
+      "asrTable": "ASR 事件明细",
+      "outputTable": "输出事件明细",
+      "time": "时间",
+      "eventType": "事件类型",
+      "stash": "Stash",
+      "text": "文本",
+      "committedText": "已提交文本",
+      "pipelineTitle": "Pipeline 时序",
+      "preconnect": "预连接",
+      "sessionReady": "会话就绪",
+      "routeStarted": "音频路由启动",
+      "firstAudioSent": "首个音频发送",
+      "firstSpeechStarted": "首次语音检测",
+      "queuedChunks": "缓冲音频块",
+      "droppedBeforeReady": "就绪前丢弃",
+      "export": "导出"
+    },
+    "benchmark": {
+      "export": "导出",
+      "selectVoiceModelFirst": "请先选择一个语音模型。",
+      "enterMp3Path": "请输入 MP3 文件路径。",
+      "preparing": "正在准备基准测试...",
+      "missingApiKey": "未找到模型 {{model}} 的 API Key，请先在模型接入页面配置。",
+      "completed": "基准测试完成",
+      "title": "模型流式输出基准测试",
+      "pending": "待测试",
+      "voiceModel": "语音模型",
+      "noVoiceModels": "未配置语音模型",
+      "mp3Path": "MP3 路径",
+      "start": "开始基准测试",
+      "viewResults": "查看结果",
+      "streamingProgress": "正在流式发送音频并接收模型输出，结果弹窗会实时刷新。",
+      "results": "基准测试结果",
+      "resultSummary": "音频时长: {{duration}}s · 文本输出事件: {{count}}",
+      "waitingProgress": "正在等待基准测试进度...",
+      "waitingAudioChunks": "等待音频分片信息",
+      "waitingFirstData": "正在等待首批基准测试数据...",
+      "manualFullAudioMode": "手动完整音频模式",
+      "serverVadMode": "服务端语音分段模式",
+      "outputDiagnosticHint": "输出诊断提示",
+      "sparseOutputHint": "当前仅捕获 {{count}} 条文本输出事件，模型可能只在完成事件中返回整段文本。",
+      "responseDoneBeforeFullAudio": "首个 response.done 发生时已发送约 {{seconds}}s 音频，占整段音频 {{percent}}%。模型可能按服务端 VAD 先完成了一个分段响应，benchmark 仍继续发送后续音频。",
+      "modelEventHint": "模型事件提示",
+      "transcriptOnlyHint": "当前只收到音频转写文本，没有收到独立的模型文本输出事件；输出相关的首 Token、吞吐和 delta 间隔会显示为 N/A。",
+      "timeline": "全链路时序",
+      "audioSendWithTime": "音频发送 {{time}}",
+      "firstTokenWithTime": "首 Token {{time}}",
+      "audioSend": "音频发送",
+      "firstToken": "首 Token",
+      "stageDurations": "阶段耗时",
+      "websocketConnect": "WebSocket 连接",
+      "audioChunksDuration": "{{chunks}} chunks · {{seconds}}s 音频",
+      "firstAsr": "首次 ASR",
+      "audioSentAtDone": "Done 时已发送音频",
+      "noChunkRecorded": "未记录 chunk",
+      "firstTokenAfterResponse": "Response 后首 Token",
+      "beforeResponse": "早于 Response",
+      "vadAndAsr": "语音检测与语音识别",
+      "vadMode": "语音检测模式",
+      "manualModeNoServerVad": "手动模式下没有服务端语音检测事件",
+      "serverDecidesSpeechBoundaries": "由服务端判断语音开始和结束",
+      "vadSpeechStart": "VAD 语音开始",
+      "notApplicable": "不适用",
+      "vadSpeechEnd": "VAD 语音结束",
+      "streamingAsrEvents": "流式 ASR 事件数",
+      "asrFinalText": "ASR 最终文本",
+      "none": "（无）",
+      "outputTimingStats": "输出时序与统计",
+      "beforeResponseWithTime": "早于 Response {{time}}",
+      "afterResponseWithTime": "Response 后 +{{time}}",
+      "firstCommit": "首次提交",
+      "totalOutputDuration": "总输出时长",
+      "outputEventCount": "输出事件数",
+      "responseDoneCount": "{{count}} 次 response.done",
+      "responseSegments": "Response 分段数",
+      "manualUsuallyOneSegment": "手动完整音频通常为 1 段",
+      "serverVadMultiSegment": "服务端语音分段会产生多段响应",
+      "outputCharacters": "输出字符数",
+      "throughput": "吞吐",
+      "charactersPerSecond": "{{value}} 字符/s",
+      "deltaIntervalStats": "Delta 间隔统计",
+      "averageInterval": "平均间隔",
+      "minInterval": "最小间隔",
+      "maxInterval": "最大间隔",
+      "liveAndFinalOutput": "实时输出 / 完整输出 ({{count}} 字符)",
+      "waitingOutput": "（等待输出）",
+      "segmentedOutput": "分段拼接输出 ({{count}} 段)",
+      "outputEventDetails": "输出事件明细 ({{count}} 条)",
+      "timeMs": "时间 (ms)",
+      "event": "事件",
+      "committedText": "已提交文本",
+      "asrEventDetails": "ASR 事件明细 ({{count}} 条)",
+      "text": "文本"
+    }
+  },
+  "providers": {
+    "common": {
+      "none": "无",
+      "enabled": "启用",
+      "disabled": "停用",
+      "text": "文本",
+      "audio": "音频"
+    },
+    "customDialog": {
+      "title": "添加平台",
+      "description": "创建自定义 Provider，用于接入兼容 OpenAI 或 DashScope 的服务。",
+      "platformName": "平台名称",
+      "platformNamePlaceholder": "例如 OpenRouter",
+      "platformType": "平台类型",
+      "baseUrl": "接口地址",
+      "transport": "传输方式",
+      "authHeader": "认证请求头",
+      "authScheme": "认证方案",
+      "region": "区域",
+      "timeoutMs": "超时毫秒",
+      "createAction": "创建平台"
+    },
+    "templateCatalog": {
+      "title": "平台目录",
+      "searchPlaceholder": "搜索平台...",
+      "itemTitle": "点击切换配置 | 左键拖动调整顺序",
+      "toggleTitle": "启用或停用平台",
+      "emptyTitle": "没有匹配的平台",
+      "emptyDescription": "调整搜索条件或添加新的平台。"
+    },
+    "modelCatalog": {
+      "title": "模型列表",
+      "noDeclaredCapabilities": "未声明模型能力",
+      "scenarioBadge": "场景：{{scenario}}",
+      "editCapabilitiesTitle": "编辑能力注册表",
+      "refreshTitle": "刷新模型目录",
+      "closeTitle": "关闭模型列表",
+      "allScenarios": "全部",
+      "searchPlaceholder": "搜索模型...",
+      "lastRefresh": "最近刷新：{{time}}",
+      "modelCount": "{{count}} 个模型",
+      "uncategorized": "未归类",
+      "manualPlaceholder": "输入模型 ID，例如 qwen-plus",
+      "manualAdd": "手动添加",
+      "description": "{{scenario}} 的模型",
+      "endpoint": "模型端点：{{endpoint}}"
+    },
+    "labels": {
+      "streamingHttp": "流式 HTTP",
+      "websocket": "长连接",
+      "http": "普通 HTTP",
+      "scenario": {
+        "watch": "语音转文字",
+        "game": "文字转语音",
+        "voiceRoom": "语音转语音（语音翻译）",
+        "subtitleTranslate": "字幕翻译"
+      },
+      "smokeCompleted": "完成",
+      "smokeFailed": "失败",
+      "subtitleFirst": "字幕优先",
+      "balanced": "均衡",
+      "runtimeCatalog": "实时目录",
+      "presetFallback": "预置回退",
+      "errorWithDetail": "{{message}}：{{detail}}"
+    },
+    "verification": {
+      "title": "验证详情",
+      "description": "查看能力探测与测试请求的执行结果。",
+      "closeTitle": "关闭验证详情",
+      "probeTitle": "能力探测",
+      "probeDescription": "平台传输能力、延迟预算和错误形态检查。",
+      "checkedAt": "探测时间：{{value}}",
+      "latency": "探测延迟：{{measured}} ms / 预算 {{budget}} ms",
+      "transportRequested": "请求传输：{{value}}",
+      "transportEffective": "生效传输：{{value}}",
+      "streamSupported": "流式能力：{{value}}",
+      "fallbackApplied": "传输回退：{{value}}",
+      "subtitlePriority": "字幕策略：{{value}}",
+      "errorDetail": "错误：{{code}}，{{message}}{{suggestion}}",
+      "suggestionSuffix": "；{{suggestion}}",
+      "smokeTitle": "测试请求",
+      "smokeDescription": "一次真实请求的响应、流式事件和路由决策。",
+      "requestId": "请求编号：{{value}}",
+      "status": "执行状态：{{value}}",
+      "duration": "总耗时：{{value}} ms",
+      "firstEventLatency": "首事件延迟：{{value}} ms",
+      "streamObserved": "流式返回：{{value}}",
+      "smokeError": "错误：{{code}}，{{message}}",
+      "returnedText": "返回文本：{{value}}",
+      "eventTriggered": "已触发 · {{eventType}} · {{summary}}"
+    },
+    "actions": {
+      "deleteCurrentProvider": "删除当前平台",
+      "verifying": "验证中...",
+      "verifyProvider": "验证接入",
+      "verificationDetails": "验证详情",
+      "modelList": "模型列表",
+      "advancedSettings": "高级设置",
+      "fetchModelList": "获取模型列表",
+      "saveSecret": "保存密钥",
+      "saving": "保存中...",
+      "readSecret": "读取密钥",
+      "addModel": "添加模型",
+      "removeAddedModel": "删除已添加模型"
+    },
+    "messages": {
+      "runtimeCoreUnavailable": "运行时核心不可用，请检查 Rust Core 是否已启动。",
+      "storagePreviewDetail": "存储层尚未就绪（当前为预览模式，schema v{{schemaVersion}}）",
+      "storageBackendDetail": "存储状态 {{status}}，backend={{backend}}，schema v{{schemaVersion}}",
+      "storageBlocked": "{{detail}}。配置读写、密钥管理与模型探测已暂挂。请在桌面壳中等待存储层自动初始化，或通过诊断面板排查。",
+      "runtimeBlockedAction": "运行时不可用，无法{{action}}。",
+      "storageBlockedAction": "存储层尚未就绪，无法{{action}}。",
+      "secretStatusReadFailed": "读取密钥状态失败",
+      "emptyModelCatalog": "上游未返回模型目录",
+      "fetchModelCatalogFailed": "获取模型列表失败",
+      "secretSaved": "已保存密钥并刷新 API 配置",
+      "secretWriteFailed": "密钥写入失败",
+      "noStoredSecret": "当前认证引用下没有已保存密钥",
+      "secretPlainLoaded": "已读取密钥明文",
+      "secretPlainReadFailed": "读取密钥明文失败",
+      "verifyFailed": "验证接入失败",
+      "providerNameRequired": "平台名称不能为空",
+      "baseUrlRequired": "接口地址不能为空",
+      "keepOneProvider": "至少需要保留一个可用平台",
+      "providerHidden": "已隐藏当前平台",
+      "customProviderDeleted": "已删除自定义平台",
+      "storageRecoveryFailed": "存储恢复尝试失败：{{error}}"
+    },
+    "auth": {
+      "title": "认证配置",
+      "saved": "已保存",
+      "notSaved": "未保存",
+      "apiUrl": "API 地址",
+      "resetApiUrl": "重置 API 地址",
+      "apiKey": "API 密钥",
+      "credentialsHeader": "API 地址 / API 密钥",
+      "secretPlaceholder": "密钥",
+      "hideSecret": "隐藏密钥",
+      "showSecret": "显示密钥"
+    },
+    "sceneModels": {
+      "title": "场景模型",
+      "addedCount": "{{count}} 个已添加模型",
+      "noneAdded": "尚未添加模型",
+      "emptyDescription": "从模型列表选择模型，或手动输入模型 ID。"
+    },
+    "pendingModel": {
+      "title": "登记未知模型",
+      "closeTitle": "关闭登记未知模型",
+      "capabilities": "模型能力",
+      "realtimeAudioMode": "实时语音模式",
+      "registerAndAdd": "登记并添加"
+    },
+    "capabilityRegistry": {
+      "title": "能力注册表",
+      "description": "为未收录模型登记能力和实时音频模式。",
+      "addEntry": "添加条目",
+      "closeTitle": "关闭能力注册表",
+      "modelIdPlaceholder": "模型 ID",
+      "deleteEntry": "删除能力条目",
+      "emptyTitle": "还没有自定义能力条目",
+      "emptyDescription": "添加条目后可为自定义模型补充能力。"
+    },
+    "audioModeHelp": {
+      "title": "实时音频模式说明",
+      "description": "每种模式决定音频如何被分段和发送给服务端，影响延迟、断句准确性以及协议兼容性。",
+      "closeTitle": "关闭说明",
+      "clientSegmentation": "客户端断句",
+      "serverSegmentation": "服务端断句",
+      "googleServerSegmentation": "Google 服务端断句",
+      "manualFullAudio": {
+        "name": "手动完整音频",
+        "description": "客户端设置 turn_detection = null，按本地断句结果提交完整音频片段，适合需要明确控制 commit 边界的 Omni Realtime 链路。",
+        "models": "适用模型：qwen-omni-turbo-realtime、qwen3-omni-flash-realtime、qwen3.5-omni-plus-realtime 等 Omni Realtime 系列"
+      },
+      "serverVad": {
+        "name": "服务端语音检测",
+        "description": "服务端使用 VAD（Voice Activity Detection）判断语音开始和结束，通常等待约 800ms 静音后提交，适合 OpenAI Realtime 和 DashScope 直播翻译模型。",
+        "models": "适用模型：qwen3-livetranslate 系列、GPT-4o realtime 等"
+      },
+      "semanticVad": {
+        "name": "语义断句检测",
+        "description": "服务端结合语音活动和语义完整度决定断句边界，适合需要减少半句话截断的对话场景；eagerness 默认使用 auto。",
+        "models": "适用模型：支持 semantic_vad 的 DashScope Omni 模型"
+      },
+      "geminiAuto": {
+        "name": "Gemini 自动活动检测",
+        "description": "通过 Google Gemini Live WebSocket 的 automaticActivityDetection 让服务端判断活动边界，减少本地 VAD 参数和手动边界配置。",
+        "models": "适用模型：gemini-2.5-flash-live 等 Gemini Live 系列"
+      },
+      "geminiManual": {
+        "name": "Gemini 手动活动边界",
+        "description": "关闭 Gemini Live 自动活动检测，由客户端发送 activityStart / activityEnd，适合需要和本地断句策略严格对齐的链路。",
+        "models": "适用模型：需要手动配置切换"
+      }
+    },
+    "advanced": {
+      "title": "高级设置",
+      "closeTitle": "关闭高级设置",
+      "displayName": "显示名称",
+      "apiFormat": "API 格式",
+      "endpointUrl": "接口地址",
+      "transport": "传输方式",
+      "timeout": "超时阈值",
+      "authScheme": "认证方案",
+      "authHeader": "认证请求头",
+      "streaming": "启用流式",
+      "region": "区域",
+      "sampleText": "测试文本"
+    },
+    "customHeaders": {
+      "title": "自定义请求头",
+      "addHeader": "添加请求头",
+      "namePlaceholder": "Header 名称",
+      "valuePlaceholder": "Header 值",
+      "deleteHeader": "删除请求头",
+      "emptyTitle": "还没有自定义请求头",
+      "emptyDescription": "添加额外 Header 后会随请求一起发送。"
+    }
+  },
+  "consoleDock": {
+    "expandAll": "全部展开",
+    "collapseAll": "全部折叠",
+    "expand": "展开",
+    "collapse": "折叠",
+    "expandSection": "展开分区"
+  },
+  "session": {
+    "watchMode": "看片模式",
+    "conversationMode": "对话模式",
+    "cueStartedAt": "开始 {{started}}",
+    "cueTimeRange": "开始 {{started}} · 结束 {{ended}}",
+    "translating": "翻译中...",
+    "failed": "失败",
+    "translated": "已翻译",
+    "translationFailed": "翻译失败",
+    "controlTitle": "会话控制",
+    "starting": "启动中...",
+    "watchButton": "看片",
+    "runningFor": "已运行 {{elapsed}}",
+    "systemAudio": "系统音频",
+    "microphoneAudio": "麦克风音频",
+    "avgFirstToken": "翻译首字平均时间",
+    "lastFirstToken": "最近首字耗时",
+    "firstTokenSamples": "首字样本",
+    "captureState": "采集状态",
+    "bufferState": "缓冲状态",
+    "framesCaptured": "采集帧数",
+    "speechSegments": "语音分段",
+    "systemAudioError": "系统音频采集异常：{{error}}",
+    "restartBridgeHint": " 建议重启 Bridge Service 后重试。",
+    "stopWithElapsed": "停止 ({{elapsed}})",
+    "stopAll": "停止全部链路",
+    "hideOverlay": "隐藏浮窗",
+    "showOverlay": "显示浮窗",
+    "clearSubtitles": "清空字幕",
+    "modelTraceTitle": "模型调用摘要",
+    "failedCount": "失败 {{count}}",
+    "normal": "正常",
+    "totalCalls": "调用总数",
+    "successFailure": "成功 / 失败",
+    "currentModel": "当前模型",
+    "lastDuration": "最近耗时",
+    "lastCue": "最近 Cue",
+    "noModelCalls": "暂无模型调用",
+    "empty": "空",
+    "modelTraceEmpty": "启动看片模式后，这里会显示最近模型调用摘要",
+    "recentError": "最近错误：{{error}}",
+    "currentSubtitle": "当前字幕",
+    "queueDepth": "队列 {{count}} 条",
+    "callingLlm": "正在调用 LLM 翻译...",
+    "noActiveSubtitle": "无活动字幕",
+    "currentSubtitleEmpty": "启动场景后，实时字幕会显示在这里。",
+    "subtitleQueue": "字幕队列",
+    "droppedCueCount": "丢弃 {{count}} 条",
+    "noSubtitleEvents": "暂无字幕事件",
+    "subtitleQueueEmpty": "语音检测到分段后将在此处显示。",
+    "fallbackSubtitlesOnly": "虚拟音频链路不可用，已降级为仅字幕模式。",
+    "fallbackAec": "虚拟音频链路不可用，已临时切换到物理扬声器直放加 AEC。该模式仍有回环风险。",
+    "virtualDriverFallbackConfirm": "虚拟音频驱动或 Bridge 尚不可用。点击“确定”进入仅字幕模式；点击“取消”临时回退到物理扬声器直放加 AEC。AEC 回退仍有回环风险。",
+    "sceneLaunchFailed": "一键启动{{scene}}失败：{{error}}"
+  },
+  "glossary": {
+    "strategy": {
+      "force": "强制",
+      "suggest": "建议",
+      "keep": "保留原文"
+    },
+    "processingMode": {
+      "injectAll": "全量注入",
+      "injectImportant": "仅重要术语",
+      "postCalibrate": "不注入术语"
+    },
+    "processingDescription": {
+      "injectAll": "所有启用库的 {{count}} 条术语进入 prompt。",
+      "injectImportant": "只把 {{count}} 条重要术语注入 prompt。",
+      "postCalibrate": "翻译后按术语库校准，不向 prompt 注入术语。"
+    },
+    "title": "术语总览",
+    "hero": {
+      "summary": "共 {{total}} 条生效术语，其中 {{important}} 条标记为重要。",
+      "currentMode": "当前模式：{{mode}}"
+    },
+    "library": {
+      "title": "术语库"
+    },
+    "labels": {
+      "enabledLibraryCount": "{{count}} 个启用库",
+      "libraryMeta": "{{count}} 条术语 · 优先级 {{priority}}",
+      "enabled": "已启用",
+      "disabled": "已禁用",
+      "entryCount": "{{count}} 条术语",
+      "notice": "提示",
+      "caseSensitive": "区分大小写",
+      "wholeWord": "全词匹配"
+    },
+    "actions": {
+      "importFile": "导入文件",
+      "newLibrary": "新建术语库",
+      "closeNotice": "关闭提示",
+      "disableLibraryNamed": "禁用术语库“{{name}}”",
+      "enableLibraryNamed": "启用术语库“{{name}}”",
+      "disable": "禁用",
+      "enable": "启用",
+      "exportLibraryNamed": "导出术语库“{{name}}”",
+      "exportThisLibrary": "导出此库",
+      "deleteLibraryNamed": "删除术语库“{{name}}”",
+      "exportAll": "导出全部",
+      "addEntry": "添加术语",
+      "createLibraryNow": "立即新建术语库",
+      "markImportant": "标记为重要",
+      "unmarkImportant": "取消重要标记",
+      "editEntryNamed": "编辑术语“{{name}}”",
+      "deleteEntryNamed": "删除术语“{{name}}”",
+      "addFirstEntry": "添加第一条术语",
+      "testCalibration": "测试校准"
+    },
+    "importTone": {
+      "success": "导入成功",
+      "warning": "导入提醒",
+      "error": "导入失败"
+    },
+    "empty": {
+      "noLibrariesTitle": "暂无术语库",
+      "noLibrariesDescription": "新建空库，或从 JSON 文件导入术语库后开始编辑。",
+      "noMatchesTitle": "没有匹配的术语",
+      "selectOrCreateTitle": "请选择或创建术语库",
+      "noMatchesDescription": "调整搜索条件，或添加第一条术语。",
+      "selectOrCreateDescription": "在左侧新建术语库，或点击上方“导入文件”导入 JSON 术语库。"
+    },
+    "filter": {
+      "groupLabel": "筛选条件",
+      "label": "筛选",
+      "strategyAria": "按策略筛选",
+      "allStrategies": "全部策略",
+      "importantOnly": "仅重要"
+    },
+    "table": {
+      "fallbackTitle": "术语表",
+      "sourceTerm": "源术语",
+      "targetTerm": "目标术语",
+      "strategy": "策略",
+      "important": "重要",
+      "actions": "操作"
+    },
+    "processing": {
+      "title": "术语处理方式"
+    },
+    "calibration": {
+      "modelLabel": "校准小模型",
+      "noModels": "暂无可用字幕翻译模型，请先在“模型接入”页为已启用的平台添加字幕翻译场景模型。"
+    },
+    "preview": {
+      "title": "术语命中预览",
+      "testTextLabel": "测试文本",
+      "placeholder": "输入一段待翻译的文本，预览哪些术语会被命中……",
+      "matchedTerms": "命中术语",
+      "calibratedResult": "校准结果",
+      "calibratedSuffix": "{{text}}（已按术语策略校准）"
+    },
+    "dialog": {
+      "addEntryTitle": "添加术语",
+      "editEntryTitle": "编辑术语",
+      "sourceLanguage": "源语言",
+      "targetLanguage": "目标语言",
+      "markAsImportant": "标记为重要术语",
+      "conflictCount": "检测到 {{count}} 条同源术语冲突",
+      "libraryName": "术语库名称",
+      "libraryNamePlaceholder": "例如：游戏术语、影视字幕、专业词汇……"
+    },
+    "conflictResolution": {
+      "overwrite": "覆盖",
+      "skip": "跳过",
+      "keep-all": "保留全部"
+    },
+    "errors": {
+      "libraryNameRequired": "请输入术语库名称",
+      "libraryNameDuplicate": "已存在同名术语库，请使用其他名称"
+    },
+    "messages": {
+      "createLibraryBeforeEntry": "请先新建术语库，再添加术语。",
+      "importNoRecognizedLibraries": "文件中未找到可识别的术语库格式。支持的格式：GlossaryLibrary 或 GlossaryPackageContract。",
+      "importSuccess": "成功导入 {{count}} 个术语库，{{skipped}} 个条目被跳过。",
+      "importParseFailed": "文件解析失败，请确认是有效的 JSON 文件。",
+      "importReadFailed": "文件读取失败，请重试。"
+    },
+    "searchPlaceholder": "搜索术语…"
   }
 }

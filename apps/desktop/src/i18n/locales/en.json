@@ -1,4 +1,4 @@
-﻿{
+{
   "common": {
     "appName": "Omni Translate",
     "save": "Save",
@@ -10,7 +10,26 @@
     "close": "Close",
     "retry": "Retry",
     "loading": "Loading…",
-    "language": "Interface language"
+    "language": "Interface language",
+    "bootstrapDetecting": "Detecting runtime…",
+    "bootstrapConnecting": "Connecting to core services…",
+    "bootstrapLoadingConfig": "Loading configuration…",
+    "bootstrapPreparing": "Preparing audio engine…",
+    "bootstrapReady": "Ready",
+    "bootstrapPreparingAudio": "Initializing audio engine…",
+    "add": "Add",
+    "bootstrapTitle": "Omni Translate is starting",
+    "delete": "Delete",
+    "supported": "Supported",
+    "unsupported": "Unsupported",
+    "applied": "Applied",
+    "notApplied": "Not applied",
+    "observed": "Observed",
+    "notObserved": "Not observed",
+    "edit": "Edit",
+    "previous": "Previous",
+    "create": "Create",
+    "notSelected": "Not selected"
   },
   "brand": {
     "title": "Realtime Translation Console",
@@ -109,7 +128,9 @@
     "resetWelcome": "Reset welcome wizard",
     "resetWelcomeHint": "Clear the local flag so the quick setup wizard appears again on next launch.",
     "resetWelcomeDone": "Reset done. The wizard will appear next time.",
-    "resetWelcomeAction": "Reset"
+    "resetWelcomeAction": "Reset",
+    "sectionDriverManagement": "Driver management",
+    "driverManagementHint": "Manage the Omni Translate virtual speaker driver and Bridge Service."
   },
   "welcome": {
     "title": "Welcome to Omni Translate",
@@ -138,7 +159,10 @@
     "stepDriverTitle": "Driver & bridge",
     "stepDriverDescription": "Check the virtual microphone driver and bridge before you start. You can install or repair them here.",
     "driverFootHint": "You can enter viewing mode now and continue repairs later from Settings > Driver management.",
-    "skip": "Skip for now"
+    "skip": "Skip for now",
+    "desktopRuntimeUnavailable": "Desktop runtime initialization failed. Wait until Rust Core and storage recover before saving the API key. If it keeps failing, restart the app and try again.",
+    "desktopRuntimePreparing": "Desktop runtime or storage is still initializing. Wait until the status is desktop runtime and storage is ready before saving the API key.",
+    "apiBaseUrlLabel": "API URL"
   },
   "driverManagement": {
     "status": {
@@ -249,9 +273,9 @@
     "translationAudioSource": "Translation audio source",
     "translationAudioAuto": "Auto (prefer Omni native audio)",
     "translationAudioOmni": "Omni native audio",
-    "translationAudioTts": "Subtitle secondary TTS",
+    "translationAudioTts": "Subtitle translation TTS",
     "translationAudioSecondary": "📝 Secondary TTS (shares source with \"Secondary translation\")",
-    "secondaryAudioCardToggle": "Enable secondary audio",
+    "secondaryAudioCardToggle": "Speak translated subtitles",
     "subtitleTranslationCardToggle": "Enable subtitle translation",
     "cardDisabledHint": "This card is disabled · enable it to edit the model",
     "unsupportedNativeAudio": "Current model does not support Omni native audio; session will keep source audio and subtitles only.",
@@ -295,8 +319,6 @@
     "outboundModelsPanelSubtitle": "Models for your translated voice · 2 scenarios",
     "inboundKicker": "Listening",
     "outboundKicker": "Replying",
-    "autoSaved": "Changes saved automatically",
-    "savedJustNow": "Saved just now",
     "chainSource": "Source",
     "chainProcessor": "Processing",
     "chainModel": "Model",
@@ -315,7 +337,7 @@
     "scenarioInboundCaption": "Peer audio → subtitle + translation (Omni full pipeline)",
     "scenarioInboundRole": "Inbound listening",
     "scenarioInboundSubtitleSecondary": "Inbound listening · secondary",
-    "scenarioInboundSecondaryTitle": "Listen to them · secondary audio",
+    "scenarioInboundSecondaryTitle": "Listen to them · subtitle TTS",
     "scenarioInboundSecondaryCaption": "Peer audio → source text (fast STT, optional Omni replacement)",
     "scenarioInboundSecondaryRole": "Inbound secondary TTS",
     "scenarioSubtitleTitle": "Subtitle translation",
@@ -359,14 +381,24 @@
       "available": "Available",
       "needsSetup": "Needs setup",
       "current": "Current",
-      "option": "Option"
+      "option": "Option",
+      "capturing": "Capturing",
+      "capturingReady": "Capturing",
+      "playingReady": "Playing",
+      "armed": "Armed",
+      "idle": "Idle",
+      "missing": "Disconnected"
     },
     "captureState": {
       "capturing": "Capturing",
       "armed": "Armed",
       "idle": "Idle",
       "muted": "Muted"
-    }
+    },
+    "outputChannelsKicker": "Speak",
+    "vadThresholdTitle": "VAD threshold {{value}}",
+    "modelSubtitleSttTranslation": "Speech recognition · Translation",
+    "modelSubtitleSttTranslationSpeech": "Speech recognition · Translation · Speech"
   },
   "overlay": {
     "contextMenuTitle": "Overlay controls",
@@ -390,5 +422,679 @@
     "textColorSky": "Sky",
     "textColorRose": "Rose",
     "unlockAction": "Unlock"
+  },
+  "diagnostics": {
+    "export": {
+      "title": "Export"
+    },
+    "quickLinkTitle": "Open diagnostics and repair",
+    "status": {
+      "ready": "Ready",
+      "warning": "Needs attention",
+      "stable": "Stable",
+      "experimental": "Experimental",
+      "unsupported": "Unsupported",
+      "draft": "Incomplete",
+      "unknown": "Unknown",
+      "running": "Running",
+      "starting": "Starting",
+      "degraded": "Degraded",
+      "stopped": "Stopped",
+      "capturing": "Capturing",
+      "buffering": "Buffering",
+      "armed": "Armed",
+      "muted": "Muted",
+      "idle": "Idle",
+      "driverRunning": "Healthy",
+      "versionMismatch": "Version mismatch",
+      "damaged": "Damaged",
+      "notInstalled": "Not installed",
+      "notStarted": "Not started",
+      "overlayVisible": "overlay visible",
+      "overlayHidden": "overlay hidden",
+      "abnormal": "Abnormal",
+      "enabled": "Enabled",
+      "unresolved": "Unresolved",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
+    "environment": {
+      "browserPreview": {
+        "label": "Browser preview",
+        "summary": "This page is still in browser preview mode. Bridge, capture, and subtitle overlay state cannot be treated as real desktop results.",
+        "detailLaunchDesktop": "Launch the real desktop shell instead.",
+        "detailPreviewOnly": "Bridge and capture blockers in this mode are placeholders only and should not be used to diagnose failures."
+      },
+      "runtimeError": {
+        "label": "Desktop runtime not connected",
+        "summary": "The frontend is inside the desktop shell, but invoke or event channels are not connected reliably. Real bridge, capture, and overlay status cannot be confirmed.",
+        "detailLogs": "Check runtime logs and one-click diagnostics first to confirm IPC timeout or Rust Core startup issues.",
+        "detailFallback": "Until runtime is fixed, specific blockers may include fallback snapshots."
+      },
+      "liveReady": {
+        "label": "Desktop runtime connected",
+        "detail": "The Session page starts scenes on demand. Diagnostics focuses only on low-level service faults."
+      },
+      "liveActionNeeded": {
+        "label": "Low-level desktop chain has issues",
+        "summary": "The real desktop shell is active, but bridge or capture returned real errors that need attention."
+      }
+    },
+    "issues": {
+      "driverDamaged": "Virtual microphone driver state is damaged and must be reinstalled.",
+      "driverVersionMismatch": "Bridge driver version mismatch. Apply the recommended repair action.",
+      "bridgeError": "Bridge Service returned error: {{code}}",
+      "virtualPlaybackLoop": "Monitor output cannot use the Omni virtual speaker. Choose real headphones or speakers on the audio routing page.",
+      "inboundError": "System audio capture error: {{error}}",
+      "outboundError": "Microphone capture error: {{error}}",
+      "speechError": "Speech dispatch error: {{error}}",
+      "bridgeRuntimeTitle": "Bridge chain error",
+      "audioRuntimeTitle": "Audio chain error",
+      "errorDetail": "Error detail: {{detail}}",
+      "errorCategory": "Error category: {{category}}",
+      "keyEvents": "Key events"
+    },
+    "signals": {
+      "environment": "Environment",
+      "bridge": "Bridge",
+      "capture": "Capture",
+      "errorSummary": "Error summary",
+      "errorCount": "{{count}} need attention",
+      "noRecentErrors": "No recent errors",
+      "needsInvestigation": "Investigate",
+      "stable": "Stable"
+    },
+    "services": {
+      "title": "Low-level runtime monitor",
+      "desktopRuntime": "Desktop runtime",
+      "bridgeService": "Bridge Service",
+      "systemAudioCapture": "System audio capture",
+      "microphoneCapture": "Microphone capture",
+      "speechAndOverlay": "Speech and overlay",
+      "stableCount": "{{stable}}/{{total}} stable"
+    },
+    "overview": {
+      "noCriticalBlockers": "No critical blockers",
+      "criticalIssueCount": "{{count}} critical issues"
+    },
+    "repairs": {
+      "retryRuntime": "Retry runtime connection",
+      "retryRuntimeSummary": "Refresh the Rust runtime snapshot and prioritize restoring invoke and event channels.",
+      "bridgeRecommended": "Run recommended bridge repair",
+      "bridgeRecommendedSummary": "Run the recommended driver or Bridge Service repair for the current bridge state.",
+      "running": "Repairing...",
+      "runSelected": "Run selected repairs",
+      "title": "Automatic repair tasks",
+      "noneNeeded": "No repair needed",
+      "checklist": "Automatic repair checklist",
+      "autoRepair": "Auto repair",
+      "emptyTitle": "No executable automatic repair tasks",
+      "canContinue": "Can continue",
+      "remainingIssues": "Continue investigating remaining issues in Key events below.",
+      "noRuntimeIssues": "No real low-level runtime errors are present. Continue monitoring runtime state."
+    },
+    "health": {
+      "normal": "Runtime status normal",
+      "issueCount": "Found {{count}} runtime issues",
+      "stableDetail": "{{count}} runtime checks are stable and recent error summary found no blockers.",
+      "needsInvestigationDetail": "Runtime issues need investigation. Re-run diagnostics or export a diagnostics bundle."
+    },
+    "notifications": {
+      "autoRepairFailed": "Auto repair failed: {{label}} - {{error}}",
+      "autoRepairSuccess": "Ran {{count}} automatic repair tasks."
+    },
+    "labels": {
+      "suggestion": "Suggestion",
+      "currentIssue": "Current issue",
+      "needsAction": "Action needed",
+      "watch": "Watch",
+      "itemCount": "{{count}} items"
+    },
+    "actions": {
+      "diagnosing": "Diagnosing...",
+      "rerunDiagnostics": "Re-run diagnostics",
+      "testing": "Testing...",
+      "testOverlay": "Test subtitle overlay",
+      "exporting": "Exporting...",
+      "exportBundle": "Export diagnostics bundle",
+      "refreshing": "Refreshing...",
+      "refreshRuntime": "Refresh runtime",
+      "selectAll": "Select all"
+    },
+    "actionsStripAria": "Diagnostics and export actions",
+    "sections": {
+      "conclusion": "Diagnosis",
+      "modelDiagnostics": "Model diagnostics",
+      "evidence": "Evidence",
+      "runtimeStatus": "Runtime status"
+    },
+    "environmentSignals": {
+      "title": "Detailed environment signals",
+      "runtimeEnvironment": "Runtime environment",
+      "browserPreviewRuntime": "Browser (Node.js / Vite)",
+      "storageStatus": "Storage status",
+      "credentialBackend": "Credential backend",
+      "schemaVersion": "Schema version",
+      "bridgeStatus": "Bridge status",
+      "normalizedStatus": "Normalized environment status",
+      "omniSpeechEnabled": "Omni speech output",
+      "speakerPlayback": "Speaker playback",
+      "virtualMic": "Virtual microphone",
+      "speakerFramesWritten": "Speaker frames written",
+      "monitorOutput": "Monitor physical output",
+      "capturePeak": "Capture peak",
+      "captureRms": "Capture RMS",
+      "silentPackets": "Silent packets",
+      "invalidSamples": "Invalid samples"
+    },
+    "liveEvents": {
+      "title": "Live Event Details",
+      "button": "View Live Events",
+      "refresh": "Refresh",
+      "loading": "Loading event data...",
+      "empty": "No event data available",
+      "summary": "{{asrCount}} ASR events · {{outputCount}} output events · session {{duration}}s",
+      "asrTable": "ASR Event Details",
+      "outputTable": "Output Event Details",
+      "time": "Time",
+      "eventType": "Event Type",
+      "stash": "Stash",
+      "text": "Text",
+      "committedText": "Committed Text",
+      "pipelineTitle": "Pipeline Milestones",
+      "preconnect": "Preconnect",
+      "sessionReady": "Session Ready",
+      "routeStarted": "Audio Route Started",
+      "firstAudioSent": "First Audio Sent",
+      "firstSpeechStarted": "First Speech Detected",
+      "queuedChunks": "Queued Audio Chunks",
+      "droppedBeforeReady": "Dropped Before Ready",
+      "export": "Export"
+    },
+    "benchmark": {
+      "export": "Export",
+      "selectVoiceModelFirst": "Select a voice model first.",
+      "enterMp3Path": "Enter an MP3 file path.",
+      "preparing": "Preparing benchmark...",
+      "missingApiKey": "No API Key was found for model {{model}}. Configure it on the Providers page first.",
+      "completed": "Benchmark completed",
+      "title": "Model streaming output benchmark",
+      "pending": "Pending test",
+      "voiceModel": "Voice model",
+      "noVoiceModels": "No voice models configured",
+      "mp3Path": "MP3 path",
+      "start": "Start benchmark",
+      "viewResults": "View results",
+      "streamingProgress": "Streaming audio and receiving model output. The results dialog updates in real time.",
+      "results": "Benchmark results",
+      "resultSummary": "Audio duration: {{duration}}s · text output events: {{count}}",
+      "waitingProgress": "Waiting for benchmark progress...",
+      "waitingAudioChunks": "Waiting for audio chunk info",
+      "waitingFirstData": "Waiting for the first benchmark data...",
+      "manualFullAudioMode": "Manual full-audio mode",
+      "serverVadMode": "Server VAD segmentation mode",
+      "outputDiagnosticHint": "Output diagnostic hint",
+      "sparseOutputHint": "Only {{count}} text output events were captured. The model may return the full text only in completion events.",
+      "responseDoneBeforeFullAudio": "The first response.done occurred after about {{seconds}}s of audio, {{percent}}% of the full audio. The model may have completed one server-VAD segment while the benchmark continued sending audio.",
+      "modelEventHint": "Model event hint",
+      "transcriptOnlyHint": "Only audio transcript text was received; no separate model text output events were observed. Output TTFT, throughput, and delta intervals show as N/A.",
+      "timeline": "End-to-end timeline",
+      "audioSendWithTime": "Audio send {{time}}",
+      "firstTokenWithTime": "First token {{time}}",
+      "audioSend": "Audio send",
+      "firstToken": "First token",
+      "stageDurations": "Stage durations",
+      "websocketConnect": "WebSocket connection",
+      "audioChunksDuration": "{{chunks}} chunks · {{seconds}}s audio",
+      "firstAsr": "First ASR",
+      "audioSentAtDone": "Audio sent at Done",
+      "noChunkRecorded": "No chunk recorded",
+      "firstTokenAfterResponse": "First token after Response",
+      "beforeResponse": "Before Response",
+      "vadAndAsr": "Voice detection and ASR",
+      "vadMode": "Voice detection mode",
+      "manualModeNoServerVad": "Manual mode has no server-side VAD events",
+      "serverDecidesSpeechBoundaries": "The server detects speech start and end",
+      "vadSpeechStart": "VAD speech start",
+      "notApplicable": "Not applicable",
+      "vadSpeechEnd": "VAD speech end",
+      "streamingAsrEvents": "Streaming ASR events",
+      "asrFinalText": "ASR final text",
+      "none": "(none)",
+      "outputTimingStats": "Output timing and statistics",
+      "beforeResponseWithTime": "Before Response {{time}}",
+      "afterResponseWithTime": "After Response +{{time}}",
+      "firstCommit": "First commit",
+      "totalOutputDuration": "Total output duration",
+      "outputEventCount": "Output event count",
+      "responseDoneCount": "{{count}} response.done events",
+      "responseSegments": "Response segments",
+      "manualUsuallyOneSegment": "Manual full audio is usually one segment",
+      "serverVadMultiSegment": "Server VAD may produce multiple response segments",
+      "outputCharacters": "Output characters",
+      "throughput": "Throughput",
+      "charactersPerSecond": "{{value}} chars/s",
+      "deltaIntervalStats": "Delta interval statistics",
+      "averageInterval": "Average interval",
+      "minInterval": "Minimum interval",
+      "maxInterval": "Maximum interval",
+      "liveAndFinalOutput": "Live output / final output ({{count}} chars)",
+      "waitingOutput": "(waiting for output)",
+      "segmentedOutput": "Segmented combined output ({{count}} segments)",
+      "outputEventDetails": "Output event details ({{count}})",
+      "timeMs": "Time (ms)",
+      "event": "Event",
+      "committedText": "Committed text",
+      "asrEventDetails": "ASR event details ({{count}})",
+      "text": "Text"
+    }
+  },
+  "providers": {
+    "common": {
+      "none": "None",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "text": "Text",
+      "audio": "Audio"
+    },
+    "customDialog": {
+      "title": "Add provider",
+      "description": "Create a custom provider for OpenAI-compatible or DashScope-compatible services.",
+      "platformName": "Provider name",
+      "platformNamePlaceholder": "For example OpenRouter",
+      "platformType": "Provider type",
+      "baseUrl": "Endpoint URL",
+      "transport": "Transport",
+      "authHeader": "Auth header",
+      "authScheme": "Auth scheme",
+      "region": "Region",
+      "timeoutMs": "Timeout in ms",
+      "createAction": "Create provider"
+    },
+    "templateCatalog": {
+      "title": "Provider catalog",
+      "searchPlaceholder": "Search providers...",
+      "itemTitle": "Click to switch config | drag with left mouse button to reorder",
+      "toggleTitle": "Enable or disable provider",
+      "emptyTitle": "No matching providers",
+      "emptyDescription": "Adjust the search or add a new provider."
+    },
+    "modelCatalog": {
+      "title": "Model list",
+      "noDeclaredCapabilities": "No declared model capabilities",
+      "scenarioBadge": "Scenario: {{scenario}}",
+      "editCapabilitiesTitle": "Edit capability registry",
+      "refreshTitle": "Refresh model catalog",
+      "closeTitle": "Close model list",
+      "allScenarios": "All",
+      "searchPlaceholder": "Search models...",
+      "lastRefresh": "Last refresh: {{time}}",
+      "modelCount": "{{count}} models",
+      "uncategorized": "Uncategorized",
+      "manualPlaceholder": "Enter a model ID, e.g. qwen-plus",
+      "manualAdd": "Add manually",
+      "description": "Models for {{scenario}}",
+      "endpoint": "Model endpoint: {{endpoint}}"
+    },
+    "labels": {
+      "streamingHttp": "Streaming HTTP",
+      "websocket": "Long connection",
+      "http": "HTTP",
+      "scenario": {
+        "watch": "Speech to text",
+        "game": "Text to speech",
+        "voiceRoom": "Speech to speech (voice translation)",
+        "subtitleTranslate": "Subtitle translation"
+      },
+      "smokeCompleted": "Completed",
+      "smokeFailed": "Failed",
+      "subtitleFirst": "Subtitle first",
+      "balanced": "Balanced",
+      "runtimeCatalog": "Live catalog",
+      "presetFallback": "Preset fallback",
+      "errorWithDetail": "{{message}}: {{detail}}"
+    },
+    "verification": {
+      "title": "Verification details",
+      "description": "Review capability probes and test request results.",
+      "closeTitle": "Close verification details",
+      "probeTitle": "Capability probe",
+      "probeDescription": "Platform transport capabilities, latency budget, and error-shape checks.",
+      "checkedAt": "Probe time: {{value}}",
+      "latency": "Probe latency: {{measured}} ms / budget {{budget}} ms",
+      "transportRequested": "Requested transport: {{value}}",
+      "transportEffective": "Effective transport: {{value}}",
+      "streamSupported": "Streaming capability: {{value}}",
+      "fallbackApplied": "Transport fallback: {{value}}",
+      "subtitlePriority": "Subtitle policy: {{value}}",
+      "errorDetail": "Error: {{code}}, {{message}}{{suggestion}}",
+      "suggestionSuffix": "; {{suggestion}}",
+      "smokeTitle": "Test request",
+      "smokeDescription": "Response, streaming events, and routing decision from one real request.",
+      "requestId": "Request ID: {{value}}",
+      "status": "Status: {{value}}",
+      "duration": "Total duration: {{value}} ms",
+      "firstEventLatency": "First event latency: {{value}} ms",
+      "streamObserved": "Streaming response: {{value}}",
+      "smokeError": "Error: {{code}}, {{message}}",
+      "returnedText": "Returned text: {{value}}",
+      "eventTriggered": "Triggered · {{eventType}} · {{summary}}"
+    },
+    "actions": {
+      "deleteCurrentProvider": "Delete current provider",
+      "verifying": "Verifying...",
+      "verifyProvider": "Verify provider",
+      "verificationDetails": "Verification details",
+      "modelList": "Model list",
+      "advancedSettings": "Advanced settings",
+      "fetchModelList": "Fetch model list",
+      "saveSecret": "Save secret",
+      "saving": "Saving...",
+      "readSecret": "Read secret",
+      "addModel": "Add model",
+      "removeAddedModel": "Remove added model"
+    },
+    "messages": {
+      "runtimeCoreUnavailable": "Runtime core is unavailable. Check whether Rust Core has started.",
+      "storagePreviewDetail": "Storage is not ready (preview mode, schema v{{schemaVersion}})",
+      "storageBackendDetail": "Storage status {{status}}, backend {{backend}}, schema v{{schemaVersion}}",
+      "storageBlocked": "{{detail}}. Configuration writes, secret management, and model probes are paused. Wait for desktop storage initialization or inspect diagnostics.",
+      "runtimeBlockedAction": "Runtime is unavailable, cannot {{action}}.",
+      "storageBlockedAction": "Storage is not ready, cannot {{action}}.",
+      "secretStatusReadFailed": "Failed to read secret status",
+      "emptyModelCatalog": "The upstream provider returned no model catalog.",
+      "fetchModelCatalogFailed": "Failed to fetch model catalog",
+      "secretSaved": "Secret saved and API configuration refreshed.",
+      "secretWriteFailed": "Failed to write secret",
+      "noStoredSecret": "No saved secret exists for the current auth reference.",
+      "secretPlainLoaded": "Secret plaintext loaded.",
+      "secretPlainReadFailed": "Failed to read secret plaintext",
+      "verifyFailed": "Provider verification failed",
+      "providerNameRequired": "Provider name is required.",
+      "baseUrlRequired": "Endpoint URL is required.",
+      "keepOneProvider": "At least one available provider must remain.",
+      "providerHidden": "Current provider hidden.",
+      "customProviderDeleted": "Custom provider deleted.",
+      "storageRecoveryFailed": "Storage recovery attempt failed: {{error}}"
+    },
+    "auth": {
+      "title": "Authentication",
+      "saved": "Saved",
+      "notSaved": "Not saved",
+      "apiUrl": "API URL",
+      "resetApiUrl": "Reset API URL",
+      "apiKey": "API key",
+      "credentialsHeader": "API URL / API Key",
+      "secretPlaceholder": "Secret",
+      "hideSecret": "Hide secret",
+      "showSecret": "Show secret"
+    },
+    "sceneModels": {
+      "title": "Scene models",
+      "addedCount": "{{count}} added models",
+      "noneAdded": "No models added",
+      "emptyDescription": "Choose a model from the model list or enter a model ID manually."
+    },
+    "pendingModel": {
+      "title": "Register unknown model",
+      "closeTitle": "Close unknown model registration",
+      "capabilities": "Model capabilities",
+      "realtimeAudioMode": "Realtime audio mode",
+      "registerAndAdd": "Register and add"
+    },
+    "capabilityRegistry": {
+      "title": "Capability registry",
+      "description": "Register capabilities and realtime audio modes for unlisted models.",
+      "addEntry": "Add entry",
+      "closeTitle": "Close capability registry",
+      "modelIdPlaceholder": "Model ID",
+      "deleteEntry": "Delete capability entry",
+      "emptyTitle": "No custom capability entries yet",
+      "emptyDescription": "Add entries to supplement capabilities for custom models."
+    },
+    "audioModeHelp": {
+      "title": "Realtime audio modes",
+      "description": "Each mode controls how audio is segmented and sent to the server, affecting latency, sentence boundary accuracy, and protocol compatibility.",
+      "closeTitle": "Close help",
+      "clientSegmentation": "Client segmentation",
+      "serverSegmentation": "Server segmentation",
+      "googleServerSegmentation": "Google server segmentation",
+      "manualFullAudio": {
+        "name": "Manual full audio",
+        "description": "The client sets turn_detection = null and commits complete local sentence audio segments, suited to Omni Realtime links that need explicit commit boundaries.",
+        "models": "Models: qwen-omni-turbo-realtime, qwen3-omni-flash-realtime, qwen3.5-omni-plus-realtime and other Omni Realtime models"
+      },
+      "serverVad": {
+        "name": "Server VAD",
+        "description": "The server uses VAD (Voice Activity Detection) to detect speech start and end, usually committing after about 800 ms of silence. Suitable for OpenAI Realtime and DashScope live translation models.",
+        "models": "Models: qwen3-livetranslate series, GPT-4o realtime and similar"
+      },
+      "semanticVad": {
+        "name": "Semantic VAD",
+        "description": "The server combines voice activity and semantic completeness to decide boundaries. Useful for dialog scenarios where clipped half-sentences should be reduced; eagerness defaults to auto.",
+        "models": "Models: DashScope Omni models that support semantic_vad"
+      },
+      "geminiAuto": {
+        "name": "Gemini automatic activity detection",
+        "description": "Google Gemini Live WebSocket automaticActivityDetection lets the server decide activity boundaries and reduces local VAD/manual-boundary configuration.",
+        "models": "Models: gemini-2.5-flash-live and other Gemini Live models"
+      },
+      "geminiManual": {
+        "name": "Gemini manual activity boundaries",
+        "description": "Disable Gemini Live automatic activity detection and let the client send activityStart / activityEnd. Useful when strict alignment with local segmentation is required.",
+        "models": "Models: requires manual configuration"
+      }
+    },
+    "advanced": {
+      "title": "Advanced settings",
+      "closeTitle": "Close advanced settings",
+      "displayName": "Display name",
+      "apiFormat": "API format",
+      "endpointUrl": "Endpoint URL",
+      "transport": "Transport",
+      "timeout": "Timeout threshold",
+      "authScheme": "Auth scheme",
+      "authHeader": "Auth header",
+      "streaming": "Streaming",
+      "region": "Region",
+      "sampleText": "Sample text"
+    },
+    "customHeaders": {
+      "title": "Custom request headers",
+      "addHeader": "Add header",
+      "namePlaceholder": "Header name",
+      "valuePlaceholder": "Header value",
+      "deleteHeader": "Delete header",
+      "emptyTitle": "No custom request headers yet",
+      "emptyDescription": "Extra headers will be sent together with requests."
+    }
+  },
+  "consoleDock": {
+    "expandAll": "Expand all",
+    "collapseAll": "Collapse all",
+    "expand": "Expand",
+    "collapse": "Collapse",
+    "expandSection": "Expand section"
+  },
+  "session": {
+    "watchMode": "Viewing mode",
+    "conversationMode": "Conversation mode",
+    "cueStartedAt": "Start {{started}}",
+    "cueTimeRange": "Start {{started}} · End {{ended}}",
+    "translating": "Translating...",
+    "failed": "Failed",
+    "translated": "Translated",
+    "translationFailed": "Translation failed",
+    "controlTitle": "Session control",
+    "starting": "Starting...",
+    "watchButton": "Watch",
+    "runningFor": "Running {{elapsed}}",
+    "systemAudio": "System audio",
+    "microphoneAudio": "Microphone audio",
+    "avgFirstToken": "Average first-token time",
+    "lastFirstToken": "Latest first-token time",
+    "firstTokenSamples": "First-token samples",
+    "captureState": "Capture state",
+    "bufferState": "Buffer state",
+    "framesCaptured": "Frames captured",
+    "speechSegments": "Speech segments",
+    "systemAudioError": "System audio capture error: {{error}}",
+    "restartBridgeHint": " Restart Bridge Service and try again.",
+    "stopWithElapsed": "Stop ({{elapsed}})",
+    "stopAll": "Stop all routes",
+    "hideOverlay": "Hide overlay",
+    "showOverlay": "Show overlay",
+    "clearSubtitles": "Clear subtitles",
+    "modelTraceTitle": "Model call summary",
+    "failedCount": "Failed {{count}}",
+    "normal": "Normal",
+    "totalCalls": "Total calls",
+    "successFailure": "Success / failure",
+    "currentModel": "Current model",
+    "lastDuration": "Latest duration",
+    "lastCue": "Latest cue",
+    "noModelCalls": "No model calls yet",
+    "empty": "Empty",
+    "modelTraceEmpty": "After viewing mode starts, recent model call summaries appear here.",
+    "recentError": "Recent error: {{error}}",
+    "currentSubtitle": "Current subtitle",
+    "queueDepth": "Queue {{count}}",
+    "callingLlm": "Calling LLM translation...",
+    "noActiveSubtitle": "No active subtitle",
+    "currentSubtitleEmpty": "Live subtitles will appear here after a scenario starts.",
+    "subtitleQueue": "Subtitle queue",
+    "droppedCueCount": "Dropped {{count}}",
+    "noSubtitleEvents": "No subtitle events yet",
+    "subtitleQueueEmpty": "Segments detected by voice activity will appear here.",
+    "fallbackSubtitlesOnly": "The virtual audio route is unavailable. The session has fallen back to subtitle-only mode.",
+    "fallbackAec": "The virtual audio route is unavailable. The session has temporarily switched to physical speaker playback with AEC. This mode still has loopback risk.",
+    "virtualDriverFallbackConfirm": "The virtual audio driver or Bridge is not available yet. Click OK to enter subtitle-only mode; click Cancel to temporarily fall back to physical speaker playback with AEC. The AEC fallback still has loopback risk.",
+    "sceneLaunchFailed": "Failed to start {{scene}}: {{error}}"
+  },
+  "glossary": {
+    "strategy": {
+      "force": "Force",
+      "suggest": "Suggest",
+      "keep": "Keep original"
+    },
+    "processingMode": {
+      "injectAll": "Inject all",
+      "injectImportant": "Important terms only",
+      "postCalibrate": "No term injection"
+    },
+    "processingDescription": {
+      "injectAll": "Inject all {{count}} terms from enabled libraries into the prompt.",
+      "injectImportant": "Inject only {{count}} important terms into the prompt.",
+      "postCalibrate": "Calibrate after translation using the glossary; do not inject terms into the prompt."
+    },
+    "title": "Glossary overview",
+    "hero": {
+      "summary": "{{total}} active terms, including {{important}} marked as important.",
+      "currentMode": "Current mode: {{mode}}"
+    },
+    "library": {
+      "title": "Glossary libraries"
+    },
+    "labels": {
+      "enabledLibraryCount": "{{count}} enabled libraries",
+      "libraryMeta": "{{count}} terms · priority {{priority}}",
+      "enabled": "Enabled",
+      "disabled": "Disabled",
+      "entryCount": "{{count}} terms",
+      "notice": "Notice",
+      "caseSensitive": "Case sensitive",
+      "wholeWord": "Whole word"
+    },
+    "actions": {
+      "importFile": "Import file",
+      "newLibrary": "New glossary library",
+      "closeNotice": "Close notice",
+      "disableLibraryNamed": "Disable glossary library {{name}}",
+      "enableLibraryNamed": "Enable glossary library {{name}}",
+      "disable": "Disable",
+      "enable": "Enable",
+      "exportLibraryNamed": "Export glossary library {{name}}",
+      "exportThisLibrary": "Export this library",
+      "deleteLibraryNamed": "Delete glossary library {{name}}",
+      "exportAll": "Export all",
+      "addEntry": "Add term",
+      "createLibraryNow": "Create glossary library now",
+      "markImportant": "Mark as important",
+      "unmarkImportant": "Unmark important",
+      "editEntryNamed": "Edit term {{name}}",
+      "deleteEntryNamed": "Delete term {{name}}",
+      "addFirstEntry": "Add first term",
+      "testCalibration": "Test calibration"
+    },
+    "importTone": {
+      "success": "Import complete",
+      "warning": "Import notice",
+      "error": "Import failed"
+    },
+    "empty": {
+      "noLibrariesTitle": "No glossary libraries",
+      "noLibrariesDescription": "Create an empty library or import glossary libraries from a JSON file to start editing.",
+      "noMatchesTitle": "No matching terms",
+      "selectOrCreateTitle": "Select or create a glossary library",
+      "noMatchesDescription": "Adjust the search filters or add the first term.",
+      "selectOrCreateDescription": "Create a library on the left, or use Import file above to import a JSON glossary library."
+    },
+    "filter": {
+      "groupLabel": "Filters",
+      "label": "Filter",
+      "strategyAria": "Filter by strategy",
+      "allStrategies": "All strategies",
+      "importantOnly": "Important only"
+    },
+    "table": {
+      "fallbackTitle": "Glossary",
+      "sourceTerm": "Source term",
+      "targetTerm": "Target term",
+      "strategy": "Strategy",
+      "important": "Important",
+      "actions": "Actions"
+    },
+    "processing": {
+      "title": "Term processing"
+    },
+    "calibration": {
+      "modelLabel": "Calibration small model",
+      "noModels": "No subtitle translation models are available. Add a subtitle translation scene model for an enabled provider on the Providers page first."
+    },
+    "preview": {
+      "title": "Term hit preview",
+      "testTextLabel": "Test text",
+      "placeholder": "Enter text to translate and preview which terms are matched...",
+      "matchedTerms": "Matched terms",
+      "calibratedResult": "Calibrated result",
+      "calibratedSuffix": "{{text}} (calibrated by glossary policy)"
+    },
+    "dialog": {
+      "addEntryTitle": "Add term",
+      "editEntryTitle": "Edit term",
+      "sourceLanguage": "Source language",
+      "targetLanguage": "Target language",
+      "markAsImportant": "Mark as important term",
+      "conflictCount": "{{count}} source-term conflicts detected",
+      "libraryName": "Glossary library name",
+      "libraryNamePlaceholder": "For example: game terms, film subtitles, professional vocabulary..."
+    },
+    "conflictResolution": {
+      "overwrite": "Overwrite",
+      "skip": "Skip",
+      "keep-all": "Keep all"
+    },
+    "errors": {
+      "libraryNameRequired": "Enter a glossary library name",
+      "libraryNameDuplicate": "A glossary library with this name already exists. Use another name."
+    },
+    "messages": {
+      "createLibraryBeforeEntry": "Create a glossary library before adding terms.",
+      "importNoRecognizedLibraries": "No recognizable glossary library format was found. Supported formats: GlossaryLibrary or GlossaryPackageContract.",
+      "importSuccess": "Imported {{count}} glossary libraries; {{skipped}} items skipped.",
+      "importParseFailed": "Failed to parse the file. Make sure it is valid JSON.",
+      "importReadFailed": "Failed to read the file. Try again."
+    },
+    "searchPlaceholder": "Search terms..."
   }
 }

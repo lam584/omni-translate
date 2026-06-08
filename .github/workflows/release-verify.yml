@@ -1,0 +1,53 @@
+name: Release Verify
+
+on:
+  workflow_dispatch:
+
+jobs:
+  verify:
+    name: Windows release static verification
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Verify release baseline
+        run: node ./scripts/release/verify-release.mjs
+
+      - name: Verify contracts
+        run: npm run test:contracts
+
+      - name: Test watch-mode report tooling
+        run: npm run test:watch-mode-report
+
+      - name: Check desktop shell
+        run: npm run check:desktop-shell
+
+      - name: Check native bridge
+        run: npm run check:bridge-service-native
+
+      - name: Ensure installer layout script is native-only
+        shell: pwsh
+        run: |
+          $content = Get-Content -Raw -LiteralPath scripts/release/prepare-installer-layout.mjs
+          $legacyBridgeName = ('bridge', 'service') -join '-'
+          $legacyPathPattern = 'path\.join\([''"]apps[''"],\s*[''"]' + [regex]::Escape($legacyBridgeName) + '[''"]\)'
+          $legacyDistToken = ('bridge', 'Dist') -join ''
+          $legacyPackageToken = ('bridge', 'Package') -join ''
+          if ($content -match $legacyPathPattern -or $content.Contains($legacyDistToken) -or $content.Contains($legacyPackageToken)) {
+            throw 'Installer layout script still references the removed legacy bridge.'
+          }

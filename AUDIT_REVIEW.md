@@ -1,0 +1,348 @@
+# Uncommitted Change Audit
+
+This document tracks the current review pass for the uncommitted worktree changes in `<repository-root>`.
+
+## Review Status
+
+- [ ] Group A: Native bridge, audio, driver, diagnostics
+- [ ] Group B: Desktop TypeScript, React, runtime, i18n
+- [ ] Group C: Tauri Rust provider, storage, benchmark
+- [ ] Group D: Scripts, CI, docs, styles, repository metadata
+- [ ] Verification: build/check/test commands completed without remaining issues
+
+## Pending Review Checklist
+
+### Group A: Native Bridge, Audio, Driver, Diagnostics
+
+- [ ] `apps/bridge-service-native/Cargo.lock`
+- [ ] `apps/bridge-service-native/Cargo.toml`
+- [ ] `apps/bridge-service-native/src/bin/omni-driver-audio-probe.rs`
+- [ ] `apps/bridge-service-native/src/lib.rs`
+- [ ] `apps/bridge-service-native/src/main.rs`
+- [ ] `apps/bridge-service/README.md` (deleted)
+- [ ] `apps/bridge-service/package.json` (deleted)
+- [ ] `apps/bridge-service/src/cli.ts` (deleted)
+- [ ] `apps/bridge-service/src/index.ts` (deleted)
+- [ ] `apps/bridge-service/src/protocol.ts` (deleted)
+- [ ] `apps/bridge-service/src/service/bridge-service.test.ts` (deleted)
+- [ ] `apps/bridge-service/src/service/bridge-service.ts` (deleted)
+- [ ] `apps/bridge-service/tsconfig.json` (deleted)
+- [ ] `apps/desktop/src-tauri/src/audio/engine.rs` (deleted)
+- [ ] `apps/desktop/src-tauri/src/audio/events.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/mod.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/omni.rs` (deleted)
+- [ ] `apps/desktop/src-tauri/src/audio/sentence.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/speech.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/state.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/stt.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/subtitle_translate.rs`
+- [ ] `apps/desktop/src-tauri/src/bridge/contracts.rs`
+- [ ] `apps/desktop/src-tauri/src/bridge/events.rs`
+- [ ] `apps/desktop/src-tauri/src/bridge/installer.rs`
+- [ ] `apps/desktop/src-tauri/src/bridge/ipc.rs`
+- [ ] `apps/desktop/src-tauri/src/diagnostics/events.rs`
+- [ ] `apps/desktop/src-tauri/src/diagnostics/model_trace.rs`
+- [ ] `drivers/windows-virtual-mic/package/driver-package.json`
+- [ ] `drivers/windows-virtual-mic/sysvad/EndpointsCommon/minwavertstream.cpp`
+- [ ] `drivers/windows-virtual-mic/sysvad/EndpointsCommon/minwavertstream.h`
+- [ ] `scripts/diagnostics/README.md`
+- [ ] `scripts/diagnostics/check_advapi.ps1` (deleted)
+- [ ] `scripts/diagnostics/check_elevated.ps1` (deleted)
+- [ ] `scripts/diagnostics/check_tauri_data.ps1` (deleted)
+- [ ] `scripts/diagnostics/credential-write/Cargo.toml`
+- [ ] `scripts/diagnostics/find_omni_data.ps1` (deleted)
+- [ ] `scripts/diagnostics/ipc_test.ps1`
+- [ ] `scripts/diagnostics/omni-realtime/Cargo.lock`
+- [ ] `scripts/diagnostics/omni-realtime/Cargo.toml`
+- [ ] `scripts/diagnostics/omni-realtime/src/main.rs`
+- [ ] `scripts/diagnostics/omni_diagnosis.ps1` (deleted)
+- [ ] `scripts/diagnostics/simple_check.ps1` (deleted)
+- [ ] `scripts/installer/invoke-elevated-driver-operation.ps1`
+- [ ] `scripts/installer/request-elevated-driver-operation.ps1`
+- [ ] `scripts/installer/stop-stale-bridge-service.ps1`
+- [ ] `scripts/installer/test-development-driver.ps1`
+- [ ] `scripts/installer/virtual-speaker-device.ps1`
+- [ ] `apps/bridge-service-native/src/bin/omni-physical-output-probe.rs`
+- [ ] `apps/bridge-service-native/src/bin/omni-watch-media-injector.rs`
+- [ ] `apps/bridge-service-native/src/windows/mod.rs`
+- [ ] `apps/bridge-service-native/src/windows/win32.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/diagnostics.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/engine/mod.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/engine/retry.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/engine/samples.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/gemini_live.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/live_session_events.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/omni/codec.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/omni/mod.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/openai_realtime.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/time_utils.rs`
+- [ ] `apps/desktop/src-tauri/src/audio/translation_route.rs`
+- [ ] `scripts/diagnostics/omni-benchmark/Cargo.lock`
+- [ ] `scripts/diagnostics/omni-benchmark/Cargo.toml`
+- [ ] `scripts/diagnostics/omni-benchmark/src/main.rs`
+- [ ] `scripts/testing/audit-worktree-groups.mjs`
+- [ ] `scripts/testing/run-watch-mode-live-matrix.ps1`
+- [ ] `scripts/testing/run-watch-mode-live.ps1`
+- [ ] `scripts/testing/run-watch-mode-live.test.mjs`
+- [ ] `scripts/testing/verify-watch-mode-evidence.mjs`
+- [ ] `scripts/testing/verify-watch-mode-evidence.test.mjs`
+- [ ] `scripts/testing/watch-mode-report.mjs`
+- [ ] `scripts/testing/watch-mode-report.test.mjs`
+
+### Group B: Desktop TypeScript, React, Runtime, i18n
+
+- [ ] `apps/desktop/eslint.config.js`
+- [ ] `apps/desktop/package.json`
+- [ ] `apps/desktop/src/App.tsx`
+- [ ] `apps/desktop/src/components/audio/AudioLevelMeter.tsx`
+- [ ] `apps/desktop/src/components/driver/DriverManagementCard.test.tsx`
+- [ ] `apps/desktop/src/components/driver/DriverManagementCard.tsx`
+- [ ] `apps/desktop/src/components/icons/AppIcon.tsx`
+- [ ] `apps/desktop/src/components/page/ConsoleDock.test.tsx`
+- [ ] `apps/desktop/src/components/page/ConsoleDock.tsx`
+- [ ] `apps/desktop/src/components/page/DiagnosticsQuickLink.tsx`
+- [ ] `apps/desktop/src/components/welcome/WelcomeLanguagePicker.tsx`
+- [ ] `apps/desktop/src/i18n/config.ts`
+- [ ] `apps/desktop/src/i18n/locales/ar.json`
+- [ ] `apps/desktop/src/i18n/locales/bn.json`
+- [ ] `apps/desktop/src/i18n/locales/de.json`
+- [ ] `apps/desktop/src/i18n/locales/en.json`
+- [ ] `apps/desktop/src/i18n/locales/es.json`
+- [ ] `apps/desktop/src/i18n/locales/fil.json`
+- [ ] `apps/desktop/src/i18n/locales/fr.json`
+- [ ] `apps/desktop/src/i18n/locales/hi.json`
+- [ ] `apps/desktop/src/i18n/locales/id.json`
+- [ ] `apps/desktop/src/i18n/locales/ja.json`
+- [ ] `apps/desktop/src/i18n/locales/ko.json`
+- [ ] `apps/desktop/src/i18n/locales/mr.json`
+- [ ] `apps/desktop/src/i18n/locales/pt.json`
+- [ ] `apps/desktop/src/i18n/locales/ru.json`
+- [ ] `apps/desktop/src/i18n/locales/ta.json`
+- [ ] `apps/desktop/src/i18n/locales/te.json`
+- [ ] `apps/desktop/src/i18n/locales/th.json`
+- [ ] `apps/desktop/src/i18n/locales/tr.json`
+- [ ] `apps/desktop/src/i18n/locales/vi.json`
+- [ ] `apps/desktop/src/i18n/locales/zh-CN.json`
+- [ ] `apps/desktop/src/i18n/locales/zh-CN.test.ts`
+- [ ] `apps/desktop/src/main.tsx`
+- [ ] `apps/desktop/src/overlay.tsx`
+- [ ] `apps/desktop/src/pages/AudioRoutingPage.snapshot.test.tsx`
+- [ ] `apps/desktop/src/pages/AudioRoutingPage.test.tsx`
+- [ ] `apps/desktop/src/pages/AudioRoutingPage.tsx`
+- [ ] `apps/desktop/src/pages/DiagnosticsPage.helpers.test.ts`
+- [ ] `apps/desktop/src/pages/DiagnosticsPage.test.tsx`
+- [ ] `apps/desktop/src/pages/DiagnosticsPage.tsx`
+- [ ] `apps/desktop/src/pages/GlossaryPage.test.tsx`
+- [ ] `apps/desktop/src/pages/GlossaryPage.tsx`
+- [ ] `apps/desktop/src/pages/ProvidersPage.helpers.test.ts`
+- [ ] `apps/desktop/src/pages/ProvidersPage.test.tsx`
+- [ ] `apps/desktop/src/pages/ProvidersPage.tsx`
+- [ ] `apps/desktop/src/pages/RealTimeSessionPage.helpers.test.tsx`
+- [ ] `apps/desktop/src/pages/RealTimeSessionPage.test.tsx`
+- [ ] `apps/desktop/src/pages/RealTimeSessionPage.tsx`
+- [ ] `apps/desktop/src/pages/SettingsPage.tsx`
+- [ ] `apps/desktop/src/pages/SubtitleOverlayPage.browser.test.tsx`
+- [ ] `apps/desktop/src/pages/SubtitleOverlayPage.helpers.test.ts`
+- [ ] `apps/desktop/src/pages/SubtitleOverlayPage.tsx`
+- [ ] `apps/desktop/src/router.tsx`
+- [ ] `apps/desktop/src/runtime/audio-runtime.test.ts`
+- [ ] `apps/desktop/src/runtime/audio-runtime.ts`
+- [ ] `apps/desktop/src/runtime/bridge-runtime.ts`
+- [ ] `apps/desktop/src/runtime/desktop-runtime.test.ts`
+- [ ] `apps/desktop/src/runtime/desktop-runtime.ts`
+- [ ] `apps/desktop/src/runtime/diagnostics-runtime.test.ts`
+- [ ] `apps/desktop/src/runtime/diagnostics-runtime.ts`
+- [ ] `apps/desktop/src/runtime/runtime-status.test.ts`
+- [ ] `apps/desktop/src/schema/audio-contract.ts`
+- [ ] `apps/desktop/src/schema/config.ts`
+- [ ] `apps/desktop/src/schema/provider-contract.ts`
+- [ ] `apps/desktop/src/utils/audio-runtime-badges.test.ts`
+- [ ] `apps/desktop/src/utils/custom-provider-templates.ts`
+- [ ] `apps/desktop/src/utils/driver-management.test.ts`
+- [ ] `apps/desktop/src/utils/driver-management.ts`
+- [ ] `apps/desktop/src/utils/provider-model-capabilities.test.ts`
+- [ ] `apps/desktop/src/utils/provider-model-capabilities.ts`
+- [ ] `apps/desktop/src/utils/scene-readiness.test.ts`
+- [ ] `apps/desktop/src/utils/scene-readiness.ts`
+- [ ] `apps/desktop/vitest.config.ts`
+- [ ] `apps/desktop/src/App.test.ts`
+- [ ] `apps/desktop/src/components/BootstrapOverlay.test.tsx`
+- [ ] `apps/desktop/src/components/BootstrapOverlay.tsx`
+- [ ] `apps/desktop/src/overlay.test.ts`
+- [ ] `apps/desktop/src/pages/AudioRoutingPage.helpers.test.ts`
+- [ ] `apps/desktop/src/pages/providers/CustomProviderDialog.tsx`
+- [ ] `apps/desktop/src/pages/providers/ProviderCatalogComponents.test.tsx`
+- [ ] `apps/desktop/src/pages/providers/ProviderModelCatalog.tsx`
+- [ ] `apps/desktop/src/pages/providers/ProviderTemplateCatalog.tsx`
+- [ ] `apps/desktop/src/pages/providers/ProviderVerificationPanel.tsx`
+- [ ] `apps/desktop/src/pages/providers/providersPageHelpers.ts`
+- [ ] `apps/desktop/src/router-startup.ts`
+- [ ] `apps/desktop/src/router.test.ts`
+- [ ] `apps/desktop/src/runtime/benchmark-runtime.test.ts`
+- [ ] `apps/desktop/src/runtime/benchmark-runtime.ts`
+- [ ] `apps/desktop/src/runtime/live-session-events-runtime.test.ts`
+- [ ] `apps/desktop/src/runtime/live-session-events-runtime.ts`
+- [ ] `apps/desktop/src/utils/debounce.test.ts`
+
+### Group C: Tauri Rust Provider, Storage, Benchmark
+
+- [ ] `apps/desktop/src-tauri/Cargo.lock`
+- [ ] `apps/desktop/src-tauri/Cargo.toml`
+- [ ] `apps/desktop/src-tauri/defaults/app-config.default.json`
+- [ ] `apps/desktop/src-tauri/src/main.rs`
+- [ ] `apps/desktop/src-tauri/src/provider/contracts.rs`
+- [ ] `apps/desktop/src-tauri/src/provider/gateway.rs`
+- [ ] `apps/desktop/src-tauri/src/provider/gateway_parts/models.rs`
+- [ ] `apps/desktop/src-tauri/src/provider/gateway_parts/transport.rs`
+- [ ] `apps/desktop/src-tauri/src/storage/repository.rs` (deleted)
+- [ ] `apps/desktop/src-tauri/windows-app-manifest.xml`
+- [ ] `apps/desktop/src-tauri/src/benchmark/mod.rs`
+- [ ] `apps/desktop/src-tauri/src/common.rs`
+- [ ] `apps/desktop/src-tauri/src/storage/repository/json_merge.rs`
+- [ ] `apps/desktop/src-tauri/src/storage/repository/mod.rs`
+- [ ] `apps/desktop/src-tauri/src/storage/repository/schema.rs`
+
+### Group D: Scripts, CI, Docs, Styles, Metadata
+
+- [ ] `.gitignore`
+- [ ] `.github/workflows/ci.yml`
+- [ ] `.github/workflows/release-verify.yml`
+- [ ] `README.md`
+- [ ] `LICENSE`
+- [ ] `package-lock.json`
+- [ ] `package.json`
+- [ ] `qodana.yaml` (deleted)
+- [ ] `apps/desktop/src/styles.css`
+- [ ] `apps/desktop/src/styles/deferred.css`
+- [ ] `apps/desktop/src/styles/global/app-theme-overrides-late.css`
+- [ ] `apps/desktop/src/styles/global/app-theme-overrides.css`
+- [ ] `apps/desktop/src/styles/global/backgrounds.css`
+- [ ] `apps/desktop/src/styles/global/badges.css`
+- [ ] `apps/desktop/src/styles/global/base.css`
+- [ ] `apps/desktop/src/styles/global/buttons.css`
+- [ ] `apps/desktop/src/styles/global/cards.css`
+- [ ] `apps/desktop/src/styles/global/console-cards.css`
+- [ ] `apps/desktop/src/styles/global/forms-base.css`
+- [ ] `apps/desktop/src/styles/global/forms-overrides.css`
+- [ ] `apps/desktop/src/styles/global/forms.css`
+- [ ] `apps/desktop/src/styles/global/layout-components.css`
+- [ ] `apps/desktop/src/styles/global/layout-modern.css`
+- [ ] `apps/desktop/src/styles/global/layout-overrides.css`
+- [ ] `apps/desktop/src/styles/global/layout-page.css`
+- [ ] `apps/desktop/src/styles/global/layout-status.css`
+- [ ] `apps/desktop/src/styles/global/layout.css`
+- [ ] `apps/desktop/src/styles/global/responsive-overrides-2.css`
+- [ ] `apps/desktop/src/styles/global/responsive-overrides-3.css`
+- [ ] `apps/desktop/src/styles/global/responsive-overrides-4.css`
+- [ ] `apps/desktop/src/styles/global/responsive-overrides-5.css`
+- [ ] `apps/desktop/src/styles/global/responsive-overrides-provider.css`
+- [ ] `apps/desktop/src/styles/global/responsive-overrides.css`
+- [ ] `apps/desktop/src/styles/global/tokens.css`
+- [ ] `apps/desktop/src/styles/global/typography.css`
+- [ ] `apps/desktop/src/styles/index.css`
+- [ ] `apps/desktop/src/styles/overlay.css`
+- [ ] `apps/desktop/src/styles/pages/diagnostics.css`
+- [ ] `apps/desktop/src/styles/pages/driver-management-overrides.css`
+- [ ] `apps/desktop/src/styles/pages/driver-management.css`
+- [ ] `apps/desktop/src/styles/pages/glossary-overrides.css`
+- [ ] `apps/desktop/src/styles/pages/glossary.css`
+- [ ] `apps/desktop/src/styles/pages/provider-overrides.css`
+- [ ] `apps/desktop/src/styles/pages/provider.css`
+- [ ] `apps/desktop/src/styles/pages/realtime-session.css`
+- [ ] `apps/desktop/src/styles/pages/routing-modern.css`
+- [ ] `apps/desktop/src/styles/pages/routing-overrides.css`
+- [ ] `apps/desktop/src/styles/pages/routing.css`
+- [ ] `apps/desktop/src/styles/pages/settings-controls.css`
+- [ ] `apps/desktop/src/styles/pages/settings-overlay-preview.css`
+- [ ] `apps/desktop/src/styles/pages/settings.css`
+- [ ] `apps/desktop/src/styles/pages/subtitle-overlay-isolation.css`
+- [ ] `apps/desktop/src/styles/pages/subtitle-overlay.css`
+- [ ] `apps/desktop/src/styles/pages/welcome.css`
+- [ ] `apps/desktop/src/styles/startup.css`
+- [ ] `docs/项目/Watch Mode 真实链路自动化测试.md`
+- [ ] `docs/项目/启动可用性测试说明.md`
+- [ ] `docs/项目/架构说明.md`
+- [ ] `docs/项目/测试与质量门禁.md`
+- [ ] `i18n/README_ar.md`
+- [ ] `i18n/README_bn.md`
+- [ ] `i18n/README_de.md`
+- [ ] `i18n/README_en.md`
+- [ ] `i18n/README_es.md`
+- [ ] `i18n/README_fil.md`
+- [ ] `i18n/README_fr.md`
+- [ ] `i18n/README_hi.md`
+- [ ] `i18n/README_id.md`
+- [ ] `i18n/README_ja.md`
+- [ ] `i18n/README_ko.md`
+- [ ] `i18n/README_mr.md`
+- [ ] `i18n/README_pt.md`
+- [ ] `i18n/README_ru.md`
+- [ ] `i18n/README_ta.md`
+- [ ] `i18n/README_te.md`
+- [ ] `i18n/README_th.md`
+- [ ] `i18n/README_tr.md`
+- [ ] `i18n/README_vi.md`
+- [ ] `license-audit-report.md`
+- [ ] `scripts/compress_logs.py` (deleted)
+- [ ] `scripts/development/dev-tauri-fast.ps1`
+- [ ] `scripts/release/create-release-package.mjs`
+- [ ] `scripts/release/generate-release-manifest.mjs`
+- [ ] `scripts/release/prepare-installer-layout.mjs`
+- [ ] `scripts/release/verify-release.mjs`
+- [ ] `scripts/smoke-audio-routing.ps1` (deleted)
+- [ ] `scripts/testing/README.md`
+- [ ] `scripts/testing/i18n-coverage.mjs`
+- [ ] `scripts/testing/measure-startup-readiness.ps1`
+- [ ] `scripts/testing/measure-startup-readiness.test.mjs`
+- [ ] `scripts/testing/prepare-install-regression-report.ps1`
+- [ ] `scripts/testing/prepare-manual-e2e-report.ps1`
+- [ ] `scripts/testing/prepare-performance-baseline.ps1`
+- [ ] `scripts/testing/run-baseline.ps1` (deleted)
+- [ ] `scripts/testing/run-coverage-gate.ps1`
+- [ ] `scripts/testing/run-quality-gate-auto.ps1`
+- [ ] `scripts/testing/run-quality-gate.ps1`
+- [ ] `scripts/testing/run-upgrade.ps1` (deleted)
+- [ ] `scripts/testing/verify-contracts.mjs`
+- [ ] `scripts/testing/verify-startup-readiness.mjs`
+- [ ] `scripts/testing/watch-mode-diagnostic-devurl-server.mjs`
+- [ ] `90/20260608-102045-120/desktop-env.local.backup`
+- [ ] `90/20260608-102045-120/failure.json`
+- [ ] `90/20260608-102045-120/report.json`
+- [ ] `90/20260608-102045-120/report.md`
+- [ ] `90/20260608-102045-120/snapshots.json`
+- [ ] `90/20260608-102045-120/steps.json`
+- [ ] `90/latest-watch-mode-live.json`
+
+## Issues Found
+
+### ISSUE-001: `check:bridge-service-native` emits dead_code warnings
+
+- Severity: Medium
+- Files: `apps/bridge-service-native/src/windows/mod.rs`
+- Evidence: `npm run check:bridge-service-native` succeeds but reports 8 warnings for unused constants/functions including `OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS`, `run_wasapi_source_worker`, `capture_wasapi_source_generation`, and helpers.
+- Risk: release/quality gates that treat warnings as failures will fail; unused WASAPI source capture code may also indicate an incomplete integration path.
+- Status: Pending fix
+
+### ISSUE-002: `test:contracts` fails on missing `README.en.md`
+
+- Severity: High
+- Files: `scripts/testing/verify-contracts.mjs`
+- Evidence: `npm run test:contracts` fails with `ENOENT: no such file or directory, open '<repository-root>\README.en.md'`.
+- Risk: contract verification cannot run in the current worktree.
+- Status: Pending fix
+
+### ISSUE-003: `i18n:coverage` fails for missing locale keys and one placeholder mismatch
+
+- Severity: High
+- Files: `apps/desktop/src/i18n/locales/*.json`, `scripts/testing/i18n-coverage.mjs`
+- Evidence: `npm run i18n:coverage` reports 11 missing keys in each non-English/non-zh-CN locale and a placeholder mismatch for `zh-CN:session.sceneLaunchFailed`.
+- Risk: new UI text falls back or fails coverage gates; placeholder mismatch can break interpolation.
+- Status: Pending fix
+
+## Verification Log
+
+- PASS: `npm run check:desktop`
+- PASS: `npm run test:watch-mode-report`
+- FAIL: `npm run check:bridge-service-native` produced warnings (see ISSUE-001)
+- FAIL: `npm run test:contracts` (see ISSUE-002)
+- FAIL: `npm run i18n:coverage` (see ISSUE-003)

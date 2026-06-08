@@ -1,0 +1,110 @@
+.settings-page-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap
+}
+
+.settings-page-head-actions {
+  justify-content:flex-end
+}
+
+.settings-page-action-group {
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  justify-content:flex-end
+}
+
+.settings-page-action-group .settings-action {
+  align-items:center;
+  display:inline-flex
+}
+
+.settings-grid-two {
+  display:grid;
+  grid-template-columns:repeat(2,
+  minmax(0,
+  1fr));
+  gap:14px
+}
+
+.settings-slider-row {
+  display:flex;
+  align-items:center;
+  gap:12px
+}
+
+.settings-slider-row input[type=range] {
+  flex:1
+}
+
+.settings-slider-value {
+  min-width:48px;
+  text-align:right;
+  font-size:14px;
+  color:#d8e0f5e6
+}
+
+.settings-color-field {
+  display:flex;
+  align-items:center;
+  gap:10px
+}
+
+.settings-color-picker {
+  width:46px;
+  height:36px;
+  padding:2px;
+  border-radius:10px;
+  border:1px solid rgba(255,
+  255,
+  255,
+  .1);
+  background:#0a0e1abf
+}
+
+.settings-color-value {
+  font-size:14px;
+  color:#b6c0e0c2
+}
+
+.settings-switch-row {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px
+}
+
+.settings-switch-copy {
+  display:grid;
+  gap:4px
+}
+
+.settings-switch-copy strong {
+  font-size:16px;
+  font-weight:600
+}
+
+.settings-switch-copy p {
+  margin:0;
+  font-size:14px;
+  color:#a8b4d8c7;
+  line-height:1.55
+}
+
+.settings-switch {
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  font-size:14px;
+  color:#d8e0f5e6
+}
+
+.settings-switch input {
+  width:18px;
+  height:18px;
+  margin:0
+}
+

@@ -1,0 +1,296 @@
+/* Audio routing page refinement: compact desktop tooling layout with a clear signal path. */
+body:not(:has(.subtitle-overlay-root)) .routing-workspace {
+  width:min(100%, 1360px);
+  margin-inline:auto;
+  padding:16px 22px 28px;
+  gap:12px;
+  align-content:start
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview {
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) auto;
+  align-items:center;
+  gap:14px;
+  border:1px solid rgba(15, 23, 32, .12);
+  border-radius:12px;
+  background:#ffffff;
+  padding:10px 14px;
+  box-shadow:0 1px 2px rgba(15, 23, 32, .04)
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-main {
+  min-width:0;
+  display:grid;
+  grid-template-columns:minmax(180px, .78fr) 22px minmax(320px, 1.36fr) 22px minmax(180px, .78fr);
+  grid-template-rows:auto auto;
+  align-items:center;
+  gap:8px
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node:first-child {
+  grid-column:1;
+  grid-row:1 / 3
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node-model {
+  grid-column:3;
+  grid-row:1 / 3
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node:last-of-type {
+  grid-column:5;
+  grid-row:1 / 3
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node {
+  min-width:0;
+  display:grid;
+  gap:2px
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node span {
+  color:#5b6773;
+  font-size:.76rem;
+  font-weight:650
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node strong {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#101820;
+  font-size:.92rem
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node small {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap;
+  color:#5b6773;
+  font-size:.74rem
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node-model {
+  padding:7px 10px;
+  border:1px solid rgba(11, 127, 117, .22);
+  border-radius:10px;
+  background:#eefaf8
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-arrow {
+  color:#7b8794;
+  text-align:center;
+  font-weight:800
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-arrow-output-to-model {
+  grid-column:2;
+  grid-row:1
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-arrow-input-to-model {
+  grid-column:4;
+  grid-row:1
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-arrow-model-to-output {
+  grid-column:2;
+  grid-row:2;
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-arrow-pair {
+  display:grid;
+  gap:1px;
+  justify-items:center;
+  line-height:1
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-panel {
+  min-width:0;
+  overflow:visible;
+  border-radius:12px !important;
+  border-color:rgba(15, 23, 32, .13) !important;
+  box-shadow:0 1px 2px rgba(15, 23, 32, .05) !important;
+  padding:14px !important;
+  gap:12px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-panel-emphasis {
+  border-color:rgba(11, 127, 117, .28) !important;
+  background:#ffffff !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-panel-head {
+  align-items:center
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-panel-head h3 {
+  font-size:1rem;
+  line-height:1.2
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-topology {
+  grid-template-columns:minmax(230px, .72fr) minmax(420px, 1.6fr) minmax(230px, .72fr) !important;
+  gap:12px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-lower-grid {
+  grid-template-columns:minmax(0, 1.05fr) minmax(420px, .95fr) !important;
+  gap:12px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-mode-grid {
+  grid-template-columns:repeat(2, minmax(0, 1fr));
+  gap:10px
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-mode-card {
+  min-height:94px;
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) auto;
+  align-items:start;
+  gap:10px;
+  border-radius:10px !important;
+  background:#f8fafc !important;
+  border-color:rgba(15, 23, 32, .12) !important;
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-mode-card-active {
+  background:#e9f7f5 !important;
+  border-color:rgba(11, 127, 117, .42) !important;
+  box-shadow:inset 3px 0 0 #0b7f75 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-mode-card p {
+  color:#3c4853 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-toggle-strong,
+body:not(:has(.subtitle-overlay-root)) .routing-metric-grid>div,
+body:not(:has(.subtitle-overlay-root)) .routing-empty {
+  border-radius:10px !important;
+  background:#f8fafc !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-metric-grid {
+  grid-template-columns:repeat(4, minmax(0, 1fr));
+  gap:8px
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-metric-grid>div {
+  padding:8px 10px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-metric-grid strong {
+  font-size:1rem
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-slider {
+  grid-template-columns:72px minmax(84px, 1fr) 44px;
+  gap:10px;
+  min-width:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-slider strong {
+  font-variant-numeric:tabular-nums
+}
+
+body:not(:has(.subtitle-overlay-root)) .select-input {
+  width:100%;
+  min-width:0;
+  min-height:38px;
+  padding-right:34px !important;
+  border-radius:10px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .field-stack,
+body:not(:has(.subtitle-overlay-root)) .routing-model-select,
+body:not(:has(.subtitle-overlay-root)) .routing-toggle,
+body:not(:has(.subtitle-overlay-root)) .routing-action-row,
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-button,
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-button span {
+  min-width:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-label {
+  color:#2f3b46 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-button {
+  min-height:44px;
+  border-color:#d6dee6 !important;
+  border-radius:10px !important;
+  background:#ffffff !important;
+  color:#101820 !important;
+  box-shadow:inset 0 1px 0 rgba(255, 255, 255, .9), 0 1px 2px rgba(15, 23, 32, .04)
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-button:hover,
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-button[aria-expanded=true],
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-button:focus-visible {
+  border-color:#13a99a !important;
+  background:#f4fcfa !important;
+  box-shadow:0 0 0 3px rgba(19, 169, 154, .16), inset 0 1px 0 rgba(255, 255, 255, .95) !important;
+  outline:none
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-list {
+  left:0 !important;
+  right:0 !important;
+  width:100%;
+  max-width:100%;
+  z-index:60;
+  gap:4px;
+  border-color:rgba(15, 23, 32, .14) !important;
+  border-radius:10px !important;
+  background:#ffffff !important;
+  box-shadow:0 14px 34px rgba(15, 23, 32, .16) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-option {
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-option small {
+  color:#52606a !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-option-highlighted,
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-option:hover {
+  background:#eefaf8 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-option-active {
+  background:#dff6f2 !important;
+  box-shadow:inset 3px 0 0 #13a99a
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-option-mismatch {
+  color:#53616d !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-option em {
+  color:#9a5a12 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-check {
+  color:#0b7f75 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-output-toggle-grid .routing-toggle-strong {
+  align-items:center;
+  border-color:#dfe6ec !important;
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-toggle span {
+  min-width:0;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+

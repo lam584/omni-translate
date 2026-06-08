@@ -1,0 +1,146 @@
+﻿:root {
+  --font-family-sans: "Bahnschrift",
+  "Aptos Display",
+  "Segoe UI Variable",
+  "Noto Sans SC",
+  sans-serif;
+  --color-text-primary: #edf4fb;
+  --color-text-muted: rgba(214,
+  225,
+  238,
+  .76);
+  --color-surface-panel: rgba(8,
+  18,
+  28,
+  .92);
+  --color-surface-card: rgba(9,
+  18,
+  30,
+  .92);
+  --color-surface-subtle: rgba(255,
+  255,
+  255,
+  .04);
+  --color-surface-soft: rgba(255,
+  255,
+  255,
+  .03);
+  --color-select-menu-surface: rgba(12,
+  24,
+  36,
+  .98);
+  --color-border-subtle: rgba(141,
+  170,
+  197,
+  .24);
+  --color-accent-warm: #f4b66f;
+  --color-accent-warm-soft: rgba(244,
+  182,
+  111,
+  .1);
+  --color-accent-warm-border: rgba(244,
+  182,
+  111,
+  .46);
+  --color-accent-warm-focus: rgba(244,
+  182,
+  111,
+  .7);
+  --color-accent-cool: #7ed9c7;
+  --color-accent-cool-soft: rgba(126,
+  217,
+  199,
+  .12);
+  --color-accent-cool-border: rgba(126,
+  217,
+  199,
+  .5);
+  --color-accent-cool-strong: rgba(126,
+  217,
+  199,
+  .2);
+  --color-accent-danger: #ea7e7e;
+  --color-accent-danger-soft: rgba(234,
+  126,
+  126,
+  .12);
+  --color-accent-danger-border: rgba(234,
+  126,
+  126,
+  .46);
+  --color-accent-warning-soft: rgba(244,
+  182,
+  111,
+  .14);
+  --color-shadow-card: rgba(2,
+  7,
+  13,
+  .4);
+  --gradient-spot-warm: rgba(214,
+  130,
+  69,
+  .2);
+  --gradient-spot-cool: rgba(49,
+  132,
+  124,
+  .24);
+  --gradient-base-start: #061018;
+  --gradient-base-mid: #091521;
+  --gradient-base-end: #0d1d2a;
+  --viewport-min-width: 320px;
+  --layout-sidebar-width: 300px;
+  --space-sidebar-y: 32px;
+  --space-sidebar-x: 24px;
+  --space-panel: 24px;
+  --space-panel-compact: 18px;
+  --space-card: 20px;
+  --space-control-x: 14px;
+  --space-card-lg-y: 24px;
+  --space-card-lg-x: 26px;
+  --space-stack: 18px;
+  --space-grid: 14px;
+  --space-list: 8px;
+  --space-cluster: 10px;
+  --space-heading: 6px;
+  --space-tight: 6px;
+  --space-brow: 10px;
+  --space-copy: 14px;
+  --space-button-y: 10px;
+  --space-nav-top: 28px;
+  --space-list-indent: 20px;
+  --radius-nav: 14px;
+  --radius-card: 18px;
+  --radius-panel: 14px;
+  --radius-pill: 999px;
+  --border-width: 1px;
+  --outline-width: 2px;
+  --outline-offset: 2px;
+  --motion-lift-y: -1px;
+  --font-size-label: .82rem;
+  --shadow-card: 0 18px 44px var(--color-shadow-card);
+  --backdrop-panel: blur(20px);
+  --backdrop-card: blur(18px);
+  --transition-interactive: transform .2s ease,
+  border-color .2s ease,
+  background .2s ease;
+  font-family:var(--font-family-sans);
+  color:var(--color-text-primary);
+  background:radial-gradient(circle at top left,
+  var(--gradient-spot-warm),
+  transparent 26%),
+  radial-gradient(circle at top right,
+  var(--gradient-spot-cool),
+  transparent 20%),
+  linear-gradient(135deg,
+  var(--gradient-base-start) 0%,
+  var(--gradient-base-mid) 52%,
+  var(--gradient-base-end) 100%);
+  line-height:1.5;
+  font-weight:400;
+  color-scheme:dark;
+  font-synthesis:none;
+  text-rendering:optimizeLegibility;
+  -webkit-font-smoothing:antialiased;
+  -moz-osx-font-smoothing:grayscale
+}
+

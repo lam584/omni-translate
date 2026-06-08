@@ -1,0 +1,119 @@
+@media (max-width: 900px) {
+  body .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single,
+  body:not(:has(.subtitle-overlay-root)) .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single {
+    width:100% !important;
+    max-width:none !important;
+    min-width:0 !important;
+    min-height:0 !important;
+    margin-inline:0 !important;
+    grid-template-columns:minmax(0, 1fr) !important;
+    grid-template-rows:none !important;
+    gap:10px !important
+  }
+
+  body .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single > .control-hero-card,
+  body .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single > .live-text-card,
+  body:not(:has(.subtitle-overlay-root)) .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single > .control-hero-card,
+  body:not(:has(.subtitle-overlay-root)) .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single > .live-text-card {
+    width:100% !important;
+    max-width:none !important;
+    min-width:0 !important;
+    min-height:0 !important;
+    grid-column:1 !important;
+    grid-row:auto !important;
+    justify-self:stretch !important;
+    align-self:stretch !important;
+    position:static !important
+  }
+
+  body .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single > .live-text-card:nth-of-type(4),
+  body:not(:has(.subtitle-overlay-root)) .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single > .live-text-card:nth-of-type(4) {
+    width:100% !important
+  }
+
+  body .realtime-session-page.realtime-session-page .control-hero-card .provider-list,
+  body .realtime-session-page.realtime-session-page .control-hero-card .control-toolbar,
+  body .realtime-session-page.realtime-session-page .control-hero-card .audio-status-grid,
+  body .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single > .live-text-card .audio-status-grid,
+  body:not(:has(.subtitle-overlay-root)) .realtime-session-page.realtime-session-page .control-hero-card .provider-list,
+  body:not(:has(.subtitle-overlay-root)) .realtime-session-page.realtime-session-page .control-hero-card .control-toolbar,
+  body:not(:has(.subtitle-overlay-root)) .realtime-session-page.realtime-session-page .control-hero-card .audio-status-grid,
+  body:not(:has(.subtitle-overlay-root)) .realtime-session-page.realtime-session-page .realtime-session-layout.page-layout-single > .live-text-card .audio-status-grid {
+    grid-template-columns:minmax(0, 1fr) !important
+  }
+}
+
+/* Final audio routing layout guard: keep controls inside their panel after broad responsive overrides. */
+body:not(:has(.subtitle-overlay-root)) .routing-topology {
+  grid-template-columns:minmax(230px, .72fr) minmax(420px, 1.6fr) minmax(230px, .72fr) !important;
+  gap:12px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-topology > .routing-panel-emphasis {
+  grid-column:auto !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-panel,
+body:not(:has(.subtitle-overlay-root)) .routing-panel *,
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node,
+body:not(:has(.subtitle-overlay-root)) .routing-overview-node * {
+  min-width:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-model-select-list {
+  left:0 !important;
+  right:0 !important;
+  width:100% !important;
+  max-width:100% !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview {
+  border-radius:10px !important;
+  padding:12px 16px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-main {
+  grid-template-columns:minmax(190px, .78fr) 34px minmax(360px, 1.45fr) 34px minmax(190px, .78fr) !important;
+  gap:10px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-arrow {
+  width:26px;
+  height:26px;
+  display:grid;
+  place-items:center;
+  border-radius:999px;
+  background:#eef2f5;
+  color:#4b5563 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-overview-arrow-pair {
+  gap:4px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-feedback-options,
+body:not(:has(.subtitle-overlay-root)) .routing-feedback-panel .routing-mode-grid {
+  grid-template-columns:1fr !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-feedback-options .routing-mode-card,
+body:not(:has(.subtitle-overlay-root)) .routing-feedback-panel .routing-mode-card {
+  min-height:86px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-feedback-options .routing-mode-card[disabled],
+body:not(:has(.subtitle-overlay-root)) .routing-feedback-panel .routing-mode-card[disabled] {
+  opacity:.72;
+  cursor:not-allowed
+}
+
+@media (max-width: 900px) {
+  body:not(:has(.subtitle-overlay-root)) .routing-topology {
+    grid-template-columns:1fr !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-topology > .routing-panel-emphasis {
+    grid-column:auto !important
+  }
+}
+

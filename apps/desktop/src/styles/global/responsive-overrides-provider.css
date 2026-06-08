@@ -1,0 +1,155 @@
+@media (max-width:1024px) {
+  .provider-capability-registry-item {
+    grid-template-columns:1fr;
+    gap:6px;
+  }
+
+  .provider-capability-mode-select {
+    max-width:100%;
+  }
+}
+
+.app-shell {
+  grid-template-columns:1fr
+}
+
+.side-panel {
+  border-right:none;
+  border-bottom:var(--border-width) solid var(--color-border-subtle);
+  position:static;
+  height:auto
+}
+
+.stats-grid,
+.preset-grid,
+.content-grid,
+.bottom-grid,
+.dashboard-grid,
+.dashboard-detail-grid,
+.dashboard-hero,
+.window-grid,
+.catalog-grid {
+  grid-template-columns:1fr 1fr
+}
+
+.workspace-header,
+.main-panel {
+  padding-left:var(--space-panel);
+  padding-right:var(--space-panel)
+}
+
+.workspace-header-meta {
+  grid-template-columns:1fr;
+  min-width:100%
+}
+
+.field-grid,
+.provider-console,
+.provider-studio-grid,
+.provider-console-compact,
+.provider-studio-grid-compact {
+  grid-template-columns:1fr
+}
+
+.provider-directory {
+  position:static
+}
+
+.provider-modal-grid,
+.provider-scene-grid,
+.provider-custom-header-item {
+  grid-template-columns:1fr
+}
+
+.main-panel,
+.side-panel {
+  padding:var(--space-panel-compact)
+}
+
+.workspace-header {
+  padding:var(--space-panel-compact) var(--space-panel-compact) 0
+}
+
+.provider-studio-heading-row,
+.provider-setting-header,
+.provider-panel-heading,
+.provider-model-item,
+.provider-summary-item,
+.provider-template-group-header {
+  flex-direction:column;
+  align-items:stretch
+}
+
+.provider-studio-header-actions-compact,
+.provider-action-row-compact,
+.provider-panel-tools,
+.provider-footnote-row,
+.provider-scene-model-actions {
+  justify-content:flex-start
+}
+
+.provider-model-item-leading {
+  width:100%
+}
+
+.provider-capability-section-header,
+.provider-scene-card-header,
+.provider-scene-model-item,
+.provider-custom-header-item {
+  flex-direction:column;
+  align-items:stretch
+}
+
+.provider-model-item-meta {
+  justify-content:flex-start
+}
+
+.provider-modal-backdrop {
+  padding:16px
+}
+
+.stats-grid,
+.preset-grid,
+.content-grid,
+.bottom-grid,
+.dashboard-grid,
+.dashboard-detail-grid,
+.dashboard-hero,
+.kpi-grid,
+.window-grid,
+.catalog-grid {
+  grid-template-columns:1fr
+}
+
+.page-intro {
+  display:grid
+}
+
+.dashboard-hero-badges {
+  grid-template-columns:1fr
+}
+
+.console-dock-header,
+.console-lane-bar,
+.console-dock-item {
+  grid-template-columns:1fr;
+  display:grid
+}
+
+.hero-card h2 {
+  max-width:none
+}
+
+.subtitle-overlay-shell {
+  padding:18px
+}
+
+.subtitle-overlay-header {
+  align-items:flex-start;
+  flex-direction:column
+}
+
+.subtitle-overlay-status {
+  justify-content:flex-start
+}
+

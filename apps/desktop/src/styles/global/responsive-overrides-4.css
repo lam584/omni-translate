@@ -1,0 +1,25 @@
+@media (max-width: 1180px) {
+  body:not(:has(.subtitle-overlay-root)) .provider-console,
+  body:not(:has(.subtitle-overlay-root)) .provider-console-compact {
+    max-width:none;
+    grid-template-columns:1fr !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-directory {
+    position:static;
+    max-height:none
+  }
+}
+
+@media (max-width: 760px) {
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-header-compact,
+  body:not(:has(.subtitle-overlay-root)) .provider-scene-model-item {
+    grid-template-columns:1fr
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-scene-model-actions {
+    flex-wrap:wrap;
+    justify-content:flex-start
+  }
+}
+

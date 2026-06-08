@@ -1,0 +1,155 @@
+.app-shell {
+  display:grid;
+  grid-template-columns:var(--layout-sidebar-width) minmax(0,
+  1fr);
+  min-height:100vh
+}
+
+.side-panel {
+  padding:var(--space-sidebar-y) var(--space-sidebar-x);
+  border-right:var(--border-width) solid var(--color-border-subtle);
+  background:var(--color-surface-panel);
+  -webkit-backdrop-filter:var(--backdrop-panel);
+  backdrop-filter:var(--backdrop-panel);
+  position:sticky;
+  top:0;
+  height:100vh;
+  display:grid;
+  align-content:start;
+  gap:22px;
+  overflow-y:auto
+}
+
+.workspace-shell {
+  min-width:0;
+  min-height:100vh;
+  display:grid;
+  grid-template-rows:auto 1fr
+}
+
+.workspace-header {
+  display:flex;
+  flex-wrap:wrap;
+  gap:18px;
+  justify-content:space-between;
+  align-items:flex-start;
+  padding:24px 28px 0
+}
+
+.workspace-title-block {
+  display:grid;
+  gap:8px
+}
+
+.workspace-eyebrow {
+  margin:0;
+  color:#cfdbe9ad;
+  font-size:.76rem;
+  letter-spacing:.14em;
+  text-transform:uppercase
+}
+
+.workspace-title-row {
+  display:flex;
+  flex-wrap:wrap;
+  gap:12px;
+  align-items:center
+}
+
+.workspace-title-row h2 {
+  margin:0;
+  font-size:clamp(1.6rem,
+  2vw,
+  2.4rem);
+  letter-spacing:-.04em
+}
+
+.workspace-copy {
+  margin:0;
+  color:var(--color-text-muted);
+  max-width:60ch
+}
+
+.workspace-header-meta {
+  display:grid;
+  grid-template-columns:repeat(3,
+  minmax(0,
+  1fr));
+  gap:12px;
+  min-width:min(560px,
+  100%)
+}
+
+.workspace-meta-card {
+  border:var(--border-width) solid var(--color-border-subtle);
+  border-radius:var(--radius-panel);
+  background:#07111be0;
+  padding:12px 14px;
+  display:grid;
+  gap:4px
+}
+
+.workspace-meta-card span,
+.shell-status-head span,
+.shell-mini-item span,
+.nav-section-title,
+.kpi-card-header span {
+  color:var(--color-text-muted);
+  font-size:var(--font-size-label);
+  text-transform:uppercase;
+  letter-spacing:.08em
+}
+
+.workspace-meta-card strong {
+  font-size:1.05rem
+}
+
+.workspace-meta-card small,
+.shell-footer-meta span,
+.timeline-list span {
+  color:var(--color-text-muted)
+}
+
+.brand-block h1,
+.hero-card h2,
+.page-intro h2,
+.section-heading h3,
+.compact-heading h3 {
+  margin:0;
+  font-weight:700;
+  letter-spacing:-.03em
+}
+
+.brand-block h1 {
+  font-size:1.75rem;
+  line-height:1.1;
+  margin-bottom:10px
+}
+
+.brand-copy,
+.hero-copy,
+.page-intro-copy,
+.content-card p,
+.preset-card p,
+.provider-card p,
+.stat-card span,
+.nav-item small,
+.bullet-list,
+.step-list {
+  color:var(--color-text-muted)
+}
+
+.eyebrow {
+  margin:0 0 var(--space-brow);
+  color:var(--color-accent-warm);
+  text-transform:uppercase;
+  letter-spacing:.12em;
+  font-size:.78rem
+}
+
+.nav-list,
+.nav-section {
+  display:grid;
+  gap:10px
+}
+

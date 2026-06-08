@@ -1,0 +1,75 @@
+/* Overlay style page: keep the preview adjacent to the controls and preserve its own contrast. */
+@media (min-width: 901px) {
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace {
+    max-width:min(1100px, calc(100vw - 88px)) !important;
+    grid-template-columns:minmax(360px, 490px) minmax(420px, 1fr) !important;
+    grid-auto-rows:auto !important;
+    align-items:start !important;
+    gap:16px !important;
+    margin-inline:auto !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .settings-page-head {
+    grid-column:1 / -1 !important;
+    grid-row:1 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .settings-card:first-of-type {
+    grid-column:1 !important;
+    grid-row:2 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .overlay-preview-card,
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .overlay-preview-card:last-child {
+    grid-column:2 !important;
+    grid-row:2 !important;
+    align-self:start !important
+  }
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-preview-card {
+  min-height:0 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-preview-stage {
+  min-height:210px !important;
+  border-radius:14px !important;
+  padding:20px !important;
+  background:
+    radial-gradient(circle at 30% 20%, rgba(255, 255, 255, .18), transparent 30%),
+    linear-gradient(135deg, rgba(35, 43, 50, .72), rgba(105, 112, 118, .66)) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-preview-window {
+  width:min(100%, 520px) !important;
+  min-height:96px !important;
+  border-radius:16px !important;
+  padding:18px 24px !important;
+  display:grid !important;
+  align-content:center !important;
+  gap:8px !important;
+  text-align:center !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-preview-window :is(
+  .overlay-preview-source,
+  .overlay-preview-translation,
+  .subtitle-overlay-source,
+  .subtitle-overlay-translation
+) {
+  color:inherit !important;
+  margin:0 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-preview-source {
+  font-size:.58em !important;
+  font-weight:500 !important;
+  opacity:.68 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-preview-translation {
+  font-weight:750 !important;
+  line-height:1.25 !important
+}
+
+/* Settings page: keep driver maintenance readable and stable in the light app theme. */

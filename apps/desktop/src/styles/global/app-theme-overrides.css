@@ -1,0 +1,256 @@
+/* Strong final app-only override: neutral gray canvas, high text contrast, bounded desktop width. */
+body:not(:has(.subtitle-overlay-root)) {
+  background:#f3f5f7 !important;
+  color:#0f1720 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .console-shell {
+  background:#f3f5f7 !important;
+  color:#0f1720 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .console-topbar,
+body:not(:has(.subtitle-overlay-root)) .console-nav {
+  background:rgba(255, 255, 255, .94) !important;
+  border-color:rgba(15, 23, 32, .12) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .content-card,
+body:not(:has(.subtitle-overlay-root)) .page-card,
+body:not(:has(.subtitle-overlay-root)) .routing-panel,
+body:not(:has(.subtitle-overlay-root)) .routing-hero,
+body:not(:has(.subtitle-overlay-root)) .glossary-hero,
+body:not(:has(.subtitle-overlay-root)) .glossary-library-panel,
+body:not(:has(.subtitle-overlay-root)) .glossary-table-panel,
+body:not(:has(.subtitle-overlay-root)) .glossary-config-panel,
+body:not(:has(.subtitle-overlay-root)) .settings-card,
+body:not(:has(.subtitle-overlay-root)) .provider-directory,
+body:not(:has(.subtitle-overlay-root)) .provider-studio-header,
+body:not(:has(.subtitle-overlay-root)) .provider-panel-card,
+body:not(:has(.subtitle-overlay-root)) .provider-setting-block,
+body:not(:has(.subtitle-overlay-root)) .provider-template-group,
+body:not(:has(.subtitle-overlay-root)) .provider-model-item,
+body:not(:has(.subtitle-overlay-root)) .compact-info-panel,
+body:not(:has(.subtitle-overlay-root)) .compact-alert-item,
+body:not(:has(.subtitle-overlay-root)) .runtime-signal-card,
+body:not(:has(.subtitle-overlay-root)) .live-text-card {
+  color:#0f1720 !important;
+  background:#ffffff !important;
+  border-color:rgba(15, 23, 32, .13) !important;
+  box-shadow:0 8px 22px rgba(15, 23, 32, .055) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .console-page-heading p,
+body:not(:has(.subtitle-overlay-root)) .page-section-header-copy p,
+body:not(:has(.subtitle-overlay-root)) .compact-description,
+body:not(:has(.subtitle-overlay-root)) .settings-card-head p,
+body:not(:has(.subtitle-overlay-root)) .settings-field-meta,
+body:not(:has(.subtitle-overlay-root)) .settings-field-label,
+body:not(:has(.subtitle-overlay-root)) .console-event-item p,
+body:not(:has(.subtitle-overlay-root)) .compact-alert-item p,
+body:not(:has(.subtitle-overlay-root)) .cue-queue-source,
+body:not(:has(.subtitle-overlay-root)) .live-text-source,
+body:not(:has(.subtitle-overlay-root)) .routing-language-card span,
+body:not(:has(.subtitle-overlay-root)) .routing-metric-grid span,
+body:not(:has(.subtitle-overlay-root)) .glossary-stat-grid span,
+body:not(:has(.subtitle-overlay-root)) .audio-status-label,
+body:not(:has(.subtitle-overlay-root)) .field-stack span,
+body:not(:has(.subtitle-overlay-root)) .provider-panel-heading p,
+body:not(:has(.subtitle-overlay-root)) .provider-setting-header p,
+body:not(:has(.subtitle-overlay-root)) .provider-setting-footnote,
+body:not(:has(.subtitle-overlay-root)) .provider-directory-header p,
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item-copy small,
+body:not(:has(.subtitle-overlay-root)) .provider-model-item-copy p,
+body:not(:has(.subtitle-overlay-root)) .chip,
+body:not(:has(.subtitle-overlay-root)) .routing-toggle,
+body:not(:has(.subtitle-overlay-root)) .routing-slider,
+body:not(:has(.subtitle-overlay-root)) .settings-switch,
+body:not(:has(.subtitle-overlay-root)) .settings-color-value,
+body:not(:has(.subtitle-overlay-root)) .settings-slider-value {
+  color:#2f3b46 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .text-input,
+body:not(:has(.subtitle-overlay-root)) .text-area,
+body:not(:has(.subtitle-overlay-root)) .select-input,
+body:not(:has(.subtitle-overlay-root)) .textarea-input,
+body:not(:has(.subtitle-overlay-root)) .settings-field-control {
+  color:#0f1720 !important;
+  background:#ffffff !important;
+  border-color:rgba(15, 23, 32, .24) !important
+}
+
+@media (min-width: 1181px) {
+  body:not(:has(.subtitle-overlay-root)) .control-workspace,
+  body:not(:has(.subtitle-overlay-root)) .console-page-heading {
+    max-width:1040px !important;
+    width:100% !important;
+    justify-self:center !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .control-workspace {
+    padding-left:18px !important;
+    padding-right:18px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-layout-single {
+    grid-template-columns:280px minmax(0, 1fr) 280px !important;
+    gap:10px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-layout-single > .control-hero-card {
+    max-width:280px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-layout-single > .live-text-card:nth-of-type(4) {
+    width:280px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-topology {
+    grid-template-columns:260px minmax(0, 1fr) 260px !important;
+    gap:10px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-lower-grid,
+  body:not(:has(.subtitle-overlay-root)) .glossary-bottom-grid {
+    grid-template-columns:minmax(0, 1fr) 280px !important;
+    gap:10px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace,
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace {
+    max-width:900px !important
+  }
+}
+
+/* Desktop page-specific containment pass: stop sparse pages from stretching asymmetrically. */
+@media (min-width: 1181px) {
+  body:not(:has(.subtitle-overlay-root)) .console-page-heading p,
+  body:not(:has(.subtitle-overlay-root)) .page-section-header-copy p,
+  body:not(:has(.subtitle-overlay-root)) .compact-description,
+  body:not(:has(.subtitle-overlay-root)) .settings-card-head p,
+  body:not(:has(.subtitle-overlay-root)) .settings-field-meta,
+  body:not(:has(.subtitle-overlay-root)) .settings-field-label,
+  body:not(:has(.subtitle-overlay-root)) .console-event-item p,
+  body:not(:has(.subtitle-overlay-root)) .compact-alert-item p,
+  body:not(:has(.subtitle-overlay-root)) .cue-queue-source,
+  body:not(:has(.subtitle-overlay-root)) .live-text-source,
+  body:not(:has(.subtitle-overlay-root)) .routing-language-card span,
+  body:not(:has(.subtitle-overlay-root)) .routing-metric-grid span,
+  body:not(:has(.subtitle-overlay-root)) .glossary-stat-grid span,
+  body:not(:has(.subtitle-overlay-root)) .audio-status-label,
+  body:not(:has(.subtitle-overlay-root)) .field-stack span,
+  body:not(:has(.subtitle-overlay-root)) .provider-panel-heading p,
+  body:not(:has(.subtitle-overlay-root)) .provider-setting-header p,
+  body:not(:has(.subtitle-overlay-root)) .provider-setting-footnote,
+  body:not(:has(.subtitle-overlay-root)) .provider-directory-header p,
+  body:not(:has(.subtitle-overlay-root)) .provider-directory-item-copy small,
+  body:not(:has(.subtitle-overlay-root)) .provider-model-item-copy p,
+  body:not(:has(.subtitle-overlay-root)) .provider-summary-item dt,
+  body:not(:has(.subtitle-overlay-root)) .provider-template-group-header span,
+  body:not(:has(.subtitle-overlay-root)) .chip,
+  body:not(:has(.subtitle-overlay-root)) small {
+    color:#1f2a34 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace:not(.overlay-settings-workspace) {
+    max-width:820px !important;
+    margin-inline:auto;
+    grid-template-columns:repeat(2, minmax(0, 1fr)) !important;
+    grid-auto-rows:auto !important;
+    gap:12px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace:not(.overlay-settings-workspace) > .settings-card {
+    grid-column:auto !important;
+    grid-row:auto !important;
+    min-height:0 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace:not(.overlay-settings-workspace) > .settings-card:nth-child(5) {
+    grid-column:1 / -1 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace {
+    max-width:900px !important;
+    margin-inline:auto;
+    grid-template-columns:1fr 1fr !important;
+    grid-auto-rows:auto !important;
+    gap:12px !important;
+    align-items:start !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .settings-page-head {
+    grid-column:1 / -1 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .settings-card {
+    grid-column:auto !important;
+    grid-row:auto !important;
+    min-height:0 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .settings-card:first-of-type {
+    grid-column:1 !important;
+    grid-row:2 / span 2 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .overlay-preview-card {
+    grid-column:2 !important;
+    grid-row:2 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .settings-card:last-child {
+    grid-column:2 !important;
+    grid-row:3 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-preview-stage {
+    min-height:220px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-console,
+  body:not(:has(.subtitle-overlay-root)) .provider-console-compact {
+    max-width:920px;
+    margin-inline:auto;
+    grid-template-columns:220px minmax(0, 1fr) !important;
+    gap:12px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-grid,
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-grid-compact {
+    grid-template-columns:1fr !important;
+    gap:12px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-side,
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-side-compact {
+    grid-template-columns:repeat(2, minmax(0, 1fr));
+    display:grid;
+    gap:12px
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .control-dashboard {
+    max-width:860px;
+    margin-inline:auto
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .control-dashboard .control-hero-grid,
+  body:not(:has(.subtitle-overlay-root)) .control-dashboard .control-grid,
+  body:not(:has(.subtitle-overlay-root)) .control-dashboard .control-grid-split,
+  body:not(:has(.subtitle-overlay-root)) .control-dashboard .control-grid-balanced {
+    grid-template-columns:1fr !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .diagnostics-overview-grid {
+    grid-template-columns:repeat(2, minmax(0, 1fr)) !important
+  }
+}
+
+@media (min-width: 1500px) {
+  body:not(:has(.subtitle-overlay-root)) .control-workspace,
+  body:not(:has(.subtitle-overlay-root)) .console-page-heading {
+    max-width:1040px !important
+  }
+}
+

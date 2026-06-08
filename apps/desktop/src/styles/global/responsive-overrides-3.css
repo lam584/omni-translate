@@ -1,0 +1,43 @@
+@media (max-width: 760px) {
+  .realtime-session-page {
+    width:100%;
+    min-width:0;
+    overflow-x:hidden
+  }
+
+  .realtime-session-page .realtime-session-layout {
+    width:100% !important;
+    max-width:none !important;
+    min-width:0 !important;
+    min-height:0 !important;
+    margin-inline:0 !important;
+    grid-template-columns:minmax(0, 1fr) !important;
+    grid-template-rows:none !important;
+    gap:10px !important
+  }
+
+  .realtime-session-page .realtime-session-layout > .control-hero-card,
+  .realtime-session-page .realtime-session-layout > .live-text-card {
+    width:100% !important;
+    max-width:none !important;
+    min-width:0 !important;
+    min-height:0 !important;
+    grid-column:1 !important;
+    grid-row:auto !important;
+    justify-self:stretch !important;
+    align-self:stretch !important;
+    position:static !important
+  }
+
+  .realtime-session-page .realtime-session-layout > .live-text-card:nth-of-type(4) {
+    width:100% !important
+  }
+
+  .realtime-session-page .control-hero-card .provider-list,
+  .realtime-session-page .control-hero-card .control-toolbar,
+  .realtime-session-page .control-hero-card .audio-status-grid,
+  .realtime-session-page .realtime-session-layout > .live-text-card .audio-status-grid {
+    grid-template-columns:minmax(0, 1fr) !important
+  }
+}
+

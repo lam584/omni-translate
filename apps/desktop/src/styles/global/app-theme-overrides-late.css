@@ -1,0 +1,611 @@
+/* App UI final pass: high-contrast light surfaces and balanced large-screen grids. */
+body:not(:has(.subtitle-overlay-root)) {
+  --app-bg:#f4f6f8;
+  --app-ink:#101820;
+  --app-muted:#26333d;
+  --app-soft:#eef2f5;
+  --app-panel:#ffffff;
+  --app-line:rgba(16, 24, 32, .16);
+  --app-line-strong:rgba(16, 24, 32, .24);
+  --app-accent:#087a70;
+  --app-accent-soft:rgba(8, 122, 112, .1);
+  --app-danger:#a73535;
+  background:var(--app-bg) !important;
+  color:var(--app-ink) !important;
+  color-scheme:light
+}
+
+body:not(:has(.subtitle-overlay-root)) .console-shell {
+  background:var(--app-bg) !important;
+  color:var(--app-ink) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .console-topbar,
+body:not(:has(.subtitle-overlay-root)) .console-nav {
+  background:rgba(255, 255, 255, .96) !important;
+  border-color:var(--app-line) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .content-card,
+body:not(:has(.subtitle-overlay-root)) .page-card,
+body:not(:has(.subtitle-overlay-root)) .routing-hero,
+body:not(:has(.subtitle-overlay-root)) .routing-panel,
+body:not(:has(.subtitle-overlay-root)) .glossary-hero,
+body:not(:has(.subtitle-overlay-root)) .glossary-library-panel,
+body:not(:has(.subtitle-overlay-root)) .glossary-table-panel,
+body:not(:has(.subtitle-overlay-root)) .glossary-config-panel,
+body:not(:has(.subtitle-overlay-root)) .settings-card,
+body:not(:has(.subtitle-overlay-root)) .provider-directory,
+body:not(:has(.subtitle-overlay-root)) .provider-studio-header,
+body:not(:has(.subtitle-overlay-root)) .provider-panel-card,
+body:not(:has(.subtitle-overlay-root)) .provider-setting-block,
+body:not(:has(.subtitle-overlay-root)) .provider-template-group,
+body:not(:has(.subtitle-overlay-root)) .provider-model-item,
+body:not(:has(.subtitle-overlay-root)) .compact-info-panel,
+body:not(:has(.subtitle-overlay-root)) .compact-alert-item,
+body:not(:has(.subtitle-overlay-root)) .runtime-signal-card,
+body:not(:has(.subtitle-overlay-root)) .live-text-card {
+  color:var(--app-ink) !important;
+  background:var(--app-panel) !important;
+  border-color:var(--app-line) !important;
+  box-shadow:0 10px 28px rgba(16, 24, 32, .06) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .console-page-heading p,
+body:not(:has(.subtitle-overlay-root)) .page-section-header-copy p,
+body:not(:has(.subtitle-overlay-root)) .compact-description,
+body:not(:has(.subtitle-overlay-root)) .settings-card-head p,
+body:not(:has(.subtitle-overlay-root)) .settings-field-meta,
+body:not(:has(.subtitle-overlay-root)) .settings-field-label,
+body:not(:has(.subtitle-overlay-root)) .console-event-item p,
+body:not(:has(.subtitle-overlay-root)) .compact-alert-item p,
+body:not(:has(.subtitle-overlay-root)) .cue-queue-source,
+body:not(:has(.subtitle-overlay-root)) .live-text-source,
+body:not(:has(.subtitle-overlay-root)) .routing-language-card span,
+body:not(:has(.subtitle-overlay-root)) .routing-metric-grid span,
+body:not(:has(.subtitle-overlay-root)) .glossary-stat-grid span,
+body:not(:has(.subtitle-overlay-root)) .glossary-library-main span,
+body:not(:has(.subtitle-overlay-root)) .glossary-entry-meta,
+body:not(:has(.subtitle-overlay-root)) .glossary-table th,
+body:not(:has(.subtitle-overlay-root)) .audio-status-label,
+body:not(:has(.subtitle-overlay-root)) .field-stack span,
+body:not(:has(.subtitle-overlay-root)) .provider-panel-heading p,
+body:not(:has(.subtitle-overlay-root)) .provider-setting-header p,
+body:not(:has(.subtitle-overlay-root)) .provider-setting-footnote,
+body:not(:has(.subtitle-overlay-root)) .provider-directory-header p,
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item-copy small,
+body:not(:has(.subtitle-overlay-root)) .provider-model-item-copy p,
+body:not(:has(.subtitle-overlay-root)) .provider-summary-item dt,
+body:not(:has(.subtitle-overlay-root)) .provider-template-group-header span,
+body:not(:has(.subtitle-overlay-root)) .chip,
+body:not(:has(.subtitle-overlay-root)) .routing-toggle,
+body:not(:has(.subtitle-overlay-root)) .routing-slider,
+body:not(:has(.subtitle-overlay-root)) .settings-switch,
+body:not(:has(.subtitle-overlay-root)) .settings-color-value,
+body:not(:has(.subtitle-overlay-root)) .settings-slider-value,
+body:not(:has(.subtitle-overlay-root)) small {
+  color:var(--app-muted) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .audio-level-meter,
+body:not(:has(.subtitle-overlay-root)) .audio-status-item,
+body:not(:has(.subtitle-overlay-root)) .routing-language-card>div,
+body:not(:has(.subtitle-overlay-root)) .routing-metric-grid>div,
+body:not(:has(.subtitle-overlay-root)) .glossary-stat-grid>div,
+body:not(:has(.subtitle-overlay-root)) .diagnostics-overview-item,
+body:not(:has(.subtitle-overlay-root)) .repair-task-row,
+body:not(:has(.subtitle-overlay-root)) .scene-readiness-row,
+body:not(:has(.subtitle-overlay-root)) .console-event-item,
+body:not(:has(.subtitle-overlay-root)) .cue-queue-item,
+body:not(:has(.subtitle-overlay-root)) .routing-empty,
+body:not(:has(.subtitle-overlay-root)) .glossary-empty,
+body:not(:has(.subtitle-overlay-root)) .glossary-warning,
+body:not(:has(.subtitle-overlay-root)) .glossary-preview-result,
+body:not(:has(.subtitle-overlay-root)) .glossary-table th {
+  color:var(--app-ink) !important;
+  background:var(--app-soft) !important;
+  border-color:var(--app-line) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .text-input,
+body:not(:has(.subtitle-overlay-root)) .text-area,
+body:not(:has(.subtitle-overlay-root)) .select-input,
+body:not(:has(.subtitle-overlay-root)) .textarea-input,
+body:not(:has(.subtitle-overlay-root)) .settings-field-control,
+body:not(:has(.subtitle-overlay-root)) .glossary-search,
+body:not(:has(.subtitle-overlay-root)) .glossary-search input {
+  color:var(--app-ink) !important;
+  background:#ffffff !important;
+  border-color:var(--app-line-strong) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .text-input::placeholder,
+body:not(:has(.subtitle-overlay-root)) .text-area::placeholder,
+body:not(:has(.subtitle-overlay-root)) .textarea-input::placeholder,
+body:not(:has(.subtitle-overlay-root)) .glossary-search input::placeholder {
+  color:#52606a !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .action-button-active,
+body:not(:has(.subtitle-overlay-root)) .routing-mode-card-active,
+body:not(:has(.subtitle-overlay-root)) .glossary-mode-card-active,
+body:not(:has(.subtitle-overlay-root)) .catalog-button-active {
+  color:#ffffff !important;
+  background:var(--app-accent) !important;
+  border-color:transparent !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .status-badge-complete,
+body:not(:has(.subtitle-overlay-root)) .status-badge-ready,
+body:not(:has(.subtitle-overlay-root)) .status-badge-stable {
+  color:#05342f !important;
+  background:rgba(8, 122, 112, .14) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .status-badge-pending,
+body:not(:has(.subtitle-overlay-root)) .status-badge-draft,
+body:not(:has(.subtitle-overlay-root)) .status-badge-experimental {
+  color:#5c3508 !important;
+  background:rgba(181, 111, 29, .14) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .status-badge-risk,
+body:not(:has(.subtitle-overlay-root)) .status-badge-warning,
+body:not(:has(.subtitle-overlay-root)) .status-badge-unsupported,
+body:not(:has(.subtitle-overlay-root)) .status-badge-unknown,
+body:not(:has(.subtitle-overlay-root)) .cue-queue-error,
+body:not(:has(.subtitle-overlay-root)) .icon-button-danger,
+body:not(:has(.subtitle-overlay-root)) .glossary-mini-button-danger {
+  color:var(--app-danger) !important
+}
+
+@media (min-width: 1181px) {
+  body:not(:has(.subtitle-overlay-root)) .control-workspace,
+  body:not(:has(.subtitle-overlay-root)) .console-page-heading {
+    width:100% !important;
+    max-width:min(1540px, calc(100vw - 200px)) !important;
+    justify-self:center !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .control-workspace {
+    padding:14px 28px 32px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-shell,
+  body:not(:has(.subtitle-overlay-root)) .routing-workspace,
+  body:not(:has(.subtitle-overlay-root)) .glossary-workspace,
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace,
+  body:not(:has(.subtitle-overlay-root)) .provider-console,
+  body:not(:has(.subtitle-overlay-root)) .provider-console-compact {
+    width:100% !important;
+    min-height:auto !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-layout-single {
+    grid-template-columns:minmax(320px, .72fr) minmax(480px, 1.2fr) minmax(360px, .86fr) !important;
+    grid-template-rows:minmax(260px, auto) minmax(280px, 1fr) !important;
+    gap:16px !important;
+    align-items:stretch !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-layout-single > .control-hero-card {
+    max-width:none !important;
+    grid-column:1 !important;
+    grid-row:1 / span 2 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-layout-single > .live-text-card:nth-of-type(2) {
+    grid-column:2 !important;
+    grid-row:1 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-layout-single > .live-text-card:nth-of-type(3) {
+    grid-column:2 !important;
+    grid-row:2 !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .page-layout-single > .live-text-card:nth-of-type(4) {
+    grid-column:3 !important;
+    grid-row:1 / span 2 !important;
+    width:auto !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-topology {
+    grid-template-columns:repeat(3, minmax(300px, 1fr)) !important;
+    gap:16px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-lower-grid {
+    grid-template-columns:repeat(2, minmax(0, 1fr)) !important;
+    gap:16px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-studio {
+    grid-template-columns:minmax(320px, .34fr) minmax(680px, 1fr) !important;
+    gap:16px !important;
+    align-items:stretch !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-library-panel,
+  body:not(:has(.subtitle-overlay-root)) .glossary-table-panel {
+    min-height:520px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-library-list {
+    gap:8px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-library-item {
+    min-height:52px !important;
+    padding:10px 12px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-filter-row {
+    grid-template-columns:minmax(360px, 1fr) 180px auto !important;
+    gap:10px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-table {
+    min-width:880px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-table th,
+  body:not(:has(.subtitle-overlay-root)) .glossary-table td {
+    padding:12px 14px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-bottom-grid {
+    grid-template-columns:repeat(2, minmax(0, 1fr)) !important;
+    gap:16px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .glossary-mode-grid {
+    grid-template-columns:repeat(3, minmax(0, 1fr)) !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace:not(.overlay-settings-workspace) {
+    max-width:1120px !important;
+    margin-inline:auto !important;
+    grid-template-columns:repeat(2, minmax(0, 1fr)) !important;
+    gap:16px !important;
+    align-items:stretch !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace:not(.overlay-settings-workspace) > .settings-card {
+    grid-column:auto !important;
+    grid-row:auto !important;
+    min-height:190px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace:not(.overlay-settings-workspace) > .settings-card:nth-child(5) {
+    grid-column:1 / -1 !important;
+    min-height:150px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace {
+    max-width:1240px !important;
+    grid-template-columns:minmax(360px, .82fr) minmax(520px, 1fr) !important;
+    gap:16px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-console,
+  body:not(:has(.subtitle-overlay-root)) .provider-console-compact {
+    max-width:1180px !important;
+    margin-inline:auto !important;
+    grid-template-columns:280px minmax(0, 1fr) !important;
+    gap:16px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-grid,
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-grid-compact {
+    grid-template-columns:minmax(0, 1fr) minmax(380px, .72fr) !important;
+    gap:16px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-grid-single {
+    grid-template-columns:1fr !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-studio,
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-grid,
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-grid-compact,
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-main,
+  body:not(:has(.subtitle-overlay-root)) .provider-panel-card,
+  body:not(:has(.subtitle-overlay-root)) .provider-setting-block,
+  body:not(:has(.subtitle-overlay-root)) .provider-secret-row,
+  body:not(:has(.subtitle-overlay-root)) .provider-secret-input-inline {
+    width:100% !important;
+    max-width:none !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-side,
+  body:not(:has(.subtitle-overlay-root)) .provider-studio-side-compact {
+    display:grid !important;
+    grid-template-columns:1fr !important;
+    gap:16px !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .diagnostics-overview-grid {
+    grid-template-columns:repeat(4, minmax(0, 1fr)) !important;
+    gap:16px !important
+  }
+}
+
+@media (min-width: 1500px) {
+  body:not(:has(.subtitle-overlay-root)) .control-workspace,
+  body:not(:has(.subtitle-overlay-root)) .console-page-heading {
+    max-width:min(1660px, calc(100vw - 148px)) !important
+  }
+}
+
+@media (min-width: 761px) and (max-width: 1180px) {
+  body:not(:has(.subtitle-overlay-root)) .console-page-heading p,
+  body:not(:has(.subtitle-overlay-root)) .page-section-header-copy p,
+  body:not(:has(.subtitle-overlay-root)) .compact-description,
+  body:not(:has(.subtitle-overlay-root)) .settings-card-head p,
+  body:not(:has(.subtitle-overlay-root)) .settings-field-meta,
+  body:not(:has(.subtitle-overlay-root)) .settings-field-label,
+  body:not(:has(.subtitle-overlay-root)) .console-event-item p,
+  body:not(:has(.subtitle-overlay-root)) .compact-alert-item p,
+  body:not(:has(.subtitle-overlay-root)) .cue-queue-source,
+  body:not(:has(.subtitle-overlay-root)) .live-text-source,
+  body:not(:has(.subtitle-overlay-root)) .audio-status-label,
+  body:not(:has(.subtitle-overlay-root)) .field-stack span,
+  body:not(:has(.subtitle-overlay-root)) .chip,
+  body:not(:has(.subtitle-overlay-root)) small {
+    color:var(--app-muted) !important
+  }
+}
+
+/* Hard contrast floor: later than every page-specific rule. */
+body:not(:has(.subtitle-overlay-root)) :is(
+  .content-card,
+  .page-card,
+  .routing-hero,
+  .routing-panel,
+  .glossary-hero,
+  .glossary-library-panel,
+  .glossary-table-panel,
+  .glossary-config-panel,
+  .settings-card,
+  .provider-directory,
+  .provider-studio-header,
+  .provider-panel-card,
+  .provider-setting-block,
+  .provider-template-group,
+  .provider-model-item,
+  .compact-info-panel,
+  .compact-alert-item,
+  .runtime-signal-card,
+  .live-text-card,
+  .console-event-item,
+  .diagnostics-overview-item,
+  .scene-readiness-row,
+  .repair-task-row
+) {
+  color:var(--app-ink) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .content-card,
+  .page-card,
+  .routing-hero,
+  .routing-panel,
+  .glossary-hero,
+  .glossary-library-panel,
+  .glossary-table-panel,
+  .glossary-config-panel,
+  .settings-card,
+  .provider-directory,
+  .provider-studio-header,
+  .provider-panel-card,
+  .provider-setting-block,
+  .provider-template-group,
+  .provider-model-item,
+  .compact-info-panel,
+  .compact-alert-item,
+  .runtime-signal-card,
+  .live-text-card,
+  .console-event-item,
+  .diagnostics-overview-item,
+  .scene-readiness-row,
+  .repair-task-row
+) :is(p, span, small, label, dt, dd, li, th, td) {
+  color:var(--app-muted) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .content-card,
+  .page-card,
+  .routing-hero,
+  .routing-panel,
+  .glossary-hero,
+  .glossary-library-panel,
+  .glossary-table-panel,
+  .glossary-config-panel,
+  .settings-card,
+  .provider-directory,
+  .provider-studio-header,
+  .provider-panel-card,
+  .provider-setting-block,
+  .provider-template-group,
+  .provider-model-item,
+  .compact-info-panel,
+  .compact-alert-item,
+  .runtime-signal-card,
+  .live-text-card,
+  .console-event-item,
+  .diagnostics-overview-item,
+  .scene-readiness-row,
+  .repair-task-row
+) :is(h1, h2, h3, h4, strong, b) {
+  color:var(--app-ink) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .routing-mode-card,
+  .glossary-mode-card,
+  .catalog-button,
+  .provider-directory-item,
+  .provider-model-item,
+  .provider-scene-card,
+  .provider-scene-model-item,
+  .routing-toggle-strong,
+  .audio-status-item,
+  .routing-language-card>div,
+  .routing-metric-grid>div,
+  .glossary-stat-grid>div
+) :is(p, span, small) {
+  color:var(--app-muted) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .routing-mode-card,
+  .glossary-mode-card,
+  .catalog-button,
+  .provider-directory-item,
+  .provider-model-item,
+  .provider-scene-card,
+  .provider-scene-model-item,
+  .routing-toggle-strong,
+  .audio-status-item,
+  .routing-language-card>div,
+  .routing-metric-grid>div,
+  .glossary-stat-grid>div
+) :is(strong, b) {
+  color:var(--app-ink) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .action-button,
+  .icon-button,
+  .settings-action,
+  .catalog-button,
+  .routing-mode-card,
+  .glossary-mode-card,
+  .provider-directory-add,
+  .provider-header-icon,
+  .provider-row-action,
+  .provider-mode-toggle,
+  .glossary-mini-button,
+  .glossary-segment
+) {
+  color:var(--app-ink) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .action-button,
+  .icon-button,
+  .settings-action,
+  .catalog-button,
+  .routing-mode-card,
+  .glossary-mode-card,
+  .provider-directory-add,
+  .provider-header-icon,
+  .provider-row-action,
+  .provider-mode-toggle,
+  .glossary-mini-button,
+  .glossary-segment
+) svg,
+body:not(:has(.subtitle-overlay-root)) :is(
+  .action-button,
+  .icon-button,
+  .settings-action,
+  .catalog-button,
+  .routing-mode-card,
+  .glossary-mode-card,
+  .provider-directory-add,
+  .provider-header-icon,
+  .provider-row-action,
+  .provider-mode-toggle,
+  .glossary-mini-button,
+  .glossary-segment
+) svg * {
+  color:currentColor !important;
+  stroke:currentColor !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .action-button:disabled,
+  .icon-button:disabled,
+  .settings-action:disabled,
+  .catalog-button:disabled,
+  .provider-directory-add:disabled,
+  .provider-header-icon:disabled,
+  .provider-row-action:disabled,
+  .glossary-mini-button:disabled
+) {
+  color:#5b6770 !important;
+  opacity:1 !important;
+  background:#f5f7f8 !important;
+  border-color:rgba(16, 24, 32, .14) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .action-button-active,
+  .routing-mode-card-active,
+  .glossary-mode-card-active,
+  .catalog-button-active,
+  .provider-directory-item-active,
+  .provider-model-item-active,
+  .glossary-library-item-active,
+  .glossary-segment-active
+),
+body:not(:has(.subtitle-overlay-root)) :is(
+  .action-button-active,
+  .routing-mode-card-active,
+  .glossary-mode-card-active,
+  .catalog-button-active,
+  .provider-directory-item-active,
+  .provider-model-item-active,
+  .glossary-library-item-active,
+  .glossary-segment-active
+) :is(p, span, small, strong, b, svg, path, circle, rect) {
+  color:#ffffff !important;
+  stroke:currentColor !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .status-badge,
+  .chip,
+  .provider-meta-chip,
+  .provider-model-item-flag,
+  .provider-capability-badge,
+  .provider-capability-chip
+) {
+  color:var(--app-ink) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .live-text-translation,
+  .cue-queue-translation,
+  .routing-inline-result,
+  .scene-launch-issue-ready,
+  .provider-directory-item-state-active,
+  .provider-model-item-flag-active
+) {
+  color:var(--app-accent) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) :is(
+  .cue-queue-error,
+  .icon-button-danger,
+  .action-button-danger,
+  .glossary-mini-button-danger,
+  .provider-header-icon-danger,
+  .provider-row-action-danger,
+  .glossary-dialog-error
+),
+body:not(:has(.subtitle-overlay-root)) :is(
+  .cue-queue-error,
+  .icon-button-danger,
+  .action-button-danger,
+  .glossary-mini-button-danger,
+  .provider-header-icon-danger,
+  .provider-row-action-danger,
+  .glossary-dialog-error
+) :is(svg, path, circle, rect) {
+  color:var(--app-danger) !important;
+  stroke:currentColor !important
+}
+

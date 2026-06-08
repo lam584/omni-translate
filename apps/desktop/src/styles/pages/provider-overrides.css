@@ -1,0 +1,279 @@
+/* Provider page visual pass: denser layout, clearer states, lighter nesting. */
+body:not(:has(.subtitle-overlay-root)) .provider-console,
+body:not(:has(.subtitle-overlay-root)) .provider-console-compact {
+  align-items:start;
+  gap:16px !important;
+  max-width:1120px;
+  margin-inline:auto;
+  grid-template-columns:224px minmax(0, 860px) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-studio {
+  gap:12px
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory,
+body:not(:has(.subtitle-overlay-root)) .provider-studio-header,
+body:not(:has(.subtitle-overlay-root)) .provider-panel-card {
+  border-radius:14px !important;
+  box-shadow:0 10px 24px rgba(15, 23, 32, .045) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory {
+  padding:14px !important;
+  gap:10px;
+  max-height:calc(100vh - 112px)
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-title {
+  color:#334155 !important;
+  font-size:.78rem;
+  letter-spacing:.02em;
+  text-transform:none
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-search {
+  background:#f8fafc !important;
+  border-color:#d9e0e7 !important;
+  border-radius:10px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-list {
+  gap:8px
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item {
+  background:#ffffff !important;
+  border-color:#d9e0e7 !important;
+  border-radius:10px !important;
+  box-shadow:none !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item:hover {
+  background:#f5fbf9 !important;
+  border-color:#93d6c8 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item-active,
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item-active:hover {
+  background:#eefbf7 !important;
+  border-color:#42bba2 !important;
+  box-shadow:inset 3px 0 0 #23a68e !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item-active :is(strong, span, small, svg, path, circle, rect),
+body:not(:has(.subtitle-overlay-root)) .provider-model-item-active :is(strong, span, small, svg, path, circle, rect) {
+  color:#0f1720 !important;
+  stroke:currentColor !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item-state {
+  background:#f4f7f9 !important;
+  border-color:#d5dee6 !important;
+  color:#475569 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-item-state-active {
+  background:#dff7ed !important;
+  border-color:#a9e3cb !important;
+  color:#087857 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-directory-add {
+  border-radius:10px !important;
+  background:#ffffff !important;
+  border-color:#d9e0e7 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-studio-header-compact {
+  display:grid;
+  grid-template-columns:minmax(0, 1fr) auto;
+  align-items:start;
+  gap:10px 14px;
+  padding:14px 16px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-studio-heading-row-compact {
+  flex-direction:row !important;
+  justify-content:space-between;
+  align-items:center;
+  min-width:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-studio-header-actions-compact {
+  justify-content:flex-end
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-studio-toolbar-compact {
+  grid-column:1 / -1
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-action-row-compact {
+  justify-content:flex-start;
+  gap:8px
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-panel-card-compact {
+  padding:14px 16px !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-panel-heading {
+  flex-direction:row !important;
+  justify-content:space-between;
+  align-items:center;
+  padding-bottom:8px;
+  border-bottom:1px solid #edf1f5
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-panel-heading h3 {
+  font-size:1rem;
+  letter-spacing:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-setting-block {
+  background:#fbfcfd !important;
+  border-color:#dfe6ed !important;
+  border-radius:12px !important;
+  box-shadow:none !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-secret-input-inline {
+  grid-template-columns:minmax(0, 1fr) 38px
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-grid {
+  gap:10px
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-card {
+  padding:12px 0 0;
+  border:0 !important;
+  border-top:1px solid #edf1f5 !important;
+  border-radius:0 !important;
+  background:transparent !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-card:first-child {
+  padding-top:0;
+  border-top:0 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-card-header {
+  flex-direction:row !important;
+  justify-content:space-between;
+  align-items:center
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-card-header strong,
+body:not(:has(.subtitle-overlay-root)) .provider-scene-model-copy strong {
+  font-size:.94rem
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-card-header p,
+body:not(:has(.subtitle-overlay-root)) .provider-scene-model-copy span {
+  color:#475569 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-model-list {
+  gap:8px
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-model-item {
+  display:grid;
+  grid-template-columns:minmax(220px, 1fr) auto;
+  align-items:center;
+  gap:12px;
+  padding:10px 12px;
+  border:1px solid #e2e8f0 !important;
+  border-radius:10px !important;
+  background:#ffffff !important;
+  box-shadow:none !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-model-actions {
+  flex-wrap:nowrap;
+  justify-content:flex-end
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-chip-row-tight {
+  gap:6px
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-meta-chip,
+body:not(:has(.subtitle-overlay-root)) .provider-capability-chip,
+body:not(:has(.subtitle-overlay-root)) .status-badge {
+  border:1px solid transparent;
+  font-weight:600
+}
+
+body:not(:has(.subtitle-overlay-root)) .status-badge-ready,
+body:not(:has(.subtitle-overlay-root)) .status-badge-complete,
+body:not(:has(.subtitle-overlay-root)) .status-badge-stable {
+  background:#dff7ed !important;
+  border-color:#a9e3cb !important;
+  color:#087857 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .status-badge-pending,
+body:not(:has(.subtitle-overlay-root)) .status-badge-draft,
+body:not(:has(.subtitle-overlay-root)) .status-badge-experimental {
+  background:#fff3dc !important;
+  border-color:#f4d69c !important;
+  color:#946108 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-capability-chip-speech-to-text {
+  background:#e8f1ff !important;
+  border-color:#bfdbfe !important;
+  color:#1d4ed8 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-capability-chip-text-to-speech {
+  background:#fff3dc !important;
+  border-color:#f4d69c !important;
+  color:#946108 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-capability-chip-speech-to-speech {
+  background:#e6f7f3 !important;
+  border-color:#b7e6dc !important;
+  color:#0f766e !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-header-icon,
+body:not(:has(.subtitle-overlay-root)) .secret-visibility-button {
+  width:38px;
+  height:38px;
+  min-width:38px;
+  border-radius:10px !important;
+  background:#ffffff !important;
+  border-color:#d9e0e7 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-header-icon:hover,
+body:not(:has(.subtitle-overlay-root)) .secret-visibility-button:hover {
+  background:#f5fbf9 !important;
+  border-color:#93d6c8 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-header-icon-danger,
+body:not(:has(.subtitle-overlay-root)) .provider-row-action-danger {
+  background:#fff7f7 !important;
+  border-color:#f2b8b8 !important;
+  color:#b42318 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-header-icon-danger:hover,
+body:not(:has(.subtitle-overlay-root)) .provider-row-action-danger:hover {
+  background:#ffecec !important;
+  border-color:#e98787 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .provider-scene-model-actions>.provider-header-icon-danger {
+  flex:0 0 34px;
+  width:34px;
+  height:34px;
+  min-width:34px;
+  margin-left:2px
+}
+

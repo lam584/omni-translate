@@ -1,0 +1,85 @@
+@import './global/tokens.css';
+@import './global/base.css';
+@import './global/backgrounds.css';
+@import './global/buttons.css';
+@import './global/layout-status.css';
+@import './global/badges.css';
+@import './global/console-cards.css';
+@import './global/typography.css';
+
+.bootstrap-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(5, 12, 19, .78);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
+}
+
+.bootstrap-overlay-card {
+  width: min(420px, 100%);
+  display: grid;
+  gap: 16px;
+  padding: 22px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 16px;
+  background: var(--color-surface-panel);
+  box-shadow: var(--shadow-card);
+}
+
+.bootstrap-spinner {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  border-radius: 14px;
+  background: var(--color-accent-cool-soft);
+  color: var(--color-accent-cool);
+}
+
+.bootstrap-title {
+  margin: 0;
+  font-weight: 700;
+}
+
+.bootstrap-step-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bootstrap-step {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: center;
+  color: var(--color-text-muted);
+  font-size: .92rem;
+}
+
+.bootstrap-step-done {
+  color: var(--color-text-primary);
+}
+
+.bootstrap-step-error {
+  color: var(--color-accent-danger);
+}
+
+.bootstrap-step-marker {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+}
+
+.bootstrap-step-detail {
+  font-size: .8rem;
+}
+
+.route-loading-surface {
+  min-height: 220px;
+}

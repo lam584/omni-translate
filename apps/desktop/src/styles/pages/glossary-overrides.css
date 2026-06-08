@@ -1,0 +1,258 @@
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item {
+  border-color:#dfe6ec !important;
+  background:#ffffff !important;
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item:hover {
+  border-color:#93d8cf !important;
+  background:#f1fbf9 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item-active {
+  border-color:#13a99a !important;
+  background:linear-gradient(135deg, #0f8f83, #17b7a7) !important;
+  box-shadow:inset 4px 0 0 #baf4ec, 0 10px 22px rgba(12, 127, 116, .18) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item-active:hover {
+  border-color:#13a99a !important;
+  background:linear-gradient(135deg, #0f8f83, #17b7a7) !important;
+  box-shadow:inset 4px 0 0 #baf4ec, 0 10px 22px rgba(12, 127, 116, .18) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item-active .glossary-library-main strong,
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item-active .glossary-library-main span {
+  color:#ffffff !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item-active .glossary-library-main span {
+  opacity:.86
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-search {
+  min-height:38px;
+  display:grid;
+  grid-template-columns:18px minmax(0, 1fr);
+  align-items:center;
+  gap:8px;
+  padding:0 12px;
+  border:1px solid #d6dee6 !important;
+  border-radius:10px !important;
+  background:#ffffff !important;
+  color:#52606a !important;
+  box-shadow:inset 0 1px 0 rgba(255, 255, 255, .9), 0 1px 2px rgba(15, 23, 32, .04)
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-search:focus-within {
+  border-color:#13a99a !important;
+  box-shadow:0 0 0 3px rgba(19, 169, 154, .16), inset 0 1px 0 rgba(255, 255, 255, .9)
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-search input {
+  min-width:0;
+  width:100%;
+  height:36px;
+  padding:0;
+  border:0 !important;
+  outline:0;
+  background:transparent !important;
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-search input::placeholder {
+  color:#7b8792 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .icon-button {
+  border-radius:9px !important;
+  background:#ffffff !important;
+  border-color:rgba(15, 23, 32, .18) !important;
+  color:#17212b !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .icon-button:hover {
+  background:#f3f7f8 !important;
+  border-color:rgba(11, 127, 117, .34) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-save-button {
+  border-color:#0b7f75 !important;
+  background:#0b7f75 !important;
+  color:#ffffff !important;
+  font-weight:700
+}
+
+body:not(:has(.subtitle-overlay-root)) .routing-save-button:hover {
+  border-color:#096d64 !important;
+  background:#096d64 !important
+}
+
+/* Glossary refinement: sortable library list and denser term table. */
+body:not(:has(.subtitle-overlay-root)) .glossary-library-list {
+  gap:8px
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item {
+  min-height:76px;
+  align-items:center;
+  border-radius:10px !important;
+  cursor:grab;
+  user-select:none
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-item-dragging {
+  border-color:#0b7f75 !important;
+  background:#e6f7f4 !important;
+  box-shadow:0 8px 18px rgba(11, 127, 117, .14) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table-wrap {
+  overflow:hidden;
+  border:1px solid #d8e0e7;
+  border-radius:10px;
+  background:#ffffff
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table {
+  width:100%;
+  min-width:720px;
+  table-layout:fixed;
+  border-collapse:separate;
+  border-spacing:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table th,
+body:not(:has(.subtitle-overlay-root)) .glossary-table td {
+  padding:13px 16px;
+  border-bottom:1px solid #e5ebf0;
+  color:#101820;
+  text-align:left;
+  vertical-align:middle
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table th {
+  height:44px;
+  background:#f3f6f8 !important;
+  color:#41505d !important;
+  font-size:.82rem;
+  font-weight:700;
+  letter-spacing:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table tbody tr {
+  transition:background .15s ease
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table tbody tr:hover {
+  background:#f8fbfc
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table tbody tr:last-child td {
+  border-bottom:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table th:nth-child(1),
+body:not(:has(.subtitle-overlay-root)) .glossary-table th:nth-child(2) {
+  width:27%
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table th:nth-child(3) {
+  width:16%
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table th:nth-child(4) {
+  width:12%;
+  text-align:center
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table th:nth-child(5) {
+  width:18%;
+  text-align:center
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table td:nth-child(4),
+body:not(:has(.subtitle-overlay-root)) .glossary-table td:nth-child(5) {
+  text-align:center
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-table td:nth-child(1) strong,
+body:not(:has(.subtitle-overlay-root)) .glossary-table td:nth-child(2) {
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-row-actions {
+  justify-content:center;
+  gap:6px
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-star {
+  width:30px;
+  height:30px;
+  border:1px solid #cfd8e1;
+  border-radius:8px;
+  background:#ffffff;
+  color:#98a4ae;
+  display:inline-grid;
+  place-items:center;
+  font-size:1rem;
+  line-height:1;
+  cursor:pointer
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-star-active {
+  border-color:#d79a30;
+  background:#fff8e9;
+  color:#b87512
+}
+
+@media (max-width: 1180px) {
+  body:not(:has(.subtitle-overlay-root)) .routing-overview,
+  body:not(:has(.subtitle-overlay-root)) .routing-overview-main {
+    grid-template-columns:1fr;
+    grid-template-rows:auto
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-overview-arrow {
+    display:none
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-overview-node:first-child,
+  body:not(:has(.subtitle-overlay-root)) .routing-overview-node-model,
+  body:not(:has(.subtitle-overlay-root)) .routing-overview-node:last-of-type {
+    grid-column:auto;
+    grid-row:auto
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-topology,
+  body:not(:has(.subtitle-overlay-root)) .routing-lower-grid {
+    grid-template-columns:1fr !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-metric-grid {
+    grid-template-columns:repeat(2, minmax(0, 1fr))
+  }
+}
+
+@media (max-width: 760px) {
+  body:not(:has(.subtitle-overlay-root)) .routing-workspace {
+    padding:12px;
+    width:100%
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-mode-grid,
+  body:not(:has(.subtitle-overlay-root)) .routing-metric-grid {
+    grid-template-columns:1fr
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-slider {
+    grid-template-columns:1fr 44px
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .routing-slider span {
+    grid-column:1 / -1
+  }
+}
+

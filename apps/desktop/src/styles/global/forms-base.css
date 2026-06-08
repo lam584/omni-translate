@@ -1,0 +1,18 @@
+
+button,
+input,
+textarea,
+select {
+  font:inherit
+}
+
+select option,
+select optgroup {
+  background-color:var(--color-select-menu-surface);
+  color:var(--color-text-primary)
+}
+
+#root {
+  min-height:100vh
+}
+

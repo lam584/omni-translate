@@ -1,0 +1,300 @@
+.live-text-head,
+.compact-info-head {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px
+}
+
+.live-text-card {
+  grid-column:1 / -1
+}
+
+.live-text-source {
+  font-size:1rem;
+  color:#fff2dd;
+  white-space:pre-line
+}
+
+.live-text-translation {
+  color:var(--color-accent-cool);
+  white-space:pre-line
+}
+
+.console-rail-grid {
+  display:grid;
+  gap:10px
+}
+
+.console-rail-metric {
+  border-radius:12px;
+  padding:10px;
+  background:#ffffff06;
+  display:grid;
+  gap:4px
+}
+
+.console-window-item,
+.console-event-item,
+.compact-event-item {
+  border-radius:12px;
+  padding:9px 10px;
+  background:#ffffff06;
+  display:grid;
+  gap:4px
+}
+
+.console-event-item-empty {
+  align-content:start;
+  justify-items:start;
+  text-align:left
+}
+
+.console-event-item-warning {
+  border:1px solid rgba(244,
+  182,
+  111,
+  .24)
+}
+
+.console-event-item-error {
+  border:1px solid rgba(234,
+  126,
+  126,
+  .24)
+}
+
+.console-event-item-info {
+  border:1px solid rgba(126,
+  217,
+  199,
+  .16)
+}
+
+@media (max-width: 1380px) {
+  .console-shell {
+    grid-template-columns:232px minmax(0,
+    1fr)
+  }
+
+  .console-rail {
+    position:static;
+    min-height:auto;
+    grid-column:1 / -1;
+    border-left:none;
+    border-top:1px solid rgba(141,
+    170,
+    197,
+    .14)
+  }
+}
+
+@media (max-width: 1100px) {
+  .console-shell {
+    grid-template-columns:1fr
+  }
+
+  .console-nav,
+  .console-rail {
+    position:static;
+    min-height:auto;
+    border:none;
+    border-bottom:1px solid rgba(141,
+    170,
+    197,
+    .14)
+  }
+
+  .console-status-strip,
+  .scene-launch-grid,
+  .control-hero-grid,
+  .control-grid-balanced,
+  .control-grid-split,
+  .diagnostics-overview-grid,
+  .runtime-signal-grid,
+  .control-summary-grid,
+  .console-rail-grid,
+  .live-pane-grid {
+    grid-template-columns:1fr 1fr
+  }
+
+  .diagnostics-command-panel,
+  .diagnostics-detail-grid,
+  .diagnostics-main-panel .diagnostics-overview-grid {
+    grid-template-columns:1fr 1fr
+  }
+
+  .diagnostics-command-panel {
+    align-items:stretch
+  }
+
+  .diagnostics-health-summary {
+    grid-column:1 / -1
+  }
+
+  .diagnostics-action-strip {
+    grid-column:1 / -1;
+    justify-content:flex-start
+  }
+}
+
+@media (max-width: 720px) {
+  .console-topbar,
+  .control-workspace,
+  .console-nav,
+  .console-rail {
+    padding:14px
+  }
+
+  .console-status-strip,
+  .scene-launch-grid,
+  .control-hero-grid,
+  .control-grid-balanced,
+  .control-grid-split,
+  .diagnostics-overview-grid,
+  .runtime-signal-grid,
+  .control-summary-grid,
+  .console-rail-grid,
+  .live-pane-grid,
+  .compact-action-item,
+  .console-nav-item {
+    grid-template-columns:1fr
+  }
+
+  .diagnostics-overview-item,
+  .repair-task-row {
+    grid-template-columns:1fr;
+    align-items:start
+  }
+
+  .diagnostics-overview-item .status-badge {
+    grid-column:auto;
+    grid-row:auto;
+    justify-self:start
+  }
+
+  .compact-action-item,
+  .console-nav-item {
+    align-items:start
+  }
+
+  .scene-readiness-row {
+    grid-template-columns:1fr;
+    align-items:start
+  }
+
+  .scene-readiness-meta {
+    justify-content:flex-start
+  }
+
+  .control-toolbar {
+    display:grid
+  }
+
+  .diagnostics-dashboard {
+    max-width:none
+  }
+
+  .diagnostics-command-panel,
+  .diagnostics-detail-grid,
+  .diagnostics-main-panel .diagnostics-overview-grid,
+  .diagnostics-raw-signals ul {
+    grid-template-columns:1fr
+  }
+
+  .diagnostics-command-panel,
+  .diagnostics-main-panel {
+    padding:14px
+  }
+
+  .diagnostics-health-summary,
+  .diagnostics-section-title {
+    display:grid;
+    justify-items:start
+  }
+
+  .diagnostics-action-strip,
+  .diagnostics-empty-actions {
+    display:grid
+  }
+
+  .diagnostics-main-panel .scene-readiness-row {
+    grid-template-columns:1fr
+  }
+
+  .console-dock-item {
+    display:grid;
+    gap:8px;
+    grid-template-columns:minmax(0,
+    1fr) auto
+  }
+
+  .console-dock-anchor,
+  .console-dock-toggle {
+    border:var(--border-width) solid var(--color-border-subtle);
+    border-radius:var(--radius-panel);
+    background:#ffffff07;
+    color:var(--color-text-primary);
+    transition:var(--transition-interactive)
+  }
+
+  .console-dock-anchor {
+    width:100%;
+    display:flex;
+    align-items:center;
+    gap:10px;
+    justify-content:flex-start;
+    padding:10px 12px;
+    text-align:left
+  }
+
+  .console-dock-anchor:hover,
+  .console-dock-toggle:hover {
+    transform:translateY(var(--motion-lift-y));
+    border-color:var(--color-accent-cool-border);
+    background:#7ed9c714
+  }
+
+  .console-dock-anchor-active,
+  .console-dock-anchor-active:hover {
+    border-color:var(--color-accent-cool-border);
+    background:#7ed9c724
+  }
+
+  .console-dock-toggle {
+    min-width:62px;
+    padding:10px 12px
+  }
+}
+
+.console-lane {
+  display:grid;
+  gap:var(--space-grid);
+  scroll-margin-top:92px
+}
+
+.console-lane-collapsed {
+  gap:0
+}
+
+.console-lane-bar {
+  border:var(--border-width) solid rgba(141,
+  170,
+  197,
+  .22);
+  border-radius:var(--radius-panel);
+  padding:12px 14px;
+  background:#060e16b8
+}
+
+.action-group-danger {
+  display:flex;
+  flex-wrap:wrap;
+  gap:var(--space-cluster);
+  padding-top:10px;
+  border-top:var(--border-width) solid rgba(234,
+  126,
+  126,
+  .24)
+}
+

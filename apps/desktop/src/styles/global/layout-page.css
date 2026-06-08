@@ -1,0 +1,12 @@
+
+.main-panel {
+  padding:18px 24px 26px;
+  display:grid;
+  gap:var(--space-stack)
+}
+
+.page-stack {
+  display:grid;
+  gap:var(--space-stack)
+}
+

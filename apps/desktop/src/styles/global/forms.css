@@ -1,0 +1,105 @@
+.field-grid {
+  display:grid;
+  gap:var(--space-cluster);
+  grid-template-columns:repeat(2,
+  minmax(0,
+  1fr))
+}
+
+.field-stack {
+  display:grid;
+  gap:var(--space-tight)
+}
+
+.field-stack span {
+  color:var(--color-text-muted);
+  font-size:var(--font-size-label)
+}
+
+.field-span-full {
+  grid-column:1 / -1
+}
+
+.text-input,
+.text-area,
+.select-input {
+  width:100%;
+  border:var(--border-width) solid var(--color-border-subtle);
+  border-radius:var(--radius-panel);
+  background:linear-gradient(180deg,
+  #ffffff0e,
+  #ffffff08);
+  color:var(--color-text-primary);
+  padding:9px 12px;
+  transition:border-color .2s ease,
+  background .2s ease,
+  box-shadow .2s ease
+}
+
+.select-input {
+  appearance:none;
+  -webkit-appearance:none;
+  -moz-appearance:none;
+  padding-right:42px;
+  background-image:linear-gradient(45deg,
+  transparent 50%,
+  rgba(237,
+  244,
+  251,
+  .82) 50%),
+  linear-gradient(135deg,
+  rgba(237,
+  244,
+  251,
+  .82) 50%,
+  transparent 50%),
+  linear-gradient(180deg,
+  #ffffff0e,
+  #ffffff08);
+  background-position:calc(100% - 18px) calc(50% - 2px),
+  calc(100% - 12px) calc(50% - 2px),
+  0 0;
+  background-size:6px 6px,
+  6px 6px,
+  100% 100%;
+  background-repeat:no-repeat;
+  box-shadow:inset 0 1px #ffffff09
+}
+
+.text-input:hover,
+.text-area:hover,
+.select-input:hover {
+  border-color:#8daac557;
+  background-color:#ffffff0e
+}
+
+.text-area {
+  min-height:112px;
+  resize:vertical
+}
+
+.text-input:focus-visible,
+.text-area:focus-visible,
+.select-input:focus-visible {
+  outline:var(--outline-width) solid var(--color-accent-warm-focus);
+  outline-offset:var(--outline-offset)
+}
+
+.result-log {
+  display:grid;
+  gap:var(--space-tight);
+  border:var(--border-width) solid var(--color-border-subtle);
+  border-radius:var(--radius-panel);
+  padding:var(--space-control-x);
+  background:#ffffff08
+}
+
+.result-log p {
+  margin:0;
+  font-family:Cascadia Code,
+  Consolas,
+  monospace;
+  font-size:.92rem;
+  color:var(--color-text-muted)
+}
+

@@ -1,0 +1,37 @@
+.page-shell,
+.page-layout {
+  display:grid;
+  gap:14px
+}
+
+.page-layout-single {
+  max-width:720px
+}
+
+.page-card {
+  border:1px solid rgba(141,
+  170,
+  197,
+  .16);
+  border-radius:16px;
+  background:linear-gradient(180deg,
+  #ffffff0d,
+  #ffffff05),
+  #08121de0;
+  padding:18px
+}
+
+.compact-description {
+  margin:0;
+  color:var(--color-text-muted);
+  font-size:.88rem
+}
+
+.control-hero-header {
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap
+}
+

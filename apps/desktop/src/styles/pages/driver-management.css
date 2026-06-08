@@ -1,0 +1,138 @@
+.driver-management-card {
+  display:flex;
+  flex-direction:column;
+  gap:14px
+}
+
+.driver-management-status {
+  display:flex;
+  align-items:flex-start;
+  gap:12px;
+  padding:14px;
+  border:1px solid rgba(255, 255, 255, .08);
+  border-radius:12px;
+  background:rgba(255, 255, 255, .025)
+}
+
+.driver-management-status h3,
+.driver-management-status p,
+.driver-management-feedback {
+  margin:0
+}
+
+.driver-management-status h3 {
+  font-size:15px;
+  line-height:1.4
+}
+
+.driver-management-status p {
+  margin-top:4px;
+  color:#b8c2e2d1;
+  font-size:13px;
+  line-height:1.55
+}
+
+.driver-management-status-icon {
+  display:grid;
+  width:34px;
+  height:34px;
+  flex:0 0 34px;
+  place-items:center;
+  border-radius:50%
+}
+
+.driver-management-status-icon-success {
+  color:#84dca8;
+  background:rgba(76, 180, 121, .14)
+}
+
+.driver-management-status-icon-warning {
+  color:#edc56a;
+  background:rgba(202, 157, 53, .14)
+}
+
+.driver-management-status-icon-error {
+  color:#f29a9a;
+  background:rgba(202, 77, 77, .16)
+}
+
+.driver-management-version {
+  display:inline-block;
+  margin-top:6px;
+  color:#9eacd6cc;
+  font-size:12px
+}
+
+.driver-management-actions {
+  display:flex;
+  align-items:center;
+  flex-wrap:wrap;
+  gap:8px
+}
+
+.driver-management-primary {
+  border-color:rgba(132, 164, 255, .55);
+  background:linear-gradient(180deg, #5c84fff2, #486ce8f2);
+  color:#fff
+}
+
+.driver-management-primary:hover {
+  background:linear-gradient(180deg, #6a8eff, #5275ed)
+}
+
+.driver-management-secondary {
+  color:#bdc8e6
+}
+
+.driver-management-feedback {
+  padding:10px 12px;
+  border-radius:10px;
+  font-size:13px;
+  line-height:1.5
+}
+
+.driver-management-feedback-success {
+  color:#84dca8;
+  background:rgba(76, 180, 121, .1)
+}
+
+.driver-management-feedback-warning {
+  color:#edc56a;
+  background:rgba(202, 157, 53, .1)
+}
+
+.driver-management-feedback-error {
+  color:#f29a9a;
+  background:rgba(202, 77, 77, .12)
+}
+
+.driver-management-details {
+  display:grid;
+  grid-template-columns:repeat(2, minmax(0, 1fr));
+  gap:1px;
+  margin:0;
+  overflow:hidden;
+  border:1px solid rgba(255, 255, 255, .08);
+  border-radius:10px;
+  background:rgba(255, 255, 255, .06)
+}
+
+.driver-management-details>div {
+  min-width:0;
+  padding:10px 12px;
+  background:#0a0e1a
+}
+
+.driver-management-details dt {
+  color:#9eacd6cc;
+  font-size:12px
+}
+
+.driver-management-details dd {
+  margin:4px 0 0;
+  overflow-wrap:anywhere;
+  color:#e2e8f8;
+  font-size:13px;
+  line-height:1.45
+}
+

@@ -1,0 +1,25 @@
+/* Keep the real subtitle overlay window isolated from the app theme. */
+body:has(.subtitle-overlay-root) {
+  margin:0 !important;
+  min-height:100vh !important;
+  background:transparent !important;
+  color:#f5f8fff5 !important;
+  overflow:hidden !important;
+  color-scheme:dark !important
+}
+
+body:has(.subtitle-overlay-root) #root {
+  min-height:100vh !important;
+  background:transparent !important
+}
+
+body:has(.subtitle-overlay-root) .subtitle-overlay-root,
+body:has(.subtitle-overlay-root) .subtitle-overlay-lyrics,
+body:has(.subtitle-overlay-root) .subtitle-overlay-source,
+body:has(.subtitle-overlay-root) .subtitle-overlay-translation,
+body:has(.subtitle-overlay-root) .subtitle-overlay-toggle-lock,
+body:has(.subtitle-overlay-root) .subtitle-overlay-context-menu,
+body:has(.subtitle-overlay-root) .subtitle-overlay-context-menu-item {
+  font-family:var(--subtitle-overlay-font-family, var(--font-family-sans)) !important
+}
+

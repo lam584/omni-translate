@@ -1,0 +1,52 @@
+body:not(:has(.subtitle-overlay-root)) .driver-management-status {
+  border-color:var(--app-line) !important;
+  background:var(--app-soft) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .driver-management-details {
+  border-color:var(--app-line) !important;
+  background:var(--app-line) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .driver-management-details>div {
+  background:#ffffff !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .driver-management-details dt {
+  color:var(--app-muted) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .driver-management-details dd {
+  color:var(--app-ink) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .driver-management-primary:not(:disabled) {
+  color:#ffffff !important;
+  border-color:#087a70 !important;
+  background:#087a70 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .driver-management-primary:not(:disabled):hover {
+  background:#06675f !important
+}
+
+@media (min-width: 1181px) {
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace:not(.overlay-settings-workspace) > .settings-card-driver,
+  body:not(:has(.subtitle-overlay-root)) .settings-workspace:not(.overlay-settings-workspace) > .settings-card-maintenance {
+    grid-column:1 / -1 !important;
+    min-height:0 !important
+  }
+}
+
+@media (max-width: 900px) {
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace {
+    grid-template-columns:1fr !important;
+    max-width:none !important
+  }
+
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .settings-card,
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace > .overlay-preview-card {
+    grid-column:1 !important;
+    grid-row:auto !important
+  }
+}

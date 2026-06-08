@@ -1,0 +1,124 @@
+
+.status-grid {
+  display:grid;
+  gap:var(--space-cluster)
+}
+
+.shell-status-stack,
+.shell-status-card,
+.shell-mini-grid,
+.shell-mini-item,
+.shell-footer-meta,
+.dashboard-hero,
+.dashboard-hero-copy,
+.dashboard-hero-badges,
+.kpi-grid,
+.kpi-card,
+.action-strip-grid,
+.action-strip,
+.action-strip-header,
+.alert-list,
+.window-grid,
+.timeline-list {
+  display:grid
+}
+
+.shell-status-stack,
+.dashboard-hero-copy,
+.kpi-card,
+.action-strip,
+.shell-status-card {
+  gap:12px
+}
+
+.shell-status-card {
+  border:var(--border-width) solid var(--color-border-subtle);
+  border-radius:var(--radius-panel);
+  padding:16px;
+  background:#ffffff07
+}
+
+.shell-status-card p,
+.shell-footer-meta {
+  margin:0
+}
+
+.shell-status-head {
+  display:flex;
+  justify-content:space-between;
+  gap:10px;
+  align-items:center
+}
+
+.shell-status-head strong,
+.shell-footer-meta strong {
+  font-size:.95rem
+}
+
+.shell-mini-grid {
+  gap:10px
+}
+
+.shell-mini-item {
+  gap:8px;
+  border:var(--border-width) solid rgba(141,
+  170,
+  197,
+  .12);
+  border-radius:14px;
+  padding:12px 14px;
+  background:#ffffff05
+}
+
+.shell-footer-meta {
+  gap:6px;
+  padding-top:4px
+}
+
+.status-panel {
+  border:var(--border-width) solid var(--color-border-subtle);
+  border-radius:var(--radius-panel);
+  background:linear-gradient(180deg,
+  #ffffff0a,
+  #ffffff05);
+  display:grid;
+  gap:var(--space-list);
+  padding:14px
+}
+
+.status-panel-tier-ready {
+  border-color:#68c98e57;
+  background:linear-gradient(180deg,
+  #68c98e1f,
+  #ffffff05)
+}
+
+.status-panel-tier-pending,
+.status-panel-tier-draft,
+.status-panel-tier-warning {
+  border-color:#f4b66f57;
+  background:linear-gradient(180deg,
+  #f4b66f1f,
+  #ffffff05)
+}
+
+.status-panel-tier-risk,
+.status-panel-tier-unsupported,
+.status-panel-tier-unknown {
+  border-color:#ea7e7e57;
+  background:linear-gradient(180deg,
+  #ea7e7e1f,
+  #ffffff05)
+}
+
+.status-panel-header {
+  align-items:center;
+  display:flex;
+  gap:var(--space-cluster);
+  justify-content:space-between
+}
+
+.status-panel-header strong {
+  font-size:1rem
+}
+

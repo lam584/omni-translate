@@ -1,0 +1,342 @@
+.subtitle-overlay-root {
+  position:relative;
+  width:fit-content;
+  max-width:100vw;
+  margin:0 auto;
+  padding:0;
+  display:block;
+  -webkit-user-select:none;
+  user-select:none;
+  touch-action:none;
+  cursor:grab
+}
+
+.subtitle-overlay-root:active {
+  cursor:grabbing
+}
+
+.subtitle-overlay-root-locked,
+.subtitle-overlay-root-locked:active {
+  cursor:default
+}
+
+.subtitle-overlay-root-locked .subtitle-overlay-lyrics {
+  pointer-events:none
+}
+
+.subtitle-overlay-resize-handle {
+  position:absolute;
+  z-index:3;
+  background:transparent;
+  pointer-events:auto
+}
+
+.subtitle-overlay-resize-handle-north,
+.subtitle-overlay-resize-handle-south {
+  left:18px;
+  right:18px;
+  height:12px
+}
+
+.subtitle-overlay-resize-handle-east,
+.subtitle-overlay-resize-handle-west {
+  top:18px;
+  bottom:18px;
+  width:12px
+}
+
+.subtitle-overlay-resize-handle-north {
+  top:-4px;
+  cursor:n-resize
+}
+
+.subtitle-overlay-resize-handle-south {
+  bottom:-4px;
+  cursor:s-resize
+}
+
+.subtitle-overlay-resize-handle-east {
+  right:-4px;
+  cursor:e-resize
+}
+
+.subtitle-overlay-resize-handle-west {
+  left:-4px;
+  cursor:w-resize
+}
+
+.subtitle-overlay-resize-handle-northeast,
+.subtitle-overlay-resize-handle-northwest,
+.subtitle-overlay-resize-handle-southeast,
+.subtitle-overlay-resize-handle-southwest {
+  width:18px;
+  height:18px
+}
+
+.subtitle-overlay-resize-handle-northeast {
+  top:-4px;
+  right:-4px;
+  cursor:ne-resize
+}
+
+.subtitle-overlay-resize-handle-northwest {
+  top:-4px;
+  left:-4px;
+  cursor:nw-resize
+}
+
+.subtitle-overlay-resize-handle-southeast {
+  right:-4px;
+  bottom:-4px;
+  cursor:se-resize
+}
+
+.subtitle-overlay-resize-handle-southwest {
+  left:-4px;
+  bottom:-4px;
+  cursor:sw-resize
+}
+
+.subtitle-overlay-lyrics {
+  position:relative;
+  width:fit-content;
+  max-width:980px;
+  display:inline-grid;
+  gap:8px;
+  justify-items:center;
+  padding:18px 24px;
+  border-radius:22px;
+  background:var(--subtitle-overlay-background,
+  rgba(17,
+  24,
+  39,
+  .84));
+  border:1px solid var(--subtitle-overlay-border,
+  rgba(255,
+  255,
+  255,
+  .12));
+  box-shadow:0 18px 40px var(--subtitle-overlay-shadow,
+  rgba(0,
+  0,
+  0,
+  .28));
+  -webkit-backdrop-filter:blur(var(--subtitle-overlay-blur,
+  12px));
+  backdrop-filter:blur(var(--subtitle-overlay-blur,
+  12px))
+}
+
+.subtitle-overlay-lyrics-window-sized {
+  box-sizing:border-box;
+  width:calc(100vw - 2px);
+  max-width:none;
+  height:calc(100vh - 2px);
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-end;
+  align-items:center;
+  overflow:hidden
+}
+
+.subtitle-overlay-cues {
+  width:100%;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  justify-content:flex-end;
+  align-items:stretch;
+  gap:8px;
+  overflow-y:auto;
+  overscroll-behavior:contain;
+  scrollbar-width:none
+}
+
+.subtitle-overlay-cues::-webkit-scrollbar {
+  width:0;
+  height:0
+}
+
+.subtitle-overlay-source,
+.subtitle-overlay-translation {
+  margin:0;
+  text-align:center;
+  text-wrap:balance;
+  white-space:pre-line;
+  color:var(--subtitle-overlay-text,
+  currentColor)
+}
+
+.subtitle-overlay-source {
+  font-size:clamp(1.9rem,
+  2.6vw,
+  2.7rem);
+  text-shadow:0 2px 14px var(--subtitle-overlay-source-shadow,
+  rgba(0,
+  0,
+  0,
+  .48))
+}
+
+.subtitle-overlay-translation {
+  font-size:clamp(1.5rem,
+  2vw,
+  2.1rem);
+  opacity:var(--subtitle-overlay-translation-opacity,
+  .92);
+  text-shadow:0 2px 14px var(--subtitle-overlay-translation-shadow,
+  rgba(0,
+  0,
+  0,
+  .42))
+}
+
+.subtitle-overlay-cue {
+  display:grid;
+  gap:7px;
+  justify-items:stretch;
+  width:100%
+}
+
+.subtitle-overlay-segment {
+  display:grid;
+  gap:2px;
+  min-height:0;
+  justify-items:center
+}
+
+.subtitle-overlay-segment-pending .subtitle-overlay-translation {
+  opacity:calc(var(--subtitle-overlay-translation-opacity,
+  .92) * .52)
+}
+
+.subtitle-overlay-grab-hint {
+  font-size:.72rem;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:#d6e1ee6b
+}
+
+.subtitle-overlay-toggle-lock {
+  position:absolute;
+  z-index:2;
+  top:12px;
+  right:12px;
+  border:1px solid rgba(255,
+  255,
+  255,
+  .16);
+  border-radius:999px;
+  background:#070c16b8;
+  color:#f5f8fff5;
+  padding:6px 12px;
+  font-size:.8rem;
+  font-weight:600;
+  pointer-events:auto;
+  cursor:pointer;
+  transition:var(--transition-interactive)
+}
+
+.subtitle-overlay-toggle-lock:hover {
+  border-color:#7ed9c76b;
+  background:#12242aeb
+}
+
+.subtitle-overlay-context-menu {
+  position:fixed;
+  z-index:40;
+  min-width:188px;
+  display:grid;
+  gap:6px;
+  padding:10px;
+  border:1px solid rgba(255,
+  255,
+  255,
+  .14);
+  border-radius:14px;
+  background:#070c16f5;
+  box-shadow:0 18px 36px #0000005c;
+  -webkit-backdrop-filter:blur(18px);
+  backdrop-filter:blur(18px);
+  pointer-events:auto
+}
+
+.subtitle-overlay-context-menu-title {
+  padding:2px 6px 8px;
+  font-size:.74rem;
+  letter-spacing:.08em;
+  text-transform:uppercase;
+  color:#d6e1ee85
+}
+
+.subtitle-overlay-context-menu-item {
+  width:100%;
+  border:1px solid rgba(255,
+  255,
+  255,
+  .08);
+  border-radius:10px;
+  background:#ffffff08;
+  color:#f5f8fff5;
+  padding:10px 12px;
+  text-align:left;
+  cursor:pointer;
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  transition:var(--transition-interactive)
+}
+
+.subtitle-overlay-context-menu-item:hover {
+  border-color:#7ed9c76b;
+  background:#12242aeb
+}
+
+.subtitle-overlay-context-menu-submenu {
+  position:relative
+}
+
+.subtitle-overlay-context-submenu-panel {
+  position:absolute;
+  top:-10px;
+  left:calc(100% + 8px);
+  min-width:172px;
+  display:none;
+  gap:6px;
+  padding:10px;
+  border:1px solid rgba(255,
+  255,
+  255,
+  .14);
+  border-radius:14px;
+  background:#070c16f5;
+  box-shadow:0 18px 36px #0000005c;
+  -webkit-backdrop-filter:blur(18px);
+  backdrop-filter:blur(18px)
+}
+
+.subtitle-overlay-context-menu-submenu:hover .subtitle-overlay-context-submenu-panel,
+.subtitle-overlay-context-menu-submenu:focus-within .subtitle-overlay-context-submenu-panel {
+  display:grid
+}
+
+.subtitle-overlay-color-menu-item {
+  justify-content:flex-start
+}
+
+.subtitle-overlay-color-swatch {
+  width:14px;
+  height:14px;
+  border-radius:999px;
+  border:1px solid rgba(255,
+  255,
+  255,
+  .34);
+  box-shadow:0 0 0 1px rgba(0,
+  0,
+  0,
+  .18)
+}
+

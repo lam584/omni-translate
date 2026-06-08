@@ -1,0 +1,172 @@
+body:not(:has(.subtitle-overlay-root)) .glossary-library-dialog {
+  color:#101820 !important;
+  background:linear-gradient(180deg,
+  #ffffff,
+  #f8fafc) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-dialog :is(h3, label, span) {
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-dialog .field-stack span {
+  color:#475569 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal-close,
+body:not(:has(.subtitle-overlay-root)) .glossary-modal-close svg,
+body:not(:has(.subtitle-overlay-root)) .glossary-modal-close svg * {
+  color:#475569 !important;
+  stroke:currentColor !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal-close {
+  background:transparent !important;
+  border-color:transparent !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal-close:hover {
+  background:#f1f5f9 !important;
+  border-color:#cbd5e1 !important;
+  color:#0f172a !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-name-input {
+  border-color:#cbd5e1 !important;
+  background:#ffffff !important;
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-name-input:hover,
+body:not(:has(.subtitle-overlay-root)) .glossary-library-name-input:focus,
+body:not(:has(.subtitle-overlay-root)) .glossary-library-name-input:focus-visible {
+  border-color:#7ed9c7 !important;
+  background:#ffffff !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-primary-action {
+  border-color:#49c5b5 !important;
+  background:#49c5b5 !important;
+  color:#061315 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-primary-action:hover {
+  border-color:#63ddce !important;
+  background:#63ddce !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-secondary-action {
+  border-color:#cbd5e1 !important;
+  background:#ffffff !important;
+  color:#334155 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-library-secondary-action:hover {
+  border-color:#94a3b8 !important;
+  background:#f8fafc !important;
+  color:#0f172a !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal-backdrop {
+  background:rgba(15, 23, 42, .42) !important;
+  -webkit-backdrop-filter:blur(5px) !important;
+  backdrop-filter:blur(5px) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal {
+  color:#101820 !important;
+  border-color:#d8e0e7 !important;
+  background:linear-gradient(180deg, #ffffff, #f8fafc) !important;
+  box-shadow:0 24px 70px rgba(15, 23, 42, .18),
+  0 1px 0 #ffffff inset !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .glossary-panel-head h3 {
+  color:#101820 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .field-stack span {
+  color:#475569 !important;
+  font-weight:600
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .text-input,
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .select-input {
+  min-height:44px;
+  border-color:#cbd5e1 !important;
+  background:#ffffff !important;
+  color:#101820 !important;
+  box-shadow:0 1px 0 #ffffff inset
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .text-input:hover,
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .select-input:hover {
+  border-color:#94a3b8 !important;
+  background:#ffffff !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .text-input:focus,
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .select-input:focus,
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .text-input:focus-visible,
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .select-input:focus-visible {
+  border-color:#49c5b5 !important;
+  outline:2px solid rgba(73, 197, 181, .28) !important;
+  outline-offset:2px;
+  box-shadow:0 0 0 1px rgba(73, 197, 181, .18),
+  0 1px 0 #ffffff inset
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .glossary-segment {
+  border-color:#cbd5e1 !important;
+  background:#ffffff !important;
+  color:#334155 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .glossary-segment:hover {
+  border-color:#94a3b8 !important;
+  background:#f8fafc !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .glossary-segment-active,
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .glossary-segment-active:hover {
+  border-color:#49c5b5 !important;
+  background:#e5faf7 !important;
+  color:#075148 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .glossary-segment-active :is(span, strong, b, svg, path, circle, rect) {
+  color:#075148 !important;
+  stroke:currentColor !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .routing-toggle {
+  color:#334155 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .routing-toggle span {
+  color:#334155 !important;
+  font-weight:500
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .glossary-conflict-box {
+  border-color:#f5c56c !important;
+  background:#fff7e6 !important;
+  color:#5b3b05 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal .glossary-conflict-box strong {
+  color:#5b3b05 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal > .glossary-panel-head .icon-button {
+  border-color:#cbd5e1 !important;
+  background:#ffffff !important;
+  color:#334155 !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .glossary-modal > .glossary-panel-head .icon-button:hover {
+  border-color:#94a3b8 !important;
+  background:#f8fafc !important;
+  color:#0f172a !important
+}
+

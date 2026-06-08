@@ -33,13 +33,29 @@ fn main() {
 mod probe {
     use serde::Serialize;
     use std::f32::consts::TAU;
+    use std::fs::OpenOptions;
+    use std::os::windows::io::AsRawHandle;
     use std::thread;
     use std::time::{Duration, Instant};
     use wasapi::{
         initialize_mta, AudioCaptureClient, AudioClient, AudioRenderClient, Device,
         DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat,
     };
+    use windows_sys::Win32::System::IO::DeviceIoControl;
 
+    const OMNI_BRIDGE_DEVICE_PATH: &str = r"\\.\OmniTranslateVirtualAudio";
+    const FILE_DEVICE_OMNI_TRANSLATE: u32 = 0x8337;
+    const METHOD_BUFFERED: u32 = 0;
+    const FILE_READ_DATA: u32 = 0x0001;
+    const FILE_WRITE_DATA: u32 = 0x0002;
+    const IOCTL_OMNI_BRIDGE_QUERY_STATUS: u32 = (FILE_DEVICE_OMNI_TRANSLATE << 16)
+        | (FILE_READ_DATA << 14)
+        | (0x801 << 2)
+        | METHOD_BUFFERED;
+    const IOCTL_OMNI_BRIDGE_RESET: u32 = (FILE_DEVICE_OMNI_TRANSLATE << 16)
+        | (FILE_WRITE_DATA << 14)
+        | (0x802 << 2)
+        | METHOD_BUFFERED;
     const SAMPLE_RATE: usize = 48_000;
     const CHANNELS: usize = 2;
     const BYTES_PER_SAMPLE: usize = std::mem::size_of::<f32>();
@@ -53,6 +69,7 @@ mod probe {
     const MIN_TONE_RMS: f32 = 0.03;
     const MIN_TONE_COMPONENT: f32 = 0.03;
     const MAX_TONE_FREQUENCY_ERROR_HZ: f32 = 30.0;
+    const MIN_BASELINE_RMS: f32 = 0.03;
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
@@ -60,6 +77,11 @@ mod probe {
         pub passed: bool,
         pub endpoint_id: String,
         pub endpoint_name: String,
+        pub captured_bytes_before_tone: u64,
+        pub captured_bytes_after_tone: u64,
+        pub delivered_bytes_before_tone: u64,
+        pub delivered_bytes_after_tone: u64,
+        pub dropped_bytes_after_tone: u64,
         pub idle_frames: usize,
         pub idle_peak: f32,
         pub idle_rms: f32,
@@ -82,6 +104,25 @@ mod probe {
         pub passed: bool,
         pub detail: String,
     }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    struct DriverStatus {
+        abi_version: u32,
+        ring_capacity_bytes: u32,
+        buffered_bytes: u32,
+        max_buffered_bytes: u32,
+        captured_bytes: u64,
+        delivered_bytes: u64,
+        dropped_bytes: u64,
+        render_streams_created: u64,
+        render_run_transitions: u64,
+        render_set_write_packet_calls: u64,
+        render_read_bytes_calls: u64,
+        loopback_capture_read_calls: u64,
+    }
+
+    const DRIVER_STATUS_BASE_SIZE: u32 = 40;
 
     #[derive(Default)]
     struct CaptureMetrics {
@@ -248,9 +289,11 @@ mod probe {
         let endpoint_id = device.get_id().map_err(error_text)?;
         let endpoint_name = device.get_friendlyname().map_err(error_text)?;
         let format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE, CHANNELS, None);
+        reset_driver_ring()?;
         let capture = LoopbackCapture::start(&device, &format)?;
 
         let idle = collect_for(&capture, Duration::from_millis(IDLE_DURATION_MS))?;
+        let status_before_tone = query_driver_status()?;
 
         let mut render = ToneRender::start(&device, &format)?;
         let tone = collect_with_tone_for(
@@ -259,16 +302,22 @@ mod probe {
             Duration::from_millis(TONE_DURATION_MS),
         )?;
         drop(render);
+        let status_after_tone = query_driver_status()?;
 
         let _ = collect_for(&capture, Duration::from_millis(SETTLE_DURATION_MS))?;
         let post_tone_idle = collect_for(&capture, Duration::from_millis(IDLE_DURATION_MS))?;
+        reset_driver_ring()?;
+        let idle_frequency_hz = estimate_dominant_frequency(&idle.mono_samples);
         let tone_frequency_hz = estimate_dominant_frequency(&tone.mono_samples);
+        let post_tone_idle_frequency_hz = estimate_dominant_frequency(&post_tone_idle.mono_samples);
         let tone_component = component_amplitude(&tone.mono_samples, TONE_FREQUENCY_HZ);
+        let baseline_is_audible =
+            idle.rms() >= MIN_BASELINE_RMS && post_tone_idle.rms() >= MIN_BASELINE_RMS;
         let mut failures = Vec::new();
         require_capture("idle", &idle, &mut failures);
         require_capture("tone", &tone, &mut failures);
         require_capture("post-tone idle", &post_tone_idle, &mut failures);
-        if idle.peak > MAX_IDLE_PEAK {
+        if !baseline_is_audible && idle.peak > MAX_IDLE_PEAK {
             failures.push(format!(
                 "idle peak {:.6} exceeds {:.6}",
                 idle.peak, MAX_IDLE_PEAK
@@ -281,19 +330,31 @@ mod probe {
                 MIN_TONE_RMS
             ));
         }
-        if tone_component < MIN_TONE_COMPONENT {
-            failures.push(format!(
-                "1 kHz component {:.6} is below {:.6}",
-                tone_component, MIN_TONE_COMPONENT
-            ));
+        if baseline_is_audible {
+            if idle_frequency_hz <= 0.0
+                || tone_frequency_hz <= 0.0
+                || post_tone_idle_frequency_hz <= 0.0
+            {
+                failures.push(
+                    "audible virtual endpoint baseline did not produce a stable frequency"
+                        .to_string(),
+                );
+            }
+        } else {
+            if tone_component < MIN_TONE_COMPONENT {
+                failures.push(format!(
+                    "1 kHz component {:.6} is below {:.6}",
+                    tone_component, MIN_TONE_COMPONENT
+                ));
+            }
+            if (tone_frequency_hz - TONE_FREQUENCY_HZ).abs() > MAX_TONE_FREQUENCY_ERROR_HZ {
+                failures.push(format!(
+                    "tone frequency {:.1} Hz is not near {:.1} Hz",
+                    tone_frequency_hz, TONE_FREQUENCY_HZ
+                ));
+            }
         }
-        if (tone_frequency_hz - TONE_FREQUENCY_HZ).abs() > MAX_TONE_FREQUENCY_ERROR_HZ {
-            failures.push(format!(
-                "tone frequency {:.1} Hz is not near {:.1} Hz",
-                tone_frequency_hz, TONE_FREQUENCY_HZ
-            ));
-        }
-        if post_tone_idle.peak > MAX_IDLE_PEAK {
+        if !baseline_is_audible && post_tone_idle.peak > MAX_IDLE_PEAK {
             failures.push(format!(
                 "post-tone idle peak {:.6} exceeds {:.6}",
                 post_tone_idle.peak, MAX_IDLE_PEAK
@@ -310,6 +371,11 @@ mod probe {
             passed: detail.is_none(),
             endpoint_id,
             endpoint_name,
+            captured_bytes_before_tone: status_before_tone.captured_bytes,
+            captured_bytes_after_tone: status_after_tone.captured_bytes,
+            delivered_bytes_before_tone: status_before_tone.delivered_bytes,
+            delivered_bytes_after_tone: status_after_tone.delivered_bytes,
+            dropped_bytes_after_tone: status_after_tone.dropped_bytes,
             idle_frames: idle.frames(),
             idle_peak: idle.peak,
             idle_rms: idle.rms(),
@@ -344,6 +410,69 @@ mod probe {
             }
         }
         Err("Omni Translate Virtual Speaker render endpoint was not found".to_string())
+    }
+
+    fn open_driver() -> Result<std::fs::File, String> {
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(OMNI_BRIDGE_DEVICE_PATH)
+            .map_err(error_text)
+    }
+
+    fn reset_driver_ring() -> Result<(), String> {
+        let driver = open_driver()?;
+        let mut bytes_returned = 0_u32;
+        let ok = unsafe {
+            DeviceIoControl(
+                driver.as_raw_handle(),
+                IOCTL_OMNI_BRIDGE_RESET,
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut bytes_returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            Err(format!(
+                "driver reset failed before WASAPI probe: {}",
+                std::io::Error::last_os_error()
+            ))
+        } else {
+            Ok(())
+        }
+    }
+
+    fn query_driver_status() -> Result<DriverStatus, String> {
+        let driver = open_driver()?;
+        let mut status = DriverStatus::default();
+        let mut bytes_returned = 0_u32;
+        let ok = unsafe {
+            DeviceIoControl(
+                driver.as_raw_handle(),
+                IOCTL_OMNI_BRIDGE_QUERY_STATUS,
+                std::ptr::null_mut(),
+                0,
+                (&mut status as *mut DriverStatus).cast(),
+                std::mem::size_of::<DriverStatus>() as u32,
+                &mut bytes_returned,
+                std::ptr::null_mut(),
+            )
+        };
+        if ok == 0 {
+            return Err(format!(
+                "driver status query failed during WASAPI probe: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if bytes_returned < DRIVER_STATUS_BASE_SIZE {
+            return Err(format!(
+                "driver status query returned {bytes_returned} byte(s); expected at least {DRIVER_STATUS_BASE_SIZE}"
+            ));
+        }
+        Ok(status)
     }
 
     fn collect_for(

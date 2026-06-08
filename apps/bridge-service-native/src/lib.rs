@@ -19,8 +19,26 @@ pub fn classify_driver_health(
     expected_driver_version: &str,
     expected_bridge_version: &str,
 ) -> &'static str {
+    classify_driver_health_with_device_evidence(
+        install_state,
+        expected_driver_version,
+        expected_bridge_version,
+        false,
+    )
+}
+
+pub fn classify_driver_health_with_device_evidence(
+    install_state: Option<&DriverInstallState>,
+    expected_driver_version: &str,
+    expected_bridge_version: &str,
+    control_device_available: bool,
+) -> &'static str {
     let Some(install_state) = install_state else {
-        return "not-installed";
+        return if control_device_available {
+            "running"
+        } else {
+            "not-installed"
+        };
     };
     if install_state.driver_backend != "sysvad-wave-rt" {
         return "damaged";
@@ -585,6 +603,29 @@ mod tests {
         assert_eq!(
             classify_driver_health(Some(&matching), "0.10.0-dev", "0.1.0"),
             "running"
+        );
+    }
+
+    #[test]
+    fn driver_health_allows_control_device_when_state_file_is_missing() {
+        let matching = DriverInstallState {
+            driver_backend: "sysvad-wave-rt".to_string(),
+            driver_version: "0.10.0-dev".to_string(),
+            bridge_version: "0.1.0".to_string(),
+        };
+
+        assert_eq!(
+            classify_driver_health_with_device_evidence(None, "0.10.0-dev", "0.1.0", true),
+            "running"
+        );
+        assert_eq!(
+            classify_driver_health_with_device_evidence(
+                Some(&matching),
+                "0.8.0-dev",
+                "0.1.0",
+                true
+            ),
+            "version-mismatch"
         );
     }
 

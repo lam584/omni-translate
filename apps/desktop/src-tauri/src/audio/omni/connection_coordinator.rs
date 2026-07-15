@@ -175,7 +175,7 @@ impl OmniConnectionCoordinator {
                             &app,
                             "omni",
                             "warning",
-                            format!("[VAD] bypass commit 鍙戦€佸け璐? {error}"),
+                            format!("[VAD] bypass commit 发送失败: {error}"),
                         );
                     } else {
                         let _ = diag_log(
@@ -183,7 +183,7 @@ impl OmniConnectionCoordinator {
                             "omni",
                             "info",
                             format!(
-                                "[VAD] bypass: 宸插彂閫?commit (璺濅笂娆?{:.0}s, 宸插彂閫?{} 鍧楅煶棰?",
+                                "[VAD] bypass: 已发送 commit（距上次 {:.0}s，已发送 {} 块音频）",
                                 elapsed.as_secs_f64(),
                                 chunk_count
                             ),
@@ -198,7 +198,7 @@ impl OmniConnectionCoordinator {
                             &app,
                             "omni",
                             "warning",
-                            format!("[VAD] bypass response.create 鍙戦€佸け璐? {error}"),
+                            format!("[VAD] bypass response.create 发送失败: {error}"),
                         );
                     }
                 }
@@ -253,19 +253,19 @@ impl OmniConnectionCoordinator {
         );
         if provider.kind != "dashscope" {
             return Err(format!(
-                "Omni 瀹炴椂缈昏瘧浠呮敮鎸?dashscope provider锛屽綋鍓嶄负 {} (provider_id={})",
+                "Omni 实时翻译仅支持 dashscope provider，当前为 {} (provider_id={})",
                 provider.kind, provider.provider_id
             ));
         }
         let ws_url = to_websocket_url(&provider.base_url, &provider.model)
-            .map_err(|error| format!("鏃犳硶鏋勫缓 WebSocket URL: {}", error.message))?;
+            .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
 
         let mut request = ws_url
             .as_str()
             .into_client_request()
-            .map_err(|error| format!("鏃犳硶鍒涘缓 WebSocket 璇锋眰: {error}"))?;
+            .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
         apply_ws_auth(&provider, request.headers_mut())
-            .map_err(|error| format!("鏃犳硶搴旂敤璁よ瘉澶? {}", error.message))?;
+            .map_err(|error| format!("无法应用认证头: {}", error.message))?;
 
         let initial_connect_started = SystemTime::now();
         let mut initial_attempt = 0usize;
@@ -279,7 +279,7 @@ impl OmniConnectionCoordinator {
                         "omni",
                         "warning",
                         format!(
-                            "[CONNECT] Omni 鍒濇杩炴帴澶辫触锛屽噯澶囬噸璇? attempt={initial_attempt}/{} error={error}",
+                            "[CONNECT] Omni 初次连接失败，准备重试: attempt={initial_attempt}/{} error={error}",
                             OMNI_INITIAL_CONNECT_RETRIES + 1
                         ),
                     );
@@ -293,7 +293,7 @@ impl OmniConnectionCoordinator {
                     trace_call.error(format!(
                         "initial websocket connect failed attempts={initial_attempt} elapsedMs={elapsed_ms} error={error}"
                     ));
-                    return Err(format!("鏃犳硶杩炴帴 Omni 鏈嶅姟: {error}"));
+                    return Err(format!("无法连接 Omni 服务: {error}"));
                 }
             }
         };
@@ -306,7 +306,7 @@ impl OmniConnectionCoordinator {
             &app,
             "omni",
             "info",
-            format!("[CONNECT] 宸茶繛鎺?Omni 鏈嶅姟, model={}", provider.model),
+            format!("[CONNECT] 已连接 Omni 服务, model={}", provider.model),
         );
 
         let active_voice = voice.to_string();
@@ -344,14 +344,14 @@ impl OmniConnectionCoordinator {
         trace_call.record_ws_send("session.update", session_cfg.clone());
         socket
             .send(Message::Text(session_cfg.to_string().into()))
-            .map_err(|error| format!("鏃犳硶鍙戦€?Omni session 閰嶇疆: {error}"))?;
+            .map_err(|error| format!("无法发送 Omni session 配置: {error}"))?;
 
         let _ = diag_log(
             &app,
             "omni",
             "debug",
             format!(
-                "[SESSION] 宸插彂閫?session.update: modalities=[text,audio] voice={voice} instructions_len={}",
+                "[SESSION] 已发送 session.update: modalities=[text,audio] voice={voice} instructions_len={}",
                 instructions.len()
             ),
         );
@@ -361,14 +361,14 @@ impl OmniConnectionCoordinator {
                 &app,
                 "omni",
                 "info",
-                "[VAD] 褰撳墠妯″紡: manual (VAD bypass 宸插惎鐢紝姣?0绉掕嚜鍔?commit)",
+                "[VAD] 当前模式: manual（VAD bypass 已启用，每 10 秒自动 commit）",
             );
         } else {
             let _ = diag_log(
                 &app,
                 "omni",
                 "info",
-                "[VAD] turn_detection 閰嶇疆: type=server_vad threshold=0.0 silence_duration_ms=800",
+                "[VAD] turn_detection 配置: type=server_vad threshold=0.0 silence_duration_ms=800",
             );
         }
 

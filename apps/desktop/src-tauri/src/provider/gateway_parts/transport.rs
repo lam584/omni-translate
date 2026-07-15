@@ -4,13 +4,79 @@ use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
 use serde_json::Value;
+use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{Error as WebSocketError, WebSocket};
+use tungstenite::{connect, Error as WebSocketError, WebSocket};
 use url::Url;
 
 use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError};
+use super::auth::{apply_ws_auth, apply_ws_custom_headers, build_reqwest_headers};
 
 const MIN_WEBSOCKET_TIMEOUT_MS: u64 = 1000;
+
+/// Owns a configured blocking HTTP client for one provider request.
+/// Authentication and custom headers are applied at the transport boundary so
+/// protocol adapters only describe endpoint and payload shape.
+pub(crate) struct ProviderHttpClient {
+    client: Client,
+}
+
+/// Owns a configured provider WebSocket connection, including credentials,
+/// request headers and I/O timeouts. Protocol adapters only send and decode
+/// protocol frames after this boundary succeeds.
+#[derive(Debug, Default)]
+pub(crate) struct WebSocketTransport;
+
+impl WebSocketTransport {
+    pub(crate) fn connect_provider(
+        &self,
+        provider: &ProviderDraftInput,
+    ) -> Result<(WebSocket<MaybeTlsStream<TcpStream>>, Duration), ProviderRuntimeError> {
+        let timeout = resolve_websocket_timeout(provider.timeout_ms);
+        let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
+        let mut request = websocket_url
+            .as_str()
+            .into_client_request()
+            .map_err(|error| {
+                ProviderRuntimeError::new(
+                    "transport.unavailable",
+                    format!("无法创建 WebSocket 请求: {error}"),
+                )
+            })?;
+        apply_ws_auth(provider, request.headers_mut())?;
+        apply_ws_custom_headers(provider, request.headers_mut())?;
+        let (mut socket, _) = connect(request).map_err(|error| {
+            ProviderRuntimeError::new(
+                "transport.unavailable",
+                format!("WebSocket 建链失败: {error}"),
+            )
+        })?;
+        apply_websocket_timeouts(&mut socket, timeout)?;
+        Ok((socket, timeout))
+    }
+}
+
+impl ProviderHttpClient {
+    pub(crate) fn new(timeout_ms: u64) -> Result<Self, ProviderRuntimeError> {
+        Ok(Self {
+            client: build_client(timeout_ms)?,
+        })
+    }
+
+    pub(crate) fn post_json(
+        &self,
+        endpoint: String,
+        provider: &ProviderDraftInput,
+        payload: &Value,
+    ) -> Result<Response, ProviderRuntimeError> {
+        self.client
+            .post(endpoint)
+            .headers(build_reqwest_headers(provider)?)
+            .json(payload)
+            .send()
+            .map_err(normalize_transport_error)
+    }
+}
 
 pub(super) fn resolve_websocket_timeout(timeout_ms: u64) -> Duration {
     Duration::from_millis(timeout_ms.max(MIN_WEBSOCKET_TIMEOUT_MS))
@@ -46,7 +112,7 @@ pub(super) fn apply_tcp_stream_timeouts(
     Ok(())
 }
 
-pub(super) fn normalize_websocket_read_error(
+pub(crate) fn normalize_websocket_read_error(
     error: WebSocketError,
     timeout: Duration,
 ) -> ProviderRuntimeError {
@@ -85,7 +151,7 @@ pub(super) fn build_client(timeout_ms: u64) -> Result<Client, ProviderRuntimeErr
         })
 }
 
-pub(super) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool) {
+pub(crate) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool) {
     match provider.kind.as_str() {
         kind if is_openai_compatible_kind(kind) => match provider.transport.as_str() {
             "http" => ("http".to_string(), false),
@@ -121,7 +187,7 @@ pub(super) fn is_dashscope_realtime_websocket_model(model: &str) -> bool {
     normalized.contains("realtime") || normalized.contains("live")
 }
 
-fn is_openai_compatible_kind(kind: &str) -> bool {
+pub(crate) fn is_openai_compatible_kind(kind: &str) -> bool {
     matches!(
         kind,
         "openai-compatible" | "openrouter" | "ollama" | "lmstudio" | "nvidia"

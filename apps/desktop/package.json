@@ -8,7 +8,7 @@
     "dev": "vite",
     "dev:tauri": "tauri dev",
     "tauri": "tauri",
-    "lint": "eslint .",
+    "lint": "eslint . --max-warnings 0",
     "build": "tsc -p tsconfig.json && vite build",
     "build:tauri": "tauri build",
     "check": "tsc -p tsconfig.json --noEmit",

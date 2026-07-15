@@ -1,12 +1,12 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-pub(super) fn now_marker() -> String {
+pub(crate) fn now_marker() -> String {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => format!("unix:{}", duration.as_secs()),
         Err(_) => "unix:0".to_string(),
     }
 }
 
-pub(super) fn normalize_timestamp(timestamp: &str) -> String {
+pub(crate) fn normalize_timestamp(timestamp: &str) -> String {
     timestamp.replace(':', "-")
 }

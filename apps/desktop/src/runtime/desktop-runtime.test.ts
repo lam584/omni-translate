@@ -626,7 +626,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     useAppStore.getState().updateSubtitleDraft({ overlayFontSize: 37 });
     await vi.advanceTimersByTimeAsync(4000);
     expect(window.localStorage.getItem('omni.configDraftFallback')).toBeNull();
-    expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('未知错误');
+    expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('sqlite unavailable');
     cleanup();
   });
 
@@ -713,7 +713,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
       throw 'parse failed';
     });
     window.dispatchEvent(new StorageEvent('storage', { key: 'omni.configDraftShadow', newValue: '{invalid' }));
-    expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('未知错误');
+    expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('Cross-window config sync failed');
     cleanup();
   });
 

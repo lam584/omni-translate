@@ -50,9 +50,9 @@ const OMNI_MONITOR_SOURCE_QUEUE_CAPACITY: usize = 25;
 const OMNI_MONITOR_SOURCE_BATCH_FRAMES: usize = 4_800;
 const OMNI_SOURCE_STALE_AFTER_MS: u64 = 500;
 const OMNI_SOURCE_SUMMARY_INTERVAL_SECS: u64 = 5;
-#[allow(dead_code)]
+#[allow(dead_code, reason = "driverless WASAPI fallback diagnostics are retained for recovery builds")]
 const OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS: u64 = 5;
-#[allow(dead_code)]
+#[allow(dead_code, reason = "driverless WASAPI fallback restart policy is retained for recovery builds")]
 const OMNI_SOURCE_RESTART_BACKOFF_MS: [u64; 4] = [250, 500, 1_000, 2_000];
 const MONITOR_VIRTUAL_PLAYBACK_LOOP: &str = "monitor.virtual-playback-loop";
 const FILE_DEVICE_OMNI_TRANSLATE: u32 = 0x8337;
@@ -209,87 +209,159 @@ impl Drop for RuntimePidFile {
     }
 }
 
-pub fn run() -> Result<(), String> {
-    let args: Vec<String> = std::env::args().collect();
-    let pipe_name = read_arg(&args, "--pipe-name").unwrap_or_else(|| "omni-bridge-ipc".into());
-    let runtime_root = read_arg(&args, "--runtime-root").unwrap_or_else(|| ".".to_string());
-    let bridge_version = read_arg(&args, "--bridge-version").unwrap_or_else(|| "0.1.0".to_string());
-    let _singleton_mutex = acquire_singleton_mutex(&pipe_name)?;
-    let runtime_root_path = PathBuf::from(&runtime_root);
-    let pid_file = write_runtime_pid_file(&runtime_root_path)?;
-    let control_pipe = format!(r"\\.\pipe\{pipe_name}");
-    let audio_pipe = format!(r"\\.\pipe\{pipe_name}-audio");
-    let source_pipe = format!(r"\\.\pipe\{pipe_name}-source");
-    let state = Arc::new(Mutex::new(BridgeState::new(bridge_version)));
-    let (playback_tx, playback_rx) = mpsc::sync_channel::<PlaybackCommand>(128);
-    let (source_tx, source_rx) = mpsc::sync_channel::<Vec<u8>>(32);
-    let playback_state = state.clone();
-    thread::spawn(move || run_playback_worker(playback_rx, playback_state));
-    let driver_source_state = state.clone();
-    let driver_source_playback_tx = playback_tx.clone();
-    let driver_source_runtime_root = runtime_root_path.clone();
-    thread::spawn(move || {
-        run_driver_source_worker(
-            driver_source_state,
-            driver_source_runtime_root,
-            driver_source_playback_tx,
+struct BridgeHost {
+    pipe_name: String,
+    runtime_root: PathBuf,
+    bridge_version: String,
+}
+
+impl BridgeHost {
+    fn from_args(args: &[String]) -> Self {
+        Self {
+            pipe_name: read_arg(args, "--pipe-name").unwrap_or_else(|| "omni-bridge-ipc".into()),
+            runtime_root: PathBuf::from(read_arg(args, "--runtime-root").unwrap_or_else(|| ".".to_string())),
+            bridge_version: read_arg(args, "--bridge-version").unwrap_or_else(|| "0.1.0".to_string()),
+        }
+    }
+
+    fn run(self) -> Result<(), String> {
+        let _singleton_mutex = acquire_singleton_mutex(&self.pipe_name)?;
+        let pid_file = write_runtime_pid_file(&self.runtime_root)?;
+        let control_pipe = format!(r"\\.\pipe\{}", self.pipe_name);
+        let audio_pipe = format!(r"\\.\pipe\{}-audio", self.pipe_name);
+        let source_pipe = format!(r"\\.\pipe\{}-source", self.pipe_name);
+        let state = Arc::new(Mutex::new(BridgeState::new(self.bridge_version)));
+        let (playback_tx, playback_rx) = mpsc::sync_channel::<PlaybackCommand>(128);
+        let (source_tx, source_rx) = mpsc::sync_channel::<Vec<u8>>(32);
+
+        PlaybackWorker::new(playback_rx, state.clone()).spawn();
+        SourceCaptureSupervisor::new(
+            state.clone(),
+            self.runtime_root.clone(),
+            playback_tx.clone(),
             source_tx,
         )
-    });
-    let watchdog_state = state.clone();
-    let watchdog_runtime_root = runtime_root_path.clone();
-    thread::spawn(move || run_source_watchdog(watchdog_state, watchdog_runtime_root));
-    let audio_state = state.clone();
-    let audio_playback_tx = playback_tx.clone();
-    let audio_runtime_root = runtime_root_path.clone();
-    let audio_pipe_clone = audio_pipe.clone();
-    thread::spawn(move || {
-        serve_named_pipe(&audio_pipe_clone, move |handle| {
-            handle_audio_client(
-                handle,
-                &audio_state,
-                &audio_runtime_root,
-                &audio_playback_tx,
-            )
-        });
-    });
-    let source_state = state.clone();
-    let source_rx = Arc::new(Mutex::new(source_rx));
-    let source_pipe_clone = source_pipe.clone();
-    let source_playback_tx = playback_tx.clone();
-    let source_runtime_root = runtime_root_path.clone();
-    thread::spawn(move || {
-        serve_named_pipe(&source_pipe_clone, move |handle| {
-            handle_source_subscriber(
-                handle,
-                &source_state,
-                &source_rx,
-                &source_playback_tx,
-                &source_runtime_root,
-            )
-        });
-    });
-    println!(
-        "{}",
-        json!({
-            "type": "bridge-service.ready",
-            "pipePath": control_pipe,
-            "audioPipePath": audio_pipe,
-            "sourcePipePath": source_pipe,
-            "runtimeRoot": runtime_root,
-            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
-        })
-    );
-    serve_named_pipe(&control_pipe, move |handle| {
-        handle_control_client(
-            handle,
-            &state,
-            &playback_tx,
-            Path::new(&runtime_root),
-            &pid_file.path,
+        .spawn();
+
+        let watchdog_state = state.clone();
+        let watchdog_runtime_root = self.runtime_root.clone();
+        thread::spawn(move || run_source_watchdog(watchdog_state, watchdog_runtime_root));
+        spawn_audio_pipe_server(
+            audio_pipe.clone(),
+            state.clone(),
+            self.runtime_root.clone(),
+            playback_tx.clone(),
+        );
+        spawn_source_pipe_server(
+            source_pipe.clone(),
+            state.clone(),
+            source_rx,
+            playback_tx.clone(),
+            self.runtime_root.clone(),
+        );
+        println!(
+            "{}",
+            json!({
+                "type": "bridge-service.ready",
+                "pipePath": control_pipe,
+                "audioPipePath": audio_pipe,
+                "sourcePipePath": source_pipe,
+                "runtimeRoot": self.runtime_root,
+                "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            })
+        );
+        NamedPipeControlServer::new(
+            control_pipe,
+            state,
+            playback_tx,
+            self.runtime_root,
+            pid_file,
         )
-    });
-    Ok(())
+        .serve();
+        Ok(())
+    }
+}
+
+struct PlaybackWorker {
+    receiver: mpsc::Receiver<PlaybackCommand>,
+    state: Arc<Mutex<BridgeState>>,
+}
+
+impl PlaybackWorker {
+    fn new(receiver: mpsc::Receiver<PlaybackCommand>, state: Arc<Mutex<BridgeState>>) -> Self {
+        Self { receiver, state }
+    }
+
+    fn spawn(self) {
+        thread::spawn(move || run_playback_worker(self.receiver, self.state));
+    }
+}
+
+struct SourceCaptureSupervisor {
+    state: Arc<Mutex<BridgeState>>,
+    runtime_root: PathBuf,
+    playback_tx: mpsc::SyncSender<PlaybackCommand>,
+    source_tx: mpsc::SyncSender<Vec<u8>>,
+}
+
+impl SourceCaptureSupervisor {
+    fn new(
+        state: Arc<Mutex<BridgeState>>,
+        runtime_root: PathBuf,
+        playback_tx: mpsc::SyncSender<PlaybackCommand>,
+        source_tx: mpsc::SyncSender<Vec<u8>>,
+    ) -> Self {
+        Self { state, runtime_root, playback_tx, source_tx }
+    }
+
+    fn spawn(self) {
+        thread::spawn(move || {
+            DriverCaptureWorker::new(
+                self.state,
+                self.runtime_root,
+                self.playback_tx,
+                self.source_tx,
+            )
+            .run()
+        });
+    }
+}
+
+struct NamedPipeControlServer {
+    pipe_name: String,
+    state: Arc<Mutex<BridgeState>>,
+    playback_tx: mpsc::SyncSender<PlaybackCommand>,
+    runtime_root: PathBuf,
+    pid_file: RuntimePidFile,
+}
+
+impl NamedPipeControlServer {
+    fn new(
+        pipe_name: String,
+        state: Arc<Mutex<BridgeState>>,
+        playback_tx: mpsc::SyncSender<PlaybackCommand>,
+        runtime_root: PathBuf,
+        pid_file: RuntimePidFile,
+    ) -> Self {
+        Self { pipe_name, state, playback_tx, runtime_root, pid_file }
+    }
+
+    fn serve(self) {
+        serve_named_pipe(&self.pipe_name, move |handle| {
+            handle_control_client(
+                handle,
+                &self.state,
+                &self.playback_tx,
+                &self.runtime_root,
+                &self.pid_file.path,
+            )
+        });
+    }
+}
+
+pub fn run() -> Result<(), String> {
+    let args: Vec<String> = std::env::args().collect();
+    BridgeHost::from_args(&args).run()
 }
 
 fn acquire_singleton_mutex(pipe_name: &str) -> Result<SingletonMutex, String> {
@@ -322,6 +394,34 @@ fn read_arg(args: &[String], key: &str) -> Option<String> {
         .position(|arg| arg == key)
         .and_then(|index| args.get(index + 1))
         .cloned()
+}
+
+fn spawn_audio_pipe_server(
+    pipe_name: String,
+    state: Arc<Mutex<BridgeState>>,
+    runtime_root: PathBuf,
+    playback_tx: mpsc::SyncSender<PlaybackCommand>,
+) {
+    thread::spawn(move || {
+        serve_named_pipe(&pipe_name, move |handle| {
+            handle_audio_client(handle, &state, &runtime_root, &playback_tx)
+        });
+    });
+}
+
+fn spawn_source_pipe_server(
+    pipe_name: String,
+    state: Arc<Mutex<BridgeState>>,
+    source_rx: mpsc::Receiver<Vec<u8>>,
+    playback_tx: mpsc::SyncSender<PlaybackCommand>,
+    runtime_root: PathBuf,
+) {
+    let source_rx = Arc::new(Mutex::new(source_rx));
+    thread::spawn(move || {
+        serve_named_pipe(&pipe_name, move |handle| {
+            handle_source_subscriber(handle, &state, &source_rx, &playback_tx, &runtime_root)
+        });
+    });
 }
 
 fn handle_control_client(
@@ -607,1069 +707,8 @@ fn handle_audio_client(
     let _ = write_framed_json(handle, &ack);
 }
 
-#[allow(dead_code)]
-fn run_wasapi_source_worker(
-    state: Arc<Mutex<BridgeState>>,
-    runtime_root: PathBuf,
-    playback_tx: mpsc::SyncSender<PlaybackCommand>,
-    source_tx: mpsc::SyncSender<Vec<u8>>,
-) {
-    let _ = initialize_mta();
-    let mut restart_index = 0_usize;
-    loop {
-        let (active, generation, device_id) = {
-            let current = state.lock().unwrap();
-            (
-                current.source_subscriber_active,
-                current.source_generation,
-                current.virtual_render_device_id.clone(),
-            )
-        };
-        if !active || device_id.is_empty() {
-            state.lock().unwrap().source_worker_phase = "waiting-subscriber".to_string();
-            thread::sleep(Duration::from_millis(25));
-            continue;
-        }
-
-        {
-            let mut current = state.lock().unwrap();
-            current.update_progress("opening-wasapi-loopback");
-        }
-        match capture_wasapi_source_generation(
-            &state,
-            &runtime_root,
-            &playback_tx,
-            &source_tx,
-            generation,
-            &device_id,
-        ) {
-            Ok(()) => restart_index = 0,
-            Err(error) => {
-                let delay_ms = OMNI_SOURCE_RESTART_BACKOFF_MS
-                    [restart_index.min(OMNI_SOURCE_RESTART_BACKOFF_MS.len() - 1)];
-                restart_index = (restart_index + 1).min(OMNI_SOURCE_RESTART_BACKOFF_MS.len() - 1);
-                {
-                    let mut current = state.lock().unwrap();
-                    current.capture_restart_count += 1;
-                    current.set_error(
-                        "wasapi-loopback-restarting",
-                        format!("capture.wasapi-loopback-failed:{error}"),
-                    );
-                }
-                append_bridge_service_log(
-                    &runtime_root,
-                    &format!(
-                        "event=wasapi_loopback_restart generation={generation} delayMs={delay_ms} error={error}"
-                    ),
-                );
-                thread::sleep(Duration::from_millis(delay_ms));
-            }
-        }
-    }
-}
-
-#[allow(dead_code)]
-fn capture_wasapi_source_generation(
-    state: &Arc<Mutex<BridgeState>>,
-    runtime_root: &Path,
-    playback_tx: &mpsc::SyncSender<PlaybackCommand>,
-    source_tx: &mpsc::SyncSender<Vec<u8>>,
-    generation: u64,
-    requested_device_id: &str,
-) -> Result<(), String> {
-    let enumerator = DeviceEnumerator::new().map_err_str()?;
-    let device = find_render_device(&enumerator, requested_device_id)?;
-    let effective_device_id = device.get_id().map_err_str()?;
-    let mut audio_client = device.get_iaudioclient().map_err_str()?;
-    let desired_format = WaveFormat::new(
-        32,
-        32,
-        &SampleType::Float,
-        INTERNAL_SAMPLE_RATE_HZ as usize,
-        INTERNAL_CHANNEL_COUNT as usize,
-        None,
-    );
-    let (_, min_time) = audio_client.get_device_period().map_err_str()?;
-    audio_client
-        .initialize_client(
-            &desired_format,
-            &Direction::Capture,
-            &StreamMode::EventsShared {
-                autoconvert: true,
-                buffer_duration_hns: min_time,
-            },
-        )
-        .map_err_str()?;
-    let event_handle = audio_client.set_get_eventhandle().map_err_str()?;
-    let capture_client = audio_client.get_audiocaptureclient().map_err_str()?;
-    audio_client.start_stream().map_err_str()?;
-
-    append_bridge_service_log(
-        runtime_root,
-        &format!(
-            "event=wasapi_loopback_started generation={generation} device={effective_device_id}"
-        ),
-    );
-    {
-        let mut current = state.lock().unwrap();
-        current.update_progress("wasapi-loopback-running");
-        current.last_error_code = None;
-    }
-
-    let mut sample_bytes = VecDeque::new();
-    let bytes_per_frame = desired_format.get_blockalign() as usize;
-    let float_chunk_bytes = 960 * INTERNAL_CHANNEL_COUNT as usize * std::mem::size_of::<f32>();
-    let mut diagnostics_started_at = Instant::now();
-    let mut diagnostics_peak = 0.0_f32;
-    let mut diagnostics_square_sum = 0.0_f64;
-    let mut diagnostics_sample_count = 0_u64;
-    let mut diagnostics_silent_packets = 0_u64;
-    let mut diagnostics_invalid_samples = 0_u64;
-
-    loop {
-        let (active, current_generation) = {
-            let current = state.lock().unwrap();
-            (current.source_subscriber_active, current.source_generation)
-        };
-        if !active || current_generation != generation {
-            let _ = audio_client.stop_stream();
-            return Ok(());
-        }
-
-        while let Some(packet_frames) = capture_client
-            .get_next_packet_size()
-            .map_err_str()?
-            .filter(|frames| *frames > 0)
-        {
-            let mut packet = vec![0_u8; packet_frames as usize * bytes_per_frame];
-            let (frames_read, buffer_info) =
-                capture_client.read_from_device(&mut packet).map_err_str()?;
-            packet.truncate(frames_read as usize * bytes_per_frame);
-            if buffer_info.flags.silent {
-                diagnostics_silent_packets += 1;
-                state.lock().unwrap().capture_silent_packet_count += 1;
-            }
-            append_capture_packet(&mut sample_bytes, packet, buffer_info.flags.silent);
-        }
-        while sample_bytes.len() >= float_chunk_bytes {
-            let mut payload = Vec::with_capacity(OMNI_SOURCE_CHUNK_BYTES);
-            for _ in 0..(960 * INTERNAL_CHANNEL_COUNT as usize) {
-                let bytes = [
-                    sample_bytes.pop_front().unwrap(),
-                    sample_bytes.pop_front().unwrap(),
-                    sample_bytes.pop_front().unwrap(),
-                    sample_bytes.pop_front().unwrap(),
-                ];
-                let (sample, invalid) = sanitize_capture_sample(f32::from_le_bytes(bytes));
-                if invalid {
-                    diagnostics_invalid_samples += 1;
-                }
-                diagnostics_peak = diagnostics_peak.max(sample.abs());
-                diagnostics_square_sum += (sample as f64) * (sample as f64);
-                diagnostics_sample_count += 1;
-                payload.extend_from_slice(&((sample * i16::MAX as f32) as i16).to_le_bytes());
-            }
-            {
-                let mut current = state.lock().unwrap();
-                current.capture_packet_count += 1;
-                current.capture_frames_received += 960;
-                current.capture_peak = diagnostics_peak;
-                current.capture_rms = capture_rms(diagnostics_square_sum, diagnostics_sample_count);
-                current.capture_invalid_sample_count += diagnostics_invalid_samples;
-                current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
-            }
-            diagnostics_invalid_samples = 0;
-            dispatch_source_frame(state, runtime_root, playback_tx, source_tx, payload);
-        }
-        if diagnostics_started_at.elapsed()
-            >= Duration::from_secs(OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS)
-        {
-            let rms = capture_rms(diagnostics_square_sum, diagnostics_sample_count);
-            append_bridge_service_log(
-                runtime_root,
-                &format!(
-                    "event=wasapi_capture_summary generation={generation} peak={diagnostics_peak:.6} rms={rms:.6} silentPackets={diagnostics_silent_packets} invalidSamples={} samples={diagnostics_sample_count}",
-                    state.lock().unwrap().capture_invalid_sample_count
-                ),
-            );
-            diagnostics_started_at = Instant::now();
-            diagnostics_peak = 0.0;
-            diagnostics_square_sum = 0.0;
-            diagnostics_sample_count = 0;
-            diagnostics_silent_packets = 0;
-        }
-        event_handle.wait_for_event(100).map_err_str()?;
-    }
-}
-
-#[allow(dead_code)]
-fn append_capture_packet(sample_bytes: &mut VecDeque<u8>, mut packet: Vec<u8>, silent: bool) {
-    if silent {
-        packet.fill(0);
-    }
-    sample_bytes.extend(packet);
-}
-
-#[allow(dead_code)]
-fn sanitize_capture_sample(sample: f32) -> (f32, bool) {
-    if sample.is_finite() {
-        (sample.clamp(-1.0, 1.0), false)
-    } else {
-        (0.0, true)
-    }
-}
-
-#[allow(dead_code)]
-fn capture_rms(square_sum: f64, sample_count: u64) -> f32 {
-    if sample_count == 0 {
-        0.0
-    } else {
-        (square_sum / sample_count as f64).sqrt() as f32
-    }
-}
-
-#[allow(dead_code)]
-fn find_render_device(
-    enumerator: &DeviceEnumerator,
-    requested_device_id: &str,
-) -> Result<Device, String> {
-    let collection = enumerator
-        .get_device_collection(&Direction::Render)
-        .map_err_str()?;
-    for device_result in &collection {
-        let device = device_result.map_err_str()?;
-        let id_matches = device
-            .get_id()
-            .map(|id| id == requested_device_id)
-            .unwrap_or(false);
-        let name_matches = device
-            .get_friendlyname()
-            .map(|name| name.contains("Omni Translate Virtual Speaker"))
-            .unwrap_or(false);
-        if id_matches || name_matches {
-            return Ok(device);
-        }
-    }
-    Err(format!(
-        "configured virtual render endpoint was not found: {requested_device_id}"
-    ))
-}
-
-fn run_driver_source_worker(
-    state: Arc<Mutex<BridgeState>>,
-    runtime_root: PathBuf,
-    playback_tx: mpsc::SyncSender<PlaybackCommand>,
-    source_tx: mpsc::SyncSender<Vec<u8>>,
-) {
-    let mut last_driver_open_error = None;
-    loop {
-        {
-            let mut current = state.lock().unwrap();
-            current.update_progress("opening-driver");
-        }
-        let driver = match OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(OMNI_BRIDGE_DEVICE_PATH)
-        {
-            Ok(driver) => driver,
-            Err(error) => {
-                let error = error.to_string();
-                let mut current = state.lock().unwrap();
-                current.set_error("driver-open-failed", format!("driver.open-failed:{error}"));
-                let generation = current.source_generation;
-                drop(current);
-                if last_driver_open_error.as_deref() != Some(error.as_str()) {
-                    append_bridge_service_log(
-                        &runtime_root,
-                        &format!("driver open failed: generation={generation} error={error}"),
-                    );
-                    last_driver_open_error = Some(error);
-                }
-                thread::sleep(Duration::from_secs(1));
-                continue;
-            }
-        };
-        if last_driver_open_error.take().is_some() {
-            append_bridge_service_log(&runtime_root, "driver open recovered");
-        }
-        {
-            let mut current = state.lock().unwrap();
-            current.update_progress("driver-open");
-        }
-        append_bridge_service_log(&runtime_root, "event=driver_open_success");
-        match query_driver_status(&driver) {
-            Ok(status) => {
-                update_driver_status(&state, &status);
-                append_bridge_service_log(
-                    &runtime_root,
-                    &format!(
-                        "event=driver_status abiVersion={} ringCapacityBytes={} maxBufferedBytes={} capturedBytes={} deliveredBytes={} bufferedBytes={} droppedBytes={}",
-                        status.abi_version,
-                        status.ring_capacity_bytes,
-                        status.max_buffered_bytes,
-                        status.captured_bytes,
-                        status.delivered_bytes,
-                        status.buffered_bytes,
-                        status.dropped_bytes,
-                    ),
-                );
-            }
-            Err(error) => append_bridge_service_log(
-                &runtime_root,
-                &format!("event=driver_status_failed error={error}"),
-            ),
-        }
-        let started_at = Instant::now();
-        let mut pending_bytes = VecDeque::new();
-        let mut pacer = AudioFramePacer::new(
-            OMNI_SOURCE_QUEUE_CAPACITY,
-            Duration::from_millis(OMNI_SOURCE_FRAME_INTERVAL_MS),
-        );
-        let mut last_dropped_frames = 0_u64;
-        let mut last_underruns = 0_u64;
-        let mut released_frames = 0_u64;
-        let mut last_summary_at = Instant::now();
-        let mut source_generation = u64::MAX;
-        let mut idle_since = Instant::now();
-        let mut first_read_generation = u64::MAX;
-        let mut first_non_empty_generation = u64::MAX;
-        loop {
-            let (active, current_generation) = {
-                let current = state.lock().unwrap();
-                (current.source_subscriber_active, current.source_generation)
-            };
-            if !active {
-                {
-                    let mut current = state.lock().unwrap();
-                    if current.source_worker_phase != "waiting-subscriber" {
-                        current.update_progress("waiting-subscriber");
-                    }
-                }
-                if source_generation != current_generation {
-                    pacer.clear();
-                    pending_bytes.clear();
-                    let _ = reset_driver_ring(&driver);
-                    source_generation = current_generation;
-                }
-                thread::sleep(Duration::from_millis(1));
-                continue;
-            }
-            if source_generation != current_generation {
-                pacer.clear();
-                pending_bytes.clear();
-                let _ = reset_driver_ring(&driver);
-                source_generation = current_generation;
-                idle_since = Instant::now();
-                first_read_generation = u64::MAX;
-                first_non_empty_generation = u64::MAX;
-                append_bridge_service_log(
-                    &runtime_root,
-                    &format!("event=source_generation_active generation={source_generation}"),
-                );
-            }
-            let mut released = false;
-            if let Some(frame) = pacer.poll(started_at.elapsed()) {
-                released_frames += 1;
-                if released_frames == 1 {
-                    append_bridge_service_log(
-                        &runtime_root,
-                        &format!(
-                            "source pacer started: frameBytes={} intervalMs={} queueCapacity={}",
-                            OMNI_SOURCE_CHUNK_BYTES,
-                            OMNI_SOURCE_FRAME_INTERVAL_MS,
-                            OMNI_SOURCE_QUEUE_CAPACITY
-                        ),
-                    );
-                }
-                dispatch_source_frame(&state, &runtime_root, &playback_tx, &source_tx, frame);
-                released = true;
-            }
-
-            let mut bytes_read = 0;
-            if pacer.queued_frames() < OMNI_SOURCE_QUEUE_CAPACITY {
-                let mut payload = vec![0_u8; OMNI_SOURCE_CHUNK_BYTES];
-                {
-                    let mut current = state.lock().unwrap();
-                    current.update_progress("reading-driver");
-                    current.source_read_calls += 1;
-                }
-                if first_read_generation != source_generation {
-                    append_bridge_service_log(
-                        &runtime_root,
-                        &format!("event=driver_read_begin generation={source_generation}"),
-                    );
-                    first_read_generation = source_generation;
-                }
-                bytes_read = match read_driver_pcm(&driver, &mut payload) {
-                    Ok(bytes_read) => {
-                        let bytes_read = bytes_read - (bytes_read % 4);
-                        let mut current = state.lock().unwrap();
-                        current.update_progress("driver-read-returned");
-                        record_source_read_result(&mut current, bytes_read);
-                        bytes_read
-                    }
-                    Err(error) => {
-                        let mut current = state.lock().unwrap();
-                        current
-                            .set_error("driver-read-failed", format!("driver.read-failed:{error}"));
-                        let generation = current.source_generation;
-                        drop(current);
-                        append_bridge_service_log(
-                            &runtime_root,
-                            &format!("driver read failed: generation={generation} error={error}"),
-                        );
-                        break;
-                    }
-                };
-                payload.truncate(bytes_read);
-                if bytes_read > 0 && first_non_empty_generation != source_generation {
-                    append_bridge_service_log(
-                        &runtime_root,
-                        &format!(
-                            "event=driver_read_first_pcm generation={source_generation} bytesRead={bytes_read}"
-                        ),
-                    );
-                    first_non_empty_generation = source_generation;
-                }
-                if !payload.is_empty() {
-                    idle_since = Instant::now();
-                    pending_bytes.extend(payload);
-                    let now = started_at.elapsed();
-                    while pending_bytes.len() >= OMNI_SOURCE_CHUNK_BYTES {
-                        let pcm16_frame: Vec<u8> =
-                            pending_bytes.drain(..OMNI_SOURCE_CHUNK_BYTES).collect();
-                        pacer.push(pcm16_frame, now);
-                    }
-                }
-            }
-
-            let dropped_frames = pacer.dropped_frame_count();
-            if dropped_frames > last_dropped_frames {
-                let dropped = dropped_frames - last_dropped_frames;
-                state.lock().unwrap().dropped_frame_count +=
-                    dropped * (OMNI_SOURCE_CHUNK_BYTES as u64 / 4);
-                last_dropped_frames = dropped_frames;
-            }
-
-            if !released {
-                if let Some(frame) = pacer.poll(started_at.elapsed()) {
-                    released_frames += 1;
-                    if released_frames == 1 {
-                        append_bridge_service_log(
-                            &runtime_root,
-                            &format!(
-                                "source pacer started: frameBytes={} intervalMs={} queueCapacity={}",
-                                OMNI_SOURCE_CHUNK_BYTES,
-                                OMNI_SOURCE_FRAME_INTERVAL_MS,
-                                OMNI_SOURCE_QUEUE_CAPACITY
-                            ),
-                        );
-                    }
-                    dispatch_source_frame(&state, &runtime_root, &playback_tx, &source_tx, frame);
-                    released = true;
-                }
-            }
-
-            let underruns = pacer.underrun_count();
-            if underruns > last_underruns {
-                state.lock().unwrap().underrun_count += underruns - last_underruns;
-                last_underruns = underruns;
-            }
-            state.lock().unwrap().queued_frames = pacer.queued_frames();
-            {
-                let mut current = state.lock().unwrap();
-                current.source_pending_bytes = pending_bytes.len();
-                current.source_pacer_queued_frames = pacer.queued_frames();
-            }
-
-            if pacer.queued_frames() == 0
-                && !pending_bytes.is_empty()
-                && idle_since.elapsed() >= Duration::from_millis(OMNI_SOURCE_STALE_AFTER_MS)
-            {
-                pending_bytes.clear();
-                state.lock().unwrap().source_pending_bytes = 0;
-            }
-
-            if last_summary_at.elapsed() >= Duration::from_secs(OMNI_SOURCE_SUMMARY_INTERVAL_SECS) {
-                if let Ok(status) = query_driver_status(&driver) {
-                    update_driver_status(&state, &status);
-                }
-                let (
-                    driver_buffered_bytes,
-                    driver_dropped_bytes,
-                    monitor_source_queued_frames,
-                    stale_source_frames_dropped,
-                ) = {
-                    let current = state.lock().unwrap();
-                    (
-                        current.driver_buffered_bytes,
-                        current.driver_dropped_bytes,
-                        current.monitor_source_queued_frames,
-                        current.stale_source_frames_dropped,
-                    )
-                };
-                append_bridge_service_log(
-                    &runtime_root,
-                    &format!(
-                        "source pacer summary: releasedFrames={} queuedFrames={} pendingBytes={} underruns={} droppedFrames={} driverBufferedBytes={} driverDroppedBytes={} monitorQueuedFrames={} staleSourceFramesDropped={}",
-                        released_frames,
-                        pacer.queued_frames(),
-                        pending_bytes.len(),
-                        pacer.underrun_count(),
-                        pacer.dropped_frame_count(),
-                        driver_buffered_bytes,
-                        driver_dropped_bytes,
-                        monitor_source_queued_frames,
-                        stale_source_frames_dropped,
-                    ),
-                );
-                last_summary_at = Instant::now();
-            }
-
-            if bytes_read == 0 && !released {
-                thread::sleep(Duration::from_millis(1));
-            }
-        }
-    }
-}
-
-fn dispatch_source_frame(
-    state: &Arc<Mutex<BridgeState>>,
-    _runtime_root: &Path,
-    playback_tx: &mpsc::SyncSender<PlaybackCommand>,
-    source_tx: &mpsc::SyncSender<Vec<u8>>,
-    payload: Vec<u8>,
-) {
-    let Ok(samples) = decode_pcm16le(&payload) else {
-        return;
-    };
-    let frame_count = samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
-    let mut current = state.lock().unwrap();
-    current.source_frames_captured += frame_count;
-    current.source_released_frames += 1;
-    current.last_frame_timestamp_ms = Some(unix_ms());
-    let monitor_samples = mix_for_monitor(
-        &samples,
-        &[],
-        INTERNAL_SAMPLE_RATE_HZ,
-        INTERNAL_CHANNEL_COUNT,
-        &current.mix_control,
-    );
-    if current.monitor_playback_enabled && !monitor_samples.is_empty() {
-        let result = playback_tx.try_send(PlaybackCommand::Play(PlaybackJob {
-            samples: monitor_samples,
-            device_id: current.physical_playback_device_id.clone(),
-            volume: playback_volume(current.physical_playback_level),
-            source_frame: true,
-            ducking_enabled: current.mix_control.ducking_enabled,
-            ducking_depth_percent: current.mix_control.ducking_depth_percent,
-            queued_at: Instant::now(),
-            source_generation: current.source_generation,
-        }));
-        if result.is_err() {
-            current.dropped_frame_count += frame_count;
-        }
-    }
-    if source_tx.try_send(payload.clone()).is_err() {
-        current.dropped_frame_count += frame_count;
-    }
-    drop(current);
-}
-
-fn append_bridge_service_log(runtime_root: &Path, message: &str) {
-    let _ = fs::create_dir_all(runtime_root);
-    if let Ok(mut log) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(runtime_root.join("bridge-service.log"))
-    {
-        let _ = writeln!(log, "{} {}", unix_ms(), message);
-    }
-}
-
-fn update_driver_status(state: &Arc<Mutex<BridgeState>>, status: &DriverStatus) {
-    let mut current = state.lock().unwrap();
-    current.driver_buffered_bytes = status.buffered_bytes as u64;
-    current.driver_max_buffered_bytes = status.max_buffered_bytes as u64;
-    current.driver_captured_bytes = status.captured_bytes;
-    current.driver_delivered_bytes = status.delivered_bytes;
-    current.driver_dropped_bytes = status.dropped_bytes;
-}
-
-fn run_source_watchdog(state: Arc<Mutex<BridgeState>>, runtime_root: PathBuf) {
-    loop {
-        thread::sleep(Duration::from_secs(OMNI_SOURCE_SUMMARY_INTERVAL_SECS));
-        let summary = {
-            let current = state.lock().unwrap();
-            source_watchdog_summary(&current, unix_ms())
-        };
-        append_bridge_service_log(&runtime_root, &summary);
-    }
-}
-
-fn record_source_read_result(state: &mut BridgeState, bytes_read: usize) {
-    state.source_bytes_read += bytes_read as u64;
-    if bytes_read == 0 {
-        state.source_zero_byte_reads += 1;
-    }
-}
-
-fn source_watchdog_summary(state: &BridgeState, now_ms: u64) -> String {
-    let last_progress_age_ms = state
-        .source_worker_last_progress_timestamp_ms
-        .map(|timestamp| now_ms.saturating_sub(timestamp))
-        .unwrap_or(0);
-    format!(
-        "event=source_watchdog captureBackend=wasapi-endpoint-loopback sourceSubscriberActive={} sourceGeneration={} workerPhase={} lastProgressAgeMs={} captureRestarts={} capturePackets={} captureFrames={} capturePeak={:.6} captureRms={:.6} captureSilentPackets={} captureInvalidSamples={} monitorBufferedMs={} monitorUnderruns={} monitorOverruns={} readCalls={} zeroByteReads={} bytesRead={} capturedBytes={} deliveredBytes={} bufferedBytes={} droppedBytes={} pacerQueuedFrames={} pendingBytes={} releasedFrames={} underruns={}",
-        state.source_subscriber_active,
-        state.source_generation,
-        state.source_worker_phase,
-        last_progress_age_ms,
-        state.capture_restart_count,
-        state.capture_packet_count,
-        state.capture_frames_received,
-        state.capture_peak,
-        state.capture_rms,
-        state.capture_silent_packet_count,
-        state.capture_invalid_sample_count,
-        state.monitor_source_queued_frames * OMNI_SOURCE_FRAME_INTERVAL_MS as usize,
-        state.monitor_underrun_count,
-        state.monitor_overrun_count,
-        state.source_read_calls,
-        state.source_zero_byte_reads,
-        state.source_bytes_read,
-        state.driver_captured_bytes,
-        state.driver_delivered_bytes,
-        state.driver_buffered_bytes,
-        state.driver_dropped_bytes,
-        state.source_pacer_queued_frames,
-        state.source_pending_bytes,
-        state.source_released_frames,
-        state.underrun_count,
-    )
-}
-
-fn read_driver_pcm(driver: &fs::File, payload: &mut [u8]) -> Result<usize, io::Error> {
-    let mut bytes_read = 0_u32;
-    let ok = unsafe {
-        DeviceIoControl(
-            driver.as_raw_handle() as HANDLE,
-            IOCTL_OMNI_BRIDGE_READ_PCM,
-            ptr::null(),
-            0,
-            payload.as_mut_ptr().cast(),
-            payload.len() as u32,
-            &mut bytes_read,
-            ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(bytes_read as usize)
-    }
-}
-
-fn reset_driver_ring(driver: &fs::File) -> Result<(), io::Error> {
-    let mut bytes_returned = 0_u32;
-    let ok = unsafe {
-        DeviceIoControl(
-            driver.as_raw_handle() as HANDLE,
-            IOCTL_OMNI_BRIDGE_RESET,
-            ptr::null(),
-            0,
-            ptr::null_mut(),
-            0,
-            &mut bytes_returned,
-            ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        Err(io::Error::last_os_error())
-    } else {
-        Ok(())
-    }
-}
-
-fn query_driver_status(driver: &fs::File) -> Result<DriverStatus, io::Error> {
-    let mut status = DriverStatus::default();
-    let mut bytes_returned = 0_u32;
-    let ok = unsafe {
-        DeviceIoControl(
-            driver.as_raw_handle() as HANDLE,
-            IOCTL_OMNI_BRIDGE_QUERY_STATUS,
-            ptr::null(),
-            0,
-            (&mut status as *mut DriverStatus).cast(),
-            std::mem::size_of::<DriverStatus>() as u32,
-            &mut bytes_returned,
-            ptr::null_mut(),
-        )
-    };
-    if ok == 0 {
-        Err(io::Error::last_os_error())
-    } else if bytes_returned < DRIVER_STATUS_BASE_SIZE {
-        Err(io::Error::new(
-            io::ErrorKind::UnexpectedEof,
-            format!(
-                "driver status returned {bytes_returned} byte(s); expected at least {DRIVER_STATUS_BASE_SIZE}"
-            ),
-        ))
-    } else {
-        Ok(status)
-    }
-}
-
-fn handle_source_subscriber(
-    handle: HANDLE,
-    state: &Arc<Mutex<BridgeState>>,
-    source_rx: &Arc<Mutex<mpsc::Receiver<Vec<u8>>>>,
-    playback_tx: &mpsc::SyncSender<PlaybackCommand>,
-    runtime_root: &Path,
-) {
-    let (my_generation, previous_generation) = {
-        let source_rx = source_rx.lock().unwrap();
-        let mut current = state.lock().unwrap();
-        let generations = begin_source_subscription(&mut current);
-        drop(current);
-        while source_rx.try_recv().is_ok() {}
-        generations
-    };
-    append_bridge_service_log(
-        runtime_root,
-        &format!(
-            "source subscriber connected: generation={my_generation} previousGeneration={previous_generation}"
-        ),
-    );
-    if source_subscription_is_owner(&state.lock().unwrap(), my_generation) {
-        let _ = playback_tx.try_send(PlaybackCommand::FlushSource);
-    }
-    let mut frame_index = 0_u64;
-    loop {
-        if !source_subscription_is_owner(&state.lock().unwrap(), my_generation) {
-            append_bridge_service_log(
-                runtime_root,
-                &format!("source subscriber handoff: generation={my_generation}"),
-            );
-            break;
-        }
-        let payload = {
-            let source_rx = source_rx.lock().unwrap();
-            let current = state.lock().unwrap();
-            if !source_subscription_is_owner(&current, my_generation) {
-                drop(current);
-                drop(source_rx);
-                append_bridge_service_log(
-                    runtime_root,
-                    &format!("source subscriber handoff: generation={my_generation}"),
-                );
-                break;
-            }
-            source_rx.try_recv()
-        };
-        let (event_type, payload) = match payload {
-            Ok(payload) => ("bridge.source.frame", payload),
-            Err(mpsc::TryRecvError::Empty) => {
-                thread::sleep(Duration::from_millis(25));
-                ("bridge.source.heartbeat", Vec::new())
-            }
-            Err(mpsc::TryRecvError::Disconnected) => break,
-        };
-        let current = state.lock().unwrap();
-        if !source_subscription_is_owner(&current, my_generation) {
-            drop(current);
-            append_bridge_service_log(
-                runtime_root,
-                &format!("source subscriber handoff: generation={my_generation}"),
-            );
-            break;
-        }
-        let Some(session_id) = current.session_id.clone() else {
-            continue;
-        };
-        drop(current);
-        frame_index += 1;
-        let frame_id = format!("driver-source-{frame_index}");
-        let header = AudioFrameHeader {
-            event_type: event_type.to_string(),
-            request_id: frame_id.clone(),
-            session_id,
-            frame_id,
-            stream_id: "omni-virtual-speaker".to_string(),
-            sample_rate_hz: INTERNAL_SAMPLE_RATE_HZ,
-            channel_count: INTERNAL_CHANNEL_COUNT,
-            frame_count: payload.len() / (INTERNAL_CHANNEL_COUNT as usize * 2),
-            timestamp_ms: unix_ms(),
-            payload_bytes: payload.len(),
-        };
-        if write_framed_audio(handle, &header, &payload).is_err() {
-            break;
-        }
-    }
-    let mut current = state.lock().unwrap();
-    if end_source_subscription(&mut current, my_generation) {
-        let next_generation = current.source_generation;
-        drop(current);
-        let _ = playback_tx.try_send(PlaybackCommand::FlushSource);
-        append_bridge_service_log(
-            runtime_root,
-            &format!(
-                "source subscriber disconnected: generation={my_generation} nextGeneration={next_generation}"
-            ),
-        );
-    }
-}
-
-fn begin_source_subscription(state: &mut BridgeState) -> (u64, u64) {
-    let previous_generation = state.source_generation;
-    state.source_generation = state.source_generation.wrapping_add(1);
-    state.source_subscriber_active = true;
-    (state.source_generation, previous_generation)
-}
-
-fn source_subscription_is_owner(state: &BridgeState, generation: u64) -> bool {
-    state.source_subscriber_active && state.source_generation == generation
-}
-
-fn end_source_subscription(state: &mut BridgeState, generation: u64) -> bool {
-    if !source_subscription_is_owner(state, generation) {
-        return false;
-    }
-    state.source_subscriber_active = false;
-    state.source_generation = state.source_generation.wrapping_add(1);
-    true
-}
-
-fn write_framed_audio(
-    handle: HANDLE,
-    header: &AudioFrameHeader,
-    payload: &[u8],
-) -> Result<(), io::Error> {
-    let header = serde_json::to_vec(header).map_err(io::Error::other)?;
-    write_all(handle, &(header.len() as u32).to_le_bytes())?;
-    write_all(handle, &header)?;
-    write_all(handle, payload)
-}
-
-fn unix_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as u64)
-        .unwrap_or_default()
-}
-
-fn run_playback_worker(
-    playback_rx: mpsc::Receiver<PlaybackCommand>,
-    state: Arc<Mutex<BridgeState>>,
-) {
-    let mut output: Option<PlaybackOutput> = None;
-    while let Ok(command) = playback_rx.recv() {
-        if matches!(command, PlaybackCommand::FlushSource) {
-            if let Some(output) = output.as_mut() {
-                flush_source_pending(output);
-                output.source_player.clear();
-                output.source_player.play();
-                output.source_pending_samples.clear();
-            }
-            state.lock().unwrap().monitor_source_queued_frames = 0;
-            continue;
-        }
-        let PlaybackCommand::Play(job) = command else {
-            continue;
-        };
-        state.lock().unwrap().monitor_playback_state = "playing".to_string();
-        if output.as_ref().map(|current| current.device_id.as_str()) != Some(job.device_id.as_str())
-        {
-            output = match open_playback_output(&job.device_id) {
-                Ok(next) => Some(next),
-                Err(error) => {
-                    let mut current = state.lock().unwrap();
-                    current.last_error_code = Some(if error == MONITOR_VIRTUAL_PLAYBACK_LOOP {
-                        error
-                    } else {
-                        format!("monitor.playback-failed:{error}")
-                    });
-                    current.monitor_playback_state = "blocked".to_string();
-                    continue;
-                }
-            };
-        }
-        if let Some(output) = output.as_mut() {
-            state.lock().unwrap().resolved_physical_playback_device_id =
-                output.resolved_device_id.clone();
-            let frames = job.samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
-            if job.source_frame {
-                let generation = state.lock().unwrap().source_generation;
-                if source_playback_job_is_stale(
-                    job.source_generation,
-                    generation,
-                    job.queued_at.elapsed(),
-                ) {
-                    state.lock().unwrap().stale_source_frames_dropped += frames;
-                    continue;
-                }
-                if monitor_source_queue_needs_drop(output.source_player.len()) {
-                    let mut current = state.lock().unwrap();
-                    current.monitor_overrun_count += 1;
-                    current.stale_source_frames_dropped += frames;
-                    continue;
-                }
-            }
-            if job.source_frame
-                && output
-                    .duck_until
-                    .map(|deadline| Instant::now() >= deadline)
-                    .unwrap_or(false)
-            {
-                output.source_player.set_volume(job.volume);
-                output.duck_until = None;
-            }
-            if job.source_frame {
-                if output.duck_until.is_none() {
-                    output.source_player.set_volume(job.volume);
-                }
-                output.source_pending_samples.extend(job.samples);
-                if output.source_pending_samples.len()
-                    >= OMNI_MONITOR_SOURCE_BATCH_FRAMES * INTERNAL_CHANNEL_COUNT as usize
-                {
-                    flush_source_pending(output);
-                }
-                state.lock().unwrap().monitor_source_queued_frames =
-                    output.source_player.len() * 5 + pending_source_chunks(output);
-            } else {
-                flush_source_pending(output);
-                output.translation_player.set_volume(job.volume);
-                let buffer = SamplesBuffer::new(
-                    NonZeroU16::new(INTERNAL_CHANNEL_COUNT).unwrap(),
-                    NonZeroU32::new(INTERNAL_SAMPLE_RATE_HZ).unwrap(),
-                    job.samples,
-                );
-                if job.ducking_enabled {
-                    output.source_player.set_volume(
-                        job.volume * 10.0_f32.powf(-(job.ducking_depth_percent as f32) / 200.0),
-                    );
-                    output.duck_until = Some(
-                        Instant::now()
-                            + Duration::from_secs_f64(
-                                frames as f64 / INTERNAL_SAMPLE_RATE_HZ as f64,
-                            ),
-                    );
-                }
-                output.translation_player.append(buffer);
-            }
-            {
-                let mut current = state.lock().unwrap();
-                current.playback_frames_written += frames;
-                current.monitor_playback_state = "ready".to_string();
-            }
-        }
-    }
-}
-
-fn playback_volume(output_level: u64) -> f32 {
-    output_level.min(100) as f32 / 100.0
-}
-
-fn flush_source_pending(output: &mut PlaybackOutput) {
-    if output.source_pending_samples.is_empty() {
-        return;
-    }
-    let samples = std::mem::take(&mut output.source_pending_samples);
-    let buffer = SamplesBuffer::new(
-        NonZeroU16::new(INTERNAL_CHANNEL_COUNT).unwrap(),
-        NonZeroU32::new(INTERNAL_SAMPLE_RATE_HZ).unwrap(),
-        samples,
-    );
-    output.source_player.append(buffer);
-}
-
-fn pending_source_chunks(output: &PlaybackOutput) -> usize {
-    let frames = output.source_pending_samples.len() / INTERNAL_CHANNEL_COUNT as usize;
-    frames.div_ceil(960)
-}
-
-fn source_playback_job_is_stale(
-    job_generation: u64,
-    current_generation: u64,
-    queued_for: Duration,
-) -> bool {
-    job_generation != current_generation
-        || queued_for > Duration::from_millis(OMNI_SOURCE_STALE_AFTER_MS)
-}
-
-fn monitor_source_queue_needs_drop(queued_sources: usize) -> bool {
-    queued_sources >= OMNI_MONITOR_SOURCE_QUEUE_CAPACITY
-}
-
-fn open_playback_output(device_id: &str) -> Result<PlaybackOutput, String> {
-    let host = cpal::default_host();
-    let device = if device_id.trim().is_empty()
-        || matches!(
-            device_id.trim(),
-            "default" | "speaker-default" | "system-output-default"
-        ) {
-        host.default_output_device()
-            .ok_or_else(|| "default playback device not found".to_string())?
-    } else {
-        host.output_devices()
-            .map_err_str()?
-            .find(|device| playback_device_matches(device, device_id))
-            .ok_or_else(|| format!("configured playback device not found: {device_id}"))?
-    };
-    if is_omni_virtual_playback_device(&device) {
-        return Err(MONITOR_VIRTUAL_PLAYBACK_LOOP.to_string());
-    }
-    let resolved_device_id = device
-        .id()
-        .map(|id| id.1)
-        .unwrap_or_else(|_| device_id.to_string());
-    let sink = DeviceSinkBuilder::from_device(device)
-        .and_then(|builder| builder.open_sink_or_fallback())
-        .map_err_str()?;
-    let source_player = Player::connect_new(sink.mixer());
-    let translation_player = Player::connect_new(sink.mixer());
-    Ok(PlaybackOutput {
-        device_id: device_id.to_string(),
-        resolved_device_id,
-        _sink: sink,
-        source_player,
-        translation_player,
-        source_pending_samples: Vec::new(),
-        duck_until: None,
-    })
-}
-
-fn is_omni_virtual_playback_device(device: &cpal::Device) -> bool {
-    device
-        .description()
-        .map(|description| is_omni_virtual_playback_device_name(description.name()))
-        .unwrap_or(false)
-}
-
-fn playback_device_matches(device: &cpal::Device, requested: &str) -> bool {
-    device.id().map(|id| id.1 == requested).unwrap_or(false)
-        || device
-            .description()
-            .map(|description| {
-                normalized_device_name(description.name())
-                    .contains(&normalized_device_name(requested))
-            })
-            .unwrap_or(false)
-}
-
-fn normalized_device_name(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect()
-}
-
-fn is_omni_virtual_playback_device_name(name: &str) -> bool {
-    name.contains("Omni Translate Virtual Speaker")
-}
-
+include!("capture.rs");
+include!("playback.rs");
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
@@ -1679,7 +718,7 @@ mod tests {
         is_omni_virtual_playback_device_name, monitor_source_queue_needs_drop,
         normalized_device_name, playback_volume, record_source_read_result,
         sanitize_capture_sample, source_playback_job_is_stale, source_subscription_is_owner,
-        source_watchdog_summary, state_snapshot, BridgeState,
+        source_watchdog_summary, state_snapshot, BridgeHost, BridgeState,
     };
 
     #[test]
@@ -1688,6 +727,23 @@ mod tests {
         assert_eq!(playback_volume(66), 0.66);
         assert_eq!(playback_volume(100), 1.0);
         assert_eq!(playback_volume(101), 1.0);
+    }
+
+    #[test]
+    fn bridge_host_reads_runtime_arguments_once_at_composition_root() {
+        let host = BridgeHost::from_args(&[
+            "omni-bridge-service".to_string(),
+            "--pipe-name".to_string(),
+            "test-control".to_string(),
+            "--runtime-root".to_string(),
+            "C:\\bridge-runtime".to_string(),
+            "--bridge-version".to_string(),
+            "2.0.0-test".to_string(),
+        ]);
+
+        assert_eq!(host.pipe_name, "test-control");
+        assert_eq!(host.runtime_root, std::path::PathBuf::from("C:\\bridge-runtime"));
+        assert_eq!(host.bridge_version, "2.0.0-test");
     }
 
     #[test]

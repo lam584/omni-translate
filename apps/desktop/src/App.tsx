@@ -194,7 +194,7 @@ function App() {
   const bridgeAutostartCleanupRef = useRef<(() => void) | null>(null);
   const bridgeAutostartPromiseRef = useRef<Promise<void> | null>(null);
   const bootstrapGenerationRef = useRef(0);
-  const appMountedAtEpochMsRef = useRef(Date.now());
+  const appMountedAtEpochMsRef = useRef<number | null>(null);
   const fullReadyLoggedRef = useRef(false);
   const deferredStylesPromiseRef = useRef<Promise<unknown> | null>(null);
 
@@ -212,7 +212,7 @@ function App() {
       'startup.readiness_ready',
       createStartupReadyDetail({
         runId: STARTUP_MEASURE_RUN_ID,
-        appMountedAtEpochMs: appMountedAtEpochMsRef.current,
+        appMountedAtEpochMs: appMountedAtEpochMsRef.current ?? Date.now(),
         readySignalAtEpochMs,
         readyAfterAppMountMs: readyAtMs,
         bootstrapOverlayCompletionDelayMs: BOOTSTRAP_OVERLAY_COMPLETION_DELAY_MS,
@@ -223,18 +223,15 @@ function App() {
   }, []);
 
   const handleBootstrapStep: OnBootstrapStep = useCallback((stepId, status, detail) => {
-    const stepTiming = startupStepTimingsRef.current[stepId] ?? {};
+    const previousStepTiming = startupStepTimingsRef.current[stepId] ?? {};
     const elapsedMs = Math.round(nowMs() - startupStartedAtRef.current);
-    if (status === 'active') {
-      stepTiming.activeAtMs ??= elapsedMs;
-    } else if (status === 'done') {
-      stepTiming.doneAtMs = elapsedMs;
-    } else if (status === 'error') {
-      stepTiming.errorAtMs = elapsedMs;
-    }
-    if (detail) {
-      stepTiming.detail = detail;
-    }
+    const stepTiming: StartupStepTiming = {
+      ...previousStepTiming,
+      ...(status === 'active' && previousStepTiming.activeAtMs === undefined ? { activeAtMs: elapsedMs } : {}),
+      ...(status === 'done' ? { doneAtMs: elapsedMs } : {}),
+      ...(status === 'error' ? { errorAtMs: elapsedMs } : {}),
+      ...(detail ? { detail } : {}),
+    };
     startupStepTimingsRef.current[stepId] = stepTiming;
 
     setSteps((prev) => {
@@ -297,6 +294,10 @@ function App() {
       cleanup();
     };
   }, [handleBootstrapStep]);
+
+  useEffect(() => {
+    appMountedAtEpochMsRef.current = Date.now();
+  }, []);
 
   // Full-ready coordinator: wait for deferred CSS + route + bridge startup convergence.
   useEffect(() => {

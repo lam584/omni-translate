@@ -26,6 +26,10 @@ if (minTranslationCoverage !== null && (!Number.isFinite(minTranslationCoverage)
 }
 
 const placeholderPattern = /{{\s*[\w.]+\s*}}/g;
+const rejectedTranslationPatterns = [
+  /MYMEMORY WARNING:/i,
+  /MYMEMORY TRANSLATED\.NET\/DOC\/USAGELIMITS/i,
+];
 const allowedSameAsSourceKeys = new Set([
   'audioRouting.tagStt',
   'audioRouting.tagTts',
@@ -95,6 +99,10 @@ function isEmptyValue(value) {
   return typeof value === 'string' && value.trim().length === 0;
 }
 
+function isRejectedTranslationValue(value) {
+  return typeof value === 'string' && rejectedTranslationPatterns.some((pattern) => pattern.test(value));
+}
+
 function withoutPlaceholders(value) {
   return value.replace(placeholderPattern, '').trim();
 }
@@ -153,7 +161,8 @@ const results = localeFiles.map((file) => {
     }
     return !sameMembers(placeholders(source[key]), placeholders(values[key]));
   });
-  const translated = sourceKeys.length - missing.length - empty.length - sameAsSource.length;
+  const rejected = sourceKeys.filter((key) => keys.has(key) && isRejectedTranslationValue(values[key]));
+  const translated = sourceKeys.length - missing.length - empty.length - sameAsSource.length - rejected.length;
 
   return {
     locale,
@@ -167,6 +176,7 @@ const results = localeFiles.map((file) => {
     extra,
     empty,
     sameAsSource,
+    rejected,
     placeholderMismatch,
   };
 });
@@ -176,15 +186,15 @@ if (jsonOutput) {
 } else {
   console.log(`i18n coverage source: ${sourceFile} (${sourceKeys.length} keys)`);
   console.log('');
-  console.log('locale  structural  translated  missing  empty  same-as-en  placeholders');
-  console.log('------  ----------  ----------  -------  -----  ----------  ------------');
+  console.log('locale  structural  translated  missing  empty  same-as-en  rejected  placeholders');
+  console.log('------  ----------  ----------  -------  -----  ----------  --------  ------------');
   for (const result of results) {
     console.log(
       `${result.locale.padEnd(6)}  ${result.structuralCoverage.toFixed(1).padStart(9)}%  ${result.translationCoverage
         .toFixed(1)
         .padStart(9)}%  ${String(result.missing.length).padStart(7)}  ${String(result.empty.length).padStart(
         5,
-      )}  ${String(result.sameAsSource.length).padStart(10)}  ${String(result.placeholderMismatch.length).padStart(
+      )}  ${String(result.sameAsSource.length).padStart(10)}  ${String(result.rejected.length).padStart(8)}  ${String(result.placeholderMismatch.length).padStart(
         12,
       )}`,
     );
@@ -195,6 +205,7 @@ if (jsonOutput) {
       result.missing.length > 0 ||
       result.empty.length > 0 ||
       result.sameAsSource.length > 0 ||
+      result.rejected.length > 0 ||
       result.placeholderMismatch.length > 0,
   );
 
@@ -206,6 +217,7 @@ if (jsonOutput) {
         ...result.missing.slice(0, 3).map((key) => `missing:${key}`),
         ...result.empty.slice(0, 3).map((key) => `empty:${key}`),
         ...result.sameAsSource.slice(0, 3).map((key) => `same:${key}`),
+        ...result.rejected.slice(0, 3).map((key) => `rejected:${key}`),
         ...result.placeholderMismatch.slice(0, 3).map((key) => `placeholder:${key}`),
       ];
       console.log(`${result.locale}: ${samples.join(', ')}`);
@@ -224,7 +236,9 @@ if (jsonOutput) {
 const blockingFailures = results.filter(
   (result) => result.missing.length > 0 || result.extra.length > 0 || result.placeholderMismatch.length > 0,
 );
-const warningFailures = results.filter((result) => result.empty.length > 0 || result.sameAsSource.length > 0);
+const warningFailures = results.filter(
+  (result) => result.empty.length > 0 || result.sameAsSource.length > 0 || result.rejected.length > 0,
+);
 const thresholdFailures =
   minTranslationCoverage === null
     ? []

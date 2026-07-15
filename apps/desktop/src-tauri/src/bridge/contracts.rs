@@ -204,7 +204,7 @@ pub struct DriverOperationResult {
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "legacy driver install-state schema is retained for upgrade compatibility")]
 pub struct DriverInstallStateFile {
     pub protocol_version: String,
     pub install_channel: String,

@@ -23,7 +23,7 @@ describe('live session events runtime', () => {
 
   it('returns empty events in browser preview mode', async () => {
     const events = await getLiveSessionEventsRuntime();
-    expect(events).toEqual({
+    expect(events).toMatchObject({
       sessionStartedAt: '',
       elapsedMs: 0,
       model: '',

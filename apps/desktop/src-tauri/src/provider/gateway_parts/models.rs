@@ -1,17 +1,84 @@
+use reqwest::blocking::Response;
 use serde_json::Value;
 
-use super::super::contracts::{ProviderDraftInput, ProviderModelRuntime, ProviderRuntimeError};
-use super::transport::join_url;
+use super::super::contracts::{
+    ProviderDraftInput, ProviderModelCatalogRuntime, ProviderModelRuntime, ProviderRuntimeError,
+};
+use super::{auth, time, transport};
 
-pub(super) fn resolve_models_endpoint(
+/// Owns model-catalog endpoint resolution, HTTP transport, and response
+/// normalization.  Keeping this state-free service separate prevents the
+/// application-facing gateway from accumulating protocol details.
+#[derive(Default)]
+pub(crate) struct ModelCatalogService;
+
+impl ModelCatalogService {
+    pub(crate) fn fetch(&self, provider: ProviderDraftInput) -> ProviderModelCatalogRuntime {
+        let endpoint = match resolve_models_endpoint(&provider) {
+            Ok(endpoint) => endpoint,
+            Err(error) => return failed_catalog(provider.provider_id, String::new(), error),
+        };
+
+        let result = (|| -> Result<Vec<ProviderModelRuntime>, ProviderRuntimeError> {
+            let client = transport::build_client(provider.timeout_ms)?;
+            let response = client
+                .get(endpoint.clone())
+                .headers(auth::build_reqwest_headers(&provider)?)
+                .send()
+                .map_err(transport::normalize_transport_error)?;
+            parse_response(&provider, response)
+        })();
+
+        match result {
+            Ok(models) => ProviderModelCatalogRuntime {
+                provider_id: provider.provider_id,
+                endpoint,
+                fetched_at: time::now_marker(),
+                models,
+                error: None,
+            },
+            Err(error) => failed_catalog(provider.provider_id, endpoint, error),
+        }
+    }
+}
+
+fn parse_response(
+    provider: &ProviderDraftInput,
+    response: Response,
+) -> Result<Vec<ProviderModelRuntime>, ProviderRuntimeError> {
+    if !response.status().is_success() {
+        return Err(match provider.kind.as_str() {
+            "dashscope" => transport::parse_dashscope_error(response),
+            _ => transport::parse_openai_error(response),
+        });
+    }
+    let value: Value = response.json().map_err(transport::normalize_transport_error)?;
+    parse_model_catalog_response(&value)
+}
+
+fn failed_catalog(
+    provider_id: String,
+    endpoint: String,
+    error: ProviderRuntimeError,
+) -> ProviderModelCatalogRuntime {
+    ProviderModelCatalogRuntime {
+        provider_id,
+        endpoint,
+        fetched_at: time::now_marker(),
+        models: Vec::new(),
+        error: Some(error),
+    }
+}
+
+pub(crate) fn resolve_models_endpoint(
     provider: &ProviderDraftInput,
 ) -> Result<String, ProviderRuntimeError> {
     match provider.kind.as_str() {
-        "dashscope" => join_url(
+        "dashscope" => transport::join_url(
             &normalize_dashscope_compatible_base_url(&provider.base_url),
             "models",
         ),
-        kind if is_openai_compatible_kind(kind) => join_url(
+        kind if is_openai_compatible_kind(kind) => transport::join_url(
             &normalize_openai_compatible_base_url(&provider.base_url),
             "models",
         ),
@@ -97,7 +164,7 @@ pub(super) fn parse_model_catalog_response(
     Ok(models)
 }
 
-pub(super) fn derive_model_capabilities(model_id: &str) -> Vec<String> {
+pub(crate) fn derive_model_capabilities(model_id: &str) -> Vec<String> {
     let normalized = model_id.to_ascii_lowercase();
     let mut capabilities: Vec<String> = Vec::new();
 
@@ -165,6 +232,7 @@ fn is_s2s_model_name(normalized: &str) -> bool {
     normalized.contains("omni")
         || normalized.contains("livetranslate")
         || normalized.contains("gpt-realtime")
+        || normalized.contains("gpt-4o-realtime")
         || normalized.contains("gpt-audio")
         || (normalized.contains("gemini") && (normalized.contains("live") || normalized.contains("native-audio")))
 }

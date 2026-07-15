@@ -1,11 +1,12 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { BenchmarkReport, BenchmarkRunResult } from '../runtime/benchmark-runtime';
 import { diagnosticsPageHelpers } from './DiagnosticsPage';
+import { DiagnosticsReportExporter, exportJson } from './diagnostics/DiagnosticsDetails';
 
 describe('diagnostics page helpers', () => {
   it('maps all status, bridge, capture, driver and rank labels', () => {
@@ -100,7 +101,7 @@ describe('diagnostics page helpers', () => {
       { label: '运行环境', tone: 'ready' },
       { label: '桥接', tone: 'ready' },
       { label: '采集', tone: 'ready' },
-      { label: '错误摘要', value: '最近无新错误', meta: '状态平稳', tone: 'ready' },
+      { label: '错误摘要', value: '最近无新错误', meta: '平稳', tone: 'ready' },
     ]);
 
     runtime.bridge.driverHealth = 'damaged';
@@ -584,6 +585,80 @@ describe('LiveSessionEventDetail', () => {
     expect(html).toContain('输出事件明细');
     expect(html).toContain('t1');
     expect(html).toContain('oc1');
+  });
+
+  it('formats complete live-event and benchmark text exports', () => {
+    const liveText = diagnosticsPageHelpers.formatLiveEventsTxt({
+      sessionStartedAt: 'unix-ms:4000',
+      elapsedMs: 12000,
+      model: 'export-model',
+      asrDeltas: [{ elapsedMs: 50, stash: 'asr-stash', text: 'source', eventType: 'asr.delta' }],
+      outputDeltas: [{ elapsedMs: 100, eventType: 'output.delta', stash: 'out-stash', committedText: 'translated' }],
+      asrFinal: 'source final',
+      translationFinal: 'translation final',
+      pipelineMilestones: {
+        preconnectStartedMs: 10,
+        sessionReadyMs: 20,
+        routeStartedMs: 30,
+        firstAudioSentMs: 40,
+        firstSpeechStartedMs: 80,
+        queuedAudioChunks: 3,
+        droppedBeforeReady: 1,
+        firstAudibleChunkMs: 60,
+        silenceSkippedBeforeAudible: 2,
+        totalInputChunksAtSpeech: 4,
+      },
+    });
+    expect(liveText).toContain('Audio Sent -> Audible:     20ms');
+    expect(liveText).toContain('Audible -> VAD Speech:     20ms');
+    expect(liveText).toContain('source final');
+    expect(liveText).toContain('translation final');
+    expect(diagnosticsPageHelpers.fmtMs(null)).toBe('N/A');
+
+    const report = benchmarkReport({
+      run: {
+        asrFinal: 'recognized',
+        translationFinal: 'translated',
+        outputDeltas: [{ elapsedMs: 100, eventType: 'response.text.delta', stash: 'stash', committedText: 'translated', rawText: 'translated' }],
+        firstAsrMs: 50,
+        firstCommittedMs: 125,
+        responseDoneMs: 200,
+        speechStartedMs: 60,
+        speechStoppedMs: 180,
+      },
+    });
+    const benchmarkText = diagnosticsPageHelpers.formatBenchmarkTxt(report);
+    expect(benchmarkText).toContain('Benchmark Report');
+    expect(benchmarkText).toContain('ASR Final: recognized');
+    expect(benchmarkText).toContain('Translation Final: translated');
+    expect(benchmarkText).toContain('response.text.delta');
+  });
+
+  it('exports diagnostic reports through the browser download adapter', () => {
+    const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:report');
+    const revokeObjectUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    const report = benchmarkReport();
+    const events = {
+      sessionStartedAt: 'unix-ms:1', elapsedMs: 2, model: 'model', asrDeltas: [], outputDeltas: [],
+      asrFinal: '', translationFinal: '',
+      pipelineMilestones: {
+        preconnectStartedMs: null, sessionReadyMs: null, routeStartedMs: null,
+        firstAudioSentMs: null, firstSpeechStartedMs: null, queuedAudioChunks: null,
+        droppedBeforeReady: null, firstAudibleChunkMs: null,
+        silenceSkippedBeforeAudible: null, totalInputChunksAtSpeech: null,
+      },
+    };
+
+    exportJson({ ok: true }, 'diagnostics.json');
+    DiagnosticsReportExporter.exportBenchmark(report, 'benchmark', 'json');
+    DiagnosticsReportExporter.exportBenchmark(report, 'benchmark', 'txt');
+    DiagnosticsReportExporter.exportLiveEvents(events, 'events', 'json');
+    DiagnosticsReportExporter.exportLiveEvents(events, 'events', 'txt');
+
+    expect(createObjectUrl).toHaveBeenCalledTimes(5);
+    expect(click).toHaveBeenCalledTimes(5);
+    expect(revokeObjectUrl).toHaveBeenCalledTimes(5);
   });
 });
 

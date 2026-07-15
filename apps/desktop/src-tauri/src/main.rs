@@ -1,4 +1,5 @@
 mod audio;
+mod api_v2;
 mod benchmark;
 mod bridge;
 mod common;
@@ -13,6 +14,7 @@ use audio::events::{
     start_audio_route_inner, start_speech_dispatch, start_translate_worker, stop_audio_route,
     stop_speech_dispatch, stop_translate_worker,
 };
+use api_v2::{bridge_v2, configuration_v2, diagnostics_v2, provider_v2, session_v2};
 use audio::state::AudioStateStore;
 use benchmark::run_model_benchmark;
 use bridge::events::{
@@ -122,6 +124,141 @@ fn set_json_pointer_bool(config: &mut Value, path: &[&str], value: bool) {
     current[path[path.len() - 1]] = Value::Bool(value);
 }
 
+fn configure_watch_mode(
+    mut config: &mut Value,
+    output_device_id: &str,
+    output_level: i64,
+    watch_model_id: &str,
+    subtitle_translation_model_id: &str,
+    inbound_secondary_audio_model_id: &str,
+    force_subtitle_tts: bool,
+) {
+    set_json_pointer_string(&mut config, &["devices", "routeMode"], "watch".to_string());
+    if !output_device_id.is_empty() {
+        set_json_pointer_string(
+            &mut config,
+            &["devices", "outputDeviceId"],
+            output_device_id.to_string(),
+        );
+    }
+    set_json_pointer_number(&mut config, &["devices", "outputLevel"], output_level);
+    set_json_pointer_string(
+        &mut config,
+        &["devices", "subtitleTranslationMode"],
+        "secondary".to_string(),
+    );
+    set_json_pointer_string(
+        &mut config,
+        &["devices", "subtitleTranslationModelId"],
+        subtitle_translation_model_id.to_string(),
+    );
+    set_json_pointer_string(
+        &mut config,
+        &["devices", "inboundSecondaryAudioModelId"],
+        inbound_secondary_audio_model_id.to_string(),
+    );
+    if !watch_model_id.is_empty() {
+        set_json_pointer_string(
+            &mut config,
+            &["devices", "inboundVoiceModelId"],
+            watch_model_id.to_string(),
+        );
+        set_json_pointer_string(
+            &mut config,
+            &["devices", "outboundVoiceModelId"],
+            watch_model_id.to_string(),
+        );
+        set_json_pointer_string(
+            &mut config,
+            &["devices", "textToSpeechModelId"],
+            watch_model_id.to_string(),
+        );
+        set_json_pointer_string(
+            &mut config,
+            &["speech", "textToSpeechModelId"],
+            watch_model_id.to_string(),
+        );
+    }
+    set_json_pointer_string(
+        &mut config,
+        &["devices", "textToSpeechModelId"],
+        inbound_secondary_audio_model_id.to_string(),
+    );
+    set_json_pointer_string(
+        &mut config,
+        &["speech", "textToSpeechModelId"],
+        inbound_secondary_audio_model_id.to_string(),
+    );
+    set_json_pointer_bool(&mut config, &["speech", "enabled"], true);
+    set_json_pointer_bool(&mut config, &["devices", "outputSpeechEnabled"], true);
+    set_json_pointer_string(
+        &mut config,
+        &["speech", "outputTarget"],
+        "speaker".to_string(),
+    );
+    set_json_pointer_bool(&mut config, &["speech", "localPlaybackEnabled"], true);
+    set_json_pointer_bool(&mut config, &["speech", "virtualMicOutputEnabled"], false);
+    set_json_pointer_string(
+        &mut config,
+        &["devices", "feedbackLoopPrevention"],
+        "virtual-driver".to_string(),
+    );
+    set_json_pointer_bool(
+        &mut config,
+        &["devices", "inboundRoute", "mixControl", "keepOriginalAudio"],
+        true,
+    );
+    set_json_pointer_bool(
+        &mut config,
+        &[
+            "devices",
+            "inboundRoute",
+            "mixControl",
+            "translatedAudioEnabled",
+        ],
+        true,
+    );
+    set_json_pointer_number(
+        &mut config,
+        &[
+            "devices",
+            "inboundRoute",
+            "mixControl",
+            "originalAudioGainDb",
+        ],
+        0,
+    );
+    set_json_pointer_number(
+        &mut config,
+        &[
+            "devices",
+            "inboundRoute",
+            "mixControl",
+            "translatedAudioGainDb",
+        ],
+        0,
+    );
+    set_json_pointer_bool(&mut config, &["vad", "bypass"], true);
+    set_json_pointer_bool(
+        &mut config,
+        &["devices", "inboundRoute", "mixControl", "duckingEnabled"],
+        true,
+    );
+    set_json_pointer_string(
+        &mut config,
+        &["devices", "inboundRoute", "mixControl", "monitorMode"],
+        "original-and-translated".to_string(),
+    );
+    if force_subtitle_tts {
+        set_json_pointer_string(
+            &mut config,
+            &["speech", "translationAudioSource"],
+            "subtitle-tts".to_string(),
+        );
+    }
+
+}
+
 fn maybe_start_watch_mode_diagnostic(app: &tauri::App) {
     if !env_flag_enabled("OMNI_WATCH_MODE_AUTOSTART") {
         return;
@@ -206,129 +343,15 @@ fn maybe_start_watch_mode_diagnostic(app: &tauri::App) {
         }
     };
 
-    set_json_pointer_string(&mut config, &["devices", "routeMode"], "watch".to_string());
-    if !output_device_id.is_empty() {
-        set_json_pointer_string(
-            &mut config,
-            &["devices", "outputDeviceId"],
-            output_device_id.clone(),
-        );
-    }
-    set_json_pointer_number(&mut config, &["devices", "outputLevel"], output_level);
-    set_json_pointer_string(
+    configure_watch_mode(
         &mut config,
-        &["devices", "subtitleTranslationMode"],
-        "secondary".to_string(),
+        &output_device_id,
+        output_level,
+        &watch_model_id,
+        &subtitle_translation_model_id,
+        &inbound_secondary_audio_model_id,
+        force_subtitle_tts,
     );
-    set_json_pointer_string(
-        &mut config,
-        &["devices", "subtitleTranslationModelId"],
-        subtitle_translation_model_id.clone(),
-    );
-    set_json_pointer_string(
-        &mut config,
-        &["devices", "inboundSecondaryAudioModelId"],
-        inbound_secondary_audio_model_id.clone(),
-    );
-    if !watch_model_id.is_empty() {
-        set_json_pointer_string(
-            &mut config,
-            &["devices", "inboundVoiceModelId"],
-            watch_model_id.clone(),
-        );
-        set_json_pointer_string(
-            &mut config,
-            &["devices", "outboundVoiceModelId"],
-            watch_model_id.clone(),
-        );
-        set_json_pointer_string(
-            &mut config,
-            &["devices", "textToSpeechModelId"],
-            watch_model_id.clone(),
-        );
-        set_json_pointer_string(
-            &mut config,
-            &["speech", "textToSpeechModelId"],
-            watch_model_id.clone(),
-        );
-    }
-    set_json_pointer_string(
-        &mut config,
-        &["devices", "textToSpeechModelId"],
-        inbound_secondary_audio_model_id.clone(),
-    );
-    set_json_pointer_string(
-        &mut config,
-        &["speech", "textToSpeechModelId"],
-        inbound_secondary_audio_model_id.clone(),
-    );
-    set_json_pointer_bool(&mut config, &["speech", "enabled"], true);
-    set_json_pointer_bool(&mut config, &["devices", "outputSpeechEnabled"], true);
-    set_json_pointer_string(
-        &mut config,
-        &["speech", "outputTarget"],
-        "speaker".to_string(),
-    );
-    set_json_pointer_bool(&mut config, &["speech", "localPlaybackEnabled"], true);
-    set_json_pointer_bool(&mut config, &["speech", "virtualMicOutputEnabled"], false);
-    set_json_pointer_string(
-        &mut config,
-        &["devices", "feedbackLoopPrevention"],
-        "virtual-driver".to_string(),
-    );
-    set_json_pointer_bool(
-        &mut config,
-        &["devices", "inboundRoute", "mixControl", "keepOriginalAudio"],
-        true,
-    );
-    set_json_pointer_bool(
-        &mut config,
-        &[
-            "devices",
-            "inboundRoute",
-            "mixControl",
-            "translatedAudioEnabled",
-        ],
-        true,
-    );
-    set_json_pointer_number(
-        &mut config,
-        &[
-            "devices",
-            "inboundRoute",
-            "mixControl",
-            "originalAudioGainDb",
-        ],
-        0,
-    );
-    set_json_pointer_number(
-        &mut config,
-        &[
-            "devices",
-            "inboundRoute",
-            "mixControl",
-            "translatedAudioGainDb",
-        ],
-        0,
-    );
-    set_json_pointer_bool(&mut config, &["vad", "bypass"], true);
-    set_json_pointer_bool(
-        &mut config,
-        &["devices", "inboundRoute", "mixControl", "duckingEnabled"],
-        true,
-    );
-    set_json_pointer_string(
-        &mut config,
-        &["devices", "inboundRoute", "mixControl", "monitorMode"],
-        "original-and-translated".to_string(),
-    );
-    if force_subtitle_tts {
-        set_json_pointer_string(
-            &mut config,
-            &["speech", "translationAudioSource"],
-            "subtitle-tts".to_string(),
-        );
-    }
 
     let audio_state = app.state::<AudioStateStore>();
     match preconnect_omni_realtime_inner(app_handle.clone(), &audio_state, config.clone()) {
@@ -672,7 +695,12 @@ fn main() {
             read_secret_ref,
             debug_ipc_ping,
             debug_cred_direct,
-            run_model_benchmark
+            run_model_benchmark,
+            provider_v2,
+            session_v2,
+            bridge_v2,
+            diagnostics_v2,
+            configuration_v2
         ])
         .setup(|app| {
             let setup_start = Instant::now();

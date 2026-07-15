@@ -968,7 +968,7 @@
     "subtitleQueueEmpty": "세션 설정과 상태를 확인하세요.",
     "fallbackSubtitlesOnly": "세션 설정과 상태를 확인하세요.",
     "fallbackAec": "세션 설정과 상태를 확인하세요.",
-    "virtualDriverFallbackConfirm": "세션 설정과 상태를 확인하세요.",
+    "virtualDriverFallbackConfirm": "가상 오디오 드라이버 또는 Bridge를 사용할 수 없습니다. ‘확인’을 누르면 자막 전용 모드로, ‘취소’를 누르면 물리 스피커 재생과 AEC 모드로 임시 전환됩니다. AEC에도 루프백 위험이 있습니다.",
     "sceneLaunchFailed": "세션 - 실패 {{scene}} {{error}}"
   },
   "glossary": {

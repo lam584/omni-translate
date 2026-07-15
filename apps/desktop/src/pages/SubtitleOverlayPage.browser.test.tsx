@@ -99,7 +99,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     expect(container.querySelector('.subtitle-overlay-context-menu')).toBeNull();
 
     await openContextMenu();
-    await act(async () => findButton(container, 'overlay.lockAction')?.click());
+    await act(async () => findButton(container, '锁定')?.click());
     expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
     const overlay = container.querySelector('.subtitle-overlay-root');
     await act(async () => {
@@ -123,7 +123,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
   it('applies every browser menu setting and closes the menu after each action', async () => {
     await renderOverlay();
     await openContextMenu();
-    await act(async () => findButton(container, '玻璃轻透')?.click());
+    await act(async () => findButton(container, '玻璃效果')?.click());
     expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
       overlayBackgroundColor: '#0f172a',
       overlayBackgroundOpacity: 0.46,
@@ -140,7 +140,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     expect(useAppStore.getState().configDraft.subtitles.overlayBackgroundOpacity).toBe(0.25);
 
     await openContextMenu();
-    await act(async () => findButton(container, '天蓝')?.click());
+    await act(async () => findButton(container, '天空蓝')?.click());
     expect(useAppStore.getState().configDraft.subtitles.overlayTextColor).toBe('#bae6fd');
   });
 
@@ -181,7 +181,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
       overlay?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
     });
 
-    expect(findButton(container, 'overlay.unlockAction')).toBeUndefined();
+    expect(findButton(container, '解锁')).toBeUndefined();
     expect(container.querySelector('.subtitle-overlay-context-menu')).toBeNull();
     expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
   });
@@ -190,9 +190,9 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     await renderOverlay();
     const overlay = container.querySelector('.subtitle-overlay-root');
     await act(async () => overlay?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
-    expect(findButton(container, 'overlay.lockAction')).not.toBeUndefined();
+    expect(findButton(container, '锁定')).not.toBeUndefined();
     await act(async () => overlay?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
-    expect(findButton(container, 'overlay.lockAction')).toBeUndefined();
+    expect(findButton(container, '锁定')).toBeUndefined();
 
     await openContextMenu();
     await act(async () => findButton(container, '隐藏字幕悬浮窗')?.click());

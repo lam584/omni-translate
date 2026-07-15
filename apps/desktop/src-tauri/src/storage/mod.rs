@@ -2,6 +2,7 @@ pub mod contracts;
 pub mod credential;
 pub mod events;
 pub mod repository;
+pub mod service;
 
 use std::path::PathBuf;
 use std::sync::Mutex;

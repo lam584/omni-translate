@@ -61,6 +61,18 @@ if (fs.existsSync(fullPath(legacyBridgePath))) {
 }
 
 const rootPackage = readJson('package.json');
+const tauriConfig = readJson(path.join('apps', 'desktop', 'src-tauri', 'tauri.conf.json'));
+const vitestSetupPath = path.join('apps', 'desktop', 'src', 'test-setup.ts');
+
+if (typeof tauriConfig.app?.security?.csp !== 'string' || !tauriConfig.app.security.csp.trim()) {
+  fail('Desktop Tauri CSP must be an explicit non-empty string.');
+}
+if (tauriConfig.bundle?.active !== true) {
+  fail('Desktop bundle packaging must be enabled for release artifacts.');
+}
+if (!fs.existsSync(fullPath(vitestSetupPath))) {
+  fail(`Vitest setup file is missing: ${vitestSetupPath}`);
+}
 const removedScripts = [
   `check:${legacyBridgeName}`,
   `build:${legacyBridgeName}`,
@@ -123,7 +135,7 @@ const governanceFiles = [
   'package.json',
   'package-lock.json',
   'README.md',
-  'README.en.md',
+  path.join('i18n', 'README_en.md'),
   ...collectFiles(path.join(rootDir, 'scripts'), (filePath) => /\.(?:mjs|ps1|md)$/i.test(filePath)).map((filePath) =>
     path.relative(rootDir, filePath),
   ),

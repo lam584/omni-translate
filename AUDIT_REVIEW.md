@@ -1,348 +1,133 @@
 # Uncommitted Change Audit
 
-This document tracks the current review pass for the uncommitted worktree changes in `<repository-root>`.
+本审计记录 `<repository-root>` 当前未提交重构工作树的收口结论，日期为 2026-07-15。
 
 ## Review Status
 
-- [ ] Group A: Native bridge, audio, driver, diagnostics
-- [ ] Group B: Desktop TypeScript, React, runtime, i18n
-- [ ] Group C: Tauri Rust provider, storage, benchmark
-- [ ] Group D: Scripts, CI, docs, styles, repository metadata
-- [ ] Verification: build/check/test commands completed without remaining issues
+- [x] Group A：Native Bridge、Audio、Driver、Diagnostics
+- [x] Group B：Desktop TypeScript、React、Runtime、Provider
+- [x] Group C：Tauri Rust Provider、Storage、Benchmark
+- [x] Group D：Scripts、CI、Docs、Metadata
+- [x] 所有工作树文件已分类，未分类文件为 0
+- [x] 编译、功能测试、契约、i18n、前端覆盖率和严格架构审计完成
 
-## Pending Review Checklist
+## Change Groups
 
-### Group A: Native Bridge, Audio, Driver, Diagnostics
+### Group A：Audio / Bridge
 
-- [ ] `apps/bridge-service-native/Cargo.lock`
-- [ ] `apps/bridge-service-native/Cargo.toml`
-- [ ] `apps/bridge-service-native/src/bin/omni-driver-audio-probe.rs`
-- [ ] `apps/bridge-service-native/src/lib.rs`
-- [ ] `apps/bridge-service-native/src/main.rs`
-- [ ] `apps/bridge-service/README.md` (deleted)
-- [ ] `apps/bridge-service/package.json` (deleted)
-- [ ] `apps/bridge-service/src/cli.ts` (deleted)
-- [ ] `apps/bridge-service/src/index.ts` (deleted)
-- [ ] `apps/bridge-service/src/protocol.ts` (deleted)
-- [ ] `apps/bridge-service/src/service/bridge-service.test.ts` (deleted)
-- [ ] `apps/bridge-service/src/service/bridge-service.ts` (deleted)
-- [ ] `apps/bridge-service/tsconfig.json` (deleted)
-- [ ] `apps/desktop/src-tauri/src/audio/engine.rs` (deleted)
-- [ ] `apps/desktop/src-tauri/src/audio/events.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/mod.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/omni.rs` (deleted)
-- [ ] `apps/desktop/src-tauri/src/audio/sentence.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/speech.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/state.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/stt.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/subtitle_translate.rs`
-- [ ] `apps/desktop/src-tauri/src/bridge/contracts.rs`
-- [ ] `apps/desktop/src-tauri/src/bridge/events.rs`
-- [ ] `apps/desktop/src-tauri/src/bridge/installer.rs`
-- [ ] `apps/desktop/src-tauri/src/bridge/ipc.rs`
-- [ ] `apps/desktop/src-tauri/src/diagnostics/events.rs`
-- [ ] `apps/desktop/src-tauri/src/diagnostics/model_trace.rs`
-- [ ] `drivers/windows-virtual-mic/package/driver-package.json`
-- [ ] `drivers/windows-virtual-mic/sysvad/EndpointsCommon/minwavertstream.cpp`
-- [ ] `drivers/windows-virtual-mic/sysvad/EndpointsCommon/minwavertstream.h`
-- [ ] `scripts/diagnostics/README.md`
-- [ ] `scripts/diagnostics/check_advapi.ps1` (deleted)
-- [ ] `scripts/diagnostics/check_elevated.ps1` (deleted)
-- [ ] `scripts/diagnostics/check_tauri_data.ps1` (deleted)
-- [ ] `scripts/diagnostics/credential-write/Cargo.toml`
-- [ ] `scripts/diagnostics/find_omni_data.ps1` (deleted)
-- [ ] `scripts/diagnostics/ipc_test.ps1`
-- [ ] `scripts/diagnostics/omni-realtime/Cargo.lock`
-- [ ] `scripts/diagnostics/omni-realtime/Cargo.toml`
-- [ ] `scripts/diagnostics/omni-realtime/src/main.rs`
-- [ ] `scripts/diagnostics/omni_diagnosis.ps1` (deleted)
-- [ ] `scripts/diagnostics/simple_check.ps1` (deleted)
-- [ ] `scripts/installer/invoke-elevated-driver-operation.ps1`
-- [ ] `scripts/installer/request-elevated-driver-operation.ps1`
-- [ ] `scripts/installer/stop-stale-bridge-service.ps1`
-- [ ] `scripts/installer/test-development-driver.ps1`
-- [ ] `scripts/installer/virtual-speaker-device.ps1`
-- [ ] `apps/bridge-service-native/src/bin/omni-physical-output-probe.rs`
-- [ ] `apps/bridge-service-native/src/bin/omni-watch-media-injector.rs`
-- [ ] `apps/bridge-service-native/src/windows/mod.rs`
-- [ ] `apps/bridge-service-native/src/windows/win32.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/diagnostics.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/engine/mod.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/engine/retry.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/engine/samples.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/gemini_live.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/live_session_events.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/omni/codec.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/omni/mod.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/openai_realtime.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/time_utils.rs`
-- [ ] `apps/desktop/src-tauri/src/audio/translation_route.rs`
-- [ ] `scripts/diagnostics/omni-benchmark/Cargo.lock`
-- [ ] `scripts/diagnostics/omni-benchmark/Cargo.toml`
-- [ ] `scripts/diagnostics/omni-benchmark/src/main.rs`
-- [ ] `scripts/testing/audit-worktree-groups.mjs`
-- [ ] `scripts/testing/run-watch-mode-live-matrix.ps1`
-- [ ] `scripts/testing/run-watch-mode-live.ps1`
-- [ ] `scripts/testing/run-watch-mode-live.test.mjs`
-- [ ] `scripts/testing/verify-watch-mode-evidence.mjs`
-- [ ] `scripts/testing/verify-watch-mode-evidence.test.mjs`
-- [ ] `scripts/testing/watch-mode-report.mjs`
-- [ ] `scripts/testing/watch-mode-report.test.mjs`
+- Audio engine、events、speech、subtitle translation、Omni session 已按设备、路由、调度、协议和 worker 生命周期拆分。
+- Native Bridge Windows 实现已按捕获/驱动 I/O 与订阅/播放职责拆分。
+- Bridge 控制消息、Named Pipe、PCM 帧布局、IOCTL、事件名称和错误契约保持不变。
 
-### Group B: Desktop TypeScript, React, Runtime, i18n
+### Group B：React / Provider / Desktop API
 
-- [ ] `apps/desktop/eslint.config.js`
-- [ ] `apps/desktop/package.json`
-- [ ] `apps/desktop/src/App.tsx`
-- [ ] `apps/desktop/src/components/audio/AudioLevelMeter.tsx`
-- [ ] `apps/desktop/src/components/driver/DriverManagementCard.test.tsx`
-- [ ] `apps/desktop/src/components/driver/DriverManagementCard.tsx`
-- [ ] `apps/desktop/src/components/icons/AppIcon.tsx`
-- [ ] `apps/desktop/src/components/page/ConsoleDock.test.tsx`
-- [ ] `apps/desktop/src/components/page/ConsoleDock.tsx`
-- [ ] `apps/desktop/src/components/page/DiagnosticsQuickLink.tsx`
-- [ ] `apps/desktop/src/components/welcome/WelcomeLanguagePicker.tsx`
-- [ ] `apps/desktop/src/i18n/config.ts`
-- [ ] `apps/desktop/src/i18n/locales/ar.json`
-- [ ] `apps/desktop/src/i18n/locales/bn.json`
-- [ ] `apps/desktop/src/i18n/locales/de.json`
-- [ ] `apps/desktop/src/i18n/locales/en.json`
-- [ ] `apps/desktop/src/i18n/locales/es.json`
-- [ ] `apps/desktop/src/i18n/locales/fil.json`
-- [ ] `apps/desktop/src/i18n/locales/fr.json`
-- [ ] `apps/desktop/src/i18n/locales/hi.json`
-- [ ] `apps/desktop/src/i18n/locales/id.json`
-- [ ] `apps/desktop/src/i18n/locales/ja.json`
-- [ ] `apps/desktop/src/i18n/locales/ko.json`
-- [ ] `apps/desktop/src/i18n/locales/mr.json`
-- [ ] `apps/desktop/src/i18n/locales/pt.json`
-- [ ] `apps/desktop/src/i18n/locales/ru.json`
-- [ ] `apps/desktop/src/i18n/locales/ta.json`
-- [ ] `apps/desktop/src/i18n/locales/te.json`
-- [ ] `apps/desktop/src/i18n/locales/th.json`
-- [ ] `apps/desktop/src/i18n/locales/tr.json`
-- [ ] `apps/desktop/src/i18n/locales/vi.json`
-- [ ] `apps/desktop/src/i18n/locales/zh-CN.json`
-- [ ] `apps/desktop/src/i18n/locales/zh-CN.test.ts`
-- [ ] `apps/desktop/src/main.tsx`
-- [ ] `apps/desktop/src/overlay.tsx`
-- [ ] `apps/desktop/src/pages/AudioRoutingPage.snapshot.test.tsx`
-- [ ] `apps/desktop/src/pages/AudioRoutingPage.test.tsx`
-- [ ] `apps/desktop/src/pages/AudioRoutingPage.tsx`
-- [ ] `apps/desktop/src/pages/DiagnosticsPage.helpers.test.ts`
-- [ ] `apps/desktop/src/pages/DiagnosticsPage.test.tsx`
-- [ ] `apps/desktop/src/pages/DiagnosticsPage.tsx`
-- [ ] `apps/desktop/src/pages/GlossaryPage.test.tsx`
-- [ ] `apps/desktop/src/pages/GlossaryPage.tsx`
-- [ ] `apps/desktop/src/pages/ProvidersPage.helpers.test.ts`
-- [ ] `apps/desktop/src/pages/ProvidersPage.test.tsx`
-- [ ] `apps/desktop/src/pages/ProvidersPage.tsx`
-- [ ] `apps/desktop/src/pages/RealTimeSessionPage.helpers.test.tsx`
-- [ ] `apps/desktop/src/pages/RealTimeSessionPage.test.tsx`
-- [ ] `apps/desktop/src/pages/RealTimeSessionPage.tsx`
-- [ ] `apps/desktop/src/pages/SettingsPage.tsx`
-- [ ] `apps/desktop/src/pages/SubtitleOverlayPage.browser.test.tsx`
-- [ ] `apps/desktop/src/pages/SubtitleOverlayPage.helpers.test.ts`
-- [ ] `apps/desktop/src/pages/SubtitleOverlayPage.tsx`
-- [ ] `apps/desktop/src/router.tsx`
-- [ ] `apps/desktop/src/runtime/audio-runtime.test.ts`
-- [ ] `apps/desktop/src/runtime/audio-runtime.ts`
-- [ ] `apps/desktop/src/runtime/bridge-runtime.ts`
-- [ ] `apps/desktop/src/runtime/desktop-runtime.test.ts`
-- [ ] `apps/desktop/src/runtime/desktop-runtime.ts`
-- [ ] `apps/desktop/src/runtime/diagnostics-runtime.test.ts`
-- [ ] `apps/desktop/src/runtime/diagnostics-runtime.ts`
-- [ ] `apps/desktop/src/runtime/runtime-status.test.ts`
-- [ ] `apps/desktop/src/schema/audio-contract.ts`
-- [ ] `apps/desktop/src/schema/config.ts`
-- [ ] `apps/desktop/src/schema/provider-contract.ts`
-- [ ] `apps/desktop/src/utils/audio-runtime-badges.test.ts`
-- [ ] `apps/desktop/src/utils/custom-provider-templates.ts`
-- [ ] `apps/desktop/src/utils/driver-management.test.ts`
-- [ ] `apps/desktop/src/utils/driver-management.ts`
-- [ ] `apps/desktop/src/utils/provider-model-capabilities.test.ts`
-- [ ] `apps/desktop/src/utils/provider-model-capabilities.ts`
-- [ ] `apps/desktop/src/utils/scene-readiness.test.ts`
-- [ ] `apps/desktop/src/utils/scene-readiness.ts`
-- [ ] `apps/desktop/vitest.config.ts`
-- [ ] `apps/desktop/src/App.test.ts`
-- [ ] `apps/desktop/src/components/BootstrapOverlay.test.tsx`
-- [ ] `apps/desktop/src/components/BootstrapOverlay.tsx`
-- [ ] `apps/desktop/src/overlay.test.ts`
-- [ ] `apps/desktop/src/pages/AudioRoutingPage.helpers.test.ts`
-- [ ] `apps/desktop/src/pages/providers/CustomProviderDialog.tsx`
-- [ ] `apps/desktop/src/pages/providers/ProviderCatalogComponents.test.tsx`
-- [ ] `apps/desktop/src/pages/providers/ProviderModelCatalog.tsx`
-- [ ] `apps/desktop/src/pages/providers/ProviderTemplateCatalog.tsx`
-- [ ] `apps/desktop/src/pages/providers/ProviderVerificationPanel.tsx`
-- [ ] `apps/desktop/src/pages/providers/providersPageHelpers.ts`
-- [ ] `apps/desktop/src/router-startup.ts`
-- [ ] `apps/desktop/src/router.test.ts`
-- [ ] `apps/desktop/src/runtime/benchmark-runtime.test.ts`
-- [ ] `apps/desktop/src/runtime/benchmark-runtime.ts`
-- [ ] `apps/desktop/src/runtime/live-session-events-runtime.test.ts`
-- [ ] `apps/desktop/src/runtime/live-session-events-runtime.ts`
-- [ ] `apps/desktop/src/utils/debounce.test.ts`
+- 6 个页面入口已变为薄 `*Page.tsx`，实现位于对应 `*Screen.tsx` 和职责子目录。
+- Provider gateway 已拆为认证、模型、传输、路由、OpenAI、DashScope、探测和实时音频模块。
+- 页面运行时访问统一经 Desktop API v2 Context；API v2 服务与原生窗口适配器已有契约测试。
+- 前端单元覆盖率排除应用组合根、旧 bootstrap 协调器和纯类型 schema；这些属于集成或编译期边界，API v2 与可独立测试产品逻辑仍纳入覆盖率。
 
-### Group C: Tauri Rust Provider, Storage, Benchmark
+### Group C：Storage / Benchmark / Tauri Infrastructure
 
-- [ ] `apps/desktop/src-tauri/Cargo.lock`
-- [ ] `apps/desktop/src-tauri/Cargo.toml`
-- [ ] `apps/desktop/src-tauri/defaults/app-config.default.json`
-- [ ] `apps/desktop/src-tauri/src/main.rs`
-- [ ] `apps/desktop/src-tauri/src/provider/contracts.rs`
-- [ ] `apps/desktop/src-tauri/src/provider/gateway.rs`
-- [ ] `apps/desktop/src-tauri/src/provider/gateway_parts/models.rs`
-- [ ] `apps/desktop/src-tauri/src/provider/gateway_parts/transport.rs`
-- [ ] `apps/desktop/src-tauri/src/storage/repository.rs` (deleted)
-- [ ] `apps/desktop/src-tauri/windows-app-manifest.xml`
-- [ ] `apps/desktop/src-tauri/src/benchmark/mod.rs`
-- [ ] `apps/desktop/src-tauri/src/common.rs`
-- [ ] `apps/desktop/src-tauri/src/storage/repository/json_merge.rs`
-- [ ] `apps/desktop/src-tauri/src/storage/repository/mod.rs`
-- [ ] `apps/desktop/src-tauri/src/storage/repository/schema.rs`
+- Repository 已拆分 schema、JSON merge、快照服务、持久化对象和持久化实现。
+- Benchmark 已拆分运行器、事件解析和报告汇总。
+- API v2 command、Storage service 和 Tauri 配置入口均已接入当前模块树。
 
-### Group D: Scripts, CI, Docs, Styles, Metadata
+### Group D：Quality Infrastructure
 
-- [ ] `.gitignore`
-- [ ] `.github/workflows/ci.yml`
-- [ ] `.github/workflows/release-verify.yml`
-- [ ] `README.md`
-- [ ] `LICENSE`
-- [ ] `package-lock.json`
-- [ ] `package.json`
-- [ ] `qodana.yaml` (deleted)
-- [ ] `apps/desktop/src/styles.css`
-- [ ] `apps/desktop/src/styles/deferred.css`
-- [ ] `apps/desktop/src/styles/global/app-theme-overrides-late.css`
-- [ ] `apps/desktop/src/styles/global/app-theme-overrides.css`
-- [ ] `apps/desktop/src/styles/global/backgrounds.css`
-- [ ] `apps/desktop/src/styles/global/badges.css`
-- [ ] `apps/desktop/src/styles/global/base.css`
-- [ ] `apps/desktop/src/styles/global/buttons.css`
-- [ ] `apps/desktop/src/styles/global/cards.css`
-- [ ] `apps/desktop/src/styles/global/console-cards.css`
-- [ ] `apps/desktop/src/styles/global/forms-base.css`
-- [ ] `apps/desktop/src/styles/global/forms-overrides.css`
-- [ ] `apps/desktop/src/styles/global/forms.css`
-- [ ] `apps/desktop/src/styles/global/layout-components.css`
-- [ ] `apps/desktop/src/styles/global/layout-modern.css`
-- [ ] `apps/desktop/src/styles/global/layout-overrides.css`
-- [ ] `apps/desktop/src/styles/global/layout-page.css`
-- [ ] `apps/desktop/src/styles/global/layout-status.css`
-- [ ] `apps/desktop/src/styles/global/layout.css`
-- [ ] `apps/desktop/src/styles/global/responsive-overrides-2.css`
-- [ ] `apps/desktop/src/styles/global/responsive-overrides-3.css`
-- [ ] `apps/desktop/src/styles/global/responsive-overrides-4.css`
-- [ ] `apps/desktop/src/styles/global/responsive-overrides-5.css`
-- [ ] `apps/desktop/src/styles/global/responsive-overrides-provider.css`
-- [ ] `apps/desktop/src/styles/global/responsive-overrides.css`
-- [ ] `apps/desktop/src/styles/global/tokens.css`
-- [ ] `apps/desktop/src/styles/global/typography.css`
-- [ ] `apps/desktop/src/styles/index.css`
-- [ ] `apps/desktop/src/styles/overlay.css`
-- [ ] `apps/desktop/src/styles/pages/diagnostics.css`
-- [ ] `apps/desktop/src/styles/pages/driver-management-overrides.css`
-- [ ] `apps/desktop/src/styles/pages/driver-management.css`
-- [ ] `apps/desktop/src/styles/pages/glossary-overrides.css`
-- [ ] `apps/desktop/src/styles/pages/glossary.css`
-- [ ] `apps/desktop/src/styles/pages/provider-overrides.css`
-- [ ] `apps/desktop/src/styles/pages/provider.css`
-- [ ] `apps/desktop/src/styles/pages/realtime-session.css`
-- [ ] `apps/desktop/src/styles/pages/routing-modern.css`
-- [ ] `apps/desktop/src/styles/pages/routing-overrides.css`
-- [ ] `apps/desktop/src/styles/pages/routing.css`
-- [ ] `apps/desktop/src/styles/pages/settings-controls.css`
-- [ ] `apps/desktop/src/styles/pages/settings-overlay-preview.css`
-- [ ] `apps/desktop/src/styles/pages/settings.css`
-- [ ] `apps/desktop/src/styles/pages/subtitle-overlay-isolation.css`
-- [ ] `apps/desktop/src/styles/pages/subtitle-overlay.css`
-- [ ] `apps/desktop/src/styles/pages/welcome.css`
-- [ ] `apps/desktop/src/styles/startup.css`
-- [ ] `docs/项目/Watch Mode 真实链路自动化测试.md`
-- [ ] `docs/项目/启动可用性测试说明.md`
-- [ ] `docs/项目/架构说明.md`
-- [ ] `docs/项目/测试与质量门禁.md`
-- [ ] `i18n/README_ar.md`
-- [ ] `i18n/README_bn.md`
-- [ ] `i18n/README_de.md`
-- [ ] `i18n/README_en.md`
-- [ ] `i18n/README_es.md`
-- [ ] `i18n/README_fil.md`
-- [ ] `i18n/README_fr.md`
-- [ ] `i18n/README_hi.md`
-- [ ] `i18n/README_id.md`
-- [ ] `i18n/README_ja.md`
-- [ ] `i18n/README_ko.md`
-- [ ] `i18n/README_mr.md`
-- [ ] `i18n/README_pt.md`
-- [ ] `i18n/README_ru.md`
-- [ ] `i18n/README_ta.md`
-- [ ] `i18n/README_te.md`
-- [ ] `i18n/README_th.md`
-- [ ] `i18n/README_tr.md`
-- [ ] `i18n/README_vi.md`
-- [ ] `license-audit-report.md`
-- [ ] `scripts/compress_logs.py` (deleted)
-- [ ] `scripts/development/dev-tauri-fast.ps1`
-- [ ] `scripts/release/create-release-package.mjs`
-- [ ] `scripts/release/generate-release-manifest.mjs`
-- [ ] `scripts/release/prepare-installer-layout.mjs`
-- [ ] `scripts/release/verify-release.mjs`
-- [ ] `scripts/smoke-audio-routing.ps1` (deleted)
-- [ ] `scripts/testing/README.md`
-- [ ] `scripts/testing/i18n-coverage.mjs`
-- [ ] `scripts/testing/measure-startup-readiness.ps1`
-- [ ] `scripts/testing/measure-startup-readiness.test.mjs`
-- [ ] `scripts/testing/prepare-install-regression-report.ps1`
-- [ ] `scripts/testing/prepare-manual-e2e-report.ps1`
-- [ ] `scripts/testing/prepare-performance-baseline.ps1`
-- [ ] `scripts/testing/run-baseline.ps1` (deleted)
-- [ ] `scripts/testing/run-coverage-gate.ps1`
-- [ ] `scripts/testing/run-quality-gate-auto.ps1`
-- [ ] `scripts/testing/run-quality-gate.ps1`
-- [ ] `scripts/testing/run-upgrade.ps1` (deleted)
-- [ ] `scripts/testing/verify-contracts.mjs`
-- [ ] `scripts/testing/verify-startup-readiness.mjs`
-- [ ] `scripts/testing/watch-mode-diagnostic-devurl-server.mjs`
-- [ ] `90/20260608-102045-120/desktop-env.local.backup`
-- [ ] `90/20260608-102045-120/failure.json`
-- [ ] `90/20260608-102045-120/report.json`
-- [ ] `90/20260608-102045-120/report.md`
-- [ ] `90/20260608-102045-120/snapshots.json`
-- [ ] `90/20260608-102045-120/steps.json`
-- [ ] `90/latest-watch-mode-live.json`
+- CI 增加契约与架构边界检查。
+- `audit-architecture-boundaries.mjs` 严格模式当前为零违规。
+- `audit-worktree-groups.mjs` 当前可分类全部工作树变更。
+- Coverage 脚本按 native exit code 判断成功，避免 Windows PowerShell 将普通 stderr 警告误判为失败。
 
-## Issues Found
+## Resolved Issues
 
-### ISSUE-001: `check:bridge-service-native` emits dead_code warnings
+### Bridge warnings
 
-- Severity: Medium
-- Files: `apps/bridge-service-native/src/windows/mod.rs`
-- Evidence: `npm run check:bridge-service-native` succeeds but reports 8 warnings for unused constants/functions including `OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS`, `run_wasapi_source_worker`, `capture_wasapi_source_generation`, and helpers.
-- Risk: release/quality gates that treat warnings as failures will fail; unused WASAPI source capture code may also indicate an incomplete integration path.
-- Status: Pending fix
+- Status：Resolved
+- Evidence：`npm run check:bridge-service-native` 无编译错误；捕获和播放职责已进入独立文件。
 
-### ISSUE-002: `test:contracts` fails on missing `README.en.md`
+### Contract README dependency
 
-- Severity: High
-- Files: `scripts/testing/verify-contracts.mjs`
-- Evidence: `npm run test:contracts` fails with `ENOENT: no such file or directory, open '<repository-root>\README.en.md'`.
-- Risk: contract verification cannot run in the current worktree.
-- Status: Pending fix
+- Status：Resolved
+- Evidence：`npm run test:contracts` 对协议 `2026-06-02-loopback-v2` 通过。
 
-### ISSUE-003: `i18n:coverage` fails for missing locale keys and one placeholder mismatch
+### i18n structural coverage
 
-- Severity: High
-- Files: `apps/desktop/src/i18n/locales/*.json`, `scripts/testing/i18n-coverage.mjs`
-- Evidence: `npm run i18n:coverage` reports 11 missing keys in each non-English/non-zh-CN locale and a placeholder mismatch for `zh-CN:session.sceneLaunchFailed`.
-- Risk: new UI text falls back or fails coverage gates; placeholder mismatch can break interpolation.
-- Status: Pending fix
+- Status：Resolved
+- Evidence：全部 locale 结构覆盖率 100%，无 missing、empty 或 placeholder mismatch。
+
+### Architecture violations
+
+- Status：Resolved
+- Evidence：严格审计从 15 项降至 9 项，最终降至 0；未提高 900/450 行阈值，也未增加豁免。
+
+### Frontend coverage
+
+- Status：Resolved
+- Evidence：58 个测试文件、498 项测试；Statements 97.02%、Branches 91.70%、Functions 98.01%、Lines 97.38%，原阈值保持不变。
 
 ## Verification Log
 
-- PASS: `npm run check:desktop`
-- PASS: `npm run test:watch-mode-report`
-- FAIL: `npm run check:bridge-service-native` produced warnings (see ISSUE-001)
-- FAIL: `npm run test:contracts` (see ISSUE-002)
-- FAIL: `npm run i18n:coverage` (see ISSUE-003)
+- PASS：`npm run check:desktop`
+- PASS：Desktop frontend tests — 58 files / 498 tests
+- PASS：`npm run test:desktop-coverage`
+- PASS：`npm run check:desktop-shell`
+- PASS：`npm run test:desktop-shell` — 254 tests
+- PASS：`npm run check:bridge-service-native`
+- PASS：`npm run test:bridge-service-native` — 33 tests
+- PASS：`npm run test:contracts`
+- PASS：`npm run i18n:coverage`
+- PASS：`npm run audit:architecture:strict` — 0 violations
+- PASS：`npm run audit:worktree-groups` — 0 unclassified files
+- PASS：`git diff --check`
+- PARTIAL：管理员 `npm run quality:gate:auto` 通过 Desktop verify、contracts、frontend coverage 和 Desktop Rust 254 项测试，在全仓 Rust 100% 覆盖率断言处停止。
+
+## Non-blocking Baseline Items
+
+仓库覆盖率脚本对两个 Rust crate 强制 lines/functions/branches 100%。本轮已安装固定 nightly 与 `cargo-llvm-cov 0.8.6` 并取得实际报告：
+
+- Desktop Rust：lines 45.77%
+- Native Bridge：lines 21.35%、functions 31.05%、branches 14.18%
+
+该差距覆盖大量平台 I/O、Tauri composition、WASAPI、Named Pipe、驱动与真实 WebSocket 路径，是独立的全产品测试建设任务，不是本轮模块拆分造成的回归。阈值未降低，本轮 Rust 源文件未从收集范围排除。
+
+## Final Conclusion
+
+- [x] 当前重构目标完成，严格架构审计零违规
+- [x] 公共 API、事件协议、Bridge 帧协议、存储格式和 UI 行为保持兼容
+- [x] 工作树变更均有明确分组与验证命令
+- [x] `REFACTOR-TODO.md` 与本审计和当前实现一致
+
+## Follow-up Object Refactor Status
+
+2026-07-15 开始下一轮状态/生命周期对象收口。架构审计已扩展到 `.inc`、`*Screen.tsx` 和超长 Rust 函数，因此上一轮零违规基线不再代表当前增强规则的结果。
+
+已完成并验证：
+
+- Omni 会话的分散初始化状态已集中到 `OmniSessionRuntime`。
+- Speech 调度去重和顺序缓存进入 `SpeechDispatchQueue`。
+- Bridge 进程、Named Pipe 命令和 PCM 写入分别进入对应对象，现有调用方已接入。
+- Diagnostics、Glossary 和 Audio Routing 已接入新的 controller/service 边界。
+- `npm run check:desktop`、`npm run check:desktop-shell` 通过；相关前端测试 3 个文件、62 项通过。
+
+当前增强审计仍失败，剩余项主要是 Omni 超长 worker、既有长 Rust worker 以及 6 个 `*Screen.tsx`。这些项目保持未完成，不使用阈值放宽或豁免伪造通过。
+
+后续进展：Audio Routing、Glossary、Real-time Session 的 Screen 违规已分别通过组件、领域模块和日志服务提取消除；相关 TypeScript 检查与定向测试通过。增强审计由 14 项降至 11 项，当前剩余 3 个 Screen 与 8 个 Rust 项。
+
+继续收口后，Diagnostics 的概览/报告/实时事件视图与 Overlay 的几何领域、样式数据、上下文菜单已移出 Screen；对应 72 项定向测试通过。增强审计当前为 9 项，仅剩 Providers Screen 和 8 个 Rust 项。
+
+Bridge typed clients 已从 `bridge/ipc.rs` 迁入独立模块并保持原导入路径兼容，Desktop Rust 编译通过。增强审计由 9 项降至 8 项。
+
+随后完成 STT 文本事件处理、watch mode 配置构建和字幕翻译 cue 循环的职责提取；每次变更后 Desktop Rust 均重新编译通过。增强严格审计现剩 5 项：`audio/engine/workers.rs::run_route_worker`、`audio/events/route_commands.rs::start_audio_route_inner`、`audio/omni/session_worker.inc` 的文件与 worker 两项，以及 `ProvidersScreen.tsx`。
+
+继续完成 Route Commands 的 Omni 分支协调函数、Audio Engine 的 `device_initializer` 正式模块，以及 Providers Screen/Workspace 边界；Providers 类型检查和 71 项定向测试通过。Omni 已由 `.inc` 转为正式 `session_worker.rs`，Desktop Rust 再次编译通过。增强严格审计现仅剩 Omni 的文件体积与 `run_omni_worker` 两项，未调整阈值或增加豁免。
+
+最终将 Omni 输入音频泵、首次连接/重连、ASR 事件、字幕/播放事件与 Socket 轮询分别迁入正式模块；`run_omni_worker` 和 `session_worker.rs` 均回到增强阈值内，`npm run audit:architecture:strict` 零违规。随后增加 `SpeechPlaybackEngine`、`CueTranslationLedger`、`TranslationResultWriter`、Providers workspace controller，并把 Session 停止顺序收口到现有 controller；Speech 29 项、字幕翻译 30 项、Providers 71 项、Session 33 项定向测试通过。
+
+最终质量收口补充（2026-07-15）：
+
+- 修复页面/组件拆分遗留的 ESLint 未使用导入与 Overlay ref props 误判，`verify:desktop` 通过。
+- 新增薄页面入口与 Overlay 菜单行为测试，并覆盖 `DiagnosticsReportExporter` 的 JSON/TXT 导出适配；前端最终为 60 个测试文件、501 项测试。
+- 前端覆盖率门禁通过：Statements 97.14%、Branches 92.22%、Functions 98.10%、Lines 97.54%，未调整阈值或排除本轮生产模块。
+- 管理员 `npm run coverage:gate` 完成前端覆盖率和 Desktop Rust 254 项测试后，在既有 Rust 全仓 100% 行覆盖率断言处失败；本次报告 Desktop Rust lines 为 44.24%。该门禁缺口不通过降低阈值、增加排除或删除代码处理。
+- 功能门禁仍全部通过：Desktop/Native Bridge 编译测试、契约、i18n、严格架构审计、工作树分组与 `git diff --check`。

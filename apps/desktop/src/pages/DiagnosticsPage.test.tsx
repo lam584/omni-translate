@@ -603,7 +603,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click();
+      container.querySelector<HTMLButtonElement>('.benchmark-modal-head > div > .icon-button:last-child')?.click();
     });
     expect(container.querySelector('.benchmark-modal')).toBeNull();
 
@@ -869,7 +869,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     // Click refresh button (the refresh icon-button in the modal head)
     const modalHead = container.querySelector('.benchmark-modal-head')!;
-    const refreshButton = modalHead.querySelector('.icon-button') as HTMLButtonElement;
+    const refreshButton = modalHead.querySelectorAll<HTMLButtonElement>('.icon-button')[1];
     await act(async () => {
       refreshButton?.click();
       await Promise.resolve();

@@ -337,14 +337,14 @@ export async function runProviderProbe(provider: ProviderDraft): Promise<Provide
     };
   }
 
-  return invokeWithTimeout<ProviderProbeProfileRuntime>(
-    'probe_provider',
-    { provider },
+  return invokeWithTimeout<{ data: ProviderProbeProfileRuntime }>(
+    'provider_v2',
+    { command: { action: 'probe', provider } },
     '模型连通性检测',
     provider.timeoutMs + 3000,
     'provider-probe',
     '请检查接口地址、网络连通性，或先切换到 HTTP 传输模式后重试。',
-  );
+  ).then((result) => result.data);
 }
 
 export async function fetchProviderModels(
@@ -363,14 +363,14 @@ export async function fetchProviderModels(
     };
   }
 
-  return invokeWithTimeout<ProviderModelCatalogRuntime>(
-    'fetch_provider_models',
-    { provider },
+  return invokeWithTimeout<{ data: ProviderModelCatalogRuntime }>(
+    'provider_v2',
+    { command: { action: 'fetchModels', provider } },
     '获取模型列表',
     provider.timeoutMs + 3000,
     'provider-models',
     '请检查接口地址、API Key 和网络连通性后重试。',
-  );
+  ).then((result) => result.data);
 }
 
 export async function runProviderSmoke(
@@ -421,19 +421,16 @@ export async function runProviderSmoke(
     };
   }
 
-  return invokeWithTimeout<ProviderSmokeResult>(
-    'execute_provider_smoke',
+  return invokeWithTimeout<{ data: ProviderSmokeResult }>(
+    'provider_v2',
     {
-      provider,
-      sourceText,
-      sourceLanguage,
-      targetLanguage,
+      command: { action: 'smoke', provider, sourceText, sourceLanguage, targetLanguage },
     },
     '模型冒烟测试',
     provider.timeoutMs + 3000,
     'provider-smoke',
     '请检查接口地址、网络连通性，或先切换到 HTTP 传输模式后重试。',
-  );
+  ).then((result) => result.data);
 }
 
 export const providerRuntimeTestHelpers = {

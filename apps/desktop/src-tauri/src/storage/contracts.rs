@@ -35,6 +35,7 @@ impl StorageRuntimeSnapshot {
 pub struct ConfigExportArtifact {
     pub file_path: String,
     pub exported_at: String,
+    pub config_contract_version: i64,
     pub snapshot_count: usize,
 }
 

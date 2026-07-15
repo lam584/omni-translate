@@ -1,19 +1,43 @@
 use std::time::Instant;
 
 use serde_json::{json, Value};
-use tungstenite::client::IntoClientRequest;
-use tungstenite::{connect, Message};
+use tungstenite::Message;
 
 use super::super::contracts::{
     ProviderDraftInput, ProviderRuntimeError, ProviderSmokeResult, ProviderStreamEventRecord,
 };
-use super::auth::{apply_ws_auth, apply_ws_custom_headers, build_reqwest_headers};
 use super::routing::{build_messages, build_routing_decision};
 use super::transport::{
-    apply_websocket_timeouts, build_client, join_url, normalize_dashscope_compatible_base_url,
-    normalize_transport_error, normalize_websocket_read_error, parse_dashscope_error,
-    resolve_websocket_timeout, to_websocket_url,
+    join_url, normalize_dashscope_compatible_base_url, normalize_transport_error,
+    normalize_websocket_read_error, parse_dashscope_error, ProviderHttpClient, WebSocketTransport,
 };
+
+/// Stateful protocol boundary for DashScope HTTP and realtime WebSocket calls.
+#[derive(Debug, Default)]
+pub(crate) struct DashScopeProviderAdapter;
+
+impl DashScopeProviderAdapter {
+    pub(crate) fn execute(
+        &self,
+        provider: &ProviderDraftInput,
+        transport_effective: &str,
+        request_id: &str,
+        source_text: &str,
+        source_language: &str,
+        target_language: &str,
+        on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
+    ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
+        execute(
+            provider,
+            transport_effective,
+            request_id,
+            source_text,
+            source_language,
+            target_language,
+            on_delta,
+        )
+    }
+}
 
 pub(super) fn execute(
     provider: &ProviderDraftInput,
@@ -44,19 +68,14 @@ pub(super) fn execute(
         provider.transport,
         transport_effective
     );
-    let client = build_client(provider.timeout_ms)?;
+    let client = ProviderHttpClient::new(provider.timeout_ms)?;
     let payload = json!({
       "model": provider.model,
       "messages": build_messages(provider, source_text, source_language, target_language, &[]),
       "temperature": provider.temperature,
       "max_tokens": provider.max_output_tokens
     });
-    let response = client
-        .post(endpoint)
-        .headers(build_reqwest_headers(provider)?)
-        .json(&payload)
-        .send()
-        .map_err(normalize_transport_error)?;
+    let response = client.post_json(endpoint, provider, &payload)?;
 
     if !response.status().is_success() {
         return Err(parse_dashscope_error(response));
@@ -136,26 +155,7 @@ fn execute_websocket(
         );
     }
 
-    let websocket_timeout = resolve_websocket_timeout(provider.timeout_ms);
-    let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
-    let mut request = websocket_url
-        .as_str()
-        .into_client_request()
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("无法创建 WebSocket 请求: {error}"),
-            )
-        })?;
-    apply_ws_auth(provider, request.headers_mut())?;
-    apply_ws_custom_headers(provider, request.headers_mut())?;
-    let (mut socket, _) = connect(request).map_err(|error| {
-        ProviderRuntimeError::new(
-            "transport.unavailable",
-            format!("DashScope WebSocket 建链失败: {error}"),
-        )
-    })?;
-    apply_websocket_timeouts(&mut socket, websocket_timeout)?;
+    let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(provider)?;
     let payload = json!({
       "request_id": request_id,
       "model": provider.model,
@@ -295,26 +295,7 @@ fn execute_realtime_websocket(
     target_language: &str,
     on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
 ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
-    let websocket_timeout = resolve_websocket_timeout(provider.timeout_ms);
-    let websocket_url = to_websocket_url(&provider.base_url, &provider.model)?;
-    let mut request = websocket_url
-        .as_str()
-        .into_client_request()
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("无法创建 WebSocket 请求: {error}"),
-            )
-        })?;
-    apply_ws_auth(provider, request.headers_mut())?;
-    apply_ws_custom_headers(provider, request.headers_mut())?;
-    let (mut socket, _) = connect(request).map_err(|error| {
-        ProviderRuntimeError::new(
-            "transport.unavailable",
-            format!("DashScope Realtime WebSocket 建链失败: {error}"),
-        )
-    })?;
-    apply_websocket_timeouts(&mut socket, websocket_timeout)?;
+    let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(provider)?;
 
     let safe_id = request_id.replace(':', "_").replace('-', "_");
     let instructions = format!(

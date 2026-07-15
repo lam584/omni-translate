@@ -12,7 +12,7 @@ const deepseekTemplate = providerTemplates.find((template) => template.id === 't
 describe('ProvidersPage helpers', () => {
   it('formats labels, transports, scenarios, timestamps and errors', () => {
     expect(helpers.formatProviderLabel(' Example  API  Platform ')).toBe('Example Platform');
-    expect(['streaming-http', 'websocket', 'http'].map(helpers.formatTransportLabel)).toEqual(['流式HTTP', '长连接', '普通HTTP']);
+    expect(['streaming-http', 'websocket', 'http'].map(helpers.formatTransportLabel)).toEqual(['流式 HTTP', '长连接', '普通 HTTP']);
     expect(['watch', 'game', 'voice-room', 'subtitle-translate', 'custom'].map((scenario) => helpers.formatScenarioLabel(scenario as Parameters<typeof helpers.formatScenarioLabel>[0]))).toEqual([
       '语音转文字',
       '文字转语音',

@@ -17,7 +17,7 @@ use super::state::AudioStateStore;
 use super::time_utils::unix_ms;
 use crate::diagnostics::model_trace::{ModelTraceContext, ModelTraceRecorder};
 use crate::provider::contracts::ProviderDraftInput;
-use crate::provider::gateway;
+use crate::provider::gateway_parts::auth::apply_ws_auth;
 
 const GEMINI_READ_TIMEOUT_MS: u64 = 200;
 const GEMINI_WRITE_TIMEOUT_SECS: u64 = 10;
@@ -231,7 +231,7 @@ fn run_gemini_worker(
         .as_str()
         .into_client_request()
         .map_err(|error| format!("failed to create Gemini Live request: {error}"))?;
-    gateway::apply_ws_auth(&provider, request.headers_mut())
+    apply_ws_auth(&provider, request.headers_mut())
         .map_err(|error| format!("failed to apply Gemini Live auth: {}", error.message))?;
 
     let (mut socket, _) =

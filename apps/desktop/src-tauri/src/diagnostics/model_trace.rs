@@ -145,12 +145,12 @@ impl ModelTraceCall {
         self.event(&format!("ws.recv.{label}"), value);
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "HTTP trace hook is part of the provider instrumentation contract")]
     pub fn record_http_request(&self, label: &str, value: Value) {
         self.event(&format!("http.request.{label}"), value);
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "HTTP trace hook is part of the provider instrumentation contract")]
     pub fn record_http_response(&self, label: &str, value: Value) {
         self.event(&format!("http.response.{label}"), value);
     }
@@ -386,6 +386,8 @@ pub fn sanitize_value(value: Value) -> Value {
                 let key_lower = key.to_ascii_lowercase();
                 if is_secret_key(&key_lower) {
                     sanitized.insert(key, Value::String("[REDACTED]".to_string()));
+                } else if key_lower == "customheaders" || key_lower == "custom_headers" {
+                    sanitized.insert(key, sanitize_custom_headers(value));
                 } else if key_lower == "audio" {
                     sanitized.insert(key, summarize_string_field(value, "base64-audio"));
                 } else if key_lower == "delta" {
@@ -410,6 +412,24 @@ fn is_secret_key(key: &str) -> bool {
         || key == "key"
         || key.contains("secret")
         || key.contains("token")
+        || key.contains("cookie")
+        || key.contains("password")
+        || key.contains("credential")
+}
+
+fn sanitize_custom_headers(value: Value) -> Value {
+    match value {
+        Value::Array(items) => Value::Array(items.into_iter().map(|item| match item {
+            Value::Object(mut header) => {
+                if header.contains_key("value") {
+                    header.insert("value".to_string(), Value::String("[REDACTED]".to_string()));
+                }
+                Value::Object(header)
+            }
+            _ => Value::String("[REDACTED]".to_string()),
+        }).collect()),
+        _ => Value::String("[REDACTED]".to_string()),
+    }
 }
 
 fn summarize_string_field(value: Value, kind: &str) -> Value {
@@ -427,7 +447,20 @@ fn sanitize_string(text: String) -> Value {
     if text.to_ascii_lowercase().contains("bearer ") {
         return Value::String(redact_bearer(&text));
     }
-    Value::String(text)
+    Value::String(redact_sensitive_query(&text))
+}
+
+fn redact_sensitive_query(text: &str) -> String {
+    let Some((base, query)) = text.split_once('?') else { return text.to_string(); };
+    let redacted = query.split('&').map(|part| {
+        let Some((key, _value)) = part.split_once('=') else { return part.to_string(); };
+        if is_secret_key(&key.to_ascii_lowercase()) {
+            format!("{key}=[REDACTED]")
+        } else {
+            part.to_string()
+        }
+    }).collect::<Vec<_>>().join("&");
+    format!("{base}?{redacted}")
 }
 
 fn redact_bearer(text: &str) -> String {

@@ -151,9 +151,9 @@ describe('GlossaryPage compact labels', () => {
     expect(container.textContent).toContain('强制');
     expect(container.textContent).toContain('建议');
 
-    await inputText(container.querySelector<HTMLInputElement>('input[placeholder="搜索术语……"]')!, 'NPC');
+    await inputText(container.querySelector<HTMLInputElement>('.glossary-search input')!, 'NPC');
     expect(container.textContent).not.toContain('GG');
-    await inputText(container.querySelector<HTMLInputElement>('input[placeholder="搜索术语……"]')!, '');
+    await inputText(container.querySelector<HTMLInputElement>('.glossary-search input')!, '');
     await selectValue(container.querySelector<HTMLSelectElement>('.glossary-filter-row select')!, 'suggest');
     expect(container.textContent).toContain('NPC');
     await selectValue(container.querySelector<HTMLSelectElement>('.glossary-filter-row select')!, '');
@@ -267,7 +267,7 @@ describe('GlossaryPage compact labels', () => {
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     await act(async () => root.render(<GlossaryPage />));
 
-    await click(buttonByText(container, '下一页'));
+    await click(buttonByText(container, '下一步'));
     expect(container.textContent).toContain('Term 13');
     await click(buttonByText(container, '上一页'));
     await click(buttonByText(container, '导出全部'));

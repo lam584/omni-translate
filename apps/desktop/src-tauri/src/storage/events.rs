@@ -10,6 +10,7 @@ use super::contracts::{
     StorageRuntimeSnapshot,
 };
 use super::credential::{CredentialVault, KeyringCredentialVault};
+use super::service::ConfigurationService;
 use super::StorageStateStore;
 
 fn log_storage_event(
@@ -83,7 +84,7 @@ pub fn load_config_draft(
     storage: State<'_, StorageStateStore>,
 ) -> Result<Value, String> {
     storage.ensure_initialized(&app)?;
-    match storage.load_config() {
+    match ConfigurationService::new(&storage).load() {
         Ok(config) => {
             log_storage_event(
                 &app,
@@ -108,7 +109,7 @@ pub fn save_config_draft(
 ) -> Result<StorageRuntimeSnapshot, String> {
     storage.ensure_initialized(&app)?;
     let summary = summarize_provider_config(&config);
-    match storage.save_config(&config) {
+    match ConfigurationService::new(&storage).save(&config) {
         Ok(snapshot) => {
             log_storage_event(
                 &app,
@@ -139,7 +140,7 @@ pub fn reset_config_draft(
     storage: State<'_, StorageStateStore>,
 ) -> Result<Value, String> {
     storage.ensure_initialized(&app)?;
-    match storage.reset_config() {
+    match ConfigurationService::new(&storage).reset() {
         Ok(config) => {
             log_storage_event(
                 &app,
@@ -162,7 +163,7 @@ pub fn export_config_draft(
     storage: State<'_, StorageStateStore>,
 ) -> Result<ConfigExportArtifact, String> {
     storage.ensure_initialized(&app)?;
-    match storage.export_config() {
+    match ConfigurationService::new(&storage).export() {
         Ok(artifact) => {
             log_storage_event(
                 &app,
@@ -189,7 +190,7 @@ pub fn import_config_draft(
     file_path: String,
 ) -> Result<Value, String> {
     storage.ensure_initialized(&app)?;
-    match storage.import_config(&file_path) {
+    match ConfigurationService::new(&storage).import(std::path::Path::new(&file_path)) {
         Ok(config) => {
             log_storage_event(
                 &app,
@@ -223,7 +224,7 @@ pub fn create_config_snapshot(
 ) -> Result<ConfigSnapshotRecord, String> {
     storage.ensure_initialized(&app)?;
     let snapshot_reason = reason.as_deref().unwrap_or("manual-snapshot");
-    match storage.create_snapshot(snapshot_reason) {
+    match ConfigurationService::new(&storage).snapshot(snapshot_reason) {
         Ok(snapshot) => {
             log_storage_event(
                 &app,
@@ -259,7 +260,7 @@ pub fn rollback_config_snapshot(
     snapshot_id: String,
 ) -> Result<Value, String> {
     storage.ensure_initialized(&app)?;
-    match storage.rollback_snapshot(&snapshot_id) {
+    match ConfigurationService::new(&storage).rollback(&snapshot_id) {
         Ok(config) => {
             log_storage_event(
                 &app,

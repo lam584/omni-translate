@@ -57,6 +57,17 @@ vi.mock('../runtime/bridge-runtime', () => ({
   refreshBridgeRuntime: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
 }));
 
+vi.mock('../runtime/desktop-api-v2', () => ({
+  desktopApiV2: {
+    bridge: {
+      install: (...args: unknown[]) => installDriverRuntimeMock(...args),
+      refresh: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
+      repair: (...args: unknown[]) => repairDriverRuntimeMock(...args),
+      start: (...args: unknown[]) => startBridgeServiceRuntimeMock(...args),
+    },
+  },
+}));
+
 describe('RealTimeSessionPage one-click launch', () => {
   let container: HTMLDivElement;
   let root: Root;

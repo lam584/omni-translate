@@ -32,14 +32,14 @@ pub struct ProviderCustomHeaderInput {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSceneModelAssignmentInput {
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "scenario is preserved for renderer contract deserialization and diagnostics")]
     pub scenario: String,
     pub model_ids: Vec<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "capability registry fields are deserialized for route planning and forward compatibility")]
 pub struct ProviderModelCapabilityRegistryEntryInput {
     pub id: String,
     pub model_id: String,
@@ -56,7 +56,7 @@ pub struct ProviderModelCapabilityRegistryEntryInput {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "catalog cache item schema is preserved for persisted renderer contracts")]
 pub struct ProviderModelCatalogCacheItemInput {
     pub id: String,
     pub display_name: String,
@@ -69,7 +69,7 @@ pub struct ProviderModelCatalogCacheItemInput {
 
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "catalog cache schema is preserved for persisted renderer contracts")]
 pub struct ProviderModelCatalogCacheInput {
     #[serde(default)]
     pub models: Vec<ProviderModelCatalogCacheItemInput>,
@@ -100,10 +100,10 @@ pub struct ProviderDraftInput {
     pub custom_headers: Vec<ProviderCustomHeaderInput>,
     #[serde(default)]
     pub scene_model_assignments: Vec<ProviderSceneModelAssignmentInput>,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "registry payload is retained for route planning and contract round trips")]
     #[serde(default)]
     pub local_model_capability_registry: Vec<ProviderModelCapabilityRegistryEntryInput>,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "catalog cache payload is retained for persisted contract round trips")]
     #[serde(default)]
     pub model_catalog_cache: ProviderModelCatalogCacheInput,
 }
@@ -244,33 +244,6 @@ impl ProviderStreamEventRecord {
         }
     }
 
-    pub fn with_text(event_type: &str, summary: &str, segment_id: &str, text: String) -> Self {
-        Self {
-            event_type: event_type.to_string(),
-            summary: summary.to_string(),
-            segment_id: Some(segment_id.to_string()),
-            text_delta: None,
-            text: Some(text),
-            audio_chunk_ref: None,
-        }
-    }
-
-    pub fn with_delta(
-        event_type: &str,
-        summary: String,
-        segment_id: &str,
-        text_delta: String,
-    ) -> Self {
-        Self {
-            event_type: event_type.to_string(),
-            summary,
-            segment_id: Some(segment_id.to_string()),
-            text_delta: Some(text_delta),
-            text: None,
-            audio_chunk_ref: None,
-        }
-    }
-
     pub fn with_audio(
         event_type: &str,
         summary: &str,
@@ -311,43 +284,6 @@ pub struct ProviderSmokeResult {
     pub error: Option<ProviderRuntimeError>,
 }
 
-impl ProviderSmokeResult {
-    #[allow(clippy::too_many_arguments)]
-    pub fn new_success(
-        request_id: String,
-        provider_id: String,
-        transport_effective: String,
-        source_language: String,
-        target_language: String,
-        event_log: Vec<ProviderStreamEventRecord>,
-        first_event_latency_ms: Option<u64>,
-        transcript: String,
-        input_tokens: Option<u64>,
-        output_tokens: Option<u64>,
-    ) -> Self {
-        Self {
-            request_id,
-            provider_id,
-            status: "completed".to_string(),
-            transport_requested: transport_effective.clone(),
-            transport_effective,
-            fallback_applied: false,
-            stream_observed: false,
-            duration_ms: 0,
-            first_event_latency_ms,
-            transcript,
-            source_language,
-            target_language,
-            event_log,
-            input_tokens,
-            output_tokens,
-            audio_seconds: None,
-            routing_decision: ProviderRoutingDecision::for_verdict("available", 0, false),
-            error: None,
-        }
-    }
-}
-
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelRuntime {
@@ -376,7 +312,7 @@ pub struct TtsAudioChunk {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)]
+#[allow(dead_code, reason = "TTS result remains part of the provider gateway contract while HTTP TTS is disabled")]
 pub struct TtsSynthesisResult {
     pub request_id: String,
     pub provider_id: String,

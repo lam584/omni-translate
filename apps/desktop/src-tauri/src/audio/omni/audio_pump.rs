@@ -1,0 +1,307 @@
+use super::*;
+
+pub(super) struct OmniAudioPumpState {
+    pub(super) buffer_size: u64,
+    pub(super) reconnect_count: usize,
+    pub(super) chunk_count: u64,
+    pub(super) sent_audio_since_commit: bool,
+    pub(super) session_ready_for_audio: bool,
+    pub(super) pre_session_audio_queue: VecDeque<Vec<u8>>,
+    pub(super) pre_session_audio_dropped: u64,
+    pub(super) silence_chunks_skipped: u64,
+    pub(super) silence_grace_chunks_sent: u32,
+    pub(super) has_sent_audible_audio: bool,
+    pub(super) total_input_chunks: u64,
+    pub(super) first_audible_chunk_ms: Option<u64>,
+    pub(super) total_silence_skipped_before_first_audible: u64,
+    pub(super) first_audio_sent_ms: Option<u64>,
+    pub(super) pending_audio_buffer: Vec<i16>,
+    pub(super) provider_input_dump: Option<ProviderInputPcmDump>,
+    pub(super) chunks_sent_this_tick: usize,
+}
+
+pub(super) struct OmniAudioPump {
+    state: OmniAudioPumpState,
+}
+
+impl OmniAudioPump {
+    pub(super) fn log_waiting_if_needed(
+        app: &AppHandle,
+        chunk_count: u64,
+        chunks_sent_this_tick: usize,
+        last_waiting_log_chunk_count: &mut u64,
+    ) {
+        if chunk_count > 0
+            && chunks_sent_this_tick == 0
+            && chunk_count.is_multiple_of(500)
+            && *last_waiting_log_chunk_count != chunk_count
+        {
+            *last_waiting_log_chunk_count = chunk_count;
+            let _ = diag_log(
+                app,
+                "omni",
+                "debug",
+                format!("[AUDIO] waiting for audio data... (sent {chunk_count} chunks)"),
+            );
+        }
+    }
+
+    pub(super) fn new(state: OmniAudioPumpState) -> Self {
+        Self { state }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn pump(
+        self,
+        app: &AppHandle,
+        store: &AudioStateStore,
+        audio_rx: &mpsc::Receiver<Vec<u8>>,
+        socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
+        provider: &ProviderDraftInput,
+        active_voice: &str,
+        instructions: &str,
+        audio_mode: RealtimeAudioMode,
+        target_language: &str,
+        session_started_at: &SystemTime,
+    ) -> Result<OmniAudioPumpState, String> {
+        let OmniAudioPumpState {
+            mut buffer_size,
+            mut reconnect_count,
+            mut chunk_count,
+            mut sent_audio_since_commit,
+            session_ready_for_audio,
+            mut pre_session_audio_queue,
+            mut pre_session_audio_dropped,
+            mut silence_chunks_skipped,
+            mut silence_grace_chunks_sent,
+            mut has_sent_audible_audio,
+            mut total_input_chunks,
+            mut first_audible_chunk_ms,
+            mut total_silence_skipped_before_first_audible,
+            mut first_audio_sent_ms,
+            mut pending_audio_buffer,
+            mut provider_input_dump,
+            chunks_sent_this_tick: _,
+        } = self.state;
+        let mut chunks_sent_this_tick = 0;
+let mut pre_session_chunks_drained_this_tick = 0usize;
+loop {
+    let raw_chunk = if session_ready_for_audio {
+        match pre_session_audio_queue
+            .pop_front()
+            .or_else(|| audio_rx.try_recv().ok())
+        {
+            Some(chunk) => chunk,
+            None => break,
+        }
+    } else {
+        match audio_rx.try_recv() {
+            Ok(chunk) => {
+                pre_session_chunks_drained_this_tick += 1;
+                if pre_session_audio_queue.len() >= OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT {
+                    pre_session_audio_queue.pop_front();
+                    pre_session_audio_dropped += 1;
+                }
+                pre_session_audio_queue.push_back(chunk);
+                if pre_session_audio_queue.len() == 1
+                    || pre_session_audio_queue.len().is_multiple_of(100)
+                {
+                    let _ = diag_log(
+                        &app,
+                        "omni",
+                        "debug",
+                        format!(
+                            "[SESSION] buffering audio before session ready: queued={} dropped={pre_session_audio_dropped}",
+                            pre_session_audio_queue.len()
+                        ),
+                    );
+                }
+                if pre_session_chunks_drained_this_tick
+                    >= OMNI_PRE_SESSION_AUDIO_DRAIN_PER_TICK
+                {
+                    break;
+                }
+                continue;
+            }
+            Err(_) => break,
+        }
+    };
+    let asr_chunk = resample_48k_stereo_to_16k_mono(&raw_chunk);
+    if asr_chunk.is_empty() {
+        let _ = diag_log(
+            &app,
+            "omni",
+            "warning",
+            "[TRACE] resampled empty ASR frame dropped",
+        );
+        continue;
+    }
+    let chunk_rms = asr_chunk_rms(&asr_chunk);
+    total_input_chunks += 1;
+    if chunk_rms < OMNI_ASR_MIN_CHUNK_RMS {
+        if has_sent_audible_audio
+            && silence_grace_chunks_sent < OMNI_ASR_SILENCE_GRACE_CHUNKS
+        {
+            silence_grace_chunks_sent += 1;
+        } else {
+            silence_chunks_skipped = silence_chunks_skipped.saturating_add(1);
+            if silence_chunks_skipped == 1 || silence_chunks_skipped.is_multiple_of(250) {
+                let _ = diag_log(
+                    &app,
+                    "omni",
+                    "debug",
+                    format!(
+                        "event=omni.asr_silence_chunk_skipped skipped={} rms={:.6} threshold={:.6}",
+                        silence_chunks_skipped, chunk_rms, OMNI_ASR_MIN_CHUNK_RMS
+                    ),
+                );
+            }
+            continue;
+        }
+    } else {
+        if !has_sent_audible_audio {
+            first_audible_chunk_ms = Some(elapsed_ms_since(&session_started_at));
+            total_silence_skipped_before_first_audible = silence_chunks_skipped;
+            store.live_session_events.record_audio_diagnostic(
+                first_audible_chunk_ms,
+                Some(silence_chunks_skipped),
+                None,
+            );
+            let _ = diag_log(
+                &app,
+                "omni",
+                "info",
+                format!(
+                    "[AUDIO] first audible chunk: elapsed_ms={} rms={:.6} threshold={:.6} silence_skipped_before={} total_input_chunks={}",
+                    first_audible_chunk_ms.unwrap_or(0),
+                    chunk_rms,
+                    OMNI_ASR_MIN_CHUNK_RMS,
+                    silence_chunks_skipped,
+                    total_input_chunks,
+                ),
+            );
+        }
+        has_sent_audible_audio = true;
+        silence_grace_chunks_sent = 0;
+        silence_chunks_skipped = 0;
+    }
+    buffer_size = buffer_size.wrapping_add(raw_chunk.len() as u64);
+    chunk_count += 1;
+    sent_audio_since_commit = true;
+    chunks_sent_this_tick += 1;
+
+    if chunk_count == 1 {
+        let elapsed = elapsed_ms_since(&session_started_at);
+        first_audio_sent_ms = Some(elapsed);
+        store.live_session_events.record_milestone(
+            "first_audio_sent",
+            elapsed,
+        );
+        let _ = diag_log(
+            &app,
+            "omni",
+            "info",
+            format!(
+                "[AUDIO] 棣栦釜闊抽鍧楀凡鍙戦€?({} samples @ 16kHz)",
+                asr_chunk.len()
+            ),
+        );
+    }
+    if chunk_count.is_multiple_of(100) {
+        let _ = diag_log(
+            &app,
+            "omni",
+            "debug",
+            format!(
+                "[AUDIO] 宸插彂閫?{} 涓煶棰戝潡 ({} 瀛楄妭)",
+                chunk_count, buffer_size
+            ),
+        );
+    }
+    if let Some(dump) = provider_input_dump.as_mut() {
+        dump.append(&app, &asr_chunk);
+    }
+    let b64 = base64_encode_i16(&asr_chunk);
+    let append = json!({
+      "type": "input_audio_buffer.append",
+      "audio": b64
+    });
+    trace_call.record_ws_send(
+        "input_audio_buffer.append",
+        json!({
+          "type": "input_audio_buffer.append",
+          "rawBytes": raw_chunk.len(),
+          "resampledSamples": asr_chunk.len(),
+          "audio": append["audio"].clone(),
+          "chunkCount": chunk_count,
+          "rms": chunk_rms,
+        }),
+    );
+    if let Err(error) = socket.send(Message::Text(append.to_string().into())) {
+        let _ = diag_log(
+            &app,
+            "omni",
+            "warning",
+            format!("[AUDIO] 鍙戦€佸け璐? {error}"),
+        );
+        match try_reconnect(
+            &mut reconnect_count,
+            &mut pending_audio_buffer,
+            store,
+            &app,
+            &provider,
+            &active_voice,
+            &instructions,
+            audio_mode,
+            &target_language,
+            buffer_size,
+        ) {
+            Ok(new_socket) => {
+                *socket = new_socket;
+                let retry_b64 = base64_encode_i16(&asr_chunk);
+                let retry_append = json!({
+                  "type": "input_audio_buffer.append",
+                  "audio": retry_b64
+                });
+                if let Err(e) = socket.send(Message::Text(retry_append.to_string().into()))
+                {
+                    store.set_stt_connected(false, buffer_size);
+                    return Err(format!("閲嶈繛鍚庡彂閫侀煶棰戞暟鎹粛鐒跺け璐? {e}"));
+                }
+                continue;
+            }
+            Err(_) => {
+                return Err(format!(
+                    "Omni WebSocket 鍙戦€佸け璐ヤ笖閲嶈繛娆℃暟宸茬敤瀹? {error}"
+                ));
+            }
+        }
+    }
+    store.set_stt_connected(true, buffer_size);
+
+    if chunks_sent_this_tick > 1 {
+        thread::sleep(Duration::from_millis(18));
+    }
+}
+        Ok(OmniAudioPumpState {
+            buffer_size,
+            reconnect_count,
+            chunk_count,
+            sent_audio_since_commit,
+            session_ready_for_audio,
+            pre_session_audio_queue,
+            pre_session_audio_dropped,
+            silence_chunks_skipped,
+            silence_grace_chunks_sent,
+            has_sent_audible_audio,
+            total_input_chunks,
+            first_audible_chunk_ms,
+            total_silence_skipped_before_first_audible,
+            first_audio_sent_ms,
+            pending_audio_buffer,
+            provider_input_dump,
+            chunks_sent_this_tick,
+        })
+    }
+}

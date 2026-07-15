@@ -59,7 +59,7 @@ describe('bridge runtime', () => {
 
   it('maps every desktop lifecycle action to native invoke commands', async () => {
     mocks.isTauriRuntime.mockReturnValue(true);
-    mocks.invoke.mockResolvedValue(runtimeSnapshotMock);
+    mocks.invoke.mockResolvedValue({ data: runtimeSnapshotMock });
     const config = structuredClone(appConfigDraftMock);
 
     await refreshBridgeRuntime();
@@ -70,12 +70,12 @@ describe('bridge runtime', () => {
     await repairDriverRuntime('restart-bridge', config);
 
     expect(mocks.invoke.mock.calls).toEqual([
-      ['refresh_bridge_runtime', undefined],
-      ['start_bridge_service', { config }],
-      ['stop_bridge_service', undefined],
-      ['install_driver_runtime', { config }],
-      ['uninstall_driver_runtime', undefined],
-      ['repair_driver_runtime', { action: 'restart-bridge', config }],
+      ['bridge_v2', { command: { action: 'refresh' } }],
+      ['bridge_v2', { command: { action: 'start', config } }],
+      ['bridge_v2', { command: { action: 'stop' } }],
+      ['bridge_v2', { command: { action: 'install', config } }],
+      ['bridge_v2', { command: { action: 'uninstall' } }],
+      ['bridge_v2', { command: { action: 'repair', repairAction: 'restart-bridge', config } }],
     ]);
   });
 

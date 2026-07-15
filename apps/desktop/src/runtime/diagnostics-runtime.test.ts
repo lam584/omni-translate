@@ -45,18 +45,22 @@ describe('diagnostics runtime', () => {
 
   it('maps desktop self-checks and exports to native invoke commands', async () => {
     mocks.isTauriRuntime.mockReturnValue(true);
-    mocks.invoke.mockImplementation(async (command: string) => ({ command }));
+    mocks.invoke.mockImplementation(async (command: string) =>
+      command === 'diagnostics_v2'
+        ? { data: { command }, warnings: [] }
+        : { command },
+    );
 
-    expect(await runDiagnosticsSelfCheckRuntime()).toEqual({ command: 'run_diagnostics_self_check' });
-    expect(await runSubtitleOverlaySelfCheckRuntime()).toEqual({ command: 'run_subtitle_overlay_self_check' });
+    expect(await runDiagnosticsSelfCheckRuntime()).toEqual({ command: 'diagnostics_v2' });
+    expect(await runSubtitleOverlaySelfCheckRuntime()).toEqual({ command: 'diagnostics_v2' });
     expect(await exportDiagnosticsBundleRuntime('quick')).toEqual({
-      artifact: { command: 'export_diagnostics_bundle' },
+      artifact: { command: 'diagnostics_v2' },
       snapshot: { command: 'get_runtime_snapshot' },
     });
     expect(mocks.invoke.mock.calls).toEqual([
-      ['run_diagnostics_self_check'],
-      ['run_subtitle_overlay_self_check'],
-      ['export_diagnostics_bundle', { scope: 'quick' }],
+      ['diagnostics_v2', { command: { action: 'selfCheck' } }],
+      ['diagnostics_v2', { command: { action: 'overlaySelfCheck' } }],
+      ['diagnostics_v2', { command: { action: 'export', scope: 'quick' } }],
       ['get_runtime_snapshot'],
     ]);
   });

@@ -128,7 +128,7 @@ describe('glossary page helpers', () => {
     expect(result.libraries).toMatchObject([
       { id: 'existing', priority: 0 },
       { id: 'direct', name: 'Direct', priority: 1 },
-      { name: 'Games (导入)', priority: 2 },
+      { name: 'Games (imported)', priority: 2 },
     ]);
     expect(result.libraries[1]?.entries[0]).not.toBe(direct.entries[0]);
     expect(glossaryPageDataHelpers.importGlossaryLibraries([], { invalid: true })).toMatchObject({

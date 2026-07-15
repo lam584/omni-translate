@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
@@ -161,7 +160,7 @@ export async function refreshBridgeRuntime(): Promise<RuntimeSnapshot> {
     return runtimeSnapshotMock;
   }
 
-  return invokeBridgeWithTimeout<RuntimeSnapshot>('refresh_bridge_runtime', undefined, '刷新驱动与 Bridge 状态', BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh');
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'refresh' } }, '刷新驱动与 Bridge 状态', BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh').then((result) => result.data);
 }
 
 export async function startBridgeServiceRuntime(config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -181,7 +180,7 @@ export async function startBridgeServiceRuntime(config: AppConfigDraft): Promise
     });
   }
 
-  return invokeBridgeWithTimeout<RuntimeSnapshot>('start_bridge_service', { config }, '启动 Bridge Service', BRIDGE_START_TIMEOUT_MS, 'bridge-start');
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'start', config } }, '启动 Bridge Service', BRIDGE_START_TIMEOUT_MS, 'bridge-start').then((result) => result.data);
 }
 
 export async function stopBridgeServiceRuntime(): Promise<RuntimeSnapshot> {
@@ -194,7 +193,7 @@ export async function stopBridgeServiceRuntime(): Promise<RuntimeSnapshot> {
     });
   }
 
-  return invokeBridgeWithTimeout<RuntimeSnapshot>('stop_bridge_service', undefined, '停止 Bridge Service', BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-stop');
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'stop' } }, '停止 Bridge Service', BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-stop').then((result) => result.data);
 }
 
 export async function installDriverRuntime(config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -214,7 +213,7 @@ export async function installDriverRuntime(config: AppConfigDraft): Promise<Runt
     });
   }
 
-  return invokeBridgeWithTimeout<RuntimeSnapshot>('install_driver_runtime', { config }, '安装驱动', BRIDGE_INSTALL_TIMEOUT_MS, 'bridge-install');
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'install', config } }, '安装驱动', BRIDGE_INSTALL_TIMEOUT_MS, 'bridge-install').then((result) => result.data);
 }
 
 export async function uninstallDriverRuntime(): Promise<RuntimeSnapshot> {
@@ -232,7 +231,7 @@ export async function uninstallDriverRuntime(): Promise<RuntimeSnapshot> {
     });
   }
 
-  return invokeBridgeWithTimeout<RuntimeSnapshot>('uninstall_driver_runtime', undefined, '卸载驱动', BRIDGE_UNINSTALL_TIMEOUT_MS, 'bridge-uninstall');
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'uninstall' } }, '卸载驱动', BRIDGE_UNINSTALL_TIMEOUT_MS, 'bridge-uninstall').then((result) => result.data);
 }
 
 export async function repairDriverRuntime(action: DriverRepairAction, config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -240,7 +239,7 @@ export async function repairDriverRuntime(action: DriverRepairAction, config: Ap
     return action === 'restart-bridge' ? startBridgeServiceRuntime(config) : installDriverRuntime(config);
   }
 
-  return invokeBridgeWithTimeout<RuntimeSnapshot>('repair_driver_runtime', { action, config }, '修复驱动', BRIDGE_REPAIR_TIMEOUT_MS, 'bridge-repair');
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'repair', repairAction: action, config } }, '修复驱动', BRIDGE_REPAIR_TIMEOUT_MS, 'bridge-repair').then((result) => result.data);
 }
 
 export const bridgeRuntimeTestHelpers = {
@@ -250,3 +249,4 @@ export const bridgeRuntimeTestHelpers = {
   invokeBridgeWithTimeout,
   withBridgePatch,
 };
+import { invoke } from '@tauri-apps/api/core';

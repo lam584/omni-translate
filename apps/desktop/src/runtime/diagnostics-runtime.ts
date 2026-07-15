@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { DiagnosticsExportScope } from '../schema/config';
 import type { DiagnosticsExportArtifact, RuntimeSnapshot } from '../schema/runtime-core';
+import { desktopApiV2 } from './desktop-api-v2';
 import { isTauriRuntime } from './tauri-runtime';
 
 function withDiagnosticsPatch(patch: Partial<RuntimeSnapshot['diagnostics']>): RuntimeSnapshot {
@@ -26,7 +27,7 @@ export async function runDiagnosticsSelfCheckRuntime(): Promise<RuntimeSnapshot>
     });
   }
 
-  return invoke<RuntimeSnapshot>('run_diagnostics_self_check');
+  return desktopApiV2.diagnostics.selfCheck();
 }
 
 export async function runSubtitleOverlaySelfCheckRuntime(): Promise<RuntimeSnapshot> {
@@ -34,7 +35,7 @@ export async function runSubtitleOverlaySelfCheckRuntime(): Promise<RuntimeSnaps
     return runtimeSnapshotMock;
   }
 
-  return invoke<RuntimeSnapshot>('run_subtitle_overlay_self_check');
+  return desktopApiV2.diagnostics.overlaySelfCheck();
 }
 
 export async function exportDiagnosticsBundleRuntime(
@@ -57,7 +58,7 @@ export async function exportDiagnosticsBundleRuntime(
     };
   }
 
-  const artifact = await invoke<DiagnosticsExportArtifact>('export_diagnostics_bundle', { scope });
+  const artifact = await desktopApiV2.diagnostics.export(scope) as DiagnosticsExportArtifact;
   const snapshot = await invoke<RuntimeSnapshot>('get_runtime_snapshot');
   return { artifact, snapshot };
 }

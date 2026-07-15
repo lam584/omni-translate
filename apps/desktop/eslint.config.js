@@ -21,8 +21,29 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      'react-hooks/set-state-in-effect': 'warn',
-      'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+      'react-hooks/set-state-in-effect': 'error',
+      'react-refresh/only-export-components': ['error', {
+        allowConstantExport: true,
+        allowExportNames: [
+          'isWatchModeDiagnosticAutostartAllowed', 'buildWatchModeDiagnosticAutostartConfig',
+          'appLayoutTestHelpers', 'scrollToConsoleSection', 'useConsoleDock',
+          'welcomeLanguagePickerHelpers', 'mountOverlayApp', 'audioRoutingPageHelpers',
+          'diagnosticsPageHelpers', 'runRecommendedBridgeAction', 'glossaryPageDataHelpers',
+          'glossaryPageHelpers', 'realTimeSessionPageHelpers', 'subtitleOverlayPageHelpers',
+          'resolveChineseFallback', 'tWithDefault', 'isBinaryAudioOutputEvent',
+          'isTextOutputEvent', 'shouldUseManualBenchmarkMode', 'textLength', 'shouldUseCandidate',
+          'buildOutputSegments', 'fmtMs', 'exportFile', 'exportJson',
+          'DiagnosticsReportExporter', 'formatLiveEventsTxt', 'formatBenchmarkTxt',
+          'router', 'useDesktopApiV2',
+        ],
+      }],
+    },
+  },
+  {
+    files: ['src/router.tsx'],
+    rules: {
+      // Router construction is an application entrypoint, not a Fast Refresh component boundary.
+      'react-refresh/only-export-components': 'off',
     },
   },
 );

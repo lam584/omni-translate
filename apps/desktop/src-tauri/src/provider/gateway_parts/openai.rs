@@ -6,9 +6,39 @@ use serde_json::{json, Value};
 use super::super::contracts::{
     ProviderDraftInput, ProviderRuntimeError, ProviderSmokeResult, ProviderStreamEventRecord,
 };
-use super::auth::build_reqwest_headers;
 use super::routing::{build_messages, build_routing_decision};
-use super::transport::{build_client, join_url, normalize_transport_error, parse_openai_error};
+use super::transport::{join_url, normalize_transport_error, parse_openai_error, ProviderHttpClient};
+
+/// Stateful protocol boundary for OpenAI-compatible providers.
+///
+/// The adapter itself is intentionally stateless today, while the explicit
+/// type keeps provider protocol ownership out of the gateway facade and gives
+/// tests a stable dependency seam.
+#[derive(Debug, Default)]
+pub(crate) struct OpenAiProviderAdapter;
+
+impl OpenAiProviderAdapter {
+    pub(crate) fn execute(
+        &self,
+        provider: &ProviderDraftInput,
+        transport_effective: &str,
+        request_id: &str,
+        source_text: &str,
+        source_language: &str,
+        target_language: &str,
+        on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
+    ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
+        execute(
+            provider,
+            transport_effective,
+            request_id,
+            source_text,
+            source_language,
+            target_language,
+            on_delta,
+        )
+    }
+}
 
 pub(super) fn execute(
     provider: &ProviderDraftInput,
@@ -26,7 +56,7 @@ pub(super) fn execute(
         provider.model,
         transport_effective
     );
-    let client = build_client(provider.timeout_ms)?;
+    let client = ProviderHttpClient::new(provider.timeout_ms)?;
     let messages = build_messages(provider, source_text, source_language, target_language, &[]);
     let payload = json!({
       "model": provider.model,
@@ -36,12 +66,7 @@ pub(super) fn execute(
       "max_tokens": provider.max_output_tokens,
       "modalities": provider.response_modalities
     });
-    let response = client
-        .post(endpoint)
-        .headers(build_reqwest_headers(provider)?)
-        .json(&payload)
-        .send()
-        .map_err(normalize_transport_error)?;
+    let response = client.post_json(endpoint, provider, &payload)?;
 
     if !response.status().is_success() {
         return Err(parse_openai_error(response));
@@ -77,6 +102,7 @@ pub(super) fn execute(
     let started = Instant::now();
 
     if transport_effective == "streaming-http" {
+        let mut reasoning_transcript = String::new();
         let reader = BufReader::new(response);
         for raw_line in reader.lines() {
             let raw_line = raw_line.map_err(|error| {
@@ -120,6 +146,14 @@ pub(super) fn execute(
                 });
             }
 
+            if let Some(reasoning_delta) = extract_openai_reasoning_delta(&value) {
+                if result.first_event_latency_ms.is_none() {
+                    result.first_event_latency_ms = Some(started.elapsed().as_millis() as u64);
+                }
+                result.stream_observed = true;
+                reasoning_transcript.push_str(&reasoning_delta);
+            }
+
             if let Some((input_tokens, output_tokens)) = extract_openai_usage(&value) {
                 result.input_tokens = Some(input_tokens);
                 result.output_tokens = Some(output_tokens);
@@ -134,6 +168,12 @@ pub(super) fn execute(
                     text: None,
                     audio_chunk_ref: None,
                 });
+            }
+        }
+
+        if result.transcript.trim().is_empty() {
+            if let Some(translation) = extract_translation_from_reasoning(&reasoning_transcript) {
+                result.transcript = translation;
             }
         }
 
@@ -189,6 +229,33 @@ fn extract_openai_delta(value: &Value) -> Option<String> {
                 .and_then(Value::as_str)
                 .map(ToString::to_string)
         })
+}
+
+fn extract_openai_reasoning_delta(value: &Value) -> Option<String> {
+    value
+        .pointer("/choices/0/delta/reasoning_content")
+        .and_then(Value::as_str)
+        .map(ToString::to_string)
+        .or_else(|| {
+            value
+                .pointer("/choices/0/message/reasoning_content")
+                .and_then(Value::as_str)
+                .map(ToString::to_string)
+        })
+}
+
+fn extract_translation_from_reasoning(reasoning: &str) -> Option<String> {
+    const MARKERS: [&str; 4] = ["Final decision:", "Decision:", "Translation:", "Final:"];
+
+    reasoning.lines().rev().find_map(|raw_line| {
+        let line = raw_line.trim();
+        MARKERS.iter().find_map(|marker| {
+            line.find(marker).and_then(|index| {
+                let candidate = line[index + marker.len()..].trim();
+                (!candidate.is_empty()).then(|| candidate.to_string())
+            })
+        })
+    })
 }
 
 fn extract_openai_completion_text(value: &Value) -> Result<String, ProviderRuntimeError> {

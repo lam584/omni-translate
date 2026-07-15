@@ -41,8 +41,9 @@ fn write_diagnostics_bundle(
         serde_json::to_string_pretty(bridge_snapshot).map_err(|error| error.to_string())?;
     let storage_json =
         serde_json::to_string_pretty(storage_snapshot).map_err(|error| error.to_string())?;
+    let sanitized_config = super::model_trace::sanitize_value(config_value.clone());
     let config_json =
-        serde_json::to_string_pretty(config_value).map_err(|error| error.to_string())?;
+        serde_json::to_string_pretty(&sanitized_config).map_err(|error| error.to_string())?;
     let env_json = serde_json::to_string_pretty(&json!({
       "generatedAt": generated_at,
       "scope": scope,
@@ -531,6 +532,43 @@ mod tests {
         assert!(export_dir.join("environment.json").exists());
         assert!(export_dir.join("logs").join("app.log").exists());
 
+        let _ = fs::remove_dir_all(root_dir);
+    }
+
+    #[test]
+    fn write_diagnostics_bundle_never_exports_config_credentials() {
+        let root_dir = temp_dir("redacted");
+        let logs_dir = root_dir.join("logs");
+        let export_dir = root_dir.join("bundle");
+        fs::create_dir_all(&logs_dir).expect("create logs dir");
+        fs::create_dir_all(&export_dir).expect("create export dir");
+        fs::write(logs_dir.join("app.log"), "safe log\n").expect("write log file");
+        let secret = "diagnostics-test-secret-7f3a";
+
+        write_diagnostics_bundle(
+            &export_dir,
+            "2025-01-01T00:00:00Z",
+            "full",
+            &DiagnosticsRuntimeSnapshot::preview(),
+            &AudioRuntimeSnapshot::preview(),
+            &BridgeRuntimeSnapshot::default(),
+            &StorageRuntimeSnapshot::preview(),
+            &json!({
+                "providers": [{
+                    "apiKey": secret,
+                    "customHeaders": [{"name": "Authorization", "value": secret}],
+                    "baseUrl": format!("https://example.test/v1?token={secret}")
+                }]
+            }),
+            &logs_dir.to_string_lossy(),
+            &root_dir.join("bridge-runtime").to_string_lossy(),
+        )
+        .expect("write diagnostics bundle");
+
+        let exported = fs::read_to_string(export_dir.join("config-draft.json"))
+            .expect("read exported config");
+        assert!(!exported.contains(secret));
+        assert!(exported.contains("[REDACTED]"));
         let _ = fs::remove_dir_all(root_dir);
     }
 

@@ -968,7 +968,7 @@
     "subtitleQueueEmpty": "セッションの設定と状態を確認してください。",
     "fallbackSubtitlesOnly": "セッションの設定と状態を確認してください。",
     "fallbackAec": "セッションの設定と状態を確認してください。",
-    "virtualDriverFallbackConfirm": "セッションの設定と状態を確認してください。",
+    "virtualDriverFallbackConfirm": "仮想オーディオドライバーまたは Bridge を利用できません。「OK」で字幕のみモードに進み、「キャンセル」で物理スピーカー再生＋AECへ一時的に切り替えます。AECでもループバックの危険があります。",
     "sceneLaunchFailed": "セッション - 失敗 {{scene}} {{error}}"
   },
   "glossary": {

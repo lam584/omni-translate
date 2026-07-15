@@ -28,6 +28,12 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      - name: Verify desktop test and release configuration
+        run: npm run test:contracts
+
+      - name: Audit Rust dead-code exemptions
+        run: npm run audit:dead-code
+
       - name: Run automated quality gate
         run: npm run quality:gate:auto -- -SkipDesktopShell
 

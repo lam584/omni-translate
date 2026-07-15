@@ -17,7 +17,7 @@ impl EchoReferenceBuffer {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "buffer emptiness probe is retained for echo diagnostics")]
     pub(crate) fn is_empty(&self) -> bool {
         self.buffer.is_empty()
     }

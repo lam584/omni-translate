@@ -1,3 +1,4 @@
+use serde_json::to_value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::bridge::state::BridgeStateStore;
@@ -45,7 +46,9 @@ pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> Run
 
 pub fn emit_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> tauri::Result<()> {
     let snapshot = build_runtime_snapshot(app, state);
-    app.emit(RUNTIME_SNAPSHOT_EVENT, snapshot)
+    app.emit(RUNTIME_SNAPSHOT_EVENT, snapshot.clone())?;
+    let payload = to_value(snapshot).unwrap_or_default();
+    crate::api_v2::emit_runtime_event_v2(app, "snapshot", payload)
 }
 
 pub fn emit_runtime_notification(
@@ -65,7 +68,9 @@ pub fn emit_runtime_notification(
             None,
         );
     }
-    app.emit(RUNTIME_NOTIFICATION_EVENT, notification)?;
+    app.emit(RUNTIME_NOTIFICATION_EVENT, notification.clone())?;
+    let payload = to_value(notification).unwrap_or_default();
+    crate::api_v2::emit_runtime_event_v2(app, "notification", payload)?;
     emit_runtime_snapshot(app, state)
 }
 

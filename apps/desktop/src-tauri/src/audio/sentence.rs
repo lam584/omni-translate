@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use super::time_utils::unix_ms;
@@ -9,8 +10,21 @@ const MIN_FORCE_CHARS: usize = 28;
 const MIN_FORCE_WORDS: usize = 6;
 const MIN_FORCE_GROWTH_CHARS: usize = 18;
 const MAX_SUBTITLE_CHARS: usize = 120;
+const MAX_CJK_SUBTITLE_CHARS: usize = 42;
 const MAX_SUBTITLE_WORDS: usize = 22;
-const MIN_SPLIT_HEAD_CHARS: usize = 36;
+const MIN_SPLIT_HEAD_CHARS: usize = 28;
+
+trait SentenceClock: Send + Sync {
+    fn now(&self) -> Instant;
+}
+
+struct SystemSentenceClock;
+
+impl SentenceClock for SystemSentenceClock {
+    fn now(&self) -> Instant {
+        Instant::now()
+    }
+}
 
 pub struct SentenceSplitter {
     buffer: String,
@@ -19,6 +33,7 @@ pub struct SentenceSplitter {
     context: VecDeque<String>,
     split_endings: Vec<char>,
     active_forced_pending: Option<ForcedPending>,
+    clock: Arc<dyn SentenceClock>,
 }
 
 #[derive(Debug, Clone)]
@@ -45,6 +60,10 @@ struct ForcedPending {
 
 impl SentenceSplitter {
     pub fn new() -> Self {
+        Self::with_clock(Arc::new(SystemSentenceClock))
+    }
+
+    fn with_clock(clock: Arc<dyn SentenceClock>) -> Self {
         Self {
             buffer: String::new(),
             committed: String::new(),
@@ -52,10 +71,11 @@ impl SentenceSplitter {
             context: VecDeque::new(),
             split_endings: vec!['.', '!', '?', ';', '。', '！', '？', '；', '\n'],
             active_forced_pending: None,
+            clock,
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "compatibility wrapper is retained for callers that do not consume revision metadata")]
     pub fn feed(&mut self, full_text: &str) -> Vec<SentenceResult> {
         self.feed_with_revision(full_text).sentences
     }
@@ -145,7 +165,7 @@ impl SentenceSplitter {
                         }
                     });
 
-                for sentence in split_subtitle_chunks(raw_sentence) {
+                for sentence in SubtitleDisplaySegmenter::split_sentence(raw_sentence) {
                     self.context.push_back(sentence.clone());
                     if self.context.len() > MAX_CONTEXT_SENTENCES {
                         self.context.pop_front();
@@ -167,7 +187,7 @@ impl SentenceSplitter {
 
         if results.is_empty() && !self.buffer.is_empty() {
             if self.pending_start.is_none() {
-                self.pending_start = Some(Instant::now());
+                self.pending_start = Some(self.clock.now());
             }
             if let Some(start) = self.pending_start {
                 let pending_text = self.buffer[self.committed.len()..].trim().to_string();
@@ -237,7 +257,7 @@ impl SentenceSplitter {
 
     #[cfg(test)]
     pub fn age_pending_for_test(&mut self, duration: Duration) {
-        self.pending_start = Some(Instant::now() - duration);
+        self.pending_start = Some(self.clock.now() - duration);
     }
 }
 
@@ -291,8 +311,97 @@ fn is_incomplete_final_clause(text: &str) -> bool {
 }
 
 fn needs_subtitle_split(text: &str) -> bool {
-    text.chars().count() > MAX_SUBTITLE_CHARS
+    text.chars().count() > subtitle_char_limit(text)
         || text.split_whitespace().count() > MAX_SUBTITLE_WORDS
+}
+
+fn subtitle_char_limit(text: &str) -> usize {
+    if text.chars().any(is_cjk_caption_character) {
+        MAX_CJK_SUBTITLE_CHARS
+    } else {
+        MAX_SUBTITLE_CHARS
+    }
+}
+
+fn is_cjk_caption_character(character: char) -> bool {
+    matches!(
+        character,
+        '\u{3040}'..='\u{30ff}' | '\u{3400}'..='\u{9fff}' | '\u{ac00}'..='\u{d7af}'
+    )
+}
+
+/// Stateless display formatter shared by both subtitle routes.
+///
+/// `SentenceSplitter` owns streaming/revision state for the secondary
+/// translator. Native realtime models already return a complete text payload,
+/// so they use `split_text`. Both paths converge on `split_sentence`, keeping
+/// the on-screen sentence and long-line rules identical.
+pub struct SubtitleDisplaySegmenter;
+
+impl SubtitleDisplaySegmenter {
+    pub fn split_text(text: &str) -> Vec<String> {
+        let text = text.trim();
+        if text.is_empty() {
+            return Vec::new();
+        }
+
+        let characters: Vec<(usize, char)> = text.char_indices().collect();
+        let mut lines = Vec::new();
+        let mut start = 0;
+
+        for (index, &(byte_index, character)) in characters.iter().enumerate() {
+            if !matches!(
+                character,
+                '.' | '!' | '?' | ';' | '。' | '！' | '？' | '；' | '\n'
+            ) {
+                continue;
+            }
+
+            let next = characters.get(index + 1).map(|(_, character)| *character);
+            if matches!(character, '.' | '!' | '?')
+                && next.is_some_and(|next| !next.is_whitespace())
+            {
+                continue;
+            }
+            if character == '.' && is_abbreviated_display_period(text, byte_index) {
+                continue;
+            }
+
+            let end = byte_index + character.len_utf8();
+            lines.extend(Self::split_sentence(&text[start..end]));
+            start = end;
+        }
+
+        // Realtime models sometimes finish a turn without punctuation. It is
+        // still safer to wrap it than to render an unreadable paragraph.
+        lines.extend(Self::split_sentence(&text[start..]));
+        lines
+    }
+
+    pub fn split_sentence(sentence: &str) -> Vec<String> {
+        split_subtitle_chunks(sentence)
+    }
+}
+
+fn is_abbreviated_display_period(text: &str, period_index: usize) -> bool {
+    let preceding_word: String = text[..period_index]
+        .chars()
+        .rev()
+        .take_while(|character| !character.is_whitespace())
+        .collect::<Vec<_>>()
+        .iter()
+        .rev()
+        .collect();
+    let upper_initialism = !preceding_word.is_empty()
+        && preceding_word.len() <= 4
+        && preceding_word
+            .chars()
+            .all(|character| character.is_ascii_uppercase() || character == '.');
+    let common_abbreviation = matches!(
+        preceding_word.to_ascii_lowercase().as_str(),
+        "mr" | "mrs" | "ms" | "dr" | "prof" | "sr" | "jr" | "vs" | "etc"
+    );
+    upper_initialism || common_abbreviation
 }
 
 fn split_subtitle_chunks(sentence: &str) -> Vec<String> {
@@ -326,26 +435,43 @@ fn split_subtitle_chunks(sentence: &str) -> Vec<String> {
 }
 
 fn find_subtitle_split_at(text: &str) -> Option<usize> {
-    let candidates = split_candidates(text);
-    let safe_candidates: Vec<usize> = candidates
+    let (semantic_candidates, whitespace_candidates) = split_candidates(text);
+    let safe_semantic_candidates: Vec<usize> = semantic_candidates
         .iter()
         .copied()
         .filter(|idx| !breaks_numeric_money_phrase(text, *idx))
         .collect();
-    let candidates = if safe_candidates.is_empty() {
-        &candidates
+    let semantic_candidates = if safe_semantic_candidates.is_empty() {
+        &semantic_candidates
     } else {
-        &safe_candidates
+        &safe_semantic_candidates
     };
-    let target = byte_after_char_count(text, MAX_SUBTITLE_CHARS)?;
+    let target = byte_after_char_count(text, subtitle_char_limit(text))?;
     let min = byte_after_char_count(text, MIN_SPLIT_HEAD_CHARS).unwrap_or(0);
 
-    candidates
+    semantic_candidates
         .iter()
         .copied()
         .filter(|idx| *idx >= min && *idx <= target)
-        .max()
-        .or(candidates.iter().copied().filter(|idx| *idx >= min).min())
+        // Prefer the first usable semantic boundary over a later arbitrary
+        // word boundary. This keeps real-time voice captions readable and
+        // avoids splitting a clause immediately before its key verb/object.
+        .min()
+        .or(semantic_candidates
+            .iter()
+            .copied()
+            .filter(|idx| *idx >= min)
+            .min())
+        .or(whitespace_candidates
+            .iter()
+            .copied()
+            .filter(|idx| *idx >= min && *idx <= target)
+            .max())
+        .or(whitespace_candidates
+            .iter()
+            .copied()
+            .filter(|idx| *idx >= min)
+            .min())
         .or(Some(target))
 }
 
@@ -381,8 +507,20 @@ fn breaks_numeric_money_phrase(text: &str, idx: usize) -> bool {
     matches!(
         (before.as_str(), after.as_str()),
         (
-            "one" | "two" | "three" | "four" | "five" | "six" | "seven" | "eight" | "nine"
-                | "ten" | "hundred" | "thousand" | "million" | "billion",
+            "one"
+                | "two"
+                | "three"
+                | "four"
+                | "five"
+                | "six"
+                | "seven"
+                | "eight"
+                | "nine"
+                | "ten"
+                | "hundred"
+                | "thousand"
+                | "million"
+                | "billion",
             "hundred" | "thousand" | "million" | "billion" | "dollar" | "dollars"
         ) | (
             "dollar" | "dollars",
@@ -391,8 +529,9 @@ fn breaks_numeric_money_phrase(text: &str, idx: usize) -> bool {
     )
 }
 
-fn split_candidates(text: &str) -> Vec<usize> {
-    let mut candidates = Vec::new();
+fn split_candidates(text: &str) -> (Vec<usize>, Vec<usize>) {
+    let mut semantic_candidates = Vec::new();
+    let mut whitespace_candidates = Vec::new();
     let connectors = [
         " and ",
         " but ",
@@ -406,7 +545,7 @@ fn split_candidates(text: &str) -> Vec<usize> {
 
     for (idx, ch) in text.char_indices() {
         if matches!(ch, ',' | '，' | ':' | '：' | '-' | '—' | '、') {
-            candidates.push(idx + ch.len_utf8());
+            semantic_candidates.push(idx + ch.len_utf8());
         }
     }
 
@@ -414,20 +553,22 @@ fn split_candidates(text: &str) -> Vec<usize> {
         let mut search_from = 0;
         while let Some(found) = text[search_from..].find(connector) {
             let idx = search_from + found + connector.len();
-            candidates.push(idx);
+            semantic_candidates.push(idx);
             search_from = idx;
         }
     }
 
     for (idx, ch) in text.char_indices() {
         if ch.is_whitespace() {
-            candidates.push(idx + ch.len_utf8());
+            whitespace_candidates.push(idx + ch.len_utf8());
         }
     }
 
-    candidates.sort_unstable();
-    candidates.dedup();
-    candidates
+    semantic_candidates.sort_unstable();
+    semantic_candidates.dedup();
+    whitespace_candidates.sort_unstable();
+    whitespace_candidates.dedup();
+    (semantic_candidates, whitespace_candidates)
 }
 
 fn byte_after_char_count(text: &str, max_chars: usize) -> Option<usize> {
@@ -451,14 +592,14 @@ fn should_emit_forced_pending(previous: Option<&str>, pending_text: &str) -> boo
 pub struct SentenceSplitterDiagnostics {
     pub buffer_len: usize,
     pub committed_len: usize,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "diagnostic preview field is serialized only by benchmark builds")]
     pub committed_preview: String,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "diagnostic preview field is serialized only by benchmark builds")]
     pub buffer_preview: String,
     pub pending_ms: Option<u64>,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "diagnostic counter is consumed only by benchmark builds")]
     pub context_sentences: usize,
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "diagnostic counter is consumed only by benchmark builds")]
     pub forced_pending_count: usize,
 }
 
@@ -600,8 +741,10 @@ mod tests {
     #[test]
     fn test_completed_sentence_does_not_replace_trailing_tiny_fragment() {
         let mut splitter = SentenceSplitter::new();
-        let forced = splitter
-            .feed("This is a long enough fragment that should translate before punctuation");
+        let text = "This is a long enough fragment that should translate before punctuation";
+        assert!(splitter.feed(text).is_empty());
+        splitter.age_pending_for_test(Duration::from_millis(700));
+        let forced = splitter.feed(text);
         assert_eq!(forced.len(), 1);
 
         let results = splitter
@@ -659,9 +802,9 @@ mod tests {
             "A future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh.",
         );
 
-        assert!(results
-            .iter()
-            .any(|result| result.sentence.contains("five hundred million dollar biosphere")));
+        assert!(results.iter().any(|result| result
+            .sentence
+            .contains("five hundred million dollar biosphere")));
         assert!(!results
             .iter()
             .any(|result| result.sentence == "million dollar biosphere."));
@@ -670,8 +813,8 @@ mod tests {
     #[test]
     fn test_epic_future_sentence_is_complete() {
         let mut splitter = SentenceSplitter::new();
-        let results = splitter
-            .feed("This video will show you just how epic the future is about to be.");
+        let results =
+            splitter.feed("This video will show you just how epic the future is about to be.");
 
         assert_eq!(results.len(), 1);
         assert_eq!(
@@ -691,7 +834,7 @@ mod tests {
         assert!(results
             .iter()
             .all(|result| result.sentence.chars().count() <= MAX_SUBTITLE_CHARS));
-        assert!(results[0].sentence.ends_with(',') || results[0].sentence.ends_with("because "));
+        assert!(results[0].sentence.ends_with(',') || results[0].sentence.ends_with("because"));
     }
 
     #[test]
@@ -704,6 +847,37 @@ mod tests {
 
         assert!(!first.is_empty());
         assert!(second.is_empty());
+    }
+
+    #[test]
+    fn display_segmenter_preserves_sentence_boundaries_and_wraps_long_sentences() {
+        let lines = SubtitleDisplaySegmenter::split_text(
+            "This is a one billion dollar rocket ship, a future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh, this video will show you how epic the future is.",
+        );
+
+        assert!(lines.len() >= 3);
+        assert!(lines
+            .iter()
+            .all(|line| line.chars().count() <= MAX_SUBTITLE_CHARS));
+        assert!(lines
+            .iter()
+            .any(|line| line.contains("five hundred million dollar biosphere.")));
+        assert_eq!(
+            lines.last().map(String::as_str),
+            Some("Oh my gosh, this video will show you how epic the future is.")
+        );
+    }
+
+    #[test]
+    fn display_segmenter_wraps_unpunctuated_cjk_text() {
+        let text = "这是一个没有任何标点符号但是必须在字幕浮窗中拆成多行显示的很长中文片段为了避免观众面对一整段难以阅读的文字我们需要在自然的位置将它拆开并保持每一行都足够短";
+        let lines = SubtitleDisplaySegmenter::split_text(text);
+
+        assert!(lines.len() >= 2);
+        assert!(lines
+            .iter()
+            .all(|line| line.chars().count() <= MAX_CJK_SUBTITLE_CHARS));
+        assert_eq!(lines.concat(), text);
     }
 
     #[test]

@@ -21,10 +21,7 @@ use crate::runtime::state::{now_marker, RuntimeStateStore};
 
 use super::contracts::{reconcile_bridge_snapshot, BridgeMixControl, BridgeRuntimeSnapshot};
 use super::installer::{apply_driver_probe, probe_driver, run_elevated_driver_operation};
-use super::ipc::{
-    apply_query, bridge_cli_path, ensure_bridge_runtime_root, initialize_bridge, query_state,
-    query_state_fast, stop_bridge_process, terminate_stale_bridge_process,
-};
+use super::ipc::{apply_query, bridge_cli_path, BridgeIpcClient, BridgeProcessSupervisor};
 use super::state::BridgeStateStore;
 
 fn extract_driver_string(config: &Value, pointer: &str, default: &str) -> String {
@@ -236,9 +233,9 @@ fn cleanup_existing_bridge_process(
     state: &BridgeStateStore,
 ) -> Result<(), String> {
     stop_existing_process(state);
-    let _ = stop_bridge_process(snapshot);
+    let _ = BridgeIpcClient::new(snapshot).stop();
     thread::sleep(Duration::from_millis(150));
-    terminate_stale_bridge_process(snapshot)
+    BridgeProcessSupervisor::new(snapshot).terminate_stale()
 }
 
 /// Returns true when the cached driver state is stale or unhealthy enough
@@ -309,7 +306,7 @@ fn start_bridge_from_snapshot(
     app: &AppHandle,
 ) -> Result<(), String> {
     cleanup_existing_bridge_process(snapshot, bridge_state)?;
-    ensure_bridge_runtime_root(snapshot)?;
+    BridgeProcessSupervisor::new(snapshot).ensure_runtime_root()?;
     bridge_state.update_snapshot(|current| *current = snapshot.clone());
 
     let mut child = build_started_process(snapshot)?;
@@ -400,7 +397,7 @@ fn start_bridge_from_snapshot(
     }
 
     bridge_state.set_process(child);
-    let initialized = initialize_bridge(snapshot)?;
+    let initialized = BridgeIpcClient::new(snapshot).initialize()?;
     bridge_state.update_snapshot(|current| *current = initialized);
     Ok(())
 }
@@ -489,11 +486,8 @@ pub fn refresh_bridge_runtime(
     }
     let snapshot = bridge_state.snapshot();
     if should_probe_bridge_pipe_on_refresh(&snapshot) {
-        let query_result = if should_use_full_bridge_pipe_query(&snapshot) {
-            query_state(&snapshot.pipe_path)
-        } else {
-            query_state_fast(&snapshot.pipe_path)
-        };
+        let query_result = BridgeIpcClient::new(&snapshot)
+            .query_state(!should_use_full_bridge_pipe_query(&snapshot));
         match query_result {
             Ok(query) => {
                 log_info!(

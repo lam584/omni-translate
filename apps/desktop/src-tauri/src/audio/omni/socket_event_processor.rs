@@ -1,0 +1,348 @@
+use super::*;
+
+pub(super) struct OmniSocketEventState {
+    pub(super) socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
+    pub(super) trace_call: crate::diagnostics::model_trace::ModelTraceCall,
+    pub(super) reconnect_count: usize,
+    pub(super) pending_audio_buffer: Vec<i16>,
+    pub(super) active_voice: String,
+    pub(super) voice_fallback_applied: bool,
+    pub(super) session_ready_for_audio: bool,
+    pub(super) event_diagnostics: OmniEventDiagnostics,
+    pub(super) current_cue_id: Option<String>,
+    pub(super) pending_source_text: String,
+    pub(super) pending_translated_text: String,
+    pub(super) st_skip_logged: bool,
+    pub(super) pending_audio_delta_count: u64,
+    pub(super) pending_audio_delta_base64_bytes: u64,
+    pub(super) pending_audio_response_id: Option<String>,
+    pub(super) last_vad_event_time: SystemTime,
+    pub(super) vad_event_count: u64,
+    pub(super) transcription_completed_flag: bool,
+    pub(super) transcription_completed_at: Option<SystemTime>,
+}
+
+pub(super) struct OmniSocketEventContext<'a> {
+    pub(super) app: &'a AppHandle,
+    pub(super) store: &'a AudioStateStore,
+    pub(super) direction: &'a str,
+    pub(super) session_generation: u64,
+    pub(super) session_started_at: &'a SystemTime,
+    pub(super) subtitle_translate_active: bool,
+    pub(super) native_translation_reuse_active: bool,
+    pub(super) total_input_chunks: u64,
+    pub(super) first_audio_sent_ms: Option<u64>,
+    pub(super) first_audible_chunk_ms: Option<u64>,
+    pub(super) chunk_count: u64,
+    pub(super) total_silence_skipped_before_first_audible: u64,
+    pub(super) playback_tx: &'a mpsc::Sender<OmniPlaybackCommand>,
+    pub(super) readiness_sent: &'a AtomicBool,
+    pub(super) readiness_tx: &'a mpsc::Sender<Result<u64, String>>,
+    pub(super) provider: &'a ProviderDraftInput,
+    pub(super) instructions: &'a str,
+    pub(super) audio_mode: RealtimeAudioMode,
+    pub(super) target_language: &'a str,
+    pub(super) buffer_size: u64,
+    pub(super) pre_session_audio_queue_len: usize,
+    pub(super) pre_session_audio_dropped: u64,
+}
+
+pub(super) struct OmniSocketPollResult {
+    pub(super) state: OmniSocketEventState,
+    pub(super) skip_tick: bool,
+}
+
+pub(super) struct OmniSocketEventProcessor;
+
+impl OmniSocketEventProcessor {
+    pub(super) fn poll(
+        state: OmniSocketEventState,
+        context: OmniSocketEventContext<'_>,
+    ) -> Result<OmniSocketPollResult, String> {
+        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at } = state;
+        let OmniSocketEventContext {
+            app, store, direction, session_generation, session_started_at,
+            subtitle_translate_active, native_translation_reuse_active,
+            total_input_chunks, first_audio_sent_ms, first_audible_chunk_ms,
+            chunk_count, total_silence_skipped_before_first_audible, playback_tx,
+            readiness_sent, readiness_tx, provider, instructions, audio_mode,
+            target_language, buffer_size, pre_session_audio_queue_len,
+            pre_session_audio_dropped,
+        } = context;
+match socket.read() {
+    Ok(msg) => match msg {
+        Message::Text(text) => {
+            if let Ok(evt) = serde_json::from_str::<Value>(&text) {
+                let event_type = evt["type"].as_str().unwrap_or("(unknown)");
+                trace_call.record_ws_recv(event_type, evt.clone());
+                match event_type {
+                    "session.created" | "session.updated" => {
+                        let readiness = OmniEventProcessor::process_session_ready(
+                            OmniReadinessState {
+                                session_ready_for_audio,
+                                event_diagnostics,
+                            },
+                            &app,
+                            store,
+                            &direction,
+                            session_generation,
+                            &session_started_at,
+                            event_type,
+                            &evt,
+                                    pre_session_audio_queue_len,
+                            pre_session_audio_dropped,
+                            &readiness_sent,
+                            &readiness_tx,
+                        );
+                        session_ready_for_audio = readiness.session_ready_for_audio;
+                        event_diagnostics = readiness.event_diagnostics;
+                    }
+                    event_type if matches!(
+                        event_type,
+                        "input_audio_buffer.speech_started"
+                            | "conversation.item.input_audio_transcription.delta"
+                            | "conversation.item.input_audio_transcription.text"
+                            | "conversation.item.input_audio_transcription.completed"
+                    ) => {
+                        let output = OmniAsrEventProcessor::process(
+                            OmniAsrEventState {
+                                last_vad_event_time,
+                                vad_event_count,
+                                current_cue_id,
+                                pending_source_text,
+                                pending_translated_text,
+                                pending_audio_buffer,
+                                transcription_completed_flag,
+                                transcription_completed_at,
+                                event_diagnostics,
+                            },
+                            &app,
+                            store,
+                            &evt,
+                            event_type,
+                            &session_started_at,
+                            subtitle_translate_active,
+                            native_translation_reuse_active,
+                            total_input_chunks,
+                            first_audio_sent_ms,
+                            first_audible_chunk_ms,
+                            chunk_count,
+                            total_silence_skipped_before_first_audible,
+                        );
+                        last_vad_event_time = output.state.last_vad_event_time;
+                        vad_event_count = output.state.vad_event_count;
+                        current_cue_id = output.state.current_cue_id;
+                        pending_source_text = output.state.pending_source_text;
+                        pending_translated_text = output.state.pending_translated_text;
+                        pending_audio_buffer = output.state.pending_audio_buffer;
+                        transcription_completed_flag = output.state.transcription_completed_flag;
+                        transcription_completed_at = output.state.transcription_completed_at;
+                        event_diagnostics = output.state.event_diagnostics;
+                        if output.skip_tick {
+                            return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at }, skip_tick: true });
+                        }
+                    }
+                    "response.audio_transcript.delta"
+                    | "response.audio_transcript.text" => {
+                        let output = OmniEventProcessor::process_transcript_delta(
+                            OmniSubtitleEventState {
+                                current_cue_id,
+                                pending_source_text,
+                                pending_translated_text,
+                                st_skip_logged,
+                                event_diagnostics,
+                            },
+                            &app,
+                            store,
+                            &evt,
+                            event_type,
+                            subtitle_translate_active,
+                            native_translation_reuse_active,
+                        );
+                        current_cue_id = output.current_cue_id;
+                        pending_source_text = output.pending_source_text;
+                        pending_translated_text = output.pending_translated_text;
+                        st_skip_logged = output.st_skip_logged;
+                        event_diagnostics = output.event_diagnostics;
+                    }
+                    "response.audio_transcript.done" => {
+                        let output = OmniEventProcessor::process_transcript_done(
+                            OmniSubtitleEventState {
+                                current_cue_id,
+                                pending_source_text,
+                                pending_translated_text,
+                                st_skip_logged,
+                                event_diagnostics,
+                            },
+                            &app,
+                            store,
+                            &evt,
+                            &session_started_at,
+                            native_translation_reuse_active,
+                        );
+                        current_cue_id = output.current_cue_id;
+                        pending_source_text = output.pending_source_text;
+                        pending_translated_text = output.pending_translated_text;
+                        st_skip_logged = output.st_skip_logged;
+                        event_diagnostics = output.event_diagnostics;
+                    }
+                    "response.audio.delta" => {
+                        let output = OmniEventProcessor::process_audio_delta(
+                            OmniAudioOutputState {
+                                pending_audio_delta_count,
+                                pending_audio_delta_base64_bytes,
+                                pending_audio_response_id,
+                                pending_audio_buffer,
+                            },
+                            &app,
+                            &evt,
+                        );
+                        pending_audio_delta_count = output.pending_audio_delta_count;
+                        pending_audio_delta_base64_bytes = output.pending_audio_delta_base64_bytes;
+                        pending_audio_response_id = output.pending_audio_response_id;
+                        pending_audio_buffer = output.pending_audio_buffer;
+                    }
+                    "response.audio.done" => {
+                        let output = OmniEventProcessor::process_audio_done(
+                            OmniAudioOutputState {
+                                pending_audio_delta_count,
+                                pending_audio_delta_base64_bytes,
+                                pending_audio_response_id,
+                                pending_audio_buffer,
+                            },
+                            &app,
+                            &playback_tx,
+                        );
+                        pending_audio_delta_count = output.pending_audio_delta_count;
+                        pending_audio_delta_base64_bytes = output.pending_audio_delta_base64_bytes;
+                        pending_audio_response_id = output.pending_audio_response_id;
+                        pending_audio_buffer = output.pending_audio_buffer;
+                    }
+                    "input_audio_buffer.speech_stopped" => {
+                        last_vad_event_time = SystemTime::now();
+                        vad_event_count += 1;
+                        let _ = diag_log(
+                            &app,
+                            "omni",
+                            "info",
+                            format!(
+                                "[VAD] speech_stopped received (VAD 浜嬩欢璁℃暟={vad_event_count})"
+                            ),
+                        );
+                    }
+                    "response.done" => {
+                        handle_response_done(
+                            &app,
+                            store,
+                            &mut trace_call,
+                            &mut current_cue_id,
+                            &mut pending_source_text,
+                            &mut pending_translated_text,
+                            subtitle_translate_active,
+                            native_translation_reuse_active,
+                            &mut transcription_completed_flag,
+                            &mut transcription_completed_at,
+                            &mut event_diagnostics,
+                            &session_started_at,
+                        );
+                        store.live_session_events.push_output_delta(
+                            "response.done",
+                            "",
+                            "",
+                        );
+                    }
+                    "error" => {
+                        let reconnect_state = OmniConnectionCoordinator::handle_provider_error(
+                            OmniReconnectState {
+                                socket,
+                                reconnect_count,
+                                pending_audio_buffer,
+                                active_voice,
+                                voice_fallback_applied,
+                            },
+                            &app,
+                            store,
+                            &provider,
+                            &instructions,
+                            audio_mode,
+                            &target_language,
+                            buffer_size,
+                            &mut trace_call,
+                            &evt,
+                            &text,
+                        );
+                        socket = reconnect_state.socket;
+                        reconnect_count = reconnect_state.reconnect_count;
+                        pending_audio_buffer = reconnect_state.pending_audio_buffer;
+                        active_voice = reconnect_state.active_voice;
+                        voice_fallback_applied = reconnect_state.voice_fallback_applied;
+                    }
+                    other => {
+                        OmniEventProcessor::log_unknown_event(&app, other, &text);
+                    }
+                }
+            } else {
+                let _ = diag_log(
+                    &app,
+                    "omni",
+                    "warning",
+                    format!("[EVENT] JSON 瑙ｆ瀽澶辫触: {text}"),
+                );
+            }
+        }
+        Message::Close(_) => {
+            let reconnect_state = OmniConnectionCoordinator::reconnect_after_close(
+                OmniReconnectState {
+                    socket,
+                    reconnect_count,
+                    pending_audio_buffer,
+                    active_voice,
+                    voice_fallback_applied,
+                },
+                &app,
+                store,
+                &provider,
+                &instructions,
+                audio_mode,
+                &target_language,
+                buffer_size,
+            )?;
+            socket = reconnect_state.socket;
+            reconnect_count = reconnect_state.reconnect_count;
+            pending_audio_buffer = reconnect_state.pending_audio_buffer;
+            active_voice = reconnect_state.active_voice;
+            voice_fallback_applied = reconnect_state.voice_fallback_applied;
+            return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at }, skip_tick: true });
+        }
+        _ => {}
+    },
+    Err(error) => {
+        let reconnect_state = OmniConnectionCoordinator::recover_read_error(
+            OmniReconnectState {
+                socket,
+                reconnect_count,
+                pending_audio_buffer,
+                active_voice,
+                voice_fallback_applied,
+            },
+            &app,
+            store,
+            &provider,
+            &instructions,
+            audio_mode,
+            &target_language,
+            buffer_size,
+            error,
+        )?;
+        socket = reconnect_state.socket;
+        reconnect_count = reconnect_state.reconnect_count;
+        pending_audio_buffer = reconnect_state.pending_audio_buffer;
+        active_voice = reconnect_state.active_voice;
+        voice_fallback_applied = reconnect_state.voice_fallback_applied;
+        return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at }, skip_tick: true });
+    }
+}
+
+        Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at }, skip_tick: false })
+    }
+}

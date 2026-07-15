@@ -70,7 +70,7 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
       '启用字幕翻译',
       '用二次字幕生成译音',
       '将翻译语音发送到虚拟麦克风',
-      '文字转语音',
+      '独立 TTS',
     ]));
 
     const switches = toggleLabels.map((label) => label.querySelector('input[type="checkbox"]'));

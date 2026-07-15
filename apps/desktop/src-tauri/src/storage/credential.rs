@@ -296,13 +296,13 @@ where
     }
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "in-memory vault is a deterministic test and non-Windows fallback")]
 pub struct MemoryCredentialVault {
     inner: Mutex<HashMap<String, String>>,
 }
 
 impl MemoryCredentialVault {
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "constructor is used by tests and non-Windows fallback wiring")]
     pub fn new() -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),

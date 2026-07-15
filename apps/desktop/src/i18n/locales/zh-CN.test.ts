@@ -60,6 +60,18 @@ describe('zh-CN locale', () => {
     }
   });
 
+  it('explains both virtual-driver fallback choices and the AEC risk', () => {
+    const semanticMarkers: Record<string, RegExp[]> = {
+      ja: [/OK/, /キャンセル/, /字幕/, /AEC/, /危険/],
+      ko: [/확인/, /취소/, /자막/, /AEC/, /위험/],
+      th: [/ตกลง/, /ยกเลิก/, /คำบรรยาย/, /AEC/, /ความเสี่ยง/],
+    };
+    for (const [code, markers] of Object.entries(semanticMarkers)) {
+      const message = (locales[code as keyof typeof locales] as typeof en).session.virtualDriverFallbackConfirm;
+      for (const marker of markers) expect(message, `${code}: ${marker}`).toMatch(marker);
+    }
+  });
+
   it('keeps settings and welcome copy localized', () => {
     expect(zhCN.settings.languageLabel).toBe('显示语言');
     expect(zhCN.settings.sectionLanguage).toBe('界面语言');

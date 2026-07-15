@@ -20,8 +20,18 @@ function Invoke-CoverageStep {
 
   $logPath = Join-Path $outputDir "$Name.log"
   Write-Host ">>> $Name`: $Command"
-  & cmd.exe /d /s /c $Command 2>&1 | Tee-Object -FilePath $logPath
-  if ($LASTEXITCODE -ne 0) {
+  # Windows PowerShell wraps any native stderr line in a NativeCommandError.
+  # Test runners legitimately use stderr for warnings, so decide success from
+  # the native exit code after allowing the merged stream to reach the log.
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    & cmd.exe /d /s /c $Command 2>&1 | Tee-Object -FilePath $logPath
+    $exitCode = $LASTEXITCODE
+  } finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  if ($exitCode -ne 0) {
     throw "Coverage gate step failed: $Name"
   }
 }

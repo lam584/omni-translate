@@ -18,6 +18,15 @@ import { defaultLanguage, isSupportedLanguage, rtlLanguages, supportedLanguageCo
 export const LANGUAGE_STORAGE_KEY = 'omni-translate.uiLanguage';
 export const WELCOME_DONE_STORAGE_KEY = 'omni-translate.welcomeCompleted';
 
+const REJECTED_TRANSLATION_MARKERS = [
+  'MYMEMORY WARNING:',
+  'MYMEMORY TRANSLATED.NET/DOC/USAGELIMITS',
+] as const;
+
+export function isRejectedTranslationValue(value: unknown): boolean {
+  return typeof value === 'string' && REJECTED_TRANSLATION_MARKERS.some((marker) => value.toUpperCase().includes(marker));
+}
+
 function mergeLocaleFallback<T extends Record<string, unknown>>(fallback: T, locale: Record<string, unknown>): T {
   const merged: Record<string, unknown> = { ...fallback };
 
@@ -32,7 +41,7 @@ function mergeLocaleFallback<T extends Record<string, unknown>>(fallback: T, loc
       !Array.isArray(fallbackValue)
     ) {
       merged[key] = mergeLocaleFallback(fallbackValue as Record<string, unknown>, value as Record<string, unknown>);
-    } else {
+    } else if (!isRejectedTranslationValue(value)) {
       merged[key] = value;
     }
   }

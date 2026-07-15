@@ -17,7 +17,7 @@ use super::state::AudioStateStore;
 use super::time_utils::unix_ms;
 use crate::diagnostics::model_trace::{ModelTraceContext, ModelTraceRecorder};
 use crate::provider::contracts::ProviderDraftInput;
-use crate::provider::gateway;
+use crate::provider::gateway_parts::auth::apply_ws_auth;
 
 const OPENAI_READ_TIMEOUT_MS: u64 = 200;
 const OPENAI_WRITE_TIMEOUT_SECS: u64 = 10;
@@ -209,7 +209,7 @@ fn run_openai_worker(
         .as_str()
         .into_client_request()
         .map_err(|error| format!("failed to create OpenAI realtime request: {error}"))?;
-    gateway::apply_ws_auth(&provider, request.headers_mut())
+    apply_ws_auth(&provider, request.headers_mut())
         .map_err(|error| format!("failed to apply OpenAI realtime auth: {}", error.message))?;
     request.headers_mut().insert(
         "OpenAI-Beta",

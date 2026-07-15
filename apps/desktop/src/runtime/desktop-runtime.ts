@@ -1,5 +1,5 @@
-﻿import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
+import { desktopApiV2 } from './desktop-api-v2';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import { AUDIO_RUNTIME_SNAPSHOT_EVENT, type AudioRuntimeSnapshot } from '../schema/audio-runtime';
@@ -31,8 +31,6 @@ const BRIDGE_INVOKE_TIMEOUT_MS = 8000;
 export const BRIDGE_AUTOSTART_AFTER_READY_DELAY_MS = 0;
 const BRIDGE_STARTUP_REFRESH_TIMEOUT_MS = 3000;
 const BRIDGE_STARTUP_START_TIMEOUT_MS = 8000;
-const BRIDGE_AUTOSTART_TIMEOUT_MS = 20000;
-const DRIVER_PROBE_TIMEOUT_MS = 120000;
 
 function startupRefreshTimeoutMs(): number {
   return BRIDGE_STARTUP_REFRESH_TIMEOUT_MS;
@@ -70,7 +68,7 @@ function invokeWithTimeout<T>(
       reject(new Error(`invoke '${command}' 超时（${timeoutMs}ms），IPC 通道可能未就绪或 Rust Core 未响应`));
     }, timeoutMs);
 
-    invoke<T>(command, payload)
+    desktopApiV2.runtime.invoke<T>(command, payload)
       .then((result) => {
         clearTimeout(timeoutId);
         resolve(result);
@@ -100,10 +98,6 @@ function shouldAutostartBridge(snapshot: RuntimeSnapshot) {
     snapshot.bridge.driverHealth === 'running' &&
     (snapshot.bridge.processStatus === 'stopped' || snapshot.bridge.processStatus === 'error')
   );
-}
-
-async function refreshAndAutostartBridge(config: AppConfigDraft) {
-  return _refreshAndAutostartBridge(config, DRIVER_PROBE_TIMEOUT_MS, BRIDGE_AUTOSTART_TIMEOUT_MS);
 }
 
 async function refreshAndAutostartBridgeStartup(config: AppConfigDraft) {
@@ -146,12 +140,16 @@ export function scheduleBridgeAutostartAfterStartup(
 ): { cleanup: RuntimeCleanup; promise: Promise<void> } {
   let resolvePromise: (() => void) | undefined;
   const promise = new Promise<void>((resolve) => { resolvePromise = resolve; });
-  const timer = setTimeout(() => {
-    void refreshAndAutostartBridgeStartup(config).finally(() => resolvePromise?.());
-  }, delayMs);
+  const run = () => void refreshAndAutostartBridgeStartup(config).finally(() => resolvePromise?.());
+  const timer = delayMs <= 0 ? null : setTimeout(run, delayMs);
+  if (timer === null) {
+    run();
+  }
 
   return {
-    cleanup: () => clearTimeout(timer),
+    cleanup: () => {
+      if (timer !== null) clearTimeout(timer);
+    },
     promise,
   };
 }
@@ -219,6 +217,7 @@ function markStep(onStep: OnBootstrapStep | undefined, stepId: BootstrapStepId, 
 // ── Core connect ──
 
 async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<RuntimeCleanup> {
+  let disposed = false;
   const unlisteners: RuntimeCleanup[] = [];
   const deferredNotifications: Array<{
     level: RuntimeNotification['level'];
@@ -351,7 +350,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   };
 
   const flushPersistQueue = async () => {
-    if (queueState.inflight || queueState.pending === null) return;
+    if (disposed || queueState.inflight || queueState.pending === null) return;
     queueState.inflight = true;
     const nextConfig = queueState.pending;
     queueState.pending = null;
@@ -360,9 +359,12 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
 
     try {
       for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+        if (disposed) return;
         try {
-          await invoke('save_config_draft', { config: nextConfig });
-          const latestSnapshot = await invoke<RuntimeSnapshot>('get_runtime_snapshot');
+          await desktopApiV2.runtime.invoke('save_config_draft', { config: nextConfig });
+          if (disposed) return;
+          const latestSnapshot = await desktopApiV2.runtime.invoke<RuntimeSnapshot>('get_runtime_snapshot');
+          if (disposed) return;
           useAppStore.getState().setRuntimeSnapshot(latestSnapshot);
           lastError = undefined;
           break;
@@ -374,7 +376,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
         }
       }
 
-      if (lastError) {
+      if (lastError && !disposed) {
         try {
           const serialized = JSON.stringify(nextConfig);
           if (canUseLocalStorage()) {
@@ -392,7 +394,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
       }
     } finally {
       queueState.inflight = false;
-      if (queueState.pending !== null) void flushPersistQueue();
+      if (!disposed && queueState.pending !== null) void flushPersistQueue();
     }
   };
 
@@ -440,7 +442,11 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     pushDesktopRuntimeNotification('warning', 'config-sync-listener-failed', `Config sync listener failed: ${formatRuntimeError(error)}`);
   }
 
+  const bridgeAutostart = scheduleBridgeAutostartAfterStartup(persistedConfig);
+
   return () => {
+    disposed = true;
+    bridgeAutostart.cleanup();
     unsubscribeConfig();
     window.removeEventListener('storage', handleConfigDraftStorage);
     window.removeEventListener('beforeunload', handleBeforeUnload);

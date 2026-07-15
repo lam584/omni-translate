@@ -132,8 +132,11 @@ async function advanceLockedRevealPoll() {
   });
 }
 
-function countInvokeCalls(command: string) {
-  return tauriMocks.invokeMock.mock.calls.filter(([nextCommand]) => nextCommand === command).length;
+function countSessionActionCalls(action: string) {
+  return tauriMocks.invokeMock.mock.calls.filter(([command, args]) =>
+    command === 'session_v2' &&
+    (args as { command?: { action?: string } } | undefined)?.command?.action === action,
+  ).length;
 }
 
 function createPointerEvent(type: string, init?: PointerEventInit) {
@@ -170,7 +173,12 @@ describe('SubtitleOverlayPage locked interaction', () => {
       HTMLElement.prototype.hasPointerCapture = vi.fn(() => true);
     }
 
-    tauriMocks.invokeMock.mockReset().mockResolvedValue(undefined);
+    tauriMocks.invokeMock.mockReset().mockImplementation(async (command: string) => {
+      if (command === 'session_v2') {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      }
+      return undefined;
+    });
     menuMocks.closeMock.mockReset().mockResolvedValue(undefined);
     menuMocks.popupMock.mockReset().mockResolvedValue(undefined);
     menuMocks.newMock.mockReset().mockResolvedValue({
@@ -284,7 +292,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       root.render(<SubtitleOverlayPage />);
     });
 
-    const chromeSyncCallsBeforeHover = countInvokeCalls('sync_subtitle_overlay_chrome');
+    const chromeSyncCallsBeforeHover = countSessionActionCalls('syncOverlayWindowState');
 
     tauriMocks.setPointerPosition({ x: 940, y: 220 });
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
@@ -294,7 +302,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 220, y: 280 }));
     await advanceLockedRevealPoll();
 
-    expect(countInvokeCalls('sync_subtitle_overlay_chrome')).toBe(chromeSyncCallsBeforeHover);
+    expect(countSessionActionCalls('syncOverlayWindowState')).toBe(chromeSyncCallsBeforeHover);
   });
 
   it('re-syncs native window state only once when the lock button toggles overlayLocked', async () => {
@@ -306,7 +314,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
     await advanceLockedRevealPoll();
 
-    const windowStateSyncCallsBeforeClick = countInvokeCalls('sync_subtitle_overlay_window_state');
+    const windowStateSyncCallsBeforeClick = countSessionActionCalls('syncOverlayWindowState');
     const button = container.querySelector('.subtitle-overlay-toggle-lock');
     expect(button).not.toBeNull();
 
@@ -314,7 +322,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(countInvokeCalls('sync_subtitle_overlay_window_state')).toBe(windowStateSyncCallsBeforeClick + 1);
+    expect(countSessionActionCalls('syncOverlayWindowState')).toBe(windowStateSyncCallsBeforeClick + 1);
   });
 
   it('resizes the overlay from client-area handles after unlock without using native resize dragging', async () => {
@@ -368,8 +376,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
         return structuredClone(runtimeSnapshotMock);
       }
 
-      if (command === 'clear_subtitle_cues') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (command === 'session_v2') {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
       return undefined;
@@ -418,7 +426,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       overlayLocked: true,
     });
     expect(tauriMocks.invokeMock).toHaveBeenCalledWith('toggle_subtitle_overlay');
-    expect(tauriMocks.invokeMock).toHaveBeenCalledWith('clear_subtitle_cues');
+    expect(countSessionActionCalls('clearCues')).toBe(1);
   });
 
   it('drags an unlocked overlay and ignores unrelated pointer ids', async () => {

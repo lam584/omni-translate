@@ -7,7 +7,7 @@ const legacyBridgeName = ['bridge', 'service'].join('-');
 
 const requiredFiles = [
   'README.md',
-  'README.en.md',
+  path.join('i18n', 'README_en.md'),
   path.join(projectDocsDir, 'Watch Mode 真实链路自动化测试.md'),
   path.join(projectDocsDir, '架构说明.md'),
   path.join(projectDocsDir, '测试与质量门禁.md'),

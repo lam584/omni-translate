@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { desktopApiV2, type DesktopApiV2 } from '../runtime/desktop-api-v2';
 
 export interface PersistenceBackend {
   save<T>(key: string, value: T): Promise<void>;
@@ -70,9 +70,11 @@ export class LocalStorageBackend implements PersistenceBackend {
 const SQLITE_DELETE_COMMAND = 'delete_config_draft';
 
 export class SqliteBackend implements PersistenceBackend {
+  constructor(private readonly desktopApi: DesktopApiV2 = desktopApiV2) {}
+
   async save<T>(key: string, value: T): Promise<void> {
     try {
-      await invoke('save_config_draft', { config: value });
+      await this.desktopApi.persistence.saveDraft(value);
     } catch {
       throw new Error(`SqliteBackend: 保存键 "${key}" 失败`);
     }
@@ -84,7 +86,7 @@ export class SqliteBackend implements PersistenceBackend {
     }
 
     try {
-      const result = await invoke<T>('load_config_draft');
+      const result = await this.desktopApi.persistence.loadDraft<T>();
       return result ?? null;
     } catch {
       return null;
@@ -97,9 +99,9 @@ export class SqliteBackend implements PersistenceBackend {
     }
 
     try {
-      const commands = await invoke<string[]>('list_commands');
+      const commands = await this.desktopApi.persistence.availableCommands();
       if (commands.includes(SQLITE_DELETE_COMMAND)) {
-        await invoke(SQLITE_DELETE_COMMAND);
+        await this.desktopApi.persistence.deleteDraft();
       }
     } catch {
       // Silently fail if delete command is unavailable
@@ -112,7 +114,7 @@ export class SqliteBackend implements PersistenceBackend {
     }
 
     try {
-      const result = await invoke<unknown>('load_config_draft');
+      const result = await this.desktopApi.persistence.loadDraft<unknown>();
       return result !== null && result !== undefined;
     } catch {
       return false;

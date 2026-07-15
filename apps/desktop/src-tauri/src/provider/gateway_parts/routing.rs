@@ -2,7 +2,7 @@ use serde_json::{json, Value};
 
 use super::super::contracts::{ProviderDraftInput, ProviderRoutingDecision};
 
-pub(super) const LATENCY_BUDGET_MS: u64 = 1200;
+pub(crate) const LATENCY_BUDGET_MS: u64 = 1200;
 
 pub(super) fn build_messages(
     provider: &ProviderDraftInput,
@@ -29,7 +29,7 @@ pub(super) fn build_messages(
     messages
 }
 
-pub(super) fn build_routing_decision(
+pub(crate) fn build_routing_decision(
     verdict: &str,
     latency_ms: u64,
     fallback_applied: bool,
@@ -60,7 +60,7 @@ pub(super) fn build_routing_decision(
     }
 }
 
-pub(super) fn build_probe_guidance(
+pub(crate) fn build_probe_guidance(
     verdict: &str,
     routing_decision: &ProviderRoutingDecision,
     fallback_applied: bool,

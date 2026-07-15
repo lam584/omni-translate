@@ -1,7 +1,5 @@
-use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc::Sender, Mutex, MutexGuard};
 use std::thread::JoinHandle;
-use std::time::Instant;
 
 use super::contracts::{
     AudioDeviceRuntime, AudioRouteRuntimeSnapshot, AudioRuntimeSnapshot, SpeechRuntimeSnapshot,
@@ -13,6 +11,19 @@ use super::live_session_events::LiveSessionEventBuffer;
 use super::omni::OmniHandle;
 use super::stt::SttHandle;
 use super::time_utils::{ms_marker, unix_ms};
+
+mod translation_latency;
+mod audio_cache;
+mod omni_sessions;
+mod session_registry;
+mod metrics;
+mod subtitle_store;
+pub use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
+use audio_cache::AudioCacheStore;
+use omni_sessions::OmniSessionStore;
+use session_registry::SessionRegistry;
+use metrics::AudioMetricsStore;
+use subtitle_store::SubtitleStore;
 
 pub struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
@@ -37,39 +48,13 @@ pub(crate) struct OmniSessionMetadata {
     pub last_error: Option<String>,
 }
 
-#[derive(Clone)]
-#[allow(dead_code)]
-pub struct CapturedSegmentAudio {
-    pub cue_id: String,
-    pub route_direction: String,
-    pub sample_rate_hz: u32,
-    pub channel_count: u16,
-    pub pcm_f32le: Vec<u8>,
-}
-
-#[derive(Clone)]
-pub struct CachedTtsAudio {
-    pub cache_key: String,
-    pub request_id: String,
-    pub sample_rate_hz: u32,
-    pub channel_count: u16,
-    pub pcm_i16: Vec<i16>,
-}
-
 pub struct AudioStateStore {
     inner: Mutex<AudioRuntimeSnapshot>,
-    first_translation_latency: Mutex<FirstTranslationLatencyTracker>,
-    sessions: Mutex<HashMap<String, AudioRouteHandle>>,
-    stt_handles: Mutex<HashMap<String, SttHandle>>,
-    omni_handles: Mutex<HashMap<String, OmniHandle>>,
-    omni_senders: Mutex<HashMap<String, Sender<Vec<u8>>>>,
-    omni_sessions: Mutex<HashMap<String, OmniSessionMetadata>>,
-    omni_generations: Mutex<HashMap<String, u64>>,
-    inbound_pipeline_lock: Mutex<()>,
-    segment_audio: Mutex<HashMap<String, CapturedSegmentAudio>>,
-    segment_audio_order: Mutex<VecDeque<String>>,
-    tts_audio: Mutex<HashMap<String, CachedTtsAudio>>,
-    tts_audio_order: Mutex<VecDeque<String>>,
+    metrics: AudioMetricsStore,
+    subtitles: SubtitleStore,
+    session_registry: SessionRegistry,
+    omni_sessions: OmniSessionStore,
+    audio_cache: AudioCacheStore,
     echo_buffer: Mutex<EchoReferenceBuffer>,
     pub live_session_events: LiveSessionEventBuffer,
 }
@@ -77,111 +62,30 @@ pub struct AudioStateStore {
 const MAX_RECENT_SUBTITLE_CUES: usize = 12;
 const HARD_MAX_RECENT_SUBTITLE_CUES: usize = 18;
 
-#[derive(Default)]
-struct CueFirstTranslationTiming {
-    first_source_at: Option<Instant>,
-    recorded: bool,
-}
-
-#[derive(Clone, Copy)]
-struct FirstTranslationLatencyMetrics {
-    average_ms: u64,
-    last_ms: u64,
-    sample_count: u64,
-}
-
-#[derive(Default)]
-struct FirstTranslationLatencyTracker {
-    cues: HashMap<String, CueFirstTranslationTiming>,
-    total_ms: u128,
-    sample_count: u64,
-    last_ms: Option<u64>,
-}
-
-impl FirstTranslationLatencyTracker {
-    fn record_source(&mut self, cue_id: &str, source_text: &str) {
-        if source_text.trim().is_empty() {
-            return;
-        }
-
-        let cue = self.cues.entry(cue_id.to_string()).or_default();
-        if cue.first_source_at.is_none() {
-            cue.first_source_at = Some(Instant::now());
-        }
-    }
-
-    fn record_translation(
-        &mut self,
-        cue_id: &str,
-        translated_text: &str,
-    ) -> Option<FirstTranslationLatencyMetrics> {
-        if translated_text.trim().is_empty() {
-            return None;
-        }
-
-        let cue = self.cues.entry(cue_id.to_string()).or_default();
-        if cue.recorded {
-            return None;
-        }
-        let first_source_at = cue.first_source_at?;
-
-        cue.recorded = true;
-        let elapsed_ms = first_source_at.elapsed().as_millis().min(u64::MAX as u128) as u64;
-        self.total_ms = self.total_ms.saturating_add(elapsed_ms as u128);
-        self.sample_count = self.sample_count.saturating_add(1);
-        self.last_ms = Some(elapsed_ms);
-
-        Some(self.metrics())
-    }
-
-    fn metrics(&self) -> FirstTranslationLatencyMetrics {
-        let average_ms = if self.sample_count == 0 {
-            0
-        } else {
-            (self.total_ms / self.sample_count as u128).min(u64::MAX as u128) as u64
-        };
-
-        FirstTranslationLatencyMetrics {
-            average_ms,
-            last_ms: self.last_ms.unwrap_or(0),
-            sample_count: self.sample_count,
-        }
-    }
-
-    fn reset(&mut self) {
-        *self = Self::default();
-    }
-}
-
 impl AudioStateStore {
     pub fn new() -> Self {
+        let preview = AudioRuntimeSnapshot::preview();
+        let subtitle_preview = preview.subtitle_overlay.clone();
         Self {
-            inner: Mutex::new(AudioRuntimeSnapshot::preview()),
-            first_translation_latency: Mutex::new(FirstTranslationLatencyTracker::default()),
-            sessions: Mutex::new(HashMap::new()),
-            stt_handles: Mutex::new(HashMap::new()),
-            omni_handles: Mutex::new(HashMap::new()),
-            omni_senders: Mutex::new(HashMap::new()),
-            omni_sessions: Mutex::new(HashMap::new()),
-            omni_generations: Mutex::new(HashMap::new()),
-            inbound_pipeline_lock: Mutex::new(()),
-            segment_audio: Mutex::new(HashMap::new()),
-            segment_audio_order: Mutex::new(VecDeque::new()),
-            tts_audio: Mutex::new(HashMap::new()),
-            tts_audio_order: Mutex::new(VecDeque::new()),
+            inner: Mutex::new(preview),
+            metrics: AudioMetricsStore::new(),
+            subtitles: SubtitleStore::new(subtitle_preview),
+            session_registry: SessionRegistry::new(),
+            omni_sessions: OmniSessionStore::new(),
+            audio_cache: AudioCacheStore::new(),
             echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
             live_session_events: LiveSessionEventBuffer::new(),
         }
     }
 
     pub fn snapshot(&self) -> AudioRuntimeSnapshot {
-        self.inner.lock().expect("audio state poisoned").clone()
+        let mut snapshot = self.inner.lock().expect("audio state poisoned").clone();
+        snapshot.subtitle_overlay = self.subtitles.snapshot();
+        snapshot
     }
 
     pub(crate) fn lock_inbound_pipeline(&self) -> MutexGuard<'_, ()> {
-        self.inbound_pipeline_lock
-            .lock()
-            .expect("inbound pipeline lock poisoned")
+        self.session_registry.lock_inbound_pipeline()
     }
 
     pub(crate) fn push_echo_reference(
@@ -204,10 +108,7 @@ impl AudioStateStore {
     }
 
     fn note_first_translation_source(&self, cue_id: &str, source_text: &str) {
-        self.first_translation_latency
-            .lock()
-            .expect("first translation latency poisoned")
-            .record_source(cue_id, source_text);
+        self.metrics.note_source(cue_id, source_text);
     }
 
     fn note_first_translation_result(
@@ -216,28 +117,11 @@ impl AudioStateStore {
         cue_id: &str,
         translated_text: &str,
     ) {
-        let Some(metrics) = self
-            .first_translation_latency
-            .lock()
-            .expect("first translation latency poisoned")
-            .record_translation(cue_id, translated_text)
-        else {
-            return;
-        };
-
-        overlay.first_translation_average_ms = Some(metrics.average_ms);
-        overlay.first_translation_last_ms = Some(metrics.last_ms);
-        overlay.first_translation_sample_count = metrics.sample_count;
+        self.metrics.note_translation(overlay, cue_id, translated_text);
     }
 
     fn reset_first_translation_latency(&self, overlay: &mut SubtitleOverlayRuntimeSnapshot) {
-        self.first_translation_latency
-            .lock()
-            .expect("first translation latency poisoned")
-            .reset();
-        overlay.first_translation_average_ms = None;
-        overlay.first_translation_last_ms = None;
-        overlay.first_translation_sample_count = 0;
+        self.metrics.reset(overlay);
     }
 
     pub fn set_stt_connected(&self, connected: bool, buffer_size: u64) {
@@ -247,57 +131,31 @@ impl AudioStateStore {
     }
 
     pub fn store_stt_handle(&self, direction: &str, handle: SttHandle) -> Option<SttHandle> {
-        self.stt_handles
-            .lock()
-            .expect("stt handles poisoned")
-            .insert(direction.to_string(), handle)
+        self.session_registry.store_stt(direction, handle)
     }
 
     pub fn take_stt_handle(&self, direction: &str) -> Option<SttHandle> {
-        self.stt_handles
-            .lock()
-            .expect("stt handles poisoned")
-            .remove(direction)
+        self.session_registry.take_stt(direction)
     }
 
     pub fn store_omni_handle(&self, direction: &str, handle: OmniHandle) -> Option<OmniHandle> {
-        self.omni_handles
-            .lock()
-            .expect("omni handles poisoned")
-            .insert(direction.to_string(), handle)
+        self.omni_sessions.store_handle(direction, handle)
     }
 
     pub fn store_omni_sender(&self, direction: &str, sender: Sender<Vec<u8>>) {
-        self.omni_senders
-            .lock()
-            .expect("omni senders poisoned")
-            .insert(direction.to_string(), sender);
+        self.omni_sessions.store_sender(direction, sender);
     }
 
     pub fn has_omni_sender(&self, direction: &str) -> bool {
-        self.omni_senders
-            .lock()
-            .expect("omni senders poisoned")
-            .contains_key(direction)
+        self.omni_sessions.has_sender(direction)
     }
 
     pub fn take_omni_sender(&self, direction: &str) -> Option<Sender<Vec<u8>>> {
-        self.omni_senders
-            .lock()
-            .expect("omni senders poisoned")
-            .remove(direction)
+        self.omni_sessions.take_sender(direction)
     }
 
     pub fn take_omni_handle(&self, direction: &str) -> Option<OmniHandle> {
-        let _ = self.take_omni_sender(direction);
-        self.omni_sessions
-            .lock()
-            .expect("omni sessions poisoned")
-            .remove(direction);
-        self.omni_handles
-            .lock()
-            .expect("omni handles poisoned")
-            .remove(direction)
+        self.omni_sessions.take_handle(direction)
     }
 
     pub(crate) fn begin_omni_session(
@@ -306,43 +164,11 @@ impl AudioStateStore {
         model_id: &str,
         subtitle_translate_active: bool,
     ) -> u64 {
-        let mut generations = self
-            .omni_generations
-            .lock()
-            .expect("omni generations poisoned");
-        let generation = generations
-            .entry(direction.to_string())
-            .and_modify(|value| *value = value.saturating_add(1))
-            .or_insert(1);
-        let generation = *generation;
-        self.omni_sessions
-            .lock()
-            .expect("omni sessions poisoned")
-            .insert(
-                direction.to_string(),
-                OmniSessionMetadata {
-                    direction: direction.to_string(),
-                    session_generation: generation,
-                    model_id: model_id.to_string(),
-                    subtitle_translate_active,
-                    state: OmniSessionLifecycle::Starting,
-                    last_error: None,
-                },
-            );
-        generation
+        self.omni_sessions.begin(direction, model_id, subtitle_translate_active)
     }
 
     pub(crate) fn mark_omni_session_ready(&self, direction: &str, generation: u64) -> bool {
-        let mut sessions = self.omni_sessions.lock().expect("omni sessions poisoned");
-        let Some(session) = sessions.get_mut(direction) else {
-            return false;
-        };
-        if session.session_generation != generation {
-            return false;
-        }
-        session.state = OmniSessionLifecycle::Ready;
-        session.last_error = None;
-        true
+        self.omni_sessions.mark_ready(direction, generation)
     }
 
     pub(crate) fn mark_omni_session_failed(
@@ -351,16 +177,7 @@ impl AudioStateStore {
         generation: u64,
         error: impl Into<String>,
     ) -> bool {
-        let mut sessions = self.omni_sessions.lock().expect("omni sessions poisoned");
-        let Some(session) = sessions.get_mut(direction) else {
-            return false;
-        };
-        if session.session_generation != generation {
-            return false;
-        }
-        session.state = OmniSessionLifecycle::Failed;
-        session.last_error = Some(error.into());
-        true
+        self.omni_sessions.mark_failed(direction, generation, error.into())
     }
 
     pub(crate) fn mark_omni_session_stopping(
@@ -369,16 +186,7 @@ impl AudioStateStore {
         generation: u64,
         reason: impl Into<String>,
     ) -> bool {
-        let mut sessions = self.omni_sessions.lock().expect("omni sessions poisoned");
-        let Some(session) = sessions.get_mut(direction) else {
-            return false;
-        };
-        if session.session_generation != generation {
-            return false;
-        }
-        session.state = OmniSessionLifecycle::Stopping;
-        session.last_error = Some(reason.into());
-        true
+        self.omni_sessions.mark_stopping(direction, generation, reason.into())
     }
 
     pub(crate) fn clear_omni_session(
@@ -387,30 +195,8 @@ impl AudioStateStore {
         generation: u64,
         reason: impl Into<String>,
     ) -> bool {
-        let reason = reason.into();
-        let should_clear = {
-            let mut sessions = self.omni_sessions.lock().expect("omni sessions poisoned");
-            match sessions.get(direction) {
-                Some(session) if session.session_generation == generation => {
-                    sessions.remove(direction);
-                    true
-                }
-                _ => false,
-            }
-        };
-        if !should_clear {
-            return false;
-        }
-        let _ = reason;
-        self.omni_senders
-            .lock()
-            .expect("omni senders poisoned")
-            .remove(direction);
-        self.omni_handles
-            .lock()
-            .expect("omni handles poisoned")
-            .remove(direction);
-        true
+        let _ = reason.into();
+        self.omni_sessions.clear(direction, generation)
     }
 
     pub(crate) fn matching_ready_omni_session(
@@ -419,16 +205,7 @@ impl AudioStateStore {
         model_id: &str,
         subtitle_translate_active: bool,
     ) -> Option<u64> {
-        self.omni_sessions
-            .lock()
-            .expect("omni sessions poisoned")
-            .get(direction)
-            .filter(|session| {
-                session.state == OmniSessionLifecycle::Ready
-                    && session.model_id == model_id
-                    && session.subtitle_translate_active == subtitle_translate_active
-            })
-            .map(|session| session.session_generation)
+        self.omni_sessions.matching_ready(direction, model_id, subtitle_translate_active)
     }
 
     pub(crate) fn take_matching_omni_sender(
@@ -437,27 +214,22 @@ impl AudioStateStore {
         model_id: &str,
         subtitle_translate_active: bool,
     ) -> Option<Sender<Vec<u8>>> {
-        self.matching_ready_omni_session(direction, model_id, subtitle_translate_active)?;
-        self.omni_senders
-            .lock()
-            .expect("omni senders poisoned")
-            .remove(direction)
+        self.omni_sessions.take_matching_sender(direction, model_id, subtitle_translate_active)
     }
 
     pub(crate) fn omni_session_metadata(
         &self,
         direction: &str,
     ) -> Option<OmniSessionMetadata> {
-        self.omni_sessions
-            .lock()
-            .expect("omni sessions poisoned")
-            .get(direction)
-            .cloned()
+        self.omni_sessions.metadata(direction)
+    }
+
+    pub(crate) fn is_current_omni_session(&self, direction: &str, generation: u64) -> bool {
+        self.omni_sessions.is_current(direction, generation)
     }
 
     pub fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
-        let mut state = self.inner.lock().expect("audio state poisoned");
-        let overlay = &mut state.subtitle_overlay;
+        self.subtitles.update(|overlay| {
         let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
         if exists {
             for cue in overlay.recent_cues.iter_mut() {
@@ -502,12 +274,12 @@ impl AudioStateStore {
             overlay.recent_cues.insert(0, cue);
             trim_recent_subtitle_cues(overlay);
         }
+        });
         self.note_first_translation_source(cue_id, source_text);
     }
 
     pub fn commit_stt_cue(&self, cue_id: &str, source_text: &str, direction: &str) {
-        let mut state = self.inner.lock().expect("audio state poisoned");
-        let overlay = &mut state.subtitle_overlay;
+        self.subtitles.update(|overlay| {
         let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
         if exists {
             for cue in overlay.recent_cues.iter_mut() {
@@ -542,7 +314,9 @@ impl AudioStateStore {
             overlay.recent_cues.insert(0, cue);
             trim_recent_subtitle_cues(overlay);
         }
+        });
         self.note_first_translation_source(cue_id, source_text);
+        let mut state = self.inner.lock().expect("audio state poisoned");
         let inbound = &mut state.inbound;
         inbound.segment_count += 1;
     }
@@ -610,105 +384,41 @@ impl AudioStateStore {
     pub fn push_subtitle_cue(&self, cue: SubtitleCueRuntime) {
         let cue_id = cue.cue_id.clone();
         let source_text = cue.source_text.clone();
-        let mut state = self.inner.lock().expect("audio state poisoned");
-        let overlay = &mut state.subtitle_overlay;
-        overlay.active_cue = Some(cue.clone());
-        overlay.recent_cues.insert(0, cue);
-        trim_recent_subtitle_cues(overlay);
+        self.subtitles.update(|overlay| {
+            overlay.active_cue = Some(cue.clone());
+            overlay.recent_cues.insert(0, cue);
+            trim_recent_subtitle_cues(overlay);
+        });
         self.note_first_translation_source(&cue_id, &source_text);
     }
 
     pub fn clear_subtitle_cues(&self) {
+        self.subtitles.update(|overlay| {
+            *overlay = SubtitleOverlayRuntimeSnapshot::empty();
+            self.reset_first_translation_latency(overlay);
+        });
+        self.audio_cache.clear();
         let mut state = self.inner.lock().expect("audio state poisoned");
-        state.subtitle_overlay = SubtitleOverlayRuntimeSnapshot::empty();
-        self.reset_first_translation_latency(&mut state.subtitle_overlay);
-        self.segment_audio
-            .lock()
-            .expect("segment audio poisoned")
-            .clear();
-        self.segment_audio_order
-            .lock()
-            .expect("segment audio order poisoned")
-            .clear();
-        self.tts_audio.lock().expect("tts audio poisoned").clear();
-        self.tts_audio_order
-            .lock()
-            .expect("tts audio order poisoned")
-            .clear();
         state.speech = SpeechRuntimeSnapshot::preview();
     }
 
     pub fn cache_segment_audio(&self, audio: CapturedSegmentAudio) {
-        const MAX_SEGMENT_AUDIO_CACHE: usize = 8;
-
-        let cue_id = audio.cue_id.clone();
-        self.segment_audio
-            .lock()
-            .expect("segment audio poisoned")
-            .insert(cue_id.clone(), audio);
-
-        let mut order = self
-            .segment_audio_order
-            .lock()
-            .expect("segment audio order poisoned");
-        order.retain(|item| item != &cue_id);
-        order.push_front(cue_id);
-
-        while order.len() > MAX_SEGMENT_AUDIO_CACHE {
-            if let Some(expired) = order.pop_back() {
-                self.segment_audio
-                    .lock()
-                    .expect("segment audio poisoned")
-                    .remove(&expired);
-            }
-        }
+        self.audio_cache.cache_segment(audio);
     }
 
     pub fn segment_audio(&self, cue_id: &str) -> Option<CapturedSegmentAudio> {
-        self.segment_audio
-            .lock()
-            .expect("segment audio poisoned")
-            .get(cue_id)
-            .cloned()
+        self.audio_cache.segment(cue_id)
     }
 
     pub fn cache_tts_audio(&self, audio: CachedTtsAudio) {
-        const MAX_TTS_AUDIO_CACHE: usize = 8;
-
-        let cache_key = audio.cache_key.clone();
-        self.tts_audio
-            .lock()
-            .expect("tts audio poisoned")
-            .insert(cache_key.clone(), audio);
-
-        let mut order = self
-            .tts_audio_order
-            .lock()
-            .expect("tts audio order poisoned");
-        order.retain(|item| item != &cache_key);
-        order.push_front(cache_key);
-
-        while order.len() > MAX_TTS_AUDIO_CACHE {
-            if let Some(expired) = order.pop_back() {
-                self.tts_audio
-                    .lock()
-                    .expect("tts audio poisoned")
-                    .remove(&expired);
-            }
-        }
-
-        let cache_entries = self.tts_audio.lock().expect("tts audio poisoned").len();
+        let cache_entries = self.audio_cache.cache_tts(audio);
         self.update_speech(|speech| {
             speech.cache_entries = cache_entries;
         });
     }
 
     pub fn tts_audio(&self, cache_key: &str) -> Option<CachedTtsAudio> {
-        self.tts_audio
-            .lock()
-            .expect("tts audio poisoned")
-            .get(cache_key)
-            .cloned()
+        self.audio_cache.tts(cache_key)
     }
 
     pub fn update_speech<F>(&self, mutate: F)
@@ -781,8 +491,7 @@ impl AudioStateStore {
         committed: bool,
     ) {
         let translated_for_metrics = translated_text.clone();
-        let mut state = self.inner.lock().expect("audio state poisoned");
-        let overlay = &mut state.subtitle_overlay;
+        self.subtitles.update(|overlay| {
         for cue in overlay.recent_cues.iter_mut() {
             if cue.cue_id == cue_id {
                 cue.translated_text = translated_text.clone();
@@ -802,7 +511,8 @@ impl AudioStateStore {
                 }
             }
         }
-        self.note_first_translation_result(overlay, cue_id, &translated_for_metrics);
+            self.note_first_translation_result(overlay, cue_id, &translated_for_metrics);
+        });
     }
 
     pub fn update_subtitle_cue_display_segments(
@@ -814,8 +524,7 @@ impl AudioStateStore {
         committed: bool,
     ) {
         let translated_for_metrics = translated_text.clone();
-        let mut state = self.inner.lock().expect("audio state poisoned");
-        let overlay = &mut state.subtitle_overlay;
+        self.subtitles.update(|overlay| {
         for cue in overlay.recent_cues.iter_mut() {
             if cue.cue_id == cue_id {
                 cue.display_source_text = display_source_text.clone();
@@ -839,12 +548,12 @@ impl AudioStateStore {
                 }
             }
         }
-        self.note_first_translation_result(overlay, cue_id, &translated_for_metrics);
+            self.note_first_translation_result(overlay, cue_id, &translated_for_metrics);
+        });
     }
 
     pub fn commit_subtitle_cue(&self, cue_id: &str) {
-        let mut state = self.inner.lock().expect("audio state poisoned");
-        let overlay = &mut state.subtitle_overlay;
+        self.subtitles.update(|overlay| {
         for cue in overlay.recent_cues.iter_mut() {
             if cue.cue_id == cue_id {
                 cue.committed = true;
@@ -858,26 +567,22 @@ impl AudioStateStore {
                 active.ended_at = ms_marker(unix_ms());
             }
         }
+        });
     }
 
     pub fn mark_session_started(&self, timestamp: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
         state.session_started_at = Some(timestamp.to_string());
-        self.reset_first_translation_latency(&mut state.subtitle_overlay);
+        drop(state);
+        self.subtitles.update(|overlay| self.reset_first_translation_latency(overlay));
     }
 
     pub fn insert_session(&self, direction: &str, handle: AudioRouteHandle) {
-        self.sessions
-            .lock()
-            .expect("audio sessions poisoned")
-            .insert(direction.to_string(), handle);
+        self.session_registry.insert(direction, handle);
     }
 
     pub fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {
-        self.sessions
-            .lock()
-            .expect("audio sessions poisoned")
-            .remove(direction)
+        self.session_registry.take(direction)
     }
 }
 

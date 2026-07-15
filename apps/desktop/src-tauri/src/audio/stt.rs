@@ -22,7 +22,10 @@ use crate::diagnostics::events::append_diagnostics_log;
 
 use crate::provider::contracts::ProviderDraftInput;
 
-use crate::provider::gateway;
+use crate::provider::gateway_parts::{
+    auth::apply_ws_auth,
+    transport::to_websocket_url,
+};
 
 use super::contracts::SubtitleCueRuntime;
 
@@ -105,7 +108,7 @@ fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
 pub struct SttHandle {
     pub stop_tx: mpsc::Sender<()>,
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "join handle is retained for supervised shutdown on supported runners")]
     pub join_handle: JoinHandle<()>,
 }
 
@@ -194,6 +197,80 @@ pub fn start_stt(
     ))
 }
 
+fn handle_stt_text_event(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    payload: &str,
+    current_cue_id: &mut Option<String>,
+    pending_source_text: &mut String,
+) {
+    let Ok(evt) = serde_json::from_str::<Value>(payload) else {
+        return;
+    };
+    match evt["type"].as_str() {
+        Some("input_audio_buffer.speech_started") => {
+            *current_cue_id = Some(format!("stt-cue-{}", unix_ms()));
+            pending_source_text.clear();
+            let _ = append_diagnostics_log(
+                app, "stt", "debug", "检测到语音开始", None, None, None,
+            );
+        }
+        Some("conversation.item.input_audio_transcription.text") => {
+            let text = evt["text"].as_str().unwrap_or("");
+            let stash = evt["stash"].as_str().unwrap_or("");
+            *pending_source_text = format!("{}{}", text, stash);
+            if let Some(id) = current_cue_id.as_ref() {
+                store.update_or_push_stt_cue(id, pending_source_text, false);
+            }
+            store.live_session_events.push_asr_delta(
+                "conversation.item.input_audio_transcription.text",
+                stash,
+                pending_source_text,
+            );
+        }
+        Some("conversation.item.input_audio_transcription.completed") => {
+            let transcript = evt["transcript"].as_str().unwrap_or("");
+            let cue_id = current_cue_id
+                .take()
+                .unwrap_or_else(|| format!("stt-cue-{}", unix_ms()));
+            store.commit_stt_cue(&cue_id, transcript, "inbound");
+            store.live_session_events.push_asr_delta(
+                "conversation.item.input_audio_transcription.completed",
+                "",
+                transcript,
+            );
+            pending_source_text.clear();
+            let _ = append_diagnostics_log(
+                app,
+                "stt",
+                "debug",
+                format!("语音识别完成: {transcript}"),
+                None,
+                None,
+                None,
+            );
+        }
+        Some("input_audio_buffer.speech_stopped") => {
+            let _ = append_diagnostics_log(
+                app, "stt", "debug", "检测到语音结束", None, None, None,
+            );
+        }
+        Some("error") => {
+            let error_msg = evt["error"]["message"].as_str().unwrap_or("未知 ASR 错误");
+            let _ = append_diagnostics_log(
+                app,
+                "stt",
+                "error",
+                format!("ASR 服务错误: {error_msg}"),
+                None,
+                None,
+                None,
+            );
+        }
+        _ => {}
+    }
+}
+
 fn run_stt_worker(
     app: AppHandle,
 
@@ -205,7 +282,7 @@ fn run_stt_worker(
 
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
-    let ws_url = gateway::to_websocket_url(&provider.base_url, ASR_MODEL)
+    let ws_url = to_websocket_url(&provider.base_url, ASR_MODEL)
         .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
 
     let mut request = ws_url
@@ -213,7 +290,7 @@ fn run_stt_worker(
         .into_client_request()
         .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
 
-    gateway::apply_ws_auth(&provider, request.headers_mut())
+    apply_ws_auth(&provider, request.headers_mut())
         .map_err(|error| format!("无法应用认证: {}", error.message))?;
 
     let (mut socket, _) =
@@ -372,102 +449,13 @@ fn run_stt_worker(
 
         match socket.read() {
             Ok(msg) => match msg {
-                Message::Text(text) => {
-                    if let Ok(evt) = serde_json::from_str::<Value>(&text) {
-                        match evt["type"].as_str() {
-                            Some("input_audio_buffer.speech_started") => {
-                                current_cue_id = Some(format!("stt-cue-{}", unix_ms()));
-
-                                pending_source_text.clear();
-
-                                let _ = append_diagnostics_log(
-                                    &app,
-                                    "stt",
-                                    "debug",
-                                    "检测到语音开始",
-                                    None,
-                                    None,
-                                    None,
-                                );
-                            }
-
-                            Some("conversation.item.input_audio_transcription.text") => {
-                                let text = evt["text"].as_str().unwrap_or("");
-
-                                let stash = evt["stash"].as_str().unwrap_or("");
-
-                                pending_source_text = format!("{}{}", text, stash);
-
-                                if let Some(ref id) = current_cue_id {
-                                    store.update_or_push_stt_cue(id, &pending_source_text, false);
-                                }
-
-                                store.live_session_events.push_asr_delta(
-                                    "conversation.item.input_audio_transcription.text",
-                                    stash,
-                                    &pending_source_text,
-                                );
-                            }
-
-                            Some("conversation.item.input_audio_transcription.completed") => {
-                                let transcript = evt["transcript"].as_str().unwrap_or("");
-
-                                let cue_id = current_cue_id
-                                    .take()
-                                    .unwrap_or_else(|| format!("stt-cue-{}", unix_ms()));
-
-                                store.commit_stt_cue(&cue_id, transcript, "inbound");
-
-                                store.live_session_events.push_asr_delta(
-                                    "conversation.item.input_audio_transcription.completed",
-                                    "",
-                                    transcript,
-                                );
-
-                                pending_source_text.clear();
-
-                                let _ = append_diagnostics_log(
-                                    &app,
-                                    "stt",
-                                    "debug",
-                                    format!("语音识别完成: {transcript}"),
-                                    None,
-                                    None,
-                                    None,
-                                );
-                            }
-
-                            Some("input_audio_buffer.speech_stopped") => {
-                                let _ = append_diagnostics_log(
-                                    &app,
-                                    "stt",
-                                    "debug",
-                                    "检测到语音结束",
-                                    None,
-                                    None,
-                                    None,
-                                );
-                            }
-
-                            Some("error") => {
-                                let error_msg =
-                                    evt["error"]["message"].as_str().unwrap_or("未知 ASR 错误");
-
-                                let _ = append_diagnostics_log(
-                                    &app,
-                                    "stt",
-                                    "error",
-                                    format!("ASR 服务错误: {error_msg}"),
-                                    None,
-                                    None,
-                                    None,
-                                );
-                            }
-
-                            _ => {}
-                        }
-                    }
-                }
+                Message::Text(text) => handle_stt_text_event(
+                    &app,
+                    store,
+                    &text,
+                    &mut current_cue_id,
+                    &mut pending_source_text,
+                ),
 
                 Message::Close(_) => {
                     let _ = append_diagnostics_log(
@@ -555,7 +543,7 @@ fn reconnect_socket(
     provider: &ProviderDraftInput,
 ) -> Result<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>, String>
 {
-    let ws_url = gateway::to_websocket_url(&provider.base_url, ASR_MODEL)
+    let ws_url = to_websocket_url(&provider.base_url, ASR_MODEL)
         .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
 
     let mut request = ws_url
@@ -563,7 +551,7 @@ fn reconnect_socket(
         .into_client_request()
         .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
 
-    gateway::apply_ws_auth(provider, request.headers_mut())
+    apply_ws_auth(provider, request.headers_mut())
         .map_err(|error| format!("无法应用认证: {}", error.message))?;
 
     let (mut socket, _) =

@@ -49,7 +49,7 @@ struct DiagnosticCategoryState {
     last_entry_at: Option<String>,
 }
 
-#[allow(dead_code)]
+#[allow(dead_code, reason = "serialized diagnostics root metadata is retained for bundle compatibility")]
 struct DiagnosticsState {
     root_dir: String,
     logs_dir: String,
@@ -115,7 +115,7 @@ impl DiagnosticsStateStore {
         }
     }
 
-    #[allow(dead_code)]
+    #[allow(dead_code, reason = "diagnostics bundle tooling reads the root path in non-desktop builds")]
     pub fn root_dir(&self) -> String {
         self.inner
             .lock()

@@ -67,7 +67,7 @@ const manifest = {
     layoutOutput: `artifacts/installer/${rootPackage.version}`,
     nativeBridgeExecutable: 'bridge-service-native/omni-bridge-service.exe',
   },
-  docs: ['README.md', 'README.en.md', ...releaseDocs],
+  docs: ['README.md', path.join('i18n', 'README_en.md'), ...releaseDocs],
 };
 
 const outputDir = path.join(rootDir, 'artifacts', 'release', rootPackage.version);

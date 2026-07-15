@@ -58,7 +58,11 @@ describe('audio runtime', () => {
 
   it('maps every desktop action to its native invoke command', async () => {
     mocks.isTauriRuntime.mockReturnValue(true);
-    mocks.invoke.mockImplementation(async (command: string) => ({ command }));
+    mocks.invoke.mockImplementation(async (command: string) =>
+      command === 'session_v2'
+        ? { data: { status: 'ok' }, warnings: [] }
+        : { command },
+    );
     const config = structuredClone(appConfigDraftMock);
 
     await refreshAudioDevicesRuntime();
@@ -73,19 +77,25 @@ describe('audio runtime', () => {
     await toggleSubtitleOverlayWindow();
     await showSubtitleOverlayWindow();
 
-    expect(mocks.invoke.mock.calls).toEqual([
-      ['refresh_audio_devices', undefined],
-      ['start_audio_route', { direction: 'inbound', config }],
-      ['preconnect_omni_realtime', { config }],
-      ['stop_audio_route', { direction: 'outbound' }],
-      ['clear_subtitle_cues', undefined],
-      ['start_speech_dispatch', { config }],
-      ['stop_speech_dispatch', undefined],
-      ['start_translate_worker', { config }],
-      ['stop_translate_worker', undefined],
+    expect(mocks.invoke.mock.calls.map(([command, args]) => [
+      command,
+      (args as { command?: { action?: string } } | undefined)?.command?.action,
+    ])).toEqual([
+      ['session_v2', 'refreshDevices'],
+      ['session_v2', 'startRoute'],
+      ['session_v2', 'preconnect'],
+      ['session_v2', 'stopRoute'],
+      ['session_v2', 'clearCues'],
+      ['session_v2', 'startSpeech'],
+      ['session_v2', 'stopSpeech'],
+      ['session_v2', 'startTranslation'],
+      ['session_v2', 'stopTranslation'],
       ['toggle_subtitle_overlay', undefined],
       ['show_subtitle_overlay', undefined],
     ]);
+    expect(mocks.invoke).toHaveBeenCalledWith('session_v2', {
+      command: { action: 'startRoute', direction: 'inbound', config },
+    });
   });
 
   it('rejects with a timeout error when invoke does not respond in time', async () => {
@@ -106,13 +116,40 @@ describe('audio runtime', () => {
     mocks.isTauriRuntime.mockReturnValue(true);
     const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
 
-    mocks.invoke.mockImplementation(async () => ({ status: 'ok' }));
+    mocks.invoke.mockImplementation(async () => ({ data: { status: 'ok' }, warnings: [] }));
 
     const result = await startAudioRouteRuntime('inbound', structuredClone(appConfigDraftMock));
     expect(result).toEqual({ status: 'ok' });
     expect(clearTimeoutSpy).toHaveBeenCalled();
 
     clearTimeoutSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('stops and refreshes native state when a route start succeeds after the frontend timeout', async () => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    let finishStart!: (value: unknown) => void;
+    const lateStart = new Promise((resolve) => { finishStart = resolve; });
+    mocks.invoke.mockImplementation((command: string, args?: { command?: { action?: string } }) => {
+      const action = args?.command?.action;
+      if (command === 'session_v2' && action === 'startRoute') return lateStart;
+      if (command === 'session_v2') return Promise.resolve({ data: { status: action }, warnings: [] });
+      return Promise.resolve({});
+    });
+
+    const startPromise = startAudioRouteRuntime('inbound', structuredClone(appConfigDraftMock));
+    const rejection = expect(startPromise).rejects.toThrow(/start audio capture|启动音频采集/);
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejection;
+
+    finishStart({ data: { status: 'late-started' }, warnings: [] });
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    expect(mocks.invoke.mock.calls.map(([, args]) => args?.command?.action)).toEqual([
+      'startRoute', 'stopRoute', 'snapshot',
+    ]);
     vi.useRealTimers();
   });
 });

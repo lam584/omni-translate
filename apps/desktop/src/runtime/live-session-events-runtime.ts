@@ -39,7 +39,7 @@ export type LiveSessionEvents = {
   pipelineMilestones: PipelineMilestones;
 };
 
-const EMPTY_PIPELINE_MILESTONES: PipelineMilestones = {
+export const EMPTY_PIPELINE_MILESTONES: PipelineMilestones = {
   preconnectStartedMs: null,
   sessionReadyMs: null,
   routeStartedMs: null,
@@ -69,5 +69,13 @@ export async function getLiveSessionEventsRuntime(): Promise<LiveSessionEvents> 
   }
 
   const json = await invoke<string>('get_live_session_events');
-  return JSON.parse(json) as LiveSessionEvents;
+  const parsed = JSON.parse(json) as Partial<LiveSessionEvents>;
+  return {
+    ...EMPTY_LIVE_SESSION_EVENTS,
+    ...parsed,
+    pipelineMilestones: {
+      ...EMPTY_PIPELINE_MILESTONES,
+      ...parsed.pipelineMilestones,
+    },
+  };
 }

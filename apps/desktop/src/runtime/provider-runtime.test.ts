@@ -373,7 +373,7 @@ describe('provider-runtime fetchProviderModels', () => {
 
   it('invokes the tauri model catalog command when runtime is available', async () => {
     enableTauriRuntime();
-    invokeMock.mockResolvedValue({
+    invokeMock.mockResolvedValue({ data: {
       providerId: appConfigDraftMock.providers[0].providerId,
       endpoint: 'https://api.openai.com/v1/models',
       fetchedAt: '2026-05-17T02:00:00.000Z',
@@ -387,12 +387,12 @@ describe('provider-runtime fetchProviderModels', () => {
         },
       ],
       error: null,
-    });
+    } });
 
     const result = await fetchProviderModels(appConfigDraftMock.providers[0]);
 
     expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock.mock.calls[0]?.[0]).toBe('fetch_provider_models');
+    expect(invokeMock.mock.calls[0]).toEqual(['provider_v2', { command: { action: 'fetchModels', provider: appConfigDraftMock.providers[0] } }]);
     expect(result.models[0]?.id).toBe('gpt-4.1');
   });
 });
@@ -459,8 +459,8 @@ describe('provider-runtime native command wrappers', () => {
   it('invokes native probe and smoke commands with the active provider contract', async () => {
     const provider = structuredClone(appConfigDraftMock.providers[0]);
     invokeMock
-      .mockResolvedValueOnce({ id: 'probe-native', providerId: provider.providerId, verdict: 'available' })
-      .mockResolvedValueOnce({ requestId: 'smoke-native', providerId: provider.providerId, status: 'completed' });
+      .mockResolvedValueOnce({ data: { id: 'probe-native', providerId: provider.providerId, verdict: 'available' } })
+      .mockResolvedValueOnce({ data: { requestId: 'smoke-native', providerId: provider.providerId, status: 'completed' } });
 
     await expect(runProviderProbe(provider)).resolves.toMatchObject({ id: 'probe-native', verdict: 'available' });
     await expect(runProviderSmoke(provider, 'hello', 'en-US', 'zh-CN')).resolves.toMatchObject({
@@ -468,14 +468,17 @@ describe('provider-runtime native command wrappers', () => {
       status: 'completed',
     });
     expect(invokeMock.mock.calls).toEqual([
-      ['probe_provider', { provider }],
+      ['provider_v2', { command: { action: 'probe', provider } }],
       [
-        'execute_provider_smoke',
+        'provider_v2',
         {
-          provider,
-          sourceText: 'hello',
-          sourceLanguage: 'en-US',
-          targetLanguage: 'zh-CN',
+          command: {
+            action: 'smoke',
+            provider,
+            sourceText: 'hello',
+            sourceLanguage: 'en-US',
+            targetLanguage: 'zh-CN',
+          },
         },
       ],
     ]);

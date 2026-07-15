@@ -1,4 +1,6 @@
-import React from 'react';
+import React, { act } from 'react';
+import { createRoot } from 'react-dom/client';
+import { RouterProvider } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
 import { router } from './router';
 
@@ -36,5 +38,30 @@ describe('router', () => {
       'overlay-style',
       'providers',
     ]);
+  });
+
+  it('loads every lazy route and runs session startup composition', async () => {
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(React.createElement(RouterProvider, { router }));
+    });
+
+    for (const route of [
+      '/session',
+      '/audio-routing',
+      '/glossary',
+      '/diagnostics',
+      '/settings',
+      '/settings/overlay-style',
+      '/settings/providers',
+    ]) {
+      await act(async () => {
+        await router.navigate(route);
+        await Promise.resolve();
+      });
+    }
+
+    await act(async () => root.unmount());
   });
 });

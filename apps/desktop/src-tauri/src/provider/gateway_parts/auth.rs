@@ -1,8 +1,34 @@
+use std::sync::Arc;
+
 use reqwest::header::{HeaderMap, HeaderName, HeaderValue, CONTENT_TYPE};
 
 use crate::storage::credential::{CredentialVault, KeyringCredentialVault};
 
 use super::super::contracts::{ProviderAuthRefInput, ProviderDraftInput, ProviderRuntimeError};
+
+/// Injectable credential lookup boundary for protocol tests and alternate vaults.
+#[derive(Clone)]
+pub(crate) struct ProviderCredentialResolver {
+    vault: Arc<dyn CredentialVault>,
+}
+
+impl ProviderCredentialResolver {
+    pub(crate) fn new(vault: Arc<dyn CredentialVault>) -> Self {
+        Self { vault }
+    }
+
+    pub(crate) fn read_credential(&self, reference: &str) -> Result<Option<String>, ProviderRuntimeError> {
+        self.vault
+            .read_secret(reference)
+            .map_err(|error| ProviderRuntimeError::new("auth.invalid", error))
+    }
+}
+
+impl Default for ProviderCredentialResolver {
+    fn default() -> Self {
+        Self::new(Arc::new(KeyringCredentialVault::new()))
+    }
+}
 
 pub(super) fn build_reqwest_headers(
     provider: &ProviderDraftInput,
@@ -120,15 +146,15 @@ pub(super) fn resolve_secret(
         "none" => Ok(None),
         _ => match auth_ref.kind.as_str() {
             "credential-ref" => {
-                let vault = KeyringCredentialVault::new();
-                match vault.read_secret(&auth_ref.reference) {
+                let vault = ProviderCredentialResolver::default();
+                match vault.read_credential(&auth_ref.reference) {
                     Ok(Some(secret)) => Ok(Some(secret)),
                     Ok(None) => Err(ProviderRuntimeError::new(
                         "auth.invalid",
                         "Credential Manager 中不存在对应密钥引用。",
                     )
                     .with_suggestion("请先在 Providers 页面保存 API Key。")),
-                    Err(error) => Err(ProviderRuntimeError::new("auth.invalid", error)),
+                    Err(error) => Err(ProviderRuntimeError::new("auth.invalid", error.message)),
                 }
             }
             "env-ref" => std::env::var(&auth_ref.reference).map(Some).map_err(|_| {
@@ -140,5 +166,52 @@ pub(super) fn resolve_secret(
                 "不支持的认证引用类型。",
             )),
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use crate::storage::credential::CredentialVault;
+
+    use super::ProviderCredentialResolver;
+
+    struct MemoryVault {
+        result: Result<Option<String>, String>,
+    }
+
+    impl CredentialVault for MemoryVault {
+        fn upsert_secret(&self, _: &str, _: &str) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn has_secret(&self, _: &str) -> Result<bool, String> {
+            Ok(self.result.as_ref().ok().and_then(|value| value.as_ref()).is_some())
+        }
+
+        fn read_secret(&self, _: &str) -> Result<Option<String>, String> {
+            self.result.clone()
+        }
+    }
+
+    #[test]
+    fn injected_vault_supplies_provider_secret() {
+        let resolver = ProviderCredentialResolver::new(Arc::new(MemoryVault {
+            result: Ok(Some("test-secret".to_string())),
+        }));
+
+        assert_eq!(resolver.read_credential("provider-key").unwrap().as_deref(), Some("test-secret"));
+    }
+
+    #[test]
+    fn injected_vault_failure_maps_to_provider_auth_error() {
+        let resolver = ProviderCredentialResolver::new(Arc::new(MemoryVault {
+            result: Err("vault unavailable".to_string()),
+        }));
+
+        let error = resolver.read_credential("provider-key").unwrap_err();
+        assert_eq!(error.code, "auth.invalid");
+        assert_eq!(error.message, "vault unavailable");
     }
 }

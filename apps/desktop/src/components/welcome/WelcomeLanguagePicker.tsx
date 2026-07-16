@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../icons/AppIcon';
 import DriverManagementCard from '../driver/DriverManagementCard';
@@ -71,6 +71,9 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
   const [revealing, setRevealing] = useState<boolean>(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const selectedLanguageRef = useRef<HTMLButtonElement>(null);
+  const providerSelectRef = useRef<HTMLSelectElement>(null);
+  const driverHeadingRef = useRef<HTMLHeadingElement>(null);
   const effectiveBridgeStatus = resolveRuntimeBridgeStatus(runtimeSnapshot);
 
   const currentTemplate = templates.find((item) => item.id === templateId) ?? defaultProviderTemplate;
@@ -87,6 +90,15 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
       : providerRuntimePreparing
         ? t('welcome.desktopRuntimePreparing')
         : null;
+
+  useEffect(() => {
+    const target = isLanguageStep
+      ? selectedLanguageRef.current
+      : isDriverStep
+        ? driverHeadingRef.current
+        : providerSelectRef.current;
+    target?.focus();
+  }, [isDriverStep, isLanguageStep, step]);
 
   useEffect(() => {
     queueMicrotask(() => setApiBaseUrl(currentTemplate.defaultDraft.baseUrl));
@@ -177,12 +189,13 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
     }
   };
 
-  const handleSaveAndFinish = async () => {
+  const handleSaveAndContinue = async () => {
     const trimmedApiKey = apiKey.trim();
     const trimmedBaseUrl = apiBaseUrl.trim() || currentTemplate.defaultDraft.baseUrl;
     if (!trimmedApiKey) {
-      // Empty API key: treat as "skip this step".
-      finishWizard();
+      // Empty API key skips only provider setup. Driver readiness is still a
+      // required first-run check and must remain visible to new users.
+      setStep('driver');
       return;
     }
 
@@ -269,6 +282,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
                 return (
                   <li key={item.code}>
                     <button
+                      ref={isActive ? selectedLanguageRef : undefined}
                       type="button"
                       role="option"
                       aria-selected={isActive}
@@ -292,6 +306,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
               <label className="welcome-provider-field">
                 <span>{t('welcome.providerLabel')}</span>
                 <select
+                  ref={providerSelectRef}
                   value={templateId}
                   onChange={(event) => {
                     setTemplateId(event.target.value);
@@ -355,22 +370,22 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
                 </div>
               </label>
 
-              {savedMessage ? <p className="welcome-provider-feedback">{savedMessage}</p> : null}
-              {errorMessage ? <p className="welcome-provider-error">{errorMessage}</p> : null}
-              {providerRuntimeStatusMessage ? <p className="welcome-step-description">{providerRuntimeStatusMessage}</p> : null}
+              {savedMessage ? <p className="welcome-provider-feedback" role="status">{savedMessage}</p> : null}
+              {errorMessage ? <p className="welcome-provider-error" role="alert">{errorMessage}</p> : null}
+              {providerRuntimeStatusMessage ? <p className="welcome-step-description" role="status">{providerRuntimeStatusMessage}</p> : null}
               <p className="welcome-step-description">{t('welcome.providerHint')}</p>
             </div>
           ) : (
             <div className="welcome-provider-form">
-              <h2 className="welcome-step-title">{t('welcome.stepDriverTitle')}</h2>
+              <h2 className="welcome-step-title" ref={driverHeadingRef} tabIndex={-1}>{t('welcome.stepDriverTitle')}</h2>
               <p className="welcome-step-description">
                 {t('welcome.stepDriverDescription')}
               </p>
 
               <DriverManagementCard variant="onboarding" />
 
-              {savedMessage ? <p className="welcome-provider-feedback">{savedMessage}</p> : null}
-              {errorMessage ? <p className="welcome-provider-error">{errorMessage}</p> : null}
+              {savedMessage ? <p className="welcome-provider-feedback" role="status">{savedMessage}</p> : null}
+              {errorMessage ? <p className="welcome-provider-error" role="alert">{errorMessage}</p> : null}
             </div>
           )}
         </div>
@@ -412,11 +427,11 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
                   type="button"
                   className="welcome-language-confirm"
                   onClick={() => {
-                    void handleSaveAndFinish();
+                    void handleSaveAndContinue();
                   }}
                   disabled={providerSaveDisabled}
                 >
-                  {saving ? t('common.loading') : t('common.finish')}
+                  {saving ? t('common.loading') : t('common.next')}
                 </button>
               </>
             )}

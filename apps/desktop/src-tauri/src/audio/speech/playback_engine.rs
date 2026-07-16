@@ -29,7 +29,8 @@ impl<'a> SpeechPlaybackEngine<'a> {
         segment_mode: bool,
         segment_index: usize,
     ) -> Result<SpeechPlaybackResult, String> {
-        let output_route = SpeechOutputRoutePlan::new(
+        let output_route = SpeechOutputRoutePlan::for_route(
+            &cue.route_direction,
             self.config.local_playback_enabled,
             self.config.virtual_mic_output_enabled,
         );

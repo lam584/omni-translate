@@ -32,9 +32,11 @@ describe('subtitle overlay page helpers', () => {
       { sourceText: 'source', translatedText: '', pending: true },
       { sourceText: '', translatedText: '译文', pending: false },
     ];
+    cue.displaySourceText = 'source';
+    cue.sourceText = 'source';
+    cue.translatedText = '译文';
     expect(subtitleOverlayPageHelpers.getCueDisplaySegments(cue)).toEqual([
-      { id: `${cue.cueId}-segment-0`, sourceText: 'source', translatedText: '', pending: true },
-      { id: `${cue.cueId}-segment-1`, sourceText: '', translatedText: '译文', pending: false },
+      { id: `${cue.cueId}-segment-0`, sourceText: 'source', translatedText: '译文', pending: true },
     ]);
 
     cue.displaySegments = [];
@@ -45,6 +47,26 @@ describe('subtitle overlay page helpers', () => {
       sourceText: 'raw source',
       pending: true,
     });
+  });
+
+  it('wraps accumulating explicit segments into paired bilingual rows without repetition', () => {
+    const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    cue.displaySegments = [{
+      sourceText: 'This is a one billion dollar rocket ship that will one day take you all the way to Mars and into your brand new home.',
+      translatedText: '这是一艘价值十亿美元的火箭飞船，未来终有一天会带你一路前往火星并住进崭新的家园。',
+      pending: true,
+    }];
+    cue.displaySourceText = cue.displaySegments[0].sourceText;
+    cue.sourceText = cue.displaySegments[0].sourceText;
+    cue.translatedText = cue.displaySegments[0].translatedText;
+
+    const segments = subtitleOverlayPageHelpers.getCueDisplaySegments(cue);
+
+    expect(segments.length).toBeGreaterThan(1);
+    expect(segments.every((segment) => segment.sourceText.length > 0)).toBe(true);
+    expect(segments.filter((segment) => segment.translatedText).every((segment) => segment.sourceText.length > 0)).toBe(true);
+    expect(segments.map((segment) => segment.sourceText).join(' ').replace(/\s+/gu, ' ').trim()).toBe(cue.displaySegments[0].sourceText);
+    expect(segments.map((segment) => segment.translatedText).join('').replace(/\s+/gu, '')).toBe(cue.displaySegments[0].translatedText);
   });
 
   it('keeps translated-only fallback lines when source text is empty', () => {

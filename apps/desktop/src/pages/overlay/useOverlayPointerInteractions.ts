@@ -3,6 +3,8 @@ import { LogicalSize, PhysicalPosition, getCurrentWindow } from '../../runtime/o
 import { isTauriRuntime } from '../../runtime/tauri-runtime';
 import {
   calculateOverlayResizeBounds,
+  MAX_OVERLAY_HEIGHT,
+  MAX_OVERLAY_WIDTH,
   MIN_OVERLAY_HEIGHT,
   MIN_OVERLAY_WIDTH,
   type OverlayDragState,
@@ -129,8 +131,8 @@ export function useOverlayPointerInteractions(params: Params) {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     if (state.frameId !== null) window.cancelAnimationFrame(state.frameId);
     const position = new PhysicalPosition(state.targetX, state.targetY);
-    const width = Math.max(MIN_OVERLAY_WIDTH, Math.round(state.targetWidth / state.scaleFactor));
-    const height = Math.max(MIN_OVERLAY_HEIGHT, Math.round(state.targetHeight / state.scaleFactor));
+    const width = Math.min(MAX_OVERLAY_WIDTH, Math.max(MIN_OVERLAY_WIDTH, Math.round(state.targetWidth / state.scaleFactor)));
+    const height = Math.min(MAX_OVERLAY_HEIGHT, Math.max(MIN_OVERLAY_HEIGHT, Math.round(state.targetHeight / state.scaleFactor)));
     await getCurrentWindow().setPosition(position);
     await getCurrentWindow().setSize(new LogicalSize(width, height));
     await params.persistOverlayBounds(position, width, height);

@@ -264,7 +264,7 @@ describe('WelcomeLanguagePicker', () => {
     expect(onDone).toHaveBeenCalledOnce();
   });
 
-  it('finishes provider setup without persisting when the API key is empty', async () => {
+  it('continues to driver setup without persisting when the API key is empty', async () => {
     const onDone = vi.fn();
     await act(async () => {
       root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={onDone} />);
@@ -274,7 +274,9 @@ describe('WelcomeLanguagePicker', () => {
     await click(getFooterButtons(container)[2]!);
 
     expect(saveProviderSecretMock).not.toHaveBeenCalled();
-    expect(onDone).toHaveBeenCalledOnce();
+    expect(container.querySelector('.driver-management-card')).not.toBeNull();
+    expect(document.activeElement).toBe(container.querySelector('.welcome-step-title'));
+    expect(onDone).not.toHaveBeenCalled();
   });
 
   it('reveals and hides a stored API key through the credential backend', async () => {

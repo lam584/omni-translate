@@ -113,15 +113,59 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
     });
 
     const actionButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('.settings-page-action-group button'));
-    expect(actionButtons[0]?.textContent).toContain('settings.overlayUnlockedState');
-    expect(actionButtons[1]?.textContent).toContain('settings.overlayShowSubtitlesAction');
+    expect(actionButtons[0]?.textContent).toContain('audioRouting.restoreDefaults');
+    expect(actionButtons[1]?.textContent).toContain('settings.overlayUnlockedState');
+    expect(actionButtons[2]?.textContent).toContain('settings.overlayShowSubtitlesAction');
 
     await act(async () => {
-      actionButtons[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      actionButtons[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
     expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
     expect(container.textContent).not.toContain('settings.overlayLockHint');
+  });
+
+  it('restores a recoverable overlay layout from the settings page', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        subtitles: {
+          ...state.configDraft.subtitles,
+          overlayBackgroundColor: '#445566',
+          overlayBackgroundOpacity: 0.2,
+          overlayFontSize: 40,
+          overlayHeight: 700,
+          overlayLocked: true,
+          overlayWidth: 1400,
+          overlayX: 0,
+          overlayY: 0,
+        },
+      },
+    }));
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <SubtitleOverlaySettingsPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const resetButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      button.textContent?.includes('audioRouting.restoreDefaults'),
+    );
+    await act(async () => resetButton?.click());
+
+    expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
+      overlayBackgroundColor: '#111827',
+      overlayBackgroundOpacity: 0.84,
+      overlayFontSize: 24,
+      overlayHeight: 220,
+      overlayLocked: false,
+      overlayWidth: 960,
+      overlayX: 50,
+      overlayY: 78,
+    });
   });
 
   it('updates every appearance field from its form control', async () => {

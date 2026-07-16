@@ -95,6 +95,11 @@ pub fn stop_translate(
         // 这样可以避免阻塞 UI 达十几秒，实现立即停止的能力
     }
 
+    // A detached provider request may still finish later, but state updates only
+    // mutate existing cues. Removing unfinished cues here prevents a stopped
+    // session from remaining permanently labelled as "translating".
+    store.discard_uncommitted_subtitle_cues();
+
     let _ = append_diagnostics_log(
         &app,
         "audio",

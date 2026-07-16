@@ -3,7 +3,7 @@ import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } 
 import { currentMonitor, getCurrentWindow } from '../../runtime/overlay-window-adapter';
 import { isTauriRuntime } from '../../runtime/tauri-runtime';
 import type { SubtitleDraft } from '../../schema/config';
-import { OVERLAY_RESIZE_DEBOUNCE_MS, type OverlayContextMenuState } from './overlayDomain';
+import { MAX_OVERLAY_HEIGHT, MAX_OVERLAY_WIDTH, MIN_OVERLAY_HEIGHT, MIN_OVERLAY_WIDTH, OVERLAY_RESIZE_DEBOUNCE_MS, type OverlayContextMenuState } from './overlayDomain';
 
 type Options = {
   lockedRevealInteractive: boolean;
@@ -51,8 +51,8 @@ export function useOverlayNativeEventSync(options: Options) {
         const windowSize = await windowHandle.innerSize();
         if (!await currentMonitor()) return;
         updateSubtitleDraft({
-          overlayHeight: Math.max(72, Math.round(windowSize.height / scaleFactor)),
-          overlayWidth: Math.max(220, Math.round(windowSize.width / scaleFactor)),
+          overlayHeight: Math.min(MAX_OVERLAY_HEIGHT, Math.max(MIN_OVERLAY_HEIGHT, Math.round(windowSize.height / scaleFactor))),
+          overlayWidth: Math.min(MAX_OVERLAY_WIDTH, Math.max(MIN_OVERLAY_WIDTH, Math.round(windowSize.width / scaleFactor))),
         });
         await syncOverlayDraftPosition();
       }, OVERLAY_RESIZE_DEBOUNCE_MS);

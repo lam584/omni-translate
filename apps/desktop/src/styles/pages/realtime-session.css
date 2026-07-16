@@ -169,6 +169,81 @@ body:not(:has(.subtitle-overlay-root)) .realtime-session-page .cue-queue-transla
   line-height:1.45 !important
 }
 
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .session-runtime-metrics {
+  display:grid;
+  gap:10px
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .audio-route-status-group {
+  display:grid;
+  gap:6px;
+  padding-top:8px;
+  border-top:1px solid #e2e8f0
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .audio-route-status-group h4 {
+  margin:0;
+  color:#475569;
+  font-size:.78rem;
+  font-weight:700;
+  letter-spacing:.02em
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .session-launch-feedback {
+  display:flex;
+  gap:8px;
+  align-items:flex-start;
+  padding:9px 10px;
+  border:1px solid #f1c27d;
+  border-radius:10px;
+  background:#fff9ed;
+  color:#8a4b08;
+  font-size:.82rem;
+  line-height:1.45
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .session-launch-feedback svg {
+  flex:0 0 auto;
+  margin-top:1px
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .session-launch-feedback-error {
+  border-color:#f1b7b7;
+  background:#fff7f7;
+  color:#b42318
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .live-caption-segments {
+  display:grid;
+  gap:8px
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .live-caption-segment {
+  display:grid;
+  gap:3px;
+  padding:8px 10px;
+  border:1px solid #dbe5e2;
+  border-radius:10px;
+  background:#f8fbfa
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .live-caption-segment p {
+  margin:0
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .live-caption-segments-current {
+  max-height:calc(100vh - 430px);
+  min-height:140px;
+  overflow:auto;
+  padding-right:2px
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .live-caption-segment-pending {
+  color:#94a3b8;
+  font-size:.82rem;
+  font-style:italic
+}
+
 @media (min-width: 761px) and (max-width: 1180px) {
   body:not(:has(.subtitle-overlay-root)) .realtime-session-page .realtime-session-layout {
     max-width:none !important;

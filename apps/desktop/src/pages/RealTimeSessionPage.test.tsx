@@ -182,7 +182,9 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(container.textContent).not.toContain('voice-room');
     expect(container.textContent).not.toContain('bridge-pending');
     expect(container.textContent).not.toContain('capture-pending');
-
+    expect(container.querySelectorAll<HTMLButtonElement>('.provider-list button')[0]?.getAttribute('aria-pressed')).toBe('false');
+    expect(container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.getAttribute('aria-pressed')).toBe('false');
+    expect(container.querySelector<HTMLButtonElement>('.control-toolbar button')?.disabled).toBe(true);
   });
 
   it('shows an empty model trace summary before calls start', async () => {
@@ -364,7 +366,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(container.textContent).not.toContain('Raw queue source that should stay hidden');
   });
 
-  it('starts bridge, bidirectional capture, speech and overlay when launching conversation mode', async () => {
+  it('starts AEC bidirectional capture, speaker speech and overlay without the bridge', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -381,18 +383,24 @@ describe('RealTimeSessionPage one-click launch', () => {
       launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(installDriverRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(2);
-    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(1, 'inbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'game' }) }));
-    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(2, 'outbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'game' }) }));
+    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(1, 'inbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'game', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false }) }));
+    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(2, 'outbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'game', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false }) }));
     expect(startSpeechDispatchRuntimeMock).toHaveBeenCalledTimes(1);
     expect(showSubtitleOverlayWindowMock).toHaveBeenCalledTimes(1);
 
     expect(useAppStore.getState().configDraft.devices.routeMode).toBe('game');
     expect(useAppStore.getState().configDraft.speech.enabled).toBe(true);
-    expect(useAppStore.getState().configDraft.speech.outputTarget).toBe('both');
+    expect(useAppStore.getState().configDraft.speech.outputTarget).toBe('speaker');
     expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('playing');
+    expect(container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.getAttribute('aria-pressed')).toBe('true');
+    expect(container.querySelector<HTMLButtonElement>('.control-toolbar button')?.disabled).toBe(false);
+    expect(Array.from(container.querySelectorAll('.audio-route-status-group h4')).map((element) => element.textContent)).toEqual([
+      '系统音频',
+      '麦克风音频',
+    ]);
   });
 
   it('launches watch mode without forcing bridge or speech startup', async () => {
@@ -1331,7 +1339,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(startTranslateWorkerRuntimeMock).toHaveBeenCalledTimes(1);
   });
 
-  it('repairs a damaged driver and starts the stopped bridge before conversation capture', async () => {
+  it('ignores a damaged optional driver when starting AEC conversation capture', async () => {
     const runtimeSnapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
     runtimeSnapshot.bridge.driverHealth = 'damaged';
     runtimeSnapshot.bridge.bridgeState = 'stopped';
@@ -1355,8 +1363,9 @@ describe('RealTimeSessionPage one-click launch', () => {
       container.querySelectorAll<HTMLButtonElement>('button')[1]?.click();
     });
 
-    expect(repairDriverRuntimeMock).toHaveBeenCalledWith('rollback-driver', expect.any(Object));
-    expect(startBridgeServiceRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(repairDriverRuntimeMock).not.toHaveBeenCalled();
+    expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(2);
   });
 
   it('reports non-error conversation launch failures', async () => {
@@ -1378,6 +1387,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     });
 
     expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('capture unavailable');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('capture unavailable');
   });
 
   it('shows degraded inbound capture and the bridge restart recommendation', async () => {

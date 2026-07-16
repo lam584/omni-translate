@@ -5,6 +5,7 @@ import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import SubtitleOverlayPage from './SubtitleOverlayPage';
+import SubtitleOverlayContent from './overlay/SubtitleOverlayContent';
 import { useAppStore } from '../stores/app-store';
 
 const tauriMocks = vi.hoisted(() => {
@@ -679,6 +680,9 @@ describe('SubtitleOverlayPage locked interaction', () => {
         { sourceText: 'Already translated source', translatedText: '已有译文', pending: false },
         { sourceText: 'Waiting source', translatedText: '', pending: true },
       ];
+      cue.displaySourceText = 'Already translated source\nWaiting source';
+      cue.sourceText = cue.displaySourceText;
+      cue.translatedText = '已有译文';
       nextSnapshot.subtitleOverlay.activeCue = cue;
 
       return {
@@ -703,6 +707,9 @@ describe('SubtitleOverlayPage locked interaction', () => {
       const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
       const cue = nextSnapshot.subtitleOverlay.recentCues[0];
       cue.displaySegments = [{ sourceText: '', translatedText: '仅译文', pending: false }];
+      cue.displaySourceText = '';
+      cue.sourceText = '';
+      cue.translatedText = '仅译文';
       nextSnapshot.subtitleOverlay.activeCue = cue;
       return { ...state, audioRuntimeSnapshot: nextSnapshot };
     });
@@ -770,7 +777,122 @@ describe('SubtitleOverlayPage locked interaction', () => {
     expect(translation?.style.fontSize).toBe('30px');
   });
 
-  it('keeps dense subtitle queues above the minimum readable font scale', async () => {
+  it('does not render a duplicate source placeholder when both localized lines are identical', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayContent
+        cardStyle={{}}
+        displayCues={[]}
+        effectiveFontSize={24}
+        lockLabel="lock"
+        overlayLocked={false}
+        previewSource="字幕已就绪"
+        previewTranslation="字幕已就绪"
+        showLockToggle={false}
+        windowSized
+        onLockBlur={() => undefined}
+        onLockHover={() => undefined}
+        onLockToggle={() => undefined}
+      />);
+    });
+
+    const source = container.querySelector('.subtitle-overlay-source');
+    const translation = container.querySelector('.subtitle-overlay-translation');
+    expect(source).toBeNull();
+    expect(translation).not.toBeNull();
+  });
+
+  it('follows the latest subtitle until the user scrolls up, then resumes at the bottom', async () => {
+    const makeCue = (index: number) => ({
+      cueId: `history-cue-${index}`,
+      routeDirection: 'inbound' as const,
+      sourceText: `Source ${index}`,
+      translatedText: `Translation ${index}`,
+      displaySegments: [{ sourceText: `Source ${index}`, translatedText: `Translation ${index}`, pending: false }],
+      startedAt: 'test',
+      endedAt: 'test',
+      committed: true,
+    });
+    const renderContent = async (cueCount: number) => {
+      await act(async () => {
+        root.render(<SubtitleOverlayContent
+          cardStyle={{}}
+          displayCues={Array.from({ length: cueCount }, (_, index) => makeCue(index))}
+          effectiveFontSize={24}
+          lockLabel="lock"
+          overlayLocked={false}
+          previewSource="Subtitles ready"
+          previewTranslation="字幕已就绪"
+          showLockToggle={false}
+          windowSized
+          onLockBlur={() => undefined}
+          onLockHover={() => undefined}
+          onLockToggle={() => undefined}
+        />);
+      });
+    };
+
+    await renderContent(3);
+    const cues = container.querySelector<HTMLElement>('.subtitle-overlay-cues')!;
+    Object.defineProperties(cues, {
+      clientHeight: { configurable: true, value: 200 },
+      scrollHeight: { configurable: true, value: 600 },
+    });
+
+    await renderContent(4);
+    expect(cues.scrollTop).toBe(600);
+
+    cues.scrollTop = 100;
+    cues.dispatchEvent(new Event('scroll', { bubbles: true }));
+    await renderContent(5);
+    expect(cues.scrollTop).toBe(100);
+
+    cues.scrollTop = 400;
+    cues.dispatchEvent(new Event('scroll', { bubbles: true }));
+    Object.defineProperty(cues, 'scrollHeight', { configurable: true, value: 700 });
+    await renderContent(6);
+    expect(cues.scrollTop).toBe(700);
+  });
+
+  it('keeps a bottom-pinned subtitle list aligned after its visible height changes', async () => {
+    let notifyResize: (() => void) | undefined;
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    class ResizeObserverMock {
+      constructor(callback: ResizeObserverCallback) {
+        notifyResize = () => callback([], this as unknown as ResizeObserver);
+      }
+      observe() { /* test-controlled */ }
+      disconnect() { /* test-controlled */ }
+      unobserve() { /* test-controlled */ }
+    }
+    Object.assign(globalThis, { ResizeObserver: ResizeObserverMock });
+
+    try {
+      await act(async () => {
+        root.render(<SubtitleOverlayContent
+          cardStyle={{}}
+          displayCues={[structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0])]}
+          effectiveFontSize={24}
+          lockLabel="lock"
+          overlayLocked={false}
+          previewSource="Subtitles ready"
+          previewTranslation="字幕已就绪"
+          showLockToggle={false}
+          windowSized
+          onLockBlur={() => undefined}
+          onLockHover={() => undefined}
+          onLockToggle={() => undefined}
+        />);
+      });
+      const cues = container.querySelector<HTMLElement>('.subtitle-overlay-cues')!;
+      Object.defineProperty(cues, 'scrollHeight', { configurable: true, value: 480 });
+      notifyResize?.();
+      expect(cues.scrollTop).toBe(480);
+    } finally {
+      Object.assign(globalThis, { ResizeObserver: OriginalResizeObserver });
+    }
+  });
+
+  it('renders the complete recent history and emphasizes the latest cue regardless of caption density', async () => {
     useAppStore.setState((state) => {
       const recentCues = Array.from({ length: 6 }, (_, index) => ({
         cueId: `dense-cue-${index}`,
@@ -795,7 +917,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
           ...state.audioRuntimeSnapshot,
           subtitleOverlay: {
             ...state.audioRuntimeSnapshot.subtitleOverlay,
-            activeCue: recentCues[recentCues.length - 1],
+            activeCue: recentCues[0],
             queueDepth: recentCues.length,
             recentCues,
           },
@@ -805,6 +927,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
           subtitles: {
             ...state.configDraft.subtitles,
             overlayFontSize: 24,
+            captionDensity: 'compact',
           },
         },
       };
@@ -816,7 +939,24 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
     const sources = Array.from(container.querySelectorAll<HTMLElement>('.subtitle-overlay-source'));
     const translations = Array.from(container.querySelectorAll<HTMLElement>('.subtitle-overlay-translation'));
+    expect(sources).toHaveLength(6);
+    expect(sources.map((item) => item.textContent)).toEqual(['Source 5', 'Source 4', 'Source 3', 'Source 2', 'Source 1', 'Source 0']);
     expect(sources[0].style.fontSize).toBe('19px');
-    expect(translations[0].style.fontSize).toBe('15px');
+    expect(sources[5].style.fontSize).toBe('24px');
+    expect(translations[5].style.fontSize).toBe('20px');
+
+    for (const captionDensity of ['balanced', 'detailed'] as const) {
+      useAppStore.setState((state) => ({
+        ...state,
+        configDraft: {
+          ...state.configDraft,
+          subtitles: { ...state.configDraft.subtitles, captionDensity },
+        },
+      }));
+      await act(async () => {
+        root.render(<SubtitleOverlayPage />);
+      });
+      expect(container.querySelectorAll('.subtitle-overlay-source')).toHaveLength(6);
+    }
   });
 });

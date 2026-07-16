@@ -223,7 +223,11 @@ pub enum BridgeCommandV2 {
     Stop,
     Install { config: Value },
     Uninstall,
-    Repair { config: Value, repair_action: String },
+    Repair {
+        config: Value,
+        #[serde(rename = "repairAction")]
+        repair_action: String,
+    },
 }
 
 #[tauri::command]
@@ -297,7 +301,7 @@ pub fn configuration_v2(
 
 #[cfg(test)]
 mod tests {
-    use super::{ConfigurationCommandV2, RuntimeEventV2, ServiceErrorV2, SessionCommandV2};
+    use super::{BridgeCommandV2, ConfigurationCommandV2, RuntimeEventV2, ServiceErrorV2, SessionCommandV2};
 
     #[test]
     fn v2_types_use_the_renderer_contract_shape() {
@@ -307,6 +311,14 @@ mod tests {
             serde_json::from_str(r#"{"action":"createSnapshot","reason":"before-import"}"#)
                 .unwrap();
         assert!(matches!(configuration, ConfigurationCommandV2::CreateSnapshot { .. }));
+        let bridge: BridgeCommandV2 = serde_json::from_str(
+            r#"{"action":"repair","repairAction":"rollback-driver","config":{}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            bridge,
+            BridgeCommandV2::Repair { repair_action, .. } if repair_action == "rollback-driver"
+        ));
         let event = RuntimeEventV2 { topic: "session".into(), sequence: 1, timestamp_ms: 2, payload: serde_json::json!({}) };
         assert_eq!(serde_json::to_value(event).unwrap()["timestampMs"], 2);
         assert_eq!(ServiceErrorV2::from("nope".to_string()).code, "runtime.operation-failed");

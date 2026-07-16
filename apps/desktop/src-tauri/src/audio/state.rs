@@ -402,6 +402,16 @@ impl AudioStateStore {
         state.speech = SpeechRuntimeSnapshot::preview();
     }
 
+    pub fn discard_uncommitted_subtitle_cues(&self) {
+        self.subtitles.update(|overlay| {
+            overlay.recent_cues.retain(|cue| cue.committed);
+            if overlay.active_cue.as_ref().is_some_and(|cue| !cue.committed) {
+                overlay.active_cue = None;
+            }
+            trim_recent_subtitle_cues(overlay);
+        });
+    }
+
     pub fn cache_segment_audio(&self, audio: CapturedSegmentAudio) {
         self.audio_cache.cache_segment(audio);
     }
@@ -758,6 +768,32 @@ mod tests {
             None
         );
         assert_eq!(restarted.subtitle_overlay.first_translation_last_ms, None);
+    }
+
+    #[test]
+    fn stopping_translation_discards_only_unfinished_cues() {
+        let store = AudioStateStore::new();
+        let cue = |id: &str, committed: bool| SubtitleCueRuntime {
+            cue_id: id.to_string(),
+            route_direction: "outbound".to_string(),
+            source_text: id.to_string(),
+            display_source_text: String::new(),
+            display_segments: Vec::new(),
+            translated_text: if committed { "done".to_string() } else { String::new() },
+            started_at: "0".to_string(),
+            ended_at: "0".to_string(),
+            committed,
+        };
+
+        store.push_subtitle_cue(cue("finished", true));
+        store.push_subtitle_cue(cue("pending", false));
+        store.discard_uncommitted_subtitle_cues();
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.subtitle_overlay.recent_cues.len(), 1);
+        assert_eq!(snapshot.subtitle_overlay.recent_cues[0].cue_id, "finished");
+        assert!(snapshot.subtitle_overlay.active_cue.is_none());
+        assert_eq!(snapshot.subtitle_overlay.queue_depth, 1);
     }
 
     #[test]

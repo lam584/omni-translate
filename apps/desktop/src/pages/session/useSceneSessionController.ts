@@ -57,7 +57,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
   const { runtimeSnapshot, setRuntimeSnapshot } = controller;
   const desktopApi = useDesktopApiV2();
   const ensureBridgeReady = async (mode: SceneMode, nextConfig: AppConfigDraft): Promise<RuntimeSnapshot> => {
-    if (mode === 'watch' && !watchModeNeedsBridge(nextConfig)) {
+    if (!watchModeNeedsBridge(nextConfig)) {
       return runtimeSnapshot;
     }
 
@@ -252,7 +252,16 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         await executeSceneLaunchPlan(plan, {
           ensureBridgeReady: async () => {
             await ensureBridgeReady(mode, nextConfig);
-            controller.updateDeviceDraft({ routeMode: mode, status: 'ready' });
+            controller.updateDeviceDraft({
+              routeMode: mode,
+              status: 'ready',
+              ...(mode !== 'watch' ? {
+                feedbackLoopPrevention: 'echo-cancel' as const,
+                aecEnabled: true,
+                outputSpeechEnabled: true,
+                virtualMicOutputEnabled: false,
+              } : {}),
+            });
             controller.updateSpeechDraft(options.speechPatch);
             controller.updateDiagnosticsReady(mode);
           },

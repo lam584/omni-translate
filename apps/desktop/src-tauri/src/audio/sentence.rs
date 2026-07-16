@@ -13,6 +13,12 @@ const MAX_SUBTITLE_CHARS: usize = 120;
 const MAX_CJK_SUBTITLE_CHARS: usize = 42;
 const MAX_SUBTITLE_WORDS: usize = 22;
 const MIN_SPLIT_HEAD_CHARS: usize = 28;
+// Display-only limits target a bilingual 24px overlay. Keeping these separate
+// prevents visual wrapping from changing when the streaming recognizer commits.
+const MAX_DISPLAY_CHARS: usize = 72;
+const MAX_CJK_DISPLAY_CHARS: usize = 24;
+const MAX_DISPLAY_WORDS: usize = 12;
+const MIN_DISPLAY_HEAD_CHARS: usize = 18;
 
 trait SentenceClock: Send + Sync {
     fn now(&self) -> Instant;
@@ -165,7 +171,7 @@ impl SentenceSplitter {
                         }
                     });
 
-                for sentence in SubtitleDisplaySegmenter::split_sentence(raw_sentence) {
+                for sentence in split_subtitle_chunks(raw_sentence) {
                     self.context.push_back(sentence.clone());
                     if self.context.len() > MAX_CONTEXT_SENTENCES {
                         self.context.pop_front();
@@ -310,17 +316,18 @@ fn is_incomplete_final_clause(text: &str) -> bool {
     endings.iter().any(|ending| normalized.ends_with(ending))
 }
 
-fn needs_subtitle_split(text: &str) -> bool {
-    text.chars().count() > subtitle_char_limit(text)
-        || text.split_whitespace().count() > MAX_SUBTITLE_WORDS
-}
-
-fn subtitle_char_limit(text: &str) -> usize {
-    if text.chars().any(is_cjk_caption_character) {
-        MAX_CJK_SUBTITLE_CHARS
+fn needs_subtitle_split_with_limits(
+    text: &str,
+    max_chars: usize,
+    max_cjk_chars: usize,
+    max_words: usize,
+) -> bool {
+    let char_limit = if text.chars().any(is_cjk_caption_character) {
+        max_cjk_chars
     } else {
-        MAX_SUBTITLE_CHARS
-    }
+        max_chars
+    };
+    text.chars().count() > char_limit || text.split_whitespace().count() > max_words
 }
 
 fn is_cjk_caption_character(character: char) -> bool {
@@ -379,7 +386,13 @@ impl SubtitleDisplaySegmenter {
     }
 
     pub fn split_sentence(sentence: &str) -> Vec<String> {
-        split_subtitle_chunks(sentence)
+        split_subtitle_chunks_with_limits(
+            sentence,
+            MAX_DISPLAY_CHARS,
+            MAX_CJK_DISPLAY_CHARS,
+            MAX_DISPLAY_WORDS,
+            MIN_DISPLAY_HEAD_CHARS,
+        )
     }
 }
 
@@ -405,18 +418,40 @@ fn is_abbreviated_display_period(text: &str, period_index: usize) -> bool {
 }
 
 fn split_subtitle_chunks(sentence: &str) -> Vec<String> {
+    split_subtitle_chunks_with_limits(
+        sentence,
+        MAX_SUBTITLE_CHARS,
+        MAX_CJK_SUBTITLE_CHARS,
+        MAX_SUBTITLE_WORDS,
+        MIN_SPLIT_HEAD_CHARS,
+    )
+}
+
+fn split_subtitle_chunks_with_limits(
+    sentence: &str,
+    max_chars: usize,
+    max_cjk_chars: usize,
+    max_words: usize,
+    min_head_chars: usize,
+) -> Vec<String> {
     let trimmed = sentence.trim();
     if trimmed.is_empty() {
         return Vec::new();
     }
-    if !needs_subtitle_split(trimmed) {
+    if !needs_subtitle_split_with_limits(trimmed, max_chars, max_cjk_chars, max_words) {
         return vec![trimmed.to_string()];
     }
 
     let mut remaining = trimmed;
     let mut chunks = Vec::new();
-    while needs_subtitle_split(remaining) {
-        let Some(split_at) = find_subtitle_split_at(remaining) else {
+    while needs_subtitle_split_with_limits(remaining, max_chars, max_cjk_chars, max_words) {
+        let Some(split_at) = find_subtitle_split_at_with_limits(
+            remaining,
+            max_chars,
+            max_cjk_chars,
+            max_words,
+            min_head_chars,
+        ) else {
             break;
         };
         let (head, tail) = remaining.split_at(split_at);
@@ -434,7 +469,13 @@ fn split_subtitle_chunks(sentence: &str) -> Vec<String> {
     chunks
 }
 
-fn find_subtitle_split_at(text: &str) -> Option<usize> {
+fn find_subtitle_split_at_with_limits(
+    text: &str,
+    max_chars: usize,
+    max_cjk_chars: usize,
+    max_words: usize,
+    min_head_chars: usize,
+) -> Option<usize> {
     let (semantic_candidates, whitespace_candidates) = split_candidates(text);
     let safe_semantic_candidates: Vec<usize> = semantic_candidates
         .iter()
@@ -446,8 +487,21 @@ fn find_subtitle_split_at(text: &str) -> Option<usize> {
     } else {
         &safe_semantic_candidates
     };
-    let target = byte_after_char_count(text, subtitle_char_limit(text))?;
-    let min = byte_after_char_count(text, MIN_SPLIT_HEAD_CHARS).unwrap_or(0);
+    let char_target = byte_after_char_count(
+        text,
+        if text.chars().any(is_cjk_caption_character) {
+            max_cjk_chars
+        } else {
+            max_chars
+        },
+    )
+    .unwrap_or(text.len());
+    let word_target = whitespace_candidates
+        .get(max_words.saturating_sub(1))
+        .copied()
+        .unwrap_or(text.len());
+    let target = char_target.min(word_target);
+    let min = byte_after_char_count(text, min_head_chars).unwrap_or(0);
 
     semantic_candidates
         .iter()
@@ -858,14 +912,42 @@ mod tests {
         assert!(lines.len() >= 3);
         assert!(lines
             .iter()
-            .all(|line| line.chars().count() <= MAX_SUBTITLE_CHARS));
+            .all(|line| line.chars().count() <= MAX_DISPLAY_CHARS));
         assert!(lines
             .iter()
             .any(|line| line.contains("five hundred million dollar biosphere.")));
-        assert_eq!(
-            lines.last().map(String::as_str),
-            Some("Oh my gosh, this video will show you how epic the future is.")
+        assert!(lines.iter().any(|line| line.starts_with("Oh my gosh,")));
+        assert_eq!(lines.last().map(String::as_str), Some("is."));
+    }
+
+    #[test]
+    fn display_segmenter_turns_real_watch_mode_paragraph_into_caption_sized_rows() {
+        let lines = SubtitleDisplaySegmenter::split_text(
+            "This is a one billion dollar rocket ship, a future technology that will one day take you all the way to Mars, living in your brand new home, a five hundred million dollar biosphere. Oh my gosh, this video will show you just how epic the future is.",
         );
+
+        assert!(lines.len() >= 4);
+        assert!(
+            lines.iter().all(|line| {
+                line.chars().count() <= MAX_DISPLAY_CHARS
+                    && line.split_whitespace().count() <= MAX_DISPLAY_WORDS
+            }),
+            "caption rows exceeded the display budget: {lines:?}"
+        );
+        assert!(lines.iter().any(|line| line.starts_with("Oh my gosh,")));
+        assert_eq!(lines.last().map(String::as_str), Some("future is."));
+    }
+
+    #[test]
+    fn display_segmenter_keeps_chinese_watch_mode_rows_to_one_readable_line() {
+        let lines = SubtitleDisplaySegmenter::split_text(
+            "这是一艘价值十亿美元的火箭飞船，一项未来科技，终有一天会带你一路前往火星，在五十亿美元的生物圈里安家落户。天哪，看完这个视频，你就会知道未来究竟有多震撼。",
+        );
+
+        assert!(lines.len() >= 4);
+        assert!(lines
+            .iter()
+            .all(|line| line.chars().count() <= MAX_CJK_DISPLAY_CHARS));
     }
 
     #[test]
@@ -876,7 +958,7 @@ mod tests {
         assert!(lines.len() >= 2);
         assert!(lines
             .iter()
-            .all(|line| line.chars().count() <= MAX_CJK_SUBTITLE_CHARS));
+            .all(|line| line.chars().count() <= MAX_CJK_DISPLAY_CHARS));
         assert_eq!(lines.concat(), text);
     }
 

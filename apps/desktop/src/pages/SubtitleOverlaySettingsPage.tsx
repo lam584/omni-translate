@@ -56,6 +56,20 @@ const fontOptions = [
 
 const OVERLAY_FONT_SIZE_MIN = 16;
 const OVERLAY_FONT_SIZE_MAX = 48;
+const DEFAULT_OVERLAY_SETTINGS = {
+  overlayBackgroundColor: '#111827',
+  overlayBackgroundOpacity: 0.84,
+  overlayFontFamily: '"Segoe UI", "Microsoft YaHei UI", sans-serif',
+  overlayFontSize: 24,
+  overlayHeight: 220,
+  overlayLocked: false,
+  overlayOpacity: 0.88,
+  overlayTextColor: '#fff8ef',
+  overlayTextOpacity: 1,
+  overlayWidth: 960,
+  overlayX: 50,
+  overlayY: 78,
+} as const;
 
 function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
@@ -101,6 +115,14 @@ function SubtitleOverlaySettingsPage() {
       <PageSectionHeader
         actions={(
           <div className="settings-page-action-group">
+            <button
+              className="settings-action settings-action-secondary"
+              onClick={() => updateSubtitleDraft(DEFAULT_OVERLAY_SETTINGS)}
+              type="button"
+            >
+              <AppIcon name="refresh" size={14} />
+              <span style={{ marginInlineStart: 6 }}>{t('audioRouting.restoreDefaults')}</span>
+            </button>
             <button
               className="settings-action settings-action-secondary"
               onClick={() => updateSubtitleDraft({ overlayLocked: !subtitles.overlayLocked })}

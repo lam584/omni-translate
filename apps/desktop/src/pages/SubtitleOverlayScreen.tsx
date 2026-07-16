@@ -37,7 +37,6 @@ function SubtitleOverlayPage() {
   const [hovered, setHovered] = useState(false);
   const { recentCues } = audioRuntimeSnapshot.subtitleOverlay;
   const displayCues = useMemo(() => [...recentCues].filter((cue) => getCueDisplaySegments(cue).length > 0).reverse(), [recentCues]);
-  const displaySegmentCount = useMemo(() => displayCues.reduce((count, cue) => count + getCueDisplaySegments(cue).length, 0), [displayCues]);
   const { overlayBackgroundColor, overlayBackgroundOpacity, overlayFontFamily, overlayFontSize, overlayHeight,
     overlayLocked, overlayOpacity, overlayTextColor, overlayTextOpacity, overlayWidth, overlayX, overlayY } = configDraft.subtitles;
   const { lockedReveal, setLockedReveal } = useOverlayLockReveal(overlayLocked);
@@ -129,7 +128,7 @@ function SubtitleOverlayPage() {
         onPointerDown={(direction, event) => void pointerInteractions.handleResizePointerDown(direction, event)}
         onPointerMove={pointerInteractions.handleResizePointerMove}
         onPointerFinish={(event) => void pointerInteractions.finishOverlayResize(event)} />
-      <SubtitleOverlayContent cardStyle={cardStyle} displayCues={displayCues} displaySegmentCount={displaySegmentCount}
+      <SubtitleOverlayContent cardStyle={cardStyle} displayCues={displayCues}
         effectiveFontSize={effectiveOverlayFontSize} overlayLocked={overlayLocked}
         showLockToggle={overlayLocked ? (isTauriRuntime() ? lockedReveal.visible : hovered) : hovered}
         windowSized={isTauriRuntime()} lockLabel={overlayLocked ? menuText('overlay.unlockAction') : menuText('overlay.lockAction')}

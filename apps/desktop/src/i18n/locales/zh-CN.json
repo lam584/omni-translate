@@ -969,7 +969,7 @@
     "fallbackSubtitlesOnly": "虚拟音频链路不可用，已降级为仅字幕模式。",
     "fallbackAec": "虚拟音频链路不可用，已临时切换到物理扬声器直放加 AEC。该模式仍有回环风险。",
     "virtualDriverFallbackConfirm": "虚拟音频驱动或 Bridge 尚不可用。点击“确定”进入仅字幕模式；点击“取消”临时回退到物理扬声器直放加 AEC。AEC 回退仍有回环风险。",
-    "sceneLaunchFailed": "一键启动{{scene}}失败：{{error}}"
+    "sceneLaunchFailed": "一键启动{{scene}}失败（{{stage}}）：{{error}}"
   },
   "glossary": {
     "strategy": {

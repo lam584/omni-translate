@@ -164,6 +164,7 @@
   text-align:center;
   text-wrap:balance;
   white-space:pre-line;
+  overflow-wrap:anywhere;
   color:var(--subtitle-overlay-text,
   currentColor)
 }

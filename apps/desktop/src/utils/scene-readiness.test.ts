@@ -51,7 +51,7 @@ describe('scene readiness', () => {
     expect(scenes[2]?.blockers.map((blocker) => blocker.id)).toEqual(['voice-room-runtime-error']);
   });
 
-  it('requires the speech output target to include virtual mic before clearing the virtual mic blocker', () => {
+  it('requires AEC before clearing conversation feedback blockers', () => {
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
     const audioSnapshot = structuredClone(audioRuntimeSnapshotMock);
@@ -60,17 +60,16 @@ describe('scene readiness', () => {
     runtimeSnapshot.bridge.bridgeState = 'running';
     audioSnapshot.inbound.streamBound = true;
     audioSnapshot.outbound.streamBound = true;
-    configDraft.speech.enabled = true;
-    configDraft.speech.virtualMicOutputEnabled = true;
-    configDraft.speech.outputTarget = 'speaker';
+    configDraft.devices.feedbackLoopPrevention = 'none';
+    configDraft.devices.aecEnabled = false;
 
     const scenes = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
 
-    expect(scenes[1]?.blockers.some((blocker) => blocker.id === 'game-speech')).toBe(true);
-    expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-speech')).toBe(true);
+    expect(scenes[1]?.blockers.some((blocker) => blocker.id === 'game-aec')).toBe(true);
+    expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-aec')).toBe(true);
   });
 
-  it('clears the virtual mic blocker when the output target includes virtual mic in the desktop shell', () => {
+  it('clears conversation feedback blockers when AEC is enabled', () => {
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
     const audioSnapshot = structuredClone(audioRuntimeSnapshotMock);
@@ -79,14 +78,13 @@ describe('scene readiness', () => {
     runtimeSnapshot.bridge.bridgeState = 'running';
     audioSnapshot.inbound.streamBound = true;
     audioSnapshot.outbound.streamBound = true;
-    configDraft.speech.enabled = true;
-    configDraft.speech.virtualMicOutputEnabled = true;
-    configDraft.speech.outputTarget = 'both';
+    configDraft.devices.feedbackLoopPrevention = 'echo-cancel';
+    configDraft.devices.aecEnabled = true;
 
     const scenes = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
 
-    expect(scenes[1]?.blockers.some((blocker) => blocker.id === 'game-speech')).toBe(false);
-    expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-speech')).toBe(false);
+    expect(scenes[1]?.blockers.some((blocker) => blocker.id === 'game-aec')).toBe(false);
+    expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-aec')).toBe(false);
   });
 
   it('adds a bridge blocker in watch mode when feedbackLoopPrevention is virtual-driver and bridge is not running', () => {

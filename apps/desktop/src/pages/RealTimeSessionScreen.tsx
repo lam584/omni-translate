@@ -16,10 +16,30 @@ import i18n from '../i18n/config';
 import { parseRuntimeTimestampMs, useSessionElapsed } from './session/useSessionElapsed';
 import { useSceneSessionController } from './session/useSceneSessionController';
 import { logSceneLaunchConfig } from './session/logSceneLaunchConfig';
+import { getCueDisplaySegments } from './overlay/overlayDomain';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | null;
 
 const TRANSLATION_FAILED_PREFIX = '[\u7ffb\u8bd1\u5931\u8d25]';
+
+function describeRuntimeError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === 'object') {
+    const candidate = error as { code?: unknown; message?: unknown };
+    if (typeof candidate.message === 'string' && candidate.message.trim()) {
+      const code = typeof candidate.code === 'string' && candidate.code.trim() ? ` (${candidate.code})` : '';
+      return `${candidate.message}${code}`;
+    }
+    try {
+      return JSON.stringify(error);
+    } catch {
+      return String(error);
+    }
+  }
+  return String(error);
+}
 
 function resolveSceneLabel(mode: SceneMode) {
   if (mode === 'watch') {
@@ -116,9 +136,9 @@ function resolveSceneSpeechPatch(mode: SceneMode, configDraft: AppConfigDraft, i
   if (mode === 'game') {
     return {
       enabled: true,
-      outputTarget: 'both' as const,
+      outputTarget: 'speaker' as const,
       localPlaybackEnabled: true,
-      virtualMicOutputEnabled: true,
+      virtualMicOutputEnabled: false,
       status: 'ready' as const,
     };
   }
@@ -126,9 +146,9 @@ function resolveSceneSpeechPatch(mode: SceneMode, configDraft: AppConfigDraft, i
   if (mode === 'voice-room') {
     return {
       enabled: true,
-      outputTarget: 'virtual-mic' as const,
-      localPlaybackEnabled: false,
-      virtualMicOutputEnabled: true,
+      outputTarget: 'speaker' as const,
+      localPlaybackEnabled: true,
+      virtualMicOutputEnabled: false,
       status: 'ready' as const,
     };
   }
@@ -157,6 +177,55 @@ function CueStatusBadge({ cue }: { cue: SubtitleCueRuntime }) {
   return <span className="cue-queue-error">{t('session.translationFailed')}</span>;
 }
 
+function getSessionCueDisplaySegments(cue: SubtitleCueRuntime) {
+  const sourceText = cue.displaySourceText || cue.sourceText;
+  const normalizedSource = sourceText.replace(/\s+/gu, '');
+  const segmentedSource = cue.displaySegments?.map((segment) => segment.sourceText).join('').replace(/\s+/gu, '') ?? '';
+  const normalizedTranslation = cue.translatedText.replace(/\s+/gu, '');
+  const segmentedTranslation = cue.displaySegments?.map((segment) => segment.translatedText).join('').replace(/\s+/gu, '') ?? '';
+
+  if (cue.displaySegments?.length && segmentedSource === normalizedSource && segmentedTranslation === normalizedTranslation) {
+    return getCueDisplaySegments(cue);
+  }
+
+  return getCueDisplaySegments({
+    ...cue,
+    displaySegments: [{
+      sourceText,
+      translatedText: cue.translatedText,
+      pending: Boolean(sourceText) && !cue.translatedText && !cue.committed,
+    }],
+  });
+}
+
+function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; current?: boolean }) {
+  const { t } = useTranslation();
+  const segments = getSessionCueDisplaySegments(cue);
+
+  if (segments.length === 0) {
+    return <p className="live-text-translation">{cue.committed ? t('session.translationFailed') : t('session.callingLlm')}</p>;
+  }
+
+  return (
+    <div className={current ? 'live-caption-segments live-caption-segments-current' : 'live-caption-segments'}>
+      {segments.map((segment) => (
+        <div className="live-caption-segment" key={segment.id}>
+          {segment.sourceText && <p className={current ? 'live-text-source' : 'cue-queue-source'}>{segment.sourceText}</p>}
+          {segment.translatedText ? (
+            <p className={segment.translatedText.startsWith(TRANSLATION_FAILED_PREFIX) ? 'cue-queue-error' : current ? 'live-text-translation' : 'cue-queue-translation'}>
+              {segment.translatedText}
+            </p>
+          ) : cue.committed ? (
+            <p className="cue-queue-error">{t('session.translationFailed')}</p>
+          ) : segment.pending ? (
+            <p className="live-caption-segment-pending">{t('session.callingLlm')}</p>
+          ) : null}
+        </div>
+      ))}
+    </div>
+  );
+}
+
 export const realTimeSessionPageHelpers = {
   parseRuntimeTimestampMs,
   resolveSceneLabel,
@@ -169,6 +238,8 @@ export const realTimeSessionPageHelpers = {
   resolveSceneSpeechPatch,
   logSceneLaunchConfig,
   CueStatusBadge,
+  getSessionCueDisplaySegments,
+  describeRuntimeError,
 };
 
 function RealTimeSessionPage() {
@@ -185,13 +256,15 @@ function RealTimeSessionPage() {
 
   const overlayWindow = runtimeSnapshot.windows.find((item) => item.label === 'subtitle-overlay');
   const activeCue = audioRuntimeSnapshot.subtitleOverlay.activeCue;
-  const activeCueSourceText = activeCue ? activeCue.displaySourceText || activeCue.sourceText : '';
   const modelTraceSummary = runtimeSnapshot.diagnostics.modelTraceSummary;
   const latestModelTraceCall = modelTraceSummary.recentCalls[0] ?? null;
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
+  const [sessionLaunchProblem, setSessionLaunchProblem] = useState<string | null>(null);
 
   const hasSpeechActivity = audioRuntimeSnapshot.speech.dispatchState !== 'idle';
   const isSessionRunning = audioRuntimeSnapshot.inbound.streamBound || audioRuntimeSnapshot.outbound.streamBound;
+  const hasActiveChain = isSessionRunning || hasSpeechActivity || audioRuntimeSnapshot.sttConnected;
+  const runningMode = hasActiveChain ? configDraft.devices.routeMode : null;
   const firstTranslationAverageMs = audioRuntimeSnapshot.subtitleOverlay.firstTranslationAverageMs;
   const firstTranslationLastMs = audioRuntimeSnapshot.subtitleOverlay.firstTranslationLastMs;
   const firstTranslationSampleCount = audioRuntimeSnapshot.subtitleOverlay.firstTranslationSampleCount;
@@ -220,13 +293,18 @@ function RealTimeSessionPage() {
     pushNotification: pushRuntimeNotification,
     runBusyAction,
     confirmWatchFallback: () => window.confirm(t('session.virtualDriverFallbackConfirm')),
-    sceneLaunchFailureMessage: (sceneMode, stage, error) => t('session.sceneLaunchFailed', {
-      scene: resolveSceneLabel(sceneMode), stage: describeSceneLaunchStage(stage),
-      error: error instanceof Error ? error.message : String(error),
-    }),
+    sceneLaunchFailureMessage: (sceneMode, stage, error) => {
+      const message = t('session.sceneLaunchFailed', {
+        scene: resolveSceneLabel(sceneMode), stage: describeSceneLaunchStage(stage),
+        error: describeRuntimeError(error),
+      });
+      setSessionLaunchProblem(message);
+      return message;
+    },
   });
 
   const handleSceneLaunch = async (mode: SceneMode) => {
+    setSessionLaunchProblem(null);
     const { isOmniModel } = resolveVoiceModelRuntime(configDraft.devices.inboundVoiceModelId);
     const speechPatch = resolveSceneSpeechPatch(mode, configDraft, isOmniModel);
     const secondarySubtitleTranslationEnabled =
@@ -259,10 +337,10 @@ function RealTimeSessionPage() {
             title={t('session.controlTitle')}
           />
           <div className="provider-list">
-            <button className={configDraft.devices.routeMode === 'watch' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null} onClick={() => void handleSceneLaunch('watch')} type="button">
+            <button aria-pressed={runningMode === 'watch'} className={runningMode === 'watch' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null} onClick={() => void handleSceneLaunch('watch')} type="button">
               {busyAction === 'watch-start' ? t('session.starting') : t('session.watchButton')}
             </button>
-            <button className={configDraft.devices.routeMode === 'game' || configDraft.devices.routeMode === 'voice-room' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null} onClick={() => void handleSceneLaunch('game')} type="button">
+            <button aria-pressed={runningMode === 'game' || runningMode === 'voice-room'} className={runningMode === 'game' || runningMode === 'voice-room' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null} onClick={() => void handleSceneLaunch('game')} type="button">
               {busyAction === 'conversation-start' ? t('session.starting') : t('session.conversationMode')}
             </button>
           </div>
@@ -286,70 +364,8 @@ function RealTimeSessionPage() {
               vadState={audioRuntimeSnapshot.outbound.vadState}
             />
           )}
-          {isSessionRunning && (
-            <div className="audio-status-grid">
-              <div className="audio-status-item">
-                <span className="audio-status-label">{t('session.avgFirstToken')}</span>
-                <span className="audio-status-value">{formatLatencyMs(firstTranslationAverageMs)}</span>
-              </div>
-              <div className="audio-status-item">
-                <span className="audio-status-label">{t('session.lastFirstToken')}</span>
-                <span className="audio-status-value">{formatLatencyMs(firstTranslationLastMs)}</span>
-              </div>
-              <div className="audio-status-item">
-                <span className="audio-status-label">{t('session.firstTokenSamples')}</span>
-                <span className="audio-status-value">{firstTranslationSampleCount}</span>
-              </div>
-              {audioRuntimeSnapshot.inbound.streamBound && (
-                <>
-                  <div className="audio-status-item">
-                    <span className="audio-status-label">{t('session.captureState')}</span>
-                    <span className="audio-status-value">{audioRuntimeSnapshot.inbound.captureState}</span>
-                  </div>
-                  <div className="audio-status-item">
-                    <span className="audio-status-label">{t('session.bufferState')}</span>
-                    <span className="audio-status-value">{audioRuntimeSnapshot.inbound.preBufferState}</span>
-                  </div>
-                  <div className="audio-status-item">
-                    <span className="audio-status-label">{t('session.framesCaptured')}</span>
-                    <span className="audio-status-value">{audioRuntimeSnapshot.inbound.framesCaptured.toLocaleString()}</span>
-                  </div>
-                  <div className="audio-status-item">
-                    <span className="audio-status-label">{t('session.speechSegments')}</span>
-                    <span className="audio-status-value">{audioRuntimeSnapshot.inbound.segmentCount}</span>
-                  </div>
-                </>
-              )}
-              {audioRuntimeSnapshot.outbound.streamBound && (
-                <>
-                  <div className="audio-status-item">
-                    <span className="audio-status-label">{t('session.captureState')}</span>
-                    <span className="audio-status-value">{audioRuntimeSnapshot.outbound.captureState}</span>
-                  </div>
-                  <div className="audio-status-item">
-                    <span className="audio-status-label">{t('session.bufferState')}</span>
-                    <span className="audio-status-value">{audioRuntimeSnapshot.outbound.preBufferState}</span>
-                  </div>
-                  <div className="audio-status-item">
-                    <span className="audio-status-label">{t('session.framesCaptured')}</span>
-                    <span className="audio-status-value">{audioRuntimeSnapshot.outbound.framesCaptured.toLocaleString()}</span>
-                  </div>
-                  <div className="audio-status-item">
-                    <span className="audio-status-label">{t('session.speechSegments')}</span>
-                    <span className="audio-status-value">{audioRuntimeSnapshot.outbound.segmentCount}</span>
-                  </div>
-                </>
-              )}
-            </div>
-          )}
-          {audioRuntimeSnapshot.inbound.lastError && (
-            <p className="cue-queue-error" role="alert">
-              {t('session.systemAudioError', { error: audioRuntimeSnapshot.inbound.lastError })}
-              {audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && t('session.restartBridgeHint')}
-            </p>
-          )}
           <div className="control-toolbar">
-            <button className={`icon-button ${isSessionRunning ? 'icon-button-danger' : ''}`} disabled={busyAction !== null} onClick={() => void handleStopAll()} type="button">
+            <button className={`icon-button ${hasActiveChain ? 'icon-button-danger' : ''}`} disabled={busyAction !== null || !hasActiveChain} onClick={() => void handleStopAll()} type="button">
               <AppIcon name="stop" size={14} />
               {isSessionRunning ? t('session.stopWithElapsed', { elapsed: formatElapsed(sessionElapsed) }) : t('session.stopAll')}
             </button>
@@ -367,6 +383,84 @@ function RealTimeSessionPage() {
               <AppIcon name="subtitles" size={14} />
               {overlayWindow?.visible ? t('session.hideOverlay') : t('session.showOverlay')}
             </button>
+          </div>
+          {isSessionRunning && (
+            <div className="session-runtime-metrics">
+              <div className="audio-status-grid audio-status-grid-summary">
+              <div className="audio-status-item">
+                <span className="audio-status-label">{t('session.avgFirstToken')}</span>
+                <span className="audio-status-value">{formatLatencyMs(firstTranslationAverageMs)}</span>
+              </div>
+              <div className="audio-status-item">
+                <span className="audio-status-label">{t('session.lastFirstToken')}</span>
+                <span className="audio-status-value">{formatLatencyMs(firstTranslationLastMs)}</span>
+              </div>
+              <div className="audio-status-item">
+                <span className="audio-status-label">{t('session.firstTokenSamples')}</span>
+                <span className="audio-status-value">{firstTranslationSampleCount}</span>
+              </div>
+              </div>
+              {audioRuntimeSnapshot.inbound.streamBound && (
+                <section className="audio-route-status-group">
+                  <h4>{t('session.systemAudio')}</h4>
+                  <div className="audio-status-grid">
+                  <div className="audio-status-item">
+                    <span className="audio-status-label">{t('session.captureState')}</span>
+                    <span className="audio-status-value">{audioRuntimeSnapshot.inbound.captureState}</span>
+                  </div>
+                  <div className="audio-status-item">
+                    <span className="audio-status-label">{t('session.bufferState')}</span>
+                    <span className="audio-status-value">{audioRuntimeSnapshot.inbound.preBufferState}</span>
+                  </div>
+                  <div className="audio-status-item">
+                    <span className="audio-status-label">{t('session.framesCaptured')}</span>
+                    <span className="audio-status-value">{audioRuntimeSnapshot.inbound.framesCaptured.toLocaleString()}</span>
+                  </div>
+                  <div className="audio-status-item">
+                    <span className="audio-status-label">{t('session.speechSegments')}</span>
+                    <span className="audio-status-value">{audioRuntimeSnapshot.inbound.segmentCount}</span>
+                  </div>
+                  </div>
+                </section>
+              )}
+              {audioRuntimeSnapshot.outbound.streamBound && (
+                <section className="audio-route-status-group">
+                  <h4>{t('session.microphoneAudio')}</h4>
+                  <div className="audio-status-grid">
+                  <div className="audio-status-item">
+                    <span className="audio-status-label">{t('session.captureState')}</span>
+                    <span className="audio-status-value">{audioRuntimeSnapshot.outbound.captureState}</span>
+                  </div>
+                  <div className="audio-status-item">
+                    <span className="audio-status-label">{t('session.bufferState')}</span>
+                    <span className="audio-status-value">{audioRuntimeSnapshot.outbound.preBufferState}</span>
+                  </div>
+                  <div className="audio-status-item">
+                    <span className="audio-status-label">{t('session.framesCaptured')}</span>
+                    <span className="audio-status-value">{audioRuntimeSnapshot.outbound.framesCaptured.toLocaleString()}</span>
+                  </div>
+                  <div className="audio-status-item">
+                    <span className="audio-status-label">{t('session.speechSegments')}</span>
+                    <span className="audio-status-value">{audioRuntimeSnapshot.outbound.segmentCount}</span>
+                  </div>
+                  </div>
+                </section>
+              )}
+            </div>
+          )}
+          {audioRuntimeSnapshot.inbound.lastError && (
+            <p className="cue-queue-error" role="alert">
+              {t('session.systemAudioError', { error: audioRuntimeSnapshot.inbound.lastError })}
+              {audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && t('session.restartBridgeHint')}
+            </p>
+          )}
+          {sessionLaunchProblem && !isSessionRunning && (
+            <div className="session-launch-feedback session-launch-feedback-error" role="alert">
+              <AppIcon name="alert" size={15} />
+              <span>{sessionLaunchProblem}</span>
+            </div>
+          )}
+          <div className="control-toolbar">
             <button
               className="icon-button icon-button-danger"
               disabled={busyAction !== null}
@@ -436,8 +530,7 @@ function RealTimeSessionPage() {
                 <strong>{activeCue.committed ? t('session.translated') : t('session.translating')}</strong>
                 <StatusBadge label={t('session.queueDepth', { count: audioRuntimeSnapshot.subtitleOverlay.queueDepth })} tone={audioRuntimeSnapshot.subtitleOverlay.queueDepth > 0 ? 'warning' : 'ready'} />
               </div>
-              <p className="live-text-source">{activeCueSourceText}</p>
-              <p className="live-text-translation">{activeCue.translatedText || (activeCue.committed ? t('session.translationFailed') : t('session.callingLlm'))}</p>
+              <CueSegmentRows cue={activeCue} current />
             </div>
           ) : (
             <div className="console-event-item">
@@ -466,12 +559,7 @@ function RealTimeSessionPage() {
                     <CueStatusBadge cue={cue} />
                   </div>
                   <div className="cue-queue-time">{formatCueTiming(cue)}</div>
-                  <p className="cue-queue-source">{cue.displaySourceText || cue.sourceText}</p>
-                  {cue.translatedText && (
-                    <p className={cue.translatedText.startsWith(TRANSLATION_FAILED_PREFIX) ? 'cue-queue-error' : 'cue-queue-translation'}>
-                      {cue.translatedText}
-                    </p>
-                  )}
+                  <CueSegmentRows cue={cue} />
                 </div>
               ))}
             </div>

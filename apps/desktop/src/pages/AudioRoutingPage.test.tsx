@@ -739,8 +739,10 @@ describe('AudioRoutingPage', () => {
     expect(devices.virtualMicOutputEnabled).toBe(false);
     expect(speech.outputTarget).toBe('speaker');
     expect(devices.subtitleTranslationMode).toBe('secondary');
-    expect(container.textContent).toContain('扬声器测试通过');
-    expect(container.textContent).toContain('麦克风测试通过');
+    expect(container.textContent).toContain('当前桌面运行时不支持麦克风测试');
+    expect(container.textContent).toContain('AudioContext is not defined');
+    expect(container.textContent).not.toContain('扬声器测试通过');
+    expect(container.textContent).not.toContain('麦克风测试通过');
     vi.useRealTimers();
   });
 

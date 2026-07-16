@@ -29,9 +29,20 @@ type Input = {
 };
 
 export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
+  const useEchoCancel = input.mode !== 'watch';
   const config: AppConfigDraft = {
     ...input.configDraft,
-    devices: { ...input.configDraft.devices, routeMode: input.mode, status: 'ready' },
+    devices: {
+      ...input.configDraft.devices,
+      routeMode: input.mode,
+      status: 'ready',
+      ...(useEchoCancel ? {
+        feedbackLoopPrevention: 'echo-cancel' as const,
+        aecEnabled: true,
+        outputSpeechEnabled: true,
+        virtualMicOutputEnabled: false,
+      } : {}),
+    },
     speech: { ...input.configDraft.speech, ...input.speechPatch },
   };
   const stages: SceneLaunchStage[] = ['bridge-ready'];

@@ -969,7 +969,7 @@
     "fallbackSubtitlesOnly": "The virtual audio route is unavailable. The session has fallen back to subtitle-only mode.",
     "fallbackAec": "The virtual audio route is unavailable. The session has temporarily switched to physical speaker playback with AEC. This mode still has loopback risk.",
     "virtualDriverFallbackConfirm": "The virtual audio driver or Bridge is not available yet. Click OK to enter subtitle-only mode; click Cancel to temporarily fall back to physical speaker playback with AEC. The AEC fallback still has loopback risk.",
-    "sceneLaunchFailed": "Failed to start {{scene}}: {{error}}"
+    "sceneLaunchFailed": "Failed to start {{scene}} during {{stage}}: {{error}}"
   },
   "glossary": {
     "strategy": {

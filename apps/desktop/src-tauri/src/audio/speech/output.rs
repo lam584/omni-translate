@@ -11,6 +11,30 @@ impl SpeechOutputRoutePlan {
             write_to_virtual_mic: virtual_mic_output_enabled,
         }
     }
+
+    pub(crate) fn for_route(
+        route_direction: &str,
+        local_playback_enabled: bool,
+        virtual_mic_output_enabled: bool,
+    ) -> Self {
+        match route_direction {
+            // Remote/system audio is translated for the local listener. Sending it
+            // back through the virtual microphone would echo the other party into
+            // the call a second time.
+            "inbound" => Self::new(local_playback_enabled, false),
+            // With a virtual microphone, the translated local voice belongs on
+            // that isolated route. In AEC-only mode there is no virtual route, so
+            // keep the promised speaker output and let echo cancellation prevent
+            // it from being captured again.
+            "outbound" => Self::new(
+                local_playback_enabled && !virtual_mic_output_enabled,
+                virtual_mic_output_enabled,
+            ),
+            // Preserve the configured behavior for legacy or diagnostic cues that
+            // do not carry a recognized route direction.
+            _ => Self::new(local_playback_enabled, virtual_mic_output_enabled),
+        }
+    }
 }
 
 pub(crate) fn desktop_direct_playback_enabled_for_config(config: &Value) -> bool {

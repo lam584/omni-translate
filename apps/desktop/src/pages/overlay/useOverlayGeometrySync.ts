@@ -2,7 +2,7 @@ import { useEffect, type MutableRefObject } from 'react';
 
 import { currentMonitor, getCurrentWindow, LogicalSize, PhysicalPosition } from '../../runtime/overlay-window-adapter';
 import { isTauriRuntime } from '../../runtime/tauri-runtime';
-import { clamp, toOverlayAxisPercent } from './overlayDomain';
+import { clamp, MAX_OVERLAY_HEIGHT, MAX_OVERLAY_WIDTH, MIN_OVERLAY_HEIGHT, MIN_OVERLAY_WIDTH, toOverlayAxisPercent } from './overlayDomain';
 
 type Options = {
   dragInProgressRef: MutableRefObject<boolean>;
@@ -24,8 +24,8 @@ export function useOverlayGeometrySync(options: Options) {
     let disposed = false;
     const applyWindowGeometry = async () => {
       const windowHandle = getCurrentWindow();
-      const logicalWidth = Math.max(220, Math.round(overlayWidth));
-      const logicalHeight = Math.max(72, Math.round(overlayHeight));
+      const logicalWidth = clamp(Math.round(overlayWidth), MIN_OVERLAY_WIDTH, MAX_OVERLAY_WIDTH);
+      const logicalHeight = clamp(Math.round(overlayHeight), MIN_OVERLAY_HEIGHT, MAX_OVERLAY_HEIGHT);
       const lastSize = lastAppliedWindowSizeRef.current;
       if (!lastSize || lastSize.width !== logicalWidth || lastSize.height !== logicalHeight) {
         lastAppliedWindowSizeRef.current = { width: logicalWidth, height: logicalHeight };

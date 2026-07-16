@@ -10,6 +10,7 @@ import { realTimeSessionPageHelpers } from './RealTimeSessionPage';
 
 const {
   CueStatusBadge,
+  describeRuntimeError,
   formatElapsed,
   formatLatencyMs,
   formatCueTiming,
@@ -57,6 +58,11 @@ describe('realTimeSessionPageHelpers', () => {
     expect(resolveSceneLabel('voice-room')).toBe('对话模式');
   });
 
+  it('preserves structured desktop service errors for actionable launch feedback', () => {
+    expect(describeRuntimeError({ code: 'bridge.install-failed', message: '驱动修复失败', retriable: true }))
+      .toBe('驱动修复失败 (bridge.install-failed)');
+  });
+
   it('formats runtime clocks and cue timing fallbacks', () => {
     expect(formatRuntimeClock(null)).toBe('--:--:--');
     expect(formatRuntimeClock('invalid')).toBe('--:--:--');
@@ -85,15 +91,15 @@ describe('realTimeSessionPageHelpers', () => {
 
     expect(resolveSceneSpeechPatch('game', configDraft, false)).toMatchObject({
       enabled: true,
-      outputTarget: 'both',
+      outputTarget: 'speaker',
       localPlaybackEnabled: true,
-      virtualMicOutputEnabled: true,
+      virtualMicOutputEnabled: false,
     });
     expect(resolveSceneSpeechPatch('voice-room', configDraft, false)).toMatchObject({
       enabled: true,
-      outputTarget: 'virtual-mic',
-      localPlaybackEnabled: false,
-      virtualMicOutputEnabled: true,
+      outputTarget: 'speaker',
+      localPlaybackEnabled: true,
+      virtualMicOutputEnabled: false,
     });
     expect(resolveSceneSpeechPatch('watch', configDraft, false).enabled).toBe(false);
 

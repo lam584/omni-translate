@@ -42,7 +42,9 @@ use self::device_initializer::{initialize_capture_route, InitializedCaptureRoute
 const SAMPLE_RATE_HZ: usize = 48_000;
 const CHANNEL_COUNT: usize = 2;
 const CHUNK_FRAMES: usize = 960;
-const SPEECH_THRESHOLD_DB: f32 = -42.0;
+// Bluetooth headset inputs commonly keep a low, steady noise floor around
+// -40 dB. Treating that as speech creates phantom segments while nobody talks.
+const SPEECH_THRESHOLD_DB: f32 = -32.0;
 const SILENCE_HOLD_CHUNKS: usize = 6;
 const ECHO_CANCEL_DELAY_SAMPLES: usize = 9_600;
 const BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS: u64 = 15;
@@ -704,6 +706,26 @@ mod tests {
         assert_eq!(cue.route_direction, "inbound");
         assert!(!cue.committed);
         assert!(cue.translated_text.is_empty());
+    }
+
+    #[test]
+    fn route_processor_ignores_bluetooth_headset_noise_floor() {
+        let mut processor = RouteProcessor::new(RouteSpec::from_config(
+            &json!({
+              "devices": {
+                "outboundRoute": { "routeId": "outbound-route", "input": { "deviceId": "mic-7" } }
+              },
+              "subtitles": { "sourceLanguage": "zh-CN", "targetLanguage": "en-US" }
+            }),
+            "outbound",
+        ).expect("route spec should parse"));
+
+        for _ in 0..20 {
+            let update = processor.ingest_chunk(&speech_chunk(0.02), 0);
+            assert_eq!(update.vad_state, "silence");
+            assert!(update.active_segment_id.is_none());
+            assert!(update.finalized_segment.is_none());
+        }
     }
 
     #[test]

@@ -337,6 +337,38 @@ mod tests {
     }
 
     #[test]
+    fn inbound_translation_is_only_played_to_the_local_listener() {
+        let plan = SpeechOutputRoutePlan::for_route("inbound", true, true);
+
+        assert!(plan.play_to_speaker);
+        assert!(!plan.write_to_virtual_mic);
+    }
+
+    #[test]
+    fn outbound_translation_is_only_sent_to_the_remote_party() {
+        let plan = SpeechOutputRoutePlan::for_route("outbound", true, true);
+
+        assert!(!plan.play_to_speaker);
+        assert!(plan.write_to_virtual_mic);
+    }
+
+    #[test]
+    fn outbound_translation_uses_speaker_when_aec_replaces_virtual_mic() {
+        let plan = SpeechOutputRoutePlan::for_route("outbound", true, false);
+
+        assert!(plan.play_to_speaker);
+        assert!(!plan.write_to_virtual_mic);
+    }
+
+    #[test]
+    fn unknown_translation_route_preserves_configured_outputs() {
+        let plan = SpeechOutputRoutePlan::for_route("diagnostics", true, true);
+
+        assert!(plan.play_to_speaker);
+        assert!(plan.write_to_virtual_mic);
+    }
+
+    #[test]
     fn virtual_driver_feedback_prevention_disables_local_playback() {
         let config = json!({
             "devices": {

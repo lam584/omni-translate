@@ -56,14 +56,6 @@ function getRuntimeBlocker(mode: SceneMode, runtimeSnapshot: RuntimeSnapshot): S
   return null;
 }
 
-function hasVirtualMicOutputConfigured(configDraft: AppConfigDraft) {
-  return (
-    configDraft.speech.enabled &&
-    configDraft.speech.virtualMicOutputEnabled &&
-    (configDraft.speech.outputTarget === 'virtual-mic' || configDraft.speech.outputTarget === 'both')
-  );
-}
-
 export function watchModeNeedsBridge(configDraft: AppConfigDraft) {
   return (
     configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ||
@@ -177,14 +169,10 @@ export function getGameSceneReadiness(
     return {
       mode: 'game',
       label: '游戏语音模式',
-      description: '双向采集、译音输出和虚拟麦克风都收口即可开始。',
+      description: '双向采集、扬声器译音和回声消除都就绪即可开始。',
       readyLabel: '可直接开始',
       blockers,
     };
-  }
-
-  if (runtimeSnapshot.bridge.bridgeState !== 'running') {
-    blockers.push({ id: 'game-bridge', title: '桥接链路待启动', route: '/audio-routing' });
   }
 
   if (!audioRuntimeSnapshot.inbound.streamBound) {
@@ -195,14 +183,14 @@ export function getGameSceneReadiness(
     blockers.push({ id: 'game-outbound', title: '出站麦克风待启动采集', route: '/audio-routing' });
   }
 
-  if (!hasVirtualMicOutputConfigured(configDraft)) {
-    blockers.push({ id: 'game-speech', title: '译音输出待切到虚拟麦克风', route: '/audio-routing' });
+  if (configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' || !configDraft.devices.aecEnabled) {
+    blockers.push({ id: 'game-aec', title: '回声消除待启用', route: '/audio-routing' });
   }
 
   return {
     mode: 'game',
     label: '游戏语音模式',
-    description: '双向采集、译音输出和虚拟麦克风都收口即可开始。',
+    description: '双向采集、扬声器译音和回声消除都就绪即可开始。',
     readyLabel: '可直接开始',
     blockers,
   };
@@ -226,28 +214,24 @@ export function getVoiceRoomSceneReadiness(
     return {
       mode: 'voice-room',
       label: '语音房模式',
-      description: '桥接、麦克风和虚拟麦克风输出都收口即可开始。',
+      description: '麦克风、扬声器译音和回声消除都就绪即可开始。',
       readyLabel: '可直接开始',
       blockers,
     };
-  }
-
-  if (runtimeSnapshot.bridge.bridgeState !== 'running') {
-    blockers.push({ id: 'voice-room-bridge', title: '桥接链路待启动', route: '/audio-routing' });
   }
 
   if (!audioRuntimeSnapshot.outbound.streamBound) {
     blockers.push({ id: 'voice-room-outbound', title: '麦克风待启动采集', route: '/audio-routing' });
   }
 
-  if (!hasVirtualMicOutputConfigured(configDraft)) {
-    blockers.push({ id: 'voice-room-speech', title: '译音输出待切到虚拟麦克风', route: '/audio-routing' });
+  if (configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' || !configDraft.devices.aecEnabled) {
+    blockers.push({ id: 'voice-room-aec', title: '回声消除待启用', route: '/audio-routing' });
   }
 
   return {
     mode: 'voice-room',
     label: '语音房模式',
-    description: '桥接、麦克风和虚拟麦克风输出都收口即可开始。',
+    description: '麦克风、扬声器译音和回声消除都就绪即可开始。',
     readyLabel: '可直接开始',
     blockers,
   };

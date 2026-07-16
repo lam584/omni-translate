@@ -114,6 +114,8 @@ export const LOCK_BUTTON_HOTSPOT_WIDTH = 65;
 export const LOCK_BUTTON_POLL_INTERVAL_MS = 120;
 export const MIN_OVERLAY_WIDTH = 220;
 export const MIN_OVERLAY_HEIGHT = 72;
+export const MAX_OVERLAY_WIDTH = 1280;
+export const MAX_OVERLAY_HEIGHT = 360;
 export const MIN_SUBTITLE_FONT_SCALE = 0.78;
 export const TRANSLATION_FONT_SCALE = 0.82;
 export const OVERLAY_RESIZE_DEBOUNCE_MS = 300;
@@ -133,20 +135,87 @@ export function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value));
 }
 
+const MAX_LATIN_CAPTION_CHARS = 72;
+const MAX_LATIN_CAPTION_WORDS = 12;
+const MAX_CJK_CAPTION_CHARS = 24;
+
+function wrapCaptionSentence(sentence: string) {
+  const trimmed = sentence.trim();
+  if (!trimmed) return [];
+  const hasCjk = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(trimmed);
+  if (hasCjk) {
+    return Array.from(trimmed).reduce<string[]>((lines, character) => {
+      const lastIndex = lines.length - 1;
+      if (lastIndex < 0 || Array.from(lines[lastIndex]).length >= MAX_CJK_CAPTION_CHARS) lines.push(character);
+      else lines[lastIndex] += character;
+      return lines;
+    }, []);
+  }
+
+  return trimmed.split(/\s+/u).reduce<string[]>((lines, word) => {
+    const lastIndex = lines.length - 1;
+    const candidate = lastIndex < 0 ? word : `${lines[lastIndex]} ${word}`;
+    const wordCount = candidate.split(/\s+/u).length;
+    if (lastIndex < 0 || candidate.length > MAX_LATIN_CAPTION_CHARS || wordCount > MAX_LATIN_CAPTION_WORDS) lines.push(word);
+    else lines[lastIndex] = candidate;
+    return lines;
+  }, []);
+}
+
+function groupCaptionLines(lines: string[], lineCount: number) {
+  if (lines.length === 0) return Array.from({ length: lineCount }, () => '');
+  if (lines.length === lineCount) return lines;
+  const grouped: string[] = [];
+  let start = 0;
+
+  for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
+    const remainingLines = lineCount - lineIndex;
+    const take = Math.ceil((lines.length - start) / remainingLines);
+    grouped.push(lines.slice(start, start + take).join(' '));
+    start += take;
+  }
+
+  return grouped;
+}
+
 export function splitDisplayLines(text: string) {
   return text
-    .split('\n')
-    .map((line) => line.trim())
+    .split(/(?<=[.!?;。！？；])\s*|\n+/u)
+    .flatMap(wrapCaptionSentence)
     .filter(Boolean);
 }
 
 export function getCueDisplaySegments(cue: SubtitleCueRuntime): OverlayDisplaySegment[] {
-  const explicitSegments = cue.displaySegments
-    ?.filter((segment) => segment.sourceText.trim().length > 0 || segment.translatedText.trim().length > 0)
-    .map((segment, index) => ({
-      ...segment,
-      id: `${cue.cueId}-segment-${index}`,
-    }));
+  const rawExplicitSegments = cue.displaySegments
+    ?.filter((segment) => segment.sourceText.trim().length > 0 || segment.translatedText.trim().length > 0);
+  const rawExplicitSourceLines = rawExplicitSegments?.flatMap((segment) => splitDisplayLines(segment.sourceText)) ?? [];
+  const rawExplicitTranslatedLines = rawExplicitSegments?.flatMap((segment) => splitDisplayLines(segment.translatedText)) ?? [];
+  const authoritativeSourceText = cue.displaySourceText || cue.sourceText;
+  const normalizedAuthoritativeSource = authoritativeSourceText.replace(/\s+/gu, '');
+  const normalizedExplicitSource = rawExplicitSourceLines.join('').replace(/\s+/gu, '');
+  const normalizedAuthoritativeTranslation = cue.translatedText.replace(/\s+/gu, '');
+  const normalizedExplicitTranslation = rawExplicitTranslatedLines.join('').replace(/\s+/gu, '');
+  const explicitSourceLines = normalizedExplicitSource === normalizedAuthoritativeSource
+    ? rawExplicitSourceLines
+    : splitDisplayLines(authoritativeSourceText);
+  const explicitTranslatedLines = normalizedExplicitTranslation === normalizedAuthoritativeTranslation
+    ? rawExplicitTranslatedLines
+    : splitDisplayLines(cue.translatedText);
+  const explicitLineCount = explicitSourceLines.length || explicitTranslatedLines.length;
+  const alignedExplicitSourceLines = explicitSourceLines.length > 0
+    ? explicitSourceLines
+    : Array.from({ length: explicitLineCount }, () => '');
+  const alignedExplicitTranslatedLines = explicitTranslatedLines.length > explicitLineCount
+    ? groupCaptionLines(explicitTranslatedLines, explicitLineCount)
+    : [...explicitTranslatedLines, ...Array.from({ length: explicitLineCount - explicitTranslatedLines.length }, () => '')];
+  const explicitSegments = rawExplicitSegments && explicitLineCount > 0
+    ? Array.from({ length: explicitLineCount }, (_, lineIndex) => ({
+        sourceText: alignedExplicitSourceLines[lineIndex],
+        translatedText: alignedExplicitTranslatedLines[lineIndex],
+        pending: !alignedExplicitTranslatedLines[lineIndex] || rawExplicitSegments.some((segment) => segment.pending),
+        id: `${cue.cueId}-segment-${lineIndex}`,
+      }))
+    : undefined;
 
   if (explicitSegments && explicitSegments.length > 0) {
     return explicitSegments;
@@ -177,26 +246,28 @@ export function calculateOverlayResizeBounds(resizeState: OverlayResizeState, sc
   const deltaY = Math.round((screenY - resizeState.startScreenY) * resizeState.scaleFactor);
   const minWidth = Math.round(MIN_OVERLAY_WIDTH * resizeState.scaleFactor);
   const minHeight = Math.round(MIN_OVERLAY_HEIGHT * resizeState.scaleFactor);
+  const maxWidth = Math.round(MAX_OVERLAY_WIDTH * resizeState.scaleFactor);
+  const maxHeight = Math.round(MAX_OVERLAY_HEIGHT * resizeState.scaleFactor);
   let width = resizeState.startWindowWidth;
   let height = resizeState.startWindowHeight;
   let x = resizeState.startWindowX;
   let y = resizeState.startWindowY;
 
   if (resizeState.direction.includes('East')) {
-    width = Math.max(minWidth, resizeState.startWindowWidth + deltaX);
+    width = clamp(resizeState.startWindowWidth + deltaX, minWidth, maxWidth);
   }
 
   if (resizeState.direction.includes('South')) {
-    height = Math.max(minHeight, resizeState.startWindowHeight + deltaY);
+    height = clamp(resizeState.startWindowHeight + deltaY, minHeight, maxHeight);
   }
 
   if (resizeState.direction.includes('West')) {
-    width = Math.max(minWidth, resizeState.startWindowWidth - deltaX);
+    width = clamp(resizeState.startWindowWidth - deltaX, minWidth, maxWidth);
     x = resizeState.startWindowX + (resizeState.startWindowWidth - width);
   }
 
   if (resizeState.direction.includes('North')) {
-    height = Math.max(minHeight, resizeState.startWindowHeight - deltaY);
+    height = clamp(resizeState.startWindowHeight - deltaY, minHeight, maxHeight);
     y = resizeState.startWindowY + (resizeState.startWindowHeight - height);
   }
 

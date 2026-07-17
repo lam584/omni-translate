@@ -81,6 +81,22 @@ describe('diagnostics page helpers', () => {
     expect(diagnosticsPageHelpers.getRuntimeEnvironmentSummary(mismatched, audio).details).toContain('桥接驱动版本不匹配，需要按推荐动作修复。');
   });
 
+  it('does not treat an optional damaged bridge as a conversation-mode blocker', () => {
+    const runtime = structuredClone(runtimeSnapshotMock);
+    const audio = structuredClone(audioRuntimeSnapshotMock);
+    const config = structuredClone(appConfigDraftMock);
+    runtime.bridgeStatus = 'tauri-shell';
+    runtime.bridge.driverHealth = 'damaged';
+    runtime.bridge.lifecycleState = 'error';
+    runtime.bridge.lastErrorCode = 'driver.not-installed';
+    config.devices.routeMode = 'voice-room';
+    config.devices.feedbackLoopPrevention = 'echo-cancel';
+
+    const summary = diagnosticsPageHelpers.getRuntimeEnvironmentSummary(runtime, audio, config);
+    expect(summary.mode).toBe('live-ready');
+    expect(diagnosticsPageHelpers.buildOverviewIssues(runtime, audio, summary, config)).toEqual([]);
+  });
+
   it('builds deduplicated overview issues and signal summaries', () => {
     const runtime = structuredClone(runtimeSnapshotMock);
     const audio = structuredClone(audioRuntimeSnapshotMock);

@@ -54,7 +54,7 @@ describe('realTimeSessionPageHelpers', () => {
     expect(formatLatencyMs(Number.NaN)).toBe('--');
     expect(formatLatencyMs(123.6)).toBe('124 ms');
     expect(resolveSceneLabel('watch')).toBe('看片模式');
-    expect(resolveSceneLabel('game')).toBe('对话模式');
+    expect(resolveSceneLabel('game')).toBe('文字转语音');
     expect(resolveSceneLabel('voice-room')).toBe('对话模式');
   });
 

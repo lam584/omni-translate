@@ -48,7 +48,7 @@ export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
   const stages: SceneLaunchStage[] = ['bridge-ready'];
   const parallelOmniPreconnect = input.mode === 'watch' && input.isOmniModel;
   if (parallelOmniPreconnect) stages.push('omni-preconnect');
-  if (input.mode !== 'voice-room') stages.push('inbound-route');
+  stages.push('inbound-route');
   if (input.mode !== 'watch') stages.push('outbound-route');
   if (!input.isOmniModel) stages.push('translate-worker');
   if (input.speechPatch.enabled

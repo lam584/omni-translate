@@ -25,9 +25,11 @@ const readProviderSecretMock = vi.fn();
 const getLiveSessionEventsRuntimeMock = vi.fn();
 const tauriRuntimeMock = vi.hoisted(() => ({
   isRuntime: false,
+  invoke: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
+  invoke: (...args: unknown[]) => tauriRuntimeMock.invoke(...args),
   isTauri: () => false,
 }));
 
@@ -149,6 +151,13 @@ describe('DiagnosticsPage monitoring boundary', () => {
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     tauriRuntimeMock.isRuntime = false;
+    tauriRuntimeMock.invoke.mockReset();
+    tauriRuntimeMock.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_runtime_snapshot' || command === 'bootstrap_runtime') {
+        return structuredClone(useAppStore.getState().runtimeSnapshot);
+      }
+      return undefined;
+    });
     startAudioRouteRuntimeMock.mockReset();
     startSpeechDispatchRuntimeMock.mockReset();
     installDriverRuntimeMock.mockReset();
@@ -303,7 +312,14 @@ describe('DiagnosticsPage monitoring boundary', () => {
     snapshot.bridge.driverHealth = 'damaged';
     snapshot.bridge.lifecycleState = 'error';
     snapshot.bridge.lastErrorCode = 'bridge.singleton-already-running';
-    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
+    useAppStore.setState((state) => ({
+      ...state,
+      runtimeSnapshot: snapshot,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' },
+      },
+    }));
     repairDriverRuntimeMock.mockRejectedValue(new Error('repair failed'));
     await act(async () => {
       root.render(
@@ -622,7 +638,14 @@ describe('DiagnosticsPage monitoring boundary', () => {
     snapshot.bridge.driverHealth = 'damaged';
     snapshot.bridge.lifecycleState = 'error';
     snapshot.bridge.lastErrorCode = 'bridge.singleton-already-running';
-    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
+    useAppStore.setState((state) => ({
+      ...state,
+      runtimeSnapshot: snapshot,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' },
+      },
+    }));
 
     await act(async () => {
       root.render(
@@ -662,6 +685,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
     snapshot.bridge.bridgeState = 'running';
     const refreshed = { ...snapshot, bridgeStatus: 'tauri-shell' };
     refreshBridgeRuntimeMock.mockResolvedValue(refreshed);
+    tauriRuntimeMock.invoke.mockImplementation(async (command: string) => {
+      if (command === 'get_runtime_snapshot' || command === 'bootstrap_runtime') return refreshed;
+      return undefined;
+    });
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
 
     await act(async () => {
@@ -679,7 +706,9 @@ describe('DiagnosticsPage monitoring boundary', () => {
       await Promise.resolve();
     });
 
-    expect(refreshBridgeRuntimeMock).toHaveBeenCalled();
+    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('bootstrap_runtime');
+    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('bootstrap_storage');
+    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('get_runtime_snapshot');
     expect(useAppStore.getState().runtimeNotifications[0]?.level).toBe('info');
   });
 
@@ -693,6 +722,24 @@ describe('DiagnosticsPage monitoring boundary', () => {
     });
 
     expect(findButtonByText(container, '查看实时事件')).toBeUndefined();
+  });
+
+  it('shows live events for an outbound-only conversation session', async () => {
+    const audio = structuredClone(audioRuntimeSnapshotMock);
+    audio.sessionStartedAt = 'unix-ms:1000';
+    audio.inbound.streamBound = false;
+    audio.outbound.streamBound = true;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <DiagnosticsPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(findButtonByText(container, '查看实时事件')).toBeDefined();
   });
 
   it('shows live events button when session is active and opens modal on click', async () => {

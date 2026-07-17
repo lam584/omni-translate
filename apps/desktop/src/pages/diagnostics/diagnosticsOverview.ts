@@ -174,6 +174,7 @@ export function isOverlayVisible(runtimeSnapshot: RuntimeSnapshot) {
 export function getRuntimeEnvironmentSummary(
   runtimeSnapshot: RuntimeSnapshot,
   audioRuntimeSnapshot: AudioRuntimeSnapshot,
+  configDraft?: AppConfigDraft,
 ): RuntimeEnvironmentSummary {
   const runtimeStatus = resolveRuntimeBridgeStatus(runtimeSnapshot);
 
@@ -205,19 +206,24 @@ export function getRuntimeEnvironmentSummary(
 
   const actualIssues: string[] = [];
 
-  if (runtimeSnapshot.bridge.driverHealth === 'damaged') {
+  const bridgeRequired = !configDraft || (
+    configDraft.devices.routeMode === 'watch' &&
+    configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
+  );
+
+  if (bridgeRequired && runtimeSnapshot.bridge.driverHealth === 'damaged') {
     actualIssues.push(i18n.t('diagnostics.issues.driverDamaged'));
   }
 
-  if (runtimeSnapshot.bridge.driverHealth === 'version-mismatch') {
+  if (bridgeRequired && runtimeSnapshot.bridge.driverHealth === 'version-mismatch') {
     actualIssues.push(i18n.t('diagnostics.issues.driverVersionMismatch'));
   }
 
-  if (runtimeSnapshot.bridge.lifecycleState === 'error' && runtimeSnapshot.bridge.lastErrorCode) {
+  if (bridgeRequired && runtimeSnapshot.bridge.lifecycleState === 'error' && runtimeSnapshot.bridge.lastErrorCode) {
     actualIssues.push(i18n.t('diagnostics.issues.bridgeError', { code: runtimeSnapshot.bridge.lastErrorCode }));
   }
 
-  if (runtimeSnapshot.bridge.lastErrorCode === 'monitor.virtual-playback-loop') {
+  if (bridgeRequired && runtimeSnapshot.bridge.lastErrorCode === 'monitor.virtual-playback-loop') {
     actualIssues.push(i18n.t('diagnostics.issues.virtualPlaybackLoop'));
   }
 
@@ -258,13 +264,19 @@ export function buildOverviewIssues(
   runtimeSnapshot: RuntimeSnapshot,
   audioRuntimeSnapshot: AudioRuntimeSnapshot,
   runtimeEnvironmentSummary: RuntimeEnvironmentSummary,
+  configDraft?: AppConfigDraft,
 ): OverviewIssue[] {
   const issues = new Map<string, OverviewIssue>();
   const recentErrors = runtimeSnapshot.diagnostics.recentErrors.slice(0, 2);
-  const hasBridgeRuntimeIssue =
+  const bridgeRequired = !configDraft || (
+    configDraft.devices.routeMode === 'watch' &&
+    configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
+  );
+  const hasBridgeRuntimeIssue = bridgeRequired && (
     runtimeSnapshot.bridge.driverHealth === 'damaged' ||
     runtimeSnapshot.bridge.driverHealth === 'version-mismatch' ||
-    runtimeSnapshot.bridge.lifecycleState === 'error';
+    runtimeSnapshot.bridge.lifecycleState === 'error'
+  );
   const hasAudioRuntimeIssue =
     Boolean(audioRuntimeSnapshot.inbound.lastError) ||
     Boolean(audioRuntimeSnapshot.outbound.lastError) ||

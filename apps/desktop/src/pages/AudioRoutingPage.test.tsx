@@ -299,7 +299,7 @@ describe('AudioRoutingPage', () => {
 
     await chooseScenarioModel(container, '听对方', 'STT Model');
     await chooseScenarioModel(container, '说给对方', 'S2S Model');
-    await chooseScenarioModel(container, '听对方 · 二次字幕译音', 'Qwen Omni');
+    await chooseScenarioModel(container, '听对方 · 二次语音识别', 'Qwen Omni');
     await chooseScenarioModel(container, '字幕翻译', 'Qwen3.6 Flash');
     await chooseScenarioModel(container, '打字 TTS', 'TTS Model');
 
@@ -393,7 +393,7 @@ describe('AudioRoutingPage', () => {
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const subtitleToggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
-    const secondaryAudioToggle = inputText(scenarioCardByTitle(container, '听对方 · 二次字幕译音').querySelector('input[type="checkbox"]'));
+    const secondaryAudioToggle = inputText(scenarioCardByTitle(container, '听对方 · 二次语音识别').querySelector('input[type="checkbox"]'));
     expect(subtitleToggle.checked).toBe(true);
     expect(secondaryAudioToggle.checked).toBe(true);
     expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('secondary');
@@ -481,7 +481,7 @@ describe('AudioRoutingPage', () => {
     const owningCard = speechToggle?.closest('.scenario-card');
 
     expect(owningSection).toBeTruthy();
-    expect(owningCard?.textContent).toContain('听对方 · 二次字幕译音');
+    expect(owningCard?.textContent).toContain('听对方 · 二次语音识别');
   });
 
   it('highlights replying model cards only while their card switches are enabled', async () => {
@@ -546,7 +546,7 @@ describe('AudioRoutingPage', () => {
     });
 
     const secondaryGroup = container.querySelector('.routing-secondary-group');
-    const cardToggle = inputText(scenarioCardByTitle(container, '听对方 · 二次字幕译音').querySelector('input[type="checkbox"]'));
+    const cardToggle = inputText(scenarioCardByTitle(container, '听对方 · 二次语音识别').querySelector('input[type="checkbox"]'));
     expect(cardToggle.getAttribute('role')).toBe('switch');
     expect(cardToggle.checked).toBe(true);
 

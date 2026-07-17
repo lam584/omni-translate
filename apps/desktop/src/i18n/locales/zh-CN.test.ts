@@ -94,7 +94,7 @@ describe('zh-CN locale', () => {
     const audioRouting = zhCN.audioRouting as unknown as Record<string, string>;
     expect(audioRouting.chainSystemAudio).toBe('系统/对方声音');
     expect(audioRouting.chainReturnToPeer).toBe('返回对方');
-    expect(audioRouting.scenarioInboundSecondaryTitle).toBe('听对方 · 二次字幕译音');
+    expect(audioRouting.scenarioInboundSecondaryTitle).toBe('听对方 · 二次语音识别');
     expect(audioRouting.translationAudioSecondary).toContain('二次字幕译音');
     expect(audioRouting.translationAudioSecondary).not.toContain('副 TTS');
     const serialized = JSON.stringify(zhCN.audioRouting);

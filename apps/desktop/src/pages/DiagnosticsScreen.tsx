@@ -4,7 +4,8 @@ import AppIcon from '../components/icons/AppIcon';
 import StatusBadge from '../components/page/StatusBadge';
 import type { StatusTone } from '../components/page/StatusBadge';
 import i18n from '../i18n/config';
-import { installDriverRuntime, refreshBridgeRuntime, repairDriverRuntime, startBridgeServiceRuntime } from '../runtime/bridge-runtime';
+import { installDriverRuntime, repairDriverRuntime, startBridgeServiceRuntime } from '../runtime/bridge-runtime';
+import { useDesktopApiV2 } from '../runtime/desktop-api-context';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
 import { isTauriRuntime, hasInvokeBridge } from '../runtime/tauri-runtime';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
@@ -55,6 +56,7 @@ export async function runRecommendedBridgeAction(snapshot: RuntimeSnapshot, conf
 }
 
 function DiagnosticsPage() {
+  const desktopApi = useDesktopApiV2();
   const configDraft = useAppStore((state) => state.configDraft);
   const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
   const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
@@ -104,13 +106,13 @@ function DiagnosticsPage() {
     run: runBenchmarkTest,
   } = useBenchmarkController(voiceModelOptions);
   const runtimeEnvironmentSummary = useMemo(
-    () => getRuntimeEnvironmentSummary(runtimeSnapshot, audioRuntimeSnapshot),
-    [runtimeSnapshot, audioRuntimeSnapshot],
+    () => getRuntimeEnvironmentSummary(runtimeSnapshot, audioRuntimeSnapshot, configDraft),
+    [runtimeSnapshot, audioRuntimeSnapshot, configDraft],
   );
   const effectiveBridgeStatus = resolveRuntimeBridgeStatus(runtimeSnapshot);
   const overviewIssues = useMemo(
-    () => buildOverviewIssues(runtimeSnapshot, audioRuntimeSnapshot, runtimeEnvironmentSummary),
-    [audioRuntimeSnapshot, runtimeEnvironmentSummary, runtimeSnapshot],
+    () => buildOverviewIssues(runtimeSnapshot, audioRuntimeSnapshot, runtimeEnvironmentSummary, configDraft),
+    [audioRuntimeSnapshot, configDraft, runtimeEnvironmentSummary, runtimeSnapshot],
   );
   const overviewTone = overviewIssues.length === 0 ? 'ready' : runtimeEnvironmentSummary.tone === 'draft' ? 'draft' : 'warning';
   const overviewLabel = overviewIssues.length === 0 ? i18n.t('diagnostics.overview.noCriticalBlockers') : i18n.t('diagnostics.overview.criticalIssueCount', { count: overviewIssues.length });
@@ -134,8 +136,9 @@ function DiagnosticsPage() {
         tone: 'warning',
         issueIds: ['runtime-runtime-error'],
         run: async () => {
-          const snapshot = await refreshBridgeRuntime();
-          setRuntimeSnapshot(snapshot);
+          await desktopApi.configuration.bootstrapRuntime();
+          await desktopApi.configuration.bootstrapStorage();
+          setRuntimeSnapshot(await desktopApi.configuration.runtimeSnapshot());
         },
       });
     }
@@ -155,7 +158,7 @@ function DiagnosticsPage() {
     }
 
     return options;
-  }, [overviewIssues, setRuntimeSnapshot]);
+  }, [desktopApi, overviewIssues, setRuntimeSnapshot]);
   const repairableIssueIds = useMemo(() => new Set(repairOptions.flatMap((option) => option.issueIds)), [repairOptions]);
   const keyIssues = useMemo(() => overviewIssues.filter((issue) => !repairableIssueIds.has(issue.id)), [overviewIssues, repairableIssueIds]);
   const primaryIssue = keyIssues[0] ?? overviewIssues[0] ?? null;
@@ -229,7 +232,12 @@ function DiagnosticsPage() {
     };
   }, [runtimeSnapshot, configDraft]);
 
-  const sessionActive = audioRuntimeSnapshot.sessionStartedAt !== null && audioRuntimeSnapshot.inbound.streamBound;
+  const sessionActive = audioRuntimeSnapshot.sessionStartedAt !== null && (
+    audioRuntimeSnapshot.inbound.streamBound ||
+    audioRuntimeSnapshot.outbound.streamBound ||
+    audioRuntimeSnapshot.sttConnected ||
+    audioRuntimeSnapshot.speech.dispatchState !== 'idle'
+  );
 
   return (
     <div className="control-dashboard diagnostics-dashboard">

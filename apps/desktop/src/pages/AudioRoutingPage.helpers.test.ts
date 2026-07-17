@@ -6,6 +6,7 @@ const {
   detectScenarioCapabilities,
   isVoiceModel,
   resolveSelectedModel,
+  supportsRoutingScenario,
 } = audioRoutingPageHelpers;
 
 function model(capabilities: ModelPreset['capabilities']): ModelPreset {
@@ -61,5 +62,18 @@ describe('AudioRoutingPage helpers', () => {
     expect(detectScenarioCapabilities(all, 'outbound')).toEqual(['stt', 'translation', 'speech']);
     expect(detectScenarioCapabilities(s2s, 'tts')).toEqual(['tts']);
     expect(detectScenarioCapabilities(all, 'unknown' as never)).toEqual([]);
+  });
+
+  it('filters routing candidates by the capability each card actually requires', () => {
+    const stt = model(['speech-to-text']);
+    const tts = model(['text-to-speech']);
+    const s2s = model(['speech-to-speech']);
+    const text = model(['text-generation']);
+
+    expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'inbound'))).toEqual([true, false, true]);
+    expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'outbound'))).toEqual([false, false, true]);
+    expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'inboundSecondary'))).toEqual([true, false, false]);
+    expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'tts'))).toEqual([false, true, true]);
+    expect([text, stt].map((candidate) => supportsRoutingScenario(candidate, 'subtitle'))).toEqual([true, false]);
   });
 });

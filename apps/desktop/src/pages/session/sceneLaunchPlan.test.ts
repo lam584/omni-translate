@@ -12,7 +12,7 @@ describe('buildSceneLaunchPlan', () => {
     { name: 'game', mode: 'game' as const, omni: false, secondary: false,
       stages: ['bridge-ready', 'inbound-route', 'outbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay'] },
     { name: 'voice room', mode: 'voice-room' as const, omni: false, secondary: false,
-      stages: ['bridge-ready', 'outbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay'] },
+      stages: ['bridge-ready', 'inbound-route', 'outbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay'] },
   ];
   for (const testCase of cases) {
     it(testCase.name, () => {

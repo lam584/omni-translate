@@ -20,6 +20,27 @@ export function isVoiceModel(model: Pick<ModelPreset, 'capabilities'>) {
   ));
 }
 
+export function supportsRoutingScenario(
+  model: Pick<ModelPreset, 'capabilities'>,
+  scenario: ScenarioId,
+): boolean {
+  const capabilities = new Set(model.capabilities);
+  switch (scenario) {
+    case 'inbound':
+      return capabilities.has('speech-to-text') || capabilities.has('speech-to-speech');
+    case 'inboundSecondary':
+      return capabilities.has('speech-to-text');
+    case 'outbound':
+      return capabilities.has('speech-to-speech');
+    case 'tts':
+      return capabilities.has('text-to-speech') || capabilities.has('speech-to-speech');
+    case 'subtitle':
+      return capabilities.has('text-generation');
+    default:
+      return false;
+  }
+}
+
 export function resolveSelectedModel(options: RoutingModelOption[], modelId: string) {
   return options.find((model) => model.model === modelId);
 }

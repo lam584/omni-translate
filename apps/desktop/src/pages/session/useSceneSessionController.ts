@@ -238,8 +238,8 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
 
   const launchScene = async (options: SceneLaunchOptions) => {
     const { mode } = options;
-    if (mode === 'watch' && [options.audioSnapshot.inbound.captureState, options.audioSnapshot.outbound.captureState].includes('stopping')) {
-      controller.pushNotification({ id: `scene-launch-stopping-${Date.now()}`, level: 'warning', source: 'session', message: '正在停止上一条链路，请稍后再启动看片模式。', emittedAt: new Date().toISOString() });
+    if ([options.audioSnapshot.inbound.captureState, options.audioSnapshot.outbound.captureState].includes('stopping')) {
+      controller.pushNotification({ id: `scene-launch-stopping-${Date.now()}`, level: 'warning', source: 'session', message: '正在停止上一条链路，请稍后再启动新场景。', emittedAt: new Date().toISOString() });
       return;
     }
     const plan = buildSceneLaunchPlan(options);

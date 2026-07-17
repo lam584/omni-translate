@@ -366,7 +366,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(container.textContent).not.toContain('Raw queue source that should stay hidden');
   });
 
-  it('starts AEC bidirectional capture, speaker speech and overlay without the bridge', async () => {
+  it('starts bidirectional voice-room capture, speaker speech and overlay without the bridge', async () => {
     await act(async () => {
       root.render(
         <MemoryRouter>
@@ -386,12 +386,12 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(installDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(2);
-    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(1, 'inbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'game', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false }) }));
-    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(2, 'outbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'game', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false }) }));
+    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(1, 'inbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'voice-room', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false }) }));
+    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(2, 'outbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'voice-room', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false }) }));
     expect(startSpeechDispatchRuntimeMock).toHaveBeenCalledTimes(1);
     expect(showSubtitleOverlayWindowMock).toHaveBeenCalledTimes(1);
 
-    expect(useAppStore.getState().configDraft.devices.routeMode).toBe('game');
+    expect(useAppStore.getState().configDraft.devices.routeMode).toBe('voice-room');
     expect(useAppStore.getState().configDraft.speech.enabled).toBe(true);
     expect(useAppStore.getState().configDraft.speech.outputTarget).toBe('speaker');
     expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('playing');
@@ -401,6 +401,49 @@ describe('RealTimeSessionPage one-click launch', () => {
       '系统音频',
       '麦克风音频',
     ]);
+  });
+
+  it('rejects conversation startup before native calls when no reply model is selected', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, outboundVoiceModelId: '' },
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.click();
+    });
+
+    expect(startAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('选择适用于当前场景的语音模型');
+  });
+
+  it('disables both scene launches while any audio chain is active', async () => {
+    const activeAudioSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    activeAudioSnapshot.outbound.streamBound = true;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: activeAudioSnapshot }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const launchButtons = container.querySelectorAll<HTMLButtonElement>('.provider-list button');
+    expect(launchButtons[0]?.disabled).toBe(true);
+    expect(launchButtons[1]?.disabled).toBe(true);
   });
 
   it('launches watch mode without forcing bridge or speech startup', async () => {
@@ -1036,6 +1079,30 @@ describe('RealTimeSessionPage one-click launch', () => {
     )).toBe(true);
   });
 
+  it('blocks a new conversation launch while the previous route is stopping', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audioRuntimeSnapshot.outbound.captureState = 'stopping';
+    audioRuntimeSnapshot.outbound.streamBound = false;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    await act(async () => {
+      container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.click();
+    });
+
+    expect(startAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runtimeNotifications.some((item) =>
+      item.message.includes('正在停止上一条链路'),
+    )).toBe(true);
+  });
+
   it('keeps launch buttons disabled and stops runtimes sequentially while stop is pending', async () => {
     const activeAudioSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
     activeAudioSnapshot.inbound.streamBound = true;
@@ -1096,7 +1163,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       inboundStop.resolve(activeAudioSnapshot);
       await Promise.resolve();
     });
-    expect(launchButtons[0].disabled).toBe(false);
+    expect(launchButtons[0].disabled).toBe(true);
     expect(stopSpeechDispatchRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
       stopTranslateWorkerRuntimeMock.mock.invocationCallOrder[0],
     );
@@ -1366,6 +1433,8 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(repairDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.anything());
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('outbound', expect.anything());
   });
 
   it('reports non-error conversation launch failures', async () => {

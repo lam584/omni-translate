@@ -9,7 +9,7 @@ import {
   toggleSubtitleOverlayWindow,
 } from '../runtime/audio-runtime';
 import { useAppStore } from '../stores/app-store';
-import type { SubtitleCueRuntime } from '../schema/audio-runtime';
+import type { AudioRuntimeSnapshot, SubtitleCueRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import type { SceneMode } from '../utils/scene-readiness';
 import i18n from '../i18n/config';
@@ -47,7 +47,7 @@ function resolveSceneLabel(mode: SceneMode) {
   }
 
   if (mode === 'game') {
-    return i18n.t('session.conversationMode');
+    return i18n.t('providers.labels.scenario.game');
   }
 
   return i18n.t('session.conversationMode');
@@ -105,6 +105,34 @@ function resolveVoiceModelRuntime(inboundVoiceModelId: string) {
     voiceModelRaw,
     isOmniModel: modelLower.includes('realtime') && (modelLower.includes('omni') || modelLower.includes('livetranslate')),
   };
+}
+
+function resolveSceneVoiceModelId(mode: SceneMode, configDraft: AppConfigDraft): string {
+  return mode === 'voice-room'
+    ? configDraft.devices.outboundVoiceModelId
+    : configDraft.devices.inboundVoiceModelId;
+}
+
+function getSceneLaunchConfigurationProblem(
+  mode: SceneMode,
+  configDraft: AppConfigDraft,
+  audioSnapshot: AudioRuntimeSnapshot,
+): 'model' | 'input-device' | 'playback-device' | null {
+  if (!resolveSceneVoiceModelId(mode, configDraft).trim()) return 'model';
+  if (mode === 'voice-room' && !configDraft.devices.inboundVoiceModelId.trim()) return 'model';
+  if (mode === 'voice-room') {
+    const selectedInput = configDraft.devices.inputDeviceId;
+    if (!selectedInput || !audioSnapshot.captureDevices.some((device) => device.deviceId === selectedInput)) {
+      return 'input-device';
+    }
+  }
+  if (mode === 'watch' || mode === 'voice-room') {
+    const selectedPlayback = configDraft.devices.playbackDeviceId;
+    if (!selectedPlayback || !audioSnapshot.renderDevices.some((device) => device.deviceId === selectedPlayback)) {
+      return 'playback-device';
+    }
+  }
+  return null;
 }
 
 function describeSceneLaunchStage(stage: string | null) {
@@ -234,6 +262,8 @@ export const realTimeSessionPageHelpers = {
   formatRuntimeClock,
   formatCueTiming,
   resolveVoiceModelRuntime,
+  resolveSceneVoiceModelId,
+  getSceneLaunchConfigurationProblem,
   describeSceneLaunchStage,
   resolveSceneSpeechPatch,
   logSceneLaunchConfig,
@@ -305,7 +335,18 @@ function RealTimeSessionPage() {
 
   const handleSceneLaunch = async (mode: SceneMode) => {
     setSessionLaunchProblem(null);
-    const { isOmniModel } = resolveVoiceModelRuntime(configDraft.devices.inboundVoiceModelId);
+    const configurationProblem = getSceneLaunchConfigurationProblem(mode, configDraft, audioRuntimeSnapshot);
+    if (configurationProblem) {
+      const chinese = i18n.language.toLowerCase().startsWith('zh');
+      const message = configurationProblem === 'model'
+        ? (chinese ? '请先在“音频路由”中选择适用于当前场景的语音模型。' : 'Select a compatible voice model in Audio Routing before starting.')
+        : configurationProblem === 'input-device'
+          ? (chinese ? '当前麦克风不可用，请在“音频路由”中重新选择输入设备。' : 'The selected microphone is unavailable. Choose an input device in Audio Routing.')
+          : (chinese ? '当前系统播放设备不可用，请在“音频路由”中重新选择输出设备。' : 'The selected playback device is unavailable. Choose an output device in Audio Routing.');
+      setSessionLaunchProblem(message);
+      return;
+    }
+    const { isOmniModel } = resolveVoiceModelRuntime(resolveSceneVoiceModelId(mode, configDraft));
     const speechPatch = resolveSceneSpeechPatch(mode, configDraft, isOmniModel);
     const secondarySubtitleTranslationEnabled =
       configDraft.devices.subtitleTranslationMode === 'secondary' && Boolean(configDraft.devices.subtitleTranslationModelId);
@@ -337,10 +378,10 @@ function RealTimeSessionPage() {
             title={t('session.controlTitle')}
           />
           <div className="provider-list">
-            <button aria-pressed={runningMode === 'watch'} className={runningMode === 'watch' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null} onClick={() => void handleSceneLaunch('watch')} type="button">
+            <button aria-pressed={runningMode === 'watch'} className={runningMode === 'watch' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null || hasActiveChain} onClick={() => void handleSceneLaunch('watch')} type="button">
               {busyAction === 'watch-start' ? t('session.starting') : t('session.watchButton')}
             </button>
-            <button aria-pressed={runningMode === 'game' || runningMode === 'voice-room'} className={runningMode === 'game' || runningMode === 'voice-room' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null} onClick={() => void handleSceneLaunch('game')} type="button">
+            <button aria-pressed={runningMode === 'voice-room'} className={runningMode === 'voice-room' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null || hasActiveChain} onClick={() => void handleSceneLaunch('voice-room')} type="button">
               {busyAction === 'conversation-start' ? t('session.starting') : t('session.conversationMode')}
             </button>
           </div>

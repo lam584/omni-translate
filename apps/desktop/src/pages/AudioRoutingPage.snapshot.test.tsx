@@ -118,7 +118,7 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     const secondaryGroup = host.container.querySelector('.routing-secondary-group') as HTMLElement | null;
     expect(secondaryGroup).toBeTruthy();
     expect(secondaryGroup?.textContent).toContain('字幕翻译');
-    expect(secondaryGroup?.textContent).toContain('听对方 · 二次字幕译音');
+    expect(secondaryGroup?.textContent).toContain('听对方 · 二次语音识别');
     const switches = secondaryGroup?.querySelectorAll('input[role="switch"]') ?? [];
     expect(switches).toHaveLength(2);
     for (const node of Array.from(switches) as HTMLInputElement[]) {

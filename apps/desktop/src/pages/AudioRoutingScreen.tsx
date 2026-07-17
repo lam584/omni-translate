@@ -7,6 +7,7 @@ import {
   detectScenarioCapabilities,
   isVoiceModel,
   resolveSelectedModel,
+  supportsRoutingScenario,
   type RoutingModelOption,
   type ScenarioId,
 } from './audio-routing/routingModelCatalog';
@@ -107,6 +108,10 @@ function AudioRoutingPage() {
   }, [configDraft, enabledProviderTemplateIds]);
 
   const voiceModelOptions = useMemo(() => allModelOptions.filter(isVoiceModel), [allModelOptions]);
+  const inboundModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'inbound')), [voiceModelOptions]);
+  const outboundModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'outbound')), [voiceModelOptions]);
+  const secondarySttModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'inboundSecondary')), [voiceModelOptions]);
+  const ttsModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'tts')), [voiceModelOptions]);
   const textModelOptions = useMemo(
     () => allModelOptions
       .filter((model) => !isVoiceModel(model))
@@ -121,18 +126,21 @@ function AudioRoutingPage() {
     device.label,
     device.interfaceName,
   ].some((value) => value.includes('Omni Translate Virtual Speaker')));
+  const selectedInputAvailable = captureDevices.some((device) => device.deviceId === configDraft.devices.inputDeviceId);
+  const selectedOutputAvailable = physicalRenderDevices.some((device) => device.deviceId === configDraft.devices.outputDeviceId);
+  const unavailableDeviceLabel = `${tWithDefault(t, 'audioRouting.status.missing')}: ${tWithDefault(t, 'audioRouting.notSelected')}`;
 
-  const inboundModelOption = resolveSelectedModel(voiceModelOptions, configDraft.devices.inboundVoiceModelId);
-  const outboundModelOption = resolveSelectedModel(voiceModelOptions, configDraft.devices.outboundVoiceModelId);
+  const inboundModelOption = resolveSelectedModel(inboundModelOptions, configDraft.devices.inboundVoiceModelId);
+  const outboundModelOption = resolveSelectedModel(outboundModelOptions, configDraft.devices.outboundVoiceModelId);
   const subtitleModelOption = resolveSelectedModel(textModelOptions, configDraft.devices.subtitleTranslationModelId);
-  const ttsModelOption = resolveSelectedModel(voiceModelOptions, configDraft.devices.textToSpeechModelId);
+  const ttsModelOption = resolveSelectedModel(ttsModelOptions, configDraft.devices.textToSpeechModelId);
 
   const subtitleMode = configDraft.devices.subtitleTranslationMode;
   const isNativeSubtitle = subtitleMode === 'native';
   const mutedHint = tWithDefault(t, 'audioRouting.cardDisabledHint');
   const nativeAudioUnsupported =
     isNativeSubtitle
-    && !resolveSelectedModel(voiceModelOptions, configDraft.devices.textToSpeechModelId || configDraft.speech.textToSpeechModelId || configDraft.devices.outboundVoiceModelId)?.capabilities.includes('speech-to-speech');
+    && !resolveSelectedModel(ttsModelOptions, configDraft.devices.textToSpeechModelId || configDraft.speech.textToSpeechModelId || configDraft.devices.outboundVoiceModelId)?.capabilities.includes('speech-to-speech');
 
   const runtimeBadges = useMemo(() => buildAudioRuntimeBadges(
     audioRuntimeSnapshot,
@@ -325,12 +333,12 @@ function AudioRoutingPage() {
   };
 
   const inboundSecondaryModelOption = resolveSelectedModel(
-    voiceModelOptions,
+    secondarySttModelOptions,
     configDraft.devices.inboundSecondaryAudioModelId,
   );
   const inboundScenarioCards: ScenarioCardProps[] = [{
     active: true, caption: tWithDefault(t, 'audioRouting.scenarioInboundCaption'), icon: 'headphones',
-    modelName: inboundModelOption?.displayName ?? '—', modelOptions: voiceModelOptions, modelProvider: inboundModelOption?.description ?? '',
+    modelName: inboundModelOption?.displayName ?? '—', modelOptions: inboundModelOptions, modelProvider: inboundModelOption?.description ?? '',
     onSelect: (modelId) => selectModel('inbound', modelId),
     tags: detectScenarioCapabilities(inboundModelOption, 'inbound'), title: tWithDefault(t, 'audioRouting.scenarioInboundTitle'), value: configDraft.devices.inboundVoiceModelId,
   }];
@@ -346,7 +354,7 @@ function AudioRoutingPage() {
     {
       caption: tWithDefault(t, 'audioRouting.scenarioInboundSecondaryCaption'), enabled: configDraft.devices.outputSpeechEnabled,
       enableLabel: tWithDefault(t, 'audioRouting.secondaryAudioCardToggle'), icon: 'subtitles',
-      modelName: inboundSecondaryModelOption?.displayName ?? '—', modelOptions: voiceModelOptions, modelProvider: inboundSecondaryModelOption?.description ?? '', mutedHint,
+      modelName: inboundSecondaryModelOption?.displayName ?? '—', modelOptions: secondarySttModelOptions, modelProvider: inboundSecondaryModelOption?.description ?? '', mutedHint,
       onEnabledChange: handleSecondaryAudioCardEnabledToggle,
       onSelect: (modelId) => selectModel('inboundSecondary', modelId),
       tags: detectScenarioCapabilities(inboundSecondaryModelOption, 'inboundSecondary'), title: tWithDefault(t, 'audioRouting.scenarioInboundSecondaryTitle'), value: configDraft.devices.inboundSecondaryAudioModelId,
@@ -356,7 +364,7 @@ function AudioRoutingPage() {
     {
       active: configDraft.devices.virtualMicOutputEnabled, caption: tWithDefault(t, 'audioRouting.scenarioOutboundCaption'),
       enableChecked: configDraft.devices.virtualMicOutputEnabled, enableLabel: tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic'), icon: 'mic',
-      modelName: outboundModelOption?.displayName ?? '—', modelOptions: voiceModelOptions, modelProvider: outboundModelOption?.description ?? '',
+      modelName: outboundModelOption?.displayName ?? '—', modelOptions: outboundModelOptions, modelProvider: outboundModelOption?.description ?? '',
       onEnabledChange: handleVirtualMicToggle,
       onSelect: (modelId) => selectModel('outbound', modelId),
       tags: detectScenarioCapabilities(outboundModelOption, 'outbound'), title: tWithDefault(t, 'audioRouting.scenarioOutboundTitle'), value: configDraft.devices.outboundVoiceModelId,
@@ -364,7 +372,7 @@ function AudioRoutingPage() {
     {
       active: configDraft.speech.enabled, caption: tWithDefault(t, 'audioRouting.scenarioTtsCaption'),
       enableChecked: configDraft.speech.enabled, enableLabel: tWithDefault(t, 'audioRouting.scenarioTtsRole'), icon: 'spark',
-      modelName: ttsModelOption?.displayName ?? '—', modelOptions: voiceModelOptions, modelProvider: ttsModelOption?.description ?? '',
+      modelName: ttsModelOption?.displayName ?? '—', modelOptions: ttsModelOptions, modelProvider: ttsModelOption?.description ?? '',
       onEnabledChange: handleTtsEnabledToggle,
       onSelect: (modelId) => selectModel('tts', modelId),
       tags: detectScenarioCapabilities(ttsModelOption, 'tts'), title: tWithDefault(t, 'audioRouting.scenarioTtsTitle'), value: configDraft.devices.textToSpeechModelId,
@@ -384,18 +392,19 @@ function AudioRoutingPage() {
             <StatusBadge label={runtimeBadges.capture.label} pulse={runtimeBadges.capture.pulse} tone={runtimeBadges.capture.tone} />
           </div>
           <ChainFlow
-            direction="inbound"
+            direction="outbound"
             directionLabel={tWithDefault(t, 'audioRouting.chainOutbound')}
-            inboundLabel={tWithDefault(t, 'audioRouting.chainSystemAudio')}
-            modelLabel={tWithDefault(t, 'audioRouting.chainInboundModel')}
-            modelSubtitle={inboundModelOption ? tWithDefault(t, 'audioRouting.modelSubtitleSttTranslation') : '—'}
-            outboundLabel={tWithDefault(t, 'audioRouting.chainSubtitleTranslated')}
-            outboundSubtitle={tWithDefault(t, 'audioRouting.chainLocalPlayback')}
+            inboundLabel={tWithDefault(t, 'audioRouting.chainMicrophone')}
+            modelLabel={tWithDefault(t, 'audioRouting.chainOutboundModel')}
+            modelSubtitle={outboundModelOption ? tWithDefault(t, 'audioRouting.modelSubtitleSttTranslationSpeech') : '—'}
+            outboundLabel={tWithDefault(t, 'audioRouting.chainVirtualMicSpeaker')}
+            outboundSubtitle={tWithDefault(t, 'audioRouting.chainReturnToPeer')}
           />
 
           <label className="field-stack field-span-full">
             <span>{tWithDefault(t, 'audioRouting.microphone')}</span>
             <select className="select-input" onChange={(event) => handleInputDeviceChange(event.target.value)} value={configDraft.devices.inputDeviceId}>
+              {!selectedInputAvailable && <option disabled value={configDraft.devices.inputDeviceId}>{unavailableDeviceLabel}</option>}
               {captureDevices.map((device) => (
                 <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
               ))}
@@ -404,7 +413,7 @@ function AudioRoutingPage() {
 
           <div className="routing-test-row">
             <div className="routing-test-row-controls">
-              <button className="icon-button" disabled={micTesting || captureDevices.length === 0} onClick={handleMicTest} type="button">
+              <button className="icon-button" disabled={micTesting || !selectedInputAvailable} onClick={handleMicTest} type="button">
                 <AppIcon name="wave" size={15} />
                 {micTesting ? tWithDefault(t, 'audioRouting.testing') : tWithDefault(t, 'audioRouting.testMic')}
               </button>
@@ -449,18 +458,19 @@ function AudioRoutingPage() {
             <StatusBadge label={runtimeBadges.output.label} pulse={runtimeBadges.output.pulse} tone={runtimeBadges.output.tone} />
           </div>
           <ChainFlow
-            direction="outbound"
+            direction="inbound"
             directionLabel={tWithDefault(t, 'audioRouting.chainInbound')}
-            inboundLabel={tWithDefault(t, 'audioRouting.chainMicrophone')}
-            modelLabel={tWithDefault(t, 'audioRouting.chainOutboundModel')}
-            modelSubtitle={outboundModelOption ? tWithDefault(t, 'audioRouting.modelSubtitleSttTranslationSpeech') : '—'}
-            outboundLabel={tWithDefault(t, 'audioRouting.chainVirtualMicSpeaker')}
-            outboundSubtitle={tWithDefault(t, 'audioRouting.chainReturnToPeer')}
+            inboundLabel={tWithDefault(t, 'audioRouting.chainSystemAudio')}
+            modelLabel={tWithDefault(t, 'audioRouting.chainInboundModel')}
+            modelSubtitle={inboundModelOption ? tWithDefault(t, 'audioRouting.modelSubtitleSttTranslation') : '—'}
+            outboundLabel={tWithDefault(t, 'audioRouting.chainSubtitleTranslated')}
+            outboundSubtitle={tWithDefault(t, 'audioRouting.chainLocalPlayback')}
           />
 
           <label className="field-stack field-span-full">
             <span>{tWithDefault(t, 'audioRouting.speaker')}</span>
             <select className="select-input" onChange={(event) => handleOutputDeviceChange(event.target.value)} value={configDraft.devices.outputDeviceId}>
+              {!selectedOutputAvailable && <option disabled value={configDraft.devices.outputDeviceId}>{unavailableDeviceLabel}</option>}
               {physicalRenderDevices.map((device) => (
                 <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
               ))}
@@ -469,7 +479,7 @@ function AudioRoutingPage() {
 
           <div className="routing-test-row">
             <div className="routing-test-row-controls">
-              <button className="icon-button" disabled={speakerTesting || physicalRenderDevices.length === 0} onClick={handleSpeakerTest} type="button">
+              <button className="icon-button" disabled={speakerTesting || !selectedOutputAvailable} onClick={handleSpeakerTest} type="button">
                 <AppIcon name="headphones" size={15} />
                 {speakerTesting ? tWithDefault(t, 'audioRouting.testing') : tWithDefault(t, 'audioRouting.testSpeaker')}
               </button>
@@ -547,7 +557,7 @@ function AudioRoutingPage() {
               <header className="routing-secondary-group-head">
                 <div>
                   <div className="routing-panel-kicker">{tWithDefault(t, 'audioRouting.secondaryTranslation')}</div>
-                  <h4>{tWithDefault(t, 'audioRouting.secondaryTranslationGroupTitle')}</h4>
+                  <h4>{tWithDefault(t, 'audioRouting.secondaryTranslationDescription')}</h4>
                 </div>
               </header>
               <div className="scenario-grid scenario-grid-routing routing-secondary-group-grid">
@@ -584,6 +594,7 @@ export const audioRoutingPageHelpers = {
   isVoiceModel,
   resolveSelectedModel,
   detectScenarioCapabilities,
+  supportsRoutingScenario,
 };
 
 export default AudioRoutingPage;

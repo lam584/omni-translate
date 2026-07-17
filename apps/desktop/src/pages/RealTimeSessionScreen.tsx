@@ -127,7 +127,10 @@ function getSceneLaunchConfigurationProblem(
     }
   }
   if (mode === 'watch' || mode === 'voice-room') {
-    const selectedPlayback = configDraft.devices.playbackDeviceId;
+    // Audio Routing and the native speech output both use outputDeviceId.
+    // playbackDeviceId is a legacy preference whose default placeholder is not
+    // a Windows endpoint ID, so validating it reports healthy devices missing.
+    const selectedPlayback = configDraft.devices.outputDeviceId;
     if (!selectedPlayback || !audioSnapshot.renderDevices.some((device) => device.deviceId === selectedPlayback)) {
       return 'playback-device';
     }

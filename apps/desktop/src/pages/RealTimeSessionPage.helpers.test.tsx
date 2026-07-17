@@ -15,6 +15,7 @@ const {
   formatLatencyMs,
   formatCueTiming,
   formatRuntimeClock,
+  getSceneLaunchConfigurationProblem,
   logSceneLaunchConfig,
   parseRuntimeTimestampMs,
   resolveSceneLabel,
@@ -84,6 +85,20 @@ describe('realTimeSessionPageHelpers', () => {
       voiceModelRaw: 'plain-model',
       isOmniModel: false,
     });
+  });
+
+  it('validates the output device selected by Audio Routing instead of the legacy playback preference', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    const audioSnapshot = structuredClone(audioRuntimeSnapshotMock);
+    const outputDevice = audioSnapshot.renderDevices[0];
+
+    configDraft.devices.outputDeviceId = outputDevice.deviceId;
+    configDraft.devices.playbackDeviceId = 'system-output-default';
+
+    expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBeNull();
+
+    configDraft.devices.outputDeviceId = 'missing-output-device';
+    expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBe('playback-device');
   });
 
   it('derives speech patches for every scene mode and watch fallback defaults', () => {

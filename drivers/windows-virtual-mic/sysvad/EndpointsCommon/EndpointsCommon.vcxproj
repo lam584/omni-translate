@@ -178,27 +178,16 @@
     </DriverSign>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="a2dphpminwavert.cpp" />
-    <ClCompile Include="a2dphpspeakertopo.cpp" />
-    <ClCompile Include="a2dphptopo.cpp" />
     <ClCompile Include="AudioModuleHelper.cpp" />
-    <ClCompile Include="bthhfpmictopo.cpp" />
     <ClCompile Include="bthhfpminwavert.cpp" />
-    <ClCompile Include="bthhfpspeakertopo.cpp" />
-    <ClCompile Include="bthhfptopo.cpp" />
-    <ClCompile Include="micarraytopo.cpp" />
     <ClCompile Include="MiniportAudioEngineNode.cpp" />
     <ClCompile Include="MiniportStreamAudioEngineNode.cpp" />
     <ClCompile Include="mintopo.cpp" />
     <ClCompile Include="minwavert.cpp" />
     <ClCompile Include="minwavertstream.cpp" />
     <ClCompile Include="NewDelete.cpp" />
-    <ClCompile Include="speakerhptopo.cpp" />
     <ClCompile Include="speakertopo.cpp" />
     <ClCompile Include="usbhsminwavert.cpp" />
-    <ClCompile Include="usbhsmictopo.cpp" />
-    <ClCompile Include="usbhsspeakertopo.cpp" />
-    <ClCompile Include="usbhstopo.cpp" />
   </ItemGroup>
   <ItemGroup>
     <Inf Exclude="@(Inf)" Include="*.inf" />

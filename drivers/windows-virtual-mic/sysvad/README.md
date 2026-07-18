@@ -21,6 +21,9 @@ GitHub Linguist treats this directory as vendored code through the repository
   componentized INF used for the Omni virtual speaker.
 - `adapter.cpp`, `common.cpp`, and their supporting files provide the PortCls
   adapter implementation.
+- The generic WaveRT implementation still links the upstream save-data, tone
+  generator, and sideband property-handler helpers. They are retained as core
+  link dependencies, but Omni does not register sideband or capture endpoints.
 - `omni_bridge_ring.cpp` and `omni_bridge_ring.h` expose rendered PCM to the
   native bridge through the Omni driver IOCTL ABI.
 

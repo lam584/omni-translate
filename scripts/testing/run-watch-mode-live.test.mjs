@@ -249,7 +249,7 @@ test('live runner writes subtitle TTS source to frontend, process, and user auto
   assert(userEnvIndex < restoreUserIndex);
 });
 
-test('live runner defaults to full Test.mp3 playback for strict evidence', () => {
+test('live runner defaults to full reference-media playback for strict evidence', () => {
   const defaultPlaybackIndex = script.indexOf('[int]$PlaybackSeconds = 0');
   const limitedPlaybackIndex = script.indexOf('if ($PlaybackSeconds -gt 0) {\r\n      $args += @("--max-seconds", "$PlaybackSeconds")');
   const fullSourceTranscriptIndex = script.indexOf('fullMedia = ($PlaybackSeconds -le 0)');

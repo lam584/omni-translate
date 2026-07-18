@@ -14,7 +14,7 @@ param(
   [switch]$StopDesktopAfterPlayback,
   [switch]$AllowElevatedDesktopLaunch,
   [switch]$SkipPhysicalOutputContentStt,
-  [string]$MediaPath = "scripts/testing/Test.mp3",
+  [string]$MediaPath = "scripts/testing/fixtures/watch-mode-en-original.wav",
   [string]$WatchModelId = "",
   [string]$SubtitleTranslationModelId = "template-dashscope-realtime::qwen3.6-flash-2026-04-16",
   [string]$InboundSecondaryAudioModelId = "template-dashscope-realtime::qwen3.5-omni-plus-realtime",

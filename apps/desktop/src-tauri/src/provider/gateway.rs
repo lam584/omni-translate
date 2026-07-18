@@ -483,7 +483,7 @@ mod tests {
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
             openai_provider(format!("http://{}", addr)),
-            "This is a one billion dollar rocket ship.".to_string(),
+            "Project Aurora has a one billion dollar reliability fund.".to_string(),
             "en-US".to_string(),
             "zh-CN".to_string(),
         );

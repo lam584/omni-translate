@@ -44,7 +44,7 @@ npm run test:llm-integration
 The local config file is ignored by Git. The live suite also runs as part of
 `npm run test:desktop-shell`, or can be invoked alone with the command above.
 It calls configured text
-models through their base URLs and sends `Test.mp3` through the configured
+models through their base URLs and sends the original `watch-mode-en-original.wav` fixture through the configured
 DashScope realtime audio model. Optional `catalog`, `probe`, and `speech`
 blocks enable model-directory, provider-probe, and realtime speech-synthesis
 checks. The suite validates response shape and configured minimum lengths.
@@ -56,7 +56,7 @@ checks. The suite validates response shape and configured minimum lengths.
 | Provider text translation and streaming deltas | Rust gateway protocol tests | Live LLM `providers[].smoke` |
 | Provider model directory | Rust endpoint parser tests | Live LLM `providers[].catalog` |
 | Provider health and latency probe | Rust routing tests | Live LLM `providers[].probe` |
-| Realtime audio transcription and translation | Rust websocket protocol tests | Live LLM `audio` with `Test.mp3` |
+| Realtime audio transcription and translation | Rust websocket protocol tests | Live LLM `audio` with the original WAV fixture |
 | Realtime speech synthesis | Rust audio-delta tests | Live LLM `audio.speech` |
 | Watch-mode route and overlay auto-show selection | Rust audio event tests and session page tests | Manual desktop watch-mode playback |
 | Subtitle cue rendering and overlay controls | Overlay page tests | Manual desktop overlay inspection |
@@ -141,7 +141,7 @@ npm run test:watch-mode-evidence
 ```
 
 Check the strict release evidence gate. This requires the latest complete
-`scripts/testing/Test.mp3` live run for both required Watch Mode models:
+`scripts/testing/fixtures/watch-mode-en-original.wav` live run for both required Watch Mode models:
 
 ```powershell
 npm run test:watch-mode-evidence:strict
@@ -167,7 +167,7 @@ npm run test:watch-mode-live:matrix -- -SkipDriverRepair -AllowElevatedDesktopLa
 
 The live command builds the native bridge, probes the virtual speaker driver,
 attempts an explicit elevated repair if the probe fails, starts the desktop
-shell, plays the full `scripts/testing/Test.mp3`, copies `app.log` and
+shell, plays the full original WAV fixture, copies `app.log` and
 `bridge-service.log`, and writes `report.json` plus `report.md` under
 `artifacts/testing/watch-mode-live/<timestamp>/`. Live runs also refresh
 `artifacts/testing/watch-mode-live/latest-watch-mode-live.json` with the
@@ -176,7 +176,7 @@ latest report path, verdict, timestamp, failure layer, and model id.
 The report separates failures into `driver`, `wasapi`, `bridge`,
 `physicalOutput`, `physicalOutputContent`, `speechSegmentation`,
 `strictContent`, `app`, and `provider` layers. The `strictContent` layer is
-applicable to `Test.mp3` full-media live runs and checks deterministic Chinese
+applicable to full original-fixture live runs and checks deterministic Chinese
 reference coverage, required concepts, forbidden numeric mistranslations, at
 least eight final subtitle writes, at least eight queued translated speech
 segments, and at least eight played translated speech segments.

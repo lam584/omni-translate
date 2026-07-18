@@ -52,7 +52,7 @@ describe('subtitle overlay page helpers', () => {
   it('wraps accumulating explicit segments into paired bilingual rows without repetition', () => {
     const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
     cue.displaySegments = [{
-      sourceText: 'This is a one billion dollar rocket ship that will one day take you all the way to Mars and into your brand new home.',
+      sourceText: 'Project Aurora has a one billion dollar reliability fund for a research station on Mars.',
       translatedText: '这是一艘价值十亿美元的火箭飞船，未来终有一天会带你一路前往火星并住进崭新的家园。',
       pending: true,
     }];

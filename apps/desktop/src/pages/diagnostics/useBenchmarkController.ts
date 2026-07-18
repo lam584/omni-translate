@@ -23,7 +23,7 @@ type BenchmarkProgressView = Pick<BenchmarkProgressEvent, 'status' | 'phase' | '
 
 export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[]) {
   const [modelId, setModelId] = useState('');
-  const [mp3Path, setMp3Path] = useState('E:\\omni-translate\\scripts\\testing\\Test.mp3');
+  const [mp3Path, setMp3Path] = useState('scripts/testing/fixtures/watch-mode-en-original.wav');
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<BenchmarkReport | null>(null);
   const [error, setError] = useState<string | null>(null);

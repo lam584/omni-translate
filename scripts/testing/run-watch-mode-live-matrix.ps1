@@ -4,7 +4,7 @@ param(
     "qwen3.5-livetranslate-flash-realtime"
   ),
   [string]$OutputRoot = "artifacts/testing/watch-mode-live",
-  [string]$MediaPath = "scripts/testing/Test.mp3",
+  [string]$MediaPath = "scripts/testing/fixtures/watch-mode-en-original.wav",
   [int]$WarmupSeconds = 12,
   [int]$PlaybackSeconds = 0,
   [int]$PostPlaybackWaitSeconds = 120,

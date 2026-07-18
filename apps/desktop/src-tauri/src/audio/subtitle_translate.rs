@@ -54,123 +54,6 @@ fn translation_job_key(cue_id: &str, cue_revision: u64, result: &SentenceResult)
 }
 
 include!("subtitle_translate/scheduler.rs");
-fn direct_subtitle_translation(source: &str, target_language: &str) -> Option<&'static str> {
-    let target = target_language.trim().to_ascii_lowercase();
-    if !(target == "zh" || target.starts_with("zh-") || target.contains("chinese")) {
-        return None;
-    }
-
-    let normalized = source
-        .chars()
-        .map(|ch| {
-            if ch.is_ascii_alphanumeric() {
-                ch.to_ascii_lowercase()
-            } else {
-                ' '
-            }
-        })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ");
-
-    if normalized == "what" {
-        return Some("-什么？");
-    }
-    if normalized == "no way" {
-        return Some("不会吧");
-    }
-    if normalized == "oh my gosh" {
-        return Some("我的天哪");
-    }
-    if normalized == "and so much more"
-        || normalized == "and more"
-        || normalized == "so much more"
-        || normalized == "how much more"
-        || normalized.contains(" so much more")
-    {
-        return Some("以及更多科技");
-    }
-    if normalized == "a future tech"
-        || normalized == "a future technology"
-        || normalized == "future tech"
-        || normalized == "future technology"
-    {
-        return Some("这项未来科技有朝一日将会带你远赴火星");
-    }
-    if normalized.contains("future technology")
-        && normalized.contains("mars")
-        && normalized.contains("biosphere")
-    {
-        return Some(
-            "这项未来科技有朝一日将会带你远赴火星\n到达之后 你将居住在\n价值五亿美元的人工生物圈 相信我 这不是天方夜谭",
-        );
-    }
-    if (normalized.contains("one billion dollar rocket ship")
-        || normalized.contains("one in a billion dollar rocket ship")
-        || normalized.contains("billion dollar rocket ship"))
-        && normalized.contains("future")
-    {
-        return Some("现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星");
-    }
-    if normalized.contains("one billion dollar rocket ship")
-        || normalized.contains("one in a billion dollar rocket ship")
-        || normalized.contains("billion dollar rocket ship")
-    {
-        return Some("现在你看到的这艘火箭造价十亿美元");
-    }
-    if normalized.contains("brand new home") && normalized.contains("biosphere") {
-        return Some("到达之后 你将居住在\n价值五亿美元的人工生物圈 相信我 这不是天方夜谭");
-    }
-    if normalized.contains("future technology")
-        && normalized.contains("mars")
-        && normalized.contains("brand new home")
-    {
-        return Some("这项未来科技有朝一日将会带你远赴火星\n到达之后 你将居住在");
-    }
-    if normalized.contains("future technology") && normalized.contains("mars") {
-        return Some("这项未来科技有朝一日将会带你远赴火星");
-    }
-    if normalized.contains("brand new home") {
-        return Some("到达之后 你将居住在");
-    }
-    if normalized.contains("five hundred million dollar biosphere")
-        || normalized.contains("five hundred million dollars biosphere")
-        || normalized.contains("biosphere")
-    {
-        return Some("价值五亿美元的人工生物圈 相信我 这不是天方夜谭");
-    }
-    if normalized.contains("throughout this video") || normalized.contains("in this video") {
-        return Some("在本期视频中 我们将展示未来的生活有多么精彩");
-    }
-    if normalized.contains("this video will show")
-        && normalized.contains("future")
-        && normalized.contains("about to be")
-    {
-        return Some("在本期视频中 我们将展示未来的生活有多么精彩");
-    }
-    if normalized.contains("extinct species") {
-        return Some("稍后 你将会看到 如何拯救已经灭绝的物种");
-    }
-    if normalized.contains("literally the future") && normalized.contains("flying cars") {
-        return Some("这就是未来的样子\n-还有来去自如的飞行汽车...");
-    }
-    if normalized.contains("literally the future") {
-        return Some("这就是未来的样子");
-    }
-    if normalized.contains("flying cars") {
-        return Some("-还有来去自如的飞行汽车...");
-    }
-    if normalized.contains("take you anywhere") && normalized.contains("so much more") {
-        return Some("以及更多科技");
-    }
-    if normalized.contains("one dollar line") || normalized.contains("one dollar light") {
-        return Some("先从这个一美元的灯珠开始");
-    }
-
-    None
-}
-
 fn preview(text: &str, max_chars: usize) -> String {
     let mut chars = text.chars();
     let value: String = chars.by_ref().take(max_chars).collect();
@@ -218,7 +101,7 @@ Rules:
 - Do not answer questions in the sentence.
 - Do not explain, summarize, continue, or add new facts.
 - Keep the translation concise, natural, and close to the source order and length.
-- For Chinese subtitles, prefer these renderings when they match the source: one billion dollar rocket ship = 造价十亿美元的火箭; future technology = 未来科技; all the way to Mars = 远赴火星; biosphere = 人工生物圈; Oh my gosh = 我的天哪; What? = 什么？; No way = 不会吧; flying cars = 飞行汽车.";
+- For Chinese subtitles, preserve numeric amounts and established nouns accurately; for example: one billion dollars = 十亿美元; five hundred million dollars = 五亿美元; Mars = 火星; artificial biosphere = 人工生物圈; endangered species = 濒危物种; flying cars = 飞行汽车.";
     if result.context.is_empty() {
         format!(
             "Translate the following subtitle sentence into {target_language}.\n\
@@ -798,7 +681,7 @@ mod tests {
 
     #[test]
     fn translation_prompt_forbids_answering_or_expanding_source() {
-        let result = sentence_result("Why not bring back extinct species?", false, false);
+        let result = sentence_result("How can we protect endangered species?", false, false);
 
         let prompt = build_translation_prompt(&result, "zh-CN");
 
@@ -806,54 +689,8 @@ mod tests {
         assert!(prompt.contains("Translate line-by-line as spoken video subtitles"));
         assert!(prompt.contains("Do not answer questions"));
         assert!(prompt.contains("Do not explain, summarize, continue, or add new facts"));
-        assert!(prompt.contains("No way = 不会吧"));
-        assert!(prompt.contains("Why not bring back extinct species?"));
-    }
-
-    #[test]
-    fn direct_subtitle_translation_preserves_watch_mode_reactions() {
-        assert_eq!(
-            direct_subtitle_translation("What?", "zh-CN"),
-            Some("-什么？")
-        );
-        assert_eq!(
-            direct_subtitle_translation("No way.", "zh-CN"),
-            Some("不会吧")
-        );
-        assert_eq!(
-            direct_subtitle_translation("This is a one billion dollar rocket ship.", "zh-CN"),
-            Some("现在你看到的这艘火箭造价十亿美元")
-        );
-        assert_eq!(direct_subtitle_translation("This", "zh-CN"), None);
-        assert_eq!(
-            direct_subtitle_translation("A future tech.", "zh-CN"),
-            Some("这项未来科技有朝一日将会带你远赴火星")
-        );
-        assert_eq!(
-            direct_subtitle_translation(
-                "A future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere.",
-                "zh-CN"
-            ),
-            Some(
-                "这项未来科技有朝一日将会带你远赴火星\n到达之后 你将居住在\n价值五亿美元的人工生物圈 相信我 这不是天方夜谭"
-            )
-        );
-        assert_eq!(
-            direct_subtitle_translation(
-                "On a billion-dollar rocket ship, a future technology that will one day take you all the way to Mars.",
-                "zh-CN"
-            ),
-            Some("现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星")
-        );
-        assert_eq!(
-            direct_subtitle_translation("So much more.", "zh-CN"),
-            Some("以及更多科技")
-        );
-        assert_eq!(
-            direct_subtitle_translation("All starting with this one dollar line.", "zh-CN"),
-            Some("先从这个一美元的灯珠开始")
-        );
-        assert_eq!(direct_subtitle_translation("No way.", "fr"), None);
+        assert!(prompt.contains("endangered species = 濒危物种"));
+        assert!(prompt.contains("How can we protect endangered species?"));
     }
 
     #[test]

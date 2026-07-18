@@ -563,8 +563,8 @@ mod native_translation_tests {
     #[test]
     fn native_translation_breaks_long_source_and_translation_into_display_rows() {
         let store = AudioStateStore::new();
-        let source = "This is a one billion dollar rocket ship, a future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh, this video will show you just how epic the future is about to be.";
-        let translated = "这是一艘价值一百万美元的火箭，一项未来科技，终有一天它将带你一路飞往火星，在你全新的家园里生活。一个价值五亿美元的生物圈。天哪，在本期视频中，我们将向你展示未来的景象究竟有多么壮观。天哪，你会看到我们将如何让灭绝的物种重获新生。";
+        let source = "Project Aurora has a one billion dollar reliability fund. The first research station is planned for Mars. Its construction budget is five hundred million dollars. Inside the station, an artificial biosphere keeps air, water, and plants in balance.";
+        let translated = "极光项目拥有十亿美元的可靠性基金。第一个研究站计划建在火星上。它的建设预算是五亿美元。研究站内的人工生物圈维持空气、水和植物的平衡。";
 
         write_native_translation_to_cue(&store, "omni-cue-long", source, translated, true, false);
 

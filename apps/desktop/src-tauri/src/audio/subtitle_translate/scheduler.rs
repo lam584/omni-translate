@@ -419,21 +419,6 @@ fn spawn_translation_job(tx: mpsc::Sender<TranslationUpdate>, job: TranslationJo
     thread::Builder::new()
         .name("subtitle-translate-call".to_string())
         .spawn(move || {
-            if let Some(translated) =
-                direct_subtitle_translation(&job.result.sentence, &job.target_language)
-            {
-                let translated = translated.to_string();
-                let _ = tx.send(TranslationUpdate::Delta(TranslationDelta {
-                    job: job.clone(),
-                    translated: translated.clone(),
-                }));
-                let _ = tx.send(TranslationUpdate::Outcome(TranslationOutcome {
-                    job,
-                    translated: Ok(translated),
-                }));
-                return;
-            }
-
             let gateway = ProviderGateway::new();
             let cue_trace = job
                 .trace

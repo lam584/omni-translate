@@ -1,0 +1,11 @@
+[allowlist]
+description = "Synthetic value used only by credential-redaction tests"
+condition = "AND"
+regexTarget = "secret"
+regexes = [
+  '''^diagnostics-test-secret-7f3a$''',
+]
+paths = [
+  '''^apps/desktop/src-tauri/src/diagnostics/events\.rs$''',
+  '''^apps/desktop/src/utils/redact-sensitive-data\.test\.ts$''',
+]

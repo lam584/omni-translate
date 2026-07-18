@@ -65,18 +65,17 @@ const PROVIDER_ERROR_PATTERNS = [
 const DEFAULT_STRICT_REFERENCE_PATH = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'fixtures',
-  'watch-mode-live',
-  'test-mp3-reference.zh-CN.txt',
+  'watch-mode-en-original.zh-CN.txt',
 );
-const TEST_MP3_SHA256 = 'REMOVED_OLD_TEST_MEDIA_SHA256';
+const TEST_MEDIA_SHA256 = '7fd64ecd6cf0762cac5ac0ab16eba37cc733765c55cc8264f87a94cb46962131';
 const STRICT_REQUIRED_CONCEPTS = [
   '十亿美元',
   '火星',
   '五亿美元',
   '人工生物圈',
-  '灭绝的物种',
+  '濒危物种',
   '飞行汽车',
-  '一美元的灯珠',
+  '一美元的灯泡',
 ];
 const STRICT_FORBIDDEN_ERRORS = [
   { text: '一亿美元', reason: 'one-billion amount was mistranslated as one hundred million' },
@@ -625,27 +624,27 @@ function uniqueEvidenceText(parts) {
   return lines.join('\n');
 }
 
-function isTestMp3Evidence(content, playback) {
+function isStrictTestMediaEvidence(content, playback) {
   const mediaSha = String(content?.sourceReference?.mediaSha256 ?? '').toLowerCase();
-  if (mediaSha === TEST_MP3_SHA256) return true;
+  if (mediaSha === TEST_MEDIA_SHA256) return true;
   const paths = [
     content?.sourceReference?.mediaPath,
     playback?.mediaPath,
   ].filter(Boolean).map((item) => String(item).replace(/\\/g, '/').toLowerCase());
-  return paths.some((item) => item.endsWith('/scripts/testing/test.mp3') || item.endsWith('/test.mp3'));
+  return paths.some((item) => item.endsWith('/scripts/testing/fixtures/watch-mode-en-original.wav'));
 }
 
 export function evaluateStrictContent(input) {
   const content = input.physicalOutputContent;
   const playback = input.playback;
-  const applicable = isTestMp3Evidence(content, playback);
+  const applicable = isStrictTestMediaEvidence(content, playback);
   const referenceText = String(input.strictReferenceText ?? readTextIfExists(DEFAULT_STRICT_REFERENCE_PATH)).trim();
   if (!applicable) {
     return {
       applicable: false,
       skipped: true,
       passed: true,
-      reason: 'strict Test.mp3 reference gate is not applicable to this run',
+      reason: 'strict reference-media gate is not applicable to this run',
     };
   }
   if (!referenceText) {
@@ -734,7 +733,7 @@ export function evaluateStrictContent(input) {
     }
   }
   const failures = [];
-  if (!fullMedia) failures.push(`strict Test.mp3 gate requires full-media playback; playbackSeconds=${sourcePlaybackSeconds}`);
+  if (!fullMedia) failures.push(`strict reference-media gate requires full-media playback; playbackSeconds=${sourcePlaybackSeconds}`);
   if (coverageEvidence < 0.83 || missingClausesEvidence.length > 2) {
     failures.push(`reference translation coverage is too low; coverage=${coverageEvidence.toFixed(3)} missingClauses=${missingClausesEvidence.length}`);
   }
@@ -1002,7 +1001,7 @@ export function classifyWatchModeRun(input) {
   };
   if (!strictContent.passed) {
     layers.strictContent.status = 'failed';
-    layers.strictContent.reason = strictContent.reason ?? 'strict Test.mp3 content evidence failed';
+    layers.strictContent.reason = strictContent.reason ?? 'strict reference-media content evidence failed';
     layers.strictContent.reasons = Array.isArray(strictContent.failures) && strictContent.failures.length > 0
       ? strictContent.failures
       : [layers.strictContent.reason];

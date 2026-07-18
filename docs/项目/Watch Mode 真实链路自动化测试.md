@@ -13,9 +13,9 @@
 5. native 路线不额外启动二次分句文本翻译/二次字幕 TTS；secondary 路线才逐句调用文本翻译和二次字幕译音。
 6. bridge 的物理播放路径能把原声实时写到指定物理播放设备，译音启用时与原声混合输出。
 7. WASAPI loopback 能在物理播放设备上捕获到实际输出电平，并验证原声/译音内容证据。
-8. 默认播放完整 `scripts/testing/Test.mp3`，播放结束后继续观察 120 秒再停止 watch mode 和 bridge，用来捕捉短音频触发长时间复述、循环输出、漏句和多句。
+8. 默认播放完整 `scripts/testing/fixtures/watch-mode-en-original.wav`，播放结束后继续观察 120 秒再停止 watch mode 和 bridge，用来捕捉短音频触发长时间复述、循环输出、漏句和多句。
 9. 使用真实 STT 对源音频生成基准转录并缓存；再对物理输出录音做 STT，把两份文本做内容一致性检查。
-10. 对 `Test.mp3` 增加 `strictContent` 层，用固定中文参考译文做确定性评分，拦截只覆盖开头、漏掉关键短语或把 `十亿美元` 误成 `一亿美元` 等严重数字错误。
+10. 对原创 WAV 素材增加 `strictContent` 层，用固定中文参考译文做确定性评分，拦截只覆盖开头、漏掉关键短语或把 `十亿美元` 误成 `一亿美元` 等严重数字错误。
 11. 发布前严格证据门槛必须同时覆盖 `qwen3.5-omni-flash-realtime` 和 `qwen3.5-livetranslate-flash-realtime` 两个模型；任意一个缺失或失败都不能通过。
 
 ## 核心命令
@@ -29,7 +29,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . .\scripts\test
 单模型真实 live run 建议在管理员 PowerShell 中运行：
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\Test.mp3
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
 ```
 
 双模型严格矩阵：
@@ -71,7 +71,7 @@ artifacts/testing/watch-mode-live/<timestamp>/
 - `driver.json`: driver/WASAPI probe 结果。
 - `bridge-source-probe.json`: bridge source frame probe 结果。
 - `physical-output-probe.json`: 物理播放设备输出电平 probe 结果。
-- `source-media-transcript.json`: 对 `Test.mp3` 的真实 STT 基准转录，按媒体 SHA256 和播放秒数缓存。
+- `source-media-transcript.json`: 对原创 WAV 素材的真实 STT 基准转录，按媒体 SHA256 和播放秒数缓存。
 - `physical-output-content.json`: 对物理输出录音的真实 STT 和与源音频基准的内容一致性比较。
 
 后续修 bug 时，优先读取：
@@ -96,7 +96,7 @@ Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-conten
 - `physicalOutput`: bridge 写到物理播放设备后的实际输出电平。
 - `physicalOutputContent`: 源音频基准转录、物理输出录音转录、内容覆盖率、长度比例、漏句和多句。
 - `speechSegmentation`: secondary 路线下的最终句段数量、最大句段长度和句段译音播放证据。
-- `strictContent`: `Test.mp3` 完整中文参考译文覆盖、关键概念、严重数字错误、最终字幕写入数、译音排队数和译音播放数。
+- `strictContent`: 原创 WAV 素材的完整中文参考译文覆盖、关键概念、严重数字错误、最终字幕写入数、译音排队数和译音播放数。
 - `app`: watch route、overlay、subtitle cue、speech dispatch 证据。
 - `provider`: 真实 provider/model 请求、失败、认证、限流、网络错误证据。
 
@@ -105,9 +105,9 @@ Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-conten
 - `native`: 主听译/Omni 模型直接输出翻译字幕/译音，不要求 `speech.segment_*` 证据。
 - `secondary`: 只有音频路由页二次翻译卡片启用时使用；必须存在最终句段分句和二次字幕译音证据。
 
-通过条件是 `verdict=passed`，并且各层状态均为 `passed`。对完整 `Test.mp3`，`strictContent` 还必须满足：
+通过条件是 `verdict=passed`，并且各层状态均为 `passed`。对完整原创 WAV 素材，`strictContent` 还必须满足：
 
-- 覆盖核心概念：`十亿美元`、`火星`、`五亿美元`、`人工生物圈`、`灭绝的物种`、`飞行汽车`、`一美元的灯珠`。
+- 覆盖核心概念：`十亿美元`、`火星`、`五亿美元`、`人工生物圈`、`濒危物种`、`飞行汽车`、`一美元的灯泡`。
 - 禁止严重数字错误，例如把 `十亿美元` 输出成 `一亿美元`。
 - `finalWriteCount >= 8`、`queuedSegmentCount >= 8`、`playedSegmentCount >= 8`。
 - `physicalOutputContent.contentConsistency.combinedEvidence.passed=false` 时不能通过内容层。
@@ -156,10 +156,10 @@ native 路线只验证原声旁路和原生模型能力对应的输出；seconda
 
 ## 内容一致性验证
 
-live runner 会先对 `scripts/testing/Test.mp3` 的实际播放窗口调用真实 STT。默认 `-PlaybackSeconds 0` 表示完整播放整段 MP3；只有显式传入正数时才限制播放窗口，并把该秒数写进 source reference：
+live runner 会先对 `scripts/testing/fixtures/watch-mode-en-original.wav` 的实际播放窗口调用真实 STT。默认 `-PlaybackSeconds 0` 表示完整播放整段素材；只有显式传入正数时才限制播放窗口，并把该秒数写进 source reference：
 
 ```text
-scripts/diagnostics/omni-realtime/target/debug/omni-realtime-diagnostic.exe --mp3 scripts/testing/Test.mp3 --manual
+scripts/diagnostics/omni-benchmark/target/debug/omni-benchmark.exe --audio scripts/testing/fixtures/watch-mode-en-original.wav --manual --json
 ```
 
 基准转录会写入本次产物的 `source-media-transcript.json`，并缓存到：
@@ -323,7 +323,7 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 
 ## 2026-06-05 120 秒尾窗与音质约束
 
-- 历史 live 样例曾使用 30 秒播放窗口和 120 秒尾窗；当前严格门槛改为默认播放完整 `Test.mp3`，并保留 120 秒尾窗。测试必须能捕捉“媒体结束后仍持续复述/翻译”的错误，不能只在短尾窗内提前通过。
+- 历史 live 样例曾使用 30 秒播放窗口和 120 秒尾窗；当前严格门槛改为默认播放完整原创 WAV 素材，并保留 120 秒尾窗。测试必须能捕捉“媒体结束后仍持续复述/翻译”的错误，不能只在短尾窗内提前通过。
 - `physical-output-recording.wav` 继续覆盖完整播放窗口和 120 秒尾窗；`physical-output-recording-source-window-16k-mono.pcm` 只截取播放窗口加 8 秒，用于验证原声可识别，避免超长录音提交给 realtime STT 后无响应。
 - 报告新增 `app.subtitleQueue`：记录 cue 开始、final/forced 翻译写入、segment TTS 排队和播放时间，精确到秒；`cueOrderInversions > 0` 或明显重复 final 翻译应判为失败。
 - 实时会话页的“字幕队列”必须显示每条 cue 的开始/结束时间，便于人工截图和自动报告互相对应。
@@ -344,7 +344,7 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 
 ## 2026-06-05 原声音质相似度约束
 
-- live runner 播放测试媒体时必须同时生成 `source-media-reference-16k-mono.pcm`。该文件由 `omni-watch-media-injector.exe --reference-pcm16k-mono-path` 从同一份 `Test.mp3` 解码得到，避免依赖 ffmpeg 或与实际播放不同的解码器。
+- live runner 播放测试媒体时必须同时生成 `source-media-reference-16k-mono.pcm`。该文件由 `omni-watch-media-injector.exe --reference-pcm16k-mono-path` 从同一份原创 WAV 素材解码得到，避免依赖 ffmpeg 或与实际播放不同的解码器。
 - `physical-output-recording-source-window-16k-mono.pcm` 与 `source-media-reference-16k-mono.pcm` 必须做 20ms RMS 包络相关。结果写入 `physicalOutputContent.originalPassthrough.sourceSimilarity`，至少包含 `envelopeCorrelation`、`levelRatio`、`bestOffsetSeconds`、`referenceFrames`、`recordedFrames`。
 - `originalPassthrough.passed` 需要同时满足 STT 可识别和 source similarity 通过。若相似度失败，报告归因到 `physicalOutputContent`，典型原因是 `physical output original passthrough does not resemble source media reference: correlation=... levelRatio=...`。
 - 当前保守门槛：`envelopeCorrelation >= 0.35` 且 `0.05 <= levelRatio <= 8.0`。这只拦截明显失真、录错设备、全静音或严重电平异常；后续若收集到更多主观“音质差”样本，再收紧阈值或增加频谱相似度。
@@ -366,7 +366,7 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 - Elevated live sample: `artifacts/testing/watch-mode-live/20260605-185455/`.
 - Passed layers: driver, wasapi, bridge, physicalOutput.
 - Route evidence: `watch_mode.omni_preconnect_started`, `watch_mode.omni_preconnect_reused`, `subtitleTranslationMode=secondary`, `translationAudioSource=SubtitleTts`.
-- Source media: `scripts/testing/Test.mp3`, English speech; source STT passed.
+- Source media: `scripts/testing/fixtures/watch-mode-en-original.wav`, original synthetic English speech; source STT passed.
 - Omni input evidence: `input_audio_buffer.append.summary` includes `audioRms.avg` around `0.18-0.28` and `audioRms.max` around `0.31-0.46`, well above local silence threshold `0.002`.
 - Failure evidence: no `speech_started`, transcription delta, or subtitle cue was received for that run.
 - Expected report attribution: `provider` with reason `audible audio was sent to Omni, but no VAD/transcription event was received`.
@@ -383,5 +383,5 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 - Latency evidence from report: `firstVisibleTranslationLatencySeconds=0`, `firstFinalTranslationLatencySeconds=0`, `firstTtsQueuedLatencySeconds=1`, `firstPlaybackLatencySeconds=2`.
 - Secondary TTS evidence: `queuedSegmentCount=3`, `playedSegmentCount=3`, `translatedSpeech.passed=true`.
 - Physical output content evidence: `contentConsistency.passed=true`, `coverage=1`, `lengthRatio=0.895`; `originalPassthrough.passed=true`, `sourceSimilarity.envelopeCorrelation=0.4068`, `levelRatio=0.7472`; `audioQuality.passed=true`, `clippingRatio=0`, `noiseRisk=false`.
-- Strict status: 该 12 秒样例现在会因为不是完整 `Test.mp3` 且 segment 数不足而无法通过 `strictContent`。
+- Strict status: 该 12 秒样例现在会因为不是完整原创 WAV 素材且 segment 数不足而无法通过 `strictContent`。
 - Report rule: when the same run marker appears multiple times, log slicing must start at the first marker occurrence. Otherwise early route config can be cut away and `translationRoute` can fall back to stale snapshot data.

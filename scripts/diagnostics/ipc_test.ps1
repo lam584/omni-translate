@@ -1,6 +1,6 @@
 # IPC Layer Diagnostic Test - Omni Translate
 param(
-    [string]$exePath = "<repository-root>\artifacts\installer\0.1.0\desktop\omni-desktop-shell.exe"
+    [string]$exePath = (Join-Path $PSScriptRoot "..\..\artifacts\installer\0.1.0\desktop\omni-desktop-shell.exe")
 )
 
 Write-Host "=== IPC Diagnostic Test ===" -ForegroundColor Cyan

@@ -840,7 +840,7 @@ mod tests {
     fn test_long_sentence_is_split_into_subtitle_chunks() {
         let mut splitter = SentenceSplitter::new();
         let results = splitter.feed(
-            "This is a one billion dollar rocket ship of future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere.",
+            "Project Aurora has a one billion dollar reliability fund for a research station on Mars, with a five hundred million dollar construction budget and an artificial biosphere for long-term experiments.",
         );
 
         assert!(results.len() > 1);
@@ -853,15 +853,15 @@ mod tests {
     fn test_money_phrase_is_not_split_between_amount_and_unit() {
         let mut splitter = SentenceSplitter::new();
         let results = splitter.feed(
-            "A future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh.",
+            "The research station on Mars has a five hundred million dollar construction budget. The artificial biosphere keeps air and water in balance.",
         );
 
         assert!(results.iter().any(|result| result
             .sentence
-            .contains("five hundred million dollar biosphere")));
+            .contains("five hundred million dollar construction budget")));
         assert!(!results
             .iter()
-            .any(|result| result.sentence == "million dollar biosphere."));
+            .any(|result| result.sentence == "million dollar construction budget."));
     }
 
     #[test]
@@ -906,7 +906,7 @@ mod tests {
     #[test]
     fn display_segmenter_preserves_sentence_boundaries_and_wraps_long_sentences() {
         let lines = SubtitleDisplaySegmenter::split_text(
-            "This is a one billion dollar rocket ship, a future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh, this video will show you how epic the future is.",
+            "Project Aurora has a one billion dollar reliability fund. The first research station is planned for Mars with a five hundred million dollar construction budget. An artificial biosphere keeps air, water, and plants in balance.",
         );
 
         assert!(lines.len() >= 3);
@@ -915,15 +915,14 @@ mod tests {
             .all(|line| line.chars().count() <= MAX_DISPLAY_CHARS));
         assert!(lines
             .iter()
-            .any(|line| line.contains("five hundred million dollar biosphere.")));
-        assert!(lines.iter().any(|line| line.starts_with("Oh my gosh,")));
-        assert_eq!(lines.last().map(String::as_str), Some("is."));
+            .any(|line| line.contains("five hundred million dollar")));
+        assert!(lines.iter().any(|line| line.contains("artificial biosphere")));
     }
 
     #[test]
-    fn display_segmenter_turns_real_watch_mode_paragraph_into_caption_sized_rows() {
+    fn display_segmenter_turns_watch_mode_fixture_paragraph_into_caption_sized_rows() {
         let lines = SubtitleDisplaySegmenter::split_text(
-            "This is a one billion dollar rocket ship, a future technology that will one day take you all the way to Mars, living in your brand new home, a five hundred million dollar biosphere. Oh my gosh, this video will show you just how epic the future is.",
+            "Project Aurora has a one billion dollar reliability fund. The first research station is planned for Mars. Its five hundred million dollar construction budget supports the station. An artificial biosphere enables long-term experiments.",
         );
 
         assert!(lines.len() >= 4);
@@ -934,8 +933,7 @@ mod tests {
             }),
             "caption rows exceeded the display budget: {lines:?}"
         );
-        assert!(lines.iter().any(|line| line.starts_with("Oh my gosh,")));
-        assert_eq!(lines.last().map(String::as_str), Some("future is."));
+        assert!(lines.iter().any(|line| line.contains("artificial biosphere")));
     }
 
     #[test]

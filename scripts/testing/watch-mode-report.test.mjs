@@ -74,34 +74,32 @@ const healthyPhysicalOutputContent = {
   },
 };
 
-const testMp3ReferenceTranslation = [
-  '现在你看到的这艘火箭造价十亿美元',
-  '这项未来科技有朝一日将会带你远赴火星',
-  '到达之后 你将居住在',
-  '价值五亿美元的人工生物圈 相信我 这不是天方夜谭',
-  '我的天哪',
-  '在本期视频中 我们将展示未来的生活有多么精彩',
-  '稍后 你将会看到 如何拯救已经灭绝的物种',
-  '这就是未来的样子',
-  '-还有来去自如的飞行汽车... -什么？',
-  '以及更多科技',
-  '不会吧',
-  '先从这个一美元的灯珠开始',
+const testMediaReferenceTranslation = [
+  '这是 Omni Translate 项目的原创音频测试素材',
+  '极光项目拥有十亿美元的可靠性基金',
+  '第一个研究站计划建在火星上',
+  '它的建设预算是五亿美元',
+  '研究站内的人工生物圈维持空气、水和植物的平衡',
+  '研究团队还研究保护濒危物种的方法',
+  '工程师正在测试用于偏远地点之间安全出行的飞行汽车',
+  '一个一美元的灯泡用于验证较小的价格仍能准确翻译',
+  '每个句子都清晰分隔，以便测量翻译时间',
+  '原创音频测试素材现已播放完毕',
 ].join('\n');
 
-function strictTestMp3Content(overrides = {}) {
+function strictTestMediaContent(overrides = {}) {
   return {
     ...healthyPhysicalOutputContent,
     sourceReference: {
       passed: true,
-      mediaSha256: 'REMOVED_OLD_TEST_MEDIA_SHA256',
-      mediaPath: 'E:\\omni-translate\\scripts\\testing\\Test.mp3',
+      mediaSha256: '7fd64ecd6cf0762cac5ac0ab16eba37cc733765c55cc8264f87a94cb46962131',
+      mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
       playbackSeconds: null,
       fullMedia: true,
     },
-    translation: testMp3ReferenceTranslation,
-    subtitleText: testMp3ReferenceTranslation,
-    segmentTranslationText: testMp3ReferenceTranslation,
+    translation: testMediaReferenceTranslation,
+    subtitleText: testMediaReferenceTranslation,
+    segmentTranslationText: testMediaReferenceTranslation,
     subtitleQueue: {
       finalWriteCount: 8,
       queuedSegmentCount: 8,
@@ -111,7 +109,7 @@ function strictTestMp3Content(overrides = {}) {
       passed: true,
       queuedSegments: 8,
       playedSegments: 8,
-      transcriptChars: testMp3ReferenceTranslation.length,
+      transcriptChars: testMediaReferenceTranslation.length,
     },
     originalPassthrough: { passed: true, transcriptChars: 160 },
     mixedOutput: { passed: true, rms: 0.08, peak: 0.3 },
@@ -558,9 +556,9 @@ test('preserves physical output mixed-output detail in markdown', () => {
   assert.match(markdown, /mixed rms=0\.001 peak=0\.004/);
 });
 
-test('strict Test.mp3 content passes with full reference coverage and segment evidence', () => {
+test('strict reference-media content passes with full reference coverage and segment evidence', () => {
   const result = evaluateStrictContent({
-    physicalOutputContent: strictTestMp3Content(),
+    physicalOutputContent: strictTestMediaContent(),
     speechSegmentation: {
       queuedSegments: 8,
       playedSegments: 8,
@@ -573,18 +571,18 @@ test('strict Test.mp3 content passes with full reference coverage and segment ev
   assert.equal(result.missingConcepts.length, 0);
 });
 
-test('strict Test.mp3 content reuses passed combined physical evidence for coverage', () => {
+test('strict reference-media content reuses passed combined physical evidence for coverage', () => {
   const structuredConceptOnly = [
     '十亿美元',
     '火星',
     '五亿美元',
     '人工生物圈',
-    '灭绝的物种',
+    '濒危物种',
     '飞行汽车',
-    '一美元的灯珠',
+    '一美元的灯泡',
   ].join('\n');
   const result = evaluateStrictContent({
-    physicalOutputContent: strictTestMp3Content({
+    physicalOutputContent: strictTestMediaContent({
       translation: structuredConceptOnly,
       subtitleText: structuredConceptOnly,
       segmentTranslationText: structuredConceptOnly,
@@ -617,9 +615,9 @@ test('strict Test.mp3 content reuses passed combined physical evidence for cover
   assert.equal(result.strictEvidenceSource, 'combinedPhysical');
 });
 
-test('strict Test.mp3 content still fails when combined physical evidence fails', () => {
+test('strict reference-media content still fails when combined physical evidence fails', () => {
   const result = evaluateStrictContent({
-    physicalOutputContent: strictTestMp3Content({
+    physicalOutputContent: strictTestMediaContent({
       contentConsistency: {
         passed: true,
         combinedEvidence: {
@@ -640,13 +638,13 @@ test('strict Test.mp3 content still fails when combined physical evidence fails'
   assert(result.failures.some((reason) => /combined physical\/structured/.test(reason)));
 });
 
-test('strict Test.mp3 content fails short 12 second evidence', () => {
+test('strict reference-media content fails short 12 second evidence', () => {
   const report = classify({
-    physicalOutputContent: strictTestMp3Content({
+    physicalOutputContent: strictTestMediaContent({
       sourceReference: {
         passed: true,
-        mediaSha256: 'REMOVED_OLD_TEST_MEDIA_SHA256',
-        mediaPath: 'E:\\omni-translate\\scripts\\testing\\Test.mp3',
+        mediaSha256: '7fd64ecd6cf0762cac5ac0ab16eba37cc733765c55cc8264f87a94cb46962131',
+        mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
         playbackSeconds: 12,
         fullMedia: false,
       },
@@ -664,12 +662,12 @@ test('strict Test.mp3 content fails short 12 second evidence', () => {
   assert.match(report.failureReason, /full-media playback/);
 });
 
-test('strict Test.mp3 content fails key numeric mistranslation', () => {
+test('strict reference-media content fails key numeric mistranslation', () => {
   const result = evaluateStrictContent({
-    physicalOutputContent: strictTestMp3Content({
-      translation: testMp3ReferenceTranslation.replace('十亿美元', '一亿美元'),
-      subtitleText: testMp3ReferenceTranslation.replace('十亿美元', '一亿美元'),
-      segmentTranslationText: testMp3ReferenceTranslation.replace('十亿美元', '一亿美元'),
+    physicalOutputContent: strictTestMediaContent({
+      translation: testMediaReferenceTranslation.replace('十亿美元', '一亿美元'),
+      subtitleText: testMediaReferenceTranslation.replace('十亿美元', '一亿美元'),
+      segmentTranslationText: testMediaReferenceTranslation.replace('十亿美元', '一亿美元'),
     }),
     speechSegmentation: {
       queuedSegments: 8,
@@ -681,10 +679,10 @@ test('strict Test.mp3 content fails key numeric mistranslation', () => {
   assert(result.forbiddenErrors.some((item) => item.text === '一亿美元'));
 });
 
-test('strict Test.mp3 content fails when only the opening translation is present', () => {
+test('strict reference-media content fails when only the opening translation is present', () => {
   const openingOnly = '这是一艘价值十亿美元的火箭飞船，一项未来科技，总有一天会带你一路前往火星，住进一个价值五亿美元的人工生物圈。';
   const result = evaluateStrictContent({
-    physicalOutputContent: strictTestMp3Content({
+    physicalOutputContent: strictTestMediaContent({
       translation: openingOnly,
       subtitleText: openingOnly,
       segmentTranslationText: openingOnly,
@@ -710,10 +708,10 @@ test('strict Test.mp3 content fails when only the opening translation is present
   assert.match(result.failures.join('\n'), /coverage|queuedSegmentCount|playedSegmentCount/);
 });
 
-test('classifies strict Test.mp3 failure with all strict failure reasons', () => {
+test('classifies strict reference-media failure with all strict failure reasons', () => {
   const openingOnly = '杩欐槸涓€鑹樹环鍊煎崄浜跨編鍏冪殑鐏椋炶埞';
   const report = classify({
-    physicalOutputContent: strictTestMp3Content({
+    physicalOutputContent: strictTestMediaContent({
       translation: openingOnly,
       subtitleText: openingOnly,
       segmentTranslationText: openingOnly,

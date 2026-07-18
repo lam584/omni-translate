@@ -927,6 +927,7 @@
     "translationFailed": "การแปล ล้มเหลว",
     "controlTitle": "เซสชัน - ชื่อเรื่อง",
     "starting": "กำลังเริ่ม...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "ดู",
     "runningFor": "เซสชัน - กำลังทำงาน {{elapsed}}",
     "systemAudio": "เซสชัน - เสียง",

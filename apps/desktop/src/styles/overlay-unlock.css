@@ -1,0 +1,35 @@
+:root {
+  color-scheme: dark;
+  font-family: Inter, "Microsoft YaHei UI", sans-serif;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+.overlay-unlock-button {
+  width: 100%;
+  height: 100%;
+  padding: 0 10px;
+  border: 1px solid rgb(255 255 255 / 24%);
+  border-radius: 10px;
+  color: #fff;
+  background: rgb(17 24 39 / 88%);
+  box-shadow: 0 5px 16px rgb(0 0 0 / 28%);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.overlay-unlock-button:hover,
+.overlay-unlock-button:focus-visible {
+  border-color: rgb(94 234 212 / 70%);
+  background: rgb(15 118 110 / 92%);
+  outline: none;
+}

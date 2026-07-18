@@ -927,6 +927,7 @@
     "translationFailed": "翻译失败",
     "controlTitle": "会话控制",
     "starting": "启动中...",
+    "startSlowWarning": "启动超过 {{seconds}} 秒，已停止本次尝试并回滚已启动的链路。请检查网络、Provider 配置和诊断日志后重试。",
     "watchButton": "看片",
     "runningFor": "已运行 {{elapsed}}",
     "systemAudio": "系统音频",

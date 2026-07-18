@@ -33,6 +33,7 @@ type SceneSessionControllerOptions = {
   runBusyAction: BusyActionRunner;
   confirmWatchFallback: () => boolean;
   sceneLaunchFailureMessage: (mode: SceneMode, stage: string | null, error: unknown) => string;
+  sceneLaunchTimeoutMessage: () => string;
 };
 
 type BusyActionRunner = (action: 'watch-start' | 'conversation-start' | 'stop', task: () => Promise<void>) => Promise<void>;
@@ -46,6 +47,29 @@ type SceneLaunchOptions = {
   speechPatch: Partial<AppConfigDraft['speech']> & { enabled: boolean };
   secondarySubtitleTranslationEnabled: boolean;
 };
+
+const SCENE_LAUNCH_TIMEOUT_MS = 7_000;
+
+function sceneLaunchTimeoutError(message: string) {
+  return new Error(message);
+}
+
+async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMessage: string, onTimeout: () => Promise<void>): Promise<T> {
+  let timerId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<never>((_, reject) => {
+    timerId = setTimeout(() => {
+      void onTimeout().catch((error) => {
+        appendFrontendDiagnosticsLog('runtime', 'warning', `[SceneLaunch] timeout cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+      });
+      reject(sceneLaunchTimeoutError(timeoutMessage));
+    }, SCENE_LAUNCH_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([operation, timeout]);
+  } finally {
+    if (timerId !== null) clearTimeout(timerId);
+  }
+}
 
 function isBridgeStartupError(error: unknown) {
   const lower = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
@@ -249,7 +273,10 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     try {
       await controller.runBusyAction(mode === 'watch' ? 'watch-start' : 'conversation-start', async () => {
         let snapshot = options.audioSnapshot;
-        await executeSceneLaunchPlan(plan, {
+        let launchTimedOut = false;
+        const launchAbortController = new AbortController();
+        const launchOperation = executeSceneLaunchPlan(plan, {
+          abortSignal: launchAbortController.signal,
           ensureBridgeReady: async () => {
             await ensureBridgeReady(mode, nextConfig);
             controller.updateDeviceDraft({
@@ -282,6 +309,14 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             else if (stage === 'speech-dispatch') snapshot = await startSpeechDispatchRuntime(nextConfig);
             else setRuntimeSnapshot(await showSubtitleOverlayWindow());
             if (stage !== 'subtitle-overlay') controller.setAudioSnapshot(snapshot);
+            if (launchTimedOut) {
+              if (stage === 'inbound-route') snapshot = await stopAudioRouteRuntime('inbound');
+              else if (stage === 'outbound-route') snapshot = await stopAudioRouteRuntime('outbound');
+              else if (stage === 'translate-worker') snapshot = await stopTranslateWorkerRuntime();
+              else if (stage === 'speech-dispatch') snapshot = await stopSpeechDispatchRuntime();
+              if (stage !== 'subtitle-overlay') controller.setAudioSnapshot(snapshot);
+              throw sceneLaunchTimeoutError(controller.sceneLaunchTimeoutMessage());
+            }
           },
           compensateStage: async (stage) => {
             if (stage === 'inbound-route') snapshot = await stopAudioRouteRuntime('inbound');
@@ -294,6 +329,22 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             */
           },
           onStageStart: (stage) => { launchStage = stage; },
+        });
+        await withSceneLaunchTimeout(launchOperation, controller.sceneLaunchTimeoutMessage(), async () => {
+          launchTimedOut = true;
+          launchAbortController.abort(sceneLaunchTimeoutError(controller.sceneLaunchTimeoutMessage()));
+          await Promise.allSettled([
+            cancelOmniPreconnectRuntime(),
+            stopSpeechDispatchRuntime(),
+            stopTranslateWorkerRuntime(),
+            stopAudioRouteRuntime('outbound'),
+            stopAudioRouteRuntime('inbound'),
+          ]);
+          try {
+            controller.setAudioSnapshot(await getAudioRuntimeSnapshotRuntime());
+          } catch {
+            // The timeout error remains the user-facing result.
+          }
         });
         if (preconnectWarning) controller.pushNotification({ id: `watch-preconnect-${Date.now()}`, level: 'warning', source: 'session', message: preconnectWarning, emittedAt: new Date().toISOString() });
       });

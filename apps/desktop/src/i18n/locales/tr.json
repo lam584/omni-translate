@@ -927,6 +927,7 @@
     "translationFailed": "Çeviri başarısız oldu",
     "controlTitle": "Oturum kontrolü",
     "starting": "Başlıyor...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "İzle",
     "runningFor": "{{elapsed}}'i Çalıştırma",
     "systemAudio": "Sistem sesi",

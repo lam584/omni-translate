@@ -927,6 +927,7 @@
     "translationFailed": "번역 실패",
     "controlTitle": "세션 - 제목",
     "starting": "시작 중...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "시청",
     "runningFor": "세션 - 실행 중 {{elapsed}}",
     "systemAudio": "세션 - 오디오",

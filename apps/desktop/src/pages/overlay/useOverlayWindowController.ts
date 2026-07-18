@@ -1,4 +1,5 @@
 import { useCallback, type MutableRefObject } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 
 import { useDesktopApiV2 } from '../../runtime/desktop-api-context';
 import { isTauriRuntime } from '../../runtime/tauri-runtime';
@@ -52,9 +53,18 @@ export function useOverlayWindowController({
     hotspotInteractive = false,
   ) => {
     if (isTauriRuntime()) {
-      await desktopApi.session.syncOverlayWindowState(locked, rounded, hotspotInteractive);
+      // Keep this on the direct native command. The overlay is a separately
+      // bootstrapped renderer and can render before the V2 desktop service
+      // bridge has hydrated; routing this through that bridge left the real
+      // window in its initial interactive state even though the config was
+      // already locked.
+      await invoke('sync_subtitle_overlay_window_state', {
+        locked,
+        rounded,
+        hotspotInteractive,
+      });
     }
-  }, [desktopApi, overlayLocked]);
+  }, [overlayLocked]);
 
   const syncOverlayDraftPosition = useCallback(async (position?: OverlayPosition) => {
     if (!isTauriRuntime()) {

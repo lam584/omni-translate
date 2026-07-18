@@ -135,8 +135,9 @@ async function advanceLockedRevealPoll() {
 
 function countSessionActionCalls(action: string) {
   return tauriMocks.invokeMock.mock.calls.filter(([command, args]) =>
-    command === 'session_v2' &&
-    (args as { command?: { action?: string } } | undefined)?.command?.action === action,
+    (command === 'session_v2' &&
+      (args as { command?: { action?: string } } | undefined)?.command?.action === action) ||
+    (command === 'sync_subtitle_overlay_window_state' && action === 'syncOverlayWindowState'),
   ).length;
 }
 
@@ -229,6 +230,17 @@ describe('SubtitleOverlayPage locked interaction', () => {
     });
     container.remove();
     vi.useRealTimers();
+  });
+
+  it('directly synchronizes the initial locked state to the native overlay window', async () => {
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    expect(tauriMocks.invokeMock).toHaveBeenCalledWith(
+      'sync_subtitle_overlay_window_state',
+      expect.objectContaining({ locked: true, hotspotInteractive: false }),
+    );
   });
 
   it('reveals the unlock button when the cursor enters the overlay bounds but keeps cursor passthrough outside the button hotspot', async () => {

@@ -927,6 +927,7 @@
     "translationFailed": "Terjemahan Gagal",
     "controlTitle": "Sesi - Judul",
     "starting": "Memulai...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "Tonton",
     "runningFor": "Berjalan {{elapsed}}",
     "systemAudio": "System Audio",

@@ -57,4 +57,21 @@ describe('executeSceneLaunchPlan', () => {
     await expect(executeSceneLaunchPlan(plan(['bridge-ready', 'omni-preconnect'], true), deps)).rejects.toThrow('bridge');
     expect(calls).toEqual(['bridge', 'preconnect', 'cancel-preconnect']);
   });
+
+  it('does not start another stage after the launch is aborted', async () => {
+    const calls: string[] = [];
+    const abortController = new AbortController();
+    const deps = dependencies(calls);
+    deps.ensureBridgeReady = async () => {
+      calls.push('bridge');
+      abortController.abort(new Error('launch timeout'));
+    };
+
+    await expect(executeSceneLaunchPlan(plan(['bridge-ready', 'inbound-route']), {
+      ...deps,
+      abortSignal: abortController.signal,
+    }))
+      .rejects.toThrow('launch timeout');
+    expect(calls).toEqual(['bridge']);
+  });
 });

@@ -927,6 +927,7 @@
     "translationFailed": "Dịch không thành công",
     "controlTitle": "Kiểm soát phiên",
     "starting": "Đang bắt đầu...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "Xem",
     "runningFor": "Đang chạy {{elapsed}}",
     "systemAudio": "Âm thanh hệ thống",

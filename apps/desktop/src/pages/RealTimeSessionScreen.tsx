@@ -326,6 +326,7 @@ function RealTimeSessionPage() {
     pushNotification: pushRuntimeNotification,
     runBusyAction,
     confirmWatchFallback: () => window.confirm(t('session.virtualDriverFallbackConfirm')),
+    sceneLaunchTimeoutMessage: () => t('session.startSlowWarning', { seconds: 7 }),
     sceneLaunchFailureMessage: (sceneMode, stage, error) => {
       const message = t('session.sceneLaunchFailed', {
         scene: resolveSceneLabel(sceneMode), stage: describeSceneLaunchStage(stage),

@@ -17,6 +17,7 @@ export class SceneLaunchError extends Error {
 }
 
 type Dependencies = {
+  abortSignal?: AbortSignal;
   ensureBridgeReady: () => Promise<void>;
   preconnectOmni: () => Promise<void>;
   cancelPreconnectOmni: () => Promise<void>;
@@ -25,6 +26,11 @@ type Dependencies = {
   onPreconnectWarning: (error: unknown) => void;
   onStageStart: (stage: SceneLaunchStage) => void;
 };
+
+function throwIfLaunchAborted(signal?: AbortSignal) {
+  if (!signal?.aborted) return;
+  throw signal.reason instanceof Error ? signal.reason : new Error('Scene launch aborted');
+}
 
 async function rollback(completedStages: SceneLaunchStage[], dependencies: Dependencies): Promise<SceneLaunchOutcome> {
   const rolledBackStages: SceneLaunchStage[] = [];
@@ -50,6 +56,7 @@ async function rollback(completedStages: SceneLaunchStage[], dependencies: Depen
 export async function executeSceneLaunchPlan(plan: SceneLaunchPlan, dependencies: Dependencies): Promise<SceneLaunchOutcome> {
   const completedStages: SceneLaunchStage[] = [];
   try {
+    throwIfLaunchAborted(dependencies.abortSignal);
     if (plan.parallelOmniPreconnect) {
       dependencies.onStageStart('bridge-ready');
       const bridgePromise = dependencies.ensureBridgeReady().catch(async (error) => {
@@ -59,6 +66,7 @@ export async function executeSceneLaunchPlan(plan: SceneLaunchPlan, dependencies
       dependencies.onStageStart('omni-preconnect');
       const preconnectPromise = dependencies.preconnectOmni();
       const [bridgeResult, preconnectResult] = await Promise.allSettled([bridgePromise, preconnectPromise]);
+      throwIfLaunchAborted(dependencies.abortSignal);
       if (bridgeResult.status === 'rejected') {
         throw bridgeResult.reason;
       }
@@ -68,14 +76,17 @@ export async function executeSceneLaunchPlan(plan: SceneLaunchPlan, dependencies
     } else {
       dependencies.onStageStart('bridge-ready');
       await dependencies.ensureBridgeReady();
+      throwIfLaunchAborted(dependencies.abortSignal);
       completedStages.push('bridge-ready');
     }
 
     const executableStages = plan.stages.filter((stage): stage is ExecutableStage =>
       stage !== 'bridge-ready' && stage !== 'omni-preconnect');
     for (const stage of executableStages) {
+      throwIfLaunchAborted(dependencies.abortSignal);
       dependencies.onStageStart(stage);
       await dependencies.executeStage(stage);
+      throwIfLaunchAborted(dependencies.abortSignal);
       completedStages.push(stage);
     }
     return { status: 'fully-started', completedStages, rolledBackStages: [], rollbackFailures: [] };

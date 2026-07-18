@@ -927,6 +927,7 @@
     "translationFailed": "翻訳 失敗",
     "controlTitle": "セッション - タイトル",
     "starting": "開始中...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "視聴",
     "runningFor": "セッション - 実行中 {{elapsed}}",
     "systemAudio": "セッション - 音声",

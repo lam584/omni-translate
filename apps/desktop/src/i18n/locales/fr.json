@@ -927,6 +927,7 @@
     "translationFailed": "La traduction a échoué",
     "controlTitle": "Contrôle de session",
     "starting": "Commencer...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "Regarder",
     "runningFor": "Exécution de {{elapsed}}",
     "systemAudio": "Son du système",

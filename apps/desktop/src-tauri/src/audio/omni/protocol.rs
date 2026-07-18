@@ -57,24 +57,49 @@ fn try_reconnect(
     target_language: &str,
     buffer_size: u64,
 ) -> Result<tungstenite::WebSocket<MaybeTlsStream<TcpStream>>, String> {
-    if *reconnect_count >= OMNI_RECONNECT_MAX_RETRIES {
-        store.set_stt_connected(false, buffer_size);
-        return Err("Omni WebSocket reconnect retry limit exhausted".to_string());
-    }
-    *reconnect_count += 1;
     pending_audio_buffer.clear();
-    notify_reconnecting(store, *reconnect_count);
-    thread::sleep(backoff_delay(*reconnect_count));
-    let socket = reconnect_socket(
-        app.clone(),
-        provider,
-        active_voice,
-        instructions,
-        audio_mode,
-        target_language,
-    )?;
-    store.set_stt_connected(true, buffer_size);
-    Ok(socket)
+    let mut last_error = None;
+
+    // A provider may close a long-running realtime response normally. Treat
+    // retries as belonging to this disconnect, not as a lifetime quota for the
+    // route. The previous implementation attempted only once per disconnect
+    // and never reset the counter, eventually dropping audio_rx and leaving the
+    // capture worker with a closed sender.
+    for attempt in 1..=OMNI_RECONNECT_MAX_RETRIES {
+        *reconnect_count = attempt;
+        notify_reconnecting(store, attempt);
+        thread::sleep(backoff_delay(attempt));
+        match reconnect_socket(
+            app.clone(),
+            provider,
+            active_voice,
+            instructions,
+            audio_mode,
+            target_language,
+        ) {
+            Ok(socket) => {
+                *reconnect_count = 0;
+                store.set_stt_connected(true, buffer_size);
+                return Ok(socket);
+            }
+            Err(error) => {
+                let _ = diag_log_detail(
+                    app,
+                    "omni",
+                    "warning",
+                    "watch_mode.omni_reconnect_attempt_failed",
+                    format!("attempt={attempt} maxAttempts={OMNI_RECONNECT_MAX_RETRIES} error={error}"),
+                );
+                last_error = Some(error);
+            }
+        }
+    }
+
+    store.set_stt_connected(false, buffer_size);
+    Err(format!(
+        "Omni WebSocket reconnect retry limit exhausted after {OMNI_RECONNECT_MAX_RETRIES} attempts: {}",
+        last_error.unwrap_or_else(|| "unknown reconnect error".to_string())
+    ))
 }
 
 fn check_vad_warning(

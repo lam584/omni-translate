@@ -927,6 +927,7 @@
     "translationFailed": "Nabigo ang pagsasalin",
     "controlTitle": "Kontrol sa session",
     "starting": "Nagsisimula...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "Panoorin",
     "runningFor": "Tumatakbo {{elapsed}}",
     "systemAudio": "Audio ng system",

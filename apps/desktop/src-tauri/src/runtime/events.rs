@@ -15,9 +15,22 @@ use super::windows::apply_subtitle_overlay_window_chrome;
 use super::windows::collect_window_snapshots;
 use super::windows::ensure_subtitle_overlay_window;
 use super::windows::sync_subtitle_overlay_input_state;
+use super::windows::sync_subtitle_overlay_unlock_window;
 
 pub const RUNTIME_SNAPSHOT_EVENT: &str = "runtime://snapshot";
 pub const RUNTIME_NOTIFICATION_EVENT: &str = "runtime://notification";
+
+fn sync_persisted_subtitle_overlay_input(app: &AppHandle, window: &tauri::WebviewWindow) {
+    let locked = app
+        .state::<StorageStateStore>()
+        .load_config()
+        .ok()
+        .and_then(|config| config.pointer("/subtitles/overlayLocked").and_then(|value| value.as_bool()))
+        .unwrap_or(false);
+    let _ = sync_subtitle_overlay_input_state(window, locked);
+    let _ = apply_subtitle_overlay_click_through(window, locked);
+    let _ = sync_subtitle_overlay_unlock_window(app, window, false);
+}
 
 pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> RuntimeSnapshot {
     let mut snapshot = state.snapshot_base();
@@ -84,9 +97,11 @@ pub fn toggle_subtitle_overlay_with_state(
         .unwrap_or_else(|_| state.overlay_window_visible());
 
     if is_visible {
+        let _ = sync_subtitle_overlay_unlock_window(app, &window, false);
         window.hide().map_err(|error| error.to_string())?;
         state.set_overlay_window_visible(false);
     } else {
+        sync_persisted_subtitle_overlay_input(app, &window);
         let _ = apply_subtitle_overlay_background(&window);
         let _ = window.set_decorations(false);
         let _ = window.set_shadow(false);
@@ -115,6 +130,7 @@ pub fn show_subtitle_overlay_with_state(
         .unwrap_or_else(|_| state.overlay_window_visible());
 
     if !is_visible {
+        sync_persisted_subtitle_overlay_input(app, &window);
         let _ = apply_subtitle_overlay_background(&window);
         let _ = window.set_decorations(false);
         let _ = window.set_shadow(false);
@@ -199,7 +215,8 @@ pub fn sync_subtitle_overlay_window_state(
     let window = ensure_subtitle_overlay_window(&app).map_err(|error| error.to_string())?;
 
     sync_subtitle_overlay_input_state(&window, locked)?;
-    apply_subtitle_overlay_click_through(&window, locked && !hotspot_interactive)?;
+    apply_subtitle_overlay_click_through(&window, locked)?;
+    sync_subtitle_overlay_unlock_window(&app, &window, locked && hotspot_interactive)?;
     apply_subtitle_overlay_window_chrome(&window)?;
     apply_subtitle_overlay_region(&window, true)
 }

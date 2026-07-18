@@ -927,6 +927,7 @@
     "translationFailed": "Falha na tradução",
     "controlTitle": "Controle de sessão",
     "starting": "Começando...",
+    "startSlowWarning": "Startup exceeded {{seconds}} seconds. This attempt was stopped and any started routes were rolled back. Check the network, provider settings, and diagnostics before retrying.",
     "watchButton": "Assistir",
     "runningFor": "Executando {{elapsed}}",
     "systemAudio": "Áudio do sistema",

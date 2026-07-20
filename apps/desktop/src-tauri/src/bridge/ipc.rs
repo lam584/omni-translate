@@ -30,7 +30,7 @@ const BRIDGE_CONNECT_DELAY_MS: u64 = 100;
 const IPC_READ_TIMEOUT_SECS: u64 = 5;
 
 pub use super::clients::BridgeIpcClient;
-pub(crate) use super::clients::{BridgeAudioWriter, BridgeCommandClient, BridgeProcessSupervisor};
+pub(crate) use super::clients::{BridgeAudioWriter, BridgeProcessSupervisor};
 
 include!("ipc/process.rs");
 

@@ -20,7 +20,6 @@ use super::events::AUDIO_RUNTIME_SNAPSHOT_EVENT;
 use super::state::{AudioRouteHandle, AudioStateStore, CapturedSegmentAudio};
 use super::time_utils::{ms_marker, now_marker, unix_ms};
 use crate::bridge::contracts::BridgeTranslationFrameHeader;
-use crate::bridge::ipc::BridgeCommandClient;
 use crate::bridge::state::BridgeStateStore;
 
 mod retry;
@@ -128,19 +127,13 @@ pub fn start_route(
         direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver";
     if waits_for_bridge_source {
         let bridge_snapshot = app.state::<BridgeStateStore>().snapshot();
-        if let Err(error) = BridgeCommandClient::new(&bridge_snapshot.pipe_path).check_health() {
-            diag_log_detail(
-                &app,
-                "audio",
-                "warning",
-                "Bridge health check failed before starting inbound audio route.",
-                error.clone(),
-            );
-            return Err(format!(
-                "Bridge Service is not responding: {}. Please restart the bridge service before starting the audio route.",
-                error
-            ));
-        }
+        diag_log_detail(
+            &app,
+            "audio",
+            "info",
+            "Inbound route delegated Bridge readiness to the capture worker.",
+            format!("pipe={} reconnectTimeoutSecs={BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS}", bridge_snapshot.pipe_path),
+        );
     }
     if !waits_for_bridge_source {
         store.mark_route_started(
@@ -425,15 +418,30 @@ impl RouteSpec {
             .and_then(Value::as_str)
             .unwrap_or("none")
             .to_string();
-        let requested_device_id =
+        let route_device_id =
             if direction == "inbound" && feedback_loop_prevention == "virtual-driver" {
                 config.pointer("/devices/virtualRenderDeviceId")
             } else {
                 config.pointer(&format!("{route_prefix}/input/deviceId"))
             }
             .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
+            .unwrap_or_default();
+        let requested_device_id = if direction == "inbound"
+            && feedback_loop_prevention != "virtual-driver"
+            && matches!(
+                route_device_id.trim(),
+                "" | "default" | "speaker-default" | "system-output-default"
+            )
+        {
+            config
+                .pointer("/devices/outputDeviceId")
+                .and_then(Value::as_str)
+                .filter(|device_id| !device_id.trim().is_empty())
+                .unwrap_or(route_device_id)
+                .to_string()
+        } else {
+            route_device_id.to_string()
+        };
         let source_language = config
             .pointer("/subtitles/sourceLanguage")
             .and_then(Value::as_str)
@@ -761,6 +769,25 @@ mod tests {
         .expect("route spec should parse");
 
         assert_eq!(spec.capture_direction(), Direction::Capture);
+    }
+
+    #[test]
+    fn route_spec_resolves_default_inbound_alias_to_configured_output_device() {
+        let spec = RouteSpec::from_config(
+            &json!({
+              "devices": {
+                "outputDeviceId": "{physical-render-endpoint}",
+                "inboundRoute": {
+                  "routeId": "inbound-route",
+                  "input": { "deviceId": "system-output-default" }
+                }
+              }
+            }),
+            "inbound",
+        )
+        .expect("route spec should parse");
+
+        assert_eq!(spec.requested_device_id, "{physical-render-endpoint}");
     }
 
     #[test]

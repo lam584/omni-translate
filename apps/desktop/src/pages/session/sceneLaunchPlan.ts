@@ -29,32 +29,46 @@ type Input = {
 };
 
 export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
-  const useEchoCancel = input.mode !== 'watch';
   const config: AppConfigDraft = {
     ...input.configDraft,
     devices: {
       ...input.configDraft.devices,
       routeMode: input.mode,
       status: 'ready',
-      ...(useEchoCancel ? {
+      ...(input.mode === 'watch' ? {
+        feedbackLoopPrevention: 'none' as const,
+        aecEnabled: false,
+        outputSpeechEnabled: true,
+        virtualMicOutputEnabled: false,
+      } : {
         feedbackLoopPrevention: 'echo-cancel' as const,
         aecEnabled: true,
         outputSpeechEnabled: true,
         virtualMicOutputEnabled: false,
-      } : {}),
+      }),
     },
-    speech: { ...input.configDraft.speech, ...input.speechPatch },
+    speech: {
+      ...input.configDraft.speech,
+      ...input.speechPatch,
+      ...(input.mode === 'watch' ? { outputTarget: 'speaker' as const } : {}),
+    },
   };
-  const stages: SceneLaunchStage[] = ['bridge-ready'];
-  const parallelOmniPreconnect = input.mode === 'watch' && input.isOmniModel;
-  if (parallelOmniPreconnect) stages.push('omni-preconnect');
+  // Watch capture does not depend on Bridge. Starting with bridge-ready lets an
+  // unrelated bootstrap consume the entire launch deadline before native audio IPC.
+  const stages: SceneLaunchStage[] = input.mode === 'watch' ? [] : ['bridge-ready'];
+  // Omni route startup now returns as soon as its worker and audio queue exist.
+  // The worker buffers captured audio until session.ready, so a separate blocking
+  // preconnect would only delay the one-click path.
+  const parallelOmniPreconnect = false;
   stages.push('inbound-route');
   if (input.mode !== 'watch') stages.push('outbound-route');
   if (!input.isOmniModel) stages.push('translate-worker');
   if (input.speechPatch.enabled
     && (!input.isOmniModel || input.secondarySubtitleTranslationEnabled)
     && input.audioSnapshot.speech.dispatchState === 'idle') stages.push('speech-dispatch');
-  if (!input.overlayVisible) stages.push('subtitle-overlay');
+  // Watch routes create the native overlay together with capture. Starting it
+  // again from the renderer is both duplicate work and outside route rollback.
+  if (input.mode !== 'watch' && !input.overlayVisible) stages.push('subtitle-overlay');
   return {
     mode: input.mode,
     config,

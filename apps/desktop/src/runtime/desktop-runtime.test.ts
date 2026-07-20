@@ -146,8 +146,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     expect(invokeMock.mock.calls.map((call) => call[0])).toEqual([
       'debug_ipc_ping',
       'bootstrap_runtime',
-      'bootstrap_audio',
       'load_config_draft',
+      'bootstrap_audio',
       'get_runtime_snapshot',
       'refresh_bridge_runtime',
     ]);
@@ -165,6 +165,21 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
     expect(invokeMock).not.toHaveBeenCalled();
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('browser-preview');
+  });
+
+  it('restores the locally persisted config in browser preview mode', async () => {
+    const fallback = structuredClone(appConfigDraftMock);
+    fallback.devices.inputLevel = 47;
+    fallback.devices.feedbackLoopPrevention = 'virtual-driver';
+    window.localStorage.setItem('omni.configDraftFallback', JSON.stringify(fallback));
+
+    const bootstrapPromise = bootstrapDesktopRuntimeBridge();
+    await vi.advanceTimersByTimeAsync(1000);
+    const cleanup = await bootstrapPromise;
+
+    expect(useAppStore.getState().configDraft.devices.inputLevel).toBe(47);
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('virtual-driver');
+    cleanup();
   });
 
   it('self-heals after the initial wait when the invoke bridge appears late', async () => {
@@ -216,8 +231,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
     expect(invokeMock.mock.calls.map((call) => call[0])).toEqual([
       'bootstrap_runtime',
-      'bootstrap_audio',
       'load_config_draft',
+      'bootstrap_audio',
       'get_runtime_snapshot',
       'refresh_bridge_runtime',
     ]);
@@ -277,8 +292,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     expect(invokeMock.mock.calls.map((call) => call[0])).toEqual([
       'debug_ipc_ping',
       'bootstrap_runtime',
-      'bootstrap_audio',
       'load_config_draft',
+      'bootstrap_audio',
       'get_runtime_snapshot',
       'refresh_bridge_runtime',
     ]);
@@ -512,13 +527,44 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
   it('surfaces an IPC ping failure as a degraded runtime snapshot', async () => {
     installTauriRuntime();
-    invokeMock.mockRejectedValueOnce(new Error('pipe unavailable'));
+    invokeMock.mockRejectedValue(new Error('pipe unavailable'));
 
-    const cleanup = await bootstrapDesktopRuntimeBridge();
+    const cleanupPromise = bootstrapDesktopRuntimeBridge();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const cleanup = await cleanupPromise;
 
     expect(useAppStore.getState().runtimeSnapshot.coreState).toBe('degraded');
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('runtime-error');
     expect(useAppStore.getState().runtimeSnapshot.notifications[0]?.source).toBe('desktop-runtime');
+    cleanup();
+  });
+
+  it('keeps retrying a transient IPC startup failure until the native channel recovers', async () => {
+    installTauriRuntime();
+    installHappyInvoke();
+    let pingAttempts = 0;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'debug_ipc_ping') {
+        pingAttempts += 1;
+        if (pingAttempts < 6) throw new Error('native channel is still starting');
+        return 'pong storage_status=ready elapsed_ms=0';
+      }
+
+      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') {
+        return structuredClone(runtimeSnapshotMock);
+      }
+
+      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
+      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const cleanupPromise = bootstrapDesktopRuntimeBridge();
+    await vi.advanceTimersByTimeAsync(5_000);
+    const cleanup = await cleanupPromise;
+
+    expect(pingAttempts).toBe(6);
+    expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).not.toBe('runtime-error');
     cleanup();
   });
 
@@ -663,6 +709,27 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     window.dispatchEvent(new Event('beforeunload'));
 
     expect(JSON.parse(window.localStorage.getItem('omni.configDraftFallback') ?? '{}').subtitles.overlayFontSize).toBe(36);
+    cleanup();
+  });
+
+  it('mirrors an inflight config write to local recovery storage immediately', async () => {
+    installTauriRuntime();
+    installHappyInvoke();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'save_config_draft') return new Promise(() => {});
+      if (command === 'debug_ipc_ping') return 'pong';
+      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') return structuredClone(runtimeSnapshotMock);
+      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
+      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const cleanup = await bootstrapDesktopRuntimeBridge();
+    useAppStore.getState().updateDeviceDraft({ inputLevel: 63, feedbackLoopPrevention: 'echo-cancel' });
+
+    const recovered = JSON.parse(window.localStorage.getItem('omni.configDraftFallback') ?? '{}');
+    expect(recovered.devices.inputLevel).toBe(63);
+    expect(recovered.devices.feedbackLoopPrevention).toBe('echo-cancel');
     cleanup();
   });
 

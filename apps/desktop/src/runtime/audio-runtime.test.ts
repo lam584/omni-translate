@@ -19,6 +19,7 @@ import {
   refreshAudioDevicesRuntime,
   showSubtitleOverlayWindow,
   startAudioRouteRuntime,
+  waitForWatchRouteReadyRuntime,
   preconnectOmniRealtimeRuntime,
   startSpeechDispatchRuntime,
   startTranslateWorkerRuntime,
@@ -82,7 +83,7 @@ describe('audio runtime', () => {
       (args as { command?: { action?: string } } | undefined)?.command?.action,
     ])).toEqual([
       ['session_v2', 'refreshDevices'],
-      ['session_v2', 'startRoute'],
+      ['start_audio_route', undefined],
       ['session_v2', 'preconnect'],
       ['session_v2', 'stopRoute'],
       ['session_v2', 'clearCues'],
@@ -93,9 +94,7 @@ describe('audio runtime', () => {
       ['toggle_subtitle_overlay', undefined],
       ['show_subtitle_overlay', undefined],
     ]);
-    expect(mocks.invoke).toHaveBeenCalledWith('session_v2', {
-      command: { action: 'startRoute', direction: 'inbound', config },
-    });
+    expect(mocks.invoke).toHaveBeenCalledWith('start_audio_route', { direction: 'inbound', config });
   });
 
   it('rejects with a timeout error when invoke does not respond in time', async () => {
@@ -116,13 +115,50 @@ describe('audio runtime', () => {
     mocks.isTauriRuntime.mockReturnValue(true);
     const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
 
-    mocks.invoke.mockImplementation(async () => ({ data: { status: 'ok' }, warnings: [] }));
+    mocks.invoke.mockImplementation(async (command: string) =>
+      command === 'start_audio_route' ? { status: 'ok' } : { data: { status: 'ok' }, warnings: [] },
+    );
 
     const result = await startAudioRouteRuntime('inbound', structuredClone(appConfigDraftMock));
     expect(result).toEqual({ status: 'ok' });
     expect(clearTimeoutSpy).toHaveBeenCalled();
 
     clearTimeoutSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('waits for the native Watch route to become usable after acknowledgement', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke
+      .mockResolvedValueOnce({ data: { inbound: { captureState: 'armed', streamBound: false, lastError: null } } })
+      .mockResolvedValueOnce({ data: { inbound: { captureState: 'capturing', streamBound: true, lastError: null } } });
+
+    const snapshot = await waitForWatchRouteReadyRuntime(100);
+
+    expect(snapshot.inbound).toMatchObject({ captureState: 'capturing', streamBound: true });
+    expect(mocks.invoke.mock.calls.map(([command, args]) => [command, args?.command?.action])).toEqual([
+      ['session_v2', 'snapshot'],
+      ['session_v2', 'snapshot'],
+    ]);
+  });
+
+  it('fails Watch route readiness immediately when native initialization reports an error', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke.mockResolvedValue({ data: { inbound: { captureState: 'buffering', streamBound: false, lastError: 'capture unavailable' } } });
+
+    await expect(waitForWatchRouteReadyRuntime(100)).rejects.toThrow('capture unavailable');
+  });
+
+  it('fails Watch route readiness when native capture never becomes usable before the deadline', async () => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke.mockResolvedValue({ data: { inbound: { captureState: 'armed', streamBound: false, lastError: null } } });
+
+    const readiness = waitForWatchRouteReadyRuntime(100);
+    const rejection = expect(readiness).rejects.toThrow('未在启动期限内就绪');
+    await vi.advanceTimersByTimeAsync(100);
+    await rejection;
+
     vi.useRealTimers();
   });
 
@@ -133,7 +169,7 @@ describe('audio runtime', () => {
     const lateStart = new Promise((resolve) => { finishStart = resolve; });
     mocks.invoke.mockImplementation((command: string, args?: { command?: { action?: string } }) => {
       const action = args?.command?.action;
-      if (command === 'session_v2' && action === 'startRoute') return lateStart;
+      if (command === 'start_audio_route') return lateStart;
       if (command === 'session_v2') return Promise.resolve({ data: { status: action }, warnings: [] });
       return Promise.resolve({});
     });
@@ -143,12 +179,14 @@ describe('audio runtime', () => {
     await vi.advanceTimersByTimeAsync(30_000);
     await rejection;
 
-    finishStart({ data: { status: 'late-started' }, warnings: [] });
+    finishStart({ status: 'late-started' });
     await vi.runAllTimersAsync();
     await Promise.resolve();
 
-    expect(mocks.invoke.mock.calls.map(([, args]) => args?.command?.action)).toEqual([
-      'startRoute', 'stopRoute', 'snapshot',
+    expect(mocks.invoke.mock.calls.map(([command, args]) => [command, args?.command?.action])).toEqual([
+      ['start_audio_route', undefined],
+      ['session_v2', 'stopRoute'],
+      ['session_v2', 'snapshot'],
     ]);
     vi.useRealTimers();
   });

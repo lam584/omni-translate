@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
-import { NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Outlet, useLocation } from 'react-router-dom';
 import { brandContent, navItems } from '../../mocks/app-content';
 import { resolveRuntimeBridgeStatus } from '../../runtime/runtime-status';
 import { useAppStore } from '../../stores/app-store';
@@ -123,25 +123,17 @@ function AppLayout() {
           <span>{t('nav.sectionMain')}</span>
         </div>
         <nav className="console-nav-list">
-          {shellNavItems.map((item) => (
-            <NavLink
-              className={({ isActive }) => {
-                const classNames = ['console-nav-item'];
+          {shellNavItems.map((item) => {
+            const classNames = ['console-nav-item'];
+            if (item.id === 'settings') classNames.push('console-nav-item-settings');
+            if (activeNav.id === item.id) classNames.push('console-nav-item-active');
 
-                if (item.id === 'settings') {
-                  classNames.push('console-nav-item-settings');
-                }
-
-                if (isActive) {
-                  classNames.push('console-nav-item-active');
-                }
-
-                return classNames.join(' ');
-              }}
+            return (
+            <a
+              className={classNames.join(' ')}
+              href={`#${item.path}`}
               key={item.id}
-              to={item.path}
               title={item.label}
-              end={item.path === '/' || item.path === '/settings'}
             >
               <span className="console-nav-icon" aria-hidden="true">
                 <AppIcon name={item.icon} size={18} />
@@ -151,8 +143,9 @@ function AppLayout() {
                 {item.hint ? <small>{item.hint}</small> : null}
               </span>
               {item.badge ? <span className="console-nav-badge">{item.badge}</span> : null}
-            </NavLink>
-          ))}
+            </a>
+            );
+          })}
         </nav>
       </aside>
 

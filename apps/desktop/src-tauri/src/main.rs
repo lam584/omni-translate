@@ -49,7 +49,8 @@ use tauri::{AppHandle, Emitter, Manager};
 
 use serde::Serialize;
 use serde_json::Value;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 use storage::StorageStateStore;
 use uuid::Uuid;
 
@@ -58,6 +59,7 @@ const DEFAULT_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID: &str =
     "template-dashscope-realtime::qwen3.6-flash-2026-04-16";
 const DEFAULT_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID: &str =
     "template-dashscope-realtime::qwen3.5-omni-plus-realtime";
+static IPC_PING_RECEIVED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -491,6 +493,7 @@ fn debug_ipc_ping(
     app: AppHandle,
     storage: tauri::State<'_, StorageStateStore>,
 ) -> Result<String, String> {
+    IPC_PING_RECEIVED.store(true, Ordering::Release);
     let start = Instant::now();
     let snapshot = storage.snapshot();
     log_debug!(
@@ -705,6 +708,7 @@ fn main() {
         .setup(|app| {
             let setup_start = Instant::now();
             let app_handle = app.handle().clone();
+            IPC_PING_RECEIVED.store(false, Ordering::Release);
             let state = app.state::<RuntimeStateStore>();
             let storage = app.state::<StorageStateStore>();
 
@@ -818,6 +822,47 @@ fn main() {
                 ),
                 setup_start.elapsed().as_millis()
             );
+
+            let ipc_watchdog_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                for reload_attempt in 1..=2 {
+                    tokio::time::sleep(Duration::from_secs(8)).await;
+                    if IPC_PING_RECEIVED.load(Ordering::Acquire) {
+                        return;
+                    }
+
+                    let reload_result = ipc_watchdog_handle
+                        .get_webview_window("main")
+                        .ok_or_else(|| "main WebView window is unavailable".to_string())
+                        .and_then(|window| {
+                            window
+                                .eval("window.location.reload()")
+                                .map_err(|error| error.to_string())
+                        });
+
+                    let (level, message, detail) = match reload_result {
+                        Ok(()) => (
+                            "warning",
+                            "startup.ipc_watchdog_reload",
+                            Some(format!("attempt={reload_attempt}")),
+                        ),
+                        Err(error) => (
+                            "error",
+                            "startup.ipc_watchdog_reload_failed",
+                            Some(format!("attempt={reload_attempt} error={error}")),
+                        ),
+                    };
+                    let _ = append_diagnostics_log(
+                        &ipc_watchdog_handle,
+                        "runtime",
+                        level,
+                        message,
+                        detail,
+                        None,
+                        None,
+                    );
+                }
+            });
 
             maybe_start_watch_mode_diagnostic(app);
 

@@ -6,9 +6,9 @@ import { buildSceneLaunchPlan, buildWatchFallbackPlan } from './sceneLaunchPlan'
 describe('buildSceneLaunchPlan', () => {
   const cases = [
     { name: 'watch omni', mode: 'watch' as const, omni: true, secondary: false,
-      stages: ['bridge-ready', 'omni-preconnect', 'inbound-route', 'subtitle-overlay'] },
+      stages: ['inbound-route'] },
     { name: 'watch classic with speech', mode: 'watch' as const, omni: false, secondary: false,
-      stages: ['bridge-ready', 'inbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay'] },
+      stages: ['inbound-route', 'translate-worker', 'speech-dispatch'] },
     { name: 'game', mode: 'game' as const, omni: false, secondary: false,
       stages: ['bridge-ready', 'inbound-route', 'outbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay'] },
     { name: 'voice room', mode: 'voice-room' as const, omni: false, secondary: false,
@@ -30,6 +30,14 @@ describe('buildSceneLaunchPlan', () => {
       });
       expect(plan.stages).toEqual(testCase.stages);
       expect(plan.config.devices.routeMode).toBe(testCase.mode);
+      if (testCase.mode === 'watch') {
+        expect(plan.config.devices).toMatchObject({
+          feedbackLoopPrevention: 'none',
+          aecEnabled: false,
+          virtualMicOutputEnabled: false,
+        });
+        expect(plan.config.speech.outputTarget).toBe('speaker');
+      }
     });
   }
 
@@ -41,8 +49,8 @@ describe('buildSceneLaunchPlan', () => {
       secondarySubtitleTranslationEnabled: false,
     };
     expect(buildWatchFallbackPlan({ ...base, isOmniModel: false, speechPatch: { enabled: false } }).stages)
-      .toEqual(['bridge-ready', 'inbound-route', 'translate-worker', 'subtitle-overlay']);
+      .toEqual(['inbound-route', 'translate-worker']);
     expect(buildWatchFallbackPlan({ ...base, isOmniModel: true, speechPatch: { enabled: true } }).stages)
-      .toEqual(['bridge-ready', 'inbound-route', 'speech-dispatch', 'subtitle-overlay']);
+      .toEqual(['inbound-route', 'speech-dispatch']);
   });
 });

@@ -22,6 +22,7 @@ use crate::runtime::events::show_subtitle_overlay_with_state;
 use crate::runtime::state::RuntimeStateStore;
 
 pub const AUDIO_RUNTIME_SNAPSHOT_EVENT: &str = "audio://snapshot";
+const AUDIO_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(6);
 const OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 const OMNI_ROUTE_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(90);
 const OMNI_PRECONNECT_COMMAND_TIMEOUT: Duration = Duration::from_secs(50);
@@ -141,11 +142,21 @@ fn start_route_with_overlay(
 }
 
 #[tauri::command]
-pub fn bootstrap_audio(
+pub async fn bootstrap_audio(
     app: AppHandle,
-    state: State<'_, AudioStateStore>,
 ) -> Result<AudioRuntimeSnapshot, String> {
-    AudioSessionSupervisor::new(app, &state).bootstrap()
+    let task = tauri::async_runtime::spawn_blocking(move || {
+            let state = app.state::<AudioStateStore>();
+            AudioSessionSupervisor::new(app.clone(), &state).bootstrap()
+        });
+
+    tokio::time::timeout(AUDIO_BOOTSTRAP_TIMEOUT, task)
+        .await
+        .map_err(|_| format!(
+            "音频设备枚举超时（{} 秒）。可能存在无响应的音频设备或驱动；应用将以降级模式继续启动。",
+            AUDIO_BOOTSTRAP_TIMEOUT.as_secs()
+        ))?
+        .map_err(|error| format!("音频初始化线程意外退出: {error}"))?
 }
 
 #[tauri::command]
@@ -236,6 +247,12 @@ mod tests {
         assert!(OMNI_ROUTE_SESSION_READINESS_TIMEOUT >= Duration::from_secs(75));
         assert!(OMNI_ROUTE_SESSION_READINESS_TIMEOUT <= Duration::from_secs(90));
         assert!(OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT < OMNI_ROUTE_SESSION_READINESS_TIMEOUT);
+    }
+
+    #[test]
+    fn omni_route_does_not_wait_for_remote_session_readiness() {
+        assert!(!should_wait_for_omni_session_readiness("route"));
+        assert!(should_wait_for_omni_session_readiness("preconnect"));
     }
 
     #[test]

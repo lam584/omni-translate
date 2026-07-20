@@ -11,6 +11,7 @@ const OVERLAY_WINDOW_TIMEOUT_MS = 15_000;
 const AUDIO_REFRESH_TIMEOUT_MS = 15_000;
 const SPEECH_DISPATCH_TIMEOUT_MS = 30_000;
 const TRANSLATE_WORKER_TIMEOUT_MS = 60_000;
+const WATCH_ROUTE_READY_POLL_MS = 40;
 // The Rust command owns cancellation and cleanup (50s hard deadline). Keep the
 // renderer deadline outside it so the UI cannot abandon a still-running task.
 const OMNI_PRECONNECT_TIMEOUT_MS = 55_000;
@@ -81,7 +82,10 @@ export async function startAudioRouteRuntime(direction: 'inbound' | 'outbound', 
   }
 
   return invokeAudioWithTimeout(
-    () => desktopApiV2.session.startRoute(direction, config),
+    // Route startup uses the direct native command. The V2 wrapper remains
+    // available for other session operations, but must not sit between the
+    // click path and the sub-second native acknowledgement.
+    () => desktopApiV2.runtime.invoke<AudioRuntimeSnapshot>('start_audio_route', { direction, config }),
     '启动音频采集',
     AUDIO_ROUTE_TIMEOUT_MS,
     async (lateStart) => {
@@ -90,6 +94,35 @@ export async function startAudioRouteRuntime(direction: 'inbound' | 'outbound', 
       await desktopApiV2.session.snapshot();
     },
   );
+}
+
+function watchRouteNotReadyError(snapshot: AudioRuntimeSnapshot) {
+  return new Error(snapshot.inbound.lastError ?? '系统音频采集未进入可用状态。');
+}
+
+export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: AbortSignal): Promise<AudioRuntimeSnapshot> {
+  if (!isTauriRuntime()) {
+    return {
+      ...audioRuntimeSnapshotMock,
+      inbound: { ...audioRuntimeSnapshotMock.inbound, captureState: 'capturing', streamBound: true },
+    } satisfies AudioRuntimeSnapshot;
+  }
+
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error('看片模式启动已取消。');
+    }
+    const snapshot = await desktopApiV2.session.snapshot();
+    if (snapshot.inbound.lastError) throw watchRouteNotReadyError(snapshot);
+    if (snapshot.inbound.captureState === 'capturing' && snapshot.inbound.streamBound) return snapshot;
+
+    const remainingMs = deadline - Date.now();
+    if (remainingMs <= 0) {
+      throw new Error('系统音频采集未在启动期限内就绪。');
+    }
+    await new Promise<void>((resolve) => window.setTimeout(resolve, Math.min(WATCH_ROUTE_READY_POLL_MS, remainingMs)));
+  }
 }
 
 export async function getAudioRuntimeSnapshotRuntime(): Promise<AudioRuntimeSnapshot> {

@@ -351,6 +351,24 @@ impl AudioStateStore {
         route.pre_buffer_state = "primed".to_string();
     }
 
+    pub fn mark_route_start_requested(
+        &self,
+        direction: &str,
+        route_id: &str,
+        requested_device_id: &str,
+    ) {
+        let mut state = self.inner.lock().expect("audio state poisoned");
+        let route = route_mut(&mut state, direction);
+        route.route_id = route_id.to_string();
+        route.requested_device_id = requested_device_id.to_string();
+        route.effective_device_id = String::new();
+        route.capture_state = "armed".to_string();
+        route.stream_bound = false;
+        route.last_error = None;
+        route.recommended_action = None;
+        route.pre_buffer_state = "cold".to_string();
+    }
+
     pub fn update_route_metrics(
         &self,
         direction: &str,

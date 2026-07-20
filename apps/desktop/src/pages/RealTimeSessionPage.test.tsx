@@ -487,11 +487,8 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(installDriverRuntimeMock).not.toHaveBeenCalled();
     expect(repairDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
-    expect(preconnectOmniRealtimeRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(preconnectOmniRealtimeRuntimeMock).not.toHaveBeenCalled();
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(preconnectOmniRealtimeRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
-      startAudioRouteRuntimeMock.mock.invocationCallOrder[0],
-    );
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
       'inbound',
       expect.objectContaining({
@@ -509,7 +506,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(useAppStore.getState().configDraft.speech.enabled).toBe(false);
   });
 
-  it('continues through normal watch launch when Omni preconnect fails', async () => {
+  it('does not block watch launch on the legacy Omni preconnect command', async () => {
     preconnectOmniRealtimeRuntimeMock.mockRejectedValue(new Error('preconnect denied'));
     await act(async () => {
       useAppStore.setState((state) => ({
@@ -541,14 +538,14 @@ describe('RealTimeSessionPage one-click launch', () => {
       (container.querySelector('button') as HTMLButtonElement | null)?.click();
     });
 
-    expect(preconnectOmniRealtimeRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(preconnectOmniRealtimeRuntimeMock).not.toHaveBeenCalled();
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(1);
     expect(useAppStore.getState().runtimeNotifications.some((item) =>
-      item.message.includes('Omni 预连接失败') && item.message.includes('preconnect denied'),
-    )).toBe(true);
+      item.message.includes('Omni 预连接失败'),
+    )).toBe(false);
   });
 
-  it('stops the watch route and reports partial startup when the overlay fails to open', async () => {
+  it('keeps the watch route active when the background overlay fails to open', async () => {
     showSubtitleOverlayWindowMock.mockRejectedValue(new Error('overlay denied'));
     await act(async () => {
       useAppStore.setState((state) => ({
@@ -581,10 +578,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     });
 
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
-    expect(stopAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound');
-    expect(useAppStore.getState().runtimeNotifications.some((item) =>
-      item.message.includes('字幕浮窗打开失败') && item.message.includes('overlay denied'),
-    )).toBe(true);
+    expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalled();
   });
 
   it('does not reopen the subtitle overlay when it is already visible during watch launch', async () => {
@@ -728,7 +722,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     );
   });
 
-  it('starts bridge in watch mode when feedbackLoopPrevention is virtual-driver', async () => {
+  it('delegates virtual-driver readiness to the background watch worker', async () => {
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -778,7 +772,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(installDriverRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
       'inbound',
@@ -790,7 +784,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     );
   });
 
-  it('falls back to subtitles-only when virtual-driver startup fails and the user accepts the downgrade', async () => {
+  it('does not synchronously repair or downgrade virtual-driver watch startup', async () => {
     const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(true);
     installDriverRuntimeMock.mockRejectedValue(new Error('SYSVAD package missing'));
     await act(async () => {
@@ -817,25 +811,12 @@ describe('RealTimeSessionPage one-click launch', () => {
       );
     });
 
-    expect(confirmMock).toHaveBeenCalledTimes(1);
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
-      'inbound',
-      expect.objectContaining({
-        devices: expect.objectContaining({
-          feedbackLoopPrevention: 'none',
-          outputSpeechEnabled: false,
-          virtualMicOutputEnabled: false,
-        }),
-        speech: expect.objectContaining({
-          enabled: false,
-          outputTarget: 'speaker',
-        }),
-      }),
-    );
+    expect(confirmMock).not.toHaveBeenCalled();
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
     confirmMock.mockRestore();
   });
 
-  it('falls back to temporary AEC speaker playback when the user rejects subtitles-only mode', async () => {
+  it('preserves the requested watch route while Bridge converges in the background', async () => {
     const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(false);
     installDriverRuntimeMock.mockRejectedValue(new Error('SYSVAD package missing'));
     await act(async () => {
@@ -862,22 +843,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       );
     });
 
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
-      'inbound',
-      expect.objectContaining({
-        devices: expect.objectContaining({
-          feedbackLoopPrevention: 'echo-cancel',
-          outputSpeechEnabled: true,
-          virtualMicOutputEnabled: false,
-          aecEnabled: true,
-        }),
-        speech: expect.objectContaining({
-          enabled: true,
-          outputTarget: 'speaker',
-          localPlaybackEnabled: true,
-        }),
-      }),
-    );
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
     confirmMock.mockRestore();
   });
 
@@ -898,7 +864,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       speech: { outputTarget: 'both' as const },
     },
   ]) {
-    it(`falls back to subtitles-only when bridge startup fails for ${scenario.name}`, async () => {
+    it(`does not block watch startup on Bridge repair for ${scenario.name}`, async () => {
       const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(true);
       installDriverRuntimeMock.mockRejectedValue(new Error('driver package missing'));
       await act(async () => {
@@ -932,27 +898,13 @@ describe('RealTimeSessionPage one-click launch', () => {
         );
       });
 
-      expect(confirmMock).toHaveBeenCalledTimes(1);
-      expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
-        'inbound',
-        expect.objectContaining({
-          devices: expect.objectContaining({
-            feedbackLoopPrevention: 'none',
-            outputSpeechEnabled: false,
-            virtualMicOutputEnabled: false,
-          }),
-          speech: expect.objectContaining({
-            enabled: false,
-            outputTarget: 'speaker',
-            virtualMicOutputEnabled: false,
-          }),
-        }),
-      );
+      expect(confirmMock).not.toHaveBeenCalled();
+      expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
       confirmMock.mockRestore();
     });
   }
 
-  it('starts bridge in watch mode when virtualMicOutputEnabled is true', async () => {
+  it('does not synchronously install Bridge when virtualMicOutputEnabled is true', async () => {
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -997,11 +949,11 @@ describe('RealTimeSessionPage one-click launch', () => {
       launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(installDriverRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
   });
 
-  it('starts bridge in watch mode when speech outputTarget is virtual-mic', async () => {
+  it('does not synchronously install Bridge for speech outputTarget virtual-mic', async () => {
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -1050,7 +1002,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(installDriverRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
   });
 
@@ -1223,7 +1175,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(useAppStore.getState().audioRuntimeSnapshot.outbound.streamBound).toBe(false);
   });
 
-  it('starts bridge in watch mode when speech outputTarget is both', async () => {
+  it('does not synchronously install Bridge for speech outputTarget both', async () => {
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -1272,7 +1224,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(installDriverRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
     expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
   });
 

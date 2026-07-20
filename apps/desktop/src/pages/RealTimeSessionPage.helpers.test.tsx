@@ -87,7 +87,7 @@ describe('realTimeSessionPageHelpers', () => {
     });
   });
 
-  it('validates the output device selected by Audio Routing instead of the legacy playback preference', () => {
+  it('keeps the persisted output preference and falls back when its Windows endpoint ID changes', () => {
     const configDraft = structuredClone(appConfigDraftMock);
     const audioSnapshot = structuredClone(audioRuntimeSnapshotMock);
     const outputDevice = audioSnapshot.renderDevices[0];
@@ -98,6 +98,9 @@ describe('realTimeSessionPageHelpers', () => {
     expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBeNull();
 
     configDraft.devices.outputDeviceId = 'missing-output-device';
+    expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBeNull();
+
+    audioSnapshot.renderDevices = [];
     expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBe('playback-device');
   });
 

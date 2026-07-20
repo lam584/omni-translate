@@ -13,6 +13,7 @@ $srcTauriRoot = "$desktopRoot\src-tauri"
 $debugExe = "$srcTauriRoot\target\debug\omni-desktop-shell.exe"
 $cargoToml = "$srcTauriRoot\Cargo.toml"
 $cargoLock = "$srcTauriRoot\Cargo.lock"
+$stopDevPortScript = "$PSScriptRoot\stop-dev-port.ps1"
 
 function Test-BinaryFresh {
   $exe = Get-Item $debugExe -ErrorAction SilentlyContinue
@@ -45,7 +46,9 @@ if (-not $ForceCargo) {
 $env:OMNI_TAURI_FAST_START = "1"
 $env:VITE_OMNI_STARTUP_MEASURE_RUN_ID = "tauri-fast-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
 
-# 1. Start or reuse Vite dev server
+# 1. Release the dev port and start Vite
+& $stopDevPortScript -Port $DevServerPort
+
 $existing = Get-NetTCPConnection -LocalPort $DevServerPort -State Listen -ErrorAction SilentlyContinue | Select-Object -First 1
 if (-not $existing) {
   Write-Host "[dev:tauri:fast] Starting Vite dev server..."

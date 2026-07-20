@@ -4,6 +4,91 @@ pub async fn start_audio_route(
     direction: String,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    let requested_device_id = config
+        .pointer("/devices/inboundRoute/input/deviceId")
+        .and_then(Value::as_str)
+        .unwrap_or("system-output-default");
+    let _ = append_diagnostics_log(
+        &app,
+        "audio",
+        "warning",
+        "watch_mode.direct_route_command_received",
+        Some(format!("direction={direction} requestedDeviceId={requested_device_id}")),
+        None,
+        None,
+    );
+    // Watch capture initialization is worker-owned. A Tauri command must
+    // acknowledge acceptance immediately; the renderer then waits for the
+    // later snapshot that confirms the route actually owns a capture stream.
+    let fast_watch_start = direction == "inbound"
+        && config.pointer("/devices/routeMode").and_then(Value::as_str) == Some("watch");
+    if fast_watch_start {
+        let state = app.state::<AudioStateStore>();
+        let route_id = config
+            .pointer("/devices/inboundRoute/routeId")
+            .and_then(Value::as_str)
+            .unwrap_or("audio-route-inbound-watch");
+        let requested_device_id = config
+            .pointer("/devices/inboundRoute/input/deviceId")
+            .and_then(Value::as_str)
+            .unwrap_or("system-output-default");
+        state.mark_route_start_requested(
+            "inbound",
+            route_id,
+            requested_device_id,
+        );
+        // Freeze the accepted state before the worker can contend for the
+        // pipeline/session locks. It is intentionally not a ready snapshot.
+        let accepted_snapshot = state.snapshot();
+        let started_at = std::time::Instant::now();
+        let _ = append_diagnostics_log(
+            &app,
+            "audio",
+            "info",
+            "watch_mode.route_start_acknowledged",
+            Some(format!("direction=inbound routeId={route_id} ready=false")),
+            None,
+            None,
+        );
+
+        let task_app = app.clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            let task_state = task_app.state::<AudioStateStore>();
+            match start_audio_route_inner(
+                task_app.clone(),
+                &task_state,
+                "inbound".to_string(),
+                config,
+            ) {
+                Ok(snapshot) => {
+                    let _ = append_diagnostics_log(
+                        &task_app,
+                        "audio",
+                        "info",
+                        "watch_mode.route_ready",
+                        Some(format!(
+                            "direction=inbound elapsedMs={} captureState={} streamBound={}",
+                            started_at.elapsed().as_millis(),
+                            snapshot.inbound.capture_state,
+                            snapshot.inbound.stream_bound,
+                        )),
+                        None,
+                        None,
+                    );
+                }
+                Err(error) => {
+                    task_state.mark_route_error(
+                        "inbound",
+                        error,
+                        Some("restart-route".to_string()),
+                    );
+                    let _ = engine::emit_audio_snapshot(&task_app, &task_state);
+                }
+            }
+        });
+        return Ok(accepted_snapshot);
+    }
+
     let timeout = route_command_timeout(&direction, &config);
     let timeout_message = route_command_timeout_message(&direction, &config, timeout);
     let app_for_task = app.clone();

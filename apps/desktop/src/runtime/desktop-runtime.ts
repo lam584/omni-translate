@@ -26,7 +26,12 @@ const INITIAL_RUNTIME_WAIT_TIMEOUT_MS = 800;
 const INITIAL_RUNTIME_WAIT_INTERVAL_MS = 25;
 const LATE_RUNTIME_HEAL_TIMEOUT_MS = 15000;
 const LATE_RUNTIME_HEAL_INTERVAL_MS = 100;
-const IPC_PING_TIMEOUT_MS = 1500;
+const IPC_PING_TIMEOUT_MS = 750;
+// WebView2 can expose the Tauri JavaScript bridge before its native message
+// channel is ready. Keep the startup overlay in a connecting state while the
+// native side settles instead of turning a recoverable launch race into a
+// permanent runtime-error snapshot.
+const IPC_PING_RETRY_DELAYS_MS = [100, 250, 500, 1000, 2000, 3000, 5000, 5000, 5000, 5000] as const;
 const BRIDGE_INVOKE_TIMEOUT_MS = 8000;
 export const BRIDGE_AUTOSTART_AFTER_READY_DELAY_MS = 0;
 const BRIDGE_STARTUP_REFRESH_TIMEOUT_MS = 3000;
@@ -78,6 +83,25 @@ function invokeWithTimeout<T>(
         reject(error);
       });
   });
+}
+
+async function pingDesktopRuntime(): Promise<number> {
+  const startedAt = performance.now();
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= IPC_PING_RETRY_DELAYS_MS.length; attempt += 1) {
+    try {
+      await invokeWithTimeout<string>('debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+      return Math.round(performance.now() - startedAt);
+    } catch (error) {
+      lastError = error;
+      const retryDelay = IPC_PING_RETRY_DELAYS_MS[attempt];
+      if (retryDelay === undefined) break;
+      await new Promise((resolve) => setTimeout(resolve, retryDelay));
+    }
+  }
+
+  throw lastError;
 }
 
 function isWatchModeAutostartRuntime() {
@@ -281,36 +305,14 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     };
   }
 
-  markStep(onStep, 'init-audio', 'active');
-  try {
-    const audioSnapshot = await invokeWithTimeout<AudioRuntimeSnapshot>('bootstrap_audio');
-    useAppStore.getState().setAudioRuntimeSnapshot(audioSnapshot);
-    markStep(onStep, 'init-audio', 'done', `${audioSnapshot.renderDevices.length} devices`);
-  } catch (error) {
-    const message = formatRuntimeError(error);
-    markStep(onStep, 'init-audio', 'error', message);
-    deferDesktopRuntimeNotification('warning', 'audio-bootstrap-failed', `Audio runtime bootstrap failed: ${message}`);
-  }
-
   let isHydrating = true;
+  markStep(onStep, 'init-audio', 'active');
   markStep(onStep, 'load-config', 'active');
 
-  let persistedConfig: AppConfigDraft;
+  let persistedConfig = useAppStore.getState().configDraft;
   try {
     persistedConfig = await invokeWithTimeout<AppConfigDraft>('load_config_draft');
     useAppStore.getState().setConfigDraft(persistedConfig);
-
-    try {
-      const hydratedSnapshot = await invokeWithTimeout<RuntimeSnapshot>('get_runtime_snapshot');
-      useAppStore.getState().setRuntimeSnapshot(hydratedSnapshot);
-    } catch (snapshotError) {
-      pushDesktopRuntimeNotification(
-        'warning',
-        'runtime-snapshot-refresh-failed',
-        `Runtime snapshot refresh after config load failed: ${formatRuntimeError(snapshotError)}`,
-      );
-    }
-
     markStep(onStep, 'load-config', 'done');
   } catch (configError) {
     const message = formatRuntimeError(configError);
@@ -320,7 +322,27 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
       'config-load-failed',
       `Config load failed: ${message}. Runtime and audio bootstrap state were preserved.`,
     );
-    persistedConfig = useAppStore.getState().configDraft;
+  }
+
+  try {
+    const audioSnapshot = await invokeWithTimeout<AudioRuntimeSnapshot>('bootstrap_audio');
+    useAppStore.getState().setAudioRuntimeSnapshot(audioSnapshot);
+    markStep(onStep, 'init-audio', 'done', `${audioSnapshot.renderDevices.length} devices`);
+  } catch (error) {
+    const message = formatRuntimeError(error);
+    markStep(onStep, 'init-audio', 'done', '已降级，稍后自动刷新设备');
+    deferDesktopRuntimeNotification('warning', 'audio-bootstrap-deferred', `Audio device refresh deferred: ${message}`);
+  }
+
+  try {
+    const hydratedSnapshot = await invokeWithTimeout<RuntimeSnapshot>('get_runtime_snapshot');
+    useAppStore.getState().setRuntimeSnapshot(hydratedSnapshot);
+  } catch (snapshotError) {
+    pushDesktopRuntimeNotification(
+      'warning',
+      'runtime-snapshot-refresh-failed',
+      `Runtime snapshot refresh after config load failed: ${formatRuntimeError(snapshotError)}`,
+    );
   }
 
   flushDeferredNotifications();
@@ -366,6 +388,17 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
           const latestSnapshot = await desktopApiV2.runtime.invoke<RuntimeSnapshot>('get_runtime_snapshot');
           if (disposed) return;
           useAppStore.getState().setRuntimeSnapshot(latestSnapshot);
+          const savedSerialized = JSON.stringify(nextConfig);
+          try {
+            if (
+              queueState.pending === null
+              && JSON.stringify(useAppStore.getState().configDraft) === savedSerialized
+              && canUseLocalStorage()
+              && window.localStorage.getItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY) === savedSerialized
+            ) {
+              window.localStorage.removeItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY);
+            }
+          } catch { /* SQLite persistence already succeeded; local cleanup is best-effort */ }
           lastError = undefined;
           break;
         } catch (error) {
@@ -404,6 +437,11 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     if (sc === queueState.lastSerializedConfig) return;
     queueState.lastSerializedConfig = sc;
     writeConfigDraftShadow(sc);
+    try {
+      if (canUseLocalStorage()) {
+        window.localStorage.setItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY, sc);
+      }
+    } catch { /* the SQLite queue below remains the primary persistence path */ }
     void emit(CONFIG_DRAFT_SYNC_EVENT, state.configDraft).catch(() => undefined);
     queueState.pending = state.configDraft;
     void flushPersistQueue();
@@ -422,14 +460,12 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   window.addEventListener('storage', handleConfigDraftStorage);
 
   const handleBeforeUnload = () => {
-    if (queueState.pending !== null) {
-      try {
-        const serialized = JSON.stringify(queueState.pending);
-        if (canUseLocalStorage()) {
-          window.localStorage.setItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY, serialized);
-        }
-      } catch { /* silently fail */ }
-    }
+    try {
+      const serialized = JSON.stringify(useAppStore.getState().configDraft);
+      if (canUseLocalStorage()) {
+        window.localStorage.setItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY, serialized);
+      }
+    } catch { /* silently fail */ }
   };
   window.addEventListener('beforeunload', handleBeforeUnload);
 
@@ -504,6 +540,13 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
 
     store.setRuntimeSnapshot(runtimeSnapshotMock);
     store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
+    try {
+      const fallbackData = await fallbackBackend.load<AppConfigDraft>(CONFIG_DRAFT_FALLBACK_STORAGE_KEY);
+      if (fallbackData) {
+        store.setConfigDraft(fallbackData);
+        lastSerializedFallbackConfig = JSON.stringify(useAppStore.getState().configDraft);
+      }
+    } catch { /* keep mock defaults when local recovery is unavailable */ }
 
     // Still attempt late healing in background — but don't block.
     void waitForTauriRuntime(LATE_RUNTIME_HEAL_TIMEOUT_MS, LATE_RUNTIME_HEAL_INTERVAL_MS).then(async (available) => {
@@ -537,11 +580,11 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
   markStep(onStep, 'check-ipc', 'active');
 
   let ipcOk = false;
-  const pingStart = performance.now();
   try {
-    const pingResult = await invokeWithTimeout<string>('debug_ipc_ping', IPC_PING_TIMEOUT_MS);
-    console.log('[omni][desktop-runtime] debug_ipc_ping 成功:', pingResult);
+    const pingElapsedMs = await pingDesktopRuntime();
+    console.log('[omni][desktop-runtime] debug_ipc_ping 成功:', `${pingElapsedMs}ms`);
     ipcOk = true;
+    markStep(onStep, 'check-ipc', 'done', `${pingElapsedMs}ms`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error('[omni][desktop-runtime] debug_ipc_ping 失败:', message);
@@ -551,9 +594,7 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
   }
 
-  if (ipcOk) {
-    markStep(onStep, 'check-ipc', 'done', `${Math.round(performance.now() - pingStart)}ms`);
-  } else {
+  if (!ipcOk) {
     markStep(onStep, 'check-ipc', 'error', 'IPC 通道未响应');
     markStep(onStep, 'init-runtime', 'error', 'IPC 未连通');
     markStep(onStep, 'init-audio', 'error', 'IPC 未连通');
@@ -604,10 +645,14 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     } catch (error) {
       console.error('[omni][desktop-runtime] connectIfAvailable 异常:', error);
       if (!disposed) {
+        const message = formatRuntimeError(error);
+        markStep(onStep, 'init-runtime', 'error', message);
+        markStep(onStep, 'init-audio', 'error', message);
+        markStep(onStep, 'load-config', 'error', message);
         pushDesktopRuntimeNotification(
           'warning',
           'runtime-connect-failed',
-          `Desktop runtime connect failed after IPC ping: ${formatRuntimeError(error)}`,
+          `Desktop runtime connect failed after IPC ping: ${message}`,
         );
       }
     }

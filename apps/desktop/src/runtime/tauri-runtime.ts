@@ -14,8 +14,12 @@ export function hasInvokeBridge() {
   return typeof (window as TauriInternalsWindow).__TAURI_INTERNALS__?.invoke === 'function';
 }
 
+export function hasTauriAppOrigin(location: Pick<Location, 'protocol' | 'hostname'> = window.location) {
+  return location.protocol === 'tauri:' || location.hostname === 'tauri.localhost';
+}
+
 export function isTauriRuntime() {
-  return typeof window !== 'undefined' && (isTauri() || hasInvokeBridge());
+  return typeof window !== 'undefined' && (isTauri() || hasInvokeBridge() || hasTauriAppOrigin());
 }
 
 export async function waitForTauriRuntime(timeoutMs = 800, intervalMs = 25): Promise<boolean> {

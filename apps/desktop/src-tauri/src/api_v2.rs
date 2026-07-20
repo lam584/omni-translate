@@ -181,6 +181,7 @@ pub async fn session_v2(
         SessionCommandV2::Preconnect { config } => audio_events::preconnect_omni_realtime(app.clone(), config).await,
         SessionCommandV2::CancelPreconnect => audio_events::cancel_omni_preconnect(app.clone()).await,
         SessionCommandV2::StartRoute { direction, config } => {
+            log::warn!("[omni][session_v2] startRoute direction={direction}");
             audio_events::start_audio_route(app.clone(), direction, config).await
         }
         SessionCommandV2::StopRoute { direction } => audio_events::stop_audio_route(app.clone(), direction).await,

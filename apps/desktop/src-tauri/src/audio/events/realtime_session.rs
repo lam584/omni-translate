@@ -1,3 +1,7 @@
+fn should_wait_for_omni_session_readiness(phase: &str) -> bool {
+    phase == "preconnect"
+}
+
 fn start_or_reuse_omni_session(
     app: &AppHandle,
     state: &AudioStateStore,
@@ -81,6 +85,21 @@ fn start_or_reuse_omni_session(
     }
     if let Some(previous) = state.store_omni_handle(direction, handle) {
         let _ = previous.stop_tx.send(());
+    }
+    if !should_wait_for_omni_session_readiness(phase) {
+        let _ = append_diagnostics_log(
+            app,
+            "audio",
+            "info",
+            "watch_mode.omni_route_started_before_session_ready",
+            Some(format!(
+                "direction={direction} generation={session_generation} model={} queuedAudio=true",
+                voice_model
+            )),
+            None,
+            None,
+        );
+        return Ok((omni_sender, session_generation));
     }
     let readiness_deadline = std::time::Instant::now() + readiness_timeout;
     let readiness_result = loop {

@@ -130,8 +130,10 @@ function getSceneLaunchConfigurationProblem(
     // Audio Routing and the native speech output both use outputDeviceId.
     // playbackDeviceId is a legacy preference whose default placeholder is not
     // a Windows endpoint ID, so validating it reports healthy devices missing.
-    const selectedPlayback = configDraft.devices.outputDeviceId;
-    if (!selectedPlayback || !audioSnapshot.renderDevices.some((device) => device.deviceId === selectedPlayback)) {
+    // Windows endpoint IDs may change after a driver update, USB reconnect, or
+    // default-device switch. The native route already falls back to the current
+    // default endpoint when the persisted ID is stale.
+    if (audioSnapshot.renderDevices.length === 0) {
       return 'playback-device';
     }
   }
@@ -326,7 +328,7 @@ function RealTimeSessionPage() {
     pushNotification: pushRuntimeNotification,
     runBusyAction,
     confirmWatchFallback: () => window.confirm(t('session.virtualDriverFallbackConfirm')),
-    sceneLaunchTimeoutMessage: () => t('session.startSlowWarning', { seconds: 7 }),
+    sceneLaunchTimeoutMessage: (seconds) => t('session.startSlowWarning', { seconds }),
     sceneLaunchFailureMessage: (sceneMode, stage, error) => {
       const message = t('session.sceneLaunchFailed', {
         scene: resolveSceneLabel(sceneMode), stage: describeSceneLaunchStage(stage),

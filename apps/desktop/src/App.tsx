@@ -303,7 +303,7 @@ function App() {
   useEffect(() => {
     if (!bootstrapReady || fullReadyLoggedRef.current) return;
 
-    deferredStylesPromiseRef.current = import('./styles/deferred.css');
+    deferredStylesPromiseRef.current = Promise.resolve();
 
     if (!deferredStylesPromiseRef.current) return;
 

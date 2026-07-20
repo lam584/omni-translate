@@ -6,7 +6,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   isTauri: () => isTauriMock(),
 }));
 
-import { hasInvokeBridge, isTauriRuntime, waitForTauriRuntime } from './tauri-runtime';
+import { hasInvokeBridge, hasTauriAppOrigin, isTauriRuntime, waitForTauriRuntime } from './tauri-runtime';
 
 describe('tauri runtime detection', () => {
   beforeEach(() => {
@@ -56,5 +56,11 @@ describe('tauri runtime detection', () => {
     expect(hasInvokeBridge()).toBe(false);
     expect(isTauriRuntime()).toBe(false);
     expect(await waitForTauriRuntime()).toBe(false);
+  });
+
+  it('recognizes both Tauri production URL forms without relying on global injection timing', () => {
+    expect(hasTauriAppOrigin({ protocol: 'tauri:', hostname: 'localhost' })).toBe(true);
+    expect(hasTauriAppOrigin({ protocol: 'http:', hostname: 'tauri.localhost' })).toBe(true);
+    expect(hasTauriAppOrigin({ protocol: 'http:', hostname: '127.0.0.1' })).toBe(false);
   });
 });

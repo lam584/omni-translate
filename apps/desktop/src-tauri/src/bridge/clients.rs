@@ -2,7 +2,7 @@ use tauri::AppHandle;
 
 use super::contracts::{BridgeRuntimeSnapshot, BridgeStateResponse};
 use super::ipc::{
-    check_bridge_health, ensure_bridge_runtime_root, flush_bridge_source, initialize_bridge,
+    ensure_bridge_runtime_root, flush_bridge_source, initialize_bridge,
     query_state, query_state_fast, stop_bridge_process, terminate_stale_bridge_process,
     write_virtual_mic_frame,
 };
@@ -69,9 +69,6 @@ impl<'a> BridgeCommandClient<'a> {
         if fast { query_state_fast(self.pipe_path) } else { query_state(self.pipe_path) }
     }
 
-    pub(crate) fn check_health(&self) -> Result<(), String> {
-        check_bridge_health(self.pipe_path)
-    }
 }
 
 pub(crate) struct BridgeAudioWriter<'a> {

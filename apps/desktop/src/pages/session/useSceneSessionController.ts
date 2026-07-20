@@ -8,6 +8,7 @@ import {
   preconnectOmniRealtimeRuntime,
   showSubtitleOverlayWindow,
   startAudioRouteRuntime,
+  waitForWatchRouteReadyRuntime,
   startSpeechDispatchRuntime,
   startTranslateWorkerRuntime,
   stopAudioRouteRuntime,
@@ -21,6 +22,7 @@ import { watchModeNeedsBridge } from '../../utils/scene-readiness';
 import { stringifyRedacted } from '../../utils/redact-sensitive-data';
 import { buildSceneLaunchPlan, buildWatchFallbackPlan, type SceneLaunchStage } from './sceneLaunchPlan';
 import { executeSceneLaunchPlan, SceneLaunchError } from './sceneLaunchExecutor';
+import { sceneLaunchTimeoutMs } from './sceneLaunchTimeout';
 
 type SceneSessionControllerOptions = {
   runtimeSnapshot: RuntimeSnapshot;
@@ -33,7 +35,7 @@ type SceneSessionControllerOptions = {
   runBusyAction: BusyActionRunner;
   confirmWatchFallback: () => boolean;
   sceneLaunchFailureMessage: (mode: SceneMode, stage: string | null, error: unknown) => string;
-  sceneLaunchTimeoutMessage: () => string;
+  sceneLaunchTimeoutMessage: (seconds: number) => string;
 };
 
 type BusyActionRunner = (action: 'watch-start' | 'conversation-start' | 'stop', task: () => Promise<void>) => Promise<void>;
@@ -48,13 +50,11 @@ type SceneLaunchOptions = {
   secondarySubtitleTranslationEnabled: boolean;
 };
 
-const SCENE_LAUNCH_TIMEOUT_MS = 7_000;
-
 function sceneLaunchTimeoutError(message: string) {
   return new Error(message);
 }
 
-async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMessage: string, onTimeout: () => Promise<void>): Promise<T> {
+async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMs: number, timeoutMessage: string, onTimeout: () => Promise<void>): Promise<T> {
   let timerId: ReturnType<typeof setTimeout> | null = null;
   const timeout = new Promise<never>((_, reject) => {
     timerId = setTimeout(() => {
@@ -62,7 +62,7 @@ async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMessage: 
         appendFrontendDiagnosticsLog('runtime', 'warning', `[SceneLaunch] timeout cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
       });
       reject(sceneLaunchTimeoutError(timeoutMessage));
-    }, SCENE_LAUNCH_TIMEOUT_MS);
+    }, timeoutMs);
   });
   try {
     return await Promise.race([operation, timeout]);
@@ -82,6 +82,14 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
   const desktopApi = useDesktopApiV2();
   const ensureBridgeReady = async (mode: SceneMode, nextConfig: AppConfigDraft): Promise<RuntimeSnapshot> => {
     if (!watchModeNeedsBridge(nextConfig)) {
+      return runtimeSnapshot;
+    }
+
+    // Bridge convergence is already scheduled during application bootstrap.
+    // Never install/repair/restart it synchronously from the sub-second watch
+    // launch path; start_audio_route performs a cheap pipe health check and
+    // reports an immediately actionable error if prewarming did not succeed.
+    if (mode === 'watch') {
       return runtimeSnapshot;
     }
 
@@ -268,10 +276,13 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     }
     const plan = buildSceneLaunchPlan(options);
     const nextConfig = plan.config;
+    const launchTimeoutMs = sceneLaunchTimeoutMs(mode, options.isOmniModel);
+    const launchTimeoutMessage = controller.sceneLaunchTimeoutMessage(launchTimeoutMs / 1_000);
     let launchStage: SceneLaunchStage | null = null;
     let preconnectWarning: string | null = null;
     try {
       await controller.runBusyAction(mode === 'watch' ? 'watch-start' : 'conversation-start', async () => {
+        const launchStartedAt = Date.now();
         let snapshot = options.audioSnapshot;
         let launchTimedOut = false;
         const launchAbortController = new AbortController();
@@ -303,7 +314,18 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             appendFrontendDiagnosticsLog('runtime', 'warning', `[WatchPreconnect] ${preconnectWarning}`);
           },
           executeStage: async (stage) => {
-            if (stage === 'inbound-route') snapshot = await startAudioRouteRuntime('inbound', nextConfig);
+            if (stage === 'inbound-route' && mode === 'watch') {
+              snapshot = await startAudioRouteRuntime('inbound', nextConfig);
+              controller.setAudioSnapshot(snapshot);
+              snapshot = await waitForWatchRouteReadyRuntime(launchTimeoutMs, launchAbortController.signal);
+              controller.setAudioSnapshot(snapshot);
+              appendFrontendDiagnosticsLog('runtime', 'info', '[WatchLaunch] native route ready', stringifyRedacted({
+                captureState: snapshot.inbound.captureState,
+                streamBound: snapshot.inbound.streamBound,
+                routeId: snapshot.inbound.routeId,
+              }));
+            }
+            else if (stage === 'inbound-route') snapshot = await startAudioRouteRuntime('inbound', nextConfig);
             else if (stage === 'outbound-route') snapshot = await startAudioRouteRuntime('outbound', nextConfig);
             else if (stage === 'translate-worker') snapshot = await startTranslateWorkerRuntime(nextConfig);
             else if (stage === 'speech-dispatch') snapshot = await startSpeechDispatchRuntime(nextConfig);
@@ -315,7 +337,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
               else if (stage === 'translate-worker') snapshot = await stopTranslateWorkerRuntime();
               else if (stage === 'speech-dispatch') snapshot = await stopSpeechDispatchRuntime();
               if (stage !== 'subtitle-overlay') controller.setAudioSnapshot(snapshot);
-              throw sceneLaunchTimeoutError(controller.sceneLaunchTimeoutMessage());
+              throw sceneLaunchTimeoutError(launchTimeoutMessage);
             }
           },
           compensateStage: async (stage) => {
@@ -328,11 +350,24 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             controller.pushNotification({ id: `scene-overlay-${mode}-${Date.now()}`, level: 'error', source: 'session', message: `字幕浮窗打开失败：${error instanceof Error ? error.message : String(error)}`, emittedAt: new Date().toISOString() });
             */
           },
-          onStageStart: (stage) => { launchStage = stage; },
+          onStageStart: (stage) => {
+            launchStage = stage;
+            appendFrontendDiagnosticsLog('runtime', 'info', '[SceneLaunch] stage start', stringifyRedacted({
+              mode,
+              stage,
+              elapsedMs: Date.now() - launchStartedAt,
+            }));
+          },
         });
-        await withSceneLaunchTimeout(launchOperation, controller.sceneLaunchTimeoutMessage(), async () => {
+        await withSceneLaunchTimeout(launchOperation, launchTimeoutMs, launchTimeoutMessage, async () => {
           launchTimedOut = true;
-          launchAbortController.abort(sceneLaunchTimeoutError(controller.sceneLaunchTimeoutMessage()));
+          appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] timeout', stringifyRedacted({
+            mode,
+            stage: launchStage,
+            elapsedMs: Date.now() - launchStartedAt,
+            timeoutMs: launchTimeoutMs,
+          }));
+          launchAbortController.abort(sceneLaunchTimeoutError(launchTimeoutMessage));
           await Promise.allSettled([
             cancelOmniPreconnectRuntime(),
             stopSpeechDispatchRuntime(),
@@ -346,6 +381,11 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             // The timeout error remains the user-facing result.
           }
         });
+        appendFrontendDiagnosticsLog('runtime', 'info', '[SceneLaunch] ready', stringifyRedacted({
+          mode,
+          elapsedMs: Date.now() - launchStartedAt,
+          stages: plan.stages,
+        }));
         if (preconnectWarning) controller.pushNotification({ id: `watch-preconnect-${Date.now()}`, level: 'warning', source: 'session', message: preconnectWarning, emittedAt: new Date().toISOString() });
       });
     } catch (error) {

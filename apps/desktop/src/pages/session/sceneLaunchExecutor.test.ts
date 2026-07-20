@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { SceneLaunchPlan, SceneLaunchStage } from './sceneLaunchPlan';
 import { executeSceneLaunchPlan, SceneLaunchError } from './sceneLaunchExecutor';
+import { sceneLaunchTimeoutMs } from './sceneLaunchTimeout';
 
 const plan = (stages: SceneLaunchStage[], parallelOmniPreconnect = false): SceneLaunchPlan => ({
   mode: 'watch', config: {} as SceneLaunchPlan['config'], stages, parallelOmniPreconnect,
@@ -18,6 +19,12 @@ function dependencies(calls: string[]) {
 }
 
 describe('executeSceneLaunchPlan', () => {
+  it('limits scene startup to less than one second', () => {
+    expect(sceneLaunchTimeoutMs('watch', true)).toBe(900);
+    expect(sceneLaunchTimeoutMs('voice-room', true)).toBe(900);
+    expect(sceneLaunchTimeoutMs('watch', false)).toBe(900);
+  });
+
   it('returns fully-started after a sequential launch', async () => {
     const calls: string[] = [];
     const result = await executeSceneLaunchPlan(plan(['bridge-ready', 'inbound-route', 'translate-worker']), dependencies(calls));

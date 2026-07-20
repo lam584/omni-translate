@@ -11,6 +11,7 @@ target/
 apps/desktop/.vite/
 apps/**/dist/
 apps/**/target/
+apps/**/target-*/
 scripts/diagnostics/**/target/
 coverage/
 

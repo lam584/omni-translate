@@ -1,3 +1,62 @@
+/// Normalized result of the fast-watch background worker.
+///
+/// The worker runs on a detached `spawn_blocking` task whose `JoinHandle` is
+/// dropped, so an escaping panic would otherwise vanish and the failure could
+/// only be inferred from the outer command timeout. Collapsing both `Err`
+/// returns and panics into `Failed` keeps every initialization failure
+/// attributable.
+enum FastWatchStartOutcome {
+    Ready(AudioRuntimeSnapshot),
+    Failed(String),
+}
+
+/// Extracts a human-readable reason from a caught panic payload.
+fn describe_panic_payload(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&'static str>() {
+        (*message).to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "未知原因".to_string()
+    }
+}
+
+/// Runs the fast-watch worker body while capturing panics, so a panic inside
+/// `start_audio_route_inner` becomes an attributable failure instead of an
+/// unobserved `JoinError`.
+fn run_fast_watch_start_body<R>(run_inner: R) -> FastWatchStartOutcome
+where
+    R: FnOnce() -> Result<AudioRuntimeSnapshot, String> + std::panic::UnwindSafe,
+{
+    match std::panic::catch_unwind(run_inner) {
+        Ok(Ok(snapshot)) => FastWatchStartOutcome::Ready(snapshot),
+        Ok(Err(error)) => FastWatchStartOutcome::Failed(error),
+        Err(panic) => FastWatchStartOutcome::Failed(format!(
+            "后台采集初始化线程崩溃（panic）：{}",
+            describe_panic_payload(panic)
+        )),
+    }
+}
+
+/// Runs the fast-watch worker and, on any failure (`Err` or panic), writes a
+/// readable reason via `mark_route_error` and emits a snapshot so front-end
+/// polling can read `lastError` without waiting for a timeout fallback.
+fn execute_fast_watch_start<R>(
+    state: &AudioStateStore,
+    run_inner: R,
+    mut emit_snapshot: impl FnMut(),
+) -> FastWatchStartOutcome
+where
+    R: FnOnce() -> Result<AudioRuntimeSnapshot, String> + std::panic::UnwindSafe,
+{
+    let outcome = run_fast_watch_start_body(run_inner);
+    if let FastWatchStartOutcome::Failed(reason) = &outcome {
+        state.mark_route_error("inbound", reason.clone(), Some("restart-route".to_string()));
+        emit_snapshot();
+    }
+    outcome
+}
+
 #[tauri::command]
 pub async fn start_audio_route(
     app: AppHandle,
@@ -54,13 +113,25 @@ pub async fn start_audio_route(
         let task_app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let task_state = task_app.state::<AudioStateStore>();
-            match start_audio_route_inner(
-                task_app.clone(),
+            // Capture both `Err` and panic so a failed background init is always
+            // attributed to `lastError` and pushed via a snapshot, rather than
+            // being swallowed by the dropped JoinHandle and left for the timeout.
+            let outcome = execute_fast_watch_start(
                 &task_state,
-                "inbound".to_string(),
-                config,
-            ) {
-                Ok(snapshot) => {
+                std::panic::AssertUnwindSafe(|| {
+                    start_audio_route_inner(
+                        task_app.clone(),
+                        &task_state,
+                        "inbound".to_string(),
+                        config,
+                    )
+                }),
+                || {
+                    let _ = engine::emit_audio_snapshot(&task_app, &task_state);
+                },
+            );
+            match outcome {
+                FastWatchStartOutcome::Ready(snapshot) => {
                     let _ = append_diagnostics_log(
                         &task_app,
                         "audio",
@@ -76,13 +147,19 @@ pub async fn start_audio_route(
                         None,
                     );
                 }
-                Err(error) => {
-                    task_state.mark_route_error(
-                        "inbound",
-                        error,
-                        Some("restart-route".to_string()),
+                FastWatchStartOutcome::Failed(reason) => {
+                    let _ = append_diagnostics_log(
+                        &task_app,
+                        "audio",
+                        "error",
+                        "watch_mode.route_failed",
+                        Some(format!(
+                            "direction=inbound elapsedMs={} error={reason}",
+                            started_at.elapsed().as_millis(),
+                        )),
+                        None,
+                        None,
                     );
-                    let _ = engine::emit_audio_snapshot(&task_app, &task_state);
                 }
             }
         });

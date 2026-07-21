@@ -820,4 +820,89 @@ mod tests {
         assert_eq!(plan.secondary_subtitle_provider.as_ref().map(|provider| provider.model.as_str()), Some("deepseek-chat"));
         assert!(plan.session_reuse_key.subtitle_translate_active);
     }
+
+    #[test]
+    fn fast_watch_start_body_normalizes_err_and_panic() {
+        // A plain `Err` from the worker stays attributable verbatim.
+        match run_fast_watch_start_body(std::panic::AssertUnwindSafe(
+            || -> Result<AudioRuntimeSnapshot, String> { Err("boom".to_string()) },
+        )) {
+            FastWatchStartOutcome::Failed(reason) => assert_eq!(reason, "boom"),
+            _ => panic!("expected the Err path to become a Failed outcome"),
+        }
+
+        // A panic is captured and surfaced with a readable reason instead of
+        // escaping the worker as an unobserved JoinError.
+        match run_fast_watch_start_body(std::panic::AssertUnwindSafe(
+            || -> Result<AudioRuntimeSnapshot, String> {
+                panic!("kaboom from start_audio_route_inner")
+            },
+        )) {
+            FastWatchStartOutcome::Failed(reason) => {
+                assert!(reason.contains("panic"), "reason should mark the panic: {reason}");
+                assert!(reason.contains("kaboom from start_audio_route_inner"));
+            }
+            _ => panic!("expected the panic path to become a Failed outcome"),
+        }
+    }
+
+    #[test]
+    fn fast_watch_start_attributes_worker_panic_within_window() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+
+        let state = Arc::new(AudioStateStore::new());
+        // Mirror the command's accepted (not-yet-ready) state.
+        state.mark_route_start_requested(
+            "inbound",
+            "audio-route-inbound-watch",
+            "system-output-default",
+        );
+        assert!(
+            state.snapshot().inbound.last_error.is_none(),
+            "accepted state must start without an error"
+        );
+
+        let emit_count = Arc::new(AtomicUsize::new(0));
+        let started_at = std::time::Instant::now();
+
+        // Run the worker on a detached thread, exactly like the dropped
+        // spawn_blocking JoinHandle in the command, and inject a panic where
+        // `start_audio_route_inner` would run.
+        let worker_state = Arc::clone(&state);
+        let worker_emit = Arc::clone(&emit_count);
+        let worker = std::thread::spawn(move || {
+            execute_fast_watch_start(
+                &worker_state,
+                std::panic::AssertUnwindSafe(|| -> Result<AudioRuntimeSnapshot, String> {
+                    panic!("injected start_audio_route_inner failure")
+                }),
+                || {
+                    worker_emit.fetch_add(1, Ordering::SeqCst);
+                },
+            );
+        });
+
+        // Poll like the front-end would, asserting the error lands inside a
+        // bounded window rather than depending on the command timeout.
+        let deadline = started_at + Duration::from_secs(2);
+        let mut observed = None;
+        while std::time::Instant::now() < deadline {
+            if let Some(error) = state.snapshot().inbound.last_error {
+                observed = Some(error);
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        worker.join().expect("worker thread should catch the panic, not propagate it");
+
+        let error = observed.expect("lastError should be set within the expected window");
+        assert!(error.contains("panic"), "reason should attribute the panic: {error}");
+        assert!(error.contains("injected start_audio_route_inner failure"));
+        assert_eq!(
+            emit_count.load(Ordering::SeqCst),
+            1,
+            "a snapshot must be emitted once so polling can observe lastError"
+        );
+    }
 }

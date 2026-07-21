@@ -77,10 +77,21 @@ fn run_route_worker(
     emit_audio_snapshot(&app, store)?;
 
     audio_client.start_stream().map_err_str()?;
+    // The stream is bound and the route now reports ready; from here on we expect
+    // frames to arrive. Track when capture began so a device that binds but stays
+    // silent (muted / exclusive-mode conflict) becomes an attributable failure.
+    let capture_started_at = Instant::now();
     loop {
         if stop_rx.try_recv().is_ok() {
             let _ = audio_client.stop_stream();
             break;
+        }
+
+        if processor.frames_captured == 0
+            && capture_started_at.elapsed() >= Duration::from_secs(AUDIO_FLOW_HEALTH_WINDOW_SECS)
+        {
+            let _ = audio_client.stop_stream();
+            return Err(audio_flow_stall_error(direction, capture_started_at.elapsed()));
         }
 
         capture_client
@@ -354,6 +365,22 @@ fn bridge_source_timeout_error(elapsed: Duration) -> Option<String> {
             DEVICE_INIT_TIMEOUT_SECS
         )
     })
+}
+
+/// Builds the attributable error raised when a route binds its stream but never
+/// captures a frame within [`AUDIO_FLOW_HEALTH_WINDOW_SECS`]. The trailing
+/// `| recommended:` marker is parsed by the route worker error handler into the
+/// snapshot's `recommended_action` so the UI can surface a concrete next step.
+fn audio_flow_stall_error(direction: &str, elapsed: Duration) -> String {
+    let source = if direction == "inbound" {
+        "系统音频"
+    } else {
+        "麦克风"
+    };
+    format!(
+        "{source}采集已就绪，但在 {} 秒内没有捕获到任何音频帧，设备可能已静音或被其他应用以独占模式占用。 | recommended: check-audio-source",
+        elapsed.as_secs().max(1)
+    )
 }
 
 #[derive(Debug, PartialEq)]

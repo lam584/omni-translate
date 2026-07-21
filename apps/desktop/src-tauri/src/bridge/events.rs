@@ -438,7 +438,9 @@ pub fn get_bridge_runtime_snapshot(
     state.snapshot()
 }
 
-#[tauri::command]
+// `(async)` runs the IPC path off the main thread so blocking driver probing
+// cannot starve the event loop. The plain fn stays callable by `bridge_v2`.
+#[tauri::command(async)]
 pub fn refresh_bridge_runtime(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,
@@ -549,7 +551,9 @@ pub fn refresh_bridge_runtime(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-#[tauri::command]
+// `(async)` runs the IPC path off the main thread so blocking process launch
+// cannot starve the event loop. The plain fn stays callable by `bridge_v2`.
+#[tauri::command(async)]
 pub fn start_bridge_service(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,

@@ -1,7 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { DiagnosticsExportScope } from '../schema/config';
-import type { DiagnosticsExportArtifact, RuntimeSnapshot } from '../schema/runtime-core';
+import type { DiagnosticLogEntryRuntime, DiagnosticsExportArtifact, RuntimeSnapshot } from '../schema/runtime-core';
 import { desktopApiV2 } from './desktop-api-v2';
 import { isTauriRuntime } from './tauri-runtime';
 
@@ -61,6 +61,25 @@ export async function exportDiagnosticsBundleRuntime(
   const artifact = await desktopApiV2.diagnostics.export(scope) as DiagnosticsExportArtifact;
   const snapshot = await invoke<RuntimeSnapshot>('get_runtime_snapshot');
   return { artifact, snapshot };
+}
+
+/**
+ * Reads the recent native diagnostics log entries. Used by the scene launch
+ * attribution path to recover route_start_acknowledged/route_ready/route_error
+ * markers when a launch fails. Never throws: an empty list degrades gracefully.
+ */
+export async function getRecentDiagnosticsLogsRuntime(): Promise<DiagnosticLogEntryRuntime[]> {
+  if (!isTauriRuntime()) {
+    return [];
+  }
+
+  try {
+    const snapshot = await invoke<{ recentLogs?: DiagnosticLogEntryRuntime[] }>('get_diagnostics_snapshot');
+    return snapshot.recentLogs ?? [];
+  } catch (error) {
+    console.warn('[diagnostics] get_diagnostics_snapshot failed:', error);
+    return [];
+  }
 }
 
 export function appendFrontendDiagnosticsLog(

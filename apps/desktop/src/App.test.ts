@@ -140,6 +140,47 @@ describe('App bootstrap shell', () => {
     expect(appMocks.bootstrapCleanup).toHaveBeenCalledTimes(1);
   });
 
+  it('closes the overlay when bootstrap settles without delivering every step', async () => {
+    // 模拟晚订阅者只收到部分步骤、无法自行算出 allDone 的场景。
+    appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockImplementation(async (onStep?: OnBootstrapStep) => {
+      onStep?.('detect-runtime', 'done');
+      return appMocks.bootstrapCleanup;
+    });
+
+    await act(async () => {
+      root?.render(React.createElement(App));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    // 整体承诺已 settle，弹窗应被兜底关闭。
+    expect(container.querySelector('.bootstrap-overlay')).toBeNull();
+  });
+
+  it('closes the overlay and logs the stuck step when bootstrap rejects', async () => {
+    appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockImplementation(async (onStep?: OnBootstrapStep) => {
+      onStep?.('detect-runtime', 'done');
+      onStep?.('check-ipc', 'active');
+      throw new Error('bootstrap boom');
+    });
+
+    await act(async () => {
+      root?.render(React.createElement(App));
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.bootstrap-overlay')).toBeNull();
+    expect(appendFrontendDiagnosticsLog).toHaveBeenCalledWith(
+      'runtime',
+      'warn',
+      'startup.bootstrap_settled_forced_overlay_close',
+      expect.stringContaining('stuckStep=check-ipc'),
+    );
+  });
+
   it('does not duplicate backend watch autostart from the frontend', async () => {
     const runMarker = 'watch_mode_diagnostic.run_id=app-test-autostart-skip';
     Object.assign(import.meta.env, {

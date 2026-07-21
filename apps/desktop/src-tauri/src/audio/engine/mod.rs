@@ -47,6 +47,11 @@ const SPEECH_THRESHOLD_DB: f32 = -32.0;
 const SILENCE_HOLD_CHUNKS: usize = 6;
 const ECHO_CANCEL_DELAY_SAMPLES: usize = 9_600;
 const BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS: u64 = 15;
+// Once a route reports ready (stream bound + capturing), real audio frames must
+// begin flowing within this window. A muted device or an exclusive-mode conflict
+// binds the stream but never delivers frames; that must surface as an
+// attributable failure instead of a silent "started but zero frames" success.
+const AUDIO_FLOW_HEALTH_WINDOW_SECS: u64 = 4;
 
 /// Application-facing lifecycle boundary for a capture route.
 /// The engine retains low-level device routines; callers use this supervisor
@@ -927,6 +932,17 @@ mod tests {
                 "reason=sample-rate-mismatch actual=16000 expected=48000".to_string()
             )
         );
+    }
+
+    #[test]
+    fn audio_flow_stall_error_is_attributable_with_recommended_action() {
+        let error = audio_flow_stall_error("inbound", Duration::from_secs(AUDIO_FLOW_HEALTH_WINDOW_SECS));
+        assert!(error.contains("没有捕获到任何音频帧"));
+        let (message, action) = error
+            .split_once(" | recommended: ")
+            .expect("stall error should carry a recommended action");
+        assert!(!message.trim().is_empty());
+        assert_eq!(action, "check-audio-source");
     }
 
     #[test]

@@ -41,13 +41,12 @@ pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> Run
     if let Some(storage) = app.try_state::<StorageStateStore>() {
         snapshot.storage = storage.snapshot();
     }
-    let mut windows = collect_window_snapshots(app);
+    let mut windows = collect_window_snapshots(app, state.overlay_window_visible());
 
     if let Some(overlay_window) = windows
         .iter_mut()
         .find(|item| item.label == "subtitle-overlay")
     {
-        state.set_overlay_window_visible(overlay_window.visible);
         if !overlay_window.visible {
             overlay_window.focused = false;
         }
@@ -92,9 +91,10 @@ pub fn toggle_subtitle_overlay_with_state(
     state: &RuntimeStateStore,
 ) -> Result<RuntimeSnapshot, String> {
     let window = ensure_subtitle_overlay_window(app).map_err(|error| error.to_string())?;
-    let is_visible = window
-        .is_visible()
-        .unwrap_or_else(|_| state.overlay_window_visible());
+    // Read cached visibility instead of the blocking Win32 `is_visible()`
+    // round-trip (see collect_window_snapshots). State is the source of truth,
+    // kept in sync by set_overlay_window_visible below.
+    let is_visible = state.overlay_window_visible();
 
     if is_visible {
         let _ = sync_subtitle_overlay_unlock_window(app, &window, false);
@@ -125,9 +125,10 @@ pub fn show_subtitle_overlay_with_state(
 ) -> Result<RuntimeSnapshot, String> {
     let window = ensure_subtitle_overlay_window(app).map_err(|error| error.to_string())?;
 
-    let is_visible = window
-        .is_visible()
-        .unwrap_or_else(|_| state.overlay_window_visible());
+    // Read cached visibility instead of the blocking Win32 `is_visible()`
+    // round-trip (see collect_window_snapshots). State is the source of truth,
+    // kept in sync by set_overlay_window_visible below.
+    let is_visible = state.overlay_window_visible();
 
     if !is_visible {
         sync_persisted_subtitle_overlay_input(app, &window);
@@ -148,16 +149,30 @@ pub fn show_subtitle_overlay_with_state(
     Ok(build_runtime_snapshot(app, state))
 }
 
+// Both commands build a `RuntimeSnapshot`. Historically that meant calling
+// `collect_window_snapshots` -> `WebviewWindow::is_visible/is_focused/title`,
+// which on Windows are synchronous Win32 round-trips that need the main-thread
+// message pump. Running them from a sync command *on* the main thread deadlocked
+// the event loop and hung `bootstrap_runtime` right after the IPC ping. The
+// snapshot builder no longer queries the OS at all (it reads cached window state
+// from `RuntimeStateStore`), so these commands are safe. Do NOT reintroduce live
+// `WebviewWindow::is_*`/`title` calls on any command/emit path.
+//
+// They are also declared `async` so Tauri runs them on a worker thread instead
+// of the main/UI thread. The WebView2 IPC custom-protocol handler runs on the
+// main thread; keeping command bodies off it prevents a burst of concurrent
+// invokes from starving that handler (which manifested as `invoke` round-trips
+// that never returned -> `bootstrap_runtime` "timeout").
 #[tauri::command]
-pub fn get_runtime_snapshot(
+pub async fn get_runtime_snapshot(
     app: AppHandle,
     state: State<'_, RuntimeStateStore>,
-) -> RuntimeSnapshot {
-    build_runtime_snapshot(&app, &state)
+) -> Result<RuntimeSnapshot, String> {
+    Ok(build_runtime_snapshot(&app, &state))
 }
 
 #[tauri::command]
-pub fn bootstrap_runtime(
+pub async fn bootstrap_runtime(
     app: AppHandle,
     state: State<'_, RuntimeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {

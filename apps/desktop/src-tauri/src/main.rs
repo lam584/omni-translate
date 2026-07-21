@@ -38,7 +38,6 @@ use runtime::events::{
 };
 use runtime::state::{now_marker, RuntimeStateStore};
 use runtime::tray::initialize_tray;
-use runtime::windows::ensure_subtitle_overlay_window;
 use storage::credential::{CredentialVault, KeyringCredentialVault};
 use storage::events::{
     bootstrap_storage, create_config_snapshot, export_config_draft, get_secret_ref_status,
@@ -60,6 +59,14 @@ const DEFAULT_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID: &str =
 const DEFAULT_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID: &str =
     "template-dashscope-realtime::qwen3.5-omni-plus-realtime";
 static IPC_PING_RECEIVED: AtomicBool = AtomicBool::new(false);
+
+// The renderer owns IPC warm-up recovery (an escalating ping-retry loop plus a
+// background reconnect probe — see apps/desktop/src/runtime/desktop-runtime.ts).
+// This watchdog is PASSIVE: after the grace window elapses it only records
+// whether the native IPC channel ever came up. It must never reload or
+// recreate the window — neither re-binds a native channel that failed to
+// initialize, and destroying the sole main window quits/crashes the whole app.
+const IPC_WATCHDOG_GRACE: Duration = Duration::from_secs(65);
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -489,7 +496,7 @@ fn maybe_start_watch_mode_diagnostic(app: &tauri::App) {
 }
 
 #[tauri::command]
-fn debug_ipc_ping(
+async fn debug_ipc_ping(
     app: AppHandle,
     storage: tauri::State<'_, StorageStateStore>,
 ) -> Result<String, String> {
@@ -760,28 +767,17 @@ fn main() {
                 }
             };
 
-            match ensure_subtitle_overlay_window(&app_handle) {
-                Ok(_) => {
-                    log_info!(
-                        &app_handle,
-                        "runtime",
-                        "字幕浮窗已预创建",
-                        "label=subtitle-overlay visible=false".to_string()
-                    );
-                }
-                Err(error) => {
-                    let detail = error.to_string();
-                    let _ = append_diagnostics_log(
-                        &app_handle,
-                        "runtime",
-                        "warning",
-                        "字幕浮窗预创建失败，首次显示时将重试。",
-                        Some(detail),
-                        None,
-                        None,
-                    );
-                }
-            }
+            // NOTE: Do NOT synchronously build the subtitle-overlay WebView2
+            // window here during `setup`. Creating a second WebView2 controller
+            // synchronously pumps nested window messages on the main thread
+            // while the *main* window's WebView2 IPC channel is still binding
+            // asynchronously. The two race on the shared main-thread message
+            // pump and can drop the main window's IPC-init messages, leaving the
+            // native IPC channel permanently unbound -> every `invoke` hangs and
+            // the renderer falls back to "运行时错误" / browser-preview mode.
+            // The overlay is created lazily on first show via
+            // `ensure_subtitle_overlay_window` (idempotent), which runs only
+            // after the main IPC channel is warm.
 
             emit_runtime_notification(
                 &app_handle,
@@ -825,43 +821,27 @@ fn main() {
 
             let ipc_watchdog_handle = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                for reload_attempt in 1..=2 {
-                    tokio::time::sleep(Duration::from_secs(8)).await;
-                    if IPC_PING_RECEIVED.load(Ordering::Acquire) {
-                        return;
-                    }
-
-                    let reload_result = ipc_watchdog_handle
-                        .get_webview_window("main")
-                        .ok_or_else(|| "main WebView window is unavailable".to_string())
-                        .and_then(|window| {
-                            window
-                                .eval("window.location.reload()")
-                                .map_err(|error| error.to_string())
-                        });
-
-                    let (level, message, detail) = match reload_result {
-                        Ok(()) => (
-                            "warning",
-                            "startup.ipc_watchdog_reload",
-                            Some(format!("attempt={reload_attempt}")),
-                        ),
-                        Err(error) => (
-                            "error",
-                            "startup.ipc_watchdog_reload_failed",
-                            Some(format!("attempt={reload_attempt} error={error}")),
-                        ),
-                    };
-                    let _ = append_diagnostics_log(
-                        &ipc_watchdog_handle,
-                        "runtime",
-                        level,
-                        message,
-                        detail,
-                        None,
-                        None,
-                    );
+                tokio::time::sleep(IPC_WATCHDOG_GRACE).await;
+                if IPC_PING_RECEIVED.load(Ordering::Acquire) {
+                    return;
                 }
+
+                // Passive diagnostic only. The renderer owns IPC warm-up
+                // recovery; reloading or recreating the window here does not
+                // re-bind a native IPC channel that never initialized and
+                // previously crashed the app, so we only record the condition.
+                let _ = append_diagnostics_log(
+                    &ipc_watchdog_handle,
+                    "runtime",
+                    "error",
+                    "startup.ipc_never_connected",
+                    Some(format!(
+                        "graceSecs={} note=frontend never reached debug_ipc_ping; native IPC channel did not initialize",
+                        IPC_WATCHDOG_GRACE.as_secs(),
+                    )),
+                    None,
+                    None,
+                );
             });
 
             maybe_start_watch_mode_diagnostic(app);

@@ -712,6 +712,34 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(useAppStore.getState().runtimeNotifications[0]?.level).toBe('info');
   });
 
+  it('shows the original runtime error in the current issue card without repeating it in the conclusion', async () => {
+    tauriRuntimeMock.isRuntime = true;
+    const snapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
+    snapshot.bridgeStatus = 'runtime-error';
+    snapshot.notifications = [{
+      id: 'runtime-bootstrap-failed',
+      level: 'error',
+      source: 'desktop-runtime',
+      message: "Rust Core 启动桥接失败：invoke 'debug_ipc_ping' 超时（750ms）",
+      emittedAt: new Date().toISOString(),
+    }];
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <DiagnosticsPage />
+        </MemoryRouter>,
+      );
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.diagnostics-primary-issue')?.textContent).toContain(
+      "Rust Core 启动桥接失败：invoke 'debug_ipc_ping' 超时（750ms）",
+    );
+    expect(container.querySelector('.diagnostics-health-summary')?.textContent).not.toContain('Rust Core 启动桥接失败');
+  });
+
   it('hides live events button when no session is active', async () => {
     await act(async () => {
       root.render(

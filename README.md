@@ -47,7 +47,8 @@ Omni Translate 面向 Windows 实时音频翻译场景，覆盖视频字幕翻�
 - **Node.js** >= 20
 - **Rust stable**，edition 2021
 - **Windows 10/11**
-- **Visual Studio 2022 + WDK 10.0.26100**，仅在编译虚拟音频驱动时需要
+- **Visual Studio 2022 Build Tools + Desktop development with C++**，编译 Tauri desktop shell 和 Native Bridge 时需要；命令行中应能找到 `cl.exe` 与 `link.exe`
+- **WDK 10.0.26100**，仅在编译虚拟音频驱动时需要
 - 开发驱动加载需要 Windows TESTSIGNING 模式；普通前端预览不需要驱动或管理员权限
 
 ### 安装与运行
@@ -57,8 +58,8 @@ Omni Translate 面向 Windows 实时音频翻译场景，覆盖视频字幕翻�
 git clone <repo-url>
 cd omni-translate
 
-# 2. 安装依赖
-npm install
+# 2. 按 package-lock.json 安装依赖
+npm ci
 
 # 3. 启动前端浏览器预览模式
 npm run dev:desktop
@@ -69,12 +70,22 @@ npm run dev:desktop-shell
 
 浏览器预览模式会自动使用 Mock runtime，适合 UI 开发和页面检查；完整桌面应用会启动 Tauri/Rust runtime，并在涉及驱动安装、修复等动作时触发提权流程。
 
+首次启动完整桌面壳前，建议从 Visual Studio 2022 的 **Developer PowerShell** 或 **x64 Native Tools Command Prompt** 进入仓库。若普通 PowerShell 报 `link.exe not found`，可先加载 MSVC 环境：
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+npm run dev:desktop-shell
+```
+
+`dev:desktop-shell` 会先构建 release 版 Native Bridge，再通过 Tauri dev 启动 Vite、Rust Core 和桌面窗口；脚本会请求 UAC。首次 Rust 构建需要下载并编译依赖，耗时会明显长于后续启动。
+
 ### 常用命令
 
 | 命令 | 说明 |
 | --- | --- |
 | `npm run dev:desktop` | 启动 React/Vite 前端开发服务器 |
 | `npm run dev:desktop-shell` | 通过提权脚本启动完整 Tauri 桌面应用 |
+| `npm run dev:desktop:fast` | 跳过 release Native Bridge 重建与提权，复用 Cargo 增量缓存进行日常桌面联调 |
 | `npm run lint:desktop` | 运行桌面前端 ESLint |
 | `npm run check:desktop` | TypeScript 类型检查 |
 | `npm run build:desktop` | 构建前端产物 |
@@ -237,6 +248,29 @@ omni-translate/
 ### 前端开发
 
 前端可直接使用 `npm run dev:desktop` 在浏览器中开发。非 Tauri 环境下 runtime 层返回 Mock 数据，便于不安装驱动、不启动 Rust 后端时检查页面和交互。
+
+### 桌面壳开发测试
+
+涉及 `invoke`、event、SQLite、Windows Credential Manager、Native Bridge、系统音频或字幕浮窗时，必须在 Tauri 桌面壳中测试，不能用浏览器 Mock 预览代替。
+
+```powershell
+# 首次启动，或修改了 Rust Core、Native Bridge、Cargo 配置时
+npm run dev:desktop-shell
+
+# 已成功完成过标准构建后的日常前端/桌面联调
+npm run dev:desktop:fast
+```
+
+`dev:desktop:fast` 会跳过 `dev:desktop-shell` 执行的 release Native Bridge 重建和 UAC 提权，先启动并预热端口 `4173` 的 Vite 服务，再进入 `tauri dev` 并复用 Cargo 增量缓存。不能直接运行 debug EXE，因为 Tauri CLI 还负责提供 WebView IPC 所需的运行上下文。首次运行、Native Bridge 源码变更后或需要验证提权流程时，仍应使用 `dev:desktop-shell`。
+
+桌面壳启动后，在“诊断”页面至少确认以下信号：
+
+- `isTauri`、`IPC Bridge`、`window.ipc` 和 `isTauriRuntime` 均为 `true`。
+- 桥接状态为 `tauri-shell`，归一化环境态不是 `runtime-error`。
+- 存储状态为 `ready`、Schema 版本至少为 `1`，凭证后端不是 `browser-preview`。
+- `artifacts/diagnostics/logs/app.log` 出现 `debug_ipc_ping`，且启动后没有 `startup.ipc_watchdog_reload`。
+
+结束桌面开发进程后再运行 Rust 检查，避免运行中的 `tauri dev` 长时间占用 Cargo 构建锁：
 
 ### Rust desktop shell
 

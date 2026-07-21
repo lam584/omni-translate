@@ -328,14 +328,25 @@ pub fn get_diagnostics_snapshot(app: AppHandle) -> DiagnosticsRuntimeSnapshot {
 }
 
 #[tauri::command]
-pub fn append_frontend_diagnostics_log(
+pub async fn append_frontend_diagnostics_log(
     app: AppHandle,
     category: String,
     level: String,
     summary: String,
     detail: Option<String>,
 ) -> Result<(), String> {
-    append_diagnostics_log(&app, &category, &level, summary, detail, None, None)
+    // `async` so this high-frequency, frontend-driven command runs on a worker
+    // thread rather than the main/UI thread that also services the WebView2 IPC
+    // custom-protocol handler. A burst of *sync* forwarded log lines on the main
+    // thread starved that handler and stalled concurrent invokes (e.g. the
+    // startup ping / `bootstrap_runtime`).
+    //
+    // Use the *quiet* append: a frontend-originated log line must never trigger
+    // `emit_runtime_snapshot`. Emitting a full snapshot back into the webview on
+    // every forwarded log creates a backend->frontend event storm that races the
+    // invoke-response channel in WebView2. The renderer already has its state; it
+    // only needs the log recorded, not echoed back.
+    append_diagnostics_log_quiet(&app, &category, &level, summary, detail, None, None)
 }
 
 #[tauri::command]
@@ -399,7 +410,13 @@ pub fn run_subtitle_overlay_self_check(
 }
 
 #[tauri::command]
-pub fn export_diagnostics_bundle(
+// `async fn` so this runs on a tokio worker thread, NOT the main thread.
+// The body performs heavy synchronous filesystem IO (snapshot build + bundle
+// write). A synchronous `#[tauri::command] fn` would run that IO on the main
+// thread, freezing the message pump (and therefore all IPC + the tray) until
+// the export finishes -- exactly the "导出中" stall users hit. Moving it off
+// the main thread keeps the UI/IPC responsive while the bundle is written.
+pub async fn export_diagnostics_bundle(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,
     diagnostics: State<'_, DiagnosticsStateStore>,

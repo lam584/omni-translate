@@ -1,4 +1,4 @@
-﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
@@ -165,6 +165,38 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
     expect(invokeMock).not.toHaveBeenCalled();
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('browser-preview');
+  });
+
+  it('replays already-emitted steps to a late second subscriber so it converges', async () => {
+    const firstSteps: Array<[string, string]> = [];
+    const secondSteps: Array<[string, string]> = [];
+
+    // 第一个订阅者发起 bootstrap；浏览器预览等待期间 flight 处于在途状态。
+    const firstBootstrap = bootstrapDesktopRuntimeBridge((stepId, status) => {
+      firstSteps.push([stepId, status]);
+    });
+
+    // 首个同步步骤应已发出，此时 flight 尚未 settle。
+    expect(firstSteps).toContainEqual(['detect-runtime', 'active']);
+
+    // 第二个订阅者在途中挂载，应立即回放已发出的步骤快照。
+    const secondBootstrap = bootstrapDesktopRuntimeBridge((stepId, status) => {
+      secondSteps.push([stepId, status]);
+    });
+    expect(secondSteps).toContainEqual(['detect-runtime', 'active']);
+
+    await vi.advanceTimersByTimeAsync(1000);
+    const cleanupFirst = await firstBootstrap;
+    const cleanupSecond = await secondBootstrap;
+
+    // 晚订阅者必须收齐全部终态步骤，才能让弹窗计算出 allDone。
+    const secondDoneSteps = secondSteps.filter(([, status]) => status === 'done').map(([stepId]) => stepId);
+    for (const stepId of ['detect-runtime', 'check-ipc', 'init-runtime', 'init-audio', 'load-config']) {
+      expect(secondDoneSteps).toContain(stepId);
+    }
+
+    cleanupFirst();
+    cleanupSecond();
   });
 
   it('restores the locally persisted config in browser preview mode', async () => {
@@ -536,6 +568,34 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     expect(useAppStore.getState().runtimeSnapshot.coreState).toBe('degraded');
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('runtime-error');
     expect(useAppStore.getState().runtimeSnapshot.notifications[0]?.source).toBe('desktop-runtime');
+    cleanup();
+  });
+
+  it('recovers after the initial IPC retry window has been exhausted', async () => {
+    installTauriRuntime();
+    installHappyInvoke();
+    let pingAttempts = 0;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'debug_ipc_ping') {
+        pingAttempts += 1;
+        if (pingAttempts <= 11) throw new Error('IPC protocol unavailable');
+        return 'pong storage_status=ready elapsed_ms=0';
+      }
+      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') {
+        return structuredClone(runtimeSnapshotMock);
+      }
+      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
+      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      throw new Error(`unexpected command: ${command}`);
+    });
+
+    const cleanupPromise = bootstrapDesktopRuntimeBridge();
+    await vi.advanceTimersByTimeAsync(40_000);
+    const cleanup = await cleanupPromise;
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    expect(pingAttempts).toBeGreaterThan(11);
+    expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).not.toBe('runtime-error');
     cleanup();
   });
 

@@ -51,7 +51,7 @@ fn summarize_provider_config(config: &Value) -> String {
     )
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn bootstrap_storage(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,
@@ -78,7 +78,7 @@ pub fn get_storage_snapshot(storage: State<'_, StorageStateStore>) -> StorageRun
     storage.snapshot()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn load_config_draft(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,
@@ -101,7 +101,7 @@ pub fn load_config_draft(
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn save_config_draft(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,

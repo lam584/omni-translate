@@ -104,7 +104,7 @@ export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: 
   if (!isTauriRuntime()) {
     return {
       ...audioRuntimeSnapshotMock,
-      inbound: { ...audioRuntimeSnapshotMock.inbound, captureState: 'capturing', streamBound: true },
+      inbound: { ...audioRuntimeSnapshotMock.inbound, captureState: 'capturing', streamBound: true, framesCaptured: 960 },
     } satisfies AudioRuntimeSnapshot;
   }
 
@@ -115,11 +115,20 @@ export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: 
     }
     const snapshot = await desktopApiV2.session.snapshot();
     if (snapshot.inbound.lastError) throw watchRouteNotReadyError(snapshot);
-    if (snapshot.inbound.captureState === 'capturing' && snapshot.inbound.streamBound) return snapshot;
+    const routeReady = snapshot.inbound.captureState === 'capturing' && snapshot.inbound.streamBound;
+    // A route that binds its stream but never captures a frame (muted device or
+    // exclusive-mode conflict) must not count as success. Keep polling until
+    // audio actually flows, or until the native flow-health watchdog attributes
+    // the silence via lastError; never resolve on stream binding alone.
+    if (routeReady && snapshot.inbound.framesCaptured > 0) return snapshot;
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      throw new Error('系统音频采集未在启动期限内就绪。');
+      throw new Error(
+        routeReady
+          ? '系统音频采集已就绪，但启动期限内没有捕获到任何音频帧。请确认音频源正在播放、设备未静音，且未被其他应用独占。'
+          : '系统音频采集未在启动期限内就绪。',
+      );
     }
     await new Promise<void>((resolve) => window.setTimeout(resolve, Math.min(WATCH_ROUTE_READY_POLL_MS, remainingMs)));
   }

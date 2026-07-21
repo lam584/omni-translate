@@ -20,6 +20,8 @@ import { getCueDisplaySegments } from './overlay/overlayDomain';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | null;
 
+type WatchFallbackResolver = (subtitlesOnly: boolean) => void;
+
 const TRANSLATION_FAILED_PREFIX = '[\u7ffb\u8bd1\u5931\u8d25]';
 
 function describeRuntimeError(error: unknown): string {
@@ -295,6 +297,7 @@ function RealTimeSessionPage() {
   const latestModelTraceCall = modelTraceSummary.recentCalls[0] ?? null;
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [sessionLaunchProblem, setSessionLaunchProblem] = useState<string | null>(null);
+  const [watchFallbackResolver, setWatchFallbackResolver] = useState<WatchFallbackResolver | null>(null);
 
   const hasSpeechActivity = audioRuntimeSnapshot.speech.dispatchState !== 'idle';
   const isSessionRunning = audioRuntimeSnapshot.inbound.streamBound || audioRuntimeSnapshot.outbound.streamBound;
@@ -316,6 +319,13 @@ function RealTimeSessionPage() {
     }
   };
 
+  const resolveWatchFallback = (subtitlesOnly: boolean) => {
+    setWatchFallbackResolver((resolve: WatchFallbackResolver | null) => {
+      resolve?.(subtitlesOnly);
+      return null;
+    });
+  };
+
   const { launchScene, stopAll } = useSceneSessionController({
     runtimeSnapshot,
     setRuntimeSnapshot,
@@ -327,7 +337,14 @@ function RealTimeSessionPage() {
       : { deviceStatus: 'ready', driverStatus: 'ready' }),
     pushNotification: pushRuntimeNotification,
     runBusyAction,
-    confirmWatchFallback: () => window.confirm(t('session.virtualDriverFallbackConfirm')),
+    confirmWatchFallback: () =>
+      new Promise<boolean>((resolve) => {
+        // The bridge/driver fallback needs a user decision after a failed launch.
+        // Clear any busy indicator first so the UI stays responsive, then defer
+        // to an in-app dialog instead of the event-loop-blocking window.confirm.
+        setBusyAction(null);
+        setWatchFallbackResolver(() => resolve);
+      }),
     sceneLaunchTimeoutMessage: (seconds) => t('session.startSlowWarning', { seconds }),
     sceneLaunchFailureMessage: (sceneMode, stage, error) => {
       const message = t('session.sceneLaunchFailed', {
@@ -621,6 +638,32 @@ function RealTimeSessionPage() {
           )}
         </article>
       </section>
+
+      {watchFallbackResolver && (
+        <div className="benchmark-modal-backdrop" onClick={() => resolveWatchFallback(false)}>
+          <div
+            className="benchmark-modal watch-fallback-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-label={t('session.watchMode')}
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="benchmark-modal-head">
+              <div>
+                <p>{t('session.virtualDriverFallbackConfirm')}</p>
+              </div>
+            </div>
+            <div className="control-toolbar">
+              <button className="action-button" onClick={() => resolveWatchFallback(true)} type="button">
+                {t('common.confirm')}
+              </button>
+              <button className="icon-button" onClick={() => resolveWatchFallback(false)} type="button">
+                {t('common.cancel')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

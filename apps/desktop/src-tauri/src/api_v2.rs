@@ -119,16 +119,18 @@ pub enum ProviderCommandV2 {
     },
 }
 
+// Runs off the main thread (async) so provider network I/O cannot starve the
+// Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub fn provider_v2(
+pub async fn provider_v2(
     app: AppHandle,
     command: ProviderCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
     let result = match command {
         ProviderCommandV2::FetchModels { provider } => {
-            to_value(provider_events::fetch_provider_models(app, provider))
+            to_value(provider_events::fetch_provider_models(app, provider).await)
         }
-        ProviderCommandV2::Probe { provider } => to_value(provider_events::probe_provider(app, provider)),
+        ProviderCommandV2::Probe { provider } => to_value(provider_events::probe_provider(app, provider).await),
         ProviderCommandV2::Smoke {
             provider,
             source_text,
@@ -140,7 +142,7 @@ pub fn provider_v2(
             source_text,
             source_language,
             target_language,
-        )),
+        ).await),
     }
     .map_err(|error| ServiceErrorV2::from(error.to_string()))?;
     Ok(ServiceResult::ok(result))
@@ -231,8 +233,10 @@ pub enum BridgeCommandV2 {
     },
 }
 
+// Runs off the main thread (async) so blocking driver/process management cannot
+// starve the Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub fn bridge_v2(app: AppHandle, command: BridgeCommandV2) -> Result<ServiceResult<Value>, ServiceErrorV2> {
+pub async fn bridge_v2(app: AppHandle, command: BridgeCommandV2) -> Result<ServiceResult<Value>, ServiceErrorV2> {
     let result = match command {
         BridgeCommandV2::Snapshot => to_value(bridge_events::get_bridge_runtime_snapshot(app.state::<BridgeStateStore>()))
             .map_err(|error| ServiceErrorV2::from(error.to_string()))?,
@@ -255,15 +259,17 @@ pub enum DiagnosticsCommandV2 {
     LiveSessionEvents,
 }
 
+// Runs off the main thread (async) so bundle/file I/O (e.g. export) cannot
+// freeze the Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub fn diagnostics_v2(
+pub async fn diagnostics_v2(
     app: AppHandle,
     command: DiagnosticsCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
     let result = match command {
         DiagnosticsCommandV2::SelfCheck => serialize_result(diagnostics_events::run_diagnostics_self_check(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>()))?,
         DiagnosticsCommandV2::OverlaySelfCheck => serialize_result(diagnostics_events::run_subtitle_overlay_self_check(app.clone(), app.state::<RuntimeStateStore>(), app.state::<AudioStateStore>()))?,
-        DiagnosticsCommandV2::Export { scope } => serialize_result(diagnostics_events::export_diagnostics_bundle(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>(), scope))?,
+        DiagnosticsCommandV2::Export { scope } => serialize_result(diagnostics_events::export_diagnostics_bundle(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>(), scope).await)?,
         DiagnosticsCommandV2::LiveSessionEvents => diagnostics_events::get_live_session_events(app.state::<AudioStateStore>())
             .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
             .map_err(ServiceErrorV2::from)?,
@@ -283,8 +289,10 @@ pub enum ConfigurationCommandV2 {
     Rollback { snapshot_id: String },
 }
 
+// Runs off the main thread (async) so SQLite/config I/O cannot starve the Tauri
+// IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub fn configuration_v2(
+pub async fn configuration_v2(
     app: AppHandle,
     command: ConfigurationCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {

@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import { desktopApiV2 } from './desktop-api-v2';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
@@ -26,6 +27,8 @@ const INITIAL_RUNTIME_WAIT_TIMEOUT_MS = 800;
 const INITIAL_RUNTIME_WAIT_INTERVAL_MS = 25;
 const LATE_RUNTIME_HEAL_TIMEOUT_MS = 15000;
 const LATE_RUNTIME_HEAL_INTERVAL_MS = 100;
+const IPC_RECOVERY_RETRY_INTERVAL_MS = 2000;
+const IPC_RECOVERY_TIMEOUT_MS = 60000;
 const IPC_PING_TIMEOUT_MS = 750;
 // WebView2 can expose the Tauri JavaScript bridge before its native message
 // channel is ready. Keep the startup overlay in a connecting state while the
@@ -225,17 +228,60 @@ export type BootstrapStepStatus = 'active' | 'done' | 'error';
 
 export type OnBootstrapStep = (stepId: BootstrapStepId, status: BootstrapStepStatus, detail?: string) => void;
 
+type BootstrapStepSnapshot = {
+  stepId: BootstrapStepId;
+  status: BootstrapStepStatus;
+  detail?: string;
+};
+
 type BootstrapFlight = {
   consumers: number;
   listeners: Set<OnBootstrapStep>;
+  emittedSteps: BootstrapStepSnapshot[];
   cleanup: RuntimeCleanup | null;
   promise: Promise<RuntimeCleanup>;
 };
 
 let activeBootstrapFlight: BootstrapFlight | null = null;
 
+// Native-log forwarding is only safe once the IPC channel has been proven ready
+// by a successful `debug_ipc_ping`. Firing an extra `invoke` *before* the ping
+// (e.g. for the detect-runtime step) races the WebView2 native message channel
+// while it is still settling and was observed to wedge the very first invoke,
+// stalling startup before the ping. We therefore stay silent until the ping
+// succeeds; the steps that matter for backend observability (init-runtime,
+// load-config, init-audio) all occur after that point anyway.
+let nativeLogForwardingEnabled = false;
+
+export function enableNativeLogForwarding() {
+  nativeLogForwardingEnabled = true;
+}
+
+// Mirror every bootstrap step transition into the native diagnostics log so the
+// Rust-side app.log and the diagnostics page reflect the *frontend* startup
+// state, not just the backend's. Previously the renderer owned the entire
+// startup handshake and the backend log went dark after the IPC ping, which is
+// exactly why a stalled `bootstrap_runtime` was invisible from the logs. This is
+// fire-and-forget: it uses a trivial sync command (like `debug_ipc_ping`) and
+// never blocks or throws, so it works even while a heavier invoke is stuck.
+function forwardStepToNativeLog(stepId: BootstrapStepId, status: BootstrapStepStatus, detail?: string) {
+  if (!isTauriRuntime() || !nativeLogForwardingEnabled) {
+    return;
+  }
+  const level = status === 'error' ? 'error' : status === 'active' ? 'debug' : 'info';
+  void invoke('append_frontend_diagnostics_log', {
+    category: 'runtime',
+    level,
+    summary: `startup.step ${stepId}=${status}`,
+    detail: detail ?? null,
+  }).catch(() => {
+    /* best-effort: a failed diagnostic forward must never affect startup */
+  });
+}
+
 function markStep(onStep: OnBootstrapStep | undefined, stepId: BootstrapStepId, status: BootstrapStepStatus, detail?: string) {
   onStep?.(stepId, status, detail);
+  forwardStepToNativeLog(stepId, status, detail);
 }
 
 // ── Core connect ──
@@ -263,10 +309,17 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     }
   };
 
+  const trackUnlisten = (unlisten: RuntimeCleanup) => {
+    if (disposed) {
+      unlisten();
+      return;
+    }
+    unlisteners.push(unlisten);
+  };
+
   const registerListener = async <T,>(eventName: string, handler: (event: { payload: T }) => void) => {
     try {
-      const unlisten = await listen<T>(eventName, handler);
-      unlisteners.push(unlisten);
+      trackUnlisten(await listen<T>(eventName, handler));
     } catch (error) {
       deferDesktopRuntimeNotification(
         'warning',
@@ -276,7 +329,14 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     }
   };
 
-  await Promise.all([
+  // Runtime push-event listeners deliver *live* snapshot/notification updates.
+  // They are deliberately NOT part of the startup-readiness critical path: the
+  // authoritative runtime snapshot is fetched synchronously through the
+  // `bootstrap_runtime` invoke below. Registering them in the foreground once
+  // hard-gated startup behind `listen()`, so a WebView event channel that was
+  // slow to settle left the overlay stuck at "init-runtime" forever. Register
+  // them as a best-effort background task instead.
+  void Promise.all([
     registerListener<RuntimeSnapshot>(RUNTIME_SNAPSHOT_EVENT, (event) => {
       useAppStore.getState().setRuntimeSnapshot(event.payload);
     }),
@@ -286,7 +346,9 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     registerListener<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => {
       useAppStore.getState().setAudioRuntimeSnapshot(event.payload);
     }),
-  ]);
+  ]).finally(() => {
+    flushDeferredNotifications();
+  });
 
   markStep(onStep, 'init-runtime', 'active');
   try {
@@ -301,6 +363,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     useAppStore.getState().setRuntimeSnapshot(createRuntimeErrorSnapshot(error));
     useAppStore.getState().setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
     return () => {
+      disposed = true;
       unlisteners.forEach((unlisten) => unlisten());
     };
   }
@@ -469,14 +532,17 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   };
   window.addEventListener('beforeunload', handleBeforeUnload);
 
-  let unlistenConfigDraft: RuntimeCleanup = () => {};
-  try {
-    unlistenConfigDraft = await listen<AppConfigDraft>(CONFIG_DRAFT_SYNC_EVENT, (event) => {
-      applyExternalConfigSync(event.payload);
+  // The cross-window config-sync listener carries the same stall risk as the
+  // runtime push listeners above, and awaiting it here would keep the bootstrap
+  // promise (and bridge autostart) pending if the event channel never settles.
+  // Register it in the background and clean it up through `unlisteners`.
+  void listen<AppConfigDraft>(CONFIG_DRAFT_SYNC_EVENT, (event) => {
+    applyExternalConfigSync(event.payload);
+  })
+    .then(trackUnlisten)
+    .catch((error) => {
+      pushDesktopRuntimeNotification('warning', 'config-sync-listener-failed', `Config sync listener failed: ${formatRuntimeError(error)}`);
     });
-  } catch (error) {
-    pushDesktopRuntimeNotification('warning', 'config-sync-listener-failed', `Config sync listener failed: ${formatRuntimeError(error)}`);
-  }
 
   const bridgeAutostart = scheduleBridgeAutostartAfterStartup(persistedConfig);
 
@@ -487,7 +553,6 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     window.removeEventListener('storage', handleConfigDraftStorage);
     window.removeEventListener('beforeunload', handleBeforeUnload);
     unlisteners.forEach((unlisten) => unlisten());
-    unlistenConfigDraft();
   };
 }
 
@@ -584,6 +649,9 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     const pingElapsedMs = await pingDesktopRuntime();
     console.log('[omni][desktop-runtime] debug_ipc_ping 成功:', `${pingElapsedMs}ms`);
     ipcOk = true;
+    // IPC is proven ready — it is now safe to mirror bootstrap steps into the
+    // native diagnostics log so backend app.log reflects frontend startup.
+    enableNativeLogForwarding();
     markStep(onStep, 'check-ipc', 'done', `${pingElapsedMs}ms`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -600,8 +668,31 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     markStep(onStep, 'init-audio', 'error', 'IPC 未连通');
     markStep(onStep, 'load-config', 'error', 'IPC 未连通');
 
+    // A WebView can retain the JavaScript-side bridge while the native IPC
+    // protocol is still recovering. Keep probing in the background so one
+    // failed startup check does not leave the application permanently stuck
+    // on the mock runtime snapshot.
+    const recoveryStartedAt = Date.now();
+    let recoveryTimer: ReturnType<typeof setTimeout> | null = null;
+    const recoverIpc = async () => {
+      if (disposed || Date.now() - recoveryStartedAt >= IPC_RECOVERY_TIMEOUT_MS) return;
+      try {
+        await invokeWithTimeout<string>('debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+        const nextCleanup = await connectDesktopRuntimeBridge();
+        if (disposed) {
+          nextCleanup();
+          return;
+        }
+        cleanup = nextCleanup;
+      } catch {
+        if (!disposed) recoveryTimer = setTimeout(() => void recoverIpc(), IPC_RECOVERY_RETRY_INTERVAL_MS);
+      }
+    };
+    recoveryTimer = setTimeout(() => void recoverIpc(), IPC_RECOVERY_RETRY_INTERVAL_MS);
+
     return () => {
       disposed = true;
+      if (recoveryTimer !== null) clearTimeout(recoveryTimer);
       fallbackActive = false;
       unsubscribeFallback();
       cleanup();
@@ -674,6 +765,10 @@ export async function bootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): P
     flight.consumers += 1;
     if (onStep) {
       flight.listeners.add(onStep);
+      // 晚订阅者立即回放已发出的步骤快照，避免只收未来步骤而漏掉终态。
+      for (const snapshot of flight.emittedSteps) {
+        onStep(snapshot.stepId, snapshot.status, snapshot.detail);
+      }
     }
 
     await flight.promise;
@@ -700,12 +795,15 @@ export async function bootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): P
   const flight: BootstrapFlight = {
     consumers: 1,
     listeners,
+    emittedSteps: [],
     cleanup: null,
     promise: Promise.resolve(() => {}),
   };
   activeBootstrapFlight = flight;
 
   const broadcastStep: OnBootstrapStep = (stepId, status, detail) => {
+    // 记录快照，供晚订阅者加入时回放，保证其也能收齐终态。
+    flight.emittedSteps.push({ stepId, status, detail });
     for (const listener of Array.from(flight.listeners)) {
       listener(stepId, status, detail);
     }

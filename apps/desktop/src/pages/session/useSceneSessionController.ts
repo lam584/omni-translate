@@ -15,7 +15,7 @@ import {
   stopSpeechDispatchRuntime,
   stopTranslateWorkerRuntime,
 } from '../../runtime/audio-runtime';
-import { appendFrontendDiagnosticsLog } from '../../runtime/diagnostics-runtime';
+import { appendFrontendDiagnosticsLog, getRecentDiagnosticsLogsRuntime } from '../../runtime/diagnostics-runtime';
 import { useDesktopApiV2 } from '../../runtime/desktop-api-context';
 import type { SceneMode } from '../../utils/scene-readiness';
 import { watchModeNeedsBridge } from '../../utils/scene-readiness';
@@ -23,6 +23,7 @@ import { stringifyRedacted } from '../../utils/redact-sensitive-data';
 import { buildSceneLaunchPlan, buildWatchFallbackPlan, type SceneLaunchStage } from './sceneLaunchPlan';
 import { executeSceneLaunchPlan, SceneLaunchError } from './sceneLaunchExecutor';
 import { sceneLaunchTimeoutMs } from './sceneLaunchTimeout';
+import { describeSceneLaunchAttribution } from './sceneLaunchAttribution';
 
 type SceneSessionControllerOptions = {
   runtimeSnapshot: RuntimeSnapshot;
@@ -33,7 +34,7 @@ type SceneSessionControllerOptions = {
   updateDiagnosticsReady: (mode: SceneMode) => void;
   pushNotification: (notification: RuntimeNotification) => void;
   runBusyAction: BusyActionRunner;
-  confirmWatchFallback: () => boolean;
+  confirmWatchFallback: () => Promise<boolean>;
   sceneLaunchFailureMessage: (mode: SceneMode, stage: string | null, error: unknown) => string;
   sceneLaunchTimeoutMessage: (seconds: number) => string;
 };
@@ -74,6 +75,36 @@ async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMs: numbe
 function isBridgeStartupError(error: unknown) {
   const lower = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
   return ['bridge', 'driver', 'source pipe', 'virtual', 'sysvad', 'package', 'wasapi'].some((token) => lower.includes(token));
+}
+
+/**
+ * Turns a watch launch failure into an attributable Error whose message names
+ * the terminal outcome (command rejected / accepted-but-not-ready / capture
+ * error) with the last native snapshot and route markers. Best-effort reads of
+ * the native snapshot and diagnostics log degrade to null/[] on failure.
+ */
+async function describeWatchLaunchFailure(
+  stage: SceneLaunchStage | null,
+  error: unknown,
+  commandAccepted: boolean,
+): Promise<Error> {
+  let snapshot: AudioRuntimeSnapshot | null = null;
+  try {
+    snapshot = await getAudioRuntimeSnapshotRuntime();
+  } catch (snapshotError) {
+    appendFrontendDiagnosticsLog('runtime', 'warning', `[SceneLaunch] attribution snapshot read failed: ${snapshotError instanceof Error ? snapshotError.message : String(snapshotError)}`);
+  }
+  const recentLogs = await getRecentDiagnosticsLogsRuntime();
+  const attribution = describeSceneLaunchAttribution({ stage, error, snapshot, recentLogs, commandAccepted });
+  appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] attribution', stringifyRedacted({
+    stage,
+    outcome: attribution.outcome,
+    commandAccepted,
+    captureState: snapshot?.inbound.captureState ?? null,
+    streamBound: snapshot?.inbound.streamBound ?? null,
+    preBufferState: snapshot?.inbound.preBufferState ?? null,
+  }));
+  return new Error(attribution.message);
 }
 
 /** Coordinates the Bridge readiness sequence used before scene startup. */
@@ -280,6 +311,9 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     const launchTimeoutMessage = controller.sceneLaunchTimeoutMessage(launchTimeoutMs / 1_000);
     let launchStage: SceneLaunchStage | null = null;
     let preconnectWarning: string | null = null;
+    // Whether the native start_audio_route command acknowledged the watch route.
+    // Distinguishes "command rejected" from "accepted but capture not ready".
+    let routeCommandAccepted = false;
     try {
       await controller.runBusyAction(mode === 'watch' ? 'watch-start' : 'conversation-start', async () => {
         const launchStartedAt = Date.now();
@@ -316,6 +350,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           executeStage: async (stage) => {
             if (stage === 'inbound-route' && mode === 'watch') {
               snapshot = await startAudioRouteRuntime('inbound', nextConfig);
+              routeCommandAccepted = true;
               controller.setAudioSnapshot(snapshot);
               snapshot = await waitForWatchRouteReadyRuntime(launchTimeoutMs, launchAbortController.signal);
               controller.setAudioSnapshot(snapshot);
@@ -395,7 +430,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           `[SceneLaunch] status=${error.outcome.status} completed=${error.outcome.completedStages.join(',')} rolledBack=${error.outcome.rolledBackStages.join(',')} rollbackFailures=${error.outcome.rollbackFailures.length}`);
       }
       if (mode === 'watch' && watchModeNeedsBridge(nextConfig) && isBridgeStartupError(launchError)) {
-        const fallback = controller.confirmWatchFallback() ? 'subtitles-only' : 'aec';
+        const fallback = (await controller.confirmWatchFallback()) ? 'subtitles-only' : 'aec';
         try {
           await startWatchFallback(options, fallback, launchError);
         } catch (fallbackError) {
@@ -435,7 +470,13 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           emittedAt: new Date().toISOString(),
         });
       }
-      controller.pushNotification({ id: `scene-launch-${mode}-${Date.now()}`, level: 'error', source: 'session', message: controller.sceneLaunchFailureMessage(mode, launchStage, launchError), emittedAt: new Date().toISOString() });
+      // Watch launches (except overlay open) replace the generic timeout text
+      // with an attributable reason: which stage, the last native snapshot, and
+      // the recent route marker, plus an outcome-specific next step.
+      const failureError = mode === 'watch' && launchStage !== 'subtitle-overlay'
+        ? await describeWatchLaunchFailure(launchStage, launchError, routeCommandAccepted)
+        : launchError;
+      controller.pushNotification({ id: `scene-launch-${mode}-${Date.now()}`, level: 'error', source: 'session', message: controller.sceneLaunchFailureMessage(mode, launchStage, failureError), emittedAt: new Date().toISOString() });
     }
   };
 

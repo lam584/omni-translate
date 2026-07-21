@@ -272,6 +272,33 @@ function App() {
       handleBootstrapStep(stepId, status, detail);
     };
 
+    // 兜底：无论步骤回调是否收齐，只要整体 bootstrap 承诺已 settle 就强制关闭弹窗，
+    // 避免晚订阅者漏收终态或异常路径导致进度弹窗永久卡死。
+    const forceCloseOverlayOnSettle = (outcome: 'resolved' | 'rejected', error?: unknown) => {
+      if (disposed || bootstrapGenerationRef.current !== generation) {
+        return;
+      }
+      if (outcome === 'rejected') {
+        const stuckStep = STEP_ORDER.find((id) => {
+          const timing = startupStepTimingsRef.current[id];
+          return !timing || (timing.doneAtMs === undefined && timing.errorAtMs === undefined);
+        });
+        void appendFrontendDiagnosticsLog(
+          'runtime',
+          'warn',
+          'startup.bootstrap_settled_forced_overlay_close',
+          `outcome=rejected stuckStep=${stuckStep ?? 'none'} error=${error instanceof Error ? error.message : String(error)}`,
+        );
+        setBootstrapReady(true);
+        return;
+      }
+      // 成功 settle：仅在步骤回调未能算出 allDone（例如晚订阅者漏收终态）时兜底关闭，
+      // 不抢占正常完成路径。
+      if (!startupReadyScheduledRef.current) {
+        setBootstrapReady(true);
+      }
+    };
+
     void bootstrapDesktopRuntimeBridge(guardedBootstrapStep).then((nextCleanup) => {
       if (disposed) {
         nextCleanup();
@@ -281,6 +308,11 @@ function App() {
       void runWatchModeDiagnosticAutostart().catch((error) => {
         console.error('[omni][watch-mode-diagnostic] autostart failed', error);
       });
+    }).catch((error) => {
+      console.error('[omni][desktop-runtime] bootstrap failed', error);
+      forceCloseOverlayOnSettle('rejected', error);
+    }).finally(() => {
+      forceCloseOverlayOnSettle('resolved');
     });
 
     return () => {

@@ -45,6 +45,16 @@ export const diagnosticsPageHelpers = {
   BenchmarkProgressBanner, BenchmarkReportDetail, LiveSessionEventDetail,
 };
 
+function getRuntimeErrorOriginal(snapshot: RuntimeSnapshot): string | null {
+  if (resolveRuntimeBridgeStatus(snapshot) !== 'runtime-error') return null;
+
+  const errorNotification = [...snapshot.notifications]
+    .reverse()
+    .find((notification) => notification.level === 'error');
+
+  return errorNotification?.message ?? null;
+}
+
 export async function runRecommendedBridgeAction(snapshot: RuntimeSnapshot, configDraft: ReturnType<typeof useAppStore.getState>['configDraft']) {
   const { bridge } = snapshot;
   switch (resolveRecommendedDriverAction(bridge)) {
@@ -162,6 +172,7 @@ function DiagnosticsPage() {
   const repairableIssueIds = useMemo(() => new Set(repairOptions.flatMap((option) => option.issueIds)), [repairOptions]);
   const keyIssues = useMemo(() => overviewIssues.filter((issue) => !repairableIssueIds.has(issue.id)), [overviewIssues, repairableIssueIds]);
   const primaryIssue = keyIssues[0] ?? overviewIssues[0] ?? null;
+  const runtimeErrorOriginal = useMemo(() => getRuntimeErrorOriginal(runtimeSnapshot), [runtimeSnapshot]);
   const [selectedRepairIds, setSelectedRepairIds] = useState<string[]>([]);
   const [repairSelectionInitialized, setRepairSelectionInitialized] = useState(false);
 
@@ -206,9 +217,7 @@ function DiagnosticsPage() {
   const healthSummaryDetail =
     overviewIssues.length === 0
       ? i18n.t('diagnostics.health.stableDetail', { count: stableServiceCount })
-      : primaryIssue
-        ? `${primaryIssue.title}。${primaryIssue.detail}`
-        : i18n.t('diagnostics.health.needsInvestigationDetail');
+      : i18n.t('diagnostics.health.needsInvestigationDetail');
 
   const envDiagnostic = useMemo(() => {
     const tauriFlag = isTauriRuntime();
@@ -284,7 +293,7 @@ function DiagnosticsPage() {
             <div>
               <span>{i18n.t('diagnostics.labels.currentIssue')}</span>
               <strong>{primaryIssue.title}</strong>
-              <p>{primaryIssue.detail}</p>
+              <p>{runtimeErrorOriginal ?? primaryIssue.detail}</p>
             </div>
             <StatusBadge label={primaryIssue.route ? i18n.t('diagnostics.labels.needsAction') : i18n.t('diagnostics.labels.watch')} tone={primaryIssue.tone} />
           </div>

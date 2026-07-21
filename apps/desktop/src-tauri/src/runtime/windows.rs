@@ -551,19 +551,42 @@ pub fn ensure_subtitle_overlay_window(app: &AppHandle) -> tauri::Result<WebviewW
     Ok(window)
 }
 
-pub fn collect_window_snapshots(app: &AppHandle) -> Vec<RuntimeWindowSnapshot> {
+// IMPORTANT: this runs on the hot path of `build_runtime_snapshot`, which is
+// invoked by nearly every command and every `emit_runtime_*` call. On Windows,
+// `WebviewWindow::title/is_visible/is_focused` are synchronous Win32 round-trips
+// that require the main-thread message pump to service them. When a synchronous
+// `#[tauri::command]` (e.g. `bootstrap_runtime`) runs *on* the main thread and
+// calls these, the pump is busy running the command and can never answer the
+// query -> the main event loop deadlocks. That single hazard stalled startup
+// (bootstrap_runtime), diagnostics export, and even the tray-quit handler,
+// because all of them ride the main thread. We therefore never query the OS
+// here: window existence comes from the (non-blocking) manager map and the only
+// state the UI actually consumes -- subtitle-overlay visibility -- is read from
+// the authoritative cache in `RuntimeStateStore`, which is updated at the exact
+// points we show/hide the overlay.
+pub fn collect_window_snapshots(
+    app: &AppHandle,
+    overlay_visible: bool,
+) -> Vec<RuntimeWindowSnapshot> {
     app.webview_windows()
-        .iter()
-        .map(|(label, window)| RuntimeWindowSnapshot {
-            label: label.clone(),
-            title: window.title().unwrap_or_else(|_| label.clone()),
-            kind: if label == "subtitle-overlay" {
-                "subtitle-overlay".to_string()
-            } else {
-                "main".to_string()
-            },
-            visible: window.is_visible().unwrap_or(false),
-            focused: window.is_focused().unwrap_or(false),
+        .keys()
+        .map(|label| {
+            let is_overlay = label == "subtitle-overlay";
+            RuntimeWindowSnapshot {
+                label: label.clone(),
+                title: if is_overlay { String::new() } else { label.clone() },
+                kind: if is_overlay {
+                    "subtitle-overlay".to_string()
+                } else {
+                    "main".to_string()
+                },
+                // The main window is created visible and is never hidden (only
+                // shown from the tray), so it is always visible. The overlay's
+                // visibility is tracked in RuntimeState as the single source of
+                // truth. `focused` is not consumed by the renderer.
+                visible: if is_overlay { overlay_visible } else { true },
+                focused: false,
+            }
         })
         .collect()
 }

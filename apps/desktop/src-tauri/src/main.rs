@@ -36,6 +36,7 @@ use runtime::events::{
     show_subtitle_overlay, sync_subtitle_overlay_chrome, sync_subtitle_overlay_region,
     toggle_subtitle_overlay,
 };
+use runtime::windows::ensure_subtitle_overlay_window;
 use runtime::state::{now_marker, RuntimeStateStore};
 use runtime::tray::initialize_tray;
 use storage::credential::{CredentialVault, KeyringCredentialVault};
@@ -842,6 +843,56 @@ fn main() {
                     None,
                     None,
                 );
+            });
+
+            // Pre-create the subtitle-overlay WebView2 window during the startup
+            // idle window, once the renderer's IPC channel is warm. Building it
+            // lazily inside the *synchronous* `toggle_subtitle_overlay` command
+            // deadlocks: WebView2 controller creation needs the main-thread
+            // message loop that the command is blocking, so the first "显示浮窗"
+            // click hangs until the renderer's 15s timeout fires. Creating it here
+            // (on the idle event loop, via run_on_main_thread) means
+            // `ensure_subtitle_overlay_window` in the toggle command always hits
+            // the fast "already exists" path. Gating on IPC_PING_RECEIVED avoids
+            // the setup-time race that previously dropped the main window's
+            // IPC-init messages (see the note above about not building here).
+            let overlay_prewarm_handle = app_handle.clone();
+            tauri::async_runtime::spawn(async move {
+                for _ in 0..600 {
+                    if IPC_PING_RECEIVED.load(Ordering::Acquire) {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+                if !IPC_PING_RECEIVED.load(Ordering::Acquire) {
+                    return;
+                }
+                // Small extra grace so the main window finishes its startup message
+                // storm before the nested pump inside WebView2 creation runs.
+                tokio::time::sleep(Duration::from_millis(250)).await;
+                let overlay_app = overlay_prewarm_handle.clone();
+                let _ = overlay_prewarm_handle.run_on_main_thread(move || {
+                    match ensure_subtitle_overlay_window(&overlay_app) {
+                        Ok(_) => {
+                            log_info!(
+                                &overlay_app,
+                                "runtime",
+                                "字幕浮窗已在启动空闲期预创建（隐藏），点击显示时无需再建窗。"
+                            );
+                        }
+                        Err(error) => {
+                            let _ = append_diagnostics_log(
+                                &overlay_app,
+                                "runtime",
+                                "warning",
+                                "字幕浮窗预创建失败，将在首次点击时懒加载（可能较慢）。",
+                                Some(error.to_string()),
+                                None,
+                                None,
+                            );
+                        }
+                    }
+                });
             });
 
             maybe_start_watch_mode_diagnostic(app);

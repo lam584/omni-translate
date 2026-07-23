@@ -119,6 +119,28 @@ pub fn start_route(
     stop_route(app.clone(), store, direction)?;
 
     let spec = RouteSpec::from_config(&config, direction)?;
+
+    // Fast path: if an idle pre-warmed device is parked for this exact target,
+    // activate it in place (the warm thread transitions itself into the shared
+    // capture loop) and skip the expensive cold `initialize_capture_route`.
+    let stt_sender = match store.warmer().try_activate(direction, &spec, stt_sender) {
+        Ok(handle) => {
+            store.insert_session(direction, handle);
+            diag_log_detail(
+                &app,
+                "audio",
+                "info",
+                format!("命中预热 {} 采集设备，跳过冷启动。", direction),
+                format!(
+                    "routeId={} device={}",
+                    spec.route_id, spec.requested_device_id
+                ),
+            );
+            return Ok(store.snapshot());
+        }
+        Err(stt_sender) => stt_sender,
+    };
+
     let effective_device_id =
         if direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver" {
             spec.requested_device_id.clone()
@@ -389,8 +411,9 @@ fn find_device_by_id(
 }
 
 include!("workers.rs");
+include!("warm_route.rs");
 #[derive(Clone)]
-struct RouteSpec {
+pub(crate) struct RouteSpec {
     route_id: String,
     direction: String,
     requested_device_id: String,

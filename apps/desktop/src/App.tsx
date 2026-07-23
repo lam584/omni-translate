@@ -6,6 +6,7 @@ import i18n, { getCurrentLanguage, hasCompletedWelcome } from './i18n/config';
 import {
   bootstrapDesktopRuntimeBridge,
   scheduleBridgeAutostartAfterStartup,
+  scheduleCapturePrewarmAfterStartup,
   type BootstrapStepId,
   type OnBootstrapStep,
 } from './runtime/desktop-runtime';
@@ -193,6 +194,7 @@ function App() {
   const bridgeAutostartScheduledRef = useRef(false);
   const bridgeAutostartCleanupRef = useRef<(() => void) | null>(null);
   const bridgeAutostartPromiseRef = useRef<Promise<void> | null>(null);
+  const capturePrewarmCleanupRef = useRef<(() => void) | null>(null);
   const bootstrapGenerationRef = useRef(0);
   const appMountedAtEpochMsRef = useRef<number | null>(null);
   const fullReadyLoggedRef = useRef(false);
@@ -252,6 +254,10 @@ function App() {
               const scheduled = scheduleBridgeAutostartAfterStartup();
               bridgeAutostartCleanupRef.current = scheduled.cleanup;
               bridgeAutostartPromiseRef.current = scheduled.promise;
+              // Warm capture devices on the same idle window so a later watch /
+              // conversation click only pays `start_stream`, not the device open.
+              const prewarm = scheduleCapturePrewarmAfterStartup();
+              capturePrewarmCleanupRef.current = prewarm.cleanup;
             }
           });
         }, BOOTSTRAP_OVERLAY_COMPLETION_DELAY_MS);
@@ -285,7 +291,7 @@ function App() {
         });
         void appendFrontendDiagnosticsLog(
           'runtime',
-          'warn',
+          'warning',
           'startup.bootstrap_settled_forced_overlay_close',
           `outcome=rejected stuckStep=${stuckStep ?? 'none'} error=${error instanceof Error ? error.message : String(error)}`,
         );
@@ -323,6 +329,8 @@ function App() {
       bridgeAutostartCleanupRef.current?.();
       bridgeAutostartCleanupRef.current = null;
       bridgeAutostartScheduledRef.current = false;
+      capturePrewarmCleanupRef.current?.();
+      capturePrewarmCleanupRef.current = null;
       cleanup();
     };
   }, [handleBootstrapStep]);

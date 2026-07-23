@@ -52,6 +52,7 @@ export class DesktopApiV2 {
     refreshDevices: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'refreshDevices' } })),
     preconnect: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'preconnect', config } })),
     cancelPreconnect: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'cancelPreconnect' } })),
+    prewarmRoutes: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'prewarmRoutes', config } })),
     startRoute: async (direction: 'inbound' | 'outbound', config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'startRoute', direction, config } })),
     stopRoute: async (direction: 'inbound' | 'outbound') => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'stopRoute', direction } })),
     clearCues: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'clearCues' } })),

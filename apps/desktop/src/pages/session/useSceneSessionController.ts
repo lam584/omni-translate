@@ -394,28 +394,45 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             }));
           },
         });
-        await withSceneLaunchTimeout(launchOperation, launchTimeoutMs, launchTimeoutMessage, async () => {
-          launchTimedOut = true;
-          appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] timeout', stringifyRedacted({
-            mode,
-            stage: launchStage,
-            elapsedMs: Date.now() - launchStartedAt,
-            timeoutMs: launchTimeoutMs,
-          }));
-          launchAbortController.abort(sceneLaunchTimeoutError(launchTimeoutMessage));
-          await Promise.allSettled([
-            cancelOmniPreconnectRuntime(),
-            stopSpeechDispatchRuntime(),
-            stopTranslateWorkerRuntime(),
-            stopAudioRouteRuntime('outbound'),
-            stopAudioRouteRuntime('inbound'),
-          ]);
-          try {
-            controller.setAudioSnapshot(await getAudioRuntimeSnapshotRuntime());
-          } catch {
-            // The timeout error remains the user-facing result.
-          }
-        });
+        if (mode === 'watch') {
+          // Watch capture is fire-and-converge and already self-bounded: the
+          // native `start_audio_route` returns on acknowledgement,
+          // `waitForWatchRouteReadyRuntime` polls within its own budget and
+          // resolves once the stream binds (or as "accepted, still converging"
+          // when the budget elapses without a native error), and any remaining
+          // watch stages carry their own native command timeouts. A destructive
+          // outer deadline here would `abort` and `stop_audio_route` a route that
+          // is still legitimately converging — which is exactly what made
+          // clicking watch mode appear to do nothing (the launch tore down a
+          // route that was ~1.4s from ready and swallowed the outcome). Let the
+          // native push events (stream bound, or `lastError` rendered by the
+          // session screen) drive the UI instead. This does not lengthen any
+          // timeout; it removes a premature rollback.
+          await launchOperation;
+        } else {
+          await withSceneLaunchTimeout(launchOperation, launchTimeoutMs, launchTimeoutMessage, async () => {
+            launchTimedOut = true;
+            appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] timeout', stringifyRedacted({
+              mode,
+              stage: launchStage,
+              elapsedMs: Date.now() - launchStartedAt,
+              timeoutMs: launchTimeoutMs,
+            }));
+            launchAbortController.abort(sceneLaunchTimeoutError(launchTimeoutMessage));
+            await Promise.allSettled([
+              cancelOmniPreconnectRuntime(),
+              stopSpeechDispatchRuntime(),
+              stopTranslateWorkerRuntime(),
+              stopAudioRouteRuntime('outbound'),
+              stopAudioRouteRuntime('inbound'),
+            ]);
+            try {
+              controller.setAudioSnapshot(await getAudioRuntimeSnapshotRuntime());
+            } catch {
+              // The timeout error remains the user-facing result.
+            }
+          });
+        }
         appendFrontendDiagnosticsLog('runtime', 'info', '[SceneLaunch] ready', stringifyRedacted({
           mode,
           elapsedMs: Date.now() - launchStartedAt,

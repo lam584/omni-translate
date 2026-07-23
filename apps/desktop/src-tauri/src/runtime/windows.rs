@@ -33,7 +33,6 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
 use super::contracts::RuntimeWindowSnapshot;
 
 const SUBTITLE_OVERLAY_CORNER_RADIUS: f64 = 22.0;
-const SUBTITLE_OVERLAY_UNLOCK_WINDOW_LABEL: &str = "subtitle-overlay-unlock";
 const SUBTITLE_OVERLAY_LOCK_HOTSPOT_HEIGHT: f64 = 36.0;
 const SUBTITLE_OVERLAY_LOCK_HOTSPOT_INSET: f64 = 6.0;
 const SUBTITLE_OVERLAY_LOCK_HOTSPOT_WIDTH: f64 = 65.0;
@@ -437,13 +436,15 @@ pub fn sync_subtitle_overlay_input_state(
         if let Ok(mut state) = subtitle_overlay_window_input_state().lock() {
             state.insert(hwnd.0 as isize, next_input_state);
 
+            // Only propagate the hit-test state to the webview children; never
+            // disable them. The in-page unlock pill lives inside the webview, so
+            // the child windows must stay enabled to receive the unlock click.
+            // Passthrough for the rest of the (locked) overlay is handled purely
+            // by the WM_NCHITTEST hook returning HTTRANSPARENT outside the hotspot.
             let child = unsafe { GetWindow(hwnd.0 as _, GW_CHILD) };
             if !child.is_null() {
                 let mut sync_child_state = |next_hwnd: isize| {
                     state.insert(next_hwnd, next_input_state);
-                    unsafe {
-                        EnableWindow(next_hwnd as _, if locked { 0 } else { 1 });
-                    }
                 };
                 for_each_child_window(child as isize, &mut sync_child_state);
             }
@@ -457,61 +458,6 @@ pub fn apply_subtitle_overlay_background(window: &WebviewWindow) -> Result<(), S
     window
         .set_background_color(Some(SUBTITLE_OVERLAY_BACKGROUND_COLOR))
         .map_err(|error| error.to_string())
-}
-
-pub fn sync_subtitle_overlay_unlock_window(
-    app: &AppHandle,
-    overlay: &WebviewWindow,
-    visible: bool,
-) -> Result<(), String> {
-    let unlock = if let Some(window) = app.get_webview_window(SUBTITLE_OVERLAY_UNLOCK_WINDOW_LABEL) {
-        window
-    } else {
-        let window = WebviewWindowBuilder::new(
-            app,
-            SUBTITLE_OVERLAY_UNLOCK_WINDOW_LABEL,
-            WebviewUrl::App("overlay-unlock.html".into()),
-        )
-        .title("")
-        .visible(false)
-        .always_on_top(true)
-        .decorations(false)
-        .transparent(true)
-        .background_color(SUBTITLE_OVERLAY_BACKGROUND_COLOR)
-        .skip_taskbar(true)
-        .resizable(false)
-        .inner_size(
-            SUBTITLE_OVERLAY_LOCK_HOTSPOT_WIDTH,
-            SUBTITLE_OVERLAY_LOCK_HOTSPOT_HEIGHT,
-        )
-        .build()
-        .map_err(|error| error.to_string())?;
-        let _ = window.set_shadow(false);
-        window
-    };
-
-    if !visible {
-        return unlock.hide().map_err(|error| error.to_string());
-    }
-
-    let overlay_position = overlay.outer_position().map_err(|error| error.to_string())?;
-    let overlay_size = overlay.outer_size().map_err(|error| error.to_string())?;
-    let scale_factor = overlay.scale_factor().map_err(|error| error.to_string())?;
-    let hotspot_width = (SUBTITLE_OVERLAY_LOCK_HOTSPOT_WIDTH * scale_factor).round() as i32;
-    let hotspot_height = (SUBTITLE_OVERLAY_LOCK_HOTSPOT_HEIGHT * scale_factor).round() as u32;
-    let hotspot_inset = (SUBTITLE_OVERLAY_LOCK_HOTSPOT_INSET * scale_factor).round() as i32;
-    let target_x = overlay_position.x + overlay_size.width as i32 - hotspot_width - hotspot_inset;
-    let target_y = overlay_position.y + hotspot_inset;
-    unlock
-        .set_position(tauri::LogicalPosition::new(
-            target_x as f64 / scale_factor,
-            target_y as f64 / scale_factor,
-        ))
-        .map_err(|error| error.to_string())?;
-    unlock
-        .set_size(tauri::PhysicalSize::new(hotspot_width as u32, hotspot_height))
-        .map_err(|error| error.to_string())?;
-    unlock.show().map_err(|error| error.to_string())
 }
 
 pub fn ensure_subtitle_overlay_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {

@@ -20,7 +20,7 @@ vi.mock('@tauri-apps/api/event', () => ({
   listen: (...args: unknown[]) => listenMock(...args),
 }));
 
-import { bootstrapDesktopRuntimeBridge, CONFIG_DRAFT_SYNC_EVENT, desktopRuntimeTestHelpers } from './desktop-runtime';
+import { bootstrapDesktopRuntimeBridge, CONFIG_DRAFT_SYNC_EVENT, desktopRuntimeTestHelpers, scheduleCapturePrewarmAfterStartup } from './desktop-runtime';
 
 function resetStore() {
   useAppStore.setState((state) => ({
@@ -48,6 +48,10 @@ function installHappyInvoke(snapshot = structuredClone(runtimeSnapshotMock)) {
       return 'pong storage_status=ready elapsed_ms=0';
     }
 
+    if (command === 'append_frontend_diagnostics_log') {
+      return undefined;
+    }
+
     if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') {
       return snapshot;
     }
@@ -64,8 +68,17 @@ function installHappyInvoke(snapshot = structuredClone(runtimeSnapshotMock)) {
       return undefined;
     }
 
+    if (command === 'session_v2') {
+      return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+    }
+
     throw new Error(`unexpected command: ${command}`);
   });
+}
+
+/** Filter out diagnostic log forwarding calls that are fire-and-forget noise. */
+function invokeCommandCalls(): string[] {
+  return invokeMock.mock.calls.map((call) => call[0]).filter((c) => c !== 'append_frontend_diagnostics_log');
 }
 
 describe('bootstrapDesktopRuntimeBridge', () => {
@@ -109,6 +122,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
+      if (command === 'append_frontend_diagnostics_log') {
+        return undefined;
+      }
+
       if (command === 'bootstrap_runtime') {
         return liveSnapshot;
       }
@@ -129,6 +146,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return liveSnapshot;
       }
 
+      if (command === 'session_v2') {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -143,7 +164,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     await vi.advanceTimersByTimeAsync(200);
     const cleanup = await bootstrapPromise;
 
-    expect(invokeMock.mock.calls.map((call) => call[0])).toEqual([
+    expect(invokeCommandCalls()).toEqual([
       'debug_ipc_ping',
       'bootstrap_runtime',
       'load_config_draft',
@@ -227,6 +248,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return liveSnapshot;
       }
 
+      if (command === 'append_frontend_diagnostics_log') {
+        return undefined;
+      }
+
       if (command === 'bootstrap_audio') {
         return structuredClone(audioRuntimeSnapshotMock);
       }
@@ -241,6 +266,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
       if (command === 'save_config_draft') {
         return undefined;
+      }
+
+      if (command === 'session_v2') {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
       throw new Error(`unexpected command: ${command}`);
@@ -261,7 +290,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
     await vi.advanceTimersByTimeAsync(200);
 
-    expect(invokeMock.mock.calls.map((call) => call[0])).toEqual([
+    expect(invokeCommandCalls()).toEqual([
       'bootstrap_runtime',
       'load_config_draft',
       'bootstrap_audio',
@@ -296,6 +325,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=preview elapsed_ms=0';
       }
 
+      if (command === 'append_frontend_diagnostics_log') {
+        return undefined;
+      }
+
       if (command === 'bootstrap_runtime') {
         return bootstrapSnapshot;
       }
@@ -316,12 +349,16 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return undefined;
       }
 
+      if (command === 'session_v2') {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
     const cleanup = await bootstrapDesktopRuntimeBridge();
 
-    expect(invokeMock.mock.calls.map((call) => call[0])).toEqual([
+    expect(invokeCommandCalls()).toEqual([
       'debug_ipc_ping',
       'bootstrap_runtime',
       'load_config_draft',
@@ -349,6 +386,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
+      if (command === 'append_frontend_diagnostics_log') {
+        return undefined;
+      }
+
       if (command === 'bootstrap_runtime') {
         return hydratedSnapshot;
       }
@@ -369,6 +410,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return undefined;
       }
 
+      if (command === 'session_v2') {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -377,6 +422,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     nextConfig.subtitles.overlayOpacity = 0.55;
     nextConfig.subtitles.overlayLocked = true;
 
+    invokeMock.mockClear();
     window.dispatchEvent(
       new StorageEvent('storage', {
         key: 'omni.configDraftShadow',
@@ -386,7 +432,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
     expect(useAppStore.getState().configDraft.subtitles.overlayOpacity).toBe(0.55);
     expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
-    expect(invokeMock.mock.calls.map((call) => call[0])).not.toContain('save_config_draft');
+    expect(invokeCommandCalls()).not.toContain('save_config_draft');
 
     cleanup();
   });
@@ -406,6 +452,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
+      if (command === 'append_frontend_diagnostics_log') {
+        return undefined;
+      }
+
       if (command === 'bootstrap_runtime') {
         return hydratedSnapshot;
       }
@@ -424,6 +474,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
       if (command === 'save_config_draft') {
         return undefined;
+      }
+
+      if (command === 'session_v2') {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
       throw new Error(`unexpected command: ${command}`);
@@ -466,6 +520,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
+      if (command === 'append_frontend_diagnostics_log') {
+        return undefined;
+      }
+
       if (command === 'bootstrap_runtime') {
         return hydratedSnapshot;
       }
@@ -486,6 +544,10 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return undefined;
       }
 
+      if (command === 'session_v2') {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      }
+
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -493,10 +555,11 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     const nextConfig = structuredClone(appConfigDraftMock);
     nextConfig.subtitles.overlayFontSize = 40;
 
+    invokeMock.mockClear();
     listeners.get(CONFIG_DRAFT_SYNC_EVENT)?.({ payload: nextConfig });
 
     expect(useAppStore.getState().configDraft.subtitles.overlayFontSize).toBe(40);
-    expect(invokeMock.mock.calls.map((call) => call[0])).not.toContain('save_config_draft');
+    expect(invokeCommandCalls()).not.toContain('save_config_draft');
 
     cleanup();
   });
@@ -946,6 +1009,129 @@ describe('desktop runtime helpers', () => {
     invokeMock.mockResolvedValueOnce('ok').mockRejectedValueOnce(new Error('invoke failed'));
     await expect(desktopRuntimeTestHelpers.invokeWithTimeout('resolve_now', 50)).resolves.toBe('ok');
     await expect(desktopRuntimeTestHelpers.invokeWithTimeout('reject_now', 50)).rejects.toThrow('invoke failed');
+  });
+});
+
+describe('scheduleCapturePrewarmAfterStartup', () => {
+  beforeEach(() => {
+    resetStore();
+    invokeMock.mockReset();
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    vi.useRealTimers();
+    invokeMock.mockReset();
+  });
+
+  it('cancels the pending pre-warm before its delay elapses', () => {
+    installTauriRuntime();
+    vi.useFakeTimers();
+    invokeMock.mockResolvedValue({ data: structuredClone(audioRuntimeSnapshotMock), warnings: [] });
+
+    const { cleanup } = scheduleCapturePrewarmAfterStartup(structuredClone(appConfigDraftMock), 5_000);
+    cleanup();
+    vi.advanceTimersByTime(5_000);
+
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it('runs the pre-warm immediately with a zero delay', async () => {
+    installTauriRuntime();
+    invokeMock.mockResolvedValue({ data: structuredClone(audioRuntimeSnapshotMock), warnings: [] });
+    const config = structuredClone(appConfigDraftMock);
+
+    const { promise } = scheduleCapturePrewarmAfterStartup(config, 0);
+    await promise;
+
+    expect(invokeMock).toHaveBeenCalledWith('session_v2', { command: { action: 'prewarmRoutes', config } });
+  });
+
+  it('is a no-op outside the Tauri runtime', async () => {
+    const { promise } = scheduleCapturePrewarmAfterStartup(structuredClone(appConfigDraftMock), 0);
+    await promise;
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('capture warm signature re-warm on device drift', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    invokeMock.mockReset();
+    emitMock.mockReset().mockResolvedValue(undefined);
+    listenMock.mockReset().mockResolvedValue(() => {});
+    Reflect.deleteProperty(globalThis, 'isTauri');
+    Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    window.localStorage.clear();
+    resetStore();
+  });
+
+  afterEach(() => {
+    Reflect.deleteProperty(globalThis, 'isTauri');
+    Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it('re-warms capture routes when a device-selection field changes', async () => {
+    installTauriRuntime();
+    installHappyInvoke();
+
+    const cleanup = await bootstrapDesktopRuntimeBridge();
+    invokeMock.mockClear();
+
+    // Change a device-related field that affects the warm signature.
+    useAppStore.getState().updateDeviceDraft({ feedbackLoopPrevention: 'virtual-driver' });
+    await vi.runOnlyPendingTimersAsync();
+    await Promise.resolve();
+
+    const sessionCalls = invokeMock.mock.calls.filter(
+      ([command, args]) => command === 'session_v2' && (args as { command?: { action?: string } })?.command?.action === 'prewarmRoutes',
+    );
+    expect(sessionCalls.length).toBe(1);
+
+    cleanup();
+  });
+
+  it('does not re-warm when a non-device config field changes', async () => {
+    installTauriRuntime();
+    installHappyInvoke();
+
+    const cleanup = await bootstrapDesktopRuntimeBridge();
+    invokeMock.mockClear();
+
+    // Change a non-device field that does NOT affect the warm signature.
+    useAppStore.getState().updateSubtitleDraft({ overlayFontSize: 42 });
+    await vi.runOnlyPendingTimersAsync();
+    await Promise.resolve();
+
+    const sessionCalls = invokeMock.mock.calls.filter(
+      ([command, args]) => command === 'session_v2' && (args as { command?: { action?: string } })?.command?.action === 'prewarmRoutes',
+    );
+    expect(sessionCalls.length).toBe(0);
+
+    cleanup();
+  });
+
+  it('re-warms when inbound device id changes', async () => {
+    installTauriRuntime();
+    installHappyInvoke();
+
+    const cleanup = await bootstrapDesktopRuntimeBridge();
+    invokeMock.mockClear();
+
+    const config = structuredClone(useAppStore.getState().configDraft);
+    config.devices.inboundRoute.input.deviceId = 'new-mic-device';
+    useAppStore.getState().setConfigDraft(config);
+    await vi.runOnlyPendingTimersAsync();
+    await Promise.resolve();
+
+    const sessionCalls = invokeMock.mock.calls.filter(
+      ([command, args]) => command === 'session_v2' && (args as { command?: { action?: string } })?.command?.action === 'prewarmRoutes',
+    );
+    expect(sessionCalls.length).toBe(1);
+
+    cleanup();
   });
 });
 

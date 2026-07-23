@@ -155,6 +155,7 @@ pub enum SessionCommandV2 {
     RefreshDevices,
     Preconnect { config: Value },
     CancelPreconnect,
+    PrewarmRoutes { config: Value },
     StartRoute { direction: String, config: Value },
     StopRoute { direction: String },
     ClearCues,
@@ -182,6 +183,9 @@ pub async fn session_v2(
         }
         SessionCommandV2::Preconnect { config } => audio_events::preconnect_omni_realtime(app.clone(), config).await,
         SessionCommandV2::CancelPreconnect => audio_events::cancel_omni_preconnect(app.clone()).await,
+        SessionCommandV2::PrewarmRoutes { config } => {
+            audio_events::prewarm_capture_routes(app.clone(), config)
+        }
         SessionCommandV2::StartRoute { direction, config } => {
             log::warn!("[omni][session_v2] startRoute direction={direction}");
             audio_events::start_audio_route(app.clone(), direction, config).await

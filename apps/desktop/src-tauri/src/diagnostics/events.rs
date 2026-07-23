@@ -272,6 +272,29 @@ pub fn build_diagnostics_snapshot(app: &AppHandle) -> DiagnosticsRuntimeSnapshot
     }
 }
 
+/// Whether writing a log line of this `category`/`level` should also rebuild and
+/// emit a full runtime snapshot to the webview.
+///
+/// High-frequency audio/omni route + session traces must NOT each trigger this.
+/// During a scene launch ~15 such lines fire back-to-back (provider resolution,
+/// Omni session start, route/overlay steps), and a live session keeps emitting
+/// them from the audio pump. Emitting on every line rebuilds the whole runtime
+/// snapshot (window enumeration + bridge + diagnostics + storage) and pushes it
+/// twice to the webview; that backend->frontend storm adds ~40ms per line to the
+/// launch worker and contends with the WebView2 invoke channel the renderer uses
+/// to poll watch-route readiness, so a pre-warmed route cannot report ready
+/// within its budget and the launch aborts before it converges.
+///
+/// Audio/omni state already reaches the UI through the much cheaper
+/// `emit_audio_snapshot` path, so only their warnings/errors need to be surfaced
+/// live here. Every other category (runtime/bridge/storage/...) always emits so
+/// startup progress and lifecycle updates are unaffected.
+fn log_should_emit_runtime_snapshot(category: &str, level: &str) -> bool {
+    let is_high_frequency_trace =
+        matches!(category, "audio" | "omni") && !matches!(level, "warning" | "error");
+    !is_high_frequency_trace
+}
+
 pub fn append_diagnostics_log(
     app: &AppHandle,
     category: &str,
@@ -282,8 +305,10 @@ pub fn append_diagnostics_log(
     elapsed_ms: Option<u128>,
 ) -> Result<(), String> {
     append_diagnostics_log_quiet(app, category, level, summary, detail, source, elapsed_ms)?;
-    if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {
-        emit_runtime_snapshot(app, &runtime_state).map_err(|error| error.to_string())?;
+    if log_should_emit_runtime_snapshot(category, level) {
+        if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {
+            emit_runtime_snapshot(app, &runtime_state).map_err(|error| error.to_string())?;
+        }
     }
     Ok(())
 }
@@ -503,7 +528,7 @@ mod tests {
     use crate::bridge::contracts::BridgeRuntimeSnapshot;
     use crate::storage::contracts::StorageRuntimeSnapshot;
 
-    use super::{write_diagnostics_bundle, DiagnosticsRuntimeSnapshot};
+    use super::{write_diagnostics_bundle, log_should_emit_runtime_snapshot, DiagnosticsRuntimeSnapshot};
 
     fn temp_dir(name: &str) -> PathBuf {
         let marker = SystemTime::now()
@@ -511,6 +536,45 @@ mod tests {
             .expect("system time before unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("omni-diagnostics-export-{name}-{marker}"))
+    }
+
+    #[test]
+    fn high_frequency_audio_and_omni_traces_skip_runtime_snapshot_emit() {
+        // Info/debug/trace lines from the audio route and Omni session hot paths
+        // must not each rebuild + emit a runtime snapshot: that storm is what
+        // starved the readiness poll and made watch mode abort before it bound.
+        for level in ["info", "debug", "trace"] {
+            assert!(
+                !log_should_emit_runtime_snapshot("audio", level),
+                "audio {level} traces must not emit a runtime snapshot"
+            );
+            assert!(
+                !log_should_emit_runtime_snapshot("omni", level),
+                "omni {level} traces must not emit a runtime snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_and_omni_warnings_and_errors_still_emit_runtime_snapshot() {
+        // Failures are rare and user-facing, so they must still reach the UI live.
+        for level in ["warning", "error"] {
+            assert!(log_should_emit_runtime_snapshot("audio", level));
+            assert!(log_should_emit_runtime_snapshot("omni", level));
+        }
+    }
+
+    #[test]
+    fn other_categories_always_emit_runtime_snapshot() {
+        // Startup progress and lifecycle updates depend on these emitting live.
+        for category in ["runtime", "bridge", "storage", "model-trace"] {
+            for level in ["info", "debug", "warning", "error"] {
+                assert!(
+                    log_should_emit_runtime_snapshot(category, level),
+                    "{category} {level} must emit a runtime snapshot"
+                );
+            }
+        }
     }
 
     #[test]

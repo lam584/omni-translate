@@ -37,6 +37,7 @@ vi.mock('./runtime/desktop-runtime', () => ({
     appMocks.bootstrapDesktopRuntimeBridge(...args),
   scheduleBridgeAutostartAfterStartup: (...args: Parameters<typeof appMocks.scheduleBridgeAutostartAfterStartup>) =>
     appMocks.scheduleBridgeAutostartAfterStartup(...args),
+  scheduleCapturePrewarmAfterStartup: vi.fn().mockReturnValue({ cleanup: vi.fn(), promise: Promise.resolve() }),
 }));
 
 vi.mock('./runtime/audio-runtime', () => ({
@@ -175,7 +176,7 @@ describe('App bootstrap shell', () => {
     expect(container.querySelector('.bootstrap-overlay')).toBeNull();
     expect(appendFrontendDiagnosticsLog).toHaveBeenCalledWith(
       'runtime',
-      'warn',
+      'warning',
       'startup.bootstrap_settled_forced_overlay_close',
       expect.stringContaining('stuckStep=check-ipc'),
     );

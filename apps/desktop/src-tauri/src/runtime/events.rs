@@ -15,7 +15,6 @@ use super::windows::apply_subtitle_overlay_window_chrome;
 use super::windows::collect_window_snapshots;
 use super::windows::ensure_subtitle_overlay_window;
 use super::windows::sync_subtitle_overlay_input_state;
-use super::windows::sync_subtitle_overlay_unlock_window;
 
 pub const RUNTIME_SNAPSHOT_EVENT: &str = "runtime://snapshot";
 pub const RUNTIME_NOTIFICATION_EVENT: &str = "runtime://notification";
@@ -28,8 +27,10 @@ fn sync_persisted_subtitle_overlay_input(app: &AppHandle, window: &tauri::Webvie
         .and_then(|config| config.pointer("/subtitles/overlayLocked").and_then(|value| value.as_bool()))
         .unwrap_or(false);
     let _ = sync_subtitle_overlay_input_state(window, locked);
-    let _ = apply_subtitle_overlay_click_through(window, locked);
-    let _ = sync_subtitle_overlay_unlock_window(app, window, false);
+    // Never mark the overlay globally click-through: the per-region WM_NCHITTEST
+    // hook keeps the unlock hotspot interactive while the rest stays passthrough,
+    // so the in-page unlock pill can be clicked without a separate catcher window.
+    let _ = apply_subtitle_overlay_click_through(window, false);
 }
 
 pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> RuntimeSnapshot {
@@ -97,7 +98,6 @@ pub fn toggle_subtitle_overlay_with_state(
     let is_visible = state.overlay_window_visible();
 
     if is_visible {
-        let _ = sync_subtitle_overlay_unlock_window(app, &window, false);
         window.hide().map_err(|error| error.to_string())?;
         state.set_overlay_window_visible(false);
     } else {
@@ -225,13 +225,16 @@ pub fn sync_subtitle_overlay_window_state(
     app: AppHandle,
     locked: bool,
     _rounded: bool,
-    hotspot_interactive: bool,
+    _hotspot_interactive: bool,
 ) -> Result<(), String> {
     let window = ensure_subtitle_overlay_window(&app).map_err(|error| error.to_string())?;
 
     sync_subtitle_overlay_input_state(&window, locked)?;
-    apply_subtitle_overlay_click_through(&window, locked)?;
-    sync_subtitle_overlay_unlock_window(&app, &window, locked && hotspot_interactive)?;
+    // Keep the overlay cursor-interactive at the OS level even while locked and
+    // let the per-region WM_NCHITTEST hook decide passthrough: everything except
+    // the top-right unlock hotspot reports HTTRANSPARENT (click-through), while
+    // the hotspot reports HTCLIENT so the in-page unlock pill stays clickable.
+    apply_subtitle_overlay_click_through(&window, false)?;
     apply_subtitle_overlay_window_chrome(&window)?;
     apply_subtitle_overlay_region(&window, true)
 }

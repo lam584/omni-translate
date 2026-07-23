@@ -6,6 +6,7 @@ import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import RealTimeSessionPage from './RealTimeSessionPage';
+import { waitForWatchRouteReadyRuntime } from '../runtime/audio-runtime';
 import { useAppStore } from '../stores/app-store';
 
 const startAudioRouteRuntimeMock = vi.fn();
@@ -40,6 +41,17 @@ vi.mock('../components/page/DiagnosticsQuickLink', () => ({
 vi.mock('../runtime/audio-runtime', () => ({
   startAudioRouteRuntime: (...args: unknown[]) => startAudioRouteRuntimeMock(...args),
   preconnectOmniRealtimeRuntime: (...args: unknown[]) => preconnectOmniRealtimeRuntimeMock(...args),
+  cancelOmniPreconnectRuntime: vi.fn().mockResolvedValue(structuredClone(audioRuntimeSnapshotMock)),
+  getAudioRuntimeSnapshotRuntime: vi.fn().mockResolvedValue({
+    ...structuredClone(audioRuntimeSnapshotMock),
+    inbound: { ...structuredClone(audioRuntimeSnapshotMock).inbound, streamBound: true, captureState: 'capturing', framesCaptured: 960 },
+    outbound: { ...structuredClone(audioRuntimeSnapshotMock).outbound, streamBound: true, captureState: 'capturing' },
+  }),
+  waitForWatchRouteReadyRuntime: vi.fn().mockResolvedValue({
+    ...structuredClone(audioRuntimeSnapshotMock),
+    inbound: { ...structuredClone(audioRuntimeSnapshotMock).inbound, streamBound: true, captureState: 'capturing', framesCaptured: 960 },
+  }),
+  prewarmCaptureRoutesRuntime: vi.fn().mockResolvedValue(undefined),
   startSpeechDispatchRuntime: (...args: unknown[]) => startSpeechDispatchRuntimeMock(...args),
   startTranslateWorkerRuntime: (...args: unknown[]) => startTranslateWorkerRuntimeMock(...args),
   stopAudioRouteRuntime: (...args: unknown[]) => stopAudioRouteRuntimeMock(...args),
@@ -500,7 +512,9 @@ describe('RealTimeSessionPage one-click launch', () => {
       }),
     );
     expect(startSpeechDispatchRuntimeMock).not.toHaveBeenCalled();
-    expect(showSubtitleOverlayWindowMock).toHaveBeenCalledTimes(1);
+    // Watch routes create the native overlay together with capture; the renderer
+    // does not re-open it (sceneLaunchPlan skips subtitle-overlay for watch mode).
+    expect(showSubtitleOverlayWindowMock).not.toHaveBeenCalled();
 
     expect(useAppStore.getState().configDraft.devices.routeMode).toBe('watch');
     expect(useAppStore.getState().configDraft.speech.enabled).toBe(false);
@@ -579,6 +593,51 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
     expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalled();
+  });
+
+  it('does not tear down or fail the watch route when readiness is still converging at the deadline', async () => {
+    // Regression: the native watch route is fire-and-converge. When the client
+    // readiness budget elapses without a native error, the launch must NOT stop
+    // the route or surface a failure — the route keeps initializing and pushes a
+    // bound (or failed) snapshot on its own. Previously this case tore the route
+    // down and swallowed the outcome, so clicking watch appeared to do nothing.
+    vi.mocked(waitForWatchRouteReadyRuntime).mockResolvedValueOnce({
+      ...structuredClone(audioRuntimeSnapshotMock),
+      inbound: { ...structuredClone(audioRuntimeSnapshotMock).inbound, streamBound: false, captureState: 'armed', lastError: null },
+    });
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        configDraft: {
+          ...state.configDraft,
+          devices: {
+            ...state.configDraft.devices,
+            outputSpeechEnabled: false,
+            virtualMicOutputEnabled: false,
+            feedbackLoopPrevention: 'none',
+          },
+          speech: {
+            ...state.configDraft.speech,
+            enabled: false,
+            outputTarget: 'speaker',
+            virtualMicOutputEnabled: false,
+          },
+        },
+      }));
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    await act(async () => {
+      (container.querySelector('button') as HTMLButtonElement | null)?.click();
+    });
+
+    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
+    expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runtimeNotifications.some((item) => item.level === 'error')).toBe(false);
   });
 
   it('does not reopen the subtitle overlay when it is already visible during watch launch', async () => {

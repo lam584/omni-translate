@@ -16,6 +16,7 @@ vi.mock('./tauri-runtime', () => ({
 
 import {
   clearSubtitleCuesRuntime,
+  prewarmCaptureRoutesRuntime,
   refreshAudioDevicesRuntime,
   showSubtitleOverlayWindow,
   startAudioRouteRuntime,
@@ -97,6 +98,30 @@ describe('audio runtime', () => {
     expect(mocks.invoke).toHaveBeenCalledWith('start_audio_route', { direction: 'inbound', config });
   });
 
+  it('skips capture pre-warm entirely outside the Tauri runtime', async () => {
+    const config = structuredClone(appConfigDraftMock);
+    await expect(prewarmCaptureRoutesRuntime(config)).resolves.toBeUndefined();
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('maps capture pre-warm to the session_v2 prewarmRoutes command', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke.mockResolvedValue({ data: { status: 'ok' }, warnings: [] });
+    const config = structuredClone(appConfigDraftMock);
+
+    await prewarmCaptureRoutesRuntime(config);
+
+    expect(mocks.invoke).toHaveBeenCalledWith('session_v2', { command: { action: 'prewarmRoutes', config } });
+  });
+
+  it('never surfaces failures from capture pre-warm', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke.mockRejectedValue(new Error('device busy'));
+    const config = structuredClone(appConfigDraftMock);
+
+    await expect(prewarmCaptureRoutesRuntime(config)).resolves.toBeUndefined();
+  });
+
   it('rejects with a timeout error when invoke does not respond in time', async () => {
     vi.useFakeTimers();
     mocks.isTauriRuntime.mockReturnValue(true);
@@ -142,15 +167,19 @@ describe('audio runtime', () => {
     ]);
   });
 
-  it('does not resolve on stream binding alone and surfaces the native zero-frame attribution', async () => {
+  it('resolves as soon as the native capture stream is bound, without waiting for the first frame', async () => {
     mocks.isTauriRuntime.mockReturnValue(true);
     mocks.invoke
       .mockResolvedValueOnce({ data: { inbound: { captureState: 'capturing', streamBound: true, framesCaptured: 0, lastError: null } } })
-      .mockResolvedValueOnce({ data: { inbound: { captureState: 'capturing', streamBound: true, framesCaptured: 0, lastError: null } } })
-      .mockResolvedValue({ data: { inbound: { captureState: 'buffering', streamBound: false, framesCaptured: 0, lastError: '系统音频采集已就绪，但在 4 秒内没有捕获到任何音频帧，设备可能已静音或被其他应用以独占模式占用。', recommendedAction: 'check-audio-source' } } });
+      .mockResolvedValue({ data: { inbound: { captureState: 'buffering', streamBound: true, framesCaptured: 0, lastError: null } } });
 
-    await expect(waitForWatchRouteReadyRuntime(1_000)).rejects.toThrow('没有捕获到任何音频帧');
-    expect(mocks.invoke.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const snapshot = await waitForWatchRouteReadyRuntime(1_000);
+
+    // Pipeline ready (bound stream) even though no audio frame has arrived yet:
+    // watch clicks routinely precede the media starting, so "ready" must not
+    // depend on the user's audio already playing.
+    expect(snapshot.inbound.streamBound).toBe(true);
+    expect(mocks.invoke.mock.calls.length).toBe(1);
   });
 
   it('fails Watch route readiness immediately when native initialization reports an error', async () => {
@@ -160,27 +189,33 @@ describe('audio runtime', () => {
     await expect(waitForWatchRouteReadyRuntime(100)).rejects.toThrow('capture unavailable');
   });
 
-  it('fails Watch route readiness when native capture never becomes usable before the deadline', async () => {
+  it('resolves as accepted-but-converging when the deadline passes without a native error, instead of tearing the route down', async () => {
     vi.useFakeTimers();
     mocks.isTauriRuntime.mockReturnValue(true);
     mocks.invoke.mockResolvedValue({ data: { inbound: { captureState: 'armed', streamBound: false, framesCaptured: 0, lastError: null } } });
 
     const readiness = waitForWatchRouteReadyRuntime(100);
-    const rejection = expect(readiness).rejects.toThrow('未在启动期限内就绪');
     await vi.advanceTimersByTimeAsync(100);
-    await rejection;
+    const snapshot = await readiness;
+
+    // The native watch route keeps converging in the background and pushes a
+    // bound/failed snapshot on its own, so a budget elapsed without a native
+    // error must NOT be a launch failure: resolve with the converging snapshot.
+    expect(snapshot.inbound).toMatchObject({ captureState: 'armed', streamBound: false, lastError: null });
 
     vi.useRealTimers();
   });
 
-  it('fails Watch route readiness when the route reports ready but no frames ever flow', async () => {
+  it('still rejects immediately when native attributes a failure before the stream binds', async () => {
     vi.useFakeTimers();
     mocks.isTauriRuntime.mockReturnValue(true);
-    mocks.invoke.mockResolvedValue({ data: { inbound: { captureState: 'capturing', streamBound: true, framesCaptured: 0, lastError: null } } });
+    mocks.invoke
+      .mockResolvedValueOnce({ data: { inbound: { captureState: 'armed', streamBound: false, framesCaptured: 0, lastError: null } } })
+      .mockResolvedValue({ data: { inbound: { captureState: 'buffering', streamBound: false, framesCaptured: 0, lastError: '系统音频采集已就绪，但在 4 秒内没有捕获到任何音频帧，设备可能已静音或被其他应用以独占模式占用。', recommendedAction: 'check-audio-source' } } });
 
-    const readiness = waitForWatchRouteReadyRuntime(100);
+    const readiness = waitForWatchRouteReadyRuntime(1_000);
     const rejection = expect(readiness).rejects.toThrow('没有捕获到任何音频帧');
-    await vi.advanceTimersByTimeAsync(100);
+    await vi.advanceTimersByTimeAsync(1_000);
     await rejection;
 
     vi.useRealTimers();

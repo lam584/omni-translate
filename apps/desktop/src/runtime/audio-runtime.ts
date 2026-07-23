@@ -115,20 +115,34 @@ export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: 
     }
     const snapshot = await desktopApiV2.session.snapshot();
     if (snapshot.inbound.lastError) throw watchRouteNotReadyError(snapshot);
-    const routeReady = snapshot.inbound.captureState === 'capturing' && snapshot.inbound.streamBound;
-    // A route that binds its stream but never captures a frame (muted device or
-    // exclusive-mode conflict) must not count as success. Keep polling until
-    // audio actually flows, or until the native flow-health watchdog attributes
-    // the silence via lastError; never resolve on stream binding alone.
-    if (routeReady && snapshot.inbound.framesCaptured > 0) return snapshot;
+    // "Ready" means the capture worker owns a bound stream (pipeline ready). We
+    // deliberately do NOT wait for the first audio frame here: `captureState`
+    // only reports 'capturing' while speech is actively detected and falls back
+    // to 'buffering' during silence, so gating on frames couples "ready" to
+    // "the user's audio is already playing loudly" and surfaces as a false
+    // launch timeout when someone clicks watch before starting the media. A
+    // stream that binds but never delivers frames (muted / exclusive-mode
+    // device) is attributed by the native flow-health watchdog and surfaces as
+    // a post-launch `lastError`, which the polling above rethrows on the next
+    // snapshot the controller observes.
+    if (snapshot.inbound.streamBound) return snapshot;
 
     const remainingMs = deadline - Date.now();
     if (remainingMs <= 0) {
-      throw new Error(
-        routeReady
-          ? '系统音频采集已就绪，但启动期限内没有捕获到任何音频帧。请确认音频源正在播放、设备未静音，且未被其他应用独占。'
-          : '系统音频采集未在启动期限内就绪。',
-      );
+      // Budget elapsed without a bound stream AND without a native `lastError`.
+      // The native watch route is fire-and-converge: `start_audio_route` only
+      // acknowledges the command, and the capture worker keeps initializing in
+      // the background, pushing an audio snapshot (`streamBound=true`) once the
+      // stream binds, or a `lastError` if it ultimately fails. Both reach the
+      // store through the global audio-snapshot event listener, so we must NOT
+      // treat "accepted but not bound yet" as a launch failure and let the caller
+      // tear the route down — doing so killed watch mode whenever readiness took
+      // a little longer than the client budget (which is what made clicking watch
+      // appear to do nothing). Resolve with the latest, still-converging snapshot
+      // and let the native push events drive the UI to capturing (or surface the
+      // error). This is deliberately not a longer timeout: the budget is
+      // unchanged, only its no-error outcome is now non-destructive.
+      return snapshot;
     }
     await new Promise<void>((resolve) => window.setTimeout(resolve, Math.min(WATCH_ROUTE_READY_POLL_MS, remainingMs)));
   }
@@ -150,6 +164,21 @@ export async function preconnectOmniRealtimeRuntime(config: AppConfigDraft): Pro
 export async function cancelOmniPreconnectRuntime(): Promise<AudioRuntimeSnapshot> {
   if (!isTauriRuntime()) return audioRuntimeSnapshotMock;
   return invokeAudioWithTimeout(() => desktopApiV2.session.cancelPreconnect(), '取消 Omni 预连接', OMNI_PRECONNECT_TIMEOUT_MS);
+}
+
+/**
+ * Best-effort idle-time pre-open of capture devices so a later route start only
+ * has to `start_stream`. Shared by watch and conversation modes; a no-op outside
+ * the Tauri runtime. Failures never propagate — this only speeds up a later
+ * click and must never block or fail startup.
+ */
+export async function prewarmCaptureRoutesRuntime(config: AppConfigDraft): Promise<void> {
+  if (!isTauriRuntime()) return;
+  try {
+    await desktopApiV2.session.prewarmRoutes(config);
+  } catch {
+    // Warming is purely an optimization; ignore failures and fall back to cold start.
+  }
 }
 
 export async function stopAudioRouteRuntime(direction: 'inbound' | 'outbound'): Promise<AudioRuntimeSnapshot> {

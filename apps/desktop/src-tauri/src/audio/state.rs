@@ -8,6 +8,7 @@ use super::contracts::{
 use super::echo_cancel::EchoReferenceBuffer;
 use super::live_session_events::LiveSessionEventBuffer;
 
+use super::engine::CaptureRouteWarmer;
 use super::omni::OmniHandle;
 use super::stt::SttHandle;
 use super::time_utils::{ms_marker, unix_ms};
@@ -56,6 +57,7 @@ pub struct AudioStateStore {
     omni_sessions: OmniSessionStore,
     audio_cache: AudioCacheStore,
     echo_buffer: Mutex<EchoReferenceBuffer>,
+    warmer: CaptureRouteWarmer,
     pub live_session_events: LiveSessionEventBuffer,
 }
 
@@ -74,8 +76,15 @@ impl AudioStateStore {
             omni_sessions: OmniSessionStore::new(),
             audio_cache: AudioCacheStore::new(),
             echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
+            warmer: CaptureRouteWarmer::new(),
             live_session_events: LiveSessionEventBuffer::new(),
         }
+    }
+
+    /// Shared pre-warmer that pre-opens capture devices during idle time so a
+    /// later `start_route` only has to `start_stream`.
+    pub(crate) fn warmer(&self) -> &CaptureRouteWarmer {
+        &self.warmer
     }
 
     pub fn snapshot(&self) -> AudioRuntimeSnapshot {

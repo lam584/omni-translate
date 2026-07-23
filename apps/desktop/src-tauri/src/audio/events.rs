@@ -172,6 +172,22 @@ pub fn refresh_audio_devices(
     AudioSessionSupervisor::new(app, &state).refresh_devices()
 }
 
+/// Best-effort idle-time pre-open of capture devices so a later route start only
+/// has to `start_stream`. Both directions are warmed from one call so watch mode
+/// (inbound) and conversation mode (inbound + outbound) share the same warmer;
+/// virtual-driver inbound is skipped by the warmer since it flows through the
+/// Bridge pipe. Never blocks the caller and never surfaces failures.
+pub fn prewarm_capture_routes(
+    app: AppHandle,
+    config: Value,
+) -> Result<AudioRuntimeSnapshot, String> {
+    let state = app.state::<AudioStateStore>();
+    for direction in ["inbound", "outbound"] {
+        state.warmer().prewarm(&app, direction, &config);
+    }
+    Ok(state.snapshot())
+}
+
 include!("events/realtime_session.rs");
 
 include!("events/route_orchestrator.rs");

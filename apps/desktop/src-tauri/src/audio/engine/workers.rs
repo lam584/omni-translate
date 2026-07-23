@@ -40,6 +40,41 @@ fn run_route_worker(
         );
     }
 
+    let initialized = initialize_capture_route(&app, direction, &spec)?;
+    if let Some(ref flag) = init_done {
+        flag.store(true, Ordering::Relaxed);
+    }
+    if initialized.init_elapsed.as_secs() >= 2 {
+        diag_log_detail(
+            &app,
+            "audio",
+            "info",
+            format!(
+                "设备初始化完成（耗时 {:.1}s）",
+                initialized.init_elapsed.as_secs_f64(),
+            ),
+            format!(
+                "direction={} device={}",
+                direction, initialized.effective_device_id
+            ),
+        );
+    }
+
+    run_capture_loop(app, store, direction, spec, initialized, stop_rx, stt_sender)
+}
+
+/// Runs the capture loop for an already-initialized WASAPI route. Shared by the
+/// cold-start worker and the pre-warmed route activation path so there is a
+/// single owner of `start_stream` plus the flow-health capture loop.
+fn run_capture_loop(
+    app: AppHandle,
+    store: &AudioStateStore,
+    direction: &str,
+    spec: RouteSpec,
+    initialized: InitializedCaptureRoute,
+    stop_rx: mpsc::Receiver<()>,
+    stt_sender: Option<mpsc::Sender<Vec<u8>>>,
+) -> Result<(), String> {
     let InitializedCaptureRoute {
         _device,
         effective_device_id,
@@ -48,20 +83,8 @@ fn run_route_worker(
         event_handle,
         buffer_frame_count,
         desired_format,
-        init_elapsed,
-    } = initialize_capture_route(&app, direction, &spec)?;
-    if let Some(ref flag) = init_done {
-        flag.store(true, Ordering::Relaxed);
-    }
-    if init_elapsed.as_secs() >= 2 {
-        diag_log_detail(
-            &app,
-            "audio",
-            "info",
-            format!("设备初始化完成（耗时 {:.1}s）", init_elapsed.as_secs_f64(),),
-            format!("direction={} device={}", direction, effective_device_id),
-        );
-    }
+        init_elapsed: _,
+    } = initialized;
 
     let mut sample_queue: VecDeque<u8> = VecDeque::with_capacity(
         100 * desired_format.get_blockalign() as usize * (1024 + 2 * buffer_frame_count as usize),

@@ -248,12 +248,12 @@ impl SentenceSplitter {
             committed_preview: if self.committed.len() <= 200 {
                 self.committed.clone()
             } else {
-                format!("{}...(truncated)", &self.committed[..200])
+                format!("{}...(truncated)", crate::audio::str_utils::truncate_chars(&self.committed, 200))
             },
             buffer_preview: if self.buffer.len() <= 200 {
                 self.buffer.clone()
             } else {
-                format!("{}...(truncated)", &self.buffer[..200])
+                format!("{}...(truncated)", crate::audio::str_utils::truncate_chars(&self.buffer, 200))
             },
             pending_ms,
             context_sentences: self.context.len(),

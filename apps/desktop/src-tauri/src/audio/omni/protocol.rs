@@ -32,7 +32,7 @@ fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
         cue_id: format!("omni-reconnecting-{}", unix_ms()),
         route_direction: "inbound".to_string(),
         source_text: format!(
-            "[Omni] 姝ｅ湪閲嶆柊杩炴帴瀹炴椂缈昏瘧鏈嶅姟 (绗?{}/{})...",
+            "[Omni] 正在重新连接实时翻译服务 (第 {}/{})...",
             attempt, OMNI_RECONNECT_MAX_RETRIES
         ),
         display_source_text: String::new(),
@@ -116,7 +116,7 @@ fn check_vad_warning(
                 "omni",
                 "warning",
                 format!(
-                    "[VAD] 灏氭棤 VAD 浜嬩欢锛堝凡绛夊緟 {}s, 宸插彂閫?{} 鍧楅煶棰? {} 瀛楄妭, VAD 浜嬩欢璁℃暟={})",
+                    "[VAD] 尚无 VAD 事件（已等待 {}s, 已发送 {} 块音频, {} 字节, VAD 事件计数={})",
                     elapsed.as_secs(),
                     chunk_count,
                     buffer_size,
@@ -334,7 +334,7 @@ fn handle_response_done(
             );
         } else if !pending_source_text.is_empty() {
             let src_preview = if pending_source_text.len() > 200 {
-                format!("{}...", &pending_source_text[..200])
+                format!("{}...", crate::audio::str_utils::truncate_chars(pending_source_text, 200))
             } else {
                 pending_source_text.clone()
             };
@@ -359,7 +359,7 @@ fn handle_response_done(
                 "omni",
                 "info",
                 format!(
-                    "[EVENT] response.done 鈫?ST_SOURCE_ONLY{st_flag} cue_id={cue_id} src=\"{src_preview}\" src_len={source_len} cue_state=[{cue_state}] (缈昏瘧鐣欑粰 subtitle_translate worker)"
+                    "[EVENT] response.done → ST_SOURCE_ONLY{st_flag} cue_id={cue_id} src=\"{src_preview}\" src_len={source_len} cue_state=[{cue_state}] (翻译留给 subtitle_translate worker)"
                 ),
             );
         } else if should_use_native_output_fallback(
@@ -390,7 +390,7 @@ fn handle_response_done(
                 app,
                 "omni",
                 "warning",
-                format!("[EVENT] response.done 鈫?SKIP{st_flag} cue_id={cue_id} 婧愭枃鏈负绌猴紒"),
+                format!("[EVENT] response.done → SKIP{st_flag} cue_id={cue_id} 源文本为空！"),
             );
         }
     } else if !pending_translated_text.is_empty() {
@@ -406,13 +406,13 @@ fn handle_response_done(
             "omni",
             "info",
             format!(
-                "[EVENT] response.done 鈫?COMMIT{st_flag} cue_id={cue_id} source_len={source_len} translated_len={translated_len} translated=\"{}\"",
+                    "[EVENT] response.done → COMMIT{st_flag} cue_id={cue_id} source_len={source_len} translated_len={translated_len} translated=\"{}\"",
                 pending_translated_text
             ),
         );
     } else if !pending_source_text.is_empty() {
         let src_preview = if pending_source_text.len() > 150 {
-            format!("{}...", &pending_source_text[..150])
+            format!("{}...", crate::audio::str_utils::truncate_chars(pending_source_text, 150))
         } else {
             pending_source_text.clone()
         };
@@ -422,7 +422,7 @@ fn handle_response_done(
             "omni",
             "info",
             format!(
-                "[EVENT] response.done 鈫?COMMIT(浠呮簮鏂囨湰, 鏃犵炕璇?{st_flag} cue_id={cue_id} src=\"{src_preview}\" src_len={source_len} translated_len={translated_len}"
+                    "[EVENT] response.done → COMMIT(仅源文本, 无翻译){st_flag} cue_id={cue_id} src=\"{src_preview}\" src_len={source_len} translated_len={translated_len}"
             ),
         );
     } else {
@@ -431,7 +431,7 @@ fn handle_response_done(
             "omni",
             "warning",
             format!(
-                "[EVENT] response.done 鈫?SKIP{st_flag} cue_id={cue_id} 婧愭枃鏈拰缈昏瘧鏂囨湰鍧囦负绌?"
+                "[EVENT] response.done → SKIP{st_flag} cue_id={cue_id} 源文本和翻译文本均为空"
             ),
         );
     }
@@ -439,7 +439,7 @@ fn handle_response_done(
         app,
         "omni",
         "debug",
-        "[STATE] 閲嶇疆: current_cue_id=None, pending_source_text cleared, pending_translated_text cleared".to_string(),
+        "[STATE] 重置: current_cue_id=None, pending_source_text cleared, pending_translated_text cleared".to_string(),
     );
     pending_source_text.clear();
     pending_translated_text.clear();

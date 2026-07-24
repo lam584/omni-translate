@@ -47,6 +47,8 @@ const SPEECH_THRESHOLD_DB: f32 = -32.0;
 const SILENCE_HOLD_CHUNKS: usize = 6;
 const ECHO_CANCEL_DELAY_SAMPLES: usize = 9_600;
 const BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS: u64 = 15;
+const BRIDGE_SOURCE_PIPE_RETRY_MS: u64 = 250;
+const DEVICE_FALLBACK_DELAY_MS: u64 = 500;
 // Once a route reports ready (stream bound + capturing), real audio frames must
 // begin flowing within this window. A muted device or an exclusive-mode conflict
 // binds the stream but never delivers frames; that must surface as an
@@ -966,6 +968,12 @@ mod tests {
             .expect("stall error should carry a recommended action");
         assert!(!message.trim().is_empty());
         assert_eq!(action, "check-audio-source");
+    }
+
+    #[test]
+    fn inbound_loopback_waits_for_media_instead_of_failing_the_watch_route() {
+        assert!(!should_fail_on_initial_frame_stall("inbound"));
+        assert!(should_fail_on_initial_frame_stall("outbound"));
     }
 
     #[test]

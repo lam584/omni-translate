@@ -648,7 +648,6 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
   });
 
   const tauriDetected = isTauriRuntime();
-  console.log('[omni][desktop-runtime] bootstrapDesktopRuntimeBridge 开始，isTauriRuntime=', tauriDetected);
 
   // Step 0: detect runtime
   markStep(onStep, 'detect-runtime', 'active');
@@ -710,7 +709,6 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
   let ipcOk = false;
   try {
     const pingElapsedMs = await pingDesktopRuntime();
-    console.log('[omni][desktop-runtime] debug_ipc_ping 成功:', `${pingElapsedMs}ms`);
     ipcOk = true;
     // IPC is proven ready — it is now safe to mirror bootstrap steps into the
     // native diagnostics log so backend app.log reflects frontend startup.

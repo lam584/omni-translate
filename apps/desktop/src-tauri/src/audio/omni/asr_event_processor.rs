@@ -151,7 +151,7 @@ impl OmniAsrEventProcessor {
                     "omni",
                     "trace",
                     format!(
-                        "[EVENT] transcription.delta 鈫?cue_id={cue_id_str} text=\"{text_val}\" stash=\"{stash}\" pending=\"{pending_source_text}\""
+                        "[EVENT] transcription.delta → cue_id={cue_id_str} text=\"{text_val}\" stash=\"{stash}\" pending=\"{pending_source_text}\""
                     ),
                 );
             }
@@ -226,7 +226,7 @@ impl OmniAsrEventProcessor {
                         "omni",
                         "info",
                         format!(
-                            "[EVENT] transcription.completed 鈫?cue_id={cue_id_str} source=\"{source}\""
+                            "[EVENT] transcription.completed → cue_id={cue_id_str} source=\"{source}\""
                         ),
                     );
                 }

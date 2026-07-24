@@ -42,6 +42,7 @@ type SceneSessionControllerOptions = {
 type BusyActionRunner = (action: 'watch-start' | 'conversation-start' | 'stop', task: () => Promise<void>) => Promise<void>;
 
 type SceneLaunchOptions = {
+  launchAttemptId: string;
   mode: SceneMode;
   configDraft: AppConfigDraft;
   audioSnapshot: AudioRuntimeSnapshot;
@@ -300,7 +301,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
   };
 
   const launchScene = async (options: SceneLaunchOptions) => {
-    const { mode } = options;
+    const { launchAttemptId, mode } = options;
     if ([options.audioSnapshot.inbound.captureState, options.audioSnapshot.outbound.captureState].includes('stopping')) {
       controller.pushNotification({ id: `scene-launch-stopping-${Date.now()}`, level: 'warning', source: 'session', message: '正在停止上一条链路，请稍后再启动新场景。', emittedAt: new Date().toISOString() });
       return;
@@ -355,6 +356,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
               snapshot = await waitForWatchRouteReadyRuntime(launchTimeoutMs, launchAbortController.signal);
               controller.setAudioSnapshot(snapshot);
               appendFrontendDiagnosticsLog('runtime', 'info', '[WatchLaunch] native route ready', stringifyRedacted({
+                launchAttemptId,
                 captureState: snapshot.inbound.captureState,
                 streamBound: snapshot.inbound.streamBound,
                 routeId: snapshot.inbound.routeId,
@@ -388,6 +390,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           onStageStart: (stage) => {
             launchStage = stage;
             appendFrontendDiagnosticsLog('runtime', 'info', '[SceneLaunch] stage start', stringifyRedacted({
+              launchAttemptId,
               mode,
               stage,
               elapsedMs: Date.now() - launchStartedAt,
@@ -412,7 +415,8 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         } else {
           await withSceneLaunchTimeout(launchOperation, launchTimeoutMs, launchTimeoutMessage, async () => {
             launchTimedOut = true;
-            appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] timeout', stringifyRedacted({
+          appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] timeout', stringifyRedacted({
+              launchAttemptId,
               mode,
               stage: launchStage,
               elapsedMs: Date.now() - launchStartedAt,
@@ -434,6 +438,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           });
         }
         appendFrontendDiagnosticsLog('runtime', 'info', '[SceneLaunch] ready', stringifyRedacted({
+          launchAttemptId,
           mode,
           elapsedMs: Date.now() - launchStartedAt,
           stages: plan.stages,

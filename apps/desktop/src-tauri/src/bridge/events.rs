@@ -24,6 +24,10 @@ use super::installer::{apply_driver_probe, probe_driver, run_elevated_driver_ope
 use super::ipc::{apply_query, bridge_cli_path, BridgeIpcClient, BridgeProcessSupervisor};
 use super::state::BridgeStateStore;
 
+const DRIVER_STATE_STALE_THRESHOLD: Duration = Duration::from_secs(300);
+const BRIDGE_STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
+const BRIDGE_POST_KILL_SETTLE_MS: u64 = 50;
+
 fn extract_driver_string(config: &Value, pointer: &str, default: &str) -> String {
     config
         .pointer(pointer)
@@ -263,7 +267,7 @@ fn should_probe_driver_on_startup_refresh(snapshot: &BridgeRuntimeSnapshot) -> b
             let age = SystemTime::now()
                 .duration_since(meta.modified().unwrap_or(SystemTime::UNIX_EPOCH))
                 .unwrap_or_default();
-            age > std::time::Duration::from_secs(300)
+            age > DRIVER_STATE_STALE_THRESHOLD
         }
         Err(_) => true,
     };
@@ -339,13 +343,12 @@ fn start_bridge_from_snapshot(
         });
     }
 
-    let startup_timeout = Duration::from_secs(8);
-    let ready_received = ready_rx.recv_timeout(startup_timeout).is_ok();
+    let ready_received = ready_rx.recv_timeout(BRIDGE_STARTUP_TIMEOUT).is_ok();
 
     if !ready_received {
         let _ = child.kill();
         let _ = child.wait();
-        thread::sleep(Duration::from_millis(50));
+        thread::sleep(Duration::from_millis(BRIDGE_POST_KILL_SETTLE_MS));
         let stderr_output = stderr_lines
             .lock()
             .map(|lines| lines.join("\n"))
@@ -364,14 +367,14 @@ fn start_bridge_from_snapshot(
             app,
             "warning",
             "Bridge Service 未在预期时间内返回就绪信号。",
-            Some(format!("timeoutMs={}", startup_timeout.as_millis())),
+            Some(format!("timeoutMs={}", BRIDGE_STARTUP_TIMEOUT.as_millis())),
         );
         record_bridge_start_error(
             bridge_state,
             "bridge.start-timeout",
             format!(
                 "Bridge Service startup timed out after {} seconds.{}",
-                startup_timeout.as_secs(),
+                BRIDGE_STARTUP_TIMEOUT.as_secs(),
                 if stderr_output.is_empty() {
                     String::new()
                 } else {
@@ -384,7 +387,7 @@ fn start_bridge_from_snapshot(
         );
         return Err(format!(
             "Bridge Service 未在 {} 秒内就绪。{}",
-            startup_timeout.as_secs(),
+            BRIDGE_STARTUP_TIMEOUT.as_secs(),
             if stderr_output.is_empty() {
                 String::new()
             } else {
@@ -476,7 +479,7 @@ pub fn refresh_bridge_runtime(
         emit_runtime_snapshot(&app, &runtime_state).map_err(|error| error.to_string())?;
     }
     if !skip_probe {
-            let probe_result = probe_driver(&snapshot, false);
+        let probe_result = probe_driver(&snapshot, false);
         bridge_state.update_snapshot(|current| match probe_result {
             Ok(probe) => apply_driver_probe(current, probe),
             Err(error) => {

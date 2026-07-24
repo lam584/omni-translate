@@ -69,6 +69,7 @@ const OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 500;
 const OMNI_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;
 const OMNI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
 const OMNI_ASR_SILENCE_GRACE_CHUNKS: u32 = 60;
+const OMNI_INTER_CHUNK_THROTTLE_MS: u64 = 18;
 const PROVIDER_INPUT_PCM_DUMP_MAX_SAMPLES: usize = 16_000 * 90;
 
 struct ProviderInputPcmDump {
@@ -176,10 +177,10 @@ impl RealtimeAudioMode {
             Some("server_vad") => Ok(Self::ServerVad),
             Some("semantic_vad") => Ok(Self::SemanticVad),
             Some("gemini_auto_activity") | Some("gemini_manual_activity") => Err(format!(
-                "妯″瀷 {model} 閰嶇疆浜?Gemini 瀹炴椂璇煶妯″紡锛屼絾褰撳墠鐪嬬墖妯″紡鐨?Omni/DashScope 瀹炴椂閾捐矾涓嶆敮鎸?Gemini Live 鍗忚"
+                "模型 {model} 配置了 Gemini 实时语音模式，但当前看片模式的 Omni/DashScope 实时链路不支持 Gemini Live 协议"
             )),
             Some(other) => Err(format!(
-                "妯″瀷 {model} 閰嶇疆浜嗕笉鏀寔鐨勫疄鏃惰闊虫ā寮? {other}"
+                "模型 {model} 配置了不支持的实时语音模式: {other}"
             )),
             None => Ok(default_realtime_audio_mode(model)),
         }
@@ -701,7 +702,7 @@ mod tests {
                     match t {
                         "input_audio_buffer.speech_started" => {
                             got_speech_started = true;
-                            println!("[TEST] 鉁?speech_started");
+                            println!("[TEST] ✅ speech_started");
                         }
                         "conversation.item.input_audio_transcription.delta" => {
                             let txt = evt["text"].as_str().unwrap_or("");
@@ -710,7 +711,7 @@ mod tests {
                         }
                         "conversation.item.input_audio_transcription.completed" => {
                             source = evt["transcript"].as_str().unwrap_or("").to_string();
-                            println!("[TEST] 鉁?src_completed: {source}");
+                            println!("[TEST] ✅ src_completed: {source}");
                         }
                         "response.audio_transcript.delta" => {
                             let d = evt["delta"].as_str().unwrap_or("");
@@ -722,16 +723,16 @@ mod tests {
                             if !tr.is_empty() {
                                 translated = tr.to_string();
                             }
-                            println!("[TEST] 鉁?trans_done: {translated}");
+                            println!("[TEST] ✅ trans_done: {translated}");
                         }
                         "response.done" => {
-                            println!("[TEST] 鉁?response.done");
+                            println!("[TEST] ✅ response.done");
                             break;
                         }
                         "error" => {
                             let err = &evt["error"];
                             println!(
-                                "[TEST] 鉂?error: {}",
+                                "[TEST] ❌ error: {}",
                                 err["message"].as_str().unwrap_or("?")
                             );
                             break;

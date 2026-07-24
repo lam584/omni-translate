@@ -71,7 +71,7 @@ fn process_translation_cues(
                     "warning",
                     format!(
                         "[CUE] cue_id={} stable text has no translation after {:?}; committing source only",
-                        &cue.cue_id[..16.min(cue.cue_id.len())],
+                        crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
                         cue_state.source_stable_since.elapsed()
                     ),
                 );
@@ -93,7 +93,7 @@ fn process_translation_cues(
                 "debug",
                 format!(
                     "[FEED] cue_id={} src_len={} src=\"{}\" splitter_before(committed={}B buffer={}B pending_ms={:?})",
-                    &cue.cue_id[..16.min(cue.cue_id.len())],
+                    crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
                     source_text.len(),
                     preview(&source_text, 150),
                     diag_before.committed_len,
@@ -114,7 +114,7 @@ fn process_translation_cues(
                 format!(
                     "[REVISION_RESET] cue_id={} cue_id_short={} revision={} old_committed=\"{}\" new_source=\"{}\"",
                     cue.cue_id,
-                    &cue.cue_id[..16.min(cue.cue_id.len())],
+                    crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
                     cue_state.revision,
                     preview(&feed_result.previous_committed, 120),
                     preview(&source_text, 120)
@@ -133,7 +133,7 @@ fn process_translation_cues(
                     "debug",
                     format!(
                         "[FEED_RESULT] cue_id={} empty splitter_after(committed={}B buffer={}B pending_ms={:?})",
-                        &cue.cue_id[..16.min(cue.cue_id.len())],
+                        crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
                         diag_after.committed_len,
                         diag_after.buffer_len,
                         diag_after.pending_ms
@@ -167,7 +167,7 @@ fn process_translation_cues(
             "debug",
             format!(
                 "[FEED_RESULT] cue_id={} returned {} sentence(s): {}",
-                &cue.cue_id[..16.min(cue.cue_id.len())],
+                crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
                 results.len(),
                 result_summary.join(" | ")
             ),
@@ -225,7 +225,7 @@ fn process_translation_cues(
                 "debug",
                 format!(
                     "[LLM_CALL] cue_id={} sentence_len={} prompt_len={} target_lang={} forced={} replacement={} prompt=\"{}\"",
-                    &cue.cue_id[..16.min(cue.cue_id.len())],
+                    crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
                     result.sentence.len(),
                     full_prompt.len(),
                     target_language,
@@ -266,7 +266,7 @@ fn process_translation_cues(
                         "debug",
                         format!(
                             "[FORCED_SKIP] cue_id={} scheduler_full (in_flight={} queued={}), skipping forced partial translation to reserve slots for final sentences",
-                            &cue.cue_id[..16.min(cue.cue_id.len())],
+                            crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
                             scheduler.in_flight.len(),
                             scheduler.queued.len(),
                         ),
@@ -335,10 +335,11 @@ impl SubtitleTranslationWorker {
     let (translation_tx, translation_rx) = mpsc::channel::<TranslationUpdate>();
     let mut scheduler = TranslationScheduler::default();
     let mut written_final_keys: HashSet<String> = HashSet::new();
+    let mut wake_update: Option<TranslationUpdate> = None;
 
     loop {
         loop_count += 1;
-        while let Ok(update) = translation_rx.try_recv() {
+        for update in wake_update.take().into_iter().chain(translation_rx.try_iter()) {
             match update {
                 TranslationUpdate::Delta(delta) => {
                     handle_translation_delta(&app, store, delta, &mut cue_states);
@@ -405,7 +406,7 @@ impl SubtitleTranslationWorker {
                 .map(|cue| {
                     format!(
                         "{}(src={}B tr={}B empty={})",
-                        &cue.cue_id[..16.min(cue.cue_id.len())],
+                        crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
                         cue.source_text.len(),
                         cue.translated_text.len(),
                         cue.translated_text.is_empty()
@@ -484,7 +485,10 @@ impl SubtitleTranslationWorker {
             );
         }
 
-        thread::sleep(Duration::from_millis(POLL_INTERVAL_MS));
+        wake_update = match translation_rx.recv_timeout(Duration::from_millis(POLL_INTERVAL_MS)) {
+            Ok(update) => Some(update),
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => None,
+        };
     }
 
         Ok(())

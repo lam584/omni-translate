@@ -53,4 +53,19 @@ describe('buildSceneLaunchPlan', () => {
     expect(buildWatchFallbackPlan({ ...base, isOmniModel: true, speechPatch: { enabled: true } }).stages)
       .toEqual(['inbound-route', 'speech-dispatch']);
   });
+
+  it('maps the launch attempt id onto the native inbound route id', () => {
+    const plan = buildSceneLaunchPlan({
+      launchAttemptId: 'watch-attempt-42',
+      mode: 'watch',
+      configDraft: structuredClone(appConfigDraftMock),
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      isOmniModel: true,
+      speechPatch: { enabled: true },
+      secondarySubtitleTranslationEnabled: false,
+    });
+
+    expect(plan.config.devices.inboundRoute.routeId).toBe('audio-route-inbound-watch-attempt-42');
+  });
 });

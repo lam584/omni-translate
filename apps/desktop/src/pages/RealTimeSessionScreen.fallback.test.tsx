@@ -14,11 +14,12 @@ type ControllerOptions = {
 };
 
 let capturedOptions: ControllerOptions | null = null;
+const launchSceneMock = vi.hoisted(() => vi.fn());
 
 vi.mock('./session/useSceneSessionController', () => ({
   useSceneSessionController: (options: ControllerOptions) => {
     capturedOptions = options;
-    return { ensureBridgeReady: vi.fn(), launchScene: vi.fn(), stopAll: vi.fn() };
+    return { ensureBridgeReady: vi.fn(), launchScene: launchSceneMock, stopAll: vi.fn() };
   },
 }));
 
@@ -34,6 +35,8 @@ describe('RealTimeSessionScreen watch fallback confirmation', () => {
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     capturedOptions = null;
+    launchSceneMock.mockReset();
+    launchSceneMock.mockResolvedValue(undefined);
 
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
@@ -136,5 +139,62 @@ describe('RealTimeSessionScreen watch fallback confirmation', () => {
 
     await expect(decision as unknown as Promise<boolean>).resolves.toBe(false);
     expect(container.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it('keeps Watch clickable when only the idle provider preconnect is connected', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      audioRuntimeSnapshot: {
+        ...state.audioRuntimeSnapshot,
+        sttConnected: true,
+        inbound: { ...state.audioRuntimeSnapshot.inbound, streamBound: false },
+        outbound: { ...state.audioRuntimeSnapshot.outbound, streamBound: false },
+        speech: { ...state.audioRuntimeSnapshot.speech, dispatchState: 'idle' },
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const [watchButton, conversationButton] = container.querySelectorAll<HTMLButtonElement>('.provider-list button');
+    const stopButton = container.querySelector<HTMLButtonElement>('.control-toolbar button');
+    expect(watchButton?.disabled).toBe(false);
+    expect(conversationButton?.disabled).toBe(false);
+    expect(stopButton?.disabled).toBe(true);
+
+    await act(async () => {
+      watchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(launchSceneMock).toHaveBeenCalledTimes(1);
+    expect(launchSceneMock).toHaveBeenCalledWith(expect.objectContaining({
+      launchAttemptId: expect.stringMatching(/^watch-/),
+      mode: 'watch',
+    }));
+  });
+
+  it('shows a visible failure when the click handler rejects unexpectedly', async () => {
+    launchSceneMock.mockRejectedValueOnce(new Error('unexpected controller failure'));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <RealTimeSessionPage />
+        </MemoryRouter>,
+      );
+    });
+    const watchButton = container.querySelector<HTMLButtonElement>('.provider-list button');
+
+    await act(async () => {
+      watchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('unexpected controller failure');
   });
 });

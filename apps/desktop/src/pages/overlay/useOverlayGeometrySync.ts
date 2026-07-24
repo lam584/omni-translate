@@ -52,9 +52,16 @@ export function useOverlayGeometrySync(options: Options) {
     const body = document.body;
     const appRoot = document.getElementById('root');
     const previous = [root.getAttribute('style'), body.getAttribute('style'), appRoot?.getAttribute('style') ?? null];
-    root.style.background = 'transparent'; root.style.overflow = 'hidden';
-    body.style.background = 'transparent'; body.style.overflow = 'hidden'; body.style.margin = '0';
-    if (appRoot) { appRoot.style.background = 'transparent'; appRoot.style.minHeight = '0'; appRoot.style.width = 'fit-content'; }
+    root.style.background = 'transparent';
+    root.style.overflow = 'hidden';
+    body.style.background = 'transparent';
+    body.style.overflow = 'hidden';
+    body.style.margin = '0';
+    if (appRoot) {
+      appRoot.style.background = 'transparent';
+      appRoot.style.minHeight = '0';
+      appRoot.style.width = 'fit-content';
+    }
     let disposed = false;
     if (isTauriRuntime()) {
       const applyPosition = async () => {
@@ -65,7 +72,8 @@ export function useOverlayGeometrySync(options: Options) {
         const [windowSize, position] = await Promise.all([windowHandle.outerSize(), windowHandle.outerPosition()]);
         const availableWidth = Math.max(0, monitor.workArea.size.width - windowSize.width);
         const availableHeight = Math.max(0, monitor.workArea.size.height - windowSize.height);
-        const requestedX = clamp(overlayX, 0, 100); const requestedY = clamp(overlayY, 0, 100);
+        const requestedX = clamp(overlayX, 0, 100);
+        const requestedY = clamp(overlayY, 0, 100);
         if (toOverlayAxisPercent(position.x, monitor.workArea.position.x, availableWidth) === requestedX
           && toOverlayAxisPercent(position.y, monitor.workArea.position.y, availableHeight) === requestedY) return;
         await windowHandle.setPosition(new PhysicalPosition(
@@ -78,7 +86,9 @@ export function useOverlayGeometrySync(options: Options) {
     return () => {
       disposed = true;
       const restore = (element: HTMLElement, value: string | null) => value === null ? element.removeAttribute('style') : element.setAttribute('style', value);
-      restore(root, previous[0]); restore(body, previous[1]); if (appRoot) restore(appRoot, previous[2]);
+      restore(root, previous[0]);
+      restore(body, previous[1]);
+      if (appRoot) restore(appRoot, previous[2]);
     };
   }, [dragInProgressRef, overlayX, overlayY]);
 }

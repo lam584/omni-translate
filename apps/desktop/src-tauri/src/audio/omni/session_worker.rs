@@ -140,7 +140,7 @@ pub fn start_omni(
         &app,
         "omni",
         "info",
-        "姝ｅ湪鍚姩 Omni 瀹炴椂缈昏瘧...",
+        "正在启动 Omni 实时翻译...",
         format!("model={} voice={}", provider.model, voice),
     );
 
@@ -198,7 +198,7 @@ pub fn start_omni(
                     &app_handle,
                     "omni",
                     "error",
-                    format!("Omni 瀹炴椂缈昏瘧鍑洪敊: {error}"),
+                    format!("Omni 实时翻译出错: {error}"),
                     format!("model={model}"),
                 );
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);
@@ -217,7 +217,7 @@ pub fn start_omni(
                 );
             }
         })
-        .map_err(|error| format!("鏃犳硶鍚姩 Omni 绾跨▼: {error}"))?;
+        .map_err(|error| format!("无法启动 Omni 线程: {error}"))?;
 
     Ok((
         audio_tx,
@@ -310,7 +310,7 @@ fn run_omni_worker(
                 "omni",
                 "info",
                 format!(
-                    "[STOP] Omni worker 宸插仠姝? 鍏卞彂閫?{} 涓煶棰戝潡, {} 瀛楄妭",
+                    "[STOP] Omni worker 已停止, 共发送 {} 个音频块, {} 字节",
                     chunk_count, buffer_size
                 ),
             );
@@ -501,21 +501,21 @@ pub(super) fn reconnect_socket(
 {
     if provider.kind != "dashscope" {
         return Err(format!(
-            "Omni 閲嶈繛浠呮敮鎸?dashscope provider锛屽綋鍓嶄负 {} (provider_id={})",
+            "Omni 重连仅支持 dashscope provider，当前为 {} (provider_id={})",
             provider.kind, provider.provider_id
         ));
     }
     let ws_url = to_websocket_url(&provider.base_url, &provider.model)
-        .map_err(|error| format!("鏃犳硶鏋勫缓 WebSocket URL: {}", error.message))?;
+        .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
     let mut request = ws_url
         .as_str()
         .into_client_request()
-        .map_err(|error| format!("鏃犳硶鍒涘缓 WebSocket 璇锋眰: {error}"))?;
+        .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
     apply_ws_auth(provider, request.headers_mut())
-        .map_err(|error| format!("鏃犳硶搴旂敤璁よ瘉澶? {}", error.message))?;
+        .map_err(|error| format!("无法应用认证头: {}", error.message))?;
 
     let (mut socket, _) =
-        connect(request).map_err(|error| format!("鏃犳硶閲嶆柊杩炴帴 Omni 鏈嶅姟: {error}"))?;
+        connect(request).map_err(|error| format!("无法重新连接 Omni 服务: {error}"))?;
     set_socket_write_timeout(&mut socket);
     set_socket_read_timeout(&mut socket);
 
@@ -528,7 +528,7 @@ pub(super) fn reconnect_socket(
     );
     socket
         .send(Message::Text(session_cfg.to_string().into()))
-        .map_err(|error| format!("鏃犳硶閲嶅彂 Omni session 閰嶇疆: {error}"))?;
+        .map_err(|error| format!("无法重发 Omni session 配置: {error}"))?;
 
     let _ = diag_log(&app, "omni", "info", "reconnected to Omni service");
     Ok(socket)

@@ -1,49 +1,33 @@
 use std::net::TcpStream;
-
 use std::sync::mpsc;
-
 use std::thread::{self, JoinHandle};
-
 use std::time::Duration;
 
 use serde_json::{json, Value};
-
 use tauri::AppHandle;
-
 use tauri::Manager;
-
 use tungstenite::{connect, Message};
-
 use tungstenite::client::IntoClientRequest;
-
 use tungstenite::stream::MaybeTlsStream;
 
 use crate::diagnostics::events::append_diagnostics_log;
-
 use crate::provider::contracts::ProviderDraftInput;
-
 use crate::provider::gateway_parts::{
     auth::apply_ws_auth,
     transport::to_websocket_url,
 };
 
 use super::contracts::SubtitleCueRuntime;
-
 use super::engine::emit_audio_snapshot;
-
 use super::state::AudioStateStore;
-
 use super::time_utils::{ms_marker, unix_ms};
 
 const ASR_MODEL: &str = "qwen3-asr-flash-realtime";
-
 const STT_RECONNECT_MAX_RETRIES: usize = 5;
-
 const STT_WRITE_TIMEOUT_SECS: u64 = 10;
 
 fn backoff_delay(retry_count: usize) -> Duration {
     let seconds = (1u64 << retry_count).min(10);
-
     Duration::from_secs(seconds)
 }
 
@@ -82,45 +66,33 @@ fn set_socket_write_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<T
 fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
     let cue = SubtitleCueRuntime {
         cue_id: format!("stt-reconnecting-{}", unix_ms()),
-
         route_direction: "inbound".to_string(),
-
         source_text: format!(
             "[STT] 正在重新连接 ASR 服务 (第 {}/{} 次)...",
             attempt, STT_RECONNECT_MAX_RETRIES
         ),
-
         display_source_text: String::new(),
         display_segments: Vec::new(),
-
         translated_text: String::new(),
-
         started_at: ms_marker(unix_ms()),
-
         ended_at: ms_marker(unix_ms()),
-
         committed: true,
     };
-
     store.push_subtitle_cue(cue);
 }
 
 pub struct SttHandle {
     pub stop_tx: mpsc::Sender<()>,
-
     #[allow(dead_code, reason = "join handle is retained for supervised shutdown on supported runners")]
     pub join_handle: JoinHandle<()>,
 }
 
 pub fn start_stt(
     app: AppHandle,
-
     store: &AudioStateStore,
-
     provider: ProviderDraftInput,
 ) -> Result<(mpsc::Sender<Vec<u8>>, SttHandle), String> {
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
-
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
     store.set_stt_connected(false, 0);
@@ -166,20 +138,13 @@ pub fn start_stt(
 
                 audio_state.push_subtitle_cue(SubtitleCueRuntime {
                     cue_id: format!("stt-error-{}", unix_ms()),
-
                     route_direction: "inbound".to_string(),
-
                     source_text: format!("[STT 错误] {error}"),
-
                     display_source_text: String::new(),
                     display_segments: Vec::new(),
-
                     translated_text: "[STT 连接断开]".to_string(),
-
                     started_at: ms_marker(unix_ms()),
-
                     ended_at: ms_marker(unix_ms()),
-
                     committed: true,
                 });
 

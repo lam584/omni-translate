@@ -17,12 +17,20 @@ import { parseRuntimeTimestampMs, useSessionElapsed } from './session/useSession
 import { useSceneSessionController } from './session/useSceneSessionController';
 import { logSceneLaunchConfig } from './session/logSceneLaunchConfig';
 import { getCueDisplaySegments } from './overlay/overlayDomain';
+import { appendFrontendDiagnosticsLog } from '../runtime/diagnostics-runtime';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | null;
 
 type WatchFallbackResolver = (subtitlesOnly: boolean) => void;
 
 const TRANSLATION_FAILED_PREFIX = '[\u7ffb\u8bd1\u5931\u8d25]';
+
+function createLaunchAttemptId(mode: SceneMode): string {
+  const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+    ? crypto.randomUUID()
+    : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  return `${mode}-${id}`;
+}
 
 function describeRuntimeError(error: unknown): string {
   if (error instanceof Error) {
@@ -301,7 +309,10 @@ function RealTimeSessionPage() {
 
   const hasSpeechActivity = audioRuntimeSnapshot.speech.dispatchState !== 'idle';
   const isSessionRunning = audioRuntimeSnapshot.inbound.streamBound || audioRuntimeSnapshot.outbound.streamBound;
-  const hasActiveChain = isSessionRunning || hasSpeechActivity || audioRuntimeSnapshot.sttConnected;
+  // sttConnected also represents the idle Omni preconnect performed during
+  // bootstrap. A ready provider socket has no route ownership and must not
+  // disable scene launch or enable Stop before a user-started chain exists.
+  const hasActiveChain = isSessionRunning || hasSpeechActivity;
   const runningMode = hasActiveChain ? configDraft.devices.routeMode : null;
   const firstTranslationAverageMs = audioRuntimeSnapshot.subtitleOverlay.firstTranslationAverageMs;
   const firstTranslationLastMs = audioRuntimeSnapshot.subtitleOverlay.firstTranslationLastMs;
@@ -357,7 +368,15 @@ function RealTimeSessionPage() {
   });
 
   const handleSceneLaunch = async (mode: SceneMode) => {
+    const launchAttemptId = createLaunchAttemptId(mode);
     setSessionLaunchProblem(null);
+    appendFrontendDiagnosticsLog('runtime', 'info', '[SceneLaunch] click accepted', JSON.stringify({
+      launchAttemptId,
+      mode,
+      sttConnected: audioRuntimeSnapshot.sttConnected,
+      inboundBound: audioRuntimeSnapshot.inbound.streamBound,
+      outboundBound: audioRuntimeSnapshot.outbound.streamBound,
+    }));
     const configurationProblem = getSceneLaunchConfigurationProblem(mode, configDraft, audioRuntimeSnapshot);
     if (configurationProblem) {
       const chinese = i18n.language.toLowerCase().startsWith('zh');
@@ -367,6 +386,11 @@ function RealTimeSessionPage() {
           ? (chinese ? '当前麦克风不可用，请在“音频路由”中重新选择输入设备。' : 'The selected microphone is unavailable. Choose an input device in Audio Routing.')
           : (chinese ? '当前系统播放设备不可用，请在“音频路由”中重新选择输出设备。' : 'The selected playback device is unavailable. Choose an output device in Audio Routing.');
       setSessionLaunchProblem(message);
+      appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] validation blocked', JSON.stringify({
+        launchAttemptId,
+        mode,
+        reason: configurationProblem,
+      }));
       return;
     }
     const { isOmniModel } = resolveVoiceModelRuntime(resolveSceneVoiceModelId(mode, configDraft));
@@ -377,8 +401,28 @@ function RealTimeSessionPage() {
       speechPatch, isOmniModel, secondarySubtitleTranslationEnabled,
     });
     await launchScene({
-      mode, configDraft, audioSnapshot: audioRuntimeSnapshot, overlayVisible: Boolean(overlayWindow?.visible),
+      launchAttemptId, mode, configDraft, audioSnapshot: audioRuntimeSnapshot, overlayVisible: Boolean(overlayWindow?.visible),
       isOmniModel, speechPatch, secondarySubtitleTranslationEnabled,
+    });
+  };
+
+  const handleSceneLaunchClick = (mode: SceneMode) => {
+    void handleSceneLaunch(mode).catch((error) => {
+      const detail = describeRuntimeError(error);
+      const message = t('session.sceneLaunchFailed', {
+        scene: resolveSceneLabel(mode),
+        stage: describeSceneLaunchStage(null),
+        error: detail,
+      });
+      setSessionLaunchProblem(message);
+      pushRuntimeNotification({
+        id: `scene-launch-handler-${mode}-${Date.now()}`,
+        level: 'error',
+        source: 'session',
+        message,
+        emittedAt: new Date().toISOString(),
+      });
+      appendFrontendDiagnosticsLog('runtime', 'error', '[SceneLaunch] click handler rejected', JSON.stringify({ mode, error: detail }));
     });
   };
 
@@ -401,13 +445,14 @@ function RealTimeSessionPage() {
             title={t('session.controlTitle')}
           />
           <div className="provider-list">
-            <button aria-pressed={runningMode === 'watch'} className={runningMode === 'watch' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null || hasActiveChain} onClick={() => void handleSceneLaunch('watch')} type="button">
+            <button aria-pressed={runningMode === 'watch'} className={runningMode === 'watch' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null || hasActiveChain} onClick={() => handleSceneLaunchClick('watch')} type="button">
               {busyAction === 'watch-start' ? t('session.starting') : t('session.watchButton')}
             </button>
-            <button aria-pressed={runningMode === 'voice-room'} className={runningMode === 'voice-room' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null || hasActiveChain} onClick={() => void handleSceneLaunch('voice-room')} type="button">
+            <button aria-pressed={runningMode === 'voice-room'} className={runningMode === 'voice-room' ? 'action-button action-button-active' : 'action-button'} disabled={busyAction !== null || hasActiveChain} onClick={() => handleSceneLaunchClick('voice-room')} type="button">
               {busyAction === 'conversation-start' ? t('session.starting') : t('session.conversationMode')}
             </button>
           </div>
+          {busyAction === 'stop' ? <p role="status">正在停止上一条链路，请稍候…</p> : null}
           {isSessionRunning && (
             <div className="session-timer">
               <AppIcon name="clock" size={14} />

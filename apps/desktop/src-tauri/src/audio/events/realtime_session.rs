@@ -283,10 +283,10 @@ pub async fn preconnect_omni_realtime(
 ) -> Result<AudioRuntimeSnapshot, String> {
     let app_for_task = app.clone();
     let mut task = tauri::async_runtime::spawn_blocking(move || {
-            let app_for_state = app_for_task.clone();
-            let state = app_for_state.state::<AudioStateStore>();
-            preconnect_omni_realtime_inner(app_for_task, &state, config)
-        });
+        let app_for_state = app_for_task.clone();
+        let state = app_for_state.state::<AudioStateStore>();
+        preconnect_omni_realtime_inner(app_for_task, &state, config)
+    });
     match tokio::time::timeout(OMNI_PRECONNECT_COMMAND_TIMEOUT, &mut task).await {
         Ok(joined) => joined.map_err(|error| error.to_string())?,
         Err(_) => {

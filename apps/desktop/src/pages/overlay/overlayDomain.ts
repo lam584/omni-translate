@@ -185,36 +185,41 @@ export function splitDisplayLines(text: string) {
     .filter(Boolean);
 }
 
+function expandExplicitSegment(
+  cueId: string,
+  segment: SubtitleDisplaySegmentRuntime,
+  segmentIndex: number,
+): OverlayDisplaySegment[] {
+  const sourceLines = splitDisplayLines(segment.sourceText);
+  const translatedLines = splitDisplayLines(segment.translatedText);
+  const lineCount = Math.max(sourceLines.length, translatedLines.length);
+  const alignedSourceLines = sourceLines.length > 0
+    ? sourceLines
+    : Array.from({ length: lineCount }, () => '');
+  const alignedTranslatedLines = translatedLines.length > lineCount
+    ? groupCaptionLines(translatedLines, lineCount)
+    : [...translatedLines, ...Array.from({ length: lineCount - translatedLines.length }, () => '')];
+
+  return Array.from({ length: lineCount }, (_, lineIndex) => ({
+    sourceText: alignedSourceLines[lineIndex] ?? '',
+    translatedText: alignedTranslatedLines[lineIndex] ?? '',
+    pending: segment.pending || (Boolean(alignedSourceLines[lineIndex]) && !alignedTranslatedLines[lineIndex]),
+    id: `${cueId}-segment-${segmentIndex}-${lineIndex}`,
+  }));
+}
+
 export function getCueDisplaySegments(cue: SubtitleCueRuntime): OverlayDisplaySegment[] {
   const rawExplicitSegments = cue.displaySegments
     ?.filter((segment) => segment.sourceText.trim().length > 0 || segment.translatedText.trim().length > 0);
-  const rawExplicitSourceLines = rawExplicitSegments?.flatMap((segment) => splitDisplayLines(segment.sourceText)) ?? [];
-  const rawExplicitTranslatedLines = rawExplicitSegments?.flatMap((segment) => splitDisplayLines(segment.translatedText)) ?? [];
   const authoritativeSourceText = cue.displaySourceText || cue.sourceText;
   const normalizedAuthoritativeSource = authoritativeSourceText.replace(/\s+/gu, '');
-  const normalizedExplicitSource = rawExplicitSourceLines.join('').replace(/\s+/gu, '');
+  const normalizedExplicitSource = rawExplicitSegments?.map((segment) => segment.sourceText).join('').replace(/\s+/gu, '') ?? '';
   const normalizedAuthoritativeTranslation = cue.translatedText.replace(/\s+/gu, '');
-  const normalizedExplicitTranslation = rawExplicitTranslatedLines.join('').replace(/\s+/gu, '');
-  const explicitSourceLines = normalizedExplicitSource === normalizedAuthoritativeSource
-    ? rawExplicitSourceLines
-    : splitDisplayLines(authoritativeSourceText);
-  const explicitTranslatedLines = normalizedExplicitTranslation === normalizedAuthoritativeTranslation
-    ? rawExplicitTranslatedLines
-    : splitDisplayLines(cue.translatedText);
-  const explicitLineCount = explicitSourceLines.length || explicitTranslatedLines.length;
-  const alignedExplicitSourceLines = explicitSourceLines.length > 0
-    ? explicitSourceLines
-    : Array.from({ length: explicitLineCount }, () => '');
-  const alignedExplicitTranslatedLines = explicitTranslatedLines.length > explicitLineCount
-    ? groupCaptionLines(explicitTranslatedLines, explicitLineCount)
-    : [...explicitTranslatedLines, ...Array.from({ length: explicitLineCount - explicitTranslatedLines.length }, () => '')];
-  const explicitSegments = rawExplicitSegments && explicitLineCount > 0
-    ? Array.from({ length: explicitLineCount }, (_, lineIndex) => ({
-        sourceText: alignedExplicitSourceLines[lineIndex],
-        translatedText: alignedExplicitTranslatedLines[lineIndex],
-        pending: !alignedExplicitTranslatedLines[lineIndex] || rawExplicitSegments.some((segment) => segment.pending),
-        id: `${cue.cueId}-segment-${lineIndex}`,
-      }))
+  const normalizedExplicitTranslation = rawExplicitSegments?.map((segment) => segment.translatedText).join('').replace(/\s+/gu, '') ?? '';
+  const explicitSegments = rawExplicitSegments
+    && normalizedExplicitSource === normalizedAuthoritativeSource
+    && normalizedExplicitTranslation === normalizedAuthoritativeTranslation
+    ? rawExplicitSegments.flatMap((segment, segmentIndex) => expandExplicitSegment(cue.cueId, segment, segmentIndex))
     : undefined;
 
   if (explicitSegments && explicitSegments.length > 0) {

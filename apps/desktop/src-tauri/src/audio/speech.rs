@@ -21,6 +21,7 @@ use super::engine::emit_audio_snapshot;
 use super::state::{AudioRouteHandle, AudioStateStore, CachedTtsAudio, CapturedSegmentAudio};
 
 const SPEECH_POLL_INTERVAL_MS: u64 = 120;
+const SPEECH_DISPATCH_IDLE_INTERVAL_MS: u64 = 40;
 const MAX_PROCESSED_CUES: usize = 32;
 const PROMPT_TONE_MS: u32 = 90;
 

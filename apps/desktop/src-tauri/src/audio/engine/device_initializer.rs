@@ -146,7 +146,7 @@ fn initialize_audio_client(
                         ),
                         format!("direction={}", direction),
                     );
-                    thread::sleep(Duration::from_millis(500));
+                    thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
                     return ClientInitialization::RetryFallback;
                 }
                 return ClientInitialization::Failed(classified);
@@ -217,7 +217,7 @@ pub(super) fn initialize_capture_route(
             Err(RetryAction::DeviceFallback) => {
                 drop(device);
                 drop(enumerator);
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
                 continue 'outer;
             }
             Err(RetryAction::Fail(msg)) => break Err(msg),
@@ -249,7 +249,7 @@ pub(super) fn initialize_capture_route(
                 drop(audio_client);
                 drop(device);
                 drop(enumerator);
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
                 continue 'outer;
             }
             Err(RetryAction::Fail(msg)) => break Err(msg),
@@ -323,7 +323,7 @@ pub(super) fn initialize_capture_route(
                 drop(audio_client);
                 drop(device);
                 drop(enumerator);
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
                 continue 'outer;
             }
             Err(RetryAction::Fail(msg)) => break Err(msg),
@@ -353,7 +353,7 @@ pub(super) fn initialize_capture_route(
                 drop(audio_client);
                 drop(device);
                 drop(enumerator);
-                thread::sleep(Duration::from_millis(500));
+                thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
                 continue 'outer;
             }
             Err(RetryAction::Fail(msg)) => break Err(msg),
@@ -384,7 +384,7 @@ pub(super) fn initialize_capture_route(
                     drop(audio_client);
                     drop(device);
                     drop(enumerator);
-                    thread::sleep(Duration::from_millis(500));
+                    thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
                     continue 'outer;
                 }
                 if classified.is_retriable() && full_retry_count < AUDIO_INIT_MAX_RETRIES {

@@ -46,81 +46,48 @@ impl SpeechDispatchWorker {
             let config = SpeechConfig::from_value(&config_value)?;
             let snapshot = store.snapshot();
             let pending_tasks: Vec<SpeechDispatchTask> = snapshot
-            .subtitle_overlay
-            .recent_cues
-            .iter()
-            .rev()
-            .flat_map(|cue| speech_dispatch_tasks_for_cue(cue, &config))
-            .filter(|task| !self.queue.contains(task))
-            .collect();
+                .subtitle_overlay
+                .recent_cues
+                .iter()
+                .rev()
+                .flat_map(|cue| speech_dispatch_tasks_for_cue(cue, &config))
+                .filter(|task| !self.queue.contains(task))
+                .collect();
             let ptt_gate_open =
-            !config.outbound_ptt_enabled || config.outbound_ptt_state == "recording";
+                !config.outbound_ptt_enabled || config.outbound_ptt_state == "recording";
 
             store.update_speech(|speech| {
-            speech.status = "ready".to_string();
-            speech.policy = config.priority.clone();
-            speech.output_target = config.output_target.clone();
-            speech.queue_depth = pending_tasks.len();
-            speech.ptt_gate_open = ptt_gate_open;
-            if !config.enabled {
-                speech.dispatch_state = "idle".to_string();
-            } else if pending_tasks.is_empty() && speech.dispatch_state != "playing" {
-                speech.dispatch_state = "waiting-subtitle".to_string();
-            }
-        });
+                speech.status = "ready".to_string();
+                speech.policy = config.priority.clone();
+                speech.output_target = config.output_target.clone();
+                speech.queue_depth = pending_tasks.len();
+                speech.ptt_gate_open = ptt_gate_open;
+                if !config.enabled {
+                    speech.dispatch_state = "idle".to_string();
+                } else if pending_tasks.is_empty() && speech.dispatch_state != "playing" {
+                    speech.dispatch_state = "waiting-subtitle".to_string();
+                }
+            });
             emit_audio_snapshot(&self.app, store)?;
 
             if !config.enabled || pending_tasks.is_empty() {
-            thread::sleep(Duration::from_millis(SPEECH_POLL_INTERVAL_MS));
-            continue;
-        }
+                thread::sleep(Duration::from_millis(SPEECH_POLL_INTERVAL_MS));
+                continue;
+            }
 
             let mut blocked_by_ptt = false;
             for task in pending_tasks {
-            if task.cue.route_direction == "outbound"
-                && config.outbound_ptt_enabled
-                && config.outbound_ptt_state != "recording"
-            {
-                blocked_by_ptt = true;
-                store.update_speech(|speech| {
-                    speech.dispatch_state = "queued".to_string();
-                    push_event(
-                        speech,
-                        "speech.ptt-blocked",
-                        "Push-to-talk 未打开，出站译音继续排队。".to_string(),
-                        Some(task.cue.cue_id.clone()),
-                        None,
-                    );
-                });
-                let _ = append_diagnostics_log(
-                    &self.app,
-                    "audio",
-                    "warning",
-                    "Push-to-talk 未打开，出站译音继续排队。",
-                    Some(format!("cue={}", task.cue.cue_id)),
-                    None,
-                    None,
-                );
-                emit_audio_snapshot(&self.app, store)?;
-                break;
-            }
-
-            let dispatch_key = task.dispatch_key();
-            match SpeechTaskProcessor::new(&self.app, store, &self.gateway, &config).process(&task) {
-                Ok(()) => {
-                    self.queue.remember(&task, &dispatch_key);
-                }
-                Err(error) => {
-                    self.queue.remember(&task, &dispatch_key);
-                    let diagnostics_error = error.clone();
+                if task.cue.route_direction == "outbound"
+                    && config.outbound_ptt_enabled
+                    && config.outbound_ptt_state != "recording"
+                {
+                    blocked_by_ptt = true;
                     store.update_speech(|speech| {
-                        speech.status = "degraded".to_string();
-                        speech.dispatch_state = "error".to_string();
-                        speech.last_error = Some(error.clone());
+                        speech.dispatch_state = "queued".to_string();
                         push_event(
                             speech,
-                            "speech.error",
-                            error,
+                            "speech.ptt-blocked",
+                            "Push-to-talk 未打开，出站译音继续排队。".to_string(),
                             Some(task.cue.cue_id.clone()),
                             None,
                         );
@@ -128,26 +95,59 @@ impl SpeechDispatchWorker {
                     let _ = append_diagnostics_log(
                         &self.app,
                         "audio",
-                        "error",
-                        "译音任务失败。",
-                        Some(format!(
-                            "cue={} segmentIndex={} error={}",
-                            task.cue.cue_id, task.segment_index, diagnostics_error
-                        )),
+                        "warning",
+                        "Push-to-talk 未打开，出站译音继续排队。",
+                        Some(format!("cue={}", task.cue.cue_id)),
                         None,
                         None,
                     );
                     emit_audio_snapshot(&self.app, store)?;
+                    break;
+                }
+
+                let dispatch_key = task.dispatch_key();
+                match SpeechTaskProcessor::new(&self.app, store, &self.gateway, &config).process(&task) {
+                    Ok(()) => {
+                        self.queue.remember(&task, &dispatch_key);
+                    }
+                    Err(error) => {
+                        self.queue.remember(&task, &dispatch_key);
+                        let diagnostics_error = error.clone();
+                        store.update_speech(|speech| {
+                            speech.status = "degraded".to_string();
+                            speech.dispatch_state = "error".to_string();
+                            speech.last_error = Some(error.clone());
+                            push_event(
+                                speech,
+                                "speech.error",
+                                error,
+                                Some(task.cue.cue_id.clone()),
+                                None,
+                            );
+                        });
+                        let _ = append_diagnostics_log(
+                            &self.app,
+                            "audio",
+                            "error",
+                            "译音任务失败。",
+                            Some(format!(
+                                "cue={} segmentIndex={} error={}",
+                                task.cue.cue_id, task.segment_index, diagnostics_error
+                            )),
+                            None,
+                            None,
+                        );
+                        emit_audio_snapshot(&self.app, store)?;
+                    }
                 }
             }
-        }
 
             if blocked_by_ptt {
-            thread::sleep(Duration::from_millis(SPEECH_POLL_INTERVAL_MS));
-            continue;
-        }
+                thread::sleep(Duration::from_millis(SPEECH_POLL_INTERVAL_MS));
+                continue;
+            }
 
-            thread::sleep(Duration::from_millis(40));
+            thread::sleep(Duration::from_millis(SPEECH_DISPATCH_IDLE_INTERVAL_MS));
         }
 
         Ok(())
@@ -254,169 +254,169 @@ impl<'a> SpeechTaskProcessor<'a> {
         let store = self.store;
         let gateway = self.gateway;
         let config = self.config;
-    let cue = &task.cue;
-    let delay_ms = config.dispatch_delay_ms(&cue.route_direction);
-    if delay_ms > 0 {
+        let cue = &task.cue;
+        let delay_ms = config.dispatch_delay_ms(&cue.route_direction);
+        if delay_ms > 0 {
+            store.update_speech(|speech| {
+                speech.dispatch_state = "deferred".to_string();
+                speech.current_cue_id = Some(cue.cue_id.clone());
+                speech.last_started_at = Some(now_marker());
+                push_event(
+                    speech,
+                    "speech.deferred",
+                    format!("字幕优先策略生效，延迟 {} ms 后再发起译音。", delay_ms),
+                    Some(cue.cue_id.clone()),
+                    None,
+                );
+            });
+            emit_audio_snapshot(app, store)?;
+            thread::sleep(Duration::from_millis(delay_ms));
+        }
+
+        let _ = append_diagnostics_log(
+            app,
+            "audio",
+            "info",
+            "speech.segment_tts_queued",
+            Some(format!(
+                "cue={} segmentIndex={} segmentMode={} sourceChars={} translatedChars={}",
+                cue.cue_id,
+                task.segment_index,
+                task.segment_mode,
+                task.source_text.chars().count(),
+                task.translated_text.chars().count()
+            )),
+            None,
+            None,
+        );
+
+        let cache_key = task.cache_key(config);
+        let (request_id, sample_rate_hz, channel_count, translated_pcm, cache_hit) =
+            if let Some(cached) = store.tts_audio(&cache_key) {
+                (
+                    cached.request_id,
+                    cached.sample_rate_hz,
+                    cached.channel_count,
+                    cached.pcm_i16,
+                    true,
+                )
+            } else {
+                let _ = append_diagnostics_log(
+                    app,
+                    "audio",
+                    "info",
+                    "speech.segment_tts_requested",
+                    Some(format!(
+                        "cue={} segmentIndex={} translatedChars={} provider={} model={}",
+                        cue.cue_id,
+                        task.segment_index,
+                        task.translated_text.chars().count(),
+                        config.provider.provider_id,
+                        config.provider.model
+                    )),
+                    None,
+                    None,
+                );
+                let synthesis = gateway
+                    .synthesize_realtime_audio(
+                        config.provider.clone(),
+                        task.translated_text.clone(),
+                        config.target_language.clone(),
+                        config.voice.clone(),
+                    )
+                    .map_err(|error| error.message)?;
+                store.cache_tts_audio(CachedTtsAudio {
+                    cache_key: cache_key.clone(),
+                    request_id: synthesis.request_id.clone(),
+                    sample_rate_hz: synthesis.audio.sample_rate_hz,
+                    channel_count: synthesis.audio.channel_count,
+                    pcm_i16: synthesis.audio.pcm_i16.clone(),
+                });
+                (
+                    synthesis.request_id,
+                    synthesis.audio.sample_rate_hz,
+                    synthesis.audio.channel_count,
+                    synthesis.audio.pcm_i16,
+                    false,
+                )
+            };
+
+        let mix = SpeechMixPlanner::new(
+            cue,
+            store.segment_audio(&cue.cue_id),
+            translated_pcm,
+            sample_rate_hz,
+            channel_count,
+            config,
+        )
+        .build();
         store.update_speech(|speech| {
-            speech.dispatch_state = "deferred".to_string();
+            speech.dispatch_state = "playing".to_string();
             speech.current_cue_id = Some(cue.cue_id.clone());
+            speech.current_request_id = Some(request_id.clone());
+            speech.mix_mode = mix.mix_mode.clone();
+            speech.ducking_active = mix.ducking_active;
             speech.last_started_at = Some(now_marker());
             push_event(
                 speech,
-                "speech.deferred",
-                format!("字幕优先策略生效，延迟 {} ms 后再发起译音。", delay_ms),
+                if cache_hit {
+                    "speech.cache-hit"
+                } else {
+                    "speech.realtime-audio-requested"
+                },
+                if cache_hit {
+                    "命中 Realtime 音频缓存，直接进入混音和输出。".to_string()
+                } else {
+                    "已完成 Realtime audio 请求，进入混音和输出。".to_string()
+                },
                 Some(cue.cue_id.clone()),
-                None,
+                Some(request_id.clone()),
             );
         });
         emit_audio_snapshot(app, store)?;
-        thread::sleep(Duration::from_millis(delay_ms));
-    }
 
-    let _ = append_diagnostics_log(
-        app,
-        "audio",
-        "info",
-        "speech.segment_tts_queued",
-        Some(format!(
-            "cue={} segmentIndex={} segmentMode={} sourceChars={} translatedChars={}",
-            cue.cue_id,
-            task.segment_index,
+        let playback = SpeechPlaybackEngine::new(app, store, config).play(
+            cue,
+            &request_id,
+            &mix,
             task.segment_mode,
-            task.source_text.chars().count(),
-            task.translated_text.chars().count()
-        )),
-        None,
-        None,
-    );
+            task.segment_index,
+        )?;
+        let speaker_frames = playback.speaker_frames;
+        let virtual_mic_frames = playback.virtual_mic_frames;
 
-    let cache_key = task.cache_key(config);
-    let (request_id, sample_rate_hz, channel_count, translated_pcm, cache_hit) =
-        if let Some(cached) = store.tts_audio(&cache_key) {
-            (
-                cached.request_id,
-                cached.sample_rate_hz,
-                cached.channel_count,
-                cached.pcm_i16,
-                true,
-            )
-        } else {
-            let _ = append_diagnostics_log(
-                app,
-                "audio",
-                "info",
-                "speech.segment_tts_requested",
-                Some(format!(
-                    "cue={} segmentIndex={} translatedChars={} provider={} model={}",
-                    cue.cue_id,
-                    task.segment_index,
-                    task.translated_text.chars().count(),
-                    config.provider.provider_id,
-                    config.provider.model
-                )),
-                None,
-                None,
+        store.update_speech(|speech| {
+            speech.dispatch_state = "waiting-subtitle".to_string();
+            speech.current_cue_id = None;
+            speech.current_request_id = None;
+            speech.last_completed_at = Some(now_marker());
+            speech.speaker_frames_written += speaker_frames;
+            speech.virtual_mic_frames_written += virtual_mic_frames;
+            speech.last_error = None;
+            push_event(
+                speech,
+                "speech.completed",
+                format!(
+                    "译音输出完成，speaker={} 帧 / virtual-mic={} 帧。",
+                    speaker_frames, virtual_mic_frames
+                ),
+                Some(cue.cue_id.clone()),
+                Some(request_id),
             );
-            let synthesis = gateway
-                .synthesize_realtime_audio(
-                    config.provider.clone(),
-                    task.translated_text.clone(),
-                    config.target_language.clone(),
-                    config.voice.clone(),
-                )
-                .map_err(|error| error.message)?;
-            store.cache_tts_audio(CachedTtsAudio {
-                cache_key: cache_key.clone(),
-                request_id: synthesis.request_id.clone(),
-                sample_rate_hz: synthesis.audio.sample_rate_hz,
-                channel_count: synthesis.audio.channel_count,
-                pcm_i16: synthesis.audio.pcm_i16.clone(),
-            });
-            (
-                synthesis.request_id,
-                synthesis.audio.sample_rate_hz,
-                synthesis.audio.channel_count,
-                synthesis.audio.pcm_i16,
-                false,
-            )
-        };
-
-    let mix = SpeechMixPlanner::new(
-        cue,
-        store.segment_audio(&cue.cue_id),
-        translated_pcm,
-        sample_rate_hz,
-        channel_count,
-        config,
-    )
-    .build();
-    store.update_speech(|speech| {
-        speech.dispatch_state = "playing".to_string();
-        speech.current_cue_id = Some(cue.cue_id.clone());
-        speech.current_request_id = Some(request_id.clone());
-        speech.mix_mode = mix.mix_mode.clone();
-        speech.ducking_active = mix.ducking_active;
-        speech.last_started_at = Some(now_marker());
-        push_event(
-            speech,
-            if cache_hit {
-                "speech.cache-hit"
-            } else {
-                "speech.realtime-audio-requested"
-            },
-            if cache_hit {
-                "命中 Realtime 音频缓存，直接进入混音和输出。".to_string()
-            } else {
-                "已完成 Realtime audio 请求，进入混音和输出。".to_string()
-            },
-            Some(cue.cue_id.clone()),
-            Some(request_id.clone()),
-        );
-    });
-    emit_audio_snapshot(app, store)?;
-
-    let playback = SpeechPlaybackEngine::new(app, store, config).play(
-        cue,
-        &request_id,
-        &mix,
-        task.segment_mode,
-        task.segment_index,
-    )?;
-    let speaker_frames = playback.speaker_frames;
-    let virtual_mic_frames = playback.virtual_mic_frames;
-
-    store.update_speech(|speech| {
-        speech.dispatch_state = "waiting-subtitle".to_string();
-        speech.current_cue_id = None;
-        speech.current_request_id = None;
-        speech.last_completed_at = Some(now_marker());
-        speech.speaker_frames_written += speaker_frames;
-        speech.virtual_mic_frames_written += virtual_mic_frames;
-        speech.last_error = None;
-        push_event(
-            speech,
-            "speech.completed",
-            format!(
-                "译音输出完成，speaker={} 帧 / virtual-mic={} 帧。",
+        });
+        let _ = append_diagnostics_log(
+            app,
+            "audio",
+            "info",
+            format!("译音输出完成，cue={}。", cue.cue_id),
+            Some(format!(
+                "speakerFrames={} virtualMicFrames={}",
                 speaker_frames, virtual_mic_frames
-            ),
-            Some(cue.cue_id.clone()),
-            Some(request_id),
+            )),
+            None,
+            None,
         );
-    });
-    let _ = append_diagnostics_log(
-        app,
-        "audio",
-        "info",
-        format!("译音输出完成，cue={}。", cue.cue_id),
-        Some(format!(
-            "speakerFrames={} virtualMicFrames={}",
-            speaker_frames, virtual_mic_frames
-        )),
-        None,
-        None,
-    );
-    emit_audio_snapshot(app, store)?;
+        emit_audio_snapshot(app, store)?;
 
         Ok(())
     }

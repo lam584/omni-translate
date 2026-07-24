@@ -292,7 +292,6 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
     const button = container.querySelector('.subtitle-overlay-toggle-lock');
     expect(button).not.toBeNull();
-
     await act(async () => {
       button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
@@ -684,7 +683,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     expect(segmentTexts).toEqual(['First source第一句', 'Second source第二句']);
   });
 
-  it('keeps a pending translation row under its source segment', async () => {
+  it('keeps unfinished text in the fixed stream slot below finalized subtitles', async () => {
     useAppStore.setState((state) => {
       const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
       const cue = nextSnapshot.subtitleOverlay.recentCues[0];
@@ -708,10 +707,70 @@ describe('SubtitleOverlayPage locked interaction', () => {
     });
 
     const segments = Array.from(container.querySelectorAll('.subtitle-overlay-segment'));
-    expect(segments).toHaveLength(2);
-    expect(segments[1].textContent).toContain('Waiting source');
-    expect(segments[1].querySelector('.subtitle-overlay-translation')).not.toBeNull();
-    expect(segments[1].className).toContain('subtitle-overlay-segment-pending');
+    expect(segments).toHaveLength(1);
+    expect(segments[0].textContent).toContain('已有译文');
+    expect(container.querySelector('.subtitle-overlay-stream-slot')?.textContent).toContain('Waiting source');
+    expect(container.querySelector('.subtitle-overlay-stream-slot')?.className).toContain('subtitle-overlay-stream-slot-active');
+  });
+
+  it('renders every token in the bottom slot and moves the finalized sentence one row up', async () => {
+    const updateStreamingCue = async (translatedText: string, pending: boolean) => {
+      await act(async () => {
+        useAppStore.setState((state) => {
+          const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+          const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+          cue.displaySourceText = 'Streaming source';
+          cue.sourceText = 'Streaming source';
+          cue.translatedText = translatedText;
+          cue.displaySegments = [{ sourceText: 'Streaming source', translatedText, pending }];
+          cue.committed = !pending;
+          nextSnapshot.subtitleOverlay.activeCue = cue;
+          return { ...state, audioRuntimeSnapshot: nextSnapshot };
+        });
+      });
+    };
+
+    await updateStreamingCue('你', true);
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('你');
+    expect(container.querySelectorAll('.subtitle-overlay-segment')).toHaveLength(0);
+
+    await updateStreamingCue('你好', true);
+    expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('你好');
+    expect(container.querySelectorAll('.subtitle-overlay-segment')).toHaveLength(0);
+
+    await updateStreamingCue('你好。', false);
+    const historySegment = container.querySelector('.subtitle-overlay-segment');
+    const streamSlot = container.querySelector('.subtitle-overlay-stream-slot');
+    expect(historySegment?.textContent).toContain('你好。');
+    expect(streamSlot?.textContent?.trim()).toBe('');
+    if (!historySegment || !streamSlot) {
+      throw new Error('finalized history and live stream slot should both render');
+    }
+    expect(
+      historySegment.compareDocumentPosition(streamSlot) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await act(async () => {
+      useAppStore.setState((state) => {
+        const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+        const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+        cue.displaySourceText = 'Streaming source\nNext source';
+        cue.sourceText = cue.displaySourceText;
+        cue.translatedText = '你好。\n下';
+        cue.displaySegments = [
+          { sourceText: 'Streaming source', translatedText: '你好。', pending: false },
+          { sourceText: 'Next source', translatedText: '下', pending: true },
+        ];
+        cue.committed = false;
+        nextSnapshot.subtitleOverlay.activeCue = cue;
+        return { ...state, audioRuntimeSnapshot: nextSnapshot };
+      });
+    });
+    expect(container.querySelector('.subtitle-overlay-segment')?.textContent).toContain('你好。');
+    expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('下');
   });
 
   it('renders translated-only display segments without an empty source paragraph', async () => {
@@ -844,7 +903,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     };
 
     await renderContent(3);
-    const cues = container.querySelector<HTMLElement>('.subtitle-overlay-cues')!;
+    const cues = container.querySelector<HTMLElement>('.subtitle-overlay-history')!;
     Object.defineProperties(cues, {
       clientHeight: { configurable: true, value: 200 },
       scrollHeight: { configurable: true, value: 600 },
@@ -895,7 +954,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
           onLockToggle={() => undefined}
         />);
       });
-      const cues = container.querySelector<HTMLElement>('.subtitle-overlay-cues')!;
+      const cues = container.querySelector<HTMLElement>('.subtitle-overlay-history')!;
       Object.defineProperty(cues, 'scrollHeight', { configurable: true, value: 480 });
       notifyResize?.();
       expect(cues.scrollTop).toBe(480);

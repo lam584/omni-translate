@@ -284,10 +284,10 @@ where
                 CREDENTIAL_OPERATION_TIMEOUT.as_millis()
             );
             Err(format!(
-        "Windows Credential Manager 在 {} 秒内未完成{}；后台工作线程可能仍阻塞在系统 API 中。请检查系统凭据服务状态后重试。",
-        CREDENTIAL_OPERATION_TIMEOUT.as_secs(),
-        action
-      ))
+                "Windows Credential Manager 在 {} 秒内未完成{}；后台工作线程可能仍阻塞在系统 API 中。请检查系统凭据服务状态后重试。",
+                CREDENTIAL_OPERATION_TIMEOUT.as_secs(),
+                action
+            ))
         }
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             log::error!("[omni][credential] channel disconnected action={}", action);

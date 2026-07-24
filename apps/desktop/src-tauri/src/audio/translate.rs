@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
@@ -17,7 +17,10 @@ use super::sentence::{detect_language, is_target_language};
 use super::state::{AudioRouteHandle, AudioStateStore};
 
 const TRANSLATE_POLL_INTERVAL_MS: u64 = 150;
+const TRANSLATE_IDLE_INTERVAL_MS: u64 = 40;
+const TRANSLATE_HEARTBEAT_INTERVAL_LOOPS: u64 = 160;
 const MAX_CONCURRENT_TRANSLATIONS: usize = 3;
+const MAX_PROCESSED_CUES: usize = 64;
 
 pub fn start_translate(
     app: AppHandle,
@@ -121,6 +124,7 @@ fn run_translate_worker(
 ) -> Result<(), String> {
     let storage = app.state::<StorageStateStore>();
     let mut processed = HashSet::new();
+    let mut processed_order: VecDeque<String> = VecDeque::new();
     let mut loop_count: u64 = 0;
 
     loop {
@@ -154,18 +158,18 @@ fn run_translate_worker(
 
             if config.provider.kind.is_empty() || config.provider.base_url.is_empty() {
                 let _ = append_diagnostics_log(
-          &app,
-          "translate",
-          "warning",
-          "翻译 Worker 配置不完整：provider kind 或 base_url 为空，LLM 调用将失败。请检查 Provider 设置。",
-          None,
-          None,
-          None,
-        );
+                    &app,
+                    "translate",
+                    "warning",
+                    "翻译 Worker 配置不完整：provider kind 或 base_url 为空，LLM 调用将失败。请检查 Provider 设置。",
+                    None,
+                    None,
+                    None,
+                );
             }
         }
 
-        if loop_count.is_multiple_of(160) {
+        if loop_count.is_multiple_of(TRANSLATE_HEARTBEAT_INTERVAL_LOOPS) {
             let _ = append_diagnostics_log(
                 &app,
                 "translate",
@@ -199,6 +203,12 @@ fn run_translate_worker(
 
         for cue in &pending_cues {
             processed.insert(cue.cue_id.clone());
+            processed_order.push_back(cue.cue_id.clone());
+        }
+        while processed_order.len() > MAX_PROCESSED_CUES {
+            if let Some(expired) = processed_order.pop_front() {
+                processed.remove(&expired);
+            }
         }
 
         let (result_tx, result_rx) = mpsc::channel();
@@ -278,7 +288,7 @@ fn run_translate_worker(
             break;
         }
 
-        thread::sleep(Duration::from_millis(40));
+        thread::sleep(Duration::from_millis(TRANSLATE_IDLE_INTERVAL_MS));
     }
 
     Ok(())
@@ -308,7 +318,19 @@ impl TranslateConfig {
                     .and_then(|v| serde_json::from_value::<ProviderDraftInput>(v.clone()).ok())
             })
             .unwrap_or_else(|| {
-                serde_json::from_value(Value::Null).expect("default provider should parse")
+                serde_json::from_value(serde_json::json!({
+                    "templateId": "",
+                    "providerId": "",
+                    "kind": "",
+                    "displayName": "",
+                    "model": "",
+                    "baseUrl": "",
+                    "transport": "http",
+                    "authRef": { "kind": "", "reference": "", "headerName": "", "scheme": "" },
+                    "streamEnabled": false,
+                    "timeoutMs": 30000u64,
+                    "systemPromptTemplate": ""
+                })).unwrap_or_else(|_| unreachable!("static JSON literal must match ProviderDraftInput"))
             });
         let source_language = config
             .pointer("/subtitles/sourceLanguage")

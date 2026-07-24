@@ -19,6 +19,7 @@ export type SceneLaunchPlan = {
 };
 
 type Input = {
+  launchAttemptId?: string;
   mode: SceneMode;
   configDraft: AppConfigDraft;
   audioSnapshot: AudioRuntimeSnapshot;
@@ -33,6 +34,12 @@ export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
     ...input.configDraft,
     devices: {
       ...input.configDraft.devices,
+      ...(input.launchAttemptId ? {
+        inboundRoute: {
+          ...input.configDraft.devices.inboundRoute,
+          routeId: `audio-route-inbound-${input.launchAttemptId}`,
+        },
+      } : {}),
       routeMode: input.mode,
       status: 'ready',
       ...(input.mode === 'watch' ? {

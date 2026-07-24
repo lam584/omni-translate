@@ -73,7 +73,7 @@ export async function executeSceneLaunchPlan(plan: SceneLaunchPlan, dependencies
       completedStages.push('bridge-ready');
       if (preconnectResult.status === 'fulfilled') completedStages.push('omni-preconnect');
       else dependencies.onPreconnectWarning(preconnectResult.reason);
-    } else {
+    } else if (plan.stages.includes('bridge-ready')) {
       dependencies.onStageStart('bridge-ready');
       await dependencies.ensureBridgeReady();
       throwIfLaunchAborted(dependencies.abortSignal);

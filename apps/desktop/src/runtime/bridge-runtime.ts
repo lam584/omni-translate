@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
@@ -249,4 +250,3 @@ export const bridgeRuntimeTestHelpers = {
   invokeBridgeWithTimeout,
   withBridgePatch,
 };
-import { invoke } from '@tauri-apps/api/core';

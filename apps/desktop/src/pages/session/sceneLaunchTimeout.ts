@@ -2,8 +2,10 @@ import type { SceneMode } from '../../utils/scene-readiness';
 
 const SCENE_LAUNCH_TIMEOUT_MS = 900;
 
-export function sceneLaunchTimeoutMs(mode: SceneMode, isOmniModel: boolean) {
-  void mode;
-  void isOmniModel;
+/**
+ * Returns the scene launch timeout in milliseconds.
+ * Parameters are reserved for future per-mode/per-model tuning.
+ */
+export function sceneLaunchTimeoutMs(_mode: SceneMode, _isOmniModel: boolean): number {
   return SCENE_LAUNCH_TIMEOUT_MS;
 }

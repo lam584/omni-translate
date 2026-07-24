@@ -1,6 +1,7 @@
 pub mod contracts;
 mod diagnostics;
 mod echo_cancel;
+pub mod str_utils;
 pub mod engine;
 pub mod events;
 pub mod gemini_live;

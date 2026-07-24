@@ -32,6 +32,14 @@ describe('executeSceneLaunchPlan', () => {
     expect(calls).toEqual(['bridge', 'inbound-route', 'translate-worker']);
   });
 
+  it('does not execute bridge startup when the Watch plan omits bridge-ready', async () => {
+    const calls: string[] = [];
+    const result = await executeSceneLaunchPlan(plan(['inbound-route']), dependencies(calls));
+
+    expect(result.status).toBe('fully-started');
+    expect(calls).toEqual(['inbound-route']);
+  });
+
   it('rolls completed stages back in reverse order', async () => {
     const calls: string[] = [];
     const deps = dependencies(calls);

@@ -36,7 +36,8 @@ describe('subtitle overlay page helpers', () => {
     cue.sourceText = 'source';
     cue.translatedText = '译文';
     expect(subtitleOverlayPageHelpers.getCueDisplaySegments(cue)).toEqual([
-      { id: `${cue.cueId}-segment-0`, sourceText: 'source', translatedText: '译文', pending: true },
+      { id: `${cue.cueId}-segment-0-0`, sourceText: 'source', translatedText: '', pending: true },
+      { id: `${cue.cueId}-segment-1-0`, sourceText: '', translatedText: '译文', pending: false },
     ]);
 
     cue.displaySegments = [];
@@ -139,4 +140,5 @@ describe('subtitle overlay page helpers', () => {
       interactive: true, visible: true,
     });
   });
+
 });

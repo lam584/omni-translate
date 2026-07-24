@@ -87,7 +87,23 @@ impl ProviderGateway {
             );
         }
 
-        let smoke = self.execute_smoke(provider, source_text, source_language, target_language);
+        let mut emitted_delta = false;
+        let smoke = {
+            let mut forward_delta = |delta: &str| {
+                if delta.is_empty() {
+                    return Ok(());
+                }
+                emitted_delta = true;
+                on_delta(delta)
+            };
+            self.execute_smoke_with_delta(
+                provider,
+                source_text,
+                source_language,
+                target_language,
+                &mut forward_delta,
+            )
+        };
 
         if let Some(error) = smoke.error.clone() {
             if let Some(trace_call) = trace_call.as_mut() {
@@ -97,18 +113,6 @@ impl ProviderGateway {
         }
 
         let result = (|| -> Result<String, ProviderRuntimeError> {
-            let mut emitted_delta = false;
-            for event in &smoke.event_log {
-                if event.event_type != "translation.delta" {
-                    continue;
-                }
-
-                if let Some(delta) = event.text_delta.as_deref() {
-                    emitted_delta = true;
-                    on_delta(delta)?;
-                }
-            }
-
             if !emitted_delta && !smoke.transcript.is_empty() {
                 on_delta(&smoke.transcript)?;
             }
@@ -167,12 +171,29 @@ impl ProviderGateway {
         source_language: String,
         target_language: String,
     ) -> ProviderSmokeResult {
+        let mut discard_delta = discard_provider_delta;
+        self.execute_smoke_with_delta(
+            provider,
+            source_text,
+            source_language,
+            target_language,
+            &mut discard_delta,
+        )
+    }
+
+    fn execute_smoke_with_delta(
+        &self,
+        provider: ProviderDraftInput,
+        source_text: String,
+        source_language: String,
+        target_language: String,
+        on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
+    ) -> ProviderSmokeResult {
         let request_id = format!("req-{}", now_marker());
         let transport_requested = provider.transport.clone();
         let (transport_effective, fallback_applied) = resolve_transport(&provider);
         let started_at = Instant::now();
 
-        let mut discard_delta = discard_provider_delta;
         let execution = match provider.kind.as_str() {
             kind if is_openai_compatible_kind(kind) => self.openai_adapter.execute(
                 &provider,
@@ -181,7 +202,7 @@ impl ProviderGateway {
                 &source_text,
                 &source_language,
                 &target_language,
-                &mut discard_delta,
+                on_delta,
             ),
             "dashscope" => self.dashscope_adapter.execute(
                 &provider,
@@ -190,7 +211,7 @@ impl ProviderGateway {
                 &source_text,
                 &source_language,
                 &target_language,
-                &mut discard_delta,
+                on_delta,
             ),
             other => Err(ProviderRuntimeError::new(
                 "request.invalid",
@@ -310,6 +331,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
+    use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
     use tungstenite::{accept, Message};
@@ -438,6 +460,161 @@ mod tests {
     }
 
     #[test]
+    fn openai_translation_forwards_delta_before_stream_completion() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            read_http_request(&mut stream);
+
+            let first_delta =
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n";
+            let remainder = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                first_delta.len() + remainder.len()
+            );
+            stream
+                .write_all(headers.as_bytes())
+                .expect("http response headers should write");
+            stream
+                .write_all(first_delta.as_bytes())
+                .expect("first delta should write");
+            stream.flush().expect("first delta should flush");
+
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("test should release the remaining response");
+            stream
+                .write_all(remainder.as_bytes())
+                .expect("remaining response should write");
+            stream.flush().expect("remaining response should flush");
+        });
+
+        let (delta_tx, delta_rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            let gateway = ProviderGateway::new();
+            gateway.translate_text_streaming_traced(
+                openai_provider(format!("http://{}", addr)),
+                "hello".to_string(),
+                "en-US".to_string(),
+                "zh-CN".to_string(),
+                None,
+                |delta| {
+                    delta_tx.send(delta.to_string()).map_err(|error| {
+                        ProviderRuntimeError::new(
+                            "test.callback-failed",
+                            format!("failed to observe delta: {error}"),
+                        )
+                    })
+                },
+            )
+        });
+
+        assert_eq!(
+            delta_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("first delta should arrive before the stream completes"),
+            "Hello"
+        );
+        release_tx
+            .send(())
+            .expect("remaining response should be released");
+        assert_eq!(
+            delta_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("second delta should arrive"),
+            " world"
+        );
+        assert_eq!(
+            client
+                .join()
+                .expect("client thread should finish")
+                .expect("translation should succeed"),
+            "Hello world"
+        );
+        server.join().expect("server thread should finish");
+    }
+
+    #[test]
+    fn openai_non_streaming_translation_forwards_final_text_once() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            read_http_request(&mut stream);
+            write_http_response(
+                &mut stream,
+                "application/json",
+                "{\"choices\":[{\"message\":{\"content\":\"Complete answer\"}}]}",
+            );
+        });
+
+        let mut provider = openai_provider(format!("http://{}", addr));
+        provider.stream_enabled = false;
+        let mut deltas = Vec::new();
+        let result = ProviderGateway::new()
+            .translate_text_streaming_traced(
+                provider,
+                "hello".to_string(),
+                "en-US".to_string(),
+                "zh-CN".to_string(),
+                None,
+                |delta| {
+                    deltas.push(delta.to_string());
+                    Ok(())
+                },
+            )
+            .expect("non-streaming translation should succeed");
+
+        assert_eq!(result, "Complete answer");
+        assert_eq!(deltas, vec!["Complete answer"]);
+        server.join().expect("server thread should finish");
+    }
+
+    #[test]
+    fn openai_translation_stops_when_delta_callback_fails() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            read_http_request(&mut stream);
+            let body = concat!(
+                "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+                "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}]}\n\n",
+                "data: [DONE]\n\n"
+            );
+            write_http_response(&mut stream, "text/event-stream", body);
+        });
+
+        let mut callback_count = 0;
+        let error = ProviderGateway::new()
+            .translate_text_streaming_traced(
+                openai_provider(format!("http://{}", addr)),
+                "hello".to_string(),
+                "en-US".to_string(),
+                "zh-CN".to_string(),
+                None,
+                |_| {
+                    callback_count += 1;
+                    Err(ProviderRuntimeError::new(
+                        "test.callback-failed",
+                        "stop streaming",
+                    ))
+                },
+            )
+            .expect_err("callback failure should abort translation");
+
+        assert_eq!(error.code, "test.callback-failed");
+        assert_eq!(callback_count, 1);
+        server.join().expect("server thread should finish");
+    }
+
+    #[test]
     fn openai_streaming_smoke_reads_array_content_delta() {
         let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
         let addr = listener.local_addr().expect("listener should have addr");
@@ -530,6 +707,78 @@ mod tests {
         assert_eq!(smoke.transcript, "Realtime translation");
         assert_eq!(smoke.input_tokens, Some(10));
         assert_eq!(smoke.output_tokens, Some(2));
+    }
+
+    #[test]
+    fn dashscope_translation_forwards_delta_before_stream_completion() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("client should connect");
+            let mut websocket = accept(stream).expect("websocket should be accepted");
+            let _ = websocket.read().expect("request payload should arrive");
+            websocket
+                .send(Message::Text(
+                    "{\"event\":{\"textDelta\":\"Realtime \"}}"
+                        .to_string()
+                        .into(),
+                ))
+                .expect("first delta frame should send");
+            release_rx
+                .recv_timeout(Duration::from_secs(2))
+                .expect("test should release the completion frame");
+            websocket
+                .send(Message::Text(
+                    "{\"event\":{\"textDelta\":\"translation\",\"type\":\"response.completed\"}}"
+                        .to_string()
+                        .into(),
+                ))
+                .expect("completion frame should send");
+        });
+
+        let (delta_tx, delta_rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            ProviderGateway::new().translate_text_streaming_traced(
+                dashscope_provider(format!("ws://{}/ws", addr)),
+                "hello".to_string(),
+                "en-US".to_string(),
+                "zh-CN".to_string(),
+                None,
+                |delta| {
+                    delta_tx.send(delta.to_string()).map_err(|error| {
+                        ProviderRuntimeError::new(
+                            "test.callback-failed",
+                            format!("failed to observe delta: {error}"),
+                        )
+                    })
+                },
+            )
+        });
+
+        assert_eq!(
+            delta_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("DashScope delta should arrive before completion"),
+            "Realtime "
+        );
+        release_tx
+            .send(())
+            .expect("completion frame should be released");
+        assert_eq!(
+            delta_rx
+                .recv_timeout(Duration::from_secs(1))
+                .expect("DashScope completion delta should arrive"),
+            "translation"
+        );
+        assert_eq!(
+            client
+                .join()
+                .expect("client thread should finish")
+                .expect("translation should succeed"),
+            "Realtime translation"
+        );
+        server.join().expect("server thread should finish");
     }
 
     #[test]

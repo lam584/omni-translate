@@ -100,10 +100,12 @@ fn run_capture_loop(
     emit_audio_snapshot(&app, store)?;
 
     audio_client.start_stream().map_err_str()?;
-    // The stream is bound and the route now reports ready; from here on we expect
-    // frames to arrive. Track when capture began so a device that binds but stays
-    // silent (muted / exclusive-mode conflict) becomes an attributable failure.
+    // The stream is bound and the route now reports ready. Microphone capture is
+    // expected to deliver packets promptly, but system loopback legitimately has
+    // no frames while every media source is paused. Keep Watch alive in that
+    // state so users can start it before pressing play.
     let capture_started_at = Instant::now();
+    let mut inbound_wait_logged = false;
     loop {
         if stop_rx.try_recv().is_ok() {
             let _ = audio_client.stop_stream();
@@ -113,8 +115,24 @@ fn run_capture_loop(
         if processor.frames_captured == 0
             && capture_started_at.elapsed() >= Duration::from_secs(AUDIO_FLOW_HEALTH_WINDOW_SECS)
         {
-            let _ = audio_client.stop_stream();
-            return Err(audio_flow_stall_error(direction, capture_started_at.elapsed()));
+            if should_fail_on_initial_frame_stall(direction) {
+                let _ = audio_client.stop_stream();
+                return Err(audio_flow_stall_error(direction, capture_started_at.elapsed()));
+            }
+            if !inbound_wait_logged {
+                diag_log_detail(
+                    &app,
+                    "audio",
+                    "info",
+                    "系统音频流已绑定，正在等待媒体开始播放。",
+                    format!(
+                        "direction={direction} routeId={} elapsedMs={} framesCaptured=0",
+                        spec.route_id,
+                        capture_started_at.elapsed().as_millis(),
+                    ),
+                );
+                inbound_wait_logged = true;
+            }
         }
 
         capture_client
@@ -211,7 +229,7 @@ fn run_bridge_source_route_worker(
                             format!("timeoutSecs={}", BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS),
                         );
                     }
-                    thread::sleep(Duration::from_millis(250));
+                    thread::sleep(Duration::from_millis(BRIDGE_SOURCE_PIPE_RETRY_MS));
                 }
             }
         };
@@ -404,6 +422,10 @@ fn audio_flow_stall_error(direction: &str, elapsed: Duration) -> String {
         "{source}采集已就绪，但在 {} 秒内没有捕获到任何音频帧，设备可能已静音或被其他应用以独占模式占用。 | recommended: check-audio-source",
         elapsed.as_secs().max(1)
     )
+}
+
+fn should_fail_on_initial_frame_stall(direction: &str) -> bool {
+    direction != "inbound"
 }
 
 #[derive(Debug, PartialEq)]

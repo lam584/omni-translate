@@ -1,3 +1,4 @@
+import { invoke } from '@tauri-apps/api/core';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
@@ -302,4 +303,3 @@ export async function showSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
 
   return invokeAudioWithTimeout(() => invoke<RuntimeSnapshot>('show_subtitle_overlay'), '显示字幕浮窗', OVERLAY_WINDOW_TIMEOUT_MS);
 }
-import { invoke } from '@tauri-apps/api/core';

@@ -461,10 +461,8 @@ pub fn apply_subtitle_overlay_background(window: &WebviewWindow) -> Result<(), S
 }
 
 pub fn ensure_subtitle_overlay_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
-    if app.get_webview_window("subtitle-overlay").is_some() {
-        let window = app
-            .get_webview_window("subtitle-overlay")
-            .expect("subtitle overlay window should exist");
+    // Single lookup to avoid TOCTOU race between is_some() and expect()
+    if let Some(window) = app.get_webview_window("subtitle-overlay") {
         let _ = apply_subtitle_overlay_background(&window);
         return Ok(window);
     }

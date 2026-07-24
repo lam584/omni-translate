@@ -239,90 +239,90 @@ impl AudioStateStore {
 
     pub fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
         self.subtitles.update(|overlay| {
-        let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
-        if exists {
-            for cue in overlay.recent_cues.iter_mut() {
-                if cue.cue_id == cue_id {
-                    if cue.committed && !committed {
-                        let new_len = source_text.len();
-                        let old_len = cue.source_text.len();
-                        if !source_text.is_empty() && new_len < old_len {
-                            break;
+            let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
+            if exists {
+                for cue in overlay.recent_cues.iter_mut() {
+                    if cue.cue_id == cue_id {
+                        if cue.committed && !committed {
+                            let new_len = source_text.len();
+                            let old_len = cue.source_text.len();
+                            if !source_text.is_empty() && new_len < old_len {
+                                break;
+                            }
                         }
+                        cue.source_text = source_text.to_string();
+                        cue.committed = committed;
+                        break;
                     }
-                    cue.source_text = source_text.to_string();
-                    cue.committed = committed;
-                    break;
                 }
-            }
-            if let Some(active) = overlay.active_cue.as_mut() {
-                if active.cue_id == cue_id
-                    && (!active.committed
-                        || committed
-                        || source_text.is_empty()
-                        || source_text.len() >= active.source_text.len())
-                {
-                    active.source_text = source_text.to_string();
-                    active.committed = committed;
+                if let Some(active) = overlay.active_cue.as_mut() {
+                    if active.cue_id == cue_id
+                        && (!active.committed
+                            || committed
+                            || source_text.is_empty()
+                            || source_text.len() >= active.source_text.len())
+                    {
+                        active.source_text = source_text.to_string();
+                        active.committed = committed;
+                    }
                 }
+            } else {
+                let now = ms_marker(unix_ms());
+                let cue = SubtitleCueRuntime {
+                    cue_id: cue_id.to_string(),
+                    route_direction: "inbound".to_string(),
+                    source_text: source_text.to_string(),
+                    display_source_text: String::new(),
+                    display_segments: Vec::new(),
+                    translated_text: String::new(),
+                    started_at: now.clone(),
+                    ended_at: now,
+                    committed,
+                };
+                overlay.active_cue = Some(cue.clone());
+                overlay.recent_cues.insert(0, cue);
+                trim_recent_subtitle_cues(overlay);
             }
-        } else {
-            let now = ms_marker(unix_ms());
-            let cue = SubtitleCueRuntime {
-                cue_id: cue_id.to_string(),
-                route_direction: "inbound".to_string(),
-                source_text: source_text.to_string(),
-                display_source_text: String::new(),
-                display_segments: Vec::new(),
-                translated_text: String::new(),
-                started_at: now.clone(),
-                ended_at: now,
-                committed,
-            };
-            overlay.active_cue = Some(cue.clone());
-            overlay.recent_cues.insert(0, cue);
-            trim_recent_subtitle_cues(overlay);
-        }
         });
         self.note_first_translation_source(cue_id, source_text);
     }
 
     pub fn commit_stt_cue(&self, cue_id: &str, source_text: &str, direction: &str) {
         self.subtitles.update(|overlay| {
-        let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
-        if exists {
-            for cue in overlay.recent_cues.iter_mut() {
-                if cue.cue_id == cue_id {
-                    cue.source_text = source_text.to_string();
-                    cue.committed = true;
-                    cue.ended_at = ms_marker(unix_ms());
-                    break;
+            let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
+            if exists {
+                for cue in overlay.recent_cues.iter_mut() {
+                    if cue.cue_id == cue_id {
+                        cue.source_text = source_text.to_string();
+                        cue.committed = true;
+                        cue.ended_at = ms_marker(unix_ms());
+                        break;
+                    }
                 }
-            }
-            if let Some(active) = overlay.active_cue.as_mut() {
-                if active.cue_id == cue_id {
-                    active.source_text = source_text.to_string();
-                    active.committed = true;
-                    active.ended_at = ms_marker(unix_ms());
+                if let Some(active) = overlay.active_cue.as_mut() {
+                    if active.cue_id == cue_id {
+                        active.source_text = source_text.to_string();
+                        active.committed = true;
+                        active.ended_at = ms_marker(unix_ms());
+                    }
                 }
+            } else {
+                let now = ms_marker(unix_ms());
+                let cue = SubtitleCueRuntime {
+                    cue_id: cue_id.to_string(),
+                    route_direction: direction.to_string(),
+                    source_text: source_text.to_string(),
+                    display_source_text: String::new(),
+                    display_segments: Vec::new(),
+                    translated_text: String::new(),
+                    started_at: now.clone(),
+                    ended_at: now,
+                    committed: true,
+                };
+                overlay.active_cue = Some(cue.clone());
+                overlay.recent_cues.insert(0, cue);
+                trim_recent_subtitle_cues(overlay);
             }
-        } else {
-            let now = ms_marker(unix_ms());
-            let cue = SubtitleCueRuntime {
-                cue_id: cue_id.to_string(),
-                route_direction: direction.to_string(),
-                source_text: source_text.to_string(),
-                display_source_text: String::new(),
-                display_segments: Vec::new(),
-                translated_text: String::new(),
-                started_at: now.clone(),
-                ended_at: now,
-                committed: true,
-            };
-            overlay.active_cue = Some(cue.clone());
-            overlay.recent_cues.insert(0, cue);
-            trim_recent_subtitle_cues(overlay);
-        }
         });
         self.note_first_translation_source(cue_id, source_text);
         let mut state = self.inner.lock().expect("audio state poisoned");
@@ -349,6 +349,10 @@ impl AudioStateStore {
         effective_device_id: &str,
     ) {
         let mut state = self.inner.lock().expect("audio state poisoned");
+        let session_was_running = state.inbound.stream_bound || state.outbound.stream_bound;
+        if !session_was_running {
+            state.session_started_at = Some(ms_marker(unix_ms()));
+        }
         let route = route_mut(&mut state, direction);
         route.route_id = route_id.to_string();
         route.requested_device_id = requested_device_id.to_string();
@@ -475,12 +479,17 @@ impl AudioStateStore {
 
     pub fn mark_route_stopped(&self, direction: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
-        let route = route_mut(&mut state, direction);
-        route.capture_state = "idle".to_string();
-        route.pre_buffer_state = "cold".to_string();
-        route.vad_state = "silence".to_string();
-        route.stream_bound = false;
-        route.active_segment_id = None;
+        {
+            let route = route_mut(&mut state, direction);
+            route.capture_state = "idle".to_string();
+            route.pre_buffer_state = "cold".to_string();
+            route.vad_state = "silence".to_string();
+            route.stream_bound = false;
+            route.active_segment_id = None;
+        }
+        if !state.inbound.stream_bound && !state.outbound.stream_bound {
+            state.session_started_at = None;
+        }
     }
 
     pub fn mark_route_stopping(&self, direction: &str) {
@@ -494,15 +503,20 @@ impl AudioStateStore {
 
     pub fn mark_route_stopped_if_stopping(&self, direction: &str) -> bool {
         let mut state = self.inner.lock().expect("audio state poisoned");
-        let route = route_mut(&mut state, direction);
-        if route.capture_state != "stopping" {
-            return false;
+        {
+            let route = route_mut(&mut state, direction);
+            if route.capture_state != "stopping" {
+                return false;
+            }
+            route.capture_state = "idle".to_string();
+            route.pre_buffer_state = "cold".to_string();
+            route.vad_state = "silence".to_string();
+            route.stream_bound = false;
+            route.active_segment_id = None;
         }
-        route.capture_state = "idle".to_string();
-        route.pre_buffer_state = "cold".to_string();
-        route.vad_state = "silence".to_string();
-        route.stream_bound = false;
-        route.active_segment_id = None;
+        if !state.inbound.stream_bound && !state.outbound.stream_bound {
+            state.session_started_at = None;
+        }
         true
     }
 
@@ -667,6 +681,34 @@ fn trim_recent_subtitle_cues(overlay: &mut SubtitleOverlayRuntimeSnapshot) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn route_lifecycle_owns_the_visible_session_timestamp() {
+        let store = AudioStateStore::new();
+        store.mark_session_started("unix-ms:stale-preconnect");
+
+        store.mark_route_started("inbound", "watch-attempt", "default", "loopback");
+        let running = store.snapshot();
+        assert!(running.session_started_at.is_some());
+        assert_ne!(
+            running.session_started_at.as_deref(),
+            Some("unix-ms:stale-preconnect")
+        );
+
+        store.mark_route_stopped("inbound");
+        assert_eq!(store.snapshot().session_started_at, None);
+    }
+
+    #[test]
+    fn stopping_one_of_two_routes_keeps_the_session_timestamp() {
+        let store = AudioStateStore::new();
+        store.mark_route_started("inbound", "watch-attempt", "default", "loopback");
+        let started_at = store.snapshot().session_started_at;
+        store.mark_route_started("outbound", "talk-attempt", "default", "microphone");
+
+        store.mark_route_stopped("inbound");
+        assert_eq!(store.snapshot().session_started_at, started_at);
+    }
 
     #[test]
     fn segment_audio_cache_keeps_recent_entries_bounded() {

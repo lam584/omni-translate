@@ -83,7 +83,7 @@ impl OmniEventProcessor {
             "[EVENT] unknown event"
         };
         let preview = if raw_text.len() > 600 {
-            format!("{}...({} bytes)", &raw_text[..600], raw_text.len())
+            format!("{}...({} bytes)", crate::audio::str_utils::truncate_chars(raw_text, 600), raw_text.len())
         } else {
             raw_text.to_string()
         };
@@ -318,7 +318,7 @@ impl OmniEventProcessor {
             "omni",
             "trace",
             format!(
-                "[EVENT] audio_transcript.delta 鈫?cue_id={cue_id_str} delta=\"{delta}\" total_len={}",
+                "[EVENT] audio_transcript.delta → cue_id={cue_id_str} delta=\"{delta}\" total_len={}",
                 pending_translated_text.len()
             ),
         );
@@ -391,7 +391,7 @@ impl OmniEventProcessor {
             "omni",
             "debug",
             format!(
-                "[EVENT] audio_transcript.done 鈫?cue_id={cue_id_str} transcript=\"{}\"",
+                "[EVENT] audio_transcript.done → cue_id={cue_id_str} transcript=\"{}\"",
                 pending_translated_text
             ),
         );

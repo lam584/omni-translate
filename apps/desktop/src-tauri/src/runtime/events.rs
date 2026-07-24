@@ -60,7 +60,10 @@ pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> Run
 pub fn emit_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> tauri::Result<()> {
     let snapshot = build_runtime_snapshot(app, state);
     app.emit(RUNTIME_SNAPSHOT_EVENT, snapshot.clone())?;
-    let payload = to_value(snapshot).unwrap_or_default();
+    let payload = to_value(&snapshot).unwrap_or_else(|error| {
+        log::error!("[omni][runtime] failed to serialize runtime snapshot: {error}");
+        serde_json::Value::Null
+    });
     crate::api_v2::emit_runtime_event_v2(app, "snapshot", payload)
 }
 
@@ -82,7 +85,10 @@ pub fn emit_runtime_notification(
         );
     }
     app.emit(RUNTIME_NOTIFICATION_EVENT, notification.clone())?;
-    let payload = to_value(notification).unwrap_or_default();
+    let payload = to_value(&notification).unwrap_or_else(|error| {
+        log::error!("[omni][runtime] failed to serialize runtime notification: {error}");
+        serde_json::Value::Null
+    });
     crate::api_v2::emit_runtime_event_v2(app, "notification", payload)?;
     emit_runtime_snapshot(app, state)
 }

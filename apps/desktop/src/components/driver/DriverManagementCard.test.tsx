@@ -343,6 +343,8 @@ describe('DriverManagementCard', () => {
     stoppedSnapshot.bridge.bridgeState = 'stopped';
     stoppedSnapshot.bridge.lastErrorCode = 'driver.secure-boot-enabled';
     stoppedSnapshot.bridge.testSigningEnabled = true;
+    stoppedSnapshot.bridge.signatureEnforcementBypassed = true;
+    stoppedSnapshot.bridge.memoryIntegrityEnabled = true;
     stoppedSnapshot.bridge.secureBootEnabled = true;
     startBridgeServiceRuntimeMock.mockResolvedValue(structuredClone(runtimeSnapshotMock));
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: stoppedSnapshot }));

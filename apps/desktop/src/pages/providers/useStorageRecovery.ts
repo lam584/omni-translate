@@ -30,6 +30,8 @@ async function invokeWithTimeout<T>(operation: () => Promise<T>, name: string): 
   });
 }
 
+export const storageRecoveryHelpers = { invokeWithTimeout };
+
 /** Restores storage after startup without coupling provider editing to IPC. */
 export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnapshot }: StorageRecoveryOptions) {
   const desktopApi = useDesktopApiV2();
@@ -46,7 +48,6 @@ export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnap
     let active = true;
     attemptsRef.current = 0;
     const refresh = async (lastResort = false) => {
-      if (!active) return;
       try {
         if (lastResort) {
           const snapshot = await invokeWithTimeout(() => desktopApi.configuration.bootstrapRuntime(), 'bootstrap runtime');
@@ -71,7 +72,7 @@ export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnap
     intervalRef.current = window.setInterval(() => {
       attemptsRef.current += 1;
       if (attemptsRef.current >= MAX_POLL_ATTEMPTS) {
-        if (intervalRef.current) window.clearInterval(intervalRef.current);
+        window.clearInterval(intervalRef.current!);
         intervalRef.current = null;
         void refresh(true);
         return;

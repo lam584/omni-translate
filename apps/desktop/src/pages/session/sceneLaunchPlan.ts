@@ -91,8 +91,9 @@ export function buildWatchFallbackPlan(
   plan.parallelOmniPreconnect = false;
   plan.stages = plan.stages.filter((stage) => stage !== 'omni-preconnect');
   if (input.speechPatch.enabled && !plan.stages.includes('speech-dispatch')) {
-    const overlayIndex = plan.stages.indexOf('subtitle-overlay');
-    plan.stages.splice(overlayIndex < 0 ? plan.stages.length : overlayIndex, 0, 'speech-dispatch');
+    // Watch plans never contain renderer-owned overlay startup, so speech is
+    // always the last compensatable fallback stage.
+    plan.stages.push('speech-dispatch');
   }
   return plan;
 }

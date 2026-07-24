@@ -518,6 +518,16 @@ describe('provider-runtime non-error native failures', () => {
       ]),
     );
   });
+
+  it('discards a non-array persisted diagnostics payload before recording IPC failure', async () => {
+    window.localStorage.setItem('omni.frontendDiagnosticsTrace', JSON.stringify({ stale: true }));
+    invokeMock.mockRejectedValueOnce(new Error('probe unavailable'));
+
+    await expect(runProviderProbe(structuredClone(appConfigDraftMock.providers[0]))).rejects.toThrow('probe unavailable');
+
+    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__).toHaveLength(2);
+    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__).not.toEqual(expect.arrayContaining([expect.objectContaining({ stale: true })]));
+  });
 });
 
 describe('provider-runtime browser preview helpers', () => {

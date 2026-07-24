@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 
 import { clearSubtitleCuesRuntime, toggleSubtitleOverlayWindow } from '../runtime/audio-runtime';
@@ -27,6 +28,7 @@ function SubtitleOverlayPage() {
   const setAudioRuntimeSnapshot = useAppStore((state) => state.setAudioRuntimeSnapshot);
   const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
   const updateSubtitleDraft = useAppStore((state) => state.updateSubtitleDraft);
+  const pushRuntimeNotification = useAppStore((state) => state.pushRuntimeNotification);
   const lastAppliedWindowSizeRef = useRef<{ width: number; height: number } | null>(null);
   const programmaticResizeRef = useRef(false);
   const dragInProgressRef = useRef(false);
@@ -56,6 +58,21 @@ function SubtitleOverlayPage() {
     setAudioRuntimeSnapshot(await clearSubtitleCuesRuntime());
   }, [setAudioRuntimeSnapshot]);
   const lockOverlay = useCallback(() => updateSubtitleDraft({ overlayLocked: true }), [updateSubtitleDraft]);
+  const toggleOverlayLock = useCallback(() => {
+    setLockedReveal({ interactive: false, visible: false });
+    updateSubtitleDraft({ overlayLocked: !overlayLocked });
+    if (overlayLocked && isTauriRuntime()) {
+      void invoke('unlock_subtitle_overlay').catch((error) => {
+        pushRuntimeNotification({
+          id: `subtitle-overlay-unlock-failed-${Date.now()}`,
+          level: 'error',
+          source: 'subtitle-overlay',
+          message: `Failed to persist subtitle overlay unlock: ${error instanceof Error ? error.message : String(error)}`,
+          emittedAt: new Date().toISOString(),
+        });
+      });
+    }
+  }, [overlayLocked, pushRuntimeNotification, setLockedReveal, updateSubtitleDraft]);
   const contextController = useOverlayContextMenuController({
     applyBackgroundOpacity: styleController.applyOverlayBackgroundOpacity,
     applyFontSize: styleController.applyOverlayFontSize,
@@ -135,7 +152,7 @@ function SubtitleOverlayPage() {
         previewSource={t('overlay.previewTitleEnglish', { defaultValue: 'Subtitles ready' })} previewTranslation={t('overlay.previewTitle')}
         onLockBlur={() => { if (overlayLocked) setLockedReveal((current) => ({ ...current, interactive: false })); }}
         onLockHover={(nextHovered) => { if (overlayLocked) setLockedReveal((current) => ({ ...current, interactive: nextHovered, visible: nextHovered || current.visible })); }}
-        onLockToggle={() => { if (overlayLocked) setLockedReveal({ interactive: false, visible: false }); updateSubtitleDraft({ overlayLocked: !overlayLocked }); }} />
+        onLockToggle={toggleOverlayLock} />
       {!isTauriRuntime() && contextController.contextMenu.open ? (
         <OverlayContextMenu applyOverlayBackgroundOpacity={closeAfter(styleController.applyOverlayBackgroundOpacity)}
           applyOverlayFontSize={closeAfter(styleController.applyOverlayFontSize)} applyOverlayStylePreset={closeAfter(styleController.applyOverlayStylePreset)}

@@ -182,7 +182,7 @@ export default function GlossaryPage() {
 
   const handleFileImport = (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (event.target) event.target.value = '';
+    event.target.value = '';
     if (!file) return;
 
     setImportMessage(null);

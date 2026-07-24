@@ -223,7 +223,7 @@ function DiagnosticsPage() {
     const tauriFlag = isTauriRuntime();
     const bridge = hasInvokeBridge();
     const runtime = isTauriRuntime();
-    const ipcObject = typeof window !== 'undefined' ? !!(window as unknown as Record<string, unknown>).ipc : false;
+    const ipcObject = !!(window as unknown as Record<string, unknown>).ipc;
     const speechEnabled = Boolean(configDraft.speech?.enabled || configDraft.devices?.outputSpeechEnabled);
 
     return {
@@ -544,7 +544,6 @@ function DiagnosticsPage() {
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <ExportButton onExport={(format) => {
-                  if (!benchmarkReport) return;
                   const ts = new Date().toISOString().replace(/[:.]/g, '-');
                   const base = `benchmark-${benchmarkReport.model}-${ts}`;
                   if (format === 'json') {

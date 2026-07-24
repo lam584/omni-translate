@@ -160,4 +160,39 @@ describe('DesktopApiV2 configuration client', () => {
     expect(windowMocks.popup).toHaveBeenCalled();
     expect(windowMocks.close).toHaveBeenCalled();
   });
+
+  it('does not fail a completed popup action when native menu cleanup rejects', async () => {
+    windowMocks.close.mockRejectedValueOnce(new Error('already closed'));
+    const api = new DesktopApiV2(vi.fn());
+
+    await expect(api.window.popupMenu([], { x: 0, y: 0 })).resolves.toBeUndefined();
+  });
+
+  it('isolates 300 concurrent IPC requests under mixed success and failure pressure', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const calls: number[] = [];
+    const invoke: InvokeFn = async <T>(_command: string, args?: Record<string, unknown>) => {
+      const requestId = Number((args?.command as { requestId?: number } | undefined)?.requestId ?? calls.length);
+      calls.push(requestId);
+      inFlight += 1;
+      maxInFlight = Math.max(maxInFlight, inFlight);
+      await Promise.resolve();
+      inFlight -= 1;
+      if (requestId % 17 === 0) throw new Error(`ipc-${requestId}`);
+      return { requestId } as T;
+    };
+    const api = new DesktopApiV2(invoke);
+
+    const results = await Promise.allSettled(Array.from({ length: 300 }, (_, requestId) =>
+      api.runtime.invoke<{ requestId: number }>('stress_ipc', { command: { requestId } })));
+
+    expect(maxInFlight).toBe(300);
+    expect(calls).toHaveLength(300);
+    expect(new Set(calls).size).toBe(300);
+    expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(282);
+    expect(results.filter((result) => result.status === 'rejected')).toHaveLength(18);
+    expect(results[17]).toMatchObject({ status: 'rejected', reason: expect.objectContaining({ message: 'ipc-17' }) });
+    expect(results[299]).toMatchObject({ status: 'fulfilled', value: { requestId: 299 } });
+  });
 });

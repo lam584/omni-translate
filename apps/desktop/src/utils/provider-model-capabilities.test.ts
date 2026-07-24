@@ -115,6 +115,7 @@ describe('provider model capabilities', () => {
     expect(inferInteractionCapabilitiesFromModelName('qwen-livetranslate-flash')).toEqual(['auto_vad', 'streaming']);
     expect(inferInteractionCapabilitiesFromModelName('custom-semantic_vad')).toEqual(['auto_vad']);
     expect(inferInteractionCapabilitiesFromModelName('gemini-native-audio-preview')).toEqual(['auto_vad', 'client_activity', 'streaming', 'chunked_http_audio', 'push_to_talk']);
+    expect(inferInteractionCapabilitiesFromModelName('gemini-realtime')).toEqual(['auto_vad', 'client_activity', 'streaming', 'push_to_talk']);
     expect(inferInteractionCapabilitiesFromModelName('custom', undefined, 'manual')).toEqual(['manual_commit', 'push_to_talk']);
     expect(inferInteractionCapabilitiesFromModelName('custom', undefined, 'gemini_auto_activity')).toEqual(['auto_vad', 'client_activity']);
     expect(inferInteractionCapabilitiesFromModelName('custom', undefined, 'gemini_manual_activity')).toEqual(['client_activity', 'push_to_talk']);

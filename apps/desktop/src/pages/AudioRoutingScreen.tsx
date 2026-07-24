@@ -85,7 +85,7 @@ function AudioRoutingPage() {
             id: key,
             model: key,
             displayName: `${providerName}: ${baseModel.displayName}`,
-            capabilities: resolveProviderModelCapabilities(baseModel, localRegistry ?? []),
+            capabilities: resolveProviderModelCapabilities(baseModel, localRegistry),
             description: cachedModel?.ownedBy ?? providerName,
             providerTemplateId,
             rawModelId: modelId,
@@ -322,8 +322,6 @@ function AudioRoutingPage() {
       case 'tts':
         patchDeviceConfig({ textToSpeechModelId: modelId });
         patchSpeechDraft({ textToSpeechModelId: modelId });
-        return;
-      default:
         return;
     }
   };

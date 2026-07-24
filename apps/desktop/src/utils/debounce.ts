@@ -18,9 +18,9 @@ export function debounce<Args extends unknown[]>(
       timer = null;
       const current = pendingArgs;
       pendingArgs = null;
-      if (current) {
-        fn(...current);
-      }
+      // A live timer is only created after pendingArgs is assigned. Cancellation
+      // clears both atomically, so the timer callback always owns arguments.
+      fn(...current!);
     }, delayMs);
   }) as {
     (...args: Args): void;

@@ -10,16 +10,22 @@ import { realTimeSessionPageHelpers } from './RealTimeSessionPage';
 
 const {
   CueStatusBadge,
+  CueSegmentRows,
+  createLaunchAttemptId,
+  describeSceneLaunchStage,
   describeRuntimeError,
   formatElapsed,
   formatLatencyMs,
   formatCueTiming,
   formatRuntimeClock,
   getSceneLaunchConfigurationProblem,
+  getSceneLaunchConfigurationMessage,
+  getSessionCueDisplaySegments,
   logSceneLaunchConfig,
   parseRuntimeTimestampMs,
   resolveSceneLabel,
   resolveSceneSpeechPatch,
+  resolveSceneVoiceModelId,
   resolveVoiceModelRuntime,
 } = realTimeSessionPageHelpers;
 
@@ -214,5 +220,102 @@ describe('realTimeSessionPageHelpers', () => {
     logSceneLaunchConfig('watch', configDraft, runtimeSnapshot, audioRuntimeSnapshot);
 
     expect(String(consoleSpy.mock.calls[0]?.[0] ?? '')).toContain('X-Enabled=enabled');
+  });
+
+  it('falls back safely when inline values and the full config cannot be serialized', () => {
+    const configDraft = structuredClone(appConfigDraftMock) as AppConfigDraft & { unsupported?: bigint };
+    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
+    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
+    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const speechPatch = { enabled: true } as Record<string, unknown> & { enabled: boolean };
+    speechPatch.self = speechPatch;
+    configDraft.unsupported = 1n;
+
+    logSceneLaunchConfig('watch', configDraft, runtimeSnapshot, audioRuntimeSnapshot, {
+      speechPatch: speechPatch as never,
+      isOmniModel: false,
+      secondarySubtitleTranslationEnabled: false,
+    });
+
+    const output = String(consoleSpy.mock.calls[0]?.[0] ?? '');
+    expect(output).toContain('[object Object]');
+    expect(output).toContain('(serialization failed)');
+  });
+
+  it('normalizes every runtime error shape', () => {
+    expect(describeRuntimeError(new Error('native failed'))).toBe('native failed');
+    expect(describeRuntimeError({ message: 'plain message', code: 7 })).toBe('plain message');
+    expect(describeRuntimeError({ value: 1 })).toBe('{"value":1}');
+    expect(describeRuntimeError('rejected')).toBe('rejected');
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(describeRuntimeError(circular)).toBe('[object Object]');
+  });
+
+  it('creates launch ids with crypto and fallback entropy', () => {
+    const randomUuid = vi.spyOn(crypto, 'randomUUID').mockReturnValue('00000000-0000-4000-8000-000000000000');
+    expect(createLaunchAttemptId('watch')).toBe('watch-00000000-0000-4000-8000-000000000000');
+    randomUuid.mockRestore();
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, 'crypto');
+    Object.defineProperty(globalThis, 'crypto', { configurable: true, value: undefined });
+    vi.spyOn(Date, 'now').mockReturnValue(123);
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    expect(createLaunchAttemptId('game')).toMatch(/^game-123-/);
+    Object.defineProperty(globalThis, 'crypto', descriptor!);
+  });
+
+  it('validates missing scene models and voice-room capture devices', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    const audioSnapshot = structuredClone(audioRuntimeSnapshotMock);
+    configDraft.devices.inboundVoiceModelId = '';
+    expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBe('model');
+    configDraft.devices.inboundVoiceModelId = 'inbound';
+    configDraft.devices.outboundVoiceModelId = '';
+    expect(getSceneLaunchConfigurationProblem('voice-room', configDraft, audioSnapshot)).toBe('model');
+    configDraft.devices.outboundVoiceModelId = 'outbound';
+    configDraft.devices.inboundVoiceModelId = '';
+    expect(getSceneLaunchConfigurationProblem('voice-room', configDraft, audioSnapshot)).toBe('model');
+    configDraft.devices.inboundVoiceModelId = 'inbound';
+    configDraft.devices.inputDeviceId = 'missing';
+    expect(getSceneLaunchConfigurationProblem('voice-room', configDraft, audioSnapshot)).toBe('input-device');
+    expect(getSceneLaunchConfigurationProblem('game', configDraft, audioSnapshot)).toBeNull();
+    expect(resolveSceneVoiceModelId('voice-room', configDraft)).toBe('outbound');
+    expect(resolveSceneVoiceModelId('game', configDraft)).toBe('inbound');
+  });
+
+  it('provides localized messages for every configuration problem', () => {
+    for (const problem of ['model', 'input-device', 'playback-device'] as const) {
+      expect(getSceneLaunchConfigurationMessage(problem, true)).toEqual(expect.any(String));
+      expect(getSceneLaunchConfigurationMessage(problem, false)).toEqual(expect.any(String));
+    }
+  });
+
+  it('labels every launch stage and the unknown fallback', () => {
+    for (const stage of ['omni-preconnect', 'bridge-ready', 'inbound-route', 'outbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay', 'fallback-route', null] as const) {
+      expect(describeSceneLaunchStage(stage)).toEqual(expect.any(String));
+    }
+  });
+
+  it('uses authoritative matching segments and rebuilds stale segments', () => {
+    const matching = {
+      ...baseCue,
+      displaySourceText: 'hello',
+      translatedText: '你好',
+      displaySegments: [{ sourceText: 'hello', translatedText: '你好', pending: false }],
+    };
+    expect(getSessionCueDisplaySegments(matching)).toHaveLength(1);
+    expect(getSessionCueDisplaySegments({ ...matching, displaySegments: [] })[0]).toMatchObject({ sourceText: 'hello' });
+    expect(getSessionCueDisplaySegments({ ...baseCue, displaySegments: undefined })).toHaveLength(1);
+  });
+
+  it('renders empty, pending, untranslated and translated cue segment states', () => {
+    const emptyCommitted = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, sourceText: '', committed: true }} />);
+    const emptyPending = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, sourceText: '', committed: false }} current />);
+    const untranslated = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, committed: true, displaySegments: [{ sourceText: 'source', translatedText: '', pending: false }] }} />);
+    const failed = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, translatedText: '[翻译失败] bad', committed: true }} current />);
+    expect(emptyCommitted).toContain('翻译失败');
+    expect(emptyPending).toContain('正在调用');
+    expect(untranslated).toContain('翻译失败');
+    expect(failed).toContain('cue-queue-error');
   });
 });

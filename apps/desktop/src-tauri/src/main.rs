@@ -31,6 +31,7 @@ use diagnostics::state::DiagnosticsStateStore;
 use provider::events::{execute_provider_smoke, fetch_provider_models, probe_provider};
 use runtime::contracts::RuntimeNotification;
 use runtime::events::sync_subtitle_overlay_window_state;
+use runtime::events::unlock_subtitle_overlay;
 use runtime::events::{
     bootstrap_runtime, emit_runtime_notification, emit_runtime_snapshot, get_runtime_snapshot,
     show_subtitle_overlay, sync_subtitle_overlay_chrome, sync_subtitle_overlay_region,
@@ -711,7 +712,8 @@ fn main() {
             session_v2,
             bridge_v2,
             diagnostics_v2,
-            configuration_v2
+            configuration_v2,
+            unlock_subtitle_overlay
         ])
         .setup(|app| {
             let setup_start = Instant::now();

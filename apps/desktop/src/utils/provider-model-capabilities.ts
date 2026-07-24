@@ -29,6 +29,7 @@ type SeedRegistryEntry = ProviderModelCapabilityRegistryEntry & {
   id: string;
   modelId: string;
   capabilities: ProviderCapability[];
+  interactionCapabilities: ProviderInteractionCapability[];
 };
 
 const seedRegistryEntries: SeedRegistryEntry[] = [
@@ -320,7 +321,7 @@ export function createDefaultLocalModelCapabilityRegistry(): ProviderModelCapabi
     capabilities: normalizeProviderCapabilityList(entry.capabilities),
     realtimeAudioMode: entry.realtimeAudioMode ?? inferRealtimeAudioModeFromModelName(entry.modelId),
     interactionCapabilities: normalizeProviderInteractionCapabilityList(
-      entry.interactionCapabilities ?? inferInteractionCapabilitiesFromModelName(entry.modelId, undefined, entry.realtimeAudioMode),
+      entry.interactionCapabilities,
     ),
   }));
 }

@@ -60,6 +60,10 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
   });
 
   it('updates subtitle font size from the appearance slider', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: { ...state.configDraft, subtitles: { ...state.configDraft.subtitles, overlayFontSize: 0 } },
+    }));
     await act(async () => {
       root.render(
         <MemoryRouter>

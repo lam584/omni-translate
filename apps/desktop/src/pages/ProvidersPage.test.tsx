@@ -674,6 +674,26 @@ describe('ProvidersPage', () => {
     );
   });
 
+  it('keeps the only visible custom provider when every fallback template is hidden', async () => {
+    await renderPage();
+    await click(addPlatformButton(container));
+    await inputText(modalInput(container, 0), 'Only Visible Custom');
+    await inputText(modalInput(container, 1), 'https://only-visible.example/v1');
+    await click(buttonByText(container, 'create'));
+    const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
+    window.localStorage.setItem('omni.providerTemplateCatalogPrefs', JSON.stringify(providerTemplates.map((template, order) => ({
+      templateId: template.id, enabled: true, hidden: true, order,
+    }))));
+    await act(async () => root.unmount());
+    root = createRoot(container);
+    await renderPage();
+
+    await click(deleteActiveProviderButton(container));
+
+    expect(useAppStore.getState().configDraft.activeProviderTemplateId).toBe(customTemplateId);
+    expect(useAppStore.getState().configDraft.providers.some((provider) => provider.templateId === customTemplateId)).toBe(true);
+  });
+
   it('removes a manually added scene model', async () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
@@ -837,6 +857,7 @@ describe('ProvidersPage', () => {
     await inputText(dialog.querySelector<HTMLInputElement>('input[type="number"]')!, '23000');
 
     expect(dialog.querySelector<HTMLInputElement>('input[placeholder="cn-beijing"]')?.value).toBe('cn-shanghai');
+    await selectValue(selects[0], 'openai-compatible');
     await click(Array.from(dialog.querySelectorAll<HTMLButtonElement>('.provider-modal-actions button')).at(0));
     expect(container.querySelector('.provider-modal')).toBeNull();
   });

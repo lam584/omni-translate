@@ -12,6 +12,7 @@ const tauriMocks = vi.hoisted(() => {
   let pointerPosition = { x: 0, y: 0 };
 
   return {
+    runtime: true,
     currentMonitorMock: vi.fn(),
     cursorPositionMock: vi.fn(async () => ({ ...pointerPosition })),
     innerSizeMock: vi.fn(),
@@ -111,7 +112,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('../runtime/tauri-runtime', () => ({
-  isTauriRuntime: () => true,
+  isTauriRuntime: () => tauriMocks.runtime,
 }));
 
 function cloneStoreState() {
@@ -158,6 +159,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    tauriMocks.runtime = true;
 
     if (!globalThis.PointerEvent) {
       Object.assign(globalThis, { PointerEvent: MouseEvent });
@@ -286,35 +288,126 @@ describe('SubtitleOverlayPage locked interaction', () => {
       root.render(<SubtitleOverlayPage />);
     });
 
-    tauriMocks.setPointerPosition({ x: 940, y: 220 });
-    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
+    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
     await advanceLockedRevealPoll();
 
     const button = container.querySelector('.subtitle-overlay-toggle-lock');
     expect(button).not.toBeNull();
+    expect(tauriMocks.invokeMock).toHaveBeenCalledWith(
+      'sync_subtitle_overlay_window_state',
+      expect.objectContaining({ locked: true, hotspotInteractive: true }),
+    );
     await act(async () => {
       button?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
     expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(false);
+    expect(tauriMocks.invokeMock).toHaveBeenCalledWith('unlock_subtitle_overlay');
   });
 
-  it('does not re-sync native chrome when the cursor leaves the unlock hotspot', async () => {
+  it('toggles a locked browser-preview overlay without invoking the native unlock command', async () => {
+    tauriMocks.runtime = false;
+    useAppStore.setState((state) => ({ ...state, configDraft: { ...state.configDraft,
+      subtitles: { ...state.configDraft.subtitles, overlayLocked: false } } }));
+    await act(async () => root.render(<SubtitleOverlayPage />));
+    const overlay = container.querySelector<HTMLElement>('.subtitle-overlay-root')!;
+    await act(async () => overlay.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+    const button = container.querySelector<HTMLButtonElement>('.subtitle-overlay-toggle-lock');
+    expect(button).not.toBeNull();
+    await act(async () => button!.click());
+    expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
+    expect(tauriMocks.invokeMock).not.toHaveBeenCalledWith('unlock_subtitle_overlay');
+  });
+
+  it('restores cursor passthrough when the cursor leaves the unlock hotspot', async () => {
     await act(async () => {
       root.render(<SubtitleOverlayPage />);
     });
 
-    const chromeSyncCallsBeforeHover = countSessionActionCalls('syncOverlayWindowState');
-
-    tauriMocks.setPointerPosition({ x: 940, y: 220 });
-    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
+    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
     await advanceLockedRevealPoll();
 
     tauriMocks.setPointerPosition({ x: 220, y: 280 });
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 220, y: 280 }));
     await advanceLockedRevealPoll();
 
-    expect(countSessionActionCalls('syncOverlayWindowState')).toBe(chromeSyncCallsBeforeHover);
+    const nativeStateCalls = tauriMocks.invokeMock.mock.calls.filter(
+      ([command]) => command === 'sync_subtitle_overlay_window_state',
+    );
+    expect(nativeStateCalls.some(([, args]) => (
+      (args as { hotspotInteractive?: boolean }).hotspotInteractive === true
+    ))).toBe(true);
+    expect(nativeStateCalls.at(-1)?.[1]).toEqual(
+      expect.objectContaining({ locked: true, hotspotInteractive: false }),
+    );
+  });
+
+  it('reports native unlock persistence failures, including non-Error IPC values', async () => {
+    tauriMocks.invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'unlock_subtitle_overlay') throw 'native offline';
+      if (command === 'session_v2') return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      return undefined;
+    });
+    await act(async () => root.render(<SubtitleOverlayPage />));
+    tauriMocks.setPointerPosition({ x: 220, y: 280 });
+    tauriMocks.cursorPositionMock.mockResolvedValue({ x: 220, y: 280 });
+    await advanceLockedRevealPoll();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.subtitle-overlay-toggle-lock')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('native offline');
+  });
+
+  it('reports Error instances from native unlock persistence', async () => {
+    tauriMocks.invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'unlock_subtitle_overlay') throw new Error('native error failure');
+      if (command === 'session_v2') return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      return undefined;
+    });
+    await act(async () => root.render(<SubtitleOverlayPage />));
+    tauriMocks.cursorPositionMock.mockResolvedValue({ x: 220, y: 280 });
+    await advanceLockedRevealPoll();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.subtitle-overlay-toggle-lock')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('native error failure');
+  });
+
+  it('ignores hover state changes while the overlay remains locked', async () => {
+    await act(async () => root.render(<SubtitleOverlayPage />));
+    const overlay = container.querySelector<HTMLElement>('.subtitle-overlay-root')!;
+    await act(async () => {
+      overlay.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      overlay.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+    });
+    expect(container.querySelector('.subtitle-overlay-root-locked')).toBeTruthy();
+  });
+
+  it('shows and hides the lock action while an unlocked overlay is hovered', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: { ...state.configDraft, subtitles: { ...state.configDraft.subtitles, overlayLocked: false } },
+    }));
+    await act(async () => root.render(<SubtitleOverlayPage />));
+    const overlay = container.querySelector<HTMLElement>('.subtitle-overlay-root')!;
+    await act(async () => overlay.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
+    const button = container.querySelector<HTMLButtonElement>('.subtitle-overlay-toggle-lock');
+    expect(button).toBeTruthy();
+    await act(async () => {
+      button?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+      button?.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
+      button?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
+    });
+    await act(async () => button?.click());
+    expect(tauriMocks.invokeMock).not.toHaveBeenCalledWith('unlock_subtitle_overlay');
+    useAppStore.getState().updateSubtitleDraft({ overlayLocked: false });
+    await act(async () => overlay.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
   });
 
   it('re-syncs native window state only once when the lock button toggles overlayLocked', async () => {
@@ -322,8 +415,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
       root.render(<SubtitleOverlayPage />);
     });
 
-    tauriMocks.setPointerPosition({ x: 940, y: 220 });
-    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
+    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
     await advanceLockedRevealPoll();
 
     const windowStateSyncCallsBeforeClick = countSessionActionCalls('syncOverlayWindowState');
@@ -551,8 +644,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
     await act(async () => {
       root.render(<SubtitleOverlayPage />);
     });
-    tauriMocks.setPointerPosition({ x: 940, y: 220 });
-    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 940, y: 220 }));
+    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
     await advanceLockedRevealPoll();
 
     const button = container.querySelector('.subtitle-overlay-toggle-lock');
@@ -597,8 +690,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
     await act(async () => {
       root.render(<SubtitleOverlayPage />);
     });
-    tauriMocks.setPointerPosition({ x: 940, y: 220 });
-    tauriMocks.cursorPositionMock.mockResolvedValue({ x: 940, y: 220 });
+    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
+    tauriMocks.cursorPositionMock.mockResolvedValue({ x: 1020, y: 220 });
     await advanceLockedRevealPoll();
     expect(container.querySelector('.subtitle-overlay-toggle-lock')).not.toBeNull();
 
@@ -958,6 +1051,46 @@ describe('SubtitleOverlayPage locked interaction', () => {
       Object.defineProperty(cues, 'scrollHeight', { configurable: true, value: 480 });
       notifyResize?.();
       expect(cues.scrollTop).toBe(480);
+    } finally {
+      Object.assign(globalThis, { ResizeObserver: OriginalResizeObserver });
+    }
+  });
+
+  it('does not auto-scroll a user-paused list during resize and renders fallback segment forms', async () => {
+    let notifyResize: (() => void) | undefined;
+    const OriginalResizeObserver = globalThis.ResizeObserver;
+    class ResizeObserverMock {
+      constructor(callback: ResizeObserverCallback) { notifyResize = () => callback([], this as unknown as ResizeObserver); }
+      observe() { /* test-controlled */ }
+      disconnect() { /* test-controlled */ }
+      unobserve() { /* test-controlled */ }
+    }
+    Object.assign(globalThis, { ResizeObserver: ResizeObserverMock });
+    try {
+      await act(async () => root.render(<SubtitleOverlayContent
+        cardStyle={{}} effectiveFontSize={24} lockLabel="lock" overlayLocked={false}
+        previewSource="source" previewTranslation="translation" showLockToggle windowSized={false}
+        onLockBlur={vi.fn()} onLockHover={vi.fn()} onLockToggle={vi.fn()}
+        displayCues={[
+          { cueId: 'legacy', routeDirection: 'inbound', sourceText: '', translatedText: 'legacy translation', startedAt: 'test', endedAt: 'test', committed: true },
+          { cueId: 'pending', routeDirection: 'inbound', sourceText: '', translatedText: '', displaySegments: [
+            { sourceText: '', translatedText: '', pending: false },
+            { sourceText: 'source without translation', translatedText: '', pending: false },
+            { sourceText: 'live source', translatedText: '', pending: true },
+            { sourceText: '', translatedText: 'live translation', pending: true },
+          ], startedAt: 'test', endedAt: 'test', committed: false },
+        ]}
+      />));
+      const history = container.querySelector<HTMLElement>('.subtitle-overlay-history')!;
+      Object.defineProperties(history, {
+        clientHeight: { configurable: true, value: 100 },
+        scrollHeight: { configurable: true, value: 500 },
+      });
+      history.scrollTop = 100;
+      await act(async () => history.dispatchEvent(new Event('scroll', { bubbles: true })));
+      notifyResize?.();
+      expect(history.scrollTop).toBe(100);
+      expect(container.textContent).toContain('live source');
     } finally {
       Object.assign(globalThis, { ResizeObserver: OriginalResizeObserver });
     }

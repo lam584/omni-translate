@@ -89,4 +89,56 @@ describe('executeSceneLaunchPlan', () => {
       .rejects.toThrow('launch timeout');
     expect(calls).toEqual(['bridge']);
   });
+
+  it('normalizes a non-Error abort reason', async () => {
+    const abortController = new AbortController();
+    abortController.abort('cancelled');
+
+    await expect(executeSceneLaunchPlan(plan(['inbound-route']), {
+      ...dependencies([]),
+      abortSignal: abortController.signal,
+    })).rejects.toThrow('Scene launch aborted');
+  });
+
+  it('continues after a parallel preconnect warning when Bridge succeeds', async () => {
+    const calls: string[] = [];
+    const deps = dependencies(calls);
+    deps.preconnectOmni = async () => { calls.push('preconnect'); throw new Error('provider unavailable'); };
+
+    const result = await executeSceneLaunchPlan(plan(['bridge-ready', 'omni-preconnect', 'inbound-route'], true), deps);
+
+    expect(result.status).toBe('fully-started');
+    expect(deps.onPreconnectWarning).toHaveBeenCalledWith(expect.any(Error));
+    expect(calls).toEqual(['bridge', 'preconnect', 'inbound-route']);
+  });
+
+  it('ignores cancellation failure while preserving a parallel Bridge error', async () => {
+    const calls: string[] = [];
+    const deps = dependencies(calls);
+    deps.ensureBridgeReady = async () => { throw new Error('bridge failed'); };
+    deps.cancelPreconnectOmni = async () => { throw new Error('cancel failed'); };
+
+    await expect(executeSceneLaunchPlan(plan(['bridge-ready', 'omni-preconnect'], true), deps)).rejects.toThrow('bridge failed');
+  });
+
+  it('rolls back a completed parallel preconnect and skips non-compensating stages', async () => {
+    const calls: string[] = [];
+    const deps = dependencies(calls);
+    deps.executeStage = async (stage) => {
+      calls.push(stage);
+      if (stage === 'inbound-route') throw 'native rejection';
+    };
+
+    const error = await executeSceneLaunchPlan(
+      plan(['bridge-ready', 'omni-preconnect', 'subtitle-overlay', 'inbound-route'], true),
+      deps,
+    ).catch((reason) => reason as SceneLaunchError);
+
+    expect(error).toBeInstanceOf(SceneLaunchError);
+    if (!(error instanceof SceneLaunchError)) throw new Error('expected launch failure');
+    expect(error.message).toBe('native rejection');
+    expect(calls).toContain('cancel-preconnect');
+    expect(calls).not.toContain('stop-subtitle-overlay');
+    expect(calls).not.toContain('stop-bridge-ready');
+  });
 });

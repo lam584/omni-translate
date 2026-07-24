@@ -11,6 +11,7 @@ import CustomProviderDialog from './CustomProviderDialog';
 import ProviderModelCatalog from './ProviderModelCatalog';
 import ProviderTemplateCatalog from './ProviderTemplateCatalog';
 import ProviderVerificationPanel from './ProviderVerificationPanel';
+import { AudioModeHelpDialog, PendingModelRegistrationDialog } from './ProviderModelDialogs';
 
 function render(element: React.ReactNode) {
   const container = document.createElement('div');
@@ -310,5 +311,89 @@ describe('provider catalog components', () => {
     expect(container.textContent).toContain('failed');
     await click(container.querySelector('.provider-header-icon'));
     expect(onClose).toHaveBeenCalled();
+  });
+
+  it('covers custom timeout fallback and closes the custom dialog from its backdrop', async () => {
+    const draft = {
+      displayName: 'Custom', kind: 'openai-compatible' as const, baseUrl: 'https://example.test', model: 'm',
+      transport: 'http' as const, authReference: 'credential://custom', authHeaderName: 'Authorization',
+      authScheme: 'none' as const, region: '', streamEnabled: false, timeoutMs: 1000, systemPromptTemplate: '',
+    };
+    const setDraft = vi.fn((updater) => updater(draft));
+    const onClose = vi.fn();
+    ({ container, root } = render(<CustomProviderDialog draft={draft} error={null} onClose={onClose} onKindChange={vi.fn()} onSave={vi.fn()} setDraft={setDraft} />));
+    await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '');
+    expect(setDraft).toHaveBeenCalled();
+    await click(container.querySelector('.provider-modal-backdrop'));
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it('renders model equality, preset catalog state, and ignores non-Enter manual keys', async () => {
+    const model: ProviderModelRuntime = { id: 'same', displayName: 'same', ownedBy: null, createdAt: null, capabilities: [] };
+    const onManualAdd = vi.fn();
+    ({ container, root } = render(<ProviderModelCatalog
+      catalog={{ signature: 's', status: 'ready', source: 'preset', endpoint: null, fetchedAt: null, error: null, models: [model] }}
+      catalogSections={[{ capability: 'text-generation', models: [model] }]} description="d" isModelAdded={() => false}
+      manualModelIdDraft="" onClose={vi.fn()} onManualAdd={onManualAdd} onManualDraftChange={vi.fn()}
+      onOpenCapabilityRegistry={vi.fn()} onQueryChange={vi.fn()} onRefresh={vi.fn()} onScenarioChange={vi.fn()}
+      onToggleModel={vi.fn()} query="" selectedScenario="watch" targetScenario="watch" uncategorizedModels={[]} />));
+    await act(async () => container!.querySelector<HTMLInputElement>('.provider-scene-manual-row input')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
+    expect(onManualAdd).not.toHaveBeenCalled();
+    expect(container.textContent).toContain('same');
+  });
+
+  it('handles pending model audio-mode changes and renders audio help', async () => {
+    const pending = {
+      scenario: 'watch' as const,
+      model: { id: 'm', displayName: 'M', ownedBy: null, createdAt: null, capabilities: [] } as ProviderModelRuntime,
+      capabilities: ['speech-to-text' as const], realtimeAudioMode: 'server_vad' as const,
+      interactionCapabilities: ['streaming' as const],
+    };
+    const onChange = vi.fn();
+    const onHelpClose = vi.fn();
+    ({ container, root } = render(<><PendingModelRegistrationDialog pending={pending} onChange={onChange}
+      onCapabilityToggle={vi.fn()} onInteractionToggle={vi.fn()} onConfirm={vi.fn()} onClose={vi.fn()} />
+      <AudioModeHelpDialog onClose={onHelpClose} /></>));
+    const select = container.querySelector<HTMLSelectElement>('select')!;
+    await change(select, 'invalid-mode');
+    const updater = onChange.mock.calls[0]?.[0] as (current: typeof pending | null) => typeof pending | null;
+    expect(updater(null)).toBeNull();
+    expect(updater(pending)).toStrictEqual(pending);
+    await change(select, 'manual');
+    const validUpdater = onChange.mock.calls.at(-1)?.[0] as (current: typeof pending | null) => typeof pending | null;
+    expect(validUpdater(pending)?.realtimeAudioMode).toBe('manual');
+    expect(container.querySelectorAll('.audio-mode-help-item')).toHaveLength(5);
+    await click(container.querySelector('.audio-mode-help-list')?.closest('[role="dialog"]'));
+    expect(onHelpClose).not.toHaveBeenCalled();
+  });
+
+  it('renders verification defaults with no probe error and a successful empty smoke result', async () => {
+    const activeProbe = {
+      id: 'p', templateId: 't', providerId: 'p', verdict: 'available' as const, checkedAt: 'now', measuredLatencyMs: 1,
+      latencyBudgetMs: 2, transportRequested: 'http' as const, transportEffective: 'http' as const,
+      streamSupported: true, fallbackApplied: false, errorShapeStable: true, responseShapeStable: true, checks: [], guidance: [],
+    };
+    const smokeResult = {
+      requestId: 's', providerId: 'p', status: 'completed' as const, transportRequested: 'http' as const,
+      transportEffective: 'http' as const, fallbackApplied: false, streamObserved: true, durationMs: 1,
+      firstEventLatencyMs: 0, transcript: '', sourceLanguage: 'en', targetLanguage: 'zh', eventLog: [],
+      inputTokens: 0, outputTokens: 0, audioSeconds: 0,
+      routingDecision: { subtitlePriority: 'balanced' as const, speechDisposition: 'ready' as const, rationale: 'ok' }, error: null,
+    };
+    ({ container, root } = render(<ProviderVerificationPanel activeProbe={activeProbe} probeResult={null}
+      smokeResult={smokeResult} summaryLabel="ready" summaryTone="ready" onClose={vi.fn()} />));
+    expect(container.querySelector('.result-log')).toBeNull();
+    expect(container.textContent).toBeTruthy();
+
+    const probeResult: ProviderProbeProfileRuntime = {
+      ...activeProbe,
+      verdict: 'unavailable' as const,
+      routingDecision: { subtitlePriority: 'balanced', speechDisposition: 'deferred', rationale: 'failed' },
+      error: { code: 'failed', message: 'no suggestion', retriable: false },
+    };
+    await act(async () => root!.render(<ProviderVerificationPanel activeProbe={activeProbe} probeResult={probeResult}
+      smokeResult={smokeResult} summaryLabel="warning" summaryTone="warning" onClose={vi.fn()} />));
+    expect(container.textContent).toContain('no suggestion');
   });
 });

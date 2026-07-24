@@ -8,6 +8,7 @@ import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import DiagnosticsPage, { runRecommendedBridgeAction } from './DiagnosticsPage';
 import { useAppStore } from '../stores/app-store';
 import type { BenchmarkReport } from '../runtime/benchmark-runtime';
+import { DiagnosticsReportExporter } from './diagnostics/DiagnosticsDetails';
 
 const startAudioRouteRuntimeMock = vi.fn();
 const startSpeechDispatchRuntimeMock = vi.fn();
@@ -953,5 +954,192 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     expect(getLiveSessionEventsRuntimeMock).toHaveBeenCalledTimes(2);
     expect(container.textContent).toContain('second');
+  });
+
+  it('runs the empty-state self-check action', async () => {
+    runDiagnosticsSelfCheckRuntimeMock.mockResolvedValue(structuredClone(useAppStore.getState().runtimeSnapshot));
+    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.diagnostics-empty-actions .icon-button')?.click();
+      await Promise.resolve();
+    });
+
+    expect(runDiagnosticsSelfCheckRuntimeMock).toHaveBeenCalled();
+  });
+
+  it('exercises both select-all directions and individual repair deselection', async () => {
+    const damaged = structuredClone(useAppStore.getState().runtimeSnapshot);
+    damaged.bridgeStatus = 'runtime-error';
+    damaged.bridge.driverHealth = 'damaged';
+    damaged.bridge.lifecycleState = 'error';
+    useAppStore.setState((state) => ({
+      ...state,
+      runtimeSnapshot: damaged,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' },
+      },
+    }));
+    await act(async () => {
+      root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>);
+      await Promise.resolve();
+    });
+    const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('.repair-task-list input'));
+
+    await act(async () => inputs[0]?.click());
+    await act(async () => inputs[0]?.click());
+    await act(async () => inputs[1]?.click());
+
+    expect(inputs.length).toBeGreaterThan(1);
+  });
+
+  it('publishes a successful bridge repair snapshot', async () => {
+    tauriRuntimeMock.isRuntime = true;
+    const damaged = structuredClone(useAppStore.getState().runtimeSnapshot);
+    damaged.bridge.driverHealth = 'damaged';
+    damaged.bridge.lifecycleState = 'error';
+    damaged.bridge.lastErrorCode = 'bridge.singleton-already-running';
+    const repaired = structuredClone(damaged);
+    repaired.bridge.driverHealth = 'running';
+    repaired.bridge.bridgeState = 'running';
+    repairDriverRuntimeMock.mockResolvedValue(repaired);
+    refreshBridgeRuntimeMock.mockResolvedValue(repaired);
+    useAppStore.setState((state) => ({
+      ...state,
+      runtimeSnapshot: damaged,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' },
+      },
+    }));
+    await act(async () => {
+      root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>);
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      await Promise.resolve();
+      const repairButton = container.querySelector<HTMLButtonElement>('.control-toolbar .icon-button');
+      expect(repairButton).not.toBeNull();
+      expect(repairButton?.disabled).toBe(false);
+      repairButton?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(repairDriverRuntimeMock).toHaveBeenCalled();
+    expect(useAppStore.getState().runtimeSnapshot.bridge.driverHealth).toBe('running');
+  });
+
+  it('exports benchmark and live-event reports through both formats', async () => {
+    const benchmarkExport = vi.spyOn(DiagnosticsReportExporter, 'exportBenchmark').mockImplementation(() => undefined);
+    const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockImplementation(() => undefined);
+    runModelBenchmarkMock.mockResolvedValue(benchmarkReport('export result'));
+    const audio = structuredClone(audioRuntimeSnapshotMock);
+    audio.sessionStartedAt = 'unix-ms:5000';
+    audio.inbound.streamBound = true;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
+    getLiveSessionEventsRuntimeMock.mockResolvedValue({
+      sessionStartedAt: 'unix-ms:5000', elapsedMs: 1000, model: 'live-model',
+      asrDeltas: [], outputDeltas: [], asrFinal: '', translationFinal: '',
+    });
+    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    for (const format of ['JSON', 'TXT']) {
+      await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
+      await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button'))
+        .find((button) => button.textContent === format)?.click());
+    }
+    expect(benchmarkExport).toHaveBeenCalledTimes(2);
+
+    await act(async () => container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head .icon-button')[1]?.click());
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    for (const format of ['JSON', 'TXT']) {
+      await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
+      await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button'))
+        .find((button) => button.textContent === format)?.click());
+    }
+    expect(liveExport).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders recent diagnostic issues without routes and safely ignores export before live events arrive', async () => {
+    const runtime = structuredClone(useAppStore.getState().runtimeSnapshot);
+    runtime.diagnostics.recentErrors = [{
+      id: 'local-warning', category: 'runtime', level: 'warning', summary: 'local warning', detail: null, emittedAt: 'test',
+    }];
+    const audio = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audio.sessionStartedAt = 'unix-ms:5000';
+    audio.sttConnected = true;
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: runtime, audioRuntimeSnapshot: audio }));
+    getLiveSessionEventsRuntimeMock.mockImplementation(() => new Promise(() => undefined));
+
+    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+    expect(Array.from(container.querySelectorAll('.compact-alert-item')).some((item) =>
+      item.tagName === 'DIV' && item.textContent?.includes('local warning'))).toBe(true);
+
+    await act(async () => container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button')?.click());
+    expect(container.querySelector('.benchmark-modal')).not.toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button'))
+      .find((button) => button.textContent === 'JSON')?.click());
+  });
+
+  it('normalizes sparse provider metadata, draft diagnostics, speech defaults, and speech-only live sessions', async () => {
+    const configDraft = structuredClone(useAppStore.getState().configDraft);
+    const baseProvider = configDraft.providers[0]!;
+    configDraft.providers = [
+      { ...baseProvider, authRef: undefined as never, localModelCapabilityRegistry: undefined as never,
+        sceneModelAssignments: [{ scenario: 'watch', modelIds: ['plain-model', 'scope::', 'scope::api', 'plain-model'] }] },
+      { ...baseProvider, templateId: 'sparse-provider', sceneModelAssignments: undefined as never },
+    ];
+    configDraft.speech.localPlaybackEnabled = undefined as never;
+    configDraft.speech.virtualMicOutputEnabled = undefined as never;
+    const runtime = structuredClone(runtimeSnapshotMock);
+    runtime.diagnostics.recentErrors = [{ id: 'draft-warning', category: 'runtime', level: 'warning', summary: 'draft warning', detail: null, emittedAt: 'test' }];
+    const audio = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audio.sessionStartedAt = 'unix-ms:5000';
+    audio.inbound.streamBound = false;
+    audio.outbound.streamBound = false;
+    audio.sttConnected = false;
+    audio.speech.dispatchState = 'playing';
+    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot: runtime, audioRuntimeSnapshot: audio }));
+
+    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+    expect(container.textContent).toContain('draft warning');
+    expect(container.querySelector('.diagnostics-live-events-button')).not.toBeNull();
+  });
+
+  it('renders sparse benchmark summaries and exports unknown-model live events', async () => {
+    const report = benchmarkReport('sparse');
+    report.audioDurationSecs = undefined as never;
+    report.runs = [];
+    runModelBenchmarkMock.mockResolvedValue(report);
+    const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockImplementation(() => undefined);
+    const audio = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audio.sessionStartedAt = 'unix-ms:5000';
+    audio.inbound.streamBound = true;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
+    getLiveSessionEventsRuntimeMock.mockResolvedValue({ sessionStartedAt: 'unix-ms:5000', elapsedMs: 0, model: '', asrDeltas: [], outputDeltas: [], asrFinal: '', translationFinal: '' });
+    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
+      await Promise.resolve(); await Promise.resolve();
+    });
+    expect(container.querySelector('.benchmark-modal')).not.toBeNull();
+    await act(async () => container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head .icon-button')[1]?.click());
+    await act(async () => { container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button')?.click(); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
+    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button')).find((button) => button.textContent === 'JSON')?.click());
+    expect(liveExport).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('live-events-unknown-'), 'json');
   });
 });

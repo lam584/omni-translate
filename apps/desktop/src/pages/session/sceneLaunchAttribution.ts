@@ -72,7 +72,7 @@ function latestRouteMarker(recentLogs: DiagnosticLogEntryRuntime[]): string | nu
   // recentLogs are ordered oldest-first by the native snapshot; walk backwards
   // so the newest acknowledgement/ready/error keyword wins.
   for (let index = recentLogs.length - 1; index >= 0; index -= 1) {
-    const summary = recentLogs[index]?.summary ?? '';
+    const summary = recentLogs[index].summary;
     const marker = ALL_ROUTE_MARKERS.find((candidate) => summary.includes(candidate));
     if (marker) return marker;
   }

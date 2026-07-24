@@ -153,7 +153,7 @@ export default function ProviderModelCatalog({
         </div>
 
         {catalog.error ? <div className="provider-inline-alert provider-inline-alert-warning">{catalog.error}</div> : null}
-        {catalog.fetchedAt ? <p className="provider-setting-footnote">{t('providers.modelCatalog.lastRefresh', { time: formatTimestampLabel(catalog.fetchedAt) ?? catalog.fetchedAt })}</p> : null}
+        {catalog.fetchedAt ? <p className="provider-setting-footnote">{t('providers.modelCatalog.lastRefresh', { time: formatTimestampLabel(catalog.fetchedAt) })}</p> : null}
 
         <div className="provider-model-list provider-model-list-modal">
           {catalogSections.map((section) => (

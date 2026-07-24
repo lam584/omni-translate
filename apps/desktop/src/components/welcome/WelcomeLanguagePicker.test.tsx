@@ -317,6 +317,36 @@ describe('WelcomeLanguagePicker', () => {
     readProviderSecretMock.mockRejectedValueOnce(new Error('credential backend unavailable'));
     await click(toggle);
     expect(container.textContent).toContain('credential backend unavailable');
+
+    readProviderSecretMock.mockRejectedValueOnce('credential string failure');
+    await click(toggle);
+    expect(container.textContent).toContain('credential string failure');
+  });
+
+  it('falls back to the default template for an unknown selection', async () => {
+    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    await click(getFooterButtons(container)[0]!);
+    const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
+    await selectValue(templateSelect, 'missing-template');
+    expect(container.querySelector<HTMLInputElement>('input[type="url"]')?.value).toBeTruthy();
+  });
+
+  it('does not update driver state after a late bridge refresh resolution or rejection', async () => {
+    let resolveRefresh!: (value: typeof runtimeSnapshotMock) => void;
+    refreshBridgeRuntimeMock.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve; }));
+    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    await click(getFooterButtons(container)[0]!);
+    await click(getFooterButtons(container)[1]!);
+    await click(getFooterButtons(container)[0]!);
+    await act(async () => resolveRefresh(structuredClone(runtimeSnapshotMock)));
+    expect(container.querySelector('.driver-management-card')).toBeNull();
+
+    let rejectRefresh!: (reason: unknown) => void;
+    refreshBridgeRuntimeMock.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectRefresh = reject; }));
+    await click(getFooterButtons(container)[1]!);
+    await click(getFooterButtons(container)[0]!);
+    await act(async () => rejectRefresh(new Error('late failure')));
+    expect(container.textContent).not.toContain('late failure');
   });
 
   it('updates the provider template and API address before surfacing save timeouts', async () => {
@@ -433,6 +463,35 @@ describe('WelcomeLanguagePicker', () => {
     expect(container.textContent).toContain('denied');
   });
 
+  it('returns safely when provider configuration is empty and formats unavailable probes without detail', async () => {
+    setTauriRuntime(true);
+    const { configDraft, runtimeSnapshot } = cloneStoreState();
+    runtimeSnapshot.bridgeStatus = 'tauri-shell';
+    runtimeSnapshot.storage.status = 'ready';
+    configDraft.providers = [];
+    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
+    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    await click(getFooterButtons(container)[0]!);
+    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'secret');
+    await click(getFooterButtons(container)[2]!);
+    expect(saveProviderSecretMock).not.toHaveBeenCalled();
+
+    const next = cloneStoreState();
+    next.runtimeSnapshot.bridgeStatus = 'tauri-shell';
+    next.runtimeSnapshot.storage.status = 'ready';
+    useAppStore.setState((state) => ({ ...state, ...next }));
+    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    saveProviderSecretMock.mockResolvedValue({ hasSecret: true });
+    runProviderProbeMock.mockResolvedValue({ verdict: 'unavailable', error: { message: '   ' } });
+    const select = container.querySelector<HTMLSelectElement>('select')!;
+    const nonWebsocket = Array.from(select.options).find((option) => option.value.includes('openai-compatible'))!;
+    await selectValue(select, nonWebsocket.value);
+    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'secret');
+    await click(getFooterButtons(container)[2]!);
+    await act(async () => Promise.resolve());
+    expect(container.textContent).toContain('API Key');
+  });
+
   it('shows non-error refresh failures after entering the driver step', async () => {
     refreshBridgeRuntimeMock.mockRejectedValue('bridge refresh unavailable');
     await act(async () => {
@@ -445,5 +504,25 @@ describe('WelcomeLanguagePicker', () => {
     });
 
     expect(container.textContent).toContain('bridge refresh unavailable');
+  });
+
+  it('shows Error refresh failures and accepts an available provider probe', async () => {
+    refreshBridgeRuntimeMock.mockRejectedValueOnce(new Error('bridge Error failure'));
+    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    await click(getFooterButtons(container)[0]!);
+    await click(getFooterButtons(container)[1]!);
+    await act(async () => Promise.resolve());
+    expect(container.textContent).toContain('bridge Error failure');
+
+    await click(getFooterButtons(container)[0]!);
+    saveProviderSecretMock.mockResolvedValue({ hasSecret: true });
+    runProviderProbeMock.mockResolvedValue({ verdict: 'available', error: null });
+    const select = container.querySelector<HTMLSelectElement>('select')!;
+    const nonWebsocket = Array.from(select.options).find((option) => option.value.includes('openai-compatible'))!;
+    await selectValue(select, nonWebsocket.value);
+    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'key');
+    await click(getFooterButtons(container)[2]!);
+    await act(async () => Promise.resolve());
+    expect(runProviderProbeMock).toHaveBeenCalled();
   });
 });

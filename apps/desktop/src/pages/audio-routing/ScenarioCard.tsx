@@ -59,8 +59,8 @@ export default function ScenarioCard(props: ScenarioCardProps) {
   }, [open]);
 
   const select = (index: number) => {
-    const option = props.modelOptions[index];
-    if (option) props.onSelect(option.model);
+    const option = props.modelOptions[index]!;
+    props.onSelect(option.model);
     setOpen(false);
   };
   const handleButtonKey = (event: KeyboardEvent<HTMLButtonElement>) => {
@@ -68,7 +68,9 @@ export default function ScenarioCard(props: ScenarioCardProps) {
       event.preventDefault();
       setActiveIndex(Math.max(0, props.modelOptions.findIndex((option) => option.model === props.value)));
       setOpen(true);
-    } else if (event.key === 'Escape') setOpen(false);
+      return;
+    }
+    if (event.key === 'Escape') setOpen(false);
   };
   const handleListKey = (event: KeyboardEvent<HTMLDivElement>) => {
     if (!props.modelOptions.length) return;

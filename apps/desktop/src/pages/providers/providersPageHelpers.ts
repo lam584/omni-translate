@@ -278,7 +278,7 @@ function resolveBaseUrlForApiFormat(kind: ProviderKind, currentBaseUrl: string, 
       return `${dashscopeOrigin}/api/v1`;
     }
 
-    return template.defaultDraft.kind === 'dashscope' ? template.defaultDraft.baseUrl : defaultBaseUrlForKind('dashscope');
+    return defaultBaseUrlForKind('dashscope');
   }
 
   if (dashscopeOrigin) {

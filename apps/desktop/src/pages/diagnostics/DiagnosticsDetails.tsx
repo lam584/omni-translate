@@ -167,7 +167,7 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
       <div className="benchmark-section">
         <h4>{i18n.t('diagnostics.benchmark.timeline')}</h4>
         <div className="benchmark-timeline-track">
-          <div className="benchmark-timeline-audio" style={{ width: `${pct(run.audioSendMs) ?? 0}%` }} title={i18n.t('diagnostics.benchmark.audioSendWithTime', { time: fmt(run.audioSendMs) })} />
+          <div className="benchmark-timeline-audio" style={{ width: `${pct(run.audioSendMs)}%` }} title={i18n.t('diagnostics.benchmark.audioSendWithTime', { time: fmt(run.audioSendMs) })} />
           {pct(run.responseCreatedMs) != null ? <span className="benchmark-timeline-marker benchmark-timeline-response" style={{ left: `${pct(run.responseCreatedMs)}%` }} title={`Response Created ${fmt(run.responseCreatedMs)}`} /> : null}
           {pct(run.firstOutputMs) != null ? <span className="benchmark-timeline-marker benchmark-timeline-first" style={{ left: `${pct(run.firstOutputMs)}%` }} title={i18n.t('diagnostics.benchmark.firstTokenWithTime', { time: fmt(run.firstOutputMs) })} /> : null}
           {pct(run.responseDoneMs) != null ? <span className="benchmark-timeline-marker benchmark-timeline-done" style={{ left: `${pct(run.responseDoneMs)}%` }} title={`Response Done ${fmt(run.responseDoneMs)}`} /> : null}
@@ -323,7 +323,7 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
       {outputSegments.length > 0 ? (
         <div className="benchmark-section">
           <h4>{i18n.t('diagnostics.benchmark.segmentedOutput', { count: outputSegments.length })}</h4>
-          <div className="benchmark-translation">{segmentedOutput || i18n.t('diagnostics.benchmark.waitingOutput')}</div>
+          <div className="benchmark-translation">{segmentedOutput}</div>
         </div>
       ) : null}
 

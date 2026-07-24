@@ -150,6 +150,44 @@ function getSceneLaunchConfigurationProblem(
   return null;
 }
 
+function getSceneLaunchConfigurationMessage(
+  problem: Exclude<ReturnType<typeof getSceneLaunchConfigurationProblem>, null>,
+  chinese: boolean,
+): string {
+  const messages = {
+    model: chinese
+      ? '请先在“音频路由”中选择适用于当前场景的语音模型。'
+      : 'Select a compatible voice model in Audio Routing before starting.',
+    'input-device': chinese
+      ? '当前麦克风不可用，请在“音频路由”中重新选择输入设备。'
+      : 'The selected microphone is unavailable. Choose an input device in Audio Routing.',
+    'playback-device': chinese
+      ? '当前系统播放设备不可用，请在“音频路由”中重新选择输出设备。'
+      : 'The selected playback device is unavailable. Choose an output device in Audio Routing.',
+  } as const;
+  return messages[problem];
+}
+
+export function diagnosticsReadyPatchForMode(sceneMode: SceneMode) {
+  return sceneMode === 'watch'
+    ? { deviceStatus: 'ready' as const }
+    : { deviceStatus: 'ready' as const, driverStatus: 'ready' as const };
+}
+
+export function WatchFallbackDialog({ onResolve }: { onResolve: WatchFallbackResolver }) {
+  const { t } = useTranslation();
+  return <div className="benchmark-modal-backdrop" onClick={() => onResolve(false)}>
+    <div className="benchmark-modal watch-fallback-modal" role="dialog" aria-modal="true"
+      aria-label={t('session.watchMode')} onClick={(event) => event.stopPropagation()}>
+      <div className="benchmark-modal-head"><div><p>{t('session.virtualDriverFallbackConfirm')}</p></div></div>
+      <div className="control-toolbar">
+        <button className="action-button" onClick={() => onResolve(true)} type="button">{t('common.confirm')}</button>
+        <button className="icon-button" onClick={() => onResolve(false)} type="button">{t('common.cancel')}</button>
+      </div>
+    </div>
+  </div>;
+}
+
 function describeSceneLaunchStage(stage: string | null) {
   switch (stage) {
     case 'omni-preconnect':
@@ -260,9 +298,9 @@ function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; cur
             </p>
           ) : cue.committed ? (
             <p className="cue-queue-error">{t('session.translationFailed')}</p>
-          ) : segment.pending ? (
+          ) : (
             <p className="live-caption-segment-pending">{t('session.callingLlm')}</p>
-          ) : null}
+          )}
         </div>
       ))}
     </div>
@@ -270,6 +308,8 @@ function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; cur
 }
 
 export const realTimeSessionPageHelpers = {
+  CueSegmentRows,
+  createLaunchAttemptId,
   parseRuntimeTimestampMs,
   resolveSceneLabel,
   formatElapsed,
@@ -279,6 +319,7 @@ export const realTimeSessionPageHelpers = {
   resolveVoiceModelRuntime,
   resolveSceneVoiceModelId,
   getSceneLaunchConfigurationProblem,
+  getSceneLaunchConfigurationMessage,
   describeSceneLaunchStage,
   resolveSceneSpeechPatch,
   logSceneLaunchConfig,
@@ -343,9 +384,7 @@ function RealTimeSessionPage() {
     setAudioSnapshot: setAudioRuntimeSnapshot,
     updateDeviceDraft,
     updateSpeechDraft,
-    updateDiagnosticsReady: (sceneMode) => updateDiagnosticsDraft(sceneMode === 'watch'
-      ? { deviceStatus: 'ready' }
-      : { deviceStatus: 'ready', driverStatus: 'ready' }),
+    updateDiagnosticsReady: (sceneMode) => updateDiagnosticsDraft(diagnosticsReadyPatchForMode(sceneMode)),
     pushNotification: pushRuntimeNotification,
     runBusyAction,
     confirmWatchFallback: () =>
@@ -380,11 +419,7 @@ function RealTimeSessionPage() {
     const configurationProblem = getSceneLaunchConfigurationProblem(mode, configDraft, audioRuntimeSnapshot);
     if (configurationProblem) {
       const chinese = i18n.language.toLowerCase().startsWith('zh');
-      const message = configurationProblem === 'model'
-        ? (chinese ? '请先在“音频路由”中选择适用于当前场景的语音模型。' : 'Select a compatible voice model in Audio Routing before starting.')
-        : configurationProblem === 'input-device'
-          ? (chinese ? '当前麦克风不可用，请在“音频路由”中重新选择输入设备。' : 'The selected microphone is unavailable. Choose an input device in Audio Routing.')
-          : (chinese ? '当前系统播放设备不可用，请在“音频路由”中重新选择输出设备。' : 'The selected playback device is unavailable. Choose an output device in Audio Routing.');
+      const message = getSceneLaunchConfigurationMessage(configurationProblem, chinese);
       setSessionLaunchProblem(message);
       appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] validation blocked', JSON.stringify({
         launchAttemptId,
@@ -684,31 +719,7 @@ function RealTimeSessionPage() {
         </article>
       </section>
 
-      {watchFallbackResolver && (
-        <div className="benchmark-modal-backdrop" onClick={() => resolveWatchFallback(false)}>
-          <div
-            className="benchmark-modal watch-fallback-modal"
-            role="dialog"
-            aria-modal="true"
-            aria-label={t('session.watchMode')}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <div className="benchmark-modal-head">
-              <div>
-                <p>{t('session.virtualDriverFallbackConfirm')}</p>
-              </div>
-            </div>
-            <div className="control-toolbar">
-              <button className="action-button" onClick={() => resolveWatchFallback(true)} type="button">
-                {t('common.confirm')}
-              </button>
-              <button className="icon-button" onClick={() => resolveWatchFallback(false)} type="button">
-                {t('common.cancel')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {watchFallbackResolver && <WatchFallbackDialog onResolve={resolveWatchFallback} />}
     </div>
   );
 }

@@ -57,19 +57,18 @@ function sceneLaunchTimeoutError(message: string) {
 }
 
 async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMs: number, timeoutMessage: string, onTimeout: () => Promise<void>): Promise<T> {
-  let timerId: ReturnType<typeof setTimeout> | null = null;
-  const timeout = new Promise<never>((_, reject) => {
-    timerId = setTimeout(() => {
-      void onTimeout().catch((error) => {
-        appendFrontendDiagnosticsLog('runtime', 'warning', `[SceneLaunch] timeout cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
-      });
-      reject(sceneLaunchTimeoutError(timeoutMessage));
-    }, timeoutMs);
-  });
+  let rejectTimeout!: (reason: Error) => void;
+  const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
+  const timerId = setTimeout(() => {
+    void onTimeout().catch((error) => {
+      appendFrontendDiagnosticsLog('runtime', 'warning', `[SceneLaunch] timeout cleanup failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    rejectTimeout(sceneLaunchTimeoutError(timeoutMessage));
+  }, timeoutMs);
   try {
     return await Promise.race([operation, timeout]);
   } finally {
-    if (timerId !== null) clearTimeout(timerId);
+    clearTimeout(timerId);
   }
 }
 
@@ -227,8 +226,8 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     });
   };
 
-  const startWatchFallback = async (options: SceneLaunchOptions, fallback: 'subtitles-only' | 'aec', originalError?: unknown) => {
-    const originalErrorMessage = originalError instanceof Error ? originalError.message : originalError == null ? '' : String(originalError);
+  const startWatchFallback = async (options: SceneLaunchOptions, fallback: 'subtitles-only' | 'aec', originalError: unknown) => {
+    const originalErrorMessage = originalError instanceof Error ? originalError.message : String(originalError);
     appendFrontendDiagnosticsLog('runtime', 'warning', `[WatchFallback] fallback strategy: ${fallback}`, stringifyRedacted({
       originalError: originalErrorMessage,
       bridge: runtimeSnapshot.bridge,
@@ -269,7 +268,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
       ensureBridgeReady: async () => undefined,
       preconnectOmni: async () => undefined,
       cancelPreconnectOmni: async () => undefined,
-      onPreconnectWarning: () => undefined,
+      onPreconnectWarning: String,
       onStageStart: (stage) => { fallbackStage = stage; },
       executeStage: async (stage) => {
         if (stage === 'inbound-route') snapshot = await startAudioRouteRuntime('inbound', fallbackPlan.config);
@@ -281,21 +280,19 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
       compensateStage: async (stage) => {
         if (stage === 'inbound-route') snapshot = await stopAudioRouteRuntime('inbound');
         else if (stage === 'translate-worker') snapshot = await stopTranslateWorkerRuntime();
-        else if (stage === 'speech-dispatch') snapshot = await stopSpeechDispatchRuntime();
+        else snapshot = await stopSpeechDispatchRuntime();
         controller.setAudioSnapshot(snapshot);
       },
       });
     } catch (error) {
-      if (error && typeof error === 'object') {
-        Object.assign(error, { fallbackStage });
-      }
+      Object.assign(error as object, { fallbackStage });
       throw error;
     }
     controller.pushNotification({
       id: `watch-fallback-${fallback}-${Date.now()}`,
       level: 'warning',
       source: 'session',
-      message: `${subtitlesOnly ? '已降级为仅字幕模式' : '已降级为回声消除模式'}${originalErrorMessage ? `（原始错误：${originalErrorMessage}）` : ''}`,
+      message: `${subtitlesOnly ? '已降级为仅字幕模式' : '已降级为回声消除模式'}（原始错误：${originalErrorMessage}）`,
       emittedAt: new Date().toISOString(),
     });
   };
@@ -381,7 +378,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             if (stage === 'inbound-route') snapshot = await stopAudioRouteRuntime('inbound');
             else if (stage === 'outbound-route') snapshot = await stopAudioRouteRuntime('outbound');
             else if (stage === 'translate-worker') snapshot = await stopTranslateWorkerRuntime();
-            else if (stage === 'speech-dispatch') snapshot = await stopSpeechDispatchRuntime();
+            else snapshot = await stopSpeechDispatchRuntime();
             controller.setAudioSnapshot(snapshot);
             /* Legacy overlay-specific notification removed; failure is reported after transactional rollback.
             controller.pushNotification({ id: `scene-overlay-${mode}-${Date.now()}`, level: 'error', source: 'session', message: `字幕浮窗打开失败：${error instanceof Error ? error.message : String(error)}`, emittedAt: new Date().toISOString() });
@@ -463,13 +460,12 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           } catch {
             // The combined error below still records that the native snapshot was unavailable.
           }
-          const fallbackCause = fallbackError instanceof SceneLaunchError ? fallbackError.cause : fallbackError;
+          const typedFallbackError = fallbackError as SceneLaunchError & { fallbackStage: SceneLaunchStage | null };
+          const fallbackCause = typedFallbackError.cause;
           appendFrontendDiagnosticsLog('runtime', 'error', '[WatchFallback] fallback failed', stringifyRedacted({
             originalError: launchError instanceof Error ? launchError.message : String(launchError),
             fallback,
-            fallbackStage: fallbackError && typeof fallbackError === 'object' && 'fallbackStage' in fallbackError
-              ? fallbackError.fallbackStage
-              : 'unknown',
+            fallbackStage: typedFallbackError.fallbackStage,
             fallbackError: fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause),
             nativeSnapshot,
           }));
@@ -504,3 +500,9 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
 
   return { ensureBridgeReady, launchScene, stopAll };
 }
+
+export const sceneSessionControllerHelpers = {
+  describeWatchLaunchFailure,
+  isBridgeStartupError,
+  withSceneLaunchTimeout,
+};

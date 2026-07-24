@@ -136,6 +136,10 @@ describe('diagnostics page helpers', () => {
       detail: index === 0 ? 'details' : null,
       emittedAt: 'test',
     }));
+    const alternateAudio = structuredClone(audio);
+    alternateAudio.inbound.recommendedAction = null;
+    alternateAudio.outbound.recommendedAction = 'restart-output';
+    expect(diagnosticsPageHelpers.buildOverviewIssues(runtime, alternateAudio, readySummary)[0]).toBeTruthy();
     const failedSummary = diagnosticsPageHelpers.getRuntimeEnvironmentSummary(runtime, audio);
     expect(diagnosticsPageHelpers.buildOverviewIssues(runtime, audio, failedSummary)).toMatchObject([
       { id: 'runtime-live-action-needed' },
@@ -648,6 +652,43 @@ describe('LiveSessionEventDetail', () => {
     expect(benchmarkText).toContain('ASR Final: recognized');
     expect(benchmarkText).toContain('Translation Final: translated');
     expect(benchmarkText).toContain('response.text.delta');
+  });
+
+  it('formats sparse live and benchmark exports with every empty-field fallback', () => {
+    expect(diagnosticsPageHelpers.buildOutputSegments([
+      { elapsedMs: 1, eventType: 'response.done', stash: '', committedText: '', rawText: '' },
+      { elapsedMs: 2, eventType: 'response.audio_transcript.text', stash: 'long candidate', committedText: '', rawText: '' },
+      { elapsedMs: 3, eventType: 'other', stash: 'x', committedText: '', rawText: '' },
+    ])).toEqual(['long candidate']);
+
+    const live = {
+      sessionStartedAt: 'start', elapsedMs: 1, model: 'm',
+      asrDeltas: [{ elapsedMs: 1, stash: '', text: '', eventType: 'asr' }],
+      outputDeltas: [{ elapsedMs: 2, eventType: 'out', stash: '', committedText: '' }],
+      asrFinal: '', translationFinal: '', pipelineMilestones: undefined,
+    };
+    const liveText = diagnosticsPageHelpers.formatLiveEventsTxt(live as never);
+    expect(liveText).toContain('N/A');
+    const liveHtml = renderToStaticMarkup(createElement(diagnosticsPageHelpers.LiveSessionEventDetail, { events: live as never, loading: false }));
+    expect(liveHtml).toContain('benchmark-delta-table');
+
+    const report = benchmarkReport({ run: {
+      asrFinal: '', translationFinal: '', firstAsrMs: null, firstOutputMs: null,
+      responseDoneMs: null, speechStartedMs: null, speechStoppedMs: null,
+      outputDeltas: [{ elapsedMs: 1, eventType: 'out', stash: '', committedText: '', rawText: '' }],
+    } });
+    expect(diagnosticsPageHelpers.formatBenchmarkTxt(report)).toContain('N/A');
+  });
+
+  it('renders early response diagnostics without the sparse-output hint', () => {
+    const report = benchmarkReport({ run: {
+      audioDurationSecs: 20, responseDoneAudioSentSecs: 1, responseDoneAudioChunksSent: 1,
+      outputDeltas: Array.from({ length: 4 }, (_, index) => ({
+        elapsedMs: index + 1, eventType: 'response.text.delta', stash: 'x', committedText: 'x', rawText: 'x',
+      })),
+    } });
+    const html = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, { report }));
+    expect(html).toContain('benchmark-warning');
   });
 
   it('exports diagnostic reports through the browser download adapter', () => {

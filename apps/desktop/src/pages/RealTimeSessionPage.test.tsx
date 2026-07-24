@@ -6,6 +6,7 @@ import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import RealTimeSessionPage from './RealTimeSessionPage';
+import { diagnosticsReadyPatchForMode, WatchFallbackDialog } from './RealTimeSessionScreen';
 import { waitForWatchRouteReadyRuntime } from '../runtime/audio-runtime';
 import { useAppStore } from '../stores/app-store';
 
@@ -519,6 +520,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(useAppStore.getState().configDraft.devices.routeMode).toBe('watch');
     expect(useAppStore.getState().configDraft.speech.enabled).toBe(false);
   });
+
 
   it('does not block watch launch on the legacy Omni preconnect command', async () => {
     preconnectOmniRealtimeRuntimeMock.mockRejectedValue(new Error('preconnect denied'));
@@ -1488,5 +1490,22 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(container.textContent).toContain('系统音频采集异常');
     expect(container.textContent).toContain('Bridge source pipe initialization timed out (10s).');
     expect(container.textContent).toContain('建议重启 Bridge Service 后重试');
+  });
+
+  it('handles every Watch fallback dialog dismissal and diagnostics-ready mode', async () => {
+    const onResolve = vi.fn();
+    await act(async () => root.render(<WatchFallbackDialog onResolve={onResolve} />));
+    await act(async () => container.querySelector<HTMLElement>('[role="dialog"]')?.click());
+    expect(onResolve).not.toHaveBeenCalled();
+    await act(async () => container.querySelector<HTMLButtonElement>('.action-button')?.click());
+    expect(onResolve).toHaveBeenLastCalledWith(true);
+    await act(async () => root.render(<WatchFallbackDialog onResolve={onResolve} />));
+    await act(async () => container.querySelector<HTMLButtonElement>('.icon-button')?.click());
+    expect(onResolve).toHaveBeenLastCalledWith(false);
+    await act(async () => root.render(<WatchFallbackDialog onResolve={onResolve} />));
+    await act(async () => container.querySelector<HTMLElement>('.benchmark-modal-backdrop')?.click());
+    expect(onResolve).toHaveBeenLastCalledWith(false);
+    expect(diagnosticsReadyPatchForMode('watch')).toEqual({ deviceStatus: 'ready' });
+    expect(diagnosticsReadyPatchForMode('game')).toEqual({ deviceStatus: 'ready', driverStatus: 'ready' });
   });
 });

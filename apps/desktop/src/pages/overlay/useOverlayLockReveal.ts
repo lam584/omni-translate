@@ -33,14 +33,15 @@ export function useOverlayLockReveal(overlayLocked: boolean) {
       inFlight = true;
 
       try {
-        const [pointer, overlayPosition, overlaySize] = await Promise.all([
+        const [pointer, overlayPosition, overlaySize, scaleFactor] = await Promise.all([
           cursorPosition(),
           windowHandle.outerPosition(),
           windowHandle.outerSize(),
+          windowHandle.scaleFactor(),
         ]);
         if (disposed) return;
 
-        const nextReveal = calculateLockedRevealState(pointer, overlayPosition, overlaySize);
+        const nextReveal = calculateLockedRevealState(pointer, overlayPosition, overlaySize, scaleFactor);
         setLockedReveal((current) => (
           current.visible === nextReveal.visible && current.interactive === nextReveal.interactive
             ? current

@@ -119,4 +119,49 @@ describe('describeSceneLaunchAttribution', () => {
     expect(result.message).toContain('采集状态未知');
     expect(result.message).toContain('无相关记录');
   });
+
+  it.each([
+    [null, ''],
+    [{ message: ' object detail ' }, 'object detail'],
+    [{ code: 7 }, '[object Object]'],
+    [42, '42'],
+  ])('normalizes non-Error launch details from %o', (error, expected) => {
+    const result = describeSceneLaunchAttribution({
+      stage: null,
+      error,
+      snapshot: snapshotWithInbound({ captureState: 'idle', streamBound: true, lastError: null }),
+      recentLogs: [logEntry('unrelated native log')],
+      commandAccepted: false,
+    });
+
+    expect(result.outcome).toBe('command-rejected');
+    if (expected) expect(result.message).toContain(expected);
+    expect(result.message).toContain('已绑定 是');
+  });
+
+  it('recognizes route-ready markers and walks past newer unrelated log entries', () => {
+    const result = describeSceneLaunchAttribution({
+      stage: 'outbound-route',
+      error: '',
+      snapshot: snapshotWithInbound({ captureState: 'armed', streamBound: false, lastError: null }),
+      recentLogs: [logEntry('watch_mode.route_ready'), logEntry('unrelated')],
+      commandAccepted: false,
+    });
+
+    expect(result.outcome).toBe('capture-not-ready');
+    expect(result.message).toContain('route_ready');
+  });
+
+  it('uses the generic native capture error when neither snapshot nor thrown value has detail', () => {
+    const result = describeSceneLaunchAttribution({
+      stage: 'inbound-route',
+      error: null,
+      snapshot: snapshotWithInbound({ captureState: 'buffering', streamBound: false, lastError: '' }),
+      recentLogs: [logEntry('watch_mode.route_error')],
+      commandAccepted: true,
+    });
+
+    expect(result.outcome).toBe('capture-error');
+    expect(result.message).toContain('原生采集返回错误');
+  });
 });

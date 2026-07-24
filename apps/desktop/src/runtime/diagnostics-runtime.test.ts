@@ -16,6 +16,7 @@ vi.mock('./tauri-runtime', () => ({
 import {
   appendFrontendDiagnosticsLog,
   exportDiagnosticsBundleRuntime,
+  getRecentDiagnosticsLogsRuntime,
   runDiagnosticsSelfCheckRuntime,
   runSubtitleOverlaySelfCheckRuntime,
 } from './diagnostics-runtime';
@@ -90,5 +91,37 @@ describe('diagnostics runtime', () => {
       detail: null,
     });
     expect(warnSpy).toHaveBeenCalledWith('[diagnostics] append_frontend_diagnostics_log failed:', expect.any(Error));
+  });
+
+  it('returns no recent native logs in browser preview mode', async () => {
+    await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([]);
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('maps recent native log IPC responses and missing arrays', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    const entry = {
+      id: 'route-ready',
+      category: 'runtime',
+      level: 'info',
+      summary: 'watch_mode.route_ready',
+      detail: null,
+      emittedAt: '2026-07-25T00:00:00.000Z',
+    } as const;
+    mocks.invoke.mockResolvedValueOnce({ recentLogs: [entry] }).mockResolvedValueOnce({});
+
+    await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([entry]);
+    await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([]);
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'get_diagnostics_snapshot');
+  });
+
+  it('degrades failed recent-log IPC reads to an empty list', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke.mockRejectedValue(new Error('diagnostics unavailable'));
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+
+    await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([]);
+
+    expect(warnSpy).toHaveBeenCalledWith('[diagnostics] get_diagnostics_snapshot failed:', expect.any(Error));
   });
 });

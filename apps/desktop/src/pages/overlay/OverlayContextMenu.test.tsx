@@ -48,6 +48,9 @@ describe('OverlayContextMenu', () => {
       });
     };
     const panels = container.querySelectorAll('.subtitle-overlay-context-submenu-panel');
+    const menu = container.querySelector('.subtitle-overlay-context-menu')!;
+    expect(menu.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }))).toBe(false);
+    menu.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     await click(panels[0].querySelector('button')!);
     await click(panels[1].querySelector('button')!);
     await click(panels[2].querySelector('button')!);

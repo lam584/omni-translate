@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { subtitleOverlayPageHelpers } from './SubtitleOverlayPage';
+import { overlayFallbackText } from './overlay/overlayDomain';
 
 describe('subtitle overlay page helpers', () => {
+  it('resolves fallback translations and preserves unknown or object keys', () => {
+    expect(overlayFallbackText('overlay')).toBe('overlay');
+    expect(overlayFallbackText('overlay.missing.key')).toBe('overlay.missing.key');
+    expect(overlayFallbackText('overlay.unlockAction')).toBe('解锁');
+  });
   it('clamps values and converts monitor positions to bounded percentages', () => {
     expect(subtitleOverlayPageHelpers.clamp(-1, 0, 10)).toBe(0);
     expect(subtitleOverlayPageHelpers.clamp(5, 0, 10)).toBe(5);
@@ -87,6 +93,19 @@ describe('subtitle overlay page helpers', () => {
     ]);
   });
 
+  it('pads explicit source rows when translation wraps onto more lines', () => {
+    const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    cue.displaySegments = [{ sourceText: 'one source line', translatedText: 'first translation\nsecond translation', pending: false }];
+    cue.displaySourceText = 'one source line';
+    cue.sourceText = 'one source line';
+    cue.translatedText = 'first translation\nsecond translation';
+
+    expect(subtitleOverlayPageHelpers.getCueDisplaySegments(cue)).toEqual([
+      expect.objectContaining({ sourceText: 'one source line', translatedText: 'first translation' }),
+      expect.objectContaining({ sourceText: '', translatedText: 'second translation' }),
+    ]);
+  });
+
   it('calculates every resize direction and enforces minimum dimensions', () => {
     const base = {
       direction: 'SouthEast' as const,
@@ -139,6 +158,30 @@ describe('subtitle overlay page helpers', () => {
     expect(subtitleOverlayPageHelpers.calculateLockedRevealState({ x: 100, y: 206 }, position, { width: 40, height: 40 })).toEqual({
       interactive: true, visible: true,
     });
+  });
+
+  it('scales the locked reveal hotspot to physical pixels on high-DPI displays', () => {
+    const position = { x: 200, y: 300 };
+    const size = { width: 1280, height: 360 };
+
+    expect(subtitleOverlayPageHelpers.calculateLockedRevealState(
+      { x: 1403, y: 348 },
+      position,
+      size,
+      2,
+    )).toEqual({ interactive: true, visible: true });
+    expect(subtitleOverlayPageHelpers.calculateLockedRevealState(
+      { x: 1350, y: 348 },
+      position,
+      size,
+      1,
+    )).toEqual({ interactive: false, visible: true });
+    expect(subtitleOverlayPageHelpers.calculateLockedRevealState(
+      { x: 450, y: 220 },
+      { x: 100, y: 200 },
+      { width: 400, height: 100 },
+      Number.NaN,
+    )).toEqual({ interactive: true, visible: true });
   });
 
 });

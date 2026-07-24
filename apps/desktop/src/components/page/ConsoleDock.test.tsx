@@ -127,6 +127,16 @@ describe('ConsoleDock', () => {
     expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
     expect(replaceState).toHaveBeenCalledWith(null, '', '#first');
     await click('select-missing');
+
+    await act(async () => {
+      observerCallback?.([
+        { isIntersecting: false, intersectionRatio: 0, target: document.getElementById('first')! },
+      ] as unknown as IntersectionObserverEntry[], {} as IntersectionObserver);
+    });
+
+    const expandedSections = [...sections, { id: 'third', token: '03', label: 'Third' }];
+    await act(async () => root.render(<HookHarness items={expandedSections} />));
+    expect(container.querySelector('output')?.textContent).toContain('"third":false');
   });
 
   it('handles empty dock sections without installing an observer', async () => {
@@ -141,7 +151,7 @@ describe('ConsoleDock', () => {
   });
 
   it('skips section scrolling without browser dependencies or a matching target', () => {
-    expect(scrollToConsoleSection('first', undefined, undefined)).toBe(false);
+    expect(scrollToConsoleSection('first', null as unknown as Window, null as unknown as Document)).toBe(false);
     expect(scrollToConsoleSection('missing', window, document)).toBe(false);
   });
 });

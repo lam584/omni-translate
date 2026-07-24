@@ -162,22 +162,6 @@ function wrapCaptionSentence(sentence: string) {
   }, []);
 }
 
-function groupCaptionLines(lines: string[], lineCount: number) {
-  if (lines.length === 0) return Array.from({ length: lineCount }, () => '');
-  if (lines.length === lineCount) return lines;
-  const grouped: string[] = [];
-  let start = 0;
-
-  for (let lineIndex = 0; lineIndex < lineCount; lineIndex += 1) {
-    const remainingLines = lineCount - lineIndex;
-    const take = Math.ceil((lines.length - start) / remainingLines);
-    grouped.push(lines.slice(start, start + take).join(' '));
-    start += take;
-  }
-
-  return grouped;
-}
-
 export function splitDisplayLines(text: string) {
   return text
     .split(/(?<=[.!?;。！？；])\s*|\n+/u)
@@ -196,13 +180,14 @@ function expandExplicitSegment(
   const alignedSourceLines = sourceLines.length > 0
     ? sourceLines
     : Array.from({ length: lineCount }, () => '');
-  const alignedTranslatedLines = translatedLines.length > lineCount
-    ? groupCaptionLines(translatedLines, lineCount)
-    : [...translatedLines, ...Array.from({ length: lineCount - translatedLines.length }, () => '')];
+  const alignedTranslatedLines = [
+    ...translatedLines,
+    ...Array.from({ length: lineCount - translatedLines.length }, () => ''),
+  ];
 
   return Array.from({ length: lineCount }, (_, lineIndex) => ({
     sourceText: alignedSourceLines[lineIndex] ?? '',
-    translatedText: alignedTranslatedLines[lineIndex] ?? '',
+    translatedText: alignedTranslatedLines[lineIndex],
     pending: segment.pending || (Boolean(alignedSourceLines[lineIndex]) && !alignedTranslatedLines[lineIndex]),
     id: `${cueId}-segment-${segmentIndex}-${lineIndex}`,
   }));
@@ -283,20 +268,25 @@ export function calculateLockedRevealState(
   pointer: { x: number; y: number },
   overlayPosition: { x: number; y: number },
   overlaySize: { height: number; width: number },
+  scaleFactor = 1,
 ): LockedRevealState {
+  const physicalScale = Number.isFinite(scaleFactor) && scaleFactor > 0 ? scaleFactor : 1;
   const insideOverlayBounds =
     pointer.x >= overlayPosition.x &&
     pointer.x <= overlayPosition.x + overlaySize.width &&
     pointer.y >= overlayPosition.y &&
     pointer.y <= overlayPosition.y + overlaySize.height;
-  const hotspotLeft = overlayPosition.x + Math.max(0, overlaySize.width - LOCK_BUTTON_HOTSPOT_WIDTH - LOCK_BUTTON_HOTSPOT_INSET);
-  const hotspotTop = overlayPosition.y + LOCK_BUTTON_HOTSPOT_INSET;
+  const hotspotWidth = LOCK_BUTTON_HOTSPOT_WIDTH * physicalScale;
+  const hotspotHeight = LOCK_BUTTON_HOTSPOT_HEIGHT * physicalScale;
+  const hotspotInset = LOCK_BUTTON_HOTSPOT_INSET * physicalScale;
+  const hotspotLeft = overlayPosition.x + Math.max(0, overlaySize.width - hotspotWidth - hotspotInset);
+  const hotspotTop = overlayPosition.y + hotspotInset;
   const insideLockHotspot =
     insideOverlayBounds &&
     pointer.x >= hotspotLeft &&
-    pointer.x <= hotspotLeft + LOCK_BUTTON_HOTSPOT_WIDTH &&
+    pointer.x <= hotspotLeft + hotspotWidth &&
     pointer.y >= hotspotTop &&
-    pointer.y <= hotspotTop + LOCK_BUTTON_HOTSPOT_HEIGHT;
+    pointer.y <= hotspotTop + hotspotHeight;
 
   return { interactive: insideLockHotspot, visible: insideOverlayBounds };
 }

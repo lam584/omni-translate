@@ -1,4 +1,4 @@
-import { useCallback, useLayoutEffect, useRef, type CSSProperties } from 'react';
+import { useCallback, useLayoutEffect, useRef, type CSSProperties, type UIEvent } from 'react';
 import type { SubtitleCueRuntime } from '../../schema/audio-runtime';
 import {
   getCueDisplaySegments,
@@ -59,9 +59,8 @@ export default function SubtitleOverlayContent(props: Props) {
     return () => observer.disconnect();
   }, [scrollToLatest]);
 
-  const handleCuesScroll = useCallback(() => {
-    const element = cuesRef.current;
-    if (!element) return;
+  const handleCuesScroll = useCallback((event: UIEvent<HTMLDivElement>) => {
+    const element = event.currentTarget;
     followingLatestRef.current = element.scrollHeight - element.scrollTop - element.clientHeight <= 2;
   }, []);
 
@@ -74,7 +73,7 @@ export default function SubtitleOverlayContent(props: Props) {
         const fontScale = Math.max(MIN_SUBTITLE_FONT_SCALE, cueScale);
         const sourceFontSize = `${Math.round(props.effectiveFontSize * fontScale)}px`;
         const translationFontSize = `${Math.round(props.effectiveFontSize * TRANSLATION_FONT_SCALE * fontScale)}px`;
-        return <div className="subtitle-overlay-cue" key={cue.cueId}>{finalizedSegments.map((segment) => <div className="subtitle-overlay-segment" key={segment.id}>{segment.sourceText ? <p className="subtitle-overlay-source" style={{ fontSize: sourceFontSize }}>{segment.sourceText}</p> : null}<p className="subtitle-overlay-translation" style={{ fontSize: translationFontSize }}>{segment.translatedText || '\u00a0'}</p></div>)}</div>;
+        return <div className="subtitle-overlay-cue" key={cue.cueId}>{finalizedSegments.map((segment) => <div className="subtitle-overlay-segment" key={segment.id}>{segment.sourceText ? <p className="subtitle-overlay-source" style={{ fontSize: sourceFontSize }}>{segment.sourceText}</p> : null}<p className="subtitle-overlay-translation" style={{ fontSize: translationFontSize }}>{segment.translatedText}</p></div>)}</div>;
       })}</div>
       <div className={liveText ? 'subtitle-overlay-stream-slot subtitle-overlay-stream-slot-active' : 'subtitle-overlay-stream-slot'}>
         <p className="subtitle-overlay-stream-text" style={{ fontSize: `${Math.round(props.effectiveFontSize * TRANSLATION_FONT_SCALE)}px` }}>{liveText || '\u00a0'}</p>

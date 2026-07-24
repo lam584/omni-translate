@@ -212,12 +212,7 @@ function ProvidersPage() {
   });
 
   const handleTemplateApply = (templateId: string) => {
-    const template = allTemplates.find((item) => item.id === templateId);
-
-    if (!template) {
-      return;
-    }
-
+    const template = allTemplates.find((item) => item.id === templateId)!;
     applyTemplate(template);
   };
 
@@ -238,7 +233,7 @@ function ProvidersPage() {
       kind,
       baseUrl: defaultBaseUrlForKind(kind),
       transport: defaultTransportForKind(kind),
-      region: kind === 'dashscope' ? current.region || 'cn-beijing' : '',
+      region: kind === 'dashscope' ? 'cn-beijing' : '',
       systemPromptTemplate: defaultPromptTemplateForKind(kind),
     }));
   };

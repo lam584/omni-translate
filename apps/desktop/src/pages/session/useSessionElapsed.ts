@@ -21,10 +21,8 @@ export function useSessionElapsed(sessionStartedAt: string | null, isSessionRunn
       updateElapsed();
       timerRef.current ??= setInterval(updateElapsed, 1_000);
     } else {
-      if (timerRef.current) {
-        clearInterval(timerRef.current);
-        timerRef.current = null;
-      }
+      // React runs the previous effect cleanup before this branch, so any live
+      // interval has already been cleared.
       queueMicrotask(() => setElapsed(0));
     }
     return () => {

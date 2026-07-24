@@ -46,4 +46,14 @@ describe('debounce', () => {
     expect(fn).toHaveBeenCalledTimes(1);
     expect(fn).toHaveBeenCalledWith('value');
   });
+
+  it('allows cancel and flush before any work is scheduled', () => {
+    const fn = vi.fn();
+    const debounced = debounce(fn, 100);
+
+    debounced.cancel();
+    debounced.flush();
+
+    expect(fn).not.toHaveBeenCalled();
+  });
 });

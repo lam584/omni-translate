@@ -18,19 +18,36 @@ use super::windows::sync_subtitle_overlay_input_state;
 
 pub const RUNTIME_SNAPSHOT_EVENT: &str = "runtime://snapshot";
 pub const RUNTIME_NOTIFICATION_EVENT: &str = "runtime://notification";
+const CONFIG_DRAFT_UPDATED_EVENT: &str = "config://draft-updated";
+
+fn should_ignore_subtitle_overlay_cursor_events(locked: bool, hotspot_interactive: bool) -> bool {
+    locked && !hotspot_interactive
+}
+
+fn apply_subtitle_overlay_input_policy(
+    window: &tauri::WebviewWindow,
+    locked: bool,
+    hotspot_interactive: bool,
+) -> Result<(), String> {
+    sync_subtitle_overlay_input_state(window, locked)?;
+    apply_subtitle_overlay_click_through(
+        window,
+        should_ignore_subtitle_overlay_cursor_events(locked, hotspot_interactive),
+    )
+}
 
 fn sync_persisted_subtitle_overlay_input(app: &AppHandle, window: &tauri::WebviewWindow) {
     let locked = app
         .state::<StorageStateStore>()
         .load_config()
         .ok()
-        .and_then(|config| config.pointer("/subtitles/overlayLocked").and_then(|value| value.as_bool()))
+        .and_then(|config| {
+            config
+                .pointer("/subtitles/overlayLocked")
+                .and_then(|value| value.as_bool())
+        })
         .unwrap_or(false);
-    let _ = sync_subtitle_overlay_input_state(window, locked);
-    // Never mark the overlay globally click-through: the per-region WM_NCHITTEST
-    // hook keeps the unlock hotspot interactive while the rest stays passthrough,
-    // so the in-page unlock pill can be clicked without a separate catcher window.
-    let _ = apply_subtitle_overlay_click_through(window, false);
+    let _ = apply_subtitle_overlay_input_policy(window, locked, false);
 }
 
 pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> RuntimeSnapshot {
@@ -231,16 +248,47 @@ pub fn sync_subtitle_overlay_window_state(
     app: AppHandle,
     locked: bool,
     _rounded: bool,
-    _hotspot_interactive: bool,
+    hotspot_interactive: bool,
 ) -> Result<(), String> {
     let window = ensure_subtitle_overlay_window(&app).map_err(|error| error.to_string())?;
 
-    sync_subtitle_overlay_input_state(&window, locked)?;
-    // Keep the overlay cursor-interactive at the OS level even while locked and
-    // let the per-region WM_NCHITTEST hook decide passthrough: everything except
-    // the top-right unlock hotspot reports HTTRANSPARENT (click-through), while
-    // the hotspot reports HTCLIENT so the in-page unlock pill stays clickable.
-    apply_subtitle_overlay_click_through(&window, false)?;
+    // While locked, the whole window ignores cursor input until polling reports
+    // that the pointer is over the unlock hotspot. At that point input is
+    // restored on this same window, and the WM_NCHITTEST hook still confines it
+    // to the hotspot. This works reliably with WebView2's child HWND hierarchy.
+    apply_subtitle_overlay_input_policy(&window, locked, hotspot_interactive)?;
     apply_subtitle_overlay_window_chrome(&window)?;
     apply_subtitle_overlay_region(&window, true)
+}
+
+#[tauri::command]
+pub fn unlock_subtitle_overlay(app: AppHandle) -> Result<(), String> {
+    let storage = app.state::<StorageStateStore>();
+    storage.ensure_initialized(&app)?;
+    let mut config = storage.load_config()?;
+    let locked = config
+        .pointer_mut("/subtitles/overlayLocked")
+        .ok_or_else(|| "missing subtitles.overlayLocked in persisted config".to_string())?;
+    *locked = serde_json::Value::Bool(false);
+    storage.save_config(&config)?;
+    app.emit(CONFIG_DRAFT_UPDATED_EVENT, config)
+        .map_err(|error| error.to_string())?;
+
+    let window = ensure_subtitle_overlay_window(&app).map_err(|error| error.to_string())?;
+    apply_subtitle_overlay_input_policy(&window, false, false)?;
+    apply_subtitle_overlay_window_chrome(&window)?;
+    apply_subtitle_overlay_region(&window, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_ignore_subtitle_overlay_cursor_events;
+
+    #[test]
+    fn locked_overlay_only_accepts_input_inside_the_unlock_hotspot() {
+        assert!(should_ignore_subtitle_overlay_cursor_events(true, false));
+        assert!(!should_ignore_subtitle_overlay_cursor_events(true, true));
+        assert!(!should_ignore_subtitle_overlay_cursor_events(false, false));
+        assert!(!should_ignore_subtitle_overlay_cursor_events(false, true));
+    }
 }

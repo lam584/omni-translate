@@ -30,8 +30,8 @@ type ConsoleLaneProps = {
 
 export function scrollToConsoleSection(
   sectionId: string,
-  targetWindow: Window | undefined = typeof window === 'undefined' ? undefined : window,
-  targetDocument: Document | undefined = typeof document === 'undefined' ? undefined : document,
+  targetWindow: Window | undefined = globalThis.window,
+  targetDocument: Document | undefined = globalThis.document,
 ) {
   if (!targetWindow || !targetDocument) {
     return false;

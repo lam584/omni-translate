@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { useAppStore } from '../stores/app-store';
+import { writeProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
 import GlossaryPage from './GlossaryPage';
 
 async function click(element: HTMLElement | null | undefined) {
@@ -34,14 +35,6 @@ async function selectValue(element: HTMLSelectElement, value: string) {
   });
 }
 
-async function changeChecked(element: HTMLInputElement, checked: boolean) {
-  const checkedSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked')?.set;
-  await act(async () => {
-    checkedSetter?.call(element, checked);
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-}
-
 function clickBySelector<T extends HTMLElement = HTMLElement>(container: HTMLElement, selector: string, index = 0) {
   return Array.from(container.querySelectorAll<T>(selector))[index];
 }
@@ -52,6 +45,7 @@ describe('GlossaryPage compact labels', () => {
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    window.localStorage.clear();
 
     const configDraft = structuredClone(appConfigDraftMock);
     configDraft.glossary.processingMode = 'post-calibrate';
@@ -133,6 +127,7 @@ describe('GlossaryPage compact labels', () => {
         entries: [
           { id: 'gg', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'GG', targetTerm: '好局', strategy: 'force', important: true, caseSensitive: false, wholeWord: true },
           { id: 'npc', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'NPC', targetTerm: '角色', strategy: 'suggest', important: false, caseSensitive: false, wholeWord: false },
+          { id: 'raw', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'RAW', targetTerm: '原文', strategy: 'keep', important: false, caseSensitive: false, wholeWord: false },
         ],
       },
       { id: 'secondary', name: 'Secondary', enabled: true, priority: 1, entries: [] },
@@ -157,7 +152,7 @@ describe('GlossaryPage compact labels', () => {
     await selectValue(container.querySelector<HTMLSelectElement>('.glossary-filter-row select')!, 'suggest');
     expect(container.textContent).toContain('NPC');
     await selectValue(container.querySelector<HTMLSelectElement>('.glossary-filter-row select')!, '');
-    await changeChecked(container.querySelector<HTMLInputElement>('.glossary-filter-row input[type="checkbox"]')!, true);
+    await click(container.querySelector<HTMLInputElement>('.glossary-filter-row input[type="checkbox"]'));
     expect(container.textContent).toContain('GG');
 
     await inputText(container.querySelector<HTMLTextAreaElement>('textarea')!, 'GG is good');
@@ -183,8 +178,49 @@ describe('GlossaryPage compact labels', () => {
     await click(buttonByText(container, '保存'));
     expect(useAppStore.getState().configDraft.glossary.libraries[0]?.entries.some((entry) => entry.sourceTerm === 'Boss')).toBe(true);
 
-    await click(container.querySelectorAll<HTMLButtonElement>('[title="删除"]')[0]);
+    await click(container.querySelectorAll<HTMLButtonElement>('[title="删除"]')[1]);
     expect(useAppStore.getState().configDraft.glossary.libraries).toHaveLength(1);
+  });
+
+  it('updates reminder and calibration choices after external config and provider-catalog changes', async () => {
+    await act(async () => root.render(<GlossaryPage />));
+    await click(buttonByText(container, '添加术语'));
+    expect(container.querySelector('.glossary-warning')).not.toBeNull();
+
+    const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.glossary.libraries = [{ id: 'external', name: 'External', enabled: true, priority: 0, entries: [] }];
+    const provider = configDraft.providers[0]!;
+    provider.sceneModelAssignments = [{ scenario: 'subtitle-translate', modelIds: ['uncached-model'] }];
+    provider.modelCatalogCache = undefined as never;
+    await act(async () => {
+      writeProviderTemplateCatalogPreferences([{ templateId: provider.templateId, enabled: false, order: 0 }]);
+      useAppStore.setState((state) => ({ ...state, configDraft }));
+      await Promise.resolve();
+    });
+    expect(container.querySelector('.glossary-warning button')).toBeNull();
+    expect(container.querySelector<HTMLSelectElement>('.glossary-calibration-row select')?.textContent).not.toContain('uncached-model');
+
+    await act(async () => {
+      writeProviderTemplateCatalogPreferences([{ templateId: provider.templateId, enabled: true, order: 0 }]);
+      await Promise.resolve();
+    });
+    expect(container.querySelector<HTMLSelectElement>('.glossary-calibration-row select')?.textContent).toContain('uncached-model');
+  });
+
+  it('removes unselected, selected-with-fallback, and final glossary libraries', async () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.glossary.libraries = ['first', 'second', 'third'].map((id, priority) => ({
+      id, name: id, enabled: true, priority, entries: [],
+    }));
+    useAppStore.setState((state) => ({ ...state, configDraft }));
+    await act(async () => root.render(<GlossaryPage />));
+    const remove = (id: string) => Array.from(container.querySelectorAll<HTMLElement>('.glossary-library-item'))
+      .find((item) => item.textContent?.includes(id))?.querySelector<HTMLButtonElement>('.glossary-mini-button-danger');
+
+    await click(remove('second'));
+    await click(remove('first'));
+    await click(remove('third'));
+    expect(useAppStore.getState().configDraft.glossary.libraries).toEqual([]);
   });
 
   it('imports recognized glossary JSON and reports parse, read and empty-file failures', async () => {
@@ -337,7 +373,7 @@ describe('GlossaryPage compact labels', () => {
     await click(container.querySelector<HTMLButtonElement>('.glossary-table [title="删除"]'));
     expect(useAppStore.getState().configDraft.glossary.libraries.find((library) => library.id === 'watch')?.entries).toHaveLength(14);
     await act(async () => {
-      window.dispatchEvent(new Event('provider-template-catalog-updated'));
+      window.dispatchEvent(new Event('omni.providerTemplateCatalogPrefs.updated'));
     });
   });
 
@@ -386,6 +422,10 @@ describe('GlossaryPage compact labels', () => {
     });
     expect(transfer.getData).toHaveBeenCalledWith('text/plain');
     expect(useAppStore.getState().configDraft.glossary.libraries[0]?.id).toBe('second');
+
+    const sameTarget = new Event('dragover', { bubbles: true, cancelable: true });
+    Object.defineProperty(sameTarget, 'dataTransfer', { value: { ...transfer, getData: () => 'second' } });
+    await act(async () => cards[1]?.dispatchEvent(sameTarget));
 
     const noSourceDragOver = new Event('dragover', { bubbles: true, cancelable: true });
     Object.defineProperty(noSourceDragOver, 'dataTransfer', { value: { getData: vi.fn(() => ''), setData: vi.fn(), effectAllowed: '' } });
@@ -484,7 +524,7 @@ describe('GlossaryPage compact labels', () => {
     expect(useAppStore.getState().configDraft.glossary.calibrationModelId).toBe('subtitle-backup');
 
     await act(async () => {
-      window.dispatchEvent(new Event('provider-template-catalog-updated'));
+      window.dispatchEvent(new Event('omni.providerTemplateCatalogPrefs.updated'));
     });
   });
 

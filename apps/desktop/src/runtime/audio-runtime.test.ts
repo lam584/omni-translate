@@ -16,6 +16,8 @@ vi.mock('./tauri-runtime', () => ({
 
 import {
   clearSubtitleCuesRuntime,
+  cancelOmniPreconnectRuntime,
+  getAudioRuntimeSnapshotRuntime,
   prewarmCaptureRoutesRuntime,
   refreshAudioDevicesRuntime,
   showSubtitleOverlayWindow,
@@ -189,6 +191,22 @@ describe('audio runtime', () => {
     await expect(waitForWatchRouteReadyRuntime(100)).rejects.toThrow('capture unavailable');
   });
 
+  it('uses the default Watch readiness error when a changing native getter clears its detail', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    let reads = 0;
+    const inbound = {
+      captureState: 'buffering',
+      streamBound: false,
+      get lastError() {
+        reads += 1;
+        return reads === 1 ? 'transient' : undefined;
+      },
+    };
+    mocks.invoke.mockResolvedValue({ data: { inbound } });
+
+    await expect(waitForWatchRouteReadyRuntime(100)).rejects.toThrow('系统音频采集未进入可用状态');
+  });
+
   it('resolves as accepted-but-converging when the deadline passes without a native error, instead of tearing the route down', async () => {
     vi.useFakeTimers();
     mocks.isTauriRuntime.mockReturnValue(true);
@@ -247,6 +265,151 @@ describe('audio runtime', () => {
       ['session_v2', 'stopRoute'],
       ['session_v2', 'snapshot'],
     ]);
+    vi.useRealTimers();
+  });
+
+  it('covers browser fallbacks for snapshot reads, preconnect cancellation, and watch readiness', async () => {
+    expect((await getAudioRuntimeSnapshotRuntime()).status).toBe('preview');
+    expect((await cancelOmniPreconnectRuntime()).status).toBe('preview');
+    expect((await waitForWatchRouteReadyRuntime(1)).inbound).toMatchObject({
+      captureState: 'capturing',
+      streamBound: true,
+      framesCaptured: 960,
+    });
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it('maps snapshot reads and preconnect cancellation through the IPC session adapter', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    mocks.invoke.mockResolvedValue({ data: { status: 'ipc-ok' }, warnings: [] });
+
+    await expect(getAudioRuntimeSnapshotRuntime()).resolves.toEqual({ status: 'ipc-ok' });
+    await expect(cancelOmniPreconnectRuntime()).resolves.toEqual({ status: 'ipc-ok' });
+
+    expect(mocks.invoke.mock.calls.map(([, args]) => args?.command?.action)).toEqual([
+      'snapshot',
+      'cancelPreconnect',
+    ]);
+  });
+
+  it('propagates an IPC rejection and clears its timeout', async () => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
+    mocks.invoke.mockRejectedValue(new Error('ipc unavailable'));
+
+    await expect(refreshAudioDevicesRuntime()).rejects.toThrow('ipc unavailable');
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+
+    clearTimeoutSpy.mockRestore();
+    vi.useRealTimers();
+  });
+
+  it('ignores a timeout callback that fires after an IPC promise already settled', async () => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    vi.spyOn(window, 'clearTimeout').mockImplementation(() => undefined);
+    mocks.invoke.mockResolvedValue({ data: { status: 'ready' }, warnings: [] });
+
+    await expect(refreshAudioDevicesRuntime()).resolves.toEqual({ status: 'ready' });
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    vi.useRealTimers();
+  });
+
+  it('honors both Error and non-Error abort reasons while polling watch readiness', async () => {
+    mocks.isTauriRuntime.mockReturnValue(true);
+    const errorController = new AbortController();
+    errorController.abort(new Error('explicit abort'));
+    await expect(waitForWatchRouteReadyRuntime(100, errorController.signal)).rejects.toThrow('explicit abort');
+
+    const stringController = new AbortController();
+    stringController.abort('cancelled');
+    await expect(waitForWatchRouteReadyRuntime(100, stringController.signal)).rejects.toThrow('看片模式启动已取消');
+    expect(mocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['speech', 30_000, startSpeechDispatchRuntime, 'startSpeech', 'stopSpeech'],
+    ['translation', 60_000, startTranslateWorkerRuntime, 'startTranslation', 'stopTranslation'],
+  ] as const)('compensates a late %s start after its renderer timeout', async (_label, timeoutMs, start, startAction, stopAction) => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    let settleStart!: (value: unknown) => void;
+    const lateStart = new Promise((resolve) => { settleStart = resolve; });
+    mocks.invoke.mockImplementation((_command: string, args?: { command?: { action?: string } }) => {
+      const action = args?.command?.action;
+      if (action === startAction) return lateStart;
+      return Promise.resolve({ data: { status: action }, warnings: [] });
+    });
+
+    const promise = start(structuredClone(appConfigDraftMock));
+    const rejection = expect(promise).rejects.toThrow('超时');
+    await vi.advanceTimersByTimeAsync(timeoutMs);
+    await rejection;
+    settleStart({ status: 'late' });
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    const actions = mocks.invoke.mock.calls.map(([, args]) => args?.command?.action);
+    expect(actions).toContain(startAction);
+    expect(actions).toContain(stopAction);
+    expect(actions).toContain('snapshot');
+    vi.useRealTimers();
+  });
+
+  it.each([
+    ['route', 30_000, (config: typeof appConfigDraftMock) => startAudioRouteRuntime('inbound', config), 'start_audio_route'],
+    ['speech', 30_000, startSpeechDispatchRuntime, 'startSpeech'],
+    ['translation', 60_000, startTranslateWorkerRuntime, 'startTranslation'],
+  ] as const)('recovers when a late %s IPC start rejects after timeout', async (_label, timeoutMs, start, startAction) => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    let rejectStart!: (error: unknown) => void;
+    const lateStart = new Promise((_resolve, reject) => { rejectStart = reject; });
+    mocks.invoke.mockImplementation((command: string, args?: { command?: { action?: string } }) => {
+      const action = command === 'start_audio_route' ? command : args?.command?.action;
+      if (action === startAction) return lateStart;
+      return Promise.resolve({ data: { status: action }, warnings: [] });
+    });
+
+    const promise = start(structuredClone(appConfigDraftMock));
+    const rejection = expect(promise).rejects.toThrow('超时');
+    await vi.advanceTimersByTimeAsync(timeoutMs);
+    await rejection;
+    rejectStart(new Error('late native rejection'));
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    vi.useRealTimers();
+  });
+
+  it('logs a timeout recovery failure without replacing the original timeout', async () => {
+    vi.useFakeTimers();
+    mocks.isTauriRuntime.mockReturnValue(true);
+    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let settleStart!: (value: unknown) => void;
+    const lateStart = new Promise((resolve) => { settleStart = resolve; });
+    mocks.invoke.mockImplementation((_command: string, args?: { command?: { action?: string } }) => {
+      const action = args?.command?.action;
+      if (action === 'startSpeech') return lateStart;
+      if (action === 'stopSpeech') return Promise.reject(new Error('cleanup failed'));
+      return Promise.resolve({ data: { status: action }, warnings: [] });
+    });
+
+    const promise = startSpeechDispatchRuntime(structuredClone(appConfigDraftMock));
+    const rejection = expect(promise).rejects.toThrow('启动语音播报超时');
+    await vi.advanceTimersByTimeAsync(30_000);
+    await rejection;
+    settleStart({ status: 'late' });
+    await vi.runAllTimersAsync();
+    await Promise.resolve();
+
+    expect(consoleSpy).toHaveBeenCalledWith(
+      expect.stringContaining('启动语音播报 timeout recovery failed'),
+      expect.any(Error),
+    );
+    consoleSpy.mockRestore();
     vi.useRealTimers();
   });
 });

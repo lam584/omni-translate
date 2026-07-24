@@ -13,11 +13,12 @@ const repairDriverRuntimeMock = vi.fn();
 const uninstallDriverRuntimeMock = vi.fn();
 const refreshBridgeRuntimeMock = vi.fn();
 const startBridgeServiceRuntimeMock = vi.fn();
+const languageMocks = vi.hoisted(() => ({ current: vi.fn(() => 'zh-CN'), resolved: 'zh-CN' as string | undefined }));
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     i18n: {
-      resolvedLanguage: 'zh-CN',
+      get resolvedLanguage() { return languageMocks.resolved; },
     },
     t: (key: string) =>
       ({
@@ -30,7 +31,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('../i18n/config', () => ({
-  getCurrentLanguage: () => 'zh-CN',
+  getCurrentLanguage: languageMocks.current,
   resetWelcomeFlag: vi.fn(),
   setUiLanguage: vi.fn(),
 }));
@@ -62,6 +63,8 @@ describe('SettingsPage driver management', () => {
     startBridgeServiceRuntimeMock.mockReset();
     vi.mocked(resetWelcomeFlag).mockReset();
     vi.mocked(setUiLanguage).mockReset();
+    languageMocks.current.mockReturnValue('zh-CN');
+    languageMocks.resolved = 'zh-CN';
 
     useAppStore.setState((state) => ({
       ...state,
@@ -155,6 +158,7 @@ describe('SettingsPage driver management', () => {
       customInput.dispatchEvent(new Event('input', { bubbles: true }));
     });
     expect(useAppStore.getState().configDraft.subtitles.translationLanguagePreference).toBe('eo');
+    await act(async () => customInput?.dispatchEvent(new FocusEvent('focusout', { bubbles: true })));
     await act(async () => {
       if (!customInput) return;
       const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -172,6 +176,13 @@ describe('SettingsPage driver management', () => {
       selects[1].dispatchEvent(new Event('change', { bubbles: true }));
     });
     expect(useAppStore.getState().configDraft.subtitles.translationLanguagePreference).toBe('en');
+  });
+
+  it('falls back to the first language metadata for an unknown persisted language', async () => {
+    languageMocks.resolved = undefined;
+    languageMocks.current.mockReturnValue('unknown');
+    await renderSettings();
+    expect(container.textContent).toContain('简体中文');
   });
 
   it('renders an existing custom translation preference and resets provider and welcome state', async () => {

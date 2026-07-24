@@ -353,6 +353,8 @@ describe('AudioRoutingPage', () => {
 
     const { speech } = useAppStore.getState().configDraft;
     expect(speech.enabled).toBe(false);
+    await act(async () => clickCheckbox(container, '独立 TTS'));
+    expect(useAppStore.getState().configDraft.speech.enabled).toBe(true);
   });
 
   it('toggles the subtitle translation card switch', async () => {
@@ -794,6 +796,90 @@ describe('AudioRoutingPage', () => {
     const buttons = Array.from(container.querySelectorAll('button')).map((button) => button.textContent ?? '');
     expect(buttons).toEqual(expect.arrayContaining([expect.stringContaining('测试麦克风'), expect.stringContaining('测试扬声器')]));
     expect(container.querySelectorAll('.audio-level-meter')).toHaveLength(2);
+  });
+
+  it('uses speech and outbound model fallbacks, shows a stale input device, and enables virtual microphone output', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, inputDeviceId: 'missing-input', textToSpeechModelId: '', subtitleTranslationMode: 'native', virtualMicOutputEnabled: false },
+        speech: { ...state.configDraft.speech, virtualMicOutputEnabled: false },
+      },
+    }));
+    await act(async () => root.render(<MemoryRouter><AudioRoutingPage /></MemoryRouter>));
+    expect(Array.from(container.querySelectorAll('option')).some((option) => option.value === 'missing-input')).toBe(true);
+
+    useAppStore.setState((state) => ({ ...state, configDraft: {
+      ...state.configDraft,
+      devices: { ...state.configDraft.devices, textToSpeechModelId: '' },
+      speech: { ...state.configDraft.speech, textToSpeechModelId: '' },
+    } }));
+    await act(async () => Promise.resolve());
+    const outboundCard = scenarioCardByTitle(container, '说给对方');
+    await act(async () => outboundCard.querySelector<HTMLInputElement>('input[role="switch"]')?.click());
+    expect(useAppStore.getState().configDraft.devices.virtualMicOutputEnabled).toBe(true);
+    expect(useAppStore.getState().configDraft.speech.outputTarget).toBe('virtual-mic');
+  });
+
+  it('publishes successful microphone and speaker labels through the page callback', async () => {
+    vi.useFakeTimers();
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: { ...state.configDraft, devices: { ...state.configDraft.devices,
+        inputDeviceId: state.audioRuntimeSnapshot.captureDevices[0]!.deviceId,
+        outputDeviceId: state.audioRuntimeSnapshot.renderDevices[0]!.deviceId } },
+    }));
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop: vi.fn() }] }) },
+    });
+    const oscillator = {
+      frequency: { value: 0 }, connect: vi.fn(), start: vi.fn(), stop: vi.fn(),
+      addEventListener: vi.fn((_name: string, listener: () => void) => listener()),
+    };
+    const gain = { gain: { value: 0 }, connect: vi.fn() };
+    oscillator.connect.mockReturnValue(gain);
+    gain.connect.mockReturnValue(gain);
+    const audioContext = {
+      currentTime: 0, destination: {}, close: vi.fn().mockResolvedValue(undefined),
+      createAnalyser: () => ({ fftSize: 0, getFloatTimeDomainData: (values: Float32Array) => values.fill(0.25) }),
+      createMediaStreamSource: () => ({ connect: vi.fn() }), createOscillator: () => oscillator, createGain: () => gain,
+    };
+    vi.stubGlobal('AudioContext', vi.fn(function AudioContextMock() { return audioContext; }));
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(901);
+    await act(async () => root.render(<MemoryRouter><AudioRoutingPage /></MemoryRouter>));
+    const testButtons = container.querySelectorAll<HTMLButtonElement>('.routing-test-row button');
+    await act(async () => {
+      testButtons[0]!.click();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+    });
+    await act(async () => testButtons[1]!.click());
+    expect(container.textContent).toContain('麦克风测试通过');
+    expect(container.textContent).toContain('扬声器测试通过');
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it('sorts multiple text-only provider models', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        providers: state.configDraft.providers.map((provider) => ({
+          ...provider,
+          sceneModelAssignments: [{ scenario: 'subtitle-translate', modelIds: ['z-text', 'a-text'] }],
+          modelCatalogCache: { ...provider.modelCatalogCache, models: [
+            { id: 'z-text', displayName: 'Zulu', ownedBy: null, createdAt: null, capabilities: ['text-generation'], providerTemplateId: provider.templateId, providerTemplateName: provider.displayName },
+            { id: 'a-text', displayName: 'Alpha', ownedBy: null, createdAt: null, capabilities: ['text-generation'], providerTemplateId: provider.templateId, providerTemplateName: provider.displayName },
+          ] },
+        })),
+      },
+    }));
+    await act(async () => root.render(<MemoryRouter><AudioRoutingPage /></MemoryRouter>));
+    const texts = await scenarioOptionTexts(container, '字幕翻译');
+    expect(texts.join(' ')).toContain('Alpha');
   });
 
   it('marks the microphone level meter active while inbound capture is bound', async () => {

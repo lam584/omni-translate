@@ -22,8 +22,8 @@ use windows_sys::Win32::UI::Input::KeyboardAndMouse::EnableWindow;
 #[cfg(target_os = "windows")]
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CallWindowProcW, DefWindowProcW, GetWindow, GetWindowLongW, GetWindowRect, SetWindowLongPtrW,
-    SetWindowLongW, SetWindowPos, SetWindowTextW, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_CHILD,
-    GW_HWNDNEXT, HTCLIENT, HTTRANSPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    SetWindowLongW, SetWindowPos, GWLP_WNDPROC, GWL_EXSTYLE, GWL_STYLE, GW_CHILD, GW_HWNDNEXT,
+    HTCLIENT, HTTRANSPARENT, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
     SWP_NOZORDER, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCHITTEST, WM_NCPAINT, WS_BORDER, WS_CAPTION,
     WS_DLGFRAME, WS_EX_APPWINDOW, WS_EX_CLIENTEDGE, WS_EX_DLGMODALFRAME, WS_EX_LAYERED,
     WS_EX_STATICEDGE, WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_EX_WINDOWEDGE, WS_MAXIMIZEBOX,
@@ -240,13 +240,10 @@ fn suppress_subtitle_overlay_dwm_frame(hwnd: isize) {
 }
 
 pub fn apply_subtitle_overlay_window_chrome(window: &WebviewWindow) -> Result<(), String> {
-    let _ = window.set_title("");
-
     #[cfg(target_os = "windows")]
     {
         let hwnd = window.hwnd().map_err(|error| error.to_string())?;
         ensure_subtitle_overlay_subclass(hwnd.0 as _);
-        let empty_title = [0u16];
         let style = unsafe { GetWindowLongW(hwnd.0 as _, GWL_STYLE) as u32 };
         let style_ex = unsafe { GetWindowLongW(hwnd.0 as _, GWL_EXSTYLE) as u32 };
         let next_style = (style | WS_POPUP)
@@ -267,7 +264,6 @@ pub fn apply_subtitle_overlay_window_chrome(window: &WebviewWindow) -> Result<()
         let style_ex_changed = style_ex != next_style_ex;
 
         unsafe {
-            SetWindowTextW(hwnd.0 as _, empty_title.as_ptr());
             if style_changed {
                 SetWindowLongW(hwnd.0 as _, GWL_STYLE, next_style as i32);
             }
@@ -472,7 +468,9 @@ pub fn ensure_subtitle_overlay_window(app: &AppHandle) -> tauri::Result<WebviewW
         "subtitle-overlay",
         WebviewUrl::App("overlay.html".into()),
     )
-    .title("")
+    // Keep an internal title so diagnostics and UI automation can identify the
+    // borderless, taskbar-hidden overlay as its own window.
+    .title("Omni Translate Subtitle Overlay")
     .visible(false)
     .always_on_top(true)
     .decorations(false)
@@ -518,7 +516,11 @@ pub fn collect_window_snapshots(
             let is_overlay = label == "subtitle-overlay";
             RuntimeWindowSnapshot {
                 label: label.clone(),
-                title: if is_overlay { String::new() } else { label.clone() },
+                title: if is_overlay {
+                    String::new()
+                } else {
+                    label.clone()
+                },
                 kind: if is_overlay {
                     "subtitle-overlay".to_string()
                 } else {

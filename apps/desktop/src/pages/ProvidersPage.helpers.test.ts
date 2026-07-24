@@ -95,6 +95,7 @@ describe('ProvidersPage helpers', () => {
     );
     expect(helpers.resolveBaseUrlForApiFormat('openai-compatible', 'https://example.test/v1', dashscopeTemplate)).toContain('compatible-mode');
     expect(helpers.resolveBaseUrlForApiFormat('dashscope', 'https://example.test/v1', { ...deepseekTemplate, defaultDraft: { ...deepseekTemplate.defaultDraft, baseUrl: 'https://custom.test/v1' } })).toContain('dashscope.aliyuncs.com');
+    expect(helpers.resolveBaseUrlForApiFormat('dashscope', '', deepseekTemplate)).toBe(helpers.defaultBaseUrlForKind('dashscope'));
     expect(helpers.resolveBaseUrlForApiFormat('openai-compatible', 'https://example.test/v1', { ...dashscopeTemplate, defaultDraft: { ...dashscopeTemplate.defaultDraft, baseUrl: 'https://custom.test/v1' } })).toBe(helpers.defaultCompatibleDashscopeBaseUrl());
     expect(helpers.normalizeBaseUrlForComparison(' https://example.test/v1/// ')).toBe('https://example.test/v1');
     expect(helpers.shouldUseTemplatePresetModels(deepseekTemplate, `${deepseekTemplate.defaultDraft.baseUrl}/`)).toBe(true);
@@ -181,6 +182,7 @@ describe('ProvidersPage helpers', () => {
     });
     expect(helpers.removeSceneModel(assignments, 'game', 'model-a', 'watch', 'model-a', 'default-model').nextModel).toBeUndefined();
     expect(helpers.removeSceneModel(assignments, 'game', 'model-a', 'watch', 'model-b', 'default-model').nextModel).toBeUndefined();
+    expect(helpers.removeSceneModel(assignments, 'missing' as unknown as AudioRouteMode, 'model-a', 'missing' as unknown as AudioRouteMode, 'model-a', 'default-model').nextModel).toBe('default-model');
     expect(helpers.removeSceneModelFromAll(assignments, 'model-a', 'watch', 'model-a', 'default-model')).toMatchObject({
       nextModel: 'model-b',
     });

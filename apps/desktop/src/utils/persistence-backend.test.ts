@@ -161,4 +161,13 @@ describe('persistence backends', () => {
     expect(fallback.delete).not.toHaveBeenCalled();
     expect(fallback.exists).not.toHaveBeenCalled();
   });
+
+  it('loads from the fallback when the primary backend returns null', async () => {
+    const primary = backend({ load: vi.fn().mockResolvedValue(null) });
+    const fallback = backend({ load: vi.fn().mockResolvedValue({ restored: true }) });
+    const composite = new CompositeBackend(primary, fallback);
+
+    await expect(composite.load('draft')).resolves.toEqual({ restored: true });
+    expect(fallback.load).toHaveBeenCalledWith('draft');
+  });
 });

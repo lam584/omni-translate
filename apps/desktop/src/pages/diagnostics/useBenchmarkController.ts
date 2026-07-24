@@ -59,11 +59,11 @@ export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[])
         },
       });
       setReport(nextReport);
-      setProgress((current) => ({ status: 'completed', phase: 'completed', message: current?.message || i18n.t('diagnostics.benchmark.completed'), audioChunksSent: current?.audioChunksSent ?? nextReport.runs[0]?.audioChunksSent ?? 0, totalAudioChunks: current?.totalAudioChunks ?? nextReport.runs[0]?.audioChunksSent ?? 0, error: null }));
+      setProgress((current) => ({ status: 'completed', phase: 'completed', message: current!.message || i18n.t('diagnostics.benchmark.completed'), audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: null }));
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : String(caught);
       setError(message);
-      setProgress((current) => ({ status: 'error', phase: current?.phase || 'failed', message, audioChunksSent: current?.audioChunksSent ?? 0, totalAudioChunks: current?.totalAudioChunks ?? 0, error: message }));
+      setProgress((current) => ({ status: 'error', phase: current!.phase, message, audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: message }));
     } finally {
       setRunning(false);
     }

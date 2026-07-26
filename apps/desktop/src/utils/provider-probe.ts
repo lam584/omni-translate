@@ -1,7 +1,7 @@
 import i18n from '../i18n/config';
 import { defaultProviderProbeProfile, providerProbeProfiles } from '../mocks/provider-probes';
 import type { ProviderDraft } from '../schema/config';
-import type { ProviderProbeCheck, ProviderProbeVerdict } from '../schema/provider-probe';
+import { PENDING_PROBE_CHECKED_AT, type ProviderProbeCheck, type ProviderProbeVerdict } from '../schema/provider-probe';
 import type { ProviderProbeProfileRuntime } from '../schema/provider-runtime';
 
 export type ProviderProbeView = {
@@ -21,6 +21,17 @@ export type ProviderProbeView = {
   checks: ProviderProbeCheck[];
   guidance: string[];
 };
+
+// Drafts persisted before the stable sentinel existed stored the localized
+// providerProbe.pendingProbe label (zh-CN, or the English text shared by every
+// other locale bundle).
+const LEGACY_PENDING_PROBE_CHECKED_AT_VALUES = ['待重新探测', 'Pending re-probe'];
+
+export function isPendingProbeCheckedAt(checkedAt: string) {
+  const value = checkedAt.trim();
+
+  return value === PENDING_PROBE_CHECKED_AT || LEGACY_PENDING_PROBE_CHECKED_AT_VALUES.includes(value);
+}
 
 export function getProbeVerdictLabel(verdict: ProviderProbeVerdict) {
   if (verdict === 'available') {
@@ -76,7 +87,9 @@ export function resolveProbeView(provider: ProviderDraft, runtimeProbe?: Provide
     templateId: provider.templateId,
     providerId: provider.providerId,
     verdict: provider.probe.verdict,
-    checkedAt: provider.probe.checkedAt || i18n.t('providerProbe.notProbed'),
+    checkedAt: isPendingProbeCheckedAt(provider.probe.checkedAt)
+      ? i18n.t('providerProbe.pendingProbe')
+      : provider.probe.checkedAt || i18n.t('providerProbe.notProbed'),
     measuredLatencyMs: provider.probe.verdict === 'available' ? 840 : provider.probe.verdict === 'realtime-risk' ? 1680 : 0,
     latencyBudgetMs: 1200,
     streamSupported: provider.probe.streamSupported,

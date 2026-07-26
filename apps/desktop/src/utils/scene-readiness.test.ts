@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { PENDING_PROBE_CHECKED_AT } from '../schema/provider-probe';
 import { formatSceneReadinessLabel, getAllSceneReadiness, getOverallReadiness, getSceneTone } from './scene-readiness';
 
 describe('scene readiness', () => {
@@ -14,6 +15,18 @@ describe('scene readiness', () => {
     const scenes = getAllSceneReadiness(configDraft, structuredClone(runtimeSnapshotMock), structuredClone(audioRuntimeSnapshotMock));
 
     expect(scenes.some((scene) => scene.blockers.some((blocker) => blocker.id.endsWith('provider')))).toBe(true);
+  });
+
+  it('treats the sentinel and legacy localized pending values as unverified regardless of UI language', () => {
+    for (const checkedAt of [PENDING_PROBE_CHECKED_AT, '待重新探测', 'Pending re-probe']) {
+      const configDraft = structuredClone(appConfigDraftMock);
+      configDraft.providers[0].probe.profileId = 'probe-dashscope-verify';
+      configDraft.providers[0].probe.checkedAt = checkedAt;
+
+      const scenes = getAllSceneReadiness(configDraft, structuredClone(runtimeSnapshotMock), structuredClone(audioRuntimeSnapshotMock));
+
+      expect(scenes.every((scene) => scene.blockers.some((blocker) => blocker.id.endsWith('provider')))).toBe(true);
+    }
   });
 
   it('does not show provider verification blocker after a verification attempt has been recorded', () => {

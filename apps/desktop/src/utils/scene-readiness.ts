@@ -4,6 +4,7 @@ import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
+import { isPendingProbeCheckedAt } from './provider-probe';
 
 export type SceneMode = 'watch' | 'game' | 'voice-room';
 
@@ -31,7 +32,7 @@ function hasProviderVerificationAttempt(configDraft: AppConfigDraft) {
   const checkedAt = activeProvider.probe.checkedAt.trim();
   const profileId = activeProvider.probe.profileId.trim();
 
-  return checkedAt.length > 0 && checkedAt !== i18n.t('providerProbe.pendingProbe') && !profileId.endsWith('-pending');
+  return checkedAt.length > 0 && !isPendingProbeCheckedAt(checkedAt) && !profileId.endsWith('-pending');
 }
 
 function getRuntimeBlocker(mode: SceneMode, runtimeSnapshot: RuntimeSnapshot): SceneBlocker | null {

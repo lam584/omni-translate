@@ -35,3 +35,8 @@ export type ProviderProbeSnapshot = {
   errorShapeStable: boolean;
   responseShapeStable: boolean;
 };
+
+// Stable sentinel persisted in probe.checkedAt before the first verification
+// attempt. Must stay non-localized so reads work regardless of the UI language;
+// display layers translate it via providerProbe.pendingProbe.
+export const PENDING_PROBE_CHECKED_AT = 'pending-probe';

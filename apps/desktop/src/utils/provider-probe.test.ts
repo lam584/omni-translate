@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { providerProbeProfiles } from '../mocks/provider-probes';
+import { PENDING_PROBE_CHECKED_AT } from '../schema/provider-probe';
 import type { ProviderProbeProfileRuntime } from '../schema/provider-runtime';
 import {
   getProbeCheckTone,
   getProbeVerdictLabel,
   getProbeVerdictTone,
+  isPendingProbeCheckedAt,
   resolveProbeView,
 } from './provider-probe';
 
@@ -20,6 +22,20 @@ describe('provider-probe helpers', () => {
     expect(getProbeCheckTone('pass')).toBe('ready');
     expect(getProbeCheckTone('warn')).toBe('warning');
     expect(getProbeCheckTone('fail')).toBe('unsupported');
+  });
+
+  it('recognizes the sentinel and legacy localized pending values and localizes them in the probe view', () => {
+    expect(isPendingProbeCheckedAt(PENDING_PROBE_CHECKED_AT)).toBe(true);
+    expect(isPendingProbeCheckedAt('待重新探测')).toBe(true);
+    expect(isPendingProbeCheckedAt('Pending re-probe')).toBe(true);
+    expect(isPendingProbeCheckedAt('2026-05-29T08:00:00Z')).toBe(false);
+    expect(isPendingProbeCheckedAt('')).toBe(false);
+
+    const pendingProvider = structuredClone(appConfigDraftMock.providers[0]);
+    pendingProvider.probe.profileId = `probe-${pendingProvider.providerId}-pending`;
+    pendingProvider.probe.checkedAt = PENDING_PROBE_CHECKED_AT;
+
+    expect(resolveProbeView(pendingProvider, null).checkedAt).toBe('待重新探测');
   });
 
   it('prefers a matching runtime probe over draft fallback data', () => {

@@ -1,5 +1,5 @@
-import i18n from '../i18n/config';
 import type { ConfigStatus, ProviderDraft, ProviderSceneModelAssignment } from '../schema/config';
+import { PENDING_PROBE_CHECKED_AT } from '../schema/provider-probe';
 import type { ProviderProbeProfileRuntime } from '../schema/provider-runtime';
 import type { ProviderTemplate } from '../schema/provider-template';
 import { createDefaultLocalModelCapabilityRegistry } from './provider-model-capabilities';
@@ -91,7 +91,7 @@ export function buildProviderDraftPatchFromTemplate(
     probe: {
       profileId: `probe-${template.defaultDraft.providerId}-pending`,
       verdict: 'realtime-risk',
-      checkedAt: i18n.t('providerProbe.pendingProbe'),
+      checkedAt: PENDING_PROBE_CHECKED_AT,
       streamSupported: template.defaultDraft.streamEnabled,
       errorShapeStable: false,
       responseShapeStable: false,

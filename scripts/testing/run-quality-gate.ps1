@@ -84,10 +84,24 @@ foreach ($artifact in $manualArtifactResults) {
 
 $manualVerificationStatus = if (($manualArtifactResults | Where-Object { $_.status -ne 'passed' }).Count -gt 0) { 'pending' } else { 'passed' }
 
+# Automated integration coverage for the desktop-runtime <-> bridge contract
+# (fake bridge / fake provider). These rows replace the former manual E2E
+# scenarios: subtitle display, locked overlay click-through, TTS counters.
+$automatedIntegration = @($autoSummary.automatedResults | Where-Object { $_.name -eq 'integration-bridge-contract' })
+if ($automatedIntegration.Count -eq 0) {
+  throw "Automated integration step 'integration-bridge-contract' is missing from the automated quality gate results."
+}
+
 $summary = [ordered]@{
   generatedAt = (Get-Date -Format s)
   workspaceRoot = $workspaceRoot.Path
   automatedResults = $autoSummary.automatedResults
+  automatedIntegration = [ordered]@{
+    name = 'integration-bridge-contract'
+    status = $automatedIntegration[0].status
+    logPath = $automatedIntegration[0].logPath
+    coveredManualScenarios = @('subtitle-display', 'locked-overlay-click-through', 'tts-counters')
+  }
   manualVerificationStatus = $manualVerificationStatus
   manualArtifacts = [ordered]@{
     e2eReport = $e2eReport

@@ -1,0 +1,104 @@
+import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import {
+  generateWatchModeLiveFixture,
+  WATCH_MODE_LIVE_FIXTURE_FILES,
+} from './generate-watch-mode-live-fixtures.mjs';
+import { writeReport } from './watch-mode-report.mjs';
+
+function makeTempDirectory(prefix) {
+  return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
+}
+
+function runDryRun({ fixtureRoot, outputRoot, feedbackLoopPrevention = 'virtual-driver', fixture = 'pass' }) {
+  const runnerOutputRoot = path.relative(process.cwd(), outputRoot);
+  return spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-ExecutionPolicy',
+    'Bypass',
+    '-File',
+    './scripts/testing/run-watch-mode-live.ps1',
+    '-DryRun',
+    '-FixtureRoot',
+    fixtureRoot,
+    '-Fixture',
+    fixture,
+    '-OutputRoot',
+    runnerOutputRoot,
+    '-FeedbackLoopPrevention',
+    feedbackLoopPrevention,
+  ], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+  });
+}
+
+function onlyRunDirectory(outputRoot) {
+  const entries = fs.readdirSync(outputRoot, { withFileTypes: true }).filter((entry) => entry.isDirectory());
+  assert.equal(entries.length, 1, `expected one run directory under ${outputRoot}`);
+  return path.join(outputRoot, entries[0].name);
+}
+
+test('generator creates a deterministic pass fixture accepted by the report classifier', () => {
+  const root = makeTempDirectory('omni-watch-fixture-generator-');
+  try {
+    const fixtureDirectory = generateWatchModeLiveFixture({ root });
+    for (const file of WATCH_MODE_LIVE_FIXTURE_FILES) {
+      assert.equal(fs.existsSync(path.join(fixtureDirectory, file)), true, `${file} must be generated`);
+    }
+    assert.doesNotThrow(() => JSON.parse(fs.readFileSync(path.join(fixtureDirectory, 'snapshots.json'), 'utf8')));
+    assert.doesNotThrow(() => JSON.parse(fs.readFileSync(path.join(fixtureDirectory, 'steps.json'), 'utf8')));
+
+    const { report } = writeReport({ inputDir: fixtureDirectory, outputDir: fixtureDirectory, mode: 'dry-run' });
+    assert.equal(report.verdict, 'passed');
+    assert.equal(report.feedbackLoopPrevention, 'virtual-driver');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('dry-run auto-generates pass fixture and records both feedback variants', {
+  skip: process.platform !== 'win32' ? 'PowerShell runner is Windows-only' : false,
+}, () => {
+  const fixtureRoot = makeTempDirectory('omni-watch-fixture-runner-');
+  const outputParent = path.join(process.cwd(), '.tmp', `watch-mode-live-test-${process.pid}-${Date.now()}`);
+  try {
+    for (const feedbackLoopPrevention of ['virtual-driver', 'echo-cancel']) {
+      const outputRoot = path.join(outputParent, feedbackLoopPrevention);
+      const result = runDryRun({ fixtureRoot, outputRoot, feedbackLoopPrevention });
+      assert.equal(result.status, 0, `${feedbackLoopPrevention} dry-run failed:\n${result.stdout}\n${result.stderr}`);
+
+      const runDirectory = onlyRunDirectory(outputRoot);
+      const report = JSON.parse(fs.readFileSync(path.join(runDirectory, 'report.json'), 'utf8').replace(/^\uFEFF/, ''));
+      const injection = JSON.parse(fs.readFileSync(path.join(runDirectory, 'config-injection.json'), 'utf8').replace(/^\uFEFF/, ''));
+      assert.equal(report.verdict, 'passed');
+      assert.equal(report.feedbackLoopPrevention, feedbackLoopPrevention);
+      assert.equal(injection.selectedFeedbackLoopPrevention, feedbackLoopPrevention);
+      assert.deepEqual(injection.variants.map((variant) => variant.injected), ['virtual-driver', 'echo-cancel']);
+    }
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    fs.rmSync(outputParent, { recursive: true, force: true });
+  }
+});
+
+test('dry-run does not generate an unknown custom fixture', {
+  skip: process.platform !== 'win32' ? 'PowerShell runner is Windows-only' : false,
+}, () => {
+  const fixtureRoot = makeTempDirectory('omni-watch-fixture-custom-');
+  const outputRoot = path.join(process.cwd(), '.tmp', `watch-mode-live-custom-${process.pid}-${Date.now()}`);
+  try {
+    const result = runDryRun({ fixtureRoot, outputRoot, fixture: 'custom-local' });
+    assert.notEqual(result.status, 0);
+    assert.match(`${result.stdout}\n${result.stderr}`, /fixture 'custom-local' is missing required file/i);
+    assert.equal(fs.existsSync(path.join(fixtureRoot, 'custom-local')), false);
+  } finally {
+    fs.rmSync(fixtureRoot, { recursive: true, force: true });
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
+});

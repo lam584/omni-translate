@@ -16,6 +16,13 @@ export const REQUIRED_LAYERS = [
 
 export const BASE_REQUIRED_LAYERS = REQUIRED_LAYERS.filter((layer) => layer !== 'strictContent');
 
+export const ECHO_CANCEL_REQUIRED_LAYERS = [
+  'driver',
+  'wasapi',
+  'app',
+  'provider',
+];
+
 const DEFAULT_ROOT = 'artifacts/testing/watch-mode-live';
 const DEFAULT_STRICT_MODELS = [
   'qwen3.5-omni-flash-realtime',
@@ -58,7 +65,12 @@ function isExcludedDirectory(directoryName) {
   return EXCLUDED_DIRECTORY_PATTERNS.some((pattern) => pattern.test(directoryName));
 }
 
-function requiredLayersFor(options = {}) {
+function reportFeedbackMode(report) {
+  return report?.feedbackLoopPrevention === 'echo-cancel' ? 'echo-cancel' : 'virtual-driver';
+}
+
+function requiredLayersFor(options = {}, feedbackMode = 'virtual-driver') {
+  if (feedbackMode === 'echo-cancel') return ECHO_CANCEL_REQUIRED_LAYERS;
   return options.strict ? REQUIRED_LAYERS : BASE_REQUIRED_LAYERS;
 }
 
@@ -67,7 +79,7 @@ function hasRequiredLayerShape(report, options = {}) {
 }
 
 function missingRequiredLayers(report, options = {}) {
-  return requiredLayersFor(options).filter((layer) => !report.layers?.[layer]?.status);
+  return requiredLayersFor(options, reportFeedbackMode(report)).filter((layer) => !report.layers?.[layer]?.status);
 }
 
 function reportModelId(report) {
@@ -84,7 +96,8 @@ function strictContentFailure(report) {
 }
 
 function basicFailure(entry, options = {}) {
-  const failedLayers = requiredLayersFor(options).filter(
+  const feedbackMode = entry.feedbackMode ?? reportFeedbackMode(entry.report);
+  const failedLayers = requiredLayersFor(options, feedbackMode).filter(
     (layer) => entry.report.layers?.[layer]?.status !== 'passed',
   );
   const latestFailure = describeLatestFailure(entry, failedLayers, options);
@@ -100,7 +113,7 @@ function basicFailure(entry, options = {}) {
       ].join(' '),
     };
   }
-  if (options.strict) {
+  if (options.strict && feedbackMode !== 'echo-cancel') {
     const reason = strictContentFailure(entry.report);
     if (reason) {
       return {
@@ -210,6 +223,7 @@ function loadCandidates(root, options = {}) {
           report,
           reportMtimeMs: stats.mtimeMs,
           modelId: reportModelId(report),
+          feedbackMode: reportFeedbackMode(report),
           complete: missingLayers.length === 0,
           incomplete: missingLayers.length > 0,
           missingLayers,
@@ -228,6 +242,7 @@ function loadCandidates(root, options = {}) {
           },
           reportMtimeMs: stats.mtimeMs,
           modelId: null,
+          feedbackMode: 'virtual-driver',
           complete: false,
           incomplete: false,
           missingLayers: requiredLayersFor(options),
@@ -253,6 +268,8 @@ export function findWatchModeEvidence(options = {}) {
   const strict = Boolean(options.strict);
   const requestedModels = normalizeModels(options.models);
   const models = requestedModels.length > 0 ? requestedModels : [];
+  const requestedFeedbackModes = normalizeModels(options.feedbackModes);
+  const feedbackModes = requestedFeedbackModes.length > 0 ? requestedFeedbackModes : ['virtual-driver'];
   if (!fs.existsSync(root)) {
     return {
       ok: false,
@@ -297,33 +314,37 @@ export function findWatchModeEvidence(options = {}) {
   }
 
   if (models.length > 0) {
-    const modelResults = models.map((model) => {
-      const latest = completeCandidates.find((entry) => entry.modelId === model);
+    const modelResults = models.flatMap((model) => feedbackModes.map((feedbackMode) => {
+      const latest = completeCandidates.find(
+        (entry) => entry.modelId === model && entry.feedbackMode === feedbackMode,
+      );
       if (!latest) {
         return {
           modelId: model,
+          feedbackMode,
           ok: false,
           latest: null,
           failedLayers: [],
-          reason: `no complete live watch-mode report found for model ${model}`,
+          reason: `no complete live watch-mode report found for model ${model} feedbackLoopPrevention ${feedbackMode}`,
         };
       }
       const failure = basicFailure(latest, { strict });
       return {
         modelId: model,
+        feedbackMode,
         ok: failure.reason == null,
         latest,
         failedLayers: failure.failedLayers,
         reason: failure.reason,
         latestFailure: failure.latestFailure,
       };
-    });
+    }));
     const failed = modelResults.filter((item) => !item.ok);
     return {
       ok: failed.length === 0,
       reason: failed.length === 0
         ? null
-        : `watch-mode evidence failed for model(s): ${failed.map((item) => `${item.modelId}: ${item.reason}`).join('; ')}`,
+        : `watch-mode evidence failed for model(s): ${failed.map((item) => `${item.modelId}[${item.feedbackMode}]: ${item.reason}`).join('; ')}`,
       root,
       latest: modelResults[0]?.latest ?? null,
       failedLayers: [...new Set(modelResults.flatMap((item) => item.failedLayers))],
@@ -333,7 +354,19 @@ export function findWatchModeEvidence(options = {}) {
     };
   }
 
-  const latest = completeCandidates[0];
+  const eligibleCandidates = completeCandidates.filter((entry) => feedbackModes.includes(entry.feedbackMode));
+  const latest = eligibleCandidates[0];
+  if (!latest) {
+    return {
+      ok: false,
+      reason: `no complete live watch-mode report found for feedbackLoopPrevention ${feedbackModes.join(',')} under ${root}`,
+      root,
+      latest: null,
+      candidates: completeCandidates,
+      invalidCandidates,
+      modelResults: [],
+    };
+  }
   const failure = basicFailure(latest, { strict });
   return {
     ok: failure.reason == null,
@@ -367,6 +400,7 @@ function printEntry(entry, label = 'Latest Watch Mode report') {
   const report = entry.report;
   console.log(`${label}: ${entry.reportPath}`);
   console.log(`ModelId: ${entry.modelId ?? '-'}`);
+  console.log(`FeedbackLoopPrevention: ${entry.feedbackMode ?? '-'}`);
   console.log(`GeneratedAt: ${report.generatedAt ?? '-'}`);
   console.log(`TranslationRoute: ${report.translationRoute ?? '-'}`);
   console.log(`Verdict: ${report.verdict ?? '-'}`);
@@ -393,10 +427,11 @@ function printFailureDetails(failure, label = 'Failure details') {
 function printEvidence(result) {
   if (result.modelResults?.length > 0) {
     for (const model of result.modelResults) {
-      if (model.latest) printEntry(model.latest, `Latest Watch Mode report for ${model.modelId}`);
+      const label = model.feedbackMode ? `${model.modelId} [${model.feedbackMode}]` : model.modelId;
+      if (model.latest) printEntry(model.latest, `Latest Watch Mode report for ${label}`);
       if (!model.ok) {
-        console.error(`Model ${model.modelId} failed evidence gate: ${model.reason}`);
-        printFailureDetails(model.latestFailure, `Failure details for ${model.modelId}`);
+        console.error(`Model ${label} failed evidence gate: ${model.reason}`);
+        printFailureDetails(model.latestFailure, `Failure details for ${label}`);
       }
     }
   } else if (result.latest) {
@@ -428,10 +463,12 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   const models = normalizeModels(args.models)
     .concat(strict && !args.models ? DEFAULT_STRICT_MODELS : [])
     .filter((value, index, list) => list.indexOf(value) === index);
+  const feedbackModes = normalizeModels(args['feedback-modes']);
   const result = findWatchModeEvidence({
     root: args.root ?? DEFAULT_ROOT,
     strict,
     models,
+    feedbackModes,
   });
   printEvidence(result);
   process.exitCode = result.ok ? 0 : 1;

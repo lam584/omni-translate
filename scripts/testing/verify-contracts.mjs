@@ -131,6 +131,24 @@ for (const relativePath of [
   assertTextMatch(relativePath, new RegExp(`protocolVersion\\s*=\\s*'${protocolVersion}'`), 'script protocol');
 }
 
+// devices.aecEnabled must keep a real native consumer: the desktop schema maps the
+// draft field, and the Rust audio engine reads it into RouteSpec to gate echo cancel.
+{
+  const schemaPath = path.join('apps', 'desktop', 'src', 'schema', 'config.ts');
+  const enginePath = path.join('apps', 'desktop', 'src-tauri', 'src', 'audio', 'engine', 'mod.rs');
+  const schemaText = readText(schemaPath);
+  const engineText = readText(enginePath);
+  if (!/draftPath:\s*'devices\.aecEnabled'/.test(schemaText)) {
+    fail(`devices.aecEnabled schema mapping is missing in ${schemaPath}`);
+  }
+  if (!engineText.includes('/devices/aecEnabled')) {
+    fail(`devices.aecEnabled has no native consumer: pointer "/devices/aecEnabled" not found in ${enginePath}`);
+  }
+  if (!/fn echo_cancel_enabled[\s\S]{0,200}?aec_enabled/.test(engineText)) {
+    fail(`devices.aecEnabled must participate in echo_cancel_enabled() in ${enginePath}`);
+  }
+}
+
 const governanceFiles = [
   'package.json',
   'package-lock.json',

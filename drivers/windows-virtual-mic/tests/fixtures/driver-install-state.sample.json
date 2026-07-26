@@ -1,0 +1,15 @@
+{
+  "protocolVersion": "2026-06-02-loopback-v2",
+  "installChannel": "development",
+  "driverVersion": "0.10.0-dev",
+  "bridgeVersion": "0.1.0",
+  "driverHealth": "running",
+  "installedAt": "2026-07-26T00:00:00.0000000Z",
+  "targetDeviceId": "virtual-mic-default",
+  "virtualRenderDeviceId": "omni-virtual-speaker-default",
+  "driverBackend": "sysvad-wave-rt",
+  "deviceName": "Omni Translate Virtual Speaker",
+  "installedInfPath": "drivers\\windows-virtual-mic\\package\\omni-virtual-speaker.inf",
+  "pnpInstanceId": "ROOT\\MEDIA\\0000",
+  "endpointInstanceId": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{aaaaaaaa-0000-0000-0000-000000000000}"
+}

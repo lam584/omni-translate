@@ -974,7 +974,23 @@ function speechSegmentationLayerFailed(segmentation, translationRoute) {
   return null;
 }
 
+export const ECHO_CANCEL_SKIPPED_LAYERS = [
+  'bridge',
+  'physicalOutput',
+  'physicalOutputContent',
+  'speechSegmentation',
+  'strictContent',
+];
+
+function normalizeFeedbackLoopPrevention(value) {
+  return value === 'echo-cancel' ? 'echo-cancel' : 'virtual-driver';
+}
+
 export function classifyWatchModeRun(input) {
+  const feedbackLoopPrevention = normalizeFeedbackLoopPrevention(
+    input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
+  );
+  const echoCancelVariant = feedbackLoopPrevention === 'echo-cancel';
   const bridgeLog = parseBridgeLog(input.bridgeLogText ?? '');
   const appLog = parseAppLog(input.appLogText ?? '');
   const translationRoute = inferTranslationRoute(input, appLog);
@@ -999,12 +1015,19 @@ export function classifyWatchModeRun(input) {
     }),
     provider: createLayer('provider', input.provider),
   };
-  if (!strictContent.passed) {
+  if (!echoCancelVariant && !strictContent.passed) {
     layers.strictContent.status = 'failed';
     layers.strictContent.reason = strictContent.reason ?? 'strict reference-media content evidence failed';
     layers.strictContent.reasons = Array.isArray(strictContent.failures) && strictContent.failures.length > 0
       ? strictContent.failures
       : [layers.strictContent.reason];
+  }
+  if (echoCancelVariant) {
+    for (const layer of ECHO_CANCEL_SKIPPED_LAYERS) {
+      layers[layer].status = 'skipped';
+      layers[layer].reason = 'echo-cancel variant does not require this evidence layer';
+      layers[layer].reasons = [];
+    }
   }
 
   const runnerFailureReason = input.failure?.message ?? null;
@@ -1044,20 +1067,25 @@ export function classifyWatchModeRun(input) {
         ['strictContent', layers.strictContent.reason],
       ];
 
-  for (const [layer, reason] of checks) {
+  const activeChecks = echoCancelVariant
+    ? checks.filter(([layer]) => !ECHO_CANCEL_SKIPPED_LAYERS.includes(layer))
+    : checks;
+
+  for (const [layer, reason] of activeChecks) {
     addLayerFailure(layers, layer, reason, input.mode ?? 'live');
   }
 
-  const failed = checks.find(([layer]) => layers[layer].status === 'failed');
-  const inconclusive = checks.find(([layer]) => layers[layer].status === 'inconclusive');
+  const failed = activeChecks.find(([layer]) => layers[layer].status === 'failed');
+  const inconclusive = activeChecks.find(([layer]) => layers[layer].status === 'inconclusive');
   const failureLayer = failed?.[0] ?? inconclusive?.[0] ?? null;
   const verdict = failed ? 'failed' : inconclusive ? 'inconclusive' : 'passed';
-  const diagnostics = buildReportDiagnostics(input, layers, checks, appLog, bridgeLog);
+  const diagnostics = buildReportDiagnostics(input, layers, activeChecks, appLog, bridgeLog);
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     mode: input.mode ?? 'live',
     modelId: input.modelId ?? input.snapshots?.modelId ?? null,
+    feedbackLoopPrevention,
     realtimeSession,
     translationRoute,
     verdict,
@@ -1076,6 +1104,7 @@ export function renderMarkdownReport(report) {
     '',
     `- GeneratedAt: ${report.generatedAt}`,
     `- Mode: ${report.mode}`,
+    `- FeedbackLoopPrevention: ${report.feedbackLoopPrevention ?? 'virtual-driver'}`,
     `- Verdict: ${report.verdict}`,
     `- FailureLayer: ${report.failureLayer ?? '-'}`,
     `- FailureReason: ${report.failureReason ?? '-'}`,
@@ -1158,6 +1187,7 @@ function collectInputFromDirectory(inputDir, mode) {
   return {
     mode,
     snapshots,
+    feedbackLoopPrevention: snapshots.feedbackLoopPrevention ?? null,
     driver: snapshots.driver ?? readJsonIfExists(path.join(inputDir, 'driver.json')),
     wasapi: snapshots.wasapi ?? snapshots.driver,
     bridge: snapshots.bridge,

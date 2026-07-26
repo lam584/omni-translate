@@ -23,4 +23,4 @@ if ($config.environment) {
 $env:OMNI_LLM_TEST_CONFIG = $resolvedConfig.Path
 Set-Location $workspaceRoot
 
-cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml provider::gateway::tests::llm_integration_provider_smoke_calls_configured_models -- --nocapture
+cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml provider::gateway::tests::llm_integration_provider_smoke_calls_configured_models -- --nocapture --include-ignored

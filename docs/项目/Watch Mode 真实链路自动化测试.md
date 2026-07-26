@@ -38,6 +38,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-wa
 npm run test:watch-mode-live:matrix -- -SkipDriverRepair -AllowElevatedDesktopLaunch -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90
 ```
 
+matrix 默认对每个模型跑 `virtual-driver` 和 `echo-cancel` 两个 `feedbackLoopPrevention` 变体（`-FeedbackLoopPreventionModes` 可裁剪），并用 `--feedback-modes` 让 verifier 按 模型 × 变体 校验证据。单独跑 echo-cancel 变体：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -FeedbackLoopPrevention echo-cancel -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
+```
+
 严格 evidence verifier：
 
 ```powershell
@@ -316,7 +322,7 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 
 ## 2026-06-05 迭代约束
 
-- live 诊断 autostart 必须使用 `devices.feedbackLoopPrevention=virtual-driver`。如果使用 `echo-cancel`，应用仍可能把音频送入 Omni websocket，但 bridge `sourceSubscriberActive` 会一直为 false，原声 monitor 不会写入物理设备，无法证明用户能听到原声。
+- 完整证据变体（默认 `-FeedbackLoopPrevention virtual-driver`）的 live 诊断 autostart 必须使用 `devices.feedbackLoopPrevention=virtual-driver`。如果使用 `echo-cancel`，应用仍可能把音频送入 Omni websocket，但 bridge `sourceSubscriberActive` 会一直为 false，原声 monitor 不会写入物理设备，无法证明用户能听到原声。因此 echo-cancel 只能作为独立变体运行，不能替代 virtual-driver 的完整门禁证据。
 - 前端 `VITE_OMNI_WATCH_MODE_AUTOSTART` 和 Tauri 后端 `OMNI_WATCH_MODE_AUTOSTART` 两条路径都必须设置同一组 watch 配置：`keepOriginalAudio=true`、`translatedAudioEnabled=true`、`monitorMode=original-and-translated`、`outputDeviceId=耳机 (iBasso-DC-Series)`。
 - 报告归因优先级：认证、限流、配额这类硬 provider 错误仍归 `provider`；单次 timeout、网络抖动等 transient provider 错误不能盖过 `physicalOutputContent` 失败。若物理输出录音为 0 帧或内容不一致，应先修真实输出链路。
 - live 报告必须同时检查启动前 `physical-output-probe.json` 和看片期间 `physical-output-content.json`。前者只能证明 bridge 可以向设备写 tone，不能证明 watch route 实际把原声/译音写到了用户耳机。
@@ -333,6 +339,13 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 - bridge monitor 不应把每个 20ms 原声帧都作为独立 rodio source 播放；应聚合为约 100ms source buffer，以降低用户态调度抖动。
 - Omni/STT 的 48k stereo -> 16k mono 输入降采样不能简单抽取每 3 个样本中的 1 个；应至少做 3 点平均，降低混叠后再交给 realtime ASR。
 - `duplicateFinalTranslations` 只统计较长 final 文本的实质重复；短感叹词和短连接句可记录在事件里，但不应单独导致 live 失败。
+
+## 2026-07-26 echo-cancel 变体
+
+- `run-watch-mode-live.ps1` 新增 `-FeedbackLoopPrevention virtual-driver|echo-cancel`（默认 virtual-driver），贯通 `.env.local` 的 `VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION`、进程/用户环境变量 `OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION` 和 SkipDesktopLaunch 的 Tauri CLI config 三条注入路径；echo-cancel run 的输出目录带 `-echo-cancel` 后缀，避免遮蔽 virtual-driver 证据。
+- echo-cancel 变体下 bridge 无 source subscriber、原声不写物理设备，报告分类器把 `bridge`、`physicalOutput`、`physicalOutputContent`、`speechSegmentation`、`strictContent` 标记为 `skipped`，仍要求 `driver`、`wasapi`、`app`、`provider` 通过；核心通过条件是 app 层 `duplicateFinalTranslations` 检测器（任何实质重复 final 翻译即失败）。
+- `report.json`、`snapshots.json`、`latest-watch-mode-live.json` 都记录 `feedbackLoopPrevention`；verifier 通过 `--feedback-modes` 按 模型 × 变体 校验，未指定时默认只认 `virtual-driver`，旧报告缺字段时也按 virtual-driver 处理。
+- `npm run test:watch-mode-live:dry-run` 会对两种变体各做一次 config 注入探针并写入 `config-injection.json`，注入不一致直接失败。
 
 ## 2026-06-05 低延迟二次翻译回归
 

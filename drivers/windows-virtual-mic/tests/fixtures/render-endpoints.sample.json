@@ -1,0 +1,18 @@
+{
+  "virtualSpeakerFriendlyName": "Omni Translate Virtual Speaker",
+  "defaultRenderDeviceId": "{0.0.0.00000000}.{physical-default}",
+  "renderEndpoints": [
+    {
+      "id": "{0.0.0.00000000}.{omni-virtual-speaker}",
+      "friendlyName": "扬声器 (Omni Translate Virtual Speaker)"
+    },
+    {
+      "id": "{0.0.0.00000000}.{physical-default}",
+      "friendlyName": "Speakers (Realtek(R) Audio)"
+    },
+    {
+      "id": "{0.0.0.00000000}.{physical-usb}",
+      "friendlyName": "USB Audio Device"
+    }
+  ]
+}

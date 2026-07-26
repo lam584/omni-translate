@@ -1,6 +1,7 @@
 param(
   [switch]$DryRun,
   [string]$Fixture = "pass",
+  [string]$FixtureRoot = "scripts/testing/fixtures/watch-mode-live",
   [string]$OutputRoot = "artifacts/testing/watch-mode-live",
   [string]$RuntimeRoot = "artifacts/diagnostics/logs",
   [int]$WarmupSeconds = 12,
@@ -19,16 +20,32 @@ param(
   [string]$SubtitleTranslationModelId = "template-dashscope-realtime::qwen3.6-flash-2026-04-16",
   [string]$InboundSecondaryAudioModelId = "template-dashscope-realtime::qwen3.5-omni-plus-realtime",
   [string]$PhysicalPlaybackDeviceId = "default",
+  [ValidateSet("virtual-driver", "echo-cancel")]
+  [string]$FeedbackLoopPrevention = "virtual-driver",
   [string]$ExpectedPhysicalPlaybackDeviceName = ""
 )
 
 $ErrorActionPreference = 'Stop'
 
+# npm 11 treats PowerShell-style single-dash options as npm config and forwards
+# only their value. Preserve the documented npm command without weakening direct
+# -Fixture validation for callers outside this lifecycle script.
+if (
+  $DryRun -and
+  $env:npm_lifecycle_event -eq "test:watch-mode-live:dry-run" -and
+  $Fixture -in @("virtual-driver", "echo-cancel") -and
+  $FeedbackLoopPrevention -eq "virtual-driver"
+) {
+  $FeedbackLoopPrevention = $Fixture
+  $Fixture = "pass"
+}
+
 function New-WatchModeOutputDirectory {
   param([string]$Root)
   $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $modelSuffix = if ($WatchModelId) { "-$($WatchModelId -replace '[^A-Za-z0-9_.-]', '_')" } else { "" }
-  $target = Join-Path (Resolve-Path ".").Path (Join-Path $Root "$timestamp$modelSuffix")
+  $feedbackSuffix = if ($FeedbackLoopPrevention -eq "echo-cancel") { "-echo-cancel" } else { "" }
+  $target = Join-Path (Resolve-Path ".").Path (Join-Path $Root "$timestamp$modelSuffix$feedbackSuffix")
   New-Item -ItemType Directory -Force -Path $target | Out-Null
   return $target
 }
@@ -213,7 +230,8 @@ function Set-DesktopAutostartEnvFile {
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_MODEL_ID=' -and
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE=' -and
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID=' -and
-      $_ -notmatch '^VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID='
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION='
     })
   }
   $expiresAtMs = [DateTimeOffset]::UtcNow.AddMinutes(45).ToUnixTimeMilliseconds()
@@ -235,6 +253,7 @@ function Set-DesktopAutostartEnvFile {
   if ($InboundSecondaryAudioModelId) {
     $next += "VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID=$InboundSecondaryAudioModelId"
   }
+  $next += "VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION=$FeedbackLoopPrevention"
   Set-Utf8NoBomContent $envPath (($next -join "`r`n") + "`r`n")
   return [pscustomobject]@{
     path = $envPath
@@ -332,6 +351,13 @@ function Ensure-ObjectProperty {
   return $Object.$Name
 }
 
+function Ensure-ValueProperty {
+  param($Object, [string]$Name)
+  if (-not $Object.PSObject.Properties[$Name]) {
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $null
+  }
+}
+
 function Set-WatchModelOnConfig {
   param($Config, [string]$ModelId)
   if (-not $ModelId) {
@@ -353,7 +379,8 @@ function Set-WatchModeSecondaryConfig {
   param(
     $Config,
     [string]$SubtitleModelId,
-    [string]$SecondaryAudioModelId
+    [string]$SecondaryAudioModelId,
+    [string]$FeedbackMode = $FeedbackLoopPrevention
   )
   if (-not $Config.devices) {
     $Config | Add-Member -NotePropertyName devices -NotePropertyValue ([pscustomobject]@{})
@@ -363,6 +390,36 @@ function Set-WatchModeSecondaryConfig {
   }
   $inboundRoute = Ensure-ObjectProperty $Config.devices "inboundRoute"
   $mixControl = Ensure-ObjectProperty $inboundRoute "mixControl"
+  foreach ($name in @(
+    "subtitleTranslationMode",
+    "subtitleTranslationModelId",
+    "inboundSecondaryAudioModelId",
+    "textToSpeechModelId",
+    "outputSpeechEnabled",
+    "feedbackLoopPrevention"
+  )) {
+    Ensure-ValueProperty $Config.devices $name
+  }
+  foreach ($name in @(
+    "textToSpeechModelId",
+    "enabled",
+    "outputTarget",
+    "localPlaybackEnabled",
+    "virtualMicOutputEnabled",
+    "translationAudioSource"
+  )) {
+    Ensure-ValueProperty $Config.speech $name
+  }
+  foreach ($name in @(
+    "keepOriginalAudio",
+    "translatedAudioEnabled",
+    "originalAudioGainDb",
+    "translatedAudioGainDb",
+    "duckingEnabled",
+    "monitorMode"
+  )) {
+    Ensure-ValueProperty $mixControl $name
+  }
   $Config.devices.subtitleTranslationMode = "secondary"
   if ($SubtitleModelId) {
     $Config.devices.subtitleTranslationModelId = $SubtitleModelId
@@ -373,7 +430,11 @@ function Set-WatchModeSecondaryConfig {
     $Config.speech.textToSpeechModelId = $SecondaryAudioModelId
   }
   $Config.devices.outputSpeechEnabled = $true
-  $Config.devices.feedbackLoopPrevention = "virtual-driver"
+  if ($FeedbackMode -eq "echo-cancel") {
+    $Config.devices.feedbackLoopPrevention = "echo-cancel"
+  } else {
+    $Config.devices.feedbackLoopPrevention = "virtual-driver"
+  }
   $mixControl.keepOriginalAudio = $true
   $mixControl.translatedAudioEnabled = $true
   $mixControl.originalAudioGainDb = 0
@@ -401,6 +462,7 @@ function Write-LatestWatchModeSummary {
     verdict = $report.verdict
     failureLayer = $report.failureLayer
     modelId = $report.modelId
+    feedbackLoopPrevention = $report.feedbackLoopPrevention
   } | ConvertTo-Json -Depth 4 | Set-Content -Path $summaryPath -Encoding UTF8
 }
 
@@ -565,6 +627,7 @@ function Start-WatchModeDesktopShell {
   $previousWatchModelId = $env:OMNI_WATCH_MODE_MODEL_ID
   $previousSubtitleTranslationModelId = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID
   $previousInboundSecondaryAudioModelId = $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID
+  $previousFeedbackLoopPrevention = $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION
   $previousUserAutostart = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART"
   $previousUserRunMarker = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER"
   $previousUserOutputDevice = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID"
@@ -574,6 +637,7 @@ function Start-WatchModeDesktopShell {
   $previousUserWatchModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_MODEL_ID"
   $previousUserSubtitleTranslationModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID"
   $previousUserInboundSecondaryAudioModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID"
+  $previousUserFeedbackLoopPrevention = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION"
   try {
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
@@ -592,6 +656,7 @@ function Start-WatchModeDesktopShell {
     if ($InboundSecondaryAudioModelId) {
       $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $InboundSecondaryAudioModelId
     }
+    $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $FeedbackLoopPrevention
     if ($AllowElevatedDesktopLaunch) {
       Set-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART" "1"
       Set-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER" $RunMarker
@@ -608,6 +673,7 @@ function Start-WatchModeDesktopShell {
       if ($InboundSecondaryAudioModelId) {
         Set-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID" $InboundSecondaryAudioModelId
       }
+      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION" $FeedbackLoopPrevention
       $process = Start-Process -FilePath $exe -WorkingDirectory (Join-Path $workspaceRoot "apps/desktop/src-tauri") -Verb RunAs -PassThru
     } else {
       try {
@@ -629,6 +695,7 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_MODEL_ID = $previousWatchModelId
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $previousSubtitleTranslationModelId
     $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $previousInboundSecondaryAudioModelId
+    $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $previousFeedbackLoopPrevention
     Set-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART" $previousUserAutostart
     Set-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER" $previousUserRunMarker
     Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID" $previousUserOutputDevice
@@ -638,6 +705,7 @@ function Start-WatchModeDesktopShell {
     Set-UserEnvironmentVariable "OMNI_WATCH_MODE_MODEL_ID" $previousUserWatchModelId
     Set-UserEnvironmentVariable "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID" $previousUserSubtitleTranslationModelId
     Set-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID" $previousUserInboundSecondaryAudioModelId
+    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION" $previousUserFeedbackLoopPrevention
   }
   Start-Sleep -Seconds $WarmupSeconds
   return [pscustomobject]@{
@@ -2335,6 +2403,7 @@ function Build-SnapshotsFile {
     runMarker = $RunMarker
     startedAtLocal = $StartedAtLocal
     modelId = if ($WatchModelId) { $WatchModelId } else { $null }
+    feedbackLoopPrevention = $FeedbackLoopPrevention
     translationRoute = $translationRoute
     driver = $driver
     wasapi = $driver
@@ -2397,14 +2466,65 @@ $runMarker = "watch_mode_diagnostic.run_id=$([System.Guid]::NewGuid().ToString('
 $startedAtLocal = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 
 if ($DryRun) {
-  $fixtureDir = Join-Path $workspaceRoot (Join-Path "scripts/testing/fixtures/watch-mode-live" $Fixture)
-  if (-not (Test-Path -LiteralPath $fixtureDir -PathType Container)) {
-    throw "Watch-mode fixture not found: $fixtureDir"
+  $injectionVariants = @()
+  $defaultConfigPath = Join-Path $workspaceRoot "apps/desktop/src-tauri/defaults/app-config.default.json"
+  foreach ($mode in @("virtual-driver", "echo-cancel")) {
+    $probeConfig = Get-Content -LiteralPath $defaultConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Set-WatchModelOnConfig $probeConfig $WatchModelId
+    Set-WatchModeSecondaryConfig $probeConfig $SubtitleTranslationModelId $InboundSecondaryAudioModelId $mode
+    $injected = $probeConfig.devices.feedbackLoopPrevention
+    if ($injected -ne $mode) {
+      throw "dry-run feedback config injection mismatch: requested=$mode injected=$injected"
+    }
+    $injectionVariants += [ordered]@{
+      requested = $mode
+      injected = $injected
+      outputSpeechEnabled = $probeConfig.devices.outputSpeechEnabled
+      monitorMode = $probeConfig.devices.inboundRoute.mixControl.monitorMode
+    }
+  }
+  [ordered]@{
+    generatedAt = Get-Date -Format o
+    selectedFeedbackLoopPrevention = $FeedbackLoopPrevention
+    variants = $injectionVariants
+  } | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $outputDir "config-injection.json") -Encoding UTF8
+  Write-Host "==> dry-run feedback config injection verified: virtual-driver, echo-cancel (selected=$FeedbackLoopPrevention)"
+  $resolvedFixtureRoot = if ([System.IO.Path]::IsPathRooted($FixtureRoot)) {
+    [System.IO.Path]::GetFullPath($FixtureRoot)
+  } else {
+    [System.IO.Path]::GetFullPath((Join-Path $workspaceRoot $FixtureRoot))
+  }
+  $fixtureDir = Join-Path $resolvedFixtureRoot $Fixture
+  $requiredFixtureFiles = @("snapshots.json", "steps.json", "app.log", "bridge-service.log")
+  $missingFixtureFiles = @($requiredFixtureFiles | Where-Object {
+    -not (Test-Path -LiteralPath (Join-Path $fixtureDir $_) -PathType Leaf)
+  })
+  if ($Fixture -eq "pass" -and $missingFixtureFiles.Count -gt 0) {
+    Write-Host "==> generating built-in Watch Mode dry-run fixture: $fixtureDir"
+    node ./scripts/testing/generate-watch-mode-live-fixtures.mjs --root $resolvedFixtureRoot --fixture pass
+    if ($LASTEXITCODE -ne 0) {
+      throw "Watch-mode fixture generation failed with exit code $LASTEXITCODE. Run 'npm run generate:watch-mode-live-fixtures' for diagnostics."
+    }
+    $missingFixtureFiles = @($requiredFixtureFiles | Where-Object {
+      -not (Test-Path -LiteralPath (Join-Path $fixtureDir $_) -PathType Leaf)
+    })
+  }
+  if ($missingFixtureFiles.Count -gt 0) {
+    throw "Watch-mode fixture '$Fixture' is missing required file(s) under $fixtureDir`: $($missingFixtureFiles -join ', ')"
   }
   Get-ChildItem -LiteralPath $fixtureDir | ForEach-Object {
     Copy-Item -LiteralPath $_.FullName -Destination $outputDir -Recurse -Force
   }
+  $dryRunSnapshotsPath = Join-Path $outputDir "snapshots.json"
+  $dryRunSnapshots = Get-Content -LiteralPath $dryRunSnapshotsPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $dryRunSnapshots | Add-Member -NotePropertyName feedbackLoopPrevention -NotePropertyValue $FeedbackLoopPrevention -Force
+  $dryRunSnapshots | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $dryRunSnapshotsPath -Encoding UTF8
   Invoke-ReportGenerator $outputDir "dry-run"
+  $dryRunReportPath = Join-Path $outputDir "report.json"
+  $dryRunReport = Get-Content -LiteralPath $dryRunReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if ($dryRunReport.verdict -ne "passed") {
+    throw "Watch-mode dry-run fixture report did not pass: verdict=$($dryRunReport.verdict) failureLayer=$($dryRunReport.failureLayer) report=$dryRunReportPath"
+  }
   Write-Output $outputDir
   exit 0
 }

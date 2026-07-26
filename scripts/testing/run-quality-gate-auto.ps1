@@ -15,6 +15,7 @@ New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
 $steps = @(
   @{ Name = "verify-desktop"; Command = "npm run verify:desktop" },
   @{ Name = "contracts"; Command = "npm run test:contracts" },
+  @{ Name = "integration-bridge-contract"; Command = "npm run test:integration:bridge-contract" },
   @{ Name = "coverage-all"; Command = "npm run coverage:gate" }
 )
 

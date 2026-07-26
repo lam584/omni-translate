@@ -27,8 +27,12 @@ if (minTranslationCoverage !== null && (!Number.isFinite(minTranslationCoverage)
 
 const placeholderPattern = /{{\s*[\w.]+\s*}}/g;
 const rejectedTranslationPatterns = [
-  /MYMEMORY WARNING:/i,
-  /MYMEMORY TRANSLATED\.NET\/DOC\/USAGELIMITS/i,
+  /MYMEMORY/i,
+  /TRANSLATED\.NET/i,
+  /USAGELIMITS/i,
+  /FREE TRANSLATIONS FOR TODAY/i,
+  // All-caps URL fragments leaked from machine-translation providers.
+  /HTTPS?:\/\/[A-Z0-9./_-]{8,}/,
 ];
 const allowedSameAsSourceKeys = new Set([
   'audioRouting.tagStt',
@@ -234,10 +238,14 @@ if (jsonOutput) {
 }
 
 const blockingFailures = results.filter(
-  (result) => result.missing.length > 0 || result.extra.length > 0 || result.placeholderMismatch.length > 0,
+  (result) =>
+    result.missing.length > 0 ||
+    result.extra.length > 0 ||
+    result.placeholderMismatch.length > 0 ||
+    result.rejected.length > 0,
 );
 const warningFailures = results.filter(
-  (result) => result.empty.length > 0 || result.sameAsSource.length > 0 || result.rejected.length > 0,
+  (result) => result.empty.length > 0 || result.sameAsSource.length > 0,
 );
 const thresholdFailures =
   minTranslationCoverage === null

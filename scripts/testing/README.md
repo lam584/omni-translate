@@ -153,6 +153,27 @@ Run the fixture-backed dry run without administrator permissions:
 npm run test:watch-mode-live:dry-run
 ```
 
+The dry run automatically generates the ignored built-in
+`scripts/testing/fixtures/watch-mode-live/pass` fixture when it is missing or
+incomplete. Regenerate it explicitly with:
+
+```powershell
+npm run generate:watch-mode-live-fixtures
+```
+
+Run the echo-cancel variant with:
+
+```powershell
+npm run test:watch-mode-live:dry-run -- -FeedbackLoopPrevention echo-cancel
+```
+
+The runner normalizes the argument forwarding used by current npm versions,
+which otherwise pass only the `echo-cancel` value to PowerShell.
+
+Only the built-in `pass` fixture is generated automatically. A missing custom
+`-Fixture` remains an error; use `-FixtureRoot` to point the runner at a local
+custom fixture collection.
+
 Run the live watch-mode diagnostic on Windows:
 
 ```powershell

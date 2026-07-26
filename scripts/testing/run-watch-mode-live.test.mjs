@@ -275,13 +275,17 @@ test('matrix runner executes both strict watch models and verifies strict eviden
   assert.match(matrix, /\$runnerParameters\.AllowElevatedDesktopLaunch = \$true/);
   assert.match(matrix, /& \$runScript @runnerParameters @RunnerArgs/);
   assert.match(matrix, /@RunnerArgs/);
+  assert.match(matrix, /\[string\[\]\]\$FeedbackLoopPreventionModes = @\(/);
+  assert.match(matrix, /FeedbackLoopPrevention = \$feedbackMode/);
   assert.match(matrix, /verify-watch-mode-evidence\.mjs --root \$OutputRoot --strict --models/);
+  assert.match(matrix, /--feedback-modes \(\$feedbackModeList -join ","\)/);
 });
 
 test('live runner forces watch virtual-driver and mixed physical output config for CLI route starts', () => {
   const helperIndex = script.indexOf('function Ensure-ObjectProperty');
   const secondaryConfigIndex = script.indexOf('function Set-WatchModeSecondaryConfig');
   const feedbackIndex = script.indexOf('$Config.devices.feedbackLoopPrevention = "virtual-driver"', secondaryConfigIndex);
+  const echoCancelIndex = script.indexOf('$Config.devices.feedbackLoopPrevention = "echo-cancel"', secondaryConfigIndex);
   const keepOriginalIndex = script.indexOf('$mixControl.keepOriginalAudio = $true', secondaryConfigIndex);
   const translatedAudioIndex = script.indexOf('$mixControl.translatedAudioEnabled = $true', secondaryConfigIndex);
   const monitorModeIndex = script.indexOf('$mixControl.monitorMode = "original-and-translated"', secondaryConfigIndex);
@@ -292,6 +296,8 @@ test('live runner forces watch virtual-driver and mixed physical output config f
   assert.notEqual(helperIndex, -1, 'runner must safely create nested config objects before setting watch mix config');
   assert.notEqual(secondaryConfigIndex, -1, 'runner must centralize secondary watch route config');
   assert.notEqual(feedbackIndex, -1, 'CLI route config must force virtual-driver feedback prevention');
+  assert.notEqual(echoCancelIndex, -1, 'CLI route config must support the echo-cancel feedback prevention variant');
+  assert.match(script, /\[ValidateSet\("virtual-driver", "echo-cancel"\)\]/, 'runner must expose a validated FeedbackLoopPrevention parameter');
   assert.notEqual(keepOriginalIndex, -1, 'CLI route config must keep original audio');
   assert.notEqual(translatedAudioIndex, -1, 'CLI route config must enable translated audio');
   assert.notEqual(monitorModeIndex, -1, 'CLI route config must monitor original and translated output');
@@ -299,6 +305,46 @@ test('live runner forces watch virtual-driver and mixed physical output config f
   assert.notEqual(cliSecondaryConfigIndex, -1, 'CLI route start must apply the shared secondary watch config');
   assert(helperIndex < secondaryConfigIndex);
   assert(secondaryConfigIndex < cliSecondaryConfigIndex);
+});
+
+test('live runner threads FeedbackLoopPrevention through env, snapshots, and dry-run injection probes', () => {
+  const dirSuffixIndex = script.indexOf('$feedbackSuffix = if ($FeedbackLoopPrevention -eq "echo-cancel") { "-echo-cancel" } else { "" }');
+  const frontendCleanupIndex = script.indexOf("$_ -notmatch '^VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION='");
+  const frontendEnvIndex = script.indexOf('VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION=$FeedbackLoopPrevention');
+  const previousProcessIndex = script.indexOf('$previousFeedbackLoopPrevention = $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION');
+  const processEnvIndex = script.indexOf('$env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $FeedbackLoopPrevention');
+  const previousUserIndex = script.indexOf('$previousUserFeedbackLoopPrevention = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION"');
+  const userEnvIndex = script.indexOf('Set-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION" $FeedbackLoopPrevention');
+  const restoreProcessIndex = script.indexOf('$env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $previousFeedbackLoopPrevention');
+  const restoreUserIndex = script.indexOf('Set-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION" $previousUserFeedbackLoopPrevention');
+  const snapshotFeedbackIndex = script.indexOf('feedbackLoopPrevention = $FeedbackLoopPrevention');
+  const latestFeedbackIndex = script.indexOf('feedbackLoopPrevention = $report.feedbackLoopPrevention');
+  const dryRunProbeIndex = script.indexOf('Set-WatchModeSecondaryConfig $probeConfig $SubtitleTranslationModelId $InboundSecondaryAudioModelId $mode');
+  const dryRunMismatchIndex = script.indexOf('dry-run feedback config injection mismatch: requested=$mode injected=$injected');
+  const dryRunArtifactIndex = script.indexOf('"config-injection.json"');
+  const dryRunSnapshotOverrideIndex = script.indexOf('Add-Member -NotePropertyName feedbackLoopPrevention -NotePropertyValue $FeedbackLoopPrevention -Force');
+
+  assert.notEqual(dirSuffixIndex, -1, 'runner must suffix echo-cancel output directories to avoid masking virtual-driver evidence');
+  assert.notEqual(frontendCleanupIndex, -1, 'runner must remove stale frontend feedback prevention from .env.local');
+  assert.notEqual(frontendEnvIndex, -1, 'runner must write frontend feedback prevention into .env.local');
+  assert.notEqual(previousProcessIndex, -1, 'runner must capture previous process feedback prevention env');
+  assert.notEqual(processEnvIndex, -1, 'runner must set process feedback prevention env');
+  assert.notEqual(previousUserIndex, -1, 'runner must capture previous user feedback prevention env');
+  assert.notEqual(userEnvIndex, -1, 'runner must set elevated user feedback prevention env');
+  assert.notEqual(restoreProcessIndex, -1, 'runner must restore process feedback prevention env');
+  assert.notEqual(restoreUserIndex, -1, 'runner must restore elevated user feedback prevention env');
+  assert.notEqual(snapshotFeedbackIndex, -1, 'runner must persist feedbackLoopPrevention in snapshots.json');
+  assert.notEqual(latestFeedbackIndex, -1, 'runner must persist feedbackLoopPrevention in latest-watch-mode-live.json');
+  assert.notEqual(dryRunProbeIndex, -1, 'dry-run must probe secondary config injection for each feedback mode');
+  assert.notEqual(dryRunMismatchIndex, -1, 'dry-run must fail when feedback config injection mismatches');
+  assert.notEqual(dryRunArtifactIndex, -1, 'dry-run must persist config-injection.json evidence');
+  assert.notEqual(dryRunSnapshotOverrideIndex, -1, 'dry-run must stamp fixture snapshots with the selected feedback mode');
+  assert(previousProcessIndex < processEnvIndex);
+  assert(processEnvIndex < restoreProcessIndex);
+  assert(previousUserIndex < userEnvIndex);
+  assert(userEnvIndex < restoreUserIndex);
+  assert(dryRunProbeIndex < dryRunMismatchIndex);
+  assert(dryRunMismatchIndex < dryRunArtifactIndex);
 });
 
 test('live runner records physical output evidence in the required order', () => {

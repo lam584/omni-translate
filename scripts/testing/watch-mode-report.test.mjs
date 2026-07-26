@@ -325,6 +325,62 @@ test('classifies any duplicate final translation as app failure', () => {
   assert.match(report.failureReason, /duplicate final translations/);
 });
 
+test('echo-cancel variant skips virtual-driver evidence layers and passes on healthy app evidence', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    bridge: {
+      bridgeState: 'running',
+      driverHealth: 'running',
+      sourceSubscriberActive: false,
+      sourceReadCalls: 0,
+      droppedFrameCount: 0,
+    },
+    physicalOutput: {
+      ...healthyPhysicalOutput,
+      passed: false,
+      rms: 0,
+      toneComponent: 0,
+    },
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
+  assert.equal(report.feedbackLoopPrevention, 'echo-cancel');
+  for (const layer of ['bridge', 'physicalOutput', 'physicalOutputContent', 'speechSegmentation', 'strictContent']) {
+    assert.equal(report.layers[layer].status, 'skipped');
+  }
+  assert.equal(report.layers.driver.status, 'passed');
+  assert.equal(report.layers.app.status, 'passed');
+  assert.equal(report.layers.provider.status, 'passed');
+});
+
+test('echo-cancel variant keeps the duplicate final translation detector as a failing gate', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    app: {
+      ...healthyApp,
+      subtitleQueue: {
+        eventCount: 8,
+        cueOrderInversions: 0,
+        duplicateFinalTranslations: 1,
+      },
+    },
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'app');
+  assert.match(report.failureReason, /duplicate final translations/);
+  assert.equal(report.feedbackLoopPrevention, 'echo-cancel');
+});
+
+test('reports default to the virtual-driver variant and honor snapshots feedbackLoopPrevention', () => {
+  assert.equal(classify().feedbackLoopPrevention, 'virtual-driver');
+
+  const fromSnapshots = classify({ snapshots: { feedbackLoopPrevention: 'echo-cancel' } });
+  assert.equal(fromSnapshots.feedbackLoopPrevention, 'echo-cancel');
+  assert.equal(fromSnapshots.layers.strictContent.status, 'skipped');
+});
+
 test('classifies slow secondary subtitle first translation as app failure', () => {
   const report = classify({
     translationRoute: 'secondary',

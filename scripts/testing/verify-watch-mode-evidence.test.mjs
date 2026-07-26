@@ -4,7 +4,16 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { REQUIRED_LAYERS, findWatchModeEvidence } from './verify-watch-mode-evidence.mjs';
+import { ECHO_CANCEL_REQUIRED_LAYERS, REQUIRED_LAYERS, findWatchModeEvidence } from './verify-watch-mode-evidence.mjs';
+
+function echoCancelLayers() {
+  return Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
+    layer,
+    ECHO_CANCEL_REQUIRED_LAYERS.includes(layer)
+      ? { status: 'passed', reason: null }
+      : { status: 'skipped', reason: 'echo-cancel variant does not require this evidence layer' },
+  ]));
+}
 
 function makeTempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-evidence-'));
@@ -315,4 +324,72 @@ test('strict model matrix passes when both requested models pass', () => {
     'qwen3.5-omni-flash-realtime',
     'qwen3.5-livetranslate-flash-realtime',
   ]);
+});
+
+test('echo-cancel variant report passes with the reduced layer set when requested', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260605-191332-echo-cancel', {
+    feedbackLoopPrevention: 'echo-cancel',
+    layers: echoCancelLayers(),
+  });
+
+  const result = findWatchModeEvidence({ root, strict: true, feedbackModes: ['echo-cancel'] });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.latest.feedbackMode, 'echo-cancel');
+  assert.equal(result.latest.report.feedbackLoopPrevention, 'echo-cancel');
+});
+
+test('default gate ignores echo-cancel runs so virtual-driver evidence stays authoritative', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260605-201332-echo-cancel', {
+    generatedAt: '2026-06-05T12:13:32.000Z',
+    feedbackLoopPrevention: 'echo-cancel',
+    layers: echoCancelLayers(),
+  });
+  writeReport(root, '20260605-191332', { generatedAt: '2026-06-05T11:13:32.000Z' });
+
+  const result = findWatchModeEvidence({ root });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.latest.directoryName, '20260605-191332');
+  assert.equal(result.latest.feedbackMode, 'virtual-driver');
+});
+
+test('strict feedback-mode matrix requires every model and feedback mode combination', () => {
+  const root = makeTempRoot();
+  const strictLayers = Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
+    layer,
+    {
+      status: 'passed',
+      reason: null,
+      data: layer === 'strictContent' ? { applicable: true, passed: true, coverage: 1 } : undefined,
+    },
+  ]));
+  writeReport(root, '20260605-191332-omni', {
+    modelId: 'qwen3.5-omni-flash-realtime',
+    layers: strictLayers,
+  });
+  writeReport(root, '20260605-201332-omni-echo-cancel', {
+    generatedAt: '2026-06-05T12:13:32.000Z',
+    modelId: 'qwen3.5-omni-flash-realtime',
+    feedbackLoopPrevention: 'echo-cancel',
+    layers: echoCancelLayers(),
+  });
+
+  const result = findWatchModeEvidence({
+    root,
+    strict: true,
+    models: [
+      'qwen3.5-omni-flash-realtime',
+      'qwen3.5-livetranslate-flash-realtime',
+    ],
+    feedbackModes: ['virtual-driver', 'echo-cancel'],
+  });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.modelResults.length, 4);
+  assert.equal(result.modelResults.filter((item) => item.ok).length, 2);
+  assert.match(result.reason, /qwen3\.5-livetranslate-flash-realtime\[virtual-driver\]/);
+  assert.match(result.reason, /qwen3\.5-livetranslate-flash-realtime\[echo-cancel\]/);
 });

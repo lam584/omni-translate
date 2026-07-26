@@ -48,7 +48,7 @@ describe('useSessionElapsed', () => {
   });
 
   it('handles seconds, ISO, invalid, future, and missing timestamps', () => {
-    expect(parseRuntimeTimestampMs('unix:123')).toBe(123);
+    expect(parseRuntimeTimestampMs('unix:123')).toBe(123_000);
     expect(parseRuntimeTimestampMs('2026-07-25T00:00:00.000Z')).toBe(Date.parse('2026-07-25T00:00:00.000Z'));
     expect(parseRuntimeTimestampMs('invalid')).toBeNull();
     expect(parseRuntimeTimestampMs(null)).toBeNull();

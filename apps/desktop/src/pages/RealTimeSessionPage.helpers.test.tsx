@@ -48,7 +48,7 @@ describe('realTimeSessionPageHelpers', () => {
     expect(parseRuntimeTimestampMs(null)).toBeNull();
     expect(parseRuntimeTimestampMs('')).toBeNull();
     expect(parseRuntimeTimestampMs('unix-ms:1779974788817')).toBe(1779974788817);
-    expect(parseRuntimeTimestampMs('unix:123')).toBe(123);
+    expect(parseRuntimeTimestampMs('unix:123')).toBe(123_000);
     expect(parseRuntimeTimestampMs('2026-06-01T00:00:00.000Z')).toBe(Date.parse('2026-06-01T00:00:00.000Z'));
     expect(parseRuntimeTimestampMs('invalid')).toBeNull();
   });

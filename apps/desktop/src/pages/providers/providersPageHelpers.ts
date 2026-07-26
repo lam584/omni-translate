@@ -22,6 +22,7 @@ import {
   resolveProviderModelCapabilities,
 } from '../../utils/provider-model-capabilities';
 import type { ProviderTemplateCatalogEntry } from '../../utils/provider-template-catalog';
+import { parseRuntimeTimestampMs } from '../../utils/runtime-timestamp';
 
 export type ModelCatalogState = {
   signature: string;
@@ -86,19 +87,7 @@ function formatTimestampLabel(value: string | null) {
     return null;
   }
 
-  let timestampMs: number | null;
-
-  if (value.startsWith('unix:')) {
-    const raw = Number(value.slice(5));
-    timestampMs = Number.isFinite(raw) ? raw * 1000 : null;
-  } else if (/^\d{10}$/.test(value)) {
-    timestampMs = Number(value) * 1000;
-  } else if (/^\d{13}$/.test(value)) {
-    timestampMs = Number(value);
-  } else {
-    const parsed = Date.parse(value);
-    timestampMs = Number.isNaN(parsed) ? null : parsed;
-  }
+  const timestampMs = parseRuntimeTimestampMs(value);
 
   if (timestampMs === null) {
     return value;

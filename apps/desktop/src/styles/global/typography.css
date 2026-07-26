@@ -615,6 +615,22 @@
   color:#f1a6a6
 }
 
+.cue-queue-error-action {
+  margin-left:8px;
+  padding:0;
+  border:none;
+  background:transparent;
+  font-size:.82rem;
+  color:inherit;
+  text-decoration:underline;
+  cursor:pointer
+}
+
+.cue-queue-error-action:disabled {
+  opacity:.6;
+  cursor:default
+}
+
 .secret-visibility-button {
   justify-content:center;
   min-width:38px;

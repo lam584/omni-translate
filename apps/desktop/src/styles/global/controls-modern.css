@@ -1,0 +1,193 @@
+/* Modern form control primitives shared by the audio-routing and
+   subtitle-overlay-style pages. Opt-in via class names so other pages keep
+   their existing native controls. */
+
+/* --- Range slider (.ui-range) ---------------------------------------- */
+/* Fill percentage arrives via an inline --fill custom property. */
+
+input[type='range'].ui-range {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 20px;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+  --ui-range-fill: #10b981;
+  --ui-range-fill-2: #0ea5a3;
+  --ui-range-track: #e4e9f2;
+}
+
+input[type='range'].ui-range::-webkit-slider-runnable-track {
+  height: 6px;
+  border-radius: 999px;
+  background:
+    linear-gradient(90deg, var(--ui-range-fill), var(--ui-range-fill-2)) 0 0 / var(--fill, 50%) 100% no-repeat,
+    var(--ui-range-track);
+}
+
+input[type='range'].ui-range::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  margin-top: -5px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid var(--ui-range-fill);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.22);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type='range'].ui-range:hover::-webkit-slider-thumb {
+  transform: scale(1.12);
+}
+
+input[type='range'].ui-range:active::-webkit-slider-thumb {
+  transform: scale(1.05);
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.3);
+}
+
+input[type='range'].ui-range:focus-visible {
+  outline: none;
+}
+
+/* Opaque two-tone ring: white gap + teal-700 keeps >=3:1 against both the
+   white cards and the green filled track (WCAG 1.4.11). */
+input[type='range'].ui-range:focus-visible::-webkit-slider-thumb {
+  box-shadow:
+    0 0 0 2px #ffffff,
+    0 0 0 4px #0f766e;
+}
+
+input[type='range'].ui-range:disabled {
+  cursor: not-allowed;
+  --ui-range-fill: #b6c1d1;
+  --ui-range-fill-2: #b6c1d1;
+}
+
+input[type='range'].ui-range:disabled::-webkit-slider-thumb {
+  transform: none;
+  box-shadow: none;
+}
+
+/* Firefox fallback (dev-in-browser); WebView2 uses the -webkit path. */
+input[type='range'].ui-range::-moz-range-track {
+  height: 6px;
+  border-radius: 999px;
+  background: var(--ui-range-track);
+}
+
+input[type='range'].ui-range::-moz-range-progress {
+  height: 6px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--ui-range-fill), var(--ui-range-fill-2));
+}
+
+input[type='range'].ui-range::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #ffffff;
+  border: 2px solid var(--ui-range-fill);
+  box-shadow: 0 1px 4px rgba(15, 23, 42, 0.22);
+}
+
+input[type='range'].ui-range:focus-visible::-moz-range-thumb {
+  box-shadow:
+    0 0 0 2px #ffffff,
+    0 0 0 4px #0f766e;
+}
+
+/* --- Switch toggle (.ui-switch) -------------------------------------- */
+
+input[type='checkbox'].ui-switch {
+  -webkit-appearance: none;
+  appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 20px;
+  margin: 0;
+  border: none;
+  border-radius: 999px;
+  background: #c7d0dd;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: background 0.18s ease;
+}
+
+input[type='checkbox'].ui-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #ffffff;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.28);
+  transition: transform 0.18s ease;
+}
+
+input[type='checkbox'].ui-switch:checked {
+  background: #10b981;
+}
+
+input[type='checkbox'].ui-switch:checked::after {
+  transform: translateX(14px);
+}
+
+input[type='checkbox'].ui-switch:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 2px #ffffff,
+    0 0 0 4px #0f766e;
+}
+
+input[type='checkbox'].ui-switch:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Windows High Contrast / forced-colors: backgrounds and shadows are
+   stripped, so rebuild the state signalling from system-colored borders. */
+@media (forced-colors: active) {
+  input[type='checkbox'].ui-switch {
+    border: 1px solid ButtonText;
+    background: ButtonFace;
+  }
+
+  input[type='checkbox'].ui-switch::after {
+    top: 1px;
+    left: 1px;
+    background: ButtonText;
+    box-shadow: none;
+  }
+
+  input[type='checkbox'].ui-switch:checked {
+    background: Highlight;
+    border-color: Highlight;
+  }
+
+  input[type='checkbox'].ui-switch:checked::after {
+    background: HighlightText;
+  }
+
+  input[type='range'].ui-range::-webkit-slider-runnable-track {
+    background: ButtonFace;
+    border: 1px solid ButtonText;
+  }
+
+  input[type='range'].ui-range::-webkit-slider-thumb {
+    background: ButtonText;
+    border-color: ButtonText;
+  }
+
+  input[type='range'].ui-range:focus-visible,
+  input[type='checkbox'].ui-switch:focus-visible {
+    outline: 2px solid CanvasText;
+    outline-offset: 2px;
+    box-shadow: none;
+  }
+}

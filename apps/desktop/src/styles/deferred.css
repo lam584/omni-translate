@@ -29,6 +29,7 @@
 @import './pages/routing-overrides.css';
 @import './pages/glossary-overrides.css';
 @import './global/responsive-overrides-5.css';
+@import './global/controls-modern.css';
 @import './pages/settings-overlay-preview.css';
 @import './pages/driver-management-overrides.css';
 @import './pages/routing-modern.css';

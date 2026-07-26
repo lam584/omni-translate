@@ -213,6 +213,17 @@ body:not(:has(.subtitle-overlay-root)) .realtime-session-page .session-launch-fe
   color:#b42318
 }
 
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .session-launch-feedback-success {
+  border-color:#a9d8b8;
+  background:#f2fbf5;
+  color:#1c7c3f
+}
+
+body:not(:has(.subtitle-overlay-root)) .realtime-session-page .session-launch-feedback .icon-button {
+  flex:0 0 auto;
+  margin-left:auto
+}
+
 body:not(:has(.subtitle-overlay-root)) .realtime-session-page .live-caption-segments {
   display:grid;
   gap:8px

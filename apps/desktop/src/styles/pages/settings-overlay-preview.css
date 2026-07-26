@@ -1,221 +1,548 @@
+/* Subtitle overlay style page: editor column + live preview. This is the
+   top-most layer for the page, so it also neutralises generic settings-page
+   rules that would otherwise leak into the nested control cards. */
+
+.overlay-settings-workspace {
+  --ov-border: #e2e7ef;
+  --ov-border-strong: #d3dae6;
+  --ov-ink: #17222d;
+  --ov-ink-soft: #5b6878;
+  --ov-accent: #0f9d8a;
+  --ov-accent-deep: #0d6659;
+  --ov-accent-soft: rgba(126, 217, 199, 0.22);
+  --ov-seg-bg: #edf0f6;
+}
+
 .overlay-settings-main {
-  grid-column:1 / -1;
-  display:grid;
-  grid-template-columns:minmax(330px, .85fr) minmax(340px, 1.15fr);
-  align-items:start;
-  gap:16px;
-  width:100%;
-  max-width:1180px;
-  margin-inline:auto
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: minmax(330px, 0.85fr) minmax(340px, 1.15fr);
+  align-items: start;
+  gap: 16px;
+  width: 100%;
+  max-width: 1180px;
+  margin-inline: auto;
 }
 
 .overlay-settings-controls {
-  display:grid;
-  gap:16px;
-  grid-column:1 !important;
-  grid-row:1 !important;
-  min-height:0
+  display: grid;
+  gap: 16px;
+  grid-column: 1 !important;
+  grid-row: 1 !important;
+  min-height: 0;
+}
+
+/* The generic settings page positions its cards on a 7-track grid via
+   .settings-card:nth-child(N) rules. Those selectors also match the cards
+   nested here and used to blow the single-column grid apart, so pin every
+   nested card back to the column. */
+.overlay-settings-controls > .settings-card {
+  grid-column: auto !important;
+  grid-row: auto !important;
+  width: 100% !important;
+  max-width: none !important;
 }
 
 .overlay-settings-controls .settings-card,
 .overlay-preview-card {
-  min-height:0 !important
+  min-height: 0 !important;
 }
+
+.overlay-settings-workspace .settings-card {
+  border-radius: 16px;
+  border: 1px solid var(--ov-border);
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.05) !important;
+  gap: 14px;
+}
+
+.overlay-settings-workspace .settings-card-head h3 {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ov-ink);
+}
+
+.overlay-settings-workspace .settings-card-head p {
+  font-size: 12.5px;
+  line-height: 1.55;
+  color: var(--ov-ink-soft) !important;
+}
+
+.overlay-settings-workspace .settings-field-label {
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--ov-ink-soft) !important;
+}
+
+.overlay-settings-workspace .settings-field-control {
+  max-width: none;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  border-color: var(--ov-border-strong) !important;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.overlay-settings-workspace .settings-field-control:hover {
+  border-color: #9daebe !important;
+}
+
+.overlay-settings-workspace .settings-field-control:focus-visible {
+  outline: none;
+  border-color: var(--ov-accent) !important;
+  box-shadow: 0 0 0 3px rgba(15, 157, 138, 0.16);
+}
+
+.overlay-settings-workspace .settings-slider-value {
+  min-width: 48px;
+  font-size: 12.5px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- Page action toolbar ---------------------------------------------- */
+
+.overlay-settings-workspace .settings-page-action-group {
+  gap: 8px;
+}
+
+.overlay-settings-workspace .settings-page-action-group .settings-action {
+  padding: 8px 14px;
+  border-radius: 10px;
+  border: 1px solid var(--ov-border-strong);
+  background: #ffffff;
+  color: #2f3b46;
+  font-size: 13px;
+  font-weight: 500;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease, transform 0.15s ease;
+}
+
+.overlay-settings-workspace .settings-page-action-group .settings-action:hover {
+  border-color: var(--ov-accent);
+  background: var(--ov-accent-soft);
+  color: var(--ov-accent-deep);
+}
+
+.overlay-settings-workspace .settings-page-action-group .settings-action:active {
+  transform: translateY(1px);
+}
+
+.overlay-settings-workspace .settings-page-action-group .settings-action:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(15, 157, 138, 0.25);
+}
+
+.overlay-settings-workspace .settings-page-action-group .settings-action-primary {
+  background: var(--ov-accent-deep);
+  border-color: var(--ov-accent-deep);
+  color: #ffffff;
+}
+
+.overlay-settings-workspace .settings-page-action-group .settings-action-primary:hover {
+  background: #0a5449;
+  border-color: #0a5449;
+  color: #ffffff;
+}
+
+.overlay-settings-workspace .settings-page-action-group .settings-action-primary:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+
+/* --- Appearance presets ------------------------------------------------ */
 
 .overlay-preset-grid {
-  display:grid;
-  grid-template-columns:repeat(2, minmax(0, 1fr));
-  gap:10px
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
 }
 
-.overlay-choice-button,
-.overlay-effect-preset-grid button {
-  min-width:0;
-  border:1px solid rgba(22, 31, 40, .12);
-  border-radius:12px;
-  background:rgba(255, 255, 255, .72);
-  color:inherit;
-  padding:10px;
-  display:flex;
-  align-items:center;
-  gap:9px;
-  cursor:pointer;
-  transition:var(--transition-interactive)
+.overlay-choice-button {
+  position: relative;
+  min-width: 0;
+  border: 1px solid var(--ov-border);
+  border-radius: 12px;
+  background: #ffffff;
+  color: #334155;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  font-size: 12.5px;
+  font-weight: 500;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
 }
 
-.overlay-choice-button:hover,
-.overlay-effect-preset-grid button:hover {
-  border-color:rgba(33, 143, 127, .42);
-  background:rgba(226, 247, 242, .82)
+.overlay-choice-button[aria-pressed="true"]::after {
+  content: '✓';
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  width: 17px;
+  height: 17px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--ov-accent);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.25);
 }
 
-.overlay-choice-button[aria-pressed="true"],
-.overlay-effect-preset-grid button[aria-pressed="true"] {
-  border-color:rgba(8, 122, 112, .58);
-  background:rgba(126, 217, 199, .22);
-  box-shadow:0 0 0 2px rgba(8, 122, 112, .08)
+.overlay-choice-button:hover {
+  border-color: rgba(33, 143, 127, 0.42);
+  box-shadow: 0 4px 12px rgba(15, 23, 42, 0.07);
+}
+
+.overlay-choice-button[aria-pressed="true"] {
+  border-color: rgba(8, 122, 112, 0.58);
+  background: rgba(126, 217, 199, 0.14);
+  color: var(--ov-accent-deep);
+  box-shadow: 0 0 0 2px rgba(8, 122, 112, 0.12);
 }
 
 .overlay-choice-swatch {
-  width:32px;
-  height:24px;
-  flex:0 0 auto;
-  border-radius:7px;
-  border:1px solid rgba(255, 255, 255, .35);
-  box-shadow:0 4px 10px rgba(0, 0, 0, .18)
+  width: 100%;
+  height: 46px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  border: 1px solid rgba(15, 23, 42, 0.08);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.06);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
 }
 
-.overlay-choice-swatch-classic { background:#111827 }
-.overlay-choice-swatch-glass { background:linear-gradient(135deg, rgba(15, 23, 42, .42), rgba(80, 124, 145, .38)) }
-.overlay-choice-swatch-contrast { background:#020617 }
-.overlay-choice-swatch-lyrics { background:linear-gradient(135deg, #376473 0 45%, transparent 45% 55%, #a5c6b8 55%) }
+.overlay-choice-swatch::after {
+  content: 'Aa';
+  font-size: 17px;
+  line-height: 1;
+}
+
+.overlay-choice-swatch-classic {
+  background: #111827;
+}
+
+.overlay-choice-swatch-classic::after {
+  color: #fff8ef;
+  font-weight: 700;
+  text-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+}
+
+.overlay-choice-swatch-glass {
+  background:
+    radial-gradient(circle at 24% 30%, rgba(255, 213, 128, 0.55), transparent 45%),
+    radial-gradient(circle at 78% 70%, rgba(97, 201, 214, 0.5), transparent 50%),
+    linear-gradient(135deg, #203f55, #6b8f95);
+}
+
+.overlay-choice-swatch-glass::after {
+  color: #f8fafc;
+  font-weight: 700;
+  padding: 3px 10px;
+  border-radius: 7px;
+  background: rgba(15, 23, 42, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55);
+}
+
+.overlay-choice-swatch-contrast {
+  background: #020617;
+}
+
+.overlay-choice-swatch-contrast::after {
+  color: #fef3c7;
+  font-weight: 800;
+  -webkit-text-stroke: 1.5px #000;
+  paint-order: stroke fill;
+  text-shadow: 0 3px 3px rgba(0, 0, 0, 0.65);
+}
+
+.overlay-choice-swatch-lyrics {
+  background:
+    radial-gradient(circle at 22% 28%, rgba(255, 213, 128, 0.6), transparent 45%),
+    radial-gradient(circle at 80% 66%, rgba(97, 201, 214, 0.55), transparent 50%),
+    linear-gradient(135deg, #203f55, #89675c 52%, #193847);
+}
+
+.overlay-choice-swatch-lyrics::after {
+  color: #ffffff;
+  font-weight: 800;
+  -webkit-text-stroke: 1.5px #000;
+  paint-order: stroke fill;
+  text-shadow: 0 2px 6px rgba(0, 0, 0, 0.5);
+}
+
+/* --- Segmented controls ------------------------------------------------ */
 
 .overlay-segmented-control,
 .overlay-text-role-tabs,
 .overlay-preview-scene-tabs {
-  display:flex;
-  flex-wrap:wrap;
-  gap:6px
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 3px;
+  background: var(--ov-seg-bg);
+  border-radius: 10px;
+  width: fit-content;
 }
 
 .overlay-segmented-control button,
 .overlay-text-role-tabs button,
 .overlay-preview-scene-tabs button {
-  border:1px solid rgba(22, 31, 40, .14);
-  border-radius:9px;
-  background:rgba(255, 255, 255, .62);
-  color:inherit;
-  padding:7px 12px;
-  cursor:pointer
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #52606f;
+  padding: 6px 14px;
+  font-size: 12.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.overlay-segmented-control button:hover,
+.overlay-text-role-tabs button:hover,
+.overlay-preview-scene-tabs button:hover {
+  color: var(--ov-ink);
+}
+
+.overlay-segmented-control button:focus-visible,
+.overlay-text-role-tabs button:focus-visible,
+.overlay-preview-scene-tabs button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(15, 157, 138, 0.35);
 }
 
 .overlay-segmented-control button[aria-pressed="true"],
 .overlay-text-role-tabs button[aria-selected="true"],
 .overlay-preview-scene-tabs button[aria-pressed="true"] {
-  border-color:rgba(33, 143, 127, .52);
-  background:rgba(126, 217, 199, .22);
-  color:#0d6659
+  background: #ffffff;
+  color: var(--ov-accent-deep);
+  font-weight: 600;
+  box-shadow: 0 1px 3px rgba(15, 23, 42, 0.14);
 }
 
 .overlay-card-head-actions {
-  display:flex;
-  align-items:flex-start;
-  justify-content:space-between;
-  gap:12px
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.overlay-card-head-actions .settings-action {
+  padding: 7px 12px;
+  border-radius: 9px;
+  border: 1px solid var(--ov-border-strong);
+  background: #ffffff;
+  font-size: 12.5px;
+  white-space: nowrap;
+  transition: border-color 0.15s ease, background 0.15s ease, color 0.15s ease;
+}
+
+.overlay-card-head-actions .settings-action:hover {
+  border-color: var(--ov-accent);
+  background: var(--ov-accent-soft);
+  color: var(--ov-accent-deep);
 }
 
 .overlay-text-role-tabs {
-  margin-bottom:12px
+  margin-bottom: 12px;
 }
 
+/* --- Text effect presets ----------------------------------------------- */
+
 .overlay-effect-preset-grid {
-  display:grid;
-  grid-template-columns:repeat(5, minmax(0, 1fr));
-  gap:7px;
-  margin-bottom:16px
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 7px;
+  margin-bottom: 16px;
 }
 
 .overlay-effect-preset-grid button {
-  min-height:66px;
-  padding:7px 4px;
-  flex-direction:column;
-  justify-content:center;
-  gap:3px;
-  font-size:.72rem
+  min-width: 0;
+  min-height: 72px;
+  border: 1px solid var(--ov-border);
+  border-radius: 11px;
+  background: #ffffff;
+  color: #475569;
+  padding: 7px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+}
+
+.overlay-effect-preset-grid button:hover {
+  border-color: rgba(33, 143, 127, 0.42);
+  box-shadow: 0 3px 10px rgba(15, 23, 42, 0.07);
+}
+
+.overlay-effect-preset-grid button[aria-pressed="true"] {
+  border-color: rgba(8, 122, 112, 0.58);
+  background: rgba(126, 217, 199, 0.14);
+  color: var(--ov-accent-deep);
+  box-shadow: 0 0 0 2px rgba(8, 122, 112, 0.12);
 }
 
 .overlay-effect-sample {
-  color:#fff;
-  font-size:1.05rem;
-  font-weight:700
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 30px;
+  border-radius: 7px;
+  background: linear-gradient(135deg, #1e293b, #334155);
+  color: #fff;
+  font-size: 1.05rem;
+  font-weight: 700;
 }
 
-.overlay-effect-sample-soft { text-shadow:0 2px 8px rgba(0, 0, 0, .55) }
-.overlay-effect-sample-crisp { -webkit-text-stroke:1px #000; paint-order:stroke fill; text-shadow:0 2px 4px rgba(0, 0, 0, .4) }
-.overlay-effect-sample-contrast { -webkit-text-stroke:2px #000; paint-order:stroke fill; text-shadow:0 3px 3px rgba(0, 0, 0, .65) }
-.overlay-effect-sample-glow { -webkit-text-stroke:.5px #fff; paint-order:stroke fill; text-shadow:0 0 8px #38bdf8 }
+.overlay-effect-sample-soft { text-shadow: 0 2px 8px rgba(0, 0, 0, 0.55); }
+.overlay-effect-sample-crisp { -webkit-text-stroke: 1px #000; paint-order: stroke fill; text-shadow: 0 2px 4px rgba(0, 0, 0, 0.4); }
+.overlay-effect-sample-contrast { -webkit-text-stroke: 2px #000; paint-order: stroke fill; text-shadow: 0 3px 3px rgba(0, 0, 0, 0.65); }
+.overlay-effect-sample-glow { -webkit-text-stroke: 0.5px #fff; paint-order: stroke fill; text-shadow: 0 0 8px #38bdf8; }
 
 .overlay-effect-section {
-  margin-top:14px;
-  border-top:1px solid rgba(22, 31, 40, .09);
-  padding-top:14px
+  margin-top: 14px;
+  border-top: 1px solid rgba(22, 31, 40, 0.09);
+  padding-top: 14px;
 }
 
 .overlay-switch-row {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:12px;
-  margin-bottom:12px;
-  font-weight:650
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ov-ink);
+  cursor: pointer;
 }
 
+/* --- Colour fields ----------------------------------------------------- */
+
+.overlay-settings-workspace .settings-color-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 5px 10px 5px 5px;
+  border: 1px solid var(--ov-border);
+  border-radius: 10px;
+  background: #ffffff;
+  width: fit-content;
+}
+
+.overlay-settings-workspace .settings-color-picker {
+  width: 40px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 7px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.overlay-settings-workspace .settings-color-picker::-webkit-color-swatch-wrapper {
+  padding: 0;
+}
+
+.overlay-settings-workspace .settings-color-picker::-webkit-color-swatch {
+  border: 1px solid rgba(15, 23, 42, 0.14);
+  border-radius: 7px;
+}
+
+.overlay-settings-workspace .settings-color-value {
+  font-size: 12.5px;
+  font-family: 'Cascadia Code', 'Consolas', monospace;
+  letter-spacing: 0.02em;
+  color: #475569 !important;
+}
+
+/* --- Live preview ------------------------------------------------------ */
+
 .overlay-preview-card {
-  position:sticky;
-  top:0;
-  grid-column:2 !important;
-  grid-row:1 !important;
-  width:auto !important;
-  align-self:start
+  position: sticky;
+  top: 0;
+  grid-column: 2 !important;
+  grid-row: 1 !important;
+  width: auto !important;
+  align-self: start;
 }
 
 .overlay-preview-scene-tabs {
-  margin-top:12px
+  margin-top: 12px;
 }
 
 .overlay-preview-stage {
-  min-height:330px !important;
-  border-radius:14px !important;
-  padding:28px !important;
-  display:grid;
-  place-items:center;
-  overflow:hidden;
-  transition:background .2s ease
+  min-height: 330px !important;
+  border-radius: 14px !important;
+  padding: 28px !important;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  position: relative;
+  box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.14), inset 0 2px 18px rgba(2, 7, 13, 0.18);
+  transition: background 0.2s ease;
 }
 
 .overlay-preview-stage-dark {
-  background:linear-gradient(135deg, #101a2b, #303c51) !important
+  background: linear-gradient(135deg, #101a2b, #303c51) !important;
 }
 
 .overlay-preview-stage-light {
-  background:linear-gradient(135deg, #f8f0dc, #b6d7d2) !important
+  background: linear-gradient(135deg, #f8f0dc, #b6d7d2) !important;
 }
 
 .overlay-preview-stage-scene {
   background:
-    radial-gradient(circle at 22% 24%, rgba(255, 213, 128, .58), transparent 20%),
-    radial-gradient(circle at 78% 68%, rgba(97, 201, 214, .55), transparent 25%),
-    linear-gradient(135deg, #203f55, #89675c 52%, #193847) !important
+    radial-gradient(circle at 22% 24%, rgba(255, 213, 128, 0.58), transparent 20%),
+    radial-gradient(circle at 78% 68%, rgba(97, 201, 214, 0.55), transparent 25%),
+    linear-gradient(135deg, #203f55, #89675c 52%, #193847) !important;
 }
 
 .overlay-preview-window {
-  box-sizing:border-box;
-  width:min(100%, 560px) !important;
-  min-height:126px !important;
-  border-radius:16px !important;
-  padding:22px 26px !important;
-  display:grid !important;
-  align-content:center !important;
-  gap:8px !important
+  box-sizing: border-box;
+  width: min(100%, 560px) !important;
+  min-height: 126px !important;
+  border-radius: 16px !important;
+  padding: 22px 26px !important;
+  display: grid !important;
+  align-content: center !important;
+  gap: 8px !important;
 }
 
 .overlay-preview-window :is(.overlay-preview-source, .overlay-preview-translation) {
-  margin:0 !important
+  margin: 0 !important;
 }
 
 body:not(:has(.subtitle-overlay-root)) .overlay-preview-window .overlay-preview-source {
-  color:var(--subtitle-overlay-source-text, #fff8ef) !important;
-  font-size:1em !important;
-  font-weight:var(--subtitle-overlay-source-weight, 500) !important;
-  line-height:1.3 !important;
-  opacity:1 !important
+  color: var(--subtitle-overlay-source-text, #fff8ef) !important;
+  font-size: 1em !important;
+  font-weight: var(--subtitle-overlay-source-weight, 500) !important;
+  line-height: 1.3 !important;
+  opacity: 1 !important;
 }
 
 body:not(:has(.subtitle-overlay-root)) .overlay-preview-window .overlay-preview-translation {
-  color:var(--subtitle-overlay-translation-text, #fff8ef) !important;
-  font-size:.82em !important;
-  font-weight:var(--subtitle-overlay-translation-weight, 700) !important;
-  line-height:1.3 !important
+  color: var(--subtitle-overlay-translation-text, #fff8ef) !important;
+  font-size: .82em !important;
+  font-weight: var(--subtitle-overlay-translation-weight, 700) !important;
+  line-height: 1.3 !important;
 }
 
 /* Keep the editor and preview in one viewport on desktop. The controls get
@@ -223,65 +550,154 @@ body:not(:has(.subtitle-overlay-root)) .overlay-preview-window .overlay-preview-
    preview even on short displays. */
 @media (min-width: 901px) {
   body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace {
-    display:flex !important;
-    flex-direction:column;
-    height:calc(100dvh - 126px);
-    min-height:0 !important;
-    max-height:calc(100dvh - 126px);
-    overflow:hidden
+    display: flex !important;
+    flex-direction: column;
+    height: calc(100dvh - 126px);
+    min-height: 0 !important;
+    max-height: calc(100dvh - 126px);
+    overflow: hidden;
   }
 
   .overlay-settings-workspace > .settings-page-head {
-    flex:0 0 auto
+    flex: 0 0 auto;
   }
 
   .overlay-settings-main {
-    flex:1 1 auto;
-    min-height:0;
-    overflow:hidden
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
   }
 
   .overlay-settings-controls {
-    max-height:100%;
-    overflow-y:auto;
-    overscroll-behavior:contain;
-    scrollbar-gutter:stable;
-    padding:0 8px 20px 0
+    max-height: 100%;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
+    padding: 0 8px 20px 0;
+  }
+
+  .overlay-settings-controls::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .overlay-settings-controls::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .overlay-settings-controls::-webkit-scrollbar-thumb {
+    background: #cfd8e3;
+    border-radius: 999px;
+  }
+
+  .overlay-settings-controls::-webkit-scrollbar-thumb:hover {
+    background: #b6c2d1;
   }
 
   .overlay-preview-stage {
-    min-height:clamp(190px, calc(100dvh - 390px), 330px) !important
+    min-height: clamp(190px, calc(100dvh - 390px), 330px) !important;
   }
 }
 
 @media (max-width: 900px) {
   .overlay-settings-main {
-    grid-template-columns:minmax(0, 1fr);
-    width:100%
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
+  /* The controls are pinned to row 1 above; move them below the preview so
+     the sticky preview really sits on top on narrow layouts. */
+  .overlay-settings-controls {
+    grid-row: 2 !important;
   }
 
   .overlay-preview-card {
-    position:sticky;
-    top:76px;
-    z-index:4;
-    order:-1;
-    grid-column:1 !important;
-    grid-row:auto !important
+    position: sticky;
+    top: 76px;
+    z-index: 4;
+    order: -1;
+    grid-column: 1 !important;
+    grid-row: 1 !important;
   }
 
   .overlay-preview-stage {
-    min-height:clamp(170px, 32dvh, 240px) !important;
-    padding:20px !important
+    min-height: clamp(170px, 32dvh, 240px) !important;
+    padding: 20px !important;
   }
 }
 
 @media (max-width: 560px) {
   .overlay-preset-grid,
   .settings-grid-two {
-    grid-template-columns:minmax(0, 1fr) !important
+    grid-template-columns: minmax(0, 1fr) !important;
   }
 
   .overlay-effect-preset-grid {
-    grid-template-columns:repeat(3, minmax(0, 1fr))
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+/* =====================================================================
+   Cascade reclaim.
+   app-theme-overrides-late.css pins .settings-card border/shadow and
+   floors descendant text colors with !important at (0,2,1)-(0,2,2).
+   These gate-prefixed rules re-assert the overlay editor palette with
+   winning specificity; keep values in sync with the rules above.
+   ===================================================================== */
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-card {
+  border-color: var(--ov-border) !important;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04), 0 8px 24px rgba(15, 23, 42, 0.05) !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-card-head h3 {
+  color: var(--ov-ink) !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-card-head p {
+  color: var(--ov-ink-soft) !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-field-label {
+  color: var(--ov-ink-soft) !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-color-value {
+  color: #475569 !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-slider-value {
+  color: #2f3b46 !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .overlay-switch-row,
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .overlay-switch-row span {
+  color: var(--ov-ink) !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-field-control {
+  border-color: var(--ov-border-strong) !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-field-control:hover {
+  border-color: #9daebe !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .settings-field-control:focus-visible {
+  border-color: var(--ov-accent) !important;
+}
+
+body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .overlay-preview-stage {
+  min-height: 330px !important;
+}
+
+@media (min-width: 901px) {
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .overlay-preview-stage {
+    min-height: clamp(190px, calc(100dvh - 390px), 330px) !important;
+  }
+}
+
+@media (max-width: 900px) {
+  body:not(:has(.subtitle-overlay-root)) .overlay-settings-workspace .overlay-preview-stage {
+    min-height: clamp(170px, 32dvh, 240px) !important;
   }
 }

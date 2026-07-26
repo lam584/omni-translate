@@ -25,17 +25,17 @@ export default function ChainFlow({
   return (
     <div className={['chain-flow', direction === 'outbound' ? 'chain-flow-outbound' : 'chain-flow-inbound'].join(' ')}>
       <div className="chain-flow-direction">{directionLabel ?? (direction === 'inbound' ? t('audioRouting.directionListen') : t('audioRouting.directionSpeak'))}</div>
-      <div className="chain-flow-segment">
+      <div className="chain-flow-segment" title={inboundSubtitle ? `${inboundLabel} · ${inboundSubtitle}` : inboundLabel}>
         <div className="chain-flow-segment-label">{inboundLabel}</div>
         {inboundSubtitle ? <div className="chain-flow-segment-sub">{inboundSubtitle}</div> : null}
       </div>
       <span className="chain-flow-arrow" aria-hidden="true">—</span>
-      <div className="chain-flow-segment">
+      <div className="chain-flow-segment" title={modelSubtitle ? `${modelLabel} · ${modelSubtitle}` : modelLabel}>
         <div className="chain-flow-segment-label">{modelLabel}</div>
         {modelSubtitle ? <div className="chain-flow-segment-sub">{modelSubtitle}</div> : null}
       </div>
       <span className="chain-flow-arrow" aria-hidden="true">—</span>
-      <div className="chain-flow-segment">
+      <div className="chain-flow-segment" title={outboundSubtitle ? `${outboundLabel} · ${outboundSubtitle}` : outboundLabel}>
         <div className="chain-flow-segment-label">{outboundLabel}</div>
         {outboundSubtitle ? <div className="chain-flow-segment-sub">{outboundSubtitle}</div> : null}
       </div>

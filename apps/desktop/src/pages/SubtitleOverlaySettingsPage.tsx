@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type CSSProperties } from 'react';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 
@@ -156,7 +156,8 @@ function SubtitleOverlaySettingsPage() {
     <label className="settings-field">
       <span className="settings-field-label">{label}</span>
       <div className="settings-slider-row">
-        <input max={max} min={min} step={step} type="range" value={value}
+        <input className="ui-range" max={max} min={min} step={step} type="range" value={value}
+          style={{ '--fill': `${((value - min) / (max - min || 1)) * 100}%` } as CSSProperties}
           onChange={(event) => onChange(Number(event.target.value))} />
         <span className="settings-slider-value">{value}{suffix}</span>
       </div>
@@ -180,7 +181,7 @@ function SubtitleOverlaySettingsPage() {
                 {subtitles.overlayLocked ? t('settings.overlayLockedState') : t('settings.overlayUnlockedState')}
               </span>
             </button>
-            <button className="settings-action settings-action-secondary" disabled={overlayTogglePending}
+            <button className="settings-action settings-action-secondary settings-action-primary" disabled={overlayTogglePending}
               onClick={() => void handleToggleOverlay()} type="button">
               <AppIcon name="subtitles" size={14} />
               <span style={{ marginInlineStart: 6 }}>
@@ -306,7 +307,7 @@ function SubtitleOverlaySettingsPage() {
               <div className="overlay-effect-section">
                 <label className="overlay-switch-row">
                   <span>{t('settings.overlayOutlineTitle')}</span>
-                  <input checked={activeStyle.outlineEnabled} type="checkbox"
+                  <input aria-checked={activeStyle.outlineEnabled} checked={activeStyle.outlineEnabled} className="ui-switch" role="switch" type="checkbox"
                     onChange={(event) => updateActiveTextStyle({ outlineEnabled: event.target.checked })} />
                 </label>
                 <div className="settings-grid-two">
@@ -326,7 +327,7 @@ function SubtitleOverlaySettingsPage() {
               <div className="overlay-effect-section">
                 <label className="overlay-switch-row">
                   <span>{t('settings.overlayShadowTitle')}</span>
-                  <input checked={activeStyle.shadowEnabled} type="checkbox"
+                  <input aria-checked={activeStyle.shadowEnabled} checked={activeStyle.shadowEnabled} className="ui-switch" role="switch" type="checkbox"
                     onChange={(event) => updateActiveTextStyle({ shadowEnabled: event.target.checked })} />
                 </label>
                 <div className="settings-grid-two">

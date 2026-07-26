@@ -92,7 +92,7 @@ export default function ScenarioCard(props: ScenarioCardProps) {
       <div className="scenario-card-icon" aria-hidden="true"><AppIcon name={props.icon} size={16} /></div>
       <div className="scenario-card-titles"><h4>{props.title}</h4><span>{props.caption}</span></div>
       {props.onEnabledChange ? <label className={['scenario-card-toggle', toggleChecked ? 'scenario-card-toggle-on' : ''].join(' ')}>
-        <input aria-checked={toggleChecked} checked={toggleChecked} onChange={(event) => props.onEnabledChange?.(event.target.checked)} role="switch" type="checkbox" />
+        <input aria-checked={toggleChecked} checked={toggleChecked} className="ui-switch" onChange={(event) => props.onEnabledChange?.(event.target.checked)} role="switch" type="checkbox" />
         <span>{props.enableLabel ?? ''}</span>
       </label> : null}
     </div>

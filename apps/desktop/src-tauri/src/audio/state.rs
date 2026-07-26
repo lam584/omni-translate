@@ -1,4 +1,4 @@
-use std::collections::{HashSet, VecDeque};
+use std::collections::{HashMap, VecDeque};
 use std::sync::{mpsc::Sender, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -60,7 +60,7 @@ pub struct AudioStateStore {
     audio_cache: AudioCacheStore,
     echo_buffer: Mutex<EchoReferenceBuffer>,
     echo_asr_activity: Mutex<EchoAsrActivity>,
-    deferred_subtitle_translation_cues: Mutex<HashSet<String>>,
+    deferred_subtitle_translation_cues: Mutex<HashMap<String, Instant>>,
     warmer: CaptureRouteWarmer,
     pub live_session_events: LiveSessionEventBuffer,
 }
@@ -127,7 +127,7 @@ impl AudioStateStore {
             audio_cache: AudioCacheStore::new(),
             echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
             echo_asr_activity: Mutex::new(EchoAsrActivity::default()),
-            deferred_subtitle_translation_cues: Mutex::new(HashSet::new()),
+            deferred_subtitle_translation_cues: Mutex::new(HashMap::new()),
             warmer: CaptureRouteWarmer::new(),
             live_session_events: LiveSessionEventBuffer::new(),
         }
@@ -519,12 +519,23 @@ impl AudioStateStore {
             *overlay = SubtitleOverlayRuntimeSnapshot::empty();
             self.reset_first_translation_latency(overlay);
         });
+        self.deferred_subtitle_translation_cues
+            .lock()
+            .expect("deferred subtitle cues poisoned")
+            .clear();
         self.audio_cache.clear();
         let mut state = self.inner.lock().expect("audio state poisoned");
         state.speech = SpeechRuntimeSnapshot::preview();
     }
 
     pub fn discard_uncommitted_subtitle_cues(&self) {
+        // Deferred-translation entries only ever describe uncommitted cues, so
+        // they are released together with the cues they gate. Leaving them
+        // behind would leak entries for the app lifetime.
+        self.deferred_subtitle_translation_cues
+            .lock()
+            .expect("deferred subtitle cues poisoned")
+            .clear();
         self.subtitles.update(|overlay| {
             overlay.recent_cues.retain(|cue| cue.committed);
             if overlay.active_cue.as_ref().is_some_and(|cue| !cue.committed) {
@@ -556,7 +567,7 @@ impl AudioStateStore {
         self.deferred_subtitle_translation_cues
             .lock()
             .expect("deferred subtitle cues poisoned")
-            .insert(cue_id.to_string());
+            .insert(cue_id.to_string(), Instant::now());
     }
 
     pub(crate) fn approve_subtitle_cue_translation(&self, cue_id: &str) {
@@ -571,7 +582,41 @@ impl AudioStateStore {
             .deferred_subtitle_translation_cues
             .lock()
             .expect("deferred subtitle cues poisoned")
-            .contains(cue_id)
+            .contains_key(cue_id)
+    }
+
+    /// Removes deferred-translation entries whose last defer touch is at least
+    /// `max_age` old and discards their uncommitted cues. Entries strand when
+    /// the manual response gate can no longer adjudicate them (missing item
+    /// ids, reconnects, worker stop); the subtitle worker skips deferred cues,
+    /// so stranded entries would otherwise stay untranslated forever. Pass
+    /// `Duration::ZERO` to flush every entry (worker stop).
+    pub(crate) fn discard_expired_deferred_subtitle_cues(
+        &self,
+        max_age: Duration,
+    ) -> Vec<String> {
+        let now = Instant::now();
+        let expired: Vec<String> = {
+            let mut deferred = self
+                .deferred_subtitle_translation_cues
+                .lock()
+                .expect("deferred subtitle cues poisoned");
+            let expired: Vec<String> = deferred
+                .iter()
+                .filter(|(_, deferred_at)| {
+                    now.saturating_duration_since(**deferred_at) >= max_age
+                })
+                .map(|(cue_id, _)| cue_id.clone())
+                .collect();
+            for cue_id in &expired {
+                deferred.remove(cue_id);
+            }
+            expired
+        };
+        for cue_id in &expired {
+            self.discard_uncommitted_subtitle_cue(cue_id);
+        }
+        expired
     }
 
     pub fn cache_segment_audio(&self, audio: CapturedSegmentAudio) {
@@ -1063,6 +1108,41 @@ mod tests {
         store.update_or_push_stt_cue("discarded-cue", "echo source", false);
         store.discard_uncommitted_subtitle_cue("discarded-cue");
         assert!(store.subtitle_cue_translation_allowed("discarded-cue"));
+    }
+
+    #[test]
+    fn clearing_or_discarding_cues_also_drops_deferred_translation_entries() {
+        let store = AudioStateStore::new();
+        store.defer_subtitle_cue_translation("deferred-a");
+        store.update_or_push_stt_cue("deferred-a", "source a", false);
+        store.discard_uncommitted_subtitle_cues();
+        assert!(store.subtitle_cue_translation_allowed("deferred-a"));
+
+        store.defer_subtitle_cue_translation("deferred-b");
+        store.clear_subtitle_cues();
+        assert!(store.subtitle_cue_translation_allowed("deferred-b"));
+    }
+
+    #[test]
+    fn stranded_deferred_translation_entries_expire_with_their_cues() {
+        let store = AudioStateStore::new();
+        store.defer_subtitle_cue_translation("stranded");
+        store.update_or_push_stt_cue("stranded", "never adjudicated", false);
+
+        assert!(store
+            .discard_expired_deferred_subtitle_cues(Duration::from_secs(30))
+            .is_empty());
+        assert!(!store.subtitle_cue_translation_allowed("stranded"));
+
+        let discarded = store.discard_expired_deferred_subtitle_cues(Duration::ZERO);
+        assert_eq!(discarded, vec!["stranded".to_string()]);
+        assert!(store.subtitle_cue_translation_allowed("stranded"));
+        assert!(!store
+            .snapshot()
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .any(|cue| cue.cue_id == "stranded"));
     }
 
     #[test]

@@ -53,6 +53,10 @@ pub(super) struct OmniSocketEventContext<'a> {
 pub(super) struct OmniSocketPollResult {
     pub(super) state: OmniSocketEventState,
     pub(super) skip_tick: bool,
+    /// The socket was replaced by a reconnect during this poll. The provider
+    /// session and its input buffer are gone, so the worker must reset the
+    /// manual response gate and the commit timer.
+    pub(super) socket_reconnected: bool,
 }
 
 pub(super) struct OmniSocketEventProcessor;
@@ -72,6 +76,7 @@ impl OmniSocketEventProcessor {
             target_language, buffer_size, pre_session_audio_queue_len,
             pre_session_audio_dropped, echo_guard_enabled,
         } = context;
+let mut socket_reconnected = false;
 match socket.read() {
     Ok(msg) => match msg {
         Message::Text(text) => {
@@ -162,7 +167,7 @@ match socket.read() {
                                         completed_item_id.unwrap_or("(none)"),
                                     ),
                                 );
-                                return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true });
+                                return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
                             }
                         }
                         let output = OmniAsrEventProcessor::process(
@@ -302,31 +307,51 @@ match socket.read() {
                                     }
                                 }
                                 if reset_turn {
-                                    if let Some(cue_id) = manual_turn_cue_to_discard(
-                                        completed_cue_id,
-                                        current_cue_id.as_deref(),
+                                    // A skipped turn never issued response.create, so any
+                                    // buffered output audio/text belongs to the previous
+                                    // turn's still-streaming response. Only the gate and
+                                    // the skipped turn's input state may be reset here;
+                                    // output state resets at response.done / audio.done.
+                                    let response_stream_active =
+                                        manual_turn_response_stream_active(
+                                            pending_audio_delta_count,
+                                            pending_audio_buffer.len(),
+                                            pending_audio_response_id.as_deref(),
+                                            &pending_translated_text,
+                                        );
+                                    if response_stream_owns_current_cue(
+                                        response_stream_active,
+                                        subtitle_translate_active,
+                                        native_translation_reuse_active,
                                     ) {
-                                        store.discard_uncommitted_subtitle_cue(cue_id);
+                                        let _ = diag_log(
+                                            app,
+                                            "omni",
+                                            "debug",
+                                            "event=manual_response_gate action=keep_streaming_response_state",
+                                        );
+                                    } else {
+                                        if let Some(cue_id) = manual_turn_cue_to_discard(
+                                            completed_cue_id,
+                                            current_cue_id.as_deref(),
+                                        ) {
+                                            store.discard_uncommitted_subtitle_cue(cue_id);
+                                        }
+                                        reset_manual_turn_input_state(
+                                            &mut current_cue_id,
+                                            &mut pending_source_text,
+                                            &mut transcription_completed_flag,
+                                            &mut transcription_completed_at,
+                                            &mut event_diagnostics,
+                                        );
                                     }
-                                    reset_omni_turn_state(
-                                        &mut current_cue_id,
-                                        &mut pending_source_text,
-                                        &mut pending_translated_text,
-                                        &mut transcription_completed_flag,
-                                        &mut transcription_completed_at,
-                                        &mut event_diagnostics,
-                                    );
-                                    pending_audio_buffer.clear();
-                                    pending_audio_delta_count = 0;
-                                    pending_audio_delta_base64_bytes = 0;
-                                    pending_audio_response_id = None;
                                 }
                                 manual_response_pending = false;
                                 manual_response_item_id = None;
                             }
                         }
                         if output.skip_tick {
-                            return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true });
+                            return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
                         }
                     }
                     "response.audio_transcript.delta"
@@ -447,6 +472,7 @@ match socket.read() {
                                 pending_audio_buffer,
                                 active_voice,
                                 voice_fallback_applied,
+                                socket_reconnected: false,
                             },
                             &app,
                             store,
@@ -464,6 +490,7 @@ match socket.read() {
                         pending_audio_buffer = reconnect_state.pending_audio_buffer;
                         active_voice = reconnect_state.active_voice;
                         voice_fallback_applied = reconnect_state.voice_fallback_applied;
+                        socket_reconnected = reconnect_state.socket_reconnected;
                     }
                     other => {
                         OmniEventProcessor::log_unknown_event(&app, other, &text);
@@ -486,6 +513,7 @@ match socket.read() {
                     pending_audio_buffer,
                     active_voice,
                     voice_fallback_applied,
+                    socket_reconnected: false,
                 },
                 &app,
                 store,
@@ -500,7 +528,8 @@ match socket.read() {
             pending_audio_buffer = reconnect_state.pending_audio_buffer;
             active_voice = reconnect_state.active_voice;
             voice_fallback_applied = reconnect_state.voice_fallback_applied;
-            return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true });
+            socket_reconnected = reconnect_state.socket_reconnected;
+            return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
         }
         _ => {}
     },
@@ -512,6 +541,7 @@ match socket.read() {
                 pending_audio_buffer,
                 active_voice,
                 voice_fallback_applied,
+                socket_reconnected: false,
             },
             &app,
             store,
@@ -527,10 +557,11 @@ match socket.read() {
         pending_audio_buffer = reconnect_state.pending_audio_buffer;
         active_voice = reconnect_state.active_voice;
         voice_fallback_applied = reconnect_state.voice_fallback_applied;
-        return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true });
+        socket_reconnected = reconnect_state.socket_reconnected;
+        return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
     }
 }
 
-        Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: false })
+        Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: false, socket_reconnected })
     }
 }

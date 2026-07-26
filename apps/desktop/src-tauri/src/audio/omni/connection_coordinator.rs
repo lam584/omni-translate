@@ -1,8 +1,8 @@
 use super::*;
 use std::collections::HashSet;
 
-const MANUAL_COMMIT_INTERVAL_SECS: u64 = 10;
-const MANUAL_RESPONSE_TIMEOUT_SECS: u64 = 30;
+pub(super) const MANUAL_COMMIT_INTERVAL_SECS: u64 = 10;
+pub(super) const MANUAL_RESPONSE_TIMEOUT_SECS: u64 = 30;
 pub(super) const RECENT_OUTPUT_ECHO_WINDOW_MS: u64 = 30_000;
 // One manual turn is ten seconds. The extra two seconds cover provider ASR
 // completion latency while retaining only the capture evidence for this turn.
@@ -142,6 +142,9 @@ pub(super) struct OmniReconnectState {
     pub(super) pending_audio_buffer: Vec<i16>,
     pub(super) active_voice: String,
     pub(super) voice_fallback_applied: bool,
+    /// Set when a reconnect replaced the socket, so the worker can drop the
+    /// manual response gate and stale response output tied to the old session.
+    pub(super) socket_reconnected: bool,
 }
 
 pub(super) struct OmniConnectionCoordinator;
@@ -199,6 +202,7 @@ impl OmniConnectionCoordinator {
                 buffer_size,
             ) {
                 state.socket = new_socket;
+                state.socket_reconnected = true;
             }
         } else {
             trace_call.error(format!(
@@ -232,6 +236,7 @@ impl OmniConnectionCoordinator {
             target_language,
             buffer_size,
         )?;
+        state.socket_reconnected = true;
         Ok(state)
     }
 
@@ -279,6 +284,7 @@ impl OmniConnectionCoordinator {
             buffer_size,
         )
         .map_err(|_| format!("Omni WebSocket read failed and reconnect limit exhausted: {error}"))?;
+        state.socket_reconnected = true;
         Ok(state)
     }
 }

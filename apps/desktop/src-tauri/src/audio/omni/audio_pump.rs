@@ -20,6 +20,9 @@ pub(super) struct OmniAudioPumpState {
     pub(super) pending_audio_buffer: Vec<i16>,
     pub(super) provider_input_dump: Option<ProviderInputPcmDump>,
     pub(super) chunks_sent_this_tick: usize,
+    /// The send path replaced the socket via reconnect during this tick. The
+    /// worker must reset the manual response gate tied to the old session.
+    pub(super) socket_reconnected: bool,
 }
 
 pub(super) struct OmniAudioPump {
@@ -85,8 +88,10 @@ impl OmniAudioPump {
             mut pending_audio_buffer,
             mut provider_input_dump,
             chunks_sent_this_tick: _,
+            socket_reconnected: _,
         } = self.state;
         let mut chunks_sent_this_tick = 0;
+        let mut socket_reconnected = false;
         let mut pre_session_chunks_drained_this_tick = 0usize;
         loop {
             let raw_chunk = if session_ready_for_audio {
@@ -264,6 +269,7 @@ impl OmniAudioPump {
                 ) {
                     Ok(new_socket) => {
                         *socket = new_socket;
+                        socket_reconnected = true;
                         let retry_b64 = base64_encode_i16(&asr_chunk);
                         let retry_append = json!({
                           "type": "input_audio_buffer.append",
@@ -307,6 +313,7 @@ impl OmniAudioPump {
             pending_audio_buffer,
             provider_input_dump,
             chunks_sent_this_tick,
+            socket_reconnected,
         })
     }
 }

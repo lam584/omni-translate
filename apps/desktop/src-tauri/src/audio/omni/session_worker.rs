@@ -329,6 +329,19 @@ fn run_omni_worker(
                 vad_event_count,
                 buffer_size,
             );
+            // In-flight deferred cues can never be approved once the worker
+            // stops; flush them with the same semantics as a gate timeout so
+            // the overlay does not keep cues the subtitle worker skips forever.
+            for cue_id in store.discard_expired_deferred_subtitle_cues(Duration::ZERO) {
+                let _ = diag_log(
+                    &app,
+                    "omni",
+                    "info",
+                    format!(
+                        "event=manual_response_gate action=discard_deferred_on_stop cueId={cue_id}"
+                    ),
+                );
+            }
             request_omni_playback_stop(&playback_stop_requested, &playback_tx);
             let _ = playback_join.join();
             emit_audio_snapshot(&app, store)?;
@@ -353,6 +366,7 @@ fn run_omni_worker(
             pending_audio_buffer,
             provider_input_dump,
             chunks_sent_this_tick: 0,
+            socket_reconnected: false,
         })
         .pump(
             &app,
@@ -385,6 +399,27 @@ fn run_omni_worker(
         pending_audio_buffer = pump_state.pending_audio_buffer;
         provider_input_dump = pump_state.provider_input_dump;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
+        if pump_state.socket_reconnected {
+            reset_manual_gate_after_reconnect(
+                &app,
+                store,
+                audio_mode,
+                &mut manual_response_pending,
+                &mut manual_response_item_id,
+                &mut sent_audio_since_commit,
+                &mut last_commit_time,
+                &mut current_cue_id,
+                &mut pending_source_text,
+                &mut pending_translated_text,
+                &mut transcription_completed_flag,
+                &mut transcription_completed_at,
+                &mut event_diagnostics,
+                &mut pending_audio_buffer,
+                &mut pending_audio_delta_count,
+                &mut pending_audio_delta_base64_bytes,
+                &mut pending_audio_response_id,
+            );
+        }
 
         OmniAudioPump::log_waiting_if_needed(
             &app,
@@ -412,21 +447,32 @@ fn run_omni_worker(
         manual_response_pending = commit_state.manual_response_pending;
         manual_response_item_id = commit_state.manual_response_item_id;
         if commit_state.manual_turn_timed_out {
-            if let Some(cue_id) = current_cue_id.as_deref() {
-                store.discard_uncommitted_subtitle_cue(cue_id);
-            }
-            reset_omni_turn_state(
-                &mut current_cue_id,
-                &mut pending_source_text,
-                &mut pending_translated_text,
-                &mut transcription_completed_flag,
-                &mut transcription_completed_at,
-                &mut event_diagnostics,
+            // A timed-out turn never issued response.create; buffered output
+            // and, in native-reuse/audio-only modes, `current_cue_id` may still
+            // belong to a previous turn's streaming response. Only reset the
+            // input side; output state resets at response.done / audio.done.
+            let response_stream_active = manual_turn_response_stream_active(
+                pending_audio_delta_count,
+                pending_audio_buffer.len(),
+                pending_audio_response_id.as_deref(),
+                &pending_translated_text,
             );
-            pending_audio_buffer.clear();
-            pending_audio_delta_count = 0;
-            pending_audio_delta_base64_bytes = 0;
-            pending_audio_response_id = None;
+            if !response_stream_owns_current_cue(
+                response_stream_active,
+                subtitle_translate_active,
+                native_translation_reuse_active,
+            ) {
+                if let Some(cue_id) = current_cue_id.as_deref() {
+                    store.discard_uncommitted_subtitle_cue(cue_id);
+                }
+                reset_manual_turn_input_state(
+                    &mut current_cue_id,
+                    &mut pending_source_text,
+                    &mut transcription_completed_flag,
+                    &mut transcription_completed_at,
+                    &mut event_diagnostics,
+                );
+            }
         }
 
         OmniEventProcessor::expire_stale_transcription(
@@ -434,6 +480,23 @@ fn run_omni_worker(
             &mut transcription_completed_flag,
             &mut transcription_completed_at,
         );
+
+        // Deferred secondary-translation entries strand when their manual turn
+        // can no longer be adjudicated (missing completed item ids, reconnects,
+        // released `current_cue_id`); age them out so the overlay does not keep
+        // cues the subtitle worker skips forever.
+        for cue_id in store.discard_expired_deferred_subtitle_cues(Duration::from_secs(
+            MANUAL_RESPONSE_TIMEOUT_SECS,
+        )) {
+            let _ = diag_log(
+                &app,
+                "omni",
+                "warning",
+                format!(
+                    "event=manual_response_gate action=discard_stale_deferred_cue cueId={cue_id}"
+                ),
+            );
+        }
 
         let poll = OmniSocketEventProcessor::poll(
             OmniSocketEventState {
@@ -506,6 +569,27 @@ fn run_omni_worker(
         transcription_completed_at = poll.state.transcription_completed_at;
         manual_response_pending = poll.state.manual_response_pending;
         manual_response_item_id = poll.state.manual_response_item_id;
+        if poll.socket_reconnected {
+            reset_manual_gate_after_reconnect(
+                &app,
+                store,
+                audio_mode,
+                &mut manual_response_pending,
+                &mut manual_response_item_id,
+                &mut sent_audio_since_commit,
+                &mut last_commit_time,
+                &mut current_cue_id,
+                &mut pending_source_text,
+                &mut pending_translated_text,
+                &mut transcription_completed_flag,
+                &mut transcription_completed_at,
+                &mut event_diagnostics,
+                &mut pending_audio_buffer,
+                &mut pending_audio_delta_count,
+                &mut pending_audio_delta_base64_bytes,
+                &mut pending_audio_response_id,
+            );
+        }
         if poll.skip_tick {
             continue;
         }
@@ -523,6 +607,63 @@ fn run_omni_worker(
     }
 
     Ok(())
+}
+
+/// After a WebSocket reconnect the provider session and its input buffer are
+/// gone: an awaited `input_audio_buffer.committed` ack or
+/// `transcription.completed` will never arrive, and a streaming response
+/// cannot resume. Drop the manual response gate and the stale turn/output
+/// state, and backdate the commit timer so the next audible chunk on the new
+/// session commits immediately instead of waiting out another full interval.
+#[allow(clippy::too_many_arguments)]
+fn reset_manual_gate_after_reconnect(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    audio_mode: RealtimeAudioMode,
+    manual_response_pending: &mut bool,
+    manual_response_item_id: &mut Option<String>,
+    sent_audio_since_commit: &mut bool,
+    last_commit_time: &mut SystemTime,
+    current_cue_id: &mut Option<String>,
+    pending_source_text: &mut String,
+    pending_translated_text: &mut String,
+    transcription_completed_flag: &mut bool,
+    transcription_completed_at: &mut Option<SystemTime>,
+    event_diagnostics: &mut OmniEventDiagnostics,
+    pending_audio_buffer: &mut Vec<i16>,
+    pending_audio_delta_count: &mut u64,
+    pending_audio_delta_base64_bytes: &mut u64,
+    pending_audio_response_id: &mut Option<String>,
+) {
+    if audio_mode.uses_manual_commit() && *manual_response_pending {
+        let _ = diag_log(
+            app,
+            "omni",
+            "warning",
+            "event=manual_response_gate action=reset_after_reconnect reason=server_session_lost",
+        );
+    }
+    *manual_response_pending = false;
+    *manual_response_item_id = None;
+    *sent_audio_since_commit = false;
+    *last_commit_time = SystemTime::now()
+        .checked_sub(Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS))
+        .unwrap_or_else(SystemTime::now);
+    if let Some(cue_id) = current_cue_id.as_deref() {
+        store.discard_uncommitted_subtitle_cue(cue_id);
+    }
+    reset_omni_turn_state(
+        current_cue_id,
+        pending_source_text,
+        pending_translated_text,
+        transcription_completed_flag,
+        transcription_completed_at,
+        event_diagnostics,
+    );
+    pending_audio_buffer.clear();
+    *pending_audio_delta_count = 0;
+    *pending_audio_delta_base64_bytes = 0;
+    *pending_audio_response_id = None;
 }
 
 pub(super) fn reconnect_socket(

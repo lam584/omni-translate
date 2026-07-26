@@ -394,7 +394,7 @@ fn handle_response_done(
                 format!("[EVENT] response.done → SKIP{st_flag} cue_id={cue_id} 源文本为空！"),
             );
         }
-    } else if !pending_translated_text.is_empty() {
+    } else if !pending_translated_text.trim().is_empty() {
         let source = if pending_source_text.is_empty() {
             pending_translated_text.clone()
         } else {
@@ -467,13 +467,61 @@ fn reset_omni_turn_state(
     transcription_completed_at: &mut Option<SystemTime>,
     event_diagnostics: &mut OmniEventDiagnostics,
 ) {
-    pending_source_text.clear();
     pending_translated_text.clear();
+    reset_manual_turn_input_state(
+        current_cue_id,
+        pending_source_text,
+        transcription_completed_flag,
+        transcription_completed_at,
+        event_diagnostics,
+    );
+}
+
+/// Releases the input-side state of a manual turn without touching the
+/// response output stream (`pending_audio_*`, `pending_translated_text`).
+/// A skipped or timed-out manual turn never issued `response.create`, so any
+/// buffered output belongs to a previous turn that may still be streaming.
+fn reset_manual_turn_input_state(
+    current_cue_id: &mut Option<String>,
+    pending_source_text: &mut String,
+    transcription_completed_flag: &mut bool,
+    transcription_completed_at: &mut Option<SystemTime>,
+    event_diagnostics: &mut OmniEventDiagnostics,
+) {
+    pending_source_text.clear();
     *current_cue_id = None;
     event_diagnostics.current_cue_origin = None;
     event_diagnostics.last_asr_delta_item_id = None;
     *transcription_completed_flag = false;
     *transcription_completed_at = None;
+}
+
+/// A response output stream is active between its first output event and the
+/// response.done / audio.done cleanup. While it is active, the output buffers
+/// must survive a manual-gate reset for a later, skipped turn.
+fn manual_turn_response_stream_active(
+    pending_audio_delta_count: u64,
+    pending_audio_buffer_len: usize,
+    pending_audio_response_id: Option<&str>,
+    pending_translated_text: &str,
+) -> bool {
+    pending_audio_delta_count > 0
+        || pending_audio_buffer_len > 0
+        || pending_audio_response_id.is_some()
+        || !pending_translated_text.is_empty()
+}
+
+/// In native-reuse and audio-only modes the streaming response writes into
+/// `current_cue_id`; discarding that shared cue on a skipped turn would delete
+/// the previous turn's live translation from the overlay. Only the secondary
+/// subtitle path keeps `current_cue_id` exclusively on the input side.
+fn response_stream_owns_current_cue(
+    response_stream_active: bool,
+    subtitle_translate_active: bool,
+    native_translation_reuse_active: bool,
+) -> bool {
+    response_stream_active
+        && (native_translation_reuse_active || !subtitle_translate_active)
 }
 
 #[cfg(test)]
@@ -507,6 +555,48 @@ mod manual_turn_state_tests {
         assert!(!transcription_completed_flag);
         assert!(transcription_completed_at.is_none());
         assert!(event_diagnostics.current_cue_origin.is_none());
+    }
+
+    #[test]
+    fn skipped_turn_reset_detects_a_previous_turns_streaming_response() {
+        assert!(manual_turn_response_stream_active(3, 4_800, Some("resp-1"), "部分译文"));
+        assert!(manual_turn_response_stream_active(0, 0, None, "译文尾部"));
+        assert!(!manual_turn_response_stream_active(0, 0, None, ""));
+
+        // Native-reuse and audio-only modes stream output into the shared cue.
+        assert!(response_stream_owns_current_cue(true, true, true));
+        assert!(response_stream_owns_current_cue(true, false, false));
+        // The secondary subtitle path never writes response output into cues.
+        assert!(!response_stream_owns_current_cue(true, true, false));
+        assert!(!response_stream_owns_current_cue(false, true, true));
+    }
+
+    #[test]
+    fn manual_turn_input_reset_releases_only_input_side_state() {
+        let mut current_cue_id = Some("skipped-turn".to_string());
+        let mut pending_source_text = "skipped source".to_string();
+        let mut transcription_completed_flag = true;
+        let mut transcription_completed_at = Some(SystemTime::now());
+        let mut event_diagnostics = OmniEventDiagnostics {
+            current_cue_origin: Some("transcription_delta".to_string()),
+            last_asr_delta_item_id: Some("item-skip".to_string()),
+            ..OmniEventDiagnostics::default()
+        };
+
+        reset_manual_turn_input_state(
+            &mut current_cue_id,
+            &mut pending_source_text,
+            &mut transcription_completed_flag,
+            &mut transcription_completed_at,
+            &mut event_diagnostics,
+        );
+
+        assert!(current_cue_id.is_none());
+        assert!(pending_source_text.is_empty());
+        assert!(!transcription_completed_flag);
+        assert!(transcription_completed_at.is_none());
+        assert!(event_diagnostics.current_cue_origin.is_none());
+        assert!(event_diagnostics.last_asr_delta_item_id.is_none());
     }
 }
 

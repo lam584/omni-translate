@@ -54,7 +54,8 @@ use self::connection_coordinator::{
     classify_completed_manual_response, manual_turn_cue_to_discard,
     recent_echo_input_is_dominated, ManualResponseDecision, OmniCommitState,
     OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
-    MANUAL_ECHO_ACTIVITY_WINDOW,
+    MANUAL_COMMIT_INTERVAL_SECS, MANUAL_ECHO_ACTIVITY_WINDOW,
+    MANUAL_RESPONSE_TIMEOUT_SECS,
 };
 use self::event_processor::{
     OmniAudioOutputState, OmniEventProcessor, OmniReadinessState, OmniSubtitleEventState,

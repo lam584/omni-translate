@@ -177,7 +177,7 @@ pub fn emit_runtime_event_v2(
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "camelCase")]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ProviderCommandV2 {
     FetchModels { provider: ProviderDraftInput },
     Probe { provider: ProviderDraftInput },
@@ -230,7 +230,7 @@ pub async fn provider_v2(
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "camelCase")]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SessionCommandV2 {
     Snapshot,
     RefreshDevices,
@@ -312,7 +312,7 @@ pub async fn session_v2(
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "camelCase")]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeCommandV2 {
     Snapshot,
     Refresh,
@@ -322,7 +322,6 @@ pub enum BridgeCommandV2 {
     Uninstall,
     Repair {
         config: Value,
-        #[serde(rename = "repairAction")]
         repair_action: String,
     },
 }
@@ -351,7 +350,7 @@ pub async fn bridge_v2(app: AppHandle, command: BridgeCommandV2) -> Result<Servi
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "camelCase")]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DiagnosticsCommandV2 {
     SelfCheck,
     OverlaySelfCheck,
@@ -384,7 +383,7 @@ pub async fn diagnostics_v2(
 }
 
 #[derive(Debug, Deserialize)]
-#[serde(tag = "action", rename_all = "camelCase")]
+#[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ConfigurationCommandV2 {
     Load,
     Save { config: Value },
@@ -451,6 +450,52 @@ mod tests {
             error.details.as_ref().and_then(|details| details["rawError"].as_str()),
             Some("nope"),
             "the original error text must survive the generic folding"
+        );
+    }
+
+    #[test]
+    fn v2_struct_variant_fields_accept_the_renderer_camel_case_payloads() {
+        // The renderer always sends camelCase keys. serde's container-level
+        // `rename_all` only renames *variants*, so multi-word fields need
+        // their own rename attribute — this test pins that the whole wire
+        // shape actually deserializes.
+        let session: Result<SessionCommandV2, _> = serde_json::from_str(
+            r#"{"action":"syncOverlayWindowState","locked":true,"rounded":false,"hotspotInteractive":true}"#,
+        );
+        assert!(
+            matches!(
+                session,
+                Ok(SessionCommandV2::SyncOverlayWindowState { hotspot_interactive: true, .. })
+            ),
+            "syncOverlayWindowState must accept the camelCase hotspotInteractive key: {session:?}"
+        );
+        let configuration: Result<ConfigurationCommandV2, _> =
+            serde_json::from_str(r#"{"action":"import","filePath":"C:/config.json"}"#);
+        assert!(
+            matches!(
+                configuration,
+                Ok(ConfigurationCommandV2::Import { ref file_path }) if file_path == "C:/config.json"
+            ),
+            "import must accept the camelCase filePath key: {configuration:?}"
+        );
+        let rollback: Result<ConfigurationCommandV2, _> =
+            serde_json::from_str(r#"{"action":"rollback","snapshotId":"snapshot-1"}"#);
+        assert!(
+            matches!(
+                rollback,
+                Ok(ConfigurationCommandV2::Rollback { ref snapshot_id }) if snapshot_id == "snapshot-1"
+            ),
+            "rollback must accept the camelCase snapshotId key: {rollback:?}"
+        );
+        let smoke: Result<super::ProviderCommandV2, _> = serde_json::from_str(
+            r#"{"action":"smoke","provider":{"templateId":"t","providerId":"p","kind":"openai","displayName":"P","model":"m","baseUrl":"https://example.invalid","transport":"websocket","authRef":{"kind":"header","reference":"ref","headerName":"Authorization","scheme":"Bearer"},"region":null,"streamEnabled":true,"timeoutMs":1000,"systemPromptTemplate":""},"sourceText":"hello","sourceLanguage":"en","targetLanguage":"zh-CN"}"#,
+        );
+        assert!(
+            matches!(
+                smoke,
+                Ok(super::ProviderCommandV2::Smoke { ref source_text, .. }) if source_text.as_deref() == Some("hello")
+            ),
+            "smoke must not silently drop the camelCase sourceText key: {smoke:?}"
         );
     }
 

@@ -35,7 +35,9 @@ foreach ($step in $steps) {
   Write-Host ">>> $($step.Name): $($step.Command)"
   $wrappedCommand = $step.Command + ' > "' + $logPath + '" 2>&1'
   & cmd.exe /d /s /c $wrappedCommand
-  Get-Content -Path $logPath | Select-Object -Last 40
+  # Echo the log tail via the host stream only: the success stream must stay
+  # clean so callers capturing this script's output receive just the summary path.
+  Get-Content -Path $logPath | Select-Object -Last 40 | Out-Host
   if ($LASTEXITCODE -ne 0) {
     throw "Quality gate (auto) step failed: $($step.Name)"
   }

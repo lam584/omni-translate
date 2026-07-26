@@ -12,9 +12,15 @@ Set-Location $workspaceRoot
 
 # 1. Run automated quality gate first
 $autoScript = Join-Path $PSScriptRoot "run-quality-gate-auto.ps1"
-$autoSummaryPath = & $autoScript -OutputRoot $OutputRoot
+# The auto script is expected to emit only the summary path on the success
+# stream, but guard against stray output: keep the last non-empty string.
+$autoOutput = @(& $autoScript -OutputRoot $OutputRoot)
+$autoSummaryPath = @($autoOutput | Where-Object { ($_ -is [string]) -and -not [string]::IsNullOrWhiteSpace($_) }) | Select-Object -Last 1
 if ($LASTEXITCODE -ne 0) {
   throw "Automated quality gate failed. See: $autoSummaryPath"
+}
+if ([string]::IsNullOrWhiteSpace($autoSummaryPath) -or -not (Test-Path -LiteralPath $autoSummaryPath -ErrorAction SilentlyContinue)) {
+  throw "Automated quality gate did not emit a usable summary path. Captured output: $($autoOutput -join '; ')"
 }
 
 # 2. Generate and validate manual artifacts

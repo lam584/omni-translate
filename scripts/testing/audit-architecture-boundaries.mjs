@@ -1,9 +1,48 @@
-import { readFileSync, readdirSync } from 'node:fs';
+import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, join, relative } from 'node:path';
 
 const root = process.cwd();
 const strict = process.argv.includes('--strict');
+const updateBaseline = process.argv.includes('--update-baseline');
+const baselinePath = join(root, 'scripts/testing/architecture-baseline.json');
 const violations = [];
+
+// Stable baseline key: rule + normalized relative path, without line/length
+// numbers or function names, so line drift inside an already-listed file does
+// not surface as a new violation. Multiple findings that share a rule and file
+// collapse into a single baseline entry.
+function baselineKey(message) {
+  const separator = message.indexOf(': ');
+  const rule = message.slice(0, separator);
+  let subject = message.slice(separator + 2);
+  subject = subject.replace(/ \(\d+\)$/, '');
+  subject = subject.replace(/::[A-Za-z0-9_]+$/, '');
+  return `${rule}: ${subject.replace(/\\/g, '/')}`;
+}
+
+function readBaselineKeys() {
+  let text;
+  try {
+    text = readFileSync(baselinePath, 'utf8');
+  } catch {
+    return new Set();
+  }
+  const parsed = JSON.parse(text);
+  if (!Array.isArray(parsed.violations)) {
+    throw new Error(`Baseline file ${relative(root, baselinePath)} must contain a "violations" array.`);
+  }
+  return new Set(parsed.violations);
+}
+
+function writeBaseline(keys) {
+  const payload = {
+    comment:
+      'Known architecture boundary violations tolerated by the non-strict audit. '
+      + 'Regenerate with: node scripts/testing/audit-architecture-boundaries.mjs --update-baseline',
+    violations: [...keys].sort(),
+  };
+  writeFileSync(baselinePath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
 
 function walk(directory, predicate) {
   return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
@@ -155,5 +194,29 @@ if (violations.length === 0) {
 } else {
   console.log(`Architecture boundary audit found ${violations.length} violation(s):`);
   for (const violation of violations) console.log(`- ${violation}`);
-  if (strict) process.exitCode = 1;
+}
+
+if (updateBaseline) {
+  const keys = new Set(violations.map(baselineKey));
+  writeBaseline(keys);
+  console.log(`Baseline updated: ${keys.size} entr${keys.size === 1 ? 'y' : 'ies'} written to ${relative(root, baselinePath)}.`);
+} else if (strict) {
+  // Strict mode ignores the baseline: every violation fails the audit.
+  if (violations.length > 0) process.exitCode = 1;
+} else {
+  const baselineKeys = readBaselineKeys();
+  const currentKeys = new Set(violations.map(baselineKey));
+  const newViolations = violations.filter((violation) => !baselineKeys.has(baselineKey(violation)));
+  const resolved = [...baselineKeys].filter((key) => !currentKeys.has(key)).sort();
+  if (resolved.length > 0) {
+    console.log(`Baseline entries resolved (${resolved.length}) - run --update-baseline to prune them:`);
+    for (const key of resolved) console.log(`- ${key}`);
+  }
+  if (newViolations.length > 0) {
+    console.log(`New violation(s) not covered by baseline (${newViolations.length}):`);
+    for (const violation of newViolations) console.log(`- ${violation}`);
+    process.exitCode = 1;
+  } else {
+    console.log(`0 new violations (${baselineKeys.size} baselined).`);
+  }
 }

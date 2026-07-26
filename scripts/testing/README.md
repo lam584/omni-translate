@@ -32,6 +32,24 @@ The Rust suite includes the live LLM integration test. It reads
 `scripts/testing/llm-integration.config.json` by default, so this command makes
 real provider network calls and requires local credentials.
 
+Run the architecture boundary audit:
+
+```powershell
+npm run audit:architecture
+```
+
+The default (non-strict) mode compares findings against
+`scripts/testing/architecture-baseline.json` and fails only on violations not
+covered by that baseline; pre-existing debt listed there is reported but
+tolerated. Baseline entries are keyed by rule plus normalized file path (no
+line numbers), so line drift in an already-listed file does not fail the gate.
+Resolved baseline entries are reported as prune candidates. After paying down
+debt (or when intentionally accepting a new entry), regenerate the baseline
+with `node scripts/testing/audit-architecture-boundaries.mjs
+--update-baseline`. `npm run audit:architecture:strict` ignores the baseline
+and fails on every violation. The non-strict audit runs in the PR fast-check
+workflow and as the first step of `run-quality-gate-auto.ps1`.
+
 ## Live LLM integration
 
 Copy `llm-integration.config.example.json` to

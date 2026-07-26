@@ -48,3 +48,6 @@ jobs:
 
       - name: Test desktop shell
         run: npm run test:desktop-shell
+
+      - name: Audit architecture boundaries
+        run: npm run audit:architecture

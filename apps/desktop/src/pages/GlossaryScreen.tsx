@@ -20,7 +20,7 @@ import {
   resolveGlossaryExportFilename, toggleGlossaryEntryImportant, toggleGlossaryLibrary,
   upsertGlossaryEntry,
 } from './glossary/glossaryDomain';
-import { providerTemplates } from '../mocks/provider-templates';
+import { providerTemplates } from '../defaults/provider-templates';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
 import {

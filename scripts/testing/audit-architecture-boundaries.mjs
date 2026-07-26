@@ -176,6 +176,12 @@ for (const path of walk(pageRoot, (path) => path.endsWith('Workspace.tsx'))) {
 
 const frontendRoot = 'apps/desktop/src';
 const frontend = walk(join(root, frontendRoot), (path) => /\.(ts|tsx)$/.test(path));
+// Environment probing is confined to the composition roots (desktop-api.ts
+// decides once, desktop-runtime.ts owns the late-heal); everything else must
+// consume the installed desktop-api capabilities. Cap the total production
+// call-site count so inline probing cannot creep back in.
+const PROBE_CALL_SITE_CAP = 5;
+let probeCallSites = 0;
 for (const path of frontend) {
   const rel = relative(root, path).replace(/\\/g, '/');
   // Test files and ambient declarations are exempt from the import rules below.
@@ -186,6 +192,10 @@ for (const path of frontend) {
   // import mocks; production code may not.
   const inTestSupport =
     rel.startsWith(`${frontendRoot}/mocks/`) || rel.startsWith(`${frontendRoot}/test-utils/`);
+
+  if (!inTestSupport && rel !== `${frontendRoot}/runtime/tauri-runtime.ts`) {
+    probeCallSites += (text.match(/\bisTauriRuntime\s*\(/g) ?? []).length;
+  }
 
   // Tauri APIs are only reachable through the runtime adapter layer.
   if (!inRuntime && /@tauri-apps\/api/.test(text)) {
@@ -207,6 +217,10 @@ for (const path of frontend) {
   // The pattern also matches generic calls such as invoke<T>(...).
   if (rel === 'apps/desktop/src/runtime/desktop-api-v2.ts') continue;
   if (/(?<![.\w])invoke\s*[<(]/.test(text)) violations.push(`Direct invoke: ${rel}`);
+}
+
+if (probeCallSites > PROBE_CALL_SITE_CAP) {
+  violations.push(`isTauriRuntime call sites in production: ${probeCallSites} (cap ${PROBE_CALL_SITE_CAP})`);
 }
 
 const gateway = readFileSync(join(root, 'apps/desktop/src-tauri/src/provider/gateway.rs'), 'utf8');

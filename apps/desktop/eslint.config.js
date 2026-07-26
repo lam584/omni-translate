@@ -26,6 +26,17 @@ export default tseslint.config(
       // which mirrors to the console itself and forwards to the native diagnostics log.
       'no-console': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      // Environment probing happens once, in the composition root. Everything
+      // else consumes the installed desktop-api (activeDesktopApi / context
+      // capabilities); see src/runtime/desktop-api.ts. The overrides below
+      // exempt the composition-root modules themselves.
+      'no-restricted-imports': ['error', {
+        patterns: [{
+          group: ['**/tauri-runtime'],
+          importNamePattern: '^(isTauriRuntime|waitForTauriRuntime)$',
+          message: 'Probe the environment only in the composition roots; consume capabilities from desktop-api/desktop-api-context instead.',
+        }],
+      }],
       'react-refresh/only-export-components': ['error', {
         allowConstantExport: true,
         allowExportNames: [
@@ -38,7 +49,7 @@ export default tseslint.config(
           'isTextOutputEvent', 'shouldUseManualBenchmarkMode', 'textLength', 'shouldUseCandidate',
           'buildOutputSegments', 'fmtMs', 'exportFile', 'exportJson',
           'DiagnosticsReportExporter', 'formatLiveEventsTxt', 'formatBenchmarkTxt',
-          'router', 'useDesktopApiV2', 'diagnosticsReadyPatchForMode',
+          'router', 'useDesktopApiV2', 'useDesktopCapabilities', 'diagnosticsReadyPatchForMode',
         ],
       }],
     },
@@ -48,6 +59,15 @@ export default tseslint.config(
     rules: {
       // Router construction is an application entrypoint, not a Fast Refresh component boundary.
       'react-refresh/only-export-components': 'off',
+    },
+  },
+  {
+    // Composition roots: the one-time environment decision (desktop-api) and
+    // the bootstrap that owns the preview -> Tauri late-heal (desktop-runtime),
+    // plus the probe module's own tests.
+    files: ['src/runtime/desktop-api.ts', 'src/runtime/desktop-runtime.ts', 'src/runtime/tauri-runtime.test.ts'],
+    rules: {
+      'no-restricted-imports': 'off',
     },
   },
   {

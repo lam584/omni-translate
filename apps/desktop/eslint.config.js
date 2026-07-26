@@ -22,6 +22,7 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-hooks/set-state-in-effect': 'error',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       'react-refresh/only-export-components': ['error', {
         allowConstantExport: true,
         allowExportNames: [
@@ -34,7 +35,7 @@ export default tseslint.config(
           'isTextOutputEvent', 'shouldUseManualBenchmarkMode', 'textLength', 'shouldUseCandidate',
           'buildOutputSegments', 'fmtMs', 'exportFile', 'exportJson',
           'DiagnosticsReportExporter', 'formatLiveEventsTxt', 'formatBenchmarkTxt',
-          'router', 'useDesktopApiV2',
+          'router', 'useDesktopApiV2', 'diagnosticsReadyPatchForMode',
         ],
       }],
     },

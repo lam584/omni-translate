@@ -1,3 +1,4 @@
+import i18n from '../i18n/config';
 import { desktopApiV2, type DesktopApiV2 } from '../runtime/desktop-api-v2';
 
 export interface PersistenceBackend {
@@ -76,7 +77,7 @@ export class SqliteBackend implements PersistenceBackend {
     try {
       await this.desktopApi.persistence.saveDraft(value);
     } catch {
-      throw new Error(`SqliteBackend: 保存键 "${key}" 失败`);
+      throw new Error(i18n.t('runtime.storage.sqliteSaveFailed', { key }));
     }
   }
 
@@ -142,7 +143,7 @@ export class CompositeBackend implements PersistenceBackend {
       try {
         await this.fallback.save(key, value);
       } catch {
-        throw new Error(`CompositeBackend: 保存键 "${key}" 失败（主后端和后备后端均失败）`);
+        throw new Error(i18n.t('runtime.storage.compositeSaveFailed', { key }));
       }
     }
   }

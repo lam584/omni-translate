@@ -113,6 +113,10 @@ export function buildWatchModeDiagnosticAutostartConfig(
     'VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID',
     DEFAULT_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID,
   );
+  const feedbackLoopPrevention =
+    watchModeEnvString(env, 'VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION') === 'echo-cancel'
+      ? 'echo-cancel'
+      : 'virtual-driver';
 
   return {
     ...currentConfig,
@@ -128,15 +132,15 @@ export function buildWatchModeDiagnosticAutostartConfig(
       subtitleTranslationModelId,
       inboundSecondaryAudioModelId,
       outputSpeechEnabled: true,
-      feedbackLoopPrevention: 'virtual-driver',
+      feedbackLoopPrevention,
       inboundRoute: {
         ...currentConfig.devices.inboundRoute,
         mixControl: {
           ...currentConfig.devices.inboundRoute.mixControl,
           keepOriginalAudio: true,
           translatedAudioEnabled: true,
-          originalAudioGainDb: 0,
-          translatedAudioGainDb: 0,
+          originalAudioGainDb: -4,
+          translatedAudioGainDb: -1,
           duckingEnabled: true,
           monitorMode: 'original-and-translated',
         },

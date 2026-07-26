@@ -111,11 +111,63 @@
     "overlayAppearanceHint": "Genel opaklık hem kartı hem de metni etkiler; arka plan ve metin opaklığı ayrı ayrı ayarlanabilir.",
     "overlayOpacityLabel": "Genel opaklık",
     "overlayFontSizeLabel": "Altyazı yazı tipi boyutu",
+    "overlayHeightLabel": "Kaplama yüksekliği",
     "overlayTextOpacityLabel": "Metin opaklığı",
     "overlayBackgroundOpacityLabel": "Arka plan opaklığı",
     "overlayTextColorLabel": "Metin rengi",
     "overlayBackgroundColorLabel": "Arka plan rengi",
     "overlayFontLabel": "Yazı tipi",
+    "overlayPresetTitle": "Overall style",
+    "overlayPresetHint": "Start with a common subtitle style, then fine-tune its text effects.",
+    "overlayPreset": {
+      "classic": "Classic subtitles",
+      "glass": "Clear glass",
+      "contrast": "High contrast",
+      "lyrics": "Background-free lyrics"
+    },
+    "overlayTypographyTitle": "Typography",
+    "overlayTypographyHint": "Adjust the font, size, opacity and subtitle alignment.",
+    "overlayAlignLabel": "Text alignment",
+    "overlayAlign": {
+      "left": "Left",
+      "center": "Center",
+      "right": "Right"
+    },
+    "overlayTextEffectsTitle": "Text effects",
+    "overlayTextEffectsHint": "Style source and translated text separately, or apply the current style to both.",
+    "overlayApplyBoth": "Apply to both",
+    "overlayTextRole": {
+      "source": "Source",
+      "translation": "Translation"
+    },
+    "overlayEffectPreset": {
+      "none": "None",
+      "soft": "Soft shadow",
+      "crisp": "Crisp outline",
+      "contrast": "High contrast",
+      "glow": "Neon glow"
+    },
+    "overlayFontWeightLabel": "Font weight",
+    "overlayFontWeight": {
+      "400": "Regular",
+      "500": "Medium",
+      "600": "Semibold",
+      "700": "Bold"
+    },
+    "overlayOutlineTitle": "Text outline",
+    "overlayShadowTitle": "Text shadow",
+    "overlayEffectColorLabel": "Effect color",
+    "overlayOutlineWidthLabel": "Outline width",
+    "overlayShadowOpacityLabel": "Shadow opacity",
+    "overlayShadowXLabel": "Horizontal offset",
+    "overlayShadowYLabel": "Vertical offset",
+    "overlayShadowBlurLabel": "Blur radius",
+    "overlayBackgroundTitle": "Background and opacity",
+    "overlayPreviewScene": {
+      "dark": "Dark",
+      "light": "Light",
+      "scene": "Complex scene"
+    },
     "overlayLockTitle": "Yer paylaşımını kilitle",
     "overlayLockHint": "Geçerli konumu kilitle. Tekrar taşımanız gerektiğinde kilidini açmak için fareyle kaplamanın üzerine gelin.",
     "overlayLockedState": "Kilitli",
@@ -130,8 +182,7 @@
     "resetWelcomeDone": "Sıfırlama tamamlandı. Sihirbaz bir dahaki sefere görünecektir.",
     "resetWelcomeAction": "Sıfırla",
     "sectionDriverManagement": "Sürücü yönetimi",
-    "driverManagementHint": "Omni Translate sanal hoparlör sürücüsünü ve Bridge Service'i yönetin.",
-    "overlayHeightLabel": "Kaplama yüksekliği"
+    "driverManagementHint": "Omni Translate sanal hoparlör sürücüsünü ve Bridge Service'i yönetin."
   },
   "welcome": {
     "title": "Omni Translate'e hoş geldiniz",
@@ -230,7 +281,10 @@
       "signatureEnforcementBypass": "Geçici imza yaptırımını atlama",
       "memoryIntegrity": "Bellek bütünlüğü",
       "summary": "Teşhis özeti",
-      "rawSummary": "Ham özet"
+      "rawSummary": "Ham özet",
+      "testSigning": "TESTSIGNING",
+      "secureBoot": "Secure Boot",
+      "bridge": "Bridge"
     },
     "value": {
       "none": "Yok",
@@ -281,6 +335,9 @@
     "cardDisabledHint": "Bu kart devre dışı bırakıldı · modeli düzenlemek için etkinleştirin",
     "unsupportedNativeAudio": "Mevcut model Omni yerel sesi desteklemiyor; oturum yalnızca kaynak sesi ve altyazıları koruyacaktır.",
     "outputVolume": "Çıkış hacmi",
+    "originalAudioVolume": "Orijinal ses düzeyi",
+    "translatedAudioVolume": "LLM çeviri ses düzeyi",
+    "originalAudioVolumeVirtualDriverHint": "Orijinal ses düzeyi yalnızca sanal sürücü modunda ayarlanabilir. Geçerli fiziksel loopback modunda oynatıcı veya Windows ses düzeyini kullanın.",
     "inputLevel": "Giriş seviyesi",
     "testing": "Test ediliyor...",
     "testSpeaker": "Test hoparlörü",
@@ -400,9 +457,9 @@
     "vadThresholdTitle": "VAD eşiği {{value}}",
     "modelSubtitleSttTranslation": "Konuşma tanıma · Çeviri",
     "modelSubtitleSttTranslationSpeech": "Konuşma tanıma · Çeviri · Konuşma",
-    "originalAudioVolume": "Orijinal ses düzeyi",
-    "translatedAudioVolume": "LLM çeviri ses düzeyi",
-    "originalAudioVolumeVirtualDriverHint": "Orijinal ses düzeyi yalnızca sanal sürücü modunda ayarlanabilir. Geçerli fiziksel loopback modunda oynatıcı veya Windows ses düzeyini kullanın."
+    "micTestUnsupported": "Current desktop runtime does not support microphone testing",
+    "directionListen": "Listen",
+    "directionSpeak": "Speak"
   },
   "overlay": {
     "contextMenuTitle": "Yer paylaşımı kontrolleri",
@@ -610,7 +667,10 @@
       "firstSpeechStarted": "First Speech Detected",
       "queuedChunks": "Queued Audio Chunks",
       "droppedBeforeReady": "Dropped Before Ready",
-      "export": "Export"
+      "export": "Export",
+      "firstAudibleChunk": "First Audible Chunk",
+      "silenceSkipped": "Silence Skipped (before audible)",
+      "totalInputChunks": "Total Input Chunks (at speech)"
     },
     "benchmark": {
       "selectVoiceModelFirst": "Önce bir ses modeli seçin.",
@@ -687,7 +747,11 @@
       "committedText": "Taahhüt edilen metin",
       "asrEventDetails": "ASR etkinlik ayrıntıları ({{count}})",
       "text": "Metin",
-      "export": "Export"
+      "export": "Export",
+      "sessionReady": "Session Ready",
+      "responseCreated": "Response Created",
+      "responseDone": "Response Done",
+      "responseLegend": "Response"
     },
     "export": {
       "title": "Export"
@@ -844,7 +908,8 @@
       "closeTitle": "Bilinmeyen model kaydını kapat",
       "capabilities": "Model yetenekleri",
       "realtimeAudioMode": "Gerçek zamanlı ses modu",
-      "registerAndAdd": "Kayıt olun ve ekleyin"
+      "registerAndAdd": "Kayıt olun ve ekleyin",
+      "interactionCapabilities": "Interaction capabilities"
     },
     "capabilityRegistry": {
       "title": "Yetenek kaydı",
@@ -901,7 +966,10 @@
       "authHeader": "Kimlik doğrulama başlığı",
       "streaming": "Akış",
       "region": "Bölge",
-      "sampleText": "Örnek metin"
+      "sampleText": "Örnek metin",
+      "temperature": "Temperature",
+      "maxOutputTokens": "Max Output Tokens",
+      "responseModalities": "Response Modalities"
     },
     "customHeaders": {
       "title": "Özel istek başlıkları",
@@ -974,7 +1042,37 @@
     "fallbackSubtitlesOnly": "Sanal ses yolu kullanılamıyor. Oturum yalnızca altyazı moduna geri döndü.",
     "fallbackAec": "Sanal ses yolu kullanılamıyor. Oturum geçici olarak AEC ile fiziksel hoparlör çalmaya geçti. Bu modun hala geridöngü riski vardır.",
     "virtualDriverFallbackConfirm": "Sanal ses sürücüsü veya Köprü henüz mevcut değil. Yalnızca altyazı moduna girmek için Tamam'ı tıklayın; AEC ile geçici olarak fiziksel hoparlörden çalmaya geri dönmek için İptal'e tıklayın. AEC geri dönüşü hala geridöngü riskine sahiptir.",
-    "sceneLaunchFailed": "{{scene}} başlatılamadı: {{error}}"
+    "sceneLaunchFailed": "{{scene}} ({{stage}}) başlatılamadı: {{error}}",
+    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
+    "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
+    "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
+    "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
+    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
+    "attribution": {
+      "stageBridgeReady": "Bridge/driver preparation",
+      "stageOmniPreconnect": "Omni preconnect",
+      "stageInboundRoute": "System audio capture",
+      "stageOutboundRoute": "Microphone capture",
+      "stageTranslateWorker": "Translation engine",
+      "stageSpeechDispatch": "Speech output",
+      "stageSubtitleOverlay": "Subtitle overlay",
+      "stageLaunch": "Launch",
+      "captureStateUnknown": "Capture state unknown",
+      "captureStateFormat": "Capture state {{captureState}}/{{preBufferState}}, bound: {{bound}}",
+      "boundYes": "yes",
+      "boundNo": "no",
+      "nativeMarker": "Native diagnostics: {{marker}}",
+      "noMarker": "no relevant records",
+      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
+      "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
+      "captureErrorDefault": "Native capture returned an error",
+      "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
+      "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
+      "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    }
   },
   "glossary": {
     "strategy": {
@@ -1101,5 +1199,166 @@
       "importReadFailed": "Dosya okunamadı. Tekrar deneyin."
     },
     "searchPlaceholder": "Arama terimleri..."
+  },
+  "sceneReadiness": {
+    "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
+    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "providerNotVerified": "Model verification pending",
+    "watchLabel": "Watch mode",
+    "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
+    "readyToStart": "Ready to start",
+    "virtualDriverPending": "Virtual audio driver pending (required for translated audio output)",
+    "systemAudioPending": "System audio capture pending",
+    "overlayPending": "Subtitle overlay pending",
+    "gameLabel": "Game voice mode",
+    "gameDescription": "Ready to start when bidirectional capture, speaker translated audio, and echo cancellation are all ready.",
+    "inboundAudioPending": "Inbound system audio capture pending",
+    "outboundMicPending": "Outbound microphone capture pending",
+    "aecPending": "Echo cancellation pending",
+    "voiceRoomLabel": "Voice room mode",
+    "voiceRoomDescription": "Ready to start when microphone, speaker translated audio, and echo cancellation are all ready.",
+    "micPending": "Microphone capture pending",
+    "blockerCount": "{{count}} items to resolve",
+    "overallLabel": "{{ready}}/{{total}} scenes ready"
+  },
+  "providerProbe": {
+    "verdictAvailable": "Available",
+    "verdictRealtimeRisk": "Not recommended for realtime",
+    "verdictUnavailable": "Unavailable",
+    "notProbed": "Not probed",
+    "pendingProbe": "Pending re-probe",
+    "checkStreaming": "Realtime response",
+    "checkStreamingPass": "Realtime response supported.",
+    "checkStreamingFail": "Realtime response not supported.",
+    "checkErrorShape": "Error response",
+    "checkErrorShapePass": "Error response is stable.",
+    "checkErrorShapeFail": "Error response is unstable.",
+    "checkResponseShape": "Result response",
+    "checkResponseShapePass": "Result response is stable.",
+    "checkResponseShapeFail": "Result response is unstable.",
+    "guidanceAvailable": "You can send a test request directly.",
+    "guidanceRealtimeRisk": "Better suited for subtitles first; speech dispatch is recommended to be deferred.",
+    "guidanceUnavailable": "Check the service address, secret, and model name first."
+  },
+  "customProvider": {
+    "protocolWebsocket": "Custom WebSocket",
+    "protocolStreamingHttp": "Custom Streaming HTTP",
+    "protocolHttp": "Custom HTTP",
+    "groupRequired": "Basic connection fields",
+    "groupRequiredDesc": "A custom provider needs at least these fields confirmed.",
+    "fieldModel": "Model name",
+    "fieldModelDesc": "The model to call by default.",
+    "fieldBaseUrl": "Endpoint URL",
+    "fieldBaseUrlDesc": "Used for capability probes, model catalog, and request entry.",
+    "fieldAuthRef": "Auth reference",
+    "fieldAuthRefDesc": "Used to write to the system credential manager.",
+    "groupRouting": "Request behavior",
+    "groupRoutingDesc": "Determines request protocol and timeout behavior.",
+    "fieldTransport": "Transport",
+    "fieldTransportDesc": "Choose HTTP, streaming, or WebSocket based on upstream capabilities.",
+    "fieldTimeout": "Timeout threshold",
+    "fieldTimeoutDesc": "Used for model probes, model catalog, and smoke tests.",
+    "fieldRegion": "Region",
+    "fieldRegionDesc": "Records the default region when the service distinguishes regions.",
+    "groupAdvanced": "Advanced fields",
+    "groupAdvancedDesc": "Optionally control system prompt template and streaming capability.",
+    "fieldPromptTemplate": "System prompt template",
+    "fieldPromptTemplateDesc": "Follows the current Provider Draft prompt template structure.",
+    "fieldStream": "Streaming toggle",
+    "fieldStreamDesc": "Allows the UI to directly control whether realtime response is enabled in template mode.",
+    "description": "Custom {{platform}} provider integration.",
+    "notes": "This template was created locally and saved in browser storage. You can continue using the system credential manager to save API Keys.",
+    "mappingModel": "The custom template maps the default model name to the request layer.",
+    "mappingBaseUrl": "The custom template retains an independent endpoint URL.",
+    "mappingAuth": "Authentication continues to be injected by reference.",
+    "mappingTransport": "Transport is provided with a default value by the custom template."
+  },
+  "runtime": {
+    "provider": {
+      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "defaultGuidance": "Please try again later.",
+      "previewRationale": "Running in browser preview mode, using mock probe results.",
+      "traceInvokeStart": "Frontend invoked runtime command.",
+      "traceInvokeTimeout": "Frontend timed out waiting for runtime command.",
+      "traceInvokeResult": "Frontend received runtime command result.",
+      "traceInvokeFailed": "Frontend runtime command failed.",
+      "traceSecretStatusStart": "Frontend preparing to read API Key status.",
+      "actionSecretStatus": "Read saved API Key status",
+      "guidanceCredentialManager": "Check whether Windows Credential Manager is available, then try again.",
+      "traceSecretStatusResult": "Frontend received API Key status result.",
+      "traceSecretStatusFailed": "Frontend failed to read API Key status.",
+      "traceSecretSaveStart": "Frontend preparing to save API Key.",
+      "actionSecretSave": "API Key native save command",
+      "traceSecretSaveResult": "Frontend received API Key save result.",
+      "traceSecretSaveFailed": "Frontend failed to save API Key.",
+      "traceSecretReadStart": "Frontend preparing to read API Key plaintext.",
+      "actionSecretRead": "Read saved API Key",
+      "traceSecretReadResult": "Frontend received API Key plaintext result.",
+      "traceSecretReadFailed": "Frontend failed to read API Key plaintext.",
+      "actionProbe": "Model connectivity probe",
+      "guidanceProbe": "Check the endpoint URL, network connectivity, or switch to HTTP transport mode and try again.",
+      "actionFetchModels": "Fetch model list",
+      "guidanceFetchModels": "Check the endpoint URL, API Key, and network connectivity, then try again.",
+      "smokeSessionStarted": "Browser preview mode established a mock session.",
+      "smokeTranslationCompleted": "Browser preview mode returned the full mock text.",
+      "smokeResponseCompleted": "Browser preview mode response ended.",
+      "smokePreviewRationale": "Running in browser preview mode, not connected to a real Provider.",
+      "actionSmoke": "Model smoke test",
+      "guidanceSmoke": "Check the endpoint URL, network connectivity, or switch to HTTP transport mode and try again."
+    },
+    "desktop": {
+      "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
+      "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
+      "unknownError": "Unknown error",
+      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "audioDegraded": "Degraded, will auto-refresh devices later",
+      "browserPreview": "Browser preview mode",
+      "skipped": "Skipped",
+      "mockData": "Mock data",
+      "tauriDesktop": "Tauri desktop environment",
+      "ipcDiagFailed": "IPC channel diagnostics failed: {{message}}",
+      "ipcNotResponding": "IPC channel not responding",
+      "ipcNotConnected": "IPC not connected"
+    },
+    "audio": {
+      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and diagnostics log.",
+      "actionRefreshDevices": "Refresh audio devices",
+      "actionStartCapture": "Start audio capture",
+      "watchRouteNotReady": "System audio capture did not enter a usable state.",
+      "watchCancelled": "Watch mode launch was cancelled.",
+      "actionReadSnapshot": "Read audio runtime state",
+      "actionPreconnect": "Omni preconnect",
+      "actionCancelPreconnect": "Cancel Omni preconnect",
+      "actionStopCapture": "Stop audio capture",
+      "actionClearCues": "Clear subtitle queue",
+      "actionStartSpeech": "Start speech dispatch",
+      "actionStopSpeech": "Stop speech dispatch",
+      "actionStartTranslation": "Start translation engine",
+      "actionStopTranslation": "Stop translation engine",
+      "actionToggleOverlay": "Toggle subtitle overlay",
+      "actionShowOverlay": "Show subtitle overlay"
+    },
+    "bridge": {
+      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "traceInvokeStart": "Frontend invoked Bridge runtime command.",
+      "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
+      "traceInvokeResult": "Frontend received Bridge runtime command result.",
+      "traceInvokeFailed": "Frontend Bridge runtime command failed.",
+      "actionRefresh": "Refresh driver and Bridge state",
+      "actionStart": "Start Bridge Service",
+      "actionStop": "Stop Bridge Service",
+      "actionInstall": "Install driver",
+      "actionUninstall": "Uninstall driver",
+      "actionRepair": "Repair driver"
+    },
+    "benchmark": {
+      "desktopOnly": "Benchmark is only available in the desktop runtime.",
+      "timeout": "Benchmark timed out ({{seconds}}s). Check the network connection or model configuration.",
+      "parseFailed": "Benchmark result parsing failed: {{error}}"
+    },
+    "storage": {
+      "sqliteSaveFailed": "SqliteBackend: failed to save key \"{{key}}\"",
+      "compositeSaveFailed": "CompositeBackend: failed to save key \"{{key}}\" (both primary and fallback backends failed)"
+    }
   }
 }

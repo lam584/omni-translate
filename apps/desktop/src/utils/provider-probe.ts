@@ -1,3 +1,4 @@
+import i18n from '../i18n/config';
 import { defaultProviderProbeProfile, providerProbeProfiles } from '../mocks/provider-probes';
 import type { ProviderDraft } from '../schema/config';
 import type { ProviderProbeCheck, ProviderProbeVerdict } from '../schema/provider-probe';
@@ -23,14 +24,14 @@ export type ProviderProbeView = {
 
 export function getProbeVerdictLabel(verdict: ProviderProbeVerdict) {
   if (verdict === 'available') {
-    return '可用';
+    return i18n.t('providerProbe.verdictAvailable');
   }
 
   if (verdict === 'realtime-risk') {
-    return '不推荐实时';
+    return i18n.t('providerProbe.verdictRealtimeRisk');
   }
 
-  return '不可用';
+  return i18n.t('providerProbe.verdictUnavailable');
 }
 
 export function getProbeVerdictTone(verdict: ProviderProbeVerdict) {
@@ -75,7 +76,7 @@ export function resolveProbeView(provider: ProviderDraft, runtimeProbe?: Provide
     templateId: provider.templateId,
     providerId: provider.providerId,
     verdict: provider.probe.verdict,
-    checkedAt: provider.probe.checkedAt || '未探测',
+    checkedAt: provider.probe.checkedAt || i18n.t('providerProbe.notProbed'),
     measuredLatencyMs: provider.probe.verdict === 'available' ? 840 : provider.probe.verdict === 'realtime-risk' ? 1680 : 0,
     latencyBudgetMs: 1200,
     streamSupported: provider.probe.streamSupported,
@@ -88,23 +89,23 @@ export function resolveProbeView(provider: ProviderDraft, runtimeProbe?: Provide
       {
         id: `${provider.providerId}-streaming`,
         key: 'streaming',
-        label: '实时返回',
+        label: i18n.t('providerProbe.checkStreaming'),
         status: provider.probe.streamSupported ? 'pass' : 'fail',
-        summary: provider.probe.streamSupported ? '支持实时返回。' : '暂不支持实时返回。',
+        summary: provider.probe.streamSupported ? i18n.t('providerProbe.checkStreamingPass') : i18n.t('providerProbe.checkStreamingFail'),
       },
       {
         id: `${provider.providerId}-error-shape`,
         key: 'error-shape',
-        label: '错误返回',
+        label: i18n.t('providerProbe.checkErrorShape'),
         status: provider.probe.errorShapeStable ? 'pass' : 'fail',
-        summary: provider.probe.errorShapeStable ? '错误返回稳定。' : '错误返回不稳定。',
+        summary: provider.probe.errorShapeStable ? i18n.t('providerProbe.checkErrorShapePass') : i18n.t('providerProbe.checkErrorShapeFail'),
       },
       {
         id: `${provider.providerId}-response-shape`,
         key: 'response-shape',
-        label: '结果返回',
+        label: i18n.t('providerProbe.checkResponseShape'),
         status: provider.probe.responseShapeStable ? 'pass' : 'fail',
-        summary: provider.probe.responseShapeStable ? '结果返回稳定。' : '结果返回不稳定。',
+        summary: provider.probe.responseShapeStable ? i18n.t('providerProbe.checkResponseShapePass') : i18n.t('providerProbe.checkResponseShapeFail'),
       },
     ],
     guidance: buildFallbackGuidance(provider.probe.verdict),
@@ -113,12 +114,12 @@ export function resolveProbeView(provider: ProviderDraft, runtimeProbe?: Provide
 
 function buildFallbackGuidance(verdict: ProviderProbeVerdict) {
   if (verdict === 'available') {
-    return ['可以直接发送测试请求。'];
+    return [i18n.t('providerProbe.guidanceAvailable')];
   }
 
   if (verdict === 'realtime-risk') {
-    return ['更适合先出字幕，播报建议延后。'];
+    return [i18n.t('providerProbe.guidanceRealtimeRisk')];
   }
 
-  return ['先检查服务地址、密钥和模型名。'];
+  return [i18n.t('providerProbe.guidanceUnavailable')];
 }

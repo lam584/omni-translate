@@ -135,12 +135,12 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
           <div><dt>{t('driverManagement.detail.probeState')}</dt><dd>{t(`driverManagement.value.${bridge.driverProbeState}`)}</dd></div>
           <div><dt>{t('driverManagement.detail.endpoint')}</dt><dd>{bridge.endpointName ?? t('driverManagement.value.notFound')}</dd></div>
           <div><dt>{t('driverManagement.detail.abi')}</dt><dd>{bridge.abiVersion ?? t('driverManagement.value.unavailable')}</dd></div>
-          <div><dt>TESTSIGNING</dt><dd>{t(bridge.testSigningEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
+          <div><dt>{t('driverManagement.detail.testSigning')}</dt><dd>{t(bridge.testSigningEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
           <div><dt>{t('driverManagement.detail.signatureEnforcementBypass')}</dt><dd>{t(bridge.signatureEnforcementBypassed ? 'driverManagement.value.enabledUntilRestart' : 'driverManagement.value.disabled')}</dd></div>
           <div><dt>{t('driverManagement.detail.memoryIntegrity')}</dt><dd>{t(bridge.memoryIntegrityEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
-          <div><dt>Secure Boot</dt><dd>{bridge.secureBootEnabled == null ? t('driverManagement.value.unknown') : t(bridge.secureBootEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
+          <div><dt>{t('driverManagement.detail.secureBoot')}</dt><dd>{bridge.secureBootEnabled == null ? t('driverManagement.value.unknown') : t(bridge.secureBootEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
           <div><dt>{t('driverManagement.detail.secureBootProbe')}</dt><dd>{t(`driverManagement.value.${bridge.secureBootProbeStatus}`)}</dd></div>
-          <div><dt>Bridge</dt><dd>{bridge.bridgeState}</dd></div>
+          <div><dt>{t('driverManagement.detail.bridge')}</dt><dd>{bridge.bridgeState}</dd></div>
           <div><dt>{t('driverManagement.detail.errorCode')}</dt><dd>{bridge.lastErrorCode ?? t('driverManagement.value.none')}</dd></div>
           <div><dt>{t('driverManagement.detail.recentLog')}</dt><dd>{bridge.lastDriverOperation?.logPath || t('driverManagement.value.none')}</dd></div>
           <div><dt>{t('driverManagement.detail.summary')}</dt><dd>{t(`driverManagement.description.${diagnosis.key}`)}</dd></div>

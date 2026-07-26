@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import i18n from '../i18n/config';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
@@ -19,7 +20,7 @@ const OMNI_PRECONNECT_TIMEOUT_MS = 55_000;
 
 function createAudioRuntimeTimeoutError(actionLabel: string, timeoutMs: number) {
   return new Error(
-    `${actionLabel}超时：${Math.ceil(timeoutMs / 1000)} 秒内未收到 Rust 运行时结果。请检查 Desktop Shell 终端和诊断日志。`,
+    i18n.t('runtime.audio.timeoutError', { action: actionLabel, seconds: Math.ceil(timeoutMs / 1000) }),
   );
 }
 
@@ -64,7 +65,7 @@ export async function refreshAudioDevicesRuntime(): Promise<AudioRuntimeSnapshot
     return audioRuntimeSnapshotMock;
   }
 
-  return invokeAudioWithTimeout(() => desktopApiV2.session.refreshDevices(), '刷新音频设备', AUDIO_REFRESH_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.session.refreshDevices(), i18n.t('runtime.audio.actionRefreshDevices'), AUDIO_REFRESH_TIMEOUT_MS);
 }
 
 export async function startAudioRouteRuntime(direction: 'inbound' | 'outbound', config: AppConfigDraft): Promise<AudioRuntimeSnapshot> {
@@ -87,7 +88,7 @@ export async function startAudioRouteRuntime(direction: 'inbound' | 'outbound', 
     // available for other session operations, but must not sit between the
     // click path and the sub-second native acknowledgement.
     () => desktopApiV2.runtime.invoke<AudioRuntimeSnapshot>('start_audio_route', { direction, config }),
-    '启动音频采集',
+    i18n.t('runtime.audio.actionStartCapture'),
     AUDIO_ROUTE_TIMEOUT_MS,
     async (lateStart) => {
       await lateStart.catch(() => undefined);
@@ -98,7 +99,7 @@ export async function startAudioRouteRuntime(direction: 'inbound' | 'outbound', 
 }
 
 function watchRouteNotReadyError(snapshot: AudioRuntimeSnapshot) {
-  return new Error(snapshot.inbound.lastError ?? '系统音频采集未进入可用状态。');
+  return new Error(snapshot.inbound.lastError ?? i18n.t('runtime.audio.watchRouteNotReady'));
 }
 
 export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: AbortSignal): Promise<AudioRuntimeSnapshot> {
@@ -112,7 +113,7 @@ export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: 
   const deadline = Date.now() + timeoutMs;
   while (true) {
     if (signal?.aborted) {
-      throw signal.reason instanceof Error ? signal.reason : new Error('看片模式启动已取消。');
+      throw signal.reason instanceof Error ? signal.reason : new Error(i18n.t('runtime.audio.watchCancelled'));
     }
     const snapshot = await desktopApiV2.session.snapshot();
     if (snapshot.inbound.lastError) throw watchRouteNotReadyError(snapshot);
@@ -151,7 +152,7 @@ export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: 
 
 export async function getAudioRuntimeSnapshotRuntime(): Promise<AudioRuntimeSnapshot> {
   if (!isTauriRuntime()) return audioRuntimeSnapshotMock;
-  return invokeAudioWithTimeout(() => desktopApiV2.session.snapshot(), '读取音频运行状态', AUDIO_REFRESH_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.session.snapshot(), i18n.t('runtime.audio.actionReadSnapshot'), AUDIO_REFRESH_TIMEOUT_MS);
 }
 
 export async function preconnectOmniRealtimeRuntime(config: AppConfigDraft): Promise<AudioRuntimeSnapshot> {
@@ -159,12 +160,12 @@ export async function preconnectOmniRealtimeRuntime(config: AppConfigDraft): Pro
     return audioRuntimeSnapshotMock;
   }
 
-  return invokeAudioWithTimeout(() => desktopApiV2.session.preconnect(config), 'Omni 预连接', OMNI_PRECONNECT_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.session.preconnect(config), i18n.t('runtime.audio.actionPreconnect'), OMNI_PRECONNECT_TIMEOUT_MS);
 }
 
 export async function cancelOmniPreconnectRuntime(): Promise<AudioRuntimeSnapshot> {
   if (!isTauriRuntime()) return audioRuntimeSnapshotMock;
-  return invokeAudioWithTimeout(() => desktopApiV2.session.cancelPreconnect(), '取消 Omni 预连接', OMNI_PRECONNECT_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.session.cancelPreconnect(), i18n.t('runtime.audio.actionCancelPreconnect'), OMNI_PRECONNECT_TIMEOUT_MS);
 }
 
 /**
@@ -187,7 +188,7 @@ export async function stopAudioRouteRuntime(direction: 'inbound' | 'outbound'): 
     return audioRuntimeSnapshotMock;
   }
 
-  return invokeAudioWithTimeout(() => desktopApiV2.session.stopRoute(direction), '停止音频采集', AUDIO_ROUTE_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.session.stopRoute(direction), i18n.t('runtime.audio.actionStopCapture'), AUDIO_ROUTE_TIMEOUT_MS);
 }
 
 export async function clearSubtitleCuesRuntime(): Promise<AudioRuntimeSnapshot> {
@@ -211,7 +212,7 @@ export async function clearSubtitleCuesRuntime(): Promise<AudioRuntimeSnapshot> 
     } satisfies AudioRuntimeSnapshot;
   }
 
-  return invokeAudioWithTimeout(() => desktopApiV2.session.clearCues(), '清除字幕队列', OVERLAY_WINDOW_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.session.clearCues(), i18n.t('runtime.audio.actionClearCues'), OVERLAY_WINDOW_TIMEOUT_MS);
 }
 
 export async function startSpeechDispatchRuntime(config: AppConfigDraft): Promise<AudioRuntimeSnapshot> {
@@ -229,7 +230,7 @@ export async function startSpeechDispatchRuntime(config: AppConfigDraft): Promis
 
   return invokeAudioWithTimeout(
     () => desktopApiV2.session.startSpeech(config),
-    '启动语音播报',
+    i18n.t('runtime.audio.actionStartSpeech'),
     SPEECH_DISPATCH_TIMEOUT_MS,
     async (lateStart) => {
       await lateStart.catch(() => undefined);
@@ -252,7 +253,7 @@ export async function stopSpeechDispatchRuntime(): Promise<AudioRuntimeSnapshot>
     } satisfies AudioRuntimeSnapshot;
   }
 
-  return invokeAudioWithTimeout(() => desktopApiV2.session.stopSpeech(), '停止语音播报', SPEECH_DISPATCH_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.session.stopSpeech(), i18n.t('runtime.audio.actionStopSpeech'), SPEECH_DISPATCH_TIMEOUT_MS);
 }
 
 export async function startTranslateWorkerRuntime(config: AppConfigDraft): Promise<AudioRuntimeSnapshot> {
@@ -265,7 +266,7 @@ export async function startTranslateWorkerRuntime(config: AppConfigDraft): Promi
 
   return invokeAudioWithTimeout(
     () => desktopApiV2.session.startTranslation(config),
-    '启动翻译引擎',
+    i18n.t('runtime.audio.actionStartTranslation'),
     TRANSLATE_WORKER_TIMEOUT_MS,
     async (lateStart) => {
       await lateStart.catch(() => undefined);
@@ -280,7 +281,7 @@ export async function stopTranslateWorkerRuntime(): Promise<AudioRuntimeSnapshot
     return audioRuntimeSnapshotMock;
   }
 
-  return invokeAudioWithTimeout(() => desktopApiV2.session.stopTranslation(), '停止翻译引擎', TRANSLATE_WORKER_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.session.stopTranslation(), i18n.t('runtime.audio.actionStopTranslation'), TRANSLATE_WORKER_TIMEOUT_MS);
 }
 
 export async function toggleSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
@@ -288,7 +289,7 @@ export async function toggleSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
     return runtimeSnapshotMock;
   }
 
-  return invokeAudioWithTimeout(() => invoke<RuntimeSnapshot>('toggle_subtitle_overlay'), '切换字幕浮窗', OVERLAY_WINDOW_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => invoke<RuntimeSnapshot>('toggle_subtitle_overlay'), i18n.t('runtime.audio.actionToggleOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
 }
 
 export async function showSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
@@ -301,5 +302,5 @@ export async function showSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
     };
   }
 
-  return invokeAudioWithTimeout(() => invoke<RuntimeSnapshot>('show_subtitle_overlay'), '显示字幕浮窗', OVERLAY_WINDOW_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => invoke<RuntimeSnapshot>('show_subtitle_overlay'), i18n.t('runtime.audio.actionShowOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
 }

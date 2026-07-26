@@ -143,6 +143,7 @@ fn configure_watch_mode(
     subtitle_translation_model_id: &str,
     inbound_secondary_audio_model_id: &str,
     force_subtitle_tts: bool,
+    feedback_loop_prevention: &str,
 ) {
     set_json_pointer_string(&mut config, &["devices", "routeMode"], "watch".to_string());
     if !output_device_id.is_empty() {
@@ -212,7 +213,7 @@ fn configure_watch_mode(
     set_json_pointer_string(
         &mut config,
         &["devices", "feedbackLoopPrevention"],
-        "virtual-driver".to_string(),
+        feedback_loop_prevention.to_string(),
     );
     set_json_pointer_bool(
         &mut config,
@@ -310,6 +311,15 @@ fn maybe_start_watch_mode_diagnostic(app: &tauri::App) {
     let force_subtitle_tts = std::env::var("OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE")
         .map(|value| value.trim().eq_ignore_ascii_case("subtitle-tts"))
         .unwrap_or(true);
+    let feedback_loop_prevention = std::env::var("OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION")
+        .map(|value| {
+            if value.trim().eq_ignore_ascii_case("echo-cancel") {
+                "echo-cancel".to_string()
+            } else {
+                "virtual-driver".to_string()
+            }
+        })
+        .unwrap_or_else(|_| "virtual-driver".to_string());
 
     let _ = append_diagnostics_log(
         &app_handle,
@@ -362,6 +372,7 @@ fn maybe_start_watch_mode_diagnostic(app: &tauri::App) {
         &subtitle_translation_model_id,
         &inbound_secondary_audio_model_id,
         force_subtitle_tts,
+        &feedback_loop_prevention,
     );
 
     let audio_state = app.state::<AudioStateStore>();
@@ -412,7 +423,7 @@ fn maybe_start_watch_mode_diagnostic(app: &tauri::App) {
                 "info",
                 "watch_mode.diagnostic_autostart_bridge_started",
                 Some(format!(
-                    "runMarker={} outputDeviceId={} outputLevel={} translationAudioSource={} watchModelId={} feedbackLoopPrevention=virtual-driver",
+                    "runMarker={} outputDeviceId={} outputLevel={} translationAudioSource={} watchModelId={} feedbackLoopPrevention={}",
                     if run_marker.is_empty() {
                         "-"
                     } else {
@@ -433,7 +444,8 @@ fn maybe_start_watch_mode_diagnostic(app: &tauri::App) {
                         "-"
                     } else {
                         watch_model_id.as_str()
-                    }
+                    },
+                    feedback_loop_prevention
                 )),
                 None,
                 None,

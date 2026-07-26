@@ -1,3 +1,4 @@
+import i18n from '../../i18n/config';
 import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
 import type { DiagnosticLogEntryRuntime } from '../../schema/runtime-core';
 import type { SceneLaunchStage } from './sceneLaunchPlan';
@@ -44,13 +45,13 @@ const ALL_ROUTE_MARKERS = [
 ] as const;
 
 const STAGE_LABELS: Record<SceneLaunchStage, string> = {
-  'bridge-ready': 'Bridge/驱动准备',
-  'omni-preconnect': 'Omni 预连接',
-  'inbound-route': '系统音频采集',
-  'outbound-route': '麦克风采集',
-  'translate-worker': '翻译引擎',
-  'speech-dispatch': '语音播报',
-  'subtitle-overlay': '字幕浮窗',
+  'bridge-ready': i18n.t('session.attribution.stageBridgeReady'),
+  'omni-preconnect': i18n.t('session.attribution.stageOmniPreconnect'),
+  'inbound-route': i18n.t('session.attribution.stageInboundRoute'),
+  'outbound-route': i18n.t('session.attribution.stageOutboundRoute'),
+  'translate-worker': i18n.t('session.attribution.stageTranslateWorker'),
+  'speech-dispatch': i18n.t('session.attribution.stageSpeechDispatch'),
+  'subtitle-overlay': i18n.t('session.attribution.stageSubtitleOverlay'),
 };
 
 function errorText(error: unknown): string {
@@ -92,14 +93,14 @@ function classify(input: SceneLaunchAttributionInput): SceneLaunchOutcome {
 }
 
 function captureStateFragment(snapshot: AudioRuntimeSnapshot | null): string {
-  if (!snapshot) return '采集状态未知';
+  if (!snapshot) return i18n.t('session.attribution.captureStateUnknown');
   const { captureState, preBufferState, streamBound } = snapshot.inbound;
-  return `采集状态 ${captureState}/${preBufferState}，已绑定 ${streamBound ? '是' : '否'}`;
+  return i18n.t('session.attribution.captureStateFormat', { captureState, preBufferState, bound: streamBound ? i18n.t('session.attribution.boundYes') : i18n.t('session.attribution.boundNo') });
 }
 
 function nativeMarkerFragment(recentLogs: DiagnosticLogEntryRuntime[]): string {
   const marker = latestRouteMarker(recentLogs);
-  return `原生诊断 ${marker ?? '无相关记录'}`;
+  return i18n.t('session.attribution.nativeMarker', { marker: marker ?? i18n.t('session.attribution.noMarker') });
 }
 
 /**
@@ -109,24 +110,24 @@ function nativeMarkerFragment(recentLogs: DiagnosticLogEntryRuntime[]): string {
  */
 export function describeSceneLaunchAttribution(input: SceneLaunchAttributionInput): SceneLaunchAttribution {
   const outcome = classify(input);
-  const stageLabel = input.stage ? STAGE_LABELS[input.stage] : '启动';
+  const stageLabel = input.stage ? STAGE_LABELS[input.stage] : i18n.t('session.attribution.stageLaunch');
   const context = `${captureStateFragment(input.snapshot)}；${nativeMarkerFragment(input.recentLogs)}`;
   const detail = errorText(input.error);
 
   if (outcome === 'command-rejected') {
-    const reason = `${stageLabel}命令未被接受（${context}${detail ? `；${detail}` : ''}）`;
-    const hint = '请确认桌面壳与音频服务正在运行，稍后重试；若反复出现，请重启应用后再启动看片。';
+    const reason = i18n.t('session.attribution.commandRejectedReason', { stage: stageLabel, context, detail: detail ? `；${detail}` : '' });
+    const hint = i18n.t('session.attribution.commandRejectedHint');
     return { outcome, message: `${reason}。${hint}` };
   }
 
   if (outcome === 'capture-error') {
     const nativeError = input.snapshot?.inbound.lastError?.trim() || detail;
-    const reason = `${stageLabel}报错：${nativeError || '原生采集返回错误'}（${context}）`;
-    const hint = '请在“音频路由”中重新选择系统播放设备，或确认该设备未被其他程序独占后重试。';
+    const reason = i18n.t('session.attribution.captureErrorReason', { stage: stageLabel, nativeError: nativeError || i18n.t('session.attribution.captureErrorDefault'), context });
+    const hint = i18n.t('session.attribution.captureErrorHint');
     return { outcome, message: `${reason}。${hint}` };
   }
 
-  const reason = `${stageLabel}已接受命令但未在期限内就绪（${context}）`;
-  const hint = '通常是采集设备启动较慢或当前无音频输出，请确认正在播放声音后重试；若持续未就绪，请在“诊断”页查看采集日志。';
+  const reason = i18n.t('session.attribution.captureNotReadyReason', { stage: stageLabel, context });
+  const hint = i18n.t('session.attribution.captureNotReadyHint');
   return { outcome, message: `${reason}。${hint}` };
 }

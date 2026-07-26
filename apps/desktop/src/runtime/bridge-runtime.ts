@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import i18n from '../i18n/config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
@@ -87,7 +88,7 @@ function appendBridgeTrace(level: BridgeRuntimeTrace['level'], summary: string, 
 
 function createBridgeRuntimeTimeoutError(actionLabel: string, timeoutMs: number, operation: string) {
   const error = new Error(
-    `${actionLabel}超时：${Math.ceil(timeoutMs / 1000)} 秒内未收到 Rust 运行时结果。请查看 Desktop Shell 终端和 Bridge 诊断日志。`,
+    i18n.t('runtime.bridge.timeoutError', { action: actionLabel, seconds: Math.ceil(timeoutMs / 1000) }),
   );
 
   Object.assign(error, {
@@ -107,7 +108,7 @@ async function invokeBridgeWithTimeout<T>(
   operation: string,
 ): Promise<T> {
   const startedAt = Date.now();
-  appendBridgeTrace('info', '前端发起 Bridge 运行时命令。', `command=${command} operation=${operation} timeoutMs=${timeoutMs}`);
+  appendBridgeTrace('info', i18n.t('runtime.bridge.traceInvokeStart'), `command=${command} operation=${operation} timeoutMs=${timeoutMs}`);
 
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -117,7 +118,7 @@ async function invokeBridgeWithTimeout<T>(
       }
 
       settled = true;
-      appendBridgeTrace('error', '前端等待 Bridge 运行时命令超时。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
+      appendBridgeTrace('error', i18n.t('runtime.bridge.traceInvokeTimeout'), `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
       reject(createBridgeRuntimeTimeoutError(actionLabel, timeoutMs, operation));
     }, timeoutMs);
 
@@ -129,7 +130,7 @@ async function invokeBridgeWithTimeout<T>(
 
         settled = true;
         window.clearTimeout(timer);
-        appendBridgeTrace('info', '前端收到 Bridge 运行时命令结果。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
+        appendBridgeTrace('info', i18n.t('runtime.bridge.traceInvokeResult'), `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
         resolve(result);
       })
       .catch((error) => {
@@ -140,7 +141,7 @@ async function invokeBridgeWithTimeout<T>(
         settled = true;
         window.clearTimeout(timer);
         const detail = error instanceof Error ? error.message : String(error);
-        appendBridgeTrace('error', '前端 Bridge 运行时命令失败。', `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt} error=${detail}`);
+        appendBridgeTrace('error', i18n.t('runtime.bridge.traceInvokeFailed'), `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt} error=${detail}`);
         reject(error);
       });
   });
@@ -161,7 +162,7 @@ export async function refreshBridgeRuntime(): Promise<RuntimeSnapshot> {
     return runtimeSnapshotMock;
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'refresh' } }, '刷新驱动与 Bridge 状态', BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh').then((result) => result.data);
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'refresh' } }, i18n.t('runtime.bridge.actionRefresh'), BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh').then((result) => result.data);
 }
 
 export async function startBridgeServiceRuntime(config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -181,7 +182,7 @@ export async function startBridgeServiceRuntime(config: AppConfigDraft): Promise
     });
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'start', config } }, '启动 Bridge Service', BRIDGE_START_TIMEOUT_MS, 'bridge-start').then((result) => result.data);
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'start', config } }, i18n.t('runtime.bridge.actionStart'), BRIDGE_START_TIMEOUT_MS, 'bridge-start').then((result) => result.data);
 }
 
 export async function stopBridgeServiceRuntime(): Promise<RuntimeSnapshot> {
@@ -194,7 +195,7 @@ export async function stopBridgeServiceRuntime(): Promise<RuntimeSnapshot> {
     });
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'stop' } }, '停止 Bridge Service', BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-stop').then((result) => result.data);
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'stop' } }, i18n.t('runtime.bridge.actionStop'), BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-stop').then((result) => result.data);
 }
 
 export async function installDriverRuntime(config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -214,7 +215,7 @@ export async function installDriverRuntime(config: AppConfigDraft): Promise<Runt
     });
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'install', config } }, '安装驱动', BRIDGE_INSTALL_TIMEOUT_MS, 'bridge-install').then((result) => result.data);
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'install', config } }, i18n.t('runtime.bridge.actionInstall'), BRIDGE_INSTALL_TIMEOUT_MS, 'bridge-install').then((result) => result.data);
 }
 
 export async function uninstallDriverRuntime(): Promise<RuntimeSnapshot> {
@@ -232,7 +233,7 @@ export async function uninstallDriverRuntime(): Promise<RuntimeSnapshot> {
     });
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'uninstall' } }, '卸载驱动', BRIDGE_UNINSTALL_TIMEOUT_MS, 'bridge-uninstall').then((result) => result.data);
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'uninstall' } }, i18n.t('runtime.bridge.actionUninstall'), BRIDGE_UNINSTALL_TIMEOUT_MS, 'bridge-uninstall').then((result) => result.data);
 }
 
 export async function repairDriverRuntime(action: DriverRepairAction, config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -240,7 +241,7 @@ export async function repairDriverRuntime(action: DriverRepairAction, config: Ap
     return action === 'restart-bridge' ? startBridgeServiceRuntime(config) : installDriverRuntime(config);
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'repair', repairAction: action, config } }, '修复驱动', BRIDGE_REPAIR_TIMEOUT_MS, 'bridge-repair').then((result) => result.data);
+  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'repair', repairAction: action, config } }, i18n.t('runtime.bridge.actionRepair'), BRIDGE_REPAIR_TIMEOUT_MS, 'bridge-repair').then((result) => result.data);
 }
 
 export const bridgeRuntimeTestHelpers = {

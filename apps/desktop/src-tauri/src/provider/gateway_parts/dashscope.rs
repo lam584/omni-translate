@@ -6,7 +6,7 @@ use tungstenite::Message;
 use super::super::contracts::{
     ProviderDraftInput, ProviderRuntimeError, ProviderSmokeResult, ProviderStreamEventRecord,
 };
-use super::routing::{build_messages, build_routing_decision};
+use super::routing::{build_messages, build_routing_decision, build_translation_system_prompt};
 use super::transport::{
     join_url, normalize_dashscope_compatible_base_url, normalize_transport_error,
     normalize_websocket_read_error, parse_dashscope_error, ProviderHttpClient, WebSocketTransport,
@@ -298,10 +298,8 @@ fn execute_realtime_websocket(
     let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(provider)?;
 
     let safe_id = request_id.replace(':', "_").replace('-', "_");
-    let instructions = format!(
-      "promptTemplateId={}\nsourceLanguage={}\ntargetLanguage={}\n请输出自然、简洁、可直接展示的翻译。",
-      provider.system_prompt_template, source_language, target_language,
-    );
+    let instructions =
+        build_translation_system_prompt(provider, source_language, target_language);
 
     let session_update = json!({
       "event_id": format!("evt_{}_session", safe_id),

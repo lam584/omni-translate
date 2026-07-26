@@ -1,4 +1,5 @@
 import type { StatusTone } from '../components/page/StatusBadge';
+import i18n from '../i18n/config';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
@@ -30,7 +31,7 @@ function hasProviderVerificationAttempt(configDraft: AppConfigDraft) {
   const checkedAt = activeProvider.probe.checkedAt.trim();
   const profileId = activeProvider.probe.profileId.trim();
 
-  return checkedAt.length > 0 && checkedAt !== '待重新探测' && !profileId.endsWith('-pending');
+  return checkedAt.length > 0 && checkedAt !== i18n.t('providerProbe.pendingProbe') && !profileId.endsWith('-pending');
 }
 
 function getRuntimeBlocker(mode: SceneMode, runtimeSnapshot: RuntimeSnapshot): SceneBlocker | null {
@@ -39,7 +40,7 @@ function getRuntimeBlocker(mode: SceneMode, runtimeSnapshot: RuntimeSnapshot): S
   if (runtimeStatus === 'browser-preview') {
     return {
       id: `${mode}-runtime-preview`,
-      title: '当前仍在浏览器预览模式，桥接、采集和字幕浮窗状态需在桌面壳确认',
+      title: i18n.t('sceneReadiness.browserPreviewBlocker'),
       route: '/diagnostics',
     };
   }
@@ -47,7 +48,7 @@ function getRuntimeBlocker(mode: SceneMode, runtimeSnapshot: RuntimeSnapshot): S
   if (runtimeStatus === 'runtime-error') {
     return {
       id: `${mode}-runtime-error`,
-      title: '桌面运行时还没接通，当前不能确认桥接、采集和字幕浮窗状态',
+      title: i18n.t('sceneReadiness.runtimeErrorBlocker'),
       route: '/diagnostics',
     };
   }
@@ -72,7 +73,7 @@ export function getWatchSceneReadiness(
   const blockers: SceneBlocker[] = [];
 
   if (!hasProviderVerificationAttempt(configDraft)) {
-    blockers.push({ id: 'watch-provider', title: '模型待完成验证', route: '/providers' });
+    blockers.push({ id: 'watch-provider', title: i18n.t('sceneReadiness.providerNotVerified'), route: '/providers' });
   }
 
   const runtimeBlocker = getRuntimeBlocker('watch', runtimeSnapshot);
@@ -81,30 +82,30 @@ export function getWatchSceneReadiness(
 
     return {
       mode: 'watch',
-      label: '看片模式',
-      description: '模型、系统音频、字幕浮窗都能用即可开始。',
-      readyLabel: '可直接开始',
+      label: i18n.t('sceneReadiness.watchLabel'),
+      description: i18n.t('sceneReadiness.watchDescription'),
+      readyLabel: i18n.t('sceneReadiness.readyToStart'),
       blockers,
     };
   }
 
   if (watchModeNeedsBridge(configDraft) && runtimeSnapshot.bridge.bridgeState !== 'running') {
-    blockers.push({ id: 'watch-bridge', title: '虚拟音频驱动待启动（译音输出需要）', route: '/audio-routing' });
+    blockers.push({ id: 'watch-bridge', title: i18n.t('sceneReadiness.virtualDriverPending'), route: '/audio-routing' });
   }
 
   if (!audioRuntimeSnapshot.inbound.streamBound) {
-    blockers.push({ id: 'watch-inbound', title: '系统音频待启动采集', route: '/audio-routing' });
+    blockers.push({ id: 'watch-inbound', title: i18n.t('sceneReadiness.systemAudioPending'), route: '/audio-routing' });
   }
 
   if (!isOverlayVisible(runtimeSnapshot)) {
-    blockers.push({ id: 'watch-overlay', title: '字幕浮窗待显示', route: '/session' });
+    blockers.push({ id: 'watch-overlay', title: i18n.t('sceneReadiness.overlayPending'), route: '/session' });
   }
 
   return {
     mode: 'watch',
-    label: '看片模式',
-    description: '模型、系统音频、字幕浮窗都能用即可开始。',
-    readyLabel: '可直接开始',
+    label: i18n.t('sceneReadiness.watchLabel'),
+    description: i18n.t('sceneReadiness.watchDescription'),
+    readyLabel: i18n.t('sceneReadiness.readyToStart'),
     blockers,
   };
 }
@@ -117,7 +118,7 @@ export function getGameSceneReadiness(
   const blockers: SceneBlocker[] = [];
 
   if (!hasProviderVerificationAttempt(configDraft)) {
-    blockers.push({ id: 'game-provider', title: '模型待完成验证', route: '/providers' });
+    blockers.push({ id: 'game-provider', title: i18n.t('sceneReadiness.providerNotVerified'), route: '/providers' });
   }
 
   const runtimeBlocker = getRuntimeBlocker('game', runtimeSnapshot);
@@ -126,30 +127,30 @@ export function getGameSceneReadiness(
 
     return {
       mode: 'game',
-      label: '游戏语音模式',
-      description: '双向采集、扬声器译音和回声消除都就绪即可开始。',
-      readyLabel: '可直接开始',
+      label: i18n.t('sceneReadiness.gameLabel'),
+      description: i18n.t('sceneReadiness.gameDescription'),
+      readyLabel: i18n.t('sceneReadiness.readyToStart'),
       blockers,
     };
   }
 
   if (!audioRuntimeSnapshot.inbound.streamBound) {
-    blockers.push({ id: 'game-inbound', title: '入站系统音频待启动采集', route: '/audio-routing' });
+    blockers.push({ id: 'game-inbound', title: i18n.t('sceneReadiness.inboundAudioPending'), route: '/audio-routing' });
   }
 
   if (!audioRuntimeSnapshot.outbound.streamBound) {
-    blockers.push({ id: 'game-outbound', title: '出站麦克风待启动采集', route: '/audio-routing' });
+    blockers.push({ id: 'game-outbound', title: i18n.t('sceneReadiness.outboundMicPending'), route: '/audio-routing' });
   }
 
   if (configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' || !configDraft.devices.aecEnabled) {
-    blockers.push({ id: 'game-aec', title: '回声消除待启用', route: '/audio-routing' });
+    blockers.push({ id: 'game-aec', title: i18n.t('sceneReadiness.aecPending'), route: '/audio-routing' });
   }
 
   return {
     mode: 'game',
-    label: '游戏语音模式',
-    description: '双向采集、扬声器译音和回声消除都就绪即可开始。',
-    readyLabel: '可直接开始',
+    label: i18n.t('sceneReadiness.gameLabel'),
+    description: i18n.t('sceneReadiness.gameDescription'),
+    readyLabel: i18n.t('sceneReadiness.readyToStart'),
     blockers,
   };
 }
@@ -162,7 +163,7 @@ export function getVoiceRoomSceneReadiness(
   const blockers: SceneBlocker[] = [];
 
   if (!hasProviderVerificationAttempt(configDraft)) {
-    blockers.push({ id: 'voice-room-provider', title: '模型待完成验证', route: '/providers' });
+    blockers.push({ id: 'voice-room-provider', title: i18n.t('sceneReadiness.providerNotVerified'), route: '/providers' });
   }
 
   const runtimeBlocker = getRuntimeBlocker('voice-room', runtimeSnapshot);
@@ -171,26 +172,26 @@ export function getVoiceRoomSceneReadiness(
 
     return {
       mode: 'voice-room',
-      label: '语音房模式',
-      description: '麦克风、扬声器译音和回声消除都就绪即可开始。',
-      readyLabel: '可直接开始',
+      label: i18n.t('sceneReadiness.voiceRoomLabel'),
+      description: i18n.t('sceneReadiness.voiceRoomDescription'),
+      readyLabel: i18n.t('sceneReadiness.readyToStart'),
       blockers,
     };
   }
 
   if (!audioRuntimeSnapshot.outbound.streamBound) {
-    blockers.push({ id: 'voice-room-outbound', title: '麦克风待启动采集', route: '/audio-routing' });
+    blockers.push({ id: 'voice-room-outbound', title: i18n.t('sceneReadiness.micPending'), route: '/audio-routing' });
   }
 
   if (configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' || !configDraft.devices.aecEnabled) {
-    blockers.push({ id: 'voice-room-aec', title: '回声消除待启用', route: '/audio-routing' });
+    blockers.push({ id: 'voice-room-aec', title: i18n.t('sceneReadiness.aecPending'), route: '/audio-routing' });
   }
 
   return {
     mode: 'voice-room',
-    label: '语音房模式',
-    description: '麦克风、扬声器译音和回声消除都就绪即可开始。',
-    readyLabel: '可直接开始',
+    label: i18n.t('sceneReadiness.voiceRoomLabel'),
+    description: i18n.t('sceneReadiness.voiceRoomDescription'),
+    readyLabel: i18n.t('sceneReadiness.readyToStart'),
     blockers,
   };
 }
@@ -212,7 +213,7 @@ export function formatSceneReadinessLabel(blockerCount: number, readyLabel: stri
     return readyLabel;
   }
 
-  return `待收口 ${blockerCount} 项`;
+  return i18n.t('sceneReadiness.blockerCount', { count: blockerCount });
 }
 
 export function getSceneTone(blockerCount: number): StatusTone {
@@ -243,6 +244,6 @@ export function getOverallReadiness(scenes: SceneReadiness[]): OverallReadiness 
     readyCount,
     totalCount,
     tone,
-    label: `${readyCount}/${totalCount} 场景就绪`,
+    label: i18n.t('sceneReadiness.overallLabel', { ready: readyCount, total: totalCount }),
   };
 }

@@ -1155,7 +1155,7 @@ describe('ProvidersPage', () => {
     const numberInputs = Array.from(dialog.querySelectorAll<HTMLInputElement>('input[type="number"]'));
     await inputText(numberInputs[0]!, '');
     await inputText(fieldControl<HTMLInputElement>(dialog, 'Temperature', 'input')!, '');
-    await inputText(fieldControl<HTMLInputElement>(dialog, 'Max Output Tokens', 'input')!, '');
+    await inputText(fieldControl<HTMLInputElement>(dialog, '最大输出 Token', 'input')!, '');
     await selectValue(dialog.querySelector<HTMLSelectElement>('select')!, 'dashscope');
     await inputText(Array.from(dialog.querySelectorAll<HTMLInputElement>('input.text-input')).at(-1)!, 'cn-shanghai');
 

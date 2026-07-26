@@ -16,6 +16,11 @@ import type {
   SubtitleDraft,
 } from '../schema/config';
 import type { RuntimeNotification, RuntimeSnapshot } from '../schema/runtime-core';
+import {
+  DEFAULT_SOURCE_TEXT_STYLE,
+  DEFAULT_TRANSLATION_TEXT_STYLE,
+  resolveOverlayTextStyle,
+} from '../pages/overlay/overlayTypography';
 
 type AppStoreState = {
   activePageId: string;
@@ -59,6 +64,8 @@ const defaultPageId = resolveInitialPageId(navItems);
 const defaultPresetId = resolveInitialPresetId(appConfigDraftMock.onboarding.activePresetId, presets);
 
 function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDraft {
+  const incomingSubtitles = configDraft.subtitles as Partial<SubtitleDraft>;
+  const legacyTextColor = incomingSubtitles.overlayTextColor ?? appConfigDraftMock.subtitles.overlayTextColor;
   return {
     ...appConfigDraftMock,
     ...configDraft,
@@ -83,6 +90,16 @@ function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDra
     subtitles: {
       ...appConfigDraftMock.subtitles,
       ...configDraft.subtitles,
+      overlaySourceTextStyle: resolveOverlayTextStyle(
+        incomingSubtitles.overlaySourceTextStyle,
+        DEFAULT_SOURCE_TEXT_STYLE,
+        legacyTextColor,
+      ),
+      overlayTranslationTextStyle: resolveOverlayTextStyle(
+        incomingSubtitles.overlayTranslationTextStyle,
+        DEFAULT_TRANSLATION_TEXT_STYLE,
+        legacyTextColor,
+      ),
     },
     speech: {
       ...appConfigDraftMock.speech,

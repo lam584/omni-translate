@@ -313,8 +313,8 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
     expect(config.devices.textToSpeechModelId).toBe('template-dashscope-realtime::qwen3.5-omni-plus-realtime');
     expect(config.devices.inboundRoute.mixControl.keepOriginalAudio).toBe(true);
     expect(config.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(true);
-    expect(config.devices.inboundRoute.mixControl.originalAudioGainDb).toBe(0);
-    expect(config.devices.inboundRoute.mixControl.translatedAudioGainDb).toBe(0);
+    expect(config.devices.inboundRoute.mixControl.originalAudioGainDb).toBe(-4);
+    expect(config.devices.inboundRoute.mixControl.translatedAudioGainDb).toBe(-1);
     expect(config.devices.inboundRoute.mixControl.duckingEnabled).toBe(true);
     expect(config.devices.inboundRoute.mixControl.monitorMode).toBe('original-and-translated');
     expect(config.speech.textToSpeechModelId).toBe('template-dashscope-realtime::qwen3.5-omni-plus-realtime');
@@ -334,6 +334,18 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
     const config = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, env);
     expect(config.devices.subtitleTranslationModelId).toBe('template-deepseek::deepseek-chat');
     expect(config.devices.inboundSecondaryAudioModelId).toBe('template-dashscope-realtime::qwen3.5-omni-flash-realtime');
+  });
+
+  it('applies the echo-cancel feedback variant only for an explicit env opt-in', () => {
+    const echoCancel = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
+      VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION: 'echo-cancel',
+    });
+    expect(echoCancel.devices.feedbackLoopPrevention).toBe('echo-cancel');
+
+    const invalidValue = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
+      VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION: 'none',
+    });
+    expect(invalidValue.devices.feedbackLoopPrevention).toBe('virtual-driver');
   });
 
   it('applies watch model override when env provides VITE_OMNI_WATCH_MODE_MODEL_ID', () => {

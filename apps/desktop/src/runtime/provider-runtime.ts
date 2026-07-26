@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import i18n from '../i18n/config';
 import { defaultProviderProbeProfile } from '../mocks/provider-probes';
 import type { ModelPreset } from '../schema/provider-template';
 import type { ProviderDraft } from '../schema/config';
@@ -37,13 +38,14 @@ function resolveRuntimeTimeoutMs(timeoutMs: number) {
 }
 
 function createProviderRuntimeTimeoutError(actionLabel: string, timeoutMs: number, operation: string, guidance?: string) {
-  const error = new Error(`${actionLabel}超时，${Math.ceil(timeoutMs / 1000)} 秒内未收到结果。${guidance ?? '请稍后重试。'}`);
+  const effectiveGuidance = guidance ?? i18n.t('runtime.provider.defaultGuidance');
+  const error = new Error(i18n.t('runtime.provider.timeoutError', { action: actionLabel, seconds: Math.ceil(timeoutMs / 1000), guidance: effectiveGuidance }));
 
   Object.assign(error, {
     code: 'timeout',
     operation,
     retriable: true,
-    suggestion: guidance ?? '请稍后重试。',
+    suggestion: effectiveGuidance,
   });
 
   return error;
@@ -126,7 +128,7 @@ function previewRoutingForVerdict(verdict: ProviderProbeProfileRuntime['verdict'
   return {
     subtitlePriority: verdict === 'available' ? ('balanced' as const) : ('subtitle-first' as const),
     speechDisposition: verdict === 'available' ? ('ready' as const) : ('deferred' as const),
-    rationale: '当前运行在浏览器预览模式，使用 mock probe 结果。',
+    rationale: i18n.t('runtime.provider.previewRationale'),
   };
 }
 
@@ -145,7 +147,7 @@ async function invokeWithTimeout<T>(
   appendFrontendDiagnosticsTrace(
     category,
     'info',
-    '前端发起运行时命令。',
+    i18n.t('runtime.provider.traceInvokeStart'),
     `command=${command} operation=${operation} timeoutMs=${effectiveTimeoutMs ?? 'none'} payloadKeys=${Object.keys(payload).join(',')}`,
   );
 
@@ -163,7 +165,7 @@ async function invokeWithTimeout<T>(
             appendFrontendDiagnosticsTrace(
               category,
               'error',
-              '前端等待运行时命令超时。',
+              i18n.t('runtime.provider.traceInvokeTimeout'),
               `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`,
             );
             reject(createProviderRuntimeTimeoutError(actionLabel, effectiveTimeoutMs, operation, guidance));
@@ -182,7 +184,7 @@ async function invokeWithTimeout<T>(
         appendFrontendDiagnosticsTrace(
           category,
           'info',
-          '前端收到运行时命令结果。',
+          i18n.t('runtime.provider.traceInvokeResult'),
           `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`,
         );
         resolve(result);
@@ -200,7 +202,7 @@ async function invokeWithTimeout<T>(
         appendFrontendDiagnosticsTrace(
           category,
           'error',
-          '前端运行时命令失败。',
+          i18n.t('runtime.provider.traceInvokeFailed'),
           `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt} error=${detail}`,
         );
         reject(error);
@@ -217,28 +219,28 @@ export async function getProviderSecretStatus(reference: string): Promise<Creden
     };
   }
 
-  appendFrontendDiagnosticsTrace('storage', 'info', '前端准备读取 API Key 状态。', `reference=${reference}`);
+  appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretStatusStart'), `reference=${reference}`);
 
   try {
     const result = await invokeWithTimeout<CredentialRefStatus>(
       'get_secret_ref_status',
       { reference },
-      '读取已保存 API Key 状态',
+      i18n.t('runtime.provider.actionSecretStatus'),
       null,
       'credential-status',
-      '请检查 Windows Credential Manager 是否可用后重试。',
+      i18n.t('runtime.provider.guidanceCredentialManager'),
     );
 
     appendFrontendDiagnosticsTrace(
       'storage',
       'info',
-      '前端收到 API Key 状态结果。',
+      i18n.t('runtime.provider.traceSecretStatusResult'),
       `reference=${reference} backend=${result.backend} hasSecret=${result.hasSecret}`,
     );
     return result;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    appendFrontendDiagnosticsTrace('storage', 'error', '前端读取 API Key 状态失败。', `reference=${reference} error=${detail}`);
+    appendFrontendDiagnosticsTrace('storage', 'error', i18n.t('runtime.provider.traceSecretStatusFailed'), `reference=${reference} error=${detail}`);
     throw error;
   }
 }
@@ -252,29 +254,29 @@ export async function saveProviderSecret(reference: string, secret: string): Pro
     };
   }
 
-  appendFrontendDiagnosticsTrace('storage', 'info', '前端准备保存 API Key。', `reference=${reference} secretLength=${secret.length}`);
+  appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretSaveStart'), `reference=${reference} secretLength=${secret.length}`);
 
   try {
     const result = await invokeWithTimeout<CredentialRefStatus>(
       'upsert_secret_ref',
       { reference, secret },
-      'API Key 原生保存命令',
+      i18n.t('runtime.provider.actionSecretSave'),
       SAVE_PROVIDER_SECRET_TIMEOUT_MS,
       'credential-save',
-      '请检查 Windows Credential Manager 是否可用后重试。',
+      i18n.t('runtime.provider.guidanceCredentialManager'),
     );
 
     appendFrontendDiagnosticsTrace(
       'storage',
       'info',
-      '前端收到 API Key 保存结果。',
+      i18n.t('runtime.provider.traceSecretSaveResult'),
       `reference=${reference} backend=${result.backend} hasSecret=${result.hasSecret}`,
     );
 
     return result;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    appendFrontendDiagnosticsTrace('storage', 'error', '前端保存 API Key 失败。', `reference=${reference} error=${detail}`);
+    appendFrontendDiagnosticsTrace('storage', 'error', i18n.t('runtime.provider.traceSecretSaveFailed'), `reference=${reference} error=${detail}`);
     throw error;
   }
 }
@@ -288,28 +290,28 @@ export async function readProviderSecret(reference: string): Promise<CredentialS
     };
   }
 
-  appendFrontendDiagnosticsTrace('storage', 'info', '前端准备读取 API Key 明文。', `reference=${reference}`);
+  appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretReadStart'), `reference=${reference}`);
 
   try {
     const result = await invokeWithTimeout<CredentialSecretPayload>(
       'read_secret_ref',
       { reference },
-      '读取已保存 API Key',
+      i18n.t('runtime.provider.actionSecretRead'),
       null,
       'credential-read',
-      '请检查 Windows Credential Manager 是否可用后重试。',
+      i18n.t('runtime.provider.guidanceCredentialManager'),
     );
 
     appendFrontendDiagnosticsTrace(
       'storage',
       'info',
-      '前端收到 API Key 明文结果。',
+      i18n.t('runtime.provider.traceSecretReadResult'),
       `reference=${reference} hasSecret=${Boolean(result.secret)}`,
     );
     return result;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    appendFrontendDiagnosticsTrace('storage', 'error', '前端读取 API Key 明文失败。', `reference=${reference} error=${detail}`);
+    appendFrontendDiagnosticsTrace('storage', 'error', i18n.t('runtime.provider.traceSecretReadFailed'), `reference=${reference} error=${detail}`);
     throw error;
   }
 }
@@ -340,10 +342,10 @@ export async function runProviderProbe(provider: ProviderDraft): Promise<Provide
   return invokeWithTimeout<{ data: ProviderProbeProfileRuntime }>(
     'provider_v2',
     { command: { action: 'probe', provider } },
-    '模型连通性检测',
+    i18n.t('runtime.provider.actionProbe'),
     provider.timeoutMs + 3000,
     'provider-probe',
-    '请检查接口地址、网络连通性，或先切换到 HTTP 传输模式后重试。',
+    i18n.t('runtime.provider.guidanceProbe'),
   ).then((result) => result.data);
 }
 
@@ -366,10 +368,10 @@ export async function fetchProviderModels(
   return invokeWithTimeout<{ data: ProviderModelCatalogRuntime }>(
     'provider_v2',
     { command: { action: 'fetchModels', provider } },
-    '获取模型列表',
+    i18n.t('runtime.provider.actionFetchModels'),
     provider.timeoutMs + 3000,
     'provider-models',
-    '请检查接口地址、API Key 和网络连通性后重试。',
+    i18n.t('runtime.provider.guidanceFetchModels'),
   ).then((result) => result.data);
 }
 
@@ -396,17 +398,17 @@ export async function runProviderSmoke(
       eventLog: [
         {
           eventType: 'session.started',
-          summary: '浏览器预览模式已建立 mock 会话。',
+          summary: i18n.t('runtime.provider.smokeSessionStarted'),
         },
         {
           eventType: 'translation.completed',
-          summary: '浏览器预览模式返回了整段 mock 文本。',
+          summary: i18n.t('runtime.provider.smokeTranslationCompleted'),
           segmentId: 'segment-preview',
           text: 'Browser preview translation result.',
         },
         {
           eventType: 'response.completed',
-          summary: '浏览器预览模式响应结束。',
+          summary: i18n.t('runtime.provider.smokeResponseCompleted'),
         },
       ],
       inputTokens: 12,
@@ -415,7 +417,7 @@ export async function runProviderSmoke(
       routingDecision: {
         subtitlePriority: 'balanced',
         speechDisposition: 'ready',
-        rationale: '当前运行在浏览器预览模式，未连接真实 Provider。',
+        rationale: i18n.t('runtime.provider.smokePreviewRationale'),
       },
       error: null,
     };
@@ -426,10 +428,10 @@ export async function runProviderSmoke(
     {
       command: { action: 'smoke', provider, sourceText, sourceLanguage, targetLanguage },
     },
-    '模型冒烟测试',
+    i18n.t('runtime.provider.actionSmoke'),
     provider.timeoutMs + 3000,
     'provider-smoke',
-    '请检查接口地址、网络连通性，或先切换到 HTTP 传输模式后重试。',
+    i18n.t('runtime.provider.guidanceSmoke'),
   ).then((result) => result.data);
 }
 

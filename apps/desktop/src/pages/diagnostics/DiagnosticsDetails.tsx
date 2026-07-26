@@ -168,13 +168,13 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
         <h4>{i18n.t('diagnostics.benchmark.timeline')}</h4>
         <div className="benchmark-timeline-track">
           <div className="benchmark-timeline-audio" style={{ width: `${pct(run.audioSendMs)}%` }} title={i18n.t('diagnostics.benchmark.audioSendWithTime', { time: fmt(run.audioSendMs) })} />
-          {pct(run.responseCreatedMs) != null ? <span className="benchmark-timeline-marker benchmark-timeline-response" style={{ left: `${pct(run.responseCreatedMs)}%` }} title={`Response Created ${fmt(run.responseCreatedMs)}`} /> : null}
+          {pct(run.responseCreatedMs) != null ? <span className="benchmark-timeline-marker benchmark-timeline-response" style={{ left: `${pct(run.responseCreatedMs)}%` }} title={`${i18n.t('diagnostics.benchmark.responseCreated')} ${fmt(run.responseCreatedMs)}`} /> : null}
           {pct(run.firstOutputMs) != null ? <span className="benchmark-timeline-marker benchmark-timeline-first" style={{ left: `${pct(run.firstOutputMs)}%` }} title={i18n.t('diagnostics.benchmark.firstTokenWithTime', { time: fmt(run.firstOutputMs) })} /> : null}
-          {pct(run.responseDoneMs) != null ? <span className="benchmark-timeline-marker benchmark-timeline-done" style={{ left: `${pct(run.responseDoneMs)}%` }} title={`Response Done ${fmt(run.responseDoneMs)}`} /> : null}
+          {pct(run.responseDoneMs) != null ? <span className="benchmark-timeline-marker benchmark-timeline-done" style={{ left: `${pct(run.responseDoneMs)}%` }} title={`${i18n.t('diagnostics.benchmark.responseDone')} ${fmt(run.responseDoneMs)}`} /> : null}
         </div>
         <div className="benchmark-timeline-legend">
           <span><i className="benchmark-legend-audio" />{i18n.t('diagnostics.benchmark.audioSend')}</span>
-          <span><i className="benchmark-legend-response" />Response</span>
+          <span><i className="benchmark-legend-response" />{i18n.t('diagnostics.benchmark.responseLegend')}</span>
           <span><i className="benchmark-legend-first" />{i18n.t('diagnostics.benchmark.firstToken')}</span>
         </div>
       </div>
@@ -187,7 +187,7 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
             <strong>{fmt(run.connectMs)}</strong>
           </div>
           <div className="benchmark-metric">
-            <span>Session Ready</span>
+            <span>{i18n.t('diagnostics.benchmark.sessionReady')}</span>
             <strong>{fmt(run.sessionReadyMs)}</strong>
           </div>
           <div className="benchmark-metric">
@@ -204,7 +204,7 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
             <strong>{fmt(run.firstOutputMs)}</strong>
           </div>
           <div className="benchmark-metric">
-            <span>Response Done</span>
+            <span>{i18n.t('diagnostics.benchmark.responseDone')}</span>
             <strong>{fmt(run.responseDoneMs)}</strong>
           </div>
           <div className="benchmark-metric">
@@ -249,7 +249,7 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
         <h4>{i18n.t('diagnostics.benchmark.outputTimingStats')}</h4>
         <div className="benchmark-metrics-grid">
           <div className="benchmark-metric">
-            <span>Response Created</span>
+            <span>{i18n.t('diagnostics.benchmark.responseCreated')}</span>
             <strong>{fmt(run.responseCreatedMs)}</strong>
           </div>
           <div className="benchmark-metric">
@@ -584,15 +584,15 @@ export function PipelineMilestonesGrid({ milestones }: { milestones?: LiveSessio
           <strong>{safeMilestones.droppedBeforeReady ?? 'N/A'}</strong>
         </div>
         <div className="benchmark-metric">
-          <span>First Audible Chunk</span>
+          <span>{i18n.t('diagnostics.liveEvents.firstAudibleChunk')}</span>
           <strong>{fmtMs(safeMilestones.firstAudibleChunkMs)}</strong>
         </div>
         <div className="benchmark-metric">
-          <span>Silence Skipped (before audible)</span>
+          <span>{i18n.t('diagnostics.liveEvents.silenceSkipped')}</span>
           <strong>{safeMilestones.silenceSkippedBeforeAudible ?? 'N/A'}</strong>
         </div>
         <div className="benchmark-metric">
-          <span>Total Input Chunks (at speech)</span>
+          <span>{i18n.t('diagnostics.liveEvents.totalInputChunks')}</span>
           <strong>{safeMilestones.totalInputChunksAtSpeech ?? 'N/A'}</strong>
         </div>
       </div>

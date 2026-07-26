@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import i18n from '../../i18n/config';
 
 type DeviceTestKind = 'microphone' | 'speaker';
 
@@ -37,7 +38,7 @@ export function useAudioDeviceTestController(resolvePassedLabel: (kind: DeviceTe
     let stream: MediaStream | undefined;
     let context: AudioContext | undefined;
     try {
-      if (!navigator.mediaDevices?.getUserMedia) throw new Error('当前桌面运行时不支持麦克风测试');
+      if (!navigator.mediaDevices?.getUserMedia) throw new Error(i18n.t('audioRouting.micTestUnsupported'));
       stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       context = new AudioContext();
       const analyser = context.createAnalyser();

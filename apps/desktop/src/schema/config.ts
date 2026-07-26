@@ -33,6 +33,22 @@ export type CaptionDensity = 'compact' | 'balanced' | 'detailed';
 
 export type SubtitlePriority = 'subtitle-first' | 'balanced';
 export type TranslationAudioSource = 'auto' | 'omni-native' | 'subtitle-tts';
+export type SubtitleOverlayTextAlign = 'left' | 'center' | 'right';
+export type SubtitleOverlayFontWeight = 400 | 500 | 600 | 700;
+
+export type SubtitleOverlayTextStyle = {
+  color: string;
+  fontWeight: SubtitleOverlayFontWeight;
+  outlineEnabled: boolean;
+  outlineColor: string;
+  outlineWidth: number;
+  shadowEnabled: boolean;
+  shadowColor: string;
+  shadowOpacity: number;
+  shadowOffsetX: number;
+  shadowOffsetY: number;
+  shadowBlur: number;
+};
 
 export type GlossaryImportStrategy = 'replace' | 'merge';
 
@@ -170,8 +186,12 @@ export type SubtitleDraft = {
   instructions: string;
   overlayOpacity: number;
   overlayLocked: boolean;
+  /** Legacy shared color kept for importing older configuration documents. */
   overlayTextColor: string;
   overlayTextOpacity: number;
+  overlayTextAlign: SubtitleOverlayTextAlign;
+  overlaySourceTextStyle: SubtitleOverlayTextStyle;
+  overlayTranslationTextStyle: SubtitleOverlayTextStyle;
   overlayBackgroundColor: string;
   overlayBackgroundOpacity: number;
   overlayFontFamily: string;
@@ -299,7 +319,7 @@ export const appConfigFieldMappings: SQLiteFieldMapping[] = [
   { draftPath: 'devices.subtitleTranslationMode', sqliteTable: 'audio_device_preferences', sqliteColumn: 'subtitle_translation_mode', note: 'Subtitle translation mode.' },
   { draftPath: 'devices.subtitleTranslationModelId', sqliteTable: 'audio_device_preferences', sqliteColumn: 'subtitle_translation_model_id', note: 'Secondary subtitle model.' },
   { draftPath: 'devices.inputLevel', sqliteTable: 'audio_device_preferences', sqliteColumn: 'input_level', note: 'Input gain level (0-100).' },
-  { draftPath: 'devices.aecEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'aec_enabled', note: 'Acoustic echo cancellation.' },
+  { draftPath: 'devices.aecEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'aec_enabled', note: 'Acoustic echo cancellation; gates native echo-cancel in RouteSpec together with feedbackLoopPrevention.' },
   { draftPath: 'devices.ansEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'ans_enabled', note: 'Automatic noise suppression.' },
   { draftPath: 'devices.agcEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'agc_enabled', note: 'Automatic gain control.' },
   { draftPath: 'devices.outputLevel', sqliteTable: 'audio_device_preferences', sqliteColumn: 'output_level', note: 'Output volume level (0-100).' },
@@ -316,6 +336,9 @@ export const appConfigFieldMappings: SQLiteFieldMapping[] = [
   { draftPath: 'subtitles.priority', sqliteTable: 'subtitle_preferences', sqliteColumn: 'priority_mode', note: 'Subtitle priority mode.' },
   { draftPath: 'subtitles.overlayOpacity', sqliteTable: 'subtitle_preferences', sqliteColumn: 'overlay_opacity', note: 'Overlay opacity.' },
   { draftPath: 'subtitles.overlayLocked', sqliteTable: 'subtitle_preferences', sqliteColumn: 'overlay_locked', note: 'Overlay lock state.' },
+  { draftPath: 'subtitles.overlayTextAlign', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Overlay text alignment.' },
+  { draftPath: 'subtitles.overlaySourceTextStyle', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Source subtitle typography and effects.' },
+  { draftPath: 'subtitles.overlayTranslationTextStyle', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Translated subtitle typography and effects.' },
   { draftPath: 'subtitles.sourceLanguage', sqliteTable: 'subtitle_preferences', sqliteColumn: 'source_language', note: 'Subtitle source language.' },
   { draftPath: 'subtitles.mode', sqliteTable: 'subtitle_preferences', sqliteColumn: 'display_mode', note: 'Subtitle display mode.' },
   { draftPath: 'subtitles.captionDensity', sqliteTable: 'subtitle_preferences', sqliteColumn: 'caption_density', note: 'Caption density.' },

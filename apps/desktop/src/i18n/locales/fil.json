@@ -111,11 +111,63 @@
     "overlayAppearanceHint": "Ang pangkalahatang opacity ay nakakaapekto sa parehong card at text, habang ang background at text opacity ay maaaring i-tune nang hiwalay.",
     "overlayOpacityLabel": "Pangkalahatang opacity",
     "overlayFontSizeLabel": "Laki ng font ng subtitle",
+    "overlayHeightLabel": "Taas ng overlay",
     "overlayTextOpacityLabel": "Opacity ng text",
     "overlayBackgroundOpacityLabel": "Opacity ng background",
     "overlayTextColorLabel": "Kulay ng teksto",
     "overlayBackgroundColorLabel": "Kulay ng background",
     "overlayFontLabel": "Font ng titik",
+    "overlayPresetTitle": "Overall style",
+    "overlayPresetHint": "Start with a common subtitle style, then fine-tune its text effects.",
+    "overlayPreset": {
+      "classic": "Classic subtitles",
+      "glass": "Clear glass",
+      "contrast": "High contrast",
+      "lyrics": "Background-free lyrics"
+    },
+    "overlayTypographyTitle": "Typography",
+    "overlayTypographyHint": "Adjust the font, size, opacity and subtitle alignment.",
+    "overlayAlignLabel": "Text alignment",
+    "overlayAlign": {
+      "left": "Left",
+      "center": "Center",
+      "right": "Right"
+    },
+    "overlayTextEffectsTitle": "Text effects",
+    "overlayTextEffectsHint": "Style source and translated text separately, or apply the current style to both.",
+    "overlayApplyBoth": "Apply to both",
+    "overlayTextRole": {
+      "source": "Source",
+      "translation": "Translation"
+    },
+    "overlayEffectPreset": {
+      "none": "None",
+      "soft": "Soft shadow",
+      "crisp": "Crisp outline",
+      "contrast": "High contrast",
+      "glow": "Neon glow"
+    },
+    "overlayFontWeightLabel": "Font weight",
+    "overlayFontWeight": {
+      "400": "Regular",
+      "500": "Medium",
+      "600": "Semibold",
+      "700": "Bold"
+    },
+    "overlayOutlineTitle": "Text outline",
+    "overlayShadowTitle": "Text shadow",
+    "overlayEffectColorLabel": "Effect color",
+    "overlayOutlineWidthLabel": "Outline width",
+    "overlayShadowOpacityLabel": "Shadow opacity",
+    "overlayShadowXLabel": "Horizontal offset",
+    "overlayShadowYLabel": "Vertical offset",
+    "overlayShadowBlurLabel": "Blur radius",
+    "overlayBackgroundTitle": "Background and opacity",
+    "overlayPreviewScene": {
+      "dark": "Dark",
+      "light": "Light",
+      "scene": "Complex scene"
+    },
     "overlayLockTitle": "I-lock ang overlay",
     "overlayLockHint": "I-lock ang kasalukuyang posisyon. Mag-hover sa overlay upang i-unlock ito kapag kailangan mo itong ilipat muli.",
     "overlayLockedState": "Naka-lock",
@@ -130,8 +182,7 @@
     "resetWelcomeDone": "Tapos na ang pag-reset. Ang wizard ay lilitaw sa susunod na pagkakataon.",
     "resetWelcomeAction": "I-reset",
     "sectionDriverManagement": "Pamamahala ng driver",
-    "driverManagementHint": "Pamahalaan ang Omni Translate virtual speaker driver at Bridge Service.",
-    "overlayHeightLabel": "Taas ng overlay"
+    "driverManagementHint": "Pamahalaan ang Omni Translate virtual speaker driver at Bridge Service."
   },
   "welcome": {
     "title": "Maligayang pagdating sa Omni Translate",
@@ -230,7 +281,10 @@
       "signatureEnforcementBypass": "Pansamantalang signature enforcement bypass",
       "memoryIntegrity": "Integridad ng memorya",
       "summary": "Buod ng diagnostic",
-      "rawSummary": "Raw na buod"
+      "rawSummary": "Raw na buod",
+      "testSigning": "TESTSIGNING",
+      "secureBoot": "Secure Boot",
+      "bridge": "Bridge"
     },
     "value": {
       "none": "wala",
@@ -281,6 +335,9 @@
     "cardDisabledHint": "Ang card na ito ay hindi pinagana · paganahin itong i-edit ang modelo",
     "unsupportedNativeAudio": "Hindi sinusuportahan ng kasalukuyang modelo ang katutubong audio ng Omni; pananatilihin ng session ang pinagmulang audio at mga subtitle lamang.",
     "outputVolume": "Dami ng output",
+    "originalAudioVolume": "Volume ng orihinal na audio",
+    "translatedAudioVolume": "Volume ng salin na audio ng LLM",
+    "originalAudioVolumeVirtualDriverHint": "Sa virtual-driver mode lamang naa-adjust ang volume ng orihinal na audio. Sa kasalukuyang physical-loopback mode, gamitin ang volume ng player o ng Windows.",
     "inputLevel": "Antas ng input",
     "testing": "Pagsubok...",
     "testSpeaker": "Subukan ang tagapagsalita",
@@ -400,9 +457,9 @@
     "vadThresholdTitle": "Threshold ng VAD {{value}}",
     "modelSubtitleSttTranslation": "Pagkilala sa pagsasalita · Pagsasalin",
     "modelSubtitleSttTranslationSpeech": "Pagkilala sa pagsasalita · Pagsasalin · Pagsasalita",
-    "originalAudioVolume": "Volume ng orihinal na audio",
-    "translatedAudioVolume": "Volume ng salin na audio ng LLM",
-    "originalAudioVolumeVirtualDriverHint": "Sa virtual-driver mode lamang naa-adjust ang volume ng orihinal na audio. Sa kasalukuyang physical-loopback mode, gamitin ang volume ng player o ng Windows."
+    "micTestUnsupported": "Current desktop runtime does not support microphone testing",
+    "directionListen": "Listen",
+    "directionSpeak": "Speak"
   },
   "overlay": {
     "contextMenuTitle": "Mga kontrol sa overlay",
@@ -610,7 +667,10 @@
       "firstSpeechStarted": "First Speech Detected",
       "queuedChunks": "Queued Audio Chunks",
       "droppedBeforeReady": "Dropped Before Ready",
-      "export": "Export"
+      "export": "Export",
+      "firstAudibleChunk": "First Audible Chunk",
+      "silenceSkipped": "Silence Skipped (before audible)",
+      "totalInputChunks": "Total Input Chunks (at speech)"
     },
     "benchmark": {
       "selectVoiceModelFirst": "Pumili muna ng voice model.",
@@ -687,7 +747,11 @@
       "committedText": "Naka-commit na text",
       "asrEventDetails": "Mga detalye ng kaganapan ng ASR ({{count}})",
       "text": "Teksto",
-      "export": "Export"
+      "export": "Export",
+      "sessionReady": "Session Ready",
+      "responseCreated": "Response Created",
+      "responseDone": "Response Done",
+      "responseLegend": "Response"
     },
     "export": {
       "title": "Export"
@@ -844,7 +908,8 @@
       "closeTitle": "Isara ang hindi kilalang pagpaparehistro ng modelo",
       "capabilities": "Mga kakayahan ng modelo",
       "realtimeAudioMode": "Realtime na audio mode",
-      "registerAndAdd": "Magrehistro at magdagdag"
+      "registerAndAdd": "Magrehistro at magdagdag",
+      "interactionCapabilities": "Interaction capabilities"
     },
     "capabilityRegistry": {
       "title": "Rehistro ng kakayahan",
@@ -901,7 +966,10 @@
       "authHeader": "Header ng pagpapatotoo",
       "streaming": "Streaming mode",
       "region": "Rehiyon",
-      "sampleText": "Halimbawang teksto"
+      "sampleText": "Halimbawang teksto",
+      "temperature": "Temperature",
+      "maxOutputTokens": "Max Output Tokens",
+      "responseModalities": "Response Modalities"
     },
     "customHeaders": {
       "title": "Mga header ng custom na kahilingan",
@@ -974,7 +1042,37 @@
     "fallbackSubtitlesOnly": "Ang virtual na ruta ng audio ay hindi magagamit. Ang session ay bumalik sa subtitle-only mode.",
     "fallbackAec": "Ang virtual na ruta ng audio ay hindi magagamit. Ang session ay pansamantalang lumipat sa pisikal na pag-playback ng speaker gamit ang AEC. Ang mode na ito ay mayroon pa ring panganib sa loopback.",
     "virtualDriverFallbackConfirm": "Hindi pa available ang virtual audio driver o Bridge. I-click ang OK upang pumasok sa subtitle-only mode; i-click ang Kanselahin upang pansamantalang bumalik sa pisikal na pag-playback ng speaker gamit ang AEC. Ang AEC fallback ay mayroon pa ring panganib sa loopback.",
-    "sceneLaunchFailed": "Nabigong simulan ang {{scene}}: {{error}}"
+    "sceneLaunchFailed": "Nabigong simulan ang {{scene}} ({{stage}}): {{error}}",
+    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
+    "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
+    "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
+    "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
+    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
+    "attribution": {
+      "stageBridgeReady": "Bridge/driver preparation",
+      "stageOmniPreconnect": "Omni preconnect",
+      "stageInboundRoute": "System audio capture",
+      "stageOutboundRoute": "Microphone capture",
+      "stageTranslateWorker": "Translation engine",
+      "stageSpeechDispatch": "Speech output",
+      "stageSubtitleOverlay": "Subtitle overlay",
+      "stageLaunch": "Launch",
+      "captureStateUnknown": "Capture state unknown",
+      "captureStateFormat": "Capture state {{captureState}}/{{preBufferState}}, bound: {{bound}}",
+      "boundYes": "yes",
+      "boundNo": "no",
+      "nativeMarker": "Native diagnostics: {{marker}}",
+      "noMarker": "no relevant records",
+      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
+      "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
+      "captureErrorDefault": "Native capture returned an error",
+      "captureErrorHint": "Please reselect the system playback device in Audio Routing, or confirm the device is not exclusively occupied by another program.",
+      "captureNotReadyReason": "{{stage}} accepted the command but was not ready in time ({{context}})",
+      "captureNotReadyHint": "Usually the capture device starts slowly or there is no audio output. Confirm sound is playing and retry. If it remains not ready, check the capture log on the Diagnostics page."
+    }
   },
   "glossary": {
     "strategy": {
@@ -1101,5 +1199,166 @@
       "importReadFailed": "Nabigong basahin ang file. Subukan muli."
     },
     "searchPlaceholder": "Mga termino para sa paghahanap..."
+  },
+  "sceneReadiness": {
+    "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
+    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "providerNotVerified": "Model verification pending",
+    "watchLabel": "Watch mode",
+    "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
+    "readyToStart": "Ready to start",
+    "virtualDriverPending": "Virtual audio driver pending (required for translated audio output)",
+    "systemAudioPending": "System audio capture pending",
+    "overlayPending": "Subtitle overlay pending",
+    "gameLabel": "Game voice mode",
+    "gameDescription": "Ready to start when bidirectional capture, speaker translated audio, and echo cancellation are all ready.",
+    "inboundAudioPending": "Inbound system audio capture pending",
+    "outboundMicPending": "Outbound microphone capture pending",
+    "aecPending": "Echo cancellation pending",
+    "voiceRoomLabel": "Voice room mode",
+    "voiceRoomDescription": "Ready to start when microphone, speaker translated audio, and echo cancellation are all ready.",
+    "micPending": "Microphone capture pending",
+    "blockerCount": "{{count}} items to resolve",
+    "overallLabel": "{{ready}}/{{total}} scenes ready"
+  },
+  "providerProbe": {
+    "verdictAvailable": "Available",
+    "verdictRealtimeRisk": "Not recommended for realtime",
+    "verdictUnavailable": "Unavailable",
+    "notProbed": "Not probed",
+    "pendingProbe": "Pending re-probe",
+    "checkStreaming": "Realtime response",
+    "checkStreamingPass": "Realtime response supported.",
+    "checkStreamingFail": "Realtime response not supported.",
+    "checkErrorShape": "Error response",
+    "checkErrorShapePass": "Error response is stable.",
+    "checkErrorShapeFail": "Error response is unstable.",
+    "checkResponseShape": "Result response",
+    "checkResponseShapePass": "Result response is stable.",
+    "checkResponseShapeFail": "Result response is unstable.",
+    "guidanceAvailable": "You can send a test request directly.",
+    "guidanceRealtimeRisk": "Better suited for subtitles first; speech dispatch is recommended to be deferred.",
+    "guidanceUnavailable": "Check the service address, secret, and model name first."
+  },
+  "customProvider": {
+    "protocolWebsocket": "Custom WebSocket",
+    "protocolStreamingHttp": "Custom Streaming HTTP",
+    "protocolHttp": "Custom HTTP",
+    "groupRequired": "Basic connection fields",
+    "groupRequiredDesc": "A custom provider needs at least these fields confirmed.",
+    "fieldModel": "Model name",
+    "fieldModelDesc": "The model to call by default.",
+    "fieldBaseUrl": "Endpoint URL",
+    "fieldBaseUrlDesc": "Used for capability probes, model catalog, and request entry.",
+    "fieldAuthRef": "Auth reference",
+    "fieldAuthRefDesc": "Used to write to the system credential manager.",
+    "groupRouting": "Request behavior",
+    "groupRoutingDesc": "Determines request protocol and timeout behavior.",
+    "fieldTransport": "Transport",
+    "fieldTransportDesc": "Choose HTTP, streaming, or WebSocket based on upstream capabilities.",
+    "fieldTimeout": "Timeout threshold",
+    "fieldTimeoutDesc": "Used for model probes, model catalog, and smoke tests.",
+    "fieldRegion": "Region",
+    "fieldRegionDesc": "Records the default region when the service distinguishes regions.",
+    "groupAdvanced": "Advanced fields",
+    "groupAdvancedDesc": "Optionally control system prompt template and streaming capability.",
+    "fieldPromptTemplate": "System prompt template",
+    "fieldPromptTemplateDesc": "Follows the current Provider Draft prompt template structure.",
+    "fieldStream": "Streaming toggle",
+    "fieldStreamDesc": "Allows the UI to directly control whether realtime response is enabled in template mode.",
+    "description": "Custom {{platform}} provider integration.",
+    "notes": "This template was created locally and saved in browser storage. You can continue using the system credential manager to save API Keys.",
+    "mappingModel": "The custom template maps the default model name to the request layer.",
+    "mappingBaseUrl": "The custom template retains an independent endpoint URL.",
+    "mappingAuth": "Authentication continues to be injected by reference.",
+    "mappingTransport": "Transport is provided with a default value by the custom template."
+  },
+  "runtime": {
+    "provider": {
+      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "defaultGuidance": "Please try again later.",
+      "previewRationale": "Running in browser preview mode, using mock probe results.",
+      "traceInvokeStart": "Frontend invoked runtime command.",
+      "traceInvokeTimeout": "Frontend timed out waiting for runtime command.",
+      "traceInvokeResult": "Frontend received runtime command result.",
+      "traceInvokeFailed": "Frontend runtime command failed.",
+      "traceSecretStatusStart": "Frontend preparing to read API Key status.",
+      "actionSecretStatus": "Read saved API Key status",
+      "guidanceCredentialManager": "Check whether Windows Credential Manager is available, then try again.",
+      "traceSecretStatusResult": "Frontend received API Key status result.",
+      "traceSecretStatusFailed": "Frontend failed to read API Key status.",
+      "traceSecretSaveStart": "Frontend preparing to save API Key.",
+      "actionSecretSave": "API Key native save command",
+      "traceSecretSaveResult": "Frontend received API Key save result.",
+      "traceSecretSaveFailed": "Frontend failed to save API Key.",
+      "traceSecretReadStart": "Frontend preparing to read API Key plaintext.",
+      "actionSecretRead": "Read saved API Key",
+      "traceSecretReadResult": "Frontend received API Key plaintext result.",
+      "traceSecretReadFailed": "Frontend failed to read API Key plaintext.",
+      "actionProbe": "Model connectivity probe",
+      "guidanceProbe": "Check the endpoint URL, network connectivity, or switch to HTTP transport mode and try again.",
+      "actionFetchModels": "Fetch model list",
+      "guidanceFetchModels": "Check the endpoint URL, API Key, and network connectivity, then try again.",
+      "smokeSessionStarted": "Browser preview mode established a mock session.",
+      "smokeTranslationCompleted": "Browser preview mode returned the full mock text.",
+      "smokeResponseCompleted": "Browser preview mode response ended.",
+      "smokePreviewRationale": "Running in browser preview mode, not connected to a real Provider.",
+      "actionSmoke": "Model smoke test",
+      "guidanceSmoke": "Check the endpoint URL, network connectivity, or switch to HTTP transport mode and try again."
+    },
+    "desktop": {
+      "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
+      "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
+      "unknownError": "Unknown error",
+      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "audioDegraded": "Degraded, will auto-refresh devices later",
+      "browserPreview": "Browser preview mode",
+      "skipped": "Skipped",
+      "mockData": "Mock data",
+      "tauriDesktop": "Tauri desktop environment",
+      "ipcDiagFailed": "IPC channel diagnostics failed: {{message}}",
+      "ipcNotResponding": "IPC channel not responding",
+      "ipcNotConnected": "IPC not connected"
+    },
+    "audio": {
+      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and diagnostics log.",
+      "actionRefreshDevices": "Refresh audio devices",
+      "actionStartCapture": "Start audio capture",
+      "watchRouteNotReady": "System audio capture did not enter a usable state.",
+      "watchCancelled": "Watch mode launch was cancelled.",
+      "actionReadSnapshot": "Read audio runtime state",
+      "actionPreconnect": "Omni preconnect",
+      "actionCancelPreconnect": "Cancel Omni preconnect",
+      "actionStopCapture": "Stop audio capture",
+      "actionClearCues": "Clear subtitle queue",
+      "actionStartSpeech": "Start speech dispatch",
+      "actionStopSpeech": "Stop speech dispatch",
+      "actionStartTranslation": "Start translation engine",
+      "actionStopTranslation": "Stop translation engine",
+      "actionToggleOverlay": "Toggle subtitle overlay",
+      "actionShowOverlay": "Show subtitle overlay"
+    },
+    "bridge": {
+      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "traceInvokeStart": "Frontend invoked Bridge runtime command.",
+      "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
+      "traceInvokeResult": "Frontend received Bridge runtime command result.",
+      "traceInvokeFailed": "Frontend Bridge runtime command failed.",
+      "actionRefresh": "Refresh driver and Bridge state",
+      "actionStart": "Start Bridge Service",
+      "actionStop": "Stop Bridge Service",
+      "actionInstall": "Install driver",
+      "actionUninstall": "Uninstall driver",
+      "actionRepair": "Repair driver"
+    },
+    "benchmark": {
+      "desktopOnly": "Benchmark is only available in the desktop runtime.",
+      "timeout": "Benchmark timed out ({{seconds}}s). Check the network connection or model configuration.",
+      "parseFailed": "Benchmark result parsing failed: {{error}}"
+    },
+    "storage": {
+      "sqliteSaveFailed": "SqliteBackend: failed to save key \"{{key}}\"",
+      "compositeSaveFailed": "CompositeBackend: failed to save key \"{{key}}\" (both primary and fallback backends failed)"
+    }
   }
 }

@@ -1,3 +1,4 @@
+import i18n from '../i18n/config';
 import type { ProviderAuthScheme, ProviderKind, ProviderTransport } from '../schema/provider-contract';
 import type { ProviderTemplate } from '../schema/provider-template';
 
@@ -30,14 +31,14 @@ function resolveCustomProviderAuthReference(displayName: string, currentReferenc
 
 function makeProtocolLabel(transport: ProviderTransport) {
   if (transport === 'websocket') {
-    return '自定义长连接';
+    return i18n.t('customProvider.protocolWebsocket');
   }
 
   if (transport === 'streaming-http') {
-    return '自定义流式HTTP';
+    return i18n.t('customProvider.protocolStreamingHttp');
   }
 
-  return '自定义HTTP';
+  return i18n.t('customProvider.protocolHttp');
 }
 
 function supportedTransportsForKind(kind: ProviderKind): ProviderTransport[] {
@@ -71,47 +72,47 @@ function makeFieldGroups(kind: ProviderKind): ProviderTemplate['fieldGroups'] {
   const groups: ProviderTemplate['fieldGroups'] = [
     {
       id: `${kind}-custom-required`,
-      label: '基础连接字段',
-      description: '自定义平台至少需要确认这些字段。',
+      label: i18n.t('customProvider.groupRequired'),
+      description: i18n.t('customProvider.groupRequiredDesc'),
       tier: 'required',
       fields: [
         {
           id: `${kind}-custom-model`,
           key: 'model',
-          label: '模型名',
-          description: '默认调用的模型。',
+          label: i18n.t('customProvider.fieldModel'),
+          description: i18n.t('customProvider.fieldModelDesc'),
         },
         {
           id: `${kind}-custom-base-url`,
           key: 'baseUrl',
-          label: '接口地址',
-          description: '用于能力检测、模型目录和请求入口。',
+          label: i18n.t('customProvider.fieldBaseUrl'),
+          description: i18n.t('customProvider.fieldBaseUrlDesc'),
         },
         {
           id: `${kind}-custom-auth-reference`,
           key: 'authRef.reference',
-          label: '认证引用',
-          description: '用于写入系统凭据管理器。',
+          label: i18n.t('customProvider.fieldAuthRef'),
+          description: i18n.t('customProvider.fieldAuthRefDesc'),
         },
       ],
     },
     {
       id: `${kind}-custom-routing`,
-      label: '请求行为',
-      description: '决定请求协议与超时行为。',
+      label: i18n.t('customProvider.groupRouting'),
+      description: i18n.t('customProvider.groupRoutingDesc'),
       tier: 'recommended',
       fields: [
         {
           id: `${kind}-custom-transport`,
           key: 'transport',
-          label: '传输方式',
-          description: '按上游能力选择 HTTP、流式或长连接。',
+          label: i18n.t('customProvider.fieldTransport'),
+          description: i18n.t('customProvider.fieldTransportDesc'),
         },
         {
           id: `${kind}-custom-timeout`,
           key: 'timeoutMs',
-          label: '超时阈值',
-          description: '用于模型探测、模型目录和烟雾测试。',
+          label: i18n.t('customProvider.fieldTimeout'),
+          description: i18n.t('customProvider.fieldTimeoutDesc'),
         },
       ],
     },
@@ -121,28 +122,28 @@ function makeFieldGroups(kind: ProviderKind): ProviderTemplate['fieldGroups'] {
     groups[1]?.fields.splice(1, 0, {
       id: `${kind}-custom-region`,
       key: 'region',
-      label: '区域',
-      description: '当服务区分地域时用于记录默认区域。',
+      label: i18n.t('customProvider.fieldRegion'),
+      description: i18n.t('customProvider.fieldRegionDesc'),
     });
   }
 
   groups.push({
     id: `${kind}-custom-advanced`,
-    label: '高级字段',
-    description: '按需控制系统提示模板和流式能力。',
+    label: i18n.t('customProvider.groupAdvanced'),
+    description: i18n.t('customProvider.groupAdvancedDesc'),
     tier: 'advanced',
     fields: [
       {
         id: `${kind}-custom-prompt-template`,
         key: 'systemPromptTemplate',
-        label: '系统提示模板',
-        description: '沿用当前 Provider Draft 的提示模板结构。',
+        label: i18n.t('customProvider.fieldPromptTemplate'),
+        description: i18n.t('customProvider.fieldPromptTemplateDesc'),
       },
       {
         id: `${kind}-custom-stream`,
         key: 'streamEnabled',
-        label: '流式开关',
-        description: '允许 UI 在模板模式里直接控制是否启用实时返回。',
+        label: i18n.t('customProvider.fieldStream'),
+        description: i18n.t('customProvider.fieldStreamDesc'),
       },
     ],
   });
@@ -161,9 +162,9 @@ export function createCustomProviderTemplate(draft: CustomProviderTemplateDraft)
     source: 'custom',
     version,
     displayName: draft.displayName.trim(),
-    description: `自定义 ${draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible'} 平台接入。`,
+    description: i18n.t('customProvider.description', { platform: draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible' }),
     protocolLabel: makeProtocolLabel(draft.transport),
-    notes: '该模板由本地页面创建并保存在浏览器存储中，可继续使用系统凭据管理器保存 API Key。',
+    notes: i18n.t('customProvider.notes'),
     supportedTransports: supportedTransportsForKind(draft.kind),
     defaultDraft: {
       providerId: `provider-custom-${slug}`,
@@ -187,22 +188,22 @@ export function createCustomProviderTemplate(draft: CustomProviderTemplateDraft)
       {
         templateFieldKey: 'model',
         contractFieldPath: 'request.model',
-        note: '自定义模板把默认模型名映射到请求层。',
+        note: i18n.t('customProvider.mappingModel'),
       },
       {
         templateFieldKey: 'baseUrl',
         contractFieldPath: 'metadata.baseUrl',
-        note: '自定义模板保留独立入口地址。',
+        note: i18n.t('customProvider.mappingBaseUrl'),
       },
       {
         templateFieldKey: 'authRef.reference',
         contractFieldPath: 'auth.reference',
-        note: '认证信息继续通过引用方式注入。',
+        note: i18n.t('customProvider.mappingAuth'),
       },
       {
         templateFieldKey: 'transport',
         contractFieldPath: 'request.transport',
-        note: '传输方式由自定义模板提供默认值。',
+        note: i18n.t('customProvider.mappingTransport'),
       },
     ],
     presetModels: [],
@@ -234,9 +235,9 @@ export function updateCustomProviderTemplate(template: ProviderTemplate, draft: 
     ...template,
     version: makeVersionStamp(),
     displayName: draft.displayName.trim(),
-    description: `自定义 ${draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible'} 平台接入。`,
+    description: i18n.t('customProvider.description', { platform: draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible' }),
     protocolLabel: makeProtocolLabel(draft.transport),
-    notes: '该模板由本地页面创建并保存在浏览器存储中，可继续使用系统凭据管理器保存 API Key。',
+    notes: i18n.t('customProvider.notes'),
     supportedTransports: supportedTransportsForKind(draft.kind),
     defaultDraft: {
       providerId: template.defaultDraft.providerId || `provider-custom-${slug}`,
@@ -260,22 +261,22 @@ export function updateCustomProviderTemplate(template: ProviderTemplate, draft: 
       {
         templateFieldKey: 'model',
         contractFieldPath: 'request.model',
-        note: '自定义模板把默认模型名映射到请求层。',
+        note: i18n.t('customProvider.mappingModel'),
       },
       {
         templateFieldKey: 'baseUrl',
         contractFieldPath: 'metadata.baseUrl',
-        note: '自定义模板保留独立入口地址。',
+        note: i18n.t('customProvider.mappingBaseUrl'),
       },
       {
         templateFieldKey: 'authRef.reference',
         contractFieldPath: 'auth.reference',
-        note: '认证信息继续通过引用方式注入。',
+        note: i18n.t('customProvider.mappingAuth'),
       },
       {
         templateFieldKey: 'transport',
         contractFieldPath: 'request.transport',
-        note: '传输方式由自定义模板提供默认值。',
+        note: i18n.t('customProvider.mappingTransport'),
       },
     ],
   };

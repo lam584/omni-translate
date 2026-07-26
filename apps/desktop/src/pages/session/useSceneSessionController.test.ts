@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../../mocks/app-config';
 import { audioRuntimeSnapshotMock } from '../../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../../mocks/runtime-shell';
-import type { AppConfigDraft } from '../../schema/config';
 import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 
@@ -129,6 +128,7 @@ function makeHarness(runtimeSnapshot = readyRuntime()) {
     )),
     sceneLaunchTimeoutMessage: vi.fn((seconds: number) => `timeout after ${seconds}s`),
   };
+  // eslint-disable-next-line react-hooks/rules-of-hooks -- controller factory exercised outside a React render in tests
   return { controller, api: useSceneSessionController(controller) };
 }
 

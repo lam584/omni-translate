@@ -5,7 +5,6 @@ import { useTranslation } from 'react-i18next';
 import { clearSubtitleCuesRuntime, toggleSubtitleOverlayWindow } from '../runtime/audio-runtime';
 import { isTauriRuntime } from '../runtime/tauri-runtime';
 import { useAppStore } from '../stores/app-store';
-import { mixOpacity, withAlpha } from '../utils/color-alpha';
 import OverlayContextMenu from './overlay/OverlayContextMenu';
 import OverlayResizeHandles from './overlay/OverlayResizeHandles';
 import SubtitleOverlayContent from './overlay/SubtitleOverlayContent';
@@ -19,6 +18,7 @@ import { useOverlayNativeEventSync } from './overlay/useOverlayNativeEventSync';
 import { useOverlayPointerInteractions } from './overlay/useOverlayPointerInteractions';
 import { useOverlayStyleController } from './overlay/useOverlayStyleController';
 import { useOverlayWindowController } from './overlay/useOverlayWindowController';
+import { buildSubtitleOverlayCssVariables } from './overlay/overlayTypography';
 
 export { subtitleOverlayPageHelpers };
 
@@ -41,7 +41,8 @@ function SubtitleOverlayPage() {
   const { recentCues } = audioRuntimeSnapshot.subtitleOverlay;
   const displayCues = useMemo(() => [...recentCues].filter((cue) => getCueDisplaySegments(cue).length > 0).reverse(), [recentCues]);
   const { overlayBackgroundColor, overlayBackgroundOpacity, overlayFontFamily, overlayFontSize, overlayHeight,
-    overlayLocked, overlayOpacity, overlayTextColor, overlayTextOpacity, overlayWidth, overlayX, overlayY } = configDraft.subtitles;
+    overlayLocked, overlayOpacity, overlaySourceTextStyle, overlayTextColor, overlayTextOpacity,
+    overlayTranslationTextStyle, overlayWidth, overlayX, overlayY } = configDraft.subtitles;
   const { lockedReveal, setLockedReveal } = useOverlayLockReveal(overlayLocked);
   const effectiveOverlayFontSize = clamp(
     Math.round(overlayFontSize || 24),
@@ -54,7 +55,8 @@ function SubtitleOverlayPage() {
   }, [overlayX, overlayY]);
   const menuText = useCallback((key: string) => t(key, { defaultValue: overlayFallbackText(key) }), [t]);
   const styleController = useOverlayStyleController({ overlayBackgroundColor, overlayBackgroundOpacity, overlayFontFamily,
-    overlayOpacity, overlayTextColor, overlayTextOpacity, updateSubtitleDraft });
+    overlayOpacity, overlaySourceTextStyle, overlayTextColor, overlayTextOpacity,
+    overlayTranslationTextStyle, updateSubtitleDraft });
 
   const hideWindow = useCallback(async () => {
     setRuntimeSnapshot(await toggleSubtitleOverlayWindow());
@@ -116,21 +118,7 @@ function SubtitleOverlayPage() {
     syncNativeOverlayWindowState: windowController.syncNativeOverlayWindowState,
     syncOverlayDraftPosition, updateSubtitleDraft });
 
-  const cardStyle = useMemo(() => {
-    const backgroundAlpha = mixOpacity(overlayOpacity, overlayBackgroundOpacity);
-    const textAlpha = mixOpacity(overlayOpacity, overlayTextOpacity);
-    return {
-      '--subtitle-overlay-background': withAlpha(overlayBackgroundColor, backgroundAlpha),
-      '--subtitle-overlay-border': withAlpha('#ffffff', 0.12 * backgroundAlpha),
-      '--subtitle-overlay-shadow': withAlpha('#000000', 0.28 * backgroundAlpha),
-      '--subtitle-overlay-blur': `${Math.round(12 * backgroundAlpha)}px`,
-      '--subtitle-overlay-font-family': overlayFontFamily,
-      '--subtitle-overlay-source-shadow': withAlpha('#000000', 0.48 * overlayOpacity),
-      '--subtitle-overlay-translation-shadow': withAlpha('#000000', 0.42 * overlayOpacity),
-      '--subtitle-overlay-text': withAlpha(overlayTextColor, textAlpha),
-      '--subtitle-overlay-translation-opacity': `${Math.max(0.4, textAlpha * 0.92)}`,
-    } as React.CSSProperties;
-  }, [overlayBackgroundColor, overlayBackgroundOpacity, overlayFontFamily, overlayOpacity, overlayTextColor, overlayTextOpacity]);
+  const cardStyle = useMemo(() => buildSubtitleOverlayCssVariables(configDraft.subtitles), [configDraft.subtitles]);
 
   const closeAfter = <T extends unknown[]>(action: (...args: T) => void) => (...args: T) => { action(...args); closeContextMenu(); };
   const closeAfterAsync = <T extends unknown[]>(action: (...args: T) => Promise<void>) => async (...args: T) => {
@@ -145,7 +133,7 @@ function SubtitleOverlayPage() {
       onPointerDown={(event) => void pointerInteractions.handleOverlayPointerDown(event)}
       onPointerMove={pointerInteractions.handleOverlayPointerMove}
       onPointerUp={(event) => void pointerInteractions.finishOverlayDrag(event)}
-      style={{ color: overlayTextColor, fontFamily: overlayFontFamily }}>
+      style={{ fontFamily: overlayFontFamily }}>
       <OverlayResizeHandles visible={!overlayLocked && isTauriRuntime()}
         onPointerDown={(direction, event) => void pointerInteractions.handleResizePointerDown(direction, event)}
         onPointerMove={pointerInteractions.handleResizePointerMove}

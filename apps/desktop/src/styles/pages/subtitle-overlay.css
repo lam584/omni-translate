@@ -173,36 +173,33 @@
 .subtitle-overlay-source,
 .subtitle-overlay-translation {
   margin:0;
-  text-align:center;
+  width:100%;
+  text-align:var(--subtitle-overlay-text-align, center);
   text-wrap:balance;
   white-space:pre-line;
   overflow-wrap:anywhere;
-  color:var(--subtitle-overlay-text,
-  currentColor)
+  paint-order:stroke fill
 }
 
 .subtitle-overlay-source {
   font-size:clamp(1.9rem,
   2.6vw,
   2.7rem);
-  text-shadow:0 2px 14px var(--subtitle-overlay-source-shadow,
-  rgba(0,
-  0,
-  0,
-  .48))
+  color:var(--subtitle-overlay-source-text, #fff8ef);
+  font-weight:var(--subtitle-overlay-source-weight, 500);
+  -webkit-text-stroke:var(--subtitle-overlay-source-outline-width, 1px) var(--subtitle-overlay-source-outline-color, #000);
+  text-shadow:var(--subtitle-overlay-source-shadow, 0 2px 8px rgba(0, 0, 0, .48))
 }
 
 .subtitle-overlay-translation {
   font-size:clamp(1.5rem,
   2vw,
   2.1rem);
-  opacity:var(--subtitle-overlay-translation-opacity,
-  .92);
-  text-shadow:0 2px 14px var(--subtitle-overlay-translation-shadow,
-  rgba(0,
-  0,
-  0,
-  .42))
+  color:var(--subtitle-overlay-translation-text, #fff8ef);
+  font-weight:var(--subtitle-overlay-translation-weight, 700);
+  opacity:var(--subtitle-overlay-translation-opacity, .92);
+  -webkit-text-stroke:var(--subtitle-overlay-translation-outline-width, 1px) var(--subtitle-overlay-translation-outline-color, #000);
+  text-shadow:var(--subtitle-overlay-translation-shadow, 0 2px 8px rgba(0, 0, 0, .42))
 }
 
 .subtitle-overlay-cue {
@@ -243,17 +240,21 @@
   display:-webkit-box;
   -webkit-box-orient:vertical;
   -webkit-line-clamp:2;
-  text-align:center;
+  text-align:var(--subtitle-overlay-text-align, center);
   white-space:pre-wrap;
   overflow-wrap:anywhere;
   overflow:hidden;
-  color:var(--subtitle-overlay-text, currentColor);
+  color:var(--subtitle-overlay-source-text, #fff8ef);
+  font-weight:var(--subtitle-overlay-source-weight, 500);
+  paint-order:stroke fill;
+  -webkit-text-stroke:var(--subtitle-overlay-source-outline-width, 1px) var(--subtitle-overlay-source-outline-color, #000);
   opacity:0;
-  text-shadow:0 2px 14px var(--subtitle-overlay-source-shadow, rgba(0, 0, 0, .48))
+  text-shadow:var(--subtitle-overlay-source-shadow, 0 2px 8px rgba(0, 0, 0, .48))
 }
 
 .subtitle-overlay-stream-slot-active .subtitle-overlay-stream-source {
-  opacity:calc(var(--subtitle-overlay-translation-opacity, .92) * .8)
+  opacity:calc(var(--subtitle-overlay-translation-opacity,
+  .92) * .8)
 }
 
 .subtitle-overlay-stream-text {
@@ -264,18 +265,16 @@
   display:-webkit-box;
   -webkit-box-orient:vertical;
   -webkit-line-clamp:2;
-  text-align:center;
+  text-align:var(--subtitle-overlay-text-align, center);
   white-space:pre-wrap;
   overflow-wrap:anywhere;
   overflow:hidden;
-  color:var(--subtitle-overlay-text,
-  currentColor);
+  color:var(--subtitle-overlay-translation-text, #fff8ef);
+  font-weight:var(--subtitle-overlay-translation-weight, 700);
+  paint-order:stroke fill;
+  -webkit-text-stroke:var(--subtitle-overlay-translation-outline-width, 1px) var(--subtitle-overlay-translation-outline-color, #000);
   opacity:0;
-  text-shadow:0 2px 14px var(--subtitle-overlay-translation-shadow,
-  rgba(0,
-  0,
-  0,
-  .42))
+  text-shadow:var(--subtitle-overlay-translation-shadow, 0 2px 8px rgba(0, 0, 0, .42))
 }
 
 .subtitle-overlay-stream-slot-active .subtitle-overlay-stream-text {

@@ -10,6 +10,8 @@ type OverlayStyleControllerOptions = {
   overlayOpacity: number;
   overlayTextColor: string;
   overlayTextOpacity: number;
+  overlaySourceTextStyle: SubtitleDraft['overlaySourceTextStyle'];
+  overlayTranslationTextStyle: SubtitleDraft['overlayTranslationTextStyle'];
   updateSubtitleDraft: (patch: Partial<SubtitleDraft>) => void;
 };
 
@@ -20,6 +22,8 @@ export function useOverlayStyleController({
   overlayOpacity,
   overlayTextColor,
   overlayTextOpacity,
+  overlaySourceTextStyle,
+  overlayTranslationTextStyle,
   updateSubtitleDraft,
 }: OverlayStyleControllerOptions) {
   const applyOverlayStylePreset = useCallback((preset: OverlayStylePreset) => {
@@ -30,16 +34,21 @@ export function useOverlayStyleController({
       overlayOpacity: preset.opacity,
       overlayTextColor: preset.textColor,
       overlayTextOpacity: preset.textOpacity,
+      overlaySourceTextStyle: { ...overlaySourceTextStyle, color: preset.textColor },
+      overlayTranslationTextStyle: { ...overlayTranslationTextStyle, color: preset.textColor },
     });
-  }, [overlayFontFamily, updateSubtitleDraft]);
+  }, [overlayFontFamily, overlaySourceTextStyle, overlayTranslationTextStyle, updateSubtitleDraft]);
 
   const matchesOverlayStylePreset = useCallback((preset: OverlayStylePreset) => (
     overlayBackgroundColor.toLowerCase() === preset.backgroundColor.toLowerCase()
       && Math.abs(overlayBackgroundOpacity - preset.backgroundOpacity) < 0.01
       && Math.abs(overlayOpacity - preset.opacity) < 0.01
       && overlayTextColor.toLowerCase() === preset.textColor.toLowerCase()
+      && overlaySourceTextStyle.color.toLowerCase() === preset.textColor.toLowerCase()
+      && overlayTranslationTextStyle.color.toLowerCase() === preset.textColor.toLowerCase()
       && Math.abs(overlayTextOpacity - preset.textOpacity) < 0.01
-  ), [overlayBackgroundColor, overlayBackgroundOpacity, overlayOpacity, overlayTextColor, overlayTextOpacity]);
+  ), [overlayBackgroundColor, overlayBackgroundOpacity, overlayOpacity, overlaySourceTextStyle.color,
+    overlayTextColor, overlayTextOpacity, overlayTranslationTextStyle.color]);
 
   const applyOverlayFontSize = useCallback((fontSize: number) => {
     updateSubtitleDraft({ overlayFontSize: fontSize });
@@ -50,8 +59,12 @@ export function useOverlayStyleController({
   }, [updateSubtitleDraft]);
 
   const applyOverlayTextColor = useCallback((color: string) => {
-    updateSubtitleDraft({ overlayTextColor: color });
-  }, [updateSubtitleDraft]);
+    updateSubtitleDraft({
+      overlayTextColor: color,
+      overlaySourceTextStyle: { ...overlaySourceTextStyle, color },
+      overlayTranslationTextStyle: { ...overlayTranslationTextStyle, color },
+    });
+  }, [overlaySourceTextStyle, overlayTranslationTextStyle, updateSubtitleDraft]);
 
   return {
     applyOverlayBackgroundOpacity,

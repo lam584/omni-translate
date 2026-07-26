@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
+import i18n from '../i18n/config';
 import { desktopApiV2 } from './desktop-api-v2';
 import { prewarmCaptureRoutesRuntime, preconnectOmniRealtimeRuntime } from './audio-runtime';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
@@ -74,7 +75,7 @@ function invokeWithTimeout<T>(
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     const timeoutId = setTimeout(() => {
-      reject(new Error(`invoke '${command}' 超时（${timeoutMs}ms），IPC 通道可能未就绪或 Rust Core 未响应`));
+      reject(new Error(i18n.t('runtime.desktop.invokeTimeout', { command, timeoutMs })));
     }, timeoutMs);
 
     desktopApiV2.runtime.invoke<T>(command, payload)
@@ -156,7 +157,7 @@ async function _refreshAndAutostartBridge(
       id: `bridge-autostart-failed-${Date.now()}`,
       level: 'warning',
       source: 'desktop-runtime',
-      message: `Bridge Service 自动启动失败：${error instanceof Error ? error.message : String(error)}`,
+      message: i18n.t('runtime.desktop.bridgeAutostartFailed', { error: error instanceof Error ? error.message : String(error) }),
       emittedAt: new Date().toISOString(),
     });
   }
@@ -236,7 +237,7 @@ export function scheduleCapturePrewarmAfterStartup(
 }
 
 function createRuntimeErrorSnapshot(error: unknown): RuntimeSnapshot {
-  const message = error instanceof Error ? error.message : '未知错误';
+  const message = error instanceof Error ? error.message : i18n.t('runtime.desktop.unknownError');
 
   return {
     ...runtimeSnapshotMock,
@@ -248,7 +249,7 @@ function createRuntimeErrorSnapshot(error: unknown): RuntimeSnapshot {
         id: 'runtime-bootstrap-failed',
         level: 'error',
         source: 'desktop-runtime',
-        message: `Rust Core 启动桥接失败：${message}`,
+        message: i18n.t('runtime.desktop.rustCoreFailed', { message }),
         emittedAt: new Date().toISOString(),
       },
     ],
@@ -447,7 +448,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
     markStep(onStep, 'init-audio', 'done', `${audioSnapshot.renderDevices.length} devices`);
   } catch (error) {
     const message = formatRuntimeError(error);
-    markStep(onStep, 'init-audio', 'done', '已降级，稍后自动刷新设备');
+    markStep(onStep, 'init-audio', 'done', i18n.t('runtime.desktop.audioDegraded'));
     deferDesktopRuntimeNotification('warning', 'audio-bootstrap-deferred', `Audio device refresh deferred: ${message}`);
   }
 
@@ -659,11 +660,11 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
   if (!runtimeAvailable) {
     // Tauri runtime not available — this is a browser preview scenario.
     // Report it clearly and proceed with mock data immediately.
-    markStep(onStep, 'detect-runtime', 'done', '浏览器预览模式');
-    markStep(onStep, 'check-ipc', 'done', '已跳过');
-    markStep(onStep, 'init-runtime', 'done', 'Mock 数据');
-    markStep(onStep, 'init-audio', 'done', 'Mock 数据');
-    markStep(onStep, 'load-config', 'done', 'Mock 数据');
+    markStep(onStep, 'detect-runtime', 'done', i18n.t('runtime.desktop.browserPreview'));
+    markStep(onStep, 'check-ipc', 'done', i18n.t('runtime.desktop.skipped'));
+    markStep(onStep, 'init-runtime', 'done', i18n.t('runtime.desktop.mockData'));
+    markStep(onStep, 'init-audio', 'done', i18n.t('runtime.desktop.mockData'));
+    markStep(onStep, 'load-config', 'done', i18n.t('runtime.desktop.mockData'));
 
     store.setRuntimeSnapshot(runtimeSnapshotMock);
     store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
@@ -701,7 +702,7 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     };
   }
 
-  markStep(onStep, 'detect-runtime', 'done', 'Tauri 桌面环境');
+  markStep(onStep, 'detect-runtime', 'done', i18n.t('runtime.desktop.tauriDesktop'));
 
   // Step 1: check IPC
   markStep(onStep, 'check-ipc', 'active');
@@ -718,16 +719,16 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     const message = error instanceof Error ? error.message : String(error);
     console.error('[omni][desktop-runtime] debug_ipc_ping 失败:', message);
     store.setRuntimeSnapshot(createRuntimeErrorSnapshot(
-      new Error(`IPC 通道诊断失败：${message}`)
+      new Error(i18n.t('runtime.desktop.ipcDiagFailed', { message }))
     ));
     store.setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
   }
 
   if (!ipcOk) {
-    markStep(onStep, 'check-ipc', 'error', 'IPC 通道未响应');
-    markStep(onStep, 'init-runtime', 'error', 'IPC 未连通');
-    markStep(onStep, 'init-audio', 'error', 'IPC 未连通');
-    markStep(onStep, 'load-config', 'error', 'IPC 未连通');
+    markStep(onStep, 'check-ipc', 'error', i18n.t('runtime.desktop.ipcNotResponding'));
+    markStep(onStep, 'init-runtime', 'error', i18n.t('runtime.desktop.ipcNotConnected'));
+    markStep(onStep, 'init-audio', 'error', i18n.t('runtime.desktop.ipcNotConnected'));
+    markStep(onStep, 'load-config', 'error', i18n.t('runtime.desktop.ipcNotConnected'));
 
     // A WebView can retain the JavaScript-side bridge while the native IPC
     // protocol is still recovering. Keep probing in the background so one

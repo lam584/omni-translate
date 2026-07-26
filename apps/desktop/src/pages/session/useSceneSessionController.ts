@@ -1,3 +1,4 @@
+import i18n from '../../i18n/config';
 import type { AppConfigDraft } from '../../schema/config';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import type { RuntimeNotification } from '../../schema/runtime-core';
@@ -207,7 +208,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             id: `stop-${label}-${Date.now()}`,
             level: 'error',
             source: 'session',
-            message: `停止 ${label} 失败：${detail}`,
+            message: i18n.t('session.stopStepFailed', { label, detail }),
             emittedAt: new Date().toISOString(),
           });
         }
@@ -292,7 +293,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
       id: `watch-fallback-${fallback}-${Date.now()}`,
       level: 'warning',
       source: 'session',
-      message: `${subtitlesOnly ? '已降级为仅字幕模式' : '已降级为回声消除模式'}（原始错误：${originalErrorMessage}）`,
+      message: subtitlesOnly ? i18n.t('session.fallbackSubtitlesOnlyMode', { error: originalErrorMessage }) : i18n.t('session.fallbackAecMode', { error: originalErrorMessage }),
       emittedAt: new Date().toISOString(),
     });
   };
@@ -300,7 +301,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
   const launchScene = async (options: SceneLaunchOptions) => {
     const { launchAttemptId, mode } = options;
     if ([options.audioSnapshot.inbound.captureState, options.audioSnapshot.outbound.captureState].includes('stopping')) {
-      controller.pushNotification({ id: `scene-launch-stopping-${Date.now()}`, level: 'warning', source: 'session', message: '正在停止上一条链路，请稍后再启动新场景。', emittedAt: new Date().toISOString() });
+      controller.pushNotification({ id: `scene-launch-stopping-${Date.now()}`, level: 'warning', source: 'session', message: i18n.t('session.stoppingPreviousRoute'), emittedAt: new Date().toISOString() });
       return;
     }
     const plan = buildSceneLaunchPlan(options);
@@ -340,7 +341,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             controller.setAudioSnapshot(await cancelOmniPreconnectRuntime());
           },
           onPreconnectWarning: (error) => {
-            preconnectWarning = `Omni 预连接失败，已改走普通启动路径：${error instanceof Error ? error.message : String(error)}`;
+            preconnectWarning = i18n.t('session.preconnectFailedFallback', { error: error instanceof Error ? error.message : String(error) });
             appendFrontendDiagnosticsLog('runtime', 'warning', `[WatchPreconnect] ${preconnectWarning}`);
           },
           executeStage: async (stage) => {
@@ -471,7 +472,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             id: `watch-fallback-failed-${Date.now()}`,
             level: 'error',
             source: 'session',
-            message: `看片模式启动失败，${fallback} 降级也未能完成：${fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause)}`,
+            message: i18n.t('session.watchFallbackFailed', { fallback, cause: fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause) }),
             emittedAt: new Date().toISOString(),
           });
         }
@@ -482,7 +483,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           id: `scene-overlay-${mode}-${Date.now()}`,
           level: 'error',
           source: 'session',
-          message: `字幕浮窗打开失败：${launchError instanceof Error ? launchError.message : String(launchError)}`,
+          message: i18n.t('session.overlayOpenFailed', { error: launchError instanceof Error ? launchError.message : String(launchError) }),
           emittedAt: new Date().toISOString(),
         });
       }

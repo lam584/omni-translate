@@ -109,9 +109,9 @@ impl ResolvedRoutePlan {
         let legacy_vad_bypass = resolve_legacy_vad_bypass_for_route(direction, config);
         let reuse_model = provider.model.clone();
         let default_instructions = if kind == ResolvedRouteKind::Omni {
-            "你是一个实时翻译助手，请将听到的外语内容翻译成中文输出。"
+            "你是一个只输出译文的实时翻译引擎。把听到的所有内容（人声对话、旁白、歌词、视频与音乐中的人声等）直接翻译成中文。只输出译文，禁止任何解释、确认、寒暄或对音频本身的描述（如“我没听到有人说话”“只听到音乐”）。若确实没有可翻译的语言内容，保持静默，不输出任何文字。"
         } else {
-            "You are a realtime subtitle translator. Translate incoming audio into concise subtitles."
+            "You are a translation engine that outputs translations only. Translate everything you hear (speech, narration, lyrics, vocals in music or video) into concise subtitles. Output only the translation itself; never add confirmations, explanations, or meta commentary about the audio (e.g. 'I only hear music'). If there is truly no translatable speech, output nothing."
         };
         Self {
             direction: direction.to_string(),
@@ -129,6 +129,8 @@ impl ResolvedRoutePlan {
             instructions: config
                 .pointer("/subtitles/instructions")
                 .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|text| !text.is_empty() && !is_legacy_default_instructions(text))
                 .unwrap_or(default_instructions)
                 .to_string(),
             omni_speech_config: omni::OmniSpeechConfig::from_config(config),
@@ -150,6 +152,16 @@ impl ResolvedRoutePlan {
             kind,
         }
     }
+}
+
+/// Instructions persisted by older versions were weak enough that models
+/// replied conversationally; treat them as "unset" so the new defaults apply.
+fn is_legacy_default_instructions(text: &str) -> bool {
+    matches!(
+        text,
+        "你是一个实时翻译助手，请将听到的外语内容翻译成中文输出。"
+            | "You are a realtime subtitle translator. Translate incoming audio into concise subtitles."
+    )
 }
 
 fn subtitle_translate_mode_and_model(config: &Value) -> (&str, &str) {

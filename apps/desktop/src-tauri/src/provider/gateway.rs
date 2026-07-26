@@ -1530,6 +1530,7 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "live provider smoke; needs scripts/testing/llm-integration.config.json and API keys (npm run test:llm-integration)"]
     fn llm_integration_provider_smoke_calls_configured_models() {
         let config = load_llm_integration_config();
         assert!(

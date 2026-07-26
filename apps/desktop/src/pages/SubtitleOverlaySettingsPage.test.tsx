@@ -187,20 +187,25 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
       );
     });
 
-    const ranges = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="range"]'));
-    const colors = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="color"]'));
+    const fieldInput = <T extends HTMLInputElement | HTMLSelectElement>(labelKey: string, selector: string) =>
+      Array.from(container.querySelectorAll<HTMLLabelElement>('label'))
+        .find((label) => label.textContent?.includes(labelKey))?.querySelector<T>(selector);
+    const fontSize = fieldInput<HTMLInputElement>('settings.overlayFontSizeLabel', 'input[type="range"]')!;
+    const opacity = fieldInput<HTMLInputElement>('settings.overlayOpacityLabel', 'input[type="range"]')!;
+    const textColor = fieldInput<HTMLInputElement>('settings.overlayTextColorLabel', 'input[type="color"]')!;
+    const backgroundColor = fieldInput<HTMLInputElement>('settings.overlayBackgroundColorLabel', 'input[type="color"]')!;
+    const font = fieldInput<HTMLSelectElement>('settings.overlayFontLabel', 'select')!;
     await act(async () => {
-      for (const [input, value] of ranges.map((input, index) => [input, String(index === 1 ? 33 : 0.5)] as const)) {
+      for (const [input, value] of [[fontSize, '33'], [opacity, '50']] as const) {
         setInputValue(input, value);
         input.dispatchEvent(new Event('input', { bubbles: true }));
       }
-      for (const [input, value] of colors.map((input, index) => [input, index === 0 ? '#112233' : '#445566'] as const)) {
+      for (const [input, value] of [[textColor, '#112233'], [backgroundColor, '#445566']] as const) {
         setInputValue(input, value);
         input.dispatchEvent(new Event('input', { bubbles: true }));
       }
-      const select = container.querySelector<HTMLSelectElement>('select')!;
-      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(select, select.options[1]!.value);
-      select.dispatchEvent(new Event('change', { bubbles: true }));
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set?.call(font, font.options[1]!.value);
+      font.dispatchEvent(new Event('change', { bubbles: true }));
     });
 
     const subtitles = useAppStore.getState().configDraft.subtitles;
@@ -209,6 +214,45 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
     expect(subtitles.overlayTextColor).toBe('#112233');
     expect(subtitles.overlayBackgroundColor).toBe('#445566');
     expect(subtitles.overlayFontFamily).toContain('Microsoft YaHei');
+  });
+
+  it('applies independent text effects and can copy them to both subtitle rows', async () => {
+    await act(async () => root.render(<MemoryRouter><SubtitleOverlaySettingsPage /></MemoryRouter>));
+
+    const noneButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('settings.overlayEffectPreset.none'))!;
+    await act(async () => noneButton.click());
+
+    let subtitles = useAppStore.getState().configDraft.subtitles;
+    expect(subtitles.overlayTranslationTextStyle.outlineEnabled).toBe(false);
+    expect(subtitles.overlayTranslationTextStyle.shadowEnabled).toBe(false);
+    expect(subtitles.overlaySourceTextStyle.outlineEnabled).toBe(true);
+
+    const applyBoth = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('settings.overlayApplyBoth'))!;
+    await act(async () => applyBoth.click());
+
+    subtitles = useAppStore.getState().configDraft.subtitles;
+    expect(subtitles.overlaySourceTextStyle).toEqual(subtitles.overlayTranslationTextStyle);
+  });
+
+  it('applies layout presets and alignment to the live preview', async () => {
+    await act(async () => root.render(<MemoryRouter><SubtitleOverlaySettingsPage /></MemoryRouter>));
+
+    const lyricsPreset = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('settings.overlayPreset.lyrics'))!;
+    const leftAlign = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('settings.overlayAlign.left'))!;
+    await act(async () => {
+      lyricsPreset.click();
+      leftAlign.click();
+    });
+
+    const subtitles = useAppStore.getState().configDraft.subtitles;
+    expect(subtitles.overlayBackgroundOpacity).toBe(0);
+    expect(subtitles.overlayTextAlign).toBe('left');
+    const preview = container.querySelector<HTMLElement>('.overlay-preview-window')!;
+    expect(preview.style.getPropertyValue('--subtitle-overlay-text-align')).toBe('left');
   });
 
   it('shows pending text while the overlay visibility command is unresolved', async () => {

@@ -59,7 +59,7 @@ describe('audio-routing components', () => {
     const nextSelector = container.querySelector<HTMLButtonElement>('.scenario-card-selector')!;
     await act(async () => nextSelector.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true })));
     await act(async () => nextSelector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
-    let list = container.querySelector<HTMLElement>('[role="listbox"]')!;
+    const list = container.querySelector<HTMLElement>('[role="listbox"]')!;
     for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End', 'x']) {
       await act(async () => list.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })));
     }

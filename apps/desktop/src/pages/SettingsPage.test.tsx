@@ -31,6 +31,7 @@ vi.mock('react-i18next', () => ({
 }));
 
 vi.mock('../i18n/config', () => ({
+  default: { t: (key: string) => key },
   getCurrentLanguage: languageMocks.current,
   resetWelcomeFlag: vi.fn(),
   setUiLanguage: vi.fn(),

@@ -141,7 +141,11 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
 
     await openContextMenu();
     await act(async () => findButton(container, '天空蓝')?.click());
-    expect(useAppStore.getState().configDraft.subtitles.overlayTextColor).toBe('#bae6fd');
+    expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
+      overlayTextColor: '#bae6fd',
+      overlaySourceTextStyle: { color: '#bae6fd' },
+      overlayTranslationTextStyle: { color: '#bae6fd' },
+    });
   });
 
   it('falls back to the default preview font size when draft size is unset', async () => {

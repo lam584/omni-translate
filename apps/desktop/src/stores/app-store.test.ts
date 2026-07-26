@@ -90,6 +90,21 @@ describe('app store', () => {
     expect(merged.activeProviderTemplateId).toBe(initialState.configDraft.activeProviderTemplateId);
   });
 
+  it('hydrates legacy shared subtitle colors into both independent text styles', () => {
+    const legacyDraft = structuredClone(useAppStore.getState().configDraft);
+    const legacySubtitles = legacyDraft.subtitles as unknown as Record<string, unknown>;
+    legacySubtitles.overlayTextColor = '#123456';
+    delete legacySubtitles.overlaySourceTextStyle;
+    delete legacySubtitles.overlayTranslationTextStyle;
+
+    const merged = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft);
+
+    expect(merged.subtitles.overlaySourceTextStyle.color).toBe('#123456');
+    expect(merged.subtitles.overlayTranslationTextStyle.color).toBe('#123456');
+    expect(merged.subtitles.overlaySourceTextStyle.fontWeight).toBe(500);
+    expect(merged.subtitles.overlayTranslationTextStyle.fontWeight).toBe(700);
+  });
+
   it('fills missing inbound mix gains without replacing persisted mix settings', () => {
     const legacyDraft = structuredClone(useAppStore.getState().configDraft);
     const legacyMix = legacyDraft.devices.inboundRoute.mixControl as unknown as Record<string, unknown>;

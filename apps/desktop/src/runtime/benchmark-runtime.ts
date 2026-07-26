@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import i18n from '../i18n/config';
 import type { RealtimeAudioMode } from '../schema/config';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
 import { isTauriRuntime } from './tauri-runtime';
@@ -106,7 +107,7 @@ export async function runModelBenchmark(
   options: BenchmarkRunOptions = {},
 ): Promise<BenchmarkReport> {
   if (!isTauriRuntime()) {
-    throw new Error('基准测试仅在桌面运行时可用。');
+    throw new Error(i18n.t('runtime.benchmark.desktopOnly'));
   }
 
   const runId = options.runId ?? `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`;
@@ -118,7 +119,7 @@ export async function runModelBenchmark(
 
   return new Promise<BenchmarkReport>((resolve, reject) => {
     const timeoutId = setTimeout(() => {
-      reject(new Error(`基准测试超时（${BENCHMARK_INVOKE_TIMEOUT_MS / 1000}s），请检查网络连接或模型配置。`));
+      reject(new Error(i18n.t('runtime.benchmark.timeout', { seconds: BENCHMARK_INVOKE_TIMEOUT_MS / 1000 })));
     }, BENCHMARK_INVOKE_TIMEOUT_MS);
 
     invoke<string>('run_model_benchmark', {
@@ -138,7 +139,7 @@ export async function runModelBenchmark(
         try {
           resolve(JSON.parse(jsonString) as BenchmarkReport);
         } catch (parseError) {
-          reject(new Error(`基准测试结果解析失败: ${parseError instanceof Error ? parseError.message : String(parseError)}`));
+          reject(new Error(i18n.t('runtime.benchmark.parseFailed', { error: parseError instanceof Error ? parseError.message : String(parseError) })));
         }
       })
       .catch((error) => {

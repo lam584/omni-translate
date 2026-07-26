@@ -1,10 +1,11 @@
 import { useEffect } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Outlet, useLocation } from 'react-router-dom';
-import { brandContent, navItems } from '../../mocks/app-content';
+import { brandContent, navItems } from '../../defaults/app-content';
 import { resolveRuntimeBridgeStatus } from '../../runtime/runtime-status';
 import { useAppStore } from '../../stores/app-store';
 import AppIcon, { type AppIconName } from '../icons/AppIcon';
+import RuntimeToastHost from './RuntimeToastHost';
 import StatusBadge from '../page/StatusBadge';
 import type { StatusTone } from '../page/StatusBadge';
 
@@ -164,6 +165,8 @@ function AppLayout() {
           <Outlet />
         </main>
       </div>
+
+      <RuntimeToastHost />
     </div>
   );
 }

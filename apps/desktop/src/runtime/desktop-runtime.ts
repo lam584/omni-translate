@@ -3,8 +3,8 @@ import i18n from '../i18n/config';
 import { desktopApiV2 } from './desktop-api-v2';
 import { invokeWithTimeoutCore } from './invoke-with-timeout';
 import { prewarmCaptureRoutesRuntime, preconnectOmniRealtimeRuntime } from './audio-runtime';
-import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
-import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
+import { runtimeSnapshotMock } from '../defaults/runtime-shell';
 import { AUDIO_RUNTIME_SNAPSHOT_EVENT, type AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import {

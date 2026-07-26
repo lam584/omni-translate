@@ -96,7 +96,7 @@ assertTextMatch(
   'desktop TypeScript bridge contract',
 );
 assertTextMatch(
-  path.join('apps', 'desktop', 'src', 'mocks', 'app-config.ts'),
+  path.join('apps', 'desktop', 'src', 'defaults', 'app-config.ts'),
   new RegExp(`protocolVersion:\\s*'${protocolVersion}'`),
   'desktop config mock protocol',
 );
@@ -181,12 +181,12 @@ const driverVersionPins = [
     'desktop Rust installer driver version fixtures',
   ],
   [
-    path.join('apps', 'desktop', 'src', 'mocks', 'app-config.ts'),
+    path.join('apps', 'desktop', 'src', 'defaults', 'app-config.ts'),
     new RegExp(`expectedDriverVersion:\\s*'${driverVersionToken}'`),
     'desktop config mock expected driver version',
   ],
   [
-    path.join('apps', 'desktop', 'src', 'mocks', 'runtime-shell.ts'),
+    path.join('apps', 'desktop', 'src', 'defaults', 'runtime-shell.ts'),
     new RegExp(`expectedDriverVersion:\\s*'${driverVersionToken}'`),
     'desktop runtime shell mock expected driver version',
   ],
@@ -246,17 +246,17 @@ const bridgeVersionPins = [
     'desktop Rust bridge snapshot bridge version',
   ],
   [
-    path.join('apps', 'desktop', 'src', 'mocks', 'app-config.ts'),
+    path.join('apps', 'desktop', 'src', 'defaults', 'app-config.ts'),
     new RegExp(`expectedBridgeVersion:\\s*'${bridgeVersionToken}'`),
     'desktop config mock expected bridge version',
   ],
   [
-    path.join('apps', 'desktop', 'src', 'mocks', 'runtime-shell.ts'),
+    path.join('apps', 'desktop', 'src', 'defaults', 'runtime-shell.ts'),
     new RegExp(`expectedBridgeVersion:\\s*'${bridgeVersionToken}'`),
     'desktop runtime shell mock expected bridge version',
   ],
   [
-    path.join('apps', 'desktop', 'src', 'mocks', 'runtime-shell.ts'),
+    path.join('apps', 'desktop', 'src', 'defaults', 'runtime-shell.ts'),
     new RegExp(`bridgeVersion:\\s*'${bridgeVersionToken}'`),
     'desktop runtime shell mock bridge version',
   ],

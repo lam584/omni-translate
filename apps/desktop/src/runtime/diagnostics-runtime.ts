@@ -1,4 +1,4 @@
-import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { runtimeSnapshotMock } from '../defaults/runtime-shell';
 import type { DiagnosticsExportScope } from '../schema/config';
 import type { DiagnosticLogEntryRuntime, DiagnosticsExportArtifact, RuntimeSnapshot } from '../schema/runtime-core';
 import { desktopApiV2 } from './desktop-api-v2';

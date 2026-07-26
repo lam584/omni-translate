@@ -1,9 +1,10 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import { type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeSnapshotMock } from '../../mocks/runtime-shell';
 import { useAppStore } from '../../stores/app-store';
+import { mountTestRoot, type TestRootHandle } from '../../test-utils';
 
 const content = vi.hoisted(() => ({
   brandContent: { eyebrow: '', copy: '' },
@@ -18,10 +19,8 @@ const content = vi.hoisted(() => ({
   presets: [{ id: 'preset-watch-mode' }],
 }));
 
-vi.mock('../../mocks/app-content', () => content);
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
-}));
+vi.mock('../../defaults/app-content', () => content);
+vi.mock('react-i18next', async () => (await import('../../test-utils/i18n-stub')).reactI18nextStub());
 
 import AppLayout, { appLayoutTestHelpers } from './AppLayout';
 
@@ -41,25 +40,23 @@ function renderLayout(root: Root, path: string) {
 }
 
 describe('AppLayout', () => {
+  let view: TestRootHandle;
   let container: HTMLDivElement;
   let root: Root;
 
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     content.brandContent.eyebrow = '';
     content.brandContent.copy = '';
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
     runtimeSnapshot.bridge.bridgeState = 'stopped';
     runtimeSnapshot.bridgeStatus = 'browser-preview';
     useAppStore.setState((state) => ({ ...state, runtimeNotifications: [], runtimeSnapshot }));
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    view = mountTestRoot();
+    ({ container, root } = view);
   });
 
   afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
+    await view.cleanup();
   });
 
   it('maps runtime tones explicitly', () => {

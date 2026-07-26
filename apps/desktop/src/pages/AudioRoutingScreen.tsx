@@ -15,7 +15,7 @@ import {
 import AudioLevelMeter from '../components/audio/AudioLevelMeter';
 import AppIcon from '../components/icons/AppIcon';
 import StatusBadge from '../components/page/StatusBadge';
-import { providerTemplates } from '../mocks/provider-templates';
+import { providerTemplates } from '../defaults/provider-templates';
 import type { AudioInputProcessingContract } from '../schema/audio-contract';
 import type { DeviceDraft, FeedbackLoopPrevention, SpeechDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';

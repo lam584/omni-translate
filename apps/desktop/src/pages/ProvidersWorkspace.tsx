@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { StatusTone } from '../components/page/StatusBadge';
-import { defaultProviderTemplate, providerTemplates } from '../mocks/provider-templates';
+import { defaultProviderTemplate, providerTemplates } from '../defaults/provider-templates';
 import type { ProviderKind } from '../schema/provider-contract';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
 import { isTauriRuntime } from '../runtime/tauri-runtime';

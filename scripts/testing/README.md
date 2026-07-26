@@ -38,6 +38,23 @@ Run the architecture boundary audit:
 npm run audit:architecture
 ```
 
+The audit enforces size limits (Rust modules/functions, React
+page/screen/workspace files), Rust module wiring, and the retired legacy
+gateway methods, plus these frontend boundary rules for `apps/desktop/src`
+(test files and `.d.ts` ambient declarations are exempt):
+
+- `@tauri-apps/api` may only be imported inside `runtime/**`; every other
+  production source is flagged as `Tauri import outside runtime`.
+- Production code must not import `src/mocks/**` (`Mocks import in production
+  code`). Shared preset/default data lives in `src/defaults/**`; `src/mocks/**`
+  holds test doubles. Test support code (`src/mocks/**` itself and shared test
+  helpers under `src/test-utils/**`) is exempt as an importer.
+- `runtime/**` must not import `pages/**` or `components/**`
+  (`Runtime imports UI layer`) — no reverse layering.
+- Tauri command calls funnel through `runtime/desktop-api-v2.ts`; any other
+  bare `invoke(...)` or `invoke<T>(...)` call site is flagged as
+  `Direct invoke`.
+
 The default (non-strict) mode compares findings against
 `scripts/testing/architecture-baseline.json` and fails only on violations not
 covered by that baseline; pre-existing debt listed there is reported but
@@ -99,7 +116,19 @@ virtual audio driver and play audio. Confirm that:
   `watch route ensured subtitle overlay visible`.
 - `artifacts/diagnostics/logs/bridge-service.log` contains
   `source pacer summary` entries whose `queuedFrames` remain near zero during
-  steady playback and do not grow continuously.
+  steady playback and do not grow continuously. Bridge log lines use the same
+  format as app.log — `{timestamp} [{LEVEL}] [bridge] {source} - {message}`
+  with a `yyyy-MM-dd HH:mm:ss.fff` leading timestamp — and the pacer summary
+  message is kept verbatim after the prefix.
+- Every app.log line ends with a ` sid=<value>` token carrying the
+  application-run session id; bridge-service.log lines carry the derived
+  `sid=bridge-<appSid>-<startMs>` token after the `bridge.init` handshake.
+  Filtering all three log sources (app.log, bridge-service.log, forwarded
+  frontend entries inside app.log) by the same `sid=` substring isolates one
+  application run. The five `*_v2` commands additionally log
+  `api_v2.request` / `api_v2.response` lines with a `requestId=<value>`
+  detail that matches the `requestId` field on the v2 response envelope
+  (`ServiceErrorV2.details.requestId` on failures).
 
 ## Startup readiness timing
 

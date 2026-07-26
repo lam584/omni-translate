@@ -1,5 +1,5 @@
 import i18n from '../i18n/config';
-import { defaultProviderProbeProfile, providerProbeProfiles } from '../mocks/provider-probes';
+import { defaultProviderProbeProfile, providerProbeProfiles } from '../defaults/provider-probes';
 import type { ProviderDraft } from '../schema/config';
 import { PENDING_PROBE_CHECKED_AT, type ProviderProbeCheck, type ProviderProbeVerdict } from '../schema/provider-probe';
 import type { ProviderProbeProfileRuntime } from '../schema/provider-runtime';

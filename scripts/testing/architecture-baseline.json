@@ -1,8 +1,8 @@
 {
   "comment": "Known architecture boundary violations tolerated by the non-strict audit. Regenerate with: node scripts/testing/audit-architecture-boundaries.mjs --update-baseline",
   "violations": [
-    "Direct invoke: apps/desktop/src/pages/SubtitleOverlayScreen.tsx",
-    "Direct invoke: apps/desktop/src/pages/overlay/useOverlayWindowController.ts",
+    "Direct invoke: apps/desktop/src/mocks/fake-bridge.ts",
+    "Mocks import in production code: apps/desktop/src/pages/GlossaryScreen.tsx",
     "React screen >600 lines: apps/desktop/src/pages/AudioRoutingScreen.tsx",
     "React screen >600 lines: apps/desktop/src/pages/DiagnosticsScreen.tsx",
     "React screen >600 lines: apps/desktop/src/pages/RealTimeSessionScreen.tsx",
@@ -12,7 +12,6 @@
     "Rust module >900 lines: apps/desktop/src-tauri/src/audio/omni/protocol.rs",
     "Rust module >900 lines: apps/desktop/src-tauri/src/audio/openai_realtime.rs",
     "Rust module >900 lines: apps/desktop/src-tauri/src/audio/state.rs",
-    "Rust module >900 lines: apps/desktop/src-tauri/src/main.rs",
-    "Screen Tauri import: apps/desktop/src/pages/SubtitleOverlayScreen.tsx"
+    "Rust module >900 lines: apps/desktop/src-tauri/src/main.rs"
   ]
 }

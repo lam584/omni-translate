@@ -1,8 +1,8 @@
 import { create } from 'zustand';
-import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
-import { appConfigDraftMock } from '../mocks/app-config';
-import { navItems, presets } from '../mocks/app-content';
-import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
+import { appConfigDraftMock } from '../defaults/app-config';
+import { navItems, presets } from '../defaults/app-content';
+import { runtimeSnapshotMock } from '../defaults/runtime-shell';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type {
   AppConfigDraft,

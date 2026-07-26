@@ -1,5 +1,5 @@
 import i18n from '../i18n/config';
-import { defaultProviderProbeProfile } from '../mocks/provider-probes';
+import { defaultProviderProbeProfile } from '../defaults/provider-probes';
 import type { ModelPreset } from '../schema/provider-template';
 import type { ProviderDraft } from '../schema/config';
 import type {

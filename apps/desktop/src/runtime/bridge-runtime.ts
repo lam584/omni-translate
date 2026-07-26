@@ -1,5 +1,5 @@
 import i18n from '../i18n/config';
-import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { runtimeSnapshotMock } from '../defaults/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
 import type { RuntimeSnapshot } from '../schema/runtime-core';

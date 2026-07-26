@@ -160,33 +160,53 @@ for (const directory of rustRoots) {
 
 const pageRoot = join(root, 'apps/desktop/src/pages');
 for (const path of walk(pageRoot, (path) => path.endsWith('Page.tsx'))) {
-  const text = readFileSync(path, 'utf8');
-  const lines = text.split(/\r?\n/).length;
+  const lines = sourceLines(path);
   if (lines > 450) violations.push(`React page >450 lines: ${relative(root, path)} (${lines})`);
-  if (/@tauri-apps\/api/.test(text)) violations.push(`Page Tauri import: ${relative(root, path)}`);
 }
 
 for (const path of walk(pageRoot, (path) => path.endsWith('Screen.tsx'))) {
   const lines = sourceLines(path);
   if (lines > 600) violations.push(`React screen >600 lines: ${relative(root, path)} (${lines})`);
-  if (/@tauri-apps\/api/.test(readFileSync(path, 'utf8'))) {
-    violations.push(`Screen Tauri import: ${relative(root, path)}`);
-  }
 }
 
 for (const path of walk(pageRoot, (path) => path.endsWith('Workspace.tsx'))) {
-  const text = readFileSync(path, 'utf8');
   const lines = sourceLines(path);
   if (lines > 900) violations.push(`React workspace >900 lines: ${relative(root, path)} (${lines})`);
-  if (/@tauri-apps\/api/.test(text)) violations.push(`Workspace Tauri import: ${relative(root, path)}`);
 }
 
-const frontend = walk(join(root, 'apps/desktop/src'), (path) => /\.(ts|tsx)$/.test(path));
+const frontendRoot = 'apps/desktop/src';
+const frontend = walk(join(root, frontendRoot), (path) => /\.(ts|tsx)$/.test(path));
 for (const path of frontend) {
   const rel = relative(root, path).replace(/\\/g, '/');
+  // Test files and ambient declarations are exempt from the import rules below.
+  if (/\.(test|spec)\.[jt]sx?$/.test(rel) || rel.endsWith('.d.ts')) continue;
+  const text = readFileSync(path, 'utf8');
+  const inRuntime = rel.startsWith(`${frontendRoot}/runtime/`);
+  // Test support code (the mocks themselves and shared test helpers) may
+  // import mocks; production code may not.
+  const inTestSupport =
+    rel.startsWith(`${frontendRoot}/mocks/`) || rel.startsWith(`${frontendRoot}/test-utils/`);
+
+  // Tauri APIs are only reachable through the runtime adapter layer.
+  if (!inRuntime && /@tauri-apps\/api/.test(text)) {
+    violations.push(`Tauri import outside runtime: ${rel}`);
+  }
+
+  // Production code must not depend on test doubles in src/mocks; shared
+  // preset/default data lives in src/defaults.
+  if (!inTestSupport && /(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*)['"][^'"]*\bmocks\//.test(text)) {
+    violations.push(`Mocks import in production code: ${rel}`);
+  }
+
+  // Reverse layering: the runtime layer must not reach up into UI layers.
+  if (inRuntime && /(?:\bfrom\s+|\bimport\s*\(\s*)['"](?:\.\.\/)+(?:pages|components)\//.test(text)) {
+    violations.push(`Runtime imports UI layer: ${rel}`);
+  }
+
+  // All Tauri command calls funnel through the single runtime API adapter.
+  // The pattern also matches generic calls such as invoke<T>(...).
   if (rel === 'apps/desktop/src/runtime/desktop-api-v2.ts') continue;
-  if (/\.(test|spec)\.[jt]sx?$/.test(rel)) continue;
-  if (/(?<!\.)\binvoke\(/.test(readFileSync(path, 'utf8'))) violations.push(`Direct invoke: ${rel}`);
+  if (/(?<![.\w])invoke\s*[<(]/.test(text)) violations.push(`Direct invoke: ${rel}`);
 }
 
 const gateway = readFileSync(join(root, 'apps/desktop/src-tauri/src/provider/gateway.rs'), 'utf8');

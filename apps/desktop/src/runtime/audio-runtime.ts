@@ -1,6 +1,6 @@
 import i18n from '../i18n/config';
-import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
-import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
+import { runtimeSnapshotMock } from '../defaults/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';

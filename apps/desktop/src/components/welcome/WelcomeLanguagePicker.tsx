@@ -4,7 +4,7 @@ import AppIcon from '../icons/AppIcon';
 import DriverManagementCard from '../driver/DriverManagementCard';
 import { supportedLanguages } from '../../i18n/languages';
 import { markWelcomeCompleted, setUiLanguage } from '../../i18n/config';
-import { defaultProviderTemplate, providerTemplates } from '../../mocks/provider-templates';
+import { defaultProviderTemplate, providerTemplates } from '../../defaults/provider-templates';
 import { readProviderSecret, runProviderProbe, saveProviderSecret } from '../../runtime/provider-runtime';
 import { resolveRuntimeBridgeStatus } from '../../runtime/runtime-status';
 import { isTauriRuntime } from '../../runtime/tauri-runtime';

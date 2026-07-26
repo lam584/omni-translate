@@ -63,9 +63,9 @@ export default tseslint.config(
   },
   {
     // Composition roots: the one-time environment decision (desktop-api) and
-    // the bootstrap that owns the preview -> Tauri late-heal (desktop-runtime),
-    // plus the probe module's own tests.
-    files: ['src/runtime/desktop-api.ts', 'src/runtime/desktop-runtime.ts', 'src/runtime/tauri-runtime.test.ts'],
+    // the bootstrap that owns the preview -> Tauri late-heal (bootstrap/
+    // startup), plus the probe module's own tests.
+    files: ['src/runtime/desktop-api.ts', 'src/runtime/bootstrap/startup.ts', 'src/runtime/tauri-runtime.test.ts'],
     rules: {
       'no-restricted-imports': 'off',
     },

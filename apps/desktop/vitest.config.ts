@@ -25,9 +25,6 @@ export default mergeConfig(
           'src/overlay.tsx',
           'src/mocks/**',
           'src/i18n/config.ts',
-          // Transitional startup orchestration is integration-covered; the
-          // independently testable V2 service boundary remains in coverage.
-          'src/runtime/desktop-runtime.ts',
           // These schema modules contain compile-time contracts only. V8 sees
           // a few emitted enum lines even though there is no runtime behavior.
           'src/schema/config.ts',

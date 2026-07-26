@@ -20,6 +20,15 @@ export function buildDefaultSceneModelAssignments(template: ProviderTemplate): P
     { scenario: 'subtitle-translate', modelIds: [] },
   ];
 
+  if (template.id === 'template-openai-compatible-realtime') {
+    return [
+      { scenario: 'watch', modelIds: ['gpt-realtime-translate', 'gpt-realtime-2.1'] },
+      { scenario: 'game', modelIds: ['gpt-realtime-2.1-mini'] },
+      { scenario: 'voice-room', modelIds: [] },
+      { scenario: 'subtitle-translate', modelIds: [] },
+    ];
+  }
+
   if (template.id === 'template-dashscope-realtime') {
     return [
       { scenario: 'watch', modelIds: ['qwen3.5-omni-plus-realtime'] },

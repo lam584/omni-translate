@@ -221,6 +221,11 @@ describe('provider model capabilities', () => {
 
     const seeded = createDefaultLocalModelCapabilityRegistry();
     expect(seeded.some((item) => item.modelId === 'gpt-realtime' && item.interactionCapabilities?.includes('manual_commit'))).toBe(true);
+    expect(seeded.find((item) => item.modelId === 'gpt-realtime-2.1')?.capabilities).toEqual(['speech-to-text', 'speech-to-speech']);
+    expect(seeded.find((item) => item.modelId === 'gpt-realtime-2.1-mini')?.realtimeAudioMode).toBe('server_vad');
+    expect(seeded.find((item) => item.modelId === 'gpt-realtime-translate')?.interactionCapabilities).toEqual(['streaming', 'pipeline_asr_mt_tts']);
+    expect(seeded.find((item) => item.modelId === 'gpt-realtime-whisper')?.realtimeAudioMode).toBe('manual');
+    expect(seeded.find((item) => item.modelId === 'gpt-4o-transcribe')?.realtimeAudioMode).toBe('server_vad');
     expect(seeded.every((item) => item.capabilities.length > 0)).toBe(true);
   });
 });

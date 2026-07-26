@@ -17,7 +17,11 @@ export type ProviderTemplateCatalogEntry = {
   hidden: boolean;
 };
 
-const DEFAULT_ENABLED_TEMPLATE_IDS = new Set(['template-dashscope-realtime', 'template-deepseek']);
+const DEFAULT_ENABLED_TEMPLATE_IDS = new Set([
+  'template-openai-compatible-realtime',
+  'template-dashscope-realtime',
+  'template-deepseek',
+]);
 
 function storageAvailable() {
   return typeof window !== 'undefined' && typeof window.localStorage !== 'undefined';

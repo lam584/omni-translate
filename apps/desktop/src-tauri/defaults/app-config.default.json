@@ -1,25 +1,26 @@
 {
   "activeProviderTemplateId": "template-dashscope-realtime",
   "providers": [{
-    "templateId": "template-openai-compatible-realtime",
+    "templateId": "template-dashscope-realtime",
     "templateVersion": "2026.05.10",
     "templateSource": "official",
-    "providerId": "provider-openai-compatible",
-    "kind": "openai-compatible",
-    "displayName": "OpenAI Compatible",
+    "providerId": "provider-dashscope",
+    "kind": "dashscope",
+    "displayName": "阿里云百炼 API",
     "mode": "template",
     "model": "qwen3.5-omni-plus-realtime",
-    "baseUrl": "https://api.openai-compatible.local/v1",
-    "transport": "streaming-http",
+    "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
+    "transport": "websocket",
     "authRef": {
       "kind": "credential-ref",
-      "reference": "credential://provider/openai-compatible/default",
+      "reference": "credential://provider/dashscope/default",
       "headerName": "Authorization",
       "scheme": "bearer"
     },
+    "region": "cn-beijing",
     "streamEnabled": true,
-    "timeoutMs": 15000,
-    "systemPromptTemplate": "video-realtime-cn",
+    "timeoutMs": 12000,
+    "systemPromptTemplate": "game-live-translation-cn",
     "temperature": 0.2,
     "maxOutputTokens": 256,
     "responseModalities": [
@@ -322,6 +323,124 @@
           "text-to-speech",
           "speech-to-speech"
         ]
+      },
+      {
+        "id": "seed-gpt-realtime-2.1",
+        "modelId": "gpt-realtime-2.1",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-realtime-2.1-mini",
+        "modelId": "gpt-realtime-2.1-mini",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-realtime",
+        "modelId": "gpt-realtime",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-realtime-translate",
+        "modelId": "gpt-realtime-translate",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "streaming",
+          "pipeline_asr_mt_tts"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-realtime-whisper",
+        "modelId": "gpt-realtime-whisper",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "manual_commit",
+          "streaming"
+        ],
+        "apiModes": [
+          "realtime",
+          "audio"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-4o-transcribe",
+        "modelId": "gpt-4o-transcribe",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "audio-transcriptions"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-4o-mini-transcribe",
+        "modelId": "gpt-4o-mini-transcribe",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "audio-transcriptions"
+        ],
+        "source": "official"
       }
     ],
     "modelCatalogCache": {
@@ -333,7 +452,7 @@
       "models": []
     },
     "probe": {
-      "profileId": "probe-openai-compatible-baseline",
+      "profileId": "probe-dashscope-baseline",
       "verdict": "realtime-risk",
       "checkedAt": "2026-05-10T10:20:00+08:00",
       "streamSupported": true,

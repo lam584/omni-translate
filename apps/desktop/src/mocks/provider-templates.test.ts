@@ -29,19 +29,30 @@ describe('default provider template', () => {
     );
   });
 
-  it('enables only Aliyun Bailian and DeepSeek by default', () => {
+  it('enables only OpenAI, Aliyun Bailian and DeepSeek by default', () => {
     const entries = buildProviderTemplateCatalogEntries(providerTemplates, []);
     const enabledTemplateIds = entries.filter((entry) => entry.enabled).map((entry) => entry.template.id);
 
-    expect(enabledTemplateIds).toEqual(['template-dashscope-realtime', 'template-deepseek']);
+    expect(enabledTemplateIds).toEqual([
+      'template-openai-compatible-realtime',
+      'template-dashscope-realtime',
+      'template-deepseek',
+    ]);
   });
 
   it('uses provider-specific default scene models', () => {
+    const openai = providerTemplates.find((template) => template.id === 'template-openai-compatible-realtime');
     const dashscope = providerTemplates.find((template) => template.id === 'template-dashscope-realtime');
     const deepseek = providerTemplates.find((template) => template.id === 'template-deepseek');
     const openrouter = providerTemplates.find((template) => template.id === 'template-openrouter');
     const ollama = providerTemplates.find((template) => template.id === 'template-ollama');
 
+    expect(buildDefaultSceneModelAssignments(openai!).map((item) => [item.scenario, item.modelIds])).toEqual([
+      ['watch', ['gpt-realtime-translate', 'gpt-realtime-2.1']],
+      ['game', ['gpt-realtime-2.1-mini']],
+      ['voice-room', []],
+      ['subtitle-translate', []],
+    ]);
     expect(buildDefaultSceneModelAssignments(dashscope!).map((item) => [item.scenario, item.modelIds])).toEqual([
       ['watch', ['qwen3.5-omni-plus-realtime']],
       ['game', ['qwen3.5-omni-plus-realtime']],

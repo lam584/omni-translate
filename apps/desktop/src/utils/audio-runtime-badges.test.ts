@@ -24,14 +24,14 @@ function baseSnapshot(overrides: Partial<AudioRuntimeSnapshot> = {}): AudioRunti
       captureState: 'idle', preBufferState: 'cold', vadState: 'silence',
       bufferAheadMs: 0, framesCaptured: 0, segmentCount: 0, streamBound: false,
       lastEnergyDb: -90, lastFrameAt: null, activeSegmentId: null,
-      lastError: null, recommendedAction: null,
+      lastError: null, lastErrorCode: null, recommendedAction: null,
     },
     outbound: {
       routeId: 'out', direction: 'outbound', requestedDeviceId: 'r1', effectiveDeviceId: 'r1',
       captureState: 'idle', preBufferState: 'cold', vadState: 'silence',
       bufferAheadMs: 0, framesCaptured: 0, segmentCount: 0, streamBound: false,
       lastEnergyDb: -90, lastFrameAt: null, activeSegmentId: null,
-      lastError: null, recommendedAction: null,
+      lastError: null, lastErrorCode: null, recommendedAction: null,
     },
     subtitleOverlay: {
       queueDepth: 0, droppedCueCount: 0,
@@ -48,6 +48,7 @@ function baseSnapshot(overrides: Partial<AudioRuntimeSnapshot> = {}): AudioRunti
     sessionStartedAt: null,
     sttConnected: true,
     sttBufferSize: 0,
+    sttConnection: { state: 'connected', reconnectAttempt: 0, maxReconnectAttempts: 0, lastDisconnectReason: null },
     ...overrides,
   };
 }

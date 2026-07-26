@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { cursorPosition, getCurrentWindow } from '../../runtime/overlay-window-adapter';
-import { isTauriRuntime } from '../../runtime/tauri-runtime';
+import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import {
   calculateLockedRevealState,
   LOCK_BUTTON_POLL_INTERVAL_MS,
@@ -10,6 +10,7 @@ import {
 const HIDDEN_REVEAL: LockedRevealState = { interactive: false, visible: false };
 
 export function useOverlayLockReveal(overlayLocked: boolean) {
+  const { hasNativeShell } = useDesktopCapabilities();
   const [lockedReveal, setLockedReveal] = useState<LockedRevealState>(HIDDEN_REVEAL);
 
   useEffect(() => {
@@ -20,7 +21,7 @@ export function useOverlayLockReveal(overlayLocked: boolean) {
       return undefined;
     }
 
-    if (!isTauriRuntime()) {
+    if (!hasNativeShell) {
       return undefined;
     }
 
@@ -65,7 +66,7 @@ export function useOverlayLockReveal(overlayLocked: boolean) {
       disposed = true;
       window.clearInterval(intervalId);
     };
-  }, [overlayLocked]);
+  }, [overlayLocked, hasNativeShell]);
 
   return { lockedReveal, setLockedReveal };
 }

@@ -17,7 +17,9 @@ vi.mock('../../runtime/diagnostics-runtime', () => ({
   runSubtitleOverlaySelfCheckRuntime: runtime.overlaySelfCheck,
 }));
 vi.mock('../../runtime/live-session-events-runtime', () => ({ getLiveSessionEventsRuntime: runtime.getEvents }));
-vi.mock('../../runtime/tauri-runtime', () => ({ isTauriRuntime: runtime.isTauri }));
+vi.mock('../../runtime/desktop-api-context', () => ({
+  useDesktopCapabilities: () => ({ hasNativeShell: Boolean(runtime.isTauri()) }),
+}));
 vi.mock('../../runtime/bridge-runtime', () => ({ refreshBridgeRuntime: runtime.refreshBridge }));
 
 describe('useDiagnosticsWorkbenchController', () => {

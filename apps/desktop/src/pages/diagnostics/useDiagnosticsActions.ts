@@ -7,7 +7,7 @@ import {
   runSubtitleOverlaySelfCheckRuntime,
 } from '../../runtime/diagnostics-runtime';
 import { getLiveSessionEventsRuntime, type LiveSessionEvents } from '../../runtime/live-session-events-runtime';
-import { isTauriRuntime } from '../../runtime/tauri-runtime';
+import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import type { DiagnosticsExportScope } from '../../schema/config';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import { useAppStore } from '../../stores/app-store';
@@ -15,6 +15,7 @@ import { useAppStore } from '../../stores/app-store';
 export type DiagnosticsRepairTask = { id: string; label: string; run: () => Promise<void> };
 
 export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepairTask[], selectedRepairIds: string[]) {
+  const { hasNativeShell } = useDesktopCapabilities();
   const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
   const updateDiagnosticsDraft = useAppStore((state) => state.updateDiagnosticsDraft);
   const pushRuntimeNotification = useAppStore((state) => state.pushRuntimeNotification);
@@ -51,7 +52,7 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
           });
         }
       }
-      if (isTauriRuntime()) setRuntimeSnapshot(await refreshBridgeRuntime());
+      if (hasNativeShell) setRuntimeSnapshot(await refreshBridgeRuntime());
       if (failures.length === 0) {
         pushRuntimeNotification({
           id: `auto-repair-success-${Date.now()}`,

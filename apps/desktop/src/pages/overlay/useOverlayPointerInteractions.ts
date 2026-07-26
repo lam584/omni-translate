@@ -1,6 +1,6 @@
 import { useEffect, type MutableRefObject, type PointerEvent as ReactPointerEvent } from 'react';
 import { LogicalSize, PhysicalPosition, getCurrentWindow } from '../../runtime/overlay-window-adapter';
-import { isTauriRuntime } from '../../runtime/tauri-runtime';
+import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import {
   calculateOverlayResizeBounds,
   MAX_OVERLAY_HEIGHT,
@@ -25,6 +25,7 @@ type Params = {
 };
 
 export function useOverlayPointerInteractions(params: Params) {
+  const { hasNativeShell } = useDesktopCapabilities();
   const { dragStateRef, resizeStateRef } = params;
   useEffect(() => () => {
     const drag = dragStateRef.current;
@@ -47,7 +48,7 @@ export function useOverlayPointerInteractions(params: Params) {
   };
 
   const handleOverlayPointerDown = async (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isTauriRuntime() || params.overlayLocked || event.button !== 0) return;
+    if (!hasNativeShell || params.overlayLocked || event.button !== 0) return;
     if (event.target instanceof Element && event.target.closest('.subtitle-overlay-toggle-lock')) return;
     const targetElement = event.currentTarget;
     event.preventDefault();
@@ -82,7 +83,7 @@ export function useOverlayPointerInteractions(params: Params) {
   };
 
   const handleResizePointerDown = async (direction: OverlayResizeDirection, event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!isTauriRuntime() || params.overlayLocked || event.button !== 0) return;
+    if (!hasNativeShell || params.overlayLocked || event.button !== 0) return;
     const targetElement = event.currentTarget;
     event.preventDefault();
     event.stopPropagation();

@@ -7,7 +7,7 @@ import { markWelcomeCompleted, setUiLanguage } from '../../i18n/config';
 import { defaultProviderTemplate, providerTemplates } from '../../defaults/provider-templates';
 import { readProviderSecret, runProviderProbe, saveProviderSecret } from '../../runtime/provider-runtime';
 import { resolveRuntimeBridgeStatus } from '../../runtime/runtime-status';
-import { isTauriRuntime } from '../../runtime/tauri-runtime';
+import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import { refreshBridgeRuntime } from '../../runtime/bridge-runtime';
 import { useAppStore } from '../../stores/app-store';
 import {
@@ -50,6 +50,7 @@ function formatProviderSetupError(error: unknown, translate: (key: string) => st
  * wizard chrome reflects the choice immediately.
  */
 function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePickerProps) {
+  const { hasNativeShell } = useDesktopCapabilities();
   const { t } = useTranslation();
   const configDraft = useAppStore((state) => state.configDraft);
   const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
@@ -80,7 +81,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
   const isLanguageStep = step === 'language';
   const isDriverStep = step === 'driver';
   const providerRuntimePreparing =
-    isTauriRuntime() && (effectiveBridgeStatus !== 'tauri-shell' || runtimeSnapshot.storage.status !== 'ready');
+    hasNativeShell && (effectiveBridgeStatus !== 'tauri-shell' || runtimeSnapshot.storage.status !== 'ready');
   const providerSaveDisabled = saving || revealing || providerRuntimePreparing;
   const latestRuntimeError = runtimeNotifications.find((item) => item.level === 'error');
   const providerRuntimeStatusMessage =

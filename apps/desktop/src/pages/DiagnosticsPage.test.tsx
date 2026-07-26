@@ -5,6 +5,7 @@ import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import DiagnosticsPage, { runRecommendedBridgeAction } from './DiagnosticsPage';
+import { resetDesktopApiForTests } from '../runtime/desktop-api';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils';
 import type { BenchmarkReport } from '../runtime/benchmark-runtime';
@@ -170,6 +171,9 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
   beforeEach(() => {
     tauriRuntimeMock.isRuntime = false;
+    // The composition root decides the desktop boundary once; re-decide per
+    // test so a previous test's Tauri/preview choice cannot leak.
+    resetDesktopApiForTests();
     tauriRuntimeMock.invoke.mockReset();
     tauriRuntimeMock.invoke.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
       const action = args?.command?.action;

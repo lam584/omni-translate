@@ -11,7 +11,9 @@ const mocks = vi.hoisted(() => ({
   scaleFactor: vi.fn(),
 }));
 
-vi.mock('../../runtime/tauri-runtime', () => ({ isTauriRuntime: () => mocks.isTauri() }));
+vi.mock('../../runtime/desktop-api-context', () => ({
+  useDesktopCapabilities: () => ({ hasNativeShell: mocks.isTauri() }),
+}));
 vi.mock('../../runtime/overlay-window-adapter', () => ({
   LogicalSize: class LogicalSize { constructor(public width: number, public height: number) {} },
   PhysicalPosition: class PhysicalPosition { constructor(public x: number, public y: number) {} },
@@ -180,9 +182,13 @@ describe('useOverlayPointerInteractions imperative IPC cleanup', () => {
     expect(target.releasePointerCapture).not.toHaveBeenCalled();
 
     mocks.isTauri.mockReturnValue(false);
+    // Capability is read at render time (a real preview -> Tauri upgrade
+    // re-renders through the provider), so refresh the hook closure.
+    await act(async () => root.render(<Harness />));
     await controller.handleResizePointerDown('SouthEast', pointerEvent(7));
     expect(mocks.outerSize).not.toHaveBeenCalled();
     mocks.isTauri.mockReturnValue(true);
+    await act(async () => root.render(<Harness />));
 
     refs.resize.current = {
       direction: 'SouthEast', pointerId: 8, frameId: null, scaleFactor: 1,

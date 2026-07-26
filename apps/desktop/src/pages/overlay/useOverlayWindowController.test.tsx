@@ -17,13 +17,18 @@ vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mocks.invoke(...args),
 }));
 
-vi.mock('../../runtime/tauri-runtime', () => ({
-  isTauriRuntime: () => mocks.isTauri(),
-}));
-
 vi.mock('../../runtime/desktop-api-context', () => ({
   useDesktopApiV2: () => ({
+    capabilities: {
+      get hasNativeShell() {
+        return mocks.isTauri();
+      },
+    },
     session: { syncOverlayRegion: mocks.syncRegion },
+    overlay: {
+      sync: (locked: boolean, rounded: boolean, hotspotInteractive: boolean) =>
+        mocks.invoke('sync_subtitle_overlay_window_state', { locked, rounded, hotspotInteractive }),
+    },
     window: {
       currentMonitor: mocks.currentMonitor,
       outerSize: mocks.outerSize,
@@ -104,6 +109,9 @@ describe('useOverlayWindowController native IPC coordination', () => {
 
   it('skips native synchronization outside Tauri', async () => {
     mocks.isTauri.mockReturnValue(false);
+    // Capability is read at render time (a real preview -> Tauri upgrade
+    // re-renders through the provider), so refresh the hook closure.
+    await act(async () => root.render(<Harness />));
 
     await controller.syncNativeOverlayRegion();
     await controller.syncNativeOverlayWindowState();

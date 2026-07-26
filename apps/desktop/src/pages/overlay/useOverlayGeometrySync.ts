@@ -1,7 +1,7 @@
 import { useEffect, type MutableRefObject } from 'react';
 
 import { currentMonitor, getCurrentWindow, LogicalSize, PhysicalPosition } from '../../runtime/overlay-window-adapter';
-import { isTauriRuntime } from '../../runtime/tauri-runtime';
+import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import { clamp, MAX_OVERLAY_HEIGHT, MAX_OVERLAY_WIDTH, MIN_OVERLAY_HEIGHT, MIN_OVERLAY_WIDTH, toOverlayAxisPercent } from './overlayDomain';
 
 type Options = {
@@ -16,11 +16,12 @@ type Options = {
 };
 
 export function useOverlayGeometrySync(options: Options) {
+  const { hasNativeShell } = useDesktopCapabilities();
   const { dragInProgressRef, lastAppliedWindowSizeRef, overlayHeight, overlayWidth, overlayX, overlayY,
     programmaticResizeRef, syncNativeOverlayRegion } = options;
 
   useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
+    if (!hasNativeShell) return undefined;
     let disposed = false;
     const applyWindowGeometry = async () => {
       const windowHandle = getCurrentWindow();
@@ -45,7 +46,7 @@ export function useOverlayGeometrySync(options: Options) {
     };
     void applyWindowGeometry();
     return () => { disposed = true; };
-  }, [lastAppliedWindowSizeRef, overlayHeight, overlayWidth, overlayX, overlayY, programmaticResizeRef, syncNativeOverlayRegion]);
+  }, [lastAppliedWindowSizeRef, overlayHeight, overlayWidth, overlayX, overlayY, programmaticResizeRef, syncNativeOverlayRegion, hasNativeShell]);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -63,7 +64,7 @@ export function useOverlayGeometrySync(options: Options) {
       appRoot.style.width = 'fit-content';
     }
     let disposed = false;
-    if (isTauriRuntime()) {
+    if (hasNativeShell) {
       const applyPosition = async () => {
         if (dragInProgressRef.current) return;
         const monitor = await currentMonitor();
@@ -90,5 +91,5 @@ export function useOverlayGeometrySync(options: Options) {
       restore(body, previous[1]);
       if (appRoot) restore(appRoot, previous[2]);
     };
-  }, [dragInProgressRef, overlayX, overlayY]);
+  }, [dragInProgressRef, overlayX, overlayY, hasNativeShell]);
 }

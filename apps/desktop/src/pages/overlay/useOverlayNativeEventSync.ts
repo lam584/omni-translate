@@ -1,7 +1,7 @@
 import { useEffect, type Dispatch, type MutableRefObject, type SetStateAction } from 'react';
 
 import { currentMonitor, getCurrentWindow } from '../../runtime/overlay-window-adapter';
-import { isTauriRuntime } from '../../runtime/tauri-runtime';
+import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import type { SubtitleDraft } from '../../schema/config';
 import { MAX_OVERLAY_HEIGHT, MAX_OVERLAY_WIDTH, MIN_OVERLAY_HEIGHT, MIN_OVERLAY_WIDTH, OVERLAY_RESIZE_DEBOUNCE_MS, type OverlayContextMenuState } from './overlayDomain';
 
@@ -20,22 +20,23 @@ type Options = {
 };
 
 export function useOverlayNativeEventSync(options: Options) {
+  const { hasNativeShell } = useDesktopCapabilities();
   const { lockedRevealInteractive, overlayLocked, programmaticResizeRef, resizeDebounceTimerRef,
     resizeInProgressRef, setContextMenu, setHovered, syncNativeOverlayRegion,
     syncNativeOverlayWindowState, syncOverlayDraftPosition, updateSubtitleDraft } = options;
 
   useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
+    if (!hasNativeShell) return undefined;
     if (overlayLocked) queueMicrotask(() => {
       setHovered(false);
       setContextMenu((current) => current.open ? { ...current, open: false } : current);
     });
     void syncNativeOverlayWindowState(overlayLocked, true, lockedRevealInteractive);
     return undefined;
-  }, [lockedRevealInteractive, overlayLocked, setContextMenu, setHovered, syncNativeOverlayWindowState]);
+  }, [lockedRevealInteractive, overlayLocked, setContextMenu, setHovered, syncNativeOverlayWindowState, hasNativeShell]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return undefined;
+    if (!hasNativeShell) return undefined;
     let disposed = false;
     let unlisten: (() => void) | undefined;
     const windowHandle = getCurrentWindow();
@@ -65,5 +66,5 @@ export function useOverlayNativeEventSync(options: Options) {
       }
       unlisten?.();
     };
-  }, [programmaticResizeRef, resizeDebounceTimerRef, resizeInProgressRef, syncNativeOverlayRegion, syncOverlayDraftPosition, updateSubtitleDraft]);
+  }, [programmaticResizeRef, resizeDebounceTimerRef, resizeInProgressRef, syncNativeOverlayRegion, syncOverlayDraftPosition, updateSubtitleDraft, hasNativeShell]);
 }

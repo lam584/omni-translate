@@ -71,7 +71,8 @@ vi.mock('../runtime/bridge-runtime', () => ({
   refreshBridgeRuntime: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
 }));
 
-vi.mock('../runtime/desktop-api-v2', () => ({
+vi.mock('../runtime/desktop-api-v2', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../runtime/desktop-api-v2')>()),
   desktopApiV2: {
     bridge: {
       install: (...args: unknown[]) => installDriverRuntimeMock(...args),

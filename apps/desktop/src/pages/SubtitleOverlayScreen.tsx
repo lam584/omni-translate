@@ -2,8 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import { clearSubtitleCuesRuntime, toggleSubtitleOverlayWindow } from '../runtime/audio-runtime';
-import { desktopApiV2 } from '../runtime/desktop-api-v2';
-import { isTauriRuntime } from '../runtime/tauri-runtime';
+import { useDesktopApiV2 } from '../runtime/desktop-api-context';
 import { useAppStore } from '../stores/app-store';
 import OverlayContextMenu from './overlay/OverlayContextMenu';
 import OverlayResizeHandles from './overlay/OverlayResizeHandles';
@@ -23,6 +22,8 @@ import { buildSubtitleOverlayCssVariables } from './overlay/overlayTypography';
 export { subtitleOverlayPageHelpers };
 
 function SubtitleOverlayPage() {
+  const desktopApi = useDesktopApiV2();
+  const hasNativeShell = desktopApi.capabilities.hasNativeShell;
   const { t } = useTranslation();
   const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
   const configDraft = useAppStore((state) => state.configDraft);
@@ -68,8 +69,8 @@ function SubtitleOverlayPage() {
   const toggleOverlayLock = useCallback(() => {
     setLockedReveal({ interactive: false, visible: false });
     updateSubtitleDraft({ overlayLocked: !overlayLocked });
-    if (overlayLocked && isTauriRuntime()) {
-      void desktopApiV2.overlay.unlock().catch((error) => {
+    if (overlayLocked && hasNativeShell) {
+      void desktopApi.overlay.unlock().catch((error) => {
         pushRuntimeNotification({
           id: `subtitle-overlay-unlock-failed-${Date.now()}`,
           level: 'error',
@@ -79,7 +80,7 @@ function SubtitleOverlayPage() {
         });
       });
     }
-  }, [overlayLocked, pushRuntimeNotification, setLockedReveal, updateSubtitleDraft]);
+  }, [overlayLocked, pushRuntimeNotification, setLockedReveal, updateSubtitleDraft, desktopApi.overlay, hasNativeShell]);
   const contextController = useOverlayContextMenuController({
     applyBackgroundOpacity: styleController.applyOverlayBackgroundOpacity,
     applyFontSize: styleController.applyOverlayFontSize,
@@ -134,19 +135,19 @@ function SubtitleOverlayPage() {
       onPointerMove={pointerInteractions.handleOverlayPointerMove}
       onPointerUp={(event) => void pointerInteractions.finishOverlayDrag(event)}
       style={{ fontFamily: overlayFontFamily }}>
-      <OverlayResizeHandles visible={!overlayLocked && isTauriRuntime()}
+      <OverlayResizeHandles visible={!overlayLocked && hasNativeShell}
         onPointerDown={(direction, event) => void pointerInteractions.handleResizePointerDown(direction, event)}
         onPointerMove={pointerInteractions.handleResizePointerMove}
         onPointerFinish={(event) => void pointerInteractions.finishOverlayResize(event)} />
       <SubtitleOverlayContent cardStyle={cardStyle} displayCues={displayCues}
         effectiveFontSize={effectiveOverlayFontSize} overlayLocked={overlayLocked}
-        showLockToggle={overlayLocked ? (isTauriRuntime() ? lockedReveal.visible : hovered) : hovered}
-        windowSized={isTauriRuntime()} lockLabel={overlayLocked ? menuText('overlay.unlockAction') : menuText('overlay.lockAction')}
+        showLockToggle={overlayLocked ? (hasNativeShell ? lockedReveal.visible : hovered) : hovered}
+        windowSized={hasNativeShell} lockLabel={overlayLocked ? menuText('overlay.unlockAction') : menuText('overlay.lockAction')}
         previewSource={t('overlay.previewTitleEnglish', { defaultValue: 'Subtitles ready' })} previewTranslation={t('overlay.previewTitle')}
         onLockBlur={() => { if (overlayLocked) setLockedReveal((current) => ({ ...current, interactive: false })); }}
         onLockHover={(nextHovered) => { if (overlayLocked) setLockedReveal((current) => ({ ...current, interactive: nextHovered, visible: nextHovered || current.visible })); }}
         onLockToggle={toggleOverlayLock} />
-      {!isTauriRuntime() && contextController.contextMenu.open ? (
+      {!hasNativeShell && contextController.contextMenu.open ? (
         <OverlayContextMenu applyOverlayBackgroundOpacity={closeAfter(styleController.applyOverlayBackgroundOpacity)}
           applyOverlayFontSize={closeAfter(styleController.applyOverlayFontSize)} applyOverlayStylePreset={closeAfter(styleController.applyOverlayStylePreset)}
           applyOverlayTextColor={closeAfter(styleController.applyOverlayTextColor)} clearSubtitleOverlayCues={closeAfterAsync(clearCues)}

@@ -10,7 +10,9 @@ const mocks = vi.hoisted(() => ({
   scaleFactor: vi.fn(),
 }));
 
-vi.mock('../../runtime/tauri-runtime', () => ({ isTauriRuntime: () => mocks.isTauri() }));
+vi.mock('../../runtime/desktop-api-context', () => ({
+  useDesktopCapabilities: () => ({ hasNativeShell: mocks.isTauri() }),
+}));
 vi.mock('../../runtime/overlay-window-adapter', () => ({
   cursorPosition: () => mocks.cursorPosition(),
   getCurrentWindow: () => ({

@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from 'react';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import { useDesktopApiV2 } from '../../runtime/desktop-api-context';
 import { invokeWithTimeoutCore } from '../../runtime/invoke-with-timeout';
-import { isTauriRuntime } from '../../runtime/tauri-runtime';
 
 const POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_ATTEMPTS = 8;
@@ -27,13 +26,14 @@ export const storageRecoveryHelpers = { invokeWithTimeout };
 /** Restores storage after startup without coupling provider editing to IPC. */
 export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnapshot }: StorageRecoveryOptions) {
   const desktopApi = useDesktopApiV2();
+  const hasNativeShell = desktopApi.capabilities.hasNativeShell;
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const attemptsRef = useRef(0);
   const recoveryKey = `${runtimeStatus}:${bridgeStatus}`;
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
 
   useEffect(() => {
-    if (!isTauriRuntime() || runtimeStatus === 'ready' || bridgeStatus === 'runtime-error') {
+    if (!hasNativeShell || runtimeStatus === 'ready' || bridgeStatus === 'runtime-error') {
       return;
     }
 
@@ -77,7 +77,7 @@ export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnap
       if (intervalRef.current) window.clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
-  }, [bridgeStatus, desktopApi, recoveryKey, runtimeStatus, setRuntimeSnapshot]);
+  }, [bridgeStatus, desktopApi, recoveryKey, runtimeStatus, setRuntimeSnapshot, hasNativeShell]);
 
   return failure?.key === recoveryKey ? failure.message : null;
 }

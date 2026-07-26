@@ -7,13 +7,19 @@ import { storageRecoveryHelpers, useStorageRecovery } from './useStorageRecovery
 const mocks = vi.hoisted(() => ({
   bootstrapRuntime: vi.fn(), bootstrapStorage: vi.fn(), runtimeSnapshot: vi.fn(), isTauri: vi.fn(),
 }));
-vi.mock('../../runtime/tauri-runtime', () => ({ isTauriRuntime: mocks.isTauri }));
 vi.mock('../../runtime/desktop-api-context', () => ({
-  useDesktopApiV2: () => ({ configuration: {
-    bootstrapRuntime: mocks.bootstrapRuntime,
-    bootstrapStorage: mocks.bootstrapStorage,
-    runtimeSnapshot: mocks.runtimeSnapshot,
-  } }),
+  useDesktopApiV2: () => ({
+    capabilities: {
+      get hasNativeShell() {
+        return Boolean(mocks.isTauri());
+      },
+    },
+    configuration: {
+      bootstrapRuntime: mocks.bootstrapRuntime,
+      bootstrapStorage: mocks.bootstrapStorage,
+      runtimeSnapshot: mocks.runtimeSnapshot,
+    },
+  }),
 }));
 
 describe('useStorageRecovery', () => {

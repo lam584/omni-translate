@@ -4,7 +4,7 @@ import type { StatusTone } from '../components/page/StatusBadge';
 import { defaultProviderTemplate, providerTemplates } from '../defaults/provider-templates';
 import type { ProviderKind } from '../schema/provider-contract';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
-import { isTauriRuntime } from '../runtime/tauri-runtime';
+import { useDesktopCapabilities } from '../runtime/desktop-api-context';
 import { useAppStore } from '../stores/app-store';
 import { buildProviderTemplateCatalogEntries } from '../utils/provider-template-catalog';
 import {
@@ -50,6 +50,7 @@ const {
 } = providersPageHelpers;
 
 function ProvidersPage() {
+  const { hasNativeShell } = useDesktopCapabilities();
   const { t } = useTranslation();
   const configDraft = useAppStore((state) => state.configDraft);
   const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
@@ -92,7 +93,7 @@ function ProvidersPage() {
   const activeTemplate = activeTemplateEntry?.template ?? defaultProviderTemplate;
   const activeProbe = useMemo(() => resolveProbeView(activeProvider, probeResult), [activeProvider, probeResult]);
   const effectiveBridgeStatus = resolveRuntimeBridgeStatus(runtimeSnapshot);
-  const storageBlocked = isTauriRuntime() && runtimeSnapshot.storage.status !== 'ready';
+  const storageBlocked = hasNativeShell && runtimeSnapshot.storage.status !== 'ready';
   const providerRuntimeBlocked = storageBlocked;
   const latestRuntimeError = runtimeNotifications.find((item) => item.level === 'error');
   const modelCatalogSignature = useMemo(() => buildModelCatalogSignature(activeProvider), [activeProvider]);

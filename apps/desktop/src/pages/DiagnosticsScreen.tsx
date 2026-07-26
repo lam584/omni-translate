@@ -8,7 +8,7 @@ import i18n from '../i18n/config';
 import { installDriverRuntime, repairDriverRuntime, startBridgeServiceRuntime } from '../runtime/bridge-runtime';
 import { useDesktopApiV2 } from '../runtime/desktop-api-context';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
-import { isTauriRuntime, hasInvokeBridge } from '../runtime/tauri-runtime';
+import { hasInvokeBridge } from '../runtime/tauri-runtime';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import { useAppStore } from '../stores/app-store';
 import { resolveRecommendedDriverAction } from '../utils/driver-management';
@@ -217,16 +217,17 @@ function DiagnosticsPage() {
       : i18n.t('diagnostics.health.needsInvestigationDetail');
 
   const envDiagnostic = useMemo(() => {
-    const tauriFlag = isTauriRuntime();
+    // One capability read feeds both legacy display fields; hasInvokeBridge
+    // stays a raw probe on purpose — this panel reports the real environment.
+    const shell = desktopApi.capabilities.hasNativeShell;
     const bridge = hasInvokeBridge();
-    const runtime = isTauriRuntime();
     const ipcObject = !!(window as unknown as Record<string, unknown>).ipc;
     const speechEnabled = Boolean(configDraft.speech?.enabled || configDraft.devices?.outputSpeechEnabled);
 
     return {
-      tauriFlag,
+      tauriFlag: shell,
       hasBridge: bridge,
-      isRuntime: runtime,
+      isRuntime: shell,
       hasIpcObject: ipcObject,
       storageStatus: runtimeSnapshot.storage.status,
       bridgeStatus: runtimeSnapshot.bridgeStatus,
@@ -236,7 +237,7 @@ function DiagnosticsPage() {
       speechLocalPlayback: Boolean(configDraft.speech?.localPlaybackEnabled ?? true),
       speechVirtualMic: Boolean(configDraft.speech?.virtualMicOutputEnabled ?? false),
     };
-  }, [runtimeSnapshot, configDraft]);
+  }, [desktopApi, runtimeSnapshot, configDraft]);
 
   const sessionActive = audioRuntimeSnapshot.sessionStartedAt !== null && (
     audioRuntimeSnapshot.inbound.streamBound ||

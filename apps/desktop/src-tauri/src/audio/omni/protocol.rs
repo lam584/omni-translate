@@ -399,14 +399,11 @@ pub(super) fn handle_response_done(
         } else {
             pending_source_text.clone()
         };
-        write_native_translation_payload_to_cue(
+        write_committed_native_translation_to_cue(
             store,
             &cue_id,
             &source,
             pending_translated_text,
-            true,
-            false,
-            false,
         );
         let _ = diag_log(
             app,
@@ -638,6 +635,7 @@ pub(super) fn write_native_output_preview_to_cue(
         false,
         true,
         false,
+        false,
     );
     cue_id
 }
@@ -654,6 +652,7 @@ pub(super) fn write_native_output_final_to_cue(
         &cue_id,
         source_text,
         translated_text,
+        false,
         false,
         false,
         false,
@@ -703,6 +702,28 @@ pub(super) fn write_native_translation_to_cue(
         committed,
         streaming,
         true,
+        false,
+    );
+}
+
+/// Commit write for the native path that runs without the secondary subtitle
+/// worker (and therefore without segment TTS): allowed to re-arrange rows into
+/// source/translation blocks when the two sides do not line up.
+pub(super) fn write_committed_native_translation_to_cue(
+    store: &AudioStateStore,
+    cue_id: &str,
+    source_text: &str,
+    translated_text: &str,
+) {
+    write_native_translation_payload_to_cue(
+        store,
+        cue_id,
+        source_text,
+        translated_text,
+        true,
+        false,
+        false,
+        true,
     );
 }
 
@@ -715,6 +736,7 @@ fn write_native_translation_payload_to_cue(
     committed: bool,
     streaming: bool,
     fallback_to_translation_source: bool,
+    align_mismatched_lines: bool,
 ) {
     if translated_text.trim().is_empty() {
         return;
@@ -726,36 +748,67 @@ fn write_native_translation_payload_to_cue(
     };
     let source_lines = SubtitleDisplaySegmenter::split_text(&display_source_text);
     let translated_lines = SubtitleDisplaySegmenter::split_text(translated_text);
-    let line_count = source_lines.len().max(translated_lines.len());
-    let has_untranslated_source = source_lines
-        .iter()
-        .enumerate()
-        .any(|(index, source)| !source.trim().is_empty() && translated_lines.get(index).is_none_or(|translated| translated.trim().is_empty()));
-    let keep_live_tail = streaming
-        && (has_untranslated_source || !has_terminal_subtitle_boundary(translated_text));
-    // Source and translation wrap independently. When their line counts differ,
-    // the two live tails must remain independently identifiable instead of
-    // marking only the final row of the wider column.
-    let pending_source_index = if keep_live_tail {
-        source_lines.len().checked_sub(1)
-    } else {
-        None
-    };
-    let pending_translation_index = if streaming
-        && !has_terminal_subtitle_boundary(translated_text)
+    let display_segments: Vec<SubtitleDisplaySegmentRuntime> = if align_mismatched_lines
+        && source_lines.len() != translated_lines.len()
     {
-        translated_lines.len().checked_sub(1)
+        // Committed turn whose translation does not line up with the source
+        // (realtime models often merge sentences or re-translate only the tail
+        // of the audio window). Index pairing would attach translations to the
+        // wrong source rows and leave the leftover rows looking permanently
+        // failed, so render the full source block followed by the full
+        // translation block. Only the commit path with segment TTS out of the
+        // picture opts in: segment-TTS dedupe keys embed row indices and
+        // texts, and re-slotting the rows of a cue that already streamed
+        // would replay already-spoken audio.
+        source_lines
+            .iter()
+            .map(|row| SubtitleDisplaySegmentRuntime {
+                source_text: row.clone(),
+                translated_text: String::new(),
+                pending: false,
+            })
+            .chain(
+                translated_lines
+                    .iter()
+                    .map(|row| SubtitleDisplaySegmentRuntime {
+                        source_text: String::new(),
+                        translated_text: row.clone(),
+                        pending: false,
+                    }),
+            )
+            .collect()
     } else {
-        None
+        let line_count = source_lines.len().max(translated_lines.len());
+        let has_untranslated_source = source_lines
+            .iter()
+            .enumerate()
+            .any(|(index, source)| !source.trim().is_empty() && translated_lines.get(index).is_none_or(|translated| translated.trim().is_empty()));
+        let keep_live_tail = streaming
+            && (has_untranslated_source || !has_terminal_subtitle_boundary(translated_text));
+        // Source and translation wrap independently. When their line counts differ,
+        // the two live tails must remain independently identifiable instead of
+        // marking only the final row of the wider column.
+        let pending_source_index = if keep_live_tail {
+            source_lines.len().checked_sub(1)
+        } else {
+            None
+        };
+        let pending_translation_index = if streaming
+            && !has_terminal_subtitle_boundary(translated_text)
+        {
+            translated_lines.len().checked_sub(1)
+        } else {
+            None
+        };
+        (0..line_count)
+            .map(|index| SubtitleDisplaySegmentRuntime {
+                source_text: source_lines.get(index).cloned().unwrap_or_default(),
+                translated_text: translated_lines.get(index).cloned().unwrap_or_default(),
+                pending: pending_source_index == Some(index)
+                    || pending_translation_index == Some(index),
+            })
+            .collect()
     };
-    let display_segments = (0..line_count)
-        .map(|index| SubtitleDisplaySegmentRuntime {
-            source_text: source_lines.get(index).cloned().unwrap_or_default(),
-            translated_text: translated_lines.get(index).cloned().unwrap_or_default(),
-            pending: pending_source_index == Some(index)
-                || pending_translation_index == Some(index),
-        })
-        .collect();
     store.update_or_push_stt_cue(cue_id, &display_source_text, false);
     store.update_subtitle_cue_display_segments(
         cue_id,

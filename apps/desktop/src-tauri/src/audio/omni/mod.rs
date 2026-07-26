@@ -554,6 +554,7 @@ use self::protocol::{
 };
 #[cfg(test)]
 mod native_translation_tests {
+    use super::protocol::write_committed_native_translation_to_cue;
     use super::*;
 
     #[test]
@@ -778,6 +779,80 @@ mod native_translation_tests {
         assert!(cue.display_segments[2].pending);
         assert_eq!(cue.display_segments[3].source_text, "source four");
         assert!(cue.display_segments[3].pending);
+    }
+
+    #[test]
+    fn committed_partial_native_translation_never_pairs_unrelated_rows() {
+        let store = AudioStateStore::new();
+        // Regression: watch-mode turn where the realtime model only translated
+        // the tail sentences of the audio window. Index pairing used to put the
+        // translation under the wrong source sentences and leave the remaining
+        // committed rows rendered as "翻译失败" forever.
+        let source = "I want to see you send text with your brain. Okay. His hands are paralyzed, but we're going to film him so you can see they're not moving.";
+        let translated = "他的手瘫痪了，但我们正在拍摄，所以你能看到它们没有动。";
+
+        write_committed_native_translation_to_cue(&store, "omni-cue-partial", source, translated);
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == "omni-cue-partial")
+            .expect("partial native translation cue");
+
+        assert!(cue.committed);
+        assert_eq!(
+            cue.translated_text.replace('\n', ""),
+            translated.replace('\n', "")
+        );
+        // No row may pair a source sentence with a translation of a different
+        // sentence: every row carries either source text or translated text.
+        assert!(cue
+            .display_segments
+            .iter()
+            .all(|segment| segment.source_text.is_empty() || segment.translated_text.is_empty()));
+        // Source rows all come first, translation rows follow as one block.
+        let first_translated = cue
+            .display_segments
+            .iter()
+            .position(|segment| !segment.translated_text.is_empty())
+            .expect("translation rows present");
+        assert!(first_translated > 0);
+        assert!(cue.display_segments[..first_translated]
+            .iter()
+            .all(|segment| !segment.source_text.is_empty()));
+        assert!(cue.display_segments[first_translated..]
+            .iter()
+            .all(|segment| segment.source_text.is_empty()));
+        assert!(cue.display_segments.iter().all(|segment| !segment.pending));
+    }
+
+    #[test]
+    fn committed_native_translation_keeps_index_pairing_when_lines_align() {
+        let store = AudioStateStore::new();
+
+        write_committed_native_translation_to_cue(
+            &store,
+            "omni-cue-aligned",
+            "First source. Second source.",
+            "第一句。第二句。",
+        );
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == "omni-cue-aligned")
+            .expect("aligned native translation cue");
+
+        assert!(cue.committed);
+        assert_eq!(cue.display_segments.len(), 2);
+        assert_eq!(cue.display_segments[0].source_text, "First source.");
+        assert_eq!(cue.display_segments[0].translated_text, "第一句。");
+        assert_eq!(cue.display_segments[1].source_text, "Second source.");
+        assert_eq!(cue.display_segments[1].translated_text, "第二句。");
     }
 
     #[test]

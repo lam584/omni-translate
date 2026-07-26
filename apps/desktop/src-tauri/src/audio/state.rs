@@ -879,9 +879,17 @@ fn route_mut<'a>(
 }
 
 fn cue_needs_more_time(cue: &SubtitleCueRuntime) -> bool {
-    !cue.committed
-        || cue.translated_text.trim().is_empty()
-        || cue.display_segments.iter().any(|segment| {
+    if !cue.committed || cue.translated_text.trim().is_empty() {
+        return true;
+    }
+    // Block-layout commits (source rows followed by translation-only rows) are
+    // final: their source-only rows are not awaiting translation, so they must
+    // stay eligible for eviction.
+    let block_layout = cue.display_segments.iter().any(|segment| {
+        segment.source_text.trim().is_empty() && !segment.translated_text.trim().is_empty()
+    });
+    !block_layout
+        && cue.display_segments.iter().any(|segment| {
             !segment.source_text.trim().is_empty() && segment.translated_text.trim().is_empty()
         })
 }

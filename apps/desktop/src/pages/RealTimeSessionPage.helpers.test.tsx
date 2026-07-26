@@ -318,4 +318,24 @@ describe('realTimeSessionPageHelpers', () => {
     expect(untranslated).toContain('翻译失败');
     expect(failed).toContain('cue-queue-error');
   });
+
+  it('does not label source-only rows as failed when the committed cue has a translation', () => {
+    // Regression: native watch-mode turns can return a translation covering
+    // only part of the source. The cue renders as a source block followed by
+    // a translation block; those source rows are not failures.
+    const partialBlock = renderToStaticMarkup(<CueSegmentRows cue={{
+      ...baseCue,
+      committed: true,
+      translatedText: '他的手瘫痪了。',
+      displaySourceText: 'His hands are paralyzed. Okay.',
+      displaySegments: [
+        { sourceText: 'His hands are paralyzed.', translatedText: '', pending: false },
+        { sourceText: 'Okay.', translatedText: '', pending: false },
+        { sourceText: '', translatedText: '他的手瘫痪了。', pending: false },
+      ],
+    }} />);
+    expect(partialBlock).not.toContain('翻译失败');
+    expect(partialBlock).toContain('他的手瘫痪了。');
+    expect(partialBlock).toContain('His hands are paralyzed.');
+  });
 });

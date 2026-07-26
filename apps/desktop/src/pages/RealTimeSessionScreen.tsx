@@ -283,6 +283,13 @@ function getSessionCueDisplaySegments(cue: SubtitleCueRuntime) {
 function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; current?: boolean }) {
   const { t } = useTranslation();
   const segments = getSessionCueDisplaySegments(cue);
+  // Native watch-mode commits emit a source block followed by a translation
+  // block when the two sides do not line up (e.g. the realtime model only
+  // translated part of the audio window). Source-only rows of such a cue are
+  // not failures — the translation lives on the translation-only rows below.
+  // The secondary-worker path never emits translation-only rows, so its
+  // per-sentence failure markers keep rendering.
+  const blockLayout = segments.some((segment) => !segment.sourceText && segment.translatedText);
 
   if (segments.length === 0) {
     return <p className="live-text-translation">{cue.committed ? t('session.translationFailed') : t('session.callingLlm')}</p>;
@@ -298,7 +305,9 @@ function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; cur
               {segment.translatedText}
             </p>
           ) : cue.committed ? (
-            <p className="cue-queue-error">{t('session.translationFailed')}</p>
+            blockLayout ? null : (
+              <p className="cue-queue-error">{t('session.translationFailed')}</p>
+            )
           ) : (
             <p className="live-caption-segment-pending">{t('session.callingLlm')}</p>
           )}

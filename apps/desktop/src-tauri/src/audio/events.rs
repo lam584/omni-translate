@@ -4,22 +4,47 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 
 use super::contracts::AudioRuntimeSnapshot;
-use super::engine;
 use super::engine::AudioRouteSupervisor;
+#[cfg(test)]
 use super::gemini_live;
-use super::omni;
-use super::openai_realtime;
 use super::speech;
 use super::session_supervisor::AudioSessionSupervisor;
 use super::state::AudioStateStore;
-use super::stt;
 use super::subtitle_translate;
 use super::translate;
 use crate::bridge::{ipc::BridgeIpcClient, state::BridgeStateStore};
 use crate::diagnostics::events::append_diagnostics_log;
+#[cfg(test)]
 use crate::provider::contracts::ProviderDraftInput;
 use crate::runtime::events::show_subtitle_overlay_with_state;
 use crate::runtime::state::RuntimeStateStore;
+
+mod route_config;
+
+mod realtime_session;
+
+mod route_orchestrator;
+
+pub use realtime_session::{cancel_omni_preconnect, preconnect_omni_realtime};
+pub(crate) use realtime_session::preconnect_omni_realtime_inner;
+#[cfg(test)]
+use realtime_session::should_wait_for_omni_session_readiness;
+
+pub(crate) use route_config::resolve_model_provider_from_config_value;
+use route_config::is_omni_model;
+#[cfg(test)]
+use route_config::{
+    is_openai_realtime_provider, resolve_realtime_audio_mode_for_route,
+    resolve_realtime_audio_mode_value, should_start_secondary_speech_dispatch, ResolvedRoutePlan,
+    ResolvedVadPolicy, SpeechDispatchPolicy, SubtitleFallbackPolicy,
+};
+
+pub use route_orchestrator::{start_audio_route, stop_audio_route, stop_speech_dispatch};
+pub(crate) use route_orchestrator::start_audio_route_inner;
+#[cfg(test)]
+use route_orchestrator::{
+    execute_fast_watch_start, run_fast_watch_start_body, FastWatchStartOutcome,
+};
 
 pub const AUDIO_RUNTIME_SNAPSHOT_EVENT: &str = "audio://snapshot";
 const AUDIO_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(6);
@@ -188,10 +213,6 @@ pub fn prewarm_capture_routes(
     Ok(state.snapshot())
 }
 
-include!("events/realtime_session.rs");
-
-include!("events/route_orchestrator.rs");
-
 #[tauri::command]
 pub fn clear_subtitle_cues(
     app: AppHandle,
@@ -229,8 +250,6 @@ pub async fn stop_translate_worker(app: AppHandle) -> Result<AudioRuntimeSnapsho
     });
     rx.recv().map_err(|e| e.to_string())?
 }
-
-include!("events/route_config.rs");
 
 #[cfg(test)]
 mod tests {

@@ -1,5 +1,12 @@
+use serde_json::Value;
+use tauri::AppHandle;
+
+use super::super::{gemini_live, omni, speech};
+use crate::diagnostics::events::append_diagnostics_log;
+use crate::provider::contracts::ProviderDraftInput;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResolvedRouteKind {
+pub(super) enum ResolvedRouteKind {
     GeminiLive,
     Omni,
     OpenAiRealtime,
@@ -8,7 +15,7 @@ enum ResolvedRouteKind {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ResolvedVadPolicy {
+pub(super) enum ResolvedVadPolicy {
     ManualCommit,
     ServerVad,
     GeminiAutoActivity,
@@ -16,48 +23,48 @@ enum ResolvedVadPolicy {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SubtitleFallbackPolicy {
+pub(super) enum SubtitleFallbackPolicy {
     Native,
     Secondary,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum SpeechDispatchPolicy {
+pub(super) enum SpeechDispatchPolicy {
     Disabled,
     SubtitleTtsWhenIdle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct SessionReuseKey {
-    direction: String,
-    model: String,
-    subtitle_translate_active: bool,
+pub(super) struct SessionReuseKey {
+    pub(super) direction: String,
+    pub(super) model: String,
+    pub(super) subtitle_translate_active: bool,
 }
 
 #[derive(Debug, Clone)]
-struct ResolvedRoutePlan {
-    direction: String,
-    requested_voice_model: String,
-    target_language: String,
-    voice: String,
-    instructions: String,
-    omni_speech_config: omni::OmniSpeechConfig,
-    provider: ProviderDraftInput,
-    secondary_subtitle_provider: Option<ProviderDraftInput>,
-    subtitle_translation_model_id: String,
-    realtime_audio_mode: String,
-    legacy_vad_bypass: bool,
-    vad_policy: ResolvedVadPolicy,
-    subtitle_fallback_policy: SubtitleFallbackPolicy,
-    speech_dispatch_policy: SpeechDispatchPolicy,
-    speech_output_enabled: bool,
-    translation_audio_source: speech::TranslationAudioSource,
-    session_reuse_key: SessionReuseKey,
-    kind: ResolvedRouteKind,
+pub(super) struct ResolvedRoutePlan {
+    pub(super) direction: String,
+    pub(super) requested_voice_model: String,
+    pub(super) target_language: String,
+    pub(super) voice: String,
+    pub(super) instructions: String,
+    pub(super) omni_speech_config: omni::OmniSpeechConfig,
+    pub(super) provider: ProviderDraftInput,
+    pub(super) secondary_subtitle_provider: Option<ProviderDraftInput>,
+    pub(super) subtitle_translation_model_id: String,
+    pub(super) realtime_audio_mode: String,
+    pub(super) legacy_vad_bypass: bool,
+    pub(super) vad_policy: ResolvedVadPolicy,
+    pub(super) subtitle_fallback_policy: SubtitleFallbackPolicy,
+    pub(super) speech_dispatch_policy: SpeechDispatchPolicy,
+    pub(super) speech_output_enabled: bool,
+    pub(super) translation_audio_source: speech::TranslationAudioSource,
+    pub(super) session_reuse_key: SessionReuseKey,
+    pub(super) kind: ResolvedRouteKind,
 }
 
 impl ResolvedRoutePlan {
-    fn from_resolved_provider(
+    pub(super) fn from_resolved_provider(
         direction: &str,
         config: &Value,
         requested_voice_model: String,
@@ -176,15 +183,20 @@ fn subtitle_translate_mode_and_model(config: &Value) -> (&str, &str) {
     (mode, model_id)
 }
 
-fn is_omni_model(model: &str) -> bool {
+pub(super) fn is_omni_model(model: &str) -> bool {
     let lower = model.to_lowercase();
     lower.contains("realtime") && (lower.contains("omni") || lower.contains("livetranslate"))
 }
 
-fn is_openai_realtime_provider(provider: &ProviderDraftInput) -> bool {
+pub(super) fn is_openai_realtime_provider(provider: &ProviderDraftInput) -> bool {
     provider.kind == "openai-compatible" && {
         let lower = provider.model.to_ascii_lowercase();
-        lower.contains("realtime") || lower.contains("live")
+        // realtime/live -> conversation dialect; translate -> dedicated
+        // translation endpoint; transcribe/whisper -> transcription intent.
+        lower.contains("realtime")
+            || lower.contains("live")
+            || lower.contains("transcribe")
+            || lower.contains("whisper")
     }
 }
 
@@ -211,12 +223,16 @@ fn default_realtime_audio_mode_name(model: &str) -> &'static str {
         "manual"
     } else if lower.contains("gemini") && (lower.contains("live") || lower.contains("realtime")) {
         "gemini_auto_activity"
+    } else if lower.contains("whisper") && lower.contains("realtime") {
+        // gpt-realtime-whisper streams continuously; OpenAI recommends
+        // turn_detection: null with manual commits for it.
+        "manual"
     } else {
         "server_vad"
     }
 }
 
-fn resolve_realtime_audio_mode_value(provider: &ProviderDraftInput, model: &str) -> String {
+pub(super) fn resolve_realtime_audio_mode_value(provider: &ProviderDraftInput, model: &str) -> String {
     let normalized_model = model.trim().to_ascii_lowercase();
     provider
         .local_model_capability_registry
@@ -234,7 +250,7 @@ fn resolve_realtime_audio_mode_value(provider: &ProviderDraftInput, model: &str)
 }
 
 #[cfg(test)]
-fn resolve_realtime_audio_mode_for_route(
+pub(super) fn resolve_realtime_audio_mode_for_route(
     direction: &str,
     config: &Value,
     provider: &ProviderDraftInput,
@@ -256,7 +272,7 @@ fn is_dashscope_provider(provider: &ProviderDraftInput) -> bool {
 }
 
 #[cfg(test)]
-fn should_start_secondary_speech_dispatch(
+pub(super) fn should_start_secondary_speech_dispatch(
     config: &Value,
     st_active: bool,
     speech_dispatch_state: &str,
@@ -268,7 +284,7 @@ fn should_start_secondary_speech_dispatch(
             == speech::TranslationAudioSource::SubtitleTts
 }
 
-fn resolve_model_provider_from_config(
+pub(super) fn resolve_model_provider_from_config(
     app: &AppHandle,
     config: &Value,
     composite_model_id: &str,

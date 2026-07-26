@@ -1,3 +1,26 @@
+use serde_json::Value;
+use tauri::{AppHandle, Manager};
+
+use super::super::contracts::AudioRuntimeSnapshot;
+use super::super::engine;
+use super::super::engine::AudioRouteSupervisor;
+use super::super::state::AudioStateStore;
+use super::super::{speech, stt, subtitle_translate};
+use super::realtime_session::{
+    apply_native_subtitle_translate_fallback, start_or_reuse_gemini_live_session,
+    start_or_reuse_omni_session, start_or_reuse_openai_realtime_session,
+    stop_preconnected_omni_session,
+};
+use super::route_config::{
+    resolve_model_provider_from_config, ResolvedRouteKind, ResolvedRoutePlan, SpeechDispatchPolicy,
+    SubtitleFallbackPolicy,
+};
+use super::{
+    route_command_timeout, route_command_timeout_message, start_route_with_overlay,
+    stop_existing_inbound_pipeline, OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
+};
+use crate::diagnostics::events::append_diagnostics_log;
+
 /// Normalized result of the fast-watch background worker.
 ///
 /// The worker runs on a detached `spawn_blocking` task whose `JoinHandle` is
@@ -5,7 +28,7 @@
 /// only be inferred from the outer command timeout. Collapsing both `Err`
 /// returns and panics into `Failed` keeps every initialization failure
 /// attributable.
-enum FastWatchStartOutcome {
+pub(super) enum FastWatchStartOutcome {
     Ready(AudioRuntimeSnapshot),
     Failed(String),
 }
@@ -24,7 +47,7 @@ fn describe_panic_payload(payload: Box<dyn std::any::Any + Send>) -> String {
 /// Runs the fast-watch worker body while capturing panics, so a panic inside
 /// `start_audio_route_inner` becomes an attributable failure instead of an
 /// unobserved `JoinError`.
-fn run_fast_watch_start_body<R>(run_inner: R) -> FastWatchStartOutcome
+pub(super) fn run_fast_watch_start_body<R>(run_inner: R) -> FastWatchStartOutcome
 where
     R: FnOnce() -> Result<AudioRuntimeSnapshot, String> + std::panic::UnwindSafe,
 {
@@ -41,7 +64,7 @@ where
 /// Runs the fast-watch worker and, on any failure (`Err` or panic), writes a
 /// readable reason via `mark_route_error` and emits a snapshot so front-end
 /// polling can read `lastError` without waiting for a timeout fallback.
-fn execute_fast_watch_start<R>(
+pub(super) fn execute_fast_watch_start<R>(
     state: &AudioStateStore,
     run_inner: R,
     mut emit_snapshot: impl FnMut(),
@@ -51,7 +74,7 @@ where
 {
     let outcome = run_fast_watch_start_body(run_inner);
     if let FastWatchStartOutcome::Failed(reason) = &outcome {
-        state.mark_route_error("inbound", reason.clone(), Some("restart-route".to_string()));
+        state.mark_route_error("inbound", reason.clone(), None, Some("restart-route".to_string()));
         emit_snapshot();
     }
     outcome
@@ -196,6 +219,7 @@ pub async fn start_audio_route(
                 state.mark_route_error(
                     "inbound",
                     timeout_message.clone(),
+                    None,
                     Some("restart-bridge".to_string()),
                 );
                 let _ = engine::emit_audio_snapshot(&app, &state);
@@ -405,6 +429,85 @@ fn start_omni_inbound_route(
     )
 }
 
+fn start_openai_inbound_route(
+    app: AppHandle,
+    state: &AudioStateStore,
+    direction: &str,
+    config: Value,
+    plan: ResolvedRoutePlan,
+) -> Result<AudioRuntimeSnapshot, String> {
+    let speech_dispatch_state = state.snapshot().speech.dispatch_state;
+    let mut st_active = false;
+    if let Some(text_provider) = plan.secondary_subtitle_provider.clone() {
+        let _ = append_diagnostics_log(
+            &app,
+            "audio",
+            "info",
+            format!(
+                "二次翻译已启用 (openai-realtime): text_provider.kind={} model={} base_url={}",
+                text_provider.kind, text_provider.model, text_provider.base_url
+            ),
+            None,
+            None,
+            None,
+        );
+        match subtitle_translate::start_subtitle_translate(
+            app.clone(),
+            &state,
+            text_provider,
+            plan.target_language.clone(),
+        ) {
+            Ok(_) => {
+                st_active = true;
+            }
+            Err(error) => {
+                // Fall back to the realtime model's own translation output.
+                let _ = append_diagnostics_log(
+                    &app,
+                    "audio",
+                    "warning",
+                    "watch_mode.subtitle_translate_fallback_native_applied",
+                    Some(format!(
+                        "reason=worker_failed provider=openai-realtime subtitleTranslationModelId={} error={error}",
+                        plan.subtitle_translation_model_id
+                    )),
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+    let should_start_speech_dispatch = plan.speech_dispatch_policy
+        == SpeechDispatchPolicy::SubtitleTtsWhenIdle
+        && st_active
+        && speech_dispatch_state == "idle";
+    let openai_sender = start_or_reuse_openai_realtime_session(
+        &app,
+        &state,
+        plan.provider.clone(),
+        &plan.direction,
+        &plan.target_language,
+        &plan.realtime_audio_mode,
+        plan.instructions.clone(),
+        st_active,
+    )?;
+    state.live_session_events.record_milestone_now("route_started");
+    if should_start_speech_dispatch {
+        if let Err(error) = speech::start_dispatch(app.clone(), &state, config.clone()) {
+            let _ = append_diagnostics_log(
+                &app,
+                "audio",
+                "error",
+                format!("speech dispatch fallback failed for OpenAI secondary watch: {error}"),
+                None,
+                None,
+                None,
+            );
+        }
+    }
+    start_route_with_overlay(app, &state, direction, config, Some(openai_sender))
+}
+
 pub(crate) fn start_audio_route_inner(
     app: AppHandle,
     state: &AudioStateStore,
@@ -515,16 +618,7 @@ pub(crate) fn start_audio_route_inner(
                 start_omni_inbound_route(app, state, &direction, config, plan)
             }
             ResolvedRouteKind::OpenAiRealtime => {
-                let openai_sender = start_or_reuse_openai_realtime_session(
-                    &app,
-                    &state,
-                    plan.provider,
-                    &plan.direction,
-                    &plan.target_language,
-                    &plan.realtime_audio_mode,
-                    plan.instructions,
-                )?;
-                start_route_with_overlay(app, &state, &direction, config, Some(openai_sender))
+                start_openai_inbound_route(app, state, &direction, config, plan)
             }
             ResolvedRouteKind::DashscopeStt => {
                 let (stt_sender, handle) = stt::start_stt(app.clone(), &state, plan.provider)?;

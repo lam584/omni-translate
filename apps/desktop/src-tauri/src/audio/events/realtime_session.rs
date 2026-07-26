@@ -1,8 +1,21 @@
-fn should_wait_for_omni_session_readiness(phase: &str) -> bool {
+use std::time::Duration;
+
+use serde_json::Value;
+use tauri::{AppHandle, Manager};
+
+use super::super::contracts::AudioRuntimeSnapshot;
+use super::super::state::AudioStateStore;
+use super::super::{gemini_live, omni, openai_realtime};
+use super::route_config::{is_omni_model, resolve_model_provider_from_config, ResolvedRoutePlan};
+use super::{OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT};
+use crate::diagnostics::events::append_diagnostics_log;
+use crate::provider::contracts::ProviderDraftInput;
+
+pub(super) fn should_wait_for_omni_session_readiness(phase: &str) -> bool {
     phase == "preconnect"
 }
 
-fn start_or_reuse_omni_session(
+pub(super) fn start_or_reuse_omni_session(
     app: &AppHandle,
     state: &AudioStateStore,
     voice_provider: ProviderDraftInput,
@@ -173,7 +186,7 @@ fn start_or_reuse_omni_session(
     Ok((omni_sender, session_generation))
 }
 
-fn apply_native_subtitle_translate_fallback(config: &mut Value) {
+pub(super) fn apply_native_subtitle_translate_fallback(config: &mut Value) {
     if !config.get("speech").map(Value::is_object).unwrap_or(false) {
         config["speech"] = Value::Object(Default::default());
     }
@@ -185,7 +198,7 @@ fn apply_native_subtitle_translate_fallback(config: &mut Value) {
     }
 }
 
-fn stop_preconnected_omni_session(
+pub(super) fn stop_preconnected_omni_session(
     app: &AppHandle,
     state: &AudioStateStore,
     direction: &str,
@@ -217,7 +230,7 @@ fn stop_preconnected_omni_session(
     }
 }
 
-fn start_or_reuse_openai_realtime_session(
+pub(super) fn start_or_reuse_openai_realtime_session(
     app: &AppHandle,
     state: &AudioStateStore,
     voice_provider: ProviderDraftInput,
@@ -225,6 +238,7 @@ fn start_or_reuse_openai_realtime_session(
     target_lang: &str,
     realtime_audio_mode: &str,
     instructions: String,
+    subtitle_translate_active: bool,
 ) -> Result<std::sync::mpsc::Sender<Vec<u8>>, String> {
     if let Some(sender) = state.take_omni_sender(direction) {
         return Ok(sender);
@@ -241,6 +255,7 @@ fn start_or_reuse_openai_realtime_session(
         instructions,
         audio_mode,
         target_lang.to_string(),
+        subtitle_translate_active,
     )?;
     if let Some(previous) = state.store_omni_handle(direction, handle) {
         let _ = previous.stop_tx.send(());
@@ -248,7 +263,7 @@ fn start_or_reuse_openai_realtime_session(
     Ok(sender)
 }
 
-fn start_or_reuse_gemini_live_session(
+pub(super) fn start_or_reuse_gemini_live_session(
     app: &AppHandle,
     state: &AudioStateStore,
     voice_provider: ProviderDraftInput,

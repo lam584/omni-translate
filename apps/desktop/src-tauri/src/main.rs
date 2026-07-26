@@ -11,41 +11,32 @@ mod runtime;
 mod storage;
 
 use audio::events::{
-    bootstrap_audio, clear_subtitle_cues, preconnect_omni_realtime,
-    preconnect_omni_realtime_inner, refresh_audio_devices, start_audio_route,
-    start_audio_route_inner, start_speech_dispatch, start_translate_worker, stop_audio_route,
-    stop_speech_dispatch, stop_translate_worker,
+    bootstrap_audio, preconnect_omni_realtime, preconnect_omni_realtime_inner,
+    start_audio_route, start_audio_route_inner, stop_audio_route,
 };
 use api_v2::{bridge_v2, configuration_v2, diagnostics_v2, provider_v2, session_v2};
 use audio::state::AudioStateStore;
 use benchmark::run_model_benchmark;
-use bridge::events::{
-    get_bridge_runtime_snapshot, install_driver_runtime, refresh_bridge_runtime,
-    repair_driver_runtime, start_bridge_service, stop_bridge_service, uninstall_driver_runtime,
-};
+use bridge::events::{refresh_bridge_runtime, start_bridge_service};
 use bridge::state::BridgeStateStore;
 use diagnostics::events::{
-    append_diagnostics_log, append_frontend_diagnostics_logs,
-    export_diagnostics_bundle, get_diagnostics_snapshot, get_live_session_events,
-    run_diagnostics_self_check, run_subtitle_overlay_self_check, set_diagnostics_log_level,
+    append_diagnostics_log, append_frontend_diagnostics_logs, get_diagnostics_snapshot,
+    get_live_session_events, set_diagnostics_log_level,
 };
-use provider::events::{execute_provider_smoke, fetch_provider_models, probe_provider};
 use runtime::contracts::RuntimeNotification;
 use runtime::events::sync_subtitle_overlay_window_state;
 use runtime::events::unlock_subtitle_overlay;
 use runtime::events::{
     bootstrap_runtime, emit_runtime_notification, emit_runtime_snapshot, get_runtime_snapshot,
-    show_subtitle_overlay, sync_subtitle_overlay_region,
-    toggle_subtitle_overlay,
+    show_subtitle_overlay, toggle_subtitle_overlay,
 };
 use runtime::windows::ensure_subtitle_overlay_window;
 use runtime::state::{now_marker, RuntimeStateStore};
 use runtime::tray::initialize_tray;
 use storage::credential::{CredentialVault, KeyringCredentialVault};
 use storage::events::{
-    bootstrap_storage, create_config_snapshot, export_config_draft, get_secret_ref_status,
-    import_config_draft, load_config_draft, read_secret_ref,
-    reset_config_draft, rollback_config_snapshot, save_config_draft, upsert_secret_ref,
+    bootstrap_storage, get_secret_ref_status, load_config_draft, read_secret_ref,
+    save_config_draft, upsert_secret_ref,
 };
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -675,43 +666,20 @@ fn main() {
             bootstrap_runtime,
             toggle_subtitle_overlay,
             show_subtitle_overlay,
-            sync_subtitle_overlay_region,
             sync_subtitle_overlay_window_state,
-            get_bridge_runtime_snapshot,
             refresh_bridge_runtime,
             start_bridge_service,
-            stop_bridge_service,
-            install_driver_runtime,
-            uninstall_driver_runtime,
-            repair_driver_runtime,
             get_diagnostics_snapshot,
             set_diagnostics_log_level,
             append_frontend_diagnostics_logs,
-            run_diagnostics_self_check,
-            run_subtitle_overlay_self_check,
-            export_diagnostics_bundle,
             get_live_session_events,
             bootstrap_audio,
-            refresh_audio_devices,
             preconnect_omni_realtime,
             start_audio_route,
             stop_audio_route,
-            start_speech_dispatch,
-            stop_speech_dispatch,
-            start_translate_worker,
-            stop_translate_worker,
-            clear_subtitle_cues,
-            fetch_provider_models,
-            probe_provider,
-            execute_provider_smoke,
             bootstrap_storage,
             load_config_draft,
             save_config_draft,
-            reset_config_draft,
-            export_config_draft,
-            import_config_draft,
-            create_config_snapshot,
-            rollback_config_snapshot,
             upsert_secret_ref,
             get_secret_ref_status,
             read_secret_ref,

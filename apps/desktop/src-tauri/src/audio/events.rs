@@ -184,7 +184,6 @@ pub async fn bootstrap_audio(
         .map_err(|error| format!("音频初始化线程意外退出: {error}"))?
 }
 
-#[tauri::command]
 pub fn refresh_audio_devices(
     app: AppHandle,
     state: State<'_, AudioStateStore>,
@@ -208,7 +207,6 @@ pub fn prewarm_capture_routes(
     Ok(state.snapshot())
 }
 
-#[tauri::command]
 pub fn clear_subtitle_cues(
     app: AppHandle,
     state: State<'_, AudioStateStore>,
@@ -216,7 +214,6 @@ pub fn clear_subtitle_cues(
     AudioSessionSupervisor::new(app, &state).clear_cues()
 }
 
-#[tauri::command]
 pub fn start_speech_dispatch(
     app: AppHandle,
     state: State<'_, AudioStateStore>,
@@ -225,7 +222,6 @@ pub fn start_speech_dispatch(
     AudioSessionSupervisor::new(app, &state).start_speech(config)
 }
 
-#[tauri::command]
 pub fn start_translate_worker(
     app: AppHandle,
     state: State<'_, AudioStateStore>,
@@ -234,7 +230,6 @@ pub fn start_translate_worker(
     AudioSessionSupervisor::new(app, &state).start_translation(config)
 }
 
-#[tauri::command]
 pub async fn stop_translate_worker(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

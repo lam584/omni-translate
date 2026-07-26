@@ -648,7 +648,6 @@ pub(crate) fn start_audio_route_inner(
     }
 }
 
-#[tauri::command]
 pub async fn stop_speech_dispatch(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {

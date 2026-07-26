@@ -405,7 +405,6 @@ pub async fn append_frontend_diagnostics_logs(
     Ok(())
 }
 
-#[tauri::command]
 pub fn run_diagnostics_self_check(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,
@@ -433,7 +432,6 @@ pub fn run_diagnostics_self_check(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-#[tauri::command]
 pub fn run_subtitle_overlay_self_check(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,
@@ -465,7 +463,6 @@ pub fn run_subtitle_overlay_self_check(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-#[tauri::command]
 // `async fn` so this runs on a tokio worker thread, NOT the main thread.
 // The body performs heavy synchronous filesystem IO (snapshot build + bundle
 // write). A synchronous `#[tauri::command] fn` would run that IO on the main

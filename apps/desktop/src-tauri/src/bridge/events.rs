@@ -454,7 +454,6 @@ fn log_bridge_event(
     let _ = append_diagnostics_log_quiet(app, "bridge", level, summary, detail, None, None);
 }
 
-#[tauri::command]
 pub fn get_bridge_runtime_snapshot(
     state: State<'_, BridgeStateStore>,
 ) -> super::contracts::BridgeRuntimeSnapshot {
@@ -629,7 +628,6 @@ pub fn start_bridge_service(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-#[tauri::command]
 pub fn stop_bridge_service(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,
@@ -666,7 +664,6 @@ pub fn stop_bridge_service(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-#[tauri::command]
 pub fn install_driver_runtime(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,
@@ -734,7 +731,6 @@ pub fn install_driver_runtime(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-#[tauri::command]
 pub fn uninstall_driver_runtime(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,
@@ -788,7 +784,6 @@ pub fn uninstall_driver_runtime(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-#[tauri::command]
 pub fn repair_driver_runtime(
     app: AppHandle,
     runtime_state: State<'_, RuntimeStateStore>,

@@ -129,7 +129,6 @@ pub fn save_config_draft(
     }
 }
 
-#[tauri::command]
 pub fn reset_config_draft(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,
@@ -152,7 +151,6 @@ pub fn reset_config_draft(
     }
 }
 
-#[tauri::command]
 pub fn export_config_draft(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,
@@ -178,7 +176,6 @@ pub fn export_config_draft(
     }
 }
 
-#[tauri::command]
 pub fn import_config_draft(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,
@@ -211,7 +208,6 @@ pub fn import_config_draft(
     }
 }
 
-#[tauri::command]
 pub fn create_config_snapshot(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,
@@ -248,7 +244,6 @@ pub fn create_config_snapshot(
     }
 }
 
-#[tauri::command]
 pub fn rollback_config_snapshot(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,

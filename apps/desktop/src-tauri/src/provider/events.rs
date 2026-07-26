@@ -8,7 +8,6 @@ use super::contracts::{
 };
 use super::gateway::ProviderGateway;
 
-#[tauri::command]
 // `async fn`: the gateway performs blocking network IO. Keep it off the main
 // thread so a slow/hung provider endpoint never freezes the message pump
 // (IPC + tray). Same main-thread-starvation hazard as export.
@@ -40,7 +39,6 @@ pub async fn fetch_provider_models(
     result
 }
 
-#[tauri::command]
 // `async fn`: blocking network probe, kept off the main thread.
 pub async fn probe_provider(app: AppHandle, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
     let result = ProviderGateway::new().probe(provider);
@@ -68,7 +66,6 @@ pub async fn probe_provider(app: AppHandle, provider: ProviderDraftInput) -> Pro
     result
 }
 
-#[tauri::command]
 // `async fn`: blocking network smoke test, kept off the main thread.
 pub async fn execute_provider_smoke(
     app: AppHandle,

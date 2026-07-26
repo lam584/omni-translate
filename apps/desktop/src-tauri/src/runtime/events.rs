@@ -231,7 +231,6 @@ pub fn show_subtitle_overlay(
     show_subtitle_overlay_with_state(&app, &state)
 }
 
-#[tauri::command]
 pub fn sync_subtitle_overlay_region(app: AppHandle, rounded: bool) -> Result<(), String> {
     let window = ensure_subtitle_overlay_window(&app).map_err(|error| error.to_string())?;
     apply_subtitle_overlay_region(&window, rounded)

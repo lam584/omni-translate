@@ -177,15 +177,25 @@ pub fn emit_runtime_event_v2<R: tauri::Runtime>(
     app.emit(&event_name, event)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ProviderCommandV2 {
-    FetchModels { provider: ProviderDraftInput },
-    Probe { provider: ProviderDraftInput },
-    Smoke {
+    FetchModels {
+        #[ts(type = "unknown")]
         provider: ProviderDraftInput,
+    },
+    Probe {
+        #[ts(type = "unknown")]
+        provider: ProviderDraftInput,
+    },
+    Smoke {
+        #[ts(type = "unknown")]
+        provider: ProviderDraftInput,
+        #[ts(optional)]
         source_text: Option<String>,
+        #[ts(optional)]
         source_language: Option<String>,
+        #[ts(optional)]
         target_language: Option<String>,
     },
     RunModelBenchmark {
@@ -193,11 +203,17 @@ pub enum ProviderCommandV2 {
         api_key: String,
         mp3_path: String,
         run_id: String,
+        #[ts(optional)]
         realtime_audio_mode: Option<String>,
+        #[ts(optional)]
         interaction_capabilities: Option<Vec<String>>,
+        #[ts(optional)]
         provider_kind: Option<String>,
+        #[ts(optional)]
         base_url: Option<String>,
+        #[ts(optional)]
         auth_header_name: Option<String>,
+        #[ts(optional)]
         auth_scheme: Option<String>,
     },
 }
@@ -271,21 +287,37 @@ pub async fn provider_v2(
     finish_v2(&app, "provider_v2", request_id, started, outcome)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SessionCommandV2 {
     Snapshot,
     Bootstrap,
     RefreshDevices,
-    Preconnect { config: Value },
+    Preconnect {
+        #[ts(type = "unknown")]
+        config: Value,
+    },
     CancelPreconnect,
-    PrewarmRoutes { config: Value },
-    StartRoute { direction: String, config: Value },
+    PrewarmRoutes {
+        #[ts(type = "unknown")]
+        config: Value,
+    },
+    StartRoute {
+        direction: String,
+        #[ts(type = "unknown")]
+        config: Value,
+    },
     StopRoute { direction: String },
     ClearCues,
-    StartSpeech { config: Value },
+    StartSpeech {
+        #[ts(type = "unknown")]
+        config: Value,
+    },
     StopSpeech,
-    StartTranslation { config: Value },
+    StartTranslation {
+        #[ts(type = "unknown")]
+        config: Value,
+    },
     StopTranslation,
     SyncOverlayRegion { rounded: bool },
     SyncOverlayWindowState {
@@ -355,16 +387,23 @@ pub async fn session_v2(
     )
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum BridgeCommandV2 {
     Snapshot,
     Refresh,
-    Start { config: Value },
+    Start {
+        #[ts(type = "unknown")]
+        config: Value,
+    },
     Stop,
-    Install { config: Value },
+    Install {
+        #[ts(type = "unknown")]
+        config: Value,
+    },
     Uninstall,
     Repair {
+        #[ts(type = "unknown")]
         config: Value,
         repair_action: String,
     },
@@ -393,7 +432,7 @@ pub async fn bridge_v2(app: AppHandle, command: BridgeCommandV2) -> Result<Servi
     finish_v2(&app, "bridge_v2", request_id, started, outcome)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum DiagnosticsCommandV2 {
     SelfCheck,
@@ -459,15 +498,21 @@ pub async fn diagnostics_v2(
     finish_v2(&app, "diagnostics_v2", request_id, started, outcome)
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ConfigurationCommandV2 {
     Load,
-    Save { config: Value },
+    Save {
+        #[ts(type = "unknown")]
+        config: Value,
+    },
     Reset,
     Export,
     Import { file_path: String },
-    CreateSnapshot { reason: Option<String> },
+    CreateSnapshot {
+        #[ts(optional)]
+        reason: Option<String>,
+    },
     Rollback { snapshot_id: String },
     RuntimeSnapshot,
     BootstrapRuntime,
@@ -549,6 +594,55 @@ mod tests {
             Some("nope"),
             "the original error text must survive the generic folding"
         );
+    }
+
+    /// Round-trips the literal JSON the renderer's DesktopApiV2 emits (the
+    /// committed fixture written by desktop-api-v2.fixture.test.ts) through
+    /// the real command enums. A TS-side rename of an action or payload field
+    /// changes the fixture and fails here even when tsc cannot see it.
+    #[test]
+    fn renderer_command_payloads_deserialize_into_the_v2_enums() {
+        let fixture: serde_json::Value = serde_json::from_str(include_str!(
+            "../fixtures/desktop-api-v2-commands.json"
+        ))
+        .expect("fixture parses");
+        let entries = fixture.as_array().expect("fixture is an array");
+        assert!(
+            entries.len() >= 40,
+            "fixture unexpectedly small ({} entries); regenerate it",
+            entries.len()
+        );
+        let mut round_tripped = 0usize;
+        for entry in entries {
+            let label = entry["label"].as_str().unwrap_or("(unlabeled)");
+            let command = entry["command"].as_str().expect("entry command");
+            let payload = entry["payload"]["command"].clone();
+            let outcome: Result<(), String> = match command {
+                "provider_v2" => serde_json::from_value::<super::ProviderCommandV2>(payload)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                "session_v2" => serde_json::from_value::<SessionCommandV2>(payload)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                "bridge_v2" => serde_json::from_value::<BridgeCommandV2>(payload)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                "diagnostics_v2" => serde_json::from_value::<super::DiagnosticsCommandV2>(payload)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                "configuration_v2" => serde_json::from_value::<ConfigurationCommandV2>(payload)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string()),
+                other => panic!("fixture entry {label} targets unknown command {other}"),
+            };
+            assert!(
+                outcome.is_ok(),
+                "renderer payload for {label} no longer deserializes into {command}: {}",
+                outcome.unwrap_err()
+            );
+            round_tripped += 1;
+        }
+        assert_eq!(round_tripped, entries.len());
     }
 
     #[test]

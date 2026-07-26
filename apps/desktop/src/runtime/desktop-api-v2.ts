@@ -40,7 +40,21 @@ import type { ProviderInteractionCapability } from '../schema/provider-contract'
 import type { ModelPreset } from '../schema/provider-template';
 import type { CredentialRefStatus, CredentialSecretPayload, ProviderModelCatalogRuntime, ProviderProbeProfileRuntime, ProviderSmokeResult } from '../schema/provider-runtime';
 import type { ConfigExportArtifact, ConfigSnapshotRecord } from '../schema/generated/runtime-core';
+import type {
+  BridgeCommandV2,
+  ConfigurationCommandV2,
+  DiagnosticsCommandV2,
+  ProviderCommandV2,
+  SessionCommandV2,
+} from '../schema/generated/api-v2-commands';
 import type { DiagnosticLogEntryRuntime, RuntimeSnapshot } from '../schema/runtime-core';
+
+// Compile-time drift gate for the renderer→shell command direction: every v2
+// envelope literal below is `satisfies`-checked against the GENERATED command
+// enums (schema/generated/api-v2-commands.ts, produced from api_v2.rs by
+// ts-rs). Renaming an action or a payload field on either side fails tsc; the
+// wire-level counterpart is the fixture round-trip in
+// desktop-api-v2.fixture.test.ts + the cargo deserialization test.
 
 export type ServiceWarning = { code: string; message: string };
 export type ServiceResult<T> = { data: T; warnings: ServiceWarning[]; requestId?: string };
@@ -90,31 +104,31 @@ export class DesktopApiV2 {
     // builds its catalog from the preset list); the native provider service
     // resolves the catalog itself and ignores it.
     fetchModels: async (provider: ProviderDraft, _presetModels?: readonly ModelPreset[]) =>
-      unwrap(await this.invokeFn<ServiceResult<ProviderModelCatalogRuntime>>('provider_v2', { command: { action: 'fetchModels', provider } })),
+      unwrap(await this.invokeFn<ServiceResult<ProviderModelCatalogRuntime>>('provider_v2', { command: { action: 'fetchModels', provider } satisfies ProviderCommandV2 })),
     probe: async (provider: ProviderDraft) =>
-      unwrap(await this.invokeFn<ServiceResult<ProviderProbeProfileRuntime>>('provider_v2', { command: { action: 'probe', provider } })),
+      unwrap(await this.invokeFn<ServiceResult<ProviderProbeProfileRuntime>>('provider_v2', { command: { action: 'probe', provider } satisfies ProviderCommandV2 })),
     smoke: async (provider: ProviderDraft, sourceText?: string, sourceLanguage?: string, targetLanguage?: string) =>
       unwrap(await this.invokeFn<ServiceResult<ProviderSmokeResult>>('provider_v2', {
-        command: { action: 'smoke', provider, sourceText, sourceLanguage, targetLanguage },
+        command: { action: 'smoke', provider, sourceText, sourceLanguage, targetLanguage } satisfies ProviderCommandV2,
       })),
   };
 
   readonly session = {
-    snapshot: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'snapshot' } })),
-    refreshDevices: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'refreshDevices' } })),
-    preconnect: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'preconnect', config } })),
-    cancelPreconnect: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'cancelPreconnect' } })),
-    prewarmRoutes: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'prewarmRoutes', config } })),
-    startRoute: async (direction: 'inbound' | 'outbound', config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'startRoute', direction, config } })),
-    stopRoute: async (direction: 'inbound' | 'outbound') => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'stopRoute', direction } })),
-    clearCues: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'clearCues' } })),
-    startSpeech: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'startSpeech', config } })),
-    stopSpeech: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'stopSpeech' } })),
-    startTranslation: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'startTranslation', config } })),
-    stopTranslation: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'stopTranslation' } })),
-    syncOverlayRegion: async (rounded = true) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'syncOverlayRegion', rounded } })),
+    snapshot: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'snapshot' } satisfies SessionCommandV2 })),
+    refreshDevices: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'refreshDevices' } satisfies SessionCommandV2 })),
+    preconnect: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'preconnect', config } satisfies SessionCommandV2 })),
+    cancelPreconnect: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'cancelPreconnect' } satisfies SessionCommandV2 })),
+    prewarmRoutes: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'prewarmRoutes', config } satisfies SessionCommandV2 })),
+    startRoute: async (direction: 'inbound' | 'outbound', config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'startRoute', direction, config } satisfies SessionCommandV2 })),
+    stopRoute: async (direction: 'inbound' | 'outbound') => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'stopRoute', direction } satisfies SessionCommandV2 })),
+    clearCues: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'clearCues' } satisfies SessionCommandV2 })),
+    startSpeech: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'startSpeech', config } satisfies SessionCommandV2 })),
+    stopSpeech: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'stopSpeech' } satisfies SessionCommandV2 })),
+    startTranslation: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'startTranslation', config } satisfies SessionCommandV2 })),
+    stopTranslation: async () => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'stopTranslation' } satisfies SessionCommandV2 })),
+    syncOverlayRegion: async (rounded = true) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'syncOverlayRegion', rounded } satisfies SessionCommandV2 })),
     syncOverlayWindowState: async (locked: boolean, rounded: boolean, hotspotInteractive: boolean) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', {
-      command: { action: 'syncOverlayWindowState', locked, rounded, hotspotInteractive },
+      command: { action: 'syncOverlayWindowState', locked, rounded, hotspotInteractive } satisfies SessionCommandV2,
     })),
     // Performance-sensitive legacy direct command, distinct from `startRoute`
     // above (session_v2 envelope): route startup must keep the sub-second
@@ -125,13 +139,13 @@ export class DesktopApiV2 {
   };
 
   readonly bridge = {
-    snapshot: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot['bridge']>>('bridge_v2', { command: { action: 'snapshot' } })),
-    refresh: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'refresh' } })),
-    start: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'start', config } })),
-    stop: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'stop' } })),
-    install: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'install', config } })),
-    uninstall: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'uninstall' } })),
-    repair: async (repairAction: DriverRepairAction, config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'repair', repairAction, config } })),
+    snapshot: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot['bridge']>>('bridge_v2', { command: { action: 'snapshot' } satisfies BridgeCommandV2 })),
+    refresh: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'refresh' } satisfies BridgeCommandV2 })),
+    start: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'start', config } satisfies BridgeCommandV2 })),
+    stop: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'stop' } satisfies BridgeCommandV2 })),
+    install: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'install', config } satisfies BridgeCommandV2 })),
+    uninstall: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'uninstall' } satisfies BridgeCommandV2 })),
+    repair: async (repairAction: DriverRepairAction, config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'repair', repairAction, config } satisfies BridgeCommandV2 })),
   };
 
   /**
@@ -144,10 +158,10 @@ export class DesktopApiV2 {
   };
 
   readonly diagnostics = {
-    selfCheck: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('diagnostics_v2', { command: { action: 'selfCheck' } })),
-    overlaySelfCheck: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('diagnostics_v2', { command: { action: 'overlaySelfCheck' } })),
-    export: async (scope: DiagnosticsExportScope) => unwrap(await this.invokeFn<ServiceResult<{ scope: string; outputPath: string; generatedAt: string; fileCount: number }>>('diagnostics_v2', { command: { action: 'export', scope } })),
-    liveSessionEvents: async <T>() => unwrap(await this.invokeFn<ServiceResult<T>>('diagnostics_v2', { command: { action: 'liveSessionEvents' } })),
+    selfCheck: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('diagnostics_v2', { command: { action: 'selfCheck' } satisfies DiagnosticsCommandV2 })),
+    overlaySelfCheck: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('diagnostics_v2', { command: { action: 'overlaySelfCheck' } satisfies DiagnosticsCommandV2 })),
+    export: async (scope: DiagnosticsExportScope) => unwrap(await this.invokeFn<ServiceResult<{ scope: string; outputPath: string; generatedAt: string; fileCount: number }>>('diagnostics_v2', { command: { action: 'export', scope } satisfies DiagnosticsCommandV2 })),
+    liveSessionEvents: async <T>() => unwrap(await this.invokeFn<ServiceResult<T>>('diagnostics_v2', { command: { action: 'liveSessionEvents' } satisfies DiagnosticsCommandV2 })),
     // Batched frontend log forwarding + dynamic level control stay direct
     // commands (not v2 envelopes): they are fire-and-forget plumbing used by
     // the logger itself and must not depend on snapshot rebuilds.
@@ -158,24 +172,24 @@ export class DesktopApiV2 {
     // Native log-ring snapshot: scene launch attribution reads recent route
     // markers from the diagnostics snapshot action.
     snapshot: async () =>
-      unwrap(await this.invokeFn<ServiceResult<{ recentLogs?: DiagnosticLogEntryRuntime[] }>>('diagnostics_v2', { command: { action: 'snapshot' } })),
+      unwrap(await this.invokeFn<ServiceResult<{ recentLogs?: DiagnosticLogEntryRuntime[] }>>('diagnostics_v2', { command: { action: 'snapshot' } satisfies DiagnosticsCommandV2 })),
   };
 
   readonly configuration = {
-    load: async () => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'load' } })),
-    save: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot['storage']>>('configuration_v2', { command: { action: 'save', config } })),
-    reset: async () => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'reset' } })),
-    export: async () => unwrap(await this.invokeFn<ServiceResult<ConfigExportArtifact>>('configuration_v2', { command: { action: 'export' } })),
-    import: async (filePath: string) => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'import', filePath } })),
-    createSnapshot: async (reason?: string) => unwrap(await this.invokeFn<ServiceResult<ConfigSnapshotRecord>>('configuration_v2', { command: { action: 'createSnapshot', reason } })),
-    rollback: async (snapshotId: string) => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'rollback', snapshotId } })),
+    load: async () => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'load' } satisfies ConfigurationCommandV2 })),
+    save: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot['storage']>>('configuration_v2', { command: { action: 'save', config } satisfies ConfigurationCommandV2 })),
+    reset: async () => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'reset' } satisfies ConfigurationCommandV2 })),
+    export: async () => unwrap(await this.invokeFn<ServiceResult<ConfigExportArtifact>>('configuration_v2', { command: { action: 'export' } satisfies ConfigurationCommandV2 })),
+    import: async (filePath: string) => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'import', filePath } satisfies ConfigurationCommandV2 })),
+    createSnapshot: async (reason?: string) => unwrap(await this.invokeFn<ServiceResult<ConfigSnapshotRecord>>('configuration_v2', { command: { action: 'createSnapshot', reason } satisfies ConfigurationCommandV2 })),
+    rollback: async (snapshotId: string) => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'rollback', snapshotId } satisfies ConfigurationCommandV2 })),
     // Whitelisted direct command (see the header): startup recovery issues it
     // before the runtime snapshot exists, and ipc_test.ps1 invokes it over CLI.
     bootstrapStorage: async () => this.invokeFn<void>('bootstrap_storage'),
     runtimeSnapshot: async () =>
-      unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('configuration_v2', { command: { action: 'runtimeSnapshot' } })),
+      unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('configuration_v2', { command: { action: 'runtimeSnapshot' } satisfies ConfigurationCommandV2 })),
     bootstrapRuntime: async () =>
-      unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('configuration_v2', { command: { action: 'bootstrapRuntime' } })),
+      unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('configuration_v2', { command: { action: 'bootstrapRuntime' } satisfies ConfigurationCommandV2 })),
   };
 
   /** Startup-orchestration commands used by the desktop runtime bootstrap. */
@@ -183,7 +197,7 @@ export class DesktopApiV2 {
     // Whitelisted direct command (see the header): the IPC liveness probe.
     debugIpcPing: () => this.invokeFn<string>('debug_ipc_ping'),
     bootstrapAudio: async () =>
-      unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'bootstrap' } })),
+      unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'bootstrap' } satisfies SessionCommandV2 })),
   };
 
   /**
@@ -202,7 +216,7 @@ export class DesktopApiV2 {
   readonly benchmark = {
     /** Returns the benchmark report as a raw JSON string; callers parse it. */
     runModelBenchmark: async (payload: ModelBenchmarkRunPayload) =>
-      unwrap(await this.invokeFn<ServiceResult<string>>('provider_v2', { command: { action: 'runModelBenchmark', ...payload } })),
+      unwrap(await this.invokeFn<ServiceResult<string>>('provider_v2', { command: { action: 'runModelBenchmark', ...payload } satisfies ProviderCommandV2 })),
   };
 
   // Secrets are intentionally not represented in the generic configuration
@@ -210,11 +224,11 @@ export class DesktopApiV2 {
   // never appear inside a config document.
   readonly credentials = {
     status: async (reference: string) =>
-      unwrap(await this.invokeFn<ServiceResult<CredentialRefStatus>>('configuration_v2', { command: { action: 'secretStatus', reference } })),
+      unwrap(await this.invokeFn<ServiceResult<CredentialRefStatus>>('configuration_v2', { command: { action: 'secretStatus', reference } satisfies ConfigurationCommandV2 })),
     read: async (reference: string) =>
-      unwrap(await this.invokeFn<ServiceResult<CredentialSecretPayload>>('configuration_v2', { command: { action: 'secretRead', reference } })),
+      unwrap(await this.invokeFn<ServiceResult<CredentialSecretPayload>>('configuration_v2', { command: { action: 'secretRead', reference } satisfies ConfigurationCommandV2 })),
     save: async (reference: string, secret: string) =>
-      unwrap(await this.invokeFn<ServiceResult<CredentialRefStatus>>('configuration_v2', { command: { action: 'secretUpsert', reference, secret } })),
+      unwrap(await this.invokeFn<ServiceResult<CredentialRefStatus>>('configuration_v2', { command: { action: 'secretUpsert', reference, secret } satisfies ConfigurationCommandV2 })),
   };
 
   /** Native-window boundary used by overlay hooks; tests inject this object. */

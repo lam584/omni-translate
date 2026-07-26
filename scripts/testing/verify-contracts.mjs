@@ -360,6 +360,57 @@ for (const pin of eventNamePins) {
 }
 
 // ---------------------------------------------------------------------------
+// Tagged-enum field renaming: an internally-tagged serde enum whose struct
+// variants carry inline fields must not declare `rename_all` without
+// `rename_all_fields`. `rename_all` only renames the VARIANT tags, so a
+// multi-word field would silently stay snake_case on the wire while the
+// renderer sends camelCase — the exact drift class behind e7beb57 (an Option
+// field swallowed its payload for ~12 days while manual testing looked fine).
+export function findTaggedEnumRenameGaps(source, relativePath) {
+  const gaps = [];
+  const enumPattern = /#\[serde\(([^)]*)\)\]\s*(?:#\[[^\]]*\]\s*)*pub(?:\(crate\))?\s+enum\s+(\w+)\s*\{([\s\S]*?)\n\}/g;
+  for (const match of source.matchAll(enumPattern)) {
+    const [, serdeAttrs, enumName, body] = match;
+    if (!/\btag\s*=/.test(serdeAttrs)) continue;
+    const hasStructVariant = /^\s{4}\w+\s*\{/m.test(body);
+    if (!hasStructVariant) continue;
+    if (/\brename_all\s*=/.test(serdeAttrs) && !/\brename_all_fields\s*=/.test(serdeAttrs)) {
+      gaps.push(`${relativePath}: tagged enum ${enumName} has struct variants with rename_all but no rename_all_fields`);
+    }
+  }
+  return gaps;
+}
+
+{
+  const rustRoots = [
+    path.join(rootDir, 'apps', 'desktop', 'src-tauri', 'src'),
+    path.join(rootDir, 'apps', 'bridge-service-native', 'src'),
+    path.join(rootDir, 'crates'),
+  ];
+  for (const rustRoot of rustRoots) {
+    for (const filePath of collectFiles(rustRoot, (candidate) => candidate.endsWith('.rs'))) {
+      const relativePath = path.relative(rootDir, filePath);
+      for (const gap of findTaggedEnumRenameGaps(fs.readFileSync(filePath, 'utf8'), relativePath)) {
+        fail(gap);
+      }
+    }
+  }
+  // Self-check: the pattern must actually fire on a violating enum, so the
+  // guard cannot rot into a regex that matches nothing.
+  const violating = [
+    '#[serde(tag = "action", rename_all = "camelCase")]',
+    'pub enum SelfCheckCommand {',
+    '    DoThing {',
+    '        some_field: bool,',
+    '    },',
+    '}',
+  ].join('\n');
+  if (findTaggedEnumRenameGaps(violating, 'self-check').length !== 1) {
+    fail('tagged-enum rename lint self-check failed: the guard no longer detects a known violation');
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Field-level contract validation moved to generated TypeScript files: the
 // contract_export cargo test (apps/desktop/src-tauri/src/contract_export.rs)
 // fails when apps/desktop/src/schema/generated/ no longer matches the Rust

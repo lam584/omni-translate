@@ -352,6 +352,62 @@ pub fn get_diagnostics_snapshot(app: AppHandle) -> DiagnosticsRuntimeSnapshot {
     build_diagnostics_snapshot(&app)
 }
 
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrontendDiagnosticsBatchEntry {
+    pub category: String,
+    pub level: String,
+    pub summary: String,
+    #[serde(default)]
+    pub detail: Option<String>,
+    #[serde(default)]
+    pub emitted_at: Option<String>,
+}
+
+/// Batched frontend log ingestion (renderer logger flushes up to ~100 entries
+/// per call instead of one IPC round trip per line). `async` + quiet appends
+/// for the same reasons as `append_frontend_diagnostics_log` below.
+#[tauri::command]
+pub async fn append_frontend_diagnostics_logs(
+    app: AppHandle,
+    entries: Vec<FrontendDiagnosticsBatchEntry>,
+    dropped_count: Option<u64>,
+) -> Result<(), String> {
+    let Some(store) = app.try_state::<DiagnosticsStateStore>() else {
+        return Ok(());
+    };
+
+    for entry in entries {
+        let _ = store.append_log(
+            &entry.category,
+            &entry.level,
+            entry.summary,
+            entry.detail,
+            entry.emitted_at.unwrap_or_else(now_marker),
+            None,
+            None,
+        );
+    }
+
+    let dropped = dropped_count.unwrap_or(0);
+    if dropped > 0 {
+        let _ = store.append_log(
+            "runtime",
+            "warning",
+            format!("frontend log buffer dropped {dropped} entries before forwarding"),
+            None,
+            now_marker(),
+            Some(format!("{}:{}", file!(), line!())),
+            None,
+        );
+    }
+
+    Ok(())
+}
+
+/// Deprecated: superseded by the batched `append_frontend_diagnostics_logs`.
+/// Kept until every external caller is gone (no production frontend code
+/// invokes it any more); remove in the next major version.
 #[tauri::command]
 pub async fn append_frontend_diagnostics_log(
     app: AppHandle,

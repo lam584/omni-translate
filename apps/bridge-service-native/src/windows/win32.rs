@@ -25,7 +25,11 @@ where
         let handle = match create_pipe(pipe_name) {
             Ok(handle) => handle,
             Err(error) => {
-                eprintln!("failed to create named pipe {pipe_name}: {error}");
+                super::service_log(
+                    omni_logging::LogLevel::Error,
+                    &format!("{}:{}", file!(), line!()),
+                    &format!("failed to create named pipe {pipe_name}: {error}"),
+                );
                 return;
             }
         };

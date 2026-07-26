@@ -640,15 +640,12 @@ fn dispatch_source_frame(
     drop(current);
 }
 
-fn append_bridge_service_log(runtime_root: &Path, message: &str) {
-    let _ = fs::create_dir_all(runtime_root);
-    if let Ok(mut log) = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(runtime_root.join("bridge-service.log"))
-    {
-        let _ = writeln!(log, "{} {}", unix_ms(), message);
-    }
+fn append_bridge_service_log(_runtime_root: &Path, message: &str) {
+    // Thin wrapper retained for its call sites on audio-realtime paths: the
+    // shared logger only performs a bounded, non-blocking channel send here
+    // (the old implementation ran create_dir_all + open + write per line on
+    // the calling thread).
+    service_log(LogLevel::Info, "-", message);
 }
 
 fn update_driver_status(state: &Arc<Mutex<BridgeState>>, status: &DriverStatus) {

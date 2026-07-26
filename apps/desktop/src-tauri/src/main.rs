@@ -25,11 +25,10 @@ use bridge::events::{
 };
 use bridge::state::BridgeStateStore;
 use diagnostics::events::{
-    append_diagnostics_log, append_frontend_diagnostics_log, export_diagnostics_bundle,
-    get_diagnostics_snapshot, get_live_session_events, run_diagnostics_self_check,
-    run_subtitle_overlay_self_check, set_diagnostics_log_level,
+    append_diagnostics_log, append_frontend_diagnostics_log, append_frontend_diagnostics_logs,
+    export_diagnostics_bundle, get_diagnostics_snapshot, get_live_session_events,
+    run_diagnostics_self_check, run_subtitle_overlay_self_check, set_diagnostics_log_level,
 };
-use diagnostics::state::DiagnosticsStateStore;
 use provider::events::{execute_provider_smoke, fetch_provider_models, probe_provider};
 use runtime::contracts::RuntimeNotification;
 use runtime::events::sync_subtitle_overlay_window_state;
@@ -663,12 +662,12 @@ async fn debug_cred_direct(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn main() {
-    diagnostics::file_logger::init(log::Level::Warn);
+    let diagnostics_store = diagnostics::bootstrap_logging();
 
     tauri::Builder::default()
         .manage(AudioStateStore::new())
         .manage(BridgeStateStore::new())
-        .manage(DiagnosticsStateStore::new())
+        .manage(diagnostics_store)
         .manage(RuntimeStateStore::new())
         .manage(StorageStateStore::new())
         .invoke_handler(tauri::generate_handler![
@@ -689,6 +688,7 @@ fn main() {
             get_diagnostics_snapshot,
             set_diagnostics_log_level,
             append_frontend_diagnostics_log,
+            append_frontend_diagnostics_logs,
             run_diagnostics_self_check,
             run_subtitle_overlay_self_check,
             export_diagnostics_bundle,

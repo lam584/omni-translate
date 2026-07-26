@@ -105,13 +105,19 @@ export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
     { name: 'synthetic driver probe', ok: true, result: healthyDriver, error: null },
     { name: 'synthetic watch route', ok: true, result: { routeState: 'capturing' }, error: null },
   ];
+  // Lines carry the trailing ` sid=<value>` session token appended by the
+  // unified logging pipeline; load-bearing markers stay verbatim before it.
   const appLog = [
-    'watch_mode.route_start | direction=inbound routeMode=watch',
-    'watch route ensured subtitle overlay visible detail=label=subtitle-overlay visible=true',
-    'subtitle cue appended id=synthetic-cue-1',
-    'model_trace finished status=ok elapsedMs=100',
+    'watch_mode.route_start | direction=inbound routeMode=watch sid=0198fixturesid',
+    'watch route ensured subtitle overlay visible detail=label=subtitle-overlay visible=true sid=0198fixturesid',
+    'subtitle cue appended id=synthetic-cue-1 sid=0198fixturesid',
+    'model_trace finished status=ok elapsedMs=100 sid=0198fixturesid',
   ].join('\n');
-  const bridgeLog = 'source pacer summary: releasedFrames=12 queuedFrames=0 pendingBytes=0 underruns=0 droppedFrames=0 driverBufferedBytes=0 driverDroppedBytes=0 monitorQueuedFrames=0 staleSourceFramesDropped=0';
+  // Mirrors the unified bridge log line format emitted by omni-logging:
+  // `{timestamp} [{LEVEL}] [bridge] {source} - {message}` with the original
+  // pacer summary message kept verbatim after the prefix and the bridge
+  // session id (`bridge-{appSid}-{startMs}`) as the trailing token.
+  const bridgeLog = '2026-01-01 00:00:00.000 [NORMAL] [bridge] - - source pacer summary: releasedFrames=12 queuedFrames=0 pendingBytes=0 underruns=0 droppedFrames=0 driverBufferedBytes=0 driverDroppedBytes=0 monitorQueuedFrames=0 staleSourceFramesDropped=0 sid=bridge-0198fixturesid-1000';
 
   fs.writeFileSync(path.join(fixtureDirectory, 'snapshots.json'), `${JSON.stringify(snapshots, null, 2)}\n`, 'utf8');
   fs.writeFileSync(path.join(fixtureDirectory, 'steps.json'), `${JSON.stringify(steps, null, 2)}\n`, 'utf8');

@@ -178,7 +178,6 @@ async function runWatchModeDiagnosticAutostart() {
   if (typeof runMarker === 'string') {
     startedWatchModeAutostartMarkers.add(runMarker);
   }
-  console.info('[omni][watch-mode-diagnostic] autostart', runMarker ? `runMarker=${runMarker}` : '');
   appendFrontendDiagnosticsLog(
     'runtime',
     'info',
@@ -316,10 +315,20 @@ function App() {
       }
       cleanup = nextCleanup;
       void runWatchModeDiagnosticAutostart().catch((error) => {
-        console.error('[omni][watch-mode-diagnostic] autostart failed', error);
+        void appendFrontendDiagnosticsLog(
+          'runtime',
+          'error',
+          'watch_mode.diagnostic_autostart_failed',
+          error instanceof Error ? error.message : String(error),
+        );
       });
     }).catch((error) => {
-      console.error('[omni][desktop-runtime] bootstrap failed', error);
+      void appendFrontendDiagnosticsLog(
+        'runtime',
+        'error',
+        'startup.bootstrap_failed',
+        error instanceof Error ? error.message : String(error),
+      );
       forceCloseOverlayOnSettle('rejected', error);
     }).finally(() => {
       forceCloseOverlayOnSettle('resolved');

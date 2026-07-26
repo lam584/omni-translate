@@ -30,15 +30,11 @@ pub struct ServiceResult<T> {
     pub data: T,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ServiceWarning>,
-}
-
-impl<T> ServiceResult<T> {
-    fn ok(data: T) -> Self {
-        Self {
-            data,
-            warnings: Vec::new(),
-        }
-    }
+    /// Correlation id of this command execution; also present in the
+    /// entry/exit `api_v2.request` / `api_v2.response` log lines. Optional and
+    /// additive, so older payload consumers keep working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request_id: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -62,9 +58,11 @@ impl From<String> for ServiceErrorV2 {
     fn from(message: String) -> Self {
         Self {
             code: "runtime.operation-failed".to_string(),
-            message,
+            message: message.clone(),
+            // Keep the untruncated original error text in details so the
+            // generic code/message folding no longer destroys attribution.
+            details: Some(serde_json::json!({ "rawError": message })),
             retriable: false,
-            details: None,
         }
     }
 }
@@ -72,6 +70,78 @@ impl From<String> for ServiceErrorV2 {
 fn serialize_result<T: Serialize>(result: Result<T, String>) -> Result<Value, ServiceErrorV2> {
     let value = result.map_err(ServiceErrorV2::from)?;
     to_value(value).map_err(|error| ServiceErrorV2::from(error.to_string()))
+}
+
+fn new_request_id() -> String {
+    uuid::Uuid::now_v7().simple().to_string()
+}
+
+/// Write the request id into `ServiceErrorV2.details.requestId`, preserving
+/// any existing details payload (non-object details move under `inner`).
+fn attach_request_id(mut error: ServiceErrorV2, request_id: &str) -> ServiceErrorV2 {
+    let mut details = match error.details.take() {
+        Some(Value::Object(map)) => map,
+        Some(other) => {
+            let mut map = serde_json::Map::new();
+            map.insert("inner".to_string(), other);
+            map
+        }
+        None => serde_json::Map::new(),
+    };
+    details.insert(
+        "requestId".to_string(),
+        Value::String(request_id.to_string()),
+    );
+    error.details = Some(Value::Object(details));
+    error
+}
+
+fn log_v2_entry(app: &AppHandle, command: &str, request_id: &str) {
+    crate::log_debug!(
+        app,
+        "runtime",
+        format!("api_v2.request command={command}"),
+        format!("requestId={request_id}")
+    );
+}
+
+/// Shared exit path for the five v2 commands: logs the outcome with its
+/// elapsed time and stamps the request id on the success envelope or into
+/// `ServiceErrorV2.details.requestId` on failure.
+fn finish_v2<T>(
+    app: &AppHandle,
+    command: &str,
+    request_id: String,
+    started: std::time::Instant,
+    outcome: Result<T, ServiceErrorV2>,
+) -> Result<ServiceResult<T>, ServiceErrorV2> {
+    let elapsed_ms = started.elapsed().as_millis();
+    match outcome {
+        Ok(data) => {
+            crate::log_debug!(
+                app,
+                "runtime",
+                format!("api_v2.response command={command} status=ok"),
+                format!("requestId={request_id}"),
+                elapsed_ms
+            );
+            Ok(ServiceResult {
+                data,
+                warnings: Vec::new(),
+                request_id: Some(request_id),
+            })
+        }
+        Err(error) => {
+            crate::log_warn!(
+                app,
+                "runtime",
+                format!("api_v2.response command={command} status=error code={}", error.code),
+                format!("requestId={request_id}"),
+                elapsed_ms
+            );
+            Err(attach_request_id(error, &request_id))
+        }
+    }
 }
 
 /// Stable event shape for renderer subscriptions.  Individual producers can
@@ -126,26 +196,37 @@ pub async fn provider_v2(
     app: AppHandle,
     command: ProviderCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
-    let result = match command {
-        ProviderCommandV2::FetchModels { provider } => {
-            to_value(provider_events::fetch_provider_models(app, provider).await)
+    let request_id = new_request_id();
+    let started = std::time::Instant::now();
+    log_v2_entry(&app, "provider_v2", &request_id);
+    let outcome = async {
+        match command {
+            ProviderCommandV2::FetchModels { provider } => {
+                to_value(provider_events::fetch_provider_models(app.clone(), provider).await)
+            }
+            ProviderCommandV2::Probe { provider } => {
+                to_value(provider_events::probe_provider(app.clone(), provider).await)
+            }
+            ProviderCommandV2::Smoke {
+                provider,
+                source_text,
+                source_language,
+                target_language,
+            } => to_value(
+                provider_events::execute_provider_smoke(
+                    app.clone(),
+                    provider,
+                    source_text,
+                    source_language,
+                    target_language,
+                )
+                .await,
+            ),
         }
-        ProviderCommandV2::Probe { provider } => to_value(provider_events::probe_provider(app, provider).await),
-        ProviderCommandV2::Smoke {
-            provider,
-            source_text,
-            source_language,
-            target_language,
-        } => to_value(provider_events::execute_provider_smoke(
-            app,
-            provider,
-            source_text,
-            source_language,
-            target_language,
-        ).await),
+        .map_err(|error| ServiceErrorV2::from(error.to_string()))
     }
-    .map_err(|error| ServiceErrorV2::from(error.to_string()))?;
-    Ok(ServiceResult::ok(result))
+    .await;
+    finish_v2(&app, "provider_v2", request_id, started, outcome)
 }
 
 #[derive(Debug, Deserialize)]
@@ -176,6 +257,9 @@ pub async fn session_v2(
     app: AppHandle,
     command: SessionCommandV2,
 ) -> Result<ServiceResult<AudioRuntimeSnapshot>, ServiceErrorV2> {
+    let request_id = new_request_id();
+    let started = std::time::Instant::now();
+    log_v2_entry(&app, "session_v2", &request_id);
     let result = match command {
         SessionCommandV2::Snapshot => Ok(app.state::<AudioStateStore>().snapshot()),
         SessionCommandV2::RefreshDevices => {
@@ -218,7 +302,13 @@ pub async fn session_v2(
         )
         .map(|_| app.state::<AudioStateStore>().snapshot()),
     };
-    result.map(ServiceResult::ok).map_err(ServiceErrorV2::from)
+    finish_v2(
+        &app,
+        "session_v2",
+        request_id,
+        started,
+        result.map_err(ServiceErrorV2::from),
+    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -241,17 +331,23 @@ pub enum BridgeCommandV2 {
 // starve the Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
 pub async fn bridge_v2(app: AppHandle, command: BridgeCommandV2) -> Result<ServiceResult<Value>, ServiceErrorV2> {
-    let result = match command {
-        BridgeCommandV2::Snapshot => to_value(bridge_events::get_bridge_runtime_snapshot(app.state::<BridgeStateStore>()))
-            .map_err(|error| ServiceErrorV2::from(error.to_string()))?,
-        BridgeCommandV2::Refresh => serialize_result(bridge_events::refresh_bridge_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>()))?,
-        BridgeCommandV2::Start { config } => serialize_result(bridge_events::start_bridge_service(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>(), config))?,
-        BridgeCommandV2::Stop => serialize_result(bridge_events::stop_bridge_service(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>()))?,
-        BridgeCommandV2::Install { config } => serialize_result(bridge_events::install_driver_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>(), config))?,
-        BridgeCommandV2::Uninstall => serialize_result(bridge_events::uninstall_driver_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>()))?,
-        BridgeCommandV2::Repair { config, repair_action } => serialize_result(bridge_events::repair_driver_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>(), config, repair_action))?,
-    };
-    Ok(ServiceResult::ok(result))
+    let request_id = new_request_id();
+    let started = std::time::Instant::now();
+    log_v2_entry(&app, "bridge_v2", &request_id);
+    let outcome = async {
+        match command {
+            BridgeCommandV2::Snapshot => to_value(bridge_events::get_bridge_runtime_snapshot(app.state::<BridgeStateStore>()))
+                .map_err(|error| ServiceErrorV2::from(error.to_string())),
+            BridgeCommandV2::Refresh => serialize_result(bridge_events::refresh_bridge_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>())),
+            BridgeCommandV2::Start { config } => serialize_result(bridge_events::start_bridge_service(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>(), config)),
+            BridgeCommandV2::Stop => serialize_result(bridge_events::stop_bridge_service(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>())),
+            BridgeCommandV2::Install { config } => serialize_result(bridge_events::install_driver_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>(), config)),
+            BridgeCommandV2::Uninstall => serialize_result(bridge_events::uninstall_driver_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>())),
+            BridgeCommandV2::Repair { config, repair_action } => serialize_result(bridge_events::repair_driver_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>(), config, repair_action)),
+        }
+    }
+    .await;
+    finish_v2(&app, "bridge_v2", request_id, started, outcome)
 }
 
 #[derive(Debug, Deserialize)]
@@ -270,15 +366,21 @@ pub async fn diagnostics_v2(
     app: AppHandle,
     command: DiagnosticsCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
-    let result = match command {
-        DiagnosticsCommandV2::SelfCheck => serialize_result(diagnostics_events::run_diagnostics_self_check(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>()))?,
-        DiagnosticsCommandV2::OverlaySelfCheck => serialize_result(diagnostics_events::run_subtitle_overlay_self_check(app.clone(), app.state::<RuntimeStateStore>(), app.state::<AudioStateStore>()))?,
-        DiagnosticsCommandV2::Export { scope } => serialize_result(diagnostics_events::export_diagnostics_bundle(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>(), scope).await)?,
-        DiagnosticsCommandV2::LiveSessionEvents => diagnostics_events::get_live_session_events(app.state::<AudioStateStore>())
-            .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
-            .map_err(ServiceErrorV2::from)?,
-    };
-    Ok(ServiceResult::ok(result))
+    let request_id = new_request_id();
+    let started = std::time::Instant::now();
+    log_v2_entry(&app, "diagnostics_v2", &request_id);
+    let outcome = async {
+        match command {
+            DiagnosticsCommandV2::SelfCheck => serialize_result(diagnostics_events::run_diagnostics_self_check(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>())),
+            DiagnosticsCommandV2::OverlaySelfCheck => serialize_result(diagnostics_events::run_subtitle_overlay_self_check(app.clone(), app.state::<RuntimeStateStore>(), app.state::<AudioStateStore>())),
+            DiagnosticsCommandV2::Export { scope } => serialize_result(diagnostics_events::export_diagnostics_bundle(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>(), scope).await),
+            DiagnosticsCommandV2::LiveSessionEvents => diagnostics_events::get_live_session_events(app.state::<AudioStateStore>())
+                .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
+                .map_err(ServiceErrorV2::from),
+        }
+    }
+    .await;
+    finish_v2(&app, "diagnostics_v2", request_id, started, outcome)
 }
 
 #[derive(Debug, Deserialize)]
@@ -300,21 +402,30 @@ pub async fn configuration_v2(
     app: AppHandle,
     command: ConfigurationCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
-    let result = match command {
-        ConfigurationCommandV2::Load => serialize_result(storage_events::load_config_draft(app.clone(), app.state::<StorageStateStore>()))?,
-        ConfigurationCommandV2::Save { config } => serialize_result(storage_events::save_config_draft(app.clone(), app.state::<StorageStateStore>(), config))?,
-        ConfigurationCommandV2::Reset => serialize_result(storage_events::reset_config_draft(app.clone(), app.state::<StorageStateStore>()))?,
-        ConfigurationCommandV2::Export => serialize_result(storage_events::export_config_draft(app.clone(), app.state::<StorageStateStore>()))?,
-        ConfigurationCommandV2::Import { file_path } => serialize_result(storage_events::import_config_draft(app.clone(), app.state::<StorageStateStore>(), file_path))?,
-        ConfigurationCommandV2::CreateSnapshot { reason } => serialize_result(storage_events::create_config_snapshot(app.clone(), app.state::<StorageStateStore>(), reason))?,
-        ConfigurationCommandV2::Rollback { snapshot_id } => serialize_result(storage_events::rollback_config_snapshot(app.clone(), app.state::<StorageStateStore>(), snapshot_id))?,
-    };
-    Ok(ServiceResult::ok(result))
+    let request_id = new_request_id();
+    let started = std::time::Instant::now();
+    log_v2_entry(&app, "configuration_v2", &request_id);
+    let outcome = async {
+        match command {
+            ConfigurationCommandV2::Load => serialize_result(storage_events::load_config_draft(app.clone(), app.state::<StorageStateStore>())),
+            ConfigurationCommandV2::Save { config } => serialize_result(storage_events::save_config_draft(app.clone(), app.state::<StorageStateStore>(), config)),
+            ConfigurationCommandV2::Reset => serialize_result(storage_events::reset_config_draft(app.clone(), app.state::<StorageStateStore>())),
+            ConfigurationCommandV2::Export => serialize_result(storage_events::export_config_draft(app.clone(), app.state::<StorageStateStore>())),
+            ConfigurationCommandV2::Import { file_path } => serialize_result(storage_events::import_config_draft(app.clone(), app.state::<StorageStateStore>(), file_path)),
+            ConfigurationCommandV2::CreateSnapshot { reason } => serialize_result(storage_events::create_config_snapshot(app.clone(), app.state::<StorageStateStore>(), reason)),
+            ConfigurationCommandV2::Rollback { snapshot_id } => serialize_result(storage_events::rollback_config_snapshot(app.clone(), app.state::<StorageStateStore>(), snapshot_id)),
+        }
+    }
+    .await;
+    finish_v2(&app, "configuration_v2", request_id, started, outcome)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{BridgeCommandV2, ConfigurationCommandV2, RuntimeEventV2, ServiceErrorV2, SessionCommandV2};
+    use super::{
+        attach_request_id, BridgeCommandV2, ConfigurationCommandV2, RuntimeEventV2, ServiceErrorV2,
+        ServiceResult, SessionCommandV2,
+    };
 
     #[test]
     fn v2_types_use_the_renderer_contract_shape() {
@@ -334,6 +445,54 @@ mod tests {
         ));
         let event = RuntimeEventV2 { topic: "session".into(), sequence: 1, timestamp_ms: 2, payload: serde_json::json!({}) };
         assert_eq!(serde_json::to_value(event).unwrap()["timestampMs"], 2);
-        assert_eq!(ServiceErrorV2::from("nope".to_string()).code, "runtime.operation-failed");
+        let error = ServiceErrorV2::from("nope".to_string());
+        assert_eq!(error.code, "runtime.operation-failed");
+        assert_eq!(
+            error.details.as_ref().and_then(|details| details["rawError"].as_str()),
+            Some("nope"),
+            "the original error text must survive the generic folding"
+        );
+    }
+
+    #[test]
+    fn request_id_reaches_the_success_envelope_and_error_details() {
+        let success = ServiceResult {
+            data: serde_json::json!({"ok": true}),
+            warnings: Vec::new(),
+            request_id: Some("req-1".to_string()),
+        };
+        let serialized = serde_json::to_value(&success).unwrap();
+        assert_eq!(serialized["requestId"], "req-1");
+
+        let without_id = ServiceResult {
+            data: serde_json::json!({"ok": true}),
+            warnings: Vec::new(),
+            request_id: None,
+        };
+        let serialized = serde_json::to_value(&without_id).unwrap();
+        assert!(
+            serialized.get("requestId").is_none(),
+            "absent request ids must not serialize (older consumers see the old shape)"
+        );
+
+        // Existing details are preserved when the request id is attached.
+        let error = attach_request_id(ServiceErrorV2::from("boom".to_string()), "req-2");
+        let details = error.details.expect("details present");
+        assert_eq!(details["requestId"], "req-2");
+        assert_eq!(details["rawError"], "boom");
+
+        // Non-object details move under `inner` instead of being destroyed.
+        let error = attach_request_id(
+            ServiceErrorV2 {
+                code: "x".into(),
+                message: "y".into(),
+                retriable: false,
+                details: Some(serde_json::json!("plain-text")),
+            },
+            "req-3",
+        );
+        let details = error.details.expect("details present");
+        assert_eq!(details["requestId"], "req-3");
+        assert_eq!(details["inner"], "plain-text");
     }
 }

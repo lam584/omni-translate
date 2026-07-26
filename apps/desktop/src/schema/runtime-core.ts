@@ -208,6 +208,10 @@ export type DiagnosticsRuntimeSnapshot = {
   modelTraceSummary: ModelTraceSummaryRuntime;
   recentLogs: DiagnosticLogEntryRuntime[];
   recentErrors: DiagnosticLogEntryRuntime[];
+  /** Lines discarded because the bounded backend log channel was full. */
+  logDroppedCount?: number;
+  /** Failed writes observed by the backend log writer thread. */
+  logWriteErrorCount?: number;
 };
 
 export type DiagnosticsExportArtifact = {
@@ -223,6 +227,8 @@ export type RuntimeSnapshot = {
   activeProfileId: string;
   trayReady: boolean;
   lastSyncAt: string;
+  /** Application-run session id (the trailing ` sid=` token in native logs). */
+  sessionId?: string;
   bridge: BridgeRuntimeSnapshot;
   diagnostics: DiagnosticsRuntimeSnapshot;
   storage: StorageRuntimeSnapshot;

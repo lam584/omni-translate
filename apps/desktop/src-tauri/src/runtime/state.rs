@@ -85,6 +85,7 @@ impl RuntimeStateStore {
             active_profile_id: state.active_profile_id.clone(),
             tray_ready: state.tray_ready,
             last_sync_at: state.last_sync_at.clone(),
+            session_id: crate::diagnostics::session_id().to_string(),
             bridge: BridgeRuntimeSnapshot::default(),
             diagnostics: DiagnosticsRuntimeSnapshot::preview(),
             storage: StorageRuntimeSnapshot::preview(),

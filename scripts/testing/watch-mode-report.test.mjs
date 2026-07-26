@@ -121,13 +121,16 @@ function strictTestMediaContent(overrides = {}) {
   };
 }
 
-const healthyBridgeLog = 'source pacer summary: releasedFrames=12 queuedFrames=0 pendingBytes=0 underruns=0 droppedFrames=0 driverBufferedBytes=0 driverDroppedBytes=0 monitorQueuedFrames=0 staleSourceFramesDropped=0';
+// Mirrors the unified bridge log line format emitted by omni-logging:
+// `{timestamp} [{LEVEL}] [bridge] {source} - {message}`, including the
+// trailing ` sid=<value>` session token every line now carries.
+const healthyBridgeLog = '2026-01-01 00:00:00.000 [NORMAL] [bridge] - - source pacer summary: releasedFrames=12 queuedFrames=0 pendingBytes=0 underruns=0 droppedFrames=0 driverBufferedBytes=0 driverDroppedBytes=0 monitorQueuedFrames=0 staleSourceFramesDropped=0 sid=bridge-0198testsid-1000';
 const healthyAppLog = [
-  'watch_mode.omni_preconnect_started detail=direction=inbound',
-  'watch_mode.omni_preconnect_reused detail=direction=inbound',
-  'watch route ensured subtitle overlay visible detail=label=subtitle-overlay visible=true',
-  'subtitle cue appended id=cue-1',
-  'model_trace finished status=ok elapsedMs=1200',
+  'watch_mode.omni_preconnect_started detail=direction=inbound sid=0198testsid',
+  'watch_mode.omni_preconnect_reused detail=direction=inbound sid=0198testsid',
+  'watch route ensured subtitle overlay visible detail=label=subtitle-overlay visible=true sid=0198testsid',
+  'subtitle cue appended id=cue-1 sid=0198testsid',
+  'model_trace finished status=ok elapsedMs=1200 sid=0198testsid',
 ].join('\n');
 
 function classify(overrides = {}) {
@@ -1422,6 +1425,16 @@ test('does not fail recovered provider timeout when physical output content pass
 });
 
 test('parses bridge source pacer metrics', () => {
+  const parsed = parseBridgeLog('2026-01-01 00:00:01.000 [NORMAL] [bridge] - - source pacer summary: releasedFrames=10 queuedFrames=2 pendingBytes=3840 underruns=1 droppedFrames=0 driverBufferedBytes=960 driverDroppedBytes=0 monitorQueuedFrames=1 staleSourceFramesDropped=0 sid=bridge-0198testsid-1000');
+
+  assert.equal(parsed.metrics.releasedFrames, 10);
+  assert.equal(parsed.metrics.queuedFrames, 2);
+  assert.equal(parsed.metrics.pendingBytes, 3840);
+});
+
+test('parses bridge source pacer metrics from legacy unprefixed lines', () => {
+  // Logs written before the unified `{timestamp} [{LEVEL}] [bridge]` prefix
+  // must keep parsing (rotated files can span the format change).
   const parsed = parseBridgeLog('source pacer summary: releasedFrames=10 queuedFrames=2 pendingBytes=3840 underruns=1 droppedFrames=0 driverBufferedBytes=960 driverDroppedBytes=0 monitorQueuedFrames=1 staleSourceFramesDropped=0');
 
   assert.equal(parsed.metrics.releasedFrames, 10);

@@ -34,6 +34,16 @@ impl RuntimeNotification {
             emitted_at,
         }
     }
+
+    pub fn error(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
+        Self {
+            id: id.to_string(),
+            level: "error".to_string(),
+            source: source.to_string(),
+            message: message.to_string(),
+            emitted_at,
+        }
+    }
 }
 
 #[derive(Clone, Serialize)]
@@ -54,6 +64,9 @@ pub struct RuntimeSnapshot {
     pub active_profile_id: String,
     pub tray_ready: bool,
     pub last_sync_at: String,
+    /// Application-run session id (the trailing ` sid=` token in the logs),
+    /// handed to the renderer so frontend records correlate across processes.
+    pub session_id: String,
     pub bridge: BridgeRuntimeSnapshot,
     pub diagnostics: DiagnosticsRuntimeSnapshot,
     pub storage: StorageRuntimeSnapshot,

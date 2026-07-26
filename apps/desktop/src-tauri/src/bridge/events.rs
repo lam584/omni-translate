@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::io::BufRead;
 use std::process::{Command, Stdio};
 use std::sync::{Arc, Mutex};
@@ -7,7 +8,6 @@ use std::path::Path;
 
 use serde_json::Value;
 use tauri::{AppHandle, State};
-use uuid::Uuid;
 
 use crate::diagnostics::events::append_diagnostics_log_quiet;
 use crate::log_debug;
@@ -27,6 +27,10 @@ use super::state::BridgeStateStore;
 const DRIVER_STATE_STALE_THRESHOLD: Duration = Duration::from_secs(300);
 const BRIDGE_STARTUP_TIMEOUT: Duration = Duration::from_secs(8);
 const BRIDGE_POST_KILL_SETTLE_MS: u64 = 50;
+/// Upper bound of bridge stderr lines kept in memory for the startup-failure
+/// report; older lines are evicted, and every line is persisted to the
+/// diagnostics log instead of accumulating without bound.
+const BRIDGE_STDERR_MAX_LINES: usize = 200;
 
 fn extract_driver_string(config: &Value, pointer: &str, default: &str) -> String {
     config
@@ -316,7 +320,7 @@ fn start_bridge_from_snapshot(
     let mut child = build_started_process(snapshot)?;
     let stdout = child.stdout.take();
     let stderr = child.stderr.take();
-    let stderr_lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let stderr_lines = Arc::new(Mutex::new(VecDeque::<String>::new()));
 
     let (ready_tx, ready_rx) = std::sync::mpsc::channel();
     if let Some(stdout) = stdout {
@@ -333,12 +337,28 @@ fn start_bridge_from_snapshot(
     }
     if let Some(stderr) = stderr {
         let stderr_lines = Arc::clone(&stderr_lines);
+        let app_handle = app.clone();
         thread::spawn(move || {
             let reader = std::io::BufReader::new(stderr);
             for line in reader.lines().map_while(Result::ok) {
                 if let Ok(mut lines) = stderr_lines.lock() {
-                    lines.push(line);
+                    if lines.len() >= BRIDGE_STDERR_MAX_LINES {
+                        lines.pop_front();
+                    }
+                    lines.push_back(line.clone());
                 }
+                // Persist instead of accumulating: after the bridge eprintln
+                // consolidation, stderr output is exceptional and every line
+                // is worth a diagnostics record.
+                let _ = append_diagnostics_log_quiet(
+                    &app_handle,
+                    "bridge",
+                    "warning",
+                    format!("bridge-service stderr: {line}"),
+                    None,
+                    Some(format!("{}:{}", file!(), line!())),
+                    None,
+                );
             }
         });
     }
@@ -351,7 +371,7 @@ fn start_bridge_from_snapshot(
         thread::sleep(Duration::from_millis(BRIDGE_POST_KILL_SETTLE_MS));
         let stderr_output = stderr_lines
             .lock()
-            .map(|lines| lines.join("\n"))
+            .map(|lines| lines.iter().cloned().collect::<Vec<_>>().join("\n"))
             .unwrap_or_default();
 
         if !stderr_output.is_empty() {
@@ -575,7 +595,7 @@ pub fn start_bridge_service(
             snapshot.runtime_root, snapshot.pipe_name
         )
     );
-    snapshot.session_id = Some(format!("bridge-session-{}", Uuid::new_v4()));
+    snapshot.session_id = Some(super::new_bridge_session_id());
     snapshot.process_status = "starting".to_string();
     snapshot.pipe_path = format!(r"\\.\pipe\{}", snapshot.pipe_name);
     if let Err(error) = start_bridge_from_snapshot(&snapshot, &bridge_state, &app) {
@@ -694,7 +714,7 @@ pub fn install_driver_runtime(
     }
 
     let mut started = bridge_state.snapshot();
-    started.session_id = Some(format!("bridge-session-{}", Uuid::new_v4()));
+    started.session_id = Some(super::new_bridge_session_id());
     started.process_status = "starting".to_string();
     start_bridge_from_snapshot(&started, &bridge_state, &app)?;
     bridge_state.update_snapshot(|current| current.install_phase = "ready".to_string());
@@ -818,7 +838,7 @@ pub fn repair_driver_runtime(
     }
 
     let mut restarted = bridge_state.snapshot();
-    restarted.session_id = Some(format!("bridge-session-{}", Uuid::new_v4()));
+    restarted.session_id = Some(super::new_bridge_session_id());
     restarted.process_status = "starting".to_string();
     start_bridge_from_snapshot(&restarted, &bridge_state, &app)?;
     bridge_state.update_snapshot(|current| current.install_phase = "ready".to_string());

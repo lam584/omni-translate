@@ -1,14 +1,15 @@
 use std::collections::BTreeMap;
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU8, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use super::contracts::{
     DiagnosticLogCategoryRuntime, DiagnosticLogEntryRuntime, DiagnosticsRuntimeSnapshot,
     ModelTraceCallRuntime, ModelTraceSummaryRuntime,
 };
-use chrono::Local;
+use super::log_pipeline::LogPipeline;
 
 const DEFAULT_LOG_CATEGORIES: [&str; 6] = [
     "runtime",
@@ -21,8 +22,6 @@ const DEFAULT_LOG_CATEGORIES: [&str; 6] = [
 const MAX_RECENT_LOGS: usize = 24;
 const MAX_RECENT_ERRORS: usize = 12;
 const MAX_RECENT_MODEL_TRACE_CALLS: usize = 12;
-const APP_LOG_MAX_BYTES: u64 = 10 * 1024 * 1024;
-const APP_LOG_ROTATED_FILES: u32 = 3;
 
 fn log_level_priority(level: &str) -> u8 {
     match level {
@@ -62,11 +61,16 @@ struct DiagnosticsState {
     last_export_scope: Option<String>,
     last_export_path: Option<String>,
     last_exported_at: Option<String>,
-    min_log_level: u8,
 }
 
+/// Cloneable: every clone shares the same state, dynamic level and writer
+/// pipeline, so the `log::` forwarder can hold a clone while Tauri manages the
+/// original.
+#[derive(Clone)]
 pub struct DiagnosticsStateStore {
-    inner: Mutex<DiagnosticsState>,
+    inner: Arc<Mutex<DiagnosticsState>>,
+    min_log_level: Arc<AtomicU8>,
+    pipeline: LogPipeline,
 }
 
 impl DiagnosticsStateStore {
@@ -78,6 +82,7 @@ impl DiagnosticsStateStore {
             let _ = migrate_diagnostics_tree(Path::new(&legacy_root), Path::new(&root_dir));
         }
 
+        store.apply_env_log_level();
         store
     }
 
@@ -97,8 +102,10 @@ impl DiagnosticsStateStore {
             );
         }
 
+        let pipeline = LogPipeline::new(PathBuf::from(app_log_path(&logs_dir)));
+
         Self {
-            inner: Mutex::new(DiagnosticsState {
+            inner: Arc::new(Mutex::new(DiagnosticsState {
                 root_dir,
                 logs_dir,
                 exports_dir,
@@ -110,8 +117,38 @@ impl DiagnosticsStateStore {
                 last_export_scope: None,
                 last_export_path: None,
                 last_exported_at: None,
-                min_log_level: default_min_log_level(),
-            }),
+            })),
+            min_log_level: Arc::new(AtomicU8::new(default_min_log_level())),
+            pipeline,
+        }
+    }
+
+    /// Apply `OMNI_LOG_LEVEL` (error/warning/info/debug/verbose, case
+    /// insensitive). Invalid values keep the current level and leave a single
+    /// warning line in the log.
+    fn apply_env_log_level(&self) {
+        let Ok(raw) = std::env::var("OMNI_LOG_LEVEL") else {
+            return;
+        };
+        let trimmed = raw.trim();
+        if trimmed.is_empty() {
+            return;
+        }
+        match canonical_log_level(trimmed) {
+            Some(level) => self.set_min_log_level(level),
+            None => {
+                let _ = self.append_log(
+                    "runtime",
+                    "warning",
+                    format!(
+                        "OMNI_LOG_LEVEL value \"{trimmed}\" is invalid; expected error/warning/info/debug/verbose"
+                    ),
+                    None,
+                    crate::runtime::state::now_marker(),
+                    Some(format!("{}:{}", file!(), line!())),
+                    None,
+                );
+            }
         }
     }
 
@@ -148,8 +185,30 @@ impl DiagnosticsStateStore {
     }
 
     pub fn set_min_log_level(&self, level: &str) {
-        let mut state = self.inner.lock().expect("diagnostics state poisoned");
-        state.min_log_level = log_level_priority(level);
+        let priority = log_level_priority(level);
+        self.min_log_level.store(priority, Ordering::Relaxed);
+        // Keep the `log::` facade's global filter in sync so disabled levels
+        // skip macro dispatch entirely instead of being filtered per record.
+        log::set_max_level(level_filter_for_priority(priority));
+    }
+
+    pub(crate) fn is_level_enabled(&self, level: &str) -> bool {
+        log_level_priority(level) >= self.min_log_level.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn current_level_filter(&self) -> log::LevelFilter {
+        level_filter_for_priority(self.min_log_level.load(Ordering::Relaxed))
+    }
+
+    /// Block until every line appended before this call reached app.log.
+    /// Synchronization point for tests and deliberate shutdown paths; the hot
+    /// logging path never calls this.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "flush barrier is exercised by unit tests and kept for orderly shutdown")
+    )]
+    pub fn flush_logs(&self) -> bool {
+        self.pipeline.flush_blocking(Duration::from_secs(5))
     }
 
     pub fn append_log(
@@ -162,11 +221,9 @@ impl DiagnosticsStateStore {
         source: Option<String>,
         elapsed_ms: Option<u128>,
     ) -> Result<DiagnosticLogEntryRuntime, String> {
-        self.ensure_directories()?;
         let summary = summary.into();
-        let mut state = self.inner.lock().expect("diagnostics state poisoned");
 
-        if log_level_priority(level) < state.min_log_level {
+        if !self.is_level_enabled(level) {
             let entry = DiagnosticLogEntryRuntime {
                 id: format!(
                     "{}-{}-{}",
@@ -185,14 +242,7 @@ impl DiagnosticsStateStore {
             return Ok(entry);
         }
 
-        let logs_dir = state.logs_dir.clone();
-        let category_state = state
-            .categories
-            .entry(category.to_string())
-            .or_insert_with(|| DiagnosticCategoryState {
-                entry_count: 0,
-                last_entry_at: None,
-            });
+        let mut state = self.inner.lock().expect("diagnostics state poisoned");
 
         let entry = DiagnosticLogEntryRuntime {
             id: format!(
@@ -210,7 +260,23 @@ impl DiagnosticsStateStore {
             elapsed_ms,
         };
 
-        write_app_log_line(&logs_dir, &entry)?;
+        // Format + submit while holding the lock so timestamps in file order
+        // stay strictly monotonic, exactly like the legacy synchronous writer.
+        // No file I/O happens here: `submit_line` is a bounded, non-blocking
+        // channel send into the single writer thread.
+        self.pipeline.submit_line(format_app_log_line(
+            &format_log_timestamp(),
+            &entry,
+            Some(super::session_id()),
+        ));
+
+        let category_state = state
+            .categories
+            .entry(category.to_string())
+            .or_insert_with(|| DiagnosticCategoryState {
+                entry_count: 0,
+                last_entry_at: None,
+            });
 
         category_state.entry_count += 1;
         category_state.last_entry_at = Some(entry.emitted_at.clone());
@@ -311,12 +377,14 @@ impl DiagnosticsStateStore {
             model_trace_summary: state.model_trace_summary.clone(),
             recent_logs: state.recent_logs.clone(),
             recent_errors: state.recent_errors.clone(),
+            log_dropped_count: self.pipeline.dropped_count(),
+            log_write_error_count: self.pipeline.write_error_count(),
         }
     }
 }
 
 pub(crate) fn format_log_timestamp() -> String {
-    Local::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string()
+    omni_logging::timestamp::format_log_timestamp()
 }
 
 pub(crate) fn app_log_path(logs_dir: &str) -> String {
@@ -333,10 +401,16 @@ pub(crate) fn level_marker(level: &str) -> &'static str {
     }
 }
 
-fn write_app_log_line(logs_dir: &str, entry: &DiagnosticLogEntryRuntime) -> Result<(), String> {
-    let app_log_path = app_log_path(logs_dir);
-    rotate_app_log_if_needed(&app_log_path);
-    let timestamp = format_log_timestamp();
+/// Format one app.log line. Without a session id the output is byte-for-byte
+/// identical to the legacy `write_app_log_line` formatter; with one, a single
+/// trailing ` sid=<value>` key=value token is appended before the newline
+/// (never as a prefix — the leading-timestamp contract is load-bearing).
+/// Guarded by `format_app_log_line_matches_legacy_formatter_byte_for_byte`.
+pub(crate) fn format_app_log_line(
+    timestamp: &str,
+    entry: &DiagnosticLogEntryRuntime,
+    session_id: Option<&str>,
+) -> String {
     let level_marker = level_marker(&entry.level);
     let source_info = entry.source.as_deref().unwrap_or("-");
 
@@ -354,36 +428,43 @@ fn write_app_log_line(logs_dir: &str, entry: &DiagnosticLogEntryRuntime) -> Resu
         line.push_str(&format!("  ({}ms)", elapsed));
     }
 
-    line.push('\n');
+    if let Some(session_id) = session_id {
+        line.push_str(" sid=");
+        line.push_str(session_id);
+    }
 
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&app_log_path)
-        .map_err(|error| error.to_string())?;
-    file.write_all(line.as_bytes())
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    line.push('\n');
+    line
 }
 
-pub(crate) fn rotate_app_log_if_needed(app_log_path: &str) {
-    let path = Path::new(app_log_path);
-    let file_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
-    if file_size < APP_LOG_MAX_BYTES {
-        return;
+pub(crate) fn level_filter_for_priority(priority: u8) -> log::LevelFilter {
+    match priority {
+        4 => log::LevelFilter::Error,
+        3 => log::LevelFilter::Warn,
+        2 => log::LevelFilter::Info,
+        1 => log::LevelFilter::Debug,
+        _ => log::LevelFilter::Trace,
     }
+}
 
-    for index in (1..=APP_LOG_ROTATED_FILES).rev() {
-        let old_path = if index == 1 {
-            path.to_path_buf()
-        } else {
-            path.with_extension(format!("{}.log", index - 1))
-        };
-        let new_path = path.with_extension(format!("{}.log", index));
-        if old_path.exists() {
-            let _ = fs::rename(&old_path, &new_path);
-        }
+/// Canonical `OMNI_LOG_LEVEL` values, matched case-insensitively.
+pub(crate) fn canonical_log_level(value: &str) -> Option<&'static str> {
+    match value.to_ascii_lowercase().as_str() {
+        "error" => Some("error"),
+        "warning" => Some("warning"),
+        "info" => Some("info"),
+        "debug" => Some("debug"),
+        "verbose" => Some("verbose"),
+        _ => None,
     }
+}
+
+/// Serialize tests that touch process-global log state (the `log::` max level
+/// and `OMNI_LOG_LEVEL`), which would otherwise race across parallel tests.
+#[cfg(test)]
+pub(crate) fn global_log_state_lock() -> std::sync::MutexGuard<'static, ()> {
+    static LOCK: Mutex<()> = Mutex::new(());
+    LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 pub(crate) fn default_diagnostics_root() -> String {
@@ -474,8 +555,12 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{copy_logs_into, migrate_diagnostics_tree, DiagnosticsStateStore};
-    use crate::diagnostics::contracts::ModelTraceCallRuntime;
+    use super::{
+        canonical_log_level, copy_logs_into, format_app_log_line, global_log_state_lock,
+        level_filter_for_priority, log_level_priority, migrate_diagnostics_tree,
+        DiagnosticsStateStore,
+    };
+    use crate::diagnostics::contracts::{DiagnosticLogEntryRuntime, ModelTraceCallRuntime};
 
     fn temp_dir(name: &str) -> PathBuf {
         let marker = SystemTime::now()
@@ -537,6 +622,7 @@ mod tests {
             .iter()
             .any(|item| item.category == "audio" && item.entry_count == 1));
 
+        assert!(store.flush_logs(), "writer thread should acknowledge flush");
         let logs_dir = store.logs_dir();
         let app_log_path = PathBuf::from(&logs_dir).join("app.log");
         let app_log = fs::read_to_string(&app_log_path).expect("read app log");
@@ -558,6 +644,286 @@ mod tests {
 
         let _ = fs::remove_dir_all(root_dir);
         let _ = fs::remove_dir_all(export_dir);
+    }
+
+    #[test]
+    fn format_app_log_line_matches_legacy_formatter_byte_for_byte() {
+        // Reference implementation copied verbatim from the pre-refactor
+        // `write_app_log_line` body (minus the file I/O). Do not "simplify"
+        // this copy: it is the byte-level contract witness.
+        fn legacy_format(timestamp: &str, entry: &DiagnosticLogEntryRuntime) -> String {
+            let level_marker = super::level_marker(&entry.level);
+            let source_info = entry.source.as_deref().unwrap_or("-");
+
+            let mut line = format!(
+                "{} [{}] [{}] {} - {}",
+                timestamp, level_marker, entry.category, source_info, entry.summary
+            );
+
+            if let Some(ref detail) = entry.detail {
+                line.push_str(" | ");
+                line.push_str(detail);
+            }
+
+            if let Some(elapsed) = entry.elapsed_ms {
+                line.push_str(&format!("  ({}ms)", elapsed));
+            }
+
+            line.push('\n');
+            line
+        }
+
+        fn entry(
+            level: &str,
+            category: &str,
+            summary: &str,
+            detail: Option<&str>,
+            source: Option<&str>,
+            elapsed_ms: Option<u128>,
+        ) -> DiagnosticLogEntryRuntime {
+            DiagnosticLogEntryRuntime {
+                id: "test".to_string(),
+                category: category.to_string(),
+                level: level.to_string(),
+                summary: summary.to_string(),
+                detail: detail.map(str::to_string),
+                emitted_at: "unix:0".to_string(),
+                source: source.map(str::to_string),
+                elapsed_ms,
+            }
+        }
+
+        let matrix = vec![
+            entry("info", "runtime", "runtime ready", None, None, None),
+            entry(
+                "error",
+                "audio",
+                "audio failed",
+                Some("device missing"),
+                Some("state.rs:303"),
+                Some(42),
+            ),
+            entry(
+                "warning",
+                "bridge",
+                "watch_mode.route_start direction=outbound",
+                Some("key=value key2=\"quoted value\""),
+                Some(r"src\bridge\ipc.rs:167"),
+                None,
+            ),
+            entry(
+                "debug",
+                "storage",
+                "[TRANS_WRITE] cue_id=cue-1 translated=\"你好 \\\"世界\\\"\"",
+                None,
+                Some("-"),
+                Some(0),
+            ),
+            entry("verbose", "model-trace", "trace line", Some(""), None, None),
+            entry("unknown-level", "provider", "fallback marker", None, None, Some(u128::MAX)),
+        ];
+
+        for entry in &matrix {
+            let timestamp = super::format_log_timestamp();
+            assert_eq!(
+                format_app_log_line(&timestamp, entry, None).into_bytes(),
+                legacy_format(&timestamp, entry).into_bytes(),
+                "formatter output diverged for summary {:?}",
+                entry.summary
+            );
+
+            // Session-id injection is exactly one trailing space-separated
+            // key=value token before the newline — never a prefix.
+            let mut expected = legacy_format(&timestamp, entry);
+            expected.truncate(expected.len() - 1);
+            expected.push_str(" sid=0198c0ffee0198c0ffee0198c0ffee00");
+            expected.push('\n');
+            assert_eq!(
+                format_app_log_line(&timestamp, entry, Some("0198c0ffee0198c0ffee0198c0ffee00")),
+                expected,
+                "sid injection diverged for summary {:?}",
+                entry.summary
+            );
+        }
+    }
+
+    #[test]
+    fn concurrent_appends_keep_lines_intact_and_ordered() {
+        let root_dir = temp_dir("concurrent");
+        let store = DiagnosticsStateStore::new_with_root(root_dir.to_string_lossy().to_string());
+        const THREADS: usize = 8;
+        const LINES_PER_THREAD: usize = 400;
+
+        let handles: Vec<_> = (0..THREADS)
+            .map(|thread_index| {
+                let store = store.clone();
+                std::thread::spawn(move || {
+                    for seq in 0..LINES_PER_THREAD {
+                        store
+                            .append_log(
+                                "runtime",
+                                "info",
+                                format!("concurrent thread={thread_index} seq={seq:03}"),
+                                None,
+                                "unix:0".to_string(),
+                                Some("state.rs:0".to_string()),
+                                None,
+                            )
+                            .expect("append concurrent log");
+                    }
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().expect("join writer thread");
+        }
+        assert!(store.flush_logs());
+
+        let snapshot = store.snapshot_base();
+        assert_eq!(snapshot.log_dropped_count, 0, "burst below channel capacity must not drop");
+        assert_eq!(snapshot.log_write_error_count, 0);
+
+        let app_log = fs::read_to_string(PathBuf::from(store.logs_dir()).join("app.log"))
+            .expect("read app log");
+        let lines: Vec<&str> = app_log.lines().collect();
+        assert_eq!(lines.len(), THREADS * LINES_PER_THREAD);
+
+        let mut seen = std::collections::HashSet::new();
+        for line in &lines {
+            let payload = line
+                .split(" - ")
+                .nth(1)
+                .unwrap_or_else(|| panic!("malformed line: {line}"));
+            assert!(
+                payload.starts_with("concurrent thread="),
+                "interleaved/corrupt line: {line}"
+            );
+            assert!(seen.insert(payload.to_string()), "duplicated line: {line}");
+        }
+
+        // Timestamps must be non-decreasing in file order: formatting and
+        // submission happen under the state lock, and the single writer thread
+        // preserves channel order.
+        let mut previous = "";
+        for line in &lines {
+            let stamp = &line[..23];
+            assert!(
+                stamp >= previous,
+                "timestamp order regressed: {previous} then {stamp}"
+            );
+            previous = stamp;
+        }
+
+        let _ = fs::remove_dir_all(root_dir);
+    }
+
+    #[test]
+    fn dynamic_level_filters_and_reenables_appends() {
+        let _guard = global_log_state_lock();
+        let root_dir = temp_dir("dynamic-level");
+        let store = DiagnosticsStateStore::new_with_root(root_dir.to_string_lossy().to_string());
+
+        store.set_min_log_level("error");
+        store
+            .append_log(
+                "runtime",
+                "info",
+                "filtered info line",
+                None,
+                "unix:1".to_string(),
+                None,
+                None,
+            )
+            .expect("append filtered log");
+
+        store.set_min_log_level("verbose");
+        store
+            .append_log(
+                "runtime",
+                "info",
+                "visible info line",
+                None,
+                "unix:2".to_string(),
+                None,
+                None,
+            )
+            .expect("append visible log");
+
+        assert!(store.flush_logs());
+        let app_log = fs::read_to_string(PathBuf::from(store.logs_dir()).join("app.log"))
+            .expect("read app log");
+        assert!(!app_log.contains("filtered info line"));
+        assert!(app_log.contains("visible info line"));
+
+        let snapshot = store.snapshot_base();
+        assert_eq!(snapshot.recent_logs.len(), 1);
+        assert_eq!(snapshot.recent_logs[0].summary, "visible info line");
+
+        let _ = fs::remove_dir_all(root_dir);
+    }
+
+    #[test]
+    fn omni_log_level_values_map_to_canonical_levels_and_filters() {
+        assert_eq!(canonical_log_level("ERROR"), Some("error"));
+        assert_eq!(canonical_log_level("Warning"), Some("warning"));
+        assert_eq!(canonical_log_level("info"), Some("info"));
+        assert_eq!(canonical_log_level("DEBUG"), Some("debug"));
+        assert_eq!(canonical_log_level("Verbose"), Some("verbose"));
+        assert_eq!(canonical_log_level("trace"), None, "trace is spelled verbose in OMNI_LOG_LEVEL");
+        assert_eq!(canonical_log_level("warn"), None);
+        assert_eq!(canonical_log_level(""), None);
+
+        assert_eq!(
+            level_filter_for_priority(log_level_priority("error")),
+            log::LevelFilter::Error
+        );
+        assert_eq!(
+            level_filter_for_priority(log_level_priority("warning")),
+            log::LevelFilter::Warn
+        );
+        assert_eq!(
+            level_filter_for_priority(log_level_priority("info")),
+            log::LevelFilter::Info
+        );
+        assert_eq!(
+            level_filter_for_priority(log_level_priority("debug")),
+            log::LevelFilter::Debug
+        );
+        assert_eq!(
+            level_filter_for_priority(log_level_priority("verbose")),
+            log::LevelFilter::Trace
+        );
+    }
+
+    #[test]
+    fn env_log_level_overrides_initial_level_and_warns_on_invalid_values() {
+        let _guard = global_log_state_lock();
+        let root_dir = temp_dir("env-level");
+        let store = DiagnosticsStateStore::new_with_root(root_dir.to_string_lossy().to_string());
+
+        std::env::set_var("OMNI_LOG_LEVEL", "ERROR");
+        store.apply_env_log_level();
+        std::env::remove_var("OMNI_LOG_LEVEL");
+        assert!(!store.is_level_enabled("info"));
+        assert!(store.is_level_enabled("error"));
+
+        store.set_min_log_level("verbose");
+        std::env::set_var("OMNI_LOG_LEVEL", "not-a-level");
+        store.apply_env_log_level();
+        std::env::remove_var("OMNI_LOG_LEVEL");
+        assert!(
+            store.is_level_enabled("verbose"),
+            "invalid value must keep the current level"
+        );
+        assert!(store.flush_logs());
+        let app_log = fs::read_to_string(PathBuf::from(store.logs_dir()).join("app.log"))
+            .expect("read app log");
+        assert!(
+            app_log.contains("OMNI_LOG_LEVEL value \"not-a-level\" is invalid"),
+            "invalid env value must leave a warning line"
+        );
+
+        let _ = fs::remove_dir_all(root_dir);
     }
 
     #[test]

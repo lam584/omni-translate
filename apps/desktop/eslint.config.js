@@ -22,6 +22,9 @@ export default tseslint.config(
     rules: {
       ...reactHooks.configs.recommended.rules,
       'react-hooks/set-state-in-effect': 'error',
+      // All production logging must flow through createLogger (src/runtime/logger.ts),
+      // which mirrors to the console itself and forwards to the native diagnostics log.
+      'no-console': 'error',
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
       'react-refresh/only-export-components': ['error', {
         allowConstantExport: true,
@@ -45,6 +48,13 @@ export default tseslint.config(
     rules: {
       // Router construction is an application entrypoint, not a Fast Refresh component boundary.
       'react-refresh/only-export-components': 'off',
+    },
+  },
+  {
+    files: ['**/*.{test,spec}.{ts,tsx}'],
+    rules: {
+      // Tests may spy on and assert against console output.
+      'no-console': 'off',
     },
   },
 );

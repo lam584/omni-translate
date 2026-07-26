@@ -146,7 +146,7 @@ describe('realTimeSessionPageHelpers', () => {
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
     const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
     configDraft.providers[0].displayName = '';
     configDraft.providers[0].customHeaders = [{ id: 'h1', name: 'X-Test', value: '1', enabled: false }];
@@ -187,7 +187,7 @@ describe('realTimeSessionPageHelpers', () => {
     });
 
     expect(consoleSpy).toHaveBeenCalledTimes(1);
-    const logOutput = String(consoleSpy.mock.calls[0]?.[0] ?? '');
+    const logOutput = String(consoleSpy.mock.calls[0]?.[2] ?? '');
     expect(logOutput).toContain('Provider[0]');
     expect(logOutput).toContain('X-Test=disabled');
     expect(logOutput).toContain('speechPatch');
@@ -197,14 +197,14 @@ describe('realTimeSessionPageHelpers', () => {
     const configDraft = structuredClone(appConfigDraftMock) as AppConfigDraft & { circular?: unknown };
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
     const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
     configDraft.speech = undefined as unknown as AppConfigDraft['speech'];
     configDraft.circular = configDraft;
 
     logSceneLaunchConfig('voice-room', configDraft, runtimeSnapshot, audioRuntimeSnapshot);
 
-    const logOutput = String(consoleSpy.mock.calls[0]?.[0] ?? '');
+    const logOutput = String(consoleSpy.mock.calls[0]?.[2] ?? '');
     expect(logOutput).toContain('speech');
     expect(logOutput).toContain('JSON');
   });
@@ -213,20 +213,20 @@ describe('realTimeSessionPageHelpers', () => {
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
     const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
 
     configDraft.providers[0].customHeaders = [{ id: 'h-enabled', name: 'X-Enabled', value: '1', enabled: true }];
 
     logSceneLaunchConfig('watch', configDraft, runtimeSnapshot, audioRuntimeSnapshot);
 
-    expect(String(consoleSpy.mock.calls[0]?.[0] ?? '')).toContain('X-Enabled=enabled');
+    expect(String(consoleSpy.mock.calls[0]?.[2] ?? '')).toContain('X-Enabled=enabled');
   });
 
   it('falls back safely when inline values and the full config cannot be serialized', () => {
     const configDraft = structuredClone(appConfigDraftMock) as AppConfigDraft & { unsupported?: bigint };
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
     const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const speechPatch = { enabled: true } as Record<string, unknown> & { enabled: boolean };
     speechPatch.self = speechPatch;
     configDraft.unsupported = 1n;
@@ -237,7 +237,7 @@ describe('realTimeSessionPageHelpers', () => {
       secondarySubtitleTranslationEnabled: false,
     });
 
-    const output = String(consoleSpy.mock.calls[0]?.[0] ?? '');
+    const output = String(consoleSpy.mock.calls[0]?.[2] ?? '');
     expect(output).toContain('[object Object]');
     expect(output).toContain('(serialization failed)');
   });

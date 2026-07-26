@@ -93,6 +93,10 @@ pub struct DiagnosticsRuntimeSnapshot {
     pub model_trace_summary: ModelTraceSummaryRuntime,
     pub recent_logs: Vec<DiagnosticLogEntryRuntime>,
     pub recent_errors: Vec<DiagnosticLogEntryRuntime>,
+    /// Lines discarded because the bounded log channel was full.
+    pub log_dropped_count: u64,
+    /// Failed writes observed by the log writer thread.
+    pub log_write_error_count: u64,
 }
 
 impl DiagnosticsRuntimeSnapshot {
@@ -113,6 +117,8 @@ impl DiagnosticsRuntimeSnapshot {
             model_trace_summary: ModelTraceSummaryRuntime::preview(),
             recent_logs: Vec::new(),
             recent_errors: Vec::new(),
+            log_dropped_count: 0,
+            log_write_error_count: 0,
         }
     }
 }

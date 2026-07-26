@@ -1,15 +1,19 @@
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 pub use omni_bridge_protocol::{
     AudioFrameAck as BridgeTranslationFrameAck, AudioFrameHeader as BridgeTranslationFrameHeader,
     MixControl as BridgeMixControl,
 };
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeRuntimeSnapshot {
+    #[ts(type = "'stopped' | 'starting' | 'running' | 'error'")]
     pub process_status: String,
+    #[ts(type = "'development' | 'release'")]
     pub install_channel: String,
+    #[ts(type = "'idle' | 'planned' | 'probing' | 'elevation-required' | 'waiting-for-elevation' | 'waiting-for-restart' | 'installing-driver' | 'uninstalling-driver' | 'starting-bridge' | 'verifying' | 'rollback-required' | 'ready'")]
     pub install_phase: String,
     pub target_device_id: String,
     pub virtual_render_device_id: String,
@@ -19,8 +23,11 @@ pub struct BridgeRuntimeSnapshot {
     pub monitor_playback_enabled: bool,
     pub expected_driver_version: String,
     pub expected_bridge_version: String,
+    #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,
+    #[ts(type = "'idle' | 'initializing' | 'ready' | 'writing' | 'draining' | 'stopped' | 'error'")]
     pub lifecycle_state: String,
+    #[ts(type = "'not-installed' | 'damaged' | 'version-mismatch' | 'running'")]
     pub driver_health: String,
     pub driver_version: Option<String>,
     pub bridge_version: String,
@@ -60,7 +67,9 @@ pub struct BridgeRuntimeSnapshot {
     pub source_zero_byte_reads: u64,
     pub monitor_playback_state: String,
     pub last_frame_timestamp_ms: Option<u64>,
+    #[ts(type = "('driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered') | null")]
     pub last_error_code: Option<String>,
+    #[ts(type = "('reinstall-driver' | 'restart-bridge' | 'rollback-driver' | 'open-diagnostics') | null")]
     pub recommended_action: Option<String>,
     pub pipe_name: String,
     pub pipe_path: String,
@@ -70,12 +79,15 @@ pub struct BridgeRuntimeSnapshot {
     pub session_id: Option<String>,
     pub last_handshake_at: Option<String>,
     pub rollback_supported: bool,
+    #[ts(type = "'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown'")]
     pub status: String,
+    #[ts(type = "'idle' | 'probing' | 'ready' | 'failed'")]
     pub driver_probe_state: String,
     pub test_signing_enabled: bool,
     pub signature_enforcement_bypassed: bool,
     pub memory_integrity_enabled: bool,
     pub secure_boot_enabled: Option<bool>,
+    #[ts(type = "'idle' | 'waiting-for-elevation' | 'detected' | 'cancelled' | 'unavailable'")]
     pub secure_boot_probe_status: String,
     pub root_device_count: usize,
     pub root_instance_ids: Vec<String>,
@@ -172,7 +184,7 @@ impl Default for BridgeRuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverProbeResult {
     pub schema_version: u32,
@@ -192,7 +204,7 @@ pub struct DriverProbeResult {
     pub detail: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverOperationResult {
     pub schema_version: u32,
@@ -207,7 +219,7 @@ pub struct DriverOperationResult {
     pub finished_at: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "legacy driver install-state schema is retained for upgrade compatibility")]
 pub struct DriverInstallStateFile {
@@ -224,7 +236,7 @@ pub struct DriverInstallStateFile {
     pub driver_backend: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type")]
 pub enum DriverBridgeCommand {
     #[serde(rename = "bridge.init")]
@@ -239,7 +251,7 @@ pub enum DriverBridgeCommand {
     SourceFlush(BridgeSourceFlushRequest),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type")]
 pub enum DriverBridgeEvent {
     #[serde(rename = "bridge.init.ack")]
@@ -252,7 +264,7 @@ pub enum DriverBridgeEvent {
     Error(DriverBridgeErrorEvent),
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeInitRequest {
     pub request_id: String,
@@ -269,7 +281,7 @@ pub struct BridgeInitRequest {
     pub expected_bridge_version: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeInitResponse {
     pub request_id: String,
@@ -279,19 +291,19 @@ pub struct BridgeInitResponse {
     pub active_driver_version: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStateQuery {
     pub request_id: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeSourceFlushRequest {
     pub request_id: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStateResponse {
     pub request_id: String,
@@ -374,7 +386,7 @@ pub struct BridgeStateResponse {
     pub last_error_code: Option<String>,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeAudioFrame {
     pub frame_id: String,
@@ -388,7 +400,7 @@ pub struct BridgeAudioFrame {
     pub payload_ref: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeWriteFrameRequest {
     pub request_id: String,
@@ -396,7 +408,7 @@ pub struct BridgeWriteFrameRequest {
     pub frame: BridgeAudioFrame,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeWriteFrameAck {
     pub request_id: String,
@@ -405,7 +417,7 @@ pub struct BridgeWriteFrameAck {
     pub queue_depth: usize,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeShutdownRequest {
     pub request_id: String,
@@ -413,7 +425,7 @@ pub struct BridgeShutdownRequest {
     pub reason: String,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverBridgeErrorEvent {
     pub request_id: Option<String>,

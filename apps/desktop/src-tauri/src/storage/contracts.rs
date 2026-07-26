@@ -1,8 +1,10 @@
 use serde::Serialize;
+use ts_rs::TS;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageRuntimeSnapshot {
+    #[ts(type = "'preview' | 'ready'")]
     pub status: String,
     pub schema_version: i64,
     pub database_path: String,
@@ -30,7 +32,7 @@ impl StorageRuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigExportArtifact {
     pub file_path: String,
@@ -39,7 +41,7 @@ pub struct ConfigExportArtifact {
     pub snapshot_count: usize,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ConfigSnapshotRecord {
     pub snapshot_id: String,
@@ -47,7 +49,7 @@ pub struct ConfigSnapshotRecord {
     pub created_at: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialRefStatus {
     pub reference: String,
@@ -55,7 +57,7 @@ pub struct CredentialRefStatus {
     pub has_secret: bool,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct CredentialSecretPayload {
     pub reference: String,

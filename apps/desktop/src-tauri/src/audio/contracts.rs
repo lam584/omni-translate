@@ -1,25 +1,31 @@
 use serde::Serialize;
+use ts_rs::TS;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioDeviceRuntime {
     pub device_id: String,
     pub label: String,
     pub interface_name: String,
+    #[ts(type = "'render' | 'capture'")]
     pub direction: String,
     pub is_default: bool,
     pub state: String,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioRouteRuntimeSnapshot {
     pub route_id: String,
+    #[ts(type = "'inbound' | 'outbound'")]
     pub direction: String,
     pub requested_device_id: String,
     pub effective_device_id: String,
+    #[ts(type = "'idle' | 'armed' | 'capturing' | 'buffering' | 'muted' | 'stopping'")]
     pub capture_state: String,
+    #[ts(type = "'cold' | 'primed' | 'ready' | 'draining'")]
     pub pre_buffer_state: String,
+    #[ts(type = "'silence' | 'speech'")]
     pub vad_state: String,
     pub buffer_ahead_ms: u64,
     pub frames_captured: u64,
@@ -57,7 +63,7 @@ impl AudioRouteRuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleDisplaySegmentRuntime {
     pub source_text: String,
@@ -65,10 +71,11 @@ pub struct SubtitleDisplaySegmentRuntime {
     pub pending: bool,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleCueRuntime {
     pub cue_id: String,
+    #[ts(type = "'inbound' | 'outbound'")]
     pub route_direction: String,
     pub source_text: String,
     #[serde(skip_serializing_if = "String::is_empty")]
@@ -81,7 +88,7 @@ pub struct SubtitleCueRuntime {
     pub committed: bool,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleOverlayRuntimeSnapshot {
     pub queue_depth: usize,
@@ -107,7 +114,7 @@ impl SubtitleOverlayRuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeechDispatchEventRuntime {
     pub event_id: String,
@@ -118,10 +125,12 @@ pub struct SpeechDispatchEventRuntime {
     pub request_id: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SpeechRuntimeSnapshot {
+    #[ts(type = "'preview' | 'ready' | 'degraded'")]
     pub status: String,
+    #[ts(type = "'idle' | 'waiting-subtitle' | 'queued' | 'deferred' | 'playing' | 'error'")]
     pub dispatch_state: String,
     pub queue_depth: usize,
     pub cache_entries: usize,
@@ -167,10 +176,11 @@ impl SpeechRuntimeSnapshot {
 /// Realtime provider (STT/translation WebSocket) connection lifecycle exposed
 /// to the renderer, so reconnect progress is visible instead of only flipping
 /// the legacy `stt_connected` boolean.
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SttConnectionRuntime {
     /// "idle" | "connected" | "reconnecting" | "disconnected"
+    #[ts(type = "'idle' | 'connected' | 'reconnecting' | 'disconnected'")]
     pub state: String,
     pub reconnect_attempt: u64,
     pub max_reconnect_attempts: u64,
@@ -188,9 +198,10 @@ impl SttConnectionRuntime {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioRuntimeSnapshot {
+    #[ts(type = "'preview' | 'ready' | 'degraded'")]
     pub status: String,
     pub host: String,
     pub render_devices: Vec<AudioDeviceRuntime>,

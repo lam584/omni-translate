@@ -3,6 +3,7 @@
 //! JSON frame/ack/mix-control payload shapes, and the pcm16le codec.
 
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-06-02-loopback-v2";
 
@@ -20,7 +21,7 @@ pub fn source_pipe_path(pipe_name: &str) -> String {
     format!(r"\\.\pipe\{}-source", pipe_name)
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct MixControl {
     pub keep_original_audio: bool,
@@ -46,7 +47,7 @@ impl Default for MixControl {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioFrameHeader {
     #[serde(rename = "type")]
@@ -62,7 +63,7 @@ pub struct AudioFrameHeader {
     pub payload_bytes: usize,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioFrameAck {
     #[serde(rename = "type")]

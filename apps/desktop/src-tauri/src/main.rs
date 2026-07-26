@@ -4,6 +4,8 @@ mod benchmark;
 mod bridge;
 mod common;
 #[cfg(test)]
+mod contract_export;
+#[cfg(test)]
 mod contract_keys_fixture;
 mod diagnostics;
 mod provider;

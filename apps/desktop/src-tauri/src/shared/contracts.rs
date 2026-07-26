@@ -5,13 +5,15 @@
 //! contract-keys fixture and must not change here.
 
 use serde::Serialize;
+use ts_rs::TS;
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelTraceCallRuntime {
     pub trace_id: String,
     pub call_id: String,
     pub name: String,
+    #[ts(type = "'running' | 'succeeded' | 'failed'")]
     pub status: String,
     pub provider_id: String,
     pub model: String,
@@ -19,11 +21,12 @@ pub struct ModelTraceCallRuntime {
     pub cue_id: Option<String>,
     pub started_at: String,
     pub completed_at: Option<String>,
+    #[ts(type = "number | null")]
     pub elapsed_ms: Option<u128>,
     pub last_error: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ModelTraceSummaryRuntime {
     pub active_trace_id: Option<String>,
@@ -49,20 +52,22 @@ impl ModelTraceSummaryRuntime {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticLogEntryRuntime {
     pub id: String,
     pub category: String,
+    #[ts(type = "'info' | 'warning' | 'error'")]
     pub level: String,
     pub summary: String,
     pub detail: Option<String>,
     pub emitted_at: String,
     pub source: Option<String>,
+    #[ts(type = "number | null")]
     pub elapsed_ms: Option<u128>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticLogCategoryRuntime {
     pub category: String,
@@ -71,17 +76,18 @@ pub struct DiagnosticLogCategoryRuntime {
     pub last_entry_at: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticSupportSignalRuntime {
     pub id: String,
     pub label: String,
+    #[ts(type = "'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown'")]
     pub status: String,
     pub summary: String,
     pub recommended_action: Option<String>,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticsRuntimeSnapshot {
     pub status: String,
@@ -129,19 +135,21 @@ impl DiagnosticsRuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticsExportArtifact {
+    #[ts(type = "'summary' | 'quick' | 'full'")]
     pub scope: String,
     pub output_path: String,
     pub generated_at: String,
     pub file_count: usize,
 }
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeNotification {
     pub id: String,
+    #[ts(type = "'info' | 'warning' | 'error'")]
     pub level: String,
     pub source: String,
     pub message: String,

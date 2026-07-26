@@ -1,6 +1,7 @@
 import React, { useEffect } from 'react';
 import ReactDOM from 'react-dom/client';
 import SubtitleOverlayPage from './pages/SubtitleOverlayPage';
+import { DesktopApiProvider } from './runtime/desktop-api-context';
 import { bootstrapDesktopRuntimeBridge } from './runtime/desktop-runtime';
 import './i18n/config';
 import './styles/overlay.css';
@@ -35,7 +36,9 @@ export function mountOverlayApp(rootElement: HTMLElement | null = document.getEl
 
   return ReactDOM.createRoot(rootElement).render(
     <React.StrictMode>
-      <OverlayApp />
+      <DesktopApiProvider>
+        <OverlayApp />
+      </DesktopApiProvider>
     </React.StrictMode>,
   );
 }

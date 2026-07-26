@@ -375,9 +375,9 @@
       ],
       "mixControl": {
         "keepOriginalAudio": true,
-        "translatedAudioEnabled": false,
-        "translatedAudioGainDb": -3,
-        "originalAudioGainDb": 0,
+        "translatedAudioEnabled": true,
+        "translatedAudioGainDb": -1,
+        "originalAudioGainDb": -4,
         "duckingEnabled": true,
         "duckingDepthPercent": 35,
         "monitorMode": "original-and-translated"
@@ -451,6 +451,7 @@
     "outputSpeechEnabled": true,
     "outputSubtitlesEnabled": true,
     "virtualMicOutputEnabled": true,
+    "feedbackLoopPrevention": "echo-cancel",
     "status": "warning"
   },
   "subtitles": {

@@ -130,7 +130,8 @@
     "resetWelcomeDone": "已重置。向导会在下次启动时出现。",
     "resetWelcomeAction": "重置",
     "sectionDriverManagement": "驱动管理",
-    "driverManagementHint": "管理 Omni Translate 虚拟扬声器驱动与 Bridge Service。"
+    "driverManagementHint": "管理 Omni Translate 虚拟扬声器驱动与 Bridge Service。",
+    "overlayHeightLabel": "悬浮窗高度"
   },
   "welcome": {
     "title": "欢迎使用 Omni Translate",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "说",
     "vadThresholdTitle": "VAD 阈值 {{value}}",
     "modelSubtitleSttTranslation": "语音识别 · 翻译",
-    "modelSubtitleSttTranslationSpeech": "语音识别 · 翻译 · 语音"
+    "modelSubtitleSttTranslationSpeech": "语音识别 · 翻译 · 语音",
+    "originalAudioVolume": "原声音量",
+    "translatedAudioVolume": "LLM 译声音量",
+    "originalAudioVolumeVirtualDriverHint": "原声音量仅在虚拟驱动模式下可调；当前物理回环模式请使用播放器或 Windows 音量控制。"
   },
   "overlay": {
     "contextMenuTitle": "悬浮窗控制",

@@ -24,6 +24,8 @@ struct OmniSessionRuntime {
     reconnect_count: usize,
     chunk_count: u64,
     sent_audio_since_commit: bool,
+    manual_response_pending: bool,
+    manual_response_item_id: Option<String>,
     last_vad_event_time: SystemTime,
     vad_event_count: u64,
     last_commit_time: SystemTime,
@@ -58,6 +60,8 @@ impl OmniSessionRuntime {
             reconnect_count: 0,
             chunk_count: 0,
             sent_audio_since_commit: false,
+            manual_response_pending: false,
+            manual_response_item_id: None,
             last_vad_event_time: SystemTime::now(),
             vad_event_count: 0,
             last_commit_time: SystemTime::now(),
@@ -247,6 +251,7 @@ fn run_omni_worker(
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
+    let echo_guard_enabled = speech_config.echo_guard_enabled();
     let OmniConnectedSession {
         mut socket,
         mut trace_call,
@@ -255,6 +260,7 @@ fn run_omni_worker(
         mut voice_fallback_applied,
         native_translation_reuse_active,
         playback_tx,
+        playback_stop_requested,
         playback_join,
     } = OmniConnectionCoordinator::connect_initial(
         &app,
@@ -276,6 +282,8 @@ fn run_omni_worker(
         mut reconnect_count,
         mut chunk_count,
         mut sent_audio_since_commit,
+        mut manual_response_pending,
+        mut manual_response_item_id,
         mut last_vad_event_time,
         mut vad_event_count,
         mut last_commit_time,
@@ -321,7 +329,7 @@ fn run_omni_worker(
                 vad_event_count,
                 buffer_size,
             );
-            let _ = playback_tx.send(OmniPlaybackCommand::Stop);
+            request_omni_playback_stop(&playback_stop_requested, &playback_tx);
             let _ = playback_join.join();
             emit_audio_snapshot(&app, store)?;
             break;
@@ -389,6 +397,9 @@ fn run_omni_worker(
             OmniCommitState {
                 last_commit_time,
                 sent_audio_since_commit,
+                manual_response_pending,
+                manual_response_item_id,
+                manual_turn_timed_out: false,
             },
             &app,
             &mut socket,
@@ -398,6 +409,22 @@ fn run_omni_worker(
         );
         last_commit_time = commit_state.last_commit_time;
         sent_audio_since_commit = commit_state.sent_audio_since_commit;
+        manual_response_pending = commit_state.manual_response_pending;
+        manual_response_item_id = commit_state.manual_response_item_id;
+        if commit_state.manual_turn_timed_out {
+            reset_omni_turn_state(
+                &mut current_cue_id,
+                &mut pending_source_text,
+                &mut pending_translated_text,
+                &mut transcription_completed_flag,
+                &mut transcription_completed_at,
+                &mut event_diagnostics,
+            );
+            pending_audio_buffer.clear();
+            pending_audio_delta_count = 0;
+            pending_audio_delta_base64_bytes = 0;
+            pending_audio_response_id = None;
+        }
 
         OmniEventProcessor::expire_stale_transcription(
             &app,
@@ -426,6 +453,8 @@ fn run_omni_worker(
                 vad_event_count,
                 transcription_completed_flag,
                 transcription_completed_at,
+                manual_response_pending,
+                manual_response_item_id,
             },
             OmniSocketEventContext {
                 app: &app,
@@ -450,6 +479,7 @@ fn run_omni_worker(
                 buffer_size,
                 pre_session_audio_queue_len: pre_session_audio_queue.len(),
                 pre_session_audio_dropped,
+                echo_guard_enabled,
             },
         )?;
         socket = poll.state.socket;
@@ -471,6 +501,8 @@ fn run_omni_worker(
         vad_event_count = poll.state.vad_event_count;
         transcription_completed_flag = poll.state.transcription_completed_flag;
         transcription_completed_at = poll.state.transcription_completed_at;
+        manual_response_pending = poll.state.manual_response_pending;
+        manual_response_item_id = poll.state.manual_response_item_id;
         if poll.skip_tick {
             continue;
         }

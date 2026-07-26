@@ -130,7 +130,8 @@
     "resetWelcomeDone": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่า",
     "resetWelcomeAction": "รีเซ็ต",
     "sectionDriverManagement": "การตั้งค่า - ไดรเวอร์",
-    "driverManagementHint": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่า"
+    "driverManagementHint": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่า",
+    "overlayHeightLabel": "ความสูงโอเวอร์เลย์"
   },
   "welcome": {
     "title": "การตั้งค่าเริ่มต้น - ชื่อเรื่อง",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "การกำหนดเส้นทางเสียง - เอาต์พุต",
     "vadThresholdTitle": "การกำหนดเส้นทางเสียง - ชื่อเรื่อง {{value}}",
     "modelSubtitleSttTranslation": "การกำหนดเส้นทางเสียง - โมเดล・คำบรรยาย・การแปล",
-    "modelSubtitleSttTranslationSpeech": "การกำหนดเส้นทางเสียง - โมเดล・คำบรรยาย・การแปล"
+    "modelSubtitleSttTranslationSpeech": "การกำหนดเส้นทางเสียง - โมเดล・คำบรรยาย・การแปล",
+    "originalAudioVolume": "ระดับเสียงต้นฉบับ",
+    "translatedAudioVolume": "ระดับเสียงแปลจาก LLM",
+    "originalAudioVolumeVirtualDriverHint": "ปรับระดับเสียงต้นฉบับได้เฉพาะในโหมดไดรเวอร์เสมือนเท่านั้น ในโหมดลูปแบ็กทางกายภาพปัจจุบัน ให้ใช้ระดับเสียงของโปรแกรมเล่นหรือ Windows"
   },
   "overlay": {
     "contextMenuTitle": "โอเวอร์เลย์คำบรรยาย - ชื่อเรื่อง",

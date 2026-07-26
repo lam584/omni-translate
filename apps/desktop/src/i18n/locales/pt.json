@@ -130,7 +130,8 @@
     "resetWelcomeDone": "Redefinição concluída. O assistente aparecerá na próxima vez.",
     "resetWelcomeAction": "Redefinir",
     "sectionDriverManagement": "Gerenciamento de motorista",
-    "driverManagementHint": "Gerencie o driver do alto-falante virtual Omni Translate e Bridge Service."
+    "driverManagementHint": "Gerencie o driver do alto-falante virtual Omni Translate e Bridge Service.",
+    "overlayHeightLabel": "Altura da sobreposição"
   },
   "welcome": {
     "title": "Bem-vindo ao Omni Translate",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "Fale",
     "vadThresholdTitle": "Limite VAD {{value}}",
     "modelSubtitleSttTranslation": "Reconhecimento de fala · Tradução",
-    "modelSubtitleSttTranslationSpeech": "Reconhecimento de fala · Tradução · Fala"
+    "modelSubtitleSttTranslationSpeech": "Reconhecimento de fala · Tradução · Fala",
+    "originalAudioVolume": "Volume do áudio original",
+    "translatedAudioVolume": "Volume do áudio traduzido pelo LLM",
+    "originalAudioVolumeVirtualDriverHint": "O volume do áudio original só pode ser ajustado no modo de driver virtual. No modo de loopback físico atual, use o volume do player ou do Windows."
   },
   "overlay": {
     "contextMenuTitle": "Controles de sobreposição",

@@ -399,8 +399,15 @@ fn handle_response_done(
         } else {
             pending_source_text.clone()
         };
-        store.update_or_push_stt_cue(&cue_id, &source, true);
-        store.update_subtitle_cue_translation(&cue_id, pending_translated_text.clone(), true);
+        write_native_translation_payload_to_cue(
+            store,
+            &cue_id,
+            &source,
+            pending_translated_text,
+            true,
+            false,
+            false,
+        );
         let _ = diag_log(
             app,
             "omni",
@@ -441,12 +448,64 @@ fn handle_response_done(
         "debug",
         "[STATE] 重置: current_cue_id=None, pending_source_text cleared, pending_translated_text cleared".to_string(),
     );
+    reset_omni_turn_state(
+        current_cue_id,
+        pending_source_text,
+        pending_translated_text,
+        transcription_completed_flag,
+        transcription_completed_at,
+        event_diagnostics,
+    );
+}
+
+fn reset_omni_turn_state(
+    current_cue_id: &mut Option<String>,
+    pending_source_text: &mut String,
+    pending_translated_text: &mut String,
+    transcription_completed_flag: &mut bool,
+    transcription_completed_at: &mut Option<SystemTime>,
+    event_diagnostics: &mut OmniEventDiagnostics,
+) {
     pending_source_text.clear();
     pending_translated_text.clear();
     *current_cue_id = None;
     event_diagnostics.current_cue_origin = None;
     *transcription_completed_flag = false;
     *transcription_completed_at = None;
+}
+
+#[cfg(test)]
+mod manual_turn_state_tests {
+    use super::*;
+
+    #[test]
+    fn skipped_manual_response_clears_turn_state_without_response_done() {
+        let mut current_cue_id = Some("manual-turn".to_string());
+        let mut pending_source_text = "echoed translation".to_string();
+        let mut pending_translated_text = "stale translation".to_string();
+        let mut transcription_completed_flag = true;
+        let mut transcription_completed_at = Some(SystemTime::now());
+        let mut event_diagnostics = OmniEventDiagnostics {
+            current_cue_origin: Some("transcription_completed".to_string()),
+            ..OmniEventDiagnostics::default()
+        };
+
+        reset_omni_turn_state(
+            &mut current_cue_id,
+            &mut pending_source_text,
+            &mut pending_translated_text,
+            &mut transcription_completed_flag,
+            &mut transcription_completed_at,
+            &mut event_diagnostics,
+        );
+
+        assert!(current_cue_id.is_none());
+        assert!(pending_source_text.is_empty());
+        assert!(pending_translated_text.is_empty());
+        assert!(!transcription_completed_flag);
+        assert!(transcription_completed_at.is_none());
+        assert!(event_diagnostics.current_cue_origin.is_none());
+    }
 }
 
 fn is_livetranslate_model(model: &str) -> bool {
@@ -475,8 +534,35 @@ fn write_native_output_preview_to_cue(
     source_text: &str,
     translated_text: &str,
 ) -> String {
-    let cue_id = write_live_source_to_cue(store, current_cue_id, source_text);
-    store.update_subtitle_cue_translation(&cue_id, translated_text.to_string(), false);
+    let cue_id = ensure_transcription_cue_id(current_cue_id);
+    write_native_translation_payload_to_cue(
+        store,
+        &cue_id,
+        source_text,
+        translated_text,
+        false,
+        true,
+        false,
+    );
+    cue_id
+}
+
+fn write_native_output_final_to_cue(
+    store: &AudioStateStore,
+    current_cue_id: &mut Option<String>,
+    source_text: &str,
+    translated_text: &str,
+) -> String {
+    let cue_id = ensure_transcription_cue_id(current_cue_id);
+    write_native_translation_payload_to_cue(
+        store,
+        &cue_id,
+        source_text,
+        translated_text,
+        false,
+        false,
+        false,
+    );
     cue_id
 }
 
@@ -494,23 +580,51 @@ fn write_native_translation_to_cue(
     source_text: &str,
     translated_text: &str,
     committed: bool,
-    segment_pending: bool,
+    streaming: bool,
+) {
+    write_native_translation_payload_to_cue(
+        store,
+        cue_id,
+        source_text,
+        translated_text,
+        committed,
+        streaming,
+        true,
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_native_translation_payload_to_cue(
+    store: &AudioStateStore,
+    cue_id: &str,
+    source_text: &str,
+    translated_text: &str,
+    committed: bool,
+    streaming: bool,
+    fallback_to_translation_source: bool,
 ) {
     if translated_text.trim().is_empty() {
         return;
     }
-    let display_source_text = if source_text.trim().is_empty() {
+    let display_source_text = if fallback_to_translation_source && source_text.trim().is_empty() {
         translated_text.trim().to_string()
     } else {
         source_text.trim().to_string()
     };
     let source_lines = SubtitleDisplaySegmenter::split_text(&display_source_text);
     let translated_lines = SubtitleDisplaySegmenter::split_text(translated_text);
-    let display_segments = (0..source_lines.len().max(translated_lines.len()))
+    let line_count = source_lines.len().max(translated_lines.len());
+    let has_untranslated_source = source_lines
+        .iter()
+        .enumerate()
+        .any(|(index, source)| !source.trim().is_empty() && translated_lines.get(index).is_none_or(|translated| translated.trim().is_empty()));
+    let keep_live_tail = streaming
+        && (has_untranslated_source || !has_terminal_subtitle_boundary(translated_text));
+    let display_segments = (0..line_count)
         .map(|index| SubtitleDisplaySegmentRuntime {
             source_text: source_lines.get(index).cloned().unwrap_or_default(),
             translated_text: translated_lines.get(index).cloned().unwrap_or_default(),
-            pending: segment_pending,
+            pending: keep_live_tail && index + 1 == line_count,
         })
         .collect();
     store.update_or_push_stt_cue(cue_id, &display_source_text, false);
@@ -521,6 +635,14 @@ fn write_native_translation_to_cue(
         translated_lines.join("\n"),
         committed,
     );
+}
+
+fn has_terminal_subtitle_boundary(text: &str) -> bool {
+    text.trim_end()
+        .chars()
+        .next_back()
+        .is_some_and(|character| matches!(character, '.' | '!' | '?' | ';' | '。' | '！' | '？' | '；'))
+        || text.ends_with('\n')
 }
 
 fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
@@ -592,8 +714,41 @@ enum OmniPlaybackCommand {
         samples: Vec<i16>,
         cue_id: String,
         sample_rate_hz: u32,
+        queued_at: Instant,
     },
     Stop,
+}
+
+fn render_omni_output_samples(
+    samples: &[i16],
+    output_level: u64,
+    translated_audio_gain_db: f32,
+) -> Vec<i16> {
+    let translated_gain = if translated_audio_gain_db.is_finite() {
+        10.0_f32.powf(translated_audio_gain_db / 20.0)
+    } else {
+        0.0
+    };
+    let combined_gain = output_level.min(100) as f32 / 100.0 * translated_gain;
+    samples
+        .iter()
+        .map(|sample| {
+            ((*sample as f32) * combined_gain).clamp(i16::MIN as f32, i16::MAX as f32)
+                as i16
+        })
+        .collect()
+}
+
+fn omni_playback_queue_age_expired(age: Duration) -> bool {
+    age > OMNI_PLAYBACK_MAX_QUEUE_AGE
+}
+
+fn request_omni_playback_stop(
+    stop_requested: &AtomicBool,
+    playback_tx: &mpsc::SyncSender<OmniPlaybackCommand>,
+) {
+    stop_requested.store(true, Ordering::Release);
+    let _ = playback_tx.try_send(OmniPlaybackCommand::Stop);
 }
 
 #[derive(Debug, Clone)]
@@ -603,6 +758,8 @@ pub(crate) struct OmniSpeechConfig {
     virtual_mic_output_enabled: bool,
     speaker_device_id: Option<String>,
     speaker_output_level: u64,
+    translated_audio_gain_db: f32,
+    echo_guard_enabled: bool,
 }
 
 impl OmniSpeechConfig {
@@ -618,11 +775,15 @@ impl OmniSpeechConfig {
         let native_audio_enabled =
             super::speech::resolve_translation_audio_source(config_value, true)
                 == super::speech::TranslationAudioSource::OmniNative;
+        let local_playback_enabled =
+            super::speech::desktop_direct_playback_enabled_for_config(config_value);
+        // Text-level self-output detection protects every physical playback
+        // route, including sessions that have not explicitly enabled AEC.
+        let echo_guard_enabled =
+            local_playback_enabled && (speech_enabled || device_output_enabled);
         Self {
             enabled: native_audio_enabled && (speech_enabled || device_output_enabled),
-            local_playback_enabled: super::speech::desktop_direct_playback_enabled_for_config(
-                config_value,
-            ),
+            local_playback_enabled,
             virtual_mic_output_enabled: config_value
                 .pointer("/speech/virtualMicOutputEnabled")
                 .and_then(Value::as_bool)
@@ -642,42 +803,72 @@ impl OmniSpeechConfig {
                 .and_then(Value::as_u64)
                 .unwrap_or(100)
                 .min(100),
+            translated_audio_gain_db: config_value
+                .pointer("/devices/inboundRoute/mixControl/translatedAudioGainDb")
+                .and_then(Value::as_f64)
+                .unwrap_or(-1.0) as f32,
+            echo_guard_enabled,
         }
     }
 
     fn any_output(&self) -> bool {
         self.enabled && (self.local_playback_enabled || self.virtual_mic_output_enabled)
     }
+
+    pub(super) fn echo_guard_enabled(&self) -> bool {
+        self.echo_guard_enabled
+    }
+
 }
 
 fn start_omni_playback(
     app: AppHandle,
     speech_config: OmniSpeechConfig,
-) -> (mpsc::Sender<OmniPlaybackCommand>, JoinHandle<()>) {
-    let (tx, rx) = mpsc::channel::<OmniPlaybackCommand>();
+) -> (
+    mpsc::SyncSender<OmniPlaybackCommand>,
+    Arc<AtomicBool>,
+    JoinHandle<()>,
+) {
+    let (tx, rx) = mpsc::sync_channel::<OmniPlaybackCommand>(OMNI_PLAYBACK_QUEUE_CAPACITY);
+    let stop_requested = Arc::new(AtomicBool::new(false));
+    let playback_stop_requested = stop_requested.clone();
     let join = thread::Builder::new()
         .name("omni-playback".to_string())
         .spawn(move || {
             let audio_state = app.state::<AudioStateStore>();
             loop {
+                if playback_stop_requested.load(Ordering::Acquire) {
+                    break;
+                }
                 let cmd = match rx.recv_timeout(Duration::from_millis(200)) {
                     Ok(cmd) => cmd,
                     Err(mpsc::RecvTimeoutError::Timeout) => continue,
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
                 };
                 match cmd {
-                    OmniPlaybackCommand::Stop => {
-                        audio_state.update_speech(|s| {
-                            s.dispatch_state = "idle".to_string();
-                        });
-                        let _ = emit_audio_snapshot(&app, &audio_state);
-                        break;
-                    }
+                    OmniPlaybackCommand::Stop => break,
                     OmniPlaybackCommand::Play {
                         samples,
                         cue_id,
                         sample_rate_hz,
+                        queued_at,
                     } => {
+                        if playback_stop_requested.load(Ordering::Acquire) {
+                            break;
+                        }
+                        let queued_for = queued_at.elapsed();
+                        if omni_playback_queue_age_expired(queued_for) {
+                            let _ = diag_log(
+                                &app,
+                                "omni",
+                                "warning",
+                                format!(
+                                    "[AUDIO] stale native playback dropped: cue_id={cue_id} queued_ms={}",
+                                    queued_for.as_millis()
+                                ),
+                            );
+                            continue;
+                        }
                         let cfg = &speech_config;
                         let duration_ms =
                             ((samples.len() as u64) * 1000).saturating_div(sample_rate_hz as u64);
@@ -716,15 +907,23 @@ fn start_omni_playback(
                             cfg.local_playback_enabled,
                             cfg.virtual_mic_output_enabled,
                         );
+                        let output_samples = render_omni_output_samples(
+                            &samples,
+                            cfg.speaker_output_level,
+                            cfg.translated_audio_gain_db,
+                        );
                         let speaker_frames = if output_route.play_to_speaker {
-                            let echo_reference = super::speech::i16_to_f32(&samples);
+                            // The AEC reference must be the exact PCM submitted to the
+                            // speaker. Output level and translated-audio gain are already
+                            // baked in, so speaker playback stays at unity volume.
+                            let echo_reference = super::speech::i16_to_f32(&output_samples);
                             audio_state.push_echo_reference(&echo_reference, sample_rate_hz, 1);
                             let result = super::speech::play_to_speaker(
-                                &samples,
+                                &output_samples,
                                 sample_rate_hz,
                                 1,
                                 cfg.speaker_device_id.as_deref(),
-                                cfg.speaker_output_level,
+                                100,
                             );
                             match result {
                                 Ok(frames) => {
@@ -748,14 +947,10 @@ fn start_omni_playback(
 
                         let vmic_frames = if output_route.write_to_virtual_mic {
                             let req_id = format!("omni-play-{}", unix_ms());
-                            let vmic_samples = super::speech::scale_i16_by_output_level(
-                                &samples,
-                                cfg.speaker_output_level,
-                            );
                             match BridgeAudioWriter::new(&app).write_translation_frame(
                                 &cue_id,
                                 &req_id,
-                                &vmic_samples,
+                                &output_samples,
                                 sample_rate_hz,
                                 1,
                             )
@@ -793,7 +988,99 @@ fn start_omni_playback(
                     }
                 }
             }
+            audio_state.update_speech(|s| {
+                s.dispatch_state = "idle".to_string();
+                s.current_cue_id = None;
+            });
+            let _ = emit_audio_snapshot(&app, &audio_state);
         })
         .expect("failed to spawn omni-playback thread");
-    (tx, join)
+    (tx, stop_requested, join)
+}
+
+#[cfg(test)]
+mod omni_playback_tests {
+    use super::*;
+
+    fn queued_play(cue_id: &str) -> OmniPlaybackCommand {
+        OmniPlaybackCommand::Play {
+            samples: vec![1, -1],
+            cue_id: cue_id.to_string(),
+            sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+            queued_at: Instant::now(),
+        }
+    }
+
+    #[test]
+    fn native_playback_config_enables_echo_guard_and_reads_translated_gain() {
+        let config = json!({
+            "devices": {
+                "outputLevel": 75,
+                "inboundRoute": {
+                    "mixControl": {
+                        "translatedAudioGainDb": -6.0206
+                    }
+                }
+            },
+            "speech": {
+                "enabled": true,
+                "localPlaybackEnabled": true
+            }
+        });
+
+        let speech = OmniSpeechConfig::from_config(&config);
+        assert_eq!(speech.speaker_output_level, 75);
+        assert!((speech.translated_audio_gain_db + 6.0206).abs() < f32::EPSILON);
+        assert!(speech.echo_guard_enabled());
+    }
+
+    #[test]
+    fn native_output_gain_is_applied_to_the_pcm_used_for_playback() {
+        let samples = [20_000, -20_000, i16::MAX, i16::MIN];
+        let half_from_route_gain = render_omni_output_samples(&samples, 100, -6.0206);
+        let half_from_output_level = render_omni_output_samples(&samples, 50, 0.0);
+
+        for (route_sample, level_sample) in
+            half_from_route_gain.iter().zip(&half_from_output_level)
+        {
+            assert!((*route_sample as i32 - *level_sample as i32).abs() <= 1);
+        }
+        assert_eq!(half_from_output_level, vec![10_000, -10_000, 16_383, -16_384]);
+
+        let clipped = render_omni_output_samples(&samples, 100, 6.0206);
+        assert_eq!(clipped[0], i16::MAX);
+        assert_eq!(clipped[1], i16::MIN);
+    }
+
+    #[test]
+    fn echo_reference_conversion_uses_the_gain_adjusted_samples() {
+        let rendered = render_omni_output_samples(&[12_000, -8_000], 50, 0.0);
+        let echo_reference = super::super::speech::i16_to_f32(&rendered);
+
+        assert_eq!(rendered, vec![6_000, -4_000]);
+        assert_eq!(echo_reference[0], 6_000_f32 / i16::MAX as f32);
+        assert_eq!(echo_reference[1], -4_000_f32 / i16::MAX as f32);
+    }
+
+    #[test]
+    fn bounded_queue_and_out_of_band_stop_prevent_post_stop_backlog_growth() {
+        let (tx, rx) = mpsc::sync_channel(OMNI_PLAYBACK_QUEUE_CAPACITY);
+        assert!(tx.try_send(queued_play("first")).is_ok());
+        assert!(matches!(
+            tx.try_send(queued_play("second")),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+
+        let stop_requested = AtomicBool::new(false);
+        request_omni_playback_stop(&stop_requested, &tx);
+        assert!(stop_requested.load(Ordering::Acquire));
+        assert!(matches!(rx.try_recv(), Ok(OmniPlaybackCommand::Play { .. })));
+        assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(!omni_playback_queue_age_expired(
+            OMNI_PLAYBACK_MAX_QUEUE_AGE
+        ));
+        assert!(omni_playback_queue_age_expired(
+            OMNI_PLAYBACK_MAX_QUEUE_AGE + Duration::from_millis(1)
+        ));
+    }
 }

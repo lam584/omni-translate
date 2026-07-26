@@ -136,6 +136,16 @@ describe('useOverlayNativeEventSync', () => {
     expect(updateDraft).not.toHaveBeenCalled();
   });
 
+  it('persists manual resize height up to the expanded 720px limit', async () => {
+    mocks.innerSize.mockResolvedValue({ width: 1_920, height: 1_600 });
+    await act(async () => root.render(<Harness locked={false} />));
+
+    await resizeCallback();
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(updateDraft).toHaveBeenCalledWith({ overlayWidth: 960, overlayHeight: 720 });
+  });
+
   it('ignores resize callbacks and disposes a listener that resolves after unmount', async () => {
     let resolveListener!: (unlisten: () => void) => void;
     const unlisten = vi.fn();

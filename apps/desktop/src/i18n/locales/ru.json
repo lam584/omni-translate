@@ -130,7 +130,8 @@
     "resetWelcomeDone": "Сброшено. В следующий раз появится выбор языка.",
     "resetWelcomeAction": "Сбросить",
     "sectionDriverManagement": "Управление драйвером",
-    "driverManagementHint": "Управляйте драйвером виртуального динамика Omni Translate и Bridge Service."
+    "driverManagementHint": "Управляйте драйвером виртуального динамика Omni Translate и Bridge Service.",
+    "overlayHeightLabel": "Высота оверлея"
   },
   "welcome": {
     "title": "Добро пожаловать в Omni Translate",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 14 MINUTES 43 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
     "vadThresholdTitle": "Порог VAD {{value}}",
     "modelSubtitleSttTranslation": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 14 MINUTES 41 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
-    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 14 MINUTES 41 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE"
+    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 14 MINUTES 41 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
+    "originalAudioVolume": "Громкость оригинального звука",
+    "translatedAudioVolume": "Громкость перевода LLM",
+    "originalAudioVolumeVirtualDriverHint": "Громкость оригинального звука регулируется только в режиме виртуального драйвера. В текущем режиме физического loopback используйте громкость плеера или Windows."
   },
   "overlay": {
     "contextMenuTitle": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 14 MINUTES 41 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",

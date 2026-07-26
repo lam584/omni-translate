@@ -130,7 +130,8 @@
     "resetWelcomeDone": "Đặt lại xong. Thuật sĩ sẽ xuất hiện vào lần tiếp theo.",
     "resetWelcomeAction": "Đặt lại",
     "sectionDriverManagement": "Quản lý lái xe",
-    "driverManagementHint": "Quản lý trình điều khiển loa ảo Omni Translate và Bridge Service."
+    "driverManagementHint": "Quản lý trình điều khiển loa ảo Omni Translate và Bridge Service.",
+    "overlayHeightLabel": "Chiều cao lớp phủ"
   },
   "welcome": {
     "title": "Chào mừng đến với Omni Translate",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "Nói chuyện",
     "vadThresholdTitle": "Ngưỡng VAD {{value}}",
     "modelSubtitleSttTranslation": "Nhận dạng giọng nói · Dịch thuật",
-    "modelSubtitleSttTranslationSpeech": "Nhận dạng giọng nói · Dịch thuật · Lời nói"
+    "modelSubtitleSttTranslationSpeech": "Nhận dạng giọng nói · Dịch thuật · Lời nói",
+    "originalAudioVolume": "Âm lượng âm thanh gốc",
+    "translatedAudioVolume": "Âm lượng âm thanh dịch bởi LLM",
+    "originalAudioVolumeVirtualDriverHint": "Âm lượng âm thanh gốc chỉ có thể điều chỉnh trong chế độ trình điều khiển ảo. Ở chế độ loopback vật lý hiện tại, hãy dùng âm lượng của trình phát hoặc Windows."
   },
   "overlay": {
     "contextMenuTitle": "Điều khiển lớp phủ",

@@ -130,7 +130,8 @@
     "resetWelcomeDone": "설정 설정과 상태를 확인하세요.",
     "resetWelcomeAction": "재설정",
     "sectionDriverManagement": "설정 - 드라이버",
-    "driverManagementHint": "설정 설정과 상태를 확인하세요."
+    "driverManagementHint": "설정 설정과 상태를 확인하세요.",
+    "overlayHeightLabel": "오버레이 높이"
   },
   "welcome": {
     "title": "시작 설정 - 제목",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "오디오 라우팅 - 출력",
     "vadThresholdTitle": "오디오 라우팅 - 제목 {{value}}",
     "modelSubtitleSttTranslation": "오디오 라우팅 - 모델・자막・번역",
-    "modelSubtitleSttTranslationSpeech": "오디오 라우팅 - 모델・자막・번역"
+    "modelSubtitleSttTranslationSpeech": "오디오 라우팅 - 모델・자막・번역",
+    "originalAudioVolume": "원본 오디오 볼륨",
+    "translatedAudioVolume": "LLM 번역 오디오 볼륨",
+    "originalAudioVolumeVirtualDriverHint": "원본 오디오 볼륨은 가상 드라이버 모드에서만 조절할 수 있습니다. 현재 물리적 루프백 모드에서는 플레이어나 Windows 볼륨을 사용하세요."
   },
   "overlay": {
     "contextMenuTitle": "자막 오버레이 - 제목",

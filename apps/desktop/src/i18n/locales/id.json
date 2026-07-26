@@ -130,7 +130,8 @@
     "resetWelcomeDone": "Periksa pengaturan dan status Pengaturan.",
     "resetWelcomeAction": "Pengaturan - Reset Tindakan",
     "sectionDriverManagement": "Pengaturan - Driver",
-    "driverManagementHint": "Manage the Omni Translate Virtual Speaker Driver and Bridge Service."
+    "driverManagementHint": "Manage the Omni Translate Virtual Speaker Driver and Bridge Service.",
+    "overlayHeightLabel": "Tinggi overlay"
   },
   "welcome": {
     "title": "Penyiapan awal - Judul",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "Perutean audio - Keluaran",
     "vadThresholdTitle": "Perutean audio - Judul {{value}}",
     "modelSubtitleSttTranslation": "Speech recognition · Terjemahan",
-    "modelSubtitleSttTranslationSpeech": "Speech recognition · Terjemahan · Speech"
+    "modelSubtitleSttTranslationSpeech": "Speech recognition · Terjemahan · Speech",
+    "originalAudioVolume": "Volume audio asli",
+    "translatedAudioVolume": "Volume audio terjemahan LLM",
+    "originalAudioVolumeVirtualDriverHint": "Volume audio asli hanya dapat diatur dalam mode driver virtual. Dalam mode loopback fisik saat ini, gunakan volume pemutar atau Windows."
   },
   "overlay": {
     "contextMenuTitle": "Overlay subtitel - Judul",

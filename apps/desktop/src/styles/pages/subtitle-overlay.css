@@ -238,10 +238,15 @@
 .subtitle-overlay-stream-source {
   width:100%;
   min-height:1.25em;
+  max-height:2.5em;
   margin:0;
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:2;
   text-align:center;
   white-space:pre-wrap;
   overflow-wrap:anywhere;
+  overflow:hidden;
   color:var(--subtitle-overlay-text, currentColor);
   opacity:0;
   text-shadow:0 2px 14px var(--subtitle-overlay-source-shadow, rgba(0, 0, 0, .48))
@@ -254,10 +259,15 @@
 .subtitle-overlay-stream-text {
   width:100%;
   min-height:1.25em;
+  max-height:2.5em;
   margin:0;
+  display:-webkit-box;
+  -webkit-box-orient:vertical;
+  -webkit-line-clamp:2;
   text-align:center;
   white-space:pre-wrap;
   overflow-wrap:anywhere;
+  overflow:hidden;
   color:var(--subtitle-overlay-text,
   currentColor);
   opacity:0;

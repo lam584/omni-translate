@@ -130,7 +130,8 @@
     "resetWelcomeDone": "Zurücksetzen erledigt. Der Assistent wird beim nächsten Mal angezeigt.",
     "resetWelcomeAction": "Zurücksetzen",
     "sectionDriverManagement": "Fahrerverwaltung",
-    "driverManagementHint": "Verwalten Sie den virtuellen Lautsprechertreiber Omni Translate und Bridge Service."
+    "driverManagementHint": "Verwalten Sie den virtuellen Lautsprechertreiber Omni Translate und Bridge Service.",
+    "overlayHeightLabel": "Overlay-Höhe"
   },
   "welcome": {
     "title": "Willkommen bei Omni Translate",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "Sprich",
     "vadThresholdTitle": "VAD Schwelle {{value}}",
     "modelSubtitleSttTranslation": "Spracherkennung · Übersetzung",
-    "modelSubtitleSttTranslationSpeech": "Spracherkennung · Übersetzung · Sprache"
+    "modelSubtitleSttTranslationSpeech": "Spracherkennung · Übersetzung · Sprache",
+    "originalAudioVolume": "Lautstärke des Originaltons",
+    "translatedAudioVolume": "Lautstärke der LLM-Übersetzung",
+    "originalAudioVolumeVirtualDriverHint": "Die Lautstärke des Originaltons ist nur im Modus „Virtueller Treiber“ regelbar. Verwenden Sie im aktuellen physischen Loopback-Modus die Lautstärke des Players oder von Windows."
   },
   "overlay": {
     "contextMenuTitle": "Overlay-Steuerelemente",

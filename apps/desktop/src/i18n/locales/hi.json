@@ -130,7 +130,8 @@
     "resetWelcomeDone": "रीसेट हो गया। अगली बार भाषा चयन दिखेगा।",
     "resetWelcomeAction": "रीसेट",
     "sectionDriverManagement": "ड्राइवर प्रबंधन",
-    "driverManagementHint": "Omni Translate वर्चुअल स्पीकर ड्राइवर और Bridge Service प्रबंधित करें।"
+    "driverManagementHint": "Omni Translate वर्चुअल स्पीकर ड्राइवर और Bridge Service प्रबंधित करें।",
+    "overlayHeightLabel": "ओवरले की ऊंचाई"
   },
   "welcome": {
     "title": "Omni Translate में आपका स्वागत है",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 20 MINUTES 16 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
     "vadThresholdTitle": "VAD threshold मान {{value}}",
     "modelSubtitleSttTranslation": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 19 MINUTES 53 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
-    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 19 MINUTES 53 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE"
+    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 19 MINUTES 53 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
+    "originalAudioVolume": "मूल ऑडियो वॉल्यूम",
+    "translatedAudioVolume": "LLM अनुवादित ऑडियो वॉल्यूम",
+    "originalAudioVolumeVirtualDriverHint": "मूल ऑडियो वॉल्यूम केवल वर्चुअल ड्राइवर मोड में समायोजित किया जा सकता है। वर्तमान फिजिकल लूपबैक मोड में प्लेयर या Windows वॉल्यूम का उपयोग करें।"
   },
   "overlay": {
     "contextMenuTitle": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 19 MINUTES 53 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",

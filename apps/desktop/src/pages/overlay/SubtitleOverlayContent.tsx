@@ -1,8 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, type CSSProperties, type UIEvent } from 'react';
 import type { SubtitleCueRuntime } from '../../schema/audio-runtime';
 import {
-  getCueDisplaySegments,
-  getCueLiveSourceTail,
+  getOverlayTimeline,
   MIN_SUBTITLE_FONT_SCALE,
   TRANSLATION_FONT_SCALE,
 } from './overlayDomain';
@@ -26,33 +25,11 @@ export default function SubtitleOverlayContent(props: Props) {
   const distinctPreviewSource = props.previewSource.trim() !== props.previewTranslation.trim();
   const cuesRef = useRef<HTMLDivElement | null>(null);
   const followingLatestRef = useRef(true);
-  const cueLayouts = props.displayCues.map((cue) => ({
-    cue,
-    finalizedSegments: getCueDisplaySegments(cue).filter((segment) => !segment.pending),
-  }));
-  const liveParts = props.displayCues.flatMap((cue) => {
-    const explicitPending = cue.displaySegments?.filter((segment) => (
-      segment.pending && (segment.sourceText.trim() || segment.translatedText.trim())
-    ));
-    if (explicitPending?.length) return explicitPending;
-    return getCueDisplaySegments(cue).filter((segment) => segment.pending);
-  });
-  const liveTranslation = liveParts
-    .map((segment) => segment.translatedText.trim())
+  const timeline = getOverlayTimeline(props.displayCues);
+  const liveTranslation = timeline.liveSegment?.translatedText.trim() ?? '';
+  const liveSource = [timeline.liveSegment?.sourceText.trim(), timeline.liveSourceTail]
     .filter(Boolean)
     .join(' ');
-  const pendingSourceText = liveParts
-    .map((segment) => segment.sourceText.trim())
-    .filter(Boolean)
-    .join(' ');
-  // Raw ASR tail beyond the slotted segments keeps the source row streaming
-  // while the realtime API is still iterating on the active sentence.
-  const liveSourceTail = props.displayCues
-    .filter((cue) => !cue.committed)
-    .map((cue) => getCueLiveSourceTail(cue))
-    .filter(Boolean)
-    .join(' ');
-  const liveSource = [pendingSourceText, liveSourceTail].filter(Boolean).join(' ');
   const streamActive = Boolean(liveSource || liveTranslation);
   const scrollToLatest = useCallback(() => {
     const element = cuesRef.current;
@@ -81,13 +58,13 @@ export default function SubtitleOverlayContent(props: Props) {
   return <div className={props.windowSized ? 'subtitle-overlay-lyrics subtitle-overlay-lyrics-window-sized' : 'subtitle-overlay-lyrics'} style={props.cardStyle}>
     {props.showLockToggle ? <button className="subtitle-overlay-toggle-lock" onBlur={props.onLockBlur} onClick={props.onLockToggle} onMouseEnter={() => props.onLockHover(true)} onMouseLeave={() => props.onLockHover(false)} onMouseDown={(event) => event.stopPropagation()} type="button">{props.lockLabel}</button> : null}
     {props.displayCues.length ? <div className="subtitle-overlay-cues">
-      <div className="subtitle-overlay-history" onScroll={handleCuesScroll} ref={cuesRef}>{cueLayouts.map(({ cue, finalizedSegments }, cueIndex) => {
-        if (!finalizedSegments.length) return null;
+      <div className="subtitle-overlay-history" onScroll={handleCuesScroll} ref={cuesRef}>{timeline.cues.map(({ cue, historySegments }, cueIndex) => {
+        if (!historySegments.length) return null;
         const cueScale = props.displayCues.length > 1 ? 0.72 + 0.28 * (cueIndex / (props.displayCues.length - 1)) : 1;
         const fontScale = Math.max(MIN_SUBTITLE_FONT_SCALE, cueScale);
         const sourceFontSize = `${Math.round(props.effectiveFontSize * fontScale)}px`;
         const translationFontSize = `${Math.round(props.effectiveFontSize * TRANSLATION_FONT_SCALE * fontScale)}px`;
-        return <div className="subtitle-overlay-cue" key={cue.cueId}>{finalizedSegments.map((segment) => <div className="subtitle-overlay-segment" key={segment.id}>{segment.sourceText ? <p className="subtitle-overlay-source" style={{ fontSize: sourceFontSize }}>{segment.sourceText}</p> : null}<p className="subtitle-overlay-translation" style={{ fontSize: translationFontSize }}>{segment.translatedText}</p></div>)}</div>;
+        return <div className="subtitle-overlay-cue" key={cue.cueId}>{historySegments.map((segment) => <div className={segment.pending ? 'subtitle-overlay-segment subtitle-overlay-segment-pending' : 'subtitle-overlay-segment'} key={segment.id}>{segment.sourceText ? <p className="subtitle-overlay-source" style={{ fontSize: sourceFontSize }}>{segment.sourceText}</p> : null}<p className="subtitle-overlay-translation" style={{ fontSize: translationFontSize }}>{segment.translatedText}</p></div>)}</div>;
       })}</div>
       <div className={streamActive ? 'subtitle-overlay-stream-slot subtitle-overlay-stream-slot-active' : 'subtitle-overlay-stream-slot'}>
         <p className="subtitle-overlay-stream-source" style={{ fontSize: `${Math.round(props.effectiveFontSize * MIN_SUBTITLE_FONT_SCALE)}px` }}>{liveSource || '\u00a0'}</p>

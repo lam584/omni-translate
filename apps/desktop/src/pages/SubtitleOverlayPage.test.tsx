@@ -787,6 +787,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       cue.displaySourceText = 'Already translated source\nWaiting source';
       cue.sourceText = cue.displaySourceText;
       cue.translatedText = '已有译文';
+      cue.committed = false;
       nextSnapshot.subtitleOverlay.activeCue = cue;
 
       return {
@@ -921,6 +922,45 @@ describe('SubtitleOverlayPage locked interaction', () => {
     await updateOmniCue('Hello world', 'Ni hao', true);
     expect(container.querySelector('.subtitle-overlay-segment')?.textContent).toContain('Hello world');
     expect(container.querySelector('.subtitle-overlay-stream-slot')?.textContent?.trim()).toBe('');
+  });
+
+  it('promotes completed sentences during a fast uncommitted burst and keeps only its tail live', async () => {
+    const updateBurst = async (sourceText: string, translatedText: string) => {
+      await act(async () => {
+        useAppStore.setState((state) => {
+          const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+          const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+          cue.sourceText = sourceText;
+          cue.displaySourceText = '';
+          cue.translatedText = translatedText;
+          cue.displaySegments = [];
+          cue.committed = false;
+          nextSnapshot.subtitleOverlay.activeCue = cue;
+          return { ...state, audioRuntimeSnapshot: nextSnapshot };
+        });
+      });
+    };
+
+    await updateBurst(
+      'First source. Second source is still live',
+      '第一句。第二句仍在输出',
+    );
+    await act(async () => root.render(<SubtitleOverlayPage />));
+
+    expect(Array.from(container.querySelectorAll('.subtitle-overlay-segment')).map((segment) => segment.textContent))
+      .toEqual(['First source.第一句。']);
+    expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('Second source is still live');
+    expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('第二句仍在输出');
+
+    await updateBurst(
+      'First source. Second source is complete. Third source tail',
+      '第一句。第二句完成。第三句尾部',
+    );
+
+    expect(Array.from(container.querySelectorAll('.subtitle-overlay-segment')).map((segment) => segment.textContent))
+      .toEqual(['First source.第一句。', 'Second source is complete.第二句完成。']);
+    expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('Third source tail');
+    expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('第三句尾部');
   });
 
   it('streams the uncommitted ASR tail on the stream source row while the API iterates', async () => {
@@ -1179,7 +1219,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
         onLockBlur={vi.fn()} onLockHover={vi.fn()} onLockToggle={vi.fn()}
         displayCues={[
           { cueId: 'legacy', routeDirection: 'inbound', sourceText: '', translatedText: 'legacy translation', startedAt: 'test', endedAt: 'test', committed: true },
-          { cueId: 'pending', routeDirection: 'inbound', sourceText: '', translatedText: '', displaySegments: [
+          { cueId: 'pending', routeDirection: 'inbound', sourceText: 'source without translation\nlive source',
+            displaySourceText: 'source without translation\nlive source', translatedText: 'live translation', displaySegments: [
             { sourceText: '', translatedText: '', pending: false },
             { sourceText: 'source without translation', translatedText: '', pending: false },
             { sourceText: 'live source', translatedText: '', pending: true },

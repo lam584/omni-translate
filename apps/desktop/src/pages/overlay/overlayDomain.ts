@@ -40,7 +40,9 @@ export const overlayThemeOptions = [
   { id: 'contrast', labelKey: 'overlay.styleContrast', preset: overlayStylePresets.contrast },
 ] as const;
 
-export const overlayFontSizeOptions = [18, 22, 24, 28, 32, 36, 42, 48] as const;
+export const MIN_OVERLAY_FONT_SIZE = 16;
+export const MAX_OVERLAY_FONT_SIZE = 96;
+export const overlayFontSizeOptions = [18, 22, 24, 28, 32, 36, 42, 48, 56, 64, 72, 80, 96] as const;
 
 export const overlayBackgroundOpacityOptions = [0, 0.25, 0.45, 0.65, 0.84, 1] as const;
 
@@ -115,7 +117,7 @@ export const LOCK_BUTTON_POLL_INTERVAL_MS = 120;
 export const MIN_OVERLAY_WIDTH = 220;
 export const MIN_OVERLAY_HEIGHT = 72;
 export const MAX_OVERLAY_WIDTH = 1280;
-export const MAX_OVERLAY_HEIGHT = 360;
+export const MAX_OVERLAY_HEIGHT = 720;
 export const MIN_SUBTITLE_FONT_SCALE = 0.78;
 export const TRANSLATION_FONT_SCALE = 0.82;
 export const OVERLAY_RESIZE_DEBOUNCE_MS = 300;
@@ -173,6 +175,7 @@ function expandExplicitSegment(
   cueId: string,
   segment: SubtitleDisplaySegmentRuntime,
   segmentIndex: number,
+  cueCommitted: boolean,
 ): OverlayDisplaySegment[] {
   const sourceLines = splitDisplayLines(segment.sourceText);
   const translatedLines = splitDisplayLines(segment.translatedText);
@@ -185,10 +188,18 @@ function expandExplicitSegment(
     ...Array.from({ length: lineCount - translatedLines.length }, () => ''),
   ];
 
+  const referenceText = segment.translatedText.trim() || segment.sourceText.trim();
+  const hasUntranslatedSource = alignedSourceLines.some((source, lineIndex) => (
+    Boolean(source) && !alignedTranslatedLines[lineIndex]
+  ));
+  const keepLiveTail = !cueCommitted && (
+    hasUntranslatedSource || (segment.pending && !hasTerminalCaptionBoundary(referenceText))
+  );
+
   return Array.from({ length: lineCount }, (_, lineIndex) => ({
     sourceText: alignedSourceLines[lineIndex] ?? '',
     translatedText: alignedTranslatedLines[lineIndex],
-    pending: segment.pending || (Boolean(alignedSourceLines[lineIndex]) && !alignedTranslatedLines[lineIndex]),
+    pending: keepLiveTail && lineIndex === lineCount - 1,
     id: `${cueId}-segment-${segmentIndex}-${lineIndex}`,
   }));
 }
@@ -204,7 +215,9 @@ export function getCueDisplaySegments(cue: SubtitleCueRuntime): OverlayDisplaySe
   const explicitSegments = rawExplicitSegments
     && normalizedExplicitSource === normalizedAuthoritativeSource
     && normalizedExplicitTranslation === normalizedAuthoritativeTranslation
-    ? rawExplicitSegments.flatMap((segment, segmentIndex) => expandExplicitSegment(cue.cueId, segment, segmentIndex))
+    ? rawExplicitSegments.flatMap((segment, segmentIndex) => (
+      expandExplicitSegment(cue.cueId, segment, segmentIndex, cue.committed)
+    ))
     : undefined;
 
   if (explicitSegments && explicitSegments.length > 0) {
@@ -214,13 +227,22 @@ export function getCueDisplaySegments(cue: SubtitleCueRuntime): OverlayDisplaySe
   const sourceLines = splitDisplayLines(cue.displaySourceText || cue.sourceText);
   const translatedLines = splitDisplayLines(cue.translatedText);
   const segmentCount = Math.max(sourceLines.length, translatedLines.length);
+  const referenceText = cue.translatedText.trim() || (cue.displaySourceText || cue.sourceText).trim();
+  const hasUntranslatedSource = sourceLines.some((source, index) => Boolean(source) && !translatedLines[index]);
+  const keepLiveTail = !cue.committed && (
+    hasUntranslatedSource || !hasTerminalCaptionBoundary(referenceText)
+  );
 
   return Array.from({ length: segmentCount }, (_, index) => ({
     id: `${cue.cueId}-fallback-${index}`,
     sourceText: sourceLines[index] ?? '',
     translatedText: translatedLines[index] ?? '',
-    pending: !cue.committed || (Boolean(sourceLines[index]) && !translatedLines[index]),
+    pending: keepLiveTail && index === segmentCount - 1,
   })).filter((segment) => segment.sourceText || segment.translatedText);
+}
+
+function hasTerminalCaptionBoundary(text: string): boolean {
+  return /(?:[.!?;。！？；]|\n)\s*$/u.test(text);
 }
 
 const WHITESPACE_CHAR = /\s/u;
@@ -251,6 +273,58 @@ export function getCueLiveSourceTail(cue: SubtitleCueRuntime): string {
   }
   if (matched < displayedChars.length) return '';
   return rawChars.slice(index).join('').trim();
+}
+
+export type OverlayTimelineCue = {
+  cue: SubtitleCueRuntime;
+  historySegments: OverlayDisplaySegment[];
+};
+
+export type OverlayTimeline = {
+  cues: OverlayTimelineCue[];
+  liveCue: SubtitleCueRuntime | null;
+  liveSegment: OverlayDisplaySegment | null;
+  liveSourceTail: string;
+};
+
+/**
+ * Builds one ordered overlay timeline. Every readable segment except the
+ * newest pending tail belongs to history, so fast or overlapping providers can
+ * never concatenate several unfinished sentences into the fixed live slot.
+ */
+export function getOverlayTimeline(cues: SubtitleCueRuntime[]): OverlayTimeline {
+  const segmentsByCue = cues.map((cue) => getCueDisplaySegments(cue));
+  let liveCueIndex = -1;
+  let liveSegmentIndex = -1;
+  let liveSourceTail = '';
+
+  cues.forEach((cue, cueIndex) => {
+    const segments = segmentsByCue[cueIndex];
+    let pendingIndex = -1;
+    segments.forEach((segment, segmentIndex) => {
+      if (segment.pending) pendingIndex = segmentIndex;
+    });
+    const sourceTail = cue.committed ? '' : getCueLiveSourceTail(cue);
+    if (pendingIndex >= 0 || sourceTail) {
+      liveCueIndex = cueIndex;
+      liveSegmentIndex = pendingIndex;
+      liveSourceTail = sourceTail;
+    }
+  });
+
+  return {
+    cues: cues.map((cue, cueIndex) => ({
+      cue,
+      historySegments: segmentsByCue[cueIndex].filter((_, segmentIndex) => (
+        cueIndex !== liveCueIndex || segmentIndex !== liveSegmentIndex
+      )),
+    })),
+    liveCue: liveCueIndex >= 0 ? cues[liveCueIndex] : null,
+    liveSegment: liveCueIndex >= 0 && liveSegmentIndex >= 0
+      ? segmentsByCue[liveCueIndex][liveSegmentIndex]
+      : null,
+    liveSourceTail,
+  };
 }
 
 export function toOverlayAxisPercent(position: number, workAreaStart: number, availableDistance: number) {
@@ -328,5 +402,6 @@ export const subtitleOverlayPageHelpers = {
   splitDisplayLines,
   getCueDisplaySegments,
   getCueLiveSourceTail,
+  getOverlayTimeline,
   toOverlayAxisPercent,
 };

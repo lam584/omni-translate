@@ -5,7 +5,7 @@ use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use serde_json::{json, Value};
 use tauri::AppHandle;
@@ -51,7 +51,8 @@ use self::audio_pump::{OmniAudioPump, OmniAudioPumpState};
 use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
 use self::connection_coordinator::{
-    OmniCommitState, OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
+    classify_completed_manual_response, ManualResponseDecision, OmniCommitState,
+    OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
 };
 use self::event_processor::{
     OmniAudioOutputState, OmniEventProcessor, OmniReadinessState, OmniSubtitleEventState,
@@ -65,6 +66,8 @@ const OMNI_READ_TIMEOUT_MS: u64 = 200;
 const OMNI_VAD_WARNING_INTERVAL_SECS: u64 = 30;
 const TRANSCRIPTION_COMPLETED_TIMEOUT_MS: u64 = 30_000;
 const OMNI_OUTPUT_SAMPLE_RATE_HZ: u32 = 24_000;
+const OMNI_PLAYBACK_QUEUE_CAPACITY: usize = 1;
+const OMNI_PLAYBACK_MAX_QUEUE_AGE: Duration = Duration::from_secs(5);
 const OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 500;
 const OMNI_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;
 const OMNI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
@@ -481,6 +484,7 @@ mod unit_tests {
 
         assert!(!speech.any_output());
         assert!(!speech.enabled);
+        assert!(speech.echo_guard_enabled());
     }
 
     #[test]
@@ -603,6 +607,102 @@ mod native_translation_tests {
         assert_eq!(cue.translated_text, "实时字幕");
         assert_eq!(cue.display_segments.len(), 1);
         assert!(cue.display_segments[0].pending);
+    }
+
+    #[test]
+    fn native_output_preview_promotes_complete_sentences_and_keeps_one_live_tail() {
+        let store = AudioStateStore::new();
+        let mut current_cue_id = None;
+
+        let cue_id = write_native_output_preview_to_cue(
+            &store,
+            &mut current_cue_id,
+            "First source. Second source is still live",
+            "第一句。第二句仍在输出",
+        );
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .expect("native output preview cue");
+        assert_eq!(cue.display_segments.len(), 2);
+        assert!(!cue.display_segments[0].pending);
+        assert!(cue.display_segments[1].pending);
+        assert_eq!(
+            cue.display_segments.iter().filter(|segment| segment.pending).count(),
+            1
+        );
+
+        write_native_output_final_to_cue(
+            &store,
+            &mut current_cue_id,
+            "First source. Second source is complete.",
+            "第一句。第二句完成。",
+        );
+        let finalized = store.snapshot();
+        let cue = finalized
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .expect("finalized native output cue");
+        assert!(cue.display_segments.iter().all(|segment| !segment.pending));
+    }
+
+    #[test]
+    fn native_output_preview_force_wraps_long_text_with_only_last_chunk_live() {
+        let store = AudioStateStore::new();
+        let mut current_cue_id = None;
+        let long_translation = "这是一个没有句号但会持续快速输出并且长度足以被字幕显示规则切成多个可读行的实时翻译片段";
+
+        let cue_id = write_native_output_preview_to_cue(
+            &store,
+            &mut current_cue_id,
+            "This is a long source hypothesis without terminal punctuation that keeps growing quickly across the overlay.",
+            long_translation,
+        );
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .expect("wrapped native output cue");
+        assert!(cue.display_segments.len() > 1);
+        assert_eq!(
+            cue.display_segments.iter().filter(|segment| segment.pending).count(),
+            1
+        );
+        assert!(cue.display_segments.last().is_some_and(|segment| segment.pending));
+    }
+
+    #[test]
+    fn committing_a_native_cue_clears_every_pending_display_segment() {
+        let store = AudioStateStore::new();
+
+        write_native_translation_to_cue(
+            &store,
+            "omni-cue-commit",
+            "source still live",
+            "译文仍在输出",
+            false,
+            true,
+        );
+        store.commit_subtitle_cue("omni-cue-commit");
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == "omni-cue-commit")
+            .expect("committed native cue");
+        assert!(cue.committed);
+        assert!(cue.display_segments.iter().all(|segment| !segment.pending));
     }
 
     #[test]

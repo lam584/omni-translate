@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { subtitleOverlayPageHelpers } from './SubtitleOverlayPage';
-import { overlayFallbackText } from './overlay/overlayDomain';
+import { overlayFallbackText, overlayFontSizeOptions } from './overlay/overlayDomain';
 
 describe('subtitle overlay page helpers', () => {
   it('resolves fallback translations and preserves unknown or object keys', () => {
@@ -22,6 +22,7 @@ describe('subtitle overlay page helpers', () => {
   it('splits fallback subtitle lines and preserves pending translations', () => {
     expect(subtitleOverlayPageHelpers.splitDisplayLines(' first \n\n second ')).toEqual(['first', 'second']);
     const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    cue.committed = false;
     cue.displaySegments = undefined;
     cue.displaySourceText = 'first\nsecond';
     cue.translatedText = '第一句';
@@ -33,6 +34,7 @@ describe('subtitle overlay page helpers', () => {
 
   it('filters empty explicit segments and falls back to raw source text', () => {
     const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    cue.committed = false;
     cue.displaySegments = [
       { sourceText: '', translatedText: '', pending: false },
       { sourceText: 'source', translatedText: '', pending: true },
@@ -91,6 +93,63 @@ describe('subtitle overlay page helpers', () => {
         pending: false,
       },
     ]);
+  });
+
+  it('offers large subtitle font sizes through the overlay menu', () => {
+    expect(overlayFontSizeOptions.at(-1)).toBe(96);
+    expect(overlayFontSizeOptions).toContain(72);
+  });
+
+  it('promotes completed fallback sentences while keeping only the final tail pending', () => {
+    const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    cue.committed = false;
+    cue.displaySegments = undefined;
+    cue.displaySourceText = 'First source. Second source is still live';
+    cue.sourceText = cue.displaySourceText;
+    cue.translatedText = '第一句。第二句仍在输出';
+
+    const segments = subtitleOverlayPageHelpers.getCueDisplaySegments(cue);
+
+    expect(segments.map((segment) => segment.pending)).toEqual([false, true]);
+    expect(segments[0]).toMatchObject({ translatedText: '第一句。' });
+    expect(segments[1]).toMatchObject({ translatedText: '第二句仍在输出' });
+  });
+
+  it('treats every display segment as final after its cue commits', () => {
+    const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    cue.committed = true;
+    cue.sourceText = 'Committed source';
+    cue.displaySourceText = cue.sourceText;
+    cue.translatedText = '已提交译文';
+    cue.displaySegments = [{ sourceText: cue.sourceText, translatedText: cue.translatedText, pending: true }];
+
+    expect(subtitleOverlayPageHelpers.getCueDisplaySegments(cue)).toEqual([
+      expect.objectContaining({ pending: false }),
+    ]);
+  });
+
+  it('keeps only the newest pending segment in the global live timeline', () => {
+    const oldest = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    oldest.cueId = 'oldest-live';
+    oldest.committed = false;
+    oldest.sourceText = 'Older source tail';
+    oldest.displaySourceText = oldest.sourceText;
+    oldest.translatedText = '较早的实时译文';
+    oldest.displaySegments = undefined;
+    const newest = structuredClone(oldest);
+    newest.cueId = 'newest-live';
+    newest.sourceText = 'Newest source tail';
+    newest.displaySourceText = newest.sourceText;
+    newest.translatedText = '最新实时译文';
+
+    const timeline = subtitleOverlayPageHelpers.getOverlayTimeline([oldest, newest]);
+
+    expect(timeline.liveCue?.cueId).toBe('newest-live');
+    expect(timeline.liveSegment?.translatedText).toBe('最新实时译文');
+    expect(timeline.cues[0].historySegments).toEqual([
+      expect.objectContaining({ translatedText: '较早的实时译文', pending: true }),
+    ]);
+    expect(timeline.cues[1].historySegments).toHaveLength(0);
   });
 
   it('pads explicit source rows when translation wraps onto more lines', () => {

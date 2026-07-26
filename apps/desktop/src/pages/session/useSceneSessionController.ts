@@ -325,12 +325,10 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             controller.updateDeviceDraft({
               routeMode: mode,
               status: 'ready',
-              ...(mode !== 'watch' ? {
-                feedbackLoopPrevention: 'echo-cancel' as const,
-                aecEnabled: true,
-                outputSpeechEnabled: true,
-                virtualMicOutputEnabled: false,
-              } : {}),
+              feedbackLoopPrevention: nextConfig.devices.feedbackLoopPrevention,
+              aecEnabled: nextConfig.devices.aecEnabled,
+              outputSpeechEnabled: nextConfig.devices.outputSpeechEnabled,
+              virtualMicOutputEnabled: nextConfig.devices.virtualMicOutputEnabled,
             });
             controller.updateSpeechDraft(options.speechPatch);
             controller.updateDiagnosticsReady(mode);

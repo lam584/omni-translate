@@ -130,7 +130,8 @@
     "resetWelcomeDone": "रीसेट पूर्ण झाले. पुढील वेळी भाषा निवडक दिसेल.",
     "resetWelcomeAction": "रीसेट",
     "sectionDriverManagement": "ड्रायव्हर व्यवस्थापन",
-    "driverManagementHint": "Omni Translate आभासी स्पीकर ड्रायव्हर आणि Bridge Service व्यवस्थापित करा."
+    "driverManagementHint": "Omni Translate आभासी स्पीकर ड्रायव्हर आणि Bridge Service व्यवस्थापित करा.",
+    "overlayHeightLabel": "ओव्हरले उंची"
   },
   "welcome": {
     "title": "Omni Translate मध्ये आपले स्वागत आहे",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 25 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
     "vadThresholdTitle": "VAD threshold मान {{value}}",
     "modelSubtitleSttTranslation": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 02 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
-    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 01 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE"
+    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 01 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
+    "originalAudioVolume": "मूळ ऑडिओचा आवाज",
+    "translatedAudioVolume": "LLM भाषांतरित ऑडिओचा आवाज",
+    "originalAudioVolumeVirtualDriverHint": "मूळ ऑडिओचा आवाज फक्त व्हर्च्युअल ड्रायव्हर मोडमध्ये समायोजित करता येतो. सध्याच्या फिजिकल लूपबॅक मोडमध्ये प्लेयर किंवा Windows चा आवाज वापरा."
   },
   "overlay": {
     "contextMenuTitle": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 01 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",

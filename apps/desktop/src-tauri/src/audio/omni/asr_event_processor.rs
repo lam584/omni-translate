@@ -15,6 +15,8 @@ pub(super) struct OmniAsrEventState {
 pub(super) struct OmniAsrEventResult {
     pub(super) state: OmniAsrEventState,
     pub(super) skip_tick: bool,
+    /// Effective final transcript for the just-committed manual turn.
+    pub(super) completed_source_text: Option<String>,
 }
 
 pub(super) struct OmniAsrEventProcessor;
@@ -47,6 +49,7 @@ impl OmniAsrEventProcessor {
             mut transcription_completed_at,
             mut event_diagnostics,
         } = state;
+        let mut completed_source_text = None;
         match event_type {
             "input_audio_buffer.speech_started" => {
                 last_vad_event_time = SystemTime::now();
@@ -119,6 +122,7 @@ impl OmniAsrEventProcessor {
                                             event_diagnostics,
                                         },
                                         skip_tick: true,
+                                        completed_source_text: None,
                                     };
                 }
                 last_vad_event_time = SystemTime::now();
@@ -166,6 +170,7 @@ impl OmniAsrEventProcessor {
                 let source = evt["transcript"].as_str().unwrap_or("");
                 pending_source_text =
                     preserve_last_non_empty_transcription(&pending_source_text, source);
+                completed_source_text = Some(pending_source_text.clone());
                 event_diagnostics.last_asr_completed_text =
                     source.to_string();
                 event_diagnostics.last_asr_completed_at_ms =
@@ -252,6 +257,7 @@ impl OmniAsrEventProcessor {
                 event_diagnostics,
             },
             skip_tick: false,
+            completed_source_text,
         }
     }
 }

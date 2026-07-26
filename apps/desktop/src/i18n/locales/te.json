@@ -130,7 +130,8 @@
     "resetWelcomeDone": "రీసెట్ చేయబడింది. తదుపరి సారి భాష ఎంపిక కనిపిస్తుంది.",
     "resetWelcomeAction": "రీసెట్",
     "sectionDriverManagement": "డ్రైవర్ నిర్వహణ",
-    "driverManagementHint": "Omni Translate వర్చువల్ స్పీకర్ డ్రైవర్ మరియు Bridge Service ను నిర్వహించండి."
+    "driverManagementHint": "Omni Translate వర్చువల్ స్పీకర్ డ్రైవర్ మరియు Bridge Service ను నిర్వహించండి.",
+    "overlayHeightLabel": "ఓవర్‌లే ఎత్తు"
   },
   "welcome": {
     "title": "Omni Translate కు స్వాగతం",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 09 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
     "vadThresholdTitle": "VAD threshold मान {{value}}",
     "modelSubtitleSttTranslation": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 06 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
-    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 06 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE"
+    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 06 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
+    "originalAudioVolume": "అసలు ఆడియో వాల్యూమ్",
+    "translatedAudioVolume": "LLM అనువాద ఆడియో వాల్యూమ్",
+    "originalAudioVolumeVirtualDriverHint": "అసలు ఆడియో వాల్యూమ్‌ను వర్చువల్ డ్రైవర్ మోడ్‌లో మాత్రమే సర్దుబాటు చేయవచ్చు. ప్రస్తుత ఫిజికల్ loopback మోడ్‌లో ప్లేయర్ లేదా Windows వాల్యూమ్‌ను ఉపయోగించండి."
   },
   "overlay": {
     "contextMenuTitle": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 06 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",

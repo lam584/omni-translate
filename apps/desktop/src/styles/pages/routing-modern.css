@@ -274,6 +274,18 @@
   accent-color: #10b981;
 }
 
+.routing-slider-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.routing-slider-hint {
+  margin: -2px 0 4px;
+  color: #64748b;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .routing-toggle-stack {
   display: flex;
   flex-direction: column;

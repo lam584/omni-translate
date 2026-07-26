@@ -2,6 +2,7 @@
 import { useTranslation } from 'react-i18next';
 import { useCallback } from 'react';
 import { useAudioDeviceTestController } from './audio-routing/useAudioDeviceTestController';
+import { gainDbToVolumePercent, volumePercentToGainDb } from './audio-routing/audioGain';
 import ChainFlow from './audio-routing/ChainFlow';
 import {
   detectScenarioCapabilities,
@@ -185,6 +186,21 @@ function AudioRoutingPage() {
     updateSpeechDraft({ ...patch, status: 'draft' });
   };
 
+  const patchInboundMixGain = (
+    gainKey: 'originalAudioGainDb' | 'translatedAudioGainDb',
+    volumePercent: number,
+  ) => {
+    patchDeviceConfig({
+      inboundRoute: {
+        ...configDraft.devices.inboundRoute,
+        mixControl: {
+          ...configDraft.devices.inboundRoute.mixControl,
+          [gainKey]: volumePercentToGainDb(volumePercent),
+        },
+      },
+    });
+  };
+
   const handleProcessingToggle = (
     key: 'aecEnabled' | 'ansEnabled' | 'agcEnabled',
     processingKey: keyof Pick<AudioInputProcessingContract, 'echoCancellationEnabled' | 'noiseSuppressionEnabled' | 'autoGainControlEnabled'>,
@@ -216,6 +232,13 @@ function AudioRoutingPage() {
         ...configDraft.devices.outboundRoute,
         mixControl: {
           ...configDraft.devices.outboundRoute.mixControl,
+          translatedAudioEnabled: enabled,
+        },
+      },
+      inboundRoute: {
+        ...configDraft.devices.inboundRoute,
+        mixControl: {
+          ...configDraft.devices.inboundRoute.mixControl,
           translatedAudioEnabled: enabled,
         },
       },
@@ -329,6 +352,14 @@ function AudioRoutingPage() {
   const setFeedbackMode = (mode: Exclude<FeedbackLoopPrevention, 'none'>) => {
     patchDeviceConfig({ feedbackLoopPrevention: mode });
   };
+
+  const originalAudioVolumeControllable = configDraft.devices.feedbackLoopPrevention === 'virtual-driver';
+  const originalAudioVolumePercent = gainDbToVolumePercent(
+    configDraft.devices.inboundRoute.mixControl.originalAudioGainDb,
+  );
+  const translatedAudioVolumePercent = gainDbToVolumePercent(
+    configDraft.devices.inboundRoute.mixControl.translatedAudioGainDb,
+  );
 
   const inboundSecondaryModelOption = resolveSelectedModel(
     secondarySttModelOptions,
@@ -495,6 +526,45 @@ function AudioRoutingPage() {
             </div>
             <input className="routing-slider-input" max={100} min={0} onChange={(event) => patchDeviceConfig({ outputLevel: Number(event.target.value) })} type="range" value={configDraft.devices.outputLevel} />
           </div>
+
+          <label className="routing-slider-row">
+            <span className="routing-slider-head">
+              <span className="routing-slider-label">{tWithDefault(t, 'audioRouting.originalAudioVolume')}</span>
+              <strong>{originalAudioVolumePercent}%</strong>
+            </span>
+            <input
+              aria-describedby={originalAudioVolumeControllable ? undefined : 'original-audio-volume-virtual-driver-hint'}
+              aria-label={tWithDefault(t, 'audioRouting.originalAudioVolume')}
+              className="routing-slider-input"
+              disabled={!originalAudioVolumeControllable}
+              max={100}
+              min={0}
+              onChange={(event) => patchInboundMixGain('originalAudioGainDb', Number(event.target.value))}
+              type="range"
+              value={originalAudioVolumePercent}
+            />
+          </label>
+          {!originalAudioVolumeControllable ? (
+            <p className="routing-slider-hint" id="original-audio-volume-virtual-driver-hint">
+              {tWithDefault(t, 'audioRouting.originalAudioVolumeVirtualDriverHint')}
+            </p>
+          ) : null}
+
+          <label className="routing-slider-row">
+            <span className="routing-slider-head">
+              <span className="routing-slider-label">{tWithDefault(t, 'audioRouting.translatedAudioVolume')}</span>
+              <strong>{translatedAudioVolumePercent}%</strong>
+            </span>
+            <input
+              aria-label={tWithDefault(t, 'audioRouting.translatedAudioVolume')}
+              className="routing-slider-input"
+              max={100}
+              min={0}
+              onChange={(event) => patchInboundMixGain('translatedAudioGainDb', Number(event.target.value))}
+              type="range"
+              value={translatedAudioVolumePercent}
+            />
+          </label>
 
           <div className="routing-feedback">
             <div className="routing-feedback-head">

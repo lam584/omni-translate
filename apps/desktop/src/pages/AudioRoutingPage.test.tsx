@@ -43,6 +43,15 @@ function inputText(input: Element | null) {
   return input;
 }
 
+function rangeInputByLabel(container: HTMLElement, label: string) {
+  const input = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="range"]'))
+    .find((candidate) => candidate.getAttribute('aria-label') === label);
+  if (!input) {
+    throw new Error(`Expected range input ${label}`);
+  }
+  return input;
+}
+
 function clickCheckbox(container: HTMLElement, label: string) {
   const input = inputText(Array.from(container.querySelectorAll('label')).find((item) => item.textContent?.includes(label))?.querySelector('input') ?? null);
   input.click();
@@ -242,6 +251,59 @@ describe('AudioRoutingPage', () => {
     expect(container.querySelectorAll('.chain-flow-outbound')).toHaveLength(1);
     expect(container.querySelectorAll('.chain-flow-inbound')).toHaveLength(1);
     expect(container.querySelector('.routing-page-header')).toBeNull();
+  });
+
+  it('shows inbound original and translated volume with physical-loopback restrictions', async () => {
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const originalVolume = rangeInputByLabel(container, '原声音量');
+    const translatedVolume = rangeInputByLabel(container, 'LLM 译声音量');
+
+    expect(originalVolume.value).toBe('63');
+    expect(originalVolume.disabled).toBe(true);
+    expect(originalVolume.getAttribute('aria-describedby')).toBe('original-audio-volume-virtual-driver-hint');
+    expect(translatedVolume.value).toBe('89');
+    expect(translatedVolume.disabled).toBe(false);
+    expect(container.textContent).toContain('原声音量仅在虚拟驱动模式下可调');
+  });
+
+  it('stores both virtual-driver mix sliders as independent dB gains', async () => {
+    useAppStore.setState((state) => ({
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          feedbackLoopPrevention: 'virtual-driver',
+        },
+      },
+    }));
+
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const originalVolume = rangeInputByLabel(container, '原声音量');
+    expect(originalVolume.disabled).toBe(false);
+    await changeValue(originalVolume, '50');
+    await changeValue(rangeInputByLabel(container, 'LLM 译声音量'), '75');
+
+    const mixControl = useAppStore.getState().configDraft.devices.inboundRoute.mixControl;
+    expect(mixControl.originalAudioGainDb).toBeCloseTo(-6.0206, 4);
+    expect(mixControl.translatedAudioGainDb).toBeCloseTo(-2.4988, 4);
+    expect(mixControl.keepOriginalAudio).toBe(true);
+    expect(mixControl.translatedAudioEnabled).toBe(true);
+    expect(mixControl.duckingEnabled).toBe(true);
+    expect(container.querySelector('#original-audio-volume-virtual-driver-hint')).toBeNull();
   });
 
   it('filters the subtitle translation scenario to non-voice models only', async () => {
@@ -557,6 +619,17 @@ describe('AudioRoutingPage', () => {
     });
 
     expect(useAppStore.getState().configDraft.devices.subtitleTranslationMode).toBe('secondary');
+    expect(useAppStore.getState().configDraft.devices.outputSpeechEnabled).toBe(false);
+    expect(useAppStore.getState().configDraft.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(false);
+    expect(useAppStore.getState().configDraft.devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(false);
+
+    await act(async () => {
+      cardToggle.click();
+    });
+
+    expect(useAppStore.getState().configDraft.devices.outputSpeechEnabled).toBe(true);
+    expect(useAppStore.getState().configDraft.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(true);
+    expect(useAppStore.getState().configDraft.devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(true);
     const secondaryCards = Array.from(secondaryGroup?.querySelectorAll('.scenario-card') ?? []);
     expect(secondaryCards).toHaveLength(2);
   });

@@ -130,7 +130,8 @@
     "resetWelcomeDone": "மீட்டமைக்கப்பட்டது. அடுத்த முறை மொழி தேர்வு தோன்றும்.",
     "resetWelcomeAction": "மீட்டமை",
     "sectionDriverManagement": "இயக்கி மேலாண்மை",
-    "driverManagementHint": "Omni Translate மெய்நிகர் ஸ்பீக்கர் இயக்கி மற்றும் Bridge Service ஐ நிர்வகிக்கவும்."
+    "driverManagementHint": "Omni Translate மெய்நிகர் ஸ்பீக்கர் இயக்கி மற்றும் Bridge Service ஐ நிர்வகிக்கவும்.",
+    "overlayHeightLabel": "மேலடுக்கு உயரம்"
   },
   "welcome": {
     "title": "Omni Translate க்கு வரவேற்கிறோம்",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 34 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
     "vadThresholdTitle": "VAD threshold मान {{value}}",
     "modelSubtitleSttTranslation": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 32 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
-    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 32 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE"
+    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 32 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
+    "originalAudioVolume": "அசல் ஒலியின் அளவு",
+    "translatedAudioVolume": "LLM மொழிபெயர்ப்பு ஒலியின் அளவு",
+    "originalAudioVolumeVirtualDriverHint": "அசல் ஒலியின் அளவை மெய்நிகர் இயக்கி பயன்முறையில் மட்டுமே மாற்றலாம். தற்போதைய இயற்பியல் loopback பயன்முறையில் பிளேயர் அல்லது Windows ஒலியளவைப் பயன்படுத்தவும்."
   },
   "overlay": {
     "contextMenuTitle": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 15 MINUTES 32 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",

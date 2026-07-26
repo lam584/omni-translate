@@ -1,4 +1,106 @@
 use super::*;
+use std::collections::HashSet;
+
+const MANUAL_COMMIT_INTERVAL_SECS: u64 = 10;
+const MANUAL_RESPONSE_TIMEOUT_SECS: u64 = 30;
+pub(super) const RECENT_OUTPUT_ECHO_WINDOW_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ManualResponseDecision {
+    Create,
+    SkipEmpty,
+    SkipRecentOutputEcho,
+}
+
+pub(super) fn classify_manual_response(
+    source: &str,
+    recent_output: &str,
+    recent_output_age_ms: Option<u64>,
+    echo_guard_enabled: bool,
+) -> ManualResponseDecision {
+    if source.trim().is_empty() {
+        return ManualResponseDecision::SkipEmpty;
+    }
+    if echo_guard_enabled
+        && recent_output_age_ms.is_some_and(|age| age <= RECENT_OUTPUT_ECHO_WINDOW_MS)
+        && texts_are_probable_echoes(source, recent_output)
+    {
+        return ManualResponseDecision::SkipRecentOutputEcho;
+    }
+    ManualResponseDecision::Create
+}
+
+pub(super) fn classify_completed_manual_response(
+    manual_response_pending: bool,
+    committed_item_id: Option<&str>,
+    completed_item_id: Option<&str>,
+    completed_source_text: Option<&str>,
+    recent_output: &str,
+    recent_output_age_ms: Option<u64>,
+    echo_guard_enabled: bool,
+) -> Option<ManualResponseDecision> {
+    if !manual_response_pending
+        || committed_item_id.is_none()
+        || committed_item_id != completed_item_id
+    {
+        return None;
+    }
+    completed_source_text.map(|source| {
+        classify_manual_response(
+            source,
+            recent_output,
+            recent_output_age_ms,
+            echo_guard_enabled,
+        )
+    })
+}
+
+fn texts_are_probable_echoes(source: &str, output: &str) -> bool {
+    let source = normalize_echo_text(source);
+    let output = normalize_echo_text(output);
+    if source.is_empty() || output.is_empty() {
+        return false;
+    }
+    if source == output {
+        return true;
+    }
+
+    let source_chars = source.chars().collect::<Vec<_>>();
+    let output_chars = output.chars().collect::<Vec<_>>();
+    let shorter_len = source_chars.len().min(output_chars.len());
+    let longer_len = source_chars.len().max(output_chars.len());
+    let length_ratio = shorter_len as f32 / longer_len as f32;
+    if length_ratio >= 0.65 && (source.contains(&output) || output.contains(&source)) {
+        return true;
+    }
+    if shorter_len < 4 || length_ratio < 0.6 {
+        return false;
+    }
+
+    let source_bigrams = echo_bigrams(&source_chars);
+    let output_bigrams = echo_bigrams(&output_chars);
+    if source_bigrams.is_empty() || output_bigrams.is_empty() {
+        return false;
+    }
+    let intersection = source_bigrams.intersection(&output_bigrams).count();
+    let dice = (2 * intersection) as f32
+        / (source_bigrams.len() + output_bigrams.len()) as f32;
+    dice >= 0.8
+}
+
+fn normalize_echo_text(text: &str) -> String {
+    text.chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn echo_bigrams(characters: &[char]) -> HashSet<(char, char)> {
+    characters
+        .windows(2)
+        .map(|pair| (pair[0], pair[1]))
+        .collect()
+}
 
 pub(super) struct OmniReconnectState {
     pub(super) socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
@@ -150,6 +252,133 @@ impl OmniConnectionCoordinator {
 pub(super) struct OmniCommitState {
     pub(super) last_commit_time: SystemTime,
     pub(super) sent_audio_since_commit: bool,
+    pub(super) manual_response_pending: bool,
+    pub(super) manual_response_item_id: Option<String>,
+    pub(super) manual_turn_timed_out: bool,
+}
+
+#[cfg(test)]
+mod manual_response_gate_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_empty_transcriptions() {
+        assert_eq!(
+            classify_manual_response("  ", "previous output", Some(500), true),
+            ManualResponseDecision::SkipEmpty
+        );
+    }
+
+    #[test]
+    fn waits_for_a_completed_transcript_before_creating_a_response() {
+        assert_eq!(
+            classify_completed_manual_response(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                None,
+                "",
+                None,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            classify_completed_manual_response(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("new completed source"),
+                "",
+                None,
+                true,
+            ),
+            Some(ManualResponseDecision::Create)
+        );
+        assert_eq!(
+            classify_completed_manual_response(
+                false,
+                Some("item-late"),
+                Some("item-late"),
+                Some("late completed source"),
+                "",
+                None,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_uncorrelated_or_stale_completed_transcripts() {
+        assert_eq!(
+            classify_completed_manual_response(
+                true,
+                None,
+                Some("item-current"),
+                Some("source"),
+                "",
+                None,
+                true,
+            ),
+            None
+        );
+        assert_eq!(
+            classify_completed_manual_response(
+                true,
+                Some("item-current"),
+                Some("item-stale"),
+                Some("stale source"),
+                "",
+                None,
+                true,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_recent_translated_audio_echoes() {
+        assert_eq!(
+            classify_manual_response(
+                "是的，就是这样。",
+                "是的，就是这样！",
+                Some(9_500),
+                true,
+            ),
+            ManualResponseDecision::SkipRecentOutputEcho
+        );
+        assert_eq!(
+            classify_manual_response(
+                "Yes, that is exactly right",
+                "Yes, that is exactly right.",
+                Some(1_000),
+                true,
+            ),
+            ManualResponseDecision::SkipRecentOutputEcho
+        );
+    }
+
+    #[test]
+    fn allows_new_or_stale_source_audio() {
+        assert_eq!(
+            classify_manual_response(
+                "A genuinely new sentence",
+                "previous output",
+                Some(500),
+                true,
+            ),
+            ManualResponseDecision::Create
+        );
+        assert_eq!(
+            classify_manual_response("same sentence", "same sentence", Some(31_000), true),
+            ManualResponseDecision::Create
+        );
+        assert_eq!(
+            classify_manual_response("same sentence", "same sentence", Some(500), false),
+            ManualResponseDecision::Create
+        );
+    }
 }
 
 impl OmniConnectionCoordinator {
@@ -164,10 +393,30 @@ impl OmniConnectionCoordinator {
         let OmniCommitState {
             mut last_commit_time,
             mut sent_audio_since_commit,
+            mut manual_response_pending,
+            mut manual_response_item_id,
+            manual_turn_timed_out: _,
         } = state;
+        let mut manual_turn_timed_out = false;
         if audio_mode.uses_manual_commit() {
             if let Ok(elapsed) = last_commit_time.elapsed() {
-                if elapsed.as_secs() >= 10 && sent_audio_since_commit {
+                if manual_response_pending
+                    && elapsed.as_secs() >= MANUAL_RESPONSE_TIMEOUT_SECS
+                {
+                    manual_response_pending = false;
+                    manual_response_item_id = None;
+                    manual_turn_timed_out = true;
+                    last_commit_time = SystemTime::now();
+                    let _ = diag_log(
+                        app,
+                        "omni",
+                        "warning",
+                        "event=manual_response_gate_timeout action=drop_pending_response",
+                    );
+                } else if !manual_response_pending
+                    && elapsed.as_secs() >= MANUAL_COMMIT_INTERVAL_SECS
+                    && sent_audio_since_commit
+                {
                     let commit_msg = json!({ "type": "input_audio_buffer.commit" });
                     trace_call.record_ws_send("input_audio_buffer.commit", commit_msg.clone());
                     if let Err(error) = socket.send(Message::Text(commit_msg.to_string().into())) {
@@ -190,15 +439,13 @@ impl OmniConnectionCoordinator {
                         );
                         last_commit_time = SystemTime::now();
                         sent_audio_since_commit = false;
-                    }
-                    let create_msg = json!({ "type": "response.create" });
-                    trace_call.record_ws_send("response.create", create_msg.clone());
-                    if let Err(error) = socket.send(Message::Text(create_msg.to_string().into())) {
+                        manual_response_pending = true;
+                        manual_response_item_id = None;
                         let _ = diag_log(
-                            &app,
+                            app,
                             "omni",
-                            "warning",
-                            format!("[VAD] bypass response.create 发送失败: {error}"),
+                            "debug",
+                            "event=manual_response_gate state=awaiting_transcription",
                         );
                     }
                 }
@@ -207,6 +454,9 @@ impl OmniConnectionCoordinator {
         OmniCommitState {
             last_commit_time,
             sent_audio_since_commit,
+            manual_response_pending,
+            manual_response_item_id,
+            manual_turn_timed_out,
         }
     }
 }
@@ -218,7 +468,8 @@ pub(super) struct OmniConnectedSession {
     pub(super) active_voice: String,
     pub(super) voice_fallback_applied: bool,
     pub(super) native_translation_reuse_active: bool,
-    pub(super) playback_tx: mpsc::Sender<OmniPlaybackCommand>,
+    pub(super) playback_tx: mpsc::SyncSender<OmniPlaybackCommand>,
+    pub(super) playback_stop_requested: Arc<AtomicBool>,
     pub(super) playback_join: JoinHandle<()>,
 }
 
@@ -374,7 +625,8 @@ impl OmniConnectionCoordinator {
 
         let native_translation_reuse_active =
             subtitle_translate_active && is_livetranslate_model(&provider.model);
-        let (playback_tx, playback_join) = start_omni_playback(app.clone(), speech_config);
+        let (playback_tx, playback_stop_requested, playback_join) =
+            start_omni_playback(app.clone(), speech_config);
         Ok(OmniConnectedSession {
             socket,
             trace_call,
@@ -383,6 +635,7 @@ impl OmniConnectionCoordinator {
             voice_fallback_applied,
             native_translation_reuse_active,
             playback_tx,
+            playback_stop_requested,
             playback_join,
         })
     }

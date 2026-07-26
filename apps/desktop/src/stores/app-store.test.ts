@@ -90,6 +90,21 @@ describe('app store', () => {
     expect(merged.activeProviderTemplateId).toBe(initialState.configDraft.activeProviderTemplateId);
   });
 
+  it('fills missing inbound mix gains without replacing persisted mix settings', () => {
+    const legacyDraft = structuredClone(useAppStore.getState().configDraft);
+    const legacyMix = legacyDraft.devices.inboundRoute.mixControl as unknown as Record<string, unknown>;
+    legacyMix.keepOriginalAudio = false;
+    delete legacyMix.originalAudioGainDb;
+    delete legacyMix.translatedAudioGainDb;
+
+    const merged = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft);
+
+    expect(merged.devices.inboundRoute.mixControl.keepOriginalAudio).toBe(false);
+    expect(merged.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(true);
+    expect(merged.devices.inboundRoute.mixControl.originalAudioGainDb).toBe(-4);
+    expect(merged.devices.inboundRoute.mixControl.translatedAudioGainDb).toBe(-1);
+  });
+
   it('deduplicates notifications, keeps six items and updates runtime sync metadata', () => {
     for (let index = 0; index < 7; index += 1) {
       useAppStore.getState().pushRuntimeNotification(notification(`notice-${index}`));

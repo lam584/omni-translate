@@ -32,8 +32,8 @@ describe('buildSceneLaunchPlan', () => {
       expect(plan.config.devices.routeMode).toBe(testCase.mode);
       if (testCase.mode === 'watch') {
         expect(plan.config.devices).toMatchObject({
-          feedbackLoopPrevention: 'none',
-          aecEnabled: false,
+          feedbackLoopPrevention: 'echo-cancel',
+          aecEnabled: true,
           virtualMicOutputEnabled: false,
         });
         expect(plan.config.speech.outputTarget).toBe('speaker');
@@ -52,6 +52,25 @@ describe('buildSceneLaunchPlan', () => {
       .toEqual(['inbound-route', 'translate-worker']);
     expect(buildWatchFallbackPlan({ ...base, isOmniModel: true, speechPatch: { enabled: true } }).stages)
       .toEqual(['inbound-route', 'speech-dispatch']);
+  });
+
+  it('preserves virtual-driver isolation instead of enabling acoustic echo cancellation', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+    configDraft.devices.aecEnabled = true;
+
+    const plan = buildSceneLaunchPlan({
+      mode: 'watch',
+      configDraft,
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      isOmniModel: true,
+      speechPatch: { enabled: true },
+      secondarySubtitleTranslationEnabled: false,
+    });
+
+    expect(plan.config.devices.feedbackLoopPrevention).toBe('virtual-driver');
+    expect(plan.config.devices.aecEnabled).toBe(false);
   });
 
   it('maps the launch attempt id onto the native inbound route id', () => {

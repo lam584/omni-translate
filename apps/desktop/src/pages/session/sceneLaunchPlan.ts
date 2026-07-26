@@ -30,6 +30,16 @@ type Input = {
 };
 
 export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
+  // Watch mode plays translated speech back through the same physical output
+  // that the loopback route captures. Legacy drafts may still carry `none`,
+  // but starting that combination with speech enabled creates an unbounded
+  // model -> speaker -> capture -> model feedback loop. Keep virtual-driver
+  // isolation when the user selected it; otherwise make echo cancellation the
+  // safe watch-mode baseline and ensure its route gate is actually enabled.
+  const watchFeedbackLoopPrevention =
+    input.configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
+      ? 'virtual-driver'
+      : 'echo-cancel';
   const config: AppConfigDraft = {
     ...input.configDraft,
     devices: {
@@ -43,8 +53,8 @@ export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
       routeMode: input.mode,
       status: 'ready',
       ...(input.mode === 'watch' ? {
-        feedbackLoopPrevention: 'none' as const,
-        aecEnabled: false,
+        feedbackLoopPrevention: watchFeedbackLoopPrevention,
+        aecEnabled: watchFeedbackLoopPrevention === 'echo-cancel',
         outputSpeechEnabled: true,
         virtualMicOutputEnabled: false,
       } : {

@@ -263,6 +263,9 @@ impl AudioStateStore {
                         }
                         cue.source_text = source_text.to_string();
                         cue.committed = committed;
+                        if committed {
+                            finalize_cue_display_segments(cue);
+                        }
                         break;
                     }
                 }
@@ -275,6 +278,9 @@ impl AudioStateStore {
                     {
                         active.source_text = source_text.to_string();
                         active.committed = committed;
+                        if committed {
+                            finalize_cue_display_segments(active);
+                        }
                     }
                 }
             } else {
@@ -306,6 +312,7 @@ impl AudioStateStore {
                     if cue.cue_id == cue_id {
                         cue.source_text = source_text.to_string();
                         cue.committed = true;
+                        finalize_cue_display_segments(cue);
                         cue.ended_at = ms_marker(unix_ms());
                         break;
                     }
@@ -314,6 +321,7 @@ impl AudioStateStore {
                     if active.cue_id == cue_id {
                         active.source_text = source_text.to_string();
                         active.committed = true;
+                        finalize_cue_display_segments(active);
                         active.ended_at = ms_marker(unix_ms());
                     }
                 }
@@ -423,7 +431,10 @@ impl AudioStateStore {
         route.segment_count += 1;
     }
 
-    pub fn push_subtitle_cue(&self, cue: SubtitleCueRuntime) {
+    pub fn push_subtitle_cue(&self, mut cue: SubtitleCueRuntime) {
+        if cue.committed {
+            finalize_cue_display_segments(&mut cue);
+        }
         let cue_id = cue.cue_id.clone();
         let source_text = cue.source_text.clone();
         self.subtitles.update(|overlay| {
@@ -559,6 +570,7 @@ impl AudioStateStore {
                 cue.translated_text = translated_text.clone();
                 cue.committed = committed || cue.committed;
                 if committed {
+                    finalize_cue_display_segments(cue);
                     cue.ended_at = ms_marker(unix_ms());
                 }
                 break;
@@ -569,6 +581,7 @@ impl AudioStateStore {
                 active.translated_text = translated_text;
                 active.committed = committed || active.committed;
                 if committed {
+                    finalize_cue_display_segments(active);
                     active.ended_at = ms_marker(unix_ms());
                 }
             }
@@ -594,6 +607,7 @@ impl AudioStateStore {
                 cue.translated_text = translated_text.clone();
                 cue.committed = committed || cue.committed;
                 if committed {
+                    finalize_cue_display_segments(cue);
                     cue.ended_at = ms_marker(unix_ms());
                 }
                 break;
@@ -606,6 +620,7 @@ impl AudioStateStore {
                 active.translated_text = translated_text;
                 active.committed = committed || active.committed;
                 if committed {
+                    finalize_cue_display_segments(active);
                     active.ended_at = ms_marker(unix_ms());
                 }
             }
@@ -619,6 +634,7 @@ impl AudioStateStore {
         for cue in overlay.recent_cues.iter_mut() {
             if cue.cue_id == cue_id {
                 cue.committed = true;
+                finalize_cue_display_segments(cue);
                 cue.ended_at = ms_marker(unix_ms());
                 break;
             }
@@ -626,6 +642,7 @@ impl AudioStateStore {
         if let Some(active) = overlay.active_cue.as_mut() {
             if active.cue_id == cue_id {
                 active.committed = true;
+                finalize_cue_display_segments(active);
                 active.ended_at = ms_marker(unix_ms());
             }
         }
@@ -645,6 +662,12 @@ impl AudioStateStore {
 
     pub fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.session_registry.take(direction)
+    }
+}
+
+fn finalize_cue_display_segments(cue: &mut SubtitleCueRuntime) {
+    for segment in &mut cue.display_segments {
+        segment.pending = false;
     }
 }
 

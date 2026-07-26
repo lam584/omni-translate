@@ -184,7 +184,7 @@ impl OmniEventProcessor {
     pub(super) fn process_audio_done(
         state: OmniAudioOutputState,
         app: &AppHandle,
-        playback_tx: &mpsc::Sender<OmniPlaybackCommand>,
+        playback_tx: &mpsc::SyncSender<OmniPlaybackCommand>,
     ) -> OmniAudioOutputState {
         let OmniAudioOutputState {
             mut pending_audio_delta_count,
@@ -199,17 +199,27 @@ impl OmniEventProcessor {
                 .saturating_div(OMNI_OUTPUT_SAMPLE_RATE_HZ as u64);
             let response_id =
                 pending_audio_response_id.as_deref().unwrap_or("(none)");
-            let _ = playback_tx.send(OmniPlaybackCommand::Play {
+            let enqueue_status = match playback_tx.try_send(OmniPlaybackCommand::Play {
                 samples: std::mem::take(&mut pending_audio_buffer),
                 cue_id: cue_id.clone(),
                 sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
-            });
+                queued_at: Instant::now(),
+            }) {
+                Ok(()) => "queued",
+                Err(mpsc::TrySendError::Full(_)) => "dropped_queue_full",
+                Err(mpsc::TrySendError::Disconnected(_)) => "dropped_disconnected",
+            };
+            let log_level = if enqueue_status == "queued" {
+                "info"
+            } else {
+                "warning"
+            };
             let _ = diag_log(
                 &app,
                 "omni",
-                "info",
+                log_level,
                 format!(
-                    "[AUDIO] native audio.done: response_id={response_id} deltas={} base64_bytes={} samples={sample_count} sample_rate_hz={OMNI_OUTPUT_SAMPLE_RATE_HZ} duration_ms={duration_ms}; sent_to_playback_thread cue_id={cue_id}",
+                    "[AUDIO] native audio.done: response_id={response_id} deltas={} base64_bytes={} samples={sample_count} sample_rate_hz={OMNI_OUTPUT_SAMPLE_RATE_HZ} duration_ms={duration_ms}; playback_status={enqueue_status} cue_id={cue_id}",
                     pending_audio_delta_count,
                     pending_audio_delta_base64_bytes
                 ),
@@ -340,6 +350,7 @@ impl OmniEventProcessor {
         store: &AudioStateStore,
         evt: &Value,
         session_started_at: &SystemTime,
+        subtitle_translate_active: bool,
         native_translation_reuse_active: bool,
     ) -> OmniSubtitleEventState {
         let OmniSubtitleEventState {
@@ -384,6 +395,26 @@ impl OmniEventProcessor {
                 "info",
                 format!(
                     "[TRANS_NATIVE_FINAL] subtitle_translate_active=true livetranslate=true native transcript ready for subtitle-tts cue_id={cue_id} translated_len={}",
+                    pending_translated_text.len()
+                ),
+            );
+        } else if !subtitle_translate_active && !pending_translated_text.trim().is_empty() {
+            let cue_id = write_native_output_final_to_cue(
+                store,
+                &mut current_cue_id,
+                &pending_source_text,
+                &pending_translated_text,
+            );
+            if event_diagnostics.current_cue_origin.is_none() {
+                event_diagnostics.current_cue_origin =
+                    Some("native_audio_transcript_done".to_string());
+            }
+            let _ = diag_log(
+                &app,
+                "omni",
+                "debug",
+                format!(
+                    "[TRANS_NATIVE_FINAL] native transcript display segments finalized cue_id={cue_id} translated_len={}",
                     pending_translated_text.len()
                 ),
             );

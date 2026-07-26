@@ -130,7 +130,8 @@
     "resetWelcomeDone": "تمت إعادة التعيين. سيظهر منتقي اللغة في المرة القادمة.",
     "resetWelcomeAction": "إعادة تعيين",
     "sectionDriverManagement": "إدارة برنامج التشغيل",
-    "driverManagementHint": "إدارة برنامج تشغيل مكبر الصوت الافتراضي في Omni Translate وخدمة Bridge Service."
+    "driverManagementHint": "إدارة برنامج تشغيل مكبر الصوت الافتراضي في Omni Translate وخدمة Bridge Service.",
+    "overlayHeightLabel": "ارتفاع نافذة الترجمة"
   },
   "welcome": {
     "title": "مرحبًا بك في Omni Translate",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 30 MINUTES 02 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
     "vadThresholdTitle": "عتبة VAD {{value}}",
     "modelSubtitleSttTranslation": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 29 MINUTES 39 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
-    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 29 MINUTES 38 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE"
+    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 29 MINUTES 38 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
+    "originalAudioVolume": "مستوى صوت الصوت الأصلي",
+    "translatedAudioVolume": "مستوى صوت الترجمة من LLM",
+    "originalAudioVolumeVirtualDriverHint": "يمكن ضبط مستوى الصوت الأصلي فقط في وضع برنامج التشغيل الافتراضي؛ في وضع الاسترجاع الفعلي الحالي، استخدم مستوى صوت المشغل أو Windows."
   },
   "overlay": {
     "contextMenuTitle": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 29 MINUTES 38 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",

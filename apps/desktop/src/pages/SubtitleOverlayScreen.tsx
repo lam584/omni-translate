@@ -10,7 +10,8 @@ import OverlayContextMenu from './overlay/OverlayContextMenu';
 import OverlayResizeHandles from './overlay/OverlayResizeHandles';
 import SubtitleOverlayContent from './overlay/SubtitleOverlayContent';
 import { clamp, getCueDisplaySegments, overlayFallbackText, subtitleOverlayPageHelpers,
-  toOverlayAxisPercent, type OverlayDragState, type OverlayResizeState } from './overlay/overlayDomain';
+  MAX_OVERLAY_FONT_SIZE, MIN_OVERLAY_FONT_SIZE, toOverlayAxisPercent,
+  type OverlayDragState, type OverlayResizeState } from './overlay/overlayDomain';
 import { useOverlayContextMenuController } from './overlay/useOverlayContextMenuController';
 import { useOverlayGeometrySync } from './overlay/useOverlayGeometrySync';
 import { useOverlayLockReveal } from './overlay/useOverlayLockReveal';
@@ -42,7 +43,11 @@ function SubtitleOverlayPage() {
   const { overlayBackgroundColor, overlayBackgroundOpacity, overlayFontFamily, overlayFontSize, overlayHeight,
     overlayLocked, overlayOpacity, overlayTextColor, overlayTextOpacity, overlayWidth, overlayX, overlayY } = configDraft.subtitles;
   const { lockedReveal, setLockedReveal } = useOverlayLockReveal(overlayLocked);
-  const effectiveOverlayFontSize = clamp(Math.round(overlayFontSize || 24), 16, 48);
+  const effectiveOverlayFontSize = clamp(
+    Math.round(overlayFontSize || 24),
+    MIN_OVERLAY_FONT_SIZE,
+    MAX_OVERLAY_FONT_SIZE,
+  );
   const overlayPositionRef = useRef({ x: overlayX, y: overlayY });
   useEffect(() => {
     overlayPositionRef.current = { x: overlayX, y: overlayY };

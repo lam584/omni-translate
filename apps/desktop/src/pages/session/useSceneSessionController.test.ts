@@ -262,7 +262,11 @@ describe('useSceneSessionController IPC orchestration', () => {
     planState.mainStages = ['bridge-ready', 'inbound-route'];
     const watch = makeHarness();
     await watch.api.launchScene(makeLaunchOptions('watch'));
-    expect(watch.controller.updateDeviceDraft).toHaveBeenCalledWith(expect.objectContaining({ routeMode: 'watch' }));
+    expect(watch.controller.updateDeviceDraft).toHaveBeenCalledWith(expect.objectContaining({
+      routeMode: 'watch',
+      feedbackLoopPrevention: 'echo-cancel',
+      aecEnabled: true,
+    }));
 
     planState.parallelPreconnect = true;
     planState.mainStages = ['bridge-ready', 'omni-preconnect', 'inbound-route'];

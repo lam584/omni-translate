@@ -6,6 +6,12 @@ import PageSectionHeader from '../components/page/PageSectionHeader';
 import { toggleSubtitleOverlayWindow } from '../runtime/audio-runtime';
 import { useAppStore } from '../stores/app-store';
 import { mixOpacity, withAlpha } from '../utils/color-alpha';
+import {
+  MAX_OVERLAY_FONT_SIZE,
+  MAX_OVERLAY_HEIGHT,
+  MIN_OVERLAY_FONT_SIZE,
+  MIN_OVERLAY_HEIGHT,
+} from './overlay/overlayDomain';
 
 const fontOptions = [
   {
@@ -54,8 +60,6 @@ const fontOptions = [
   },
 ];
 
-const OVERLAY_FONT_SIZE_MIN = 16;
-const OVERLAY_FONT_SIZE_MAX = 48;
 const DEFAULT_OVERLAY_SETTINGS = {
   overlayBackgroundColor: '#111827',
   overlayBackgroundOpacity: 0.84,
@@ -82,7 +86,16 @@ function SubtitleOverlaySettingsPage() {
   const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
   const updateSubtitleDraft = useAppStore((state) => state.updateSubtitleDraft);
   const [overlayTogglePending, setOverlayTogglePending] = useState(false);
-  const overlayFontSize = clamp(Math.round(subtitles.overlayFontSize || 24), OVERLAY_FONT_SIZE_MIN, OVERLAY_FONT_SIZE_MAX);
+  const overlayFontSize = clamp(
+    Math.round(subtitles.overlayFontSize || 24),
+    MIN_OVERLAY_FONT_SIZE,
+    MAX_OVERLAY_FONT_SIZE,
+  );
+  const overlayHeight = clamp(
+    Math.round(subtitles.overlayHeight || 220),
+    MIN_OVERLAY_HEIGHT,
+    MAX_OVERLAY_HEIGHT,
+  );
   const overlayWindow = runtimeSnapshot.windows.find((item) => item.label === 'subtitle-overlay');
   const previewBackgroundAlpha = mixOpacity(subtitles.overlayOpacity, subtitles.overlayBackgroundOpacity);
   const previewTextAlpha = mixOpacity(subtitles.overlayOpacity, subtitles.overlayTextOpacity);
@@ -183,14 +196,29 @@ function SubtitleOverlaySettingsPage() {
             <span className="settings-field-label">{t('settings.overlayFontSizeLabel')}</span>
             <div className="settings-slider-row">
               <input
-                max={OVERLAY_FONT_SIZE_MAX}
-                min={OVERLAY_FONT_SIZE_MIN}
+                max={MAX_OVERLAY_FONT_SIZE}
+                min={MIN_OVERLAY_FONT_SIZE}
                 step="1"
                 type="range"
                 value={overlayFontSize}
                 onChange={(event) => updateSubtitleDraft({ overlayFontSize: Number(event.target.value) })}
               />
               <span className="settings-slider-value">{overlayFontSize}px</span>
+            </div>
+          </label>
+
+          <label className="settings-field">
+            <span className="settings-field-label">{t('settings.overlayHeightLabel')}</span>
+            <div className="settings-slider-row">
+              <input
+                max={MAX_OVERLAY_HEIGHT}
+                min={MIN_OVERLAY_HEIGHT}
+                step="4"
+                type="range"
+                value={overlayHeight}
+                onChange={(event) => updateSubtitleDraft({ overlayHeight: Number(event.target.value) })}
+              />
+              <span className="settings-slider-value">{overlayHeight}px</span>
             </div>
           </label>
 

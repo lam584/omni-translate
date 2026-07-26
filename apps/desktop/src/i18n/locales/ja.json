@@ -130,7 +130,8 @@
     "resetWelcomeDone": "設定の設定と状態を確認してください。",
     "resetWelcomeAction": "リセット",
     "sectionDriverManagement": "設定 - ドライバー",
-    "driverManagementHint": "設定の設定と状態を確認してください。"
+    "driverManagementHint": "設定の設定と状態を確認してください。",
+    "overlayHeightLabel": "オーバーレイの高さ"
   },
   "welcome": {
     "title": "初期設定 - タイトル",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "音声ルーティング - 出力",
     "vadThresholdTitle": "音声ルーティング - タイトル {{value}}",
     "modelSubtitleSttTranslation": "音声ルーティング - モデル・字幕・翻訳",
-    "modelSubtitleSttTranslationSpeech": "音声ルーティング - モデル・字幕・翻訳"
+    "modelSubtitleSttTranslationSpeech": "音声ルーティング - モデル・字幕・翻訳",
+    "originalAudioVolume": "元音声の音量",
+    "translatedAudioVolume": "LLM 翻訳音声の音量",
+    "originalAudioVolumeVirtualDriverHint": "元音声の音量は仮想ドライバーモードでのみ調整できます。現在の物理ループバックモードでは、プレーヤーまたは Windows の音量を使用してください。"
   },
   "overlay": {
     "contextMenuTitle": "字幕オーバーレイ - タイトル",

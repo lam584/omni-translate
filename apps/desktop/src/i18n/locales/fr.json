@@ -130,7 +130,8 @@
     "resetWelcomeDone": "Réinitialisation effectuée. L'assistant apparaîtra la prochaine fois.",
     "resetWelcomeAction": "Réinitialiser",
     "sectionDriverManagement": "Gestion des chauffeurs",
-    "driverManagementHint": "Gérez le pilote de haut-parleur virtuel Omni Translate et Bridge Service."
+    "driverManagementHint": "Gérez le pilote de haut-parleur virtuel Omni Translate et Bridge Service.",
+    "overlayHeightLabel": "Hauteur de la superposition"
   },
   "welcome": {
     "title": "Bienvenue à Omni Translate",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "Parler",
     "vadThresholdTitle": "seuil VAD {{value}}",
     "modelSubtitleSttTranslation": "Reconnaissance vocale · Traduction",
-    "modelSubtitleSttTranslationSpeech": "Reconnaissance vocale · Traduction · Discours"
+    "modelSubtitleSttTranslationSpeech": "Reconnaissance vocale · Traduction · Discours",
+    "originalAudioVolume": "Volume de l’audio original",
+    "translatedAudioVolume": "Volume de l’audio traduit par le LLM",
+    "originalAudioVolumeVirtualDriverHint": "Le volume de l’audio original est réglable uniquement en mode pilote virtuel. Dans le mode de bouclage physique actuel, utilisez le volume du lecteur ou de Windows."
   },
   "overlay": {
     "contextMenuTitle": "Contrôles de superposition",

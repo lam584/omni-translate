@@ -130,7 +130,8 @@
     "resetWelcomeDone": "রিসেট হয়েছে। পরবর্তীতে ভাষা নির্বাচক আবার আসবে।",
     "resetWelcomeAction": "রিসেট",
     "sectionDriverManagement": "ড্রাইভার ব্যবস্থাপনা",
-    "driverManagementHint": "Omni Translate ভার্চুয়াল স্পিকার ড্রাইভার এবং Bridge Service পরিচালনা করুন।"
+    "driverManagementHint": "Omni Translate ভার্চুয়াল স্পিকার ড্রাইভার এবং Bridge Service পরিচালনা করুন।",
+    "overlayHeightLabel": "ওভারলে উচ্চতা"
   },
   "welcome": {
     "title": "Omni Translate-এ স্বাগতম",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 25 MINUTES 09 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
     "vadThresholdTitle": "VAD threshold মান {{value}}",
     "modelSubtitleSttTranslation": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 24 MINUTES 45 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
-    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 24 MINUTES 45 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE"
+    "modelSubtitleSttTranslationSpeech": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 24 MINUTES 45 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",
+    "originalAudioVolume": "মূল অডিওর ভলিউম",
+    "translatedAudioVolume": "LLM অনুবাদ অডিওর ভলিউম",
+    "originalAudioVolumeVirtualDriverHint": "মূল অডিওর ভলিউম শুধু ভার্চুয়াল ড্রাইভার মোডে নিয়ন্ত্রণ করা যায়; বর্তমান ফিজিক্যাল লুপব্যাক মোডে প্লেয়ার বা Windows-এর ভলিউম ব্যবহার করুন।"
   },
   "overlay": {
     "contextMenuTitle": "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN  08 HOURS 24 MINUTES 45 SECONDS VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP TO TRANSLATE MORE",

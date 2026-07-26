@@ -59,7 +59,7 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
     container.remove();
   });
 
-  it('updates subtitle font size from the appearance slider', async () => {
+  it('updates large subtitle font size and overlay height from the appearance sliders', async () => {
     useAppStore.setState((state) => ({
       ...state,
       configDraft: { ...state.configDraft, subtitles: { ...state.configDraft.subtitles, overlayFontSize: 0 } },
@@ -73,15 +73,21 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
     });
 
     const fontSizeSlider = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="range"]'))
-      .find((input) => input.min === '16' && input.max === '48');
+      .find((input) => input.min === '16' && input.max === '96');
+    const heightSlider = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="range"]'))
+      .find((input) => input.min === '72' && input.max === '720');
     expect(fontSizeSlider).not.toBeUndefined();
+    expect(heightSlider).not.toBeUndefined();
 
     await act(async () => {
-      setInputValue(fontSizeSlider!, '32');
+      setInputValue(fontSizeSlider!, '72');
       fontSizeSlider!.dispatchEvent(new Event('input', { bubbles: true }));
+      setInputValue(heightSlider!, '700');
+      heightSlider!.dispatchEvent(new Event('input', { bubbles: true }));
     });
 
-    expect(useAppStore.getState().configDraft.subtitles.overlayFontSize).toBe(32);
+    expect(useAppStore.getState().configDraft.subtitles.overlayFontSize).toBe(72);
+    expect(useAppStore.getState().configDraft.subtitles.overlayHeight).toBe(700);
     expect(container.textContent).toContain('settings.overlayPreviewTitle');
   });
 

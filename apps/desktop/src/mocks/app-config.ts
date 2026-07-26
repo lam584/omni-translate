@@ -104,9 +104,9 @@ export const appConfigDraftMock: AppConfigDraft = {
       ],
       mixControl: {
         keepOriginalAudio: true,
-        translatedAudioEnabled: false,
-        translatedAudioGainDb: -3,
-        originalAudioGainDb: 0,
+        translatedAudioEnabled: true,
+        translatedAudioGainDb: -1,
+        originalAudioGainDb: -4,
         duckingEnabled: true,
         duckingDepthPercent: 35,
         monitorMode: 'original-and-translated',
@@ -187,7 +187,7 @@ export const appConfigDraftMock: AppConfigDraft = {
     outputSpeechEnabled: true,
     outputSubtitlesEnabled: false,
     virtualMicOutputEnabled: true,
-    feedbackLoopPrevention: 'none',
+    feedbackLoopPrevention: 'echo-cancel',
     status: 'warning',
   },
   subtitles: {

@@ -130,7 +130,8 @@
     "resetWelcomeDone": "Reset done. The wizard will appear next time.",
     "resetWelcomeAction": "Reset",
     "sectionDriverManagement": "Driver management",
-    "driverManagementHint": "Manage the Omni Translate virtual speaker driver and Bridge Service."
+    "driverManagementHint": "Manage the Omni Translate virtual speaker driver and Bridge Service.",
+    "overlayHeightLabel": "Overlay height"
   },
   "welcome": {
     "title": "Welcome to Omni Translate",
@@ -398,7 +399,10 @@
     "outputChannelsKicker": "Speak",
     "vadThresholdTitle": "VAD threshold {{value}}",
     "modelSubtitleSttTranslation": "Speech recognition · Translation",
-    "modelSubtitleSttTranslationSpeech": "Speech recognition · Translation · Speech"
+    "modelSubtitleSttTranslationSpeech": "Speech recognition · Translation · Speech",
+    "originalAudioVolume": "Original audio volume",
+    "translatedAudioVolume": "LLM translated audio volume",
+    "originalAudioVolumeVirtualDriverHint": "Original audio volume is adjustable only in virtual-driver mode. In the current physical-loopback mode, use the player or Windows volume control."
   },
   "overlay": {
     "contextMenuTitle": "Overlay controls",

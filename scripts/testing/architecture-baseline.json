@@ -9,7 +9,6 @@
     "Rust function >300 lines: apps/desktop/src-tauri/src/audio/omni/session_worker.rs",
     "Rust function >300 lines: apps/desktop/src-tauri/src/audio/omni/socket_event_processor.rs",
     "Rust module >900 lines: apps/desktop/src-tauri/src/audio/omni/protocol.rs",
-    "Rust module >900 lines: apps/desktop/src-tauri/src/audio/openai_realtime.rs",
-    "Rust module >900 lines: apps/desktop/src-tauri/src/audio/state.rs"
+    "Rust module >900 lines: apps/desktop/src-tauri/src/audio/openai_realtime.rs"
   ]
 }

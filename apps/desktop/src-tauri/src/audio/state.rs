@@ -1,4 +1,4 @@
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
 use std::sync::{mpsc::Sender, Mutex, MutexGuard};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -17,11 +17,16 @@ use super::time_utils::{ms_marker, unix_ms};
 
 mod translation_latency;
 mod audio_cache;
+mod cue_lifecycle;
+mod echo_activity;
 mod omni_sessions;
 mod session_registry;
 mod metrics;
 mod subtitle_store;
 pub use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
+use cue_lifecycle::{finalize_cue_display_segments, trim_recent_subtitle_cues};
+use echo_activity::EchoAsrActivity;
+pub(crate) use echo_activity::EchoSuppressionSnapshot;
 use audio_cache::AudioCacheStore;
 use omni_sessions::OmniSessionStore;
 use session_registry::SessionRegistry;
@@ -67,55 +72,6 @@ pub struct AudioStateStore {
     /// able to clobber the connection state its successor already published.
     stt_session_epoch: std::sync::atomic::AtomicU64,
     pub live_session_events: LiveSessionEventBuffer,
-}
-
-const MAX_RECENT_SUBTITLE_CUES: usize = 12;
-const HARD_MAX_RECENT_SUBTITLE_CUES: usize = 18;
-const ECHO_ASR_ACTIVITY_RETENTION: Duration = Duration::from_secs(30);
-
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct EchoSuppressionSnapshot {
-    pub(crate) total_chunks: u64,
-    pub(crate) suppressed_chunks: u64,
-}
-
-#[derive(Default)]
-struct EchoAsrActivity {
-    chunks: VecDeque<(Instant, bool)>,
-}
-
-impl EchoAsrActivity {
-    fn record(&mut self, suppressed: bool, now: Instant) {
-        self.chunks.push_back((now, suppressed));
-        self.prune(now, ECHO_ASR_ACTIVITY_RETENTION);
-    }
-
-    fn snapshot(&mut self, window: Duration, now: Instant) -> EchoSuppressionSnapshot {
-        self.prune(now, ECHO_ASR_ACTIVITY_RETENTION);
-        let mut snapshot = EchoSuppressionSnapshot::default();
-        for (_, suppressed) in self
-            .chunks
-            .iter()
-            .filter(|(at, _)| now.saturating_duration_since(*at) <= window)
-        {
-            snapshot.total_chunks = snapshot.total_chunks.saturating_add(1);
-            if *suppressed {
-                snapshot.suppressed_chunks =
-                    snapshot.suppressed_chunks.saturating_add(1);
-            }
-        }
-        snapshot
-    }
-
-    fn prune(&mut self, now: Instant, window: Duration) {
-        while self
-            .chunks
-            .front()
-            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > window)
-        {
-            self.chunks.pop_front();
-        }
-    }
 }
 
 impl AudioStateStore {
@@ -891,12 +847,6 @@ impl AudioStateStore {
     }
 }
 
-fn finalize_cue_display_segments(cue: &mut SubtitleCueRuntime) {
-    for segment in &mut cue.display_segments {
-        segment.pending = false;
-    }
-}
-
 fn route_mut<'a>(
     state: &'a mut AudioRuntimeSnapshot,
     direction: &str,
@@ -906,44 +856,6 @@ fn route_mut<'a>(
     } else {
         &mut state.inbound
     }
-}
-
-fn cue_needs_more_time(cue: &SubtitleCueRuntime) -> bool {
-    if !cue.committed || cue.translated_text.trim().is_empty() {
-        return true;
-    }
-    // Block-layout commits (source rows followed by translation-only rows) are
-    // final: their source-only rows are not awaiting translation, so they must
-    // stay eligible for eviction.
-    let block_layout = cue.display_segments.iter().any(|segment| {
-        segment.source_text.trim().is_empty() && !segment.translated_text.trim().is_empty()
-    });
-    !block_layout
-        && cue.display_segments.iter().any(|segment| {
-            !segment.source_text.trim().is_empty() && segment.translated_text.trim().is_empty()
-        })
-}
-
-fn trim_recent_subtitle_cues(overlay: &mut SubtitleOverlayRuntimeSnapshot) {
-    while overlay.recent_cues.len() > MAX_RECENT_SUBTITLE_CUES {
-        if let Some(index) = overlay
-            .recent_cues
-            .iter()
-            .rposition(|cue| !cue_needs_more_time(cue))
-        {
-            overlay.recent_cues.remove(index);
-            overlay.dropped_cue_count += 1;
-        } else {
-            break;
-        }
-    }
-
-    while overlay.recent_cues.len() > HARD_MAX_RECENT_SUBTITLE_CUES {
-        overlay.recent_cues.pop();
-        overlay.dropped_cue_count += 1;
-    }
-
-    overlay.queue_depth = overlay.recent_cues.len();
 }
 
 #[cfg(test)]

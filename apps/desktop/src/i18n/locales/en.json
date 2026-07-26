@@ -1013,6 +1013,25 @@
     "speechSegments": "Speech segments",
     "systemAudioError": "System audio capture error: {{error}}",
     "restartBridgeHint": " Restart Bridge Service and try again.",
+    "connectionReconnecting": "Connection interrupted, reconnecting (attempt {{attempt}}/{{max}})...",
+    "connectionRestored": "Connection restored",
+    "connectionExhausted": "Reconnect attempts exhausted. The realtime session was interrupted.",
+    "restartSessionButton": "Restart session",
+    "restartSessionHint": " Restart the session and try again.",
+    "errorCode": {
+      "credentialInvalid": "API key is invalid or expired. Update your provider credentials.",
+      "quotaExceeded": "Provider quota or rate limit reached. Check your usage and try again.",
+      "voiceUnsupported": "The selected voice is not supported. Choose another voice in provider settings.",
+      "networkUnreachable": "Unable to reach the speech service. Check your network and restart the session.",
+      "providerInternal": "The provider reported an internal error. Restart the session and try again later.",
+      "audioDeviceLost": "The audio device was disconnected or is unavailable. Check the device and try again.",
+      "audioFlowStalled": "The audio stream stalled. Confirm the audio source is still playing."
+    },
+    "errorAction": {
+      "openProviders": "Open provider settings"
+    },
+    "exportDiagnostics": "Export diagnostics",
+    "toastRegionAria": "Session notifications",
     "stopWithElapsed": "Stop ({{elapsed}})",
     "stopAll": "Stop all routes",
     "hideOverlay": "Hide overlay",

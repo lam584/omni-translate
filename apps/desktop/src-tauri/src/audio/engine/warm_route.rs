@@ -279,15 +279,10 @@ fn warm_route_thread(
                 stop_rx,
                 stt_sender,
             ) {
-                let (message, recommended_action) =
-                    if let Some(pos) = error.find(" | recommended: ") {
-                        let msg = error[..pos].to_string();
-                        let action = error[pos + " | recommended: ".len()..].to_string();
-                        (msg, Some(action))
-                    } else {
-                        (error.clone(), None)
-                    };
-                store.mark_route_error(direction, message, recommended_action);
+                let (message, error_code, recommended_action) =
+                    crate::audio::omni::session_errors::split_error_markers(&error);
+                notify_route_worker_error(&app, direction, &message, error_code.as_deref());
+                store.mark_route_error(direction, message, error_code, recommended_action);
                 let _ = emit_audio_snapshot(&app, &store);
             }
         }

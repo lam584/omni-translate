@@ -484,7 +484,7 @@ match socket.read() {
                             &mut trace_call,
                             &evt,
                             &text,
-                        );
+                        )?;
                         socket = reconnect_state.socket;
                         reconnect_count = reconnect_state.reconnect_count;
                         pending_audio_buffer = reconnect_state.pending_audio_buffer;

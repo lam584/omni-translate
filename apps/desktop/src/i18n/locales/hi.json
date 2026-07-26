@@ -1013,6 +1013,25 @@
     "speechSegments": "वाक् खंड",
     "systemAudioError": "System audio ध्वनि capture error: {{error}}",
     "restartBridgeHint": " Bridge Service restart करें और फिर कोशिश करें.",
+    "connectionReconnecting": "कनेक्शन बाधित हुआ, पुनः कनेक्ट हो रहा है (प्रयास {{attempt}}/{{max}})…",
+    "connectionRestored": "कनेक्शन बहाल हो गया",
+    "connectionExhausted": "पुनः कनेक्ट के प्रयास समाप्त हो गए। रीयल-टाइम सत्र बाधित हो गया।",
+    "restartSessionButton": "सत्र पुनः प्रारंभ करें",
+    "restartSessionHint": " सत्र पुनः प्रारंभ करके फिर से प्रयास करें।",
+    "errorCode": {
+      "credentialInvalid": "API कुंजी अमान्य है या समाप्त हो गई है। प्रदाता क्रेडेंशियल अपडेट करें।",
+      "quotaExceeded": "प्रदाता कोटा या दर सीमा पूरी हो गई है। अपना उपयोग जांचें और पुनः प्रयास करें।",
+      "voiceUnsupported": "चयनित आवाज़ समर्थित नहीं है। प्रदाता सेटिंग्स में दूसरी आवाज़ चुनें।",
+      "networkUnreachable": "वॉयस सेवा से कनेक्ट नहीं हो सका। नेटवर्क जांचें और सत्र पुनः प्रारंभ करें।",
+      "providerInternal": "प्रदाता ने आंतरिक त्रुटि की सूचना दी। बाद में सत्र पुनः प्रारंभ करें।",
+      "audioDeviceLost": "ऑडियो डिवाइस डिस्कनेक्ट हो गया या अनुपलब्ध है। डिवाइस जांचें और पुनः प्रयास करें।",
+      "audioFlowStalled": "ऑडियो स्ट्रीम रुक गई है। पुष्टि करें कि ऑडियो स्रोत अभी भी चल रहा है।"
+    },
+    "errorAction": {
+      "openProviders": "प्रदाता सेटिंग्स खोलें"
+    },
+    "exportDiagnostics": "निदान निर्यात करें",
+    "toastRegionAria": "सत्र सूचनाएँ",
     "stopWithElapsed": "Stop रोकें ({{elapsed}})",
     "stopAll": "सभी रूट रोकें",
     "hideOverlay": "ओवरले छिपाएँ",

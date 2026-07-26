@@ -1,0 +1,91 @@
+/* Global toast host for session-domain runtime notifications
+   (RuntimeToastHost.tsx). Fixed to the bottom-right of the shell so the
+   alerts stay visible on every page without covering the sidebar. */
+
+.runtime-toast-region {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 900;
+  display: grid;
+  gap: 10px;
+  width: min(380px, calc(100vw - 40px));
+}
+
+.runtime-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 12px;
+  background: var(--color-surface-panel);
+  box-shadow: var(--shadow-card);
+  color: var(--color-text-primary);
+  font-size: .86rem;
+  line-height: 1.45;
+}
+
+.runtime-toast > svg {
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.runtime-toast-error {
+  border-color: var(--color-accent-danger);
+}
+
+.runtime-toast-error > svg {
+  color: var(--color-accent-danger);
+}
+
+.runtime-toast-warning {
+  border-color: var(--color-accent-warning, #d9a83c);
+}
+
+.runtime-toast-warning > svg {
+  color: var(--color-accent-warning, #d9a83c);
+}
+
+.runtime-toast-message {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.runtime-toast-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex-shrink: 0;
+  padding: 4px 8px;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 8px;
+  background: transparent;
+  color: var(--color-text-primary);
+  font-size: .78rem;
+  cursor: pointer;
+}
+
+.runtime-toast-action:disabled {
+  opacity: .6;
+  cursor: default;
+}
+
+.runtime-toast-close {
+  display: inline-grid;
+  place-items: center;
+  flex-shrink: 0;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+  cursor: pointer;
+}
+
+.runtime-toast-close:hover {
+  color: var(--color-text-primary);
+}

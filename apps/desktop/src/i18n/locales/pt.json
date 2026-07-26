@@ -1013,6 +1013,25 @@
     "speechSegments": "Segmentos de fala",
     "systemAudioError": "Erro de captura de áudio do sistema: {{error}}",
     "restartBridgeHint": "Reinicie Bridge Service e tente novamente.",
+    "connectionReconnecting": "Conexão interrompida, reconectando (tentativa {{attempt}}/{{max}})…",
+    "connectionRestored": "Conexão restaurada",
+    "connectionExhausted": "Tentativas de reconexão esgotadas. A sessão em tempo real foi interrompida.",
+    "restartSessionButton": "Reiniciar sessão",
+    "restartSessionHint": " Reinicie a sessão e tente novamente.",
+    "errorCode": {
+      "credentialInvalid": "A chave de API é inválida ou expirou. Atualize as credenciais do provedor.",
+      "quotaExceeded": "Cota ou limite de taxa do provedor atingido. Verifique seu uso e tente novamente.",
+      "voiceUnsupported": "A voz selecionada não é compatível. Escolha outra voz nas configurações do provedor.",
+      "networkUnreachable": "Não foi possível acessar o serviço de voz. Verifique sua rede e reinicie a sessão.",
+      "providerInternal": "O provedor relatou um erro interno. Reinicie a sessão mais tarde.",
+      "audioDeviceLost": "O dispositivo de áudio foi desconectado ou está indisponível. Verifique o dispositivo e tente novamente.",
+      "audioFlowStalled": "O fluxo de áudio travou. Confirme se a fonte de áudio ainda está em reprodução."
+    },
+    "errorAction": {
+      "openProviders": "Abrir configurações do provedor"
+    },
+    "exportDiagnostics": "Exportar diagnóstico",
+    "toastRegionAria": "Notificações da sessão",
     "stopWithElapsed": "Parar ({{elapsed}})",
     "stopAll": "Pare todas as rotas",
     "hideOverlay": "Ocultar sobreposição",

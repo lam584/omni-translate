@@ -488,8 +488,9 @@ fn bridge_source_timeout_error(elapsed: Duration) -> Option<String> {
 
 /// Builds the attributable error raised when a route binds its stream but never
 /// captures a frame within [`AUDIO_FLOW_HEALTH_WINDOW_SECS`]. The trailing
-/// `| recommended:` marker is parsed by the route worker error handler into the
-/// snapshot's `recommended_action` so the UI can surface a concrete next step.
+/// `| code:` / `| recommended:` markers are parsed by the route worker error
+/// handler into the snapshot's `last_error_code` / `recommended_action` so the
+/// UI can surface a translated message and a concrete next step.
 fn audio_flow_stall_error(direction: &str, elapsed: Duration) -> String {
     let source = if direction == "inbound" {
         "系统音频"
@@ -497,7 +498,7 @@ fn audio_flow_stall_error(direction: &str, elapsed: Duration) -> String {
         "麦克风"
     };
     format!(
-        "{source}采集已就绪，但在 {} 秒内没有捕获到任何音频帧，设备可能已静音或被其他应用以独占模式占用。 | recommended: check-audio-source",
+        "{source}采集已就绪，但在 {} 秒内没有捕获到任何音频帧，设备可能已静音或被其他应用以独占模式占用。 | code: audio.flow-stalled | recommended: check-audio-source",
         elapsed.as_secs().max(1)
     )
 }

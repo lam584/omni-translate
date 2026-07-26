@@ -217,6 +217,26 @@ impl AudioStateStore {
         let mut state = self.inner.lock().expect("audio state poisoned");
         state.stt_connected = connected;
         state.stt_buffer_size = buffer_size;
+        if connected {
+            state.stt_connection.state = "connected".to_string();
+            state.stt_connection.reconnect_attempt = 0;
+            state.stt_connection.last_disconnect_reason = None;
+        } else {
+            // Keep the last disconnect reason so an exhausted reconnect stays
+            // attributable; mark_stt_reconnecting overwrites it per attempt.
+            state.stt_connection.state = "disconnected".to_string();
+        }
+    }
+
+    /// Marks the realtime provider socket as mid-reconnect so the renderer can
+    /// show "reconnecting (attempt N/M)" instead of a silent gap.
+    pub fn mark_stt_reconnecting(&self, attempt: u64, max_attempts: u64, reason: &str) {
+        let mut state = self.inner.lock().expect("audio state poisoned");
+        state.stt_connected = false;
+        state.stt_connection.state = "reconnecting".to_string();
+        state.stt_connection.reconnect_attempt = attempt;
+        state.stt_connection.max_reconnect_attempts = max_attempts;
+        state.stt_connection.last_disconnect_reason = Some(reason.to_string());
     }
 
     pub fn store_stt_handle(&self, direction: &str, handle: SttHandle) -> Option<SttHandle> {
@@ -448,6 +468,7 @@ impl AudioStateStore {
         route.capture_state = "capturing".to_string();
         route.stream_bound = true;
         route.last_error = None;
+        route.last_error_code = None;
         route.recommended_action = None;
         route.pre_buffer_state = "primed".to_string();
     }
@@ -466,6 +487,7 @@ impl AudioStateStore {
         route.capture_state = "armed".to_string();
         route.stream_bound = false;
         route.last_error = None;
+        route.last_error_code = None;
         route.recommended_action = None;
         route.pre_buffer_state = "cold".to_string();
     }
@@ -700,6 +722,7 @@ impl AudioStateStore {
         &self,
         direction: &str,
         message: String,
+        error_code: Option<String>,
         recommended_action: Option<String>,
     ) {
         let mut state = self.inner.lock().expect("audio state poisoned");
@@ -708,6 +731,25 @@ impl AudioStateStore {
         route.capture_state = "buffering".to_string();
         route.stream_bound = false;
         route.last_error = Some(message);
+        route.last_error_code = error_code;
+        route.recommended_action = recommended_action;
+    }
+
+    /// Surfaces a session-leg failure (e.g. the Omni worker dying) on the
+    /// route snapshot without touching the capture state machine: the capture
+    /// worker may still be running and owns those fields.
+    pub fn mark_route_last_error(
+        &self,
+        direction: &str,
+        message: String,
+        error_code: Option<String>,
+        recommended_action: Option<String>,
+    ) {
+        let mut state = self.inner.lock().expect("audio state poisoned");
+        state.status = "degraded".to_string();
+        let route = route_mut(&mut state, direction);
+        route.last_error = Some(message);
+        route.last_error_code = error_code;
         route.recommended_action = recommended_action;
     }
 
@@ -896,6 +938,87 @@ mod tests {
 
         store.mark_route_stopped("inbound");
         assert_eq!(store.snapshot().session_started_at, started_at);
+    }
+
+    #[test]
+    fn stt_connection_lifecycle_tracks_reconnect_attempts() {
+        let store = AudioStateStore::new();
+        assert_eq!(store.snapshot().stt_connection.state, "idle");
+
+        store.set_stt_connected(true, 320);
+        let connected = store.snapshot().stt_connection;
+        assert_eq!(connected.state, "connected");
+        assert_eq!(connected.reconnect_attempt, 0);
+        assert_eq!(connected.last_disconnect_reason, None);
+
+        store.mark_stt_reconnecting(2, 5, "provider closed the WebSocket");
+        let reconnecting = store.snapshot().stt_connection;
+        assert_eq!(reconnecting.state, "reconnecting");
+        assert_eq!(reconnecting.reconnect_attempt, 2);
+        assert_eq!(reconnecting.max_reconnect_attempts, 5);
+        assert_eq!(
+            reconnecting.last_disconnect_reason.as_deref(),
+            Some("provider closed the WebSocket")
+        );
+        assert!(!store.snapshot().stt_connected);
+    }
+
+    #[test]
+    fn reconnect_success_clears_the_disconnect_reason() {
+        let store = AudioStateStore::new();
+        store.mark_stt_reconnecting(3, 5, "WebSocket read failed: broken pipe");
+
+        store.set_stt_connected(true, 320);
+        let connection = store.snapshot().stt_connection;
+        assert_eq!(connection.state, "connected");
+        assert_eq!(connection.reconnect_attempt, 0);
+        assert_eq!(connection.last_disconnect_reason, None);
+    }
+
+    #[test]
+    fn reconnect_exhaustion_keeps_the_reason_for_attribution() {
+        let store = AudioStateStore::new();
+        store.mark_stt_reconnecting(5, 5, "audio send failed: connection reset");
+
+        store.set_stt_connected(false, 320);
+        let connection = store.snapshot().stt_connection;
+        assert_eq!(connection.state, "disconnected");
+        assert_eq!(
+            connection.last_disconnect_reason.as_deref(),
+            Some("audio send failed: connection reset")
+        );
+    }
+
+    #[test]
+    fn session_leg_failure_surfaces_on_the_route_without_stealing_capture_state() {
+        let store = AudioStateStore::new();
+        store.mark_route_started("inbound", "watch-attempt", "default", "loopback");
+        let bound_before = store.snapshot().inbound.stream_bound;
+
+        store.mark_route_last_error(
+            "inbound",
+            "Omni WebSocket reconnect retry limit exhausted after 5 attempts: timeout".to_string(),
+            Some("session.network-unreachable".to_string()),
+            Some("restart-session".to_string()),
+        );
+
+        let snapshot = store.snapshot();
+        assert_eq!(snapshot.status, "degraded");
+        assert_eq!(snapshot.inbound.stream_bound, bound_before);
+        assert_eq!(
+            snapshot.inbound.last_error_code.as_deref(),
+            Some("session.network-unreachable")
+        );
+        assert_eq!(
+            snapshot.inbound.recommended_action.as_deref(),
+            Some("restart-session")
+        );
+        assert!(snapshot
+            .inbound
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("reconnect retry limit exhausted"));
     }
 
     #[test]

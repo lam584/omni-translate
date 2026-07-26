@@ -12,7 +12,7 @@ use wasapi::{initialize_mta, Device, DeviceEnumerator, Direction, SampleType, St
 
 use super::diagnostics::{diag_log, diag_log_detail};
 use crate::common::MapErrToString;
-use crate::runtime::events::emit_runtime_snapshot;
+use crate::runtime::events::{emit_runtime_notification, emit_runtime_snapshot};
 use crate::runtime::state::RuntimeStateStore;
 
 use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
@@ -211,15 +211,20 @@ pub fn start_route(
                 init_done: Some(init_done_for_worker),
             };
             if let Err(error) = worker.run(&audio_state) {
-                let (message, recommended_action) =
-                    if let Some(pos) = error.find(" | recommended: ") {
-                        let msg = error[..pos].to_string();
-                        let action = error[pos + " | recommended: ".len()..].to_string();
-                        (msg, Some(action))
-                    } else {
-                        (error.clone(), None)
-                    };
-                audio_state.mark_route_error(&route_direction, message, recommended_action);
+                let (message, error_code, recommended_action) =
+                    crate::audio::omni::session_errors::split_error_markers(&error);
+                notify_route_worker_error(
+                    &app_handle,
+                    &route_direction,
+                    &message,
+                    error_code.as_deref(),
+                );
+                audio_state.mark_route_error(
+                    &route_direction,
+                    message,
+                    error_code,
+                    recommended_action,
+                );
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);
             }
         })
@@ -342,6 +347,35 @@ pub fn emit_audio_snapshot(app: &AppHandle, store: &AudioStateStore) -> Result<(
         emit_runtime_snapshot(app, &runtime_state).map_err_str()?;
     }
     Ok(())
+}
+
+/// Route worker failures used to only update the audio snapshot, leaving
+/// users outside the session page unaware of a dead capture chain. Push an
+/// error-level runtime notification (source `audio-engine`) so the global
+/// toast host can surface it; the id embeds the error code for dedupe.
+fn notify_route_worker_error(
+    app: &AppHandle,
+    direction: &str,
+    message: &str,
+    error_code: Option<&str>,
+) {
+    let Some(runtime_state) = app.try_state::<RuntimeStateStore>() else {
+        return;
+    };
+    let text = match error_code {
+        Some(code) => format!("音频链路已中断（{direction}）: {message} [{code}]"),
+        None => format!("音频链路已中断（{direction}）: {message}"),
+    };
+    let _ = emit_runtime_notification(
+        app,
+        &runtime_state,
+        crate::runtime::contracts::RuntimeNotification::error(
+            &format!("audio-engine-{direction}-{}", error_code.unwrap_or("worker-error")),
+            "audio-engine",
+            &text,
+            ms_marker(unix_ms()),
+        ),
+    );
 }
 
 fn pick_device(enumerator: &DeviceEnumerator, spec: &RouteSpec) -> Result<Device, String> {

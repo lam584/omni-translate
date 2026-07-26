@@ -43,6 +43,36 @@ impl AudioInitError {
     pub(super) fn is_retriable(&self) -> bool {
         matches!(self, AudioInitError::DeviceInUse(_))
     }
+
+    /// Structured code for the route snapshot's `last_error_code`. Both
+    /// access-denied and in-use failures mean the device is unavailable to
+    /// the session; the recommended action still distinguishes the fix.
+    pub(super) fn error_code(&self) -> Option<&'static str> {
+        match self {
+            AudioInitError::AccessDenied(_) | AudioInitError::DeviceInUse(_) => {
+                Some("audio.device-lost")
+            }
+            AudioInitError::Unknown(_) => None,
+        }
+    }
+
+    /// Final-failure error string carrying the `| code:` / `| recommended:`
+    /// markers consumed by `session_errors::split_error_markers`.
+    pub(super) fn tagged_error(&self) -> String {
+        match self.error_code() {
+            Some(code) => format!(
+                "{} | code: {} | recommended: {}",
+                self.message(),
+                code,
+                self.recommended_action()
+            ),
+            None => format!(
+                "{} | recommended: {}",
+                self.message(),
+                self.recommended_action()
+            ),
+        }
+    }
 }
 
 pub(super) enum RetryAction {
@@ -115,11 +145,7 @@ pub(super) fn with_audio_init_retry<T, E: std::fmt::Display>(
                     classified.recommended_action()
                 ),
             );
-            Err(RetryAction::Fail(format!(
-                "{} | recommended: {}",
-                classified.message(),
-                classified.recommended_action()
-            )))
+            Err(RetryAction::Fail(classified.tagged_error()))
         }
     }
 }

@@ -266,6 +266,7 @@ impl OmniAudioPump {
                     audio_mode,
                     &target_language,
                     buffer_size,
+                    &format!("audio send failed: {error}"),
                 ) {
                     Ok(new_socket) => {
                         *socket = new_socket;

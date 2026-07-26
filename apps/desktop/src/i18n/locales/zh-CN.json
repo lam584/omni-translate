@@ -1013,6 +1013,25 @@
     "speechSegments": "语音分段",
     "systemAudioError": "系统音频采集异常：{{error}}",
     "restartBridgeHint": " 建议重启 Bridge Service 后重试。",
+    "connectionReconnecting": "连接中断，正在重连（第 {{attempt}}/{{max}} 次）…",
+    "connectionRestored": "连接已恢复",
+    "connectionExhausted": "重连次数已用尽，实时会话已中断。",
+    "restartSessionButton": "重新启动会话",
+    "restartSessionHint": " 建议重新启动会话后重试。",
+    "errorCode": {
+      "credentialInvalid": "API Key 无效或已失效，请更新平台凭据。",
+      "quotaExceeded": "平台配额或速率限制已触发，请检查用量后重试。",
+      "voiceUnsupported": "当前音色不受支持，请在平台页更换音色。",
+      "networkUnreachable": "无法连接语音服务，请检查网络后重新启动会话。",
+      "providerInternal": "平台服务内部错误，请稍后重新启动会话。",
+      "audioDeviceLost": "音频设备已断开或不可用，请检查设备后重试。",
+      "audioFlowStalled": "音频流已停滞，请确认音频源仍在播放。"
+    },
+    "errorAction": {
+      "openProviders": "前往平台页更新"
+    },
+    "exportDiagnostics": "导出诊断",
+    "toastRegionAria": "会话通知",
     "stopWithElapsed": "停止 ({{elapsed}})",
     "stopAll": "停止全部链路",
     "hideOverlay": "隐藏浮窗",

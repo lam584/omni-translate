@@ -1013,6 +1013,25 @@
     "speechSegments": "Sprachsegmente",
     "systemAudioError": "Fehler bei der System-Audioaufnahme: {{error}}",
     "restartBridgeHint": "Starten Sie Bridge Service neu und versuchen Sie es erneut.",
+    "connectionReconnecting": "Verbindung unterbrochen, Wiederverbindung läuft (Versuch {{attempt}}/{{max}}) …",
+    "connectionRestored": "Verbindung wiederhergestellt",
+    "connectionExhausted": "Wiederverbindungsversuche erschöpft. Die Echtzeitsitzung wurde unterbrochen.",
+    "restartSessionButton": "Sitzung neu starten",
+    "restartSessionHint": " Starten Sie die Sitzung neu und versuchen Sie es erneut.",
+    "errorCode": {
+      "credentialInvalid": "Der API-Schlüssel ist ungültig oder abgelaufen. Aktualisieren Sie Ihre Anbieter-Zugangsdaten.",
+      "quotaExceeded": "Anbieter-Kontingent oder Ratenlimit erreicht. Prüfen Sie Ihre Nutzung und versuchen Sie es erneut.",
+      "voiceUnsupported": "Die gewählte Stimme wird nicht unterstützt. Wählen Sie in den Anbieter-Einstellungen eine andere Stimme.",
+      "networkUnreachable": "Der Sprachdienst ist nicht erreichbar. Prüfen Sie Ihr Netzwerk und starten Sie die Sitzung neu.",
+      "providerInternal": "Der Anbieter meldete einen internen Fehler. Starten Sie die Sitzung später neu.",
+      "audioDeviceLost": "Das Audiogerät wurde getrennt oder ist nicht verfügbar. Prüfen Sie das Gerät und versuchen Sie es erneut.",
+      "audioFlowStalled": "Der Audiostream ist ins Stocken geraten. Stellen Sie sicher, dass die Audioquelle noch wiedergibt."
+    },
+    "errorAction": {
+      "openProviders": "Anbieter-Einstellungen öffnen"
+    },
+    "exportDiagnostics": "Diagnose exportieren",
+    "toastRegionAria": "Sitzungsbenachrichtigungen",
     "stopWithElapsed": "Stopp ({{elapsed}})",
     "stopAll": "Stoppen Sie alle Routen",
     "hideOverlay": "Overlay ausblenden",

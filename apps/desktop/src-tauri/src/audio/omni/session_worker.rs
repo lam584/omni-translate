@@ -190,6 +190,19 @@ pub fn start_omni(
             let result = worker.run(&audio_state);
             if let Err(error) = result {
                 audio_state.set_stt_connected(false, 0);
+                // Mirror the engine route-worker convention: trailing
+                // `| code:` / `| recommended:` markers become the snapshot's
+                // last_error_code and recommended_action so the session page
+                // can surface a translated message and a concrete next step
+                // instead of a silent session death.
+                let (route_message, error_code, recommended_action) =
+                    split_error_markers(&error);
+                audio_state.mark_route_last_error(
+                    &worker_direction,
+                    route_message.clone(),
+                    error_code,
+                    recommended_action,
+                );
                 let _ = audio_state.mark_omni_session_failed(
                     &worker_direction,
                     session_generation,
@@ -204,6 +217,18 @@ pub fn start_omni(
                     "error",
                     format!("Omni 实时翻译出错: {error}"),
                     format!("model={model}"),
+                );
+                let runtime_state =
+                    app_handle.state::<crate::runtime::state::RuntimeStateStore>();
+                let _ = crate::runtime::events::emit_runtime_notification(
+                    &app_handle,
+                    &runtime_state,
+                    crate::runtime::contracts::RuntimeNotification::error(
+                        &format!("omni-session-failed-{worker_direction}"),
+                        "session",
+                        &format!("实时翻译会话中断（{worker_direction}）: {route_message}"),
+                        ms_marker(unix_ms()),
+                    ),
                 );
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);
                 let _ =

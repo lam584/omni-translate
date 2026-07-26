@@ -1013,6 +1013,25 @@
     "speechSegments": "কথার সেগমেন্ট",
     "systemAudioError": "System audio capture error ত্রুটি: {{error}}",
     "restartBridgeHint": " Bridge Service restart করে আবার চেষ্টা করুন.",
+    "connectionReconnecting": "সংযোগ বিচ্ছিন্ন হয়েছে, পুনরায় সংযোগ করা হচ্ছে (চেষ্টা {{attempt}}/{{max}})…",
+    "connectionRestored": "সংযোগ পুনরুদ্ধার হয়েছে",
+    "connectionExhausted": "পুনঃসংযোগের চেষ্টা শেষ হয়ে গেছে। রিয়েল-টাইম সেশন বিঘ্নিত হয়েছে।",
+    "restartSessionButton": "সেশন পুনরায় চালু করুন",
+    "restartSessionHint": " সেশন পুনরায় চালু করে আবার চেষ্টা করুন।",
+    "errorCode": {
+      "credentialInvalid": "API কী অবৈধ বা মেয়াদোত্তীর্ণ। প্রদানকারীর শংসাপত্র আপডেট করুন।",
+      "quotaExceeded": "প্রদানকারীর কোটা বা রেট সীমায় পৌঁছেছে। আপনার ব্যবহার যাচাই করে আবার চেষ্টা করুন।",
+      "voiceUnsupported": "নির্বাচিত ভয়েস সমর্থিত নয়। প্রদানকারীর সেটিংসে অন্য ভয়েস বেছে নিন।",
+      "networkUnreachable": "ভয়েস পরিষেবায় সংযোগ করা যায়নি। নেটওয়ার্ক যাচাই করে সেশন পুনরায় চালু করুন।",
+      "providerInternal": "প্রদানকারী একটি অভ্যন্তরীণ ত্রুটি জানিয়েছে। পরে সেশন পুনরায় চালু করুন।",
+      "audioDeviceLost": "অডিও ডিভাইস বিচ্ছিন্ন বা অনুপলব্ধ। ডিভাইস যাচাই করে আবার চেষ্টা করুন।",
+      "audioFlowStalled": "অডিও স্ট্রিম থেমে গেছে। অডিও উৎস এখনও চলছে কিনা নিশ্চিত করুন।"
+    },
+    "errorAction": {
+      "openProviders": "প্রদানকারীর সেটিংস খুলুন"
+    },
+    "exportDiagnostics": "ডায়াগনস্টিকস রপ্তানি করুন",
+    "toastRegionAria": "সেশন বিজ্ঞপ্তি",
     "stopWithElapsed": "Stop বন্ধ ({{elapsed}})",
     "stopAll": "সব রুট বন্ধ করুন",
     "hideOverlay": "ওভারলে লুকান",

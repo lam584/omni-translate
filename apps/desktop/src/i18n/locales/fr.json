@@ -1013,6 +1013,25 @@
     "speechSegments": "Segments de parole",
     "systemAudioError": "Erreur de capture audio du système : {{error}}",
     "restartBridgeHint": "Redémarrez Bridge Service et réessayez.",
+    "connectionReconnecting": "Connexion interrompue, reconnexion en cours (tentative {{attempt}}/{{max}})…",
+    "connectionRestored": "Connexion rétablie",
+    "connectionExhausted": "Tentatives de reconnexion épuisées. La session en temps réel a été interrompue.",
+    "restartSessionButton": "Redémarrer la session",
+    "restartSessionHint": " Redémarrez la session et réessayez.",
+    "errorCode": {
+      "credentialInvalid": "La clé API est invalide ou expirée. Mettez à jour vos identifiants du fournisseur.",
+      "quotaExceeded": "Quota ou limite de débit du fournisseur atteint. Vérifiez votre utilisation et réessayez.",
+      "voiceUnsupported": "La voix sélectionnée n'est pas prise en charge. Choisissez une autre voix dans les paramètres du fournisseur.",
+      "networkUnreachable": "Impossible de joindre le service vocal. Vérifiez votre réseau et redémarrez la session.",
+      "providerInternal": "Le fournisseur a signalé une erreur interne. Redémarrez la session plus tard.",
+      "audioDeviceLost": "Le périphérique audio a été déconnecté ou est indisponible. Vérifiez le périphérique et réessayez.",
+      "audioFlowStalled": "Le flux audio est bloqué. Vérifiez que la source audio est toujours en lecture."
+    },
+    "errorAction": {
+      "openProviders": "Ouvrir les paramètres du fournisseur"
+    },
+    "exportDiagnostics": "Exporter le diagnostic",
+    "toastRegionAria": "Notifications de session",
     "stopWithElapsed": "Arrêter ({{elapsed}})",
     "stopAll": "Arrêter toutes les routes",
     "hideOverlay": "Masquer la superposition",

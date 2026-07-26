@@ -1013,6 +1013,25 @@
     "speechSegments": "Phân đoạn lời nói",
     "systemAudioError": "Lỗi thu âm thanh hệ thống: {{error}}",
     "restartBridgeHint": "Khởi động lại Bridge Service và thử lại.",
+    "connectionReconnecting": "Kết nối bị gián đoạn, đang kết nối lại (lần {{attempt}}/{{max}})…",
+    "connectionRestored": "Đã khôi phục kết nối",
+    "connectionExhausted": "Đã hết số lần thử kết nối lại. Phiên thời gian thực đã bị gián đoạn.",
+    "restartSessionButton": "Khởi động lại phiên",
+    "restartSessionHint": " Hãy khởi động lại phiên và thử lại.",
+    "errorCode": {
+      "credentialInvalid": "Khóa API không hợp lệ hoặc đã hết hạn. Hãy cập nhật thông tin xác thực của nhà cung cấp.",
+      "quotaExceeded": "Đã đạt hạn mức hoặc giới hạn tốc độ của nhà cung cấp. Kiểm tra mức sử dụng rồi thử lại.",
+      "voiceUnsupported": "Giọng đọc đã chọn không được hỗ trợ. Hãy chọn giọng khác trong cài đặt nhà cung cấp.",
+      "networkUnreachable": "Không thể kết nối dịch vụ giọng nói. Kiểm tra mạng rồi khởi động lại phiên.",
+      "providerInternal": "Nhà cung cấp báo lỗi nội bộ. Hãy khởi động lại phiên sau.",
+      "audioDeviceLost": "Thiết bị âm thanh đã ngắt kết nối hoặc không khả dụng. Kiểm tra thiết bị rồi thử lại.",
+      "audioFlowStalled": "Luồng âm thanh bị đình trệ. Xác nhận nguồn âm thanh vẫn đang phát."
+    },
+    "errorAction": {
+      "openProviders": "Mở cài đặt nhà cung cấp"
+    },
+    "exportDiagnostics": "Xuất chẩn đoán",
+    "toastRegionAria": "Thông báo phiên",
     "stopWithElapsed": "Dừng lại ({{elapsed}})",
     "stopAll": "Dừng tất cả các tuyến đường",
     "hideOverlay": "Ẩn lớp phủ",

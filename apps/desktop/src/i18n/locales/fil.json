@@ -1013,6 +1013,25 @@
     "speechSegments": "Mga segment ng pagsasalita",
     "systemAudioError": "Error sa pagkuha ng audio ng system: {{error}}",
     "restartBridgeHint": "I-restart ang Bridge Service at subukang muli.",
+    "connectionReconnecting": "Naputol ang koneksyon, muling kumokonekta (pagsubok {{attempt}}/{{max}})…",
+    "connectionRestored": "Naibalik na ang koneksyon",
+    "connectionExhausted": "Naubos na ang mga pagsubok na muling kumonekta. Naputol ang real-time na session.",
+    "restartSessionButton": "I-restart ang session",
+    "restartSessionHint": " I-restart ang session at subukang muli.",
+    "errorCode": {
+      "credentialInvalid": "Ang API key ay invalid o expired na. I-update ang mga kredensyal ng provider.",
+      "quotaExceeded": "Naabot na ang quota o rate limit ng provider. Suriin ang paggamit at subukang muli.",
+      "voiceUnsupported": "Hindi suportado ang napiling boses. Pumili ng ibang boses sa mga setting ng provider.",
+      "networkUnreachable": "Hindi maabot ang serbisyo ng boses. Suriin ang network at i-restart ang session.",
+      "providerInternal": "Nag-ulat ang provider ng internal na error. I-restart ang session mamaya.",
+      "audioDeviceLost": "Nadiskonekta o hindi available ang audio device. Suriin ang device at subukang muli.",
+      "audioFlowStalled": "Huminto ang audio stream. Tiyaking tumutugtog pa ang audio source."
+    },
+    "errorAction": {
+      "openProviders": "Buksan ang mga setting ng provider"
+    },
+    "exportDiagnostics": "I-export ang diagnostics",
+    "toastRegionAria": "Mga abiso ng session",
     "stopWithElapsed": "Huminto ({{elapsed}})",
     "stopAll": "Itigil ang lahat ng ruta",
     "hideOverlay": "Itago ang overlay",

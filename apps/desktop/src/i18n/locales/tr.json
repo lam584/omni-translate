@@ -1013,6 +1013,25 @@
     "speechSegments": "Konuşma bölümleri",
     "systemAudioError": "Sistem ses yakalama hatası: {{error}}",
     "restartBridgeHint": "Bridge Service'i yeniden başlatın ve tekrar deneyin.",
+    "connectionReconnecting": "Bağlantı kesildi, yeniden bağlanılıyor ({{attempt}}/{{max}}. deneme)…",
+    "connectionRestored": "Bağlantı yeniden kuruldu",
+    "connectionExhausted": "Yeniden bağlanma denemeleri tükendi. Gerçek zamanlı oturum kesintiye uğradı.",
+    "restartSessionButton": "Oturumu yeniden başlat",
+    "restartSessionHint": " Oturumu yeniden başlatıp tekrar deneyin.",
+    "errorCode": {
+      "credentialInvalid": "API anahtarı geçersiz veya süresi dolmuş. Sağlayıcı kimlik bilgilerinizi güncelleyin.",
+      "quotaExceeded": "Sağlayıcı kotasına veya hız sınırına ulaşıldı. Kullanımınızı kontrol edip yeniden deneyin.",
+      "voiceUnsupported": "Seçilen ses desteklenmiyor. Sağlayıcı ayarlarından başka bir ses seçin.",
+      "networkUnreachable": "Ses hizmetine ulaşılamıyor. Ağınızı kontrol edip oturumu yeniden başlatın.",
+      "providerInternal": "Sağlayıcı dahili bir hata bildirdi. Oturumu daha sonra yeniden başlatın.",
+      "audioDeviceLost": "Ses cihazı bağlantısı kesildi veya kullanılamıyor. Cihazı kontrol edip yeniden deneyin.",
+      "audioFlowStalled": "Ses akışı durdu. Ses kaynağının hâlâ çaldığını doğrulayın."
+    },
+    "errorAction": {
+      "openProviders": "Sağlayıcı ayarlarını aç"
+    },
+    "exportDiagnostics": "Tanılamayı dışa aktar",
+    "toastRegionAria": "Oturum bildirimleri",
     "stopWithElapsed": "Durdur ({{elapsed}})",
     "stopAll": "Tüm rotaları durdur",
     "hideOverlay": "Kaplamayı gizle",

@@ -1013,6 +1013,25 @@
     "speechSegments": "भाषण खंड",
     "systemAudioError": "System audio ध्वनि capture error: {{error}}",
     "restartBridgeHint": " Bridge Service restart करें और फिर कोशिश करें.",
+    "connectionReconnecting": "कनेक्शन खंडित झाले, पुन्हा कनेक्ट होत आहे (प्रयत्न {{attempt}}/{{max}})…",
+    "connectionRestored": "कनेक्शन पूर्ववत झाले",
+    "connectionExhausted": "पुन्हा कनेक्ट करण्याचे प्रयत्न संपले. रिअल-टाइम सत्र खंडित झाले.",
+    "restartSessionButton": "सत्र पुन्हा सुरू करा",
+    "restartSessionHint": " सत्र पुन्हा सुरू करून पुन्हा प्रयत्न करा.",
+    "errorCode": {
+      "credentialInvalid": "API की अवैध आहे किंवा कालबाह्य झाली आहे. प्रदात्याची क्रेडेन्शियल्स अपडेट करा.",
+      "quotaExceeded": "प्रदात्याचा कोटा किंवा दर मर्यादा गाठली आहे. तुमचा वापर तपासा आणि पुन्हा प्रयत्न करा.",
+      "voiceUnsupported": "निवडलेला आवाज समर्थित नाही. प्रदात्याच्या सेटिंग्जमध्ये दुसरा आवाज निवडा.",
+      "networkUnreachable": "व्हॉइस सेवेशी संपर्क होऊ शकला नाही. नेटवर्क तपासा आणि सत्र पुन्हा सुरू करा.",
+      "providerInternal": "प्रदात्याने अंतर्गत त्रुटी नोंदवली. नंतर सत्र पुन्हा सुरू करा.",
+      "audioDeviceLost": "ऑडिओ डिव्हाइस डिस्कनेक्ट झाले किंवा अनुपलब्ध आहे. डिव्हाइस तपासा आणि पुन्हा प्रयत्न करा.",
+      "audioFlowStalled": "ऑडिओ प्रवाह थांबला आहे. ऑडिओ स्रोत अजूनही सुरू आहे का ते तपासा."
+    },
+    "errorAction": {
+      "openProviders": "प्रदात्याच्या सेटिंग्ज उघडा"
+    },
+    "exportDiagnostics": "निदान एक्सपोर्ट करा",
+    "toastRegionAria": "सत्र सूचना",
     "stopWithElapsed": "Stop रोकें ({{elapsed}})",
     "stopAll": "सर्व मार्ग थांबवा",
     "hideOverlay": "ओव्हरले लपवा",

@@ -2,6 +2,21 @@ import type { AudioCaptureState, AudioPreBufferState } from './audio-contract';
 
 export type AudioVadState = 'silence' | 'speech';
 
+/**
+ * Structured error codes attached to route snapshots and worker error
+ * strings by the Rust session error classifier
+ * (`src-tauri/src/audio/omni/session_errors.rs`). Mirrors the
+ * `DriverBridgeErrorCode` convention in `driver-bridge-contract.ts`.
+ */
+export type SessionErrorCode =
+  | 'session.credential-invalid'
+  | 'session.quota-exceeded'
+  | 'session.voice-unsupported'
+  | 'session.network-unreachable'
+  | 'session.provider-internal'
+  | 'audio.device-lost'
+  | 'audio.flow-stalled';
+
 export type AudioDeviceRuntime = {
   deviceId: string;
   label: string;
@@ -27,6 +42,7 @@ export type AudioRouteRuntimeSnapshot = {
   lastFrameAt: string | null;
   activeSegmentId: string | null;
   lastError: string | null;
+  lastErrorCode: string | null;
   recommendedAction: string | null;
 };
 
@@ -87,6 +103,15 @@ export type SpeechRuntimeSnapshot = {
   recentEvents: SpeechDispatchEventRuntime[];
 };
 
+export type SttConnectionState = 'idle' | 'connected' | 'reconnecting' | 'disconnected';
+
+export type SttConnectionRuntime = {
+  state: SttConnectionState;
+  reconnectAttempt: number;
+  maxReconnectAttempts: number;
+  lastDisconnectReason: string | null;
+};
+
 export type AudioRuntimeSnapshot = {
   status: 'preview' | 'ready' | 'degraded';
   host: string;
@@ -99,6 +124,7 @@ export type AudioRuntimeSnapshot = {
   sessionStartedAt: string | null;
   sttConnected: boolean;
   sttBufferSize: number;
+  sttConnection: SttConnectionRuntime;
 };
 
 export const AUDIO_RUNTIME_SNAPSHOT_EVENT = 'audio://snapshot';

@@ -290,11 +290,7 @@ pub(super) fn initialize_capture_route(
                         classified.recommended_action()
                     ),
                 );
-                break Err(format!(
-                    "{} | recommended: {}",
-                    classified.message(),
-                    classified.recommended_action()
-                ));
+                break Err(classified.tagged_error());
             }
         }
 
@@ -423,11 +419,7 @@ pub(super) fn initialize_capture_route(
                         classified.recommended_action()
                     ),
                 );
-                break Err(format!(
-                    "{} | recommended: {}",
-                    classified.message(),
-                    classified.recommended_action()
-                ));
+                break Err(classified.tagged_error());
             }
         };
 

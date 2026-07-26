@@ -1013,6 +1013,25 @@
     "speechSegments": "Sesi",
     "systemAudioError": "System Audio capture Galat: {{error}}",
     "restartBridgeHint": "Periksa pengaturan dan status Sesi.",
+    "connectionReconnecting": "Koneksi terputus, menyambung ulang (percobaan {{attempt}}/{{max}})…",
+    "connectionRestored": "Koneksi telah pulih",
+    "connectionExhausted": "Percobaan sambung ulang telah habis. Sesi real-time terputus.",
+    "restartSessionButton": "Mulai ulang sesi",
+    "restartSessionHint": " Mulai ulang sesi lalu coba lagi.",
+    "errorCode": {
+      "credentialInvalid": "Kunci API tidak valid atau kedaluwarsa. Perbarui kredensial penyedia.",
+      "quotaExceeded": "Kuota atau batas laju penyedia tercapai. Periksa penggunaan Anda lalu coba lagi.",
+      "voiceUnsupported": "Suara yang dipilih tidak didukung. Pilih suara lain di pengaturan penyedia.",
+      "networkUnreachable": "Tidak dapat menghubungi layanan suara. Periksa jaringan lalu mulai ulang sesi.",
+      "providerInternal": "Penyedia melaporkan kesalahan internal. Mulai ulang sesi nanti.",
+      "audioDeviceLost": "Perangkat audio terputus atau tidak tersedia. Periksa perangkat lalu coba lagi.",
+      "audioFlowStalled": "Aliran audio terhenti. Pastikan sumber audio masih diputar."
+    },
+    "errorAction": {
+      "openProviders": "Buka pengaturan penyedia"
+    },
+    "exportDiagnostics": "Ekspor diagnostik",
+    "toastRegionAria": "Notifikasi sesi",
     "stopWithElapsed": "Berhenti ({{elapsed}})",
     "stopAll": "Berhenti all routes",
     "hideOverlay": "Sembunyikan overlay",

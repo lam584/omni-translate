@@ -1013,6 +1013,25 @@
     "speechSegments": "مقاطع الكلام",
     "systemAudioError": "خطأ في التقاط صوت النظام: {{error}}",
     "restartBridgeHint": " أعد تشغيل Bridge Service وحاول مرة أخرى.",
+    "connectionReconnecting": "انقطع الاتصال، وتجري إعادة الاتصال (المحاولة {{attempt}}/{{max}})…",
+    "connectionRestored": "تمت استعادة الاتصال",
+    "connectionExhausted": "استُنفدت محاولات إعادة الاتصال. تم قطع الجلسة الفورية.",
+    "restartSessionButton": "إعادة تشغيل الجلسة",
+    "restartSessionHint": " أعد تشغيل الجلسة وحاول مرة أخرى.",
+    "errorCode": {
+      "credentialInvalid": "مفتاح API غير صالح أو منتهي الصلاحية. حدّث بيانات اعتماد المزوّد.",
+      "quotaExceeded": "تم بلوغ حصة المزوّد أو حد المعدل. تحقق من استخدامك وحاول مرة أخرى.",
+      "voiceUnsupported": "الصوت المحدد غير مدعوم. اختر صوتًا آخر في إعدادات المزوّد.",
+      "networkUnreachable": "تعذر الوصول إلى خدمة الصوت. تحقق من الشبكة وأعد تشغيل الجلسة.",
+      "providerInternal": "أبلغ المزوّد عن خطأ داخلي. أعد تشغيل الجلسة لاحقًا.",
+      "audioDeviceLost": "تم فصل جهاز الصوت أو أنه غير متاح. تحقق من الجهاز وحاول مرة أخرى.",
+      "audioFlowStalled": "توقف تدفق الصوت. تأكد من أن مصدر الصوت لا يزال قيد التشغيل."
+    },
+    "errorAction": {
+      "openProviders": "فتح إعدادات المزوّد"
+    },
+    "exportDiagnostics": "تصدير التشخيص",
+    "toastRegionAria": "إشعارات الجلسة",
     "stopWithElapsed": "إيقاف ({{elapsed}})",
     "stopAll": "إيقاف جميع المسارات",
     "hideOverlay": "إخفاء الطبقة العلوية",

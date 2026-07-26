@@ -29,6 +29,7 @@ pub struct AudioRouteRuntimeSnapshot {
     pub last_frame_at: Option<String>,
     pub active_segment_id: Option<String>,
     pub last_error: Option<String>,
+    pub last_error_code: Option<String>,
     pub recommended_action: Option<String>,
 }
 
@@ -50,6 +51,7 @@ impl AudioRouteRuntimeSnapshot {
             last_frame_at: None,
             active_segment_id: None,
             last_error: None,
+            last_error_code: None,
             recommended_action: None,
         }
     }
@@ -162,6 +164,30 @@ impl SpeechRuntimeSnapshot {
     }
 }
 
+/// Realtime provider (STT/translation WebSocket) connection lifecycle exposed
+/// to the renderer, so reconnect progress is visible instead of only flipping
+/// the legacy `stt_connected` boolean.
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SttConnectionRuntime {
+    /// "idle" | "connected" | "reconnecting" | "disconnected"
+    pub state: String,
+    pub reconnect_attempt: u64,
+    pub max_reconnect_attempts: u64,
+    pub last_disconnect_reason: Option<String>,
+}
+
+impl SttConnectionRuntime {
+    pub fn idle() -> Self {
+        Self {
+            state: "idle".to_string(),
+            reconnect_attempt: 0,
+            max_reconnect_attempts: 0,
+            last_disconnect_reason: None,
+        }
+    }
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AudioRuntimeSnapshot {
@@ -176,6 +202,7 @@ pub struct AudioRuntimeSnapshot {
     pub session_started_at: Option<String>,
     pub stt_connected: bool,
     pub stt_buffer_size: u64,
+    pub stt_connection: SttConnectionRuntime,
 }
 
 impl AudioRuntimeSnapshot {
@@ -192,6 +219,7 @@ impl AudioRuntimeSnapshot {
             session_started_at: None,
             stt_connected: false,
             stt_buffer_size: 0,
+            stt_connection: SttConnectionRuntime::idle(),
         }
     }
 }

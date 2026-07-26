@@ -163,7 +163,7 @@ impl OmniConnectionCoordinator {
         trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
         evt: &Value,
         raw_text: &str,
-    ) -> OmniReconnectState {
+    ) -> Result<OmniReconnectState, String> {
         let err_code = evt["error"]["code"].as_str().unwrap_or("?");
         let err_msg = evt["error"]["message"].as_str().unwrap_or("链路错误");
         let _ = diag_log(
@@ -172,7 +172,8 @@ impl OmniConnectionCoordinator {
             "error",
             format!("[EVENT] error: code={err_code} message=\"{err_msg}\" raw={raw_text}"),
         );
-        let handled_voice_fallback = is_unsupported_voice_error(err_code, err_msg)
+        let classified = classify_provider_error(err_code, err_msg);
+        let handled_voice_fallback = classified == SessionErrorCode::VoiceUnsupported
             && !state.voice_fallback_applied
             && !state.active_voice.trim().is_empty()
             && state.reconnect_count < OMNI_RECONNECT_MAX_RETRIES;
@@ -200,16 +201,45 @@ impl OmniConnectionCoordinator {
                 audio_mode,
                 target_language,
                 buffer_size,
+                &format!("provider rejected voice: {err_msg}"),
             ) {
                 state.socket = new_socket;
                 state.socket_reconnected = true;
             }
-        } else {
+            return Ok(state);
+        }
+        if classified.is_terminal() {
+            // Credential/quota rejections repeat on every reconnect, so fail
+            // the session immediately and tell the user right away instead of
+            // burning the retry budget on a hopeless loop.
             trace_call.error(format!(
-                "model error code={err_code} message={err_msg} raw={raw_text}"
+                "terminal provider error classified={} code={err_code} message={err_msg} raw={raw_text}",
+                classified.as_str()
+            ));
+            let summary = match classified {
+                SessionErrorCode::CredentialInvalid => "API Key 无效或已失效，请更新平台凭据",
+                _ => "Provider 配额或速率限制已触发",
+            };
+            let runtime_state = app.state::<crate::runtime::state::RuntimeStateStore>();
+            let _ = crate::runtime::events::emit_runtime_notification(
+                app,
+                &runtime_state,
+                crate::runtime::contracts::RuntimeNotification::error(
+                    &format!("omni-provider-{}", classified.as_str()),
+                    "session",
+                    &format!("{summary}: {err_msg} [{}]", classified.as_str()),
+                    ms_marker(unix_ms()),
+                ),
+            );
+            return Err(with_error_markers(
+                &format!("{summary}: {err_msg} (code={err_code})"),
+                classified,
             ));
         }
-        state
+        trace_call.error(format!(
+            "model error code={err_code} message={err_msg} raw={raw_text}"
+        ));
+        Ok(state)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -235,6 +265,7 @@ impl OmniConnectionCoordinator {
             audio_mode,
             target_language,
             buffer_size,
+            "provider closed the WebSocket",
         )?;
         state.socket_reconnected = true;
         Ok(state)
@@ -282,6 +313,7 @@ impl OmniConnectionCoordinator {
             audio_mode,
             target_language,
             buffer_size,
+            &format!("WebSocket read failed: {error}"),
         )
         .map_err(|_| format!("Omni WebSocket read failed and reconnect limit exhausted: {error}"))?;
         state.socket_reconnected = true;
@@ -652,7 +684,11 @@ impl OmniConnectionCoordinator {
                     trace_call.error(format!(
                         "initial websocket connect failed attempts={initial_attempt} elapsedMs={elapsed_ms} error={error}"
                     ));
-                    return Err(format!("无法连接 Omni 服务: {error}"));
+                    let connect_error = error.to_string();
+                    return Err(with_error_markers(
+                        &format!("无法连接 Omni 服务: {connect_error}"),
+                        classify_connect_error(&connect_error),
+                    ));
                 }
             }
         };

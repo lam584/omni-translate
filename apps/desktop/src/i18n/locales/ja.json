@@ -1013,6 +1013,25 @@
     "speechSegments": "セッション",
     "systemAudioError": "セッション - 音声・エラー {{error}}",
     "restartBridgeHint": "セッションの設定と状態を確認してください。",
+    "connectionReconnecting": "接続が中断されました。再接続中（{{attempt}}/{{max}} 回目）…",
+    "connectionRestored": "接続が回復しました",
+    "connectionExhausted": "再接続の試行回数が上限に達しました。リアルタイムセッションが中断されました。",
+    "restartSessionButton": "セッションを再起動",
+    "restartSessionHint": " セッションを再起動して再試行してください。",
+    "errorCode": {
+      "credentialInvalid": "APIキーが無効か期限切れです。プロバイダーの認証情報を更新してください。",
+      "quotaExceeded": "プロバイダーのクォータまたはレート制限に達しました。利用状況を確認して再試行してください。",
+      "voiceUnsupported": "選択した音声は対応していません。プロバイダー設定で別の音声を選択してください。",
+      "networkUnreachable": "音声サービスに接続できません。ネットワークを確認してセッションを再起動してください。",
+      "providerInternal": "プロバイダーで内部エラーが発生しました。しばらくしてからセッションを再起動してください。",
+      "audioDeviceLost": "オーディオデバイスが切断されたか利用できません。デバイスを確認して再試行してください。",
+      "audioFlowStalled": "オーディオストリームが停止しました。音源が再生中か確認してください。"
+    },
+    "errorAction": {
+      "openProviders": "プロバイダー設定を開く"
+    },
+    "exportDiagnostics": "診断をエクスポート",
+    "toastRegionAria": "セッション通知",
     "stopWithElapsed": "セッション - 停止 {{elapsed}}",
     "stopAll": "セッション - 停止",
     "hideOverlay": "セッション - 非表示",

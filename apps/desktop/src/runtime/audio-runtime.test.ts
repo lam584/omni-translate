@@ -381,9 +381,21 @@ describe('audio runtime', () => {
     const rejection = expect(promise).rejects.toThrow('超时');
     await vi.advanceTimersByTimeAsync(timeoutMs);
     await rejection;
+    mocks.invoke.mockClear();
     rejectStart(new Error('late native rejection'));
     await vi.runAllTimersAsync();
     await Promise.resolve();
+
+    // The recovery path must still run after the late start REJECTED (not
+    // only when it resolves): the corresponding stop command tears down
+    // whatever the native side may have partially started, and a snapshot
+    // refresh republishes the authoritative state.
+    const recoveryActions = mocks.invoke.mock.calls.map(
+      ([command, args]) => (args as { command?: { action?: string } })?.command?.action ?? command,
+    );
+    const stopAction = _label === 'route' ? 'stopRoute' : _label === 'speech' ? 'stopSpeech' : 'stopTranslation';
+    expect(recoveryActions).toContain(stopAction);
+    expect(recoveryActions).toContain('snapshot');
 
     vi.useRealTimers();
   });

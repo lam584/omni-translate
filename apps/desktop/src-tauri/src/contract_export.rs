@@ -152,6 +152,21 @@ fn generated_files() -> Vec<GeneratedFile> {
             ),
         },
         GeneratedFile {
+            name: "api-v2-commands.ts",
+            source: "apps/desktop/src-tauri/src/api_v2.rs",
+            content: render(
+                "apps/desktop/src-tauri/src/api_v2.rs",
+                &[],
+                &[
+                    decl::<crate::api_v2::ProviderCommandV2>(),
+                    decl::<crate::api_v2::SessionCommandV2>(),
+                    decl::<crate::api_v2::BridgeCommandV2>(),
+                    decl::<crate::api_v2::DiagnosticsCommandV2>(),
+                    decl::<crate::api_v2::ConfigurationCommandV2>(),
+                ],
+            ),
+        },
+        GeneratedFile {
             name: "audio-runtime.ts",
             source: "apps/desktop/src-tauri/src/audio/contracts.rs",
             content: render(

@@ -56,13 +56,14 @@ impl OmniAudioPump {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn pump(
+    pub(super) fn pump<C: RealtimeSocketConnector, R: tauri::Runtime>(
         self,
-        app: &AppHandle,
+        connector: &C,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         audio_rx: &mpsc::Receiver<Vec<u8>>,
-        socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
-        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
+        socket: &mut C::Socket,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         provider: &ProviderDraftInput,
         active_voice: &str,
         instructions: &str,
@@ -75,7 +76,7 @@ impl OmniAudioPump {
             mut reconnect_count,
             mut chunk_count,
             mut sent_audio_since_commit,
-            session_ready_for_audio,
+            mut session_ready_for_audio,
             mut pre_session_audio_queue,
             mut pre_session_audio_dropped,
             mut silence_chunks_skipped,
@@ -90,7 +91,7 @@ impl OmniAudioPump {
             chunks_sent_this_tick: _,
             socket_reconnected: _,
         } = self.state;
-        let mut chunks_sent_this_tick = 0;
+        let mut chunks_sent_this_tick: usize = 0;
         let mut socket_reconnected = false;
         let mut pre_session_chunks_drained_this_tick = 0usize;
         loop {
@@ -248,18 +249,19 @@ impl OmniAudioPump {
                   "rms": chunk_rms,
                 }),
             );
-            if let Err(error) = socket.send(Message::Text(append.to_string().into())) {
+            if let Err(error) = socket.send_message(Message::Text(append.to_string().into())) {
                 let _ = diag_log(
-                    &app,
+                    app,
                     "omni",
                     "warning",
                     format!("[AUDIO] 发送失败: {error}"),
                 );
                 match try_reconnect(
+                    connector,
                     &mut reconnect_count,
                     &mut pending_audio_buffer,
                     store,
-                    &app,
+                    app,
                     &provider,
                     &active_voice,
                     &instructions,
@@ -271,16 +273,18 @@ impl OmniAudioPump {
                     Ok(new_socket) => {
                         *socket = new_socket;
                         socket_reconnected = true;
-                        let retry_b64 = base64_encode_i16(&asr_chunk);
-                        let retry_append = json!({
-                          "type": "input_audio_buffer.append",
-                          "audio": retry_b64
-                        });
-                        if let Err(e) = socket.send(Message::Text(retry_append.to_string().into()))
-                        {
-                            store.set_stt_connected(false, buffer_size);
-                            return Err(format!("重连后发送音频数据仍然失败: {e}"));
-                        }
+                        // The replacement session has not confirmed its
+                        // session.update yet: sending now races the provider's
+                        // session setup (the audio lands before the session is
+                        // configured). Re-queue this chunk at the front of the
+                        // pre-session buffer and stop treating the session as
+                        // ready; the queue drains once the new
+                        // session.created/session.updated arrives.
+                        session_ready_for_audio = false;
+                        buffer_size = buffer_size.wrapping_sub(raw_chunk.len() as u64);
+                        chunk_count = chunk_count.saturating_sub(1);
+                        chunks_sent_this_tick = chunks_sent_this_tick.saturating_sub(1);
+                        pre_session_audio_queue.push_front(raw_chunk);
                         continue;
                     }
                     Err(_) => {

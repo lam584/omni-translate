@@ -61,6 +61,17 @@ where
     }
 }
 
+/// True while no later inbound start/stop command has superseded the detached
+/// fast-watch start that was accepted at `accepted_generation`. Must be
+/// evaluated only while holding the inbound pipeline lock: the check and the
+/// route mutation must be atomic against the competing stop command.
+pub(super) fn fast_watch_start_still_current(
+    state: &AudioStateStore,
+    accepted_generation: u64,
+) -> bool {
+    state.inbound_route_generation() == accepted_generation
+}
+
 /// Runs the fast-watch worker and, on any failure (`Err` or panic), writes a
 /// readable reason via `mark_route_error` and emits a snapshot so front-end
 /// polling can read `lastError` without waiting for a timeout fallback.
@@ -113,6 +124,11 @@ pub async fn start_audio_route(
             .pointer("/devices/inboundRoute/input/deviceId")
             .and_then(Value::as_str)
             .unwrap_or("system-output-default");
+        // Claim a fresh command generation: this start supersedes any earlier
+        // pending detached start, and a later stop (or start) supersedes this
+        // one. The detached worker re-checks the generation once it holds the
+        // pipeline lock and aborts when it lost the race.
+        let accepted_generation = state.bump_inbound_route_generation();
         state.mark_route_start_requested(
             "inbound",
             route_id,
@@ -135,16 +151,38 @@ pub async fn start_audio_route(
         let task_app = app.clone();
         tauri::async_runtime::spawn_blocking(move || {
             let task_state = task_app.state::<AudioStateStore>();
+            // Take the pipeline lock *before* re-checking the generation: a
+            // stop command that raced this worker either already holds the
+            // lock (we block, then observe its bump and abort) or has already
+            // bumped and finished (we observe the bump immediately). Without
+            // this token a stop that won the lock was silently undone by the
+            // pending start.
+            let pipeline_guard = task_state.lock_inbound_pipeline();
+            if !fast_watch_start_still_current(&task_state, accepted_generation) {
+                let _ = append_diagnostics_log(
+                    &task_app,
+                    "audio",
+                    "info",
+                    "watch_mode.route_start_superseded",
+                    Some(format!(
+                        "direction=inbound acceptedGeneration={accepted_generation} currentGeneration={} elapsedMs={}",
+                        task_state.inbound_route_generation(),
+                        started_at.elapsed().as_millis(),
+                    )),
+                    None,
+                    None,
+                );
+                return;
+            }
             // Capture both `Err` and panic so a failed background init is always
             // attributed to `lastError` and pushed via a snapshot, rather than
             // being swallowed by the dropped JoinHandle and left for the timeout.
             let outcome = execute_fast_watch_start(
                 &task_state,
                 std::panic::AssertUnwindSafe(|| {
-                    start_audio_route_inner(
+                    start_inbound_route_locked(
                         task_app.clone(),
                         &task_state,
-                        "inbound".to_string(),
                         config,
                     )
                 }),
@@ -152,6 +190,7 @@ pub async fn start_audio_route(
                     let _ = engine::emit_audio_snapshot(&task_app, &task_state);
                 },
             );
+            drop(pipeline_guard);
             match outcome {
                 FastWatchStartOutcome::Ready(snapshot) => {
                     let _ = append_diagnostics_log(
@@ -515,6 +554,21 @@ pub(crate) fn start_audio_route_inner(
 ) -> Result<AudioRuntimeSnapshot, String> {
     if direction == "inbound" {
         let _pipeline_guard = state.lock_inbound_pipeline();
+        start_inbound_route_locked(app, state, config)
+    } else {
+        start_route_with_overlay(app, state, &direction, config, None)
+    }
+}
+
+/// Inbound route startup body. Caller must hold the inbound pipeline lock
+/// (and, for detached fast-watch starts, must have re-checked the route
+/// generation while holding it).
+fn start_inbound_route_locked(
+    app: AppHandle,
+    state: &AudioStateStore,
+    config: Value,
+) -> Result<AudioRuntimeSnapshot, String> {
+    let direction = "inbound".to_string();
         let keep_omni = state.has_omni_sender("inbound");
         stop_existing_inbound_pipeline(&app, &state, keep_omni)?;
         let requested_voice_model = config
@@ -663,8 +717,65 @@ pub(crate) fn start_audio_route_inner(
         } else {
             start_route_with_overlay(app, &state, &direction, config, None)
         }
-    } else {
-        start_route_with_overlay(app, &state, &direction, config, None)
+}
+
+#[cfg(test)]
+mod fast_watch_supersede_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    /// Field incident: the user pressed stop while a detached fast-watch start
+    /// was still queued behind the pipeline lock. The stop won the lock, tore
+    /// the route down, and the pending start then silently restarted capture.
+    /// The generation token forces the late worker to abort instead.
+    #[test]
+    fn a_stop_that_wins_the_pipeline_lock_revokes_the_pending_fast_watch_start() {
+        let store = Arc::new(AudioStateStore::new());
+        // Fast-watch command accepted: worker will run under this generation.
+        let accepted_generation = store.bump_inbound_route_generation();
+        // Stop command arrives and bumps before its stop work, exactly as
+        // stop_audio_route does.
+        store.bump_inbound_route_generation();
+        let stop_guard = store.lock_inbound_pipeline();
+
+        let worker_store = store.clone();
+        let started = Arc::new(AtomicBool::new(false));
+        let started_flag = started.clone();
+        let worker = std::thread::spawn(move || {
+            // Mirrors the detached worker: lock first, then re-check.
+            let _guard = worker_store.lock_inbound_pipeline();
+            if fast_watch_start_still_current(&worker_store, accepted_generation) {
+                started_flag.store(true, Ordering::SeqCst);
+            }
+        });
+        // The worker blocks on the lock held by the stop; release it once the
+        // stop has finished its teardown.
+        std::thread::sleep(std::time::Duration::from_millis(50));
+        drop(stop_guard);
+        worker.join().expect("fast-watch worker thread");
+
+        assert!(
+            !started.load(Ordering::SeqCst),
+            "a fast-watch start superseded by stop must abort instead of restarting the route"
+        );
+    }
+
+    #[test]
+    fn an_undisturbed_fast_watch_start_runs_under_its_accepted_generation() {
+        let store = AudioStateStore::new();
+        let accepted_generation = store.bump_inbound_route_generation();
+        let _guard = store.lock_inbound_pipeline();
+        assert!(fast_watch_start_still_current(&store, accepted_generation));
+    }
+
+    #[test]
+    fn a_second_fast_watch_start_supersedes_the_first_pending_one() {
+        let store = AudioStateStore::new();
+        let first = store.bump_inbound_route_generation();
+        let second = store.bump_inbound_route_generation();
+        assert!(!fast_watch_start_still_current(&store, first));
+        assert!(fast_watch_start_still_current(&store, second));
     }
 }
 
@@ -689,6 +800,11 @@ pub async fn stop_audio_route(
         let state = app.state::<AudioStateStore>();
         let result = (|| -> Result<AudioRuntimeSnapshot, String> {
             if direction == "inbound" {
+                // Supersede any detached fast-watch start that has not yet
+                // acquired the pipeline lock: without this bump, a pending
+                // start acquiring the lock after us restarted the route the
+                // user just stopped.
+                state.bump_inbound_route_generation();
                 let _pipeline_guard = state.lock_inbound_pipeline();
                 stop_existing_inbound_pipeline(&app, &state, false)?;
             } else {

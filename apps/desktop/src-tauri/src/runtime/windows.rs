@@ -506,8 +506,8 @@ pub fn ensure_subtitle_overlay_window(app: &AppHandle) -> tauri::Result<WebviewW
 // state the UI actually consumes -- subtitle-overlay visibility -- is read from
 // the authoritative cache in `RuntimeStateStore`, which is updated at the exact
 // points we show/hide the overlay.
-pub fn collect_window_snapshots(
-    app: &AppHandle,
+pub fn collect_window_snapshots<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     overlay_visible: bool,
 ) -> Vec<RuntimeWindowSnapshot> {
     app.webview_windows()

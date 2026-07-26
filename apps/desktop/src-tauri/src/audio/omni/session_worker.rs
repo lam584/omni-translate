@@ -334,6 +334,7 @@ fn run_omni_worker(
     } = OmniSessionRuntime::new();
     let mut provider_input_dump = ProviderInputPcmDump::from_env(&app);
 
+    let connector = TungsteniteConnector;
     loop {
         if stop_rx.try_recv().is_ok() {
             let _ = socket.close(None);
@@ -394,6 +395,7 @@ fn run_omni_worker(
             socket_reconnected: false,
         })
         .pump(
+            &connector,
             &app,
             store,
             &audio_rx,
@@ -443,6 +445,7 @@ fn run_omni_worker(
                 &mut pending_audio_delta_count,
                 &mut pending_audio_delta_base64_bytes,
                 &mut pending_audio_response_id,
+                &mut session_ready_for_audio,
             );
         }
 
@@ -572,6 +575,7 @@ fn run_omni_worker(
                 pre_session_audio_dropped,
                 echo_guard_enabled,
             },
+            &connector,
         )?;
         socket = poll.state.socket;
         trace_call = poll.state.trace_call;
@@ -613,6 +617,7 @@ fn run_omni_worker(
                 &mut pending_audio_delta_count,
                 &mut pending_audio_delta_base64_bytes,
                 &mut pending_audio_response_id,
+                &mut session_ready_for_audio,
             );
         }
         if poll.skip_tick {
@@ -638,11 +643,14 @@ fn run_omni_worker(
 /// gone: an awaited `input_audio_buffer.committed` ack or
 /// `transcription.completed` will never arrive, and a streaming response
 /// cannot resume. Drop the manual response gate and the stale turn/output
-/// state, and backdate the commit timer so the next audible chunk on the new
-/// session commits immediately instead of waiting out another full interval.
+/// state, backdate the commit timer so the next audible chunk on the new
+/// session commits immediately instead of waiting out another full interval,
+/// and mark the session not ready for audio: the new socket has not confirmed
+/// its `session.update` yet, so audio must buffer in the pre-session queue
+/// until the new `session.created`/`session.updated` arrives.
 #[allow(clippy::too_many_arguments)]
-fn reset_manual_gate_after_reconnect(
-    app: &AppHandle,
+pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     store: &AudioStateStore,
     audio_mode: RealtimeAudioMode,
     manual_response_pending: &mut bool,
@@ -659,6 +667,7 @@ fn reset_manual_gate_after_reconnect(
     pending_audio_delta_count: &mut u64,
     pending_audio_delta_base64_bytes: &mut u64,
     pending_audio_response_id: &mut Option<String>,
+    session_ready_for_audio: &mut bool,
 ) {
     if audio_mode.uses_manual_commit() && *manual_response_pending {
         let _ = diag_log(
@@ -668,6 +677,47 @@ fn reset_manual_gate_after_reconnect(
             "event=manual_response_gate action=reset_after_reconnect reason=server_session_lost",
         );
     }
+    reset_session_state_after_reconnect(
+        store,
+        manual_response_pending,
+        manual_response_item_id,
+        sent_audio_since_commit,
+        last_commit_time,
+        current_cue_id,
+        pending_source_text,
+        pending_translated_text,
+        transcription_completed_flag,
+        transcription_completed_at,
+        event_diagnostics,
+        pending_audio_buffer,
+        pending_audio_delta_count,
+        pending_audio_delta_base64_bytes,
+        pending_audio_response_id,
+        session_ready_for_audio,
+    );
+}
+
+/// State portion of the post-reconnect reset, kept free of `AppHandle` so the
+/// reconnect contract stays directly unit-testable.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn reset_session_state_after_reconnect(
+    store: &AudioStateStore,
+    manual_response_pending: &mut bool,
+    manual_response_item_id: &mut Option<String>,
+    sent_audio_since_commit: &mut bool,
+    last_commit_time: &mut SystemTime,
+    current_cue_id: &mut Option<String>,
+    pending_source_text: &mut String,
+    pending_translated_text: &mut String,
+    transcription_completed_flag: &mut bool,
+    transcription_completed_at: &mut Option<SystemTime>,
+    event_diagnostics: &mut OmniEventDiagnostics,
+    pending_audio_buffer: &mut Vec<i16>,
+    pending_audio_delta_count: &mut u64,
+    pending_audio_delta_base64_bytes: &mut u64,
+    pending_audio_response_id: &mut Option<String>,
+    session_ready_for_audio: &mut bool,
+) {
     *manual_response_pending = false;
     *manual_response_item_id = None;
     *sent_audio_since_commit = false;
@@ -689,10 +739,80 @@ fn reset_manual_gate_after_reconnect(
     *pending_audio_delta_count = 0;
     *pending_audio_delta_base64_bytes = 0;
     *pending_audio_response_id = None;
+    // The replacement socket has not confirmed its session.update yet; audio
+    // sent now would race the provider's session setup and be dropped (or
+    // transcribed against the wrong configuration). Buffer through the
+    // pre-session queue until the new session.created/session.updated lands.
+    *session_ready_for_audio = false;
 }
 
-pub(super) fn reconnect_socket(
-    app: AppHandle,
+#[cfg(test)]
+mod reconnect_reset_tests {
+    use super::*;
+
+    /// Field bug: after a mid-session reconnect, `session_ready_for_audio`
+    /// stayed true, so captured audio was pumped into the new socket before
+    /// the provider confirmed the new session.
+    #[test]
+    fn reconnect_reset_marks_the_session_not_ready_for_audio() {
+        let store = AudioStateStore::new();
+        let mut manual_response_pending = true;
+        let mut manual_response_item_id = Some("item-old".to_string());
+        let mut sent_audio_since_commit = true;
+        let mut last_commit_time = SystemTime::now();
+        let mut current_cue_id = Some("cue-old".to_string());
+        let mut pending_source_text = "half a sentence".to_string();
+        let mut pending_translated_text = "半句译文".to_string();
+        let mut transcription_completed_flag = true;
+        let mut transcription_completed_at = Some(SystemTime::now());
+        let mut event_diagnostics = OmniEventDiagnostics::default();
+        let mut pending_audio_buffer = vec![1_i16, -1];
+        let mut pending_audio_delta_count = 3_u64;
+        let mut pending_audio_delta_base64_bytes = 4_096_u64;
+        let mut pending_audio_response_id = Some("resp-old".to_string());
+        let mut session_ready_for_audio = true;
+
+        reset_session_state_after_reconnect(
+            &store,
+            &mut manual_response_pending,
+            &mut manual_response_item_id,
+            &mut sent_audio_since_commit,
+            &mut last_commit_time,
+            &mut current_cue_id,
+            &mut pending_source_text,
+            &mut pending_translated_text,
+            &mut transcription_completed_flag,
+            &mut transcription_completed_at,
+            &mut event_diagnostics,
+            &mut pending_audio_buffer,
+            &mut pending_audio_delta_count,
+            &mut pending_audio_delta_base64_bytes,
+            &mut pending_audio_response_id,
+            &mut session_ready_for_audio,
+        );
+
+        assert!(
+            !session_ready_for_audio,
+            "audio must buffer in the pre-session queue until the new session confirms"
+        );
+        assert!(!manual_response_pending);
+        assert!(manual_response_item_id.is_none());
+        assert!(!sent_audio_since_commit);
+        assert!(current_cue_id.is_none());
+        assert!(pending_audio_buffer.is_empty());
+        assert_eq!(pending_audio_delta_count, 0);
+        assert!(pending_audio_response_id.is_none());
+        // The commit timer is backdated so the next audible chunk commits
+        // immediately on the new session.
+        assert!(
+            last_commit_time.elapsed().unwrap_or_default()
+                >= Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS)
+        );
+    }
+}
+
+pub(super) fn reconnect_socket<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     provider: &ProviderDraftInput,
     voice: &str,
     instructions: &str,
@@ -731,6 +851,6 @@ pub(super) fn reconnect_socket(
         .send(Message::Text(session_cfg.to_string().into()))
         .map_err(|error| format!("无法重发 Omni session 配置: {error}"))?;
 
-    let _ = diag_log(&app, "omni", "info", "reconnected to Omni service");
+    let _ = diag_log(app, "omni", "info", "reconnected to Omni service");
     Ok(socket)
 }

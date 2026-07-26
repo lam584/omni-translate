@@ -72,6 +72,18 @@ pub(super) fn classify_completed_manual_response(
     })
 }
 
+/// After a manual-gate timeout (or a reconnect reset) the awaited item-id is
+/// gone, so a late `transcription.completed` no longer correlates with the
+/// gate. It still carries the tail of the user's turn: route it to the ASR
+/// processor for display whenever it has transcript text. The response gate
+/// itself stays closed for such items — `classify_completed_manual_response`
+/// keeps returning `None` — so no `response.create` is ever armed for them.
+pub(super) fn should_route_uncorrelated_completed_transcription(
+    transcript: Option<&str>,
+) -> bool {
+    transcript.is_some_and(|text| !text.trim().is_empty())
+}
+
 pub(super) fn recent_echo_input_is_dominated(
     total_chunks: u64,
     suppressed_chunks: u64,
@@ -136,8 +148,8 @@ fn echo_bigrams(characters: &[char]) -> HashSet<(char, char)> {
         .collect()
 }
 
-pub(super) struct OmniReconnectState {
-    pub(super) socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
+pub(super) struct OmniReconnectState<S: RealtimeSocket> {
+    pub(super) socket: S,
     pub(super) reconnect_count: usize,
     pub(super) pending_audio_buffer: Vec<i16>,
     pub(super) active_voice: String,
@@ -151,19 +163,20 @@ pub(super) struct OmniConnectionCoordinator;
 
 impl OmniConnectionCoordinator {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn handle_provider_error(
-        mut state: OmniReconnectState,
-        app: &AppHandle,
+    pub(super) fn handle_provider_error<C: RealtimeSocketConnector, R: tauri::Runtime>(
+        mut state: OmniReconnectState<C::Socket>,
+        connector: &C,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         provider: &ProviderDraftInput,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
         target_language: &str,
         buffer_size: u64,
-        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         evt: &Value,
         raw_text: &str,
-    ) -> Result<OmniReconnectState, String> {
+    ) -> Result<OmniReconnectState<C::Socket>, String> {
         let err_code = evt["error"]["code"].as_str().unwrap_or("?");
         let err_msg = evt["error"]["message"].as_str().unwrap_or("链路错误");
         let _ = diag_log(
@@ -191,6 +204,7 @@ impl OmniConnectionCoordinator {
                 format!("errorCode={err_code}"),
             );
             if let Ok(new_socket) = try_reconnect(
+                connector,
                 &mut state.reconnect_count,
                 &mut state.pending_audio_buffer,
                 store,
@@ -243,18 +257,20 @@ impl OmniConnectionCoordinator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn reconnect_after_close(
-        mut state: OmniReconnectState,
-        app: &AppHandle,
+    pub(super) fn reconnect_after_close<C: RealtimeSocketConnector, R: tauri::Runtime>(
+        mut state: OmniReconnectState<C::Socket>,
+        connector: &C,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         provider: &ProviderDraftInput,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
         target_language: &str,
         buffer_size: u64,
-    ) -> Result<OmniReconnectState, String> {
+    ) -> Result<OmniReconnectState<C::Socket>, String> {
         let _ = diag_log(app, "omni", "warning", "[SOCKET] WebSocket closed");
         state.socket = try_reconnect(
+            connector,
             &mut state.reconnect_count,
             &mut state.pending_audio_buffer,
             store,
@@ -272,9 +288,10 @@ impl OmniConnectionCoordinator {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn recover_read_error(
-        mut state: OmniReconnectState,
-        app: &AppHandle,
+    pub(super) fn recover_read_error<C: RealtimeSocketConnector, R: tauri::Runtime>(
+        mut state: OmniReconnectState<C::Socket>,
+        connector: &C,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         provider: &ProviderDraftInput,
         instructions: &str,
@@ -282,7 +299,7 @@ impl OmniConnectionCoordinator {
         target_language: &str,
         buffer_size: u64,
         error: tungstenite::Error,
-    ) -> Result<OmniReconnectState, String> {
+    ) -> Result<OmniReconnectState<C::Socket>, String> {
         let err_str = error.to_string();
         if err_str.contains("timed out")
             || err_str.contains("WouldBlock")
@@ -303,6 +320,7 @@ impl OmniConnectionCoordinator {
             format!("[SOCKET] read error: {error}"),
         );
         state.socket = try_reconnect(
+            connector,
             &mut state.reconnect_count,
             &mut state.pending_audio_buffer,
             store,
@@ -375,6 +393,35 @@ mod manual_response_gate_tests {
                 Some("item-late"),
                 Some("item-late"),
                 Some("late completed source"),
+                "",
+                None,
+                true,
+                false,
+            ),
+            None
+        );
+    }
+
+    /// Field bug: the tail ASR of a turn whose manual gate had already timed
+    /// out was dropped entirely — the user's last sentence never appeared in
+    /// the overlay. A late completed transcription with text must be routed
+    /// for display, while the (mismatched) gate must still refuse to arm
+    /// response.create for it.
+    #[test]
+    fn late_completed_transcription_with_text_is_displayed_but_never_arms_a_response() {
+        assert!(should_route_uncorrelated_completed_transcription(Some(
+            "the tail of the user's turn"
+        )));
+        assert!(!should_route_uncorrelated_completed_transcription(Some("   ")));
+        assert!(!should_route_uncorrelated_completed_transcription(None));
+        // The same late item keeps the response gate closed: after the timeout
+        // manual_response_pending is false, so classification yields None.
+        assert_eq!(
+            classify_completed_manual_response(
+                false,
+                None,
+                Some("item-late"),
+                Some("the tail of the user's turn"),
                 "",
                 None,
                 true,
@@ -522,11 +569,11 @@ mod manual_response_gate_tests {
 }
 
 impl OmniConnectionCoordinator {
-    pub(super) fn maintain_manual_commit(
+    pub(super) fn maintain_manual_commit<S: RealtimeSocket, R: tauri::Runtime>(
         state: OmniCommitState,
-        app: &AppHandle,
-        socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
-        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
+        app: &AppHandle<R>,
+        socket: &mut S,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         audio_mode: RealtimeAudioMode,
         chunk_count: u64,
     ) -> OmniCommitState {
@@ -559,7 +606,7 @@ impl OmniConnectionCoordinator {
                 {
                     let commit_msg = json!({ "type": "input_audio_buffer.commit" });
                     trace_call.record_ws_send("input_audio_buffer.commit", commit_msg.clone());
-                    if let Err(error) = socket.send(Message::Text(commit_msg.to_string().into())) {
+                    if let Err(error) = socket.send_message(Message::Text(commit_msg.to_string().into())) {
                         let _ = diag_log(
                             &app,
                             "omni",
@@ -769,8 +816,12 @@ impl OmniConnectionCoordinator {
 
         let native_translation_reuse_active =
             subtitle_translate_active && is_livetranslate_model(&provider.model);
+        // Register the speech config as the live shared instance: config saves
+        // during the session update it in place, and the playback thread
+        // re-reads it for every Play command.
+        let shared_speech_config = store.register_omni_speech_config(speech_config);
         let (playback_tx, playback_stop_requested, playback_join) =
-            start_omni_playback(app.clone(), speech_config);
+            start_omni_playback(app.clone(), shared_speech_config);
         Ok(OmniConnectedSession {
             socket,
             trace_call,

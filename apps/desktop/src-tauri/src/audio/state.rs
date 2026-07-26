@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::{mpsc::Sender, Mutex, MutexGuard};
+use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -11,7 +11,7 @@ use super::echo_cancel::{EchoCancellationResult, EchoReferenceBuffer};
 use super::live_session_events::LiveSessionEventBuffer;
 
 use super::engine::CaptureRouteWarmer;
-use super::omni::OmniHandle;
+use super::omni::{OmniHandle, OmniSpeechConfig};
 use super::stt::SttHandle;
 use super::time_utils::{ms_marker, unix_ms};
 
@@ -66,6 +66,10 @@ pub struct AudioStateStore {
     echo_buffer: Mutex<EchoReferenceBuffer>,
     echo_asr_activity: Mutex<EchoAsrActivity>,
     deferred_subtitle_translation_cues: Mutex<HashMap<String, Instant>>,
+    /// Live speech config shared with the active Omni playback thread. The
+    /// playback thread re-reads it per Play command; config saves update it
+    /// in place so device/toggle changes apply without a route restart.
+    active_omni_speech_config: Mutex<Option<Arc<RwLock<OmniSpeechConfig>>>>,
     warmer: CaptureRouteWarmer,
     /// Monotonic id of the newest realtime STT worker. Stopping a route is
     /// fire-and-forget, so a superseded worker's late shutdown must not be
@@ -88,6 +92,7 @@ impl AudioStateStore {
             echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
             echo_asr_activity: Mutex::new(EchoAsrActivity::default()),
             deferred_subtitle_translation_cues: Mutex::new(HashMap::new()),
+            active_omni_speech_config: Mutex::new(None),
             warmer: CaptureRouteWarmer::new(),
             stt_session_epoch: std::sync::atomic::AtomicU64::new(0),
             live_session_events: LiveSessionEventBuffer::new(),
@@ -108,6 +113,48 @@ impl AudioStateStore {
 
     pub(crate) fn lock_inbound_pipeline(&self) -> MutexGuard<'_, ()> {
         self.session_registry.lock_inbound_pipeline()
+    }
+
+    /// Current inbound-route command generation. See
+    /// `SessionRegistry::inbound_route_generation` for the protocol.
+    pub(crate) fn inbound_route_generation(&self) -> u64 {
+        self.session_registry.inbound_route_generation()
+    }
+
+    /// Supersedes every pending detached inbound start and returns the new
+    /// generation the caller may itself run under.
+    pub(crate) fn bump_inbound_route_generation(&self) -> u64 {
+        self.session_registry.bump_inbound_route_generation()
+    }
+
+    /// Publishes `config` as the live Omni speech config and returns the
+    /// shared handle the playback thread reads per Play command.
+    pub(crate) fn register_omni_speech_config(
+        &self,
+        config: OmniSpeechConfig,
+    ) -> Arc<RwLock<OmniSpeechConfig>> {
+        let shared = Arc::new(RwLock::new(config));
+        *self
+            .active_omni_speech_config
+            .lock()
+            .expect("omni speech config slot poisoned") = Some(shared.clone());
+        shared
+    }
+
+    /// Applies a freshly saved app config to the live Omni playback thread,
+    /// if one is registered. No-op between sessions.
+    pub(crate) fn refresh_omni_speech_config(&self, config_value: &serde_json::Value) {
+        let slot = self
+            .active_omni_speech_config
+            .lock()
+            .expect("omni speech config slot poisoned");
+        if let Some(shared) = slot.as_ref() {
+            let next = OmniSpeechConfig::from_config(config_value);
+            match shared.write() {
+                Ok(mut config) => *config = next,
+                Err(poisoned) => *poisoned.into_inner() = next,
+            }
+        }
     }
 
     pub(crate) fn push_echo_reference(

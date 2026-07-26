@@ -1,5 +1,5 @@
-pub fn write_virtual_mic_frame(
-    app: &AppHandle,
+pub fn write_virtual_mic_frame<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     cue_id: &str,
     request_id: &str,
     samples: &[i16],
@@ -66,8 +66,8 @@ fn accepted_translation_frames(ack: &BridgeTranslationFrameAck) -> Result<u64, S
     Ok(ack.accepted_frames as u64)
 }
 
-fn write_bridge_audio_frame(
-    app: &AppHandle,
+fn write_bridge_audio_frame<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     event_type: &str,
     cue_id: &str,
     request_id: &str,

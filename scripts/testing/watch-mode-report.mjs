@@ -1,6 +1,16 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+/** HEAD commit of the checkout producing this evidence (null outside git). */
+export function currentGitCommit() {
+  try {
+    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() || null;
+  } catch {
+    return null;
+  }
+}
 
 const DEFAULT_SUSPECT_FILES = {
   driver: [
@@ -1083,6 +1093,11 @@ export function classifyWatchModeRun(input) {
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
+    // Provenance for the strict evidence gate: which source revision produced
+    // this evidence (verify-watch-mode-evidence --strict rejects reports whose
+    // commit is not an ancestor of HEAD or whose age exceeds the budget).
+    commit: input.commit ?? currentGitCommit(),
+    buildHash: input.buildHash ?? null,
     mode: input.mode ?? 'live',
     modelId: input.modelId ?? input.snapshots?.modelId ?? null,
     feedbackLoopPrevention,

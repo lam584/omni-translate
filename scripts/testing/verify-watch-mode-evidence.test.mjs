@@ -4,7 +4,12 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { ECHO_CANCEL_REQUIRED_LAYERS, REQUIRED_LAYERS, findWatchModeEvidence } from './verify-watch-mode-evidence.mjs';
+import { ECHO_CANCEL_REQUIRED_LAYERS, REQUIRED_LAYERS, findWatchModeEvidence, strictProvenanceFailure } from './verify-watch-mode-evidence.mjs';
+
+// Frozen "now" + always-ancestor stub so the strict provenance gate can be
+// exercised deterministically against the fixture timestamps.
+const FIXTURE_NOW = Date.parse('2026-06-06T00:00:00.000Z');
+const provenanceOk = { now: FIXTURE_NOW, isAncestorOfHead: () => true };
 
 function echoCancelLayers() {
   return Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
@@ -26,6 +31,7 @@ function writeReport(root, directoryName, overrides = {}) {
   const report = {
     schemaVersion: 1,
     generatedAt: '2026-06-05T11:13:32.000Z',
+    commit: 'fixture-commit',
     mode: 'live',
     translationRoute: 'secondary',
     verdict: 'passed',
@@ -252,7 +258,7 @@ test('strict mode passes when strict content is applicable and passed', () => {
     ])),
   });
 
-  const result = findWatchModeEvidence({ root, strict: true });
+  const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
 
   assert.equal(result.ok, true);
   assert.equal(result.latest.modelId, 'qwen3.5-omni-flash-realtime');
@@ -280,6 +286,7 @@ test('strict model matrix requires every requested model', () => {
       'qwen3.5-omni-flash-realtime',
       'qwen3.5-livetranslate-flash-realtime',
     ],
+    ...provenanceOk,
   });
 
   assert.equal(result.ok, false);
@@ -317,6 +324,7 @@ test('strict model matrix passes when both requested models pass', () => {
       'qwen3.5-omni-flash-realtime',
       'qwen3.5-livetranslate-flash-realtime',
     ],
+    ...provenanceOk,
   });
 
   assert.equal(result.ok, true);
@@ -333,7 +341,7 @@ test('echo-cancel variant report passes with the reduced layer set when requeste
     layers: echoCancelLayers(),
   });
 
-  const result = findWatchModeEvidence({ root, strict: true, feedbackModes: ['echo-cancel'] });
+  const result = findWatchModeEvidence({ root, strict: true, feedbackModes: ['echo-cancel'], ...provenanceOk });
 
   assert.equal(result.ok, true);
   assert.equal(result.latest.feedbackMode, 'echo-cancel');
@@ -385,6 +393,7 @@ test('strict feedback-mode matrix requires every model and feedback mode combina
       'qwen3.5-livetranslate-flash-realtime',
     ],
     feedbackModes: ['virtual-driver', 'echo-cancel'],
+    ...provenanceOk,
   });
 
   assert.equal(result.ok, false);
@@ -392,4 +401,79 @@ test('strict feedback-mode matrix requires every model and feedback mode combina
   assert.equal(result.modelResults.filter((item) => item.ok).length, 2);
   assert.match(result.reason, /qwen3\.5-livetranslate-flash-realtime\[virtual-driver\]/);
   assert.match(result.reason, /qwen3\.5-livetranslate-flash-realtime\[echo-cancel\]/);
+});
+
+test('strict mode rejects evidence older than the age budget', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260401-191332', {
+    generatedAt: '2026-04-01T11:13:32.000Z',
+    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
+      layer,
+      { status: 'passed', reason: null, data: layer === 'strictContent' ? { applicable: true, passed: true } : undefined },
+    ])),
+  });
+
+  const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /evidence is stale/);
+  assert.deepEqual(result.failedLayers, ['provenance']);
+});
+
+test('strict mode rejects evidence without a producing commit', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260605-191332', {
+    commit: null,
+    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
+      layer,
+      { status: 'passed', reason: null, data: layer === 'strictContent' ? { applicable: true, passed: true } : undefined },
+    ])),
+  });
+
+  const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /requires report\.commit/);
+});
+
+test('strict mode rejects evidence whose commit is not an ancestor of HEAD', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260605-191332', {
+    commit: 'orphaned-rewrite-commit',
+    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
+      layer,
+      { status: 'passed', reason: null, data: layer === 'strictContent' ? { applicable: true, passed: true } : undefined },
+    ])),
+  });
+
+  const result = findWatchModeEvidence({
+    root,
+    strict: true,
+    now: FIXTURE_NOW,
+    isAncestorOfHead: (commit) => commit !== 'orphaned-rewrite-commit',
+  });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /not an ancestor of HEAD/);
+});
+
+test('non-strict mode does not apply the provenance gate', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260401-191332', { generatedAt: '2026-04-01T11:13:32.000Z', commit: null });
+
+  const result = findWatchModeEvidence({ root, now: FIXTURE_NOW });
+
+  assert.equal(result.ok, true);
+});
+
+test('strictProvenanceFailure honors a custom age budget', () => {
+  const report = { generatedAt: '2026-06-01T00:00:00.000Z', commit: 'abc' };
+  assert.equal(
+    strictProvenanceFailure(report, { now: FIXTURE_NOW, maxAgeDays: 30, isAncestorOfHead: () => true }),
+    null,
+  );
+  assert.match(
+    strictProvenanceFailure(report, { now: FIXTURE_NOW, maxAgeDays: 3, isAncestorOfHead: () => true }) ?? '',
+    /stale/,
+  );
 });

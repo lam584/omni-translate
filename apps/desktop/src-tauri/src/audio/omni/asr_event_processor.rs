@@ -29,9 +29,9 @@ pub(super) struct OmniAsrEventProcessor;
 
 impl OmniAsrEventProcessor {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn process(
+    pub(super) fn process<R: tauri::Runtime>(
         state: OmniAsrEventState,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         evt: &Value,
         event_type: &str,

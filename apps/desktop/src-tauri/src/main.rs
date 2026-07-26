@@ -5,6 +5,8 @@ mod bridge;
 mod common;
 #[cfg(test)]
 mod contract_export;
+#[cfg(test)]
+mod ipc_boundary_tests;
 mod diagnostics;
 mod provider;
 mod runtime;
@@ -499,9 +501,11 @@ fn maybe_start_watch_mode_diagnostic(app: &tauri::App) {
     }
 }
 
+// Runtime-generic so the real command (not a stand-in) can be registered on
+// tauri::test::MockRuntime and driven across the actual IPC boundary in tests.
 #[tauri::command]
-async fn debug_ipc_ping(
-    app: AppHandle,
+async fn debug_ipc_ping<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: tauri::State<'_, StorageStateStore>,
 ) -> Result<String, String> {
     IPC_PING_RECEIVED.store(true, Ordering::Release);

@@ -1,8 +1,8 @@
 use super::*;
 
-pub(super) struct OmniSocketEventState {
-    pub(super) socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
-    pub(super) trace_call: crate::diagnostics::model_trace::ModelTraceCall,
+pub(super) struct OmniSocketEventState<S: RealtimeSocket, R: tauri::Runtime = tauri::Wry> {
+    pub(super) socket: S,
+    pub(super) trace_call: crate::diagnostics::model_trace::ModelTraceCall<R>,
     pub(super) reconnect_count: usize,
     pub(super) pending_audio_buffer: Vec<i16>,
     pub(super) active_voice: String,
@@ -24,8 +24,8 @@ pub(super) struct OmniSocketEventState {
     pub(super) manual_response_item_id: Option<String>,
 }
 
-pub(super) struct OmniSocketEventContext<'a> {
-    pub(super) app: &'a AppHandle,
+pub(super) struct OmniSocketEventContext<'a, R: tauri::Runtime = tauri::Wry> {
+    pub(super) app: &'a AppHandle<R>,
     pub(super) store: &'a AudioStateStore,
     pub(super) direction: &'a str,
     pub(super) session_generation: u64,
@@ -50,8 +50,8 @@ pub(super) struct OmniSocketEventContext<'a> {
     pub(super) echo_guard_enabled: bool,
 }
 
-pub(super) struct OmniSocketPollResult {
-    pub(super) state: OmniSocketEventState,
+pub(super) struct OmniSocketPollResult<S: RealtimeSocket, R: tauri::Runtime = tauri::Wry> {
+    pub(super) state: OmniSocketEventState<S, R>,
     pub(super) skip_tick: bool,
     /// The socket was replaced by a reconnect during this poll. The provider
     /// session and its input buffer are gone, so the worker must reset the
@@ -62,10 +62,11 @@ pub(super) struct OmniSocketPollResult {
 pub(super) struct OmniSocketEventProcessor;
 
 impl OmniSocketEventProcessor {
-    pub(super) fn poll(
-        state: OmniSocketEventState,
-        context: OmniSocketEventContext<'_>,
-    ) -> Result<OmniSocketPollResult, String> {
+    pub(super) fn poll<C: RealtimeSocketConnector, R: tauri::Runtime>(
+        state: OmniSocketEventState<C::Socket, R>,
+        context: OmniSocketEventContext<'_, R>,
+        connector: &C,
+    ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
         let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_item_id } = state;
         let OmniSocketEventContext {
             app, store, direction, session_generation, session_started_at,
@@ -77,7 +78,7 @@ impl OmniSocketEventProcessor {
             pre_session_audio_dropped, echo_guard_enabled,
         } = context;
 let mut socket_reconnected = false;
-match socket.read() {
+match socket.read_message() {
     Ok(msg) => match msg {
         Message::Text(text) => {
             if let Ok(evt) = serde_json::from_str::<Value>(&text) {
@@ -156,18 +157,40 @@ match socket.read() {
                             if !manual_response_pending
                                 || manual_response_item_id.as_deref() != completed_item_id
                             {
-                                let _ = diag_log(
-                                    app,
-                                    "omni",
-                                    "warning",
-                                    format!(
-                                        "event=manual_response_gate action=ignore_transcription reason=item_id_mismatch pending={} expectedItemId={} receivedItemId={}",
-                                        manual_response_pending,
-                                        manual_response_item_id.as_deref().unwrap_or("(none)"),
-                                        completed_item_id.unwrap_or("(none)"),
-                                    ),
-                                );
-                                return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
+                                if should_route_uncorrelated_completed_transcription(
+                                    evt["transcript"].as_str(),
+                                ) {
+                                    // The gate timed out (or reset), but this
+                                    // completed item still carries the tail of
+                                    // the user's turn. Fall through so the ASR
+                                    // processor completes the display cue; the
+                                    // mismatched gate below never arms
+                                    // response.create for it.
+                                    let _ = diag_log(
+                                        app,
+                                        "omni",
+                                        "info",
+                                        format!(
+                                            "event=manual_response_gate action=route_late_transcription reason=item_id_mismatch pending={} expectedItemId={} receivedItemId={}",
+                                            manual_response_pending,
+                                            manual_response_item_id.as_deref().unwrap_or("(none)"),
+                                            completed_item_id.unwrap_or("(none)"),
+                                        ),
+                                    );
+                                } else {
+                                    let _ = diag_log(
+                                        app,
+                                        "omni",
+                                        "warning",
+                                        format!(
+                                            "event=manual_response_gate action=ignore_transcription reason=item_id_mismatch pending={} expectedItemId={} receivedItemId={}",
+                                            manual_response_pending,
+                                            manual_response_item_id.as_deref().unwrap_or("(none)"),
+                                            completed_item_id.unwrap_or("(none)"),
+                                        ),
+                                    );
+                                    return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
+                                }
                             }
                         }
                         let output = OmniAsrEventProcessor::process(
@@ -244,7 +267,7 @@ match socket.read() {
                                             "response.create",
                                             create_msg.clone(),
                                         );
-                                        if let Err(error) = socket.send(Message::Text(
+                                        if let Err(error) = socket.send_message(Message::Text(
                                             create_msg.to_string().into(),
                                         )) {
                                             let _ = diag_log(
@@ -474,6 +497,7 @@ match socket.read() {
                                 voice_fallback_applied,
                                 socket_reconnected: false,
                             },
+                            connector,
                             &app,
                             store,
                             &provider,
@@ -515,6 +539,7 @@ match socket.read() {
                     voice_fallback_applied,
                     socket_reconnected: false,
                 },
+                connector,
                 &app,
                 store,
                 &provider,
@@ -543,6 +568,7 @@ match socket.read() {
                 voice_fallback_applied,
                 socket_reconnected: false,
             },
+            connector,
             &app,
             store,
             &provider,

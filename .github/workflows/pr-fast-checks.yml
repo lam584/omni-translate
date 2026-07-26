@@ -43,6 +43,12 @@ jobs:
       - name: Verify desktop (lint + check + test + build)
         run: npm run verify:desktop
 
+      # The frontend coverage thresholds previously lived only in local runs,
+      # so the gate could rot without anyone noticing. Same thresholds, now on
+      # every PR.
+      - name: Frontend coverage gate
+        run: npm run coverage:gate
+
       - name: Verify contracts
         run: npm run test:contracts
 

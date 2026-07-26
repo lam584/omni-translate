@@ -74,7 +74,10 @@ pub fn log_should_emit_runtime_snapshot(category: &str, level: &str) -> bool {
     !is_high_frequency_trace
 }
 
-pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> RuntimeSnapshot {
+pub fn build_runtime_snapshot<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    state: &RuntimeStateStore,
+) -> RuntimeSnapshot {
     let mut snapshot = state.snapshot_base();
     if let Some(bridge) = app.try_state::<BridgeStateStore>() {
         snapshot.bridge = bridge.snapshot();
@@ -101,7 +104,10 @@ pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> Run
     snapshot
 }
 
-pub fn emit_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> tauri::Result<()> {
+pub fn emit_runtime_snapshot<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    state: &RuntimeStateStore,
+) -> tauri::Result<()> {
     let snapshot = build_runtime_snapshot(app, state);
     app.emit(RUNTIME_SNAPSHOT_EVENT, snapshot.clone())?;
     let payload = to_value(&snapshot).unwrap_or_else(|error| {
@@ -111,8 +117,8 @@ pub fn emit_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> taur
     crate::api_v2::emit_runtime_event_v2(app, "snapshot", payload)
 }
 
-pub fn emit_runtime_notification(
-    app: &AppHandle,
+pub fn emit_runtime_notification<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     state: &RuntimeStateStore,
     notification: RuntimeNotification,
 ) -> tauri::Result<()> {

@@ -132,7 +132,10 @@ export const audioRuntimeSnapshotMock: AudioRuntimeSnapshot = {
     recentEvents: [
       {
         eventId: 'browser-preview-tts-requested',
-        kind: 'speech.tts-requested',
+        // Preview events must use the pinned native vocabulary
+        // (schema/speech-event-kinds.ts); `speech.tts-requested` never
+        // existed on the Rust side.
+        kind: 'speech.realtime-audio-requested',
         summary: '浏览器预览模式会显示播报事件流，但不会连接真实模型服务。',
         emittedAt: 'browser-preview',
         cueId: 'browser-preview-cue-1',

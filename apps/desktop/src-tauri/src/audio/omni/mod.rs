@@ -34,7 +34,17 @@ mod connection;
 mod connection_coordinator;
 mod event_processor;
 mod config;
+mod realtime_socket;
+pub(crate) use self::realtime_socket::{
+    RealtimeSocket, RealtimeSocketConnector, TungsteniteConnector,
+};
 pub(crate) mod session_errors;
+#[cfg(test)]
+mod acoustic_loop_tests;
+#[cfg(test)]
+mod local_ws_reconnect_tests;
+#[cfg(test)]
+mod replay_tests;
 mod session_worker;
 mod socket_event_processor;
 
@@ -54,7 +64,8 @@ use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
 use self::connection_coordinator::{
     classify_completed_manual_response, manual_turn_cue_to_discard,
-    recent_echo_input_is_dominated, ManualResponseDecision, OmniCommitState,
+    recent_echo_input_is_dominated, should_route_uncorrelated_completed_transcription,
+    ManualResponseDecision, OmniCommitState,
     OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
     MANUAL_COMMIT_INTERVAL_SECS, MANUAL_ECHO_ACTIVITY_WINDOW,
     MANUAL_RESPONSE_TIMEOUT_SECS,
@@ -93,7 +104,7 @@ struct ProviderInputPcmDump {
 }
 
 impl ProviderInputPcmDump {
-    fn from_env(app: &AppHandle) -> Option<Self> {
+    fn from_env<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<Self> {
         let path = std::env::var("OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH")
             .ok()
             .map(|value| value.trim().to_string())
@@ -133,7 +144,7 @@ impl ProviderInputPcmDump {
         }
     }
 
-    fn append(&mut self, app: &AppHandle, samples: &[i16]) {
+    fn append<R: tauri::Runtime>(&mut self, app: &AppHandle<R>, samples: &[i16]) {
         if self.write_failed || samples.is_empty() || self.samples_written >= self.max_samples {
             return;
         }

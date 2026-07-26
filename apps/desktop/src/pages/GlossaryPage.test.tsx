@@ -1,8 +1,8 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { useAppStore } from '../stores/app-store';
+import { mountTestRoot, type TestRootHandle } from '../test-utils';
 import { writeProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
 import GlossaryPage from './GlossaryPage';
 
@@ -40,11 +40,10 @@ function clickBySelector<T extends HTMLElement = HTMLElement>(container: HTMLEle
 }
 
 describe('GlossaryPage compact labels', () => {
+  let view: TestRootHandle;
   let container: HTMLDivElement;
-  let root: Root;
 
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     window.localStorage.clear();
 
     const configDraft = structuredClone(appConfigDraftMock);
@@ -55,24 +54,18 @@ describe('GlossaryPage compact labels', () => {
       configDraft,
     }));
 
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    view = mountTestRoot();
+    ({ container } = view);
   });
 
   afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await view.cleanup();
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
   });
 
   it('renders localized section titles without redundant English kickers', async () => {
-    await act(async () => {
-      root.render(<GlossaryPage />);
-    });
+    await view.render(<GlossaryPage />);
 
     expect(container.querySelector('.routing-kicker')).toBeNull();
     expect(container.textContent).not.toContain('Libraries');
@@ -81,9 +74,7 @@ describe('GlossaryPage compact labels', () => {
   });
 
   it('labels post-calibration mode as no term injection', async () => {
-    await act(async () => {
-      root.render(<GlossaryPage />);
-    });
+    await view.render(<GlossaryPage />);
 
     expect(container.textContent).toContain('不注入术语');
     expect(container.textContent).toContain('翻译后按术语库校准，不向 prompt 注入术语。');
@@ -91,7 +82,7 @@ describe('GlossaryPage compact labels', () => {
   });
 
   it('guides an empty workspace through validation and keyboard library creation', async () => {
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
     await click(buttonByText(container, '添加术语'));
     expect(container.textContent).toContain('请先新建术语库');
     await click(buttonByText(container, '立即新建术语库'));
@@ -140,7 +131,7 @@ describe('GlossaryPage compact labels', () => {
     });
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
 
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
     expect(container.textContent).toContain('Watch Terms');
     expect(container.textContent).toContain('GG');
     expect(container.textContent).toContain('强制');
@@ -183,7 +174,7 @@ describe('GlossaryPage compact labels', () => {
   });
 
   it('updates reminder and calibration choices after external config and provider-catalog changes', async () => {
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
     await click(buttonByText(container, '添加术语'));
     expect(container.querySelector('.glossary-warning')).not.toBeNull();
 
@@ -213,7 +204,7 @@ describe('GlossaryPage compact labels', () => {
       id, name: id, enabled: true, priority, entries: [],
     }));
     useAppStore.setState((state) => ({ ...state, configDraft }));
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
     const remove = (id: string) => Array.from(container.querySelectorAll<HTMLElement>('.glossary-library-item'))
       .find((item) => item.textContent?.includes(id))?.querySelector<HTMLButtonElement>('.glossary-mini-button-danger');
 
@@ -244,7 +235,7 @@ describe('GlossaryPage compact labels', () => {
       }
     }
     vi.stubGlobal('FileReader', MockFileReader);
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     const clickSpy = vi.spyOn(input, 'click');
     await click(buttonByText(container, '导入文件'));
@@ -301,7 +292,7 @@ describe('GlossaryPage compact labels', () => {
       revokeObjectURL: vi.fn(),
     });
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
 
     await click(buttonByText(container, '下一步'));
     expect(container.textContent).toContain('Term 13');
@@ -398,7 +389,7 @@ describe('GlossaryPage compact labels', () => {
     ];
     useAppStore.setState((state) => ({ ...state, configDraft }));
 
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
 
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     Object.defineProperty(input, 'files', { configurable: true, value: [new File(['test'], 'invalid.json', { type: 'application/json' })] });
@@ -442,7 +433,7 @@ describe('GlossaryPage compact labels', () => {
     ];
     useAppStore.setState((state) => ({ ...state, configDraft }));
 
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
 
     await click(container.querySelector<HTMLButtonElement>('.glossary-table-panel .routing-primary-action'));
     expect(container.querySelector('.glossary-modal')).toBeTruthy();
@@ -457,7 +448,7 @@ describe('GlossaryPage compact labels', () => {
 
     await click(container.querySelector<HTMLButtonElement>('.glossary-table-panel .routing-primary-action'));
     await act(async () => {
-      container.querySelector<HTMLElement>('.glossary-modal-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector<HTMLElement>('.modal-backdrop--glossary')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container.querySelector('.glossary-modal')).toBeNull();
 
@@ -472,7 +463,7 @@ describe('GlossaryPage compact labels', () => {
 
     await click(container.querySelector<HTMLButtonElement>('.routing-hero-actions .routing-primary-action'));
     await act(async () => {
-      container.querySelector<HTMLElement>('.glossary-modal-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector<HTMLElement>('.modal-backdrop--glossary')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container.querySelector('.glossary-library-dialog')).toBeNull();
   });
@@ -515,7 +506,7 @@ describe('GlossaryPage compact labels', () => {
     };
     useAppStore.setState((state) => ({ ...state, configDraft }));
 
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
 
     const calibrationSelect = clickBySelector<HTMLSelectElement>(container, '.glossary-calibration-row select');
     expect(Array.from(calibrationSelect.options).map((option) => option.value)).toEqual(['', 'subtitle-main', 'subtitle-backup']);
@@ -529,7 +520,7 @@ describe('GlossaryPage compact labels', () => {
   });
 
   it('keeps shared routing classes available after CSS cleanup', async () => {
-    await act(async () => root.render(<GlossaryPage />));
+    await view.render(<GlossaryPage />);
 
     expect(container.querySelector('.routing-hero-actions')).toBeTruthy();
     expect(container.querySelector('.routing-primary-action')).toBeTruthy();

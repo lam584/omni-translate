@@ -1,4 +1,5 @@
 import AppIcon from '../../components/icons/AppIcon';
+import ModalDialog from '../../components/ModalDialog';
 import StatusBadge from '../../components/page/StatusBadge';
 import { useTranslation } from 'react-i18next';
 import type { ProviderScenario } from '../../schema/config';
@@ -106,8 +107,7 @@ export default function ProviderModelCatalog({
   const { t } = useTranslation();
 
   return (
-    <div className="provider-modal-backdrop" onClick={onClose} role="presentation">
-      <div aria-label={t('providers.modelCatalog.title')} aria-modal="true" className="provider-modal provider-model-modal content-card page-card compact-card" onClick={(event) => event.stopPropagation()} role="dialog">
+    <ModalDialog aria-label={t('providers.modelCatalog.title')} className="provider-modal provider-model-modal content-card page-card compact-card" onClose={onClose} variant="provider">
         <div className="provider-panel-heading provider-panel-heading-compact">
           <div>
             <h3>{t('providers.modelCatalog.title')}</h3>
@@ -225,7 +225,6 @@ export default function ProviderModelCatalog({
             {t('providers.modelCatalog.manualAdd')}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 }

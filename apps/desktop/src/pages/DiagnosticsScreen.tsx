@@ -1,6 +1,7 @@
 ﻿import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import AppIcon from '../components/icons/AppIcon';
+import ModalDialog from '../components/ModalDialog';
 import StatusBadge from '../components/page/StatusBadge';
 import type { StatusTone } from '../components/page/StatusBadge';
 import i18n from '../i18n/config';
@@ -531,8 +532,7 @@ function DiagnosticsPage() {
       </section>
 
       {benchmarkModalOpen && benchmarkReport ? (
-        <div className="benchmark-modal-backdrop" onClick={() => setBenchmarkModalOpen(false)}>
-          <div className="benchmark-modal" onClick={(event) => event.stopPropagation()}>
+        <ModalDialog aria-label={i18n.t('diagnostics.benchmark.results')} className="benchmark-modal" onClose={() => setBenchmarkModalOpen(false)} variant="benchmark">
             <div className="benchmark-modal-head">
               <div>
                 <span className="diagnostics-kicker">{i18n.t('diagnostics.benchmark.results')}</span>
@@ -556,13 +556,11 @@ function DiagnosticsPage() {
             </div>
             <BenchmarkProgressBanner error={benchmarkError} progress={benchmarkProgress} />
             <BenchmarkReportDetail report={benchmarkReport} />
-          </div>
-        </div>
+        </ModalDialog>
       ) : null}
 
       {liveEventsModalOpen ? (
-        <div className="benchmark-modal-backdrop" onClick={closeLiveEventsModal}>
-          <div className="benchmark-modal" onClick={(event) => event.stopPropagation()}>
+        <ModalDialog aria-label={i18n.t('diagnostics.liveEvents.title')} className="benchmark-modal" onClose={closeLiveEventsModal} variant="benchmark">
             <div className="benchmark-modal-head">
               <div>
                 <span className="diagnostics-kicker">{i18n.t('diagnostics.liveEvents.title')}</span>
@@ -593,8 +591,7 @@ function DiagnosticsPage() {
               </div>
             </div>
             <LiveSessionEventDetail events={liveEvents} loading={liveEventsLoading} />
-          </div>
-        </div>
+        </ModalDialog>
       ) : null}
     </div>
   );

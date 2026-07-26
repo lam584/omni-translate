@@ -1,10 +1,10 @@
 ﻿import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { useAppStore } from '../stores/app-store';
+import { mountTestRoot, type TestRootHandle } from '../test-utils';
 import type { ProviderCapability } from '../schema/provider-contract';
 import AudioRoutingPage, { audioRoutingPageHelpers } from './AudioRoutingPage';
 
@@ -30,11 +30,7 @@ vi.mock('../utils/provider-template-catalog', async () => {
   };
 });
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (_key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? _key,
-  }),
-}));
+vi.mock('react-i18next', async () => (await import('../test-utils/i18n-stub')).reactI18nextStub({ passthroughDefault: true }));
 
 function inputText(input: Element | null) {
   if (!(input instanceof HTMLInputElement)) {
@@ -101,11 +97,18 @@ async function chooseScenarioModel(container: HTMLElement, title: string, modelT
 }
 
 describe('AudioRoutingPage', () => {
+  let view: TestRootHandle;
   let container: HTMLDivElement;
-  let root: Root;
+
+  async function renderPage() {
+    await view.render(
+      <MemoryRouter>
+        <AudioRoutingPage />
+      </MemoryRouter>,
+    );
+  }
 
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     providerCatalogPreferencesMock.value = [];
     const configDraft = structuredClone(appConfigDraftMock);
     configDraft.providers[0].templateId = 'template-openai-compatible-realtime';
@@ -220,26 +223,16 @@ describe('AudioRoutingPage', () => {
       configDraft,
     }));
 
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    view = mountTestRoot();
+    ({ container } = view);
   });
 
   afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await view.cleanup();
   });
 
   it('renders two top panels, two model panels, and five scenario cards', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const headings = Array.from(container.querySelectorAll('h3')).map((h) => h.textContent);
     expect(headings).toEqual(expect.arrayContaining(['采集', '输出', '听译模型', '回复模型']));
@@ -254,13 +247,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('shows inbound original and translated volume with physical-loopback restrictions', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const originalVolume = rangeInputByLabel(container, '原声音量');
     const translatedVolume = rangeInputByLabel(container, 'LLM 译声音量');
@@ -284,13 +271,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const originalVolume = rangeInputByLabel(container, '原声音量');
     expect(originalVolume.disabled).toBe(false);
@@ -307,13 +288,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('filters the subtitle translation scenario to non-voice models only', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const options = await scenarioOptionTexts(container, '字幕翻译');
     const joined = options.join(' ');
@@ -337,13 +312,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     expect(subtitleCard.classList.contains('scenario-card-muted')).toBe(true);
@@ -351,13 +320,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('writes independent selections to inbound, outbound, secondary, subtitle, and tts fields', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await chooseScenarioModel(container, '听对方', 'STT Model');
     await chooseScenarioModel(container, '说给对方', 'S2S Model');
@@ -375,13 +338,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('writes input processing toggles into the outbound route contract', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       clickCheckbox(container, '回声消除');
@@ -401,13 +358,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('writes the TTS card toggle into speech preferences', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       clickCheckbox(container, '独立 TTS');
@@ -420,13 +371,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('toggles the subtitle translation card switch', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const secondaryToggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
@@ -447,13 +392,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('derives secondary translation mode from the two secondary card switches', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const subtitleToggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
@@ -497,13 +436,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const selector = subtitleCard.querySelector<HTMLButtonElement>('button.scenario-card-selector');
@@ -511,13 +444,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('places the virtual microphone output toggle inside the replying model card', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const virtualMicToggle = Array.from(container.querySelectorAll('label')).find((item) =>
       item.textContent?.includes('将翻译语音发送到虚拟麦克风'),
@@ -530,13 +457,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('places the secondary audio toggle inside the secondary audio card', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const speechToggle = Array.from(container.querySelectorAll('label')).find((item) =>
       item.textContent?.includes('用二次字幕生成译音'),
@@ -564,13 +485,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const outboundCard = scenarioCardByTitle(container, '说给对方');
     const ttsCard = scenarioCardByTitle(container, '打字 TTS');
@@ -587,13 +502,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('places the subtitle translation model inside the inbound model panel', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const owningSection = subtitleCard.closest('.routing-models-inbound-panel');
@@ -601,13 +510,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('toggles the secondary audio switch from the scenario card', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const secondaryGroup = container.querySelector('.routing-secondary-group');
     const cardToggle = inputText(scenarioCardByTitle(container, '听对方 · 二次语音识别').querySelector('input[type="checkbox"]'));
@@ -635,13 +538,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('places the subtitle translation card enable toggle inside the listening model panel', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const subtitleToggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
@@ -651,13 +548,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('places feedback loop prevention options in the output panel', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const outputPanel = container.querySelector('.routing-output-panel');
     const radioGroup = outputPanel?.querySelector('.routing-feedback-options');
@@ -682,13 +573,7 @@ describe('AudioRoutingPage', () => {
       { templateId: 'template-dashscope-realtime', enabled: false, order: 1 },
     ];
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).not.toContain('Qwen3.6 Flash');
     expect(container.textContent).not.toContain('Qwen Omni');
@@ -700,26 +585,14 @@ describe('AudioRoutingPage', () => {
       { templateId: 'template-dashscope-realtime', enabled: true, hidden: true, order: 1 },
     ];
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect((await scenarioOptionTexts(container, '字幕翻译')).join(' ')).not.toContain('Qwen3.6 Flash');
     expect(container.textContent).not.toContain('Qwen Omni');
   });
 
   it('refreshes routing model lists when a provider template is disabled in the same window', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(scenarioCardByTitle(container, '听对方').textContent).toContain('Qwen Omni');
 
@@ -755,13 +628,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const outputSelect = Array.from(container.querySelectorAll<HTMLSelectElement>('select.select-input'))
       .find((select) => Array.from(select.options).some((option) => option.textContent?.includes('扬声器')));
@@ -775,13 +642,7 @@ describe('AudioRoutingPage', () => {
 
   it('updates devices, levels, virtual microphone output and subtitle mode controls', async () => {
     vi.useFakeTimers();
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const deviceSelects = container.querySelectorAll<HTMLSelectElement>('select.select-input');
     const levels = container.querySelectorAll<HTMLInputElement>('input[type="range"]');
@@ -838,13 +699,7 @@ describe('AudioRoutingPage', () => {
         },
       },
     }));
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('当前模型不支持 Omni 直接译音');
 
@@ -858,13 +713,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('shows microphone and speaker test buttons with audio level meters', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const buttons = Array.from(container.querySelectorAll('button')).map((button) => button.textContent ?? '');
     expect(buttons).toEqual(expect.arrayContaining([expect.stringContaining('测试麦克风'), expect.stringContaining('测试扬声器')]));
@@ -880,7 +729,7 @@ describe('AudioRoutingPage', () => {
         speech: { ...state.configDraft.speech, virtualMicOutputEnabled: false },
       },
     }));
-    await act(async () => root.render(<MemoryRouter><AudioRoutingPage /></MemoryRouter>));
+    await renderPage();
     expect(Array.from(container.querySelectorAll('option')).some((option) => option.value === 'missing-input')).toBe(true);
 
     useAppStore.setState((state) => ({ ...state, configDraft: {
@@ -921,7 +770,7 @@ describe('AudioRoutingPage', () => {
     };
     vi.stubGlobal('AudioContext', vi.fn(function AudioContextMock() { return audioContext; }));
     vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(901);
-    await act(async () => root.render(<MemoryRouter><AudioRoutingPage /></MemoryRouter>));
+    await renderPage();
     const testButtons = container.querySelectorAll<HTMLButtonElement>('.routing-test-row button');
     await act(async () => {
       testButtons[0]!.click();
@@ -950,7 +799,7 @@ describe('AudioRoutingPage', () => {
         })),
       },
     }));
-    await act(async () => root.render(<MemoryRouter><AudioRoutingPage /></MemoryRouter>));
+    await renderPage();
     const texts = await scenarioOptionTexts(container, '字幕翻译');
     expect(texts.join(' ')).toContain('Alpha');
   });
@@ -968,25 +817,13 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.querySelector('.routing-capture-panel .audio-level-meter')?.classList.contains('audio-level-meter-active')).toBe(true);
   });
 
   it('saves model selections immediately without showing an auto-save indicator', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.querySelector('.routing-saved-indicator')).toBeNull();
     expect(container.textContent).not.toContain('已自动保存');
@@ -998,13 +835,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('renders embedded chain flow segments with model and device labels', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const outboundFlow = container.querySelector('.chain-flow-outbound');
     const inboundFlow = container.querySelector('.chain-flow-inbound');
@@ -1016,13 +847,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('exposes scenario toggles as ARIA switches with aria-checked', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const switches = Array.from(container.querySelectorAll('input[role="switch"]'));
     expect(switches.length).toBeGreaterThan(0);
@@ -1032,13 +857,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('supports keyboard navigation inside scenario listboxes', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const cards = Array.from(container.querySelectorAll('.scenario-card'));
     const firstCard = cards[0] as HTMLElement;
@@ -1067,13 +886,7 @@ describe('AudioRoutingPage', () => {
   });
 
   it('handles scenario selector keyboard open, close and boundary navigation', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const card = scenarioCardByTitle(container, '说给对方');
     const selector = card.querySelector<HTMLButtonElement>('button.scenario-card-selector')!;
@@ -1143,7 +956,7 @@ describe('AudioRoutingPage', () => {
     expect(tWithDefault((_key, options) => options?.defaultValue ?? '', 'audioRouting.unknownKey')).toBe('audioRouting.unknownKey');
 
     await act(async () => {
-      root.render(
+      view.root.render(
         <MemoryRouter>
           <ChainFlow
             direction="inbound"
@@ -1232,13 +1045,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const aecToggle = inputText(container.querySelector('.routing-toggle-stack input[type="checkbox"]'));
     await act(async () => {
@@ -1297,13 +1104,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const card = await openScenarioSelect(container, '字幕翻译');
     const optionTexts = Array.from(card.querySelectorAll('.scenario-card-option')).map((option) => option.textContent ?? '');
@@ -1330,13 +1131,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const card = scenarioCardByTitle(container, '听对方');
     await act(async () => {
@@ -1363,13 +1158,7 @@ describe('AudioRoutingPage', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <AudioRoutingPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const outputPanel = container.querySelector('.routing-output-panel')!;
     const radios = Array.from(outputPanel.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'));

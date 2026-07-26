@@ -1,5 +1,4 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
@@ -7,6 +6,7 @@ import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import DiagnosticsPage, { runRecommendedBridgeAction } from './DiagnosticsPage';
 import { useAppStore } from '../stores/app-store';
+import { mountTestRoot, type TestRootHandle } from '../test-utils';
 import type { BenchmarkReport } from '../runtime/benchmark-runtime';
 import { DiagnosticsReportExporter } from './diagnostics/DiagnosticsDetails';
 
@@ -146,11 +146,29 @@ function benchmarkReport(text: string): BenchmarkReport {
 }
 
 describe('DiagnosticsPage monitoring boundary', () => {
+  let view: TestRootHandle;
   let container: HTMLDivElement;
-  let root: Root;
+
+  async function renderPage() {
+    await view.render(
+      <MemoryRouter>
+        <DiagnosticsPage />
+      </MemoryRouter>,
+    );
+  }
+
+  async function renderPageAndFlush() {
+    await act(async () => {
+      view.root.render(
+        <MemoryRouter>
+          <DiagnosticsPage />
+        </MemoryRouter>,
+      );
+      await Promise.resolve();
+    });
+  }
 
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     tauriRuntimeMock.isRuntime = false;
     tauriRuntimeMock.invoke.mockReset();
     tauriRuntimeMock.invoke.mockImplementation(async (command: string) => {
@@ -227,26 +245,16 @@ describe('DiagnosticsPage monitoring boundary', () => {
       runtimeNotifications: runtimeSnapshot.notifications,
     }));
 
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    view = mountTestRoot();
+    ({ container } = view);
   });
 
   afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await view.cleanup();
   });
 
   it('treats idle bridge and capture as neutral monitoring state', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const autoRepairButton = findButtonByText(container, '自动修复已选项');
     expect(autoRepairButton).toBeUndefined();
@@ -288,13 +296,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     runSubtitleOverlaySelfCheckRuntimeMock.mockResolvedValue(snapshot);
     exportDiagnosticsBundleRuntimeMock.mockResolvedValue({ snapshot });
     refreshBridgeRuntimeMock.mockResolvedValue(snapshot);
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     for (const label of ['重新诊断', '测试字幕浮窗', '导出诊断包', '刷新运行态']) {
       await act(async () => {
@@ -322,14 +324,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       },
     }));
     repairDriverRuntimeMock.mockRejectedValue(new Error('repair failed'));
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-      await Promise.resolve();
-    });
+    await renderPageAndFlush();
     await act(async () => {
       findButtonByText(container, '自动修复已选项')?.click();
       await Promise.resolve();
@@ -355,13 +350,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       return finalReport;
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       findButtonByText(container, '开始基准测试')?.click();
@@ -393,13 +382,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       throw new Error('network failed');
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       findButtonByText(container, '开始基准测试')?.click();
@@ -432,13 +415,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     runModelBenchmarkMock.mockResolvedValue(report);
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       findButtonByText(container, '开始基准测试')?.click();
@@ -486,13 +463,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     report.summary.avgOutputDeltasPerRun = run.outputDeltas.length;
     runModelBenchmarkMock.mockResolvedValue(report);
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
@@ -519,13 +490,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       },
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.querySelector<HTMLSelectElement>('.diagnostics-benchmark-select')?.disabled).toBe(true);
     expect(container.textContent).toContain('未配置语音模型');
@@ -542,14 +507,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
         providers: [provider],
       },
     });
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-      await Promise.resolve();
-    });
+    await renderPageAndFlush();
 
     await changeValue(container.querySelector<HTMLInputElement>('.diagnostics-benchmark-input')!, '   ');
     await act(async () => {
@@ -578,14 +536,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     });
     readProviderSecretMock.mockResolvedValueOnce({ secret: '' });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-      await Promise.resolve();
-    });
+    await renderPageAndFlush();
 
     const select = container.querySelector<HTMLSelectElement>('.diagnostics-benchmark-select')!;
     expect(select.options.length).toBe(2);
@@ -605,13 +556,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
   it('closes benchmark result modal from the close button and backdrop', async () => {
     runModelBenchmarkMock.mockResolvedValue(benchmarkReport('modal result'));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
       await Promise.resolve();
@@ -629,7 +574,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     });
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     await act(async () => {
-      container.querySelector<HTMLElement>('.benchmark-modal-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector<HTMLElement>('.modal-backdrop--benchmark')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container.querySelector('.benchmark-modal')).toBeNull();
   });
@@ -648,14 +593,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-      await Promise.resolve();
-    });
+    await renderPageAndFlush();
 
     const repairInputs = Array.from(container.querySelectorAll<HTMLInputElement>('.repair-task-list input[type="checkbox"]'));
     expect(repairInputs.length).toBeGreaterThan(1);
@@ -692,14 +630,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     });
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-      await Promise.resolve();
-    });
+    await renderPageAndFlush();
 
     await act(async () => {
       findButtonByText(container, '自动修复已选项')?.click();
@@ -726,14 +657,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     }];
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-      await Promise.resolve();
-    });
+    await renderPageAndFlush();
 
     expect(container.querySelector('.diagnostics-primary-issue')?.textContent).toContain(
       "Rust Core 启动桥接失败：invoke 'debug_ipc_ping' 超时（750ms）",
@@ -742,13 +666,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
   });
 
   it('hides live events button when no session is active', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(findButtonByText(container, '查看实时事件')).toBeUndefined();
   });
@@ -760,13 +678,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.outbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(findButtonByText(container, '查看实时事件')).toBeDefined();
   });
@@ -793,13 +705,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       translationFinal: 'Hello world',
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const liveButton = findButtonByText(container, '查看实时事件');
     expect(liveButton).toBeDefined();
@@ -825,13 +731,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.inbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       findButtonByText(container, '查看实时事件')!.click();
@@ -857,7 +757,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     });
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     await act(async () => {
-      container.querySelector<HTMLElement>('.benchmark-modal-backdrop')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      container.querySelector<HTMLElement>('.modal-backdrop--benchmark')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(container.querySelector('.benchmark-modal')).toBeNull();
   });
@@ -878,13 +778,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       translationFinal: '',
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       findButtonByText(container, '查看实时事件')!.click();
@@ -912,13 +806,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       translationFinal: '',
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <DiagnosticsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       findButtonByText(container, '查看实时事件')!.click();
@@ -958,7 +846,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
   it('runs the empty-state self-check action', async () => {
     runDiagnosticsSelfCheckRuntimeMock.mockResolvedValue(structuredClone(useAppStore.getState().runtimeSnapshot));
-    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+    await renderPage();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.diagnostics-empty-actions .icon-button')?.click();
@@ -981,10 +869,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
         devices: { ...state.configDraft.devices, routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' },
       },
     }));
-    await act(async () => {
-      root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>);
-      await Promise.resolve();
-    });
+    await renderPageAndFlush();
     const inputs = Array.from(container.querySelectorAll<HTMLInputElement>('.repair-task-list input'));
 
     await act(async () => inputs[0]?.click());
@@ -1013,10 +898,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
         devices: { ...state.configDraft.devices, routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' },
       },
     }));
-    await act(async () => {
-      root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>);
-      await Promise.resolve();
-    });
+    await renderPageAndFlush();
 
     await act(async () => {
       await Promise.resolve();
@@ -1044,7 +926,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
       sessionStartedAt: 'unix-ms:5000', elapsedMs: 1000, model: 'live-model',
       asrDeltas: [], outputDeltas: [], asrFinal: '', translationFinal: '',
     });
-    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+    await renderPage();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
@@ -1083,7 +965,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: runtime, audioRuntimeSnapshot: audio }));
     getLiveSessionEventsRuntimeMock.mockImplementation(() => new Promise(() => undefined));
 
-    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+    await renderPage();
     expect(Array.from(container.querySelectorAll('.compact-alert-item')).some((item) =>
       item.tagName === 'DIV' && item.textContent?.includes('local warning'))).toBe(true);
 
@@ -1114,7 +996,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.speech.dispatchState = 'playing';
     useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot: runtime, audioRuntimeSnapshot: audio }));
 
-    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+    await renderPage();
     expect(container.textContent).toContain('draft warning');
     expect(container.querySelector('.diagnostics-live-events-button')).not.toBeNull();
   });
@@ -1130,7 +1012,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.inbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
     getLiveSessionEventsRuntimeMock.mockResolvedValue({ sessionStartedAt: 'unix-ms:5000', elapsedMs: 0, model: '', asrDeltas: [], outputDeltas: [], asrFinal: '', translationFinal: '' });
-    await act(async () => root.render(<MemoryRouter><DiagnosticsPage /></MemoryRouter>));
+    await renderPage();
     await act(async () => {
       container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
       await Promise.resolve(); await Promise.resolve();

@@ -1,6 +1,7 @@
 import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../../components/icons/AppIcon';
+import ModalDialog from '../../components/ModalDialog';
 import type { GlossaryEntryStrategy, GlossaryPackageEntry } from '../../schema/glossary-package';
 
 type EntryState = {
@@ -32,8 +33,7 @@ const languages = ['auto', 'zh-CN', 'en-US', 'ja-JP', 'ko-KR'] as const;
 export default function GlossaryEntryDialog(props: Props) {
   const { t } = useTranslation();
   const patch = (next: Partial<EntryState>) => props.setState((current) => ({ ...current, ...next }));
-  return <div className="glossary-modal-backdrop" onClick={props.onClose}>
-    <div className="glossary-modal" onClick={(event) => event.stopPropagation()}>
+  return <ModalDialog aria-label={props.state.id ? t('glossary.dialog.editEntryTitle') : t('glossary.dialog.addEntryTitle')} className="glossary-modal" onClose={props.onClose} variant="glossary">
       <div className="glossary-panel-head"><div><h3>{props.state.id ? t('glossary.dialog.editEntryTitle') : t('glossary.dialog.addEntryTitle')}</h3></div><button className="icon-button" onClick={props.onClose} type="button"><AppIcon name="close" size={16} /></button></div>
       <div className="glossary-dialog-grid">
         <label className="field-stack"><span>{t('glossary.dialog.sourceLanguage')}</span><select className="select-input" onChange={(event) => patch({ sourceLang: event.target.value })} value={props.state.sourceLang}>{languages.map((language) => <option key={language} value={language}>{language}</option>)}</select></label>
@@ -45,6 +45,5 @@ export default function GlossaryEntryDialog(props: Props) {
         {props.conflicts.length ? <div className="glossary-conflict-box field-span-full"><strong>{t('glossary.dialog.conflictCount', { count: props.conflicts.length })}</strong><div className="glossary-preview-result">{props.conflicts.map((entry) => <span className="chip" key={entry.id}>{entry.sourceTerm} → {entry.targetTerm}</span>)}</div><div className="glossary-segmented">{(['overwrite', 'skip', 'keep-all'] as const).map((resolution) => <button className={props.conflictResolution === resolution ? 'glossary-segment glossary-segment-active' : 'glossary-segment'} key={resolution} onClick={() => props.setConflictResolution(resolution)} type="button">{t(`glossary.conflictResolution.${resolution}`)}</button>)}</div></div> : null}
       </div>
       <div className="routing-action-row"><button className="icon-button routing-primary-action" onClick={props.onSave} type="button">{t('common.save')}</button><button className="icon-button" onClick={props.onClose} type="button">{t('common.cancel')}</button></div>
-    </div>
-  </div>;
+  </ModalDialog>;
 }

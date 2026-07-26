@@ -1,5 +1,4 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
@@ -7,6 +6,7 @@ import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import SubtitleOverlayPage from './SubtitleOverlayPage';
 import SubtitleOverlayContent from './overlay/SubtitleOverlayContent';
 import { useAppStore } from '../stores/app-store';
+import { cloneStoreState as cloneBaseStoreState, mountTestRoot, type TestRootHandle } from '../test-utils';
 
 const tauriMocks = vi.hoisted(() => {
   let pointerPosition = { x: 0, y: 0 };
@@ -105,25 +105,17 @@ vi.mock('@tauri-apps/api/window', () => {
   };
 });
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string) => key,
-  }),
-}));
+vi.mock('react-i18next', async () => (await import('../test-utils/i18n-stub')).reactI18nextStub());
 
 vi.mock('../runtime/tauri-runtime', () => ({
   isTauriRuntime: () => tauriMocks.runtime,
 }));
 
+// Variant of the shared helper: overlay tests start from a locked overlay.
 function cloneStoreState() {
-  const configDraft = structuredClone(appConfigDraftMock);
-  configDraft.subtitles.overlayLocked = true;
-
-  return {
-    audioRuntimeSnapshot: structuredClone(audioRuntimeSnapshotMock),
-    configDraft,
-    runtimeSnapshot: structuredClone(runtimeSnapshotMock),
-  };
+  const state = cloneBaseStoreState();
+  state.configDraft.subtitles.overlayLocked = true;
+  return state;
 }
 
 async function advanceLockedRevealPoll() {
@@ -153,12 +145,11 @@ function createPointerEvent(type: string, init?: PointerEventInit) {
 }
 
 describe('SubtitleOverlayPage locked interaction', () => {
+  let view: TestRootHandle;
   let container: HTMLDivElement;
-  let root: Root;
 
   beforeEach(() => {
     vi.useFakeTimers();
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     tauriMocks.runtime = true;
 
     if (!globalThis.PointerEvent) {
@@ -221,23 +212,17 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
     tauriMocks.setPointerPosition({ x: 20, y: 20 });
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 20, y: 20 }));
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    view = mountTestRoot();
+    ({ container } = view);
   });
 
   afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await view.cleanup();
     vi.useRealTimers();
   });
 
   it('directly synchronizes the initial locked state to the native overlay window', async () => {
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     expect(tauriMocks.invokeMock).toHaveBeenCalledWith(
       'sync_subtitle_overlay_window_state',
@@ -246,9 +231,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   });
 
   it('reveals the unlock button when the cursor enters the overlay bounds but keeps cursor passthrough outside the button hotspot', async () => {
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     expect(container.querySelector('.subtitle-overlay-toggle-lock')).toBeNull();
 
@@ -272,9 +255,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const lyrics = container.querySelector<HTMLElement>('.subtitle-overlay-lyrics');
     expect(lyrics?.style.getPropertyValue('--subtitle-overlay-background')).toBe('rgba(17, 24, 39, 0)');
@@ -284,9 +265,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   });
 
   it('stops passthrough inside the unlock hotspot and unlocks the overlay when the button is clicked', async () => {
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     tauriMocks.setPointerPosition({ x: 1020, y: 220 });
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
@@ -310,7 +289,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     tauriMocks.runtime = false;
     useAppStore.setState((state) => ({ ...state, configDraft: { ...state.configDraft,
       subtitles: { ...state.configDraft.subtitles, overlayLocked: false } } }));
-    await act(async () => root.render(<SubtitleOverlayPage />));
+    await view.render(<SubtitleOverlayPage />);
     const overlay = container.querySelector<HTMLElement>('.subtitle-overlay-root')!;
     await act(async () => overlay.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
     const button = container.querySelector<HTMLButtonElement>('.subtitle-overlay-toggle-lock');
@@ -321,9 +300,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   });
 
   it('restores cursor passthrough when the cursor leaves the unlock hotspot', async () => {
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     tauriMocks.setPointerPosition({ x: 1020, y: 220 });
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
@@ -350,7 +327,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       if (command === 'session_v2') return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       return undefined;
     });
-    await act(async () => root.render(<SubtitleOverlayPage />));
+    await view.render(<SubtitleOverlayPage />);
     tauriMocks.setPointerPosition({ x: 220, y: 280 });
     tauriMocks.cursorPositionMock.mockResolvedValue({ x: 220, y: 280 });
     await advanceLockedRevealPoll();
@@ -368,7 +345,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       if (command === 'session_v2') return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       return undefined;
     });
-    await act(async () => root.render(<SubtitleOverlayPage />));
+    await view.render(<SubtitleOverlayPage />);
     tauriMocks.cursorPositionMock.mockResolvedValue({ x: 220, y: 280 });
     await advanceLockedRevealPoll();
     await act(async () => {
@@ -380,7 +357,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   });
 
   it('ignores hover state changes while the overlay remains locked', async () => {
-    await act(async () => root.render(<SubtitleOverlayPage />));
+    await view.render(<SubtitleOverlayPage />);
     const overlay = container.querySelector<HTMLElement>('.subtitle-overlay-root')!;
     await act(async () => {
       overlay.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
@@ -394,7 +371,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       ...state,
       configDraft: { ...state.configDraft, subtitles: { ...state.configDraft.subtitles, overlayLocked: false } },
     }));
-    await act(async () => root.render(<SubtitleOverlayPage />));
+    await view.render(<SubtitleOverlayPage />);
     const overlay = container.querySelector<HTMLElement>('.subtitle-overlay-root')!;
     await act(async () => overlay.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
     const button = container.querySelector<HTMLButtonElement>('.subtitle-overlay-toggle-lock');
@@ -411,9 +388,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   });
 
   it('re-syncs native window state only once when the lock button toggles overlayLocked', async () => {
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     tauriMocks.setPointerPosition({ x: 1020, y: 220 });
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
@@ -431,9 +406,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   });
 
   it('resizes the overlay from client-area handles after unlock without using native resize dragging', async () => {
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     await act(async () => {
       useAppStore.setState((state) => ({
@@ -448,9 +421,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       }));
     });
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const eastHandle = container.querySelector('.subtitle-overlay-resize-handle-east');
     expect(eastHandle).not.toBeNull();
@@ -498,9 +469,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
         },
       },
     }));
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const overlay = container.querySelector('.subtitle-overlay-root');
     await act(async () => {
@@ -545,9 +514,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
         },
       },
     }));
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
     const overlay = container.querySelector('.subtitle-overlay-root');
     await act(async () => {
       overlay?.dispatchEvent(createPointerEvent('pointermove', { pointerId: 99, screenX: 1, screenY: 1 }));
@@ -578,9 +545,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
         },
       },
     }));
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const overlay = container.querySelector('.subtitle-overlay-root');
     const eastHandle = container.querySelector('.subtitle-overlay-resize-handle-east');
@@ -607,7 +572,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     tauriMocks.innerSizeMock.mockResolvedValue({ height: 180, width: 720 });
 
     await act(async () => {
-      root.render(<SubtitleOverlayPage />);
+      view.root.render(<SubtitleOverlayPage />);
       await Promise.resolve();
     });
     expect(onResized).toBeDefined();
@@ -635,15 +600,13 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
     await act(async () => {
       await onResized?.();
-      root.unmount();
+      view.root.unmount();
     });
     expect(unlisten).toHaveBeenCalled();
   });
 
   it('runs locked reveal button hover and blur handlers', async () => {
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
     tauriMocks.setPointerPosition({ x: 1020, y: 220 });
     tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
     await advanceLockedRevealPoll();
@@ -671,7 +634,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     }));
     tauriMocks.currentMonitorMock.mockResolvedValueOnce(null);
     await act(async () => {
-      root.render(<SubtitleOverlayPage />);
+      view.root.render(<SubtitleOverlayPage />);
       await Promise.resolve();
     });
 
@@ -687,9 +650,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   });
 
   it('hides a revealed lock button when native cursor polling fails', async () => {
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
     tauriMocks.setPointerPosition({ x: 1020, y: 220 });
     tauriMocks.cursorPositionMock.mockResolvedValue({ x: 1020, y: 220 });
     await advanceLockedRevealPoll();
@@ -708,11 +669,9 @@ describe('SubtitleOverlayPage locked interaction', () => {
     document.documentElement.setAttribute('style', 'color: blue');
     document.body.setAttribute('style', 'color: green');
 
+    await view.render(<SubtitleOverlayPage />);
     await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
-    await act(async () => {
-      root.unmount();
+      view.root.unmount();
     });
 
     expect(document.documentElement.getAttribute('style')).toContain('color: blue');
@@ -739,9 +698,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       };
     });
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     expect(container.textContent).toContain('First source line');
     expect(container.textContent).toContain('Second source line');
@@ -768,9 +725,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       };
     });
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const segmentTexts = Array.from(container.querySelectorAll('.subtitle-overlay-segment')).map((segment) => segment.textContent);
     expect(segmentTexts).toEqual(['First source第一句', 'Second source第二句']);
@@ -796,9 +751,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       };
     });
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const segments = Array.from(container.querySelectorAll('.subtitle-overlay-segment'));
     expect(segments).toHaveLength(1);
@@ -825,9 +778,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     };
 
     await updateStreamingCue('你', true);
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
     expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('你');
     expect(container.querySelectorAll('.subtitle-overlay-segment')).toHaveLength(0);
 
@@ -880,9 +831,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       return { ...state, audioRuntimeSnapshot: nextSnapshot };
     });
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('Waiting source');
     expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('部分译文');
@@ -935,9 +884,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     };
 
     await updateOmniSegments(translationSteps[0]);
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
     expectStreamingStep(translationSteps[0]);
 
     await updateOmniSegments(translationSteps[1]);
@@ -971,9 +918,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     };
 
     await updateOmniCue('Hello wor', 'Ni', false);
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
     expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('Hello wor');
     expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('Ni');
     expect(container.querySelectorAll('.subtitle-overlay-segment')).toHaveLength(0);
@@ -1009,7 +954,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       'First source. Second source is still live',
       '第一句。第二句仍在输出',
     );
-    await act(async () => root.render(<SubtitleOverlayPage />));
+    await view.render(<SubtitleOverlayPage />);
 
     expect(Array.from(container.querySelectorAll('.subtitle-overlay-segment')).map((segment) => segment.textContent))
       .toEqual(['First source.第一句。']);
@@ -1045,9 +990,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     };
 
     await updateIteratingCue('First sentence. still being spoke');
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
     expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('still being spoke');
     expect(container.querySelector('.subtitle-overlay-stream-slot')?.className).toContain('subtitle-overlay-stream-slot-active');
 
@@ -1068,9 +1011,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       return { ...state, audioRuntimeSnapshot: nextSnapshot };
     });
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('\u00a0');
     expect(container.textContent).not.toContain('Rewritten raw source after revision');
@@ -1088,9 +1029,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       return { ...state, audioRuntimeSnapshot: nextSnapshot };
     });
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
     const segment = container.querySelector('.subtitle-overlay-segment');
     expect(segment?.querySelector('.subtitle-overlay-source')).toBeNull();
     expect(segment?.textContent).toContain('仅译文');
@@ -1108,9 +1047,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const source = container.querySelector<HTMLElement>('.subtitle-overlay-source');
     const translation = container.querySelector<HTMLElement>('.subtitle-overlay-translation');
@@ -1139,9 +1076,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const source = container.querySelector<HTMLElement>('.subtitle-overlay-source');
     const translation = container.querySelector<HTMLElement>('.subtitle-overlay-translation');
@@ -1153,7 +1088,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
   it('does not render a duplicate source placeholder when both localized lines are identical', async () => {
     await act(async () => {
-      root.render(<SubtitleOverlayContent
+      view.root.render(<SubtitleOverlayContent
         cardStyle={{}}
         displayCues={[]}
         effectiveFontSize={24}
@@ -1188,7 +1123,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     });
     const renderContent = async (cueCount: number) => {
       await act(async () => {
-        root.render(<SubtitleOverlayContent
+        view.root.render(<SubtitleOverlayContent
           cardStyle={{}}
           displayCues={Array.from({ length: cueCount }, (_, index) => makeCue(index))}
           effectiveFontSize={24}
@@ -1242,7 +1177,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
     try {
       await act(async () => {
-        root.render(<SubtitleOverlayContent
+        view.root.render(<SubtitleOverlayContent
           cardStyle={{}}
           displayCues={[structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0])]}
           effectiveFontSize={24}
@@ -1277,7 +1212,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     }
     Object.assign(globalThis, { ResizeObserver: ResizeObserverMock });
     try {
-      await act(async () => root.render(<SubtitleOverlayContent
+      await act(async () => view.root.render(<SubtitleOverlayContent
         cardStyle={{}} effectiveFontSize={24} lockLabel="lock" overlayLocked={false}
         previewSource="source" previewTranslation="translation" showLockToggle windowSized={false}
         onLockBlur={vi.fn()} onLockHover={vi.fn()} onLockToggle={vi.fn()}
@@ -1348,9 +1283,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       };
     });
 
-    await act(async () => {
-      root.render(<SubtitleOverlayPage />);
-    });
+    await view.render(<SubtitleOverlayPage />);
 
     const sources = Array.from(container.querySelectorAll<HTMLElement>('.subtitle-overlay-source'));
     const translations = Array.from(container.querySelectorAll<HTMLElement>('.subtitle-overlay-translation'));
@@ -1368,9 +1301,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
           subtitles: { ...state.configDraft.subtitles, captionDensity },
         },
       }));
-      await act(async () => {
-        root.render(<SubtitleOverlayPage />);
-      });
+      await view.render(<SubtitleOverlayPage />);
       expect(container.querySelectorAll('.subtitle-overlay-source')).toHaveLength(6);
     }
   });

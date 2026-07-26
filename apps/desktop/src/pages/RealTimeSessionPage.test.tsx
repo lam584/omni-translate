@@ -1,5 +1,5 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
@@ -9,6 +9,7 @@ import RealTimeSessionPage from './RealTimeSessionPage';
 import { diagnosticsReadyPatchForMode, WatchFallbackDialog } from './RealTimeSessionScreen';
 import { waitForWatchRouteReadyRuntime } from '../runtime/audio-runtime';
 import { useAppStore } from '../stores/app-store';
+import { mountTestRoot, type TestRootHandle } from '../test-utils';
 
 const startAudioRouteRuntimeMock = vi.fn();
 const preconnectOmniRealtimeRuntimeMock = vi.fn();
@@ -82,11 +83,18 @@ vi.mock('../runtime/desktop-api-v2', () => ({
 }));
 
 describe('RealTimeSessionPage one-click launch', () => {
+  let view: TestRootHandle;
   let container: HTMLDivElement;
-  let root: Root;
+
+  async function renderPage() {
+    await view.render(
+      <MemoryRouter>
+        <RealTimeSessionPage />
+      </MemoryRouter>,
+    );
+  }
 
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     startAudioRouteRuntimeMock.mockReset();
     preconnectOmniRealtimeRuntimeMock.mockReset();
     startSpeechDispatchRuntimeMock.mockReset();
@@ -168,27 +176,17 @@ describe('RealTimeSessionPage one-click launch', () => {
       runtimeNotifications: runtimeSnapshot.notifications,
     }));
 
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    view = mountTestRoot();
+    ({ container } = view);
   });
 
   afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await view.cleanup();
     vi.useRealTimers();
   });
 
   it('keeps the session page focused on launch controls', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.querySelectorAll('button').length).toBeGreaterThanOrEqual(2);
     expect(container.textContent).not.toContain('game');
@@ -201,13 +199,7 @@ describe('RealTimeSessionPage one-click launch', () => {
   });
 
   it('shows an empty model trace summary before calls start', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.querySelectorAll('button').length).toBeGreaterThanOrEqual(2);
     expect(container.textContent?.length ?? 0).toBeGreaterThan(0);
@@ -245,13 +237,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       runtimeNotifications: runtimeSnapshot.notifications,
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('1 / 1');
     expect(container.textContent).toContain('qwen3.5-omni-plus-realtime');
@@ -272,13 +258,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       audioRuntimeSnapshot,
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('--');
     expect(container.textContent).toContain('--');
@@ -298,28 +278,16 @@ describe('RealTimeSessionPage one-click launch', () => {
       audioRuntimeSnapshot,
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('00:10');
 
     await act(async () => {
-      root.unmount();
+      view.root.unmount();
     });
-    root = createRoot(container);
+    view.root = createRoot(container);
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('00:10');
     vi.useRealTimers();
@@ -336,13 +304,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       audioRuntimeSnapshot,
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('1234 ms');
     expect(container.textContent).toContain('1234 ms');
@@ -365,13 +327,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       audioRuntimeSnapshot,
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('Short source line one');
     expect(container.textContent).toContain('Short source line two');
@@ -380,13 +336,7 @@ describe('RealTimeSessionPage one-click launch', () => {
   });
 
   it('starts bidirectional voice-room capture, speaker speech and overlay without the bridge', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const launchButton = container.querySelectorAll('button')[1] as HTMLButtonElement | undefined;
     expect(launchButton).toBeDefined();
@@ -425,13 +375,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.click();
@@ -446,13 +390,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     activeAudioSnapshot.outbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: activeAudioSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const launchButtons = container.querySelectorAll<HTMLButtonElement>('.provider-list button');
     expect(launchButtons[0]?.disabled).toBe(true);
@@ -481,13 +419,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       }));
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
@@ -543,7 +475,7 @@ describe('RealTimeSessionPage one-click launch', () => {
           },
         },
       }));
-      root.render(
+      view.root.render(
         <MemoryRouter>
           <RealTimeSessionPage />
         </MemoryRouter>,
@@ -582,7 +514,7 @@ describe('RealTimeSessionPage one-click launch', () => {
           },
         },
       }));
-      root.render(
+      view.root.render(
         <MemoryRouter>
           <RealTimeSessionPage />
         </MemoryRouter>,
@@ -626,7 +558,7 @@ describe('RealTimeSessionPage one-click launch', () => {
           },
         },
       }));
-      root.render(
+      view.root.render(
         <MemoryRouter>
           <RealTimeSessionPage />
         </MemoryRouter>,
@@ -670,13 +602,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       }));
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       container.querySelector<HTMLButtonElement>('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -687,13 +613,7 @@ describe('RealTimeSessionPage one-click launch', () => {
   });
 
   it('starts speech dispatch for Omni watch mode when device translated speech output is enabled', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       useAppStore.setState((state) => ({
@@ -738,13 +658,7 @@ describe('RealTimeSessionPage one-click launch', () => {
   });
 
   it('starts speech dispatch for Omni watch mode when secondary translation speech is enabled', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       useAppStore.setState((state) => ({
@@ -818,13 +732,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
@@ -859,7 +767,7 @@ describe('RealTimeSessionPage one-click launch', () => {
           },
         },
       }));
-      root.render(
+      view.root.render(
         <MemoryRouter>
           <RealTimeSessionPage />
         </MemoryRouter>,
@@ -891,7 +799,7 @@ describe('RealTimeSessionPage one-click launch', () => {
           },
         },
       }));
-      root.render(
+      view.root.render(
         <MemoryRouter>
           <RealTimeSessionPage />
         </MemoryRouter>,
@@ -946,7 +854,7 @@ describe('RealTimeSessionPage one-click launch', () => {
             },
           },
         }));
-        root.render(
+        view.root.render(
           <MemoryRouter>
             <RealTimeSessionPage />
           </MemoryRouter>,
@@ -995,13 +903,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
@@ -1048,13 +950,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
@@ -1073,13 +969,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     audioRuntimeSnapshot.inbound.streamBound = false;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       (container.querySelector('button') as HTMLButtonElement | null)?.click();
@@ -1098,13 +988,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     audioRuntimeSnapshot.outbound.streamBound = false;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     await act(async () => {
       container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.click();
@@ -1132,13 +1016,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     );
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: activeAudioSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const launchButtons = container.querySelectorAll<HTMLButtonElement>('.provider-list button');
     const stopButton = container.querySelector<HTMLButtonElement>('.control-toolbar button');
@@ -1203,13 +1081,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     clearSubtitleCuesRuntimeMock.mockResolvedValue(activeAudioSnapshot);
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: activeAudioSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const toolbarButtons = container.querySelectorAll<HTMLButtonElement>('.control-toolbar button');
     await act(async () => {
@@ -1270,13 +1142,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
     });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
@@ -1321,13 +1187,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     ];
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot, runtimeSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('fallback source');
     expect(container.textContent).toContain('丢弃 3 条');
@@ -1348,13 +1208,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     runtimeSnapshot.diagnostics.modelTraceSummary.lastError = null;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot, runtimeSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.querySelector('.console-event-item-empty')).not.toBeNull();
     expect(container.querySelectorAll('.console-event-item')).toHaveLength(3);
@@ -1376,13 +1230,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     audioRuntimeSnapshot.subtitleOverlay.droppedCueCount = 0;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('committed source');
     expect(container.textContent).toContain('翻译失败');
@@ -1405,13 +1253,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
     await act(async () => {
       container.querySelector<HTMLButtonElement>('button')?.click();
     });
@@ -1432,13 +1274,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     startBridgeServiceRuntimeMock.mockResolvedValue(started);
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
     await act(async () => {
       container.querySelectorAll<HTMLButtonElement>('button')[1]?.click();
     });
@@ -1457,13 +1293,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     startAudioRouteRuntimeMock.mockRejectedValue('capture unavailable');
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
     await act(async () => {
       container.querySelectorAll<HTMLButtonElement>('button')[1]?.click();
     });
@@ -1479,13 +1309,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     audioRuntimeSnapshot.inbound.recommendedAction = 'restart-bridge';
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(container.textContent).toContain('系统音频采集异常');
     expect(container.textContent).toContain('Bridge source pipe initialization timed out (10s).');
@@ -1494,16 +1318,16 @@ describe('RealTimeSessionPage one-click launch', () => {
 
   it('handles every Watch fallback dialog dismissal and diagnostics-ready mode', async () => {
     const onResolve = vi.fn();
-    await act(async () => root.render(<WatchFallbackDialog onResolve={onResolve} />));
+    await view.render(<WatchFallbackDialog onResolve={onResolve} />);
     await act(async () => container.querySelector<HTMLElement>('[role="dialog"]')?.click());
     expect(onResolve).not.toHaveBeenCalled();
     await act(async () => container.querySelector<HTMLButtonElement>('.action-button')?.click());
     expect(onResolve).toHaveBeenLastCalledWith(true);
-    await act(async () => root.render(<WatchFallbackDialog onResolve={onResolve} />));
+    await view.render(<WatchFallbackDialog onResolve={onResolve} />);
     await act(async () => container.querySelector<HTMLButtonElement>('.icon-button')?.click());
     expect(onResolve).toHaveBeenLastCalledWith(false);
-    await act(async () => root.render(<WatchFallbackDialog onResolve={onResolve} />));
-    await act(async () => container.querySelector<HTMLElement>('.benchmark-modal-backdrop')?.click());
+    await view.render(<WatchFallbackDialog onResolve={onResolve} />);
+    await act(async () => container.querySelector<HTMLElement>('.modal-backdrop--benchmark')?.click());
     expect(onResolve).toHaveBeenLastCalledWith(false);
     expect(diagnosticsReadyPatchForMode('watch')).toEqual({ deviceStatus: 'ready' });
     expect(diagnosticsReadyPatchForMode('game')).toEqual({ deviceStatus: 'ready', driverStatus: 'ready' });

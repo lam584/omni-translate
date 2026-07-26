@@ -1,0 +1,86 @@
+/*
+ * Shared modal backdrop layer (ModalDialog.tsx).
+ *
+ * z-index ladder for fixed chrome this layer coordinates with:
+ *    5-60  in-page floating UI (console dock 7, routing model select list 60)
+ *   50     .console-nav mobile bottom bar (global/responsive-overrides-2.css)
+ *   900    runtime toast stack (global/runtime-toast.css)
+ *   900    --z-modal: modal backdrops (benchmark + provider variants; provider was
+ *          previously 50 and tied with .console-nav — raised here on purpose)
+ *   1000   --z-modal-elevated: glossary modal backdrops (kept above the toast stack,
+ *          preserving the pre-unification order)
+ *   1000   startup splash (startup.css)
+ *   9999   welcome overlay (pages/welcome.css)
+ *
+ * Visual differences between the variants (background, blur, layout, padding) are
+ * intentional and preserved 1:1 from the per-page backdrops they replace.
+ */
+
+:root {
+  --z-modal: 900;
+  --z-modal-elevated: 1000;
+}
+
+.modal-backdrop {
+  position:fixed;
+  inset:0;
+  z-index:var(--z-modal)
+}
+
+/* Formerly .benchmark-modal-backdrop (pages/diagnostics.css). */
+.modal-backdrop--benchmark {
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  background:rgba(0, 0, 0, .45);
+  backdrop-filter:blur(2px)
+}
+
+/* Formerly .glossary-modal-backdrop (pages/routing.css). */
+.modal-backdrop--glossary {
+  z-index:var(--z-modal-elevated);
+  display:grid;
+  place-items:center;
+  padding:24px;
+  background:#02070dcc;
+  -webkit-backdrop-filter:blur(6px);
+  backdrop-filter:blur(6px)
+}
+
+/* Formerly .provider-modal-backdrop (pages/provider.css). */
+.modal-backdrop--provider {
+  display:grid;
+  place-items:center;
+  padding:32px;
+  background:#040a109e;
+  -webkit-backdrop-filter:blur(10px);
+  backdrop-filter:blur(10px)
+}
+
+/* Benchmark-look dialog panel, formerly borrowed from .benchmark-modal /
+ * .benchmark-modal-head in pages/diagnostics.css by the watch fallback dialog. */
+.modal-panel--benchmark {
+  width:min(760px, 92vw);
+  max-height:88vh;
+  overflow-y:auto;
+  padding:20px 22px;
+  border-radius:10px;
+  background:#fff;
+  box-shadow:0 20px 48px rgba(0, 0, 0, .22)
+}
+
+.modal-panel-head--benchmark {
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-start;
+  gap:12px;
+  margin-bottom:16px;
+  padding-bottom:12px;
+  border-bottom:1px solid #e5e7eb
+}
+
+.modal-panel-head--benchmark p {
+  margin:4px 0 0;
+  font-size:12px;
+  color:#64748b
+}

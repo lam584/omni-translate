@@ -495,56 +495,6 @@
   color:var(--color-text-muted)
 }
 
-.routing-modal-backdrop {
-  position:fixed;
-  inset:0;
-  z-index:80;
-  display:grid;
-  place-items:center;
-  padding:22px;
-  background:rgba(0, 0, 0, .32)
-}
-
-.routing-modal {
-  width:min(460px, 100%);
-  border:1px solid rgba(0, 0, 0, .12);
-  border-radius:14px;
-  padding:16px;
-  color:#1a1a2e;
-  background:#ffffff;
-  box-shadow:0 4px 24px rgba(0, 0, 0, .12)
-}
-
-.routing-modal-head,
-.routing-modal-actions {
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:10px
-}
-
-.routing-modal-head h3 {
-  margin:0;
-  font-size:1rem
-}
-
-.routing-modal-body {
-  display:grid;
-  gap:9px;
-  margin-block:14px;
-  color:#555;
-  font-size:.9rem
-}
-
-.routing-modal-body p,
-.routing-modal-body ul {
-  margin:0
-}
-
-.routing-modal-body ul {
-  padding-inline-start:18px
-}
-
 .routing-toggle {
   display:inline-flex;
   align-items:center;
@@ -731,21 +681,6 @@
   minmax(0,
   1fr));
   gap:10px
-}
-
-.glossary-modal-backdrop {
-  position:fixed;
-  top:0;
-  right:0;
-  bottom:0;
-  left:0;
-  z-index:1000;
-  display:grid;
-  place-items:center;
-  padding:24px;
-  background:#02070dcc;
-  -webkit-backdrop-filter:blur(6px);
-  backdrop-filter:blur(6px)
 }
 
 .glossary-modal {

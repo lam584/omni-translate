@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../components/icons/AppIcon';
+import ModalDialog from '../components/ModalDialog';
 import PageSectionHeader from '../components/page/PageSectionHeader';
 import StatusBadge from '../components/page/StatusBadge';
 import type { GlossaryEntryStrategy, GlossaryLibrary, GlossaryPackageEntry } from '../schema/glossary-package';
@@ -529,8 +530,7 @@ export default function GlossaryPage() {
 
       {/* New library dialog */}
       {libraryDialogOpen ? (
-        <div className="glossary-modal-backdrop" onClick={() => setLibraryDialogOpen(false)}>
-          <div className="glossary-modal glossary-library-dialog" onClick={(e) => e.stopPropagation()}>
+        <ModalDialog aria-label={t('glossary.actions.newLibrary')} className="glossary-modal glossary-library-dialog" onClose={() => setLibraryDialogOpen(false)} variant="glossary">
             <div className="glossary-panel-head">
               <div>
                 <h3>{t('glossary.actions.newLibrary')}</h3>
@@ -562,8 +562,7 @@ export default function GlossaryPage() {
               </button>
               <button className="icon-button glossary-library-secondary-action" onClick={() => setLibraryDialogOpen(false)} type="button">{t('common.cancel')}</button>
             </div>
-          </div>
-        </div>
+        </ModalDialog>
       ) : null}
     </div>
   );

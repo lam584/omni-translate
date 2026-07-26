@@ -2,6 +2,7 @@ import type { Dispatch, SetStateAction } from 'react';
 import { useTranslation } from 'react-i18next';
 
 import AppIcon from '../../components/icons/AppIcon';
+import ModalDialog from '../../components/ModalDialog';
 import type { ProviderAuthScheme, ProviderKind, ProviderTransport } from '../../schema/provider-contract';
 import type { CustomProviderTemplateDraft } from '../../utils/custom-provider-templates';
 import { providersPageHelpers } from './providersPageHelpers';
@@ -29,8 +30,7 @@ export default function CustomProviderDialog({
   const transports: ProviderTransport[] = supportedTransportsForKind(draft.kind);
 
   return (
-    <div className="provider-modal-backdrop" onClick={onClose} role="presentation">
-      <div aria-label={t('providers.customDialog.title')} aria-modal="true" className="provider-modal content-card page-card compact-card" onClick={(event) => event.stopPropagation()} role="dialog">
+    <ModalDialog aria-label={t('providers.customDialog.title')} className="provider-modal content-card page-card compact-card" onClose={onClose} variant="provider">
         <div className="provider-panel-heading provider-panel-heading-compact">
           <div>
             <h3>{t('providers.customDialog.title')}</h3>
@@ -107,7 +107,6 @@ export default function CustomProviderDialog({
             {t('providers.customDialog.createAction')}
           </button>
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 }

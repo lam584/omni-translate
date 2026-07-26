@@ -1,7 +1,9 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import AppIcon from '../components/icons/AppIcon';
+import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
 import AudioLevelMeter from '../components/audio/AudioLevelMeter';
+import ModalDialog from '../components/ModalDialog';
 import PageSectionHeader from '../components/page/PageSectionHeader';
 import StatusBadge from '../components/page/StatusBadge';
 import {
@@ -14,12 +16,13 @@ import type { AppConfigDraft } from '../schema/config';
 import type { SceneMode } from '../utils/scene-readiness';
 import i18n from '../i18n/config';
 import { parseRuntimeTimestampMs, useSessionElapsed } from './session/useSessionElapsed';
+import { extractSessionErrorCode, sessionErrorPresentation } from '../utils/session-error-presentation';
 import { useSceneSessionController } from './session/useSceneSessionController';
 import { logSceneLaunchConfig } from './session/logSceneLaunchConfig';
 import { getCueDisplaySegments } from './overlay/overlayDomain';
-import { appendFrontendDiagnosticsLog } from '../runtime/diagnostics-runtime';
+import { appendFrontendDiagnosticsLog, exportDiagnosticsBundleRuntime } from '../runtime/diagnostics-runtime';
 
-type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | null;
+type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | 'export-diagnostics' | null;
 
 type WatchFallbackResolver = (subtitlesOnly: boolean) => void;
 
@@ -176,16 +179,14 @@ export function diagnosticsReadyPatchForMode(sceneMode: SceneMode) {
 
 export function WatchFallbackDialog({ onResolve }: { onResolve: WatchFallbackResolver }) {
   const { t } = useTranslation();
-  return <div className="benchmark-modal-backdrop" onClick={() => onResolve(false)}>
-    <div className="benchmark-modal watch-fallback-modal" role="dialog" aria-modal="true"
-      aria-label={t('session.watchMode')} onClick={(event) => event.stopPropagation()}>
-      <div className="benchmark-modal-head"><div><p>{t('session.virtualDriverFallbackConfirm')}</p></div></div>
-      <div className="control-toolbar">
-        <button className="action-button" onClick={() => onResolve(true)} type="button">{t('common.confirm')}</button>
-        <button className="icon-button" onClick={() => onResolve(false)} type="button">{t('common.cancel')}</button>
-      </div>
+  return <ModalDialog aria-label={t('session.watchMode')} className="modal-panel--benchmark watch-fallback-modal"
+    onClose={() => onResolve(false)} variant="benchmark">
+    <div className="modal-panel-head--benchmark"><div><p>{t('session.virtualDriverFallbackConfirm')}</p></div></div>
+    <div className="control-toolbar">
+      <button className="action-button" onClick={() => onResolve(true)} type="button">{t('common.confirm')}</button>
+      <button className="icon-button" onClick={() => onResolve(false)} type="button">{t('common.cancel')}</button>
     </div>
-  </div>;
+  </ModalDialog>;
 }
 
 function describeSceneLaunchStage(stage: string | null) {
@@ -344,6 +345,9 @@ function RealTimeSessionPage() {
   const activeCue = audioRuntimeSnapshot.subtitleOverlay.activeCue;
   const modelTraceSummary = runtimeSnapshot.diagnostics.modelTraceSummary;
   const latestModelTraceCall = modelTraceSummary.recentCalls[0] ?? null;
+  const inboundErrorCode = audioRuntimeSnapshot.inbound.lastErrorCode
+    ?? (audioRuntimeSnapshot.inbound.lastError ? extractSessionErrorCode(audioRuntimeSnapshot.inbound.lastError) : null);
+  const inboundErrorPresentation = sessionErrorPresentation(inboundErrorCode);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [sessionLaunchProblem, setSessionLaunchProblem] = useState<string | null>(null);
   const [watchFallbackResolver, setWatchFallbackResolver] = useState<WatchFallbackResolver | null>(null);
@@ -361,6 +365,27 @@ function RealTimeSessionPage() {
 
   const sessionElapsed = useSessionElapsed(audioRuntimeSnapshot.sessionStartedAt, isSessionRunning);
 
+  // Omni WebSocket connection lifecycle: surface reconnect progress, a short
+  // "restored" notice after recovery, and a restart advice banner once the
+  // reconnect budget is exhausted (recommendedAction === 'restart-session').
+  const sttConnection = audioRuntimeSnapshot.sttConnection;
+  const isSttReconnecting = sttConnection.state === 'reconnecting';
+  const sessionRestartAdvised =
+    audioRuntimeSnapshot.inbound.recommendedAction === 'restart-session'
+    || audioRuntimeSnapshot.outbound.recommendedAction === 'restart-session';
+  const [connectionRestoredVisible, setConnectionRestoredVisible] = useState(false);
+  const previousSttConnectionStateRef = useRef(sttConnection.state);
+  useEffect(() => {
+    const previousState = previousSttConnectionStateRef.current;
+    previousSttConnectionStateRef.current = sttConnection.state;
+    if (previousState === 'reconnecting' && sttConnection.state === 'connected') {
+      setConnectionRestoredVisible(true);
+      const timer = window.setTimeout(() => setConnectionRestoredVisible(false), 5000);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [sttConnection.state]);
+
   const runBusyAction = async (nextBusyAction: Exclude<BusyAction, null>, action: () => Promise<void>) => {
     setBusyAction(nextBusyAction);
 
@@ -370,6 +395,14 @@ function RealTimeSessionPage() {
       setBusyAction(null);
     }
   };
+
+  // Quick diagnostics export shortcut on session error surfaces, reusing the
+  // diagnostics page export pipeline without a page switch.
+  const handleExportDiagnostics = () =>
+    void runBusyAction('export-diagnostics', async () => {
+      const result = await exportDiagnosticsBundleRuntime('quick');
+      setRuntimeSnapshot(result.snapshot);
+    });
 
   const resolveWatchFallback = (subtitlesOnly: boolean) => {
     setWatchFallbackResolver((resolve: WatchFallbackResolver | null) => {
@@ -471,6 +504,17 @@ function RealTimeSessionPage() {
     });
   };
 
+  const handleSessionRestartClick = () => {
+    void (async () => {
+      if (hasActiveChain) {
+        await handleStopAll();
+      }
+      handleSceneLaunchClick(configDraft.devices.routeMode);
+    })().catch((error) => {
+      appendFrontendDiagnosticsLog('runtime', 'error', '[SessionRestart] stop before relaunch failed', JSON.stringify({ error: describeRuntimeError(error) }));
+    });
+  };
+
   return (
     <div className="page-shell realtime-session-page">
       <section className="page-layout page-layout-single realtime-session-layout">
@@ -488,6 +532,37 @@ function RealTimeSessionPage() {
             </button>
           </div>
           {busyAction === 'stop' ? <p role="status">正在停止上一条链路，请稍候…</p> : null}
+          {isSttReconnecting && (
+            <div className="session-launch-feedback" role="status">
+              <AppIcon name="refresh" size={15} />
+              <span>
+                {t('session.connectionReconnecting', {
+                  attempt: sttConnection.reconnectAttempt,
+                  max: sttConnection.maxReconnectAttempts,
+                })}
+              </span>
+            </div>
+          )}
+          {!isSttReconnecting && connectionRestoredVisible && (
+            <div className="session-launch-feedback session-launch-feedback-success" role="status">
+              <AppIcon name="check" size={15} />
+              <span>{t('session.connectionRestored')}</span>
+            </div>
+          )}
+          {sessionRestartAdvised && (
+            <div className="session-launch-feedback session-launch-feedback-error" role="alert">
+              <AppIcon name="alert" size={15} />
+              <span>{t('session.connectionExhausted')}</span>
+              <button className="icon-button" disabled={busyAction !== null} onClick={handleSessionRestartClick} type="button">
+                <AppIcon name="refresh" size={14} />
+                {t('session.restartSessionButton')}
+              </button>
+              <button className="icon-button" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
+                <AppIcon name="layers" size={14} />
+                {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
+              </button>
+            </div>
+          )}
           {isSessionRunning && (
             <div className="session-timer">
               <AppIcon name="clock" size={14} />
@@ -594,8 +669,18 @@ function RealTimeSessionPage() {
           )}
           {audioRuntimeSnapshot.inbound.lastError && (
             <p className="cue-queue-error" role="alert">
-              {t('session.systemAudioError', { error: audioRuntimeSnapshot.inbound.lastError })}
-              {audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && t('session.restartBridgeHint')}
+              {inboundErrorPresentation
+                ? `${t(inboundErrorPresentation.messageKey)} [${inboundErrorCode}]`
+                : t('session.systemAudioError', { error: audioRuntimeSnapshot.inbound.lastError })}
+              {!inboundErrorPresentation && audioRuntimeSnapshot.inbound.recommendedAction === 'restart-bridge' && t('session.restartBridgeHint')}
+              {(inboundErrorPresentation?.action === 'restart-session'
+                || (!inboundErrorPresentation && audioRuntimeSnapshot.inbound.recommendedAction === 'restart-session')) && t('session.restartSessionHint')}
+              {inboundErrorPresentation?.action === 'open-providers' && inboundErrorPresentation.actionKey && (
+                <Link className="cue-queue-error-action" to="/settings/providers">{t(inboundErrorPresentation.actionKey)}</Link>
+              )}
+              <button className="cue-queue-error-action" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
+                {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
+              </button>
             </p>
           )}
           {sessionLaunchProblem && !isSessionRunning && (

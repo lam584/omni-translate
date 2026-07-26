@@ -104,7 +104,8 @@
   justify-content:flex-start
 }
 
-.provider-modal-backdrop {
+/* Needs the body prefix to keep overriding components/modal.css, which is imported later. */
+body .modal-backdrop--provider {
   padding:16px
 }
 

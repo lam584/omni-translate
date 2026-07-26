@@ -1,12 +1,12 @@
 ﻿import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
+import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { providerTemplates } from '../mocks/provider-templates';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import { useAppStore } from '../stores/app-store';
+import { cloneStoreState, mountTestRoot, setTauriRuntime, type TestRootHandle } from '../test-utils';
 import ProvidersPage, { providersPageHelpers } from './ProvidersPage';
 
 const invokeMock = vi.fn();
@@ -30,27 +30,6 @@ vi.mock('../runtime/provider-runtime', () => ({
   runProviderProbe: (...args: unknown[]) => runProviderProbeMock(...args),
   runProviderSmoke: (...args: unknown[]) => runProviderSmokeMock(...args),
 }));
-
-function cloneStoreState() {
-  return {
-    configDraft: structuredClone(appConfigDraftMock),
-    runtimeSnapshot: structuredClone(runtimeSnapshotMock),
-    audioRuntimeSnapshot: structuredClone(audioRuntimeSnapshotMock),
-  };
-}
-
-function setTauriRuntime(enabled: boolean) {
-  if (enabled) {
-    Object.defineProperty(globalThis, 'isTauri', {
-      value: true,
-      writable: true,
-      configurable: true,
-    });
-    return;
-  }
-
-  Reflect.deleteProperty(globalThis, 'isTauri');
-}
 
 function buttons(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLButtonElement>('button'));
@@ -240,11 +219,10 @@ async function waitForExpectation(assertion: () => void) {
 }
 
 describe('ProvidersPage', () => {
+  let view: TestRootHandle;
   let container: HTMLDivElement;
-  let root: Root;
 
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     invokeMock.mockReset().mockRejectedValue(new Error('runtime snapshot refresh unavailable in test'));
     getProviderSecretStatusMock.mockReset().mockResolvedValue({
       reference: appConfigDraftMock.providers[0].authRef.reference,
@@ -322,16 +300,12 @@ describe('ProvidersPage', () => {
       runtimeNotifications: runtimeSnapshot.notifications,
     }));
 
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    view = mountTestRoot();
+    ({ container } = view);
   });
 
   afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await view.cleanup();
     setTauriRuntime(false);
     window.localStorage.removeItem('omni.customProviderTemplates');
     window.localStorage.removeItem('omni.providerTemplateCatalogPrefs');
@@ -340,7 +314,7 @@ describe('ProvidersPage', () => {
 
   async function renderPage() {
     await act(async () => {
-      root.render(
+      view.root.render(
         <MemoryRouter>
           <ProvidersPage />
         </MemoryRouter>,
@@ -684,8 +658,8 @@ describe('ProvidersPage', () => {
     window.localStorage.setItem('omni.providerTemplateCatalogPrefs', JSON.stringify(providerTemplates.map((template, order) => ({
       templateId: template.id, enabled: true, hidden: true, order,
     }))));
-    await act(async () => root.unmount());
-    root = createRoot(container);
+    await act(async () => view.root.unmount());
+    view.root = createRoot(container);
     await renderPage();
 
     await click(deleteActiveProviderButton(container));
@@ -1119,7 +1093,7 @@ describe('ProvidersPage', () => {
     await click(sceneAddButtons(container)[0]);
 
     await waitForExpectation(() => expect(fetchProviderModelsMock).toHaveBeenCalled());
-    await click(container.querySelector<HTMLElement>('.provider-modal-backdrop'));
+    await click(container.querySelector<HTMLElement>('.modal-backdrop--provider'));
     expect(modelCatalogDialog(container)).toBeNull();
   });
 
@@ -1165,7 +1139,7 @@ describe('ProvidersPage', () => {
       maxOutputTokens: 1,
       region: 'cn-shanghai',
     });
-    await click(container.querySelector<HTMLElement>('.provider-modal-backdrop'));
+    await click(container.querySelector<HTMLElement>('.modal-backdrop--provider'));
     expect(advancedSettingsDialog(container)).toBeUndefined();
   });
 
@@ -1208,9 +1182,9 @@ describe('ProvidersPage', () => {
       ),
     );
     await act(async () => {
-      root.unmount();
+      view.root.unmount();
     });
-    root = createRoot(container);
+    view.root = createRoot(container);
     await renderPage();
     await click(deleteActiveProviderButton(container));
     expect(useAppStore.getState().configDraft.activeProviderTemplateId).toBe(currentTemplateId);

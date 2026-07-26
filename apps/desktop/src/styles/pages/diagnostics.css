@@ -309,17 +309,6 @@
   font-size:12px
 }
 
-.benchmark-modal-backdrop {
-  position:fixed;
-  inset:0;
-  z-index:900;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  background:rgba(0, 0, 0, .45);
-  backdrop-filter:blur(2px)
-}
-
 .benchmark-modal {
   width:min(760px, 92vw);
   max-height:88vh;

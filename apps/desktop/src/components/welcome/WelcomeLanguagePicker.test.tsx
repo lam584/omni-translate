@@ -1,11 +1,10 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import '../../../src/i18n/config';
 import i18n from '../../../src/i18n/config';
-import { appConfigDraftMock } from '../../../src/mocks/app-config';
 import { runtimeSnapshotMock } from '../../../src/mocks/runtime-shell';
 import { useAppStore } from '../../../src/stores/app-store';
+import { cloneStoreState, mountTestRoot, setTauriRuntime, type TestRootHandle } from '../../test-utils';
 import WelcomeLanguagePicker from './WelcomeLanguagePicker';
 
 const saveProviderSecretMock = vi.fn();
@@ -26,26 +25,6 @@ vi.mock('../../runtime/bridge-runtime', () => ({
   startBridgeServiceRuntime: vi.fn(),
   uninstallDriverRuntime: vi.fn(),
 }));
-
-function cloneStoreState() {
-  return {
-    configDraft: structuredClone(appConfigDraftMock),
-    runtimeSnapshot: structuredClone(runtimeSnapshotMock),
-  };
-}
-
-function setTauriRuntime(enabled: boolean) {
-  if (enabled) {
-    Object.defineProperty(globalThis, 'isTauri', {
-      value: true,
-      writable: true,
-      configurable: true,
-    });
-    return;
-  }
-
-  Reflect.deleteProperty(globalThis, 'isTauri');
-}
 
 function getFooterButtons(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLButtonElement>('.welcome-language-foot-actions button'));
@@ -78,11 +57,14 @@ async function selectValue(element: HTMLSelectElement, value: string) {
 }
 
 describe('WelcomeLanguagePicker', () => {
+  let view: TestRootHandle;
   let container: HTMLDivElement;
-  let root: Root;
+
+  async function renderPicker(onDone: () => void = vi.fn()) {
+    await view.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={onDone} />);
+  }
 
   beforeEach(async () => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.useRealTimers();
     saveProviderSecretMock.mockReset();
     runProviderProbeMock.mockReset();
@@ -100,16 +82,12 @@ describe('WelcomeLanguagePicker', () => {
       runtimeSnapshot,
     }));
 
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    view = mountTestRoot();
+    ({ container } = view);
   });
 
   afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
+    await view.cleanup();
     setTauriRuntime(false);
     vi.useRealTimers();
   });
@@ -126,9 +104,7 @@ describe('WelcomeLanguagePicker', () => {
       runtimeSnapshot,
     }));
 
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
 
     await click(getFooterButtons(container)[0]!);
 
@@ -159,9 +135,7 @@ describe('WelcomeLanguagePicker', () => {
       hasSecret: true,
     });
 
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
 
     await click(getFooterButtons(container)[0]!);
 
@@ -190,9 +164,7 @@ describe('WelcomeLanguagePicker', () => {
       runtimeSnapshot,
     }));
 
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
 
     await click(getFooterButtons(container)[0]!);
     await click(getFooterButtons(container)[1]!);
@@ -223,9 +195,7 @@ describe('WelcomeLanguagePicker', () => {
       ],
     }));
 
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
 
     await click(getFooterButtons(container)[0]!);
 
@@ -234,9 +204,7 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('navigates back to language selection from the provider step', async () => {
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
 
     const languageButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('.welcome-language-item'));
     await click(languageButtons[1]!);
@@ -249,9 +217,7 @@ describe('WelcomeLanguagePicker', () => {
 
   it('skips provider setup, returns from the driver step and completes the wizard', async () => {
     const onDone = vi.fn();
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={onDone} />);
-    });
+    await renderPicker(onDone);
 
     await click(getFooterButtons(container)[0]!);
     await click(getFooterButtons(container)[1]!);
@@ -266,9 +232,7 @@ describe('WelcomeLanguagePicker', () => {
 
   it('continues to driver setup without persisting when the API key is empty', async () => {
     const onDone = vi.fn();
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={onDone} />);
-    });
+    await renderPicker(onDone);
 
     await click(getFooterButtons(container)[0]!);
     await click(getFooterButtons(container)[2]!);
@@ -285,9 +249,7 @@ describe('WelcomeLanguagePicker', () => {
       backend: 'windows-credential-manager',
       secret: 'stored-secret',
     });
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
 
     await click(getFooterButtons(container)[0]!);
     const toggle = container.querySelector<HTMLButtonElement>('.welcome-secret-toggle')!;
@@ -305,9 +267,7 @@ describe('WelcomeLanguagePicker', () => {
       backend: 'windows-credential-manager',
       secret: null,
     });
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
 
     await click(getFooterButtons(container)[0]!);
     const toggle = container.querySelector<HTMLButtonElement>('.welcome-secret-toggle')!;
@@ -324,7 +284,7 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('falls back to the default template for an unknown selection', async () => {
-    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
     await selectValue(templateSelect, 'missing-template');
@@ -334,7 +294,7 @@ describe('WelcomeLanguagePicker', () => {
   it('does not update driver state after a late bridge refresh resolution or rejection', async () => {
     let resolveRefresh!: (value: typeof runtimeSnapshotMock) => void;
     refreshBridgeRuntimeMock.mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve; }));
-    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     await click(getFooterButtons(container)[1]!);
     await click(getFooterButtons(container)[0]!);
@@ -357,9 +317,7 @@ describe('WelcomeLanguagePicker', () => {
     useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
     saveProviderSecretMock.mockRejectedValue({ code: 'timeout', operation: 'credential-save' });
 
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
     const alternateTemplate = Array.from(templateSelect.options).find((option) => option.value !== templateSelect.value)!;
@@ -387,9 +345,7 @@ describe('WelcomeLanguagePicker', () => {
     });
     runProviderProbeMock.mockRejectedValue({ code: 'timeout', operation: 'provider-probe' });
 
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
     const nonWebsocketTemplate = Array.from(templateSelect.options).find((option) => option.value.includes('openai-compatible'))!;
@@ -411,9 +367,7 @@ describe('WelcomeLanguagePicker', () => {
     runtimeSnapshot.storage.status = 'preview';
     useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot, runtimeNotifications: [] }));
 
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
 
     expect(container.textContent).toContain('桌面运行时');
@@ -421,9 +375,7 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('reveals an entered API key locally without reading the credential backend', async () => {
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'entered-secret');
 
@@ -445,9 +397,7 @@ describe('WelcomeLanguagePicker', () => {
     saveProviderSecretMock.mockResolvedValue({ hasSecret: true });
     runProviderProbeMock.mockResolvedValue({ verdict: 'unavailable', error: { message: '  denied  ' } });
 
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
     const nonWebsocketTemplate = Array.from(templateSelect.options).find((option) => option.value.includes('openai-compatible'))!;
@@ -470,7 +420,7 @@ describe('WelcomeLanguagePicker', () => {
     runtimeSnapshot.storage.status = 'ready';
     configDraft.providers = [];
     useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
-    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'secret');
     await click(getFooterButtons(container)[2]!);
@@ -479,8 +429,8 @@ describe('WelcomeLanguagePicker', () => {
     const next = cloneStoreState();
     next.runtimeSnapshot.bridgeStatus = 'tauri-shell';
     next.runtimeSnapshot.storage.status = 'ready';
-    useAppStore.setState((state) => ({ ...state, ...next }));
-    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    useAppStore.setState((state) => ({ ...state, configDraft: next.configDraft, runtimeSnapshot: next.runtimeSnapshot }));
+    await renderPicker();
     saveProviderSecretMock.mockResolvedValue({ hasSecret: true });
     runProviderProbeMock.mockResolvedValue({ verdict: 'unavailable', error: { message: '   ' } });
     const select = container.querySelector<HTMLSelectElement>('select')!;
@@ -494,9 +444,7 @@ describe('WelcomeLanguagePicker', () => {
 
   it('shows non-error refresh failures after entering the driver step', async () => {
     refreshBridgeRuntimeMock.mockRejectedValue('bridge refresh unavailable');
-    await act(async () => {
-      root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />);
-    });
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     await click(getFooterButtons(container)[1]!);
     await act(async () => {
@@ -508,7 +456,7 @@ describe('WelcomeLanguagePicker', () => {
 
   it('shows Error refresh failures and accepts an available provider probe', async () => {
     refreshBridgeRuntimeMock.mockRejectedValueOnce(new Error('bridge Error failure'));
-    await act(async () => root.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={vi.fn()} />));
+    await renderPicker();
     await click(getFooterButtons(container)[0]!);
     await click(getFooterButtons(container)[1]!);
     await act(async () => Promise.resolve());

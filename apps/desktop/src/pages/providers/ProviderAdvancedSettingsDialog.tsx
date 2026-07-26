@@ -1,5 +1,6 @@
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../../components/icons/AppIcon';
+import ModalDialog from '../../components/ModalDialog';
 import type { ProviderCustomHeaderDraft, ProviderDraft, ProviderResponseModality } from '../../schema/config';
 import type { ProviderAuthScheme, ProviderKind, ProviderTransport } from '../../schema/provider-contract';
 import { providersPageHelpers } from './providersPageHelpers';
@@ -20,8 +21,7 @@ type Props = {
 export default function ProviderAdvancedSettingsDialog(props: Props) {
   const { t } = useTranslation();
   const draft = (patch: Partial<ProviderDraft>) => props.onProviderChange({ ...patch, status: 'draft' });
-  return <div className="provider-modal-backdrop" onClick={props.onClose} role="presentation">
-    <div aria-label={t('providers.actions.advancedSettings')} aria-modal="true" className="provider-modal provider-advanced-modal content-card page-card compact-card" onClick={(event) => event.stopPropagation()} role="dialog">
+  return <ModalDialog aria-label={t('providers.actions.advancedSettings')} className="provider-modal provider-advanced-modal content-card page-card compact-card" onClose={props.onClose} variant="provider">
       <div className="provider-panel-heading provider-panel-heading-compact"><div><h3>{t('providers.actions.advancedSettings')}</h3></div><button className="provider-header-icon" onClick={props.onClose} title={t('providers.advanced.closeTitle')} type="button"><AppIcon name="close" size={13} /></button></div>
       <div className="field-grid provider-field-grid provider-modal-grid">
         <label className="field-stack"><span>{t('providers.advanced.displayName')}</span><input className="text-input" onChange={(event) => draft({ displayName: event.target.value })} value={props.provider.displayName} /></label>
@@ -42,6 +42,5 @@ export default function ProviderAdvancedSettingsDialog(props: Props) {
         <div className="provider-setting-header provider-setting-header-compact"><div><strong>{t('providers.customHeaders.title')}</strong></div><button className="icon-button" onClick={props.onHeaderAdd} type="button"><AppIcon name="cloud" size={14} />{t('providers.customHeaders.addHeader')}</button></div>
         <div className="provider-custom-header-list">{props.provider.customHeaders.length ? props.provider.customHeaders.map((header) => <div className="provider-custom-header-item" key={header.id}><input className="text-input" onChange={(event) => props.onHeaderChange(header.id, { name: event.target.value })} placeholder={t('providers.customHeaders.namePlaceholder')} value={header.name} /><input className="text-input" onChange={(event) => props.onHeaderChange(header.id, { value: event.target.value })} placeholder={t('providers.customHeaders.valuePlaceholder')} value={header.value} /><select className="select-input" onChange={(event) => props.onHeaderChange(header.id, { enabled: event.target.value === 'true' })} value={String(header.enabled)}><option value="true">{t('providers.common.enabled')}</option><option value="false">{t('providers.common.disabled')}</option></select><button className="provider-header-icon provider-header-icon-danger" onClick={() => props.onHeaderRemove(header.id)} title={t('providers.customHeaders.deleteHeader')} type="button"><AppIcon name="close" size={13} /></button></div>) : <div className="provider-directory-empty provider-scene-empty"><strong>{t('providers.customHeaders.emptyTitle')}</strong><p>{t('providers.customHeaders.emptyDescription')}</p></div>}</div>
       </section>
-    </div>
-  </div>;
+  </ModalDialog>;
 }

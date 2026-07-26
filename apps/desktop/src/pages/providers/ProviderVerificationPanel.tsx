@@ -1,5 +1,6 @@
 import StatusBadge, { type StatusTone } from '../../components/page/StatusBadge';
 import AppIcon from '../../components/icons/AppIcon';
+import ModalDialog from '../../components/ModalDialog';
 import { useTranslation } from 'react-i18next';
 import type { ProviderProbeProfileRuntime, ProviderSmokeResult } from '../../schema/provider-runtime';
 import type { ProviderProbeView } from '../../utils/provider-probe';
@@ -30,8 +31,7 @@ export default function ProviderVerificationPanel({
   const { t } = useTranslation();
 
   return (
-    <div className="provider-modal-backdrop" onClick={onClose} role="presentation">
-      <div aria-label={t('providers.verification.title')} aria-modal="true" className="provider-modal provider-validation-modal content-card page-card compact-card" onClick={(event) => event.stopPropagation()} role="dialog">
+    <ModalDialog aria-label={t('providers.verification.title')} className="provider-modal provider-validation-modal content-card page-card compact-card" onClose={onClose} variant="provider">
         <div className="provider-panel-heading provider-panel-heading-compact">
           <div>
             <h3>{t('providers.verification.title')}</h3>
@@ -117,7 +117,6 @@ export default function ProviderVerificationPanel({
             </section>
           ) : null}
         </div>
-      </div>
-    </div>
+    </ModalDialog>
   );
 }

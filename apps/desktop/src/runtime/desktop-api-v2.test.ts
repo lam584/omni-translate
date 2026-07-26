@@ -122,8 +122,6 @@ describe('DesktopApiV2 configuration client', () => {
     await api.configuration.bootstrapRuntime();
     await api.persistence.saveDraft(config);
     await api.persistence.loadDraft();
-    await api.persistence.deleteDraft();
-    await api.persistence.availableCommands();
     await api.runtime.debugIpcPing();
     await api.runtime.bootstrapAudio();
     await api.overlay.sync(true, false, true);
@@ -168,7 +166,7 @@ describe('DesktopApiV2 configuration client', () => {
     expect(calls).toContainEqual(['toggle_subtitle_overlay', undefined]);
     expect(calls).toContainEqual(['show_subtitle_overlay', undefined]);
     expect(calls).toContainEqual(['run_model_benchmark', benchmarkPayload]);
-    expect(calls).toHaveLength(54);
+    expect(calls).toHaveLength(52);
   });
 
   it('adapts native window coordinates, sizing and popup menus', async () => {

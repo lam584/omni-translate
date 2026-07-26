@@ -73,11 +73,6 @@ pub fn bootstrap_storage(
     Ok(snapshot)
 }
 
-#[tauri::command]
-pub fn get_storage_snapshot(storage: State<'_, StorageStateStore>) -> StorageRuntimeSnapshot {
-    storage.snapshot()
-}
-
 #[tauri::command(async)]
 pub fn load_config_draft(
     app: AppHandle,

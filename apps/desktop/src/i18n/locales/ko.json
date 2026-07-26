@@ -1374,10 +1374,6 @@
       "desktopOnly": "Benchmark is only available in the desktop runtime.",
       "timeout": "Benchmark timed out ({{seconds}}s). Check the network connection or model configuration.",
       "parseFailed": "Benchmark result parsing failed: {{error}}"
-    },
-    "storage": {
-      "sqliteSaveFailed": "SqliteBackend: failed to save key \"{{key}}\"",
-      "compositeSaveFailed": "CompositeBackend: failed to save key \"{{key}}\" (both primary and fallback backends failed)"
     }
   }
 }

@@ -11,7 +11,7 @@ mod runtime;
 mod storage;
 
 use audio::events::{
-    bootstrap_audio, clear_subtitle_cues, get_audio_runtime_snapshot, preconnect_omni_realtime,
+    bootstrap_audio, clear_subtitle_cues, preconnect_omni_realtime,
     preconnect_omni_realtime_inner, refresh_audio_devices, start_audio_route,
     start_audio_route_inner, start_speech_dispatch, start_translate_worker, stop_audio_route,
     stop_speech_dispatch, stop_translate_worker,
@@ -25,7 +25,7 @@ use bridge::events::{
 };
 use bridge::state::BridgeStateStore;
 use diagnostics::events::{
-    append_diagnostics_log, append_frontend_diagnostics_log, append_frontend_diagnostics_logs,
+    append_diagnostics_log, append_frontend_diagnostics_logs,
     export_diagnostics_bundle, get_diagnostics_snapshot, get_live_session_events,
     run_diagnostics_self_check, run_subtitle_overlay_self_check, set_diagnostics_log_level,
 };
@@ -35,7 +35,7 @@ use runtime::events::sync_subtitle_overlay_window_state;
 use runtime::events::unlock_subtitle_overlay;
 use runtime::events::{
     bootstrap_runtime, emit_runtime_notification, emit_runtime_snapshot, get_runtime_snapshot,
-    show_subtitle_overlay, sync_subtitle_overlay_chrome, sync_subtitle_overlay_region,
+    show_subtitle_overlay, sync_subtitle_overlay_region,
     toggle_subtitle_overlay,
 };
 use runtime::windows::ensure_subtitle_overlay_window;
@@ -44,7 +44,7 @@ use runtime::tray::initialize_tray;
 use storage::credential::{CredentialVault, KeyringCredentialVault};
 use storage::events::{
     bootstrap_storage, create_config_snapshot, export_config_draft, get_secret_ref_status,
-    get_storage_snapshot, import_config_draft, load_config_draft, read_secret_ref,
+    import_config_draft, load_config_draft, read_secret_ref,
     reset_config_draft, rollback_config_snapshot, save_config_draft, upsert_secret_ref,
 };
 use tauri::{AppHandle, Emitter, Manager};
@@ -675,7 +675,6 @@ fn main() {
             bootstrap_runtime,
             toggle_subtitle_overlay,
             show_subtitle_overlay,
-            sync_subtitle_overlay_chrome,
             sync_subtitle_overlay_region,
             sync_subtitle_overlay_window_state,
             get_bridge_runtime_snapshot,
@@ -687,14 +686,12 @@ fn main() {
             repair_driver_runtime,
             get_diagnostics_snapshot,
             set_diagnostics_log_level,
-            append_frontend_diagnostics_log,
             append_frontend_diagnostics_logs,
             run_diagnostics_self_check,
             run_subtitle_overlay_self_check,
             export_diagnostics_bundle,
             get_live_session_events,
             bootstrap_audio,
-            get_audio_runtime_snapshot,
             refresh_audio_devices,
             preconnect_omni_realtime,
             start_audio_route,
@@ -708,7 +705,6 @@ fn main() {
             probe_provider,
             execute_provider_smoke,
             bootstrap_storage,
-            get_storage_snapshot,
             load_config_draft,
             save_config_draft,
             reset_config_draft,

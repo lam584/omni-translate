@@ -185,11 +185,6 @@ pub async fn bootstrap_audio(
 }
 
 #[tauri::command]
-pub fn get_audio_runtime_snapshot(state: State<'_, AudioStateStore>) -> AudioRuntimeSnapshot {
-    state.snapshot()
-}
-
-#[tauri::command]
 pub fn refresh_audio_devices(
     app: AppHandle,
     state: State<'_, AudioStateStore>,

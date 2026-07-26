@@ -238,12 +238,6 @@ pub fn sync_subtitle_overlay_region(app: AppHandle, rounded: bool) -> Result<(),
 }
 
 #[tauri::command]
-pub fn sync_subtitle_overlay_chrome(app: AppHandle) -> Result<(), String> {
-    let window = ensure_subtitle_overlay_window(&app).map_err(|error| error.to_string())?;
-    apply_subtitle_overlay_window_chrome(&window)
-}
-
-#[tauri::command]
 pub fn sync_subtitle_overlay_window_state(
     app: AppHandle,
     locked: bool,

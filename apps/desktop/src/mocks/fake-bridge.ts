@@ -302,7 +302,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       case 'bootstrap_audio':
         return structuredClone(audio) as T;
       case 'save_config_draft':
-      case 'append_frontend_diagnostics_log':
+      case 'append_frontend_diagnostics_logs':
         return undefined as T;
       default:
         throw new Error(`fake bridge: unsupported command ${command}`);

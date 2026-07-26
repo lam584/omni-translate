@@ -155,8 +155,6 @@ export class DesktopApiV2 {
   readonly persistence = {
     saveDraft: async <T>(config: T) => this.invokeFn<void>('save_config_draft', { config }),
     loadDraft: async <T>() => this.invokeFn<T | null>('load_config_draft'),
-    deleteDraft: async () => this.invokeFn<void>('delete_config_draft'),
-    availableCommands: async () => this.invokeFn<string[]>('list_commands'),
   };
 
   /** Startup-orchestration commands used by the desktop runtime bootstrap. */

@@ -366,7 +366,7 @@ pub struct FrontendDiagnosticsBatchEntry {
 
 /// Batched frontend log ingestion (renderer logger flushes up to ~100 entries
 /// per call instead of one IPC round trip per line). `async` + quiet appends
-/// for the same reasons as `append_frontend_diagnostics_log` below.
+/// for the same reasons as `append_frontend_diagnostics_logs` below.
 #[tauri::command]
 pub async fn append_frontend_diagnostics_logs(
     app: AppHandle,
@@ -403,31 +403,6 @@ pub async fn append_frontend_diagnostics_logs(
     }
 
     Ok(())
-}
-
-/// Deprecated: superseded by the batched `append_frontend_diagnostics_logs`.
-/// Kept until every external caller is gone (no production frontend code
-/// invokes it any more); remove in the next major version.
-#[tauri::command]
-pub async fn append_frontend_diagnostics_log(
-    app: AppHandle,
-    category: String,
-    level: String,
-    summary: String,
-    detail: Option<String>,
-) -> Result<(), String> {
-    // `async` so this high-frequency, frontend-driven command runs on a worker
-    // thread rather than the main/UI thread that also services the WebView2 IPC
-    // custom-protocol handler. A burst of *sync* forwarded log lines on the main
-    // thread starved that handler and stalled concurrent invokes (e.g. the
-    // startup ping / `bootstrap_runtime`).
-    //
-    // Use the *quiet* append: a frontend-originated log line must never trigger
-    // `emit_runtime_snapshot`. Emitting a full snapshot back into the webview on
-    // every forwarded log creates a backend->frontend event storm that races the
-    // invoke-response channel in WebView2. The renderer already has its state; it
-    // only needs the log recorded, not echoed back.
-    append_diagnostics_log_quiet(&app, &category, &level, summary, detail, None, None)
 }
 
 #[tauri::command]

@@ -27,17 +27,38 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-# npm 11 treats PowerShell-style single-dash options as npm config and forwards
-# only their value. Preserve the documented npm command without weakening direct
-# -Fixture validation for callers outside this lifecycle script.
+# npm 11 swallows PowerShell-style single-dash options after "npm run ... --"
+# and forwards only their values, so "-FixtureRoot X:\fixtures" or
+# "-FeedbackLoopPrevention echo-cancel" arrives here as a bare value that binds
+# positionally to -Fixture. Because "-Fixture" itself can never survive npm
+# forwarding, any caller-bound value under these lifecycles is an orphaned
+# value of some swallowed option. Fail fast with npm-safe alternatives instead
+# of running with silently misbound arguments.
 if (
-  $DryRun -and
-  $env:npm_lifecycle_event -eq "test:watch-mode-live:dry-run" -and
-  $Fixture -in @("virtual-driver", "echo-cancel") -and
-  $FeedbackLoopPrevention -eq "virtual-driver"
+  $env:npm_lifecycle_event -in @("test:watch-mode-live", "test:watch-mode-live:dry-run") -and
+  $PSBoundParameters.ContainsKey("Fixture")
 ) {
-  $FeedbackLoopPrevention = $Fixture
-  $Fixture = "pass"
+  throw (
+    "npm forwarded only the value '$Fixture' because npm 11 swallows single-dash options after 'npm run ... --'. " +
+    "Set OMNI_WATCH_MODE_LIVE_FIXTURE, OMNI_WATCH_MODE_LIVE_FIXTURE_ROOT, or " +
+    "OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION before 'npm run', or invoke the runner directly: " +
+    "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/run-watch-mode-live.ps1 [-DryRun] -FeedbackLoopPrevention echo-cancel"
+  )
+}
+
+# npm-safe environment overrides for parameters that npm cannot forward as
+# single-dash options. Explicit parameters always win over these fallbacks.
+if (-not $PSBoundParameters.ContainsKey("Fixture") -and $env:OMNI_WATCH_MODE_LIVE_FIXTURE) {
+  $Fixture = $env:OMNI_WATCH_MODE_LIVE_FIXTURE
+}
+if (-not $PSBoundParameters.ContainsKey("FixtureRoot") -and $env:OMNI_WATCH_MODE_LIVE_FIXTURE_ROOT) {
+  $FixtureRoot = $env:OMNI_WATCH_MODE_LIVE_FIXTURE_ROOT
+}
+if (-not $PSBoundParameters.ContainsKey("FeedbackLoopPrevention") -and $env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION) {
+  if ($env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION -notin @("virtual-driver", "echo-cancel")) {
+    throw "OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION must be 'virtual-driver' or 'echo-cancel'; got '$($env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION)'."
+  }
+  $FeedbackLoopPrevention = $env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION
 }
 
 function New-WatchModeOutputDirectory {

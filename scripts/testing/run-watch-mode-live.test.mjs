@@ -347,6 +347,30 @@ test('live runner threads FeedbackLoopPrevention through env, snapshots, and dry
   assert(dryRunMismatchIndex < dryRunArtifactIndex);
 });
 
+test('live runner fails fast on npm-swallowed single-dash options and honors env overrides', () => {
+  const lifecycleGateIndex = script.indexOf('$env:npm_lifecycle_event -in @("test:watch-mode-live", "test:watch-mode-live:dry-run")');
+  const boundFixtureIndex = script.indexOf('$PSBoundParameters.ContainsKey("Fixture")', lifecycleGateIndex);
+  const throwIndex = script.indexOf("npm 11 swallows single-dash options after 'npm run ... --'", lifecycleGateIndex);
+  const fixtureEnvIndex = script.indexOf('-not $PSBoundParameters.ContainsKey("Fixture") -and $env:OMNI_WATCH_MODE_LIVE_FIXTURE');
+  const fixtureRootEnvIndex = script.indexOf('-not $PSBoundParameters.ContainsKey("FixtureRoot") -and $env:OMNI_WATCH_MODE_LIVE_FIXTURE_ROOT');
+  const feedbackEnvIndex = script.indexOf('-not $PSBoundParameters.ContainsKey("FeedbackLoopPrevention") -and $env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION');
+  const feedbackEnvValidationIndex = script.indexOf("OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION must be 'virtual-driver' or 'echo-cancel'", feedbackEnvIndex);
+
+  assert.notEqual(lifecycleGateIndex, -1, 'runner must scope swallowed-option detection to the npm watch-mode-live lifecycles');
+  assert.notEqual(boundFixtureIndex, -1, 'runner must treat any caller-bound -Fixture under npm lifecycles as a swallowed-option value');
+  assert.notEqual(throwIndex, -1, 'runner must fail fast with npm-safe guidance instead of misbinding arguments');
+  assert.equal(script.indexOf('$FeedbackLoopPrevention = $Fixture'), -1, 'runner must not silently rewrite -Fixture into -FeedbackLoopPrevention');
+  assert.notEqual(fixtureEnvIndex, -1, 'runner must honor OMNI_WATCH_MODE_LIVE_FIXTURE when -Fixture is not bound');
+  assert.notEqual(fixtureRootEnvIndex, -1, 'runner must honor OMNI_WATCH_MODE_LIVE_FIXTURE_ROOT when -FixtureRoot is not bound');
+  assert.notEqual(feedbackEnvIndex, -1, 'runner must honor OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION when -FeedbackLoopPrevention is not bound');
+  assert.notEqual(feedbackEnvValidationIndex, -1, 'runner must validate the feedback-mode env override against the supported set');
+  assert(lifecycleGateIndex < boundFixtureIndex);
+  assert(boundFixtureIndex < throwIndex);
+  assert(throwIndex < fixtureEnvIndex);
+  assert(fixtureEnvIndex < fixtureRootEnvIndex);
+  assert(fixtureRootEnvIndex < feedbackEnvIndex);
+});
+
 test('live runner records physical output evidence in the required order', () => {
   const physicalProbeIndex = script.indexOf('Invoke-Step "physical output loopback probe"');
   const setDesktopOutputIndex = script.indexOf('Set-DesktopPhysicalPlaybackOverride (Get-PhysicalOutputResolvedDeviceId $physicalOutputProbe)', physicalProbeIndex);

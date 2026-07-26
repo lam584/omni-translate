@@ -26,13 +26,17 @@ if (minTranslationCoverage !== null && (!Number.isFinite(minTranslationCoverage)
 }
 
 const placeholderPattern = /{{\s*[\w.]+\s*}}/g;
+// Exact machine-translation failure markers leaked by the MyMemory API, e.g.
+// "MYMEMORY WARNING: YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. ...
+// VISIT HTTPS://MYMEMORY.TRANSLATED.NET/DOC/USAGELIMITS.PHP ...". A superset
+// of REJECTED_TRANSLATION_MARKERS in apps/desktop/src/i18n/config.ts; keep
+// each pattern narrow enough that legitimate provider mentions (a "MyMemory"
+// label or a generic translated.net help link) do not trip this blocking
+// gate — only the usage-limits leak URL itself still matches.
 const rejectedTranslationPatterns = [
-  /MYMEMORY/i,
-  /TRANSLATED\.NET/i,
-  /USAGELIMITS/i,
-  /FREE TRANSLATIONS FOR TODAY/i,
-  // All-caps URL fragments leaked from machine-translation providers.
-  /HTTPS?:\/\/[A-Z0-9./_-]{8,}/,
+  /MYMEMORY WARNING:/i,
+  /MYMEMORY[\s.]TRANSLATED\.NET\/DOC\/USAGELIMITS/i,
+  /YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY/i,
 ];
 const allowedSameAsSourceKeys = new Set([
   'audioRouting.tagStt',

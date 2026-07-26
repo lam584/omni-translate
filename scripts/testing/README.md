@@ -164,15 +164,24 @@ npm run generate:watch-mode-live-fixtures
 Run the echo-cancel variant with:
 
 ```powershell
-npm run test:watch-mode-live:dry-run -- -FeedbackLoopPrevention echo-cancel
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/run-watch-mode-live.ps1 -DryRun -FeedbackLoopPrevention echo-cancel
 ```
 
-The runner normalizes the argument forwarding used by current npm versions,
-which otherwise pass only the `echo-cancel` value to PowerShell.
+npm 11 swallows single-dash options after `npm run ... --` and forwards only
+their values, so PowerShell-style runner options cannot be passed through the
+npm scripts. The runner fails fast when it detects such a misbound value. To
+keep using `npm run test:watch-mode-live` or the dry-run script, set the
+environment-variable overrides instead:
+
+```powershell
+$env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION = "echo-cancel"
+npm run test:watch-mode-live:dry-run
+```
 
 Only the built-in `pass` fixture is generated automatically. A missing custom
-`-Fixture` remains an error; use `-FixtureRoot` to point the runner at a local
-custom fixture collection.
+fixture remains an error; select one with `-Fixture` and `-FixtureRoot` on a
+direct `powershell.exe -File` invocation, or with `OMNI_WATCH_MODE_LIVE_FIXTURE`
+and `OMNI_WATCH_MODE_LIVE_FIXTURE_ROOT` when going through `npm run`.
 
 Run the live watch-mode diagnostic on Windows:
 
@@ -180,10 +189,12 @@ Run the live watch-mode diagnostic on Windows:
 npm run test:watch-mode-live
 ```
 
-Run the strict two-model matrix on Windows:
+Run the strict two-model matrix on Windows. Matrix options are single-dash
+PowerShell parameters, so invoke the script directly instead of going through
+`npm run ... --`:
 
 ```powershell
-npm run test:watch-mode-live:matrix -- -SkipDriverRepair -AllowElevatedDesktopLaunch -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/run-watch-mode-live-matrix.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90
 ```
 
 The live command builds the native bridge, probes the virtual speaker driver,

@@ -412,6 +412,9 @@ fn run_omni_worker(
         manual_response_pending = commit_state.manual_response_pending;
         manual_response_item_id = commit_state.manual_response_item_id;
         if commit_state.manual_turn_timed_out {
+            if let Some(cue_id) = current_cue_id.as_deref() {
+                store.discard_uncommitted_subtitle_cue(cue_id);
+            }
             reset_omni_turn_state(
                 &mut current_cue_id,
                 &mut pending_source_text,

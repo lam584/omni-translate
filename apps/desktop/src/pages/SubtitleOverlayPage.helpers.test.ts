@@ -152,6 +152,39 @@ describe('subtitle overlay page helpers', () => {
     expect(timeline.cues[1].historySegments).toHaveLength(0);
   });
 
+  it('selects mismatched live source and translation tails independently', () => {
+    const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    const sourceLines = ['source one', 'source two', 'source three', 'source four'];
+    const translatedLines = ['译文第一行', '译文第二行', '译文第三行'];
+    cue.committed = false;
+    cue.sourceText = sourceLines.join('\n');
+    cue.displaySourceText = cue.sourceText;
+    cue.translatedText = translatedLines.join('\n');
+    cue.displaySegments = sourceLines.map((sourceText, index) => ({
+      sourceText,
+      translatedText: translatedLines[index] ?? '',
+      pending: index === 2 || index === 3,
+    }));
+
+    const timeline = subtitleOverlayPageHelpers.getOverlayTimeline([cue]);
+
+    expect(timeline.liveSegment).toMatchObject({
+      sourceText: 'source four',
+      translatedText: '译文第三行',
+      pending: true,
+    });
+    expect(timeline.cues[0].historySegments.map((segment) => segment.translatedText).filter(Boolean))
+      .toEqual(['译文第一行', '译文第二行']);
+    expect(timeline.cues[0].historySegments.map((segment) => segment.sourceText).filter(Boolean))
+      .toEqual(['source one', 'source two', 'source three']);
+
+    cue.committed = true;
+    const committedTimeline = subtitleOverlayPageHelpers.getOverlayTimeline([cue]);
+    expect(committedTimeline.liveSegment).toBeNull();
+    expect(committedTimeline.cues[0].historySegments.map((segment) => segment.translatedText).filter(Boolean))
+      .toEqual(translatedLines);
+  });
+
   it('pads explicit source rows when translation wraps onto more lines', () => {
     const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
     cue.displaySegments = [{ sourceText: 'one source line', translatedText: 'first translation\nsecond translation', pending: false }];

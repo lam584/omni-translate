@@ -889,6 +889,70 @@ describe('SubtitleOverlayPage locked interaction', () => {
     expect(container.querySelector('.subtitle-overlay-stream-slot')?.className).toContain('subtitle-overlay-stream-slot-active');
   });
 
+  it('streams independently pending Omni source and translation tails without duplicating history', async () => {
+    const sourceLines = [
+      'Omni source line one',
+      'Omni source line two',
+      'Omni source line three',
+      'Omni source line four',
+    ];
+    const translationSteps = [
+      ['Omni 译文一'],
+      ['Omni 译文一', 'Omni 译文二'],
+      ['Omni 译文一', 'Omni 译文二', 'Omni 译文三'],
+    ];
+    const updateOmniSegments = async (translatedLines: string[], committed = false) => {
+      await act(async () => {
+        useAppStore.setState((state) => {
+          const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+          const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+          cue.sourceText = sourceLines.join('\n');
+          cue.displaySourceText = cue.sourceText;
+          cue.translatedText = translatedLines.join('\n');
+          cue.displaySegments = sourceLines.map((sourceText, index) => ({
+            sourceText,
+            translatedText: translatedLines[index] ?? '',
+            pending: !committed && (
+              index === sourceLines.length - 1 || index === translatedLines.length - 1
+            ),
+          }));
+          cue.committed = committed;
+          nextSnapshot.subtitleOverlay.activeCue = cue;
+          return { ...state, audioRuntimeSnapshot: nextSnapshot };
+        });
+      });
+    };
+    const expectStreamingStep = (translatedLines: string[]) => {
+      const latestTranslation = translatedLines.at(-1);
+      const historyTranslations = Array.from(
+        container.querySelectorAll('.subtitle-overlay-history .subtitle-overlay-translation'),
+      ).map((element) => element.textContent).filter(Boolean);
+
+      expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe(sourceLines.at(-1));
+      expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe(latestTranslation);
+      expect(historyTranslations).toEqual(translatedLines.slice(0, -1));
+      expect(container.querySelector('.subtitle-overlay-history')?.textContent).not.toContain(latestTranslation);
+    };
+
+    await updateOmniSegments(translationSteps[0]);
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    expectStreamingStep(translationSteps[0]);
+
+    await updateOmniSegments(translationSteps[1]);
+    expectStreamingStep(translationSteps[1]);
+
+    await updateOmniSegments(translationSteps[2]);
+    expectStreamingStep(translationSteps[2]);
+
+    await updateOmniSegments(translationSteps[2], true);
+    expect(container.querySelector('.subtitle-overlay-stream-slot')?.textContent?.trim()).toBe('');
+    expect(Array.from(
+      container.querySelectorAll('.subtitle-overlay-history .subtitle-overlay-translation'),
+    ).map((element) => element.textContent).filter(Boolean)).toEqual(translationSteps[2]);
+  });
+
   it('keeps an uncommitted Omni fallback cue in the live rows while both hypotheses iterate', async () => {
     const updateOmniCue = async (sourceText: string, translatedText: string, committed: boolean) => {
       await act(async () => {

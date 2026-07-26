@@ -4,6 +4,8 @@ pub(super) struct OmniAudioPumpState {
     pub(super) buffer_size: u64,
     pub(super) reconnect_count: usize,
     pub(super) chunk_count: u64,
+    /// At least one above-threshold input chunk was sent in the current manual
+    /// turn. Silence-grace frames must not create another turn by themselves.
     pub(super) sent_audio_since_commit: bool,
     pub(super) session_ready_for_audio: bool,
     pub(super) pre_session_audio_queue: VecDeque<Vec<u8>>,
@@ -188,7 +190,10 @@ impl OmniAudioPump {
             }
             buffer_size = buffer_size.wrapping_add(raw_chunk.len() as u64);
             chunk_count += 1;
-            sent_audio_since_commit = true;
+            sent_audio_since_commit = manual_turn_has_audible_input(
+                sent_audio_since_commit,
+                chunk_rms,
+            );
             chunks_sent_this_tick += 1;
 
             if chunk_count == 1 {
@@ -304,4 +309,11 @@ impl OmniAudioPump {
             chunks_sent_this_tick,
         })
     }
+}
+
+pub(super) fn manual_turn_has_audible_input(
+    already_audible: bool,
+    chunk_rms: f32,
+) -> bool {
+    already_audible || chunk_rms >= OMNI_ASR_MIN_CHUNK_RMS
 }

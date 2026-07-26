@@ -203,6 +203,7 @@ struct OmniEventDiagnostics {
     current_cue_origin: Option<String>,
     last_asr_delta_text: String,
     last_asr_delta_at_ms: Option<u64>,
+    last_asr_delta_item_id: Option<String>,
     last_asr_completed_text: String,
     last_asr_completed_at_ms: Option<u64>,
     empty_asr_completed_count: u64,
@@ -470,6 +471,7 @@ fn reset_omni_turn_state(
     pending_translated_text.clear();
     *current_cue_id = None;
     event_diagnostics.current_cue_origin = None;
+    event_diagnostics.last_asr_delta_item_id = None;
     *transcription_completed_flag = false;
     *transcription_completed_at = None;
 }
@@ -522,8 +524,12 @@ fn write_live_source_to_cue(
     store: &AudioStateStore,
     current_cue_id: &mut Option<String>,
     source_text: &str,
+    defer_secondary_translation: bool,
 ) -> String {
     let cue_id = ensure_transcription_cue_id(current_cue_id);
+    if defer_secondary_translation {
+        store.defer_subtitle_cue_translation(&cue_id);
+    }
     store.update_or_push_stt_cue(&cue_id, source_text, false);
     cue_id
 }
@@ -566,11 +572,29 @@ fn write_native_output_final_to_cue(
     cue_id
 }
 
-fn preserve_last_non_empty_transcription(pending: &str, completed: &str) -> String {
-    if completed.trim().is_empty() {
-        pending.to_string()
-    } else {
-        completed.to_string()
+struct ResolvedCompletedTranscription {
+    display_text: String,
+    response_gate_text: String,
+}
+
+fn resolve_completed_transcription(
+    pending: &str,
+    completed: &str,
+    pending_matches_completed_item: bool,
+) -> ResolvedCompletedTranscription {
+    ResolvedCompletedTranscription {
+        display_text: if completed.trim().is_empty() {
+            pending.to_string()
+        } else {
+            completed.to_string()
+        },
+        response_gate_text: if completed.trim().is_empty()
+            && pending_matches_completed_item
+        {
+            pending.to_string()
+        } else {
+            completed.to_string()
+        },
     }
 }
 
@@ -620,11 +644,27 @@ fn write_native_translation_payload_to_cue(
         .any(|(index, source)| !source.trim().is_empty() && translated_lines.get(index).is_none_or(|translated| translated.trim().is_empty()));
     let keep_live_tail = streaming
         && (has_untranslated_source || !has_terminal_subtitle_boundary(translated_text));
+    // Source and translation wrap independently. When their line counts differ,
+    // the two live tails must remain independently identifiable instead of
+    // marking only the final row of the wider column.
+    let pending_source_index = if keep_live_tail {
+        source_lines.len().checked_sub(1)
+    } else {
+        None
+    };
+    let pending_translation_index = if streaming
+        && !has_terminal_subtitle_boundary(translated_text)
+    {
+        translated_lines.len().checked_sub(1)
+    } else {
+        None
+    };
     let display_segments = (0..line_count)
         .map(|index| SubtitleDisplaySegmentRuntime {
             source_text: source_lines.get(index).cloned().unwrap_or_default(),
             translated_text: translated_lines.get(index).cloned().unwrap_or_default(),
-            pending: keep_live_tail && index + 1 == line_count,
+            pending: pending_source_index == Some(index)
+                || pending_translation_index == Some(index),
         })
         .collect();
     store.update_or_push_stt_cue(cue_id, &display_source_text, false);

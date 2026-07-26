@@ -15,8 +15,14 @@ pub(super) struct OmniAsrEventState {
 pub(super) struct OmniAsrEventResult {
     pub(super) state: OmniAsrEventState,
     pub(super) skip_tick: bool,
-    /// Effective final transcript for the just-committed manual turn.
+    /// Effective gate transcript for the just-committed manual turn. The raw
+    /// final wins; a non-empty delta is used only when the provider correlates
+    /// it to this completed item, so an older hypothesis cannot create a new
+    /// response.
     pub(super) completed_source_text: Option<String>,
+    /// Cue created by this completed input item. This remains available even
+    /// when the secondary subtitle path releases `current_cue_id` immediately.
+    pub(super) completed_cue_id: Option<String>,
 }
 
 pub(super) struct OmniAsrEventProcessor;
@@ -32,6 +38,7 @@ impl OmniAsrEventProcessor {
         session_started_at: &SystemTime,
         subtitle_translate_active: bool,
         native_translation_reuse_active: bool,
+        defer_secondary_translation: bool,
         total_input_chunks: u64,
         first_audio_sent_ms: Option<u64>,
         first_audible_chunk_ms: Option<u64>,
@@ -50,6 +57,7 @@ impl OmniAsrEventProcessor {
             mut event_diagnostics,
         } = state;
         let mut completed_source_text = None;
+        let mut completed_cue_id = None;
         match event_type {
             "input_audio_buffer.speech_started" => {
                 last_vad_event_time = SystemTime::now();
@@ -123,6 +131,7 @@ impl OmniAsrEventProcessor {
                                         },
                                         skip_tick: true,
                                         completed_source_text: None,
+                                        completed_cue_id: None,
                                     };
                 }
                 last_vad_event_time = SystemTime::now();
@@ -138,6 +147,7 @@ impl OmniAsrEventProcessor {
                         store,
                         &mut current_cue_id,
                         &pending_source_text,
+                        defer_secondary_translation,
                     );
                 }
                 if event_diagnostics.current_cue_origin.is_none()
@@ -149,6 +159,8 @@ impl OmniAsrEventProcessor {
                 event_diagnostics.last_asr_delta_text = pending_source_text.clone();
                 event_diagnostics.last_asr_delta_at_ms =
                     Some(elapsed_ms_since(&session_started_at));
+                event_diagnostics.last_asr_delta_item_id =
+                    evt["item_id"].as_str().map(str::to_string);
                 let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
                 store.live_session_events.push_asr_delta(
                     event_type,
@@ -168,9 +180,24 @@ impl OmniAsrEventProcessor {
                 last_vad_event_time = SystemTime::now();
                 vad_event_count += 1;
                 let source = evt["transcript"].as_str().unwrap_or("");
-                pending_source_text =
-                    preserve_last_non_empty_transcription(&pending_source_text, source);
-                completed_source_text = Some(pending_source_text.clone());
+                let completed_item_id = evt["item_id"].as_str();
+                let pending_matches_completed_item = completed_item_id.is_some()
+                    && event_diagnostics.last_asr_delta_item_id.as_deref()
+                        == completed_item_id;
+                let resolved = resolve_completed_transcription(
+                    &pending_source_text,
+                    source,
+                    pending_matches_completed_item,
+                );
+                pending_source_text = resolved.display_text;
+                completed_source_text = Some(resolved.response_gate_text);
+                if !pending_source_text.trim().is_empty() {
+                    let cue_id = ensure_transcription_cue_id(&mut current_cue_id);
+                    if defer_secondary_translation {
+                        store.defer_subtitle_cue_translation(&cue_id);
+                    }
+                    completed_cue_id = Some(cue_id);
+                }
                 event_diagnostics.last_asr_completed_text =
                     source.to_string();
                 event_diagnostics.last_asr_completed_at_ms =
@@ -258,6 +285,7 @@ impl OmniAsrEventProcessor {
             },
             skip_tick: false,
             completed_source_text,
+            completed_cue_id,
         }
     }
 }

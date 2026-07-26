@@ -379,7 +379,10 @@ impl SubtitleTranslationWorker {
             .subtitle_overlay
             .recent_cues
             .iter()
-            .filter(|cue| !cue.committed)
+            .filter(|cue| {
+                !cue.committed
+                    && store.subtitle_cue_translation_allowed(&cue.cue_id)
+            })
             .collect();
         let uncommitted_ids: HashSet<String> = uncommitted_cues
             .iter()
@@ -453,7 +456,10 @@ impl SubtitleTranslationWorker {
                 .subtitle_overlay
                 .recent_cues
                 .iter()
-                .any(|cue| !cue.committed);
+                .any(|cue| {
+                    !cue.committed
+                        && store.subtitle_cue_translation_allowed(&cue.cue_id)
+                });
 
         let should_log_heartbeat = if is_idle {
             loop_count.is_multiple_of(1000)
@@ -468,7 +474,10 @@ impl SubtitleTranslationWorker {
                 .subtitle_overlay
                 .recent_cues
                 .iter()
-                .filter(|cue| !cue.committed)
+                .filter(|cue| {
+                    !cue.committed
+                        && store.subtitle_cue_translation_allowed(&cue.cue_id)
+                })
                 .count();
             let _ = diag_log(
                 &app,

@@ -4,12 +4,21 @@ use std::collections::HashSet;
 const MANUAL_COMMIT_INTERVAL_SECS: u64 = 10;
 const MANUAL_RESPONSE_TIMEOUT_SECS: u64 = 30;
 pub(super) const RECENT_OUTPUT_ECHO_WINDOW_MS: u64 = 30_000;
+// One manual turn is ten seconds. The extra two seconds cover provider ASR
+// completion latency while retaining only the capture evidence for this turn.
+pub(super) const MANUAL_ECHO_ACTIVITY_WINDOW: Duration = Duration::from_secs(12);
+// Normal media plus translated playback is preserved by the AEC double-talk
+// path. A paused source recapturing only local playback produces a sustained,
+// much higher suppressed-chunk share; require both duration and ratio evidence.
+const MIN_ECHO_ACTIVITY_CHUNKS: u64 = 120;
+const ECHO_DOMINATED_PERCENT: u64 = 35;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ManualResponseDecision {
     Create,
     SkipEmpty,
     SkipRecentOutputEcho,
+    SkipEchoDominatedPlayback,
 }
 
 pub(super) fn classify_manual_response(
@@ -17,15 +26,21 @@ pub(super) fn classify_manual_response(
     recent_output: &str,
     recent_output_age_ms: Option<u64>,
     echo_guard_enabled: bool,
+    echo_dominated_input: bool,
 ) -> ManualResponseDecision {
     if source.trim().is_empty() {
         return ManualResponseDecision::SkipEmpty;
     }
-    if echo_guard_enabled
-        && recent_output_age_ms.is_some_and(|age| age <= RECENT_OUTPUT_ECHO_WINDOW_MS)
-        && texts_are_probable_echoes(source, recent_output)
-    {
-        return ManualResponseDecision::SkipRecentOutputEcho;
+    let recent_output_is_active = echo_guard_enabled
+        && !recent_output.trim().is_empty()
+        && recent_output_age_ms.is_some_and(|age| age <= RECENT_OUTPUT_ECHO_WINDOW_MS);
+    if recent_output_is_active {
+        if texts_are_probable_echoes(source, recent_output) {
+            return ManualResponseDecision::SkipRecentOutputEcho;
+        }
+        if echo_dominated_input {
+            return ManualResponseDecision::SkipEchoDominatedPlayback;
+        }
     }
     ManualResponseDecision::Create
 }
@@ -38,6 +53,7 @@ pub(super) fn classify_completed_manual_response(
     recent_output: &str,
     recent_output_age_ms: Option<u64>,
     echo_guard_enabled: bool,
+    echo_dominated_input: bool,
 ) -> Option<ManualResponseDecision> {
     if !manual_response_pending
         || committed_item_id.is_none()
@@ -51,8 +67,26 @@ pub(super) fn classify_completed_manual_response(
             recent_output,
             recent_output_age_ms,
             echo_guard_enabled,
+            echo_dominated_input,
         )
     })
+}
+
+pub(super) fn recent_echo_input_is_dominated(
+    total_chunks: u64,
+    suppressed_chunks: u64,
+) -> bool {
+    total_chunks >= MIN_ECHO_ACTIVITY_CHUNKS
+        && suppressed_chunks
+            .saturating_mul(100)
+            >= total_chunks.saturating_mul(ECHO_DOMINATED_PERCENT)
+}
+
+pub(super) fn manual_turn_cue_to_discard<'a>(
+    completed_cue_id: Option<&'a str>,
+    current_cue_id: Option<&'a str>,
+) -> Option<&'a str> {
+    completed_cue_id.or(current_cue_id)
 }
 
 fn texts_are_probable_echoes(source: &str, output: &str) -> bool {
@@ -264,7 +298,7 @@ mod manual_response_gate_tests {
     #[test]
     fn rejects_empty_transcriptions() {
         assert_eq!(
-            classify_manual_response("  ", "previous output", Some(500), true),
+            classify_manual_response("  ", "previous output", Some(500), true, false),
             ManualResponseDecision::SkipEmpty
         );
     }
@@ -280,6 +314,7 @@ mod manual_response_gate_tests {
                 "",
                 None,
                 true,
+                false,
             ),
             None
         );
@@ -292,6 +327,7 @@ mod manual_response_gate_tests {
                 "",
                 None,
                 true,
+                false,
             ),
             Some(ManualResponseDecision::Create)
         );
@@ -304,6 +340,7 @@ mod manual_response_gate_tests {
                 "",
                 None,
                 true,
+                false,
             ),
             None
         );
@@ -320,6 +357,7 @@ mod manual_response_gate_tests {
                 "",
                 None,
                 true,
+                false,
             ),
             None
         );
@@ -332,6 +370,7 @@ mod manual_response_gate_tests {
                 "",
                 None,
                 true,
+                false,
             ),
             None
         );
@@ -345,6 +384,7 @@ mod manual_response_gate_tests {
                 "是的，就是这样！",
                 Some(9_500),
                 true,
+                false,
             ),
             ManualResponseDecision::SkipRecentOutputEcho
         );
@@ -354,9 +394,36 @@ mod manual_response_gate_tests {
                 "Yes, that is exactly right.",
                 Some(1_000),
                 true,
+                false,
             ),
             ManualResponseDecision::SkipRecentOutputEcho
         );
+    }
+
+    #[test]
+    fn rejects_echo_dominated_asr_in_any_language_during_recent_playback() {
+        assert_eq!(
+            classify_manual_response(
+                "这是直播版。我天，你快到我家过生日。",
+                "这个视频将向你展示未来有多么史诗般。",
+                Some(8_000),
+                true,
+                true,
+            ),
+            ManualResponseDecision::SkipEchoDominatedPlayback
+        );
+        assert_eq!(
+            classify_manual_response(
+                "A garbled replay in a Latin script",
+                "The previous translated playback is different",
+                Some(2_000),
+                true,
+                true,
+            ),
+            ManualResponseDecision::SkipEchoDominatedPlayback
+        );
+        assert!(recent_echo_input_is_dominated(360, 190));
+        assert!(!recent_echo_input_is_dominated(360, 28));
     }
 
     #[test]
@@ -367,16 +434,51 @@ mod manual_response_gate_tests {
                 "previous output",
                 Some(500),
                 true,
+                false,
             ),
             ManualResponseDecision::Create
         );
         assert_eq!(
-            classify_manual_response("same sentence", "same sentence", Some(31_000), true),
+            classify_manual_response(
+                "视频里本来就有的中文对白",
+                "先前播放的中文译音",
+                Some(500),
+                true,
+                false,
+            ),
             ManualResponseDecision::Create
         );
         assert_eq!(
-            classify_manual_response("same sentence", "same sentence", Some(500), false),
+            classify_manual_response(
+                "same sentence",
+                "same sentence",
+                Some(31_000),
+                true,
+                true,
+            ),
             ManualResponseDecision::Create
+        );
+        assert_eq!(
+            classify_manual_response(
+                "same sentence",
+                "same sentence",
+                Some(500),
+                false,
+                true,
+            ),
+            ManualResponseDecision::Create
+        );
+    }
+
+    #[test]
+    fn secondary_turn_cleanup_keeps_the_completed_cue_id_after_current_is_released() {
+        assert_eq!(
+            manual_turn_cue_to_discard(Some("completed-secondary-cue"), None),
+            Some("completed-secondary-cue"),
+        );
+        assert_eq!(
+            manual_turn_cue_to_discard(None, Some("current-native-cue")),
+            Some("current-native-cue"),
         );
     }
 }

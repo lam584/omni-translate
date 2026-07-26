@@ -288,41 +288,75 @@ export type OverlayTimeline = {
 };
 
 /**
- * Builds one ordered overlay timeline. Every readable segment except the
- * newest pending tail belongs to history, so fast or overlapping providers can
- * never concatenate several unfinished sentences into the fixed live slot.
+ * Builds one ordered overlay timeline. Source and translation wrap at
+ * different widths, so their newest pending rows are selected independently
+ * and combined only for the fixed live slot. Every other readable field stays
+ * in history, including unfinished rows from older overlapping cues.
  */
 export function getOverlayTimeline(cues: SubtitleCueRuntime[]): OverlayTimeline {
   const segmentsByCue = cues.map((cue) => getCueDisplaySegments(cue));
   let liveCueIndex = -1;
-  let liveSegmentIndex = -1;
+  let liveSourceSegmentIndex = -1;
+  let liveTranslationSegmentIndex = -1;
   let liveSourceTail = '';
 
   cues.forEach((cue, cueIndex) => {
     const segments = segmentsByCue[cueIndex];
-    let pendingIndex = -1;
+    let pendingSourceIndex = -1;
+    let pendingTranslationIndex = -1;
     segments.forEach((segment, segmentIndex) => {
-      if (segment.pending) pendingIndex = segmentIndex;
+      if (!segment.pending) return;
+      if (segment.sourceText.trim()) pendingSourceIndex = segmentIndex;
+      if (segment.translatedText.trim()) pendingTranslationIndex = segmentIndex;
     });
     const sourceTail = cue.committed ? '' : getCueLiveSourceTail(cue);
-    if (pendingIndex >= 0 || sourceTail) {
+    if (pendingSourceIndex >= 0 || pendingTranslationIndex >= 0 || sourceTail) {
       liveCueIndex = cueIndex;
-      liveSegmentIndex = pendingIndex;
+      liveSourceSegmentIndex = pendingSourceIndex;
+      liveTranslationSegmentIndex = pendingTranslationIndex;
       liveSourceTail = sourceTail;
     }
   });
 
+  const liveSegments = liveCueIndex >= 0 ? segmentsByCue[liveCueIndex] : [];
+  const liveSourceText = liveSourceSegmentIndex >= 0
+    ? liveSegments[liveSourceSegmentIndex]?.sourceText ?? ''
+    : '';
+  const liveTranslatedText = liveTranslationSegmentIndex >= 0
+    ? liveSegments[liveTranslationSegmentIndex]?.translatedText ?? ''
+    : '';
+  const liveSegment = liveSourceText || liveTranslatedText
+    ? {
+        id: `${cues[liveCueIndex].cueId}-live`,
+        sourceText: liveSourceText,
+        translatedText: liveTranslatedText,
+        pending: true,
+      }
+    : null;
+
   return {
     cues: cues.map((cue, cueIndex) => ({
       cue,
-      historySegments: segmentsByCue[cueIndex].filter((_, segmentIndex) => (
-        cueIndex !== liveCueIndex || segmentIndex !== liveSegmentIndex
-      )),
+      historySegments: segmentsByCue[cueIndex]
+        .map((segment, segmentIndex) => {
+          if (cueIndex !== liveCueIndex) return segment;
+          const sourceText = segmentIndex === liveSourceSegmentIndex ? '' : segment.sourceText;
+          const translatedText = segmentIndex === liveTranslationSegmentIndex ? '' : segment.translatedText;
+          if (!sourceText && !translatedText) return null;
+          return {
+            ...segment,
+            sourceText,
+            translatedText,
+            pending: segmentIndex === liveSourceSegmentIndex
+              || segmentIndex === liveTranslationSegmentIndex
+              ? false
+              : segment.pending,
+          };
+        })
+        .filter((segment): segment is OverlayDisplaySegment => segment !== null),
     })),
     liveCue: liveCueIndex >= 0 ? cues[liveCueIndex] : null,
-    liveSegment: liveCueIndex >= 0 && liveSegmentIndex >= 0
-      ? segmentsByCue[liveCueIndex][liveSegmentIndex]
-      : null,
+    liveSegment,
     liveSourceTail,
   };
 }

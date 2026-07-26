@@ -184,6 +184,9 @@ match socket.read() {
                             &session_started_at,
                             subtitle_translate_active,
                             native_translation_reuse_active,
+                            audio_mode.uses_manual_commit()
+                                && subtitle_translate_active
+                                && !native_translation_reuse_active,
                             total_input_chunks,
                             first_audio_sent_ms,
                             first_audible_chunk_ms,
@@ -201,10 +204,17 @@ match socket.read() {
                         event_diagnostics = output.state.event_diagnostics;
                         if audio_mode.uses_manual_commit() {
                             let completed_source_text = output.completed_source_text.as_deref();
+                            let completed_cue_id = output.completed_cue_id.as_deref();
                             let now_ms = elapsed_ms_since(session_started_at);
                             let recent_output_age_ms = event_diagnostics
                                 .last_output_done_at_ms
                                 .map(|timestamp| now_ms.saturating_sub(timestamp));
+                            let echo_activity = store
+                                .recent_echo_suppression(MANUAL_ECHO_ACTIVITY_WINDOW);
+                            let echo_dominated_input = recent_echo_input_is_dominated(
+                                echo_activity.total_chunks,
+                                echo_activity.suppressed_chunks,
+                            );
                             if let Some(decision) = classify_completed_manual_response(
                                 manual_response_pending,
                                 manual_response_item_id.as_deref(),
@@ -213,12 +223,14 @@ match socket.read() {
                                 &event_diagnostics.last_output_done_text,
                                 recent_output_age_ms,
                                 echo_guard_enabled,
+                                echo_dominated_input,
                             ) {
                                 let source = completed_source_text.unwrap_or_default();
                                 let mut reset_turn = matches!(
                                     decision,
                                     ManualResponseDecision::SkipEmpty
                                         | ManualResponseDecision::SkipRecentOutputEcho
+                                        | ManualResponseDecision::SkipEchoDominatedPlayback
                                 );
                                 match decision {
                                     ManualResponseDecision::Create => {
@@ -240,6 +252,9 @@ match socket.read() {
                                             );
                                             reset_turn = true;
                                         } else {
+                                            if let Some(cue_id) = completed_cue_id {
+                                                store.approve_subtitle_cue_translation(cue_id);
+                                            }
                                             let _ = diag_log(
                                                 app,
                                                 "omni",
@@ -271,8 +286,28 @@ match socket.read() {
                                             ),
                                         );
                                     }
+                                    ManualResponseDecision::SkipEchoDominatedPlayback => {
+                                        let _ = diag_log(
+                                            app,
+                                            "omni",
+                                            "warning",
+                                            format!(
+                                                "event=manual_response_gate action=skip reason=echo_dominated_playback sourceLen={} outputAgeMs={} echoChunks={} suppressedChunks={}",
+                                                source.chars().count(),
+                                                recent_output_age_ms.unwrap_or(u64::MAX),
+                                                echo_activity.total_chunks,
+                                                echo_activity.suppressed_chunks,
+                                            ),
+                                        );
+                                    }
                                 }
                                 if reset_turn {
+                                    if let Some(cue_id) = manual_turn_cue_to_discard(
+                                        completed_cue_id,
+                                        current_cue_id.as_deref(),
+                                    ) {
+                                        store.discard_uncommitted_subtitle_cue(cue_id);
+                                    }
                                     reset_omni_turn_state(
                                         &mut current_cue_id,
                                         &mut pending_source_text,

@@ -51,8 +51,10 @@ use self::audio_pump::{OmniAudioPump, OmniAudioPumpState};
 use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
 use self::connection_coordinator::{
-    classify_completed_manual_response, ManualResponseDecision, OmniCommitState,
+    classify_completed_manual_response, manual_turn_cue_to_discard,
+    recent_echo_input_is_dominated, ManualResponseDecision, OmniCommitState,
     OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
+    MANUAL_ECHO_ACTIVITY_WINDOW,
 };
 use self::event_processor::{
     OmniAudioOutputState, OmniEventProcessor, OmniReadinessState, OmniSubtitleEventState,
@@ -237,6 +239,7 @@ fn initial_connect_backoff(retry_count: usize) -> Duration {
 #[cfg(test)]
 mod unit_tests {
     use super::*;
+    use super::audio_pump::manual_turn_has_audible_input;
     use base64::Engine;
 
     #[test]
@@ -299,6 +302,22 @@ mod unit_tests {
     fn asr_chunk_rms_distinguishes_silence_from_audible_audio() {
         assert_eq!(asr_chunk_rms(&[0, 0, 0]), 0.0);
         assert!(asr_chunk_rms(&[0, 512, -512]) > OMNI_ASR_MIN_CHUNK_RMS);
+    }
+
+    #[test]
+    fn silence_grace_cannot_arm_another_manual_commit() {
+        assert!(!manual_turn_has_audible_input(
+            false,
+            OMNI_ASR_MIN_CHUNK_RMS * 0.5,
+        ));
+        assert!(manual_turn_has_audible_input(
+            false,
+            OMNI_ASR_MIN_CHUNK_RMS,
+        ));
+        assert!(manual_turn_has_audible_input(
+            true,
+            OMNI_ASR_MIN_CHUNK_RMS * 0.5,
+        ));
     }
 
     #[test]
@@ -520,11 +539,17 @@ mod native_translation_tests {
         let store = AudioStateStore::new();
         let mut current_cue_id = None;
 
-        let first_id = write_live_source_to_cue(&store, &mut current_cue_id, "With or");
+        let first_id = write_live_source_to_cue(
+            &store,
+            &mut current_cue_id,
+            "With or",
+            false,
+        );
         let second_id = write_live_source_to_cue(
             &store,
             &mut current_cue_id,
             "With or without you",
+            false,
         );
         let preview_id = write_native_output_preview_to_cue(
             &store,
@@ -548,15 +573,42 @@ mod native_translation_tests {
     }
 
     #[test]
-    fn empty_completed_transcription_keeps_the_last_delta_hypothesis() {
+    fn empty_completed_transcription_only_reuses_a_correlated_delta() {
+        let empty_final = resolve_completed_transcription(
+            "Oh, my dilemma.",
+            "",
+            false,
+        );
+        assert_eq!(empty_final.display_text, "Oh, my dilemma.");
+        assert_eq!(empty_final.response_gate_text, "");
         assert_eq!(
-            preserve_last_non_empty_transcription("Oh, my dilemma.", ""),
-            "Oh, my dilemma."
+            classify_completed_manual_response(
+                true,
+                Some("item-Crf"),
+                Some("item-Crf"),
+                Some(&empty_final.response_gate_text),
+                "",
+                None,
+                true,
+                false,
+            ),
+            Some(ManualResponseDecision::SkipEmpty),
+        );
+
+        let correlated_empty_final = resolve_completed_transcription(
+            "A valid same-item delta",
+            "",
+            true,
         );
         assert_eq!(
-            preserve_last_non_empty_transcription("older hypothesis", "final transcript"),
-            "final transcript"
+            correlated_empty_final.response_gate_text,
+            "A valid same-item delta",
         );
+
+        let non_empty_final =
+            resolve_completed_transcription("older hypothesis", "final transcript", false);
+        assert_eq!(non_empty_final.display_text, "final transcript");
+        assert_eq!(non_empty_final.response_gate_text, "final transcript");
     }
 
     #[test]
@@ -678,6 +730,32 @@ mod native_translation_tests {
             1
         );
         assert!(cue.display_segments.last().is_some_and(|segment| segment.pending));
+    }
+
+    #[test]
+    fn native_output_preview_marks_mismatched_source_and_translation_tails() {
+        let store = AudioStateStore::new();
+        let mut current_cue_id = None;
+
+        let cue_id = write_native_output_preview_to_cue(
+            &store,
+            &mut current_cue_id,
+            "source one\nsource two\nsource three\nsource four",
+            "译文一\n译文二\n译文三",
+        );
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .expect("mismatched native output preview cue");
+        assert_eq!(cue.display_segments.len(), 4);
+        assert_eq!(cue.display_segments[2].translated_text, "译文三");
+        assert!(cue.display_segments[2].pending);
+        assert_eq!(cue.display_segments[3].source_text, "source four");
+        assert!(cue.display_segments[3].pending);
     }
 
     #[test]

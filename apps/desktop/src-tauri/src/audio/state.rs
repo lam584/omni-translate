@@ -1,5 +1,7 @@
+use std::collections::{HashSet, VecDeque};
 use std::sync::{mpsc::Sender, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use super::contracts::{
     AudioDeviceRuntime, AudioRouteRuntimeSnapshot, AudioRuntimeSnapshot, SpeechRuntimeSnapshot,
@@ -57,12 +59,60 @@ pub struct AudioStateStore {
     omni_sessions: OmniSessionStore,
     audio_cache: AudioCacheStore,
     echo_buffer: Mutex<EchoReferenceBuffer>,
+    echo_asr_activity: Mutex<EchoAsrActivity>,
+    deferred_subtitle_translation_cues: Mutex<HashSet<String>>,
     warmer: CaptureRouteWarmer,
     pub live_session_events: LiveSessionEventBuffer,
 }
 
 const MAX_RECENT_SUBTITLE_CUES: usize = 12;
 const HARD_MAX_RECENT_SUBTITLE_CUES: usize = 18;
+const ECHO_ASR_ACTIVITY_RETENTION: Duration = Duration::from_secs(30);
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct EchoSuppressionSnapshot {
+    pub(crate) total_chunks: u64,
+    pub(crate) suppressed_chunks: u64,
+}
+
+#[derive(Default)]
+struct EchoAsrActivity {
+    chunks: VecDeque<(Instant, bool)>,
+}
+
+impl EchoAsrActivity {
+    fn record(&mut self, suppressed: bool, now: Instant) {
+        self.chunks.push_back((now, suppressed));
+        self.prune(now, ECHO_ASR_ACTIVITY_RETENTION);
+    }
+
+    fn snapshot(&mut self, window: Duration, now: Instant) -> EchoSuppressionSnapshot {
+        self.prune(now, ECHO_ASR_ACTIVITY_RETENTION);
+        let mut snapshot = EchoSuppressionSnapshot::default();
+        for (_, suppressed) in self
+            .chunks
+            .iter()
+            .filter(|(at, _)| now.saturating_duration_since(*at) <= window)
+        {
+            snapshot.total_chunks = snapshot.total_chunks.saturating_add(1);
+            if *suppressed {
+                snapshot.suppressed_chunks =
+                    snapshot.suppressed_chunks.saturating_add(1);
+            }
+        }
+        snapshot
+    }
+
+    fn prune(&mut self, now: Instant, window: Duration) {
+        while self
+            .chunks
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > window)
+        {
+            self.chunks.pop_front();
+        }
+    }
+}
 
 impl AudioStateStore {
     pub fn new() -> Self {
@@ -76,6 +126,8 @@ impl AudioStateStore {
             omni_sessions: OmniSessionStore::new(),
             audio_cache: AudioCacheStore::new(),
             echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
+            echo_asr_activity: Mutex::new(EchoAsrActivity::default()),
+            deferred_subtitle_translation_cues: Mutex::new(HashSet::new()),
             warmer: CaptureRouteWarmer::new(),
             live_session_events: LiveSessionEventBuffer::new(),
         }
@@ -118,6 +170,23 @@ impl AudioStateStore {
             .lock()
             .expect("echo buffer poisoned")
             .subtract_from(captured, delay_samples)
+    }
+
+    pub(crate) fn record_echo_asr_chunk(&self, suppressed: bool) {
+        self.echo_asr_activity
+            .lock()
+            .expect("echo ASR activity poisoned")
+            .record(suppressed, Instant::now());
+    }
+
+    pub(crate) fn recent_echo_suppression(
+        &self,
+        window: Duration,
+    ) -> EchoSuppressionSnapshot {
+        self.echo_asr_activity
+            .lock()
+            .expect("echo ASR activity poisoned")
+            .snapshot(window, Instant::now())
     }
 
     /// Reference-buffer depth and emptiness probe for the periodic
@@ -463,6 +532,46 @@ impl AudioStateStore {
             }
             trim_recent_subtitle_cues(overlay);
         });
+    }
+
+    pub fn discard_uncommitted_subtitle_cue(&self, cue_id: &str) {
+        self.deferred_subtitle_translation_cues
+            .lock()
+            .expect("deferred subtitle cues poisoned")
+            .remove(cue_id);
+        self.subtitles.update(|overlay| {
+            overlay
+                .recent_cues
+                .retain(|cue| cue.cue_id != cue_id || cue.committed);
+            if overlay.active_cue.as_ref().is_some_and(|cue| {
+                cue.cue_id == cue_id && !cue.committed
+            }) {
+                overlay.active_cue = None;
+            }
+            trim_recent_subtitle_cues(overlay);
+        });
+    }
+
+    pub(crate) fn defer_subtitle_cue_translation(&self, cue_id: &str) {
+        self.deferred_subtitle_translation_cues
+            .lock()
+            .expect("deferred subtitle cues poisoned")
+            .insert(cue_id.to_string());
+    }
+
+    pub(crate) fn approve_subtitle_cue_translation(&self, cue_id: &str) {
+        self.deferred_subtitle_translation_cues
+            .lock()
+            .expect("deferred subtitle cues poisoned")
+            .remove(cue_id);
+    }
+
+    pub(crate) fn subtitle_cue_translation_allowed(&self, cue_id: &str) -> bool {
+        !self
+            .deferred_subtitle_translation_cues
+            .lock()
+            .expect("deferred subtitle cues poisoned")
+            .contains(cue_id)
     }
 
     pub fn cache_segment_audio(&self, audio: CapturedSegmentAudio) {
@@ -897,6 +1006,63 @@ mod tests {
         assert_eq!(snapshot.subtitle_overlay.recent_cues[0].cue_id, "finished");
         assert!(snapshot.subtitle_overlay.active_cue.is_none());
         assert_eq!(snapshot.subtitle_overlay.queue_depth, 1);
+    }
+
+    #[test]
+    fn skipped_manual_turn_discards_only_its_uncommitted_cue() {
+        let store = AudioStateStore::new();
+        store.update_or_push_stt_cue("stale-live", "Oh, my dilemma.", false);
+        store.update_or_push_stt_cue("current-live", "New source", false);
+
+        store.discard_uncommitted_subtitle_cue("stale-live");
+
+        let snapshot = store.snapshot();
+        assert!(!snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .any(|cue| cue.cue_id == "stale-live"));
+        assert!(snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .any(|cue| cue.cue_id == "current-live"));
+        assert_eq!(
+            snapshot.subtitle_overlay.active_cue.as_ref().map(|cue| cue.cue_id.as_str()),
+            Some("current-live"),
+        );
+    }
+
+    #[test]
+    fn recent_echo_suppression_tracks_total_and_suppressed_chunks() {
+        let store = AudioStateStore::new();
+        store.record_echo_asr_chunk(false);
+        store.record_echo_asr_chunk(true);
+        store.record_echo_asr_chunk(false);
+        store.record_echo_asr_chunk(true);
+
+        assert_eq!(
+            store.recent_echo_suppression(Duration::from_secs(12)),
+            EchoSuppressionSnapshot {
+                total_chunks: 4,
+                suppressed_chunks: 2,
+            },
+        );
+    }
+
+    #[test]
+    fn manual_gate_defers_secondary_translation_until_approval_or_discard() {
+        let store = AudioStateStore::new();
+        store.defer_subtitle_cue_translation("manual-cue");
+        assert!(!store.subtitle_cue_translation_allowed("manual-cue"));
+
+        store.approve_subtitle_cue_translation("manual-cue");
+        assert!(store.subtitle_cue_translation_allowed("manual-cue"));
+
+        store.defer_subtitle_cue_translation("discarded-cue");
+        store.update_or_push_stt_cue("discarded-cue", "echo source", false);
+        store.discard_uncommitted_subtitle_cue("discarded-cue");
+        assert!(store.subtitle_cue_translation_allowed("discarded-cue"));
     }
 
     #[test]

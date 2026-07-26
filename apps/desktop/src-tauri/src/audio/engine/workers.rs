@@ -145,6 +145,7 @@ fn run_capture_loop(
             let (chunk, suppress_asr) = if spec.echo_cancel_enabled() {
                 let f32_chunk = bytes_to_f32_stereo(&chunk);
                 let cancellation = store.subtract_echo(&f32_chunk, ECHO_CANCEL_DELAY_SAMPLES);
+                store.record_echo_asr_chunk(cancellation.suppress_asr);
                 let cleaned_bytes = f32_stereo_to_bytes(&cancellation.samples);
                 echo_diagnostics.record(
                     calculate_chunk_db(&chunk),

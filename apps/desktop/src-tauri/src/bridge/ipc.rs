@@ -42,12 +42,12 @@ pub fn initialize_bridge(
     let session_id = snapshot
         .session_id
         .clone()
-        .unwrap_or_else(|| format!("bridge-session-{}", Uuid::new_v4()));
+        .unwrap_or_else(super::new_bridge_session_id);
     let event = write_command(
         &snapshot.pipe_path,
         &DriverBridgeCommand::Init(BridgeInitRequest {
             request_id: format!("bridge-init-{}", now_unix_ms()),
-            protocol_version: "2026-06-02-loopback-v2".to_string(),
+            protocol_version: omni_bridge_protocol::BRIDGE_PROTOCOL_VERSION.to_string(),
             session_id: session_id.clone(),
             install_channel: snapshot.install_channel.clone(),
             target_device_id: snapshot.target_device_id.clone(),
@@ -258,7 +258,7 @@ mod tests {
         };
 
         let state = DriverInstallStateFile {
-            protocol_version: "2026-06-02-loopback-v2".to_string(),
+            protocol_version: omni_bridge_protocol::BRIDGE_PROTOCOL_VERSION.to_string(),
             install_channel: "release".to_string(),
             driver_version: "1.2.3".to_string(),
             bridge_version: "0.2.0".to_string(),
@@ -295,7 +295,7 @@ mod tests {
             &mut snapshot,
             BridgeStateResponse {
                 request_id: "bridge-state-1".to_string(),
-                protocol_version: "2026-06-02-loopback-v2".to_string(),
+                protocol_version: omni_bridge_protocol::BRIDGE_PROTOCOL_VERSION.to_string(),
                 bridge_state: "running".to_string(),
                 lifecycle_state: "ready".to_string(),
                 driver_health: "running".to_string(),

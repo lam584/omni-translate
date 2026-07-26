@@ -137,7 +137,12 @@ function functionSpans(path) {
   return spans;
 }
 
-const rustRoots = ['apps/desktop/src-tauri/src', 'apps/bridge-service-native/src'];
+const rustRoots = [
+  'apps/desktop/src-tauri/src',
+  'apps/bridge-service-native/src',
+  'crates/omni-bridge-protocol/src',
+  'crates/omni-logging/src',
+];
 for (const directory of rustRoots) {
   for (const path of walk(join(root, directory), (path) => /\.(?:rs|inc)$/.test(path))) {
     const count = productionLines(path);

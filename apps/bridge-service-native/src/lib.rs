@@ -2,7 +2,11 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
 
-pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-06-02-loopback-v2";
+pub use omni_bridge_protocol::{
+    accepted_audio_frame_ack, decode_pcm16le, encode_pcm16le, rejected_audio_frame_ack,
+    AudioFrameAck, AudioFrameHeader, MixControl, BRIDGE_PROTOCOL_VERSION,
+};
+
 pub const INTERNAL_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const INTERNAL_CHANNEL_COUNT: u16 = 2;
 
@@ -51,63 +55,6 @@ pub fn classify_driver_health_with_device_evidence(
     "running"
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct MixControl {
-    pub keep_original_audio: bool,
-    pub translated_audio_enabled: bool,
-    pub translated_audio_gain_db: f32,
-    pub original_audio_gain_db: f32,
-    pub ducking_enabled: bool,
-    pub ducking_depth_percent: u64,
-    pub monitor_mode: String,
-}
-
-impl Default for MixControl {
-    fn default() -> Self {
-        Self {
-            keep_original_audio: true,
-            translated_audio_enabled: true,
-            translated_audio_gain_db: 0.0,
-            original_audio_gain_db: 0.0,
-            ducking_enabled: true,
-            ducking_depth_percent: 35,
-            monitor_mode: "original-and-translated".to_string(),
-        }
-    }
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioFrameHeader {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    pub request_id: String,
-    pub session_id: String,
-    pub frame_id: String,
-    pub stream_id: String,
-    pub sample_rate_hz: u32,
-    pub channel_count: u16,
-    pub frame_count: usize,
-    pub timestamp_ms: u64,
-    pub payload_bytes: usize,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct AudioFrameAck {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    pub request_id: String,
-    pub frame_id: String,
-    pub accepted_frames: usize,
-    pub playback_frames_written: u64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error_code: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
-
 pub fn singleton_mutex_name(pipe_name: &str) -> String {
     let suffix = pipe_name
         .chars()
@@ -128,37 +75,6 @@ pub fn singleton_mutex_name(pipe_name: &str) -> String {
 
 pub fn should_exit_after_control_command(command_type: &str) -> bool {
     command_type == "bridge.shutdown"
-}
-
-pub fn accepted_audio_frame_ack(
-    header: &AudioFrameHeader,
-    playback_frames_written: u64,
-) -> AudioFrameAck {
-    AudioFrameAck {
-        event_type: "bridge.translation.ack".to_string(),
-        request_id: header.request_id.clone(),
-        frame_id: header.frame_id.clone(),
-        accepted_frames: header.frame_count,
-        playback_frames_written,
-        error_code: None,
-        message: None,
-    }
-}
-
-pub fn rejected_audio_frame_ack(
-    header: &AudioFrameHeader,
-    error_code: &str,
-    message: &str,
-) -> AudioFrameAck {
-    AudioFrameAck {
-        event_type: "bridge.translation.nack".to_string(),
-        request_id: header.request_id.clone(),
-        frame_id: header.frame_id.clone(),
-        accepted_frames: 0,
-        playback_frames_written: 0,
-        error_code: Some(error_code.to_string()),
-        message: Some(message.to_string()),
-    }
 }
 
 pub fn validate_translation_frame(
@@ -316,25 +232,6 @@ impl<T> AudioFramePacer<T> {
     }
 }
 
-pub fn decode_pcm16le(bytes: &[u8]) -> Result<Vec<i16>, String> {
-    if !bytes.len().is_multiple_of(2) {
-        return Err("pcm16le payload must contain an even number of bytes".to_string());
-    }
-
-    Ok(bytes
-        .chunks_exact(2)
-        .map(|chunk| i16::from_le_bytes([chunk[0], chunk[1]]))
-        .collect())
-}
-
-pub fn encode_pcm16le(samples: &[i16]) -> Vec<u8> {
-    let mut bytes = Vec::with_capacity(samples.len() * 2);
-    for sample in samples {
-        bytes.extend_from_slice(&sample.to_le_bytes());
-    }
-    bytes
-}
-
 pub fn mix_for_monitor(
     original: &[i16],
     translated: &[i16],
@@ -428,12 +325,6 @@ fn db_to_gain(db: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn pcm16le_round_trip() {
-        let samples = vec![0, 1, -1, i16::MAX, i16::MIN];
-        assert_eq!(decode_pcm16le(&encode_pcm16le(&samples)).unwrap(), samples);
-    }
 
     #[test]
     fn resamples_24k_mono_translation_to_48k_stereo() {
@@ -672,11 +563,6 @@ mod tests {
         let samples =
             validate_translation_frame(Some("session-1"), &header, &[1, 0, 2, 0]).unwrap();
         assert_eq!(samples, vec![1, 2]);
-        let ack = accepted_audio_frame_ack(&header, 12);
-        assert_eq!(ack.event_type, "bridge.translation.ack");
-        assert_eq!(ack.accepted_frames, 2);
-        assert_eq!(ack.playback_frames_written, 12);
-        assert_eq!(ack.error_code, None);
     }
 
     #[test]

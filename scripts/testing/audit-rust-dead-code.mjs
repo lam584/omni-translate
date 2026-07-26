@@ -1,7 +1,12 @@
 import { readdir, readFile } from 'node:fs/promises';
 import path from 'node:path';
 
-const roots = ['apps/desktop/src-tauri/src', 'apps/bridge-service-native/src'];
+const roots = [
+  'apps/desktop/src-tauri/src',
+  'apps/bridge-service-native/src',
+  'crates/omni-bridge-protocol/src',
+  'crates/omni-logging/src',
+];
 
 async function rustFiles(directory) {
   const entries = await readdir(directory, { withFileTypes: true });

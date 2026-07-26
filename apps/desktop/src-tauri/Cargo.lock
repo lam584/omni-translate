@@ -3688,6 +3688,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-bridge-protocol"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "omni-desktop-shell"
 version = "0.1.0"
 dependencies = [
@@ -3698,6 +3705,8 @@ dependencies = [
  "keyring",
  "log",
  "minimp3",
+ "omni-bridge-protocol",
+ "omni-logging",
  "reqwest",
  "rodio",
  "rusqlite",
@@ -3713,6 +3722,13 @@ dependencies = [
  "wasapi",
  "whatlang",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "omni-logging"
+version = "0.1.0"
+dependencies = [
+ "chrono",
 ]
 
 [[package]]

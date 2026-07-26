@@ -1,21 +1,23 @@
 use std::collections::VecDeque;
 use std::fs::{self, OpenOptions};
-use std::io::{self, Write as _};
+use std::io;
 use std::num::{NonZeroU16, NonZeroU32};
 use std::os::windows::io::AsRawHandle;
 use std::path::{Path, PathBuf};
 use std::ptr;
-use std::sync::{mpsc, Arc, Mutex};
+use std::sync::{mpsc, Arc, Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait};
+use omni_bridge_protocol::{audio_pipe_path, control_pipe_path, source_pipe_path, DEFAULT_PIPE_NAME};
 use omni_bridge_service::{
     accepted_audio_frame_ack, classify_driver_health_with_device_evidence, decode_pcm16le,
     mix_for_monitor, should_exit_after_control_command, singleton_mutex_name,
     validate_translation_frame, AudioFrameHeader, AudioFramePacer, DriverInstallState, MixControl,
     BRIDGE_PROTOCOL_VERSION, INTERNAL_CHANNEL_COUNT, INTERNAL_SAMPLE_RATE_HZ,
 };
+use omni_logging::{panic_hook, LogLevel, Logger};
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, MixerDeviceSink, Player};
 use serde_json::{json, Value};
 use wasapi::{
@@ -31,6 +33,35 @@ use self::win32::{
     flush_file_buffers, read_exact, read_line, serve_named_pipe, wide_string, write_all,
     write_framed_json,
 };
+
+static SERVICE_LOGGER: OnceLock<Logger> = OnceLock::new();
+
+/// Route one bridge service log line through the shared logger (dynamic
+/// level + 10MB×3 rotation + background writer thread). Falls back to stderr
+/// in the narrow window before `BridgeHost::run` initializes the logger,
+/// where no file destination exists yet.
+pub(crate) fn service_log(level: LogLevel, source: &str, message: &str) {
+    match SERVICE_LOGGER.get() {
+        Some(logger) => logger.log(level, source, message),
+        None => eprintln!("{message}"),
+    }
+}
+
+fn init_service_logging(runtime_root: &Path) {
+    let _ = SERVICE_LOGGER.set(Logger::with_env_level(
+        runtime_root.join("bridge-service.log"),
+        "bridge",
+        LogLevel::Info,
+    ));
+    // No session id yet: the desktop session id only arrives with the
+    // `bridge.init` handshake (SERVICE_LOGGER picks it up there).
+    panic_hook::install(
+        runtime_root.join("bridge-service.log"),
+        runtime_root.join("panic.log"),
+        "bridge",
+        None,
+    );
+}
 
 trait MapErrToString<T> {
     fn map_err_str(self) -> Result<T, String>;
@@ -218,18 +249,19 @@ struct BridgeHost {
 impl BridgeHost {
     fn from_args(args: &[String]) -> Self {
         Self {
-            pipe_name: read_arg(args, "--pipe-name").unwrap_or_else(|| "omni-bridge-ipc".into()),
+            pipe_name: read_arg(args, "--pipe-name").unwrap_or_else(|| DEFAULT_PIPE_NAME.into()),
             runtime_root: PathBuf::from(read_arg(args, "--runtime-root").unwrap_or_else(|| ".".to_string())),
             bridge_version: read_arg(args, "--bridge-version").unwrap_or_else(|| "0.1.0".to_string()),
         }
     }
 
     fn run(self) -> Result<(), String> {
+        init_service_logging(&self.runtime_root);
         let _singleton_mutex = acquire_singleton_mutex(&self.pipe_name)?;
         let pid_file = write_runtime_pid_file(&self.runtime_root)?;
-        let control_pipe = format!(r"\\.\pipe\{}", self.pipe_name);
-        let audio_pipe = format!(r"\\.\pipe\{}-audio", self.pipe_name);
-        let source_pipe = format!(r"\\.\pipe\{}-source", self.pipe_name);
+        let control_pipe = control_pipe_path(&self.pipe_name);
+        let audio_pipe = audio_pipe_path(&self.pipe_name);
+        let source_pipe = source_pipe_path(&self.pipe_name);
         let state = Arc::new(Mutex::new(BridgeState::new(self.bridge_version)));
         let (playback_tx, playback_rx) = mpsc::sync_channel::<PlaybackCommand>(128);
         let (source_tx, source_rx) = mpsc::sync_channel::<Vec<u8>>(32);
@@ -434,7 +466,11 @@ fn handle_control_client(
     let line = match read_line(handle) {
         Ok(line) => line,
         Err(error) => {
-            eprintln!("failed to read control command: {error}");
+            service_log(
+                LogLevel::Error,
+                &format!("{}:{}", file!(), line!()),
+                &format!("failed to read control command: {error}"),
+            );
             return;
         }
     };
@@ -502,6 +538,11 @@ fn handle_control(
                 .as_ref()
                 .map(|value| value.driver_version.clone());
             current.session_id = command["sessionId"].as_str().map(str::to_string);
+            // Correlate bridge-service.log lines with the desktop session:
+            // every subsequent line carries the trailing ` sid=<value>` token.
+            if let Some(logger) = SERVICE_LOGGER.get() {
+                logger.set_session_id(current.session_id.clone());
+            }
             current.virtual_render_device_id = command["virtualRenderDeviceId"]
                 .as_str()
                 .unwrap_or_default()

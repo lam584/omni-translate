@@ -1,5 +1,10 @@
 use serde::{Deserialize, Serialize};
 
+pub use omni_bridge_protocol::{
+    AudioFrameAck as BridgeTranslationFrameAck, AudioFrameHeader as BridgeTranslationFrameHeader,
+    MixControl as BridgeMixControl,
+};
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BridgeRuntimeSnapshot {
@@ -84,7 +89,7 @@ pub struct BridgeRuntimeSnapshot {
 impl Default for BridgeRuntimeSnapshot {
     fn default() -> Self {
         let runtime_root = default_runtime_root();
-        let pipe_name = "omni-bridge-ipc".to_string();
+        let pipe_name = omni_bridge_protocol::DEFAULT_PIPE_NAME.to_string();
 
         Self {
             process_status: "stopped".to_string(),
@@ -141,9 +146,9 @@ impl Default for BridgeRuntimeSnapshot {
             last_frame_timestamp_ms: None,
             last_error_code: Some("driver.not-installed".to_string()),
             recommended_action: Some("reinstall-driver".to_string()),
-            pipe_path: format!(r"\\.\pipe\{}", pipe_name),
-            audio_pipe_path: format!(r"\\.\pipe\{}-audio", pipe_name),
-            source_pipe_path: format!(r"\\.\pipe\{}-source", pipe_name),
+            pipe_path: omni_bridge_protocol::control_pipe_path(&pipe_name),
+            audio_pipe_path: omni_bridge_protocol::audio_pipe_path(&pipe_name),
+            source_pipe_path: omni_bridge_protocol::source_pipe_path(&pipe_name),
             pipe_name,
             runtime_root,
             session_id: None,
@@ -398,63 +403,6 @@ pub struct BridgeWriteFrameAck {
     pub frame_id: String,
     pub accepted_at: String,
     pub queue_depth: usize,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeMixControl {
-    pub keep_original_audio: bool,
-    pub translated_audio_enabled: bool,
-    pub translated_audio_gain_db: f32,
-    pub original_audio_gain_db: f32,
-    pub ducking_enabled: bool,
-    pub ducking_depth_percent: u64,
-    pub monitor_mode: String,
-}
-
-impl Default for BridgeMixControl {
-    fn default() -> Self {
-        Self {
-            keep_original_audio: true,
-            translated_audio_enabled: true,
-            translated_audio_gain_db: 0.0,
-            original_audio_gain_db: 0.0,
-            ducking_enabled: true,
-            ducking_depth_percent: 35,
-            monitor_mode: "original-and-translated".to_string(),
-        }
-    }
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeTranslationFrameHeader {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    pub request_id: String,
-    pub session_id: String,
-    pub frame_id: String,
-    pub stream_id: String,
-    pub sample_rate_hz: u32,
-    pub channel_count: u16,
-    pub frame_count: usize,
-    pub timestamp_ms: u64,
-    pub payload_bytes: usize,
-}
-
-#[derive(Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct BridgeTranslationFrameAck {
-    #[serde(rename = "type")]
-    pub event_type: String,
-    pub request_id: String,
-    pub frame_id: String,
-    pub accepted_frames: usize,
-    pub playback_frames_written: u64,
-    #[serde(default)]
-    pub error_code: Option<String>,
-    #[serde(default)]
-    pub message: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

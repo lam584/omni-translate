@@ -86,9 +86,9 @@ for (const scriptName of removedScripts) {
 }
 
 assertTextMatch(
-  path.join('apps', 'bridge-service-native', 'src', 'lib.rs'),
+  path.join('crates', 'omni-bridge-protocol', 'src', 'lib.rs'),
   new RegExp(`BRIDGE_PROTOCOL_VERSION:\\s*&str\\s*=\\s*"${protocolVersion}"`),
-  'native bridge Rust protocol',
+  'shared bridge protocol crate',
 );
 assertTextMatch(
   path.join('apps', 'desktop', 'src', 'schema', 'driver-bridge-contract.ts'),
@@ -107,7 +107,7 @@ assertTextMatch(
 );
 assertTextMatch(
   path.join('apps', 'desktop', 'src-tauri', 'src', 'bridge', 'ipc.rs'),
-  new RegExp(`protocol_version:\\s*"${protocolVersion}"\\.to_string\\(\\)`),
+  /protocol_version:\s*omni_bridge_protocol::BRIDGE_PROTOCOL_VERSION\.to_string\(\)/,
   'desktop Rust bridge init protocol',
 );
 assertJsonValue(

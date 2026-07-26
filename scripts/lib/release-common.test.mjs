@@ -8,6 +8,7 @@ import {
   RELEASE_DOCS,
   bundleName,
   collectFiles,
+  compressArchive,
   readCargoVersion,
   readJson,
   readText,
@@ -94,6 +95,19 @@ test('releasePaths derives release and installer directories from repoRoot', () 
   assert.equal(paths.signedDir, path.join(paths.packageRoot, 'signed'));
   assert.equal(paths.signingDir, path.join(paths.releaseDir, 'signing'));
   assert.equal(paths.installerLayoutDir, path.join(repoRoot, 'artifacts', 'installer', '1.2.3'));
+});
+
+test('compressArchive zips a directory into a non-empty archive', () => {
+  const tempDir = makeTempDir('release-common-compress-');
+  const sourceDir = path.join(tempDir, 'payload');
+  fs.mkdirSync(sourceDir);
+  fs.writeFileSync(path.join(sourceDir, 'hello.txt'), 'hello archive', 'utf8');
+  const zipPath = path.join(tempDir, 'payload.zip');
+
+  compressArchive(sourceDir, zipPath);
+
+  assert.equal(fs.existsSync(zipPath), true);
+  assert.equal(fs.statSync(zipPath).size > 0, true);
 });
 
 test('RELEASE_DOCS lists the four project docs shipped with a release', () => {

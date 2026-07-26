@@ -11,7 +11,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if ($Action -eq 'rollback-driver') {
+if ($Action -eq 'rollback-driver' -or $Action -eq 'reinstall-driver') {
   & (Join-Path $PSScriptRoot 'uninstall-development-driver.ps1') `
     -WorkspaceRoot $WorkspaceRoot `
     -RuntimeRoot $RuntimeRoot `

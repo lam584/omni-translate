@@ -28,16 +28,52 @@ function sha256(filePath) {
   return createHash('sha256').update(readFileSync(filePath)).digest('hex');
 }
 
+function sleepMs(milliseconds) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds);
+}
+
+function desktopProcessStillRunning() {
+  if (process.platform === 'win32') {
+    const result = spawnSync('tasklist', ['/FI', 'IMAGENAME eq omni-desktop-shell.exe', '/FO', 'CSV', '/NH'], {
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    return (result.stdout ?? '').toLowerCase().includes('omni-desktop-shell.exe');
+  }
+  const result = spawnSync('pgrep', ['-x', 'omni-desktop-shell'], { stdio: 'ignore' });
+  return result.status === 0;
+}
+
 // The desktop shell is single-instance. Stop every stale copy before building,
 // otherwise a newly built executable hands control back to an older elevated
 // process and exits immediately. The shortcut runs this launcher as admin.
-const stopExitCode = run('powershell.exe', [
-  '-NoProfile',
-  '-ExecutionPolicy',
-  'Bypass',
-  '-Command',
-  'Get-Process -Name omni-desktop-shell -ErrorAction SilentlyContinue | Stop-Process -Force; Start-Sleep -Milliseconds 500; if (Get-Process -Name omni-desktop-shell -ErrorAction SilentlyContinue) { exit 1 }',
-]);
+function stopStaleDesktopProcesses() {
+  let exitCode;
+  if (process.platform === 'win32') {
+    // taskkill exits 128 when no process matches the image name.
+    exitCode = run('taskkill', ['/F', '/IM', 'omni-desktop-shell.exe'], { stdio: 'ignore' });
+    if (exitCode === 128) return 0;
+  } else {
+    try {
+      // pkill exits 1 when no process matches.
+      exitCode = run('pkill', ['-x', 'omni-desktop-shell'], { stdio: 'ignore' });
+      if (exitCode === 1) return 0;
+    } catch (error) {
+      if (error.code === 'ENOENT') return 0;
+      throw error;
+    }
+  }
+  if (exitCode !== 0) return exitCode;
+  // A forced kill can leave an elevated process lingering briefly; confirm the
+  // image is really gone before handing the build a stale single-instance peer.
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (!desktopProcessStillRunning()) return 0;
+    sleepMs(250);
+  }
+  return 1;
+}
+
+const stopExitCode = stopStaleDesktopProcesses();
 if (stopExitCode !== 0) {
   console.error('[Omni Translate] Unable to stop an older desktop process. Run this shortcut as administrator.');
   process.exit(stopExitCode);

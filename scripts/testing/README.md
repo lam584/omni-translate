@@ -65,7 +65,7 @@ debt (or when intentionally accepting a new entry), regenerate the baseline
 with `node scripts/testing/audit-architecture-boundaries.mjs
 --update-baseline`. `npm run audit:architecture:strict` ignores the baseline
 and fails on every violation. The non-strict audit runs in the PR fast-check
-workflow and as the first step of `run-quality-gate-auto.ps1`.
+workflow and as the first step of `run-quality-gate-auto.mjs`.
 
 ## Live LLM integration
 
@@ -236,12 +236,13 @@ Run the live watch-mode diagnostic on Windows:
 npm run test:watch-mode-live
 ```
 
-Run the strict two-model matrix on Windows. Matrix options are single-dash
-PowerShell parameters, so invoke the script directly instead of going through
-`npm run ... --`:
+Run the strict two-model matrix on Windows. Matrix options are double-dash
+Node flags (they survive `npm run ... --` on npm 11); anything after a literal
+`--` separator is forwarded verbatim to `run-watch-mode-live.ps1` as extra
+single-dash runner parameters:
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/run-watch-mode-live-matrix.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90
+node ./scripts/testing/run-watch-mode-live-matrix.mjs --skip-driver-repair --allow-elevated-desktop-launch --post-playback-wait-seconds 120 --session-ready-timeout-seconds 90
 ```
 
 The live command builds the native bridge, probes the virtual speaker driver,

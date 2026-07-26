@@ -5,13 +5,13 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "predev": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/development/stop-dev-port.ps1 -Port 4173",
+    "predev": "node ../../scripts/development/stop-dev-port.mjs --port 4173",
     "dev": "vite",
     "dev:tauri": "tauri dev",
     "tauri": "tauri",
     "lint": "eslint . --max-warnings 0",
     "build": "tsc -p tsconfig.json && vite build",
-    "prebuild:tauri": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/development/stop-desktop-release.ps1",
+    "prebuild:tauri": "node ../../scripts/development/stop-desktop-release.mjs",
     "build:tauri": "node ../../scripts/development/build-desktop-release.mjs",
     "build:installer": "tauri build",
     "check": "tsc -p tsconfig.json --noEmit",
@@ -21,7 +21,7 @@
     "test:integration:bridge-contract": "vitest run src/runtime/bridge-contract.integration.test.tsx",
     "test:watch": "vitest",
     "verify": "npm run lint && npm run check && npm run test && npm run build",
-    "dev:tauri:fast": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ../../scripts/development/dev-tauri-fast.ps1"
+    "dev:tauri:fast": "node ../../scripts/development/dev-tauri-fast.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.11.0",

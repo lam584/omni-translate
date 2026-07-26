@@ -234,43 +234,65 @@ describe('scene readiness', () => {
     );
   });
 
-  it('covers watch model resolution for empty, explicit, assigned and unknown model ids', () => {
-    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
-    const audioSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    runtimeSnapshot.bridgeStatus = 'tauri-shell';
-    runtimeSnapshot.bridge.bridgeState = 'running';
-    audioSnapshot.inbound.streamBound = true;
-    runtimeSnapshot.windows = runtimeSnapshot.windows.map((item) =>
+  // The former "covers watch model resolution" test asserted `blockers=[]`
+  // for four configs whose distinguishing branches no longer exist in
+  // scene-readiness (model-mode blockers moved out during the decoupling
+  // refactor), so all four assertions were identical and vacuous. Each watch
+  // blocker branch is pinned by its own observable id instead.
+  it('raises each watch blocker exactly under its own condition', () => {
+    const readyRuntime = structuredClone(runtimeSnapshotMock);
+    readyRuntime.bridgeStatus = 'tauri-shell';
+    readyRuntime.bridge.bridgeState = 'running';
+    readyRuntime.windows = readyRuntime.windows.map((item) =>
       item.label === 'subtitle-overlay' ? { ...item, visible: true } : item,
     );
+    const readyAudio = structuredClone(audioRuntimeSnapshotMock);
+    readyAudio.inbound.streamBound = true;
+    const readyConfig = structuredClone(appConfigDraftMock);
+    readyConfig.providers[0].probe.profileId = 'probe-dashscope-verify';
+    readyConfig.providers[0].probe.checkedAt = '2026-05-17T12:00:00.000Z';
+    readyConfig.providers[0].status = 'warning';
+    readyConfig.devices.feedbackLoopPrevention = 'echo-cancel';
+    readyConfig.devices.virtualMicOutputEnabled = false;
+    readyConfig.speech.outputTarget = 'speaker';
 
-    const baseConfig = structuredClone(appConfigDraftMock);
-    baseConfig.providers[0].probe.profileId = 'probe-dashscope-verify';
-    baseConfig.providers[0].probe.checkedAt = '2026-05-17T12:00:00.000Z';
-    baseConfig.providers[0].status = 'warning';
+    const watchBlockerIds = (
+      config = readyConfig,
+      runtime = readyRuntime,
+      audio = readyAudio,
+    ) => getAllSceneReadiness(structuredClone(config), structuredClone(runtime), structuredClone(audio))[0]!
+      .blockers.map((blocker) => blocker.id);
 
-    const emptyModelConfig = structuredClone(baseConfig);
-    emptyModelConfig.devices.inboundVoiceModelId = ' ';
-    expect(getAllSceneReadiness(emptyModelConfig, runtimeSnapshot, audioSnapshot)[0]?.blockers).toEqual([]);
+    // Fully ready baseline: no blockers at all.
+    expect(watchBlockerIds()).toEqual([]);
 
-    const explicitModelConfig = structuredClone(baseConfig);
-    explicitModelConfig.providers[0].templateId = 'template-audio';
-    explicitModelConfig.activeProviderTemplateId = 'template-audio';
-    explicitModelConfig.providers[0].localModelCapabilityRegistry = [];
-    explicitModelConfig.devices.inboundVoiceModelId = 'template-audio::qwen3-asr-flash-realtime';
-    expect(getAllSceneReadiness(explicitModelConfig, runtimeSnapshot, audioSnapshot)[0]?.blockers).toEqual([]);
+    // Unverified provider → watch-provider (and only that).
+    const unverified = structuredClone(readyConfig);
+    unverified.providers[0].probe.profileId = '';
+    unverified.providers[0].probe.checkedAt = '';
+    unverified.providers[0].status = 'draft';
+    expect(watchBlockerIds(unverified)).toEqual(['watch-provider']);
 
-    const assignedModelConfig = structuredClone(baseConfig);
-    assignedModelConfig.providers[0].model = 'default-model';
-    assignedModelConfig.providers[0].sceneModelAssignments = [
-      { scenario: 'watch', modelIds: ['assigned-asr-model'] },
-    ];
-    assignedModelConfig.devices.inboundVoiceModelId = 'assigned-asr-model';
-    expect(getAllSceneReadiness(assignedModelConfig, runtimeSnapshot, audioSnapshot)[0]?.blockers).toEqual([]);
+    // Bridge-dependent route with the bridge stopped → watch-bridge.
+    const bridgeNeeded = structuredClone(readyConfig);
+    bridgeNeeded.devices.feedbackLoopPrevention = 'virtual-driver';
+    const stoppedBridge = structuredClone(readyRuntime);
+    stoppedBridge.bridge.bridgeState = 'stopped';
+    expect(watchBlockerIds(bridgeNeeded, stoppedBridge)).toEqual(['watch-bridge']);
+    // The same stopped bridge without a bridge-dependent route: no blocker.
+    expect(watchBlockerIds(readyConfig, stoppedBridge)).toEqual([]);
 
-    const unknownModelConfig = structuredClone(baseConfig);
-    unknownModelConfig.devices.inboundVoiceModelId = 'missing-model';
-    expect(getAllSceneReadiness(unknownModelConfig, runtimeSnapshot, audioSnapshot)[0]?.blockers).toEqual([]);
+    // Unbound system audio → watch-inbound.
+    const unboundAudio = structuredClone(readyAudio);
+    unboundAudio.inbound.streamBound = false;
+    expect(watchBlockerIds(readyConfig, readyRuntime, unboundAudio)).toEqual(['watch-inbound']);
+
+    // Hidden overlay → watch-overlay.
+    const hiddenOverlay = structuredClone(readyRuntime);
+    hiddenOverlay.windows = hiddenOverlay.windows.map((item) =>
+      item.label === 'subtitle-overlay' ? { ...item, visible: false } : item,
+    );
+    expect(watchBlockerIds(readyConfig, hiddenOverlay)).toEqual(['watch-overlay']);
   });
 
   it('formats scene and overall readiness summaries', () => {

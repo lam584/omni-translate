@@ -71,12 +71,12 @@ impl<'a> BridgeCommandClient<'a> {
 
 }
 
-pub(crate) struct BridgeAudioWriter<'a> {
-    app: &'a AppHandle,
+pub(crate) struct BridgeAudioWriter<'a, R: tauri::Runtime = tauri::Wry> {
+    app: &'a AppHandle<R>,
 }
 
-impl<'a> BridgeAudioWriter<'a> {
-    pub(crate) fn new(app: &'a AppHandle) -> Self {
+impl<'a, R: tauri::Runtime> BridgeAudioWriter<'a, R> {
+    pub(crate) fn new(app: &'a AppHandle<R>) -> Self {
         Self { app }
     }
 

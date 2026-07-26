@@ -268,8 +268,8 @@ pub fn build_diagnostics_snapshot(app: &AppHandle) -> DiagnosticsRuntimeSnapshot
     }
 }
 
-pub fn append_diagnostics_log(
-    app: &AppHandle,
+pub fn append_diagnostics_log<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     category: &str,
     level: &str,
     summary: impl Into<String>,
@@ -287,8 +287,8 @@ pub fn append_diagnostics_log(
     Ok(())
 }
 
-pub fn append_diagnostics_log_quiet(
-    app: &AppHandle,
+pub fn append_diagnostics_log_quiet<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     category: &str,
     level: &str,
     summary: impl Into<String>,

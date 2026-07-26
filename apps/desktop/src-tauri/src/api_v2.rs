@@ -158,8 +158,8 @@ pub struct RuntimeEventV2 {
 
 static RUNTIME_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub fn emit_runtime_event_v2(
-    app: &AppHandle,
+pub fn emit_runtime_event_v2<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     topic: impl Into<String>,
     payload: Value,
 ) -> tauri::Result<()> {
@@ -489,7 +489,18 @@ pub async fn configuration_v2(
     let outcome = async {
         match command {
             ConfigurationCommandV2::Load => serialize_result(storage_events::load_config_draft(app.clone(), app.state::<StorageStateStore>())),
-            ConfigurationCommandV2::Save { config } => serialize_result(storage_events::save_config_draft(app.clone(), app.state::<StorageStateStore>(), config)),
+            ConfigurationCommandV2::Save { config } => {
+                let result = storage_events::save_config_draft(app.clone(), app.state::<StorageStateStore>(), config.clone());
+                if result.is_ok() {
+                    // Propagate the saved config to the live Omni playback
+                    // thread so device/toggle changes apply on the next cue
+                    // instead of waiting for a route restart.
+                    if let Some(audio_state) = app.try_state::<crate::audio::state::AudioStateStore>() {
+                        audio_state.refresh_omni_speech_config(&config);
+                    }
+                }
+                serialize_result(result)
+            }
             ConfigurationCommandV2::Reset => serialize_result(storage_events::reset_config_draft(app.clone(), app.state::<StorageStateStore>())),
             ConfigurationCommandV2::Export => serialize_result(storage_events::export_config_draft(app.clone(), app.state::<StorageStateStore>())),
             ConfigurationCommandV2::Import { file_path } => serialize_result(storage_events::import_config_draft(app.clone(), app.state::<StorageStateStore>(), file_path)),

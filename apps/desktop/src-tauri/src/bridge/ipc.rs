@@ -368,9 +368,24 @@ mod tests {
     fn workspace_root_resolves_to_repository_root() {
         let root = workspace_root();
 
-        assert_eq!(
-            root.file_name().and_then(|value| value.to_str()),
-            Some("omni-translate")
+        // The repository can be checked out (or worktree'd) under any
+        // directory name, so identify the root by its repo markers instead of
+        // its basename: the workspace package.json and the layout that
+        // `assets_root` depends on.
+        assert!(
+            root.join("package.json").is_file(),
+            "workspace root {} lacks package.json",
+            root.display()
+        );
+        assert!(
+            root.join("apps").join("desktop").join("src-tauri").is_dir(),
+            "workspace root {} lacks apps/desktop/src-tauri",
+            root.display()
+        );
+        assert!(
+            root.join("scripts").join("installer").is_dir(),
+            "workspace root {} lacks scripts/installer (assets_root contract)",
+            root.display()
         );
 
         let [preferred, legacy] = bridge_cli_release_candidates();

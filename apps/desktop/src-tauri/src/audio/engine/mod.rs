@@ -340,7 +340,10 @@ pub fn clear_cues(
     Ok(store.snapshot())
 }
 
-pub fn emit_audio_snapshot(app: &AppHandle, store: &AudioStateStore) -> Result<(), String> {
+pub fn emit_audio_snapshot<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+) -> Result<(), String> {
     app.emit(AUDIO_RUNTIME_SNAPSHOT_EVENT, store.snapshot())
         .map_err_str()?;
     if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {

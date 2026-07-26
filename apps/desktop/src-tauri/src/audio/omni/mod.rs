@@ -54,7 +54,8 @@ use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
 use self::connection_coordinator::{
     classify_completed_manual_response, manual_turn_cue_to_discard,
-    recent_echo_input_is_dominated, ManualResponseDecision, OmniCommitState,
+    recent_echo_input_is_dominated, should_route_uncorrelated_completed_transcription,
+    ManualResponseDecision, OmniCommitState,
     OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
     MANUAL_COMMIT_INTERVAL_SECS, MANUAL_ECHO_ACTIVITY_WINDOW,
     MANUAL_RESPONSE_TIMEOUT_SECS,

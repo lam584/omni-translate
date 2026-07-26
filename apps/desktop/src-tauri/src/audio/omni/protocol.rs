@@ -996,9 +996,9 @@ impl OmniSpeechConfig {
 
 }
 
-pub(super) fn start_omni_playback(
-    app: AppHandle,
-    speech_config: OmniSpeechConfig,
+pub(super) fn start_omni_playback<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
 ) -> (
     mpsc::SyncSender<OmniPlaybackCommand>,
     Arc<AtomicBool>,
@@ -1044,7 +1044,15 @@ pub(super) fn start_omni_playback(
                             );
                             continue;
                         }
-                        let cfg = &speech_config;
+                        // Re-read the shared config for every Play command:
+                        // config saves during the session (output device,
+                        // playback toggles, gain) must apply to the next cue,
+                        // not only after a route restart.
+                        let current_config = match speech_config.read() {
+                            Ok(config) => config.clone(),
+                            Err(poisoned) => poisoned.into_inner().clone(),
+                        };
+                        let cfg = &current_config;
                         let duration_ms =
                             ((samples.len() as u64) * 1000).saturating_div(sample_rate_hz as u64);
                         let _ = diag_log(&app, "omni", "info",
@@ -1235,6 +1243,72 @@ mod omni_playback_tests {
         assert_eq!(rendered, vec![6_000, -4_000]);
         assert_eq!(echo_reference[0], 6_000_f32 / i16::MAX as f32);
         assert_eq!(echo_reference[1], -4_000_f32 / i16::MAX as f32);
+    }
+
+    /// Field bug: the playback thread cloned `OmniSpeechConfig` at session
+    /// start, so switching the output device or playback toggles mid-session
+    /// had no effect until the route was restarted. Queue one cue under the
+    /// speaker config, swap the shared config (as a config save does), and
+    /// assert the next cue is dispatched with the new routing.
+    #[test]
+    fn playback_thread_reads_the_shared_config_for_every_play_command() {
+        use tauri::Manager;
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        app.manage(crate::bridge::state::BridgeStateStore::new());
+        let handle = app.handle().clone();
+        let audio_state = handle.state::<AudioStateStore>();
+
+        let speaker_config = json!({
+            "devices": { "outputSpeechEnabled": true, "outputLevel": 100 },
+            "speech": { "enabled": true, "localPlaybackEnabled": true }
+        });
+        let shared = audio_state
+            .register_omni_speech_config(OmniSpeechConfig::from_config(&speaker_config));
+        assert!(shared.read().expect("shared config readable").any_output());
+        let (tx, stop_requested, join) = start_omni_playback(handle.clone(), shared);
+
+        let wait_for = |description: &str,
+                        predicate: &dyn Fn(&crate::audio::contracts::SpeechRuntimeSnapshot) -> bool| {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            loop {
+                let speech = audio_state.snapshot().speech;
+                if predicate(&speech) {
+                    return;
+                }
+                assert!(
+                    Instant::now() < deadline,
+                    "timed out waiting for {description}; dispatchState={} outputTarget={}",
+                    speech.dispatch_state,
+                    speech.output_target,
+                );
+                thread::sleep(Duration::from_millis(10));
+            }
+        };
+
+        tx.send(queued_play("cue-live-config-1")).expect("queue first cue");
+        wait_for("first cue processed under the speaker config", &|speech| {
+            speech.dispatch_state == "waiting-subtitle" && speech.output_target == "speaker"
+        });
+
+        // Mid-session config save: route output to the virtual mic instead.
+        audio_state.refresh_omni_speech_config(&json!({
+            "devices": { "outputSpeechEnabled": true, "outputLevel": 100 },
+            "speech": {
+                "enabled": true,
+                "localPlaybackEnabled": false,
+                "virtualMicOutputEnabled": true
+            }
+        }));
+        tx.send(queued_play("cue-live-config-2")).expect("queue second cue");
+        wait_for("second cue dispatched with the new config", &|speech| {
+            speech.output_target == "virtual-mic"
+        });
+
+        request_omni_playback_stop(&stop_requested, &tx);
+        let _ = join.join();
     }
 
     #[test]

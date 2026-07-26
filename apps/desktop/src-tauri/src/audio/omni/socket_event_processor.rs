@@ -156,18 +156,40 @@ match socket.read() {
                             if !manual_response_pending
                                 || manual_response_item_id.as_deref() != completed_item_id
                             {
-                                let _ = diag_log(
-                                    app,
-                                    "omni",
-                                    "warning",
-                                    format!(
-                                        "event=manual_response_gate action=ignore_transcription reason=item_id_mismatch pending={} expectedItemId={} receivedItemId={}",
-                                        manual_response_pending,
-                                        manual_response_item_id.as_deref().unwrap_or("(none)"),
-                                        completed_item_id.unwrap_or("(none)"),
-                                    ),
-                                );
-                                return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
+                                if should_route_uncorrelated_completed_transcription(
+                                    evt["transcript"].as_str(),
+                                ) {
+                                    // The gate timed out (or reset), but this
+                                    // completed item still carries the tail of
+                                    // the user's turn. Fall through so the ASR
+                                    // processor completes the display cue; the
+                                    // mismatched gate below never arms
+                                    // response.create for it.
+                                    let _ = diag_log(
+                                        app,
+                                        "omni",
+                                        "info",
+                                        format!(
+                                            "event=manual_response_gate action=route_late_transcription reason=item_id_mismatch pending={} expectedItemId={} receivedItemId={}",
+                                            manual_response_pending,
+                                            manual_response_item_id.as_deref().unwrap_or("(none)"),
+                                            completed_item_id.unwrap_or("(none)"),
+                                        ),
+                                    );
+                                } else {
+                                    let _ = diag_log(
+                                        app,
+                                        "omni",
+                                        "warning",
+                                        format!(
+                                            "event=manual_response_gate action=ignore_transcription reason=item_id_mismatch pending={} expectedItemId={} receivedItemId={}",
+                                            manual_response_pending,
+                                            manual_response_item_id.as_deref().unwrap_or("(none)"),
+                                            completed_item_id.unwrap_or("(none)"),
+                                        ),
+                                    );
+                                    return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
+                                }
                             }
                         }
                         let output = OmniAsrEventProcessor::process(

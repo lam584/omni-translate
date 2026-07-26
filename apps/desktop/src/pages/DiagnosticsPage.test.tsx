@@ -5,7 +5,8 @@ import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import DiagnosticsPage, { runRecommendedBridgeAction } from './DiagnosticsPage';
-import { resetDesktopApiForTests } from '../runtime/desktop-api';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
+import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils';
 import type { BenchmarkReport } from '../runtime/benchmark-runtime';
@@ -26,7 +27,7 @@ const runModelBenchmarkMock = vi.fn();
 const readProviderSecretMock = vi.fn();
 const getLiveSessionEventsRuntimeMock = vi.fn();
 const tauriRuntimeMock = vi.hoisted(() => ({
-  isRuntime: false,
+
   invoke: vi.fn(),
 }));
 
@@ -68,7 +69,6 @@ vi.mock('../runtime/live-session-events-runtime', () => ({
 }));
 
 vi.mock('../runtime/tauri-runtime', () => ({
-  isTauriRuntime: () => tauriRuntimeMock.isRuntime,
   hasInvokeBridge: () => false,
 }));
 
@@ -170,10 +170,9 @@ describe('DiagnosticsPage monitoring boundary', () => {
   }
 
   beforeEach(() => {
-    tauriRuntimeMock.isRuntime = false;
-    // The composition root decides the desktop boundary once; re-decide per
-    // test so a previous test's Tauri/preview choice cannot leak.
+    // Re-install per test so a previous test's Tauri/preview choice cannot leak.
     resetDesktopApiForTests();
+    installDesktopApi(new PreviewDesktopApi());
     tauriRuntimeMock.invoke.mockReset();
     tauriRuntimeMock.invoke.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
       const action = args?.command?.action;
@@ -622,7 +621,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
   });
 
   it('runs runtime-error repair and refreshes after successful Tauri repairs', async () => {
-    tauriRuntimeMock.isRuntime = true;
+    installDesktopApi(new TauriDesktopApi());
     const snapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
     snapshot.bridgeStatus = 'runtime-error';
     snapshot.bridge.driverHealth = 'running';
@@ -653,7 +652,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
   });
 
   it('shows the original runtime error in the current issue card without repeating it in the conclusion', async () => {
-    tauriRuntimeMock.isRuntime = true;
+    installDesktopApi(new TauriDesktopApi());
     const snapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
     snapshot.bridgeStatus = 'runtime-error';
     snapshot.notifications = [{
@@ -888,7 +887,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
   });
 
   it('publishes a successful bridge repair snapshot', async () => {
-    tauriRuntimeMock.isRuntime = true;
+    installDesktopApi(new TauriDesktopApi());
     const damaged = structuredClone(useAppStore.getState().runtimeSnapshot);
     damaged.bridge.driverHealth = 'damaged';
     damaged.bridge.lifecycleState = 'error';

@@ -10,7 +10,9 @@ const mocks = vi.hoisted(() => ({
   setSize: vi.fn(),
 }));
 
-vi.mock('../../runtime/tauri-runtime', () => ({ isTauriRuntime: () => true }));
+vi.mock('../../runtime/desktop-api-context', () => ({
+  useDesktopCapabilities: () => ({ hasNativeShell: true }),
+}));
 vi.mock('../../runtime/overlay-window-adapter', () => ({
   currentMonitor: () => mocks.currentMonitor(),
   LogicalSize: class LogicalSize { constructor(public width: number, public height: number) {} },

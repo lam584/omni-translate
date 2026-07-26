@@ -4,6 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { installDesktopApi, resetDesktopApiForTests } from '../runtime/desktop-api';
+import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 import { useAppStore } from '../stores/app-store';
 import SubtitleOverlayPage from './SubtitleOverlayPage';
 
@@ -23,7 +25,6 @@ vi.mock('@tauri-apps/api/window', () => ({
   getCurrentWindow: vi.fn(),
 }));
 vi.mock('../runtime/audio-runtime', () => runtimeMocks);
-vi.mock('../runtime/tauri-runtime', () => ({ isTauriRuntime: () => false }));
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
@@ -40,6 +41,8 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+    resetDesktopApiForTests();
+    installDesktopApi(new PreviewDesktopApi());
     runtimeMocks.clearSubtitleCuesRuntime.mockReset().mockResolvedValue(structuredClone(audioRuntimeSnapshotMock));
     runtimeMocks.toggleSubtitleOverlayWindow.mockReset().mockResolvedValue(structuredClone(runtimeSnapshotMock));
     useAppStore.setState((state) => ({

@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
+import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 import SubtitleOverlayPage from './SubtitleOverlayPage';
 import SubtitleOverlayContent from './overlay/SubtitleOverlayContent';
 import { useAppStore } from '../stores/app-store';
@@ -12,7 +14,7 @@ const tauriMocks = vi.hoisted(() => {
   let pointerPosition = { x: 0, y: 0 };
 
   return {
-    runtime: true,
+
     currentMonitorMock: vi.fn(),
     cursorPositionMock: vi.fn(async () => ({ ...pointerPosition })),
     innerSizeMock: vi.fn(),
@@ -107,10 +109,6 @@ vi.mock('@tauri-apps/api/window', () => {
 
 vi.mock('react-i18next', async () => (await import('../test-utils/i18n-stub')).reactI18nextStub());
 
-vi.mock('../runtime/tauri-runtime', () => ({
-  isTauriRuntime: () => tauriMocks.runtime,
-}));
-
 // Variant of the shared helper: overlay tests start from a locked overlay.
 function cloneStoreState() {
   const state = cloneBaseStoreState();
@@ -150,7 +148,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
-    tauriMocks.runtime = true;
+    resetDesktopApiForTests();
+    installDesktopApi(new TauriDesktopApi());
 
     if (!globalThis.PointerEvent) {
       Object.assign(globalThis, { PointerEvent: MouseEvent });
@@ -286,7 +285,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
   });
 
   it('toggles a locked browser-preview overlay without invoking the native unlock command', async () => {
-    tauriMocks.runtime = false;
+    installDesktopApi(new PreviewDesktopApi());
     useAppStore.setState((state) => ({ ...state, configDraft: { ...state.configDraft,
       subtitles: { ...state.configDraft.subtitles, overlayLocked: false } } }));
     await view.render(<SubtitleOverlayPage />);

@@ -20,6 +20,7 @@ use crate::diagnostics::events as diagnostics_events;
 use crate::diagnostics::state::DiagnosticsStateStore;
 use crate::provider::contracts::ProviderDraftInput;
 use crate::provider::events as provider_events;
+use crate::runtime::events as runtime_events;
 use crate::runtime::state::RuntimeStateStore;
 use crate::storage::events as storage_events;
 use crate::storage::StorageStateStore;
@@ -187,6 +188,18 @@ pub enum ProviderCommandV2 {
         source_language: Option<String>,
         target_language: Option<String>,
     },
+    RunModelBenchmark {
+        model: String,
+        api_key: String,
+        mp3_path: String,
+        run_id: String,
+        realtime_audio_mode: Option<String>,
+        interaction_capabilities: Option<Vec<String>>,
+        provider_kind: Option<String>,
+        base_url: Option<String>,
+        auth_header_name: Option<String>,
+        auth_scheme: Option<String>,
+    },
 }
 
 // Runs off the main thread (async) so provider network I/O cannot starve the
@@ -222,6 +235,35 @@ pub async fn provider_v2(
                 )
                 .await,
             ),
+            ProviderCommandV2::RunModelBenchmark {
+                model,
+                api_key,
+                mp3_path,
+                run_id,
+                realtime_audio_mode,
+                interaction_capabilities,
+                provider_kind,
+                base_url,
+                auth_header_name,
+                auth_scheme,
+            } => {
+                return serialize_result(
+                    crate::benchmark::run_model_benchmark(
+                        app.clone(),
+                        model,
+                        api_key,
+                        mp3_path,
+                        run_id,
+                        realtime_audio_mode,
+                        interaction_capabilities,
+                        provider_kind,
+                        base_url,
+                        auth_header_name,
+                        auth_scheme,
+                    )
+                    .await,
+                );
+            }
         }
         .map_err(|error| ServiceErrorV2::from(error.to_string()))
     }
@@ -233,6 +275,7 @@ pub async fn provider_v2(
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum SessionCommandV2 {
     Snapshot,
+    Bootstrap,
     RefreshDevices,
     Preconnect { config: Value },
     CancelPreconnect,
@@ -262,6 +305,7 @@ pub async fn session_v2(
     log_v2_entry(&app, "session_v2", &request_id);
     let result = match command {
         SessionCommandV2::Snapshot => Ok(app.state::<AudioStateStore>().snapshot()),
+        SessionCommandV2::Bootstrap => audio_events::bootstrap_audio(app.clone()).await,
         SessionCommandV2::RefreshDevices => {
             audio_events::refresh_audio_devices(app.clone(), app.state::<AudioStateStore>())
         }
@@ -356,6 +400,7 @@ pub enum DiagnosticsCommandV2 {
     OverlaySelfCheck,
     Export { scope: String },
     LiveSessionEvents,
+    Snapshot,
 }
 
 // Runs off the main thread (async) so bundle/file I/O (e.g. export) cannot
@@ -376,6 +421,8 @@ pub async fn diagnostics_v2(
             DiagnosticsCommandV2::LiveSessionEvents => diagnostics_events::get_live_session_events(app.state::<AudioStateStore>())
                 .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
                 .map_err(ServiceErrorV2::from),
+            DiagnosticsCommandV2::Snapshot => to_value(diagnostics_events::get_diagnostics_snapshot(app.clone()))
+                .map_err(|error| ServiceErrorV2::from(error.to_string())),
         }
     }
     .await;
@@ -392,6 +439,11 @@ pub enum ConfigurationCommandV2 {
     Import { file_path: String },
     CreateSnapshot { reason: Option<String> },
     Rollback { snapshot_id: String },
+    RuntimeSnapshot,
+    BootstrapRuntime,
+    SecretStatus { reference: String },
+    SecretRead { reference: String },
+    SecretUpsert { reference: String, secret: String },
 }
 
 // Runs off the main thread (async) so SQLite/config I/O cannot starve the Tauri
@@ -413,6 +465,11 @@ pub async fn configuration_v2(
             ConfigurationCommandV2::Import { file_path } => serialize_result(storage_events::import_config_draft(app.clone(), app.state::<StorageStateStore>(), file_path)),
             ConfigurationCommandV2::CreateSnapshot { reason } => serialize_result(storage_events::create_config_snapshot(app.clone(), app.state::<StorageStateStore>(), reason)),
             ConfigurationCommandV2::Rollback { snapshot_id } => serialize_result(storage_events::rollback_config_snapshot(app.clone(), app.state::<StorageStateStore>(), snapshot_id)),
+            ConfigurationCommandV2::RuntimeSnapshot => serialize_result(runtime_events::get_runtime_snapshot(app.clone(), app.state::<RuntimeStateStore>()).await),
+            ConfigurationCommandV2::BootstrapRuntime => serialize_result(runtime_events::bootstrap_runtime(app.clone(), app.state::<RuntimeStateStore>()).await),
+            ConfigurationCommandV2::SecretStatus { reference } => serialize_result(storage_events::get_secret_ref_status(app.clone(), reference).await),
+            ConfigurationCommandV2::SecretRead { reference } => serialize_result(storage_events::read_secret_ref(app.clone(), reference).await),
+            ConfigurationCommandV2::SecretUpsert { reference, secret } => serialize_result(storage_events::upsert_secret_ref(app.clone(), reference, secret).await),
         }
     }
     .await;
@@ -497,6 +554,40 @@ mod tests {
             ),
             "smoke must not silently drop the camelCase sourceText key: {smoke:?}"
         );
+    }
+
+    #[test]
+    fn migrated_direct_commands_deserialize_as_v2_actions() {
+        // Phase-1 command retirement moved these former direct commands into
+        // the service envelopes; pin the action names the renderer sends.
+        let session: SessionCommandV2 = serde_json::from_str(r#"{"action":"bootstrap"}"#).unwrap();
+        assert!(matches!(session, SessionCommandV2::Bootstrap));
+        let diagnostics: super::DiagnosticsCommandV2 =
+            serde_json::from_str(r#"{"action":"snapshot"}"#).unwrap();
+        assert!(matches!(diagnostics, super::DiagnosticsCommandV2::Snapshot));
+        for (payload, expects_secret) in [
+            (r#"{"action":"runtimeSnapshot"}"#, false),
+            (r#"{"action":"bootstrapRuntime"}"#, false),
+            (r#"{"action":"secretStatus","reference":"r"}"#, false),
+            (r#"{"action":"secretRead","reference":"r"}"#, false),
+            (r#"{"action":"secretUpsert","reference":"r","secret":"s"}"#, true),
+        ] {
+            let command: ConfigurationCommandV2 = serde_json::from_str(payload).unwrap();
+            if expects_secret {
+                assert!(matches!(
+                    command,
+                    ConfigurationCommandV2::SecretUpsert { ref secret, .. } if secret == "s"
+                ));
+            }
+        }
+        let benchmark: super::ProviderCommandV2 = serde_json::from_str(
+            r#"{"action":"runModelBenchmark","model":"m","apiKey":"k","mp3Path":"p","runId":"r"}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            benchmark,
+            super::ProviderCommandV2::RunModelBenchmark { ref run_id, .. } if run_id == "r"
+        ));
     }
 
     #[test]

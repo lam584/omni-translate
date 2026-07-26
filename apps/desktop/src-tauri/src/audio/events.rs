@@ -166,7 +166,6 @@ fn start_route_with_overlay(
     Ok(snapshot)
 }
 
-#[tauri::command]
 pub async fn bootstrap_audio(
     app: AppHandle,
 ) -> Result<AudioRuntimeSnapshot, String> {

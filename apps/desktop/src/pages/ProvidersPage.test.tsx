@@ -1448,20 +1448,27 @@ describe('ProvidersPage', () => {
     state.runtimeSnapshot.bridgeStatus = 'tauri-shell';
     state.runtimeSnapshot.storage.status = 'preview';
     useAppStore.setState((current) => ({ ...current, ...state, runtimeNotifications: state.runtimeSnapshot.notifications }));
-    invokeMock.mockImplementation((command: string) => {
+    invokeMock.mockImplementation((command: string, args?: { command?: { action?: string } }) => {
+      const action = args?.command?.action;
       if (command === 'bootstrap_storage') {
         return Promise.resolve(null);
       }
-      if (command === 'get_runtime_snapshot') {
+      if (command === 'configuration_v2' && action === 'runtimeSnapshot') {
         return Promise.resolve({
-          ...state.runtimeSnapshot,
-          storage: { ...state.runtimeSnapshot.storage, status: 'preview' },
+          data: {
+            ...state.runtimeSnapshot,
+            storage: { ...state.runtimeSnapshot.storage, status: 'preview' },
+          },
+          warnings: [],
         });
       }
-      if (command === 'bootstrap_runtime') {
+      if (command === 'configuration_v2' && action === 'bootstrapRuntime') {
         return Promise.resolve({
-          ...state.runtimeSnapshot,
-          storage: { ...state.runtimeSnapshot.storage, status: 'ready' },
+          data: {
+            ...state.runtimeSnapshot,
+            storage: { ...state.runtimeSnapshot.storage, status: 'ready' },
+          },
+          warnings: [],
         });
       }
       return Promise.reject(new Error(`unexpected command ${command}`));
@@ -1479,8 +1486,8 @@ describe('ProvidersPage', () => {
       });
     }
 
-    expect(invokeMock).toHaveBeenCalledWith('get_runtime_snapshot');
-    expect(invokeMock).toHaveBeenCalledWith('bootstrap_runtime');
+    expect(invokeMock).toHaveBeenCalledWith('configuration_v2', { command: { action: 'runtimeSnapshot' } });
+    expect(invokeMock).toHaveBeenCalledWith('configuration_v2', { command: { action: 'bootstrapRuntime' } });
     expect(useAppStore.getState().runtimeSnapshot.storage.status).toBe('ready');
   });
 

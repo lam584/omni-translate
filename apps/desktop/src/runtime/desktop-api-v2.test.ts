@@ -103,14 +103,12 @@ describe('DesktopApiV2 configuration client', () => {
     await api.bridge.install(config);
     await api.bridge.uninstall();
     await api.bridge.repair('restart-bridge', config);
-    await api.legacyBridge.refresh();
     await api.legacyBridge.start(config);
     await api.diagnostics.selfCheck();
     await api.diagnostics.overlaySelfCheck();
     await api.diagnostics.export('summary');
     await api.diagnostics.liveSessionEvents();
     await api.diagnostics.snapshot();
-    await api.diagnostics.liveSessionEventsRaw();
     await api.configuration.load();
     await api.configuration.save(config);
     await api.configuration.reset();
@@ -120,8 +118,6 @@ describe('DesktopApiV2 configuration client', () => {
     await api.configuration.bootstrapStorage();
     await api.configuration.runtimeSnapshot();
     await api.configuration.bootstrapRuntime();
-    await api.persistence.saveDraft(config);
-    await api.persistence.loadDraft();
     await api.runtime.debugIpcPing();
     await api.runtime.bootstrapAudio();
     await api.overlay.sync(true, false, true);
@@ -148,16 +144,18 @@ describe('DesktopApiV2 configuration client', () => {
       { command: { action: 'export', scope: 'summary' } },
     ]);
     expect(calls).toContainEqual([
-      'upsert_secret_ref',
-      { reference: 'secret-ref', secret: 'secret-value' },
+      'configuration_v2',
+      { command: { action: 'secretUpsert', reference: 'secret-ref', secret: 'secret-value' } },
     ]);
     expect(calls).toContainEqual(['start_audio_route', { direction: 'inbound', config }]);
-    expect(calls).toContainEqual(['refresh_bridge_runtime', undefined]);
     expect(calls).toContainEqual(['start_bridge_service', { config }]);
-    expect(calls).toContainEqual(['get_diagnostics_snapshot', undefined]);
-    expect(calls).toContainEqual(['get_live_session_events', undefined]);
+    expect(calls).toContainEqual(['diagnostics_v2', { command: { action: 'snapshot' } }]);
+    expect(calls).toContainEqual(['diagnostics_v2', { command: { action: 'liveSessionEvents' } }]);
     expect(calls).toContainEqual(['debug_ipc_ping', undefined]);
-    expect(calls).toContainEqual(['bootstrap_audio', undefined]);
+    expect(calls).toContainEqual(['session_v2', { command: { action: 'bootstrap' } }]);
+    expect(calls).toContainEqual(['configuration_v2', { command: { action: 'runtimeSnapshot' } }]);
+    expect(calls).toContainEqual(['configuration_v2', { command: { action: 'bootstrapRuntime' } }]);
+    expect(calls).toContainEqual(['bootstrap_storage', undefined]);
     expect(calls).toContainEqual([
       'sync_subtitle_overlay_window_state',
       { locked: true, rounded: false, hotspotInteractive: true },
@@ -165,8 +163,11 @@ describe('DesktopApiV2 configuration client', () => {
     expect(calls).toContainEqual(['unlock_subtitle_overlay', undefined]);
     expect(calls).toContainEqual(['toggle_subtitle_overlay', undefined]);
     expect(calls).toContainEqual(['show_subtitle_overlay', undefined]);
-    expect(calls).toContainEqual(['run_model_benchmark', benchmarkPayload]);
-    expect(calls).toHaveLength(52);
+    expect(calls).toContainEqual([
+      'provider_v2',
+      { command: { action: 'runModelBenchmark', ...benchmarkPayload } },
+    ]);
+    expect(calls).toHaveLength(48);
   });
 
   it('adapts native window coordinates, sizing and popup menus', async () => {
@@ -210,7 +211,7 @@ describe('DesktopApiV2 configuration client', () => {
       await Promise.resolve();
       inFlight -= 1;
       if (requestId % 17 === 0) throw new Error(`ipc-${requestId}`);
-      return { requestId } as T;
+      return { data: { requestId }, warnings: [] } as T;
     };
     const api = new DesktopApiV2(invoke);
 

@@ -58,9 +58,12 @@ describe('provider-runtime saveProviderSecret', () => {
 
   it('issues the direct save invoke and records a local frontend trace on success', async () => {
     invokeMock.mockResolvedValue({
-      reference: 'credential://provider/dashscope/default',
-      backend: 'windows-credential-manager',
-      hasSecret: true,
+      data: {
+        reference: 'credential://provider/dashscope/default',
+        backend: 'windows-credential-manager',
+        hasSecret: true,
+      },
+      warnings: [],
     });
 
     const result = await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
@@ -71,7 +74,10 @@ describe('provider-runtime saveProviderSecret', () => {
       hasSecret: true,
     });
     expect(nonLoggerInvokeCalls()).toHaveLength(1);
-    expect(nonLoggerInvokeCalls()[0]?.[0]).toBe('upsert_secret_ref');
+    expect(nonLoggerInvokeCalls()[0]).toEqual([
+      'configuration_v2',
+      { command: { action: 'secretUpsert', reference: 'credential://provider/dashscope/default', secret: 'secret-token' } },
+    ]);
     expect(recentTraceEntries()[0]).toMatchObject({
       category: 'storage',
       level: 'info',
@@ -85,7 +91,10 @@ describe('provider-runtime saveProviderSecret', () => {
     await expect(saveProviderSecret('credential://provider/dashscope/default', 'secret-token')).rejects.toThrow('backend failure');
 
     expect(nonLoggerInvokeCalls()).toHaveLength(1);
-    expect(nonLoggerInvokeCalls()[0]?.[0]).toBe('upsert_secret_ref');
+    expect(nonLoggerInvokeCalls()[0]).toEqual([
+      'configuration_v2',
+      { command: { action: 'secretUpsert', reference: 'credential://provider/dashscope/default', secret: 'secret-token' } },
+    ]);
     expect(recentTraceEntries()[0]).toMatchObject({
       category: 'storage',
       level: 'error',
@@ -111,7 +120,10 @@ describe('provider-runtime saveProviderSecret', () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('CredWriteW failed with code 5');
     expect(nonLoggerInvokeCalls()).toHaveLength(1);
-    expect(nonLoggerInvokeCalls()[0]?.[0]).toBe('upsert_secret_ref');
+    expect(nonLoggerInvokeCalls()[0]).toEqual([
+      'configuration_v2',
+      { command: { action: 'secretUpsert', reference: 'credential://provider/dashscope/default', secret: 'secret-token' } },
+    ]);
     expect(recentTraceEntries()[0]).toMatchObject({
       category: 'storage',
       level: 'error',
@@ -136,7 +148,10 @@ describe('provider-runtime saveProviderSecret', () => {
     });
     expect((error as Error).message).toContain('API Key 原生保存命令超时');
     expect(nonLoggerInvokeCalls()).toHaveLength(1);
-    expect(nonLoggerInvokeCalls()[0]?.[0]).toBe('upsert_secret_ref');
+    expect(nonLoggerInvokeCalls()[0]).toEqual([
+      'configuration_v2',
+      { command: { action: 'secretUpsert', reference: 'credential://provider/dashscope/default', secret: 'secret-token' } },
+    ]);
     expect(recentTraceEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -150,11 +165,13 @@ describe('provider-runtime saveProviderSecret', () => {
 
   it('keeps the timeout conclusion when the native command resolves after the frontend already timed out', async () => {
     vi.useFakeTimers();
-    let resolveInvoke: ((value: { reference: string; backend: string; hasSecret: boolean }) => void) | undefined;
+    let resolveInvoke:
+      | ((value: { data: { reference: string; backend: string; hasSecret: boolean }; warnings: unknown[] }) => void)
+      | undefined;
     invokeMock.mockImplementation(
       () =>
         new Promise((resolve) => {
-          resolveInvoke = resolve as (value: { reference: string; backend: string; hasSecret: boolean }) => void;
+          resolveInvoke = resolve as (value: { data: { reference: string; backend: string; hasSecret: boolean }; warnings: unknown[] }) => void;
         }),
     );
 
@@ -171,9 +188,12 @@ describe('provider-runtime saveProviderSecret', () => {
     });
 
     resolveInvoke?.({
-      reference: 'credential://provider/dashscope/default',
-      backend: 'windows-credential-manager',
-      hasSecret: true,
+      data: {
+        reference: 'credential://provider/dashscope/default',
+        backend: 'windows-credential-manager',
+        hasSecret: true,
+      },
+      warnings: [],
     });
     await Promise.resolve();
 
@@ -191,9 +211,12 @@ describe('provider-runtime saveProviderSecret', () => {
   it('returns the browser preview result without issuing invoke when tauri runtime is unavailable', async () => {
     disableTauriRuntime();
     invokeMock.mockResolvedValue({
-      reference: 'credential://provider/dashscope/default',
-      backend: 'windows-credential-manager',
-      hasSecret: true,
+      data: {
+        reference: 'credential://provider/dashscope/default',
+        backend: 'windows-credential-manager',
+        hasSecret: true,
+      },
+      warnings: [],
     });
 
     const result = await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
@@ -208,9 +231,12 @@ describe('provider-runtime saveProviderSecret', () => {
 
   it('keeps a bounded in-memory trace buffer for later inspection', async () => {
     invokeMock.mockResolvedValue({
-      reference: 'credential://provider/dashscope/default',
-      backend: 'windows-credential-manager',
-      hasSecret: true,
+      data: {
+        reference: 'credential://provider/dashscope/default',
+        backend: 'windows-credential-manager',
+        hasSecret: true,
+      },
+      warnings: [],
     });
 
     const result = await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
@@ -238,9 +264,12 @@ describe('provider-runtime diagnostics trace', () => {
 
   it('accumulates trace entries across appends in the logger ring', async () => {
     invokeMock.mockResolvedValue({
-      reference: 'credential://provider/dashscope/default',
-      backend: 'windows-credential-manager',
-      hasSecret: true,
+      data: {
+        reference: 'credential://provider/dashscope/default',
+        backend: 'windows-credential-manager',
+        hasSecret: true,
+      },
+      warnings: [],
     });
 
     await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
@@ -256,9 +285,12 @@ describe('provider-runtime diagnostics trace', () => {
     // omni.frontendDiagnosticsTrace persistence was removed), so a broken
     // storage backend must not affect trace recording.
     invokeMock.mockResolvedValue({
-      reference: 'credential://provider/dashscope/default',
-      backend: 'windows-credential-manager',
-      hasSecret: true,
+      data: {
+        reference: 'credential://provider/dashscope/default',
+        backend: 'windows-credential-manager',
+        hasSecret: true,
+      },
+      warnings: [],
     });
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('storage full');
@@ -415,14 +447,20 @@ describe('provider-runtime native command wrappers', () => {
   it('reads credential status and secret payloads from the native credential backend', async () => {
     invokeMock
       .mockResolvedValueOnce({
-        reference: 'credential://provider/dashscope/default',
-        backend: 'windows-credential-manager',
-        hasSecret: true,
+        data: {
+          reference: 'credential://provider/dashscope/default',
+          backend: 'windows-credential-manager',
+          hasSecret: true,
+        },
+        warnings: [],
       })
       .mockResolvedValueOnce({
-        reference: 'credential://provider/dashscope/default',
-        backend: 'windows-credential-manager',
-        secret: 'stored-secret',
+        data: {
+          reference: 'credential://provider/dashscope/default',
+          backend: 'windows-credential-manager',
+          secret: 'stored-secret',
+        },
+        warnings: [],
       });
 
     await expect(getProviderSecretStatus('credential://provider/dashscope/default')).resolves.toMatchObject({
@@ -433,15 +471,19 @@ describe('provider-runtime native command wrappers', () => {
       backend: 'windows-credential-manager',
       secret: 'stored-secret',
     });
-    expect(nonLoggerInvokeCalls().map((call) => call[0])).toEqual(['get_secret_ref_status', 'read_secret_ref']);
+    expect(nonLoggerInvokeCalls()).toEqual([
+      ['configuration_v2', { command: { action: 'secretStatus', reference: 'credential://provider/dashscope/default' } }],
+      ['configuration_v2', { command: { action: 'secretRead', reference: 'credential://provider/dashscope/default' } }],
+    ]);
   });
 
   it('propagates credential read failures and records diagnostics traces', async () => {
-    // Dispatch by command: the logger's own batched forwarding also calls
-    // invoke, so consumable mockRejectedValueOnce chains would race with it.
-    invokeMock.mockImplementation((command: unknown) => {
-      if (command === 'get_secret_ref_status') return Promise.reject(new Error('status unavailable'));
-      if (command === 'read_secret_ref') return Promise.reject('secret unavailable');
+    // Dispatch by envelope action: the logger's own batched forwarding also
+    // calls invoke, so consumable mockRejectedValueOnce chains would race with it.
+    invokeMock.mockImplementation((command: unknown, args?: unknown) => {
+      const action = (args as { command?: { action?: string } } | undefined)?.command?.action;
+      if (command === 'configuration_v2' && action === 'secretStatus') return Promise.reject(new Error('status unavailable'));
+      if (command === 'configuration_v2' && action === 'secretRead') return Promise.reject('secret unavailable');
       return Promise.resolve(undefined);
     });
 
@@ -458,9 +500,10 @@ describe('provider-runtime native command wrappers', () => {
   });
 
   it('records non-error status failures and Error secret failures', async () => {
-    invokeMock.mockImplementation((command: unknown) => {
-      if (command === 'get_secret_ref_status') return Promise.reject('status string failure');
-      if (command === 'read_secret_ref') return Promise.reject(new Error('secret Error failure'));
+    invokeMock.mockImplementation((command: unknown, args?: unknown) => {
+      const action = (args as { command?: { action?: string } } | undefined)?.command?.action;
+      if (command === 'configuration_v2' && action === 'secretStatus') return Promise.reject('status string failure');
+      if (command === 'configuration_v2' && action === 'secretRead') return Promise.reject(new Error('secret Error failure'));
       return Promise.resolve(undefined);
     });
     await expect(getProviderSecretStatus('credential://provider/dashscope/default')).rejects.toBe('status string failure');

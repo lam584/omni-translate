@@ -96,7 +96,6 @@ pub fn load_config_draft(
     }
 }
 
-#[tauri::command(async)]
 pub fn save_config_draft(
     app: AppHandle,
     storage: State<'_, StorageStateStore>,
@@ -280,7 +279,6 @@ pub fn rollback_config_snapshot(
     }
 }
 
-#[tauri::command]
 pub async fn upsert_secret_ref(
     app: AppHandle,
     reference: String,
@@ -375,7 +373,6 @@ pub async fn upsert_secret_ref(
     }
 }
 
-#[tauri::command]
 pub async fn get_secret_ref_status(
     app: AppHandle,
     reference: String,
@@ -443,7 +440,6 @@ pub async fn get_secret_ref_status(
     }
 }
 
-#[tauri::command]
 pub async fn read_secret_ref(
     app: AppHandle,
     reference: String,

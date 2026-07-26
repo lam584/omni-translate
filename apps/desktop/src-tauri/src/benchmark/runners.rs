@@ -1,4 +1,3 @@
-#[tauri::command]
 pub async fn run_model_benchmark(
     app: AppHandle,
     model: String,

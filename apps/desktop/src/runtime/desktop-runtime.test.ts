@@ -40,11 +40,18 @@ function installTauriRuntime() {
   });
 }
 
+type V2InvokeArgs = { command?: { action?: string } };
+
+/** True when the call is a v2 service envelope invoke for the given action. */
+function isV2(command: string, args: V2InvokeArgs | undefined, service: string, action: string) {
+  return command === service && args?.command?.action === action;
+}
+
 function installHappyInvoke(snapshot = structuredClone(runtimeSnapshotMock)) {
   snapshot.bridgeStatus = 'tauri-shell';
   snapshot.storage.status = 'ready';
 
-  invokeMock.mockImplementation(async (command: string) => {
+  invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
     if (command === 'debug_ipc_ping') {
       return 'pong storage_status=ready elapsed_ms=0';
     }
@@ -53,20 +60,20 @@ function installHappyInvoke(snapshot = structuredClone(runtimeSnapshotMock)) {
       return undefined;
     }
 
-    if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') {
-      return snapshot;
+    if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) {
+      return { data: snapshot, warnings: [] };
     }
 
-    if (command === 'bootstrap_audio') {
-      return structuredClone(audioRuntimeSnapshotMock);
+    if (isV2(command, args, 'session_v2', 'bootstrap')) {
+      return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
     }
 
-    if (command === 'load_config_draft') {
-      return structuredClone(appConfigDraftMock);
+    if (isV2(command, args, 'configuration_v2', 'load')) {
+      return { data: structuredClone(appConfigDraftMock), warnings: [] };
     }
 
-    if (command === 'save_config_draft') {
-      return undefined;
+    if (isV2(command, args, 'configuration_v2', 'save')) {
+      return { data: structuredClone(runtimeSnapshotMock.storage), warnings: [] };
     }
 
     if (command === 'session_v2') {
@@ -77,11 +84,19 @@ function installHappyInvoke(snapshot = structuredClone(runtimeSnapshotMock)) {
   });
 }
 
-/** Filter out diagnostic log forwarding calls that are fire-and-forget noise. */
+/**
+ * Ordered `command` / `command:action` names of every invoke, filtering out
+ * fire-and-forget diagnostic log forwarding noise. V2 envelope calls keep
+ * their action so sequence assertions stay as strict as the old per-command
+ * form.
+ */
 function invokeCommandCalls(): string[] {
   return invokeMock.mock.calls
-    .map((call) => call[0])
-    .filter((c) => !String(c).startsWith('append_frontend_diagnostics_log'));
+    .filter((call) => !String(call[0]).startsWith('append_frontend_diagnostics_log'))
+    .map((call) => {
+      const action = (call[1] as V2InvokeArgs | undefined)?.command?.action;
+      return action ? `${call[0]}:${action}` : String(call[0]);
+    });
 }
 
 describe('bootstrapDesktopRuntimeBridge', () => {
@@ -121,7 +136,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
       },
     ];
 
-    invokeMock.mockImplementation(async (command: string) => {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
       if (command === 'debug_ipc_ping') {
         return 'pong storage_status=ready elapsed_ms=0';
       }
@@ -130,24 +145,24 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return undefined;
       }
 
-      if (command === 'bootstrap_runtime') {
-        return liveSnapshot;
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime')) {
+        return { data: liveSnapshot, warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
-      if (command === 'save_config_draft') {
-        return undefined;
+      if (isV2(command, args, 'configuration_v2', 'save')) {
+        return { data: undefined, warnings: [] };
       }
 
-      if (command === 'refresh_bridge_runtime' || command === 'get_runtime_snapshot') {
-        return liveSnapshot;
+      if (isV2(command, args, 'bridge_v2', 'refresh') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot')) {
+        return { data: liveSnapshot, warnings: [] };
       }
 
       if (command === 'session_v2') {
@@ -170,11 +185,11 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
     expect(invokeCommandCalls()).toEqual([
       'debug_ipc_ping',
-      'bootstrap_runtime',
-      'load_config_draft',
-      'bootstrap_audio',
-      'get_runtime_snapshot',
-      'refresh_bridge_runtime',
+      'configuration_v2:bootstrapRuntime',
+      'configuration_v2:load',
+      'session_v2:bootstrap',
+      'configuration_v2:runtimeSnapshot',
+      'bridge_v2:refresh',
     ]);
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('tauri-shell');
     expect(useAppStore.getState().runtimeSnapshot.storage.status).toBe('ready');
@@ -247,29 +262,29 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     liveSnapshot.storage.databasePath = 'C:/Users/Red/AppData/Roaming/com.omni.translate/config/omni-config.db';
     liveSnapshot.storage.credentialBackend = 'windows-credential-manager';
 
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'bootstrap_runtime') {
-        return liveSnapshot;
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime')) {
+        return { data: liveSnapshot, warnings: [] };
       }
 
       if (command.startsWith('append_frontend_diagnostics_log')) {
         return undefined;
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
-      if (command === 'refresh_bridge_runtime' || command === 'get_runtime_snapshot') {
-        return liveSnapshot;
+      if (isV2(command, args, 'bridge_v2', 'refresh') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot')) {
+        return { data: liveSnapshot, warnings: [] };
       }
 
-      if (command === 'save_config_draft') {
-        return undefined;
+      if (isV2(command, args, 'configuration_v2', 'save')) {
+        return { data: undefined, warnings: [] };
       }
 
       if (command === 'session_v2') {
@@ -295,11 +310,11 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     await vi.advanceTimersByTimeAsync(200);
 
     expect(invokeCommandCalls()).toEqual([
-      'bootstrap_runtime',
-      'load_config_draft',
-      'bootstrap_audio',
-      'get_runtime_snapshot',
-      'refresh_bridge_runtime',
+      'configuration_v2:bootstrapRuntime',
+      'configuration_v2:load',
+      'session_v2:bootstrap',
+      'configuration_v2:runtimeSnapshot',
+      'bridge_v2:refresh',
     ]);
     expect(useAppStore.getState().runtimeSnapshot.storage.status).toBe('ready');
 
@@ -324,7 +339,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     hydratedSnapshot.storage.databasePath = 'C:/Users/Red/AppData/Roaming/com.omni.translate/config/omni-config.db';
     hydratedSnapshot.storage.credentialBackend = 'windows-credential-manager';
 
-    invokeMock.mockImplementation(async (command: string) => {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
       if (command === 'debug_ipc_ping') {
         return 'pong storage_status=preview elapsed_ms=0';
       }
@@ -333,24 +348,24 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return undefined;
       }
 
-      if (command === 'bootstrap_runtime') {
-        return bootstrapSnapshot;
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime')) {
+        return { data: bootstrapSnapshot, warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
-      if (command === 'refresh_bridge_runtime' || command === 'get_runtime_snapshot') {
-        return hydratedSnapshot;
+      if (isV2(command, args, 'bridge_v2', 'refresh') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot')) {
+        return { data: hydratedSnapshot, warnings: [] };
       }
 
-      if (command === 'save_config_draft') {
-        return undefined;
+      if (isV2(command, args, 'configuration_v2', 'save')) {
+        return { data: undefined, warnings: [] };
       }
 
       if (command === 'session_v2') {
@@ -364,11 +379,11 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
     expect(invokeCommandCalls()).toEqual([
       'debug_ipc_ping',
-      'bootstrap_runtime',
-      'load_config_draft',
-      'bootstrap_audio',
-      'get_runtime_snapshot',
-      'refresh_bridge_runtime',
+      'configuration_v2:bootstrapRuntime',
+      'configuration_v2:load',
+      'session_v2:bootstrap',
+      'configuration_v2:runtimeSnapshot',
+      'bridge_v2:refresh',
     ]);
     expect(useAppStore.getState().runtimeSnapshot.storage.status).toBe('ready');
 
@@ -385,7 +400,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     hydratedSnapshot.bridgeStatus = 'tauri-shell';
     hydratedSnapshot.storage.status = 'ready';
 
-    invokeMock.mockImplementation(async (command: string) => {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
       if (command === 'debug_ipc_ping') {
         return 'pong storage_status=ready elapsed_ms=0';
       }
@@ -394,24 +409,24 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return undefined;
       }
 
-      if (command === 'bootstrap_runtime') {
-        return hydratedSnapshot;
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime')) {
+        return { data: hydratedSnapshot, warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
-      if (command === 'refresh_bridge_runtime' || command === 'get_runtime_snapshot') {
-        return hydratedSnapshot;
+      if (isV2(command, args, 'bridge_v2', 'refresh') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot')) {
+        return { data: hydratedSnapshot, warnings: [] };
       }
 
-      if (command === 'save_config_draft') {
-        return undefined;
+      if (isV2(command, args, 'configuration_v2', 'save')) {
+        return { data: undefined, warnings: [] };
       }
 
       if (command === 'session_v2') {
@@ -436,7 +451,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
     expect(useAppStore.getState().configDraft.subtitles.overlayOpacity).toBe(0.55);
     expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
-    expect(invokeCommandCalls()).not.toContain('save_config_draft');
+    expect(invokeCommandCalls()).not.toContain('configuration_v2:save');
 
     cleanup();
   });
@@ -451,7 +466,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     hydratedSnapshot.bridgeStatus = 'tauri-shell';
     hydratedSnapshot.storage.status = 'ready';
 
-    invokeMock.mockImplementation(async (command: string) => {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
       if (command === 'debug_ipc_ping') {
         return 'pong storage_status=ready elapsed_ms=0';
       }
@@ -460,24 +475,24 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return undefined;
       }
 
-      if (command === 'bootstrap_runtime') {
-        return hydratedSnapshot;
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime')) {
+        return { data: hydratedSnapshot, warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
-      if (command === 'refresh_bridge_runtime' || command === 'get_runtime_snapshot') {
-        return hydratedSnapshot;
+      if (isV2(command, args, 'bridge_v2', 'refresh') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot')) {
+        return { data: hydratedSnapshot, warnings: [] };
       }
 
-      if (command === 'save_config_draft') {
-        return undefined;
+      if (isV2(command, args, 'configuration_v2', 'save')) {
+        return { data: undefined, warnings: [] };
       }
 
       if (command === 'session_v2') {
@@ -519,7 +534,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     hydratedSnapshot.bridgeStatus = 'tauri-shell';
     hydratedSnapshot.storage.status = 'ready';
 
-    invokeMock.mockImplementation(async (command: string) => {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
       if (command === 'debug_ipc_ping') {
         return 'pong storage_status=ready elapsed_ms=0';
       }
@@ -528,24 +543,24 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return undefined;
       }
 
-      if (command === 'bootstrap_runtime') {
-        return hydratedSnapshot;
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime')) {
+        return { data: hydratedSnapshot, warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
-      if (command === 'refresh_bridge_runtime' || command === 'get_runtime_snapshot') {
-        return hydratedSnapshot;
+      if (isV2(command, args, 'bridge_v2', 'refresh') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot')) {
+        return { data: hydratedSnapshot, warnings: [] };
       }
 
-      if (command === 'save_config_draft') {
-        return undefined;
+      if (isV2(command, args, 'configuration_v2', 'save')) {
+        return { data: undefined, warnings: [] };
       }
 
       if (command === 'session_v2') {
@@ -563,7 +578,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     listeners.get(CONFIG_DRAFT_SYNC_EVENT)?.({ payload: nextConfig });
 
     expect(useAppStore.getState().configDraft.subtitles.overlayFontSize).toBe(40);
-    expect(invokeCommandCalls()).not.toContain('save_config_draft');
+    expect(invokeCommandCalls()).not.toContain('configuration_v2:save');
 
     cleanup();
   });
@@ -642,17 +657,17 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     installTauriRuntime();
     installHappyInvoke();
     let pingAttempts = 0;
-    invokeMock.mockImplementation(async (command: string) => {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
       if (command === 'debug_ipc_ping') {
         pingAttempts += 1;
         if (pingAttempts <= 11) throw new Error('IPC protocol unavailable');
         return 'pong storage_status=ready elapsed_ms=0';
       }
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') {
-        return structuredClone(runtimeSnapshotMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) {
+        return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
       }
-      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
-      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'configuration_v2', 'load')) return { data: structuredClone(appConfigDraftMock), warnings: [] };
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -670,19 +685,19 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     installTauriRuntime();
     installHappyInvoke();
     let pingAttempts = 0;
-    invokeMock.mockImplementation(async (command: string) => {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
       if (command === 'debug_ipc_ping') {
         pingAttempts += 1;
         if (pingAttempts < 6) throw new Error('native channel is still starting');
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') {
-        return structuredClone(runtimeSnapshotMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) {
+        return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
-      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'configuration_v2', 'load')) return { data: structuredClone(appConfigDraftMock), warnings: [] };
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -698,8 +713,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
   it('reports a background driver probe failure without breaking bootstrap', async () => {
     installTauriRuntime();
     installHappyInvoke();
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'refresh_bridge_runtime') {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'bridge_v2', 'refresh')) {
         throw new Error('driver probe unavailable');
       }
 
@@ -707,16 +722,16 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot') {
-        return structuredClone(runtimeSnapshotMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot')) {
+        return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
       throw new Error(`unexpected command: ${command}`);
@@ -737,8 +752,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
   it('falls back to localStorage after SQLite persistence retries are exhausted', async () => {
     installTauriRuntime();
     installHappyInvoke();
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'save_config_draft') {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'configuration_v2', 'save')) {
         throw new Error('sqlite unavailable');
       }
 
@@ -746,16 +761,16 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') {
-        return structuredClone(runtimeSnapshotMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) {
+        return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
       throw new Error(`unexpected command: ${command}`);
@@ -786,12 +801,12 @@ describe('bootstrapDesktopRuntimeBridge', () => {
 
       return originalSetItem.call(this, key, value);
     });
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'save_config_draft') throw 'sqlite unavailable';
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'configuration_v2', 'save')) throw 'sqlite unavailable';
       if (command === 'debug_ipc_ping') return 'pong';
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') return structuredClone(runtimeSnapshotMock);
-      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
-      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'session_v2', 'bootstrap')) return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'configuration_v2', 'load')) return { data: structuredClone(appConfigDraftMock), warnings: [] };
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -806,8 +821,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
   it('stores the pending config fallback before page unload', async () => {
     installTauriRuntime();
     installHappyInvoke();
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'save_config_draft') {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'configuration_v2', 'save')) {
         return new Promise(() => {});
       }
 
@@ -815,16 +830,16 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') {
-        return structuredClone(runtimeSnapshotMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) {
+        return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'bootstrap_audio') {
-        return structuredClone(audioRuntimeSnapshotMock);
+      if (isV2(command, args, 'session_v2', 'bootstrap')) {
+        return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
       }
 
-      if (command === 'load_config_draft') {
-        return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'load')) {
+        return { data: structuredClone(appConfigDraftMock), warnings: [] };
       }
 
       throw new Error(`unexpected command: ${command}`);
@@ -842,12 +857,12 @@ describe('bootstrapDesktopRuntimeBridge', () => {
   it('mirrors an inflight config write to local recovery storage immediately', async () => {
     installTauriRuntime();
     installHappyInvoke();
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'save_config_draft') return new Promise(() => {});
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'configuration_v2', 'save')) return new Promise(() => {});
       if (command === 'debug_ipc_ping') return 'pong';
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') return structuredClone(runtimeSnapshotMock);
-      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
-      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'session_v2', 'bootstrap')) return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'configuration_v2', 'load')) return { data: structuredClone(appConfigDraftMock), warnings: [] };
       throw new Error(`unexpected command: ${command}`);
     });
 
@@ -863,12 +878,12 @@ describe('bootstrapDesktopRuntimeBridge', () => {
   it('ignores localStorage failures while flushing pending config before unload', async () => {
     installTauriRuntime();
     installHappyInvoke();
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'save_config_draft') return new Promise(() => {});
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'configuration_v2', 'save')) return new Promise(() => {});
       if (command === 'debug_ipc_ping') return 'pong';
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') return structuredClone(runtimeSnapshotMock);
-      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
-      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'session_v2', 'bootstrap')) return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'configuration_v2', 'load')) return { data: structuredClone(appConfigDraftMock), warnings: [] };
       throw new Error(`unexpected command: ${command}`);
     });
     const originalSetItem = Storage.prototype.setItem;
@@ -926,20 +941,20 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     installHappyInvoke();
     let resolveFirstSave: (() => void) | undefined;
     let saveCount = 0;
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'save_config_draft') {
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'configuration_v2', 'save')) {
         saveCount += 1;
         if (saveCount === 1) {
           await new Promise<void>((resolve) => {
             resolveFirstSave = resolve;
           });
         }
-        return undefined;
+        return { data: undefined, warnings: [] };
       }
       if (command === 'debug_ipc_ping') return 'pong';
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot' || command === 'refresh_bridge_runtime') return structuredClone(runtimeSnapshotMock);
-      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
-      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot') || isV2(command, args, 'bridge_v2', 'refresh')) return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'session_v2', 'bootstrap')) return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'configuration_v2', 'load')) return { data: structuredClone(appConfigDraftMock), warnings: [] };
       throw new Error(`unexpected command: ${command}`);
     });
     const cleanup = await bootstrapDesktopRuntimeBridge();
@@ -955,12 +970,12 @@ describe('bootstrapDesktopRuntimeBridge', () => {
   it('reports non-error background driver probe failures', async () => {
     installTauriRuntime();
     installHappyInvoke();
-    invokeMock.mockImplementation(async (command: string) => {
-      if (command === 'refresh_bridge_runtime') throw 'driver probe string failure';
+    invokeMock.mockImplementation(async (command: string, args?: V2InvokeArgs) => {
+      if (isV2(command, args, 'bridge_v2', 'refresh')) throw 'driver probe string failure';
       if (command === 'debug_ipc_ping') return 'pong';
-      if (command === 'bootstrap_runtime' || command === 'get_runtime_snapshot') return structuredClone(runtimeSnapshotMock);
-      if (command === 'bootstrap_audio') return structuredClone(audioRuntimeSnapshotMock);
-      if (command === 'load_config_draft') return structuredClone(appConfigDraftMock);
+      if (isV2(command, args, 'configuration_v2', 'bootstrapRuntime') || isV2(command, args, 'configuration_v2', 'runtimeSnapshot')) return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'session_v2', 'bootstrap')) return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+      if (isV2(command, args, 'configuration_v2', 'load')) return { data: structuredClone(appConfigDraftMock), warnings: [] };
       throw new Error(`unexpected command: ${command}`);
     });
     const cleanup = await bootstrapDesktopRuntimeBridge();

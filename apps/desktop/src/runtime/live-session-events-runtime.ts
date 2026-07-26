@@ -68,8 +68,7 @@ export async function getLiveSessionEventsRuntime(): Promise<LiveSessionEvents> 
     return { ...EMPTY_LIVE_SESSION_EVENTS };
   }
 
-  const json = await desktopApiV2.diagnostics.liveSessionEventsRaw();
-  const parsed = JSON.parse(json) as Partial<LiveSessionEvents>;
+  const parsed = await desktopApiV2.diagnostics.liveSessionEvents<Partial<LiveSessionEvents>>();
   return {
     ...EMPTY_LIVE_SESSION_EVENTS,
     ...parsed,

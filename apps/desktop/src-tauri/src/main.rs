@@ -11,33 +11,28 @@ mod runtime;
 mod storage;
 
 use audio::events::{
-    bootstrap_audio, preconnect_omni_realtime, preconnect_omni_realtime_inner,
-    start_audio_route, start_audio_route_inner, stop_audio_route,
+    preconnect_omni_realtime, preconnect_omni_realtime_inner, start_audio_route,
+    start_audio_route_inner, stop_audio_route,
 };
 use api_v2::{bridge_v2, configuration_v2, diagnostics_v2, provider_v2, session_v2};
 use audio::state::AudioStateStore;
-use benchmark::run_model_benchmark;
-use bridge::events::{refresh_bridge_runtime, start_bridge_service};
+use bridge::events::start_bridge_service;
 use bridge::state::BridgeStateStore;
 use diagnostics::events::{
-    append_diagnostics_log, append_frontend_diagnostics_logs, get_diagnostics_snapshot,
-    get_live_session_events, set_diagnostics_log_level,
+    append_diagnostics_log, append_frontend_diagnostics_logs, set_diagnostics_log_level,
 };
 use runtime::contracts::RuntimeNotification;
 use runtime::events::sync_subtitle_overlay_window_state;
 use runtime::events::unlock_subtitle_overlay;
 use runtime::events::{
-    bootstrap_runtime, emit_runtime_notification, emit_runtime_snapshot, get_runtime_snapshot,
-    show_subtitle_overlay, toggle_subtitle_overlay,
+    emit_runtime_notification, emit_runtime_snapshot, show_subtitle_overlay,
+    toggle_subtitle_overlay,
 };
 use runtime::windows::ensure_subtitle_overlay_window;
 use runtime::state::{now_marker, RuntimeStateStore};
 use runtime::tray::initialize_tray;
 use storage::credential::{CredentialVault, KeyringCredentialVault};
-use storage::events::{
-    bootstrap_storage, get_secret_ref_status, load_config_draft, read_secret_ref,
-    save_config_draft, upsert_secret_ref,
-};
+use storage::events::{bootstrap_storage, load_config_draft};
 use tauri::{AppHandle, Emitter, Manager};
 
 use serde::Serialize;
@@ -661,31 +656,32 @@ fn main() {
         .manage(diagnostics_store)
         .manage(RuntimeStateStore::new())
         .manage(StorageStateStore::new())
+        // Registration whitelist. The renderer talks to the five *_v2 service
+        // envelopes; every other entry below is a deliberately direct command
+        // with a written reason — see the header comment of
+        // apps/desktop/src/runtime/desktop-api-v2.ts for the authoritative
+        // list. In short: overlay window commands (separately bootstrapped
+        // renderer), logger plumbing (fire-and-forget), the IPC liveness
+        // probe, the sub-second start_audio_route click path, and the
+        // commands the live-matrix / IPC self-test scripts invoke over CLI
+        // (start_bridge_service, preconnect_omni_realtime, stop_audio_route,
+        // bootstrap_storage, load_config_draft, debug_ipc_ping,
+        // debug_cred_direct). Removing a script-invoked command requires
+        // re-running the live matrix on real hardware.
         .invoke_handler(tauri::generate_handler![
-            get_runtime_snapshot,
-            bootstrap_runtime,
             toggle_subtitle_overlay,
             show_subtitle_overlay,
             sync_subtitle_overlay_window_state,
-            refresh_bridge_runtime,
             start_bridge_service,
-            get_diagnostics_snapshot,
             set_diagnostics_log_level,
             append_frontend_diagnostics_logs,
-            get_live_session_events,
-            bootstrap_audio,
             preconnect_omni_realtime,
             start_audio_route,
             stop_audio_route,
             bootstrap_storage,
             load_config_draft,
-            save_config_draft,
-            upsert_secret_ref,
-            get_secret_ref_status,
-            read_secret_ref,
             debug_ipc_ping,
             debug_cred_direct,
-            run_model_benchmark,
             provider_v2,
             session_v2,
             bridge_v2,

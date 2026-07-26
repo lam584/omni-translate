@@ -132,7 +132,7 @@ async function _refreshAndAutostartBridge(
   startTimeoutMs: number,
 ) {
   try {
-    const driverSnapshot = await invokeWithTimeout(() => desktopApiV2.legacyBridge.refresh(), 'refresh_bridge_runtime', refreshTimeoutMs);
+    const driverSnapshot = await invokeWithTimeout(() => desktopApiV2.bridge.refresh(), 'bridge_v2.refresh', refreshTimeoutMs);
     useAppStore.getState().setRuntimeSnapshot(driverSnapshot);
 
     if (isWatchModeAutostartRuntime() || !shouldAutostartBridge(driverSnapshot)) {
@@ -425,11 +425,8 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   let persistedConfig = useAppStore.getState().configDraft;
   try {
     persistedConfig = await invokeWithTimeout(
-      // `loadDraft` is typed `T | null` for general drafts, but the Rust
-      // `load_config_draft` command always materializes a full config draft;
-      // keep this call site's pre-existing non-null contract.
-      () => desktopApiV2.persistence.loadDraft<AppConfigDraft>() as Promise<AppConfigDraft>,
-      'load_config_draft',
+      () => desktopApiV2.configuration.load(),
+      'configuration_v2.load',
     );
     useAppStore.getState().setConfigDraft(persistedConfig);
     markStep(onStep, 'load-config', 'done');
@@ -503,7 +500,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
       for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
         if (disposed) return;
         try {
-          await desktopApiV2.persistence.saveDraft(nextConfig);
+          await desktopApiV2.configuration.save(nextConfig);
           if (disposed) return;
           const latestSnapshot = await desktopApiV2.configuration.runtimeSnapshot();
           if (disposed) return;

@@ -68,7 +68,7 @@ describe('benchmark runtime', () => {
       progressHandler = handler;
       return unlisten;
     });
-    mocks.invoke.mockResolvedValue(JSON.stringify(report));
+    mocks.invoke.mockResolvedValue({ data: JSON.stringify(report), warnings: [] });
     const onProgress = vi.fn();
 
     const resultPromise = runModelBenchmark('model', 'key', 'audio.mp3', {
@@ -108,17 +108,20 @@ describe('benchmark runtime', () => {
     await expect(resultPromise).resolves.toEqual(report);
     expect(onProgress).toHaveBeenCalledTimes(1);
     expect(mocks.listen).toHaveBeenCalledWith(BENCHMARK_PROGRESS_EVENT, expect.any(Function));
-    expect(mocks.invoke).toHaveBeenCalledWith('run_model_benchmark', {
-      model: 'model',
-      apiKey: 'key',
-      mp3Path: 'audio.mp3',
-      runId: 'run-1',
-      realtimeAudioMode: 'server_vad',
-      interactionCapabilities: ['streaming'],
-      providerKind: 'openai',
-      baseUrl: 'https://example.test',
-      authHeaderName: 'Authorization',
-      authScheme: 'Bearer',
+    expect(mocks.invoke).toHaveBeenCalledWith('provider_v2', {
+      command: {
+        action: 'runModelBenchmark',
+        model: 'model',
+        apiKey: 'key',
+        mp3Path: 'audio.mp3',
+        runId: 'run-1',
+        realtimeAudioMode: 'server_vad',
+        interactionCapabilities: ['streaming'],
+        providerKind: 'openai',
+        baseUrl: 'https://example.test',
+        authHeaderName: 'Authorization',
+        authScheme: 'Bearer',
+      },
     });
     expect(unlisten).toHaveBeenCalledTimes(1);
   });
@@ -127,17 +130,20 @@ describe('benchmark runtime', () => {
     const report = makeReport();
     vi.spyOn(Date, 'now').mockReturnValue(1234);
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
-    mocks.invoke.mockResolvedValue(JSON.stringify(report));
+    mocks.invoke.mockResolvedValue({ data: JSON.stringify(report), warnings: [] });
 
     await expect(runModelBenchmark('model', 'key', 'audio.mp3')).resolves.toEqual(report);
 
-    expect(mocks.invoke).toHaveBeenCalledWith('run_model_benchmark', expect.objectContaining({
-      runId: 'benchmark-1234-i',
-    }));
+    expect(mocks.invoke).toHaveBeenCalledWith('provider_v2', {
+      command: expect.objectContaining({
+        action: 'runModelBenchmark',
+        runId: 'benchmark-1234-i',
+      }),
+    });
   });
 
   it('rejects invalid JSON and native invoke errors', async () => {
-    mocks.invoke.mockResolvedValueOnce('{bad json');
+    mocks.invoke.mockResolvedValueOnce({ data: '{bad json', warnings: [] });
     await expect(runModelBenchmark('model', 'key', 'audio.mp3', { runId: 'parse-fail' })).rejects.toThrow();
 
     mocks.invoke.mockRejectedValueOnce(new Error('native failed'));
@@ -148,7 +154,7 @@ describe('benchmark runtime', () => {
     const parseSpy = vi.spyOn(JSON, 'parse').mockImplementationOnce(() => {
       throw 'string parse failure';
     });
-    mocks.invoke.mockResolvedValueOnce('{}');
+    mocks.invoke.mockResolvedValueOnce({ data: '{}', warnings: [] });
 
     await expect(runModelBenchmark('model', 'key', 'audio.mp3', { runId: 'parse-string-fail' })).rejects.toThrow('string parse failure');
     parseSpy.mockRestore();

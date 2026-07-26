@@ -49,7 +49,7 @@ describe('diagnostics runtime', () => {
   it('maps desktop self-checks and exports to native invoke commands', async () => {
     mocks.isTauriRuntime.mockReturnValue(true);
     mocks.invoke.mockImplementation(async (command: string) =>
-      command === 'diagnostics_v2'
+      command === 'diagnostics_v2' || command === 'configuration_v2'
         ? { data: { command }, warnings: [] }
         : { command },
     );
@@ -58,13 +58,13 @@ describe('diagnostics runtime', () => {
     expect(await runSubtitleOverlaySelfCheckRuntime()).toEqual({ command: 'diagnostics_v2' });
     expect(await exportDiagnosticsBundleRuntime('quick')).toEqual({
       artifact: { command: 'diagnostics_v2' },
-      snapshot: { command: 'get_runtime_snapshot' },
+      snapshot: { command: 'configuration_v2' },
     });
     expect(mocks.invoke.mock.calls).toEqual([
       ['diagnostics_v2', { command: { action: 'selfCheck' } }],
       ['diagnostics_v2', { command: { action: 'overlaySelfCheck' } }],
       ['diagnostics_v2', { command: { action: 'export', scope: 'quick' } }],
-      ['get_runtime_snapshot'],
+      ['configuration_v2', { command: { action: 'runtimeSnapshot' } }],
     ]);
   });
 
@@ -133,11 +133,13 @@ describe('diagnostics runtime', () => {
       detail: null,
       emittedAt: '2026-07-25T00:00:00.000Z',
     } as const;
-    mocks.invoke.mockResolvedValueOnce({ recentLogs: [entry] }).mockResolvedValueOnce({});
+    mocks.invoke
+      .mockResolvedValueOnce({ data: { recentLogs: [entry] }, warnings: [] })
+      .mockResolvedValueOnce({ data: {}, warnings: [] });
 
     await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([entry]);
     await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([]);
-    expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'get_diagnostics_snapshot');
+    expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'diagnostics_v2', { command: { action: 'snapshot' } });
   });
 
   it('degrades failed recent-log IPC reads to an empty list', async () => {

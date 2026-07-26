@@ -171,9 +171,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
   beforeEach(() => {
     tauriRuntimeMock.isRuntime = false;
     tauriRuntimeMock.invoke.mockReset();
-    tauriRuntimeMock.invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_runtime_snapshot' || command === 'bootstrap_runtime') {
-        return structuredClone(useAppStore.getState().runtimeSnapshot);
+    tauriRuntimeMock.invoke.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
+      const action = args?.command?.action;
+      if (command === 'configuration_v2' && (action === 'runtimeSnapshot' || action === 'bootstrapRuntime')) {
+        return { data: structuredClone(useAppStore.getState().runtimeSnapshot), warnings: [] };
       }
       return undefined;
     });
@@ -624,8 +625,11 @@ describe('DiagnosticsPage monitoring boundary', () => {
     snapshot.bridge.bridgeState = 'running';
     const refreshed = { ...snapshot, bridgeStatus: 'tauri-shell' };
     refreshBridgeRuntimeMock.mockResolvedValue(refreshed);
-    tauriRuntimeMock.invoke.mockImplementation(async (command: string) => {
-      if (command === 'get_runtime_snapshot' || command === 'bootstrap_runtime') return refreshed;
+    tauriRuntimeMock.invoke.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
+      const action = args?.command?.action;
+      if (command === 'configuration_v2' && (action === 'runtimeSnapshot' || action === 'bootstrapRuntime')) {
+        return { data: refreshed, warnings: [] };
+      }
       return undefined;
     });
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
@@ -638,9 +642,9 @@ describe('DiagnosticsPage monitoring boundary', () => {
       await Promise.resolve();
     });
 
-    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('bootstrap_runtime');
+    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('configuration_v2', { command: { action: 'bootstrapRuntime' } });
     expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('bootstrap_storage');
-    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('get_runtime_snapshot');
+    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('configuration_v2', { command: { action: 'runtimeSnapshot' } });
     expect(useAppStore.getState().runtimeNotifications[0]?.level).toBe('info');
   });
 

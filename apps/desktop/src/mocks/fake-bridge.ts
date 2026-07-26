@@ -229,6 +229,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
         };
         break;
       case 'snapshot':
+      case 'bootstrap':
       case 'refreshDevices':
       case 'preconnect':
       case 'cancelPreconnect':
@@ -264,6 +265,18 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     return envelope(structuredClone(runtime));
   }
 
+  function handleConfigurationAction(action: string | null) {
+    switch (action) {
+      case 'runtimeSnapshot':
+      case 'bootstrapRuntime':
+        return envelope(structuredClone(runtime));
+      case 'save':
+        return envelope(structuredClone(runtime.storage));
+      default:
+        throw new Error(`fake bridge: unsupported configuration_v2 action ${String(action)}`);
+    }
+  }
+
   async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     record(command, args);
     switch (command) {
@@ -271,6 +284,8 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
         return handleSessionAction(extractAction(args), args) as T;
       case 'bridge_v2':
         return handleBridgeAction(extractAction(args), args) as T;
+      case 'configuration_v2':
+        return handleConfigurationAction(extractAction(args)) as T;
       case 'start_audio_route':
         startRoute(args?.direction as 'inbound' | 'outbound');
         return structuredClone(audio) as T;
@@ -292,16 +307,9 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
         return structuredClone(runtime) as T;
       case 'debug_ipc_ping':
         return 'pong' as T;
-      case 'bootstrap_runtime':
-      case 'get_runtime_snapshot':
-      case 'refresh_bridge_runtime':
-        return structuredClone(runtime) as T;
       case 'start_bridge_service':
         applyBridgeRunning(args?.config as AppConfigDraft | undefined);
         return structuredClone(runtime) as T;
-      case 'bootstrap_audio':
-        return structuredClone(audio) as T;
-      case 'save_config_draft':
       case 'append_frontend_diagnostics_logs':
         return undefined as T;
       default:

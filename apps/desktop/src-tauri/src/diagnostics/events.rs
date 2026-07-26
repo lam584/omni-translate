@@ -347,7 +347,6 @@ pub fn set_diagnostics_log_level(
     Ok(())
 }
 
-#[tauri::command]
 pub fn get_diagnostics_snapshot(app: AppHandle) -> DiagnosticsRuntimeSnapshot {
     build_diagnostics_snapshot(&app)
 }
@@ -536,7 +535,6 @@ pub async fn export_diagnostics_bundle(
     })
 }
 
-#[tauri::command]
 pub fn get_live_session_events(
     audio_state: State<'_, AudioStateStore>,
 ) -> Result<String, String> {

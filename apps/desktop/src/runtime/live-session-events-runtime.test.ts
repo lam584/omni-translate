@@ -35,7 +35,7 @@ describe('live session events runtime', () => {
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
-  it('invokes native command and parses JSON in Tauri mode', async () => {
+  it('invokes the diagnostics_v2 command and maps envelope events in Tauri mode', async () => {
     mocks.isTauriRuntime.mockReturnValue(true);
     const payload = {
       sessionStartedAt: 'unix-ms:1000',
@@ -50,10 +50,10 @@ describe('live session events runtime', () => {
       asrFinal: '你好',
       translationFinal: 'Hello',
     };
-    mocks.invoke.mockResolvedValue(JSON.stringify(payload));
+    mocks.invoke.mockResolvedValue({ data: payload, warnings: [] });
 
     const events = await getLiveSessionEventsRuntime();
-    expect(mocks.invoke).toHaveBeenCalledWith('get_live_session_events');
+    expect(mocks.invoke).toHaveBeenCalledWith('diagnostics_v2', { command: { action: 'liveSessionEvents' } });
     expect(events.model).toBe('qwen3.5-omni-plus-realtime');
     expect(events.elapsedMs).toBe(5000);
     expect(events.asrDeltas).toHaveLength(1);
@@ -71,7 +71,7 @@ describe('live session events runtime', () => {
     await expect(getLiveSessionEventsRuntime()).rejects.toThrow('command not found');
   });
 
-  it('rejects when native invoke returns invalid JSON', async () => {
+  it('rejects when the native envelope payload is malformed', async () => {
     mocks.isTauriRuntime.mockReturnValue(true);
     mocks.invoke.mockResolvedValue('not-json');
 

@@ -186,7 +186,6 @@ pub fn show_subtitle_overlay_with_state(
 // main thread; keeping command bodies off it prevents a burst of concurrent
 // invokes from starving that handler (which manifested as `invoke` round-trips
 // that never returned -> `bootstrap_runtime` "timeout").
-#[tauri::command]
 pub async fn get_runtime_snapshot(
     app: AppHandle,
     state: State<'_, RuntimeStateStore>,
@@ -194,7 +193,6 @@ pub async fn get_runtime_snapshot(
     Ok(build_runtime_snapshot(&app, &state))
 }
 
-#[tauri::command]
 pub async fn bootstrap_runtime(
     app: AppHandle,
     state: State<'_, RuntimeStateStore>,

@@ -1,3 +1,34 @@
+/**
+ * Direct v1 command whitelist
+ * ---------------------------
+ * Every renderer→shell call goes through one of the five v2 service
+ * envelopes (`provider_v2` / `session_v2` / `bridge_v2` / `diagnostics_v2` /
+ * `configuration_v2`) EXCEPT the commands below, each of which keeps a direct
+ * registration for a written reason. Do not add new direct commands without
+ * extending this list, and keep it in sync with `generate_handler!` in
+ * `src-tauri/src/main.rs`.
+ *
+ * - `debug_ipc_ping` — IPC liveness probe used before anything else may
+ *   invoke; must stay a trivial sync echo with no envelope or logging. Also
+ *   CLI-invoked by scripts/diagnostics/ipc_test.ps1 and
+ *   scripts/testing/run-watch-mode-live.ps1.
+ * - `start_audio_route` — route startup keeps the sub-second native
+ *   acknowledgement on the click path and bypasses the ServiceResult
+ *   envelope. Also CLI-invoked by run-watch-mode-live.ps1.
+ * - `start_bridge_service` — startup/autostart path predating bridge_v2;
+ *   CLI-invoked by run-watch-mode-live.ps1.
+ * - `append_frontend_diagnostics_logs` / `set_diagnostics_log_level` —
+ *   fire-and-forget logger plumbing; must not depend on snapshot rebuilds.
+ * - `bootstrap_storage` — startup recovery path; CLI-invoked by ipc_test.ps1.
+ * - `sync_subtitle_overlay_window_state` / `unlock_subtitle_overlay` /
+ *   `toggle_subtitle_overlay` / `show_subtitle_overlay` — the overlay is a
+ *   separately bootstrapped renderer and issues these before the V2 desktop
+ *   service bridge has hydrated.
+ * - Script-only registrations without a renderer call site:
+ *   `load_config_draft`, `stop_audio_route`, `preconnect_omni_realtime`
+ *   (run-watch-mode-live.ps1) and `debug_cred_direct` (ipc_test.ps1). Their
+ *   removal requires re-running the live matrix on real hardware.
+ */
 import { invoke } from '@tauri-apps/api/core';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { Menu } from '@tauri-apps/api/menu';
@@ -27,7 +58,7 @@ export type FrontendDiagnosticsBatchEntry = {
   emittedAt: string;
 };
 export type DiagnosticsLogLevel = 'error' | 'warning' | 'info' | 'debug' | 'verbose';
-/** Flat args for the legacy 'run_model_benchmark' command; mirrors the benchmark-runtime call site. */
+/** Flat args for the provider_v2 'runModelBenchmark' action; mirrors the benchmark-runtime call site. */
 export type ModelBenchmarkRunPayload = {
   model: string;
   apiKey: string;
@@ -105,13 +136,11 @@ export class DesktopApiV2 {
   };
 
   /**
-   * Legacy bridge lifecycle commands that pre-date bridge_v2. Same runtime
-   * area as `bridge` above, but different commands with different semantics:
-   * these direct commands are used on the startup/autostart path and do not
-   * go through the ServiceResult envelope.
+   * Legacy bridge lifecycle command that pre-dates bridge_v2. Whitelisted:
+   * the startup/autostart path issues it directly and the live-matrix script
+   * invokes it over the CLI, so it bypasses the ServiceResult envelope.
    */
   readonly legacyBridge = {
-    refresh: () => this.invokeFn<RuntimeSnapshot>('refresh_bridge_runtime'),
     start: (config: AppConfigDraft) => this.invokeFn<RuntimeSnapshot>('start_bridge_service', { config }),
   };
 
@@ -127,13 +156,10 @@ export class DesktopApiV2 {
       this.invokeFn<void>('append_frontend_diagnostics_logs', { entries: [...entries], droppedCount }),
     setLogLevel: async (level: DiagnosticsLogLevel) =>
       this.invokeFn<void>('set_diagnostics_log_level', { level }),
-    // Direct native log-ring snapshot (not a diagnostics_v2 envelope): scene
-    // launch attribution reads recent route markers without a snapshot rebuild.
-    snapshot: () => this.invokeFn<{ recentLogs?: DiagnosticLogEntryRuntime[] }>('get_diagnostics_snapshot'),
-    // Legacy 'get_live_session_events' direct command returning a raw JSON
-    // string that callers parse themselves. Deliberately distinct from
-    // `liveSessionEvents` above, which is the diagnostics_v2 envelope action.
-    liveSessionEventsRaw: () => this.invokeFn<string>('get_live_session_events'),
+    // Native log-ring snapshot: scene launch attribution reads recent route
+    // markers from the diagnostics snapshot action.
+    snapshot: async () =>
+      unwrap(await this.invokeFn<ServiceResult<{ recentLogs?: DiagnosticLogEntryRuntime[] }>>('diagnostics_v2', { command: { action: 'snapshot' } })),
   };
 
   readonly configuration = {
@@ -144,23 +170,21 @@ export class DesktopApiV2 {
     import: async (filePath: string) => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'import', filePath } })),
     createSnapshot: async (reason?: string) => unwrap(await this.invokeFn<ServiceResult<ConfigSnapshotRecord>>('configuration_v2', { command: { action: 'createSnapshot', reason } })),
     rollback: async (snapshotId: string) => unwrap(await this.invokeFn<ServiceResult<AppConfigDraft>>('configuration_v2', { command: { action: 'rollback', snapshotId } })),
-    // Startup recovery remains a renderer capability while the Rust bootstrap
-    // command is folded into configuration_v2; pages never invoke it directly.
+    // Whitelisted direct command (see the header): startup recovery issues it
+    // before the runtime snapshot exists, and ipc_test.ps1 invokes it over CLI.
     bootstrapStorage: async () => this.invokeFn<void>('bootstrap_storage'),
-    runtimeSnapshot: async () => this.invokeFn<RuntimeSnapshot>('get_runtime_snapshot'),
-    bootstrapRuntime: async () => this.invokeFn<RuntimeSnapshot>('bootstrap_runtime'),
-  };
-
-  /** Persistence capability kept behind the desktop boundary during V2 migration. */
-  readonly persistence = {
-    saveDraft: async <T>(config: T) => this.invokeFn<void>('save_config_draft', { config }),
-    loadDraft: async <T>() => this.invokeFn<T | null>('load_config_draft'),
+    runtimeSnapshot: async () =>
+      unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('configuration_v2', { command: { action: 'runtimeSnapshot' } })),
+    bootstrapRuntime: async () =>
+      unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('configuration_v2', { command: { action: 'bootstrapRuntime' } })),
   };
 
   /** Startup-orchestration commands used by the desktop runtime bootstrap. */
   readonly runtime = {
+    // Whitelisted direct command (see the header): the IPC liveness probe.
     debugIpcPing: () => this.invokeFn<string>('debug_ipc_ping'),
-    bootstrapAudio: () => this.invokeFn<AudioRuntimeSnapshot>('bootstrap_audio'),
+    bootstrapAudio: async () =>
+      unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', { command: { action: 'bootstrap' } })),
   };
 
   /**
@@ -178,15 +202,20 @@ export class DesktopApiV2 {
 
   readonly benchmark = {
     /** Returns the benchmark report as a raw JSON string; callers parse it. */
-    runModelBenchmark: (payload: ModelBenchmarkRunPayload) => this.invokeFn<string>('run_model_benchmark', payload),
+    runModelBenchmark: async (payload: ModelBenchmarkRunPayload) =>
+      unwrap(await this.invokeFn<ServiceResult<string>>('provider_v2', { command: { action: 'runModelBenchmark', ...payload } })),
   };
 
   // Secrets are intentionally not represented in the generic configuration
-  // protocol: callers must use the credential-specific capability.
+  // draft protocol: callers must use the credential-specific actions, which
+  // never appear inside a config document.
   readonly credentials = {
-    status: (reference: string) => this.invokeFn<CredentialRefStatus>('get_secret_ref_status', { reference }),
-    read: (reference: string) => this.invokeFn<CredentialSecretPayload>('read_secret_ref', { reference }),
-    save: (reference: string, secret: string) => this.invokeFn<CredentialRefStatus>('upsert_secret_ref', { reference, secret }),
+    status: async (reference: string) =>
+      unwrap(await this.invokeFn<ServiceResult<CredentialRefStatus>>('configuration_v2', { command: { action: 'secretStatus', reference } })),
+    read: async (reference: string) =>
+      unwrap(await this.invokeFn<ServiceResult<CredentialSecretPayload>>('configuration_v2', { command: { action: 'secretRead', reference } })),
+    save: async (reference: string, secret: string) =>
+      unwrap(await this.invokeFn<ServiceResult<CredentialRefStatus>>('configuration_v2', { command: { action: 'secretUpsert', reference, secret } })),
   };
 
   /** Native-window boundary used by overlay hooks; tests inject this object. */

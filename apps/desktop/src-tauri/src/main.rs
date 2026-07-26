@@ -3,6 +3,8 @@ mod api_v2;
 mod benchmark;
 mod bridge;
 mod common;
+#[cfg(test)]
+mod contract_keys_fixture;
 mod diagnostics;
 mod provider;
 mod runtime;

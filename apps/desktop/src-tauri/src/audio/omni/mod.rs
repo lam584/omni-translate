@@ -40,6 +40,8 @@ pub(crate) use self::realtime_socket::{
 };
 pub(crate) mod session_errors;
 #[cfg(test)]
+mod local_ws_reconnect_tests;
+#[cfg(test)]
 mod replay_tests;
 mod session_worker;
 mod socket_event_processor;

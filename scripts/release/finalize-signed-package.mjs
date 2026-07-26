@@ -1,27 +1,16 @@
-import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 
-const rootDir = process.cwd();
-const readJson = (relativePath) => JSON.parse(fs.readFileSync(path.join(rootDir, relativePath), 'utf8'));
-const sha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
-const collectFiles = (dir) =>
-  fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      return collectFiles(fullPath);
-    }
-    return [fullPath];
-  });
+import { bundleName, collectFiles, compressArchive, readJson, releasePaths, repoRoot, sha256 } from '../lib/release-common.mjs';
+
+const rootDir = repoRoot;
 
 const rootPackage = readJson('package.json');
 const version = rootPackage.version;
-const bundleName = `OmniTranslate-${version}-windows-x64-portable`;
-const releaseDir = path.join(rootDir, 'artifacts', 'release', version);
-const signedDir = path.join(releaseDir, 'packages', 'signed');
-const signedBundleDir = path.join(signedDir, bundleName);
-const signedBundleZip = path.join(signedDir, `${bundleName}.zip`);
+const bundleBase = bundleName(version);
+const { releaseDir, signedDir } = releasePaths(version);
+const signedBundleDir = path.join(signedDir, bundleBase);
+const signedBundleZip = path.join(signedDir, `${bundleBase}.zip`);
 const signedChecksumsPath = path.join(releaseDir, 'signed-checksums.sha256.json');
 const signedSummaryPath = path.join(releaseDir, 'signed-package-summary.json');
 
@@ -30,8 +19,7 @@ if (!fs.existsSync(signedBundleDir)) {
 }
 
 fs.rmSync(signedBundleZip, { force: true });
-const psCommand = `Compress-Archive -Path '${signedBundleDir.replace(/'/g, "''")}\\*' -DestinationPath '${signedBundleZip.replace(/'/g, "''")}' -Force`;
-execFileSync('powershell.exe', ['-NoProfile', '-Command', psCommand], { stdio: 'inherit' });
+compressArchive(signedBundleDir, signedBundleZip);
 
 const signedFiles = collectFiles(signedBundleDir).map((filePath) => ({
   path: path.relative(rootDir, filePath),

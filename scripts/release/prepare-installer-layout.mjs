@@ -1,17 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const rootDir = process.cwd();
+import { bundleName, readCargoVersion, readJson, releasePaths, repoRoot } from '../lib/release-common.mjs';
 
-const readText = (relativePath) => fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
-const readJson = (relativePath) => JSON.parse(readText(relativePath));
-const readCargoVersion = (relativePath) => {
-  const match = readText(relativePath).match(/^\s*version\s*=\s*"([^"]+)"/m);
-  if (!match) {
-    throw new Error(`Unable to read Cargo package version from ${relativePath}`);
-  }
-  return match[1];
-};
+const rootDir = repoRoot;
 
 const rootPackage = readJson('package.json');
 const desktopPackage = readJson(path.join('apps', 'desktop', 'package.json'));
@@ -64,13 +56,13 @@ for (const fileName of driverPackageFiles) {
   }
 }
 
-const versionDir = path.join(rootDir, 'artifacts', 'installer', rootPackage.version);
+const versionDir = releasePaths(rootPackage.version).installerLayoutDir;
 fs.rmSync(versionDir, { recursive: true, force: true });
 const layout = {
   version: rootPackage.version,
   generatedAt: new Date().toISOString(),
   naming: {
-    packageBaseName: `OmniTranslate-${rootPackage.version}-windows-x64-portable`,
+    packageBaseName: bundleName(rootPackage.version),
     channel: 'stable',
     platform: 'windows-x64',
   },

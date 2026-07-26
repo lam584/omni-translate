@@ -1,17 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-const rootDir = process.cwd();
-const projectDocsDir = path.join('docs', '项目');
+import { RELEASE_DOCS, readCargoVersion, readJson, readText, repoRoot } from '../lib/release-common.mjs';
+
+const rootDir = repoRoot;
 const legacyBridgeName = ['bridge', 'service'].join('-');
 
 const requiredFiles = [
   'README.md',
   path.join('i18n', 'README_en.md'),
-  path.join(projectDocsDir, 'Watch Mode 真实链路自动化测试.md'),
-  path.join(projectDocsDir, '架构说明.md'),
-  path.join(projectDocsDir, '测试与质量门禁.md'),
-  path.join(projectDocsDir, '社区术语包格式规范.md'),
+  ...RELEASE_DOCS,
   'apps/desktop/package.json',
   'apps/bridge-service-native/Cargo.toml',
   'scripts/release/prepare-installer-layout.mjs',
@@ -24,17 +22,6 @@ const requiredFiles = [
   'scripts/installer/repair-driver.ps1',
   'scripts/testing/verify-contracts.mjs',
 ];
-
-const readText = (relativePath) => fs.readFileSync(path.join(rootDir, relativePath), 'utf8');
-const readJson = (relativePath) => JSON.parse(readText(relativePath));
-
-function readCargoVersion(relativePath) {
-  const match = readText(relativePath).match(/^\s*version\s*=\s*"([^"]+)"/m);
-  if (!match) {
-    throw new Error(`Unable to read Cargo package version from ${relativePath}`);
-  }
-  return match[1];
-}
 
 const rootPackage = readJson('package.json');
 const desktopPackage = readJson(path.join('apps', 'desktop', 'package.json'));

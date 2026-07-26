@@ -44,14 +44,17 @@ const ALL_ROUTE_MARKERS = [
   ...ROUTE_ACK_MARKERS,
 ] as const;
 
-const STAGE_LABELS: Record<SceneLaunchStage, string> = {
-  'bridge-ready': i18n.t('session.attribution.stageBridgeReady'),
-  'omni-preconnect': i18n.t('session.attribution.stageOmniPreconnect'),
-  'inbound-route': i18n.t('session.attribution.stageInboundRoute'),
-  'outbound-route': i18n.t('session.attribution.stageOutboundRoute'),
-  'translate-worker': i18n.t('session.attribution.stageTranslateWorker'),
-  'speech-dispatch': i18n.t('session.attribution.stageSpeechDispatch'),
-  'subtitle-overlay': i18n.t('session.attribution.stageSubtitleOverlay'),
+// Stage label i18n keys, resolved through i18n.t at call time: non zh-CN/en
+// locale bundles are attached asynchronously after startup, so labels frozen
+// at module load would ignore the language active when the failure occurs.
+const STAGE_LABEL_KEYS: Record<SceneLaunchStage, string> = {
+  'bridge-ready': 'session.attribution.stageBridgeReady',
+  'omni-preconnect': 'session.attribution.stageOmniPreconnect',
+  'inbound-route': 'session.attribution.stageInboundRoute',
+  'outbound-route': 'session.attribution.stageOutboundRoute',
+  'translate-worker': 'session.attribution.stageTranslateWorker',
+  'speech-dispatch': 'session.attribution.stageSpeechDispatch',
+  'subtitle-overlay': 'session.attribution.stageSubtitleOverlay',
 };
 
 function errorText(error: unknown): string {
@@ -110,7 +113,7 @@ function nativeMarkerFragment(recentLogs: DiagnosticLogEntryRuntime[]): string {
  */
 export function describeSceneLaunchAttribution(input: SceneLaunchAttributionInput): SceneLaunchAttribution {
   const outcome = classify(input);
-  const stageLabel = input.stage ? STAGE_LABELS[input.stage] : i18n.t('session.attribution.stageLaunch');
+  const stageLabel = input.stage ? i18n.t(STAGE_LABEL_KEYS[input.stage]) : i18n.t('session.attribution.stageLaunch');
   const context = `${captureStateFragment(input.snapshot)}；${nativeMarkerFragment(input.recentLogs)}`;
   const detail = errorText(input.error);
 

@@ -318,21 +318,28 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         const launchStartedAt = Date.now();
         let snapshot = options.audioSnapshot;
         let launchTimedOut = false;
+        // Sync the plan's corrected route configuration back into the drafts on
+        // every launch path, before the plan executes. Watch plans deliberately
+        // contain no bridge-ready stage, so this write-back must not live inside
+        // the executor's ensureBridgeReady callback: legacy watch drafts (e.g.
+        // feedbackLoopPrevention 'none' / virtualMicOutputEnabled true) would
+        // never migrate and watchModeNeedsBridge would keep misreporting a
+        // virtual-driver blocker against the actually-launched route.
+        controller.updateDeviceDraft({
+          routeMode: mode,
+          status: 'ready',
+          feedbackLoopPrevention: nextConfig.devices.feedbackLoopPrevention,
+          aecEnabled: nextConfig.devices.aecEnabled,
+          outputSpeechEnabled: nextConfig.devices.outputSpeechEnabled,
+          virtualMicOutputEnabled: nextConfig.devices.virtualMicOutputEnabled,
+        });
+        controller.updateSpeechDraft(options.speechPatch);
+        controller.updateDiagnosticsReady(mode);
         const launchAbortController = new AbortController();
         const launchOperation = executeSceneLaunchPlan(plan, {
           abortSignal: launchAbortController.signal,
           ensureBridgeReady: async () => {
             await ensureBridgeReady(mode, nextConfig);
-            controller.updateDeviceDraft({
-              routeMode: mode,
-              status: 'ready',
-              feedbackLoopPrevention: nextConfig.devices.feedbackLoopPrevention,
-              aecEnabled: nextConfig.devices.aecEnabled,
-              outputSpeechEnabled: nextConfig.devices.outputSpeechEnabled,
-              virtualMicOutputEnabled: nextConfig.devices.virtualMicOutputEnabled,
-            });
-            controller.updateSpeechDraft(options.speechPatch);
-            controller.updateDiagnosticsReady(mode);
           },
           preconnectOmni: async () => {
             controller.setAudioSnapshot(await preconnectOmniRealtimeRuntime(nextConfig));

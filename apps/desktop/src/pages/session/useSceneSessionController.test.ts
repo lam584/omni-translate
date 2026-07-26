@@ -258,15 +258,19 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.stopSpeech).toHaveBeenCalled();
   });
 
-  it('covers Watch bridge setup and non-Error preconnect warnings', async () => {
-    planState.mainStages = ['bridge-ready', 'inbound-route'];
+  it('migrates legacy Watch drafts on the real bridge-free plan and warns on non-Error preconnect failures', async () => {
+    // Use the real watch plan: its stages never include 'bridge-ready', so the
+    // legacy draft correction must run outside the bridge-ready callback.
     const watch = makeHarness();
     await watch.api.launchScene(makeLaunchOptions('watch'));
     expect(watch.controller.updateDeviceDraft).toHaveBeenCalledWith(expect.objectContaining({
       routeMode: 'watch',
       feedbackLoopPrevention: 'echo-cancel',
       aecEnabled: true,
+      virtualMicOutputEnabled: false,
     }));
+    expect(watch.controller.updateSpeechDraft).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
+    expect(watch.controller.updateDiagnosticsReady).toHaveBeenCalledWith('watch');
 
     planState.parallelPreconnect = true;
     planState.mainStages = ['bridge-ready', 'omni-preconnect', 'inbound-route'];

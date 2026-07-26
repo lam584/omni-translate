@@ -85,6 +85,10 @@ function mergeConfigDraftWithDefaults(configDraft: AppConfigDraft): AppConfigDra
       outboundRoute: {
         ...appConfigDraftMock.devices.outboundRoute,
         ...configDraft.devices.outboundRoute,
+        mixControl: {
+          ...appConfigDraftMock.devices.outboundRoute.mixControl,
+          ...configDraft.devices.outboundRoute?.mixControl,
+        },
       },
     },
     subtitles: {

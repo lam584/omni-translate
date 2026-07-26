@@ -4,9 +4,8 @@ import { listen } from '@tauri-apps/api/event';
 import i18n from '../i18n/config';
 import type { RealtimeAudioMode } from '../schema/config';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
-import { desktopApiV2 } from './desktop-api-v2';
+import { activeDesktopApi } from './desktop-api';
 import { invokeWithTimeoutCore } from './invoke-with-timeout';
-import { isTauriRuntime } from './tauri-runtime';
 
 export type BenchmarkOutputDelta = {
   elapsedMs: number;
@@ -109,7 +108,9 @@ export async function runModelBenchmark(
   mp3Path: string,
   options: BenchmarkRunOptions = {},
 ): Promise<BenchmarkReport> {
-  if (!isTauriRuntime()) {
+  // Capability gate (not an environment probe): the progress-event listener
+  // below must not be registered when no native shell can emit the events.
+  if (!activeDesktopApi().capabilities.hasNativeShell) {
     throw new Error(i18n.t('runtime.benchmark.desktopOnly'));
   }
 
@@ -122,7 +123,7 @@ export async function runModelBenchmark(
 
   return invokeWithTimeoutCore(
     async () => {
-      const jsonString = await desktopApiV2.benchmark.runModelBenchmark({
+      const jsonString = await activeDesktopApi().benchmark.runModelBenchmark({
         model,
         apiKey,
         mp3Path,

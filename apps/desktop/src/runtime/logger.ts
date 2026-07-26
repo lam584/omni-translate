@@ -1,7 +1,6 @@
 /* eslint-disable no-console -- this module is the single sanctioned console
    mirror; every other file must log through createLogger instead. */
-import { desktopApiV2 } from './desktop-api-v2';
-import { isTauriRuntime } from './tauri-runtime';
+import { activeDesktopApi } from './desktop-api';
 
 export type FrontendLogLevel = 'debug' | 'info' | 'warning' | 'error';
 
@@ -82,7 +81,7 @@ async function flushPending(): Promise<void> {
   if (state.pending.length === 0 && state.droppedCount === 0) {
     return;
   }
-  if (!isTauriRuntime()) {
+  if (!activeDesktopApi().capabilities.hasNativeShell) {
     // Browser preview: entries only live in the console mirror + ring.
     state.pending = [];
     state.droppedCount = 0;
@@ -93,7 +92,7 @@ async function flushPending(): Promise<void> {
   const batch = state.pending.slice(0, MAX_BATCH_PER_INVOKE);
   const dropped = state.droppedCount;
   try {
-    await desktopApiV2.diagnostics.appendLogs(batch, dropped);
+    await activeDesktopApi().diagnostics.appendLogs(batch, dropped);
     state.pending.splice(0, batch.length);
     state.droppedCount -= dropped;
     state.retryDelayMs = RETRY_INITIAL_MS;

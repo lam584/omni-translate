@@ -8,6 +8,8 @@ vi.mock('@tauri-apps/api/core', () => ({
   isTauri: () => Boolean((globalThis as typeof globalThis & { isTauri?: boolean }).isTauri),
 }));
 
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import { getRecentFrontendLogEntries, loggerTestHelpers } from './logger';
 import {
   fetchProviderModels,
@@ -30,15 +32,13 @@ function nonLoggerInvokeCalls() {
 }
 
 function enableTauriRuntime() {
-  Object.defineProperty(globalThis, 'isTauri', {
-    value: true,
-    writable: true,
-    configurable: true,
-  });
+  resetDesktopApiForTests();
+  installDesktopApi(new TauriDesktopApi());
 }
 
 function disableTauriRuntime() {
-  Reflect.deleteProperty(globalThis, 'isTauri');
+  resetDesktopApiForTests();
+  installDesktopApi(new PreviewDesktopApi());
 }
 
 describe('provider-runtime saveProviderSecret', () => {
@@ -334,18 +334,10 @@ describe('provider-runtime timeout helpers', () => {
     vi.useRealTimers();
   });
 
-  it('uses default timeout guidance and preview decisions for both verdicts', () => {
+  it('uses default timeout guidance for timeout errors', () => {
     expect(providerRuntimeTestHelpers.createProviderRuntimeTimeoutError('操作', 1000, 'test-operation')).toMatchObject({
       code: 'timeout',
       suggestion: '请稍后重试。',
-    });
-    expect(providerRuntimeTestHelpers.previewRoutingForVerdict('available')).toMatchObject({
-      subtitlePriority: 'balanced',
-      speechDisposition: 'ready',
-    });
-    expect(providerRuntimeTestHelpers.previewRoutingForVerdict('unavailable')).toMatchObject({
-      subtitlePriority: 'subtitle-first',
-      speechDisposition: 'deferred',
     });
   });
 

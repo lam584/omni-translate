@@ -47,7 +47,7 @@ function mapPresetToRuntimeModel(preset: ModelPreset): ProviderModelRuntime {
   };
 }
 
-function previewRoutingForVerdict(verdict: ProviderProbeProfileRuntime['verdict']) {
+export function previewRoutingForVerdict(verdict: ProviderProbeProfileRuntime['verdict']) {
   return {
     subtitlePriority: verdict === 'available' ? ('balanced' as const) : ('subtitle-first' as const),
     speechDisposition: verdict === 'available' ? ('ready' as const) : ('deferred' as const),
@@ -115,7 +115,7 @@ export class PreviewDesktopApi {
   }
 
   readonly provider = {
-    fetchModels: async (provider: ProviderDraft, presetModels: ModelPreset[] = []): Promise<ProviderModelCatalogRuntime> => ({
+    fetchModels: async (provider: ProviderDraft, presetModels: readonly ModelPreset[] = []): Promise<ProviderModelCatalogRuntime> => ({
       providerId: provider.providerId,
       endpoint: `${provider.baseUrl.replace(/\/$/, '')}/models`,
       fetchedAt: new Date().toISOString(),

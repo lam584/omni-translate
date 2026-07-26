@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import { resolveRuntimeBridgeStatus } from './runtime-status';
 
 describe('resolveRuntimeBridgeStatus', () => {
   beforeEach(() => {
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    resetDesktopApiForTests();
+    installDesktopApi(new PreviewDesktopApi());
   });
 
   afterEach(() => {
-    Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
+    resetDesktopApiForTests();
   });
 
   it('keeps browser preview for the pure preview mock snapshot', () => {
@@ -16,19 +19,13 @@ describe('resolveRuntimeBridgeStatus', () => {
   });
 
   it('prefers desktop runtime whenever the current environment is tauri shell', () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      value: { invoke: () => {} },
-      configurable: true,
-    });
+    installDesktopApi(new TauriDesktopApi());
 
     expect(resolveRuntimeBridgeStatus(structuredClone(runtimeSnapshotMock))).toBe('tauri-shell');
   });
 
   it('treats a stale preview snapshot inside Tauri as a degraded desktop runtime instead of a runtime error', () => {
-    Object.defineProperty(window, '__TAURI_INTERNALS__', {
-      value: { invoke: () => {} },
-      configurable: true,
-    });
+    installDesktopApi(new TauriDesktopApi());
     const snapshot = structuredClone(runtimeSnapshotMock);
     snapshot.bridgeStatus = 'browser-preview';
     snapshot.storage.status = 'preview';

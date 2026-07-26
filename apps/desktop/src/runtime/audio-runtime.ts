@@ -1,13 +1,10 @@
 import i18n from '../i18n/config';
-import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
-import { runtimeSnapshotMock } from '../defaults/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
-import { desktopApiV2 } from './desktop-api-v2';
+import { activeDesktopApi } from './desktop-api';
 import { invokeWithTimeoutCore } from './invoke-with-timeout';
 import { createLogger } from './logger';
-import { isTauriRuntime } from './tauri-runtime';
 
 const audioLogger = createLogger('audio');
 
@@ -53,40 +50,22 @@ async function invokeAudioWithTimeout<T>(
 }
 
 export async function refreshAudioDevicesRuntime(): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return audioRuntimeSnapshotMock;
-  }
-
-  return invokeAudioWithTimeout(() => desktopApiV2.session.refreshDevices(), i18n.t('runtime.audio.actionRefreshDevices'), AUDIO_REFRESH_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().session.refreshDevices(), i18n.t('runtime.audio.actionRefreshDevices'), AUDIO_REFRESH_TIMEOUT_MS);
 }
 
 export async function startAudioRouteRuntime(direction: 'inbound' | 'outbound', config: AppConfigDraft): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return {
-      ...audioRuntimeSnapshotMock,
-      inbound:
-        direction === 'inbound'
-          ? { ...audioRuntimeSnapshotMock.inbound, captureState: 'capturing' as const, streamBound: true }
-          : audioRuntimeSnapshotMock.inbound,
-      outbound:
-        direction === 'outbound'
-          ? { ...audioRuntimeSnapshotMock.outbound, captureState: 'capturing' as const, streamBound: true }
-          : audioRuntimeSnapshotMock.outbound,
-    } satisfies AudioRuntimeSnapshot;
-  }
-
   return invokeAudioWithTimeout(
     // Route startup uses `session.startAudioRoute`, the legacy direct-command
     // wrapper (not the `startRoute` V2 envelope): it must not put the
     // ServiceResult unwrap between the click path and the sub-second native
     // acknowledgement.
-    () => desktopApiV2.session.startAudioRoute(direction, config),
+    () => activeDesktopApi().session.startAudioRoute(direction, config),
     i18n.t('runtime.audio.actionStartCapture'),
     AUDIO_ROUTE_TIMEOUT_MS,
     async (lateStart) => {
       await lateStart.catch(() => undefined);
-      await desktopApiV2.session.stopRoute(direction);
-      await desktopApiV2.session.snapshot();
+      await activeDesktopApi().session.stopRoute(direction);
+      await activeDesktopApi().session.snapshot();
     },
   );
 }
@@ -96,19 +75,12 @@ function watchRouteNotReadyError(snapshot: AudioRuntimeSnapshot) {
 }
 
 export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: AbortSignal): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return {
-      ...audioRuntimeSnapshotMock,
-      inbound: { ...audioRuntimeSnapshotMock.inbound, captureState: 'capturing', streamBound: true, framesCaptured: 960 },
-    } satisfies AudioRuntimeSnapshot;
-  }
-
   const deadline = Date.now() + timeoutMs;
   while (true) {
     if (signal?.aborted) {
       throw signal.reason instanceof Error ? signal.reason : new Error(i18n.t('runtime.audio.watchCancelled'));
     }
-    const snapshot = await desktopApiV2.session.snapshot();
+    const snapshot = await activeDesktopApi().session.snapshot();
     if (snapshot.inbound.lastError) throw watchRouteNotReadyError(snapshot);
     // "Ready" means the capture worker owns a bound stream (pipeline ready). We
     // deliberately do NOT wait for the first audio frame here: `captureState`
@@ -144,21 +116,15 @@ export async function waitForWatchRouteReadyRuntime(timeoutMs: number, signal?: 
 }
 
 export async function getAudioRuntimeSnapshotRuntime(): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) return audioRuntimeSnapshotMock;
-  return invokeAudioWithTimeout(() => desktopApiV2.session.snapshot(), i18n.t('runtime.audio.actionReadSnapshot'), AUDIO_REFRESH_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().session.snapshot(), i18n.t('runtime.audio.actionReadSnapshot'), AUDIO_REFRESH_TIMEOUT_MS);
 }
 
 export async function preconnectOmniRealtimeRuntime(config: AppConfigDraft): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return audioRuntimeSnapshotMock;
-  }
-
-  return invokeAudioWithTimeout(() => desktopApiV2.session.preconnect(config), i18n.t('runtime.audio.actionPreconnect'), OMNI_PRECONNECT_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().session.preconnect(config), i18n.t('runtime.audio.actionPreconnect'), OMNI_PRECONNECT_TIMEOUT_MS);
 }
 
 export async function cancelOmniPreconnectRuntime(): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) return audioRuntimeSnapshotMock;
-  return invokeAudioWithTimeout(() => desktopApiV2.session.cancelPreconnect(), i18n.t('runtime.audio.actionCancelPreconnect'), OMNI_PRECONNECT_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().session.cancelPreconnect(), i18n.t('runtime.audio.actionCancelPreconnect'), OMNI_PRECONNECT_TIMEOUT_MS);
 }
 
 /**
@@ -168,132 +134,59 @@ export async function cancelOmniPreconnectRuntime(): Promise<AudioRuntimeSnapsho
  * click and must never block or fail startup.
  */
 export async function prewarmCaptureRoutesRuntime(config: AppConfigDraft): Promise<void> {
-  if (!isTauriRuntime()) return;
   try {
-    await desktopApiV2.session.prewarmRoutes(config);
+    await activeDesktopApi().session.prewarmRoutes(config);
   } catch {
     // Warming is purely an optimization; ignore failures and fall back to cold start.
   }
 }
 
 export async function stopAudioRouteRuntime(direction: 'inbound' | 'outbound'): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return audioRuntimeSnapshotMock;
-  }
-
-  return invokeAudioWithTimeout(() => desktopApiV2.session.stopRoute(direction), i18n.t('runtime.audio.actionStopCapture'), AUDIO_ROUTE_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().session.stopRoute(direction), i18n.t('runtime.audio.actionStopCapture'), AUDIO_ROUTE_TIMEOUT_MS);
 }
 
 export async function clearSubtitleCuesRuntime(): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return {
-      ...audioRuntimeSnapshotMock,
-      subtitleOverlay: {
-        queueDepth: 0,
-        droppedCueCount: 0,
-        firstTranslationAverageMs: null,
-        firstTranslationLastMs: null,
-        firstTranslationSampleCount: 0,
-        activeCue: null,
-        recentCues: [],
-      },
-      speech: {
-        ...audioRuntimeSnapshotMock.speech,
-        queueDepth: 0,
-        currentCueId: null,
-      },
-    } satisfies AudioRuntimeSnapshot;
-  }
-
-  return invokeAudioWithTimeout(() => desktopApiV2.session.clearCues(), i18n.t('runtime.audio.actionClearCues'), OVERLAY_WINDOW_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().session.clearCues(), i18n.t('runtime.audio.actionClearCues'), OVERLAY_WINDOW_TIMEOUT_MS);
 }
 
 export async function startSpeechDispatchRuntime(config: AppConfigDraft): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return {
-      ...audioRuntimeSnapshotMock,
-      speech: {
-        ...audioRuntimeSnapshotMock.speech,
-        status: 'ready',
-        dispatchState: 'playing',
-        outputTarget: config.speech.outputTarget,
-      },
-    } satisfies AudioRuntimeSnapshot;
-  }
-
   return invokeAudioWithTimeout(
-    () => desktopApiV2.session.startSpeech(config),
+    () => activeDesktopApi().session.startSpeech(config),
     i18n.t('runtime.audio.actionStartSpeech'),
     SPEECH_DISPATCH_TIMEOUT_MS,
     async (lateStart) => {
       await lateStart.catch(() => undefined);
-      await desktopApiV2.session.stopSpeech();
-      await desktopApiV2.session.snapshot();
+      await activeDesktopApi().session.stopSpeech();
+      await activeDesktopApi().session.snapshot();
     },
   );
 }
 
 export async function stopSpeechDispatchRuntime(): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return {
-      ...audioRuntimeSnapshotMock,
-      speech: {
-        ...audioRuntimeSnapshotMock.speech,
-        dispatchState: 'idle',
-        currentCueId: null,
-        currentRequestId: null,
-      },
-    } satisfies AudioRuntimeSnapshot;
-  }
-
-  return invokeAudioWithTimeout(() => desktopApiV2.session.stopSpeech(), i18n.t('runtime.audio.actionStopSpeech'), SPEECH_DISPATCH_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().session.stopSpeech(), i18n.t('runtime.audio.actionStopSpeech'), SPEECH_DISPATCH_TIMEOUT_MS);
 }
 
 export async function startTranslateWorkerRuntime(config: AppConfigDraft): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return {
-      ...audioRuntimeSnapshotMock,
-      sessionStartedAt: new Date().toISOString(),
-    } satisfies AudioRuntimeSnapshot;
-  }
-
   return invokeAudioWithTimeout(
-    () => desktopApiV2.session.startTranslation(config),
+    () => activeDesktopApi().session.startTranslation(config),
     i18n.t('runtime.audio.actionStartTranslation'),
     TRANSLATE_WORKER_TIMEOUT_MS,
     async (lateStart) => {
       await lateStart.catch(() => undefined);
-      await desktopApiV2.session.stopTranslation();
-      await desktopApiV2.session.snapshot();
+      await activeDesktopApi().session.stopTranslation();
+      await activeDesktopApi().session.snapshot();
     },
   );
 }
 
 export async function stopTranslateWorkerRuntime(): Promise<AudioRuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return audioRuntimeSnapshotMock;
-  }
-
-  return invokeAudioWithTimeout(() => desktopApiV2.session.stopTranslation(), i18n.t('runtime.audio.actionStopTranslation'), TRANSLATE_WORKER_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().session.stopTranslation(), i18n.t('runtime.audio.actionStopTranslation'), TRANSLATE_WORKER_TIMEOUT_MS);
 }
 
 export async function toggleSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return runtimeSnapshotMock;
-  }
-
-  return invokeAudioWithTimeout(() => desktopApiV2.overlay.toggle(), i18n.t('runtime.audio.actionToggleOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().overlay.toggle(), i18n.t('runtime.audio.actionToggleOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
 }
 
 export async function showSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return {
-      ...runtimeSnapshotMock,
-      windows: runtimeSnapshotMock.windows.map((item) =>
-        item.label === 'subtitle-overlay' ? { ...item, visible: true } : item,
-      ),
-    };
-  }
-
-  return invokeAudioWithTimeout(() => desktopApiV2.overlay.show(), i18n.t('runtime.audio.actionShowOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => activeDesktopApi().overlay.show(), i18n.t('runtime.audio.actionShowOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
 }

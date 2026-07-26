@@ -1,19 +1,16 @@
 import i18n from '../i18n/config';
-import { defaultProviderProbeProfile } from '../defaults/provider-probes';
 import type { ModelPreset } from '../schema/provider-template';
 import type { ProviderDraft } from '../schema/config';
 import type {
   CredentialSecretPayload,
   CredentialRefStatus,
   ProviderModelCatalogRuntime,
-  ProviderModelRuntime,
   ProviderProbeProfileRuntime,
   ProviderSmokeResult,
 } from '../schema/provider-runtime';
-import { desktopApiV2 } from './desktop-api-v2';
+import { activeDesktopApi } from './desktop-api';
 import { invokeWithTimeoutCore } from './invoke-with-timeout';
 import { createLogger } from './logger';
-import { isTauriRuntime } from './tauri-runtime';
 
 const MIN_PROVIDER_RUNTIME_TIMEOUT_MS = 1000;
 const SAVE_PROVIDER_SECRET_TIMEOUT_MS = 7000;
@@ -63,24 +60,6 @@ function appendFrontendDiagnosticsTrace(category: string, level: string, summary
 
 function diagnosticsCategoryForOperation(operation: string) {
   return operation.startsWith('credential-') ? 'storage' : 'provider';
-}
-
-function mapPresetToRuntimeModel(preset: ModelPreset): ProviderModelRuntime {
-  return {
-    id: preset.model,
-    displayName: preset.displayName,
-    ownedBy: 'preset',
-    createdAt: null,
-    capabilities: preset.capabilities,
-  };
-}
-
-function previewRoutingForVerdict(verdict: ProviderProbeProfileRuntime['verdict']) {
-  return {
-    subtitlePriority: verdict === 'available' ? ('balanced' as const) : ('subtitle-first' as const),
-    speechDisposition: verdict === 'available' ? ('ready' as const) : ('deferred' as const),
-    rationale: i18n.t('runtime.provider.previewRationale'),
-  };
 }
 
 async function invokeWithTimeout<T>(
@@ -148,19 +127,11 @@ async function invokeWithTimeout<T>(
 }
 
 export async function getProviderSecretStatus(reference: string): Promise<CredentialRefStatus> {
-  if (!isTauriRuntime()) {
-    return {
-      reference,
-      backend: 'browser-preview',
-      hasSecret: false,
-    };
-  }
-
   appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretStatusStart'), `reference=${reference}`);
 
   try {
     const result = await invokeWithTimeout(
-      () => desktopApiV2.credentials.status(reference),
+      () => activeDesktopApi().credentials.status(reference),
       i18n.t('runtime.provider.actionSecretStatus'),
       null,
       'credential-status',
@@ -182,19 +153,11 @@ export async function getProviderSecretStatus(reference: string): Promise<Creden
 }
 
 export async function saveProviderSecret(reference: string, secret: string): Promise<CredentialRefStatus> {
-  if (!isTauriRuntime()) {
-    return {
-      reference,
-      backend: 'browser-preview',
-      hasSecret: secret.length > 0,
-    };
-  }
-
   appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretSaveStart'), `reference=${reference} secretLength=${secret.length}`);
 
   try {
     const result = await invokeWithTimeout(
-      () => desktopApiV2.credentials.save(reference, secret),
+      () => activeDesktopApi().credentials.save(reference, secret),
       i18n.t('runtime.provider.actionSecretSave'),
       SAVE_PROVIDER_SECRET_TIMEOUT_MS,
       'credential-save',
@@ -217,19 +180,11 @@ export async function saveProviderSecret(reference: string, secret: string): Pro
 }
 
 export async function readProviderSecret(reference: string): Promise<CredentialSecretPayload> {
-  if (!isTauriRuntime()) {
-    return {
-      reference,
-      backend: 'browser-preview',
-      secret: null,
-    };
-  }
-
   appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretReadStart'), `reference=${reference}`);
 
   try {
     const result = await invokeWithTimeout(
-      () => desktopApiV2.credentials.read(reference),
+      () => activeDesktopApi().credentials.read(reference),
       i18n.t('runtime.provider.actionSecretRead'),
       null,
       'credential-read',
@@ -251,30 +206,8 @@ export async function readProviderSecret(reference: string): Promise<CredentialS
 }
 
 export async function runProviderProbe(provider: ProviderDraft): Promise<ProviderProbeProfileRuntime> {
-  if (!isTauriRuntime()) {
-    return {
-      id: defaultProviderProbeProfile.id,
-      templateId: defaultProviderProbeProfile.templateId,
-      providerId: defaultProviderProbeProfile.providerId,
-      verdict: defaultProviderProbeProfile.verdict,
-      checkedAt: defaultProviderProbeProfile.checkedAt,
-      measuredLatencyMs: defaultProviderProbeProfile.measuredLatencyMs,
-      latencyBudgetMs: defaultProviderProbeProfile.latencyBudgetMs,
-      streamSupported: defaultProviderProbeProfile.streamSupported,
-      errorShapeStable: defaultProviderProbeProfile.errorShapeStable,
-      responseShapeStable: defaultProviderProbeProfile.responseShapeStable,
-      transportRequested: provider.transport,
-      transportEffective: provider.transport,
-      fallbackApplied: false,
-      checks: defaultProviderProbeProfile.checks,
-      guidance: defaultProviderProbeProfile.guidance,
-      routingDecision: previewRoutingForVerdict(defaultProviderProbeProfile.verdict),
-      error: null,
-    };
-  }
-
   return invokeWithTimeout(
-    () => desktopApiV2.provider.probe(provider),
+    () => activeDesktopApi().provider.probe(provider),
     i18n.t('runtime.provider.actionProbe'),
     provider.timeoutMs + 3000,
     'provider-probe',
@@ -286,20 +219,8 @@ export async function fetchProviderModels(
   provider: ProviderDraft,
   presetModels: ModelPreset[] = [],
 ): Promise<ProviderModelCatalogRuntime> {
-  if (!isTauriRuntime()) {
-    const models = presetModels.map(mapPresetToRuntimeModel);
-
-    return {
-      providerId: provider.providerId,
-      endpoint: `${provider.baseUrl.replace(/\/$/, '')}/models`,
-      fetchedAt: new Date().toISOString(),
-      models,
-      error: null,
-    };
-  }
-
   return invokeWithTimeout(
-    () => desktopApiV2.provider.fetchModels(provider),
+    () => activeDesktopApi().provider.fetchModels(provider, presetModels),
     i18n.t('runtime.provider.actionFetchModels'),
     provider.timeoutMs + 3000,
     'provider-models',
@@ -313,50 +234,8 @@ export async function runProviderSmoke(
   sourceLanguage: string,
   targetLanguage: string,
 ): Promise<ProviderSmokeResult> {
-  if (!isTauriRuntime()) {
-    return {
-      requestId: 'browser-preview-smoke',
-      providerId: provider.providerId,
-      status: 'completed',
-      transportRequested: provider.transport,
-      transportEffective: provider.transport,
-      fallbackApplied: false,
-      streamObserved: provider.transport !== 'http',
-      durationMs: 120,
-      firstEventLatencyMs: 48,
-      transcript: 'Browser preview translation result.',
-      sourceLanguage,
-      targetLanguage,
-      eventLog: [
-        {
-          eventType: 'session.started',
-          summary: i18n.t('runtime.provider.smokeSessionStarted'),
-        },
-        {
-          eventType: 'translation.completed',
-          summary: i18n.t('runtime.provider.smokeTranslationCompleted'),
-          segmentId: 'segment-preview',
-          text: 'Browser preview translation result.',
-        },
-        {
-          eventType: 'response.completed',
-          summary: i18n.t('runtime.provider.smokeResponseCompleted'),
-        },
-      ],
-      inputTokens: 12,
-      outputTokens: 5,
-      audioSeconds: null,
-      routingDecision: {
-        subtitlePriority: 'balanced',
-        speechDisposition: 'ready',
-        rationale: i18n.t('runtime.provider.smokePreviewRationale'),
-      },
-      error: null,
-    };
-  }
-
   return invokeWithTimeout(
-    () => desktopApiV2.provider.smoke(provider, sourceText, sourceLanguage, targetLanguage),
+    () => activeDesktopApi().provider.smoke(provider, sourceText, sourceLanguage, targetLanguage),
     i18n.t('runtime.provider.actionSmoke'),
     provider.timeoutMs + 3000,
     'provider-smoke',
@@ -369,7 +248,5 @@ export const providerRuntimeTestHelpers = {
   createProviderRuntimeTimeoutError,
   appendFrontendDiagnosticsTrace,
   diagnosticsCategoryForOperation,
-  mapPresetToRuntimeModel,
-  previewRoutingForVerdict,
   invokeWithTimeout,
 };

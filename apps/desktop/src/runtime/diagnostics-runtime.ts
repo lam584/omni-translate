@@ -1,67 +1,23 @@
-import { runtimeSnapshotMock } from '../defaults/runtime-shell';
 import type { DiagnosticsExportScope } from '../schema/config';
 import type { DiagnosticLogEntryRuntime, DiagnosticsExportArtifact, RuntimeSnapshot } from '../schema/runtime-core';
-import { desktopApiV2 } from './desktop-api-v2';
+import { activeDesktopApi } from './desktop-api';
 import { createLogger } from './logger';
-import { isTauriRuntime } from './tauri-runtime';
 
 const runtimeLogger = createLogger('runtime');
 
-function withDiagnosticsPatch(patch: Partial<RuntimeSnapshot['diagnostics']>): RuntimeSnapshot {
-  return {
-    ...runtimeSnapshotMock,
-    diagnostics: {
-      ...runtimeSnapshotMock.diagnostics,
-      ...patch,
-    },
-  } satisfies RuntimeSnapshot;
-}
-
 export async function runDiagnosticsSelfCheckRuntime(): Promise<RuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return withDiagnosticsPatch({
-      status: 'ready',
-      installStatus: 'ready',
-      providerStatus: 'ready',
-      driverStatus: 'warning',
-      deviceStatus: 'warning',
-      lastSelfCheckAt: new Date().toISOString(),
-    });
-  }
-
-  return desktopApiV2.diagnostics.selfCheck();
+  return activeDesktopApi().diagnostics.selfCheck();
 }
 
 export async function runSubtitleOverlaySelfCheckRuntime(): Promise<RuntimeSnapshot> {
-  if (!isTauriRuntime()) {
-    return runtimeSnapshotMock;
-  }
-
-  return desktopApiV2.diagnostics.overlaySelfCheck();
+  return activeDesktopApi().diagnostics.overlaySelfCheck();
 }
 
 export async function exportDiagnosticsBundleRuntime(
   scope: DiagnosticsExportScope,
 ): Promise<{ artifact: DiagnosticsExportArtifact; snapshot: RuntimeSnapshot }> {
-  if (!isTauriRuntime()) {
-    const generatedAt = new Date().toISOString();
-    return {
-      artifact: {
-        scope,
-        outputPath: `browser-preview/diagnostics-${scope}.zip`,
-        generatedAt,
-        fileCount: scope === 'full' ? 6 : 3,
-      },
-      snapshot: withDiagnosticsPatch({
-        lastExportScope: scope,
-        lastExportPath: `browser-preview/diagnostics-${scope}.zip`,
-        lastExportedAt: generatedAt,
-      }),
-    };
-  }
-
-  const artifact = await desktopApiV2.diagnostics.export(scope) as DiagnosticsExportArtifact;
-  const snapshot = await desktopApiV2.configuration.runtimeSnapshot();
+  const artifact = await activeDesktopApi().diagnostics.export(scope) as DiagnosticsExportArtifact;
+  const snapshot = await activeDesktopApi().configuration.runtimeSnapshot();
   return { artifact, snapshot };
 }
 
@@ -71,12 +27,8 @@ export async function exportDiagnosticsBundleRuntime(
  * markers when a launch fails. Never throws: an empty list degrades gracefully.
  */
 export async function getRecentDiagnosticsLogsRuntime(): Promise<DiagnosticLogEntryRuntime[]> {
-  if (!isTauriRuntime()) {
-    return [];
-  }
-
   try {
-    const snapshot = await desktopApiV2.diagnostics.snapshot();
+    const snapshot = await activeDesktopApi().diagnostics.snapshot();
     return snapshot.recentLogs ?? [];
   } catch (error) {
     runtimeLogger.warn(

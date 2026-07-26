@@ -4,7 +4,7 @@ import { appConfigDraftMock } from '../defaults/app-config';
 import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
 import { defaultProviderProbeProfile } from '../defaults/provider-probes';
 import type { AppConfigDraft, ProviderDraft } from '../schema/config';
-import { PreviewDesktopApi } from './preview-desktop-api';
+import { PreviewDesktopApi, previewRoutingForVerdict } from './preview-desktop-api';
 
 function draft(): AppConfigDraft {
   return structuredClone(appConfigDraftMock);
@@ -17,6 +17,17 @@ function providerDraft(): ProviderDraft {
 describe('PreviewDesktopApi', () => {
   it('advertises the browser-preview capability set', () => {
     expect(new PreviewDesktopApi().capabilities.hasNativeShell).toBe(false);
+  });
+
+  it('derives preview routing decisions for both probe verdicts', () => {
+    expect(previewRoutingForVerdict('available')).toMatchObject({
+      subtitlePriority: 'balanced',
+      speechDisposition: 'ready',
+    });
+    expect(previewRoutingForVerdict('unavailable')).toMatchObject({
+      subtitlePriority: 'subtitle-first',
+      speechDisposition: 'deferred',
+    });
   });
 
   it('binds and releases capture routes like the native session', async () => {

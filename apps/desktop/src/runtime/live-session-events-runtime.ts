@@ -1,5 +1,4 @@
-import { desktopApiV2 } from './desktop-api-v2';
-import { isTauriRuntime } from './tauri-runtime';
+import { activeDesktopApi } from './desktop-api';
 
 export type LiveSessionAsrDelta = {
   elapsedMs: number;
@@ -64,11 +63,7 @@ const EMPTY_LIVE_SESSION_EVENTS: LiveSessionEvents = {
 };
 
 export async function getLiveSessionEventsRuntime(): Promise<LiveSessionEvents> {
-  if (!isTauriRuntime()) {
-    return { ...EMPTY_LIVE_SESSION_EVENTS };
-  }
-
-  const parsed = await desktopApiV2.diagnostics.liveSessionEvents<Partial<LiveSessionEvents>>();
+  const parsed = await activeDesktopApi().diagnostics.liveSessionEvents<Partial<LiveSessionEvents>>();
   return {
     ...EMPTY_LIVE_SESSION_EVENTS,
     ...parsed,

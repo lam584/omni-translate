@@ -2,16 +2,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
-  isTauriRuntime: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+  isTauri: () => false,
 }));
 
-vi.mock('./tauri-runtime', () => ({
-  isTauriRuntime: () => mocks.isTauriRuntime(),
-}));
 
 import {
   appendFrontendDiagnosticsLog,
@@ -20,12 +17,15 @@ import {
   runDiagnosticsSelfCheckRuntime,
   runSubtitleOverlaySelfCheckRuntime,
 } from './diagnostics-runtime';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import { getRecentFrontendLogEntries, loggerTestHelpers } from './logger';
 
 describe('diagnostics runtime', () => {
   beforeEach(() => {
     mocks.invoke.mockReset();
-    mocks.isTauriRuntime.mockReset().mockReturnValue(false);
+    resetDesktopApiForTests();
+    installDesktopApi(new PreviewDesktopApi());
     loggerTestHelpers.reset();
   });
 
@@ -47,7 +47,7 @@ describe('diagnostics runtime', () => {
   });
 
   it('maps desktop self-checks and exports to native invoke commands', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockImplementation(async (command: string) =>
       command === 'diagnostics_v2' || command === 'configuration_v2'
         ? { data: { command }, warnings: [] }
@@ -86,7 +86,7 @@ describe('diagnostics runtime', () => {
   it('forwards batched frontend diagnostics logs and retains entries on IPC failure', async () => {
     vi.useFakeTimers();
     try {
-      mocks.isTauriRuntime.mockReturnValue(true);
+      installDesktopApi(new TauriDesktopApi());
       mocks.invoke.mockRejectedValue(new Error('log unavailable'));
       vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
@@ -124,7 +124,7 @@ describe('diagnostics runtime', () => {
   });
 
   it('maps recent native log IPC responses and missing arrays', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     const entry = {
       id: 'route-ready',
       category: 'runtime',
@@ -143,7 +143,7 @@ describe('diagnostics runtime', () => {
   });
 
   it('degrades failed recent-log IPC reads to an empty list', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockRejectedValue(new Error('diagnostics unavailable'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 

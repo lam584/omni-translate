@@ -2,17 +2,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
-  isTauriRuntime: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mocks.invoke(...args),
+  isTauri: () => false,
 }));
 
-vi.mock('./tauri-runtime', () => ({
-  isTauriRuntime: () => mocks.isTauriRuntime(),
-}));
 
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import {
   createLogger,
   getRecentFrontendLogEntries,
@@ -31,7 +30,8 @@ describe('frontend logger', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mocks.invoke.mockReset().mockResolvedValue(undefined);
-    mocks.isTauriRuntime.mockReset().mockReturnValue(true);
+    resetDesktopApiForTests();
+    installDesktopApi(new TauriDesktopApi());
     loggerTestHelpers.reset();
     vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
@@ -126,7 +126,7 @@ describe('frontend logger', () => {
   });
 
   it('keeps only the most recent 500 entries in the ring buffer', () => {
-    mocks.isTauriRuntime.mockReturnValue(false);
+    installDesktopApi(new PreviewDesktopApi());
     const logger = createLogger('runtime');
     for (let index = 0; index < 510; index += 1) {
       logger.info(`entry ${index}`);
@@ -138,7 +138,7 @@ describe('frontend logger', () => {
   });
 
   it('never invokes IPC outside the Tauri runtime', async () => {
-    mocks.isTauriRuntime.mockReturnValue(false);
+    installDesktopApi(new PreviewDesktopApi());
     const logger = createLogger('runtime');
     logger.error('browser only');
     await vi.runAllTimersAsync();
@@ -147,7 +147,7 @@ describe('frontend logger', () => {
   });
 
   it('captures window errors and unhandled promise rejections', () => {
-    mocks.isTauriRuntime.mockReturnValue(false);
+    installDesktopApi(new PreviewDesktopApi());
     installGlobalErrorCapture();
 
     window.dispatchEvent(new ErrorEvent('error', { message: 'boom', filename: 'app.js', lineno: 1, colno: 2 }));

@@ -22,6 +22,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 import { bootstrapDesktopRuntimeBridge, CONFIG_DRAFT_SYNC_EVENT, desktopRuntimeTestHelpers, scheduleCapturePrewarmAfterStartup } from './desktop-runtime';
 import { loggerTestHelpers } from './logger';
+import { resetDesktopApiForTests } from './desktop-api';
 
 function resetStore() {
   useAppStore.setState((state) => ({
@@ -106,6 +107,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     emitMock.mockReset().mockResolvedValue(undefined);
     listenMock.mockReset().mockResolvedValue(() => {});
     loggerTestHelpers.reset();
+    resetDesktopApiForTests();
     Reflect.deleteProperty(globalThis, 'isTauri');
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
     window.localStorage.clear();
@@ -1034,6 +1036,7 @@ describe('scheduleCapturePrewarmAfterStartup', () => {
     resetStore();
     invokeMock.mockReset();
     loggerTestHelpers.reset();
+    resetDesktopApiForTests();
   });
 
   afterEach(() => {
@@ -1079,6 +1082,7 @@ describe('capture warm signature re-warm on device drift', () => {
     emitMock.mockReset().mockResolvedValue(undefined);
     listenMock.mockReset().mockResolvedValue(() => {});
     loggerTestHelpers.reset();
+    resetDesktopApiForTests();
     Reflect.deleteProperty(globalThis, 'isTauri');
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
     window.localStorage.clear();

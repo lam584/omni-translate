@@ -4,16 +4,13 @@ import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
-  isTauriRuntime: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mocks.invoke(...args),
+  isTauri: () => false,
 }));
 
-vi.mock('./tauri-runtime', () => ({
-  isTauriRuntime: () => mocks.isTauriRuntime(),
-}));
 
 import {
   bridgeRuntimeTestHelpers,
@@ -24,13 +21,16 @@ import {
   stopBridgeServiceRuntime,
   uninstallDriverRuntime,
 } from './bridge-runtime';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import { getRecentFrontendLogEntries, loggerTestHelpers } from './logger';
 
 describe('bridge runtime', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mocks.invoke.mockReset();
-    mocks.isTauriRuntime.mockReset().mockReturnValue(false);
+    resetDesktopApiForTests();
+    installDesktopApi(new PreviewDesktopApi());
     loggerTestHelpers.reset();
     vi.restoreAllMocks();
   });
@@ -43,7 +43,8 @@ describe('bridge runtime', () => {
 
   it('provides complete browser preview lifecycle snapshots', async () => {
     const config = structuredClone(appConfigDraftMock);
-    expect(await refreshBridgeRuntime()).toBe(runtimeSnapshotMock);
+    // The preview boundary returns isolated clones, not the module singleton.
+    expect(await refreshBridgeRuntime()).toStrictEqual(runtimeSnapshotMock);
     expect((await startBridgeServiceRuntime(config)).bridge).toMatchObject({
       bridgeState: 'running',
       expectedDriverVersion: config.driver.expectedDriverVersion,
@@ -58,7 +59,7 @@ describe('bridge runtime', () => {
   });
 
   it('maps every desktop lifecycle action to native invoke commands', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockResolvedValue({ data: runtimeSnapshotMock });
     const config = structuredClone(appConfigDraftMock);
 

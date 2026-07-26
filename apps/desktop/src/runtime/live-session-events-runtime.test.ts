@@ -2,23 +2,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
-  isTauriRuntime: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+  isTauri: () => false,
 }));
 
-vi.mock('./tauri-runtime', () => ({
-  isTauriRuntime: () => mocks.isTauriRuntime(),
-}));
 
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import { getLiveSessionEventsRuntime } from './live-session-events-runtime';
 
 describe('live session events runtime', () => {
   beforeEach(() => {
     mocks.invoke.mockReset();
-    mocks.isTauriRuntime.mockReset().mockReturnValue(false);
+    resetDesktopApiForTests();
+    installDesktopApi(new PreviewDesktopApi());
   });
 
   it('returns empty events in browser preview mode', async () => {
@@ -36,7 +36,7 @@ describe('live session events runtime', () => {
   });
 
   it('invokes the diagnostics_v2 command and maps envelope events in Tauri mode', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     const payload = {
       sessionStartedAt: 'unix-ms:1000',
       elapsedMs: 5000,
@@ -65,14 +65,14 @@ describe('live session events runtime', () => {
   });
 
   it('rejects when native invoke fails', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockRejectedValue(new Error('command not found'));
 
     await expect(getLiveSessionEventsRuntime()).rejects.toThrow('command not found');
   });
 
   it('rejects when the native envelope payload is malformed', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockResolvedValue('not-json');
 
     await expect(getLiveSessionEventsRuntime()).rejects.toThrow();

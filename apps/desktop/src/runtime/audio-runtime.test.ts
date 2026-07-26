@@ -3,17 +3,16 @@ import { appConfigDraftMock } from '../mocks/app-config';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
-  isTauriRuntime: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
   invoke: (...args: unknown[]) => mocks.invoke(...args),
+  isTauri: () => false,
 }));
 
-vi.mock('./tauri-runtime', () => ({
-  isTauriRuntime: () => mocks.isTauriRuntime(),
-}));
 
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import {
   clearSubtitleCuesRuntime,
   cancelOmniPreconnectRuntime,
@@ -35,7 +34,8 @@ import {
 describe('audio runtime', () => {
   beforeEach(() => {
     mocks.invoke.mockReset();
-    mocks.isTauriRuntime.mockReset().mockReturnValue(false);
+    resetDesktopApiForTests();
+    installDesktopApi(new PreviewDesktopApi());
   });
 
   it('provides complete browser preview snapshots', async () => {
@@ -61,7 +61,7 @@ describe('audio runtime', () => {
   });
 
   it('maps every desktop action to its native invoke command', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockImplementation(async (command: string) =>
       command === 'session_v2'
         ? { data: { status: 'ok' }, warnings: [] }
@@ -107,7 +107,7 @@ describe('audio runtime', () => {
   });
 
   it('maps capture pre-warm to the session_v2 prewarmRoutes command', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockResolvedValue({ data: { status: 'ok' }, warnings: [] });
     const config = structuredClone(appConfigDraftMock);
 
@@ -117,7 +117,7 @@ describe('audio runtime', () => {
   });
 
   it('never surfaces failures from capture pre-warm', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockRejectedValue(new Error('device busy'));
     const config = structuredClone(appConfigDraftMock);
 
@@ -126,7 +126,7 @@ describe('audio runtime', () => {
 
   it('rejects with a timeout error when invoke does not respond in time', async () => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockImplementation(() => new Promise(() => {})); // never resolves
 
     const promise = refreshAudioDevicesRuntime();
@@ -139,7 +139,7 @@ describe('audio runtime', () => {
 
   it('clears timeout when invoke resolves before deadline', async () => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
 
     mocks.invoke.mockImplementation(async (command: string) =>
@@ -155,7 +155,7 @@ describe('audio runtime', () => {
   });
 
   it('waits for the native Watch route to become usable after acknowledgement', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke
       .mockResolvedValueOnce({ data: { inbound: { captureState: 'armed', streamBound: false, framesCaptured: 0, lastError: null } } })
       .mockResolvedValueOnce({ data: { inbound: { captureState: 'capturing', streamBound: true, framesCaptured: 960, lastError: null } } });
@@ -170,7 +170,7 @@ describe('audio runtime', () => {
   });
 
   it('resolves as soon as the native capture stream is bound, without waiting for the first frame', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke
       .mockResolvedValueOnce({ data: { inbound: { captureState: 'capturing', streamBound: true, framesCaptured: 0, lastError: null } } })
       .mockResolvedValue({ data: { inbound: { captureState: 'buffering', streamBound: true, framesCaptured: 0, lastError: null } } });
@@ -185,14 +185,14 @@ describe('audio runtime', () => {
   });
 
   it('fails Watch route readiness immediately when native initialization reports an error', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockResolvedValue({ data: { inbound: { captureState: 'buffering', streamBound: false, lastError: 'capture unavailable' } } });
 
     await expect(waitForWatchRouteReadyRuntime(100)).rejects.toThrow('capture unavailable');
   });
 
   it('uses the default Watch readiness error when a changing native getter clears its detail', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     let reads = 0;
     const inbound = {
       captureState: 'buffering',
@@ -209,7 +209,7 @@ describe('audio runtime', () => {
 
   it('resolves as accepted-but-converging when the deadline passes without a native error, instead of tearing the route down', async () => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockResolvedValue({ data: { inbound: { captureState: 'armed', streamBound: false, framesCaptured: 0, lastError: null } } });
 
     const readiness = waitForWatchRouteReadyRuntime(100);
@@ -226,7 +226,7 @@ describe('audio runtime', () => {
 
   it('still rejects immediately when native attributes a failure before the stream binds', async () => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke
       .mockResolvedValueOnce({ data: { inbound: { captureState: 'armed', streamBound: false, framesCaptured: 0, lastError: null } } })
       .mockResolvedValue({ data: { inbound: { captureState: 'buffering', streamBound: false, framesCaptured: 0, lastError: '系统音频采集已就绪，但在 4 秒内没有捕获到任何音频帧，设备可能已静音或被其他应用以独占模式占用。', recommendedAction: 'check-audio-source' } } });
@@ -241,7 +241,7 @@ describe('audio runtime', () => {
 
   it('stops and refreshes native state when a route start succeeds after the frontend timeout', async () => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     let finishStart!: (value: unknown) => void;
     const lateStart = new Promise((resolve) => { finishStart = resolve; });
     mocks.invoke.mockImplementation((command: string, args?: { command?: { action?: string } }) => {
@@ -271,16 +271,20 @@ describe('audio runtime', () => {
   it('covers browser fallbacks for snapshot reads, preconnect cancellation, and watch readiness', async () => {
     expect((await getAudioRuntimeSnapshotRuntime()).status).toBe('preview');
     expect((await cancelOmniPreconnectRuntime()).status).toBe('preview');
-    expect((await waitForWatchRouteReadyRuntime(1)).inbound).toMatchObject({
+    // The preview session is stateful: a started route binds the stream, so
+    // the readiness poll resolves through the same logic as the desktop path.
+    const started = await startAudioRouteRuntime('inbound', structuredClone(appConfigDraftMock));
+    const ready = await waitForWatchRouteReadyRuntime(1);
+    expect(ready.inbound).toMatchObject({
       captureState: 'capturing',
       streamBound: true,
-      framesCaptured: 960,
     });
+    expect(ready.inbound.framesCaptured).toBe(started.inbound.framesCaptured);
     expect(mocks.invoke).not.toHaveBeenCalled();
   });
 
   it('maps snapshot reads and preconnect cancellation through the IPC session adapter', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     mocks.invoke.mockResolvedValue({ data: { status: 'ipc-ok' }, warnings: [] });
 
     await expect(getAudioRuntimeSnapshotRuntime()).resolves.toEqual({ status: 'ipc-ok' });
@@ -294,7 +298,7 @@ describe('audio runtime', () => {
 
   it('propagates an IPC rejection and clears its timeout', async () => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     const clearTimeoutSpy = vi.spyOn(window, 'clearTimeout');
     mocks.invoke.mockRejectedValue(new Error('ipc unavailable'));
 
@@ -307,7 +311,7 @@ describe('audio runtime', () => {
 
   it('ignores a timeout callback that fires after an IPC promise already settled', async () => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     vi.spyOn(window, 'clearTimeout').mockImplementation(() => undefined);
     mocks.invoke.mockResolvedValue({ data: { status: 'ready' }, warnings: [] });
 
@@ -318,7 +322,7 @@ describe('audio runtime', () => {
   });
 
   it('honors both Error and non-Error abort reasons while polling watch readiness', async () => {
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     const errorController = new AbortController();
     errorController.abort(new Error('explicit abort'));
     await expect(waitForWatchRouteReadyRuntime(100, errorController.signal)).rejects.toThrow('explicit abort');
@@ -334,7 +338,7 @@ describe('audio runtime', () => {
     ['translation', 60_000, startTranslateWorkerRuntime, 'startTranslation', 'stopTranslation'],
   ] as const)('compensates a late %s start after its renderer timeout', async (_label, timeoutMs, start, startAction, stopAction) => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     let settleStart!: (value: unknown) => void;
     const lateStart = new Promise((resolve) => { settleStart = resolve; });
     mocks.invoke.mockImplementation((_command: string, args?: { command?: { action?: string } }) => {
@@ -364,7 +368,7 @@ describe('audio runtime', () => {
     ['translation', 60_000, startTranslateWorkerRuntime, 'startTranslation'],
   ] as const)('recovers when a late %s IPC start rejects after timeout', async (_label, timeoutMs, start, startAction) => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     let rejectStart!: (error: unknown) => void;
     const lateStart = new Promise((_resolve, reject) => { rejectStart = reject; });
     mocks.invoke.mockImplementation((command: string, args?: { command?: { action?: string } }) => {
@@ -386,7 +390,7 @@ describe('audio runtime', () => {
 
   it('logs a timeout recovery failure without replacing the original timeout', async () => {
     vi.useFakeTimers();
-    mocks.isTauriRuntime.mockReturnValue(true);
+    installDesktopApi(new TauriDesktopApi());
     const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     let settleStart!: (value: unknown) => void;
     const lateStart = new Promise((resolve) => { settleStart = resolve; });

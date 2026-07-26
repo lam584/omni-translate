@@ -3,21 +3,20 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
   listen: vi.fn(),
-  isTauriRuntime: vi.fn(),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
+  invoke: (...args: unknown[]) => mocks.invoke(...args),
+  isTauri: () => false,
 }));
 
 vi.mock('@tauri-apps/api/event', () => ({
   listen: (...args: unknown[]) => mocks.listen(...args),
 }));
 
-vi.mock('./tauri-runtime', () => ({
-  isTauriRuntime: () => mocks.isTauriRuntime(),
-}));
 
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import { BENCHMARK_PROGRESS_EVENT, runModelBenchmark, type BenchmarkProgressEvent, type BenchmarkReport } from './benchmark-runtime';
 
 function makeReport(): BenchmarkReport {
@@ -50,11 +49,12 @@ describe('benchmark runtime', () => {
     vi.useFakeTimers();
     mocks.invoke.mockReset();
     mocks.listen.mockReset().mockResolvedValue(vi.fn());
-    mocks.isTauriRuntime.mockReset().mockReturnValue(true);
+    resetDesktopApiForTests();
+    installDesktopApi(new TauriDesktopApi());
   });
 
   it('rejects when the desktop runtime is unavailable', async () => {
-    mocks.isTauriRuntime.mockReturnValue(false);
+    installDesktopApi(new PreviewDesktopApi());
 
     await expect(runModelBenchmark('model', 'key', 'audio.mp3')).rejects.toThrow();
     expect(mocks.invoke).not.toHaveBeenCalled();

@@ -1,6 +1,7 @@
 import { emit, listen } from '@tauri-apps/api/event';
 import i18n from '../i18n/config';
-import { desktopApiV2 } from './desktop-api-v2';
+import { activeDesktopApi, installDesktopApi, TauriDesktopApi } from './desktop-api';
+import { PreviewDesktopApi } from './preview-desktop-api';
 import { invokeWithTimeoutCore } from './invoke-with-timeout';
 import { prewarmCaptureRoutesRuntime, preconnectOmniRealtimeRuntime } from './audio-runtime';
 import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
@@ -89,7 +90,7 @@ async function pingDesktopRuntime(): Promise<number> {
 
   for (let attempt = 0; attempt <= IPC_PING_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      await invokeWithTimeout(() => desktopApiV2.runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+      await invokeWithTimeout(() => activeDesktopApi().runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
       return Math.round(performance.now() - startedAt);
     } catch (error) {
       lastError = error;
@@ -132,7 +133,7 @@ async function _refreshAndAutostartBridge(
   startTimeoutMs: number,
 ) {
   try {
-    const driverSnapshot = await invokeWithTimeout(() => desktopApiV2.bridge.refresh(), 'bridge_v2.refresh', refreshTimeoutMs);
+    const driverSnapshot = await invokeWithTimeout(() => activeDesktopApi().bridge.refresh(), 'bridge_v2.refresh', refreshTimeoutMs);
     useAppStore.getState().setRuntimeSnapshot(driverSnapshot);
 
     if (isWatchModeAutostartRuntime() || !shouldAutostartBridge(driverSnapshot)) {
@@ -140,7 +141,7 @@ async function _refreshAndAutostartBridge(
     }
 
     const startedSnapshot = await invokeWithTimeout(
-      () => desktopApiV2.legacyBridge.start(config),
+      () => activeDesktopApi().legacyBridge.start(config),
       'start_bridge_service',
       startTimeoutMs,
     );
@@ -313,7 +314,7 @@ export function enableNativeLogForwarding() {
 // fire-and-forget: it uses a trivial sync command (like `debug_ipc_ping`) and
 // never blocks or throws, so it works even while a heavier invoke is stuck.
 function forwardStepToNativeLog(stepId: BootstrapStepId, status: BootstrapStepStatus, detail?: string) {
-  if (!isTauriRuntime() || !nativeLogForwardingEnabled) {
+  if (!activeDesktopApi().capabilities.hasNativeShell || !nativeLogForwardingEnabled) {
     return;
   }
   // Routed through the unified logger: `startup.*` summaries take its urgent
@@ -402,7 +403,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
 
   markStep(onStep, 'init-runtime', 'active');
   try {
-    const snapshot = await invokeWithTimeout(() => desktopApiV2.configuration.bootstrapRuntime(), 'bootstrap_runtime');
+    const snapshot = await invokeWithTimeout(() => activeDesktopApi().configuration.bootstrapRuntime(), 'bootstrap_runtime');
     useAppStore.getState().setRuntimeSnapshot(snapshot);
     markStep(onStep, 'init-runtime', 'done');
   } catch (error) {
@@ -425,7 +426,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   let persistedConfig = useAppStore.getState().configDraft;
   try {
     persistedConfig = await invokeWithTimeout(
-      () => desktopApiV2.configuration.load(),
+      () => activeDesktopApi().configuration.load(),
       'configuration_v2.load',
     );
     useAppStore.getState().setConfigDraft(persistedConfig);
@@ -441,7 +442,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   }
 
   try {
-    const audioSnapshot = await invokeWithTimeout(() => desktopApiV2.runtime.bootstrapAudio(), 'bootstrap_audio');
+    const audioSnapshot = await invokeWithTimeout(() => activeDesktopApi().runtime.bootstrapAudio(), 'bootstrap_audio');
     useAppStore.getState().setAudioRuntimeSnapshot(audioSnapshot);
     markStep(onStep, 'init-audio', 'done', `${audioSnapshot.renderDevices.length} devices`);
   } catch (error) {
@@ -451,7 +452,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   }
 
   try {
-    const hydratedSnapshot = await invokeWithTimeout(() => desktopApiV2.configuration.runtimeSnapshot(), 'get_runtime_snapshot');
+    const hydratedSnapshot = await invokeWithTimeout(() => activeDesktopApi().configuration.runtimeSnapshot(), 'get_runtime_snapshot');
     useAppStore.getState().setRuntimeSnapshot(hydratedSnapshot);
   } catch (snapshotError) {
     pushDesktopRuntimeNotification(
@@ -500,9 +501,9 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
       for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
         if (disposed) return;
         try {
-          await desktopApiV2.configuration.save(nextConfig);
+          await activeDesktopApi().configuration.save(nextConfig);
           if (disposed) return;
-          const latestSnapshot = await desktopApiV2.configuration.runtimeSnapshot();
+          const latestSnapshot = await activeDesktopApi().configuration.runtimeSnapshot();
           if (disposed) return;
           useAppStore.getState().setRuntimeSnapshot(latestSnapshot);
           const savedSerialized = JSON.stringify(nextConfig);
@@ -657,7 +658,8 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
 
   if (!runtimeAvailable) {
     // Tauri runtime not available — this is a browser preview scenario.
-    // Report it clearly and proceed with mock data immediately.
+    // Install the preview boundary and proceed with its data immediately.
+    installDesktopApi(new PreviewDesktopApi());
     markStep(onStep, 'detect-runtime', 'done', i18n.t('runtime.desktop.browserPreview'));
     markStep(onStep, 'check-ipc', 'done', i18n.t('runtime.desktop.skipped'));
     markStep(onStep, 'init-runtime', 'done', i18n.t('runtime.desktop.mockData'));
@@ -679,8 +681,10 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
       if (!available || disposed) {
         return;
       }
-      // Tauri became available later — reconnect silently (no step reporting since overlay is gone).
+      // Tauri became available later — upgrade the desktop boundary and
+      // reconnect silently (no step reporting since overlay is gone).
       try {
+        installDesktopApi(new TauriDesktopApi());
         const nextCleanup = await connectDesktopRuntimeBridge();
         if (disposed) {
           nextCleanup();
@@ -703,6 +707,7 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     };
   }
 
+  installDesktopApi(new TauriDesktopApi());
   markStep(onStep, 'detect-runtime', 'done', i18n.t('runtime.desktop.tauriDesktop'));
 
   // Step 1: check IPC
@@ -740,7 +745,7 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     const recoverIpc = async () => {
       if (disposed || Date.now() - recoveryStartedAt >= IPC_RECOVERY_TIMEOUT_MS) return;
       try {
-        await invokeWithTimeout(() => desktopApiV2.runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+        await invokeWithTimeout(() => activeDesktopApi().runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
         const nextCleanup = await connectDesktopRuntimeBridge();
         if (disposed) {
           nextCleanup();

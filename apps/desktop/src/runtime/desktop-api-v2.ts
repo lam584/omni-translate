@@ -37,6 +37,7 @@ import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft, DiagnosticsExportScope, ProviderDraft, RealtimeAudioMode } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
+import type { ModelPreset } from '../schema/provider-template';
 import type { CredentialRefStatus, CredentialSecretPayload, ProviderModelCatalogRuntime, ProviderProbeProfileRuntime, ProviderSmokeResult } from '../schema/provider-runtime';
 import type { DiagnosticLogEntryRuntime, RuntimeSnapshot } from '../schema/runtime-core';
 
@@ -90,7 +91,10 @@ export class DesktopApiV2 {
   constructor(private readonly invokeFn: InvokeFn = invoke) {}
 
   readonly provider = {
-    fetchModels: async (provider: ProviderDraft) =>
+    // `presetModels` is a preview-implementation hint (the browser preview
+    // builds its catalog from the preset list); the native provider service
+    // resolves the catalog itself and ignores it.
+    fetchModels: async (provider: ProviderDraft, _presetModels?: readonly ModelPreset[]) =>
       unwrap(await this.invokeFn<ServiceResult<ProviderModelCatalogRuntime>>('provider_v2', { command: { action: 'fetchModels', provider } })),
     probe: async (provider: ProviderDraft) =>
       unwrap(await this.invokeFn<ServiceResult<ProviderProbeProfileRuntime>>('provider_v2', { command: { action: 'probe', provider } })),

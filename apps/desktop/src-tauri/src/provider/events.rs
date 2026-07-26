@@ -1,4 +1,4 @@
-use tauri::AppHandle;
+use tauri::{AppHandle, Manager};
 
 use crate::diagnostics::events::append_diagnostics_log;
 
@@ -42,6 +42,13 @@ pub async fn fetch_provider_models(
 // `async fn`: blocking network probe, kept off the main thread.
 pub async fn probe_provider(app: AppHandle, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
     let result = ProviderGateway::new().probe(provider);
+    if let Some(store) = app.try_state::<crate::provider::state::ProviderStateStore>() {
+        store.record_probe(crate::provider::state::ProviderProbeSummary {
+            verdict: result.verdict.clone(),
+            checked_at: result.checked_at.clone(),
+            transport_effective: result.transport_effective.clone(),
+        });
+    }
     let level = if result.error.is_some() || result.verdict != "available" {
         "warning"
     } else {

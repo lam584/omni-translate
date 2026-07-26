@@ -50,33 +50,14 @@ const WIRE_PREFIXES = [
   '/type', '/usage',
 ];
 
-// Reads of config sections that AppConfigDraft has never had: they always fall
-// through to their inline default. Recorded, not exempted-away: each entry
-// warns on every run until the domain fix lands, and a stale entry (path no
-// longer read) fails so the list cannot rot. Do not add entries to make the
-// guard pass for new code — fix the path instead.
-const KNOWN_DEAD_READS = [
-  {
-    pointer: '/provider/model',
-    file: 'src-tauri/src/audio/engine/mod.rs',
-    reason: 'AppConfigDraft has providers[] (plural); this read always yields the inline default model.',
-  },
-  {
-    pointer: '/provider/transport',
-    file: 'src-tauri/src/diagnostics/events.rs',
-    reason: 'support matrix always reports the "http" fallback; probe data does not live in the config document.',
-  },
-  {
-    pointer: '/provider/probe/verdict',
-    file: 'src-tauri/src/diagnostics/events.rs',
-    reason: 'always None on real configs; provider status in the support matrix is permanently "未探测".',
-  },
-  {
-    pointer: '/provider/probe/checkedAt',
-    file: 'src-tauri/src/diagnostics/events.rs',
-    reason: 'always the "未探测" fallback on real configs.',
-  },
-];
+// Reads of config sections the schema does not have: they always fall through
+// to their inline default. Recorded, not exempted-away: each entry warns on
+// every run until the domain fix lands, and a stale entry (path no longer
+// read) fails so the list cannot rot. Do not add entries to make the guard
+// pass for new code — fix the path instead. Empty is the steady state (the
+// original four entries were fixed on 2026-07-27: engine now reads the
+// direction's voice model, diagnostics reads the provider probe store).
+const KNOWN_DEAD_READS = [];
 
 // Pointers that intentionally target keys only present in pre-schema documents
 // (kept alive by the repository's unknown-field passthrough). Every listed
@@ -146,21 +127,46 @@ function collectPointerSites() {
   return sites;
 }
 
-function resolvesInDefaultConfig(pointer, defaultConfig) {
+function resolveInDefaultConfig(pointer, defaultConfig) {
   let node = defaultConfig;
   for (const rawSegment of pointer.split('/').slice(1)) {
     const segment = rawSegment.replace(/~1/g, '/').replace(/~0/g, '~');
     if (Array.isArray(node)) {
       const index = Number(segment);
-      if (!Number.isInteger(index) || index >= node.length) return false;
+      if (!Number.isInteger(index) || index >= node.length) return { found: false };
       node = node[index];
     } else if (node !== null && typeof node === 'object' && segment in node) {
       node = node[segment];
     } else {
-      return false;
+      return { found: false };
     }
   }
-  return true;
+  return { found: true, value: node };
+}
+
+// serde_json accessor family a read may legally apply, keyed by the JSON type
+// of the default-document value at that path. Catches `as_str` on a bool
+// field and friends — the residual type-safety a Rust config struct would
+// have bought (方案A devices 子域 compensating control, 2026-07-27 决策).
+const ACCESSORS_BY_TYPE = {
+  string: ['as_str'],
+  boolean: ['as_bool'],
+  number: ['as_u64', 'as_i64', 'as_f64'],
+};
+
+function checkAccessorType(site, value, failures) {
+  if (site.kind !== 'read') return;
+  const accessorMatch = /\.and_then\(Value::as_(\w+)\)/.exec(site.tail);
+  if (!accessorMatch) return;
+  const accessor = 'as_' + accessorMatch[1];
+  const jsonType = Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
+  const allowed = ACCESSORS_BY_TYPE[jsonType];
+  if (allowed && !allowed.includes(accessor)) {
+    failures.push(
+      `type-mismatched config read: ${site.pointer} is ${jsonType} in the default document`
+      + ` but ${site.file}:${site.line} reads it with Value::${accessor} (always None at runtime)`,
+    );
+  }
 }
 
 function extractInlineDefault(tail) {
@@ -185,8 +191,10 @@ export function verifyConfigPaths() {
   const configSites = [];
 
   for (const site of sites) {
-    if (resolvesInDefaultConfig(site.pointer, defaultConfig)) {
+    const resolved = resolveInDefaultConfig(site.pointer, defaultConfig);
+    if (resolved.found) {
       configSites.push(site);
+      checkAccessorType(site, resolved.value, failures);
       continue;
     }
     const dead = KNOWN_DEAD_READS.find((e) => e.pointer === site.pointer && site.file.includes(e.file));

@@ -54,14 +54,24 @@ const OMNI_PRECONNECT_COMMAND_TIMEOUT: Duration = Duration::from_secs(50);
 const OMNI_ROUTE_COMMAND_TIMEOUT: Duration = Duration::from_secs(95);
 const DEFAULT_ROUTE_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// Single source for the route mode: a document missing `devices.routeMode`
+/// (only reachable with corrupt/Null configs, since the default document pins
+/// the key) behaves like the product default "watch". Call sites used to
+/// disagree ("" vs "unknown" fallbacks) — keep them on this helper.
+fn configured_route_mode(config: &Value) -> &str {
+    config
+        .pointer("/devices/routeMode")
+        .and_then(Value::as_str)
+        .unwrap_or("watch")
+}
+
 fn should_show_subtitle_overlay_for_route(direction: &str, config: &Value) -> bool {
-    direction == "inbound"
-        && config.pointer("/devices/routeMode").and_then(Value::as_str) == Some("watch")
+    direction == "inbound" && configured_route_mode(config) == "watch"
 }
 
 fn route_command_timeout(direction: &str, config: &Value) -> Duration {
     if direction == "inbound"
-        && config.pointer("/devices/routeMode").and_then(Value::as_str) == Some("watch")
+        && configured_route_mode(config) == "watch"
         && config
             .pointer("/devices/inboundVoiceModelId")
             .and_then(Value::as_str)
@@ -76,10 +86,7 @@ fn route_command_timeout(direction: &str, config: &Value) -> Duration {
 }
 
 fn route_command_timeout_message(direction: &str, config: &Value, timeout: Duration) -> String {
-    let route_mode = config
-        .pointer("/devices/routeMode")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
+    let route_mode = configured_route_mode(config);
     format!(
         "音频采集启动超时：direction={direction} routeMode={route_mode}，{} 秒内未收到后端结果。请检查 Bridge/驱动状态和实时模型连接。",
         timeout.as_secs()
@@ -125,10 +132,7 @@ fn start_route_with_overlay(
     stt_sender: Option<std::sync::mpsc::Sender<Vec<u8>>>,
 ) -> Result<AudioRuntimeSnapshot, String> {
     let should_show_overlay = should_show_subtitle_overlay_for_route(direction, &config);
-    let route_mode = config
-        .pointer("/devices/routeMode")
-        .and_then(Value::as_str)
-        .unwrap_or("unknown");
+    let route_mode = configured_route_mode(&config);
     let _ = append_diagnostics_log(
         &app,
         "audio",

@@ -131,7 +131,7 @@ impl ResolvedRoutePlan {
             target_language: config
                 .pointer("/subtitles/targetLanguage")
                 .and_then(Value::as_str)
-                .unwrap_or("zh")
+                .unwrap_or("zh-CN")
                 .to_string(),
             voice: config
                 .pointer("/speech/voice")
@@ -210,11 +210,7 @@ fn resolve_legacy_vad_bypass_for_route(direction: &str, config: &Value) -> bool 
         .pointer("/vad/bypass")
         .and_then(Value::as_bool)
         .unwrap_or(false);
-    let route_mode = config
-        .pointer("/devices/routeMode")
-        .and_then(Value::as_str)
-        .unwrap_or("");
-    if direction == "inbound" && route_mode == "watch" {
+    if direction == "inbound" && super::configured_route_mode(config) == "watch" {
         return false;
     }
     configured

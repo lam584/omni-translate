@@ -117,16 +117,25 @@ fn build_support_matrix(app: &AppHandle) -> Vec<DiagnosticSupportSignalRuntime> 
         .try_state::<StorageStateStore>()
         .and_then(|storage| storage.load_config().ok())
         .unwrap_or(Value::Null);
-    let provider_transport = config_value
-        .pointer("/provider/transport")
+    // Probe data lives in the provider state store (recorded by
+    // events::probe_provider); before the first probe the row falls back to
+    // the configured transport of the active provider.
+    let last_probe = app
+        .try_state::<crate::provider::state::ProviderStateStore>()
+        .and_then(|store| store.last_probe());
+    let configured_transport = config_value
+        .pointer("/providers/0/transport")
         .and_then(Value::as_str)
-        .unwrap_or("http");
-    let provider_verdict = config_value
-        .pointer("/provider/probe/verdict")
-        .and_then(Value::as_str);
-    let provider_checked_at = config_value
-        .pointer("/provider/probe/checkedAt")
-        .and_then(Value::as_str)
+        .unwrap_or("unknown")
+        .to_string();
+    let provider_transport = last_probe
+        .as_ref()
+        .map(|probe| probe.transport_effective.clone())
+        .unwrap_or(configured_transport);
+    let provider_verdict = last_probe.as_ref().map(|probe| probe.verdict.as_str());
+    let provider_checked_at = last_probe
+        .as_ref()
+        .map(|probe| probe.checked_at.as_str())
         .unwrap_or("未探测");
 
     let device_status = if !audio_snapshot.capture_devices.is_empty()
@@ -211,10 +220,6 @@ pub fn build_diagnostics_snapshot(app: &AppHandle) -> DiagnosticsRuntimeSnapshot
         .try_state::<BridgeStateStore>()
         .map(|state| state.snapshot())
         .unwrap_or_default();
-    let config_value = app
-        .try_state::<StorageStateStore>()
-        .and_then(|storage| storage.load_config().ok())
-        .unwrap_or(Value::Null);
     let support_matrix = build_support_matrix(app);
     let install_status = if bridge_snapshot.install_phase == "ready" {
         "ready"
@@ -223,9 +228,10 @@ pub fn build_diagnostics_snapshot(app: &AppHandle) -> DiagnosticsRuntimeSnapshot
     }
     .to_string();
     let provider_status = status_from_probe_verdict(
-        config_value
-            .pointer("/provider/probe/verdict")
-            .and_then(Value::as_str),
+        app.try_state::<crate::provider::state::ProviderStateStore>()
+            .and_then(|store| store.last_probe())
+            .as_ref()
+            .map(|probe| probe.verdict.as_str()),
     );
     let driver_status = if bridge_snapshot.status == "ready" {
         "ready"

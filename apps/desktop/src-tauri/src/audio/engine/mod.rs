@@ -521,8 +521,15 @@ impl RouteSpec {
             .and_then(Value::as_str)
             .unwrap_or("zh-CN")
             .to_string();
+        // The realtime model actually bound to this route decides whether the
+        // provider does server-side VAD (omni/livetranslate realtime models),
+        // in which case local VAD gating must not swallow frames.
         let model = config
-            .pointer("/provider/model")
+            .pointer(if direction == "outbound" {
+                "/devices/outboundVoiceModelId"
+            } else {
+                "/devices/inboundVoiceModelId"
+            })
             .and_then(Value::as_str)
             .unwrap_or("");
         let lower_model = model.to_lowercase();
@@ -826,6 +833,27 @@ mod tests {
         assert_eq!(spec.target_language, "en-US");
         assert!(!spec.echo_cancel_enabled());
         assert_eq!(spec.capture_direction(), Direction::Capture);
+    }
+
+    #[test]
+    fn route_spec_skips_local_vad_only_for_realtime_omni_models_of_the_route_direction() {
+        let config = json!({
+          "devices": {
+            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "outboundVoiceModelId": "gpt-4o-mini-transcribe",
+            "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } },
+            "outboundRoute": { "routeId": "outbound-route", "input": { "deviceId": "mic-7" } }
+          }
+        });
+
+        let inbound = RouteSpec::from_config(&config, "inbound").expect("inbound spec");
+        assert!(inbound.skip_local_vad, "omni realtime model does server-side VAD");
+
+        let outbound = RouteSpec::from_config(&config, "outbound").expect("outbound spec");
+        assert!(!outbound.skip_local_vad, "non-realtime outbound model keeps local VAD");
+
+        let unset = RouteSpec::from_config(&json!({ "devices": {} }), "inbound").expect("unset spec");
+        assert!(!unset.skip_local_vad, "missing model id keeps local VAD");
     }
 
     #[test]

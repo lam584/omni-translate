@@ -102,8 +102,7 @@ pub async fn start_audio_route(
     // Watch capture initialization is worker-owned. A Tauri command must
     // acknowledge acceptance immediately; the renderer then waits for the
     // later snapshot that confirms the route actually owns a capture stream.
-    let fast_watch_start = direction == "inbound"
-        && config.pointer("/devices/routeMode").and_then(Value::as_str) == Some("watch");
+    let fast_watch_start = direction == "inbound" && super::configured_route_mode(&config) == "watch";
     if fast_watch_start {
         let state = app.state::<AudioStateStore>();
         let route_id = config

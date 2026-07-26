@@ -659,6 +659,7 @@ fn main() {
         .manage(BridgeStateStore::new())
         .manage(diagnostics_store)
         .manage(RuntimeStateStore::new())
+        .manage(provider::state::ProviderStateStore::new())
         .manage(StorageStateStore::new())
         // Registration whitelist. The renderer talks to the five *_v2 service
         // envelopes; every other entry below is a deliberately direct command

@@ -1,4 +1,6 @@
-fn set_socket_write_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
+use super::*;
+
+pub(super) fn set_socket_write_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => {
             let _ = stream.set_write_timeout(Some(Duration::from_secs(OMNI_WRITE_TIMEOUT_SECS)));
@@ -12,7 +14,7 @@ fn set_socket_write_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<T
     }
 }
 
-fn set_socket_read_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
+pub(super) fn set_socket_read_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
     match socket.get_mut() {
         MaybeTlsStream::Plain(stream) => {
             let _ = stream.set_read_timeout(Some(Duration::from_millis(OMNI_READ_TIMEOUT_MS)));
@@ -27,7 +29,7 @@ fn set_socket_read_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<Tc
 }
 
 fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
-    use super::contracts::SubtitleCueRuntime;
+    use crate::audio::contracts::SubtitleCueRuntime;
     let cue = SubtitleCueRuntime {
         cue_id: format!("omni-reconnecting-{}", unix_ms()),
         route_direction: "inbound".to_string(),
@@ -45,7 +47,7 @@ fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
     store.push_subtitle_cue(cue);
 }
 
-fn try_reconnect(
+pub(super) fn try_reconnect(
     reconnect_count: &mut usize,
     pending_audio_buffer: &mut Vec<i16>,
     store: &AudioStateStore,
@@ -56,6 +58,7 @@ fn try_reconnect(
     audio_mode: RealtimeAudioMode,
     target_language: &str,
     buffer_size: u64,
+    disconnect_reason: &str,
 ) -> Result<tungstenite::WebSocket<MaybeTlsStream<TcpStream>>, String> {
     pending_audio_buffer.clear();
     let mut last_error = None;
@@ -67,6 +70,12 @@ fn try_reconnect(
     // capture worker with a closed sender.
     for attempt in 1..=OMNI_RECONNECT_MAX_RETRIES {
         *reconnect_count = attempt;
+        store.mark_stt_reconnecting(
+            attempt as u64,
+            OMNI_RECONNECT_MAX_RETRIES as u64,
+            disconnect_reason,
+        );
+        let _ = emit_audio_snapshot(app, store);
         notify_reconnecting(store, attempt);
         thread::sleep(backoff_delay(attempt));
         match reconnect_socket(
@@ -80,6 +89,7 @@ fn try_reconnect(
             Ok(socket) => {
                 *reconnect_count = 0;
                 store.set_stt_connected(true, buffer_size);
+                let _ = emit_audio_snapshot(app, store);
                 return Ok(socket);
             }
             Err(error) => {
@@ -96,13 +106,20 @@ fn try_reconnect(
     }
 
     store.set_stt_connected(false, buffer_size);
-    Err(format!(
-        "Omni WebSocket reconnect retry limit exhausted after {OMNI_RECONNECT_MAX_RETRIES} attempts: {}",
-        last_error.unwrap_or_else(|| "unknown reconnect error".to_string())
+    let _ = emit_audio_snapshot(app, store);
+    // Classify the final connect failure so the frontend can distinguish a
+    // credential rejection from plain network trouble after exhaustion.
+    let last_error = last_error.unwrap_or_else(|| "unknown reconnect error".to_string());
+    let code = classify_connect_error(&last_error);
+    Err(with_error_markers(
+        &format!(
+            "Omni WebSocket reconnect retry limit exhausted after {OMNI_RECONNECT_MAX_RETRIES} attempts: {last_error}"
+        ),
+        code,
     ))
 }
 
-fn check_vad_warning(
+pub(super) fn check_vad_warning(
     app: &AppHandle,
     last_vad_event_time: &SystemTime,
     chunk_count: u64,
@@ -129,7 +146,7 @@ fn check_vad_warning(
     false
 }
 
-fn handle_session_ready_event(
+pub(super) fn handle_session_ready_event(
     app: &AppHandle,
     event_type: &str,
     evt: &Value,
@@ -193,28 +210,28 @@ fn handle_session_ready_event(
     }
 }
 
-fn is_session_ready_event(event_type: &str) -> bool {
+pub(super) fn is_session_ready_event(event_type: &str) -> bool {
     matches!(event_type, "session.created" | "session.updated")
 }
 
 #[derive(Debug, Default, Clone)]
-struct OmniEventDiagnostics {
-    readiness_event: Option<String>,
-    current_cue_origin: Option<String>,
-    last_asr_delta_text: String,
-    last_asr_delta_at_ms: Option<u64>,
-    last_asr_delta_item_id: Option<String>,
-    last_asr_completed_text: String,
-    last_asr_completed_at_ms: Option<u64>,
-    empty_asr_completed_count: u64,
-    first_non_empty_asr_completed_at_ms: Option<u64>,
-    last_output_done_text: String,
-    last_output_done_at_ms: Option<u64>,
-    first_response_done_at_ms: Option<u64>,
-    response_done_count: u64,
+pub(super) struct OmniEventDiagnostics {
+    pub(super) readiness_event: Option<String>,
+    pub(super) current_cue_origin: Option<String>,
+    pub(super) last_asr_delta_text: String,
+    pub(super) last_asr_delta_at_ms: Option<u64>,
+    pub(super) last_asr_delta_item_id: Option<String>,
+    pub(super) last_asr_completed_text: String,
+    pub(super) last_asr_completed_at_ms: Option<u64>,
+    pub(super) empty_asr_completed_count: u64,
+    pub(super) first_non_empty_asr_completed_at_ms: Option<u64>,
+    pub(super) last_output_done_text: String,
+    pub(super) last_output_done_at_ms: Option<u64>,
+    pub(super) first_response_done_at_ms: Option<u64>,
+    pub(super) response_done_count: u64,
 }
 
-fn elapsed_ms_since(start: &SystemTime) -> u64 {
+pub(super) fn elapsed_ms_since(start: &SystemTime) -> u64 {
     start
         .elapsed()
         .unwrap_or_default()
@@ -222,7 +239,7 @@ fn elapsed_ms_since(start: &SystemTime) -> u64 {
         .min(u64::MAX as u128) as u64
 }
 
-fn should_use_native_output_fallback(
+pub(super) fn should_use_native_output_fallback(
     subtitle_translate_active: bool,
     native_translation_reuse_active: bool,
     source_text: &str,
@@ -235,7 +252,7 @@ fn should_use_native_output_fallback(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn handle_response_done(
+pub(super) fn handle_response_done(
     app: &AppHandle,
     store: &AudioStateStore,
     trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
@@ -459,7 +476,7 @@ fn handle_response_done(
     );
 }
 
-fn reset_omni_turn_state(
+pub(super) fn reset_omni_turn_state(
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     pending_translated_text: &mut String,
@@ -481,7 +498,7 @@ fn reset_omni_turn_state(
 /// response output stream (`pending_audio_*`, `pending_translated_text`).
 /// A skipped or timed-out manual turn never issued `response.create`, so any
 /// buffered output belongs to a previous turn that may still be streaming.
-fn reset_manual_turn_input_state(
+pub(super) fn reset_manual_turn_input_state(
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     transcription_completed_flag: &mut bool,
@@ -499,7 +516,7 @@ fn reset_manual_turn_input_state(
 /// A response output stream is active between its first output event and the
 /// response.done / audio.done cleanup. While it is active, the output buffers
 /// must survive a manual-gate reset for a later, skipped turn.
-fn manual_turn_response_stream_active(
+pub(super) fn manual_turn_response_stream_active(
     pending_audio_delta_count: u64,
     pending_audio_buffer_len: usize,
     pending_audio_response_id: Option<&str>,
@@ -515,7 +532,7 @@ fn manual_turn_response_stream_active(
 /// `current_cue_id`; discarding that shared cue on a skipped turn would delete
 /// the previous turn's live translation from the overlay. Only the secondary
 /// subtitle path keeps `current_cue_id` exclusively on the input side.
-fn response_stream_owns_current_cue(
+pub(super) fn response_stream_owns_current_cue(
     response_stream_active: bool,
     subtitle_translate_active: bool,
     native_translation_reuse_active: bool,
@@ -600,17 +617,17 @@ mod manual_turn_state_tests {
     }
 }
 
-fn is_livetranslate_model(model: &str) -> bool {
+pub(super) fn is_livetranslate_model(model: &str) -> bool {
     model.to_ascii_lowercase().contains("livetranslate")
 }
 
-fn ensure_transcription_cue_id(current_cue_id: &mut Option<String>) -> String {
+pub(super) fn ensure_transcription_cue_id(current_cue_id: &mut Option<String>) -> String {
     current_cue_id
         .get_or_insert_with(|| format!("omni-cue-{}", unix_ms()))
         .clone()
 }
 
-fn write_live_source_to_cue(
+pub(super) fn write_live_source_to_cue(
     store: &AudioStateStore,
     current_cue_id: &mut Option<String>,
     source_text: &str,
@@ -624,7 +641,7 @@ fn write_live_source_to_cue(
     cue_id
 }
 
-fn write_native_output_preview_to_cue(
+pub(super) fn write_native_output_preview_to_cue(
     store: &AudioStateStore,
     current_cue_id: &mut Option<String>,
     source_text: &str,
@@ -643,7 +660,7 @@ fn write_native_output_preview_to_cue(
     cue_id
 }
 
-fn write_native_output_final_to_cue(
+pub(super) fn write_native_output_final_to_cue(
     store: &AudioStateStore,
     current_cue_id: &mut Option<String>,
     source_text: &str,
@@ -662,12 +679,12 @@ fn write_native_output_final_to_cue(
     cue_id
 }
 
-struct ResolvedCompletedTranscription {
-    display_text: String,
-    response_gate_text: String,
+pub(super) struct ResolvedCompletedTranscription {
+    pub(super) display_text: String,
+    pub(super) response_gate_text: String,
 }
 
-fn resolve_completed_transcription(
+pub(super) fn resolve_completed_transcription(
     pending: &str,
     completed: &str,
     pending_matches_completed_item: bool,
@@ -688,7 +705,7 @@ fn resolve_completed_transcription(
     }
 }
 
-fn write_native_translation_to_cue(
+pub(super) fn write_native_translation_to_cue(
     store: &AudioStateStore,
     cue_id: &str,
     source_text: &str,
@@ -793,7 +810,7 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
     }
 }
 
-fn build_omni_session_update(
+pub(super) fn build_omni_session_update(
     model: &str,
     voice: &str,
     instructions: &str,
@@ -832,14 +849,7 @@ fn build_omni_session_update(
     session_cfg
 }
 
-fn is_unsupported_voice_error(code: &str, message: &str) -> bool {
-    let lower_message = message.to_ascii_lowercase();
-    code == "InternalError.Algo.InvalidParameter"
-        || (lower_message.contains("voice") && lower_message.contains("not supported"))
-        || (message.contains("InvalidParameter") && lower_message.contains("voice"))
-}
-
-enum OmniPlaybackCommand {
+pub(super) enum OmniPlaybackCommand {
     Play {
         samples: Vec<i16>,
         cue_id: String,
@@ -873,7 +883,7 @@ fn omni_playback_queue_age_expired(age: Duration) -> bool {
     age > OMNI_PLAYBACK_MAX_QUEUE_AGE
 }
 
-fn request_omni_playback_stop(
+pub(super) fn request_omni_playback_stop(
     stop_requested: &AtomicBool,
     playback_tx: &mpsc::SyncSender<OmniPlaybackCommand>,
 ) {
@@ -883,9 +893,9 @@ fn request_omni_playback_stop(
 
 #[derive(Debug, Clone)]
 pub(crate) struct OmniSpeechConfig {
-    enabled: bool,
-    local_playback_enabled: bool,
-    virtual_mic_output_enabled: bool,
+    pub(super) enabled: bool,
+    pub(super) local_playback_enabled: bool,
+    pub(super) virtual_mic_output_enabled: bool,
     speaker_device_id: Option<String>,
     speaker_output_level: u64,
     translated_audio_gain_db: f32,
@@ -903,10 +913,10 @@ impl OmniSpeechConfig {
             .and_then(Value::as_bool)
             .unwrap_or(false);
         let native_audio_enabled =
-            super::speech::resolve_translation_audio_source(config_value, true)
-                == super::speech::TranslationAudioSource::OmniNative;
+            crate::audio::speech::resolve_translation_audio_source(config_value, true)
+                == crate::audio::speech::TranslationAudioSource::OmniNative;
         let local_playback_enabled =
-            super::speech::desktop_direct_playback_enabled_for_config(config_value);
+            crate::audio::speech::desktop_direct_playback_enabled_for_config(config_value);
         // Text-level self-output detection protects every physical playback
         // route, including sessions that have not explicitly enabled AEC.
         let echo_guard_enabled =
@@ -941,7 +951,7 @@ impl OmniSpeechConfig {
         }
     }
 
-    fn any_output(&self) -> bool {
+    pub(super) fn any_output(&self) -> bool {
         self.enabled && (self.local_playback_enabled || self.virtual_mic_output_enabled)
     }
 
@@ -951,7 +961,7 @@ impl OmniSpeechConfig {
 
 }
 
-fn start_omni_playback(
+pub(super) fn start_omni_playback(
     app: AppHandle,
     speech_config: OmniSpeechConfig,
 ) -> (
@@ -1033,7 +1043,7 @@ fn start_omni_playback(
                         });
                         let _ = emit_audio_snapshot(&app, &audio_state);
 
-                        let output_route = super::speech::SpeechOutputRoutePlan::new(
+                        let output_route = crate::audio::speech::SpeechOutputRoutePlan::new(
                             cfg.local_playback_enabled,
                             cfg.virtual_mic_output_enabled,
                         );
@@ -1046,9 +1056,9 @@ fn start_omni_playback(
                             // The AEC reference must be the exact PCM submitted to the
                             // speaker. Output level and translated-audio gain are already
                             // baked in, so speaker playback stays at unity volume.
-                            let echo_reference = super::speech::i16_to_f32(&output_samples);
+                            let echo_reference = crate::audio::speech::i16_to_f32(&output_samples);
                             audio_state.push_echo_reference(&echo_reference, sample_rate_hz, 1);
-                            let result = super::speech::play_to_speaker(
+                            let result = crate::audio::speech::play_to_speaker(
                                 &output_samples,
                                 sample_rate_hz,
                                 1,
@@ -1185,7 +1195,7 @@ mod omni_playback_tests {
     #[test]
     fn echo_reference_conversion_uses_the_gain_adjusted_samples() {
         let rendered = render_omni_output_samples(&[12_000, -8_000], 50, 0.0);
-        let echo_reference = super::super::speech::i16_to_f32(&rendered);
+        let echo_reference = crate::audio::speech::i16_to_f32(&rendered);
 
         assert_eq!(rendered, vec![6_000, -4_000]);
         assert_eq!(echo_reference[0], 6_000_f32 / i16::MAX as f32);

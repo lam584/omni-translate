@@ -35,6 +35,7 @@ mod connection;
 mod connection_coordinator;
 mod event_processor;
 mod config;
+pub(crate) mod session_errors;
 mod session_worker;
 mod socket_event_processor;
 
@@ -61,6 +62,10 @@ use self::event_processor::{
     OmniAudioOutputState, OmniEventProcessor, OmniReadinessState, OmniSubtitleEventState,
 };
 use self::config::OmniSessionConfig;
+use self::session_errors::{
+    classify_connect_error, classify_provider_error, split_error_markers, with_error_markers,
+    SessionErrorCode,
+};
 
 const OMNI_RECONNECT_MAX_RETRIES: usize = 5;
 const OMNI_INITIAL_CONNECT_RETRIES: usize = 3;
@@ -241,6 +246,7 @@ fn initial_connect_backoff(retry_count: usize) -> Duration {
 mod unit_tests {
     use super::*;
     use super::audio_pump::manual_turn_has_audible_input;
+    use super::protocol::{is_session_ready_event, should_use_native_output_fallback};
     use base64::Engine;
 
     #[test]
@@ -406,15 +412,15 @@ mod unit_tests {
 
     #[test]
     fn unsupported_voice_error_is_classified() {
-        assert!(is_unsupported_voice_error(
+        assert!(session_errors::is_unsupported_voice_error(
             "COMMON_ERROR",
             "<400> InternalError.Algo.InvalidParameter: Voice 'Cherry' is not supported."
         ));
-        assert!(is_unsupported_voice_error(
+        assert!(session_errors::is_unsupported_voice_error(
             "InternalError.Algo.InvalidParameter",
             "bad request"
         ));
-        assert!(!is_unsupported_voice_error(
+        assert!(!session_errors::is_unsupported_voice_error(
             "COMMON_ERROR",
             "rate limit exceeded"
         ));
@@ -530,7 +536,20 @@ mod unit_tests {
     }
 }
 
-include!("protocol.rs");
+mod protocol;
+
+pub(crate) use self::protocol::OmniSpeechConfig;
+use self::protocol::{
+    build_omni_session_update, check_vad_warning, elapsed_ms_since,
+    ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
+    is_livetranslate_model, manual_turn_response_stream_active,
+    request_omni_playback_stop, reset_manual_turn_input_state, reset_omni_turn_state,
+    resolve_completed_transcription, response_stream_owns_current_cue,
+    set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
+    try_reconnect, write_live_source_to_cue, write_native_output_final_to_cue,
+    write_native_output_preview_to_cue, write_native_translation_to_cue,
+    OmniEventDiagnostics, OmniPlaybackCommand,
+};
 #[cfg(test)]
 mod native_translation_tests {
     use super::*;

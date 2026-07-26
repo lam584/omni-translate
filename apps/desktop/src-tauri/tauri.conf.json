@@ -27,6 +27,11 @@
   },
   "bundle": {
     "active": true,
-    "targets": "all"
+    "targets": "all",
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "resources": {
+      "../../../scripts/installer/": "scripts/installer/",
+      "../../../drivers/windows-virtual-mic/package/": "drivers/windows-virtual-mic/package/"
+    }
   }
 }

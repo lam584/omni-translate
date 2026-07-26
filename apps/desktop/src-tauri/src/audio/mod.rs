@@ -15,6 +15,7 @@ pub mod session_supervisor;
 pub mod speech;
 pub mod state;
 pub mod stt;
+pub mod tencent_speech_translate;
 pub mod subtitle_translate;
 pub mod time_utils;
 pub mod translate;

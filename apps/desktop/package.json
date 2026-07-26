@@ -13,7 +13,7 @@
     "build": "tsc -p tsconfig.json && vite build",
     "prebuild:tauri": "node ../../scripts/development/stop-desktop-release.mjs",
     "build:tauri": "node ../../scripts/development/build-desktop-release.mjs",
-    "build:installer": "tauri build",
+    "build:installer": "tauri build --config src-tauri/tauri.installer.conf.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "check:tauri": "cargo check --manifest-path src-tauri/Cargo.toml",
     "test": "vitest run",

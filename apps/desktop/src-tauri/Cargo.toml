@@ -30,6 +30,8 @@ url = "2"
 wasapi = "0.23.0"
 whatlang = "0.18"
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+hmac = "0.12"
+sha1 = "0.10"
 
 [dev-dependencies]
 tempfile = "3"

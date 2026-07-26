@@ -33,6 +33,14 @@ const nativeBridgeExecutable = resolveBuiltExecutable(
   'Native Bridge Service executable is missing. Run npm run build:bridge-service-native first.',
 );
 
+const audioProbeExecutable = resolveBuiltExecutable(
+  [
+    path.join(rootDir, 'target', 'release', 'omni-driver-audio-probe.exe'),
+    path.join(rootDir, 'apps', 'bridge-service-native', 'target', 'release', 'omni-driver-audio-probe.exe'),
+  ],
+  'WASAPI audio probe executable is missing. Run npm run build:bridge-service-native first.',
+);
+
 const desktopDist = path.join(rootDir, 'apps', 'desktop', 'dist');
 if (!fs.existsSync(desktopDist)) {
   throw new Error('Desktop dist is missing. Run npm run verify:desktop first.');
@@ -95,6 +103,7 @@ const layout = {
 
 fs.mkdirSync(path.join(versionDir, 'bridge-service-native'), { recursive: true });
 fs.copyFileSync(nativeBridgeExecutable, path.join(versionDir, 'bridge-service-native', 'omni-bridge-service.exe'));
+fs.copyFileSync(audioProbeExecutable, path.join(versionDir, 'bridge-service-native', 'omni-driver-audio-probe.exe'));
 copyTree(desktopDist, path.join(versionDir, 'desktop', 'web-assets'));
 fs.mkdirSync(path.join(versionDir, 'desktop'), { recursive: true });
 fs.copyFileSync(desktopExecutable, path.join(versionDir, 'desktop', 'omni-desktop-shell.exe'));

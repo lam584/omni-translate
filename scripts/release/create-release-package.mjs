@@ -67,6 +67,7 @@ const packageMetadata = {
   uninstallEntry: 'scripts/installer/uninstall-development-driver.ps1',
   repairEntry: 'scripts/installer/repair-driver.ps1',
   nativeBridgeExecutable: 'bridge-service-native/omni-bridge-service.exe',
+  audioProbeExecutable: 'bridge-service-native/omni-driver-audio-probe.exe',
   docs: RELEASE_DOCS.map((relativePath) => path.basename(relativePath)),
 };
 fs.writeFileSync(path.join(bundleDir, 'release-package.json'), `${JSON.stringify(packageMetadata, null, 2)}\n`, 'utf8');

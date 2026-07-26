@@ -56,6 +56,42 @@ export function buildDefaultSceneModelAssignments(template: ProviderTemplate): P
     ];
   }
 
+  if (template.id === 'template-zhipu-glm') {
+    return [
+      { scenario: 'watch', modelIds: ['glm-realtime-flash'] },
+      { scenario: 'game', modelIds: ['glm-realtime-flash'] },
+      { scenario: 'voice-room', modelIds: [] },
+      { scenario: 'subtitle-translate', modelIds: [] },
+    ];
+  }
+
+  if (template.id === 'template-tencent-speech') {
+    return [
+      { scenario: 'watch', modelIds: ['hunyuan-translation-lite'] },
+      { scenario: 'game', modelIds: [] },
+      { scenario: 'voice-room', modelIds: [] },
+      { scenario: 'subtitle-translate', modelIds: [] },
+    ];
+  }
+
+  if (template.id === 'template-azure-openai') {
+    return [
+      { scenario: 'watch', modelIds: ['gpt-realtime'] },
+      { scenario: 'game', modelIds: [] },
+      { scenario: 'voice-room', modelIds: [] },
+      { scenario: 'subtitle-translate', modelIds: [] },
+    ];
+  }
+
+  if (template.id === 'template-gemini') {
+    return [
+      { scenario: 'watch', modelIds: ['gemini-3.1-flash-live-preview'] },
+      { scenario: 'game', modelIds: [] },
+      { scenario: 'voice-room', modelIds: [] },
+      { scenario: 'subtitle-translate', modelIds: [] },
+    ];
+  }
+
   return empty;
 }
 

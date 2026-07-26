@@ -48,16 +48,29 @@ pub enum OpenAiRealtimeDialect {
     /// Transcription-only session on /v1/realtime?intent=transcription
     /// (gpt-realtime-whisper, gpt-4o-(mini-)transcribe, whisper-1).
     Transcription,
+    /// Beta-era flat session shape spoken by OpenAI-realtime-style Chinese
+    /// providers (Zhipu GLM glm-realtime-*): flat session fields, 16 kHz
+    /// input, `response.text.delta` output events.
+    FlatCompat,
 }
 
 pub fn resolve_dialect(model: &str) -> OpenAiRealtimeDialect {
     let lower = model.to_ascii_lowercase();
-    if lower.contains("translate") {
+    if lower.contains("glm") {
+        OpenAiRealtimeDialect::FlatCompat
+    } else if lower.contains("translate") {
         OpenAiRealtimeDialect::Translation
     } else if lower.contains("transcribe") || lower.contains("whisper") {
         OpenAiRealtimeDialect::Transcription
     } else {
         OpenAiRealtimeDialect::Conversation
+    }
+}
+
+fn dialect_input_rate(dialect: OpenAiRealtimeDialect) -> u32 {
+    match dialect {
+        OpenAiRealtimeDialect::FlatCompat => 16_000,
+        _ => OPENAI_INPUT_SAMPLE_RATE_HZ,
     }
 }
 
@@ -118,7 +131,9 @@ pub fn build_openai_transcription_url(base_url: &str) -> Result<Url, String> {
 
 fn build_ws_url(dialect: OpenAiRealtimeDialect, base_url: &str, model: &str) -> Result<Url, String> {
     match dialect {
-        OpenAiRealtimeDialect::Conversation => build_openai_realtime_url(base_url, model),
+        OpenAiRealtimeDialect::Conversation | OpenAiRealtimeDialect::FlatCompat => {
+            build_openai_realtime_url(base_url, model)
+        }
         OpenAiRealtimeDialect::Translation => build_openai_translation_url(base_url, model),
         OpenAiRealtimeDialect::Transcription => build_openai_transcription_url(base_url),
     }
@@ -236,6 +251,40 @@ fn build_transcription_session_update(model: &str, mode: RealtimeAudioMode) -> V
     })
 }
 
+/// Beta-era flat session shape (GLM realtime and similar compat providers).
+/// GLM selects the model via this session field, not the URL query.
+fn build_flat_session_update(
+    model: &str,
+    instructions: &str,
+    mode: RealtimeAudioMode,
+    target_language: &str,
+    subtitle_translate_active: bool,
+) -> Value {
+    let instructions = format!(
+        "{instructions}\nTranslate or transcribe the incoming audio for watch-mode subtitles. Target language: {target_language}. Output concise subtitle text only."
+    );
+    // With an external subtitle-translate worker the model must not answer
+    // itself, otherwise both race to write the same cue's translation.
+    let turn_detection = match (mode, subtitle_translate_active) {
+        (RealtimeAudioMode::Manual, _) => Value::Null,
+        (_, true) => json!({ "type": "server_vad", "create_response": false }),
+        (_, false) => json!({ "type": "server_vad" }),
+    };
+    json!({
+        "type": "session.update",
+        "session": {
+            "model": model,
+            "modalities": ["text"],
+            "instructions": instructions,
+            "input_audio_format": "pcm16",
+            "sample_rate": 16000,
+            "output_audio_format": "pcm",
+            "input_audio_transcription": {},
+            "turn_detection": turn_detection
+        }
+    })
+}
+
 fn build_session_update(
     dialect: OpenAiRealtimeDialect,
     model: &str,
@@ -253,6 +302,13 @@ fn build_session_update(
         ),
         OpenAiRealtimeDialect::Translation => build_translation_session_update(target_language),
         OpenAiRealtimeDialect::Transcription => build_transcription_session_update(model, mode),
+        OpenAiRealtimeDialect::FlatCompat => build_flat_session_update(
+            model,
+            instructions,
+            mode,
+            target_language,
+            subtitle_translate_active,
+        ),
     }
 }
 
@@ -261,6 +317,16 @@ pub(crate) fn build_response_create() -> Value {
         "type": "response.create",
         "response": {
             "output_modalities": ["text"]
+        }
+    })
+}
+
+/// Beta field name (`modalities`) for flat-compat providers.
+fn build_response_create_flat() -> Value {
+    json!({
+        "type": "response.create",
+        "response": {
+            "modalities": ["text"]
         }
     })
 }
@@ -290,7 +356,9 @@ fn uses_timed_manual_commit(
         OpenAiRealtimeDialect::Transcription => {
             is_realtime_whisper_model(model) || mode.uses_manual_commit()
         }
-        OpenAiRealtimeDialect::Conversation => mode.uses_manual_commit(),
+        OpenAiRealtimeDialect::Conversation | OpenAiRealtimeDialect::FlatCompat => {
+            mode.uses_manual_commit()
+        }
     }
 }
 
@@ -301,8 +369,13 @@ fn manual_commit_messages(
     subtitle_translate_active: bool,
 ) -> Vec<Value> {
     let mut messages = vec![json!({ "type": "input_audio_buffer.commit" })];
-    if dialect == OpenAiRealtimeDialect::Conversation && !subtitle_translate_active {
-        messages.push(build_response_create());
+    if subtitle_translate_active {
+        return messages;
+    }
+    match dialect {
+        OpenAiRealtimeDialect::Conversation => messages.push(build_response_create()),
+        OpenAiRealtimeDialect::FlatCompat => messages.push(build_response_create_flat()),
+        _ => {}
     }
     messages
 }
@@ -427,6 +500,7 @@ pub fn start_openai_realtime(
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
+    let stt_epoch = store.begin_stt_session_epoch();
     store.set_stt_connected(false, 0);
     let app_handle = app.clone();
     let model = provider.model.clone();
@@ -437,6 +511,7 @@ pub fn start_openai_realtime(
             if let Err(error) = run_openai_worker(
                 app_handle.clone(),
                 &audio_state,
+                stt_epoch,
                 provider,
                 instructions,
                 audio_mode,
@@ -445,7 +520,7 @@ pub fn start_openai_realtime(
                 audio_rx,
                 stop_rx,
             ) {
-                audio_state.set_stt_connected(false, 0);
+                let _ = audio_state.set_stt_connected_if_current(stt_epoch, false, 0);
                 let _ = diag_log(
                     &app_handle,
                     "openai-realtime",
@@ -504,6 +579,7 @@ fn open_session(
 fn run_openai_worker(
     app: AppHandle,
     store: &AudioStateStore,
+    stt_epoch: u64,
     provider: ProviderDraftInput,
     instructions: String,
     audio_mode: RealtimeAudioMode,
@@ -535,11 +611,12 @@ fn run_openai_worker(
 
     let mut session = open_session(&app, &provider, dialect, &session_update, &mut trace_call)?;
     if session.session_ready {
-        store.set_stt_connected(true, 0);
+        let _ = store.set_stt_connected_if_current(stt_epoch, true, 0);
         let _ = emit_audio_snapshot(&app, store);
     }
 
     let timed_manual_commit = uses_timed_manual_commit(dialect, audio_mode, &provider.model);
+    let input_rate = dialect_input_rate(dialect);
     let mut cue = CueState::new();
     let mut gate = SilenceGate::new(OPENAI_ASR_MIN_CHUNK_RMS, OPENAI_ASR_SILENCE_GRACE_CHUNKS);
     let mut pre_session_queue: VecDeque<String> = VecDeque::new();
@@ -553,6 +630,7 @@ fn run_openai_worker(
             shutdown_session(
                 &app,
                 store,
+                stt_epoch,
                 dialect,
                 &mut session,
                 &mut cue,
@@ -569,7 +647,7 @@ fn run_openai_worker(
         // send when the session is ready, otherwise queue (bounded).
         let mut send_failed = false;
         while let Ok(chunk) = audio_rx.try_recv() {
-            let samples = resample_capture_to_mono_i16(&chunk, OPENAI_INPUT_SAMPLE_RATE_HZ);
+            let samples = resample_capture_to_mono_i16(&chunk, input_rate);
             if samples.is_empty() {
                 continue;
             }
@@ -609,6 +687,7 @@ fn run_openai_worker(
             if !try_reconnect(
                 &app,
                 store,
+                stt_epoch,
                 &provider,
                 dialect,
                 &session_update,
@@ -639,6 +718,7 @@ fn run_openai_worker(
                     if !try_reconnect(
                         &app,
                         store,
+                        stt_epoch,
                         &provider,
                         dialect,
                         &session_update,
@@ -671,6 +751,7 @@ fn run_openai_worker(
                     if !try_reconnect(
                         &app,
                         store,
+                        stt_epoch,
                         &provider,
                         dialect,
                         &session_update,
@@ -706,6 +787,7 @@ fn run_openai_worker(
                 handle_server_event(
                     &app,
                     store,
+                    stt_epoch,
                     dialect,
                     subtitle_translate_active,
                     event_type,
@@ -727,6 +809,7 @@ fn run_openai_worker(
                 if !try_reconnect(
                     &app,
                     store,
+                    stt_epoch,
                     &provider,
                     dialect,
                     &session_update,
@@ -752,6 +835,7 @@ fn run_openai_worker(
                 if !try_reconnect(
                     &app,
                     store,
+                    stt_epoch,
                     &provider,
                     dialect,
                     &session_update,
@@ -773,6 +857,7 @@ fn run_openai_worker(
 fn handle_server_event(
     app: &AppHandle,
     store: &AudioStateStore,
+    stt_epoch: u64,
     dialect: OpenAiRealtimeDialect,
     subtitle_translate_active: bool,
     event_type: &str,
@@ -787,7 +872,7 @@ fn handle_server_event(
         "session.created" | "session.updated" => {
             if !session.session_ready {
                 session.session_ready = true;
-                store.set_stt_connected(true, buffer_size);
+                let _ = store.set_stt_connected_if_current(stt_epoch, true, buffer_size);
                 let _ = emit_audio_snapshot(app, store);
             }
             *reconnect_retries = 0;
@@ -826,10 +911,12 @@ fn handle_server_event(
                 let _ = emit_audio_snapshot(app, store);
             }
         }
-        // Translated text (conversation sessions; GA + beta event names).
+        // Translated text (conversation sessions; GA + beta + flat-compat
+        // event names — GLM emits response.text.delta).
         "response.output_audio_transcript.delta"
         | "response.output_text.delta"
-        | "response.audio_transcript.delta" => {
+        | "response.audio_transcript.delta"
+        | "response.text.delta" => {
             if let Some(delta) = extract_text_delta(evt) {
                 let id = cue.ensure_cue_id();
                 cue.output_text.push_str(delta);
@@ -842,7 +929,8 @@ fn handle_server_event(
         }
         "response.output_audio_transcript.done"
         | "response.output_text.done"
-        | "response.audio_transcript.done" => {
+        | "response.audio_transcript.done"
+        | "response.text.done" => {
             if let Some(text) = extract_text_delta(evt) {
                 if !text.trim().is_empty() {
                     cue.output_text = text.to_string();
@@ -904,6 +992,7 @@ fn handle_server_event(
 fn try_reconnect(
     app: &AppHandle,
     store: &AudioStateStore,
+    stt_epoch: u64,
     provider: &ProviderDraftInput,
     dialect: OpenAiRealtimeDialect,
     session_update: &Value,
@@ -915,7 +1004,7 @@ fn try_reconnect(
     // The interrupted turn cannot be resumed on a fresh session; flush what
     // we have so the overlay keeps the partial subtitle.
     cue.commit(app, store);
-    store.set_stt_connected(false, 0);
+    let _ = store.set_stt_connected_if_current(stt_epoch, false, 0);
     let _ = emit_audio_snapshot(app, store);
 
     while *reconnect_retries < OPENAI_RECONNECT_MAX_RETRIES {
@@ -937,7 +1026,7 @@ fn try_reconnect(
             Ok(new_session) => {
                 *session = new_session;
                 if session.session_ready {
-                    store.set_stt_connected(true, 0);
+                    let _ = store.set_stt_connected_if_current(stt_epoch, true, 0);
                     let _ = emit_audio_snapshot(app, store);
                 }
                 return true;
@@ -959,6 +1048,7 @@ fn try_reconnect(
 fn shutdown_session(
     app: &AppHandle,
     store: &AudioStateStore,
+    stt_epoch: u64,
     dialect: OpenAiRealtimeDialect,
     session: &mut OpenAiSessionRuntime,
     cue: &mut CueState,
@@ -1025,7 +1115,7 @@ fn shutdown_session(
     }
     cue.commit(app, store);
     let _ = session.socket.close(None);
-    store.set_stt_connected(false, buffer_size);
+    let _ = store.set_stt_connected_if_current(stt_epoch, false, buffer_size);
     let _ = emit_audio_snapshot(app, store);
 }
 
@@ -1059,6 +1149,95 @@ mod tests {
             resolve_dialect("gpt-realtime"),
             OpenAiRealtimeDialect::Conversation
         );
+        assert_eq!(
+            resolve_dialect("glm-realtime-flash"),
+            OpenAiRealtimeDialect::FlatCompat
+        );
+        assert_eq!(
+            resolve_dialect("glm-realtime-air"),
+            OpenAiRealtimeDialect::FlatCompat
+        );
+    }
+
+    #[test]
+    fn flat_compat_uses_16k_input_and_beta_session_shape() {
+        assert_eq!(dialect_input_rate(OpenAiRealtimeDialect::FlatCompat), 16_000);
+        assert_eq!(
+            dialect_input_rate(OpenAiRealtimeDialect::Conversation),
+            24_000
+        );
+
+        let session = build_flat_session_update(
+            "glm-realtime-flash",
+            "translate",
+            RealtimeAudioMode::ServerVad,
+            "zh",
+            false,
+        );
+        assert_eq!(
+            session.pointer("/session/model").and_then(Value::as_str),
+            Some("glm-realtime-flash")
+        );
+        assert_eq!(
+            session
+                .pointer("/session/input_audio_format")
+                .and_then(Value::as_str),
+            Some("pcm16")
+        );
+        assert_eq!(
+            session
+                .pointer("/session/sample_rate")
+                .and_then(Value::as_u64),
+            Some(16_000)
+        );
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/type")
+                .and_then(Value::as_str),
+            Some("server_vad")
+        );
+        assert!(session
+            .pointer("/session/input_audio_transcription")
+            .is_some());
+        // No create_response override on the default path.
+        assert!(session
+            .pointer("/session/turn_detection/create_response")
+            .is_none());
+        // Flat shape must not carry the GA nested audio config.
+        assert!(session.pointer("/session/audio").is_none());
+
+        let manual = build_flat_session_update(
+            "glm-realtime-flash",
+            "translate",
+            RealtimeAudioMode::Manual,
+            "zh",
+            false,
+        );
+        assert!(manual
+            .pointer("/session/turn_detection")
+            .is_some_and(Value::is_null));
+
+        let with_external_translator = build_flat_session_update(
+            "glm-realtime-flash",
+            "translate",
+            RealtimeAudioMode::ServerVad,
+            "zh",
+            true,
+        );
+        assert_eq!(
+            with_external_translator
+                .pointer("/session/turn_detection/create_response")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn flat_compat_manual_commit_uses_beta_modalities() {
+        let messages = manual_commit_messages(OpenAiRealtimeDialect::FlatCompat, false);
+        assert_eq!(messages.len(), 2);
+        assert!(messages[1].pointer("/response/modalities").is_some());
+        assert!(messages[1].pointer("/response/output_modalities").is_none());
     }
 
     #[test]

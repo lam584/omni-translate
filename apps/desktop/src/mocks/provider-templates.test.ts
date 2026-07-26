@@ -25,6 +25,9 @@ describe('default provider template', () => {
         'template-gemini',
         'template-ollama',
         'template-lmstudio',
+        'template-zhipu-glm',
+        'template-tencent-speech',
+        'template-azure-openai',
       ]),
     );
   });
@@ -62,6 +65,21 @@ describe('default provider template', () => {
     expect(buildDefaultSceneModelAssignments(deepseek!).find((item) => item.scenario === 'subtitle-translate')?.modelIds).toEqual(['deepseek-v4-flash']);
     expect(buildDefaultSceneModelAssignments(openrouter!).find((item) => item.scenario === 'subtitle-translate')?.modelIds).toEqual(['openai/gpt-5.4-mini']);
     expect(buildDefaultSceneModelAssignments(ollama!).every((item) => item.modelIds.length === 0)).toBe(true);
+
+    const zhipu = providerTemplates.find((template) => template.id === 'template-zhipu-glm');
+    const tencent = providerTemplates.find((template) => template.id === 'template-tencent-speech');
+    const azure = providerTemplates.find((template) => template.id === 'template-azure-openai');
+    const gemini = providerTemplates.find((template) => template.id === 'template-gemini');
+
+    expect(buildDefaultSceneModelAssignments(zhipu!).map((item) => [item.scenario, item.modelIds])).toEqual([
+      ['watch', ['glm-realtime-flash']],
+      ['game', ['glm-realtime-flash']],
+      ['voice-room', []],
+      ['subtitle-translate', []],
+    ]);
+    expect(buildDefaultSceneModelAssignments(tencent!).find((item) => item.scenario === 'watch')?.modelIds).toEqual(['hunyuan-translation-lite']);
+    expect(buildDefaultSceneModelAssignments(azure!).find((item) => item.scenario === 'watch')?.modelIds).toEqual(['gpt-realtime']);
+    expect(buildDefaultSceneModelAssignments(gemini!).find((item) => item.scenario === 'watch')?.modelIds).toEqual(['gemini-3.1-flash-live-preview']);
   });
 
   it('persists template catalog order, visibility and enabled preferences', () => {

@@ -139,7 +139,7 @@ pub(crate) fn apply_ws_custom_headers(
     Ok(())
 }
 
-pub(super) fn resolve_secret(
+pub(crate) fn resolve_secret(
     auth_ref: &ProviderAuthRefInput,
 ) -> Result<Option<String>, ProviderRuntimeError> {
     match auth_ref.scheme.as_str() {

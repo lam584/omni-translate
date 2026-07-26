@@ -199,6 +199,7 @@ pub fn start_gemini_live(
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
+    let stt_epoch = store.begin_stt_session_epoch();
     store.set_stt_connected(false, 0);
     let app_handle = app.clone();
     let model = provider.model.clone();
@@ -209,6 +210,7 @@ pub fn start_gemini_live(
             if let Err(error) = run_gemini_worker(
                 app_handle.clone(),
                 &audio_state,
+                stt_epoch,
                 provider,
                 instructions,
                 mode,
@@ -216,7 +218,7 @@ pub fn start_gemini_live(
                 audio_rx,
                 stop_rx,
             ) {
-                audio_state.set_stt_connected(false, 0);
+                let _ = audio_state.set_stt_connected_if_current(stt_epoch, false, 0);
                 let _ = diag_log(
                     &app_handle,
                     "gemini-live",
@@ -351,6 +353,7 @@ impl GeminiCueState {
 fn run_gemini_worker(
     app: AppHandle,
     store: &AudioStateStore,
+    stt_epoch: u64,
     provider: ProviderDraftInput,
     instructions: String,
     mode: GeminiActivityMode,
@@ -398,7 +401,7 @@ fn run_gemini_worker(
      -> bool {
         cue.commit(&app, store);
         *manual_activity_started = false;
-        store.set_stt_connected(false, 0);
+        let _ = store.set_stt_connected_if_current(stt_epoch, false, 0);
         let _ = emit_audio_snapshot(&app, store);
         while *reconnect_retries < GEMINI_RECONNECT_MAX_RETRIES {
             *reconnect_retries += 1;
@@ -455,7 +458,7 @@ fn run_gemini_worker(
             }
             cue.commit(&app, store);
             let _ = session.socket.close(None);
-            store.set_stt_connected(false, buffer_size);
+            let _ = store.set_stt_connected_if_current(stt_epoch, false, buffer_size);
             let _ = emit_audio_snapshot(&app, store);
             return Ok(());
         }
@@ -583,7 +586,7 @@ fn run_gemini_worker(
                 if evt.get("setupComplete").is_some() {
                     session.session_ready = true;
                     reconnect_retries = 0;
-                    store.set_stt_connected(true, buffer_size);
+                    let _ = store.set_stt_connected_if_current(stt_epoch, true, buffer_size);
                     let _ = emit_audio_snapshot(&app, store);
                     continue;
                 }

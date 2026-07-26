@@ -40,7 +40,7 @@ const reportLines = (generatedAt) => [
   '',
   '5. Release layout',
   '- [ ] Run npm run installer:prepare.',
-  '- [ ] Confirm artifacts/installer/<version> contains bridge-service-native/omni-bridge-service.exe, scripts, and driver assets.',
+  '- [ ] Confirm artifacts/installer/<version> contains bridge-service-native/omni-bridge-service.exe, bridge-service-native/omni-driver-audio-probe.exe, scripts, and driver assets.',
   '',
   '## Final Verdict',
   '',

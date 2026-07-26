@@ -24,8 +24,10 @@ if (-not $process) {
 }
 
 $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-# Root Cargo workspace target directory first; legacy per-crate target directory second.
+# Installed layout first (bridge-service-native/ under the assets root), then
+# the root Cargo workspace target directory, then the legacy per-crate target.
 $expectedPaths = @(
+  (Join-Path $workspacePath 'bridge-service-native\omni-bridge-service.exe'),
   (Join-Path $workspacePath 'target\release\omni-bridge-service.exe'),
   (Join-Path $workspacePath 'apps\bridge-service-native\target\release\omni-bridge-service.exe')
 ) | ForEach-Object { [System.IO.Path]::GetFullPath($_) }

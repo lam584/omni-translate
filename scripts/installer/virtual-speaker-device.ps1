@@ -112,8 +112,10 @@ public static class OmniVirtualAudioProbe
 
 function Invoke-OmniWasapiAudioProbe([string]$WorkspaceRoot = (Join-Path $PSScriptRoot '..\..')) {
   $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-  # Root Cargo workspace target directory first; legacy per-crate target directory second.
+  # Installed layout first (bridge-service-native/ under the assets root), then
+  # the root Cargo workspace target directory, then the legacy per-crate target.
   $probeCandidates = @(
+    (Join-Path $workspacePath 'bridge-service-native\omni-driver-audio-probe.exe'),
     (Join-Path $workspacePath 'target\release\omni-driver-audio-probe.exe'),
     (Join-Path $workspacePath 'apps\bridge-service-native\target\release\omni-driver-audio-probe.exe')
   )

@@ -51,6 +51,7 @@ const manifest = {
     scriptsDir: 'scripts/installer',
     layoutOutput: `artifacts/installer/${rootPackage.version}`,
     nativeBridgeExecutable: 'bridge-service-native/omni-bridge-service.exe',
+    audioProbeExecutable: 'bridge-service-native/omni-driver-audio-probe.exe',
   },
   docs: ['README.md', path.join('i18n', 'README_en.md'), ...RELEASE_DOCS],
 };

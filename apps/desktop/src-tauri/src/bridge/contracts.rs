@@ -425,10 +425,11 @@ pub struct DriverBridgeErrorEvent {
     pub suggested_action: Option<String>,
 }
 
+/// Bridge runtime state (pid files, elevated operation results) lives under
+/// the diagnostics root, so installed builds write to `%LOCALAPPDATA%` while
+/// dev builds keep using the workspace `artifacts/diagnostics/logs` tree.
 pub fn default_runtime_root() -> String {
-    super::ipc::workspace_root()
-        .join("artifacts")
-        .join("diagnostics")
+    std::path::Path::new(&crate::diagnostics::state::default_diagnostics_root())
         .join("logs")
         .to_string_lossy()
         .to_string()

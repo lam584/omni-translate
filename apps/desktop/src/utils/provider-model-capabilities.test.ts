@@ -226,6 +226,14 @@ describe('provider model capabilities', () => {
     expect(seeded.find((item) => item.modelId === 'gpt-realtime-translate')?.interactionCapabilities).toEqual(['streaming', 'pipeline_asr_mt_tts']);
     expect(seeded.find((item) => item.modelId === 'gpt-realtime-whisper')?.realtimeAudioMode).toBe('manual');
     expect(seeded.find((item) => item.modelId === 'gpt-4o-transcribe')?.realtimeAudioMode).toBe('server_vad');
+    expect(seeded.find((item) => item.modelId === 'glm-realtime-flash')?.capabilities).toEqual(['speech-to-text', 'speech-to-speech']);
+    expect(seeded.find((item) => item.modelId === 'glm-realtime-flash')?.realtimeAudioMode).toBe('server_vad');
+    expect(seeded.find((item) => item.modelId === 'glm-realtime-air')?.interactionCapabilities).toEqual(['auto_vad', 'manual_commit', 'streaming']);
+    expect(seeded.find((item) => item.modelId === 'hunyuan-translation-lite')?.interactionCapabilities).toEqual(['streaming', 'pipeline_asr_mt_tts']);
+    expect(seeded.find((item) => item.modelId === 'hunyuan-translation')?.realtimeAudioMode).toBe('server_vad');
+    expect(seeded.find((item) => item.modelId === 'gemini-3.1-flash-live-preview')?.realtimeAudioMode).toBe('gemini_auto_activity');
+    expect(seeded.find((item) => item.modelId === 'qwen3.5-livetranslate-flash-realtime')?.realtimeAudioMode).toBe('server_vad');
+    expect(seeded.find((item) => item.modelId === 'qwen3.5-omni-flash-realtime')?.realtimeAudioMode).toBe('manual');
     expect(seeded.every((item) => item.capabilities.length > 0)).toBe(true);
   });
 });

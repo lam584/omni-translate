@@ -62,6 +62,10 @@ pub struct AudioStateStore {
     echo_asr_activity: Mutex<EchoAsrActivity>,
     deferred_subtitle_translation_cues: Mutex<HashMap<String, Instant>>,
     warmer: CaptureRouteWarmer,
+    /// Monotonic id of the newest realtime STT worker. Stopping a route is
+    /// fire-and-forget, so a superseded worker's late shutdown must not be
+    /// able to clobber the connection state its successor already published.
+    stt_session_epoch: std::sync::atomic::AtomicU64,
     pub live_session_events: LiveSessionEventBuffer,
 }
 
@@ -129,6 +133,7 @@ impl AudioStateStore {
             echo_asr_activity: Mutex::new(EchoAsrActivity::default()),
             deferred_subtitle_translation_cues: Mutex::new(HashMap::new()),
             warmer: CaptureRouteWarmer::new(),
+            stt_session_epoch: std::sync::atomic::AtomicU64::new(0),
             live_session_events: LiveSessionEventBuffer::new(),
         }
     }
@@ -226,6 +231,31 @@ impl AudioStateStore {
             // attributable; mark_stt_reconnecting overwrites it per attempt.
             state.stt_connection.state = "disconnected".to_string();
         }
+    }
+
+    /// Claims a new STT worker epoch. Each realtime worker captures the
+    /// returned value at start and passes it to
+    /// [`Self::set_stt_connected_if_current`] for every later state write.
+    pub fn begin_stt_session_epoch(&self) -> u64 {
+        self.stt_session_epoch
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1
+    }
+
+    /// Epoch-guarded variant of [`Self::set_stt_connected`]: a write from a
+    /// superseded worker (stale epoch) is dropped. Returns whether the write
+    /// was applied.
+    pub fn set_stt_connected_if_current(
+        &self,
+        epoch: u64,
+        connected: bool,
+        buffer_size: u64,
+    ) -> bool {
+        if self.stt_session_epoch.load(std::sync::atomic::Ordering::SeqCst) != epoch {
+            return false;
+        }
+        self.set_stt_connected(connected, buffer_size);
+        true
     }
 
     /// Marks the realtime provider socket as mid-reconnect so the renderer can

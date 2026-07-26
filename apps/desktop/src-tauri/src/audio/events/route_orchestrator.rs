@@ -9,7 +9,7 @@ use super::super::{speech, stt, subtitle_translate};
 use super::realtime_session::{
     apply_native_subtitle_translate_fallback, start_or_reuse_gemini_live_session,
     start_or_reuse_omni_session, start_or_reuse_openai_realtime_session,
-    stop_preconnected_omni_session,
+    start_or_reuse_tencent_speech_translate_session, stop_preconnected_omni_session,
 };
 use super::route_config::{
     resolve_model_provider_from_config, ResolvedRouteKind, ResolvedRoutePlan, SpeechDispatchPolicy,
@@ -616,6 +616,27 @@ pub(crate) fn start_audio_route_inner(
             }
             ResolvedRouteKind::Omni => {
                 start_omni_inbound_route(app, state, &direction, config, plan)
+            }
+            ResolvedRouteKind::TencentSpeechTranslate => {
+                // Tencent's speech_translate stream carries ASR + Hunyuan
+                // translation natively; no secondary worker is wired.
+                let source_language = config
+                    .pointer("/subtitles/sourceLanguage")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|lang| !lang.is_empty() && !lang.eq_ignore_ascii_case("auto"))
+                    .unwrap_or("en")
+                    .to_string();
+                let tencent_sender = start_or_reuse_tencent_speech_translate_session(
+                    &app,
+                    &state,
+                    plan.provider,
+                    &plan.direction,
+                    &source_language,
+                    &plan.target_language,
+                )?;
+                state.live_session_events.record_milestone_now("route_started");
+                start_route_with_overlay(app, &state, &direction, config, Some(tencent_sender))
             }
             ResolvedRouteKind::OpenAiRealtime => {
                 start_openai_inbound_route(app, state, &direction, config, plan)

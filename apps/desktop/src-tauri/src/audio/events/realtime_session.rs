@@ -5,7 +5,7 @@ use tauri::{AppHandle, Manager};
 
 use super::super::contracts::AudioRuntimeSnapshot;
 use super::super::state::AudioStateStore;
-use super::super::{gemini_live, omni, openai_realtime};
+use super::super::{gemini_live, omni, openai_realtime, tencent_speech_translate};
 use super::route_config::{is_omni_model, resolve_model_provider_from_config, ResolvedRoutePlan};
 use super::{OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT};
 use crate::diagnostics::events::append_diagnostics_log;
@@ -283,6 +283,31 @@ pub(super) fn start_or_reuse_gemini_live_session(
         voice_provider,
         instructions,
         mode,
+        target_lang.to_string(),
+    )?;
+    if let Some(previous) = state.store_omni_handle(direction, handle) {
+        let _ = previous.stop_tx.send(());
+    }
+    Ok(sender)
+}
+
+pub(super) fn start_or_reuse_tencent_speech_translate_session(
+    app: &AppHandle,
+    state: &AudioStateStore,
+    voice_provider: ProviderDraftInput,
+    direction: &str,
+    source_lang: &str,
+    target_lang: &str,
+) -> Result<std::sync::mpsc::Sender<Vec<u8>>, String> {
+    if let Some(sender) = state.take_omni_sender(direction) {
+        return Ok(sender);
+    }
+
+    let (sender, handle) = tencent_speech_translate::start_tencent_speech_translate(
+        app.clone(),
+        state,
+        voice_provider,
+        source_lang.to_string(),
         target_lang.to_string(),
     )?;
     if let Some(previous) = state.store_omni_handle(direction, handle) {

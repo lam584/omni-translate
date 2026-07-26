@@ -7,10 +7,10 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 use super::contracts::{BridgeRuntimeSnapshot, DriverOperationResult, DriverProbeResult};
-use super::ipc::workspace_root;
+use super::ipc::assets_root;
 
 fn scripts_root() -> PathBuf {
-    workspace_root().join("scripts").join("installer")
+    assets_root().join("scripts").join("installer")
 }
 
 fn script_path(script_name: &str) -> PathBuf {
@@ -66,7 +66,7 @@ pub fn probe_driver(
         .arg("-File")
         .arg(script)
         .arg("-WorkspaceRoot")
-        .arg(workspace_root())
+        .arg(assets_root())
         .arg("-RuntimeRoot")
         .arg(&snapshot.runtime_root);
     if probe_secure_boot_elevated {
@@ -109,7 +109,7 @@ pub fn run_elevated_driver_operation(
         .arg("-ResultPath")
         .arg(&result_path)
         .arg("-WorkspaceRoot")
-        .arg(workspace_root())
+        .arg(assets_root())
         .arg("-RuntimeRoot")
         .arg(&snapshot.runtime_root)
         .arg("-InstallChannel")

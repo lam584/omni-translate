@@ -1,3 +1,6 @@
+/// Compile-time repository root — only exists on the machine that built the
+/// binary. Runtime asset lookups must go through `assets_root` so installed
+/// builds resolve against bundled resources instead.
 pub fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -5,6 +8,35 @@ pub fn workspace_root() -> PathBuf {
         .and_then(Path::parent)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")))
         .to_path_buf()
+}
+
+/// Root that carries `scripts/installer` and the driver package: the dev
+/// checkout when it exists, otherwise the resources bundled next to the
+/// installed executable (declared in tauri.conf.json `bundle.resources`).
+pub fn assets_root() -> PathBuf {
+    let dev_root = workspace_root();
+    if dev_root.join("scripts").join("installer").is_dir() {
+        return dev_root;
+    }
+
+    if let Ok(exe_path) = std::env::current_exe() {
+        if let Some(exe_dir) = exe_path.parent() {
+            // Tauri bundles place resources next to the executable; the release
+            // installer layout keeps the executable in a `desktop/` subdirectory
+            // one level below the assets.
+            for candidate in &[
+                exe_dir.join("resources"),
+                exe_dir.to_path_buf(),
+                exe_dir.parent().unwrap_or(exe_dir).to_path_buf(),
+            ] {
+                if candidate.join("scripts").join("installer").is_dir() {
+                    return candidate.clone();
+                }
+            }
+        }
+    }
+
+    dev_root
 }
 
 /// Development-build locations for the bridge executable, most preferred first:

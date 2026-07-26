@@ -441,6 +441,74 @@
           "audio-transcriptions"
         ],
         "source": "official"
+      },
+      {
+        "id": "seed-glm-realtime-flash",
+        "modelId": "glm-realtime-flash",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-glm-realtime-air",
+        "modelId": "glm-realtime-air",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-hunyuan-translation-lite",
+        "modelId": "hunyuan-translation-lite",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "streaming",
+          "pipeline_asr_mt_tts"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-hunyuan-translation",
+        "modelId": "hunyuan-translation",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "streaming",
+          "pipeline_asr_mt_tts"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
       }
     ],
     "modelCatalogCache": {

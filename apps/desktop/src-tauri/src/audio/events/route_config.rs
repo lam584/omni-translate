@@ -9,6 +9,7 @@ use crate::provider::contracts::ProviderDraftInput;
 pub(super) enum ResolvedRouteKind {
     GeminiLive,
     Omni,
+    TencentSpeechTranslate,
     OpenAiRealtime,
     DashscopeStt,
     LocalVad,
@@ -81,7 +82,11 @@ impl ResolvedRoutePlan {
         } else if is_omni_model(&provider.model) {
             ResolvedRouteKind::Omni
         } else if is_openai_realtime_provider(&provider) {
+            // Explicit realtime/live/transcribe models keep their protocol
+            // semantics even when hosted behind a tencent-flavored template.
             ResolvedRouteKind::OpenAiRealtime
+        } else if is_tencent_speech_translate_provider(&provider) {
+            ResolvedRouteKind::TencentSpeechTranslate
         } else if is_dashscope_provider(&provider) {
             ResolvedRouteKind::DashscopeStt
         } else {
@@ -263,6 +268,24 @@ pub(super) fn resolve_realtime_audio_mode_for_route(
         Some(configured_mode.as_str())
     };
     omni::RealtimeAudioMode::from_config_value(mode, &provider.model)
+}
+
+/// Tencent realtime speech translation rides on the openai-compatible kind
+/// (no dedicated ProviderKind). Match only signals specific to the
+/// speech_translate product — the WS host, the exact template, or a
+/// hunyuan-translation model — so other Tencent-hosted endpoints (e.g. an
+/// OpenAI-compatible LLM proxy on tencent infrastructure) are not hijacked.
+fn is_tencent_speech_translate_provider(provider: &ProviderDraftInput) -> bool {
+    provider.kind == "openai-compatible"
+        && (provider
+            .base_url
+            .to_ascii_lowercase()
+            .contains("asr.cloud.tencent.com")
+            || provider.template_id == "template-tencent-speech"
+            || provider
+                .model
+                .to_ascii_lowercase()
+                .starts_with("hunyuan-translation"))
 }
 
 fn is_dashscope_provider(provider: &ProviderDraftInput) -> bool {

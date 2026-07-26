@@ -418,6 +418,16 @@ mod tests {
                 .and_then(Value::as_str),
             Some("semantic_vad")
         );
+        // Locked to the production adapter: 24 kHz input + input transcription.
+        assert_eq!(
+            openai
+                .pointer("/session/audio/input/format/rate")
+                .and_then(Value::as_u64),
+            Some(24_000)
+        );
+        assert!(openai
+            .pointer("/session/audio/input/transcription/model")
+            .is_some());
 
         config.model = "gemini-2.5-flash-live".to_string();
         config.audio_mode = RealtimeAudioMode::GeminiManualActivity;

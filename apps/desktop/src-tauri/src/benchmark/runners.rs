@@ -372,12 +372,6 @@ fn run_single_openai_benchmark(
         .into_client_request()
         .map_err(|e| format!("OpenAI request build failed: {e}"))?;
     apply_benchmark_auth(request.headers_mut(), config)?;
-    request.headers_mut().insert(
-        "OpenAI-Beta",
-        "realtime=v1"
-            .parse()
-            .map_err(|e| format!("OpenAI-Beta header parse: {e}"))?,
-    );
 
     let (mut socket, _) = connect(request).map_err(|e| format!("OpenAI connect failed: {e}"))?;
     let connect_ms = elapsed_ms(&connect_start);
@@ -406,7 +400,12 @@ fn run_single_openai_benchmark(
     );
 
     let mut raw = RawResult::default();
-    let chunks: Vec<&[i16]> = samples.chunks(CHUNK_SAMPLES).collect();
+    // The production OpenAI session declares 24 kHz input; the benchmark
+    // decode buffer is 16 kHz, so upsample and keep 20ms per chunk.
+    const OPENAI_CHUNK_SAMPLES: usize = 480; // 20ms @ 24kHz
+    let samples_24k =
+        crate::audio::pcm_resample::resample_mono_i16(samples, 16_000, 24_000);
+    let chunks: Vec<&[i16]> = samples_24k.chunks(OPENAI_CHUNK_SAMPLES).collect();
     let audio_start = Instant::now();
     let mut last_event = Instant::now();
     let idle_timeout = Duration::from_secs(20);
@@ -451,7 +450,7 @@ fn run_single_openai_benchmark(
     if manual_response {
         for msg in [
             json!({ "type": "input_audio_buffer.commit" }),
-            json!({ "type": "response.create", "response": { "modalities": ["text"] } }),
+            crate::audio::openai_realtime::build_response_create(),
         ] {
             socket
                 .send(Message::Text(msg.to_string().into()))

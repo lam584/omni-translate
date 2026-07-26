@@ -220,47 +220,14 @@ fn build_default_benchmark_url(base_url: &str, model: &str) -> Result<Url, Strin
     Ok(url)
 }
 
+// Benchmark and the production watch-mode workers must speak the identical
+// protocol, so URL and session construction delegate to the audio adapters.
 fn build_openai_benchmark_url(base_url: &str, model: &str) -> Result<Url, String> {
-    let mut url =
-        Url::parse(base_url.trim()).map_err(|e| format!("invalid OpenAI base URL: {e}"))?;
-    let scheme = match url.scheme() {
-        "https" => "wss",
-        "http" => "ws",
-        "wss" | "ws" => url.scheme(),
-        other => return Err(format!("unsupported OpenAI realtime URL scheme: {other}")),
-    }
-    .to_string();
-    url.set_scheme(&scheme)
-        .map_err(|_| format!("unsupported OpenAI realtime URL scheme: {scheme}"))?;
-    let path = url.path().trim_end_matches('/').to_string();
-    let realtime_path = if path.is_empty() || path == "/" {
-        "/v1/realtime".to_string()
-    } else if path.ends_with("/realtime") {
-        path
-    } else {
-        format!("{path}/realtime")
-    };
-    url.set_path(&realtime_path);
-    url.query_pairs_mut().clear().append_pair("model", model);
-    Ok(url)
+    crate::audio::openai_realtime::build_openai_realtime_url(base_url, model)
 }
 
 fn build_gemini_benchmark_url(base_url: &str) -> Result<Url, String> {
-    const SERVICE: &str =
-        "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
-    let mut url =
-        Url::parse(base_url.trim()).map_err(|e| format!("invalid Gemini base URL: {e}"))?;
-    let scheme = match url.scheme() {
-        "https" => "wss",
-        "http" => "ws",
-        "wss" | "ws" => url.scheme(),
-        other => return Err(format!("unsupported Gemini Live URL scheme: {other}")),
-    }
-    .to_string();
-    url.set_scheme(&scheme)
-        .map_err(|_| format!("unsupported Gemini Live URL scheme: {scheme}"))?;
-    url.set_path(&format!("/ws/{SERVICE}"));
-    Ok(url)
+    crate::audio::gemini_live::build_gemini_live_url(base_url)
 }
 
 fn build_session_update(config: &BenchmarkConfig) -> Value {
@@ -296,58 +263,39 @@ fn build_session_update(config: &BenchmarkConfig) -> Value {
     session
 }
 
+const BENCHMARK_INSTRUCTIONS: &str =
+    "Transcribe the input audio and translate it to Chinese. Keep the response concise.";
+
+fn to_production_audio_mode(mode: RealtimeAudioMode) -> crate::audio::omni::RealtimeAudioMode {
+    match mode {
+        RealtimeAudioMode::Manual => crate::audio::omni::RealtimeAudioMode::Manual,
+        RealtimeAudioMode::SemanticVad => crate::audio::omni::RealtimeAudioMode::SemanticVad,
+        _ => crate::audio::omni::RealtimeAudioMode::ServerVad,
+    }
+}
+
 fn build_openai_session_update(config: &BenchmarkConfig) -> Value {
-    let audio_mode_driver = benchmark_audio_mode_driver(config.audio_mode);
-    json!({
-        "type": "session.update",
-        "session": {
-            "type": "realtime",
-            "model": config.model,
-            "instructions": "Transcribe the input audio and translate it to Chinese. Keep the response concise.",
-            "output_modalities": ["text"],
-            "audio": {
-                "input": {
-                    "format": {
-                        "type": "audio/pcm",
-                        "rate": 16000
-                    },
-                    "turn_detection": audio_mode_driver.turn_detection()
-                }
-            }
-        }
-    })
+    crate::audio::openai_realtime::build_conversation_session_update(
+        BENCHMARK_INSTRUCTIONS,
+        to_production_audio_mode(config.audio_mode),
+        &config.target_language,
+        false,
+    )
 }
 
 fn build_gemini_setup(config: &BenchmarkConfig) -> Value {
-    let model = if config.model.starts_with("models/") {
-        config.model.clone()
+    let mode = if config.audio_mode == RealtimeAudioMode::GeminiManualActivity {
+        crate::audio::gemini_live::GeminiActivityMode::Manual
     } else {
-        format!("models/{}", config.model)
+        crate::audio::gemini_live::GeminiActivityMode::Auto
     };
-    let disabled = config.audio_mode == RealtimeAudioMode::GeminiManualActivity;
-    json!({
-        "setup": {
-            "model": model,
-            "generationConfig": {
-                "responseModalities": ["TEXT"]
-            },
-            "systemInstruction": {
-                "parts": [{
-                    "text": format!(
-                        "Transcribe the input audio and translate it to Chinese. Keep the response concise. Target language: {}.",
-                        config.target_language
-                    )
-                }]
-            },
-            "inputAudioTranscription": {},
-            "outputAudioTranscription": {},
-            "realtimeInputConfig": {
-                "automaticActivityDetection": {
-                    "disabled": disabled
-                }
-            }
-        }
-    })
+    crate::audio::gemini_live::build_setup(
+        &config.model,
+        BENCHMARK_INSTRUCTIONS,
+        mode,
+        &config.target_language,
+        None,
+    )
 }
 
 fn wait_session_ready(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> Result<(), String> {

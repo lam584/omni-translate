@@ -112,7 +112,7 @@ pub(super) fn apply_custom_headers(
     Ok(())
 }
 
-pub(super) fn apply_ws_custom_headers(
+pub(crate) fn apply_ws_custom_headers(
     provider: &ProviderDraftInput,
     headers: &mut tungstenite::http::HeaderMap,
 ) -> Result<(), ProviderRuntimeError> {

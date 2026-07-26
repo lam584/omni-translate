@@ -34,7 +34,13 @@ mod connection;
 mod connection_coordinator;
 mod event_processor;
 mod config;
+mod realtime_socket;
+pub(crate) use self::realtime_socket::{
+    RealtimeSocket, RealtimeSocketConnector, TungsteniteConnector,
+};
 pub(crate) mod session_errors;
+#[cfg(test)]
+mod replay_tests;
 mod session_worker;
 mod socket_event_processor;
 
@@ -94,7 +100,7 @@ struct ProviderInputPcmDump {
 }
 
 impl ProviderInputPcmDump {
-    fn from_env(app: &AppHandle) -> Option<Self> {
+    fn from_env<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<Self> {
         let path = std::env::var("OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH")
             .ok()
             .map(|value| value.trim().to_string())
@@ -134,7 +140,7 @@ impl ProviderInputPcmDump {
         }
     }
 
-    fn append(&mut self, app: &AppHandle, samples: &[i16]) {
+    fn append<R: tauri::Runtime>(&mut self, app: &AppHandle<R>, samples: &[i16]) {
         if self.write_failed || samples.is_empty() || self.samples_written >= self.max_samples {
             return;
         }

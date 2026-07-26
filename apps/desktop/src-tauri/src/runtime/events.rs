@@ -117,8 +117,8 @@ pub fn emit_runtime_snapshot<R: tauri::Runtime>(
     crate::api_v2::emit_runtime_event_v2(app, "snapshot", payload)
 }
 
-pub fn emit_runtime_notification(
-    app: &AppHandle,
+pub fn emit_runtime_notification<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     state: &RuntimeStateStore,
     notification: RuntimeNotification,
 ) -> tauri::Result<()> {

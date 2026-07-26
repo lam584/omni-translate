@@ -29,11 +29,12 @@ fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
     );
 }
 
-pub(super) fn try_reconnect(
+pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
+    connector: &C,
     reconnect_count: &mut usize,
     pending_audio_buffer: &mut Vec<i16>,
     store: &AudioStateStore,
-    app: &AppHandle,
+    app: &AppHandle<R>,
     provider: &ProviderDraftInput,
     active_voice: &str,
     instructions: &str,
@@ -41,7 +42,7 @@ pub(super) fn try_reconnect(
     target_language: &str,
     buffer_size: u64,
     disconnect_reason: &str,
-) -> Result<tungstenite::WebSocket<MaybeTlsStream<TcpStream>>, String> {
+) -> Result<C::Socket, String> {
     pending_audio_buffer.clear();
     let mut last_error = None;
 
@@ -60,8 +61,8 @@ pub(super) fn try_reconnect(
         let _ = emit_audio_snapshot(app, store);
         notify_reconnecting(store, attempt);
         thread::sleep(backoff_delay(attempt));
-        match reconnect_socket(
-            app.clone(),
+        match connector.reconnect(
+            app,
             provider,
             active_voice,
             instructions,
@@ -101,8 +102,8 @@ pub(super) fn try_reconnect(
     ))
 }
 
-pub(super) fn check_vad_warning(
-    app: &AppHandle,
+pub(super) fn check_vad_warning<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     last_vad_event_time: &SystemTime,
     chunk_count: u64,
     vad_event_count: u64,
@@ -128,8 +129,8 @@ pub(super) fn check_vad_warning(
     false
 }
 
-pub(super) fn handle_session_ready_event(
-    app: &AppHandle,
+pub(super) fn handle_session_ready_event<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     event_type: &str,
     evt: &Value,
     session_ready_for_audio: &mut bool,
@@ -234,10 +235,10 @@ pub(super) fn should_use_native_output_fallback(
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn handle_response_done(
-    app: &AppHandle,
+pub(super) fn handle_response_done<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     store: &AudioStateStore,
-    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
+    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     pending_translated_text: &mut String,

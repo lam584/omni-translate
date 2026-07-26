@@ -334,6 +334,7 @@ fn run_omni_worker(
     } = OmniSessionRuntime::new();
     let mut provider_input_dump = ProviderInputPcmDump::from_env(&app);
 
+    let connector = TungsteniteConnector;
     loop {
         if stop_rx.try_recv().is_ok() {
             let _ = socket.close(None);
@@ -394,6 +395,7 @@ fn run_omni_worker(
             socket_reconnected: false,
         })
         .pump(
+            &connector,
             &app,
             store,
             &audio_rx,
@@ -573,6 +575,7 @@ fn run_omni_worker(
                 pre_session_audio_dropped,
                 echo_guard_enabled,
             },
+            &connector,
         )?;
         socket = poll.state.socket;
         trace_call = poll.state.trace_call;
@@ -646,8 +649,8 @@ fn run_omni_worker(
 /// its `session.update` yet, so audio must buffer in the pre-session queue
 /// until the new `session.created`/`session.updated` arrives.
 #[allow(clippy::too_many_arguments)]
-fn reset_manual_gate_after_reconnect(
-    app: &AppHandle,
+pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     store: &AudioStateStore,
     audio_mode: RealtimeAudioMode,
     manual_response_pending: &mut bool,
@@ -808,8 +811,8 @@ mod reconnect_reset_tests {
     }
 }
 
-pub(super) fn reconnect_socket(
-    app: AppHandle,
+pub(super) fn reconnect_socket<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     provider: &ProviderDraftInput,
     voice: &str,
     instructions: &str,
@@ -848,6 +851,6 @@ pub(super) fn reconnect_socket(
         .send(Message::Text(session_cfg.to_string().into()))
         .map_err(|error| format!("无法重发 Omni session 配置: {error}"))?;
 
-    let _ = diag_log(&app, "omni", "info", "reconnected to Omni service");
+    let _ = diag_log(app, "omni", "info", "reconnected to Omni service");
     Ok(socket)
 }

@@ -1,8 +1,8 @@
 use super::*;
 
-pub(super) struct OmniSocketEventState {
-    pub(super) socket: tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
-    pub(super) trace_call: crate::diagnostics::model_trace::ModelTraceCall,
+pub(super) struct OmniSocketEventState<S: RealtimeSocket, R: tauri::Runtime = tauri::Wry> {
+    pub(super) socket: S,
+    pub(super) trace_call: crate::diagnostics::model_trace::ModelTraceCall<R>,
     pub(super) reconnect_count: usize,
     pub(super) pending_audio_buffer: Vec<i16>,
     pub(super) active_voice: String,
@@ -24,8 +24,8 @@ pub(super) struct OmniSocketEventState {
     pub(super) manual_response_item_id: Option<String>,
 }
 
-pub(super) struct OmniSocketEventContext<'a> {
-    pub(super) app: &'a AppHandle,
+pub(super) struct OmniSocketEventContext<'a, R: tauri::Runtime = tauri::Wry> {
+    pub(super) app: &'a AppHandle<R>,
     pub(super) store: &'a AudioStateStore,
     pub(super) direction: &'a str,
     pub(super) session_generation: u64,
@@ -50,8 +50,8 @@ pub(super) struct OmniSocketEventContext<'a> {
     pub(super) echo_guard_enabled: bool,
 }
 
-pub(super) struct OmniSocketPollResult {
-    pub(super) state: OmniSocketEventState,
+pub(super) struct OmniSocketPollResult<S: RealtimeSocket, R: tauri::Runtime = tauri::Wry> {
+    pub(super) state: OmniSocketEventState<S, R>,
     pub(super) skip_tick: bool,
     /// The socket was replaced by a reconnect during this poll. The provider
     /// session and its input buffer are gone, so the worker must reset the
@@ -62,10 +62,11 @@ pub(super) struct OmniSocketPollResult {
 pub(super) struct OmniSocketEventProcessor;
 
 impl OmniSocketEventProcessor {
-    pub(super) fn poll(
-        state: OmniSocketEventState,
-        context: OmniSocketEventContext<'_>,
-    ) -> Result<OmniSocketPollResult, String> {
+    pub(super) fn poll<C: RealtimeSocketConnector, R: tauri::Runtime>(
+        state: OmniSocketEventState<C::Socket, R>,
+        context: OmniSocketEventContext<'_, R>,
+        connector: &C,
+    ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
         let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_item_id } = state;
         let OmniSocketEventContext {
             app, store, direction, session_generation, session_started_at,
@@ -77,7 +78,7 @@ impl OmniSocketEventProcessor {
             pre_session_audio_dropped, echo_guard_enabled,
         } = context;
 let mut socket_reconnected = false;
-match socket.read() {
+match socket.read_message() {
     Ok(msg) => match msg {
         Message::Text(text) => {
             if let Ok(evt) = serde_json::from_str::<Value>(&text) {
@@ -266,7 +267,7 @@ match socket.read() {
                                             "response.create",
                                             create_msg.clone(),
                                         );
-                                        if let Err(error) = socket.send(Message::Text(
+                                        if let Err(error) = socket.send_message(Message::Text(
                                             create_msg.to_string().into(),
                                         )) {
                                             let _ = diag_log(
@@ -496,6 +497,7 @@ match socket.read() {
                                 voice_fallback_applied,
                                 socket_reconnected: false,
                             },
+                            connector,
                             &app,
                             store,
                             &provider,
@@ -537,6 +539,7 @@ match socket.read() {
                     voice_fallback_applied,
                     socket_reconnected: false,
                 },
+                connector,
                 &app,
                 store,
                 &provider,
@@ -565,6 +568,7 @@ match socket.read() {
                 voice_fallback_applied,
                 socket_reconnected: false,
             },
+            connector,
             &app,
             store,
             &provider,

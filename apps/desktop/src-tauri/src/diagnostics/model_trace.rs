@@ -53,14 +53,24 @@ impl ModelTraceContext {
     }
 }
 
-#[derive(Clone)]
-pub struct ModelTraceRecorder {
-    app: AppHandle,
+pub struct ModelTraceRecorder<R: tauri::Runtime = tauri::Wry> {
+    app: AppHandle<R>,
     context: ModelTraceContext,
 }
 
-impl ModelTraceRecorder {
-    pub fn new(app: AppHandle, context: ModelTraceContext) -> Self {
+// Manual impl: `derive(Clone)` would demand `R: Clone`, but `AppHandle<R>` is
+// clonable for every runtime.
+impl<R: tauri::Runtime> Clone for ModelTraceRecorder<R> {
+    fn clone(&self) -> Self {
+        Self {
+            app: self.app.clone(),
+            context: self.context.clone(),
+        }
+    }
+}
+
+impl<R: tauri::Runtime> ModelTraceRecorder<R> {
+    pub fn new(app: AppHandle<R>, context: ModelTraceContext) -> Self {
         Self { app, context }
     }
 
@@ -70,7 +80,7 @@ impl ModelTraceRecorder {
         Self::new(self.app.clone(), context)
     }
 
-    pub fn call(&self, name: impl Into<String>) -> ModelTraceCall {
+    pub fn call(&self, name: impl Into<String>) -> ModelTraceCall<R> {
         let name = name.into();
         let call_id = format!("call-{}", Uuid::new_v4());
         let started_at = now_unix_seconds_marker();
@@ -107,8 +117,8 @@ impl ModelTraceRecorder {
     }
 }
 
-pub struct ModelTraceCall {
-    app: AppHandle,
+pub struct ModelTraceCall<R: tauri::Runtime = tauri::Wry> {
+    app: AppHandle<R>,
     context: ModelTraceContext,
     call_id: String,
     name: String,
@@ -117,7 +127,7 @@ pub struct ModelTraceCall {
     pending_audio_append_summary: AudioAppendTraceSummary,
 }
 
-impl ModelTraceCall {
+impl<R: tauri::Runtime> ModelTraceCall<R> {
     pub fn input(&self, label: &str, value: Value) {
         self.event(&format!("input.{label}"), value);
     }
@@ -347,7 +357,7 @@ fn is_audio_append_event(label: &str, value: &Value) -> bool {
             .unwrap_or(false)
 }
 
-impl Drop for ModelTraceCall {
+impl<R: tauri::Runtime> Drop for ModelTraceCall<R> {
     fn drop(&mut self) {
         if !self.finished {
             self.finish("succeeded", None);

@@ -56,13 +56,14 @@ impl OmniAudioPump {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn pump(
+    pub(super) fn pump<C: RealtimeSocketConnector, R: tauri::Runtime>(
         self,
-        app: &AppHandle,
+        connector: &C,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         audio_rx: &mpsc::Receiver<Vec<u8>>,
-        socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>,
-        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall,
+        socket: &mut C::Socket,
+        trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         provider: &ProviderDraftInput,
         active_voice: &str,
         instructions: &str,
@@ -248,18 +249,19 @@ impl OmniAudioPump {
                   "rms": chunk_rms,
                 }),
             );
-            if let Err(error) = socket.send(Message::Text(append.to_string().into())) {
+            if let Err(error) = socket.send_message(Message::Text(append.to_string().into())) {
                 let _ = diag_log(
-                    &app,
+                    app,
                     "omni",
                     "warning",
                     format!("[AUDIO] 发送失败: {error}"),
                 );
                 match try_reconnect(
+                    connector,
                     &mut reconnect_count,
                     &mut pending_audio_buffer,
                     store,
-                    &app,
+                    app,
                     &provider,
                     &active_voice,
                     &instructions,

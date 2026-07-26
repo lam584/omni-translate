@@ -24,9 +24,9 @@ pub(super) struct OmniReadinessState {
 
 impl OmniEventProcessor {
     #[allow(clippy::too_many_arguments)]
-    pub(super) fn process_session_ready(
+    pub(super) fn process_session_ready<R: tauri::Runtime>(
         mut state: OmniReadinessState,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         direction: &str,
         session_generation: u64,
@@ -74,7 +74,7 @@ impl OmniEventProcessor {
         state
     }
 
-    pub(super) fn log_unknown_event(app: &AppHandle, event_type: &str, raw_text: &str) {
+    pub(super) fn log_unknown_event<R: tauri::Runtime>(app: &AppHandle<R>, event_type: &str, raw_text: &str) {
         let is_vad_related = event_type.starts_with("input_audio_buffer.")
             || event_type.starts_with("conversation.item.input_audio");
         let prefix = if is_vad_related {
@@ -95,8 +95,8 @@ impl OmniEventProcessor {
         );
     }
 
-    pub(super) fn expire_stale_transcription(
-        app: &AppHandle,
+    pub(super) fn expire_stale_transcription<R: tauri::Runtime>(
+        app: &AppHandle<R>,
         completed: &mut bool,
         completed_at: &mut Option<SystemTime>,
     ) {
@@ -121,9 +121,9 @@ impl OmniEventProcessor {
         }
     }
 
-    pub(super) fn process_audio_delta(
+    pub(super) fn process_audio_delta<R: tauri::Runtime>(
         state: OmniAudioOutputState,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         evt: &Value,
     ) -> OmniAudioOutputState {
         let OmniAudioOutputState {
@@ -181,9 +181,9 @@ impl OmniEventProcessor {
         }
     }
 
-    pub(super) fn process_audio_done(
+    pub(super) fn process_audio_done<R: tauri::Runtime>(
         state: OmniAudioOutputState,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         playback_tx: &mpsc::SyncSender<OmniPlaybackCommand>,
     ) -> OmniAudioOutputState {
         let OmniAudioOutputState {
@@ -250,9 +250,9 @@ impl OmniEventProcessor {
         }
     }
 
-    pub(super) fn process_transcript_delta(
+    pub(super) fn process_transcript_delta<R: tauri::Runtime>(
         state: OmniSubtitleEventState,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         evt: &Value,
         event_type: &str,
@@ -344,9 +344,9 @@ impl OmniEventProcessor {
         }
     }
 
-    pub(super) fn process_transcript_done(
+    pub(super) fn process_transcript_done<R: tauri::Runtime>(
         state: OmniSubtitleEventState,
-        app: &AppHandle,
+        app: &AppHandle<R>,
         store: &AudioStateStore,
         evt: &Value,
         session_started_at: &SystemTime,

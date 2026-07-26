@@ -17,7 +17,8 @@
 | `apps/desktop` 前端（src、vite、TS/React） | `npm run verify:desktop` | 依次执行 lint + tsc 检查 + vitest + 构建 |
 | `apps/desktop/src-tauri`（Rust 桌面壳） | `npm run test:desktop-shell` | cargo test；仅需类型/编译检查可用 `npm run check:desktop-shell` |
 | `apps/bridge-service-native`（Rust 桥接服务） | `npm run check:bridge-service-native` | cargo check；完整测试用 `npm run test:bridge-service-native` |
-| 跨进程契约变更（事件/命令/协议） | `npm run test:contracts` | Node 契约校验脚本 |
+| 跨进程契约变更（事件/命令/协议） | `npm run test:contracts` | Node 契约校验脚本（含配置路径守卫） |
+| Rust 侧新增/改动配置 `.pointer` 读写 | `npm run test:config-paths` | 配置路径守卫：路径必须在 `app-config.default.json` 可解析或有成文豁免；`--report-defaults` 产出默认值清点 |
 | `drivers/windows-virtual-mic`（虚拟麦克风驱动） | `npm run driver:build-sysvad` | 需要 WDK/EWDK 构建环境；驱动自测用 `npm run driver:test`；进入该目录前必读 [drivers/windows-virtual-mic/AGENTS.md](drivers/windows-virtual-mic/AGENTS.md) |
 | 发布前 / 提交合并前全量门禁 | `npm run quality:gate:release` | 综合质量门禁（Node 脚本） |
 

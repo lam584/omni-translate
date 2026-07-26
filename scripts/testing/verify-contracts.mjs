@@ -1,6 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
+import { verifyConfigPaths } from './verify-config-paths.mjs';
+
 const rootDir = process.cwd();
 const protocolVersion = '2026-06-02-loopback-v2';
 const legacyBridgeName = ['bridge', 'service'].join('-');
@@ -366,6 +368,18 @@ for (const pin of eventNamePins) {
 // contract structs, and tsc fails when consumers disagree with the generated
 // shapes. This script keeps only the version/event-name pins and governance
 // checks above and below.
+
+// ---------------------------------------------------------------------------
+// Config-path guard (阶段6 方案B): every JSON-pointer literal the Rust side
+// touches must resolve in the default config document, be an allowed
+// wire-protocol read, or carry documentation in verify-config-paths.mjs.
+{
+  const { failures: configPathFailures, warnings: configPathWarnings } = verifyConfigPaths();
+  for (const warning of configPathWarnings) {
+    console.warn(`verify-contracts: ${warning}`);
+  }
+  failures.push(...configPathFailures);
+}
 
 const governanceFiles = [
   'package.json',

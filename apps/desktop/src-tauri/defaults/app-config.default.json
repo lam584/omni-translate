@@ -625,7 +625,9 @@
       }
     },
     "supportProfileId": "support-watch-system-audio",
+    "virtualRenderDeviceId": "",
     "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+    "inboundSecondaryAudioModelId": "",
     "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
     "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
     "subtitleTranslationMode": "secondary",
@@ -644,9 +646,11 @@
   "subtitles": {
     "sourceLanguage": "auto",
     "targetLanguage": "zh-CN",
+    "translationLanguagePreference": "",
     "mode": "bilingual",
     "captionDensity": "balanced",
     "priority": "subtitle-first",
+    "instructions": "",
     "overlayOpacity": 0.88,
     "overlayLocked": false,
     "overlayTextColor": "#fff8ef",
@@ -691,9 +695,11 @@
   "speech": {
     "enabled": true,
     "targetLanguage": "zh-CN",
+    "voice": "Ethan",
     "voicePresetId": "voice-cn-neutral",
     "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
     "outputTarget": "virtual-mic",
+    "translationAudioSource": "auto",
     "localPlaybackEnabled": true,
     "virtualMicOutputEnabled": true,
     "dispatchState": "waiting-subtitle",

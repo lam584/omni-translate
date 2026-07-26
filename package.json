@@ -39,6 +39,7 @@
     "perf:startup-readiness": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/measure-startup-readiness.ps1",
     "test:install-regression": "node ./scripts/testing/prepare-install-regression-report.mjs",
     "test:contracts": "node ./scripts/testing/verify-contracts.mjs",
+    "test:config-paths": "node ./scripts/testing/verify-config-paths.mjs",
     "test:integration:bridge-contract": "npm run test:integration:bridge-contract --workspace @omni/desktop",
     "audit:architecture": "node ./scripts/testing/audit-architecture-boundaries.mjs",
     "audit:architecture:strict": "node ./scripts/testing/audit-architecture-boundaries.mjs --strict",

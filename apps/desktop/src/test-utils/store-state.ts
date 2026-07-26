@@ -1,6 +1,8 @@
 import { appConfigDraftMock } from '../mocks/app-config';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
+import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 
 /**
  * Deep-clones the canonical store fixtures. Callers destructure the slices
@@ -16,18 +18,12 @@ export function cloneStoreState() {
 }
 
 /**
- * Toggles the `globalThis.isTauri` marker used by `isTauri()` runtime probes.
- * Passing false removes the property entirely (browser-preview behaviour).
+ * Injection sugar for tests: installs the Tauri or the browser-preview
+ * desktop boundary. This replaced the old `globalThis.isTauri` toggle, which
+ * only covered one of the three environment probes and therefore exercised a
+ * different path than the vi.mock-based suites.
  */
 export function setTauriRuntime(enabled: boolean) {
-  if (enabled) {
-    Object.defineProperty(globalThis, 'isTauri', {
-      value: true,
-      writable: true,
-      configurable: true,
-    });
-    return;
-  }
-
-  Reflect.deleteProperty(globalThis, 'isTauri');
+  resetDesktopApiForTests();
+  installDesktopApi(enabled ? new TauriDesktopApi() : new PreviewDesktopApi());
 }

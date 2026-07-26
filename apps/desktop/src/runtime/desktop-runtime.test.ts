@@ -191,6 +191,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
       'configuration_v2:load',
       'session_v2:bootstrap',
       'configuration_v2:runtimeSnapshot',
+      // Post-registration audio snapshot reconciliation (listener-gap fix).
+      'session_v2:snapshot',
       'bridge_v2:refresh',
     ]);
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('tauri-shell');
@@ -316,6 +318,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
       'configuration_v2:load',
       'session_v2:bootstrap',
       'configuration_v2:runtimeSnapshot',
+      // Post-registration audio snapshot reconciliation (listener-gap fix).
+      'session_v2:snapshot',
       'bridge_v2:refresh',
     ]);
     expect(useAppStore.getState().runtimeSnapshot.storage.status).toBe('ready');
@@ -385,6 +389,8 @@ describe('bootstrapDesktopRuntimeBridge', () => {
       'configuration_v2:load',
       'session_v2:bootstrap',
       'configuration_v2:runtimeSnapshot',
+      // Post-registration audio snapshot reconciliation (listener-gap fix).
+      'session_v2:snapshot',
       'bridge_v2:refresh',
     ]);
     expect(useAppStore.getState().runtimeSnapshot.storage.status).toBe('ready');

@@ -89,6 +89,57 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
     pushSpy.mockRestore();
   });
 
+  it('reconciles the audio snapshot once after the background listeners register', async () => {
+    // Regression: push events emitted between `bootstrap_audio` and the
+    // background `listen()` registration were silently lost — the store kept a
+    // stale snapshot until the next unrelated push. After registration
+    // succeeds, one authoritative snapshot fetch must reconcile the gap.
+    const reconciled = structuredClone(audioRuntimeSnapshotMock);
+    reconciled.inbound.framesCaptured = 777;
+    happyInvoke({ 'session_v2:snapshot': { data: reconciled, warnings: [] } });
+
+    const cleanup = await connectDesktopRuntimeBridge();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const snapshotCalls = invokeMock.mock.calls.filter(
+      ([command, args]) => command === 'session_v2' && (args as V2Args)?.command?.action === 'snapshot',
+    );
+    expect(snapshotCalls.length).toBeGreaterThanOrEqual(1);
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.framesCaptured).toBe(777);
+    cleanup();
+  });
+
+  it('degrades to low-frequency audio snapshot polling when the audio listener fails to register', async () => {
+    // Regression: a failed `listen()` registration only warned. The audio
+    // snapshot push channel is the only convergence signal for watch startup,
+    // so losing it silently froze the session UI. It must fall back to polling.
+    vi.useFakeTimers();
+    try {
+      const polled = structuredClone(audioRuntimeSnapshotMock);
+      polled.inbound.framesCaptured = 888;
+      happyInvoke({ 'session_v2:snapshot': { data: polled, warnings: [] } });
+      listenMock.mockRejectedValue(new Error('event channel down'));
+
+      const cleanup = await connectDesktopRuntimeBridge();
+      await vi.advanceTimersByTimeAsync(0);
+      invokeMock.mockClear();
+
+      await vi.advanceTimersByTimeAsync(30_000);
+      const pollCalls = () => invokeMock.mock.calls.filter(
+        ([command, args]) => command === 'session_v2' && (args as V2Args)?.command?.action === 'snapshot',
+      ).length;
+      expect(pollCalls()).toBeGreaterThanOrEqual(1);
+      expect(useAppStore.getState().audioRuntimeSnapshot.inbound.framesCaptured).toBe(888);
+
+      const countBeforeCleanup = pollCalls();
+      cleanup();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(pollCalls()).toBe(countBeforeCleanup);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('degrades to the runtime-error snapshot when bootstrapRuntime fails after the ping', async () => {
     happyInvoke({ 'configuration_v2:bootstrapRuntime': new Error('runtime store exploded') });
 

@@ -27,6 +27,9 @@ import { markStep, type OnBootstrapStep } from './steps';
 
 export const CONFIG_DRAFT_SYNC_EVENT = 'config://draft-updated';
 
+/** Poll cadence used only when the audio push-event listener failed to register. */
+export const AUDIO_SNAPSHOT_FALLBACK_POLL_MS = 5_000;
+
 type RuntimeCleanup = () => void;
 
 type PersistQueueState = {
@@ -78,17 +81,36 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
     unlisteners.push(unlisten);
   };
 
-  const registerListener = async <T,>(eventName: string, handler: (event: { payload: T }) => void) => {
+  const registerListener = async <T,>(eventName: string, handler: (event: { payload: T }) => void): Promise<boolean> => {
     try {
       trackUnlisten(await listen<T>(eventName, handler));
+      return true;
     } catch (error) {
       deferDesktopRuntimeNotification(
         'warning',
         'runtime-listener-failed',
         `Runtime event listener failed (${eventName}): ${formatRuntimeError(error)}`,
       );
+      return false;
     }
   };
+
+  const fetchAudioSnapshotIntoStore = async () => {
+    try {
+      const snapshot = await activeDesktopApi().session.snapshot();
+      if (!disposed) useAppStore.getState().setAudioRuntimeSnapshot(snapshot);
+    } catch {
+      // Best-effort reconciliation; the next push or poll tick retries.
+    }
+  };
+
+  // The reconciliation fetch below must run after BOTH the listener
+  // registration and the foreground `bootstrap_audio` write: reconciling
+  // earlier lets the foreground bootstrap overwrite the fresher snapshot.
+  let resolveAudioBootstrapSettled!: () => void;
+  const audioBootstrapSettled = new Promise<void>((resolve) => {
+    resolveAudioBootstrapSettled = resolve;
+  });
 
   // Runtime push-event listeners deliver *live* snapshot/notification updates.
   // They are deliberately NOT part of the startup-readiness critical path: the
@@ -107,7 +129,25 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
     registerListener<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => {
       useAppStore.getState().setAudioRuntimeSnapshot(event.payload);
     }),
-  ]).finally(() => {
+  ]).then(async ([, , audioListenerRegistered]) => {
+    await audioBootstrapSettled;
+    if (disposed) return;
+    if (audioListenerRegistered) {
+      // Any audio push emitted between `bootstrap_audio` and this registration
+      // is gone; reconcile once against the authoritative native snapshot so
+      // the store cannot keep pre-registration state until the next push.
+      void fetchAudioSnapshotIntoStore();
+      return;
+    }
+    // The audio snapshot push channel is the only signal that drives watch
+    // startup convergence (stream bound / lastError). Without it the session
+    // UI freezes on the accepted state, so degrade to low-frequency polling
+    // rather than only warning.
+    const pollId = window.setInterval(() => {
+      void fetchAudioSnapshotIntoStore();
+    }, AUDIO_SNAPSHOT_FALLBACK_POLL_MS);
+    trackUnlisten(() => window.clearInterval(pollId));
+  }).finally(() => {
     flushDeferredNotifications();
   });
 
@@ -123,6 +163,7 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
     markStep(onStep, 'load-config', 'error', message);
     useAppStore.getState().setRuntimeSnapshot(createRuntimeErrorSnapshot(error));
     useAppStore.getState().setAudioRuntimeSnapshot(audioRuntimeSnapshotMock);
+    resolveAudioBootstrapSettled();
     return () => {
       disposed = true;
       unlisteners.forEach((unlisten) => unlisten());
@@ -160,6 +201,7 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
     markStep(onStep, 'init-audio', 'done', i18n.t('runtime.desktop.audioDegraded'));
     deferDesktopRuntimeNotification('warning', 'audio-bootstrap-deferred', `Audio device refresh deferred: ${message}`);
   }
+  resolveAudioBootstrapSettled();
 
   try {
     const hydratedSnapshot = await invokeWithTimeout(() => activeDesktopApi().configuration.runtimeSnapshot(), 'get_runtime_snapshot');

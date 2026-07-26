@@ -261,24 +261,33 @@ test('live runner defaults to full reference-media playback for strict evidence'
   assert.notEqual(cacheFullIndex, -1, 'runner must separate full-media transcript cache entries');
 });
 
-test('matrix runner executes both strict watch models and verifies strict evidence', () => {
-  const matrix = fs.readFileSync('scripts/testing/run-watch-mode-live-matrix.ps1', 'utf8');
+test('matrix runner executes both strict watch models and verifies strict evidence', async () => {
+  const matrix = await import('./run-watch-mode-live-matrix.mjs');
 
-  assert.match(matrix, /qwen3\.5-omni-flash-realtime/);
-  assert.match(matrix, /qwen3\.5-livetranslate-flash-realtime/);
-  assert.match(matrix, /WatchModelId = \$model/);
-  assert.match(matrix, /WatchModelId = \$model/);
-  assert.match(matrix, /PlaybackSeconds = \$PlaybackSeconds/);
-  assert.doesNotMatch(matrix, /\$args = @\(/, 'matrix runner must not overwrite PowerShell automatic $args');
-  assert.doesNotMatch(matrix, /& \$runScript @runArgs/);
-  assert.match(matrix, /\$runnerParameters = @\{/);
-  assert.match(matrix, /\$runnerParameters\.AllowElevatedDesktopLaunch = \$true/);
-  assert.match(matrix, /& \$runScript @runnerParameters @RunnerArgs/);
-  assert.match(matrix, /@RunnerArgs/);
-  assert.match(matrix, /\[string\[\]\]\$FeedbackLoopPreventionModes = @\(/);
-  assert.match(matrix, /FeedbackLoopPrevention = \$feedbackMode/);
-  assert.match(matrix, /verify-watch-mode-evidence\.mjs --root \$OutputRoot --strict --models/);
-  assert.match(matrix, /--feedback-modes \(\$feedbackModeList -join ","\)/);
+  assert.deepEqual(matrix.DEFAULT_MODELS, ['qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime']);
+  assert.deepEqual(matrix.DEFAULT_FEEDBACK_MODES, ['virtual-driver', 'echo-cancel']);
+
+  const argv = matrix.buildRunnerArgv({
+    model: 'qwen3.5-omni-flash-realtime',
+    feedbackMode: 'virtual-driver',
+    allowElevatedDesktopLaunch: true,
+    runnerArgs: ['-DryRun'],
+  });
+  assert.equal(argv[argv.indexOf('-WatchModelId') + 1], 'qwen3.5-omni-flash-realtime');
+  assert.equal(argv[argv.indexOf('-FeedbackLoopPrevention') + 1], 'virtual-driver');
+  assert.equal(argv[argv.indexOf('-PlaybackSeconds') + 1], '0');
+  assert.ok(argv.includes('-AllowElevatedDesktopLaunch'));
+  assert.deepEqual(argv.slice(-1), ['-DryRun'], 'runner passthrough args must stay appended verbatim');
+
+  const verifyArgv = matrix.buildVerifyArgv(
+    'artifacts/testing/watch-mode-live',
+    matrix.DEFAULT_MODELS,
+    matrix.DEFAULT_FEEDBACK_MODES,
+  );
+  assert.equal(verifyArgv[0], './scripts/testing/verify-watch-mode-evidence.mjs');
+  assert.ok(verifyArgv.includes('--strict'));
+  assert.equal(verifyArgv[verifyArgv.indexOf('--models') + 1], matrix.DEFAULT_MODELS.join(','));
+  assert.equal(verifyArgv[verifyArgv.indexOf('--feedback-modes') + 1], matrix.DEFAULT_FEEDBACK_MODES.join(','));
 });
 
 test('live runner forces watch virtual-driver and mixed physical output config for CLI route starts', () => {

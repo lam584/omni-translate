@@ -10,7 +10,7 @@
 
 # 命令路由表（改动层 → 验证命令）
 
-以下命令均在仓库根目录直接运行（前置条件：已执行 `npm install`；Rust 相关命令需要本机 cargo 工具链；PowerShell 脚本类命令需要 Windows PowerShell）。
+以下命令均在仓库根目录直接运行（前置条件：已执行 `npm install`；Rust 相关命令需要本机 cargo 工具链；驱动与 Watch Mode 真实链路等 Windows 专属命令需要 Windows PowerShell，测试/门禁编排脚本均为 Node 实现）。
 
 | 改动层 | 验证命令 | 说明 |
 | --- | --- | --- |
@@ -19,7 +19,7 @@
 | `apps/bridge-service-native`（Rust 桥接服务） | `npm run check:bridge-service-native` | cargo check；完整测试用 `npm run test:bridge-service-native` |
 | 跨进程契约变更（事件/命令/协议） | `npm run test:contracts` | Node 契约校验脚本 |
 | `drivers/windows-virtual-mic`（虚拟麦克风驱动） | `npm run driver:build-sysvad` | 需要 WDK/EWDK 构建环境；驱动自测用 `npm run driver:test`；进入该目录前必读 [drivers/windows-virtual-mic/AGENTS.md](drivers/windows-virtual-mic/AGENTS.md) |
-| 发布前 / 提交合并前全量门禁 | `npm run quality:gate:release` | 综合质量门禁（PowerShell 脚本） |
+| 发布前 / 提交合并前全量门禁 | `npm run quality:gate:release` | 综合质量门禁（Node 脚本） |
 
 # 运行时诊断路由（最小索引）
 

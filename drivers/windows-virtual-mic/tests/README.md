@@ -26,7 +26,7 @@ npm run test:driver-boundaries
 
 `fixtures/` holds the contract fixtures shared with the integration test plan
 (`scripts/installer/probe-development-driver.ps1` and
-`scripts/testing/prepare-install-regression-report.ps1` validate the same
+`scripts/testing/prepare-install-regression-report.mjs` validate the same
 contracts against a real installation):
 
 - `driver-install-state.sample.json` — the exact shape written by

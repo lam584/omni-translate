@@ -4,6 +4,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { isWindows } from './testing-common.mjs';
+
 // Repository root derived from this file's location (scripts/lib/ -> repo root),
 // so release scripts no longer depend on being launched from the repo root.
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -59,8 +61,23 @@ export const releasePaths = (version) => {
   };
 };
 
-// Zip a directory's contents into zipPath via Windows PowerShell Compress-Archive.
+// Zip a directory's contents into zipPath. Windows must keep the PowerShell
+// Compress-Archive byte stream because release artifacts are hashed downstream.
 export const compressArchive = (sourceDir, zipPath) => {
-  const psCommand = `Compress-Archive -Path '${sourceDir.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force`;
-  execFileSync('powershell.exe', ['-NoProfile', '-Command', psCommand], { stdio: 'inherit' });
+  if (isWindows) {
+    const psCommand = `Compress-Archive -Path '${sourceDir.replace(/'/g, "''")}\\*' -DestinationPath '${zipPath.replace(/'/g, "''")}' -Force`;
+    execFileSync('powershell.exe', ['-NoProfile', '-Command', psCommand], { stdio: 'inherit' });
+    return;
+  }
+  const absoluteZipPath = path.resolve(zipPath);
+  // Compress-Archive -Force overwrites, while zip(1) updates an existing archive.
+  fs.rmSync(absoluteZipPath, { force: true });
+  try {
+    execFileSync('zip', ['-r', absoluteZipPath, '.'], { cwd: sourceDir, stdio: 'inherit' });
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      throw new Error('compressArchive requires the "zip" command on this platform. Install zip and retry.');
+    }
+    throw error;
+  }
 };

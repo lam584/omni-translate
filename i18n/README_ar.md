@@ -25,11 +25,11 @@
     </p>
 </h4>
 
-Omni Translate هو تطبيق سطح مكتب لنظام Windows مخصص لترجمة الصوت في الوقت الفعلي. يستهدف سير عمل مثل ترجمة ترجمات الفيديو، وترجمة صوت الألعاب، والترجمة الصوتية ثنائية الاتجاه في غرف الصوت أو الاجتماعات. يربط التطبيق برنامج تشغيل صوت افتراضي وNative Bridge وRust Core Runtime وAI Gateway موحدة لمعالجة التقاط الصوت وASR وترجمة LLM وTTS وعرض الترجمة وتوجيه التشغيل.
+Omni Translate هو تطبيق سطح مكتب لنظام Windows مخصص لترجمة الصوت في الوقت الفعلي. يستهدف سير عمل مثل ترجمة ترجمات الفيديو، وترجمة صوت الألعاب، والترجمة الصوتية ثنائية الاتجاه في غرف الصوت أو الاجتماعات. يربط التطبيق برنامج تشغيل صوت افتراضي وNative Bridge وRust Core Runtime وAI Gateway موحدة لمعالجة التقاط صوت النظام وASR وترجمة LLM وTTS وعرض الترجمة وتوجيه التشغيل.
 
 ## الميزات
 
-- **ترجمة ترجمات فورية**: يلتقط صوت النظام أو الميكروفون، ويتعرف على الكلام، ويعرض الترجمات المترجمة في النافذة الرئيسية والنافذة العائمة.
+- **ترجمة ترجمات فورية**: يلتقط صوت النظام أو الميكروفون، ويتعرف على الكلام فوريا، ويعرض الترجمات المترجمة في النافذة الرئيسية والنافذة العائمة.
 - **نافذة ترجمات عائمة**: نافذة مستقلة شفافة بلا إطار وتبقى دائما في الأعلى، ومصممة للظهور فوق الفيديو أو الألعاب أو تطبيقات الاجتماعات.
 - **ترجمة صوتية ثنائية الاتجاه**: تدعم أوضاع التوجيه للمشاهدة والألعاب وغرف الصوت، وتشمل الترجمة/الصوت الوارد وإخراج الميكروفون الافتراضي الصادر.
 - **برنامج تشغيل صوت افتراضي**: برنامج تشغيل صوت افتراضي لنظام Windows مبني على SYSVAD WaveRT ويتصل بخدمة الجسر في وضع المستخدم عبر IOCTL وABI مشتركة.
@@ -47,7 +47,8 @@ Omni Translate هو تطبيق سطح مكتب لنظام Windows مخصص لت�
 - **Node.js** >= 20
 - **Rust stable**، edition 2021
 - **Windows 10/11**
-- **Visual Studio 2022 + WDK 10.0.26100**، مطلوب فقط عند بناء برنامج تشغيل الصوت الافتراضي
+- **Visual Studio 2022 Build Tools + Desktop development with C++**، مطلوب عند بناء Tauri desktop shell وNative Bridge؛ يجب أن يكون `cl.exe` و`link.exe` متاحين من سطر الأوامر
+- **WDK 10.0.26100**، مطلوب فقط عند بناء برنامج تشغيل الصوت الافتراضي
 - يتطلب تحميل برنامج تشغيل التطوير وضع Windows TESTSIGNING؛ ولا تحتاج معاينة الواجهة الأمامية العادية إلى برنامج التشغيل أو صلاحيات المسؤول
 
 ### التثبيت والتشغيل
@@ -57,8 +58,8 @@ Omni Translate هو تطبيق سطح مكتب لنظام Windows مخصص لت�
 git clone <repo-url>
 cd omni-translate
 
-# 2. تثبيت الاعتماديات
-npm install
+# 2. تثبيت الاعتماديات وفق package-lock.json
+npm ci
 
 # 3. بدء معاينة الواجهة الأمامية في المتصفح
 npm run dev:desktop
@@ -69,12 +70,22 @@ npm run dev:desktop-shell
 
 يستخدم وضع معاينة المتصفح Mock runtime تلقائيا، لذلك يناسب تطوير الواجهة وفحص الصفحات. يبدأ تطبيق سطح المكتب الكامل Tauri/Rust runtime، ولا يطلق مسار رفع الصلاحيات إلا عند تنفيذ إجراءات مثل تثبيت برنامج التشغيل أو إصلاحه.
 
+قبل تشغيل غلاف سطح المكتب الكامل لأول مرة، يُنصح بفتح المستودع من **Developer PowerShell** أو **x64 Native Tools Command Prompt** الخاصة بـ Visual Studio 2022. إذا أظهر PowerShell العادي رسالة `link.exe not found`، يمكن تحميل بيئة MSVC أولا:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+npm run dev:desktop-shell
+```
+
+يقوم `dev:desktop-shell` أولا ببناء نسخة release من Native Bridge، ثم يبدأ Vite وRust Core ونافذة سطح المكتب عبر Tauri dev؛ ويطلب السكربت صلاحيات UAC. يحتاج أول بناء لـ Rust إلى تحميل الاعتماديات وتجميعها، لذلك يستغرق وقتا أطول بشكل ملحوظ من عمليات التشغيل اللاحقة.
+
 ### الأوامر الشائعة
 
 | الأمر | الوصف |
 | --- | --- |
 | `npm run dev:desktop` | بدء خادم تطوير واجهة React/Vite الأمامية |
 | `npm run dev:desktop-shell` | بدء تطبيق Tauri المكتبي الكامل عبر سكربت رفع الصلاحيات |
+| `npm run dev:desktop:fast` | تخطي إعادة بناء Native Bridge بنسخة release ورفع الصلاحيات، وإعادة استخدام ذاكرة Cargo التزايدية للتطوير اليومي لسطح المكتب |
 | `npm run lint:desktop` | تشغيل ESLint للواجهة الأمامية المكتبية |
 | `npm run check:desktop` | تشغيل فحص أنواع TypeScript |
 | `npm run build:desktop` | بناء أصول الواجهة الأمامية |
@@ -85,7 +96,7 @@ npm run dev:desktop-shell
 | `npm run test:contracts` | التحقق من العقود المجمدة |
 | `npm run test:watch-mode-live:dry-run` | تشغيل dry-run لمسار Watch Mode الحقيقي |
 | `npm run quality:gate:auto` | تشغيل بوابة الجودة الآلية |
-| `npm run quality:gate:release` | تشغيل بوابة جودة الإصدار |
+| `npm run quality:gate:release` | تشغيل بوابة جودة ما قبل الإصدار |
 | `npm run driver:build-sysvad` | بناء برنامج تشغيل الصوت الافتراضي SYSVAD |
 | `npm run driver:install` | تثبيت برنامج تشغيل التطوير |
 | `npm run driver:test` | فحص حالة برنامج تشغيل التطوير |
@@ -146,6 +157,9 @@ omni-translate/
 │   │           ├── runtime/        # النوافذ، علبة النظام، حالة runtime
 │   │           └── storage/        # مستودع SQLite ومعالجة بيانات الاعتماد
 │   └── bridge-service-native/      # Rust Native Bridge Service، تنفيذ الجسر الإنتاجي الوحيد
+├── crates/                         # مكتبات مشتركة لـ Cargo workspace الجذر
+│   ├── omni-bridge-protocol/       # بروتوكول الأنبوب (pipe) المشترك بين Desktop وNative Bridge
+│   └── omni-logging/               # خط أنابيب تسجيل مشترك غير حاجب (non-blocking)
 ├── drivers/
 │   └── windows-virtual-mic/        # برنامج تشغيل صوت افتراضي SYSVAD WaveRT
 │       ├── include/                # ABI مشتركة بين Driver/Bridge لـ IOCTL
@@ -197,7 +211,7 @@ omni-translate/
 - الترجمات والصوت المدبلج نتيجتان مستقلتان للجدولة؛ يتم تثبيت الترجمات أولا.
 - عندما يتجاوز زمن استجابة Provider الميزانية، يتم إصدار `latency-high`، وتستمر الترجمات، وينتقل TTS إلى حالة deferred/queued.
 - عندما يحدد فحص Provider أنه غير مناسب للاستخدام الفوري، يتم تعطيل الصوت المدبلج افتراضيا ويبقى مسار أولوية الترجمة نشطا.
-- لا تمنع أعطال برنامج التشغيل أو Bridge بدء التطبيق؛ يجب أن تبقى الترجمات والتشغيل المحلي وصفحات التشخيص متاحة في وضع التدهور.
+- لا تمنع أعطال برنامج التشغيل أو Bridge بدء التطبيق؛ يجب أن تبقى الترجمات والتشغيل المحلي وصفحة التشخيص متاحة في وضع التدهور.
 
 ## المكدس التقني
 
@@ -235,14 +249,37 @@ omni-translate/
 - `npm run test:bridge-service-native`: اختبارات Rust الخاصة بـ Native Bridge.
 - `npm run test:contracts`: التحقق من العقود المجمدة على جانب TypeScript/Rust/السكربتات.
 - `npm run quality:gate:auto`: بوابة الجودة الآلية.
-- `npm run quality:gate:release`: بوابة جودة الإصدار مع مداخل تحقق يدوية.
+- `npm run quality:gate:release`: بوابة جودة ما قبل الإصدار مع مداخل تحقق يدوية.
 - `npm run test:watch-mode-report` / `npm run test:watch-mode-live:*`: تقارير Watch Mode والأدلة ومداخل اختبار المسار الحقيقي.
 
 ## التطوير
 
 ### تطوير الواجهة الأمامية
 
-استخدم `npm run dev:desktop` لتطوير الواجهة الأمامية في المتصفح. في بيئات غير Tauri، ترجع طبقة runtime بيانات Mock لتسهيل فحص الصفحات والتفاعلات دون تثبيت برنامج التشغيل أو بدء خلفية Rust.
+يمكن تطوير الواجهة الأمامية مباشرة باستخدام `npm run dev:desktop` في المتصفح. في بيئات غير Tauri، ترجع طبقة runtime بيانات Mock لتسهيل فحص الصفحات والتفاعلات دون تثبيت برنامج التشغيل أو بدء خلفية Rust.
+
+### تطوير واختبار غلاف سطح المكتب
+
+عند التعامل مع `invoke` أو event أو SQLite أو Windows Credential Manager أو Native Bridge أو صوت النظام أو نافذة الترجمة العائمة، يجب الاختبار داخل غلاف Tauri المكتبي، ولا يمكن الاستعاضة عنه بمعاينة Mock في المتصفح.
+
+```powershell
+# عند التشغيل لأول مرة، أو بعد تعديل Rust Core أو Native Bridge أو إعدادات Cargo
+npm run dev:desktop-shell
+
+# التطوير اليومي للواجهة الأمامية/سطح المكتب بعد إتمام بناء قياسي ناجح من قبل
+npm run dev:desktop:fast
+```
+
+يتخطى `dev:desktop:fast` إعادة بناء Native Bridge بنسخة release ورفع صلاحيات UAC اللذين ينفذهما `dev:desktop-shell`: فهو يبدأ أولا خدمة Vite على المنفذ `4173` ويسخنها، ثم ينتقل إلى `tauri dev` مع إعادة استخدام ذاكرة Cargo التزايدية. لا يمكن تشغيل ملف debug EXE مباشرة، لأن Tauri CLI هو المسؤول عن توفير سياق التشغيل اللازم لـ WebView IPC. عند التشغيل لأول مرة، أو بعد تغيير مصدر Native Bridge، أو عند الحاجة للتحقق من مسار رفع الصلاحيات، ينبغي الاستمرار في استخدام `dev:desktop-shell`.
+
+بعد بدء تشغيل غلاف سطح المكتب، تأكد على الأقل من الإشارات التالية في صفحة "التشخيص":
+
+- `isTauri` و`IPC Bridge` و`window.ipc` و`isTauriRuntime` جميعها `true`.
+- حالة Bridge هي `tauri-shell`، وحالة البيئة الموحدة ليست `runtime-error`.
+- حالة التخزين هي `ready`، وإصدار Schema لا يقل عن `1`، وخلفية بيانات الاعتماد ليست `browser-preview`.
+- يظهر `debug_ipc_ping` في `artifacts/diagnostics/logs/app.log`، ولا يظهر `startup.ipc_watchdog_reload` بعد بدء التشغيل.
+
+أنهِ عملية تطوير سطح المكتب قبل تشغيل فحوصات Rust، لتجنب احتفاظ `tauri dev` قيد التشغيل بقفل بناء Cargo لفترة طويلة:
 
 ### Rust Desktop Shell
 
@@ -273,4 +310,4 @@ npm run driver:uninstall
 
 ## الترخيص
 
-هذا المشروع مرخص ترخيصا خاصا. جميع الحقوق محفوظة.
+هذا المشروع مرخص بموجب [رخصة Apache 2.0](../LICENSE).

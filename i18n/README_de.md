@@ -25,19 +25,19 @@
     </p>
 </h4>
 
-Omni Translate ist eine Windows-Desktopanwendung für Audioübersetzung in Echtzeit. Sie deckt Workflows wie Videountertitel-Übersetzung, Sprachübersetzung in Spielen und bidirektionale Übersetzung für Sprachräume oder Meetings ab. Die App verbindet einen virtuellen Audiotreiber, die native Bridge, die Rust-Core-Runtime und ein einheitliches AI Gateway, um Audioerfassung, ASR, LLM-Übersetzung, TTS, Untertitel-Rendering und Wiedergaberouting zu verarbeiten.
+Omni Translate ist eine Windows-Desktopanwendung für Audioübersetzung in Echtzeit. Sie deckt Workflows wie Videountertitel-Übersetzung, Sprachübersetzung in Spielen und bidirektionale Übersetzung für Sprachräume oder Meetings ab. Die App verbindet einen virtuellen Audiotreiber, die Native Bridge, die Rust Core Runtime und ein einheitliches AI Gateway, um Audioerfassung, ASR, LLM-Übersetzung, TTS, Untertitel-Rendering und Wiedergaberouting zu verarbeiten.
 
 ## Funktionen
 
-- **Untertitelübersetzung in Echtzeit**: Erfasst System- oder Mikrofon-Audio, erkennt Sprache und zeigt übersetzte Untertitel im Hauptfenster und im Overlay an.
-- **Schwebendes Untertitel-Overlay**: Ein transparentes, rahmenloses Fenster, das immer im Vordergrund bleibt und über Videos, Spielen oder Meeting-Apps liegen kann.
-- **Bidirektionale Sprachübersetzung**: Unterstützt Routing-Modi für Anschauen, Spiele und Sprachräume für eingehende Untertitel/Sprachausgabe und ausgehende virtuelle Mikrofon-Ausgabe.
-- **Virtueller Audiotreiber**: Windows-virtueller Audiotreiber auf Basis von SYSVAD WaveRT, verbunden mit dem Benutzermodus über IOCTL und eine gemeinsame ABI.
-- **Rust Native Bridge**: `apps/bridge-service-native` ist die einzige produktive Bridge-Implementierung und verarbeitet WASAPI, Named Pipe IPC, Audioframes und Treiberkommunikation.
-- **Einheitliches AI Gateway**: Vorlagenbasierte Integration von DashScope und OpenAI-kompatiblen Providern mit HTTP, streaming HTTP und WebSocket-Transporten.
-- **Glossarverwaltung**: Importiert, exportiert, kombiniert und priorisiert domänenspezifische Glossarpakete und speist sie in den Übersetzungs-Prompt-Fluss ein.
-- **Sichere Speicherung von Zugangsdaten**: API-Schlüssel und andere Geheimnisse werden im Windows Credential Manager statt in Klartext-Konfigurationen gespeichert.
-- **Diagnose und Quality Gates**: Treiber-Health-Probes, Modell-Traces, Logexport, Watch-Mode-Live-Link-Tests und Quality Gates für Releases.
+- **Untertitelübersetzung in Echtzeit**: Erfasst System- oder Mikrofon-Audio, erkennt Sprache in Echtzeit und zeigt übersetzte Untertitel im Hauptfenster und im Overlay an.
+- **Schwebendes Untertitel-Overlay**: Ein eigenständiges, transparentes, rahmenloses und immer im Vordergrund bleibendes Fenster, das über Videos, Spielen oder Meeting-Apps liegen kann.
+- **Bidirektionale Sprachübersetzung**: Unterstützt Routing-Modi für Anschauen, Spiele und Sprachräume und deckt eingehende Untertitel/Sprachausgabe sowie ausgehende virtuelle Mikrofon-Ausgabe ab.
+- **Virtueller Audiotreiber**: Windows-virtueller Audiotreiber auf Basis von SYSVAD WaveRT, der über IOCTL und eine gemeinsame ABI mit dem Bridge-Dienst im Benutzermodus kommuniziert.
+- **Rust Native Bridge**: `apps/bridge-service-native` ist derzeit die einzige produktive Bridge-Implementierung und verarbeitet WASAPI, Named Pipe IPC, Audioframes und die Treiberkommunikation.
+- **Einheitliches AI Gateway**: Vorlagenbasierte Integration von DashScope und OpenAI-kompatiblen Schnittstellen mit Unterstützung für HTTP-, Streaming-HTTP- und WebSocket-Transporte.
+- **Glossarverwaltung**: Unterstützt Import, Export, Zusammenführung und Priorisierung domänenspezifischer Glossarpakete und speist sie in die Übersetzungs-Prompt-Kette ein.
+- **Sichere Verwaltung von Zugangsdaten**: API-Schlüssel und andere sensible Informationen werden im Windows Credential Manager gespeichert statt im Klartext in die Geschäftskonfiguration geschrieben zu werden.
+- **Diagnose und Quality Gates**: Bietet Treiber-Health-Probes, Modell-Traces, Logexport, Watch-Mode-Live-Link-Tests und Quality Gates vor dem Release.
 - **20 UI-Sprachen**: Die aktuellen Locale-Ressourcen decken `ar`, `bn`, `de`, `en`, `es`, `fil`, `fr`, `hi`, `id`, `ja`, `ko`, `mr`, `pt`, `ru`, `ta`, `te`, `th`, `tr`, `vi` und `zh-CN` ab.
 
 ## Schnellstart
@@ -47,7 +47,8 @@ Omni Translate ist eine Windows-Desktopanwendung für Audioübersetzung in Echtz
 - **Node.js** >= 20
 - **Rust stable**, Edition 2021
 - **Windows 10/11**
-- **Visual Studio 2022 + WDK 10.0.26100**, nur zum Erstellen des virtuellen Audiotreibers erforderlich
+- **Visual Studio 2022 Build Tools + Desktop development with C++**, erforderlich zum Kompilieren der Tauri-Desktop-Shell und der Native Bridge; `cl.exe` und `link.exe` müssen über die Kommandozeile auffindbar sein
+- **WDK 10.0.26100**, nur zum Kompilieren des virtuellen Audiotreibers erforderlich
 - Das Laden von Entwicklungstreibern erfordert den Windows-TESTSIGNING-Modus; die normale Frontend-Vorschau benötigt weder Treiber noch Administratorrechte
 
 ### Installation und Start
@@ -57,8 +58,8 @@ Omni Translate ist eine Windows-Desktopanwendung für Audioübersetzung in Echtz
 git clone <repo-url>
 cd omni-translate
 
-# 2. Abhängigkeiten installieren
-npm install
+# 2. Abhängigkeiten gemäß package-lock.json installieren
+npm ci
 
 # 3. Frontend-Browser-Vorschau starten
 npm run dev:desktop
@@ -67,7 +68,16 @@ npm run dev:desktop
 npm run dev:desktop-shell
 ```
 
-Der Browser-Vorschaumodus verwendet automatisch die Mock-Runtime und eignet sich für UI-Entwicklung und Seitenprüfungen. Die vollständige Desktop-App startet die Tauri/Rust-Runtime und löst eine Rechteerhöhung nur bei Treiberinstallation, Reparatur oder ähnlichen Aktionen aus.
+Der Browser-Vorschaumodus verwendet automatisch die Mock-Runtime und eignet sich für UI-Entwicklung und Seitenprüfungen. Die vollständige Desktop-App startet die Tauri/Rust-Runtime und löst nur bei Aktionen wie Treiberinstallation oder -reparatur eine Rechteerhöhung aus.
+
+Bevor Sie die vollständige Desktop-Shell zum ersten Mal starten, wird empfohlen, das Repository aus der **Developer PowerShell** oder der **x64 Native Tools Command Prompt** von Visual Studio 2022 heraus zu öffnen. Meldet eine normale PowerShell `link.exe not found`, kann zunächst die MSVC-Umgebung geladen werden:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+npm run dev:desktop-shell
+```
+
+`dev:desktop-shell` erstellt zunächst eine Release-Version der Native Bridge und startet dann über Tauri dev Vite, die Rust Core und das Desktop-Fenster; das Skript fordert eine UAC-Bestätigung an. Der erste Rust-Build muss Abhängigkeiten herunterladen und kompilieren, was deutlich länger dauert als spätere Starts.
 
 ### Häufige Befehle
 
@@ -75,6 +85,7 @@ Der Browser-Vorschaumodus verwendet automatisch die Mock-Runtime und eignet sich
 | --- | --- |
 | `npm run dev:desktop` | Startet den React/Vite-Frontend-Entwicklungsserver |
 | `npm run dev:desktop-shell` | Startet die vollständige Tauri-Desktop-App über das Skript zur Rechteerhöhung |
+| `npm run dev:desktop:fast` | Überspringt den Release-Rebuild der Native Bridge und die Rechteerhöhung, nutzt den Cargo-Inkrementell-Cache für die tägliche Desktop-Abstimmung |
 | `npm run lint:desktop` | Führt ESLint für das Desktop-Frontend aus |
 | `npm run check:desktop` | Führt die TypeScript-Typprüfung aus |
 | `npm run build:desktop` | Erstellt die Frontend-Artefakte |
@@ -145,6 +156,9 @@ omni-translate/
 │   │           ├── runtime/        # Fenster, Tray, Runtime-Status
 │   │           └── storage/        # SQLite-Repository und Zugangsdatenverwaltung
 │   └── bridge-service-native/      # Rust Native Bridge Service, einzige produktive Bridge-Implementierung
+├── crates/                         # Gemeinsame Bibliotheken des Root-Cargo-Workspace
+│   ├── omni-bridge-protocol/       # Von Desktop und Native Bridge gemeinsam genutztes Pipe-Protokoll
+│   └── omni-logging/               # Gemeinsame nicht blockierende Logging-Pipeline
 ├── drivers/
 │   └── windows-virtual-mic/        # Virtueller SYSVAD WaveRT-Audiotreiber
 │       ├── include/                # Gemeinsame Driver/Bridge-IOCTL-ABI
@@ -196,7 +210,7 @@ Mikrofon
 - Untertitel und synchronisierte Sprachausgabe sind getrennte Planungsergebnisse; Untertitel werden zuerst übernommen.
 - Wenn die Provider-Latenz das Budget überschreitet, wird `latency-high` ausgegeben, Untertitel laufen weiter und TTS wechselt in den deferred/queued-Status.
 - Wenn Provider-Probing einen Provider als ungeeignet für Echtzeit markiert, wird synchronisierte Sprachausgabe standardmäßig deaktiviert und der untertitelorientierte Pfad bleibt aktiv.
-- Fehler im Treiber oder in der Bridge blockieren den App-Start nicht; Untertitel, lokale Wiedergabe und Diagnose sollen im degradierten Modus verfügbar bleiben.
+- Fehler im Treiber oder in der Bridge blockieren den App-Start nicht; Untertitel, lokale Wiedergabe und Diagnoseseite sollen im degradierten Modus verfügbar bleiben.
 
 ## Technologie-Stack
 
@@ -241,7 +255,30 @@ Strukturierte Konfiguration verwendet SQLite als zentrale Quelle der Wahrheit. S
 
 ### Frontend-Entwicklung
 
-Verwenden Sie `npm run dev:desktop`, um das Frontend im Browser zu entwickeln. In Nicht-Tauri-Umgebungen gibt die Runtime-Schicht Mock-Daten zurück, sodass Seiten und Interaktionen ohne Treiberinstallation oder gestartetes Rust-Backend geprüft werden können.
+Das Frontend kann direkt mit `npm run dev:desktop` im Browser entwickelt werden. In Nicht-Tauri-Umgebungen gibt die Runtime-Schicht Mock-Daten zurück, sodass Seiten und Interaktionen geprüft werden können, ohne einen Treiber zu installieren oder das Rust-Backend zu starten.
+
+### Desktop-Shell-Entwicklung und -Tests
+
+Bei Arbeiten an `invoke`, Events, SQLite, dem Windows Credential Manager, der Native Bridge, System-Audio oder dem Untertitel-Overlay muss in der Tauri-Desktop-Shell getestet werden; die Browser-Mock-Vorschau kann dies nicht ersetzen.
+
+```powershell
+# Beim ersten Start oder nach Änderungen an Rust Core, Native Bridge oder der Cargo-Konfiguration
+npm run dev:desktop-shell
+
+# Tägliche Frontend-/Desktop-Abstimmung nach einem bereits erfolgreichen Standard-Build
+npm run dev:desktop:fast
+```
+
+`dev:desktop:fast` überspringt den Release-Rebuild der Native Bridge und die UAC-Rechteerhöhung, die `dev:desktop-shell` durchführt: Es startet zuerst den Vite-Dienst auf Port `4173` vorab und wechselt dann in `tauri dev`, wobei der Cargo-Inkrementell-Cache wiederverwendet wird. Die Debug-EXE kann nicht direkt ausgeführt werden, da die Tauri-CLI weiterhin den für die WebView-IPC benötigten Laufzeitkontext bereitstellt. Beim ersten Start, nach Änderungen am Native-Bridge-Quellcode oder wenn der Rechteerhöhungsablauf geprüft werden muss, sollte weiterhin `dev:desktop-shell` verwendet werden.
+
+Nach dem Start der Desktop-Shell sollten auf der Diagnoseseite mindestens folgende Signale bestätigt werden:
+
+- `isTauri`, `IPC Bridge`, `window.ipc` und `isTauriRuntime` sind alle `true`.
+- Der Bridge-Status ist `tauri-shell`, der normalisierte Umgebungsstatus ist nicht `runtime-error`.
+- Der Speicherstatus ist `ready`, die Schema-Version ist mindestens `1`, das Credential-Backend ist nicht `browser-preview`.
+- In `artifacts/diagnostics/logs/app.log` erscheint `debug_ipc_ping`, und nach dem Start tritt kein `startup.ipc_watchdog_reload` auf.
+
+Beenden Sie den Desktop-Entwicklungsprozess, bevor Sie Rust-Prüfungen ausführen, damit ein laufender `tauri dev`-Prozess die Cargo-Build-Sperre nicht über längere Zeit blockiert:
 
 ### Rust Desktop Shell
 
@@ -272,4 +309,4 @@ npm run driver:uninstall
 
 ## Lizenz
 
-Dieses Projekt ist privat lizenziert. Alle Rechte vorbehalten.
+Dieses Projekt ist unter der [Apache License 2.0](../LICENSE) lizenziert.

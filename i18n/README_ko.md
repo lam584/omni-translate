@@ -25,7 +25,7 @@
     </p>
 </h4>
 
-Omni Translate는 Windows 실시간 오디오 번역 시나리오를 위한 데스크톱 애플리케이션입니다. 비디오 자막 번역, 게임 음성 번역, 음성방/회의 양방향 번역 같은 워크플로를 지원합니다. 앱은 가상 오디오 드라이버, Native Bridge, Rust Core, 통합 AI Gateway를 연결해 시스템 오디오 캡처, 음성 인식, LLM 번역, 음성 합성, 자막 렌더링, 오디오 재생을 이어 줍니다.
+Omni Translate는 Windows 실시간 오디오 번역 시나리오를 위한 데스크톱 애플리케이션으로, 비디오 자막 번역, 게임 음성 번역, 음성방/회의 양방향 번역 같은 워크플로를 포함합니다. 앱은 가상 오디오 드라이버, Native Bridge, Rust Core, 통합 AI Gateway를 연결해 시스템 오디오 캡처, 음성 인식, LLM 번역, 음성 합성, 자막 렌더링, 오디오 재생을 이어 줍니다.
 
 ## 주요 기능
 
@@ -47,7 +47,8 @@ Omni Translate는 Windows 실시간 오디오 번역 시나리오를 위한 데�
 - **Node.js** >= 20
 - **Rust stable**, edition 2021
 - **Windows 10/11**
-- **Visual Studio 2022 + WDK 10.0.26100**, 가상 오디오 드라이버를 빌드할 때만 필요
+- **Visual Studio 2022 Build Tools + Desktop development with C++**, Tauri desktop shell과 Native Bridge를 빌드할 때 필요하며 명령줄에서 `cl.exe`와 `link.exe`를 찾을 수 있어야 합니다
+- **WDK 10.0.26100**, 가상 오디오 드라이버를 빌드할 때만 필요
 - 개발 드라이버 로드에는 Windows TESTSIGNING 모드가 필요합니다. 일반 프런트엔드 미리보기에는 드라이버나 관리자 권한이 필요하지 않습니다.
 
 ### 설치 및 실행
@@ -57,8 +58,8 @@ Omni Translate는 Windows 실시간 오디오 번역 시나리오를 위한 데�
 git clone <repo-url>
 cd omni-translate
 
-# 2. 의존성 설치
-npm install
+# 2. package-lock.json 기준으로 의존성 설치
+npm ci
 
 # 3. 프런트엔드 브라우저 미리보기 시작
 npm run dev:desktop
@@ -69,12 +70,22 @@ npm run dev:desktop-shell
 
 브라우저 미리보기 모드는 자동으로 Mock runtime을 사용하므로 UI 개발과 페이지 확인에 적합합니다. 전체 데스크톱 앱은 Tauri/Rust runtime을 시작하며 드라이버 설치, 복구 같은 작업이 관련될 때만 권한 상승 흐름을 실행합니다.
 
+전체 데스크톱 셸을 처음 실행하기 전에는 Visual Studio 2022의 **Developer PowerShell** 또는 **x64 Native Tools Command Prompt**에서 저장소로 진입하는 것을 권장합니다. 일반 PowerShell에서 `link.exe not found` 오류가 발생하면 먼저 MSVC 환경을 로드하세요.
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+npm run dev:desktop-shell
+```
+
+`dev:desktop-shell`은 먼저 release 버전 Native Bridge를 빌드한 다음 Tauri dev를 통해 Vite, Rust Core, 데스크톱 창을 시작합니다. 스크립트는 UAC를 요청합니다. 첫 Rust 빌드는 의존성을 다운로드하고 컴파일해야 하므로 이후 실행보다 시간이 눈에 띄게 오래 걸립니다.
+
 ### 주요 명령
 
 | 명령 | 설명 |
 | --- | --- |
 | `npm run dev:desktop` | React/Vite 프런트엔드 개발 서버 시작 |
 | `npm run dev:desktop-shell` | 권한 상승 스크립트를 통해 전체 Tauri 데스크톱 앱 시작 |
+| `npm run dev:desktop:fast` | release 버전 Native Bridge 재빌드와 권한 상승을 건너뛰고 Cargo 증분 캐시를 재사용해 일상적인 데스크톱 연동 개발을 진행 |
 | `npm run lint:desktop` | 데스크톱 프런트엔드 ESLint 실행 |
 | `npm run check:desktop` | TypeScript 타입 검사 실행 |
 | `npm run build:desktop` | 프런트엔드 산출물 빌드 |
@@ -144,6 +155,9 @@ omni-translate/
 │   │           ├── runtime/        # 창, 트레이, 런타임 상태
 │   │           └── storage/        # SQLite 저장소 및 자격 증명 관리
 │   └── bridge-service-native/      # Rust Native Bridge Service, 유일한 프로덕션 브리지 구현
+├── crates/                         # 루트 Cargo workspace 공유 라이브러리
+│   ├── omni-bridge-protocol/       # Desktop와 Native Bridge가 공유하는 파이프 프로토콜
+│   └── omni-logging/               # 공유 논블로킹 로깅 파이프라인
 ├── drivers/
 │   └── windows-virtual-mic/        # SYSVAD WaveRT 가상 오디오 드라이버
 │       ├── include/                # Driver/Bridge 공유 IOCTL ABI
@@ -242,6 +256,29 @@ omni-translate/
 
 프런트엔드는 `npm run dev:desktop`을 사용해 브라우저에서 직접 개발할 수 있습니다. Tauri가 아닌 환경에서는 runtime 계층이 Mock 데이터를 반환하므로 드라이버를 설치하거나 Rust 백엔드를 시작하지 않아도 페이지와 상호작용을 확인할 수 있습니다.
 
+### 데스크톱 셸 개발 및 테스트
+
+`invoke`, event, SQLite, Windows Credential Manager, Native Bridge, 시스템 오디오, 자막 플로팅 창과 관련된 작업은 반드시 Tauri 데스크톱 셸에서 테스트해야 하며, 브라우저 Mock 미리보기로 대체할 수 없습니다.
+
+```powershell
+# 처음 실행하거나 Rust Core, Native Bridge, Cargo 설정을 변경한 경우
+npm run dev:desktop-shell
+
+# 표준 빌드를 한 번 성공적으로 마친 이후의 일상적인 프런트엔드/데스크톱 연동
+npm run dev:desktop:fast
+```
+
+`dev:desktop:fast`는 `dev:desktop-shell`이 수행하는 release 버전 Native Bridge 재빌드와 UAC 권한 상승을 건너뛰고, 먼저 포트 `4173`의 Vite 서비스를 시작해 예열한 다음 `tauri dev`로 진입하며 Cargo 증분 캐시를 재사용합니다. Tauri CLI가 WebView IPC에 필요한 런타임 컨텍스트도 제공하기 때문에 debug EXE를 직접 실행할 수는 없습니다. 처음 실행할 때, Native Bridge 소스를 변경한 후, 또는 권한 상승 흐름을 검증해야 할 때는 여전히 `dev:desktop-shell`을 사용해야 합니다.
+
+데스크톱 셸을 시작한 후 "진단" 페이지에서 최소한 다음 신호를 확인하세요.
+
+- `isTauri`, `IPC Bridge`, `window.ipc`, `isTauriRuntime`이 모두 `true`.
+- 브리지 상태가 `tauri-shell`이고, 정규화된 환경 상태가 `runtime-error`가 아님.
+- 스토리지 상태가 `ready`이고, Schema 버전이 최소 `1` 이상이며, 자격 증명 백엔드가 `browser-preview`가 아님.
+- `artifacts/diagnostics/logs/app.log`에 `debug_ipc_ping`이 나타나고, 시작 후 `startup.ipc_watchdog_reload`가 없음.
+
+Rust 검사를 실행하기 전에 데스크톱 개발 프로세스를 종료해, 실행 중인 `tauri dev`가 Cargo 빌드 락을 장시간 점유하지 않도록 하세요.
+
 ### Rust 데스크톱 셸
 
 ```bash
@@ -271,4 +308,4 @@ npm run driver:uninstall
 
 ## 라이선스
 
-이 프로젝트는 비공개 라이선스(Private)를 사용합니다. 모든 권리는 보유됩니다.
+이 프로젝트는 [Apache License 2.0](../LICENSE) 라이선스를 사용합니다.

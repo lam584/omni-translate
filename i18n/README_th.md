@@ -25,7 +25,7 @@
     </p>
 </h4>
 
-Omni Translate เป็นแอปเดสก์ท็อปสำหรับสถานการณ์การแปลเสียงแบบเรียลไทม์บน Windows ครอบคลุมเวิร์กโฟลว์อย่างการแปลคำบรรยายวิดีโอ การแปลเสียงในเกม และการแปลสองทางสำหรับห้องเสียง/การประชุม แอปเชื่อม virtual audio driver, Native Bridge, Rust Core และ unified AI Gateway เข้าด้วยกันเพื่อประมวลผลการจับเสียงระบบ การรู้จำเสียง การแปลด้วย LLM การสังเคราะห์เสียง การเรนเดอร์คำบรรยาย และการเล่นเสียง
+Omni Translate เป็นแอปเดสก์ท็อปสำหรับสถานการณ์การแปลเสียงแบบเรียลไทม์บน Windows ครอบคลุมเวิร์กโฟลว์อย่างการแปลคำบรรยายวิดีโอ การแปลเสียงในเกม และการแปลสองทางสำหรับห้องเสียง/การประชุม แอปเชื่อม virtual audio driver, Native Bridge, Rust Core และ unified AI Gateway เข้าด้วยกันเพื่อเชื่อมโยงการจับเสียงระบบ การรู้จำเสียง การแปลด้วย LLM การสังเคราะห์เสียง การเรนเดอร์คำบรรยาย และการเล่นเสียง
 
 ## ฟีเจอร์เด่น
 
@@ -47,7 +47,8 @@ Omni Translate เป็นแอปเดสก์ท็อปสำหรั�
 - **Node.js** >= 20
 - **Rust stable**, edition 2021
 - **Windows 10/11**
-- **Visual Studio 2022 + WDK 10.0.26100** จำเป็นเฉพาะเมื่อ build virtual audio driver
+- **Visual Studio 2022 Build Tools + Desktop development with C++** จำเป็นเมื่อ compile Tauri desktop shell และ Native Bridge; ต้องเรียกใช้ `cl.exe` และ `link.exe` ได้จาก command line
+- **WDK 10.0.26100** จำเป็นเฉพาะเมื่อ compile virtual audio driver
 - การโหลด development driver ต้องใช้ Windows TESTSIGNING mode; การ preview frontend ตามปกติไม่ต้องใช้ driver หรือสิทธิ์ administrator
 
 ### ติดตั้งและรัน
@@ -57,8 +58,8 @@ Omni Translate เป็นแอปเดสก์ท็อปสำหรั�
 git clone <repo-url>
 cd omni-translate
 
-# 2. install dependencies
-npm install
+# 2. ติดตั้ง dependencies ตาม package-lock.json
+npm ci
 
 # 3. start frontend browser preview
 npm run dev:desktop
@@ -69,12 +70,22 @@ npm run dev:desktop-shell
 
 โหมด browser preview จะใช้ Mock runtime โดยอัตโนมัติ เหมาะสำหรับการพัฒนา UI และตรวจหน้าเว็บ แอปเดสก์ท็อปเต็มรูปแบบจะเริ่ม Tauri/Rust runtime และจะ trigger elevation flow เฉพาะเมื่อมีการติดตั้งหรือซ่อมแซม driver
 
+ก่อนเริ่มเดสก์ท็อปเชลล์แบบเต็มครั้งแรก แนะนำให้เข้า repository จาก **Developer PowerShell** หรือ **x64 Native Tools Command Prompt** ของ Visual Studio 2022 หาก PowerShell ปกติแจ้ง error `link.exe not found` ให้โหลด MSVC environment ก่อน:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+npm run dev:desktop-shell
+```
+
+`dev:desktop-shell` จะ build Native Bridge เวอร์ชัน release ก่อน แล้วเริ่ม Vite, Rust Core และหน้าต่างเดสก์ท็อปผ่าน Tauri dev; script จะขอ UAC การ build Rust ครั้งแรกต้องดาวน์โหลดและ compile dependencies จึงใช้เวลานานกว่าการเริ่มครั้งต่อ ๆ ไปอย่างชัดเจน
+
 ### คำสั่งที่ใช้บ่อย
 
 | คำสั่ง | คำอธิบาย |
 | --- | --- |
 | `npm run dev:desktop` | เริ่ม React/Vite frontend development server |
 | `npm run dev:desktop-shell` | เริ่ม Tauri desktop app แบบเต็มผ่าน elevation script |
+| `npm run dev:desktop:fast` | ข้าม release Native Bridge rebuild และ elevation ใช้ Cargo incremental cache ซ้ำสำหรับการพัฒนาเดสก์ท็อปประจำวัน |
 | `npm run lint:desktop` | รัน ESLint สำหรับ desktop frontend |
 | `npm run check:desktop` | รัน TypeScript type checking |
 | `npm run build:desktop` | build frontend assets |
@@ -146,6 +157,9 @@ omni-translate/
 │   │           ├── runtime/        # windows, tray, runtime state
 │   │           └── storage/        # SQLite repository and credential handling
 │   └── bridge-service-native/      # Rust Native Bridge Service, production bridge implementation เพียงตัวเดียว
+├── crates/                         # shared library ของ Cargo workspace ที่ราก repository
+│   ├── omni-bridge-protocol/       # pipe protocol ที่ใช้ร่วมกันระหว่าง Desktop และ Native Bridge
+│   └── omni-logging/               # shared non-blocking logging pipeline
 ├── drivers/
 │   └── windows-virtual-mic/        # SYSVAD WaveRT virtual audio driver
 │       ├── include/                # Driver/Bridge shared IOCTL ABI
@@ -244,6 +258,29 @@ Structured configuration ใช้ SQLite เป็นแหล่งข้อ�
 
 สามารถพัฒนา frontend ใน browser ได้โดยตรงด้วย `npm run dev:desktop` ในสภาพแวดล้อมที่ไม่ใช่ Tauri ชั้น runtime จะคืน Mock data เพื่อให้ตรวจหน้าและ interaction ได้โดยไม่ต้องติดตั้ง driver หรือเริ่ม Rust backend
 
+### การพัฒนาและทดสอบเดสก์ท็อปเชลล์
+
+งานที่เกี่ยวข้องกับ `invoke`, event, SQLite, Windows Credential Manager, Native Bridge, เสียงระบบ หรือหน้าต่างคำบรรยายลอย ต้องทดสอบภายในเดสก์ท็อปเชลล์ของ Tauri เท่านั้น ไม่สามารถใช้ mock browser preview แทนได้
+
+```powershell
+# เมื่อรันครั้งแรก หรือหลังแก้ไข Rust Core, Native Bridge, การตั้งค่า Cargo
+npm run dev:desktop-shell
+
+# สำหรับการพัฒนา frontend/desktop ประจำวันหลังจาก build มาตรฐานสำเร็จมาแล้ว
+npm run dev:desktop:fast
+```
+
+`dev:desktop:fast` จะข้ามการ rebuild Native Bridge เวอร์ชัน release และ UAC elevation ที่ `dev:desktop-shell` ทำ โดยจะเริ่มและ prewarm บริการ Vite ที่พอร์ต `4173` ก่อน แล้วเข้าสู่ `tauri dev` พร้อมใช้ Cargo incremental cache ซ้ำ ไม่สามารถรัน debug EXE ได้โดยตรง เพราะ Tauri CLI ยังทำหน้าที่จัดเตรียม runtime context ที่ WebView IPC ต้องใช้ ควรใช้ `dev:desktop-shell` ต่อไปเมื่อรันครั้งแรก หลังแก้ไข source ของ Native Bridge หรือเมื่อต้องตรวจสอบ elevation flow
+
+หลังจากเดสก์ท็อปเชลล์เริ่มทำงานแล้ว ให้ตรวจสอบสัญญาณต่อไปนี้เป็นอย่างน้อยที่หน้า "Diagnostics":
+
+- `isTauri`, `IPC Bridge`, `window.ipc` และ `isTauriRuntime` มีค่าเป็น `true` ทั้งหมด
+- สถานะ bridge เป็น `tauri-shell` และ environment state ที่ normalize แล้วไม่ใช่ `runtime-error`
+- สถานะ storage เป็น `ready` เวอร์ชัน schema อย่างน้อย `1` และ credential backend ไม่ใช่ `browser-preview`
+- `artifacts/diagnostics/logs/app.log` แสดง `debug_ipc_ping` และไม่มี `startup.ipc_watchdog_reload` หลังเริ่มต้น
+
+หยุด process การพัฒนาเดสก์ท็อปก่อนรันการตรวจสอบ Rust เพื่อไม่ให้ `tauri dev` ที่ยังทำงานอยู่ครอง Cargo build lock เป็นเวลานาน:
+
 ### Rust desktop shell
 
 ```bash
@@ -273,4 +310,4 @@ npm run driver:uninstall
 
 ## ใบอนุญาต
 
-โปรเจกต์นี้ใช้ private license (Private) สงวนลิขสิทธิ์ทั้งหมด
+โปรเจกต์นี้ใช้ใบอนุญาต [Apache License 2.0](../LICENSE)

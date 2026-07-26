@@ -47,7 +47,8 @@ Omni Translate Windows के लिए रियल-टाइम ऑडिय�
 - **Node.js** >= 20
 - **Rust stable**, edition 2021
 - **Windows 10/11**
-- **Visual Studio 2022 + WDK 10.0.26100**, केवल virtual audio driver build करते समय आवश्यक
+- **Visual Studio 2022 Build Tools + Desktop development with C++**, Tauri desktop shell और Native Bridge build करते समय आवश्यक; command line में `cl.exe` और `link.exe` मिलने चाहिए
+- **WDK 10.0.26100**, केवल virtual audio driver build करते समय आवश्यक
 - development driver load करने के लिए Windows TESTSIGNING mode चाहिए; सामान्य frontend preview के लिए driver या administrator privilege की आवश्यकता नहीं होती
 
 ### इंस्टॉल और रन
@@ -57,8 +58,8 @@ Omni Translate Windows के लिए रियल-टाइम ऑडिय�
 git clone <repo-url>
 cd omni-translate
 
-# 2. dependencies install करें
-npm install
+# 2. package-lock.json के अनुसार dependencies install करें
+npm ci
 
 # 3. frontend browser preview शुरू करें
 npm run dev:desktop
@@ -69,12 +70,22 @@ npm run dev:desktop-shell
 
 Browser preview mode अपने-आप Mock runtime का उपयोग करता है, इसलिए यह UI development और page checks के लिए उपयुक्त है। पूरा desktop app Tauri/Rust runtime शुरू करता है और driver installation या repair action होने पर ही elevation flow चलाता है।
 
+पूरा desktop shell पहली बार शुरू करने से पहले, Visual Studio 2022 के **Developer PowerShell** या **x64 Native Tools Command Prompt** से repository में प्रवेश करने की सलाह दी जाती है। यदि सामान्य PowerShell में `link.exe not found` त्रुटि आए, तो पहले MSVC environment लोड करें:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+npm run dev:desktop-shell
+```
+
+`dev:desktop-shell` पहले release version का Native Bridge build करता है, फिर Tauri dev के माध्यम से Vite, Rust Core और desktop window शुरू करता है; script UAC का अनुरोध करेगी। पहली बार Rust build में dependencies download और compile करनी पड़ती हैं, इसलिए यह बाद की शुरुआत से काफी अधिक समय लेती है।
+
 ### सामान्य कमांड
 
 | कमांड | विवरण |
 | --- | --- |
 | `npm run dev:desktop` | React/Vite frontend dev server शुरू करता है |
 | `npm run dev:desktop-shell` | elevation script के माध्यम से पूरा Tauri desktop app शुरू करता है |
+| `npm run dev:desktop:fast` | release Native Bridge rebuild और elevation को skip करता है, दैनिक desktop debugging के लिए Cargo incremental cache reuse करता है |
 | `npm run lint:desktop` | desktop frontend के लिए ESLint चलाता है |
 | `npm run check:desktop` | TypeScript type checking चलाता है |
 | `npm run build:desktop` | frontend assets build करता है |
@@ -146,6 +157,9 @@ omni-translate/
 │   │           ├── runtime/        # windows, tray, runtime state
 │   │           └── storage/        # SQLite repository और credential handling
 │   └── bridge-service-native/      # Rust Native Bridge Service, एकमात्र production bridge implementation
+├── crates/                         # root Cargo workspace की साझा लाइब्रेरी
+│   ├── omni-bridge-protocol/       # Desktop और Native Bridge के बीच साझा pipe protocol
+│   └── omni-logging/               # साझा non-blocking logging pipeline
 ├── drivers/
 │   └── windows-virtual-mic/        # SYSVAD WaveRT virtual audio driver
 │       ├── include/                # Driver/Bridge shared IOCTL ABI
@@ -244,7 +258,30 @@ Structured configuration मुख्य सत्य स्रोत के र
 
 Frontend को browser में develop करने के लिए `npm run dev:desktop` उपयोग करें। Non-Tauri environments में runtime layer Mock data लौटाती है, जिससे driver install किए बिना या Rust backend start किए बिना pages और interactions check किए जा सकते हैं।
 
-### Rust Desktop Shell
+### डेस्कटॉप शेल विकास और परीक्षण
+
+`invoke`, event, SQLite, Windows Credential Manager, Native Bridge, system audio या subtitle overlay से जुड़े काम के लिए Tauri desktop shell में ही परीक्षण करना अनिवार्य है; browser Mock preview से इसे प्रतिस्थापित नहीं किया जा सकता।
+
+```powershell
+# पहली बार शुरू करते समय, या Rust Core, Native Bridge, Cargo configuration बदलने पर
+npm run dev:desktop-shell
+
+# standard build सफलतापूर्वक पूरा होने के बाद दैनिक frontend/desktop debugging
+npm run dev:desktop:fast
+```
+
+`dev:desktop:fast`, `dev:desktop-shell` द्वारा किए जाने वाले release Native Bridge rebuild और UAC elevation को छोड़ देता है; यह पहले port `4173` पर Vite service शुरू और prewarm करता है, फिर `tauri dev` में प्रवेश कर Cargo incremental cache reuse करता है। debug EXE को सीधे नहीं चलाया जा सकता, क्योंकि Tauri CLI ही WebView IPC के लिए आवश्यक runtime context प्रदान करता है। पहली बार चलाने पर, Native Bridge source code बदलने के बाद, या elevation flow verify करना हो तब भी `dev:desktop-shell` का उपयोग करना चाहिए।
+
+Desktop shell शुरू होने के बाद, "डायग्नोस्टिक्स" पेज पर कम से कम इन signals की पुष्टि करें:
+
+- `isTauri`, `IPC Bridge`, `window.ipc` और `isTauriRuntime` सभी `true` हों।
+- Bridge status `tauri-shell` हो, normalized environment state `runtime-error` न हो।
+- Storage status `ready` हो, Schema version कम से कम `1` हो, credential backend `browser-preview` न हो।
+- `artifacts/diagnostics/logs/app.log` में `debug_ipc_ping` दिखे, और शुरुआत के बाद `startup.ipc_watchdog_reload` न आए।
+
+Desktop development process समाप्त करने के बाद ही Rust checks चलाएं, ताकि चल रही `tauri dev` लंबे समय तक Cargo build lock को occupy न करे:
+
+### Rust desktop shell
 
 ```bash
 npm run check:desktop-shell
@@ -273,4 +310,4 @@ npm run driver:uninstall
 
 ## लाइसेंस
 
-यह प्रोजेक्ट private license के अंतर्गत है। सभी अधिकार सुरक्षित हैं।
+यह प्रोजेक्ट [Apache License 2.0](../LICENSE) लाइसेंस के अंतर्गत है।

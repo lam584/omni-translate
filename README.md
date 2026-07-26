@@ -151,6 +151,9 @@ omni-translate/
 │   │           ├── runtime/        # 窗口、托盘、运行时状态
 │   │           └── storage/        # SQLite 仓库与凭据管理
 │   └── bridge-service-native/      # Rust Native Bridge Service，唯一生产桥接实现
+├── crates/                         # 根 Cargo workspace 共享库
+│   ├── omni-bridge-protocol/       # Desktop 与 Native Bridge 共用的管道协议
+│   └── omni-logging/               # 共享非阻塞日志管线
 ├── drivers/
 │   └── windows-virtual-mic/        # SYSVAD WaveRT 虚拟音频驱动
 │       ├── include/                # Driver/Bridge 共享 IOCTL ABI

@@ -25,20 +25,20 @@
     </p>
 </h4>
 
-Omni Translate adalah aplikasi desktop Windows untuk terjemahan audio real-time. Aplikasi ini ditujukan untuk workflow seperti terjemahan subtitle video, terjemahan suara game, serta terjemahan dua arah untuk ruang suara atau rapat. Aplikasi menghubungkan virtual audio driver, Native Bridge, Rust core runtime, dan unified AI gateway untuk memproses audio capture, ASR, terjemahan LLM, TTS, rendering subtitle, dan playback routing.
+Omni Translate adalah aplikasi desktop Windows untuk skenario terjemahan audio real-time, mencakup workflow seperti terjemahan subtitle video, terjemahan suara game, serta terjemahan dua arah untuk ruang suara atau rapat. Aplikasi menghubungkan virtual audio driver, Native Bridge, Rust Core, dan unified AI Gateway untuk menyambungkan system audio capture, ASR, terjemahan LLM, TTS, subtitle rendering, dan audio playback.
 
 ## Fitur
 
-- **Terjemahan subtitle real-time**: Menangkap audio sistem atau mikrofon, mengenali ucapan, dan menampilkan subtitle terjemahan di jendela utama serta overlay.
-- **Overlay subtitle mengambang**: Jendela transparan, tanpa bingkai, dan always-on-top yang dirancang untuk berada di atas video, game, atau aplikasi rapat.
-- **Terjemahan suara dua arah**: Mendukung mode routing watch, game, dan voice room untuk subtitle/suara inbound serta output virtual microphone outbound.
-- **Virtual audio driver**: Virtual audio driver Windows berbasis SYSVAD WaveRT yang terhubung ke user mode melalui IOCTL dan shared ABI.
-- **Rust Native Bridge**: `apps/bridge-service-native` adalah satu-satunya implementasi bridge produksi, menangani WASAPI, Named Pipe IPC, audio frames, dan komunikasi driver.
-- **Unified AI Gateway**: Integrasi provider DashScope dan OpenAI-compatible berbasis template dengan transport HTTP, streaming HTTP, dan WebSocket.
-- **Manajemen glossary**: Mengimpor, mengekspor, menggabungkan, dan memprioritaskan paket glossary domain, lalu menyuntikkannya ke translation prompt flow.
-- **Penyimpanan credential aman**: API key dan secret lain disimpan di Windows Credential Manager, bukan di konfigurasi bisnis plaintext.
-- **Diagnostics dan quality gates**: Driver health probes, model traces, log export, Watch Mode live-link tests, dan release quality gates.
-- **20 bahasa UI**: Resource locale saat ini mencakup `ar`, `bn`, `de`, `en`, `es`, `fil`, `fr`, `hi`, `id`, `ja`, `ko`, `mr`, `pt`, `ru`, `ta`, `te`, `th`, `tr`, `vi`, dan `zh-CN`.
+- **Terjemahan subtitle real-time**: Menangkap audio sistem atau mikrofon, mengenali secara real-time, dan menampilkan subtitle terjemahan, mendukung tampilan di jendela utama maupun jendela mengambang.
+- **Overlay subtitle mengambang**: Jendela independen yang transparan, tanpa bingkai, dan always-on-top, dapat berada di atas video, game, atau software rapat.
+- **Terjemahan suara dua arah**: Mendukung mode routing watch, game, dan voice room, mencakup subtitle/suara terjemahan inbound serta output virtual microphone outbound.
+- **Virtual audio driver**: Virtual audio driver Windows berbasis SYSVAD WaveRT, berkomunikasi dengan bridge service user mode melalui IOCTL/shared ABI.
+- **Rust Native Bridge**: `apps/bridge-service-native` adalah satu-satunya implementasi bridge produksi saat ini, menangani WASAPI, Named Pipe IPC, audio frame, dan interaksi driver.
+- **Unified AI Gateway**: Integrasi provider DashScope dan OpenAI-compatible berbasis template, mendukung bentuk HTTP, streaming HTTP, dan WebSocket.
+- **Manajemen glossary**: Mendukung import, export, merge, dan strategi prioritas paket glossary domain, lalu menyuntikkannya ke alur translation prompt.
+- **Manajemen credential aman**: Informasi sensitif seperti API Key disimpan di Windows Credential Manager, tidak ditulis sebagai plaintext ke konfigurasi bisnis.
+- **Diagnostics dan quality gate**: Menyediakan driver health probe, model Trace, log export, Watch Mode live-link test, dan quality gate sebelum rilis.
+- **20 bahasa UI**: Resource bahasa UI saat ini mencakup `ar`, `bn`, `de`, `en`, `es`, `fil`, `fr`, `hi`, `id`, `ja`, `ko`, `mr`, `pt`, `ru`, `ta`, `te`, `th`, `tr`, `vi`, dan `zh-CN`.
 
 ## Mulai Cepat
 
@@ -47,27 +47,37 @@ Omni Translate adalah aplikasi desktop Windows untuk terjemahan audio real-time.
 - **Node.js** >= 20
 - **Rust stable**, edition 2021
 - **Windows 10/11**
-- **Visual Studio 2022 + WDK 10.0.26100**, hanya diperlukan saat membangun virtual audio driver
-- Memuat development drivers memerlukan mode Windows TESTSIGNING; frontend preview normal tidak memerlukan driver atau hak administrator
+- **Visual Studio 2022 Build Tools + Desktop development with C++**, diperlukan saat mengompilasi Tauri desktop shell dan Native Bridge; `cl.exe` dan `link.exe` harus dapat ditemukan dari command line
+- **WDK 10.0.26100**, hanya diperlukan saat mengompilasi virtual audio driver
+- Memuat development driver memerlukan mode Windows TESTSIGNING; frontend preview normal tidak memerlukan driver atau hak administrator
 
 ### Instalasi dan Menjalankan
 
 ```bash
-# 1. Clone the repository
+# 1. Clone repositori
 git clone <repo-url>
 cd omni-translate
 
-# 2. Install dependencies
-npm install
+# 2. Install dependencies sesuai package-lock.json
+npm ci
 
-# 3. Start the frontend browser preview
+# 3. Mulai frontend browser preview
 npm run dev:desktop
 
-# 4. Start the full Tauri desktop app
+# 4. Mulai aplikasi desktop Tauri penuh
 npm run dev:desktop-shell
 ```
 
 Mode browser preview otomatis menggunakan mock runtime, sehingga cocok untuk pengembangan UI dan pemeriksaan halaman. Aplikasi desktop penuh memulai runtime Tauri/Rust dan hanya memicu elevation saat tindakan instalasi atau perbaikan driver terlibat.
+
+Sebelum menjalankan desktop shell penuh untuk pertama kalinya, disarankan masuk ke repositori dari **Developer PowerShell** atau **x64 Native Tools Command Prompt** milik Visual Studio 2022. Jika PowerShell biasa menampilkan error `link.exe not found`, muat dulu environment MSVC:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+npm run dev:desktop-shell
+```
+
+`dev:desktop-shell` akan membangun versi release Native Bridge terlebih dahulu, lalu memulai Vite, Rust Core, dan jendela desktop melalui Tauri dev; skrip ini akan meminta UAC. Build Rust pertama memerlukan waktu untuk mengunduh dan mengompilasi dependency, sehingga durasinya jauh lebih lama dibanding start berikutnya.
 
 ### Perintah Umum
 
@@ -75,6 +85,7 @@ Mode browser preview otomatis menggunakan mock runtime, sehingga cocok untuk pen
 | --- | --- |
 | `npm run dev:desktop` | Memulai React/Vite frontend dev server |
 | `npm run dev:desktop-shell` | Memulai aplikasi desktop Tauri penuh melalui elevation script |
+| `npm run dev:desktop:fast` | Melewati rebuild release Native Bridge dan elevation, memakai ulang Cargo incremental cache untuk pengembangan desktop harian |
 | `npm run lint:desktop` | Menjalankan ESLint untuk frontend desktop |
 | `npm run check:desktop` | Menjalankan pemeriksaan tipe TypeScript |
 | `npm run build:desktop` | Membangun frontend assets |
@@ -145,6 +156,9 @@ omni-translate/
 │   │           ├── runtime/        # Windows, tray, runtime state
 │   │           └── storage/        # SQLite repository and credential handling
 │   └── bridge-service-native/      # Rust Native Bridge Service, only production bridge implementation
+├── crates/                         # Root Cargo workspace shared libraries
+│   ├── omni-bridge-protocol/       # Pipe protocol shared by Desktop and Native Bridge
+│   └── omni-logging/               # Shared non-blocking logging pipeline
 ├── drivers/
 │   └── windows-virtual-mic/        # SYSVAD WaveRT virtual audio driver
 │       ├── include/                # Shared Driver/Bridge IOCTL ABI
@@ -191,7 +205,7 @@ Microphone
   → Target app reads the virtual microphone / virtual endpoint
 ```
 
-### Latensi dan Mode Degradasi
+### Latensi dan Strategi Degradasi
 
 - Subtitle dan dubbed speech adalah hasil penjadwalan yang terpisah; subtitle di-commit terlebih dahulu.
 - Saat latensi provider melebihi budget, `latency-high` dipancarkan, subtitle tetap berjalan, dan TTS berpindah ke status deferred/queued.
@@ -243,6 +257,29 @@ Structured configuration menggunakan SQLite sebagai main source of truth. Sensit
 
 Gunakan `npm run dev:desktop` untuk mengembangkan frontend di browser. Di lingkungan non-Tauri, runtime layer mengembalikan mock data sehingga halaman dan interaksi dapat diperiksa tanpa menginstal driver atau memulai Rust backend.
 
+### Pengembangan dan Pengujian Desktop Shell
+
+Untuk pekerjaan yang menyentuh `invoke`, event, SQLite, Windows Credential Manager, Native Bridge, audio sistem, atau subtitle overlay, pengujian wajib dilakukan di dalam desktop shell Tauri, tidak bisa digantikan dengan mock browser preview.
+
+```powershell
+# Saat pertama kali menjalankan, atau setelah mengubah Rust Core, Native Bridge, atau konfigurasi Cargo
+npm run dev:desktop-shell
+
+# Untuk pengembangan frontend/desktop harian setelah build standar berhasil sebelumnya
+npm run dev:desktop:fast
+```
+
+`dev:desktop:fast` melewati rebuild release Native Bridge dan elevation UAC yang dijalankan `dev:desktop-shell`; skrip ini akan lebih dulu memulai dan melakukan prewarm server Vite di port `4173`, lalu masuk ke `tauri dev` sambil memakai ulang Cargo incremental cache. Debug EXE tidak dapat dijalankan langsung karena Tauri CLI juga menyediakan konteks runtime yang dibutuhkan WebView IPC. Tetap gunakan `dev:desktop-shell` saat menjalankan pertama kali, setelah perubahan source Native Bridge, atau saat perlu memverifikasi alur elevation.
+
+Setelah desktop shell berjalan, verifikasi minimal sinyal berikut di halaman "Diagnostics":
+
+- `isTauri`, `IPC Bridge`, `window.ipc`, dan `isTauriRuntime` semuanya bernilai `true`.
+- Status bridge adalah `tauri-shell`, environment state ternormalisasi bukan `runtime-error`.
+- Status storage `ready`, versi schema minimal `1`, dan credential backend bukan `browser-preview`.
+- `artifacts/diagnostics/logs/app.log` menampilkan `debug_ipc_ping`, dan tidak ada `startup.ipc_watchdog_reload` setelah startup.
+
+Hentikan proses pengembangan desktop sebelum menjalankan pemeriksaan Rust, agar `tauri dev` yang masih berjalan tidak menahan Cargo build lock dalam waktu lama:
+
 ### Rust Desktop Shell
 
 ```bash
@@ -272,4 +309,4 @@ npm run driver:uninstall
 
 ## Lisensi
 
-Proyek ini berlisensi privat. Semua hak dilindungi.
+Proyek ini menggunakan lisensi [Apache License 2.0](../LICENSE).

@@ -25,20 +25,20 @@
     </p>
 </h4>
 
-Omni Translate là ứng dụng desktop Windows dành cho dịch âm thanh thời gian thực. Ứng dụng hướng đến các workflow như dịch phụ đề video, dịch giọng nói trong game và dịch hai chiều cho phòng thoại hoặc cuộc họp. Ứng dụng kết nối virtual audio driver, Native Bridge, Rust core runtime và unified AI gateway để xử lý audio capture, ASR, dịch bằng LLM, TTS, subtitle rendering và playback routing.
+Omni Translate là ứng dụng desktop Windows dành cho các kịch bản dịch âm thanh thời gian thực, bao phủ các workflow như dịch phụ đề video, dịch giọng nói trong game và dịch hai chiều cho phòng thoại hoặc cuộc họp. Ứng dụng kết nối virtual audio driver, Native Bridge, Rust Core và unified AI Gateway để liên kết system audio capture, ASR, dịch bằng LLM, TTS, subtitle rendering và audio playback.
 
 ## Tính Năng
 
-- **Dịch phụ đề thời gian thực**: Thu âm thanh hệ thống hoặc micro, nhận dạng lời nói và hiển thị phụ đề đã dịch trong cửa sổ chính và overlay.
-- **Overlay phụ đề nổi**: Cửa sổ trong suốt, không viền, always-on-top, được thiết kế để nằm trên video, game hoặc ứng dụng họp.
-- **Dịch giọng nói hai chiều**: Hỗ trợ các chế độ routing watch, game và voice room cho phụ đề/giọng nói inbound và output virtual microphone outbound.
-- **Virtual audio driver**: Virtual audio driver Windows dựa trên SYSVAD WaveRT, kết nối với user mode qua IOCTL và shared ABI.
-- **Rust Native Bridge**: `apps/bridge-service-native` là implementation bridge production duy nhất, xử lý WASAPI, Named Pipe IPC, audio frames và giao tiếp driver.
-- **Unified AI Gateway**: Tích hợp provider DashScope và OpenAI-compatible dựa trên template với các transport HTTP, streaming HTTP và WebSocket.
-- **Quản lý glossary**: Import, export, merge và ưu tiên các domain glossary package, sau đó inject chúng vào translation prompt flow.
-- **Lưu trữ credential an toàn**: API key và các secret khác được lưu trong Windows Credential Manager thay vì plaintext business configuration.
-- **Diagnostics và quality gates**: Driver health probes, model traces, log export, Watch Mode live-link tests và release quality gates.
-- **20 ngôn ngữ UI**: Locale resources hiện tại bao phủ `ar`, `bn`, `de`, `en`, `es`, `fil`, `fr`, `hi`, `id`, `ja`, `ko`, `mr`, `pt`, `ru`, `ta`, `te`, `th`, `tr`, `vi` và `zh-CN`.
+- **Dịch phụ đề thời gian thực**: Thu âm thanh hệ thống hoặc micro, nhận dạng theo thời gian thực và hiển thị phụ đề đã dịch, hỗ trợ hiển thị ở cửa sổ chính và cửa sổ nổi.
+- **Overlay phụ đề nổi**: Cửa sổ độc lập trong suốt, không viền, always-on-top, có thể nằm trên video, game hoặc phần mềm họp.
+- **Dịch giọng nói hai chiều**: Hỗ trợ các chế độ routing watch, game và voice room, bao phủ phụ đề/giọng nói dịch inbound và output virtual microphone outbound.
+- **Virtual audio driver**: Virtual audio driver Windows dựa trên SYSVAD WaveRT, giao tiếp với bridge service ở user mode qua IOCTL/shared ABI.
+- **Rust Native Bridge**: `apps/bridge-service-native` là implementation bridge production duy nhất hiện tại, xử lý WASAPI, Named Pipe IPC, audio frame và tương tác driver.
+- **Unified AI Gateway**: Tích hợp provider DashScope và OpenAI-compatible dựa trên template, hỗ trợ các hình thức HTTP, streaming HTTP và WebSocket.
+- **Quản lý glossary**: Hỗ trợ import, export, merge và chiến lược ưu tiên cho các glossary package theo domain, sau đó inject vào luồng translation prompt.
+- **Lưu trữ credential an toàn**: Thông tin nhạy cảm như API Key được lưu trong Windows Credential Manager, không ghi dưới dạng plaintext vào cấu hình nghiệp vụ.
+- **Diagnostics và quality gate**: Cung cấp driver health probe, model Trace, log export, Watch Mode live-link test và quality gate trước khi phát hành.
+- **20 ngôn ngữ UI**: Tài nguyên ngôn ngữ UI hiện tại bao phủ `ar`, `bn`, `de`, `en`, `es`, `fil`, `fr`, `hi`, `id`, `ja`, `ko`, `mr`, `pt`, `ru`, `ta`, `te`, `th`, `tr`, `vi` và `zh-CN`.
 
 ## Bắt Đầu Nhanh
 
@@ -47,27 +47,37 @@ Omni Translate là ứng dụng desktop Windows dành cho dịch âm thanh thờ
 - **Node.js** >= 20
 - **Rust stable**, edition 2021
 - **Windows 10/11**
-- **Visual Studio 2022 + WDK 10.0.26100**, chỉ cần khi build virtual audio driver
+- **Visual Studio 2022 Build Tools + Desktop development with C++**, cần khi build Tauri desktop shell và Native Bridge; dòng lệnh phải tìm thấy `cl.exe` và `link.exe`
+- **WDK 10.0.26100**, chỉ cần khi build virtual audio driver
 - Việc load development drivers yêu cầu chế độ Windows TESTSIGNING; frontend preview thông thường không cần driver hoặc quyền administrator
 
 ### Cài Đặt và Chạy
 
 ```bash
-# 1. Clone the repository
+# 1. Clone repository
 git clone <repo-url>
 cd omni-translate
 
-# 2. Install dependencies
-npm install
+# 2. Cài dependencies theo package-lock.json
+npm ci
 
-# 3. Start the frontend browser preview
+# 3. Khởi động frontend browser preview
 npm run dev:desktop
 
-# 4. Start the full Tauri desktop app
+# 4. Khởi động ứng dụng Tauri desktop đầy đủ
 npm run dev:desktop-shell
 ```
 
 Chế độ browser preview tự động dùng mock runtime, phù hợp cho phát triển UI và kiểm tra trang. Ứng dụng desktop đầy đủ khởi động Tauri/Rust runtime và chỉ kích hoạt elevation khi có thao tác liên quan đến cài đặt hoặc sửa chữa driver.
+
+Trước khi khởi động desktop shell đầy đủ lần đầu, nên vào repository từ **Developer PowerShell** hoặc **x64 Native Tools Command Prompt** của Visual Studio 2022. Nếu PowerShell thông thường báo lỗi `link.exe not found`, hãy load môi trường MSVC trước:
+
+```powershell
+& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\BuildTools\Common7\Tools\Launch-VsDevShell.ps1" -Arch amd64 -HostArch amd64
+npm run dev:desktop-shell
+```
+
+`dev:desktop-shell` sẽ build bản release của Native Bridge trước, sau đó khởi động Vite, Rust Core và cửa sổ desktop thông qua Tauri dev; script sẽ yêu cầu UAC. Lần build Rust đầu tiên cần tải và biên dịch dependencies nên sẽ mất nhiều thời gian hơn đáng kể so với những lần khởi động sau.
 
 ### Lệnh Thường Dùng
 
@@ -75,6 +85,7 @@ Chế độ browser preview tự động dùng mock runtime, phù hợp cho phá
 | --- | --- |
 | `npm run dev:desktop` | Khởi động React/Vite frontend dev server |
 | `npm run dev:desktop-shell` | Khởi động ứng dụng Tauri desktop đầy đủ thông qua elevation script |
+| `npm run dev:desktop:fast` | Bỏ qua việc rebuild release Native Bridge và elevation, tái sử dụng Cargo incremental cache cho việc phát triển desktop hằng ngày |
 | `npm run lint:desktop` | Chạy ESLint cho desktop frontend |
 | `npm run check:desktop` | Chạy TypeScript type checking |
 | `npm run build:desktop` | Xây dựng tài nguyên frontend |
@@ -145,6 +156,9 @@ omni-translate/
 │   │           ├── runtime/        # Windows, tray, runtime state
 │   │           └── storage/        # SQLite repository and credential handling
 │   └── bridge-service-native/      # Rust Native Bridge Service, only production bridge implementation
+├── crates/                         # Root Cargo workspace shared libraries
+│   ├── omni-bridge-protocol/       # Pipe protocol shared by Desktop and Native Bridge
+│   └── omni-logging/               # Shared non-blocking logging pipeline
 ├── drivers/
 │   └── windows-virtual-mic/        # SYSVAD WaveRT virtual audio driver
 │       ├── include/                # Shared Driver/Bridge IOCTL ABI
@@ -191,7 +205,7 @@ Microphone
   → Target app reads the virtual microphone / virtual endpoint
 ```
 
-### Độ Trễ và Chế Độ Giảm Cấp
+### Độ Trễ và Chiến Lược Giảm Cấp
 
 - Subtitles và dubbed speech là các kết quả scheduling riêng biệt; subtitles được commit trước.
 - Khi provider latency vượt budget, `latency-high` được emit, subtitles tiếp tục xuất ra, còn TTS chuyển sang trạng thái deferred/queued.
@@ -243,6 +257,29 @@ Structured configuration dùng SQLite làm main source of truth. Sensitive crede
 
 Dùng `npm run dev:desktop` để phát triển frontend trong browser. Trong môi trường non-Tauri, runtime layer trả về mock data để có thể kiểm tra trang và tương tác mà không cần cài driver hoặc khởi động Rust backend.
 
+### Phát Triển và Kiểm Thử Desktop Shell
+
+Với các thay đổi liên quan đến `invoke`, event, SQLite, Windows Credential Manager, Native Bridge, audio hệ thống hoặc subtitle overlay, bắt buộc phải kiểm thử trong desktop shell Tauri, không thể thay thế bằng mock browser preview.
+
+```powershell
+# Khi chạy lần đầu, hoặc sau khi thay đổi Rust Core, Native Bridge, cấu hình Cargo
+npm run dev:desktop-shell
+
+# Cho việc phát triển frontend/desktop hằng ngày sau khi đã build chuẩn thành công trước đó
+npm run dev:desktop:fast
+```
+
+`dev:desktop:fast` bỏ qua việc rebuild release Native Bridge và elevation UAC mà `dev:desktop-shell` thực hiện; script sẽ khởi động và prewarm server Vite ở port `4173` trước, sau đó vào `tauri dev` trong khi tái sử dụng Cargo incremental cache. Không thể chạy trực tiếp debug EXE vì Tauri CLI còn cung cấp runtime context mà WebView IPC cần. Vẫn nên dùng `dev:desktop-shell` khi chạy lần đầu, sau khi thay đổi source Native Bridge, hoặc khi cần xác minh luồng elevation.
+
+Sau khi desktop shell khởi động, xác minh tối thiểu các tín hiệu sau ở trang "Diagnostics":
+
+- `isTauri`, `IPC Bridge`, `window.ipc` và `isTauriRuntime` đều là `true`.
+- Trạng thái bridge là `tauri-shell`, environment state đã normalize không phải `runtime-error`.
+- Trạng thái storage là `ready`, phiên bản schema tối thiểu là `1`, credential backend không phải `browser-preview`.
+- `artifacts/diagnostics/logs/app.log` xuất hiện `debug_ipc_ping`, và không có `startup.ipc_watchdog_reload` sau khi khởi động.
+
+Dừng tiến trình phát triển desktop trước khi chạy các kiểm tra Rust, để tránh `tauri dev` đang chạy giữ Cargo build lock trong thời gian dài:
+
 ### Rust Desktop Shell
 
 ```bash
@@ -272,4 +309,4 @@ npm run driver:uninstall
 
 ## Giấy Phép
 
-Dự án này dùng giấy phép riêng tư. Bảo lưu mọi quyền.
+Dự án này sử dụng giấy phép [Apache License 2.0](../LICENSE).

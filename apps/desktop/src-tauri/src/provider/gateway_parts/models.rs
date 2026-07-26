@@ -33,7 +33,7 @@ impl ModelCatalogService {
             Ok(models) => ProviderModelCatalogRuntime {
                 provider_id: provider.provider_id,
                 endpoint,
-                fetched_at: time::now_marker(),
+                fetched_at: time::now_unix_seconds_marker(),
                 models,
                 error: None,
             },
@@ -64,7 +64,7 @@ fn failed_catalog(
     ProviderModelCatalogRuntime {
         provider_id,
         endpoint,
-        fetched_at: time::now_marker(),
+        fetched_at: time::now_unix_seconds_marker(),
         models: Vec::new(),
         error: Some(error),
     }

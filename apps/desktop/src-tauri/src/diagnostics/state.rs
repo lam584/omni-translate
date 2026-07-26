@@ -144,7 +144,7 @@ impl DiagnosticsStateStore {
                         "OMNI_LOG_LEVEL value \"{trimmed}\" is invalid; expected error/warning/info/debug/verbose"
                     ),
                     None,
-                    crate::runtime::state::now_marker(),
+                    crate::shared::time::now_unix_seconds_marker(),
                     Some(format!("{}:{}", file!(), line!())),
                     None,
                 );
@@ -229,7 +229,7 @@ impl DiagnosticsStateStore {
                     "{}-{}-{}",
                     category,
                     level,
-                    crate::runtime::state::now_marker()
+                    crate::shared::time::now_unix_seconds_marker()
                 ),
                 category: category.to_string(),
                 level: level.to_string(),
@@ -249,7 +249,7 @@ impl DiagnosticsStateStore {
                 "{}-{}-{}",
                 category,
                 level,
-                crate::runtime::state::now_marker()
+                crate::shared::time::now_unix_seconds_marker()
             ),
             category: category.to_string(),
             level: level.to_string(),

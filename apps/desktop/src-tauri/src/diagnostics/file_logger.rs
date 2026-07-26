@@ -77,7 +77,7 @@ impl Log for DiagnosticsForwarder {
             diagnostics_level(record.level()),
             record.args().to_string(),
             None,
-            crate::runtime::state::now_marker(),
+            crate::shared::time::now_unix_seconds_marker(),
             Some(source),
             None,
         );

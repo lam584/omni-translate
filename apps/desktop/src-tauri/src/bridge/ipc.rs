@@ -83,7 +83,7 @@ pub fn initialize_bridge(
             } else {
                 "rollback-required".to_string()
             };
-            next.last_handshake_at = Some(crate::runtime::state::now_marker());
+            next.last_handshake_at = Some(crate::shared::time::now_unix_seconds_marker());
             if next.driver_health == "not-installed" {
                 next.last_error_code = Some("driver.not-installed".to_string());
             } else if next.driver_health == "version-mismatch" {
@@ -391,6 +391,15 @@ mod tests {
         assert!(
             bridge_cli_release_candidates().contains(&bridge_cli_path()),
             "bridge_cli_path must resolve within the release candidate chain in a dev checkout"
+        );
+    }
+
+    #[test]
+    fn assets_root_prefers_the_dev_checkout() {
+        assert_eq!(
+            assets_root(),
+            workspace_root(),
+            "a dev checkout carries scripts/installer, so assets_root must resolve to it"
         );
     }
 

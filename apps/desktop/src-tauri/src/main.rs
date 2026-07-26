@@ -8,6 +8,7 @@ mod contract_keys_fixture;
 mod diagnostics;
 mod provider;
 mod runtime;
+mod shared;
 mod storage;
 
 use audio::events::{
@@ -29,7 +30,8 @@ use runtime::events::{
     toggle_subtitle_overlay,
 };
 use runtime::windows::ensure_subtitle_overlay_window;
-use runtime::state::{now_marker, RuntimeStateStore};
+use runtime::state::RuntimeStateStore;
+use shared::time::now_unix_seconds_marker;
 use runtime::tray::initialize_tray;
 use storage::credential::{CredentialVault, KeyringCredentialVault};
 use storage::events::{bootstrap_storage, load_config_draft};
@@ -767,7 +769,7 @@ fn main() {
                             "Tauri shell、主窗口、托盘与存储层已初始化。schemaVersion={} / db={}",
                             storage_snapshot.schema_version, storage_snapshot.database_path
                         ),
-                        now_marker(),
+                        now_unix_seconds_marker(),
                     )
                 } else {
                     RuntimeNotification::warning(
@@ -778,7 +780,7 @@ fn main() {
               storage_snapshot.schema_version,
               storage_snapshot.database_path
             ),
-                        now_marker(),
+                        now_unix_seconds_marker(),
                     )
                 },
             )?;

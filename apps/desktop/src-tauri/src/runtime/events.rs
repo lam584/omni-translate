@@ -7,7 +7,8 @@ use crate::diagnostics::state::DiagnosticsStateStore;
 use crate::storage::StorageStateStore;
 
 use super::contracts::{RuntimeNotification, RuntimeSnapshot};
-use super::state::{now_marker, RuntimeStateStore};
+use super::state::RuntimeStateStore;
+use crate::shared::time::now_unix_seconds_marker;
 use super::windows::apply_subtitle_overlay_background;
 use super::windows::apply_subtitle_overlay_click_through;
 use super::windows::apply_subtitle_overlay_region;
@@ -205,7 +206,7 @@ pub async fn bootstrap_runtime(
             "runtime-bootstrap",
             "rust-core",
             "前端已建立 invoke/event 通道，主窗口与托盘就绪。字幕浮窗将在首次使用时懒加载。",
-            now_marker(),
+            now_unix_seconds_marker(),
         ),
     )
     .map_err(|error| error.to_string())?;

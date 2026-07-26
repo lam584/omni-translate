@@ -141,10 +141,10 @@ fn push_event(
     request_id: Option<String>,
 ) {
     let event = SpeechDispatchEventRuntime {
-        event_id: format!("{}-{}", kind, now_marker()),
+        event_id: format!("{}-{}", kind, now_unix_millis_marker()),
         kind: kind.to_string(),
         summary,
-        emitted_at: now_marker(),
+        emitted_at: now_unix_millis_marker(),
         cue_id,
         request_id,
     };

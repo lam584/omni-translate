@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use tungstenite::{Error as WebSocketError, Message};
 
 use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError, ProviderStreamEventRecord, TtsAudioChunk, TtsSynthesisResult};
-use super::{time::now_marker, transport::WebSocketTransport};
+use super::{time::now_unix_seconds_marker, transport::WebSocketTransport};
 
 #[derive(Debug, Default)]
 pub(crate) struct RealtimeAudioSynthesizer;
@@ -32,7 +32,7 @@ pub(crate) fn synthesize(
 
     let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(&provider)?;
 
-    let request_id = format!("realtime-audio-{}", now_marker());
+    let request_id = format!("realtime-audio-{}", now_unix_seconds_marker());
     let safe_id = request_id.replace([':', '-'], "_");
     let mut session = json!({
       "event_id": format!("evt_{}_session", safe_id),

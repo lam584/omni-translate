@@ -1,4 +1,4 @@
-use super::time_utils::now_marker;
+use super::time_utils::now_unix_millis_marker;
 
 #[derive(Clone)]
 #[allow(dead_code, reason = "route mix fields are parsed now for forward-compatible mixer policy")]

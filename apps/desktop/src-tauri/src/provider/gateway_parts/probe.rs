@@ -14,7 +14,7 @@ impl ProviderProbeService {
         provider: ProviderDraftInput,
         smoke: ProviderSmokeResult,
     ) -> ProviderProbeProfileRuntime {
-        let checked_at = time::now_marker();
+        let checked_at = time::now_unix_seconds_marker();
         let latency_ms = smoke.first_event_latency_ms.unwrap_or(smoke.duration_ms);
         let response_shape_stable = smoke.status == "completed"
             && smoke.event_log.iter().any(|item| item.event_type == "translation.completed")

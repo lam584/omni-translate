@@ -1,23 +1,20 @@
-use std::time::{SystemTime, UNIX_EPOCH};
+//! Audio-domain time helpers. The marker implementations live in
+//! `crate::shared::time`; these wrappers keep the audio-local names that
+//! the pipeline uses pervasively while making the millisecond semantics
+//! explicit at the single definition site.
 
-pub fn unix_ms() -> u64 {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => duration.as_millis() as u64,
-        Err(_) => 0,
-    }
-}
+/// Current unix time in milliseconds.
+pub use crate::shared::time::now_unix_millis as unix_ms;
 
-pub fn now_marker() -> String {
-    ms_marker(unix_ms())
-}
+/// `unix-ms:` marker for an explicit millisecond value.
+pub use crate::shared::time::unix_millis_marker as ms_marker;
 
-pub fn ms_marker(value: u64) -> String {
-    format!("unix-ms:{}", value)
-}
+/// `unix-ms:` marker for the current instant.
+pub use crate::shared::time::now_unix_millis_marker;
 
 #[cfg(test)]
 mod tests {
-    use super::{ms_marker, now_marker};
+    use super::{ms_marker, now_unix_millis_marker};
 
     /// The frontend parser (utils/runtime-timestamp.ts) pins `unix:` to
     /// seconds and `unix-ms:` to milliseconds; every millisecond marker
@@ -25,6 +22,6 @@ mod tests {
     #[test]
     fn millisecond_markers_use_the_unix_ms_prefix() {
         assert_eq!(ms_marker(1_779_974_788_817), "unix-ms:1779974788817");
-        assert!(now_marker().starts_with("unix-ms:"));
+        assert!(now_unix_millis_marker().starts_with("unix-ms:"));
     }
 }

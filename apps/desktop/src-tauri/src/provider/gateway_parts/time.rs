@@ -1,11 +1,6 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
-pub(crate) fn now_marker() -> String {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => format!("unix:{}", duration.as_secs()),
-        Err(_) => "unix:0".to_string(),
-    }
-}
+/// Second-precision `unix:` marker; the single implementation lives in
+/// `crate::shared::time` (this module re-exports it for gateway callers).
+pub(crate) use crate::shared::time::now_unix_seconds_marker;
 
 pub(crate) fn normalize_timestamp(timestamp: &str) -> String {
     timestamp.replace(':', "-")

@@ -5,7 +5,8 @@ use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use crate::runtime::events::emit_runtime_snapshot;
-use crate::runtime::state::{now_marker, RuntimeStateStore};
+use crate::runtime::state::RuntimeStateStore;
+use crate::shared::time::now_unix_seconds_marker;
 
 use super::contracts::ModelTraceCallRuntime;
 use super::events::append_diagnostics_log_quiet;
@@ -74,7 +75,7 @@ impl ModelTraceRecorder {
     pub fn call(&self, name: impl Into<String>) -> ModelTraceCall {
         let name = name.into();
         let call_id = format!("call-{}", Uuid::new_v4());
-        let started_at = now_marker();
+        let started_at = now_unix_seconds_marker();
         let call = ModelTraceCallRuntime {
             trace_id: self.context.trace_id.clone(),
             call_id: call_id.clone(),
@@ -193,7 +194,7 @@ impl ModelTraceCall {
         }
         self.finished = true;
         self.flush_audio_append_summary();
-        let completed_at = now_marker();
+        let completed_at = now_unix_seconds_marker();
         let elapsed_ms = self.started.elapsed().as_millis();
         let payload = json!({
             "status": status,

@@ -591,7 +591,7 @@ fn process_captured_chunk(
         update.buffer_ahead_ms,
         update.frames_captured,
         update.last_energy_db,
-        Some(now_marker()),
+        Some(now_unix_millis_marker()),
         update.active_segment_id.clone(),
     );
     if let Some(segment) = update.finalized_segment {

@@ -1,8 +1,8 @@
 use std::sync::Mutex;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::bridge::contracts::BridgeRuntimeSnapshot;
-use crate::diagnostics::contracts::DiagnosticsRuntimeSnapshot;
+use crate::shared::contracts::DiagnosticsRuntimeSnapshot;
+use crate::shared::time::now_unix_seconds_marker;
 use crate::storage::contracts::StorageRuntimeSnapshot;
 
 use super::contracts::{RuntimeNotification, RuntimeSnapshot};
@@ -23,7 +23,7 @@ pub struct RuntimeState {
 
 impl RuntimeStateStore {
     pub fn new() -> Self {
-        let now = now_marker();
+        let now = now_unix_seconds_marker();
 
         Self {
             inner: Mutex::new(RuntimeState {
@@ -46,13 +46,13 @@ impl RuntimeStateStore {
     pub fn mark_ready(&self) {
         let mut state = self.inner.lock().expect("runtime state poisoned");
         state.core_state = "ready".to_string();
-        state.last_sync_at = now_marker();
+        state.last_sync_at = now_unix_seconds_marker();
     }
 
     pub fn set_tray_ready(&self, tray_ready: bool) {
         let mut state = self.inner.lock().expect("runtime state poisoned");
         state.tray_ready = tray_ready;
-        state.last_sync_at = now_marker();
+        state.last_sync_at = now_unix_seconds_marker();
     }
 
     pub fn overlay_window_visible(&self) -> bool {
@@ -63,7 +63,7 @@ impl RuntimeStateStore {
     pub fn set_overlay_window_visible(&self, visible: bool) {
         let mut state = self.inner.lock().expect("runtime state poisoned");
         state.overlay_window_visible = visible;
-        state.last_sync_at = now_marker();
+        state.last_sync_at = now_unix_seconds_marker();
     }
 
     pub fn push_notification(&self, notification: RuntimeNotification) {
@@ -85,20 +85,13 @@ impl RuntimeStateStore {
             active_profile_id: state.active_profile_id.clone(),
             tray_ready: state.tray_ready,
             last_sync_at: state.last_sync_at.clone(),
-            session_id: crate::diagnostics::session_id().to_string(),
+            session_id: crate::shared::session_id().to_string(),
             bridge: BridgeRuntimeSnapshot::default(),
             diagnostics: DiagnosticsRuntimeSnapshot::preview(),
             storage: StorageRuntimeSnapshot::preview(),
             windows: Vec::new(),
             notifications: state.notifications.clone(),
         }
-    }
-}
-
-pub fn now_marker() -> String {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => format!("unix:{}", duration.as_secs()),
-        Err(_) => "unix:0".to_string(),
     }
 }
 

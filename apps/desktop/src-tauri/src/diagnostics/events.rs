@@ -12,7 +12,8 @@ use crate::runtime::contracts::RuntimeSnapshot;
 use crate::runtime::events::{
     build_runtime_snapshot, emit_runtime_snapshot, show_subtitle_overlay_with_state,
 };
-use crate::runtime::state::{now_marker, RuntimeStateStore};
+use crate::runtime::state::RuntimeStateStore;
+use crate::shared::time::now_unix_seconds_marker;
 use crate::storage::contracts::StorageRuntimeSnapshot;
 use crate::storage::StorageStateStore;
 
@@ -331,7 +332,7 @@ pub fn append_diagnostics_log_quiet(
         level,
         summary,
         detail,
-        now_marker(),
+        now_unix_seconds_marker(),
         source,
         elapsed_ms,
     )?;
@@ -382,7 +383,7 @@ pub async fn append_frontend_diagnostics_logs(
             &entry.level,
             entry.summary,
             entry.detail,
-            entry.emitted_at.unwrap_or_else(now_marker),
+            entry.emitted_at.unwrap_or_else(now_unix_seconds_marker),
             None,
             None,
         );
@@ -395,7 +396,7 @@ pub async fn append_frontend_diagnostics_logs(
             "warning",
             format!("frontend log buffer dropped {dropped} entries before forwarding"),
             None,
-            now_marker(),
+            now_unix_seconds_marker(),
             Some(format!("{}:{}", file!(), line!())),
             None,
         );
@@ -410,7 +411,7 @@ pub fn run_diagnostics_self_check(
     diagnostics: State<'_, DiagnosticsStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
     let snapshot = build_diagnostics_snapshot(&app);
-    diagnostics.mark_self_check(now_marker());
+    diagnostics.mark_self_check(now_unix_seconds_marker());
     append_diagnostics_log(
         &app,
         "runtime",
@@ -436,7 +437,7 @@ pub fn run_subtitle_overlay_self_check(
     runtime_state: State<'_, RuntimeStateStore>,
     audio_state: State<'_, AudioStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
-    let emitted_at = now_marker();
+    let emitted_at = now_unix_seconds_marker();
     audio_state.push_subtitle_cue(SubtitleCueRuntime {
         cue_id: format!("overlay-self-check-{emitted_at}"),
         route_direction: "diagnostics".to_string(),
@@ -475,7 +476,7 @@ pub async fn export_diagnostics_bundle(
     scope: String,
 ) -> Result<DiagnosticsExportArtifact, String> {
     diagnostics.ensure_directories()?;
-    let generated_at = now_marker();
+    let generated_at = now_unix_seconds_marker();
     let export_dir = format!(
         r"{}\{}-{}",
         diagnostics.exports_dir(),
@@ -515,7 +516,7 @@ pub async fn export_diagnostics_bundle(
         &bridge_snapshot.runtime_root,
     )?;
 
-    diagnostics.mark_export(scope.clone(), export_dir.clone(), now_marker());
+    diagnostics.mark_export(scope.clone(), export_dir.clone(), now_unix_seconds_marker());
     append_diagnostics_log(
         &app,
         "runtime",

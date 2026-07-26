@@ -17,7 +17,8 @@ use crate::runtime::contracts::{RuntimeNotification, RuntimeSnapshot};
 use crate::runtime::events::{
     build_runtime_snapshot, emit_runtime_notification, emit_runtime_snapshot,
 };
-use crate::runtime::state::{now_marker, RuntimeStateStore};
+use crate::runtime::state::RuntimeStateStore;
+use crate::shared::time::now_unix_seconds_marker;
 
 use super::contracts::{reconcile_bridge_snapshot, BridgeMixControl, BridgeRuntimeSnapshot};
 use super::installer::{apply_driver_probe, probe_driver, run_elevated_driver_operation};
@@ -144,8 +145,8 @@ fn record_driver_operation_error(state: &BridgeStateStore, error: &str) {
                 error_code: current.last_error_code.clone(),
                 summary: error.to_string(),
                 log_path,
-                started_at: now_marker(),
-                finished_at: now_marker(),
+                started_at: now_unix_seconds_marker(),
+                finished_at: now_unix_seconds_marker(),
             });
         }
         reconcile_bridge_snapshot(current);
@@ -434,7 +435,7 @@ fn emit_bridge_notification(
     if let Err(error) = emit_runtime_notification(
         app,
         runtime_state,
-        RuntimeNotification::info(id, "bridge-runtime", message, now_marker()),
+        RuntimeNotification::info(id, "bridge-runtime", message, now_unix_seconds_marker()),
     ) {
         log_bridge_event(
             app,
@@ -559,7 +560,7 @@ pub fn refresh_bridge_runtime(
                         "bridge-refresh-failed",
                         "bridge-runtime",
                         &error,
-                        now_marker(),
+                        now_unix_seconds_marker(),
                     ),
                 )
                 .map_err(|emit_error| emit_error.to_string())?;
@@ -656,7 +657,7 @@ pub fn stop_bridge_service(
             "bridge-stopped",
             "bridge-runtime",
             "Bridge Service 已停止。",
-            now_marker(),
+            now_unix_seconds_marker(),
         ),
     )
     .map_err(|error| error.to_string())?;

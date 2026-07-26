@@ -1,50 +1,12 @@
 use serde::Serialize;
 
 use crate::bridge::contracts::BridgeRuntimeSnapshot;
-use crate::diagnostics::contracts::DiagnosticsRuntimeSnapshot;
+use crate::shared::contracts::DiagnosticsRuntimeSnapshot;
 use crate::storage::contracts::StorageRuntimeSnapshot;
 
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct RuntimeNotification {
-    pub id: String,
-    pub level: String,
-    pub source: String,
-    pub message: String,
-    pub emitted_at: String,
-}
-
-impl RuntimeNotification {
-    pub fn info(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
-        Self {
-            id: id.to_string(),
-            level: "info".to_string(),
-            source: source.to_string(),
-            message: message.to_string(),
-            emitted_at,
-        }
-    }
-
-    pub fn warning(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
-        Self {
-            id: id.to_string(),
-            level: "warning".to_string(),
-            source: source.to_string(),
-            message: message.to_string(),
-            emitted_at,
-        }
-    }
-
-    pub fn error(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
-        Self {
-            id: id.to_string(),
-            level: "error".to_string(),
-            source: source.to_string(),
-            message: message.to_string(),
-            emitted_at,
-        }
-    }
-}
+/// Runtime notifications are mirrored into the diagnostics log through the
+/// shared signal seam, so the type itself lives in `crate::shared::contracts`.
+pub use crate::shared::contracts::RuntimeNotification;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]

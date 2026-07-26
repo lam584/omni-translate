@@ -260,7 +260,7 @@ impl<'a> SpeechTaskProcessor<'a> {
             store.update_speech(|speech| {
                 speech.dispatch_state = "deferred".to_string();
                 speech.current_cue_id = Some(cue.cue_id.clone());
-                speech.last_started_at = Some(now_marker());
+                speech.last_started_at = Some(now_unix_millis_marker());
                 push_event(
                     speech,
                     "speech.deferred",
@@ -356,7 +356,7 @@ impl<'a> SpeechTaskProcessor<'a> {
             speech.current_request_id = Some(request_id.clone());
             speech.mix_mode = mix.mix_mode.clone();
             speech.ducking_active = mix.ducking_active;
-            speech.last_started_at = Some(now_marker());
+            speech.last_started_at = Some(now_unix_millis_marker());
             push_event(
                 speech,
                 if cache_hit {
@@ -389,7 +389,7 @@ impl<'a> SpeechTaskProcessor<'a> {
             speech.dispatch_state = "waiting-subtitle".to_string();
             speech.current_cue_id = None;
             speech.current_request_id = None;
-            speech.last_completed_at = Some(now_marker());
+            speech.last_completed_at = Some(now_unix_millis_marker());
             speech.speaker_frames_written += speaker_frames;
             speech.virtual_mic_frames_written += virtual_mic_frames;
             speech.last_error = None;

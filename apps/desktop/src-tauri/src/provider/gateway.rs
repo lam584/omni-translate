@@ -1,8 +1,9 @@
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use serde_json::json;
 
 use crate::diagnostics::model_trace::ModelTraceRecorder;
+use crate::shared::time::now_unix_seconds_marker;
 
 use super::contracts::{
     ProviderDraftInput, ProviderModelCatalogRuntime,
@@ -189,7 +190,7 @@ impl ProviderGateway {
         target_language: String,
         on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
     ) -> ProviderSmokeResult {
-        let request_id = format!("req-{}", now_marker());
+        let request_id = format!("req-{}", now_unix_seconds_marker());
         let transport_requested = provider.transport.clone();
         let (transport_effective, fallback_applied) = resolve_transport(&provider);
         let started_at = Instant::now();
@@ -305,13 +306,6 @@ impl ProviderGateway {
 
 fn discard_provider_delta(_: &str) -> Result<(), ProviderRuntimeError> {
     Ok(())
-}
-
-fn now_marker() -> String {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => format!("unix:{}", duration.as_secs()),
-        Err(_) => "unix:0".to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -1366,7 +1360,7 @@ mod tests {
         let (mut socket, websocket_timeout) =
             WebSocketTransport::default().connect_provider(&provider)?;
 
-        let request_id = format!("audio-integration-{}", now_marker());
+        let request_id = format!("audio-integration-{}", now_unix_seconds_marker());
         let safe_id = request_id.replace([':', '-'], "_");
         let session_update = json!({
             "event_id": format!("evt_{}_session", safe_id),

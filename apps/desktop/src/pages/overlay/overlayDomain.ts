@@ -219,8 +219,38 @@ export function getCueDisplaySegments(cue: SubtitleCueRuntime): OverlayDisplaySe
     id: `${cue.cueId}-fallback-${index}`,
     sourceText: sourceLines[index] ?? '',
     translatedText: translatedLines[index] ?? '',
-    pending: Boolean(sourceLines[index]) && !translatedLines[index],
+    pending: !cue.committed || (Boolean(sourceLines[index]) && !translatedLines[index]),
   })).filter((segment) => segment.sourceText || segment.translatedText);
+}
+
+const WHITESPACE_CHAR = /\s/u;
+
+// Returns the raw ASR tail of the cue that is not yet represented by any
+// display segment, so the live stream row can surface source tokens while the
+// realtime API keeps iterating on the same sentence. Falls back to an empty
+// string when the displayed segments are not a prefix of the raw source text
+// (e.g. after a revision rewrite), to avoid rendering stale fragments.
+export function getCueLiveSourceTail(cue: SubtitleCueRuntime): string {
+  const displayedChars = Array.from(
+    getCueDisplaySegments(cue)
+      .map((segment) => segment.sourceText)
+      .join('')
+      .replace(/\s+/gu, ''),
+  );
+  const rawChars = Array.from(cue.sourceText || '');
+  let matched = 0;
+  let index = 0;
+  while (index < rawChars.length && matched < displayedChars.length) {
+    if (WHITESPACE_CHAR.test(rawChars[index])) {
+      index += 1;
+      continue;
+    }
+    if (rawChars[index] !== displayedChars[matched]) return '';
+    matched += 1;
+    index += 1;
+  }
+  if (matched < displayedChars.length) return '';
+  return rawChars.slice(index).join('').trim();
 }
 
 export function toOverlayAxisPercent(position: number, workAreaStart: number, availableDistance: number) {
@@ -297,5 +327,6 @@ export const subtitleOverlayPageHelpers = {
   clamp,
   splitDisplayLines,
   getCueDisplaySegments,
+  getCueLiveSourceTail,
   toOverlayAxisPercent,
 };

@@ -229,9 +229,26 @@
   flex:0 0 auto;
   min-height:1.45em;
   display:flex;
+  flex-direction:column;
   align-items:center;
   justify-content:center;
   overflow:hidden
+}
+
+.subtitle-overlay-stream-source {
+  width:100%;
+  min-height:1.25em;
+  margin:0;
+  text-align:center;
+  white-space:pre-wrap;
+  overflow-wrap:anywhere;
+  color:var(--subtitle-overlay-text, currentColor);
+  opacity:0;
+  text-shadow:0 2px 14px var(--subtitle-overlay-source-shadow, rgba(0, 0, 0, .48))
+}
+
+.subtitle-overlay-stream-slot-active .subtitle-overlay-stream-source {
+  opacity:calc(var(--subtitle-overlay-translation-opacity, .92) * .8)
 }
 
 .subtitle-overlay-stream-text {

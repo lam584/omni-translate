@@ -106,6 +106,7 @@ fn run_capture_loop(
     // state so users can start it before pressing play.
     let capture_started_at = Instant::now();
     let mut inbound_wait_logged = false;
+    let mut echo_diagnostics = EchoCancelDiagnostics::new();
     loop {
         if stop_rx.try_recv().is_ok() {
             let _ = audio_client.stop_stream();
@@ -141,12 +142,19 @@ fn run_capture_loop(
 
         let chunk_len = desired_format.get_blockalign() as usize * CHUNK_FRAMES;
         for chunk in drain_sample_chunks(&mut sample_queue, chunk_len) {
-            let chunk = if spec.echo_cancel_enabled() {
+            let (chunk, suppress_asr) = if spec.echo_cancel_enabled() {
                 let f32_chunk = bytes_to_f32_stereo(&chunk);
-                let cleaned = store.subtract_echo(&f32_chunk, ECHO_CANCEL_DELAY_SAMPLES);
-                f32_stereo_to_bytes(&cleaned)
+                let cancellation = store.subtract_echo(&f32_chunk, ECHO_CANCEL_DELAY_SAMPLES);
+                let cleaned_bytes = f32_stereo_to_bytes(&cancellation.samples);
+                echo_diagnostics.record(
+                    calculate_chunk_db(&chunk),
+                    calculate_chunk_db(&cleaned_bytes),
+                    cancellation.suppress_asr,
+                );
+                echo_diagnostics.maybe_log(&app, store, direction);
+                (cleaned_bytes, cancellation.suppress_asr)
             } else {
-                chunk
+                (chunk, false)
             };
 
             process_captured_chunk(
@@ -155,6 +163,7 @@ fn run_capture_loop(
                 direction,
                 &mut processor,
                 &stt_sender,
+                suppress_asr,
                 chunk,
                 sample_queue.len(),
             )?;
@@ -360,11 +369,79 @@ fn run_bridge_source_route_worker(
                     direction,
                     &mut processor,
                     &stt_sender,
+                    false,
                     chunk,
                     sample_queue.len(),
                 )?;
             }
         }
+    }
+}
+
+/// Periodic echo-cancel (AEC) effectiveness probe for one capture session.
+/// Accumulates per-chunk energy before and after `subtract_echo` and reports
+/// interval averages plus the reference-buffer depth through the diagnostics
+/// chain so the echo path is observable while a session runs.
+struct EchoCancelDiagnostics {
+    subtract_count: u64,
+    interval_chunks: u64,
+    interval_pre_db_sum: f64,
+    interval_post_db_sum: f64,
+    asr_suppressed_chunks: u64,
+    last_summary_at: Instant,
+}
+
+impl EchoCancelDiagnostics {
+    fn new() -> Self {
+        Self {
+            subtract_count: 0,
+            interval_chunks: 0,
+            interval_pre_db_sum: 0.0,
+            interval_post_db_sum: 0.0,
+            asr_suppressed_chunks: 0,
+            last_summary_at: Instant::now(),
+        }
+    }
+
+    fn record(&mut self, pre_db: f32, post_db: f32, suppress_asr: bool) {
+        self.subtract_count += 1;
+        self.interval_chunks += 1;
+        self.interval_pre_db_sum += pre_db as f64;
+        self.interval_post_db_sum += post_db as f64;
+        if suppress_asr {
+            self.asr_suppressed_chunks += 1;
+        }
+    }
+
+    fn maybe_log(&mut self, app: &AppHandle, store: &AudioStateStore, direction: &str) {
+        if self.last_summary_at.elapsed() < Duration::from_secs(5) {
+            return;
+        }
+        let (reference_depth, reference_empty) = store.echo_reference_diagnostics();
+        let chunks = self.interval_chunks.max(1) as f64;
+        let avg_pre_db = self.interval_pre_db_sum / chunks;
+        let avg_post_db = self.interval_post_db_sum / chunks;
+        diag_log_detail(
+            app,
+            "audio",
+            "info",
+            "event=echo_cancel_summary",
+            format!(
+                "direction={} subtractCount={} asrSuppressedChunks={} refBufferDepthSamples={} refBufferEmpty={} avgPreDb={:.1} avgPostDb={:.1} avgRemovedDb={:.1}",
+                direction,
+                self.subtract_count,
+                self.asr_suppressed_chunks,
+                reference_depth,
+                reference_empty,
+                avg_pre_db,
+                avg_post_db,
+                avg_pre_db - avg_post_db,
+            ),
+        );
+        self.interval_chunks = 0;
+        self.interval_pre_db_sum = 0.0;
+        self.interval_post_db_sum = 0.0;
+        self.last_summary_at = Instant::now();
     }
 }
 
@@ -484,20 +561,23 @@ fn process_captured_chunk(
     direction: &str,
     processor: &mut RouteProcessor,
     stt_sender: &Option<mpsc::Sender<Vec<u8>>>,
+    suppress_asr: bool,
     chunk: Vec<u8>,
     queued_bytes: usize,
 ) -> Result<(), String> {
-    if let Some(stt_tx) = stt_sender {
-        if let Err(error) = stt_tx.send(chunk.clone()) {
-            let message = format!("audio route sender unavailable for {direction}: {error}");
-            let _ = diag_log_detail(
-                app,
-                "audio",
-                "error",
-                "watch_mode.omni_sender_unavailable",
-                format!("direction={direction} error={error}"),
-            );
-            return Err(format!("{message} | recommended: restart-route"));
+    if !suppress_asr {
+        if let Some(stt_tx) = stt_sender {
+            if let Err(error) = stt_tx.send(chunk.clone()) {
+                let message = format!("audio route sender unavailable for {direction}: {error}");
+                let _ = diag_log_detail(
+                    app,
+                    "audio",
+                    "error",
+                    "watch_mode.omni_sender_unavailable",
+                    format!("direction={direction} error={error}"),
+                );
+                return Err(format!("{message} | recommended: restart-route"));
+            }
         }
     }
     let update = processor.ingest_chunk(&chunk, queued_bytes);

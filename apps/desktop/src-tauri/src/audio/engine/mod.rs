@@ -425,6 +425,7 @@ pub(crate) struct RouteSpec {
     target_language: String,
     skip_local_vad: bool,
     feedback_loop_prevention: String,
+    aec_enabled: bool,
 }
 
 impl RouteSpec {
@@ -448,6 +449,10 @@ impl RouteSpec {
             .and_then(Value::as_str)
             .unwrap_or("none")
             .to_string();
+        let aec_enabled = config
+            .pointer("/devices/aecEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(true);
         let route_device_id =
             if direction == "inbound" && feedback_loop_prevention == "virtual-driver" {
                 config.pointer("/devices/virtualRenderDeviceId")
@@ -497,11 +502,14 @@ impl RouteSpec {
             target_language,
             skip_local_vad,
             feedback_loop_prevention,
+            aec_enabled,
         })
     }
 
     fn echo_cancel_enabled(&self) -> bool {
-        self.direction == "inbound" && self.feedback_loop_prevention == "echo-cancel"
+        self.direction == "inbound"
+            && self.feedback_loop_prevention == "echo-cancel"
+            && self.aec_enabled
     }
 
     fn wasapi_direction(&self) -> Direction {
@@ -869,6 +877,36 @@ mod tests {
 
         assert!(inbound.echo_cancel_enabled());
         assert!(!outbound.echo_cancel_enabled());
+    }
+
+    #[test]
+    fn route_spec_disables_echo_cancel_when_aec_toggle_off() {
+        let config = json!({
+          "devices": {
+            "feedbackLoopPrevention": "echo-cancel",
+            "aecEnabled": false,
+            "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } }
+          }
+        });
+
+        let inbound = RouteSpec::from_config(&config, "inbound").expect("route spec should parse");
+
+        assert!(!inbound.echo_cancel_enabled());
+    }
+
+    #[test]
+    fn route_spec_defaults_aec_toggle_to_enabled_when_missing() {
+        let config = json!({
+          "devices": {
+            "feedbackLoopPrevention": "echo-cancel",
+            "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } }
+          }
+        });
+
+        let inbound = RouteSpec::from_config(&config, "inbound").expect("route spec should parse");
+
+        assert!(inbound.aec_enabled);
+        assert!(inbound.echo_cancel_enabled());
     }
 
     #[test]

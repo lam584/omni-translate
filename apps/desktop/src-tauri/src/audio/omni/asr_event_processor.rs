@@ -129,8 +129,16 @@ impl OmniAsrEventProcessor {
                     .unwrap_or("");
                 let stash = evt["stash"].as_str().unwrap_or("");
                 pending_source_text = format!("{text_val}{stash}");
-                if subtitle_translate_active && current_cue_id.is_none() {
-                    ensure_transcription_cue_id(&mut current_cue_id);
+                if !pending_source_text.trim().is_empty() {
+                    write_live_source_to_cue(
+                        store,
+                        &mut current_cue_id,
+                        &pending_source_text,
+                    );
+                }
+                if event_diagnostics.current_cue_origin.is_none()
+                    && current_cue_id.is_some()
+                {
                     event_diagnostics.current_cue_origin =
                         Some("transcription_delta".to_string());
                 }
@@ -138,9 +146,6 @@ impl OmniAsrEventProcessor {
                 event_diagnostics.last_asr_delta_at_ms =
                     Some(elapsed_ms_since(&session_started_at));
                 let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
-                if let Some(ref id) = current_cue_id {
-                    store.update_or_push_stt_cue(id, &pending_source_text, false);
-                }
                 store.live_session_events.push_asr_delta(
                     event_type,
                     stash,
@@ -159,12 +164,13 @@ impl OmniAsrEventProcessor {
                 last_vad_event_time = SystemTime::now();
                 vad_event_count += 1;
                 let source = evt["transcript"].as_str().unwrap_or("");
-                pending_source_text = source.to_string();
+                pending_source_text =
+                    preserve_last_non_empty_transcription(&pending_source_text, source);
                 event_diagnostics.last_asr_completed_text =
-                    pending_source_text.clone();
+                    source.to_string();
                 event_diagnostics.last_asr_completed_at_ms =
                     Some(elapsed_ms_since(&session_started_at));
-                if pending_source_text.trim().is_empty() {
+                if source.trim().is_empty() {
                     event_diagnostics.empty_asr_completed_count = event_diagnostics
                         .empty_asr_completed_count
                         .saturating_add(1);

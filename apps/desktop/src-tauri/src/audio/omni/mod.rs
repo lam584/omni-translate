@@ -512,6 +512,50 @@ mod native_translation_tests {
     use super::*;
 
     #[test]
+    fn native_omni_deltas_share_one_uncommitted_live_cue() {
+        let store = AudioStateStore::new();
+        let mut current_cue_id = None;
+
+        let first_id = write_live_source_to_cue(&store, &mut current_cue_id, "With or");
+        let second_id = write_live_source_to_cue(
+            &store,
+            &mut current_cue_id,
+            "With or without you",
+        );
+        let preview_id = write_native_output_preview_to_cue(
+            &store,
+            &mut current_cue_id,
+            "With or without you",
+            "translated partial",
+        );
+
+        assert_eq!(first_id, second_id);
+        assert_eq!(second_id, preview_id);
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == preview_id)
+            .expect("live Omni cue");
+        assert_eq!(cue.source_text, "With or without you");
+        assert_eq!(cue.translated_text, "translated partial");
+        assert!(!cue.committed);
+    }
+
+    #[test]
+    fn empty_completed_transcription_keeps_the_last_delta_hypothesis() {
+        assert_eq!(
+            preserve_last_non_empty_transcription("Oh, my dilemma.", ""),
+            "Oh, my dilemma."
+        );
+        assert_eq!(
+            preserve_last_non_empty_transcription("older hypothesis", "final transcript"),
+            "final transcript"
+        );
+    }
+
+    #[test]
     fn native_translation_writes_display_segment_for_secondary_tts() {
         let store = AudioStateStore::new();
 

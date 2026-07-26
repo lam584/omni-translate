@@ -294,22 +294,25 @@ impl OmniEventProcessor {
                     ),
                 );
             }
-        } else if subtitle_translate_active && !st_skip_logged {
-            st_skip_logged = true;
-            let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
-            let _ = diag_log(
-                &app,
-                "omni",
-                "info",
-                format!(
-                    "[TRANS] subtitle_translate_active=true livetranslate=false skip native response.audio_transcript cue_id={cue_id_str}"
-                ),
-            );
-        } else if let Some(ref id) = current_cue_id {
-            store.update_subtitle_cue_translation(
-                id,
-                pending_translated_text.clone(),
-                false,
+        } else if subtitle_translate_active {
+            if !st_skip_logged {
+                st_skip_logged = true;
+                let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
+                let _ = diag_log(
+                    &app,
+                    "omni",
+                    "info",
+                    format!(
+                        "[TRANS] subtitle_translate_active=true livetranslate=false skip native response.audio_transcript cue_id={cue_id_str}"
+                    ),
+                );
+            }
+        } else {
+            write_native_output_preview_to_cue(
+                store,
+                &mut current_cue_id,
+                &pending_source_text,
+                &pending_translated_text,
             );
         }
         let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");

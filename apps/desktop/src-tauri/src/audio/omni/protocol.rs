@@ -459,6 +459,35 @@ fn ensure_transcription_cue_id(current_cue_id: &mut Option<String>) -> String {
         .clone()
 }
 
+fn write_live_source_to_cue(
+    store: &AudioStateStore,
+    current_cue_id: &mut Option<String>,
+    source_text: &str,
+) -> String {
+    let cue_id = ensure_transcription_cue_id(current_cue_id);
+    store.update_or_push_stt_cue(&cue_id, source_text, false);
+    cue_id
+}
+
+fn write_native_output_preview_to_cue(
+    store: &AudioStateStore,
+    current_cue_id: &mut Option<String>,
+    source_text: &str,
+    translated_text: &str,
+) -> String {
+    let cue_id = write_live_source_to_cue(store, current_cue_id, source_text);
+    store.update_subtitle_cue_translation(&cue_id, translated_text.to_string(), false);
+    cue_id
+}
+
+fn preserve_last_non_empty_transcription(pending: &str, completed: &str) -> String {
+    if completed.trim().is_empty() {
+        pending.to_string()
+    } else {
+        completed.to_string()
+    }
+}
+
 fn write_native_translation_to_cue(
     store: &AudioStateStore,
     cue_id: &str,

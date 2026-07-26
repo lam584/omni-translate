@@ -866,6 +866,112 @@ describe('SubtitleOverlayPage locked interaction', () => {
     expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('下');
   });
 
+  it('shows the pending source and its partial translation on separate stream rows', async () => {
+    useAppStore.setState((state) => {
+      const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+      const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+      cue.sourceText = 'Waiting source';
+      cue.displaySourceText = 'Waiting source';
+      cue.translatedText = '部分译文';
+      cue.displaySegments = [{ sourceText: 'Waiting source', translatedText: '部分译文', pending: true }];
+      cue.committed = false;
+      nextSnapshot.subtitleOverlay.activeCue = cue;
+      return { ...state, audioRuntimeSnapshot: nextSnapshot };
+    });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('Waiting source');
+    expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('部分译文');
+    expect(container.querySelector('.subtitle-overlay-stream-slot')?.className).toContain('subtitle-overlay-stream-slot-active');
+  });
+
+  it('keeps an uncommitted Omni fallback cue in the live rows while both hypotheses iterate', async () => {
+    const updateOmniCue = async (sourceText: string, translatedText: string, committed: boolean) => {
+      await act(async () => {
+        useAppStore.setState((state) => {
+          const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+          const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+          cue.sourceText = sourceText;
+          cue.displaySourceText = '';
+          cue.translatedText = translatedText;
+          cue.displaySegments = [];
+          cue.committed = committed;
+          nextSnapshot.subtitleOverlay.activeCue = cue;
+          return { ...state, audioRuntimeSnapshot: nextSnapshot };
+        });
+      });
+    };
+
+    await updateOmniCue('Hello wor', 'Ni', false);
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('Hello wor');
+    expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('Ni');
+    expect(container.querySelectorAll('.subtitle-overlay-segment')).toHaveLength(0);
+
+    await updateOmniCue('Hello world', 'Ni hao', false);
+    expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('Hello world');
+    expect(container.querySelector('.subtitle-overlay-stream-text')?.textContent).toBe('Ni hao');
+    expect(container.querySelectorAll('.subtitle-overlay-segment')).toHaveLength(0);
+
+    await updateOmniCue('Hello world', 'Ni hao', true);
+    expect(container.querySelector('.subtitle-overlay-segment')?.textContent).toContain('Hello world');
+    expect(container.querySelector('.subtitle-overlay-stream-slot')?.textContent?.trim()).toBe('');
+  });
+
+  it('streams the uncommitted ASR tail on the stream source row while the API iterates', async () => {
+    const updateIteratingCue = async (sourceText: string) => {
+      await act(async () => {
+        useAppStore.setState((state) => {
+          const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+          const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+          cue.sourceText = sourceText;
+          cue.displaySourceText = 'First sentence.';
+          cue.translatedText = '第一句。';
+          cue.displaySegments = [{ sourceText: 'First sentence.', translatedText: '第一句。', pending: false }];
+          cue.committed = false;
+          nextSnapshot.subtitleOverlay.activeCue = cue;
+          return { ...state, audioRuntimeSnapshot: nextSnapshot };
+        });
+      });
+    };
+
+    await updateIteratingCue('First sentence. still being spoke');
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+    expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('still being spoke');
+    expect(container.querySelector('.subtitle-overlay-stream-slot')?.className).toContain('subtitle-overlay-stream-slot-active');
+
+    await updateIteratingCue('First sentence. still being spoken right now');
+    expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('still being spoken right now');
+  });
+
+  it('hides the ASR tail when the displayed segments no longer prefix the raw source', async () => {
+    useAppStore.setState((state) => {
+      const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);
+      const cue = nextSnapshot.subtitleOverlay.recentCues[0];
+      cue.sourceText = 'Rewritten raw source after revision';
+      cue.displaySourceText = 'First sentence.';
+      cue.translatedText = '第一句。';
+      cue.displaySegments = [{ sourceText: 'First sentence.', translatedText: '第一句。', pending: false }];
+      cue.committed = false;
+      nextSnapshot.subtitleOverlay.activeCue = cue;
+      return { ...state, audioRuntimeSnapshot: nextSnapshot };
+    });
+
+    await act(async () => {
+      root.render(<SubtitleOverlayPage />);
+    });
+
+    expect(container.querySelector('.subtitle-overlay-stream-source')?.textContent).toBe('\u00a0');
+    expect(container.textContent).not.toContain('Rewritten raw source after revision');
+  });
+
   it('renders translated-only display segments without an empty source paragraph', async () => {
     useAppStore.setState((state) => {
       const nextSnapshot = structuredClone(state.audioRuntimeSnapshot);

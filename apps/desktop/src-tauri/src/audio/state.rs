@@ -5,7 +5,7 @@ use super::contracts::{
     AudioDeviceRuntime, AudioRouteRuntimeSnapshot, AudioRuntimeSnapshot, SpeechRuntimeSnapshot,
     SubtitleCueRuntime, SubtitleDisplaySegmentRuntime, SubtitleOverlayRuntimeSnapshot,
 };
-use super::echo_cancel::EchoReferenceBuffer;
+use super::echo_cancel::{EchoCancellationResult, EchoReferenceBuffer};
 use super::live_session_events::LiveSessionEventBuffer;
 
 use super::engine::CaptureRouteWarmer;
@@ -109,11 +109,22 @@ impl AudioStateStore {
             .push_samples(samples, sample_rate_hz, channel_count);
     }
 
-    pub(crate) fn subtract_echo(&self, captured: &[f32], delay_samples: usize) -> Vec<f32> {
+    pub(crate) fn subtract_echo(
+        &self,
+        captured: &[f32],
+        delay_samples: usize,
+    ) -> EchoCancellationResult {
         self.echo_buffer
             .lock()
             .expect("echo buffer poisoned")
             .subtract_from(captured, delay_samples)
+    }
+
+    /// Reference-buffer depth and emptiness probe for the periodic
+    /// echo-cancel diagnostics summary.
+    pub(crate) fn echo_reference_diagnostics(&self) -> (usize, bool) {
+        let buffer = self.echo_buffer.lock().expect("echo buffer poisoned");
+        (buffer.depth_samples(), buffer.is_empty())
     }
 
     fn note_first_translation_source(&self, cue_id: &str, source_text: &str) {

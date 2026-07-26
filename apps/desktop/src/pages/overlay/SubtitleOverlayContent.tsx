@@ -2,6 +2,7 @@ import { useCallback, useLayoutEffect, useRef, type CSSProperties, type UIEvent 
 import type { SubtitleCueRuntime } from '../../schema/audio-runtime';
 import {
   getCueDisplaySegments,
+  getCueLiveSourceTail,
   MIN_SUBTITLE_FONT_SCALE,
   TRANSLATION_FONT_SCALE,
 } from './overlayDomain';
@@ -36,10 +37,23 @@ export default function SubtitleOverlayContent(props: Props) {
     if (explicitPending?.length) return explicitPending;
     return getCueDisplaySegments(cue).filter((segment) => segment.pending);
   });
-  const liveText = liveParts
-    .map((segment) => segment.translatedText.trim() || segment.sourceText.trim())
+  const liveTranslation = liveParts
+    .map((segment) => segment.translatedText.trim())
     .filter(Boolean)
     .join(' ');
+  const pendingSourceText = liveParts
+    .map((segment) => segment.sourceText.trim())
+    .filter(Boolean)
+    .join(' ');
+  // Raw ASR tail beyond the slotted segments keeps the source row streaming
+  // while the realtime API is still iterating on the active sentence.
+  const liveSourceTail = props.displayCues
+    .filter((cue) => !cue.committed)
+    .map((cue) => getCueLiveSourceTail(cue))
+    .filter(Boolean)
+    .join(' ');
+  const liveSource = [pendingSourceText, liveSourceTail].filter(Boolean).join(' ');
+  const streamActive = Boolean(liveSource || liveTranslation);
   const scrollToLatest = useCallback(() => {
     const element = cuesRef.current;
     if (element) element.scrollTop = element.scrollHeight;
@@ -75,8 +89,9 @@ export default function SubtitleOverlayContent(props: Props) {
         const translationFontSize = `${Math.round(props.effectiveFontSize * TRANSLATION_FONT_SCALE * fontScale)}px`;
         return <div className="subtitle-overlay-cue" key={cue.cueId}>{finalizedSegments.map((segment) => <div className="subtitle-overlay-segment" key={segment.id}>{segment.sourceText ? <p className="subtitle-overlay-source" style={{ fontSize: sourceFontSize }}>{segment.sourceText}</p> : null}<p className="subtitle-overlay-translation" style={{ fontSize: translationFontSize }}>{segment.translatedText}</p></div>)}</div>;
       })}</div>
-      <div className={liveText ? 'subtitle-overlay-stream-slot subtitle-overlay-stream-slot-active' : 'subtitle-overlay-stream-slot'}>
-        <p className="subtitle-overlay-stream-text" style={{ fontSize: `${Math.round(props.effectiveFontSize * TRANSLATION_FONT_SCALE)}px` }}>{liveText || '\u00a0'}</p>
+      <div className={streamActive ? 'subtitle-overlay-stream-slot subtitle-overlay-stream-slot-active' : 'subtitle-overlay-stream-slot'}>
+        <p className="subtitle-overlay-stream-source" style={{ fontSize: `${Math.round(props.effectiveFontSize * MIN_SUBTITLE_FONT_SCALE)}px` }}>{liveSource || '\u00a0'}</p>
+        <p className="subtitle-overlay-stream-text" style={{ fontSize: `${Math.round(props.effectiveFontSize * TRANSLATION_FONT_SCALE)}px` }}>{liveTranslation || '\u00a0'}</p>
       </div>
     </div> : <>{distinctPreviewSource ? <h1 className="subtitle-overlay-source" style={{ fontSize: `${props.effectiveFontSize}px` }}>{props.previewSource}</h1> : null}<h1 className="subtitle-overlay-translation" style={{ fontSize: `${Math.round(props.effectiveFontSize * TRANSLATION_FONT_SCALE)}px` }}>{props.previewTranslation}</h1></>}
   </div>;

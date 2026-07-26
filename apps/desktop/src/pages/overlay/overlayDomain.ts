@@ -291,14 +291,16 @@ export type OverlayTimeline = {
  * Builds one ordered overlay timeline. Source and translation wrap at
  * different widths, so their newest pending rows are selected independently
  * and combined only for the fixed live slot. Every other readable field stays
- * in history, including unfinished rows from older overlapping cues.
+ * in history, including unfinished rows from older overlapping cues. Raw ASR
+ * tails have no history row, so every uncommitted cue keeps its tail in the
+ * live slot, joined in cue order.
  */
 export function getOverlayTimeline(cues: SubtitleCueRuntime[]): OverlayTimeline {
   const segmentsByCue = cues.map((cue) => getCueDisplaySegments(cue));
   let liveCueIndex = -1;
   let liveSourceSegmentIndex = -1;
   let liveTranslationSegmentIndex = -1;
-  let liveSourceTail = '';
+  const liveSourceTails: string[] = [];
 
   cues.forEach((cue, cueIndex) => {
     const segments = segmentsByCue[cueIndex];
@@ -310,11 +312,11 @@ export function getOverlayTimeline(cues: SubtitleCueRuntime[]): OverlayTimeline 
       if (segment.translatedText.trim()) pendingTranslationIndex = segmentIndex;
     });
     const sourceTail = cue.committed ? '' : getCueLiveSourceTail(cue);
+    if (sourceTail) liveSourceTails.push(sourceTail);
     if (pendingSourceIndex >= 0 || pendingTranslationIndex >= 0 || sourceTail) {
       liveCueIndex = cueIndex;
       liveSourceSegmentIndex = pendingSourceIndex;
       liveTranslationSegmentIndex = pendingTranslationIndex;
-      liveSourceTail = sourceTail;
     }
   });
 
@@ -357,7 +359,7 @@ export function getOverlayTimeline(cues: SubtitleCueRuntime[]): OverlayTimeline 
     })),
     liveCue: liveCueIndex >= 0 ? cues[liveCueIndex] : null,
     liveSegment,
-    liveSourceTail,
+    liveSourceTail: liveSourceTails.join(' '),
   };
 }
 

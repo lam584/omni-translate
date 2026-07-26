@@ -152,6 +152,32 @@ describe('subtitle overlay page helpers', () => {
     expect(timeline.cues[1].historySegments).toHaveLength(0);
   });
 
+  it('keeps the raw ASR tail of an older uncommitted cue when a newer cue owns the live slot', () => {
+    const older = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    older.cueId = 'older-uncommitted';
+    older.committed = false;
+    older.sourceText = 'Hello world extra tail tokens';
+    older.displaySourceText = 'Hello world';
+    older.translatedText = '你好世界。';
+    older.displaySegments = [{ sourceText: 'Hello world', translatedText: '你好世界。', pending: false }];
+    const newest = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    newest.cueId = 'newest-live';
+    newest.committed = false;
+    newest.sourceText = 'Newest live source';
+    newest.displaySourceText = newest.sourceText;
+    newest.translatedText = '最新实时译文';
+    newest.displaySegments = undefined;
+
+    const timeline = subtitleOverlayPageHelpers.getOverlayTimeline([older, newest]);
+
+    expect(timeline.liveCue?.cueId).toBe('newest-live');
+    expect(timeline.liveSegment).toMatchObject({ sourceText: 'Newest live source', translatedText: '最新实时译文' });
+    expect(timeline.liveSourceTail).toBe('extra tail tokens');
+    expect(timeline.cues[0].historySegments).toEqual([
+      expect.objectContaining({ sourceText: 'Hello world', translatedText: '你好世界。' }),
+    ]);
+  });
+
   it('selects mismatched live source and translation tails independently', () => {
     const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
     const sourceLines = ['source one', 'source two', 'source three', 'source four'];

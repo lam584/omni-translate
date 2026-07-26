@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -95,6 +96,46 @@ function strictContentFailure(report) {
   return null;
 }
 
+/** Strict evidence must be recent AND produced from an ancestor of HEAD. */
+export const DEFAULT_MAX_EVIDENCE_AGE_DAYS = 14;
+
+export function defaultIsAncestorOfHead(commit) {
+  try {
+    execFileSync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Strict-mode provenance gate: a passed report is still rejected when it is
+ * older than the age budget, carries no producing commit, or its commit is
+ * not an ancestor of the current HEAD. Before this gate, `--strict` accepted
+ * arbitrarily stale artifacts as release evidence.
+ */
+export function strictProvenanceFailure(report, options = {}) {
+  const now = options.now ?? Date.now();
+  const maxAgeDays = Number(options.maxAgeDays ?? DEFAULT_MAX_EVIDENCE_AGE_DAYS);
+  const generatedAtMs = Date.parse(report.generatedAt ?? '');
+  if (!Number.isFinite(generatedAtMs)) {
+    return 'strict evidence requires a parseable generatedAt timestamp';
+  }
+  const ageDays = (now - generatedAtMs) / 86_400_000;
+  if (ageDays > maxAgeDays) {
+    return `evidence is stale: generatedAt=${report.generatedAt} age=${ageDays.toFixed(1)}d exceeds the ${maxAgeDays}d budget; re-run the live matrix`;
+  }
+  const commit = typeof report.commit === 'string' && report.commit.trim() ? report.commit.trim() : null;
+  if (!commit) {
+    return 'strict evidence requires report.commit (regenerate with the current live runner, which stamps git rev-parse HEAD)';
+  }
+  const isAncestorOfHead = options.isAncestorOfHead ?? defaultIsAncestorOfHead;
+  if (!isAncestorOfHead(commit)) {
+    return `evidence commit ${commit} is not an ancestor of HEAD; the evidence does not cover the current code`;
+  }
+  return null;
+}
+
 function basicFailure(entry, options = {}) {
   const feedbackMode = entry.feedbackMode ?? reportFeedbackMode(entry.report);
   const failedLayers = requiredLayersFor(options, feedbackMode).filter(
@@ -120,6 +161,16 @@ function basicFailure(entry, options = {}) {
         failedLayers: ['strictContent'],
         latestFailure: describeLatestFailure(entry, ['strictContent'], options, reason),
         reason,
+      };
+    }
+  }
+  if (options.strict) {
+    const provenanceReason = strictProvenanceFailure(entry.report, options);
+    if (provenanceReason) {
+      return {
+        failedLayers: ['provenance'],
+        latestFailure: describeLatestFailure(entry, ['provenance'], options, provenanceReason),
+        reason: provenanceReason,
       };
     }
   }
@@ -328,7 +379,7 @@ export function findWatchModeEvidence(options = {}) {
           reason: `no complete live watch-mode report found for model ${model} feedbackLoopPrevention ${feedbackMode}`,
         };
       }
-      const failure = basicFailure(latest, { strict });
+      const failure = basicFailure(latest, { strict, now: options.now, maxAgeDays: options.maxAgeDays, isAncestorOfHead: options.isAncestorOfHead });
       return {
         modelId: model,
         feedbackMode,
@@ -367,7 +418,7 @@ export function findWatchModeEvidence(options = {}) {
       modelResults: [],
     };
   }
-  const failure = basicFailure(latest, { strict });
+  const failure = basicFailure(latest, { strict, now: options.now, maxAgeDays: options.maxAgeDays, isAncestorOfHead: options.isAncestorOfHead });
   return {
     ok: failure.reason == null,
     reason: failure.reason == null
@@ -469,6 +520,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     strict,
     models,
     feedbackModes,
+    maxAgeDays: args['max-age-days'],
   });
   printEvidence(result);
   process.exitCode = result.ok ? 0 : 1;

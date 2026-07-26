@@ -2,8 +2,6 @@ use serde_json::to_value;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::bridge::state::BridgeStateStore;
-use crate::diagnostics::events::build_diagnostics_snapshot;
-use crate::diagnostics::state::DiagnosticsStateStore;
 use crate::storage::StorageStateStore;
 
 use super::contracts::{RuntimeNotification, RuntimeSnapshot};
@@ -51,12 +49,40 @@ fn sync_persisted_subtitle_overlay_input(app: &AppHandle, window: &tauri::Webvie
     let _ = apply_subtitle_overlay_input_policy(window, locked, false);
 }
 
+/// Whether a diagnostics log line of this `category`/`level` should rebuild
+/// and emit a full runtime snapshot to the webview. Applied by the
+/// log-appended subscriber the composition root registers.
+///
+/// High-frequency audio/omni route + session traces must NOT each trigger
+/// this. During a scene launch ~15 such lines fire back-to-back (provider
+/// resolution, Omni session start, route/overlay steps), and a live session
+/// keeps emitting them from the audio pump. Emitting on every line rebuilds
+/// the whole runtime snapshot (window enumeration + bridge + diagnostics +
+/// storage) and pushes it twice to the webview; that backend->frontend storm
+/// adds ~40ms per line to the launch worker and contends with the WebView2
+/// invoke channel the renderer uses to poll watch-route readiness, so a
+/// pre-warmed route cannot report ready within its budget and the launch
+/// aborts before it converges.
+///
+/// Audio/omni state already reaches the UI through the much cheaper
+/// `emit_audio_snapshot` path, so only their warnings/errors need to be
+/// surfaced live here. Every other category (runtime/bridge/storage/...)
+/// always emits so startup progress and lifecycle updates are unaffected.
+pub fn log_should_emit_runtime_snapshot(category: &str, level: &str) -> bool {
+    let is_high_frequency_trace =
+        matches!(category, "audio" | "omni") && !matches!(level, "warning" | "error");
+    !is_high_frequency_trace
+}
+
 pub fn build_runtime_snapshot(app: &AppHandle, state: &RuntimeStateStore) -> RuntimeSnapshot {
     let mut snapshot = state.snapshot_base();
     if let Some(bridge) = app.try_state::<BridgeStateStore>() {
         snapshot.bridge = bridge.snapshot();
     }
-    snapshot.diagnostics = build_diagnostics_snapshot(app);
+    // The diagnostics section comes through the shared provider seam (the
+    // composition root registers it); an unregistered provider yields the
+    // preview baseline, mirroring the old try_state fallback.
+    snapshot.diagnostics = crate::shared::signals::global().diagnostics_snapshot();
     if let Some(storage) = app.try_state::<StorageStateStore>() {
         snapshot.storage = storage.snapshot();
     }
@@ -91,17 +117,17 @@ pub fn emit_runtime_notification(
     notification: RuntimeNotification,
 ) -> tauri::Result<()> {
     state.push_notification(notification.clone());
-    if let Some(diagnostics) = app.try_state::<DiagnosticsStateStore>() {
-        let _ = diagnostics.append_log(
-            "runtime",
-            &notification.level,
-            notification.message.clone(),
-            Some(format!("source={}", notification.source)),
-            notification.emitted_at.clone(),
-            None,
-            None,
-        );
-    }
+    // The diagnostics subscriber (registered by the composition root) mirrors
+    // the notification into the log store; publishing before the window emit
+    // preserves the original log-then-emit ordering.
+    crate::shared::signals::global().publish_runtime_notification(
+        &crate::shared::signals::RuntimeNotificationSignal {
+            level: &notification.level,
+            source: &notification.source,
+            message: &notification.message,
+            emitted_at: &notification.emitted_at,
+        },
+    );
     app.emit(RUNTIME_NOTIFICATION_EVENT, notification.clone())?;
     let payload = to_value(&notification).unwrap_or_else(|error| {
         log::error!("[omni][runtime] failed to serialize runtime notification: {error}");
@@ -274,7 +300,7 @@ pub fn unlock_subtitle_overlay(app: AppHandle) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::should_ignore_subtitle_overlay_cursor_events;
+    use super::{log_should_emit_runtime_snapshot, should_ignore_subtitle_overlay_cursor_events};
 
     #[test]
     fn locked_overlay_only_accepts_input_inside_the_unlock_hotspot() {
@@ -282,5 +308,44 @@ mod tests {
         assert!(!should_ignore_subtitle_overlay_cursor_events(true, true));
         assert!(!should_ignore_subtitle_overlay_cursor_events(false, false));
         assert!(!should_ignore_subtitle_overlay_cursor_events(false, true));
+    }
+
+    #[test]
+    fn high_frequency_audio_and_omni_traces_skip_runtime_snapshot_emit() {
+        // Info/debug/trace lines from the audio route and Omni session hot paths
+        // must not each rebuild + emit a runtime snapshot: that storm is what
+        // starved the readiness poll and made watch mode abort before it bound.
+        for level in ["info", "debug", "trace"] {
+            assert!(
+                !log_should_emit_runtime_snapshot("audio", level),
+                "audio {level} traces must not emit a runtime snapshot"
+            );
+            assert!(
+                !log_should_emit_runtime_snapshot("omni", level),
+                "omni {level} traces must not emit a runtime snapshot"
+            );
+        }
+    }
+
+    #[test]
+    fn audio_and_omni_warnings_and_errors_still_emit_runtime_snapshot() {
+        // Failures are rare and user-facing, so they must still reach the UI live.
+        for level in ["warning", "error"] {
+            assert!(log_should_emit_runtime_snapshot("audio", level));
+            assert!(log_should_emit_runtime_snapshot("omni", level));
+        }
+    }
+
+    #[test]
+    fn other_categories_always_emit_runtime_snapshot() {
+        // Startup progress and lifecycle updates depend on these emitting live.
+        for category in ["runtime", "bridge", "storage", "model-trace"] {
+            for level in ["info", "debug", "warning", "error"] {
+                assert!(
+                    log_should_emit_runtime_snapshot(category, level),
+                    "{category} {level} must emit a runtime snapshot"
+                );
+            }
+        }
     }
 }

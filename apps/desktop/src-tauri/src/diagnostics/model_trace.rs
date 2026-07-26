@@ -4,8 +4,6 @@ use serde_json::{json, Map, Value};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
-use crate::runtime::events::emit_runtime_snapshot;
-use crate::runtime::state::RuntimeStateStore;
 use crate::shared::time::now_unix_seconds_marker;
 
 use super::contracts::ModelTraceCallRuntime;
@@ -216,9 +214,9 @@ impl ModelTraceCall {
     }
 
     fn emit_snapshot(&self) {
-        if let Some(runtime_state) = self.app.try_state::<RuntimeStateStore>() {
-            let _ = emit_runtime_snapshot(&self.app, &runtime_state);
-        }
+        // Trace updates surface through the diagnostics section of the
+        // runtime snapshot; ask the runtime subscriber to refresh it.
+        crate::shared::signals::global().request_runtime_snapshot_refresh();
     }
 }
 

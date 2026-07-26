@@ -415,9 +415,39 @@ pub async fn diagnostics_v2(
     log_v2_entry(&app, "diagnostics_v2", &request_id);
     let outcome = async {
         match command {
-            DiagnosticsCommandV2::SelfCheck => serialize_result(diagnostics_events::run_diagnostics_self_check(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>())),
-            DiagnosticsCommandV2::OverlaySelfCheck => serialize_result(diagnostics_events::run_subtitle_overlay_self_check(app.clone(), app.state::<RuntimeStateStore>(), app.state::<AudioStateStore>())),
-            DiagnosticsCommandV2::Export { scope } => serialize_result(diagnostics_events::export_diagnostics_bundle(app.clone(), app.state::<RuntimeStateStore>(), app.state::<DiagnosticsStateStore>(), scope).await),
+            // The self checks and export are cross-cutting: the diagnostics
+            // half runs in the diagnostics module, and this dispatch (the
+            // composition layer) owns the runtime-snapshot emission and the
+            // aggregate return value, so neither subsystem calls the other.
+            DiagnosticsCommandV2::SelfCheck => serialize_result(
+                diagnostics_events::run_diagnostics_self_check(app.clone(), app.state::<DiagnosticsStateStore>())
+                    .and_then(|()| {
+                        let runtime_state = app.state::<RuntimeStateStore>();
+                        runtime_events::emit_runtime_snapshot(&app, &runtime_state)
+                            .map_err(|error| error.to_string())?;
+                        Ok(runtime_events::build_runtime_snapshot(&app, &runtime_state))
+                    }),
+            ),
+            DiagnosticsCommandV2::OverlaySelfCheck => serialize_result((|| {
+                let runtime_state = app.state::<RuntimeStateStore>();
+                let audio_state = app.state::<AudioStateStore>();
+                diagnostics_events::push_overlay_self_check_cue(&audio_state);
+                runtime_events::show_subtitle_overlay_with_state(&app, &runtime_state)?;
+                crate::audio::engine::emit_audio_snapshot(&app, &audio_state)?;
+                diagnostics_events::log_overlay_self_check_cue(&app)?;
+                Ok(runtime_events::build_runtime_snapshot(&app, &runtime_state))
+            })()),
+            DiagnosticsCommandV2::Export { scope } => serialize_result(
+                match diagnostics_events::export_diagnostics_bundle(app.clone(), app.state::<DiagnosticsStateStore>(), scope).await {
+                    Ok(artifact) => {
+                        let runtime_state = app.state::<RuntimeStateStore>();
+                        runtime_events::emit_runtime_snapshot(&app, &runtime_state)
+                            .map_err(|error| error.to_string())?;
+                        Ok(artifact)
+                    }
+                    Err(error) => Err(error),
+                },
+            ),
             DiagnosticsCommandV2::LiveSessionEvents => diagnostics_events::get_live_session_events(app.state::<AudioStateStore>())
                 .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
                 .map_err(ServiceErrorV2::from),

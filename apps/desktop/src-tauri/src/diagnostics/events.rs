@@ -4,15 +4,10 @@ use std::path::Path;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
 
+use crate::audio::contracts::SubtitleCueRuntime;
 use crate::audio::state::AudioStateStore;
-use crate::audio::{contracts::SubtitleCueRuntime, engine::emit_audio_snapshot};
 use crate::bridge::contracts::BridgeRuntimeSnapshot;
 use crate::bridge::state::BridgeStateStore;
-use crate::runtime::contracts::RuntimeSnapshot;
-use crate::runtime::events::{
-    build_runtime_snapshot, emit_runtime_snapshot, show_subtitle_overlay_with_state,
-};
-use crate::runtime::state::RuntimeStateStore;
 use crate::shared::time::now_unix_seconds_marker;
 use crate::storage::contracts::StorageRuntimeSnapshot;
 use crate::storage::StorageStateStore;
@@ -273,29 +268,6 @@ pub fn build_diagnostics_snapshot(app: &AppHandle) -> DiagnosticsRuntimeSnapshot
     }
 }
 
-/// Whether writing a log line of this `category`/`level` should also rebuild and
-/// emit a full runtime snapshot to the webview.
-///
-/// High-frequency audio/omni route + session traces must NOT each trigger this.
-/// During a scene launch ~15 such lines fire back-to-back (provider resolution,
-/// Omni session start, route/overlay steps), and a live session keeps emitting
-/// them from the audio pump. Emitting on every line rebuilds the whole runtime
-/// snapshot (window enumeration + bridge + diagnostics + storage) and pushes it
-/// twice to the webview; that backend->frontend storm adds ~40ms per line to the
-/// launch worker and contends with the WebView2 invoke channel the renderer uses
-/// to poll watch-route readiness, so a pre-warmed route cannot report ready
-/// within its budget and the launch aborts before it converges.
-///
-/// Audio/omni state already reaches the UI through the much cheaper
-/// `emit_audio_snapshot` path, so only their warnings/errors need to be surfaced
-/// live here. Every other category (runtime/bridge/storage/...) always emits so
-/// startup progress and lifecycle updates are unaffected.
-fn log_should_emit_runtime_snapshot(category: &str, level: &str) -> bool {
-    let is_high_frequency_trace =
-        matches!(category, "audio" | "omni") && !matches!(level, "warning" | "error");
-    !is_high_frequency_trace
-}
-
 pub fn append_diagnostics_log(
     app: &AppHandle,
     category: &str,
@@ -306,11 +278,12 @@ pub fn append_diagnostics_log(
     elapsed_ms: Option<u128>,
 ) -> Result<(), String> {
     append_diagnostics_log_quiet(app, category, level, summary, detail, source, elapsed_ms)?;
-    if log_should_emit_runtime_snapshot(category, level) {
-        if let Some(runtime_state) = app.try_state::<RuntimeStateStore>() {
-            emit_runtime_snapshot(app, &runtime_state).map_err(|error| error.to_string())?;
-        }
-    }
+    // Native-origin log lines publish a signal; the runtime subscriber
+    // (registered by the composition root) decides whether to rebuild and
+    // emit the runtime snapshot. The quiet frontend-forwarding path below
+    // never publishes — a frontend-originated line must not race the
+    // WebView2 invoke-response channel with snapshot events.
+    crate::shared::signals::global().publish_diagnostics_log(category, level);
     Ok(())
 }
 
@@ -405,11 +378,14 @@ pub async fn append_frontend_diagnostics_logs(
     Ok(())
 }
 
+/// Diagnostics half of the one-click self check: refresh the diagnostics
+/// snapshot state and record the outcome. The runtime-snapshot emission and
+/// aggregate return value are orchestrated by the `diagnostics_v2` dispatch
+/// (the composition layer), so this module no longer calls into `runtime`.
 pub fn run_diagnostics_self_check(
     app: AppHandle,
-    runtime_state: State<'_, RuntimeStateStore>,
     diagnostics: State<'_, DiagnosticsStateStore>,
-) -> Result<RuntimeSnapshot, String> {
+) -> Result<(), String> {
     let snapshot = build_diagnostics_snapshot(&app);
     diagnostics.mark_self_check(now_unix_seconds_marker());
     append_diagnostics_log(
@@ -427,16 +403,14 @@ pub fn run_diagnostics_self_check(
         Some(format!("signals={}", snapshot.support_matrix.len())),
         Some(format!("{}:{}", file!(), line!())),
         None,
-    )?;
-    emit_runtime_snapshot(&app, &runtime_state).map_err(|error| error.to_string())?;
-    Ok(build_runtime_snapshot(&app, &runtime_state))
+    )
 }
 
-pub fn run_subtitle_overlay_self_check(
-    app: AppHandle,
-    runtime_state: State<'_, RuntimeStateStore>,
-    audio_state: State<'_, AudioStateStore>,
-) -> Result<RuntimeSnapshot, String> {
+/// Diagnostics half of the overlay self check: inject the visible cue. The
+/// overlay window handling and snapshot emission live in the `diagnostics_v2`
+/// dispatch so the ordering (cue -> show window -> audio emit -> log) is
+/// composed in one place without a diagnostics -> runtime call.
+pub fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
     let emitted_at = now_unix_seconds_marker();
     audio_state.push_subtitle_cue(SubtitleCueRuntime {
         cue_id: format!("overlay-self-check-{emitted_at}"),
@@ -449,18 +423,19 @@ pub fn run_subtitle_overlay_self_check(
         ended_at: emitted_at,
         committed: true,
     });
-    show_subtitle_overlay_with_state(&app, &runtime_state)?;
-    emit_audio_snapshot(&app, &audio_state)?;
+}
+
+/// The log line the overlay self check records after the cue became visible.
+pub fn log_overlay_self_check_cue(app: &AppHandle) -> Result<(), String> {
     append_diagnostics_log(
-        &app,
+        app,
         "runtime",
         "info",
         "subtitle overlay self-check injected a visible cue",
         Some("cue=overlay-self-check source=diagnostics".to_string()),
         Some(format!("{}:{}", file!(), line!())),
         None,
-    )?;
-    Ok(build_runtime_snapshot(&app, &runtime_state))
+    )
 }
 
 // `async fn` so this runs on a tokio worker thread, NOT the main thread.
@@ -471,7 +446,6 @@ pub fn run_subtitle_overlay_self_check(
 // the main thread keeps the UI/IPC responsive while the bundle is written.
 pub async fn export_diagnostics_bundle(
     app: AppHandle,
-    runtime_state: State<'_, RuntimeStateStore>,
     diagnostics: State<'_, DiagnosticsStateStore>,
     scope: String,
 ) -> Result<DiagnosticsExportArtifact, String> {
@@ -526,7 +500,6 @@ pub async fn export_diagnostics_bundle(
         Some(format!("{}:{}", file!(), line!())),
         None,
     )?;
-    emit_runtime_snapshot(&app, &runtime_state).map_err(|error| error.to_string())?;
 
     Ok(DiagnosticsExportArtifact {
         scope,
@@ -555,7 +528,7 @@ mod tests {
     use crate::bridge::contracts::BridgeRuntimeSnapshot;
     use crate::storage::contracts::StorageRuntimeSnapshot;
 
-    use super::{write_diagnostics_bundle, log_should_emit_runtime_snapshot, DiagnosticsRuntimeSnapshot};
+    use super::{write_diagnostics_bundle, DiagnosticsRuntimeSnapshot};
 
     fn temp_dir(name: &str) -> PathBuf {
         let marker = SystemTime::now()
@@ -563,45 +536,6 @@ mod tests {
             .expect("system time before unix epoch")
             .as_nanos();
         std::env::temp_dir().join(format!("omni-diagnostics-export-{name}-{marker}"))
-    }
-
-    #[test]
-    fn high_frequency_audio_and_omni_traces_skip_runtime_snapshot_emit() {
-        // Info/debug/trace lines from the audio route and Omni session hot paths
-        // must not each rebuild + emit a runtime snapshot: that storm is what
-        // starved the readiness poll and made watch mode abort before it bound.
-        for level in ["info", "debug", "trace"] {
-            assert!(
-                !log_should_emit_runtime_snapshot("audio", level),
-                "audio {level} traces must not emit a runtime snapshot"
-            );
-            assert!(
-                !log_should_emit_runtime_snapshot("omni", level),
-                "omni {level} traces must not emit a runtime snapshot"
-            );
-        }
-    }
-
-    #[test]
-    fn audio_and_omni_warnings_and_errors_still_emit_runtime_snapshot() {
-        // Failures are rare and user-facing, so they must still reach the UI live.
-        for level in ["warning", "error"] {
-            assert!(log_should_emit_runtime_snapshot("audio", level));
-            assert!(log_should_emit_runtime_snapshot("omni", level));
-        }
-    }
-
-    #[test]
-    fn other_categories_always_emit_runtime_snapshot() {
-        // Startup progress and lifecycle updates depend on these emitting live.
-        for category in ["runtime", "bridge", "storage", "model-trace"] {
-            for level in ["info", "debug", "warning", "error"] {
-                assert!(
-                    log_should_emit_runtime_snapshot(category, level),
-                    "{category} {level} must emit a runtime snapshot"
-                );
-            }
-        }
     }
 
     #[test]

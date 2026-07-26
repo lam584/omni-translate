@@ -34,6 +34,7 @@ pub struct RuntimeNotificationSignal<'a> {
 
 type LogObserver = Box<dyn Fn(&DiagnosticsLogSignal<'_>) + Send + Sync>;
 type NotificationObserver = Box<dyn Fn(&RuntimeNotificationSignal<'_>) + Send + Sync>;
+type RefreshObserver = Box<dyn Fn() + Send + Sync>;
 type SnapshotProvider = Box<dyn Fn() -> DiagnosticsRuntimeSnapshot + Send + Sync>;
 
 /// Instance-scoped bus so tests can build private buses; production uses the
@@ -42,6 +43,7 @@ type SnapshotProvider = Box<dyn Fn() -> DiagnosticsRuntimeSnapshot + Send + Sync
 pub struct SharedSignals {
     log_observers: RwLock<Vec<LogObserver>>,
     notification_observers: RwLock<Vec<NotificationObserver>>,
+    refresh_observers: RwLock<Vec<RefreshObserver>>,
     diagnostics_snapshot_provider: RwLock<Option<SnapshotProvider>>,
 }
 
@@ -79,6 +81,21 @@ impl SharedSignals {
             .iter()
         {
             observer(signal);
+        }
+    }
+
+    /// Diagnostics-visible state changed without a log line (e.g. a model
+    /// trace update); the runtime subscriber refreshes the snapshot.
+    pub fn subscribe_runtime_snapshot_refresh(&self, observer: impl Fn() + Send + Sync + 'static) {
+        self.refresh_observers
+            .write()
+            .expect("refresh observers poisoned")
+            .push(Box::new(observer));
+    }
+
+    pub fn request_runtime_snapshot_refresh(&self) {
+        for observer in self.refresh_observers.read().expect("refresh observers poisoned").iter() {
+            observer();
         }
     }
 

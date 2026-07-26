@@ -10,6 +10,7 @@ mod provider;
 mod runtime;
 mod shared;
 mod storage;
+mod wiring;
 
 use audio::events::{
     preconnect_omni_realtime, preconnect_omni_realtime_inner, start_audio_route,
@@ -651,6 +652,7 @@ async fn debug_cred_direct(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn main() {
     let diagnostics_store = diagnostics::bootstrap_logging();
+    let diagnostics_store_for_notifications = diagnostics_store.clone();
 
     tauri::Builder::default()
         .manage(AudioStateStore::new())
@@ -691,10 +693,17 @@ fn main() {
             configuration_v2,
             unlock_subtitle_overlay
         ])
-        .setup(|app| {
+        .setup(move |app| {
             let setup_start = Instant::now();
             let app_handle = app.handle().clone();
             IPC_PING_RECEIVED.store(false, Ordering::Release);
+
+            // Connect the diagnostics <-> runtime shared-bus seams; the
+            // wiring module is the only place that references both sides.
+            wiring::install_diagnostics_runtime_seams(
+                &app_handle,
+                diagnostics_store_for_notifications.clone(),
+            );
             let state = app.state::<RuntimeStateStore>();
             let storage = app.state::<StorageStateStore>();
 

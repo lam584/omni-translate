@@ -7,15 +7,30 @@ pub fn workspace_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Development-build locations for the bridge executable, most preferred first:
+/// the root Cargo workspace target directory, then the legacy per-crate target
+/// directory kept for artifacts built before the workspace existed.
+pub fn bridge_cli_release_candidates() -> [PathBuf; 2] {
+    let root = workspace_root();
+    [
+        root.join("target")
+            .join("release")
+            .join("omni-bridge-service.exe"),
+        root.join("apps")
+            .join("bridge-service-native")
+            .join("target")
+            .join("release")
+            .join("omni-bridge-service.exe"),
+    ]
+}
+
 pub fn bridge_cli_path() -> PathBuf {
-    let release_path = workspace_root()
-        .join("apps")
-        .join("bridge-service-native")
-        .join("target")
-        .join("release")
-        .join("omni-bridge-service.exe");
-    if release_path.exists() {
-        return release_path;
+    let [preferred_path, legacy_path] = bridge_cli_release_candidates();
+    if preferred_path.exists() {
+        return preferred_path;
+    }
+    if legacy_path.exists() {
+        return legacy_path;
     }
 
     if let Ok(exe_path) = std::env::current_exe() {
@@ -41,7 +56,7 @@ pub fn bridge_cli_path() -> PathBuf {
         }
     }
 
-    release_path
+    preferred_path
 }
 
 #[allow(dead_code, reason = "legacy install-state path is retained for upgrade compatibility")]

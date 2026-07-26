@@ -9,7 +9,9 @@ const workspaceRoot = resolve(scriptDirectory, '..', '..');
 const desktopRoot = join(workspaceRoot, 'apps', 'desktop');
 const targetDirectory = join(desktopRoot, 'src-tauri', 'target-shortcut');
 const executablePath = join(targetDirectory, 'release', 'omni-desktop-shell.exe');
-const canonicalExecutablePath = join(desktopRoot, 'src-tauri', 'target', 'release', 'omni-desktop-shell.exe');
+// Canonical release location: the root Cargo workspace target directory, which is
+// where a plain `cargo build --release` now places the desktop executable.
+const canonicalExecutablePath = join(workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe');
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {

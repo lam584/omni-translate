@@ -24,9 +24,11 @@ if (-not $process) {
 }
 
 $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-$expectedPath = [System.IO.Path]::GetFullPath(
+# Root Cargo workspace target directory first; legacy per-crate target directory second.
+$expectedPaths = @(
+  (Join-Path $workspacePath 'target\release\omni-bridge-service.exe'),
   (Join-Path $workspacePath 'apps\bridge-service-native\target\release\omni-bridge-service.exe')
-)
+) | ForEach-Object { [System.IO.Path]::GetFullPath($_) }
 $actualProcessPath = $process.Path
 if ([string]::IsNullOrWhiteSpace($actualProcessPath)) {
   $processInfo = Get-CimInstance Win32_Process -Filter "ProcessId = $bridgePid" -ErrorAction SilentlyContinue
@@ -42,8 +44,15 @@ if ([string]::IsNullOrWhiteSpace($actualProcessPath)) {
   throw "bridge.stale-process-path-unavailable: pid=$bridgePid processName=$($process.ProcessName)"
 }
 $actualPath = [System.IO.Path]::GetFullPath($actualProcessPath)
-if (-not [string]::Equals($actualPath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase)) {
-  throw "bridge.stale-process-path-mismatch: pid=$bridgePid actual=$actualPath expected=$expectedPath"
+$pathMatched = $false
+foreach ($expectedPath in $expectedPaths) {
+  if ([string]::Equals($actualPath, $expectedPath, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $pathMatched = $true
+    break
+  }
+}
+if (-not $pathMatched) {
+  throw "bridge.stale-process-path-mismatch: pid=$bridgePid actual=$actualPath expected=$($expectedPaths -join ' | ')"
 }
 
 $client = $null

@@ -59,10 +59,13 @@ const GROUPS = [
       /^apps\/desktop\/src-tauri\/defaults\//,
       /^apps\/desktop\/src-tauri\/src\/benchmark\//,
       /^apps\/desktop\/src-tauri\/Cargo\.(?:toml|lock)$/,
+      /^Cargo\.(?:toml|lock)$/,
+      /^crates\//,
     ],
     verification: [
       'npm run check:desktop-shell',
       'npm run test:desktop-shell',
+      'npm run check:bridge-service-native',
     ],
   },
   {

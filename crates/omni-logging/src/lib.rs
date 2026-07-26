@@ -1,0 +1,27 @@
+//! Shared logging primitives for the Omni Translate Rust processes.
+//!
+//! Consumed as a path dependency by `omni-desktop-shell` (Tauri backend) and
+//! `omni-bridge-service` (native bridge). Both processes share:
+//!
+//! - [`pipeline::LogPipeline`]: a single background writer thread behind a
+//!   bounded channel, owning the file handle, rotation and failure counters;
+//! - [`timestamp::format_log_timestamp`]: the repository-wide
+//!   `yyyy-MM-dd HH:mm:ss.fff` leading timestamp that the testing scripts
+//!   parse (`measure-startup-readiness.ps1`, `run-watch-mode-live.ps1`,
+//!   `watch-mode-report.mjs`);
+//! - [`level::LogLevel`]: the canonical level vocabulary
+//!   (`error/warning/info/debug/verbose`) and its line markers;
+//! - [`logger::Logger`]: a level-filtered file logger emitting the unified
+//!   `{timestamp} [{LEVEL}] [{tag}] {source} - {message}` line format;
+//! - [`panic_hook::install`]: a global panic hook writing one single-line
+//!   record to the main log plus the full backtrace to a `panic.log`.
+
+pub mod level;
+pub mod logger;
+pub mod panic_hook;
+pub mod pipeline;
+pub mod timestamp;
+
+pub use level::LogLevel;
+pub use logger::Logger;
+pub use pipeline::LogPipeline;

@@ -112,9 +112,14 @@ public static class OmniVirtualAudioProbe
 
 function Invoke-OmniWasapiAudioProbe([string]$WorkspaceRoot = (Join-Path $PSScriptRoot '..\..')) {
   $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-  $probePath = Join-Path $workspacePath 'apps\bridge-service-native\target\release\omni-driver-audio-probe.exe'
-  if (-not (Test-Path -LiteralPath $probePath -PathType Leaf)) {
-    throw "The WASAPI audio probe has not been built: $probePath. Run npm run build:bridge-service-native first."
+  # Root Cargo workspace target directory first; legacy per-crate target directory second.
+  $probeCandidates = @(
+    (Join-Path $workspacePath 'target\release\omni-driver-audio-probe.exe'),
+    (Join-Path $workspacePath 'apps\bridge-service-native\target\release\omni-driver-audio-probe.exe')
+  )
+  $probePath = $probeCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  if (-not $probePath) {
+    throw "The WASAPI audio probe has not been built: $($probeCandidates -join ' | '). Run npm run build:bridge-service-native first."
   }
 
   $probeOutput = & $probePath

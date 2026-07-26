@@ -14,20 +14,37 @@ const copyTree = (source, target) => {
   fs.cpSync(source, target, { recursive: true, force: true });
 };
 
-const nativeBridgeExecutable = path.join(rootDir, 'apps', 'bridge-service-native', 'target', 'release', 'omni-bridge-service.exe');
-if (!fs.existsSync(nativeBridgeExecutable)) {
-  throw new Error('Native Bridge Service executable is missing. Run npm run build:bridge-service-native first.');
-}
+// Release binaries land in the root workspace target directory; the per-crate
+// target directories are kept as fallbacks for artifacts built before the root
+// Cargo workspace existed.
+const resolveBuiltExecutable = (candidates, missingMessage) => {
+  const existing = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!existing) {
+    throw new Error(missingMessage);
+  }
+  return existing;
+};
+
+const nativeBridgeExecutable = resolveBuiltExecutable(
+  [
+    path.join(rootDir, 'target', 'release', 'omni-bridge-service.exe'),
+    path.join(rootDir, 'apps', 'bridge-service-native', 'target', 'release', 'omni-bridge-service.exe'),
+  ],
+  'Native Bridge Service executable is missing. Run npm run build:bridge-service-native first.',
+);
 
 const desktopDist = path.join(rootDir, 'apps', 'desktop', 'dist');
 if (!fs.existsSync(desktopDist)) {
   throw new Error('Desktop dist is missing. Run npm run verify:desktop first.');
 }
 
-const desktopExecutable = path.join(rootDir, 'apps', 'desktop', 'src-tauri', 'target', 'release', 'omni-desktop-shell.exe');
-if (!fs.existsSync(desktopExecutable)) {
-  throw new Error('Desktop executable is missing. Run npm run build:desktop-shell first.');
-}
+const desktopExecutable = resolveBuiltExecutable(
+  [
+    path.join(rootDir, 'target', 'release', 'omni-desktop-shell.exe'),
+    path.join(rootDir, 'apps', 'desktop', 'src-tauri', 'target', 'release', 'omni-desktop-shell.exe'),
+  ],
+  'Desktop executable is missing. Run npm run build:desktop-shell first.',
+);
 
 const driverPackageDir = path.join(rootDir, 'drivers', 'windows-virtual-mic', 'package');
 const developmentDriverCertificate = path.join(driverPackageDir, 'omni-translate-development-driver.cer');

@@ -13,7 +13,9 @@ if errorlevel 1 (
   exit /b 1
 )
 
-set "OMNI_DESKTOP_EXE=%CD%\apps\desktop\src-tauri\target\release\omni-desktop-shell.exe"
+rem Root workspace target directory first; legacy per-crate target directory second.
+set "OMNI_DESKTOP_EXE=%CD%\target\release\omni-desktop-shell.exe"
+if not exist "%OMNI_DESKTOP_EXE%" set "OMNI_DESKTOP_EXE=%CD%\apps\desktop\src-tauri\target\release\omni-desktop-shell.exe"
 if not exist "%OMNI_DESKTOP_EXE%" (
   echo.
   echo [Omni Translate] Build completed but the executable was not found:

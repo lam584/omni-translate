@@ -372,13 +372,25 @@ mod tests {
             root.file_name().and_then(|value| value.to_str()),
             Some("omni-translate")
         );
+
+        let [preferred, legacy] = bridge_cli_release_candidates();
         assert_eq!(
-            bridge_cli_path(),
+            preferred,
+            root.join("target")
+                .join("release")
+                .join("omni-bridge-service.exe")
+        );
+        assert_eq!(
+            legacy,
             root.join("apps")
                 .join("bridge-service-native")
                 .join("target")
                 .join("release")
                 .join("omni-bridge-service.exe")
+        );
+        assert!(
+            bridge_cli_release_candidates().contains(&bridge_cli_path()),
+            "bridge_cli_path must resolve within the release candidate chain in a dev checkout"
         );
     }
 

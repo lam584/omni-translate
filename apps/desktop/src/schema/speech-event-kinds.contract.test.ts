@@ -1,8 +1,9 @@
-import { readFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
+import dispatchRs from '../../src-tauri/src/audio/speech/dispatch.rs?raw';
+import speechRs from '../../src-tauri/src/audio/speech.rs?raw';
+import fakeBridgeSource from '../mocks/fake-bridge.ts?raw';
+import previewDefaultsSource from '../defaults/audio-runtime.ts?raw';
 import { SPEECH_EVENT_KINDS } from './speech-event-kinds';
 
 // Cross-language pin for the speech dispatch event vocabulary. The mock world
@@ -10,15 +11,7 @@ import { SPEECH_EVENT_KINDS } from './speech-event-kinds';
 // and tests asserted on it — pinning both directions keeps the fake bridge and
 // the preview defaults speaking the native dialect.
 
-const here = dirname(fileURLToPath(import.meta.url));
-const srcTauri = join(here, '..', '..', 'src-tauri', 'src');
-
-function readRustSpeechSources(): string {
-  return [
-    readFileSync(join(srcTauri, 'audio', 'speech', 'dispatch.rs'), 'utf8'),
-    readFileSync(join(srcTauri, 'audio', 'speech.rs'), 'utf8'),
-  ].join('\n');
-}
+const rustSpeechSources = `${dispatchRs}\n${speechRs}`;
 
 function collectRustSpeechKinds(source: string): Set<string> {
   const kinds = new Set<string>();
@@ -30,14 +23,13 @@ function collectRustSpeechKinds(source: string): Set<string> {
 
 describe('speech event kind vocabulary (TS ↔ Rust)', () => {
   it('every pinned kind exists verbatim in the Rust speech dispatch sources', () => {
-    const rust = readRustSpeechSources();
     for (const kind of SPEECH_EVENT_KINDS) {
-      expect(rust, `kind ${kind} must appear in src-tauri speech sources`).toContain(`"${kind}"`);
+      expect(rustSpeechSources, `kind ${kind} must appear in src-tauri speech sources`).toContain(`"${kind}"`);
     }
   });
 
   it('every speech.* event kind emitted by Rust is part of the pinned vocabulary', () => {
-    const rustKinds = collectRustSpeechKinds(readRustSpeechSources());
+    const rustKinds = collectRustSpeechKinds(rustSpeechSources);
     for (const kind of rustKinds) {
       expect(
         SPEECH_EVENT_KINDS,
@@ -48,10 +40,7 @@ describe('speech event kind vocabulary (TS ↔ Rust)', () => {
   });
 
   it('mock and preview speech events only use pinned kinds (no phantom kinds)', () => {
-    const mockSources = [
-      readFileSync(join(here, '..', 'mocks', 'fake-bridge.ts'), 'utf8'),
-      readFileSync(join(here, '..', 'defaults', 'audio-runtime.ts'), 'utf8'),
-    ].join('\n');
+    const mockSources = `${fakeBridgeSource}\n${previewDefaultsSource}`;
     for (const match of mockSources.matchAll(/kind: '(speech\.[a-z-]+)'/g)) {
       expect(
         SPEECH_EVENT_KINDS,

@@ -619,6 +619,37 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     }
   }
 
+  /** Diagnostics log ring visible through diagnostics_v2 snapshot. */
+  const diagnosticsLogs: Array<Record<string, unknown>> = [];
+
+  function appendDiagnosticsLog(entry: {
+    category: string;
+    level: string;
+    summary: string;
+    detail?: string | null;
+  }) {
+    diagnosticsLogs.unshift({
+      id: `fake-log-${diagnosticsLogs.length + 1}`,
+      category: entry.category,
+      level: entry.level,
+      summary: entry.summary,
+      detail: entry.detail ?? null,
+      emittedAt: new Date().toISOString(),
+    });
+  }
+
+  function handleDiagnosticsAction(action: string | null) {
+    switch (action) {
+      case 'snapshot':
+        return envelope({ recentLogs: structuredClone(diagnosticsLogs) });
+      case 'selfCheck':
+      case 'overlaySelfCheck':
+        return envelope(structuredClone(runtime));
+      default:
+        throw new Error(`fake bridge: unsupported diagnostics_v2 action ${String(action)}`);
+    }
+  }
+
   async function invoke<T>(command: string, args?: Record<string, unknown>): Promise<T> {
     record(command, args);
     const action = extractAction(args);
@@ -639,6 +670,8 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
           return handleBridgeAction(action, args) as T;
         case 'configuration_v2':
           return handleConfigurationAction(action) as T;
+        case 'diagnostics_v2':
+          return handleDiagnosticsAction(action) as T;
         case 'start_audio_route':
           acceptRouteStart(args?.direction as 'inbound' | 'outbound');
           return structuredClone(audio) as T;
@@ -709,6 +742,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     dropRealtimeConnection,
     restoreRealtimeConnection,
     pushNotification,
+    appendDiagnosticsLog,
   };
 }
 

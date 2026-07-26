@@ -16,6 +16,7 @@ import {
   waitForWatchRouteReadyRuntime,
 } from './audio-runtime';
 import { refreshBridgeRuntime, startBridgeServiceRuntime, stopBridgeServiceRuntime } from './bridge-runtime';
+import { getRecentDiagnosticsLogsRuntime, runSubtitleOverlaySelfCheckRuntime } from './diagnostics-runtime';
 
 // Contract integration layer for the desktop-runtime ↔ bridge boundary. The
 // real renderer runtime modules run against an injectable fake bridge / fake
@@ -425,6 +426,25 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
 
     expect(fake.sessionActionCalls('startSpeech')).toHaveLength(1);
     expect(fake.sessionActionCalls('stopSpeech')).toHaveLength(1);
+  });
+
+  it('serves diagnostics snapshot and overlay self-check through the same contract double', async () => {
+    fake.appendDiagnosticsLog({
+      category: 'audio',
+      level: 'warning',
+      summary: 'watch_mode.route_error',
+      detail: 'direction=inbound',
+    });
+
+    const recentLogs = await getRecentDiagnosticsLogsRuntime();
+    expect(recentLogs[0]).toMatchObject({ category: 'audio', summary: 'watch_mode.route_error' });
+
+    const selfCheck = await runSubtitleOverlaySelfCheckRuntime();
+    expect(selfCheck.bridgeStatus).toBe('tauri-shell');
+    expect(fake.commandCalls('diagnostics_v2').map((call) => call.action)).toEqual([
+      'snapshot',
+      'overlaySelfCheck',
+    ]);
   });
 
   it('folds a missing speaker device into speech.lastError and degraded status', async () => {

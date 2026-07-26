@@ -28,11 +28,16 @@ const mocks = vi.hoisted(() => ({
   stopTranslation: vi.fn(),
 }));
 
+// Plan topology comes from the REAL buildSceneLaunchPlan/buildWatchFallbackPlan
+// in every test (fabricated stage arrays once asserted flows real plans never
+// produce — the b796174 lesson). The single exception: current real plans hard
+// -code parallelOmniPreconnect=false, so the executor's preconnect-callback
+// wiring in the controller is unreachable through real topology. Two wiring
+// tests below opt into `forceParallelPreconnect` to keep that seam covered;
+// whether that code path should instead be removed is part of the phase-6
+// coverage-threshold decision memo.
 const planState = vi.hoisted(() => ({
-  fallbackStages: null as null | Array<'bridge-ready' | 'omni-preconnect' | 'inbound-route' | 'outbound-route' | 'translate-worker' | 'speech-dispatch' | 'subtitle-overlay'>,
-  mainStages: null as null | Array<'bridge-ready' | 'omni-preconnect' | 'inbound-route' | 'outbound-route' | 'translate-worker' | 'speech-dispatch' | 'subtitle-overlay'>,
-  parallelPreconnect: false,
-  fallbackParallelPreconnect: false,
+  forceParallelPreconnect: false,
 }));
 
 vi.mock('../../runtime/audio-runtime', () => ({
@@ -73,14 +78,10 @@ vi.mock('./sceneLaunchPlan', async (importOriginal) => {
     ...original,
     buildSceneLaunchPlan: (...args: Parameters<typeof original.buildSceneLaunchPlan>) => {
       const plan = original.buildSceneLaunchPlan(...args);
-      if (planState.mainStages) plan.stages = [...planState.mainStages];
-      plan.parallelOmniPreconnect = planState.parallelPreconnect;
-      return plan;
-    },
-    buildWatchFallbackPlan: (...args: Parameters<typeof original.buildWatchFallbackPlan>) => {
-      const plan = original.buildWatchFallbackPlan(...args);
-      if (planState.fallbackStages) plan.stages = [...planState.fallbackStages];
-      plan.parallelOmniPreconnect = planState.fallbackParallelPreconnect;
+      if (planState.forceParallelPreconnect) {
+        plan.parallelOmniPreconnect = true;
+        plan.stages = ['bridge-ready', 'omni-preconnect', ...plan.stages.filter((stage) => stage !== 'bridge-ready')];
+      }
       return plan;
     },
   };
@@ -154,10 +155,7 @@ function makeLaunchOptions(mode: 'watch' | 'voice-room' = 'watch') {
 beforeEach(() => {
   vi.useRealTimers();
   for (const mock of Object.values(mocks)) mock.mockReset();
-  planState.fallbackStages = null;
-  planState.mainStages = null;
-  planState.parallelPreconnect = false;
-  planState.fallbackParallelPreconnect = false;
+  planState.forceParallelPreconnect = false;
   const audio = cloneAudio();
   mocks.watchNeedsBridge.mockReturnValue(false);
   mocks.recentLogs.mockResolvedValue([]);
@@ -274,23 +272,23 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.stopSpeech).toHaveBeenCalled();
   });
 
-  it('executes fallback cancel, warning text variants, and speech compensation', async () => {
+  it('reports a fallback failure and rolls the AEC fallback back when its speech stage fails', async () => {
+    // Real fallback topology: subtitles-only → [inbound-route]; AEC (speech
+    // enabled) → [inbound-route, speech-dispatch].
     mocks.watchNeedsBridge.mockReturnValue(true);
-    planState.fallbackParallelPreconnect = true;
-    planState.fallbackStages = ['bridge-ready', 'omni-preconnect', 'inbound-route'];
     mocks.startRoute.mockRejectedValueOnce('bridge initial string').mockRejectedValueOnce('fallback route string');
     const first = makeHarness(); first.controller.confirmWatchFallback.mockResolvedValue(false);
     await first.api.launchScene(makeLaunchOptions('watch'));
     expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'error', '[WatchFallback] fallback failed', expect.any(String));
 
-    planState.fallbackParallelPreconnect = false;
-    planState.fallbackStages = ['inbound-route', 'speech-dispatch', 'subtitle-overlay'];
     mocks.startRoute.mockReset().mockRejectedValueOnce(new Error('bridge initial')).mockResolvedValueOnce(cloneAudio());
-    mocks.showOverlay.mockRejectedValueOnce(new Error('overlay failed'));
-    mocks.stopSpeech.mockResolvedValue(cloneAudio());
-    const second = makeHarness(); second.controller.confirmWatchFallback.mockResolvedValue(true);
+    mocks.startSpeech.mockRejectedValueOnce(new Error('fallback speech failed'));
+    const second = makeHarness(); second.controller.confirmWatchFallback.mockResolvedValue(false);
     await second.api.launchScene(makeLaunchOptions('watch'));
-    expect(mocks.stopSpeech).toHaveBeenCalled();
+    // The AEC fallback's speech-dispatch stage failed after inbound-route
+    // completed: the completed route is rolled back.
+    expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toContain('inbound');
+    expect(second.controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
   });
 
   it('migrates legacy Watch drafts on the real bridge-free plan and warns on non-Error preconnect failures', async () => {
@@ -307,8 +305,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(watch.controller.updateSpeechDraft).toHaveBeenCalledWith(expect.objectContaining({ enabled: false }));
     expect(watch.controller.updateDiagnosticsReady).toHaveBeenCalledWith('watch');
 
-    planState.parallelPreconnect = true;
-    planState.mainStages = ['bridge-ready', 'omni-preconnect', 'inbound-route'];
+    planState.forceParallelPreconnect = true;
     mocks.preconnect.mockRejectedValueOnce('preconnect string');
     const parallel = makeHarness();
     await parallel.api.launchScene(makeLaunchOptions('voice-room'));
@@ -316,10 +313,15 @@ describe('useSceneSessionController IPC orchestration', () => {
   });
 
   it('rolls back main speech and reports a non-Error overlay failure', async () => {
-    planState.mainStages = ['bridge-ready', 'inbound-route', 'speech-dispatch', 'subtitle-overlay'];
+    // Real voice-room plan with speech + overlay: [bridge-ready, inbound-route,
+    // outbound-route, translate-worker, speech-dispatch, subtitle-overlay].
+    const options = makeLaunchOptions('voice-room');
+    options.isOmniModel = false;
+    options.speechPatch = { enabled: true };
+    options.overlayVisible = false;
     mocks.showOverlay.mockRejectedValueOnce('overlay string');
     const { api, controller } = makeHarness();
-    await api.launchScene(makeLaunchOptions('voice-room'));
+    await api.launchScene(options);
     expect(mocks.stopSpeech).toHaveBeenCalled();
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('overlay string') }));
   });
@@ -457,8 +459,7 @@ describe('useSceneSessionController IPC orchestration', () => {
   });
 
   it('runs parallel Omni preconnect IPC and compensates it after a later stage failure', async () => {
-    planState.parallelPreconnect = true;
-    planState.mainStages = ['bridge-ready', 'omni-preconnect', 'inbound-route'];
+    planState.forceParallelPreconnect = true;
     mocks.startRoute.mockRejectedValue(new Error('route failed after preconnect'));
     const { api } = makeHarness();
 
@@ -469,8 +470,7 @@ describe('useSceneSessionController IPC orchestration', () => {
   });
 
   it('logs and continues when parallel Omni preconnect IPC rejects', async () => {
-    planState.parallelPreconnect = true;
-    planState.mainStages = ['bridge-ready', 'omni-preconnect', 'inbound-route'];
+    planState.forceParallelPreconnect = true;
     mocks.preconnect.mockRejectedValue('preconnect unavailable');
     const { api, controller } = makeHarness();
 
@@ -484,11 +484,14 @@ describe('useSceneSessionController IPC orchestration', () => {
   });
 
   it('classifies a failed rollback as an error-level launch outcome', async () => {
-    planState.mainStages = ['inbound-route', 'translate-worker'];
+    // Real voice-room non-Omni plan reaches translate-worker after both
+    // routes; a failing stopRoute during rollback yields rollback-failed.
+    const options = makeLaunchOptions('voice-room');
+    options.isOmniModel = false;
     mocks.startTranslation.mockRejectedValue(new Error('translation failed'));
     mocks.stopRoute.mockRejectedValue(new Error('rollback failed'));
     const { api } = makeHarness();
-    await api.launchScene(makeLaunchOptions('voice-room'));
+    await api.launchScene(options);
     expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'error', expect.stringContaining('status=rollback-failed'));
   });
 
@@ -589,9 +592,10 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'error', '[WatchFallback] fallback failed', expect.any(String));
   });
 
-  it('runs every native IPC stage in a successful AEC fallback', async () => {
+  it('runs every real AEC-fallback stage after a Bridge-class failure', async () => {
+    // Real AEC fallback plan: [inbound-route, speech-dispatch] — no bridge
+    // stage, no translate worker, no renderer-owned overlay.
     mocks.watchNeedsBridge.mockReturnValue(true);
-    planState.fallbackStages = ['inbound-route', 'outbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay'];
     mocks.startRoute.mockRejectedValueOnce(new Error('virtual bridge unavailable'));
     const { api, controller } = makeHarness();
     controller.confirmWatchFallback.mockResolvedValue(false);
@@ -599,63 +603,42 @@ describe('useSceneSessionController IPC orchestration', () => {
     await api.launchScene(makeLaunchOptions('watch'));
 
     expect(mocks.startRoute.mock.calls.map(([direction]) => direction)).toEqual(['inbound', 'inbound']);
-    expect(mocks.startTranslation).toHaveBeenCalled();
     expect(mocks.startSpeech).toHaveBeenCalled();
-    expect(mocks.showOverlay).toHaveBeenCalled();
+    expect(mocks.startTranslation).not.toHaveBeenCalled();
+    expect(mocks.showOverlay).not.toHaveBeenCalled();
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'warning' }));
   });
 
-  it('keeps fallback executor no-op Bridge and preconnect hooks safe under a parallel plan', async () => {
-    mocks.watchNeedsBridge.mockReturnValue(true);
-    planState.fallbackParallelPreconnect = true;
-    planState.fallbackStages = ['bridge-ready', 'omni-preconnect', 'inbound-route'];
-    mocks.startRoute.mockRejectedValueOnce(new Error('bridge startup failed')).mockResolvedValueOnce(cloneAudio());
+  it('compensates completed non-audio stages when a real voice-room launch fails late', async () => {
+    // Full real plan: bridge-ready, inbound, outbound, translate, speech,
+    // overlay. The overlay fails, so speech + translate + both routes roll
+    // back in reverse order.
+    const options = makeLaunchOptions('voice-room');
+    options.isOmniModel = false;
+    options.speechPatch = { enabled: true };
+    options.overlayVisible = false;
+    mocks.showOverlay.mockRejectedValueOnce(new Error('overlay failed late'));
     const { api, controller } = makeHarness();
 
-    await api.launchScene(makeLaunchOptions('watch'));
+    await api.launchScene(options);
 
-    expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'warning' }));
-  });
-
-  it('compensates non-audio stages in both fallback and main launch plans', async () => {
-    mocks.watchNeedsBridge.mockReturnValue(true);
-    planState.fallbackStages = ['speech-dispatch', 'inbound-route'];
-    mocks.startRoute.mockRejectedValueOnce(new Error('bridge startup failed')).mockRejectedValueOnce(new Error('fallback route failed'));
-    await makeHarness().api.launchScene(makeLaunchOptions('watch'));
-
-    mocks.watchNeedsBridge.mockReturnValue(false);
-    planState.fallbackStages = null;
-    planState.mainStages = ['outbound-route', 'inbound-route'];
-    mocks.startRoute.mockReset().mockResolvedValueOnce(cloneAudio()).mockRejectedValueOnce(new Error('main route failed'));
-    await makeHarness().api.launchScene(makeLaunchOptions('voice-room'));
     expect(mocks.stopSpeech).toHaveBeenCalled();
-    expect(mocks.stopRoute).toHaveBeenCalledWith('outbound');
+    expect(mocks.stopTranslation).toHaveBeenCalled();
+    expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toEqual(['outbound', 'inbound']);
+    expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
   });
 
-  it.each([
-    ['translate-worker', null, ['inbound']],
-    ['speech-dispatch', null, ['translate', 'inbound']],
-    ['subtitle-overlay', null, ['speech', 'translate', 'inbound']],
-  ] as const)('rolls back completed fallback IPC stages when %s fails', async (failedStage, failedDirection, expectedStops) => {
+  it('rolls the completed fallback route back when the AEC fallback speech stage fails', async () => {
     mocks.watchNeedsBridge.mockReturnValue(true);
-    planState.fallbackStages = ['inbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay'];
     mocks.startRoute.mockRejectedValueOnce(new Error('bridge startup failed'));
     mocks.startRoute.mockResolvedValueOnce(cloneAudio());
-    if (failedStage === 'translate-worker') mocks.startTranslation.mockRejectedValueOnce(new Error('fallback translate failed'));
-    if (failedStage === 'speech-dispatch') mocks.startSpeech.mockRejectedValueOnce(new Error('fallback speech failed'));
-    if (failedStage === 'subtitle-overlay') mocks.showOverlay.mockRejectedValueOnce(new Error('fallback overlay failed'));
+    mocks.startSpeech.mockRejectedValueOnce(new Error('fallback speech failed'));
     const { api, controller } = makeHarness();
     controller.confirmWatchFallback.mockResolvedValue(false);
 
     await api.launchScene(makeLaunchOptions('watch'));
 
-    const stopLabels = [
-      ...mocks.stopSpeech.mock.calls.map(() => 'speech'),
-      ...mocks.stopTranslation.mock.calls.map(() => 'translate'),
-      ...mocks.stopRoute.mock.calls.map(([direction]) => direction),
-    ];
-    expect(stopLabels).toEqual(expect.arrayContaining([...expectedStops]));
-    if (failedDirection) expect(mocks.startRoute).toHaveBeenCalledWith(failedDirection, expect.any(Object));
+    expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toContain('inbound');
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
   });
 
@@ -803,28 +786,4 @@ describe('useSceneSessionController IPC orchestration', () => {
     vi.useRealTimers();
   });
 
-  it('hides an already-open launch overlay during outer-timeout cleanup', async () => {
-    // The overlay opened successfully before a later stage hung: the timeout
-    // cleanup must hide it alongside stopping route/translate/speech.
-    vi.useFakeTimers();
-    const options = makeLaunchOptions('voice-room');
-    options.isOmniModel = true;
-    options.speechPatch = { enabled: false };
-    options.overlayVisible = false;
-    planState.mainStages = ['bridge-ready', 'subtitle-overlay', 'inbound-route'];
-    const hiddenRuntime = cloneRuntime();
-    hiddenRuntime.sessionId = 'overlay-hidden-session';
-    mocks.toggleOverlay.mockResolvedValue(hiddenRuntime);
-    mocks.startRoute.mockImplementation(() => new Promise(() => undefined));
-    const { api, controller } = makeHarness();
-
-    const launch = api.launchScene(options);
-    await vi.advanceTimersByTimeAsync(100);
-    await launch;
-
-    expect(mocks.showOverlay).toHaveBeenCalledTimes(1);
-    expect(mocks.toggleOverlay).toHaveBeenCalled();
-    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(hiddenRuntime);
-    vi.useRealTimers();
-  });
 });

@@ -33,6 +33,7 @@ export type BridgeInitRequest = {
   targetDeviceId: string;
   virtualRenderDeviceId: string;
   physicalPlaybackDeviceId: string;
+  physicalPlaybackLevel: number;
   mixControl: BridgeMixControl;
   monitorPlaybackEnabled: boolean;
   expectedDriverVersion: string;
@@ -53,11 +54,14 @@ export type BridgeInlinePcmFrameHeader = {
 };
 
 export type BridgeTranslationFrameAck = {
-  type: 'bridge.source.ack' | 'bridge.translation.ack';
+  type: 'bridge.source.ack' | 'bridge.translation.ack' | 'bridge.translation.nack';
   requestId: string;
   frameId: string;
   acceptedFrames: number;
   playbackFramesWritten: number;
+  /** Present on bridge.translation.nack responses (e.g. bridge.session-mismatch). */
+  errorCode?: string;
+  message?: string;
 };
 
 export type BridgeMixControl = {

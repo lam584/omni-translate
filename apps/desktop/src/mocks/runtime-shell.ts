@@ -21,6 +21,7 @@ export const runtimeSnapshotMock: RuntimeSnapshot = {
     targetDeviceId: 'virtual-mic-default',
     virtualRenderDeviceId: 'omni-virtual-speaker-default',
     physicalPlaybackDeviceId: 'speaker-default',
+    physicalPlaybackLevel: 100,
     mixControl: {
       keepOriginalAudio: true,
       translatedAudioEnabled: true,

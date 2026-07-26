@@ -53,6 +53,8 @@ export type BridgeRuntimeSnapshot = {
   targetDeviceId: string;
   virtualRenderDeviceId: string;
   physicalPlaybackDeviceId: string;
+  /** Physical playback volume percentage (0-100). */
+  physicalPlaybackLevel: number;
   mixControl: BridgeMixControl;
   monitorPlaybackEnabled: boolean;
   expectedDriverVersion: string;
@@ -144,6 +146,10 @@ export type DiagnosticLogEntryRuntime = {
   summary: string;
   detail: string | null;
   emittedAt: string;
+  /** Originating subsystem; always emitted by the backend, absent on frontend-fabricated entries. */
+  source?: string | null;
+  /** Elapsed milliseconds attached by the backend for timed operations. */
+  elapsedMs?: number | null;
 };
 
 export type DiagnosticLogCategoryRuntime = {

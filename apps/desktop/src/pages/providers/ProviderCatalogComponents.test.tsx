@@ -324,7 +324,7 @@ describe('provider catalog components', () => {
     ({ container, root } = render(<CustomProviderDialog draft={draft} error={null} onClose={onClose} onKindChange={vi.fn()} onSave={vi.fn()} setDraft={setDraft} />));
     await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '');
     expect(setDraft).toHaveBeenCalled();
-    await click(container.querySelector('.provider-modal-backdrop'));
+    await click(container.querySelector('.modal-backdrop--provider'));
     expect(onClose).toHaveBeenCalled();
   });
 

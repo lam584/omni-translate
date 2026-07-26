@@ -35,48 +35,37 @@ function buttons(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLButtonElement>('button'));
 }
 
+// Selector policy: buttons are located by their REAL rendered zh-CN copy
+// (test-setup pins the locale). No positional fallbacks - if the exact text
+// is absent the helper throws with every rendered label, so a copy or order
+// regression fails loudly instead of silently clicking a different button.
+// (The previous helpers matched double-GBK mojibake and fell back to
+// position-based picks like `.at(-1)`, which made label and order
+// regressions structurally undetectable.)
+function renderedButtonLabels(container: HTMLElement) {
+  return buttons(container)
+    .map((button) => (button.textContent ?? '').trim())
+    .filter(Boolean);
+}
+
 function buttonByText(container: HTMLElement, text: string) {
   const exact = buttons(container).find((button) => button.textContent?.trim() === text);
-  if (exact) return exact;
-
-  if (text === '\u767b\u8bb0\u5e76\u6dfb\u52a0') {
-    return container.querySelector<HTMLButtonElement>('.provider-modal-actions .provider-primary-action');
+  if (!exact) {
+    throw new Error(
+      `no button with exact text "${text}"; rendered buttons: ${JSON.stringify(renderedButtonLabels(container))}`,
+    );
   }
-  if (text.includes('create') || text.includes('平台') || text.includes('鍒涘缓') || text.includes('閸掓稑')) {
-    return Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-modal-actions button')).at(-1);
-  }
-  if (text.includes('manual') || text.includes('手动') || text.includes('鎵嬪姩') || text.includes('閹靛')) {
-    return manualModelAddButton(container);
-  }
-  if (text.includes('cancel') || text.includes('取消') || text.includes('鍙栨秷') || text.includes('閸欐牗')) {
-    return Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-modal-actions button')).at(0);
-  }
-
-  const modalAction = Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-modal-actions button')).at(-1);
-  if (modalAction) return modalAction;
-
-  return undefined;
+  return exact;
 }
 
 function buttonContainingText(container: HTMLElement, text: string) {
   const containing = buttons(container).find((button) => button.textContent?.includes(text));
-  if (containing) return containing;
-
-  if (text.includes('advanced') || text.includes('高级') || text.includes('楂樼骇') || text.includes('妤傛')) {
-    return Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-action-row button')).at(-1);
+  if (!containing) {
+    throw new Error(
+      `no button containing text "${text}"; rendered buttons: ${JSON.stringify(renderedButtonLabels(container))}`,
+    );
   }
-  if (text.includes('verify') || text.includes('验证') || text.includes('楠岃瘉') || text.includes('妤犲')) {
-    return container.querySelector<HTMLButtonElement>('.provider-primary-action');
-  }
-  if (text.includes('model') || text.includes('模型') || text.includes('妯″瀷') || text.includes('濡')) {
-    const actionButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-action-row button'));
-    return actionButtons.length >= 3 ? actionButtons[actionButtons.length - 2] : actionButtons[1];
-  }
-  if (text.includes('濞ｈ濮為弶')) {
-    return container.querySelector<HTMLButtonElement>('.provider-model-toolbar .icon-button');
-  }
-
-  return undefined;
+  return containing;
 }
 
 function secretInput(container: HTMLElement) {
@@ -407,7 +396,7 @@ describe('ProvidersPage', () => {
 
     await renderPage();
     expect(container.textContent).toContain('runtime failed');
-    expect(buttonContainingText(container, '妤犲矁鐦夐幒銉ュ弳')?.disabled).toBe(true);
+    expect(buttonContainingText(container, '验证接入')?.disabled).toBe(true);
 
     await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-action-row button')).at(-2));
     expect(modelCatalogDialog(container)).not.toBeNull();
@@ -483,7 +472,7 @@ describe('ProvidersPage', () => {
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'OpenRouter Custom');
     await inputText(modalInput(container, 1), 'https://openrouter.ai/api/v1');
-    await click(buttonByText(container, '閸掓稑缂撻獮鍐插酱'));
+    await click(buttonByText(container, '创建平台'));
 
     const created = useAppStore.getState().configDraft.providers.find(
       (p) => p.templateId === useAppStore.getState().configDraft.activeProviderTemplateId,
@@ -498,9 +487,9 @@ describe('ProvidersPage', () => {
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Editable Custom');
     await inputText(modalInput(container, 1), 'https://editable.example/v1');
-    await click(buttonByText(container, '閸掓稑缂撻獮鍐插酱'));
+    await click(buttonByText(container, '创建平台'));
 
-    await click(buttonContainingText(container, '妤傛楠囩拋鍓х枂'));
+    await click(buttonContainingText(container, '高级设置'));
     const dialog = advancedSettingsDialog(container)!;
     await inputText(dialog.querySelector<HTMLInputElement>('.provider-modal-grid input')!, 'Editable Custom Updated');
 
@@ -515,14 +504,14 @@ describe('ProvidersPage', () => {
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'First Custom');
     await inputText(modalInput(container, 1), 'https://first.example/v1');
-    await click(buttonByText(container, '閸掓稑缂撻獮鍐插酱'));
+    await click(buttonByText(container, '创建平台'));
 
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Second Custom');
     await inputText(modalInput(container, 1), 'https://second.example/v1');
-    await click(buttonByText(container, '閸掓稑缂撻獮鍐插酱'));
+    await click(buttonByText(container, '创建平台'));
 
-    await click(buttonContainingText(container, '妤傛楠囩拋鍓х枂'));
+    await click(buttonContainingText(container, '高级设置'));
     const dialog = advancedSettingsDialog(container)!;
     await inputText(dialog.querySelector<HTMLInputElement>('.provider-modal-grid input')!, 'Second Custom Updated');
 
@@ -539,7 +528,7 @@ describe('ProvidersPage', () => {
 
     await click(sceneAddButtons(container)[0]);
     await inputText(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'manual-scene-model');
-    await click(buttonByText(container, '閹靛濮╁ǎ璇插'));
+    await click(buttonByText(container, '手动添加'));
     expect(pendingRegistrationDialog(container, 'manual-scene-model')).toBeTruthy();
     await confirmPendingModelRegistration(container);
 
@@ -603,7 +592,7 @@ describe('ProvidersPage', () => {
   it('updates provider advanced settings', async () => {
     await renderPage();
 
-    await click(buttonContainingText(container, '妤傛楠囩拋鍓х枂'));
+    await click(buttonContainingText(container, '高级设置'));
     const dialog = advancedSettingsDialog(container);
     expect(dialog).not.toBeNull();
 
@@ -624,7 +613,7 @@ describe('ProvidersPage', () => {
   it('runs provider verification and opens validation details', async () => {
     await renderPage();
 
-    await click(buttonContainingText(container, '妤犲矁鐦夐幒銉ュ弳'));
+    await click(buttonContainingText(container, '验证接入'));
 
     expect(runProviderProbeMock).toHaveBeenCalled();
     expect(runProviderSmokeMock).toHaveBeenCalled();
@@ -636,7 +625,7 @@ describe('ProvidersPage', () => {
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Temporary Custom');
     await inputText(modalInput(container, 1), 'https://custom.example/v1');
-    await click(buttonByText(container, '閸掓稑缂撻獮鍐插酱'));
+    await click(buttonByText(container, '创建平台'));
 
     const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
     expect(customTemplateId).toContain('template-custom-temporary-custom-');
@@ -653,7 +642,7 @@ describe('ProvidersPage', () => {
     await click(addPlatformButton(container));
     await inputText(modalInput(container, 0), 'Only Visible Custom');
     await inputText(modalInput(container, 1), 'https://only-visible.example/v1');
-    await click(buttonByText(container, 'create'));
+    await click(buttonByText(container, '创建平台'));
     const customTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
     window.localStorage.setItem('omni.providerTemplateCatalogPrefs', JSON.stringify(providerTemplates.map((template, order) => ({
       templateId: template.id, enabled: true, hidden: true, order,
@@ -672,7 +661,7 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
     await inputText(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'remove-me');
-    await click(buttonByText(container, '閹靛濮╁ǎ璇插'));
+    await click(buttonByText(container, '手动添加'));
     await confirmPendingModelRegistration(container);
     expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).toContain('remove-me');
 
@@ -707,7 +696,7 @@ describe('ProvidersPage', () => {
     await click(sceneAddButtons(container)[0]);
     await click(container.querySelector<HTMLButtonElement>('.provider-model-toolbar .provider-header-icon'));
     const dialog = capabilityRegistryDialog(container)!;
-    await click(buttonContainingText(dialog, '濞ｈ濮為弶锛勬窗'));
+    await click(buttonContainingText(dialog, '添加条目'));
 
     const entry = dialog.querySelector<HTMLElement>('.provider-capability-registry-item')!;
     await inputText(entry.querySelector<HTMLInputElement>('input')!, 'custom-asr-model');
@@ -779,7 +768,7 @@ describe('ProvidersPage', () => {
 
   it('updates advanced provider fields, response modalities and closes the dialog', async () => {
     await renderPage();
-    await click(buttonContainingText(container, '妤傛楠囩拋鍓х枂'));
+    await click(buttonContainingText(container, '高级设置'));
     const dialog = advancedSettingsDialog(container)!;
     const inputs = dialog.querySelectorAll<HTMLInputElement>('.provider-modal-grid input');
     const selects = dialog.querySelectorAll<HTMLSelectElement>('.provider-modal-grid select');
@@ -844,7 +833,7 @@ describe('ProvidersPage', () => {
     useAppStore.setState((current) => ({ ...current, ...state }));
 
     await renderPage();
-    await click(buttonContainingText(container, '妤傛楠囩拋鍓х枂'));
+    await click(buttonContainingText(container, '高级设置'));
     const dialog = advancedSettingsDialog(container)!;
     const apiFormatSelect = Array.from(dialog.querySelectorAll<HTMLSelectElement>('select')).find((select) =>
       Array.from(select.options).some((option) => option.value === 'dashscope'),
@@ -1011,7 +1000,7 @@ describe('ProvidersPage', () => {
     expect(capabilityRegistryDialog(container)).toBeUndefined();
 
     await click(Array.from(modelCatalogDialog(container)!.querySelectorAll<HTMLButtonElement>('.provider-model-toolbar .provider-header-icon')).at(-1));
-    await click(buttonContainingText(container, '妤犲矁鐦夐幒銉ュ弳'));
+    await click(buttonContainingText(container, '验证接入'));
     await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-action-row button')).at(1));
     await click(verificationDialog(container)?.querySelector<HTMLButtonElement>('.provider-model-toolbar .provider-header-icon'));
     expect(verificationDialog(container)).toBeNull();
@@ -1037,7 +1026,7 @@ describe('ProvidersPage', () => {
     });
     await renderPage();
 
-    await click(buttonContainingText(container, '妤犲矁鐦夐幒銉ュ弳'));
+    await click(buttonContainingText(container, '验证接入'));
 
     expect(container.textContent).toContain('probe denied');
     expect(container.textContent).toContain('check endpoint');
@@ -1050,7 +1039,7 @@ describe('ProvidersPage', () => {
       error: null,
       guidance: [],
     });
-    await click(buttonContainingText(container, '妤犲矁鐦夐幒銉ュ弳'));
+    await click(buttonContainingText(container, '验证接入'));
 
     expect(container.textContent).toContain('smoke denied');
     expect(container.textContent).toContain('request rejected');
@@ -1061,7 +1050,7 @@ describe('ProvidersPage', () => {
     runProviderProbeMock.mockRejectedValue('probe unavailable');
     await renderPage();
 
-    await click(buttonContainingText(container, '妤犲矁鐦夐幒銉ュ弳'));
+    await click(buttonContainingText(container, '验证接入'));
 
     expect(useAppStore.getState().configDraft.providers[0].status).toBe('warning');
   });
@@ -1075,7 +1064,7 @@ describe('ProvidersPage', () => {
     });
     await renderPage();
 
-    await click(buttonContainingText(container, '妤犲矁鐦夐幒銉ュ弳'));
+    await click(buttonContainingText(container, '验证接入'));
 
     expect(useAppStore.getState().configDraft.providers[0].status).toBe('warning');
     expect(useAppStore.getState().configDraft.diagnostics.providerStatus).toBe('warning');
@@ -1100,12 +1089,12 @@ describe('ProvidersPage', () => {
   it('validates missing custom provider name and base URL', async () => {
     await renderPage();
     await click(addPlatformButton(container));
-    await click(buttonByText(container, '閸掓稑缂撻獮鍐插酱'));
+    await click(buttonByText(container, '创建平台'));
     expect(container.textContent).toContain('平台名称不能为空');
 
     await inputText(modalInput(container, 0), 'Incomplete Provider');
     await inputText(modalInput(container, 1), '');
-    await click(buttonByText(container, '閸掓稑缂撻獮鍐插酱'));
+    await click(buttonByText(container, '创建平台'));
     expect(container.textContent).toContain('接口地址不能为空');
   });
 
@@ -1235,7 +1224,7 @@ describe('ProvidersPage', () => {
     await inputText(secretInput(container)!, 'blocked-secret');
     await click(container.querySelector<HTMLButtonElement>('.provider-auth-entry-actions .action-button'));
     await click(revealSecretButton(container));
-    await click(buttonContainingText(container, '妤犲矁鐦夐幒銉ュ弳'));
+    await click(buttonContainingText(container, '验证接入'));
     await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-action-row button')).at(-2));
     const refreshButton = Array.from(modelCatalogDialog(container)!.querySelectorAll<HTMLButtonElement>('.provider-model-toolbar .provider-header-icon')).at(1);
     await click(refreshButton);

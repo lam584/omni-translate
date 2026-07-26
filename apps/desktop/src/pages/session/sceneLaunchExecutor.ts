@@ -38,7 +38,7 @@ async function rollback(completedStages: SceneLaunchStage[], dependencies: Depen
   for (const stage of [...completedStages].reverse()) {
     try {
       if (stage === 'omni-preconnect') await dependencies.cancelPreconnectOmni();
-      else if (stage !== 'bridge-ready' && stage !== 'subtitle-overlay') await dependencies.compensateStage(stage);
+      else if (stage !== 'bridge-ready') await dependencies.compensateStage(stage);
       else continue;
       rolledBackStages.push(stage);
     } catch (error) {

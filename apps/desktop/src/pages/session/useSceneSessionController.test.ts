@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   getAudioSnapshot: vi.fn(),
   preconnect: vi.fn(),
   showOverlay: vi.fn(),
+  toggleOverlay: vi.fn(),
   startRoute: vi.fn(),
   waitForWatchReady: vi.fn(),
   startSpeech: vi.fn(),
@@ -39,6 +40,7 @@ vi.mock('../../runtime/audio-runtime', () => ({
   getAudioRuntimeSnapshotRuntime: (...args: unknown[]) => mocks.getAudioSnapshot(...args),
   preconnectOmniRealtimeRuntime: (...args: unknown[]) => mocks.preconnect(...args),
   showSubtitleOverlayWindow: (...args: unknown[]) => mocks.showOverlay(...args),
+  toggleSubtitleOverlayWindow: (...args: unknown[]) => mocks.toggleOverlay(...args),
   startAudioRouteRuntime: (...args: unknown[]) => mocks.startRoute(...args),
   waitForWatchRouteReadyRuntime: (...args: unknown[]) => mocks.waitForWatchReady(...args),
   startSpeechDispatchRuntime: (...args: unknown[]) => mocks.startSpeech(...args),
@@ -170,6 +172,7 @@ beforeEach(() => {
   mocks.stopSpeech.mockResolvedValue(audio);
   mocks.stopTranslation.mockResolvedValue(audio);
   mocks.showOverlay.mockResolvedValue(cloneRuntime());
+  mocks.toggleOverlay.mockResolvedValue(cloneRuntime());
   mocks.refreshBridge.mockResolvedValue(readyRuntime());
   mocks.installBridge.mockResolvedValue(readyRuntime());
   mocks.repairBridge.mockResolvedValue(readyRuntime());
@@ -207,7 +210,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.refreshBridge).not.toHaveBeenCalled();
   });
 
-  it('logs non-Error Bridge refresh and stop failures and skips inactive stop stages', async () => {
+  it('logs non-Error Bridge refresh and stop failures and skips stops only for truly idle routes', async () => {
     mocks.watchNeedsBridge.mockReturnValue(true);
     mocks.refreshBridge.mockRejectedValue('refresh string');
     const cached = readyRuntime();
@@ -216,7 +219,9 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', expect.stringContaining('refresh string'));
 
     const audio = cloneAudio();
-    audio.inbound.streamBound = false; audio.outbound.streamBound = false; audio.speech.dispatchState = 'idle';
+    audio.inbound.streamBound = false; audio.inbound.captureState = 'idle';
+    audio.outbound.streamBound = false; audio.outbound.captureState = 'idle';
+    audio.speech.dispatchState = 'idle';
     mocks.getAudioSnapshot.mockRejectedValue('snapshot stop string');
     mocks.stopTranslation.mockRejectedValue('translation stop string');
     await api.stopAll({ audioSnapshot: audio, hasSpeechActivity: false, setAudioSnapshot: controller.setAudioSnapshot,
@@ -224,6 +229,40 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
     expect(mocks.stopSpeech).not.toHaveBeenCalled();
     expect(mocks.stopRoute).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['armed'],
+    ['buffering'],
+  ] as const)('stops a converging watch route (captureState=%s, streamBound=false) instead of skipping it', async (captureState) => {
+    // Regression: the accepted-but-not-bound convergence window (native
+    // fast-watch acknowledged, stream still binding) left capture/translate
+    // running after the user pressed stop, because stopAll only stopped
+    // streamBound routes.
+    const converging = cloneAudio();
+    converging.inbound.streamBound = false;
+    converging.inbound.captureState = captureState;
+    converging.outbound.streamBound = false;
+    converging.outbound.captureState = 'idle';
+    converging.speech.dispatchState = 'idle';
+    mocks.getAudioSnapshot.mockResolvedValue(converging);
+    const { api, controller } = makeHarness();
+
+    await api.stopAll({
+      audioSnapshot: cloneAudio(),
+      hasSpeechActivity: false,
+      setAudioSnapshot: controller.setAudioSnapshot,
+      pushNotification: controller.pushNotification,
+      runBusyAction: controller.runBusyAction,
+    });
+
+    expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toEqual(['inbound']);
+    // The optimistic pre-stop snapshot must show the converging route as stopping.
+    const optimistic = controller.setAudioSnapshot.mock.calls
+      .map(([snapshot]) => snapshot as AudioRuntimeSnapshot)
+      .find((snapshot) => snapshot.inbound.captureState === 'stopping');
+    expect(optimistic).toBeDefined();
+    expect(optimistic?.inbound.streamBound).toBe(false);
   });
 
   it('uses caller speech activity when native speech is idle', async () => {
@@ -688,25 +727,27 @@ describe('useSceneSessionController IPC orchestration', () => {
     ['outbound-route', 'route'],
     ['translate-worker', 'translate'],
     ['speech-dispatch', 'speech'],
-    ['subtitle-overlay', 'overlay'],
-  ] as const)('compensates a late %s IPC result that resolves after the outer timeout', async (lateStage, kind) => {
+  ] as const)('stops a late %s IPC result after the outer timeout and suppresses its stale snapshot', async (lateStage, kind) => {
     vi.useFakeTimers();
     const options = makeLaunchOptions('voice-room');
     options.isOmniModel = lateStage === 'translate-worker' || lateStage === 'speech-dispatch' ? false : true;
     options.speechPatch = { enabled: lateStage === 'speech-dispatch' };
-    options.overlayVisible = lateStage !== 'subtitle-overlay';
+    options.overlayVisible = true;
+    const lateSnapshot = cloneAudio();
+    lateSnapshot.inbound.framesCaptured = 999;
+    const stopSnapshot = cloneAudio();
+    stopSnapshot.inbound.framesCaptured = 222;
+    mocks.stopRoute.mockResolvedValue(stopSnapshot);
+    mocks.stopSpeech.mockResolvedValue(stopSnapshot);
+    mocks.stopTranslation.mockResolvedValue(stopSnapshot);
     const delayed = () => new Promise<AudioRuntimeSnapshot>((resolve) => {
-      setTimeout(() => resolve(cloneAudio()), 150);
-    });
-    const delayedRuntime = () => new Promise<RuntimeSnapshot>((resolve) => {
-      setTimeout(() => resolve(cloneRuntime()), 150);
+      setTimeout(() => resolve(lateSnapshot), 150);
     });
     if (lateStage === 'inbound-route') mocks.startRoute.mockImplementationOnce(delayed);
     if (lateStage === 'outbound-route') mocks.startRoute.mockResolvedValueOnce(cloneAudio()).mockImplementationOnce(delayed);
     if (kind === 'translate') mocks.startTranslation.mockImplementationOnce(delayed);
     if (kind === 'speech') mocks.startSpeech.mockImplementationOnce(delayed);
-    if (kind === 'overlay') mocks.showOverlay.mockImplementationOnce(delayedRuntime);
-    const { api } = makeHarness();
+    const { api, controller } = makeHarness();
 
     const launch = api.launchScene(options);
     await vi.advanceTimersByTimeAsync(100);
@@ -714,6 +755,76 @@ describe('useSceneSessionController IPC orchestration', () => {
     await vi.advanceTimersByTimeAsync(50);
 
     expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', '[SceneLaunch] timeout', expect.any(String));
+    // The late stage's own stop command must run when its start resolves after
+    // the timeout, and its started-state snapshot must never be published.
+    const expectedStop = lateStage === 'inbound-route' ? ['inbound']
+      : lateStage === 'outbound-route' ? ['outbound'] : [];
+    for (const direction of expectedStop) {
+      expect(mocks.stopRoute.mock.calls.map(([d]) => d)).toContain(direction);
+    }
+    if (kind === 'translate') expect(mocks.stopTranslation).toHaveBeenCalled();
+    if (kind === 'speech') expect(mocks.stopSpeech).toHaveBeenCalled();
+    expect(controller.setAudioSnapshot).not.toHaveBeenCalledWith(lateSnapshot);
+    // Snapshot order: the last published audio snapshot is the late stage's
+    // stop result, not any started-state snapshot.
+    const lastPublished = controller.setAudioSnapshot.mock.calls.at(-1)?.[0] as AudioRuntimeSnapshot;
+    expect(lastPublished.inbound.framesCaptured).toBe(222);
+    vi.useRealTimers();
+  });
+
+  it('hides a subtitle overlay that opens after the outer timeout and suppresses its runtime snapshot', async () => {
+    // Regression: the timeout compensation only stopped route/translate/speech;
+    // a late-resolving showSubtitleOverlayWindow left the overlay visible with
+    // no session behind it.
+    vi.useFakeTimers();
+    const options = makeLaunchOptions('voice-room');
+    options.isOmniModel = true;
+    options.speechPatch = { enabled: false };
+    options.overlayVisible = false;
+    const lateRuntime = cloneRuntime();
+    lateRuntime.sessionId = 'late-overlay-session';
+    const hiddenRuntime = cloneRuntime();
+    hiddenRuntime.sessionId = 'overlay-hidden-session';
+    mocks.showOverlay.mockImplementationOnce(() => new Promise<RuntimeSnapshot>((resolve) => {
+      setTimeout(() => resolve(lateRuntime), 150);
+    }));
+    mocks.toggleOverlay.mockResolvedValue(hiddenRuntime);
+    const { api, controller } = makeHarness();
+
+    const launch = api.launchScene(options);
+    await vi.advanceTimersByTimeAsync(100);
+    await launch;
+    await vi.advanceTimersByTimeAsync(50);
+
+    expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', '[SceneLaunch] timeout', expect.any(String));
+    expect(mocks.toggleOverlay).toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).not.toHaveBeenCalledWith(lateRuntime);
+    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(hiddenRuntime);
+    vi.useRealTimers();
+  });
+
+  it('hides an already-open launch overlay during outer-timeout cleanup', async () => {
+    // The overlay opened successfully before a later stage hung: the timeout
+    // cleanup must hide it alongside stopping route/translate/speech.
+    vi.useFakeTimers();
+    const options = makeLaunchOptions('voice-room');
+    options.isOmniModel = true;
+    options.speechPatch = { enabled: false };
+    options.overlayVisible = false;
+    planState.mainStages = ['bridge-ready', 'subtitle-overlay', 'inbound-route'];
+    const hiddenRuntime = cloneRuntime();
+    hiddenRuntime.sessionId = 'overlay-hidden-session';
+    mocks.toggleOverlay.mockResolvedValue(hiddenRuntime);
+    mocks.startRoute.mockImplementation(() => new Promise(() => undefined));
+    const { api, controller } = makeHarness();
+
+    const launch = api.launchScene(options);
+    await vi.advanceTimersByTimeAsync(100);
+    await launch;
+
+    expect(mocks.showOverlay).toHaveBeenCalledTimes(1);
+    expect(mocks.toggleOverlay).toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(hiddenRuntime);
     vi.useRealTimers();
   });
 });

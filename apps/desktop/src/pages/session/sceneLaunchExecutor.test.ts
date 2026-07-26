@@ -121,7 +121,10 @@ describe('executeSceneLaunchPlan', () => {
     await expect(executeSceneLaunchPlan(plan(['bridge-ready', 'omni-preconnect'], true), deps)).rejects.toThrow('bridge failed');
   });
 
-  it('rolls back a completed parallel preconnect and skips non-compensating stages', async () => {
+  it('rolls back a completed parallel preconnect and a completed subtitle overlay', async () => {
+    // Regression: rollback used to skip 'subtitle-overlay' entirely, leaving
+    // the native overlay window visible after every failed launch that had
+    // already opened it.
     const calls: string[] = [];
     const deps = dependencies(calls);
     deps.executeStage = async (stage) => {
@@ -138,7 +141,7 @@ describe('executeSceneLaunchPlan', () => {
     if (!(error instanceof SceneLaunchError)) throw new Error('expected launch failure');
     expect(error.message).toBe('native rejection');
     expect(calls).toContain('cancel-preconnect');
-    expect(calls).not.toContain('stop-subtitle-overlay');
+    expect(calls).toContain('stop-subtitle-overlay');
     expect(calls).not.toContain('stop-bridge-ready');
   });
 });

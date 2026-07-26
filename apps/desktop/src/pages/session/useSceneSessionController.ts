@@ -8,6 +8,7 @@ import {
   getAudioRuntimeSnapshotRuntime,
   preconnectOmniRealtimeRuntime,
   showSubtitleOverlayWindow,
+  toggleSubtitleOverlayWindow,
   startAudioRouteRuntime,
   waitForWatchRouteReadyRuntime,
   startSpeechDispatchRuntime,
@@ -196,8 +197,16 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
       } catch (error) {
         appendFrontendDiagnosticsLog('runtime', 'warning', `[StopAll] native snapshot refresh failed: ${error instanceof Error ? error.message : String(error)}`);
       }
-      const inboundBound = nativeSnapshot.inbound.streamBound;
-      const outboundBound = nativeSnapshot.outbound.streamBound;
+      // A route needs a native stop not only when its stream is bound, but for
+      // the whole accepted-but-converging window (armed/buffering/…): native
+      // fast-watch acknowledges immediately and binds the stream later, so a
+      // streamBound-only gate would leave capture/translate running after the
+      // user pressed stop. The native stop command is serialized behind the
+      // pipeline lock and is idempotent for routes that never finished binding.
+      const routeNeedsStop = (route: AudioRuntimeSnapshot['inbound']) =>
+        route.streamBound || !['idle', 'stopping'].includes(route.captureState);
+      const inboundBound = routeNeedsStop(nativeSnapshot.inbound);
+      const outboundBound = routeNeedsStop(nativeSnapshot.outbound);
       const nativeSpeechActivity = nativeSnapshot.speech.dispatchState !== 'idle';
       setAudioSnapshot({
         ...nativeSnapshot,
@@ -294,6 +303,10 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         if (stage !== 'subtitle-overlay') controller.setAudioSnapshot(snapshot);
       },
       compensateStage: async (stage) => {
+        if (stage === 'subtitle-overlay') {
+          setRuntimeSnapshot(await toggleSubtitleOverlayWindow());
+          return;
+        }
         if (stage === 'inbound-route') snapshot = await stopAudioRouteRuntime('inbound');
         else if (stage === 'translate-worker') snapshot = await stopTranslateWorkerRuntime();
         else snapshot = await stopSpeechDispatchRuntime();
@@ -333,6 +346,11 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         const launchStartedAt = Date.now();
         let snapshot = options.audioSnapshot;
         let launchTimedOut = false;
+        // Whether this launch opened the subtitle overlay. The outer-timeout
+        // cleanup (and a late-resolving overlay open) must hide exactly what
+        // the launch opened — the executor's rollback cannot reach a stage
+        // that completed before the outer deadline fired.
+        let overlayOpenedByLaunch = false;
         // Sync the plan's corrected route configuration back into the drafts on
         // every launch path, before the plan executes. Watch plans deliberately
         // contain no bridge-ready stage, so this write-back must not live inside
@@ -384,26 +402,38 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             else if (stage === 'outbound-route') snapshot = await startAudioRouteRuntime('outbound', nextConfig);
             else if (stage === 'translate-worker') snapshot = await startTranslateWorkerRuntime(nextConfig);
             else if (stage === 'speech-dispatch') snapshot = await startSpeechDispatchRuntime(nextConfig);
-            else setRuntimeSnapshot(await showSubtitleOverlayWindow());
-            if (stage !== 'subtitle-overlay') controller.setAudioSnapshot(snapshot);
+            else {
+              const overlayRuntime = await showSubtitleOverlayWindow();
+              if (!launchTimedOut) {
+                setRuntimeSnapshot(overlayRuntime);
+                overlayOpenedByLaunch = true;
+              }
+            }
+            // After the outer timeout fired, a late start result is stale: the
+            // cleanup already published the stopped state, so publishing the
+            // started snapshot here would resurrect a torn-down session in the UI.
+            if (stage !== 'subtitle-overlay' && !launchTimedOut) controller.setAudioSnapshot(snapshot);
             if (launchTimedOut) {
               if (stage === 'inbound-route') snapshot = await stopAudioRouteRuntime('inbound');
               else if (stage === 'outbound-route') snapshot = await stopAudioRouteRuntime('outbound');
               else if (stage === 'translate-worker') snapshot = await stopTranslateWorkerRuntime();
               else if (stage === 'speech-dispatch') snapshot = await stopSpeechDispatchRuntime();
+              else setRuntimeSnapshot(await toggleSubtitleOverlayWindow());
               if (stage !== 'subtitle-overlay') controller.setAudioSnapshot(snapshot);
               throw sceneLaunchTimeoutError(launchTimeoutMessage);
             }
           },
           compensateStage: async (stage) => {
+            if (stage === 'subtitle-overlay') {
+              setRuntimeSnapshot(await toggleSubtitleOverlayWindow());
+              overlayOpenedByLaunch = false;
+              return;
+            }
             if (stage === 'inbound-route') snapshot = await stopAudioRouteRuntime('inbound');
             else if (stage === 'outbound-route') snapshot = await stopAudioRouteRuntime('outbound');
             else if (stage === 'translate-worker') snapshot = await stopTranslateWorkerRuntime();
             else snapshot = await stopSpeechDispatchRuntime();
             controller.setAudioSnapshot(snapshot);
-            /* Legacy overlay-specific notification removed; failure is reported after transactional rollback.
-            controller.pushNotification({ id: `scene-overlay-${mode}-${Date.now()}`, level: 'error', source: 'session', message: `字幕浮窗打开失败：${error instanceof Error ? error.message : String(error)}`, emittedAt: new Date().toISOString() });
-            */
           },
           onStageStart: (stage) => {
             launchStage = stage;
@@ -447,6 +477,12 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
               stopTranslateWorkerRuntime(),
               stopAudioRouteRuntime('outbound'),
               stopAudioRouteRuntime('inbound'),
+              ...(overlayOpenedByLaunch
+                ? [toggleSubtitleOverlayWindow().then((runtime) => {
+                    overlayOpenedByLaunch = false;
+                    setRuntimeSnapshot(runtime);
+                  })]
+                : []),
             ]);
             try {
               controller.setAudioSnapshot(await getAudioRuntimeSnapshotRuntime());

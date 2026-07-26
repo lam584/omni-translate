@@ -1,26 +1,36 @@
+use std::collections::VecDeque;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use base64::Engine;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use tungstenite::client::IntoClientRequest;
-use tungstenite::stream::MaybeTlsStream;
 use tungstenite::{connect, Message};
 use url::Url;
 
 use super::diagnostics::diag_log;
 use super::engine::emit_audio_snapshot;
 use super::omni::OmniHandle;
+use super::pcm_resample::{
+    base64_encode_pcm16, pcm16_chunk_rms, resample_capture_to_mono_i16, SilenceGate,
+};
+use super::realtime_ws::{self, attempt_backoff_delay};
 use super::state::AudioStateStore;
 use super::time_utils::unix_ms;
-use crate::diagnostics::model_trace::{ModelTraceContext, ModelTraceRecorder};
+use crate::diagnostics::model_trace::{ModelTraceCall, ModelTraceContext, ModelTraceRecorder};
 use crate::provider::contracts::ProviderDraftInput;
-use crate::provider::gateway_parts::auth::apply_ws_auth;
+use crate::provider::gateway_parts::auth::{apply_ws_auth, apply_ws_custom_headers};
 
 const GEMINI_READ_TIMEOUT_MS: u64 = 200;
 const GEMINI_WRITE_TIMEOUT_SECS: u64 = 10;
+const GEMINI_INPUT_SAMPLE_RATE_HZ: u32 = 16_000;
+const GEMINI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
+const GEMINI_ASR_SILENCE_GRACE_CHUNKS: u32 = 60;
+const GEMINI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 500;
+const GEMINI_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;
+const GEMINI_RECONNECT_MAX_RETRIES: usize = 5;
+const GEMINI_MANUAL_ACTIVITY_INTERVAL_SECS: u64 = 10;
 const GEMINI_LIVE_SERVICE: &str =
     "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
@@ -67,16 +77,23 @@ pub fn build_gemini_live_url(base_url: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn build_setup(
+pub(crate) fn build_setup(
     model: &str,
     instructions: &str,
     mode: GeminiActivityMode,
     target_language: &str,
+    resumption_handle: Option<&str>,
 ) -> Value {
     let model_name = if model.starts_with("models/") {
         model.to_string()
     } else {
         format!("models/{model}")
+    };
+    // Live connections are cut server-side after ~10-15 minutes; declaring
+    // sessionResumption lets us resume the conversation on the next socket.
+    let session_resumption = match resumption_handle {
+        Some(handle) => json!({ "handle": handle }),
+        None => json!({}),
     };
     json!({
         "setup": {
@@ -95,17 +112,19 @@ fn build_setup(
                 "automaticActivityDetection": {
                     "disabled": mode == GeminiActivityMode::Manual
                 }
-            }
+            },
+            "contextWindowCompression": { "slidingWindow": {} },
+            "sessionResumption": session_resumption
         }
     })
 }
 
-fn audio_message(chunk: &[u8]) -> Value {
+fn audio_message(encoded_pcm16: &str) -> Value {
     json!({
         "realtimeInput": {
             "audio": {
-                "mimeType": "audio/pcm;rate=16000",
-                "data": base64::engine::general_purpose::STANDARD.encode(chunk)
+                "mimeType": format!("audio/pcm;rate={GEMINI_INPUT_SAMPLE_RATE_HZ}"),
+                "data": encoded_pcm16
             }
         }
     })
@@ -123,48 +142,50 @@ fn audio_stream_end_message() -> Value {
     json!({ "realtimeInput": { "audioStreamEnd": true } })
 }
 
-fn set_socket_timeouts(socket: &mut tungstenite::WebSocket<MaybeTlsStream<std::net::TcpStream>>) {
-    match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => {
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(GEMINI_READ_TIMEOUT_MS)));
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(GEMINI_WRITE_TIMEOUT_SECS)));
-        }
-        MaybeTlsStream::Rustls(stream) => {
-            let inner = stream.get_mut();
-            let _ = inner.set_read_timeout(Some(Duration::from_millis(GEMINI_READ_TIMEOUT_MS)));
-            let _ = inner.set_write_timeout(Some(Duration::from_secs(GEMINI_WRITE_TIMEOUT_SECS)));
-        }
-        _ => {}
-    }
+/// Manual mode: close the current activity window every interval so the
+/// model actually produces output mid-session (an end-only-at-stop cycle
+/// yields nothing until the route stops).
+fn should_cycle_manual_activity(
+    mode: GeminiActivityMode,
+    activity_started: bool,
+    audible_since_activity: bool,
+    elapsed_secs: u64,
+) -> bool {
+    mode == GeminiActivityMode::Manual
+        && activity_started
+        && audible_since_activity
+        && elapsed_secs >= GEMINI_MANUAL_ACTIVITY_INTERVAL_SECS
 }
 
-fn collect_model_text(value: &Value) -> String {
-    fn walk(value: &Value, out: &mut String) {
-        match value {
-            Value::Object(map) => {
-                if let Some(text) = map.get("text").and_then(Value::as_str) {
-                    out.push_str(text);
-                }
-                for child in map.values() {
-                    walk(child, out);
-                }
-            }
-            Value::Array(items) => {
-                for child in items {
-                    walk(child, out);
-                }
-            }
-            _ => {}
-        }
-    }
+type GeminiSocket = realtime_ws::WsSocket;
 
-    let mut out = String::new();
-    walk(value, &mut out);
-    out
+/// Gemini model turns only ever carry text under "text" parts.
+fn collect_model_text(value: &Value) -> String {
+    realtime_ws::collect_text_fields(value, false)
 }
 
 fn transcription_text<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer)?.get("text").and_then(Value::as_str)
+}
+
+fn parse_resumption_update(evt: &Value) -> Option<String> {
+    let update = evt.get("sessionResumptionUpdate")?;
+    let resumable = update
+        .get("resumable")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if !resumable {
+        return None;
+    }
+    update
+        .get("newHandle")
+        .and_then(Value::as_str)
+        .filter(|handle| !handle.is_empty())
+        .map(str::to_string)
+}
+
+fn is_go_away_message(evt: &Value) -> bool {
+    evt.get("goAway").is_some()
 }
 
 pub fn start_gemini_live(
@@ -216,6 +237,117 @@ pub fn start_gemini_live(
     ))
 }
 
+struct GeminiSessionRuntime {
+    socket: GeminiSocket,
+    session_ready: bool,
+}
+
+fn open_gemini_session(
+    app: &AppHandle,
+    provider: &ProviderDraftInput,
+    instructions: &str,
+    mode: GeminiActivityMode,
+    target_language: &str,
+    resumption_handle: Option<&str>,
+    trace_call: &mut ModelTraceCall,
+) -> Result<GeminiSessionRuntime, String> {
+    let ws_url = build_gemini_live_url(&provider.base_url)?;
+    let mut request = ws_url
+        .as_str()
+        .into_client_request()
+        .map_err(|error| format!("failed to create Gemini Live request: {error}"))?;
+    apply_ws_auth(provider, request.headers_mut())
+        .map_err(|error| format!("failed to apply Gemini Live auth: {}", error.message))?;
+    apply_ws_custom_headers(provider, request.headers_mut()).map_err(|error| {
+        format!(
+            "failed to apply Gemini Live custom headers: {}",
+            error.message
+        )
+    })?;
+
+    let (mut socket, _) =
+        connect(request).map_err(|error| format!("failed to connect Gemini Live: {error}"))?;
+    realtime_ws::set_socket_timeouts(
+        &mut socket,
+        Some(Duration::from_millis(GEMINI_READ_TIMEOUT_MS)),
+        Some(Duration::from_secs(GEMINI_WRITE_TIMEOUT_SECS)),
+    );
+
+    let setup = build_setup(
+        &provider.model,
+        instructions,
+        mode,
+        target_language,
+        resumption_handle,
+    );
+    trace_call.record_ws_send("setup", setup.clone());
+    socket
+        .send(Message::Text(setup.to_string().into()))
+        .map_err(|error| format!("failed to send Gemini setup: {error}"))?;
+    let _ = diag_log(
+        app,
+        "gemini-live",
+        "info",
+        format!(
+            "Gemini Live connected model={} mode={} resumed={}",
+            provider.model,
+            mode.as_str(),
+            resumption_handle.is_some()
+        ),
+    );
+    Ok(GeminiSessionRuntime {
+        socket,
+        session_ready: false,
+    })
+}
+
+struct GeminiCueState {
+    cue_id: Option<String>,
+    source_text: String,
+    output_text: String,
+}
+
+impl GeminiCueState {
+    fn new() -> Self {
+        Self {
+            cue_id: None,
+            source_text: String::new(),
+            output_text: String::new(),
+        }
+    }
+
+    fn ensure_cue_id(&mut self) -> String {
+        self.cue_id
+            .get_or_insert_with(|| format!("gemini-cue-{}", unix_ms()))
+            .clone()
+    }
+
+    fn reset(&mut self) {
+        self.cue_id = None;
+        self.source_text.clear();
+        self.output_text.clear();
+    }
+
+    fn commit(&mut self, app: &AppHandle, store: &AudioStateStore) {
+        if let Some(id) = self.cue_id.as_deref() {
+            let source = if self.source_text.trim().is_empty() {
+                self.output_text.as_str()
+            } else {
+                self.source_text.as_str()
+            };
+            if !source.trim().is_empty() {
+                store.update_or_push_stt_cue(id, source, true);
+                if !self.output_text.trim().is_empty() {
+                    store.update_subtitle_cue_translation(id, self.output_text.clone(), true);
+                }
+                let _ = emit_audio_snapshot(app, store);
+            }
+        }
+        self.reset();
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
 fn run_gemini_worker(
     app: AppHandle,
     store: &AudioStateStore,
@@ -226,18 +358,6 @@ fn run_gemini_worker(
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
-    let ws_url = build_gemini_live_url(&provider.base_url)?;
-    let mut request = ws_url
-        .as_str()
-        .into_client_request()
-        .map_err(|error| format!("failed to create Gemini Live request: {error}"))?;
-    apply_ws_auth(&provider, request.headers_mut())
-        .map_err(|error| format!("failed to apply Gemini Live auth: {}", error.message))?;
-
-    let (mut socket, _) =
-        connect(request).map_err(|error| format!("failed to connect Gemini Live: {error}"))?;
-    set_socket_timeouts(&mut socket);
-
     let trace = ModelTraceRecorder::new(
         app.clone(),
         ModelTraceContext::new(
@@ -248,92 +368,277 @@ fn run_gemini_worker(
         .with_route_mode("watch"),
     );
     let mut trace_call = trace.call("gemini.websocket_session");
-    let setup = build_setup(&provider.model, &instructions, mode, &target_language);
-    trace_call.record_ws_send("setup", setup.clone());
-    socket
-        .send(Message::Text(setup.to_string().into()))
-        .map_err(|error| format!("failed to send Gemini setup: {error}"))?;
 
-    store.set_stt_connected(true, 0);
-    let _ = emit_audio_snapshot(&app, store);
-    let _ = diag_log(
+    let mut resumption_handle: Option<String> = None;
+    let mut session = open_gemini_session(
         &app,
-        "gemini-live",
-        "info",
-        format!(
-            "Gemini Live connected model={} mode={}",
-            provider.model,
-            mode.as_str()
-        ),
-    );
+        &provider,
+        &instructions,
+        mode,
+        &target_language,
+        None,
+        &mut trace_call,
+    )?;
 
-    let mut cue_id: Option<String> = None;
-    let mut source_text = String::new();
-    let mut output_text = String::new();
+    let mut cue = GeminiCueState::new();
+    let mut gate = SilenceGate::new(GEMINI_ASR_MIN_CHUNK_RMS, GEMINI_ASR_SILENCE_GRACE_CHUNKS);
+    let mut pre_session_queue: VecDeque<String> = VecDeque::new();
     let mut buffer_size = 0u64;
     let mut manual_activity_started = false;
+    let mut audible_since_activity = false;
+    let mut activity_window_started_at = Instant::now();
+    let mut reconnect_retries = 0usize;
 
-    loop {
+    let reconnect = |session: &mut GeminiSessionRuntime,
+                         cue: &mut GeminiCueState,
+                         manual_activity_started: &mut bool,
+                         resumption_handle: &Option<String>,
+                         reconnect_retries: &mut usize,
+                         trace_call: &mut ModelTraceCall|
+     -> bool {
+        cue.commit(&app, store);
+        *manual_activity_started = false;
+        store.set_stt_connected(false, 0);
+        let _ = emit_audio_snapshot(&app, store);
+        while *reconnect_retries < GEMINI_RECONNECT_MAX_RETRIES {
+            *reconnect_retries += 1;
+            let delay = attempt_backoff_delay(*reconnect_retries);
+            let _ = diag_log(
+                &app,
+                "gemini-live",
+                "warning",
+                format!(
+                    "Gemini Live reconnect attempt {}/{} in {}s (resumable={})",
+                    reconnect_retries,
+                    GEMINI_RECONNECT_MAX_RETRIES,
+                    delay.as_secs(),
+                    resumption_handle.is_some()
+                ),
+            );
+            thread::sleep(delay);
+            match open_gemini_session(
+                &app,
+                &provider,
+                &instructions,
+                mode,
+                &target_language,
+                resumption_handle.as_deref(),
+                trace_call,
+            ) {
+                Ok(new_session) => {
+                    *session = new_session;
+                    return true;
+                }
+                Err(error) => {
+                    let _ = diag_log(
+                        &app,
+                        "gemini-live",
+                        "error",
+                        format!("Gemini Live reconnect failed: {error}"),
+                    );
+                }
+            }
+        }
+        false
+    };
+
+    'session_loop: loop {
         if stop_rx.try_recv().is_ok() {
             if mode == GeminiActivityMode::Manual && manual_activity_started {
-                let _ = socket.send(Message::Text(activity_end_message().to_string().into()));
+                let _ = session
+                    .socket
+                    .send(Message::Text(activity_end_message().to_string().into()));
             } else if mode == GeminiActivityMode::Auto {
-                let _ = socket.send(Message::Text(audio_stream_end_message().to_string().into()));
+                let _ = session
+                    .socket
+                    .send(Message::Text(audio_stream_end_message().to_string().into()));
             }
-            let _ = socket.close(None);
+            cue.commit(&app, store);
+            let _ = session.socket.close(None);
             store.set_stt_connected(false, buffer_size);
             let _ = emit_audio_snapshot(&app, store);
             return Ok(());
         }
 
+        // Drain captured audio: 48k stereo f32 -> 16k mono pcm16, gate
+        // silence, queue until setupComplete.
+        let mut transport_failed = false;
         while let Ok(chunk) = audio_rx.try_recv() {
-            if mode == GeminiActivityMode::Manual && !manual_activity_started {
-                let msg = activity_start_message();
-                trace_call.record_ws_send("realtimeInput.activityStart", msg.clone());
-                socket
-                    .send(Message::Text(msg.to_string().into()))
-                    .map_err(|error| format!("failed to send Gemini activityStart: {error}"))?;
-                manual_activity_started = true;
+            let samples = resample_capture_to_mono_i16(&chunk, GEMINI_INPUT_SAMPLE_RATE_HZ);
+            if samples.is_empty() {
+                continue;
             }
-            buffer_size = buffer_size.saturating_add(chunk.len() as u64);
-            let msg = audio_message(&chunk);
-            trace_call.record_ws_send("realtimeInput.audio", json!({"bytes": chunk.len()}));
-            socket
-                .send(Message::Text(msg.to_string().into()))
-                .map_err(|error| format!("failed to send Gemini audio: {error}"))?;
+            let rms = pcm16_chunk_rms(&samples);
+            if !gate.should_send(rms) {
+                continue;
+            }
+            if rms >= GEMINI_ASR_MIN_CHUNK_RMS {
+                audible_since_activity = true;
+            }
+            let encoded = base64_encode_pcm16(&samples);
+            if session.session_ready {
+                if !send_gemini_audio(
+                    &mut session,
+                    &encoded,
+                    mode,
+                    &mut manual_activity_started,
+                    &mut activity_window_started_at,
+                    &mut buffer_size,
+                    &mut trace_call,
+                ) {
+                    pre_session_queue.push_back(encoded);
+                    transport_failed = true;
+                    break;
+                }
+            } else {
+                if pre_session_queue.len() >= GEMINI_PRE_SESSION_AUDIO_QUEUE_LIMIT {
+                    pre_session_queue.pop_front();
+                }
+                pre_session_queue.push_back(encoded);
+            }
         }
 
-        match socket.read() {
+        if transport_failed {
+            if !reconnect(
+                &mut session,
+                &mut cue,
+                &mut manual_activity_started,
+                &resumption_handle,
+                &mut reconnect_retries,
+                &mut trace_call,
+            ) {
+                return Err("Gemini Live reconnect retries exhausted".to_string());
+            }
+            continue 'session_loop;
+        }
+
+        if session.session_ready {
+            for _ in 0..GEMINI_PRE_SESSION_AUDIO_DRAIN_PER_TICK {
+                let Some(encoded) = pre_session_queue.pop_front() else {
+                    break;
+                };
+                if !send_gemini_audio(
+                    &mut session,
+                    &encoded,
+                    mode,
+                    &mut manual_activity_started,
+                    &mut activity_window_started_at,
+                    &mut buffer_size,
+                    &mut trace_call,
+                ) {
+                    pre_session_queue.push_front(encoded);
+                    if !reconnect(
+                        &mut session,
+                        &mut cue,
+                        &mut manual_activity_started,
+                        &resumption_handle,
+                        &mut reconnect_retries,
+                        &mut trace_call,
+                    ) {
+                        return Err("Gemini Live reconnect retries exhausted".to_string());
+                    }
+                    continue 'session_loop;
+                }
+            }
+        }
+
+        if session.session_ready
+            && should_cycle_manual_activity(
+                mode,
+                manual_activity_started,
+                audible_since_activity,
+                activity_window_started_at.elapsed().as_secs(),
+            )
+        {
+            let msg = activity_end_message();
+            trace_call.record_ws_send("realtimeInput.activityEnd", msg.clone());
+            if session
+                .socket
+                .send(Message::Text(msg.to_string().into()))
+                .is_err()
+            {
+                if !reconnect(
+                    &mut session,
+                    &mut cue,
+                    &mut manual_activity_started,
+                    &resumption_handle,
+                    &mut reconnect_retries,
+                    &mut trace_call,
+                ) {
+                    return Err("Gemini Live reconnect retries exhausted".to_string());
+                }
+                continue 'session_loop;
+            }
+            // Next audible chunk re-opens the window with activityStart.
+            manual_activity_started = false;
+            audible_since_activity = false;
+        }
+
+        match session.socket.read() {
             Ok(Message::Text(text)) => {
                 let Ok(evt) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };
                 trace_call.record_ws_recv("serverMessage", evt.clone());
                 if evt.get("setupComplete").is_some() {
+                    session.session_ready = true;
+                    reconnect_retries = 0;
+                    store.set_stt_connected(true, buffer_size);
+                    let _ = emit_audio_snapshot(&app, store);
                     continue;
+                }
+                if let Some(handle) = parse_resumption_update(&evt) {
+                    resumption_handle = Some(handle);
+                    continue;
+                }
+                if is_go_away_message(&evt) {
+                    let _ = diag_log(
+                        &app,
+                        "gemini-live",
+                        "warning",
+                        format!(
+                            "Gemini Live goAway received (timeLeft={:?}); reconnecting proactively",
+                            evt.pointer("/goAway/timeLeft").and_then(Value::as_str)
+                        ),
+                    );
+                    if !reconnect(
+                        &mut session,
+                        &mut cue,
+                        &mut manual_activity_started,
+                        &resumption_handle,
+                        &mut reconnect_retries,
+                        &mut trace_call,
+                    ) {
+                        return Err("Gemini Live goAway and reconnects exhausted".to_string());
+                    }
+                    continue 'session_loop;
+                }
+                if evt
+                    .pointer("/serverContent/interrupted")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false)
+                {
+                    let _ = diag_log(
+                        &app,
+                        "gemini-live",
+                        "info",
+                        "Gemini Live generation interrupted".to_string(),
+                    );
                 }
 
                 if let Some(input) = transcription_text(&evt, "/serverContent/inputTranscription") {
-                    if cue_id.is_none() {
-                        cue_id = Some(format!("gemini-cue-{}", unix_ms()));
-                    }
-                    source_text.push_str(input);
-                    if let Some(id) = cue_id.as_deref() {
-                        store.update_or_push_stt_cue(id, &source_text, false);
-                        let _ = emit_audio_snapshot(&app, store);
-                    }
+                    let id = cue.ensure_cue_id();
+                    cue.source_text.push_str(input);
+                    store.update_or_push_stt_cue(&id, &cue.source_text, false);
+                    let _ = emit_audio_snapshot(&app, store);
                 }
 
                 if let Some(output) = transcription_text(&evt, "/serverContent/outputTranscription")
                 {
-                    if cue_id.is_none() {
-                        cue_id = Some(format!("gemini-cue-{}", unix_ms()));
-                    }
-                    output_text.push_str(output);
-                    if let Some(id) = cue_id.as_deref() {
-                        store.update_subtitle_cue_translation(id, output_text.clone(), false);
-                        let _ = emit_audio_snapshot(&app, store);
-                    }
+                    let id = cue.ensure_cue_id();
+                    cue.output_text.push_str(output);
+                    store.update_subtitle_cue_translation(&id, cue.output_text.clone(), false);
+                    let _ = emit_audio_snapshot(&app, store);
                 }
 
                 let model_text = collect_model_text(
@@ -341,17 +646,13 @@ fn run_gemini_worker(
                         .unwrap_or(&Value::Null),
                 );
                 if !model_text.trim().is_empty() {
-                    if cue_id.is_none() {
-                        cue_id = Some(format!("gemini-cue-{}", unix_ms()));
+                    let id = cue.ensure_cue_id();
+                    cue.output_text.push_str(&model_text);
+                    if cue.source_text.trim().is_empty() {
+                        store.update_or_push_stt_cue(&id, &cue.output_text, false);
                     }
-                    output_text.push_str(&model_text);
-                    if let Some(id) = cue_id.as_deref() {
-                        if source_text.trim().is_empty() {
-                            store.update_or_push_stt_cue(id, &output_text, false);
-                        }
-                        store.update_subtitle_cue_translation(id, output_text.clone(), false);
-                        let _ = emit_audio_snapshot(&app, store);
-                    }
+                    store.update_subtitle_cue_translation(&id, cue.output_text.clone(), false);
+                    let _ = emit_audio_snapshot(&app, store);
                 }
 
                 let turn_complete = evt
@@ -359,32 +660,88 @@ fn run_gemini_worker(
                     .and_then(Value::as_bool)
                     .unwrap_or(false);
                 if turn_complete {
-                    if let Some(id) = cue_id.as_deref() {
-                        let source = if source_text.trim().is_empty() {
-                            output_text.as_str()
-                        } else {
-                            source_text.as_str()
-                        };
-                        store.update_or_push_stt_cue(id, source, true);
-                        if !output_text.trim().is_empty() {
-                            store.update_subtitle_cue_translation(id, output_text.clone(), true);
-                        }
-                        let _ = emit_audio_snapshot(&app, store);
-                    }
-                    cue_id = None;
-                    source_text.clear();
-                    output_text.clear();
+                    cue.commit(&app, store);
                     manual_activity_started = false;
                 }
             }
-            Ok(Message::Close(_)) => return Err("Gemini Live socket closed".to_string()),
+            Ok(Message::Close(_)) => {
+                let _ = diag_log(
+                    &app,
+                    "gemini-live",
+                    "warning",
+                    "Gemini Live socket closed by server; reconnecting".to_string(),
+                );
+                if !reconnect(
+                    &mut session,
+                    &mut cue,
+                    &mut manual_activity_started,
+                    &resumption_handle,
+                    &mut reconnect_retries,
+                    &mut trace_call,
+                ) {
+                    return Err("Gemini Live socket closed and reconnects exhausted".to_string());
+                }
+            }
             Ok(_) => {}
             Err(tungstenite::Error::Io(error))
                 if error.kind() == std::io::ErrorKind::WouldBlock
                     || error.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(error) => return Err(format!("Gemini Live socket read failed: {error}")),
+            Err(error) => {
+                let _ = diag_log(
+                    &app,
+                    "gemini-live",
+                    "warning",
+                    format!("Gemini Live socket read failed: {error}; reconnecting"),
+                );
+                if !reconnect(
+                    &mut session,
+                    &mut cue,
+                    &mut manual_activity_started,
+                    &resumption_handle,
+                    &mut reconnect_retries,
+                    &mut trace_call,
+                ) {
+                    return Err(format!(
+                        "Gemini Live socket read failed after retries: {error}"
+                    ));
+                }
+            }
         }
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_gemini_audio(
+    session: &mut GeminiSessionRuntime,
+    encoded: &str,
+    mode: GeminiActivityMode,
+    manual_activity_started: &mut bool,
+    activity_window_started_at: &mut Instant,
+    buffer_size: &mut u64,
+    trace_call: &mut ModelTraceCall,
+) -> bool {
+    if mode == GeminiActivityMode::Manual && !*manual_activity_started {
+        let msg = activity_start_message();
+        trace_call.record_ws_send("realtimeInput.activityStart", msg.clone());
+        if session
+            .socket
+            .send(Message::Text(msg.to_string().into()))
+            .is_err()
+        {
+            return false;
+        }
+        *manual_activity_started = true;
+        *activity_window_started_at = Instant::now();
+    }
+    *buffer_size = buffer_size.saturating_add((encoded.len() / 4 * 3) as u64);
+    trace_call.record_ws_send(
+        "realtimeInput.audio",
+        json!({"bytes": encoded.len() / 4 * 3}),
+    );
+    session
+        .socket
+        .send(Message::Text(audio_message(encoded).to_string().into()))
+        .is_ok()
 }
 
 #[cfg(test)]
@@ -408,6 +765,7 @@ mod tests {
             "translate",
             GeminiActivityMode::Auto,
             "zh",
+            None,
         );
         assert_eq!(
             auto.pointer("/setup/realtimeInputConfig/automaticActivityDetection/disabled")
@@ -420,6 +778,7 @@ mod tests {
             "translate",
             GeminiActivityMode::Manual,
             "zh",
+            None,
         );
         assert_eq!(
             manual
@@ -427,5 +786,88 @@ mod tests {
                 .and_then(Value::as_bool),
             Some(true)
         );
+    }
+
+    #[test]
+    fn setup_declares_session_resumption_and_carries_handle_on_reconnect() {
+        let fresh = build_setup(
+            "gemini-3.1-flash-live-preview",
+            "translate",
+            GeminiActivityMode::Auto,
+            "zh",
+            None,
+        );
+        assert!(fresh
+            .pointer("/setup/sessionResumption")
+            .is_some_and(|v| v.is_object() && v.get("handle").is_none()));
+        assert!(fresh
+            .pointer("/setup/contextWindowCompression/slidingWindow")
+            .is_some());
+
+        let resumed = build_setup(
+            "gemini-3.1-flash-live-preview",
+            "translate",
+            GeminiActivityMode::Auto,
+            "zh",
+            Some("handle-123"),
+        );
+        assert_eq!(
+            resumed
+                .pointer("/setup/sessionResumption/handle")
+                .and_then(Value::as_str),
+            Some("handle-123")
+        );
+    }
+
+    #[test]
+    fn resumption_update_parsing_requires_resumable_handle() {
+        let resumable = json!({
+            "sessionResumptionUpdate": { "resumable": true, "newHandle": "h1" }
+        });
+        assert_eq!(parse_resumption_update(&resumable).as_deref(), Some("h1"));
+
+        let not_resumable = json!({
+            "sessionResumptionUpdate": { "resumable": false, "newHandle": "h2" }
+        });
+        assert!(parse_resumption_update(&not_resumable).is_none());
+
+        let empty_handle = json!({
+            "sessionResumptionUpdate": { "resumable": true, "newHandle": "" }
+        });
+        assert!(parse_resumption_update(&empty_handle).is_none());
+    }
+
+    #[test]
+    fn go_away_message_is_detected() {
+        assert!(is_go_away_message(&json!({ "goAway": { "timeLeft": "10s" } })));
+        assert!(!is_go_away_message(&json!({ "serverContent": {} })));
+    }
+
+    #[test]
+    fn manual_activity_cycles_only_with_audible_audio_and_interval() {
+        assert!(should_cycle_manual_activity(
+            GeminiActivityMode::Manual,
+            true,
+            true,
+            GEMINI_MANUAL_ACTIVITY_INTERVAL_SECS
+        ));
+        assert!(!should_cycle_manual_activity(
+            GeminiActivityMode::Manual,
+            true,
+            false,
+            GEMINI_MANUAL_ACTIVITY_INTERVAL_SECS
+        ));
+        assert!(!should_cycle_manual_activity(
+            GeminiActivityMode::Manual,
+            true,
+            true,
+            GEMINI_MANUAL_ACTIVITY_INTERVAL_SECS - 1
+        ));
+        assert!(!should_cycle_manual_activity(
+            GeminiActivityMode::Auto,
+            true,
+            true,
+            GEMINI_MANUAL_ACTIVITY_INTERVAL_SECS
+        ));
     }
 }

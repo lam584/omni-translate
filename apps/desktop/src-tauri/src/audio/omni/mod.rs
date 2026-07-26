@@ -28,7 +28,6 @@ use crate::provider::gateway_parts::{
     transport::to_websocket_url,
 };
 
-mod codec;
 mod audio_pump;
 mod asr_event_processor;
 mod connection;
@@ -45,9 +44,11 @@ use self::socket_event_processor::{
     OmniSocketEventContext, OmniSocketEventProcessor, OmniSocketEventState,
 };
 
-use self::codec::{
-    asr_chunk_rms, base64_decode_to_i16, base64_encode_i16, resample_48k_stereo_to_16k_mono,
+use crate::audio::pcm_resample::{
+    base64_decode_to_i16, base64_encode_pcm16 as base64_encode_i16,
+    pcm16_chunk_rms as asr_chunk_rms,
 };
+use crate::audio::realtime_ws::backoff_delay;
 use self::audio_pump::{OmniAudioPump, OmniAudioPumpState};
 use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
@@ -233,9 +234,10 @@ pub fn default_realtime_audio_mode(model: &str) -> RealtimeAudioMode {
     }
 }
 
-fn backoff_delay(retry_count: usize) -> Duration {
-    let seconds = (1u64 << retry_count).min(10);
-    Duration::from_secs(seconds)
+/// 48 kHz stereo f32 capture -> 16 kHz mono i16, as the DashScope wire
+/// format expects. Thin fixed-rate front for the shared capture resampler.
+fn resample_48k_stereo_to_16k_mono(input: &[u8]) -> Vec<i16> {
+    crate::audio::pcm_resample::resample_capture_to_mono_i16(input, 16_000)
 }
 
 fn initial_connect_backoff(retry_count: usize) -> Duration {

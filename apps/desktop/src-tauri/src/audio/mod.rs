@@ -8,6 +8,8 @@ pub mod gemini_live;
 pub mod live_session_events;
 pub mod omni;
 pub mod openai_realtime;
+pub mod pcm_resample;
+pub(crate) mod realtime_ws;
 pub mod sentence;
 pub mod session_supervisor;
 pub mod speech;

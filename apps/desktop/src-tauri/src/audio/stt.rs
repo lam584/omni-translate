@@ -1,4 +1,3 @@
-use std::net::TcpStream;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -8,7 +7,6 @@ use tauri::AppHandle;
 use tauri::Manager;
 use tungstenite::{connect, Message};
 use tungstenite::client::IntoClientRequest;
-use tungstenite::stream::MaybeTlsStream;
 
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::ProviderDraftInput;
@@ -19,6 +17,8 @@ use crate::provider::gateway_parts::{
 
 use super::contracts::SubtitleCueRuntime;
 use super::engine::emit_audio_snapshot;
+use super::pcm_resample::{base64_encode_pcm16, resample_capture_to_mono_i16};
+use super::realtime_ws::{self, backoff_delay, WsSocket};
 use super::state::AudioStateStore;
 use super::time_utils::{ms_marker, unix_ms};
 
@@ -26,59 +26,63 @@ const ASR_MODEL: &str = "qwen3-asr-flash-realtime";
 const STT_RECONNECT_MAX_RETRIES: usize = 5;
 const STT_WRITE_TIMEOUT_SECS: u64 = 10;
 
-fn backoff_delay(retry_count: usize) -> Duration {
-    let seconds = (1u64 << retry_count).min(10);
-    Duration::from_secs(seconds)
-}
-
-fn set_socket_read_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
-    match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => {
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(10)));
-        }
-
-        MaybeTlsStream::Rustls(stream) => {
-            let _ = stream
-                .get_mut()
-                .set_read_timeout(Some(Duration::from_millis(10)));
-        }
-
-        _ => {}
-    }
-}
-
-fn set_socket_write_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
-    match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => {
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(STT_WRITE_TIMEOUT_SECS)));
-        }
-
-        MaybeTlsStream::Rustls(stream) => {
-            let _ = stream
-                .get_mut()
-                .set_write_timeout(Some(Duration::from_secs(STT_WRITE_TIMEOUT_SECS)));
-        }
-
-        _ => {}
-    }
-}
-
 fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
-    let cue = SubtitleCueRuntime {
-        cue_id: format!("stt-reconnecting-{}", unix_ms()),
-        route_direction: "inbound".to_string(),
-        source_text: format!(
+    realtime_ws::push_reconnecting_cue(
+        store,
+        "stt-reconnecting",
+        format!(
             "[STT] 正在重新连接 ASR 服务 (第 {}/{} 次)...",
             attempt, STT_RECONNECT_MAX_RETRIES
         ),
-        display_source_text: String::new(),
-        display_segments: Vec::new(),
-        translated_text: String::new(),
-        started_at: ms_marker(unix_ms()),
-        ended_at: ms_marker(unix_ms()),
-        committed: true,
-    };
-    store.push_subtitle_cue(cue);
+    );
+}
+
+fn stt_session_update() -> Value {
+    json!({
+      "type": "session.update",
+      "session": {
+        "modalities": ["text"],
+        "input_audio_format": "pcm16",
+        "sample_rate": 16000,
+        "input_audio_transcription": {
+          "model": ASR_MODEL
+        },
+        "turn_detection": {
+          "type": "server_vad",
+          "threshold": 0.0,
+          "silence_duration_ms": 400
+        }
+      }
+    })
+}
+
+/// URL -> auth -> connect -> socket timeouts, shared by the initial connect
+/// and every reconnect. Only the connect-failure wording differs.
+fn connect_stt_socket(
+    provider: &ProviderDraftInput,
+    connect_error_prefix: &str,
+) -> Result<WsSocket, String> {
+    let ws_url = to_websocket_url(&provider.base_url, ASR_MODEL)
+        .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
+
+    let mut request = ws_url
+        .as_str()
+        .into_client_request()
+        .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
+
+    apply_ws_auth(provider, request.headers_mut())
+        .map_err(|error| format!("无法应用认证: {}", error.message))?;
+
+    let (mut socket, _) =
+        connect(request).map_err(|error| format!("{connect_error_prefix}: {error}"))?;
+
+    realtime_ws::set_socket_timeouts(
+        &mut socket,
+        Some(Duration::from_millis(10)),
+        Some(Duration::from_secs(STT_WRITE_TIMEOUT_SECS)),
+    );
+
+    Ok(socket)
 }
 
 pub struct SttHandle {
@@ -247,62 +251,14 @@ fn run_stt_worker(
 
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
-    let ws_url = to_websocket_url(&provider.base_url, ASR_MODEL)
-        .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
-
-    let mut request = ws_url
-        .as_str()
-        .into_client_request()
-        .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
-
-    apply_ws_auth(&provider, request.headers_mut())
-        .map_err(|error| format!("无法应用认证: {}", error.message))?;
-
-    let (mut socket, _) =
-        connect(request).map_err(|error| format!("无法连接 ASR 服务: {error}"))?;
-
-    set_socket_write_timeout(&mut socket);
-
-    set_socket_read_timeout(&mut socket);
+    let mut socket = connect_stt_socket(&provider, "无法连接 ASR 服务")?;
 
     store.set_stt_connected(true, 0);
 
     let _ = append_diagnostics_log(&app, "stt", "info", "已连接 ASR 服务。", None, None, None);
 
-    let session_cfg = json!({
-
-      "type": "session.update",
-
-      "session": {
-
-        "modalities": ["text"],
-
-        "input_audio_format": "pcm16",
-
-        "sample_rate": 16000,
-
-        "input_audio_transcription": {
-
-          "model": ASR_MODEL
-
-        },
-
-        "turn_detection": {
-
-          "type": "server_vad",
-
-          "threshold": 0.0,
-
-          "silence_duration_ms": 400
-
-        }
-
-      }
-
-    });
-
     socket
-        .send(Message::Text(session_cfg.to_string().into()))
+        .send(Message::Text(stt_session_update().to_string().into()))
         .map_err(|error| format!("无法发送 session 配置: {error}"))?;
 
     let _ = append_diagnostics_log(
@@ -345,7 +301,7 @@ fn run_stt_worker(
         }
 
         while let Ok(raw_chunk) = audio_rx.try_recv() {
-            let asr_chunk = resample_48k_stereo_to_16k_mono(&raw_chunk);
+            let asr_chunk = resample_capture_to_mono_i16(&raw_chunk, 16_000);
 
             if asr_chunk.is_empty() {
                 continue;
@@ -353,7 +309,7 @@ fn run_stt_worker(
 
             buffer_size = buffer_size.wrapping_add(raw_chunk.len() as u64);
 
-            let b64 = base64_encode_i16(&asr_chunk);
+            let b64 = base64_encode_pcm16(&asr_chunk);
 
             let append = json!({
 
@@ -383,7 +339,7 @@ fn run_stt_worker(
 
                     socket = reconnect_socket(app.clone(), &provider)?;
 
-                    let retry_b64 = base64_encode_i16(&asr_chunk);
+                    let retry_b64 = base64_encode_pcm16(&asr_chunk);
 
                     let retry_append = json!({
 
@@ -506,60 +462,11 @@ fn run_stt_worker(
 fn reconnect_socket(
     app: AppHandle,
     provider: &ProviderDraftInput,
-) -> Result<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>, String>
-{
-    let ws_url = to_websocket_url(&provider.base_url, ASR_MODEL)
-        .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
-
-    let mut request = ws_url
-        .as_str()
-        .into_client_request()
-        .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
-
-    apply_ws_auth(provider, request.headers_mut())
-        .map_err(|error| format!("无法应用认证: {}", error.message))?;
-
-    let (mut socket, _) =
-        connect(request).map_err(|error| format!("无法重新连接 ASR 服务: {error}"))?;
-
-    set_socket_write_timeout(&mut socket);
-
-    set_socket_read_timeout(&mut socket);
-
-    let session_cfg = json!({
-
-      "type": "session.update",
-
-      "session": {
-
-        "modalities": ["text"],
-
-        "input_audio_format": "pcm16",
-
-        "sample_rate": 16000,
-
-        "input_audio_transcription": {
-
-          "model": ASR_MODEL
-
-        },
-
-        "turn_detection": {
-
-          "type": "server_vad",
-
-          "threshold": 0.0,
-
-          "silence_duration_ms": 400
-
-        }
-
-      }
-
-    });
+) -> Result<WsSocket, String> {
+    let mut socket = connect_stt_socket(provider, "无法重新连接 ASR 服务")?;
 
     socket
-        .send(Message::Text(session_cfg.to_string().into()))
+        .send(Message::Text(stt_session_update().to_string().into()))
         .map_err(|error| format!("无法重发 session 配置: {error}"))?;
 
     let _ = append_diagnostics_log(
@@ -573,63 +480,6 @@ fn reconnect_socket(
     );
 
     Ok(socket)
-}
-
-fn resample_48k_stereo_to_16k_mono(input: &[u8]) -> Vec<i16> {
-    let sample_count = input.len() / 4;
-
-    if sample_count == 0 {
-        return Vec::new();
-    }
-
-    let stereo_float: Vec<f32> = input
-        .chunks_exact(4)
-        .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
-        .collect();
-
-    let mono_len = sample_count / 2;
-
-    let mut mono = Vec::with_capacity(mono_len);
-
-    for i in 0..mono_len {
-        let left = stereo_float[i * 2];
-
-        let right = stereo_float[i * 2 + 1];
-
-        mono.push((left + right) * 0.5);
-    }
-
-    let ratio = 48_000 / 16_000;
-
-    let out_len = mono.len() / ratio;
-
-    let mut resampled = Vec::with_capacity(out_len);
-
-    for i in 0..out_len {
-        let start = i * ratio;
-        let window = &mono[start..start + ratio];
-        resampled.push(window.iter().sum::<f32>() / ratio as f32);
-    }
-
-    resampled
-        .iter()
-        .map(|sample| {
-            let clamped = sample.clamp(-1.0, 1.0);
-
-            (clamped * 32767.0) as i16
-        })
-        .collect()
-}
-
-fn base64_encode_i16(samples: &[i16]) -> String {
-    let bytes: Vec<u8> = samples
-        .iter()
-        .flat_map(|sample| sample.to_le_bytes())
-        .collect();
-
-    use base64::Engine;
-
-    base64::engine::general_purpose::STANDARD.encode(&bytes)
 }
 
 #[cfg(test)]
@@ -650,7 +500,7 @@ mod tests {
             input.extend_from_slice(&val.to_le_bytes());
         }
 
-        let result = resample_48k_stereo_to_16k_mono(&input);
+        let result = resample_capture_to_mono_i16(&input, 16_000);
 
         assert!(!result.is_empty());
 
@@ -662,7 +512,7 @@ mod tests {
     fn base64_encode_produces_non_empty_string() {
         let samples: Vec<i16> = vec![0, 100, -100, 32767, -32768];
 
-        let encoded = base64_encode_i16(&samples);
+        let encoded = base64_encode_pcm16(&samples);
 
         assert!(!encoded.is_empty());
     }

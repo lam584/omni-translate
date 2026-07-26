@@ -1,50 +1,32 @@
 use super::*;
 
+use crate::audio::realtime_ws;
+
 pub(super) fn set_socket_write_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
-    match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => {
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(OMNI_WRITE_TIMEOUT_SECS)));
-        }
-        MaybeTlsStream::Rustls(stream) => {
-            let _ = stream
-                .get_mut()
-                .set_write_timeout(Some(Duration::from_secs(OMNI_WRITE_TIMEOUT_SECS)));
-        }
-        _ => {}
-    }
+    realtime_ws::set_socket_timeouts(
+        socket,
+        None,
+        Some(Duration::from_secs(OMNI_WRITE_TIMEOUT_SECS)),
+    );
 }
 
 pub(super) fn set_socket_read_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
-    match socket.get_mut() {
-        MaybeTlsStream::Plain(stream) => {
-            let _ = stream.set_read_timeout(Some(Duration::from_millis(OMNI_READ_TIMEOUT_MS)));
-        }
-        MaybeTlsStream::Rustls(stream) => {
-            let _ = stream
-                .get_mut()
-                .set_read_timeout(Some(Duration::from_millis(OMNI_READ_TIMEOUT_MS)));
-        }
-        _ => {}
-    }
+    realtime_ws::set_socket_timeouts(
+        socket,
+        Some(Duration::from_millis(OMNI_READ_TIMEOUT_MS)),
+        None,
+    );
 }
 
 fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
-    use crate::audio::contracts::SubtitleCueRuntime;
-    let cue = SubtitleCueRuntime {
-        cue_id: format!("omni-reconnecting-{}", unix_ms()),
-        route_direction: "inbound".to_string(),
-        source_text: format!(
+    realtime_ws::push_reconnecting_cue(
+        store,
+        "omni-reconnecting",
+        format!(
             "[Omni] 正在重新连接实时翻译服务 (第 {}/{})...",
             attempt, OMNI_RECONNECT_MAX_RETRIES
         ),
-        display_source_text: String::new(),
-        display_segments: Vec::new(),
-        translated_text: String::new(),
-        started_at: ms_marker(unix_ms()),
-        ended_at: ms_marker(unix_ms()),
-        committed: true,
-    };
-    store.push_subtitle_cue(cue);
+    );
 }
 
 pub(super) fn try_reconnect(

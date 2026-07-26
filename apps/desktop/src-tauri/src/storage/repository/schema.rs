@@ -18,6 +18,19 @@ pub(super) const OLD_CONFIG_TABLES: [&str; 10] = [
     "onboarding_state",
 ];
 
+/// Tables that must survive save_config's clear-then-write cycle.
+pub(super) const PRESERVED_ON_SAVE_TABLES: [&str; 1] = ["config_snapshots"];
+
+/// Derived from RELATIONAL_TABLES: every relational table except the
+/// preserved set, keeping config_documents as the final delete inside the
+/// save transaction (preserves the historical clear order).
+pub(super) fn tables_cleared_on_save() -> impl Iterator<Item = &'static str> {
+    RELATIONAL_TABLES
+        .into_iter()
+        .filter(|table| !PRESERVED_ON_SAVE_TABLES.contains(table) && *table != "config_documents")
+        .chain(std::iter::once("config_documents"))
+}
+
 pub(super) const RELATIONAL_TABLES: [&str; 27] = [
     "config_documents",
     "runtime_state_cache",
@@ -364,3 +377,84 @@ CREATE TABLE config_snapshots (
   created_at TEXT NOT NULL
 );
 "#;
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use super::{
+        tables_cleared_on_save, CREATE_RELATIONAL_SCHEMA_SQL, PRESERVED_ON_SAVE_TABLES,
+        RELATIONAL_TABLES,
+    };
+
+    /// Tables managed outside the relational config payload; they are created
+    /// by CREATE_RELATIONAL_SCHEMA_SQL but never dropped on rebuild.
+    const BOOKKEEPING_TABLES: [&str; 2] = ["storage_migrations", "storage_metadata"];
+
+    fn created_table_names() -> BTreeSet<&'static str> {
+        CREATE_RELATIONAL_SCHEMA_SQL
+            .lines()
+            .filter_map(|line| {
+                let rest = line.trim().strip_prefix("CREATE TABLE ")?;
+                let rest = rest.strip_prefix("IF NOT EXISTS ").unwrap_or(rest);
+                Some(rest.split_whitespace().next()?.trim_end_matches('('))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn relational_tables_match_create_schema_sql() {
+        let mut expected = created_table_names();
+        for table in BOOKKEEPING_TABLES {
+            assert!(
+                expected.remove(table),
+                "bookkeeping table {table} should be created by the schema SQL"
+            );
+        }
+        let declared: BTreeSet<&'static str> = RELATIONAL_TABLES.into_iter().collect();
+        assert_eq!(
+            declared, expected,
+            "RELATIONAL_TABLES must list exactly the tables created by CREATE_RELATIONAL_SCHEMA_SQL"
+        );
+        assert_eq!(
+            RELATIONAL_TABLES.len(),
+            declared.len(),
+            "RELATIONAL_TABLES must not contain duplicates"
+        );
+    }
+
+    #[test]
+    fn preserved_tables_are_relational_tables() {
+        for table in PRESERVED_ON_SAVE_TABLES {
+            assert!(
+                RELATIONAL_TABLES.contains(&table),
+                "preserved table {table} must be part of RELATIONAL_TABLES"
+            );
+        }
+    }
+
+    #[test]
+    fn cleared_tables_are_exactly_the_unpreserved_relational_tables() {
+        let cleared: Vec<&'static str> = tables_cleared_on_save().collect();
+        let cleared_set: BTreeSet<&'static str> = cleared.iter().copied().collect();
+        assert_eq!(
+            cleared.len(),
+            cleared_set.len(),
+            "clear list must not contain duplicates"
+        );
+
+        let expected: BTreeSet<&'static str> = RELATIONAL_TABLES
+            .into_iter()
+            .filter(|table| !PRESERVED_ON_SAVE_TABLES.contains(table))
+            .collect();
+        assert_eq!(
+            cleared_set, expected,
+            "every relational table except the preserved set must be cleared on save"
+        );
+        assert_eq!(
+            cleared.last(),
+            Some(&"config_documents"),
+            "config_documents must remain the final delete of the save transaction"
+        );
+    }
+}

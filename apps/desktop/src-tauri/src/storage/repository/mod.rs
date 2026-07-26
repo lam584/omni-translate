@@ -18,8 +18,8 @@ use self::json_merge::{
     default_config_value, enforce_current_driver_contract, merge_objects, write_json_file,
 };
 use self::schema::{
-    CREATE_RELATIONAL_SCHEMA_SQL, CURRENT_SCHEMA_VERSION, OLD_CONFIG_TABLES,
-    RELATIONAL_SCHEMA_NAME, RELATIONAL_TABLES,
+    tables_cleared_on_save, CREATE_RELATIONAL_SCHEMA_SQL, CURRENT_SCHEMA_VERSION,
+    OLD_CONFIG_TABLES, RELATIONAL_SCHEMA_NAME, RELATIONAL_TABLES,
 };
 use self::snapshot_service::ConfigSnapshotService;
 use self::persisters::{
@@ -295,19 +295,7 @@ impl ConfigRepository {
             }
         }
 
-        for table in [
-            "config_documents",
-            "providers",
-            "provider_auth_refs",
-            "audio_device_preferences",
-            "audio_routes",
-            "subtitle_preferences",
-            "speech_preferences",
-            "driver_preferences",
-            "diagnostic_preferences",
-            "onboarding_state",
-            "config_snapshots",
-        ] {
+        for table in RELATIONAL_TABLES {
             if !table_exists(connection, table)? {
                 return Ok(true);
             }
@@ -406,34 +394,7 @@ impl ConfigRepository {
     }
 
     fn clear_config_tables(&self, connection: &Connection) -> Result<(), String> {
-        for table in [
-            "runtime_state_cache",
-            "provider_model_catalog_item_capabilities",
-            "provider_model_catalog_items",
-            "provider_model_catalog_cache",
-            "provider_model_capabilities",
-            "provider_scene_model_ids",
-            "provider_scene_model_assignments",
-            "provider_response_modalities",
-            "provider_custom_headers",
-            "provider_auth_refs",
-            "providers",
-            "audio_route_outputs",
-            "audio_routes",
-            "audio_device_preferences",
-            "subtitle_preferences",
-            "speech_preferences",
-            "driver_preferences",
-            "diagnostic_preferences",
-            "glossary_injection_order",
-            "glossary_community_packages",
-            "glossary_active_packages",
-            "glossary_preferences",
-            "onboarding_unresolved_risks",
-            "onboarding_completed_steps",
-            "onboarding_state",
-            "config_documents",
-        ] {
+        for table in tables_cleared_on_save() {
             connection
                 .execute(&format!("DELETE FROM {table}"), [])
                 .map_err_str()?;
@@ -589,6 +550,36 @@ mod tests {
         assert!(
             !table_exists(&connection, "provider_settings").expect("table check should pass"),
             "old payload table should not exist"
+        );
+    }
+
+    #[test]
+    fn missing_relational_table_triggers_schema_reset() {
+        let (_temp_dir, repository) = test_repository();
+        repository
+            .initialize()
+            .expect("repository should initialize");
+
+        {
+            let connection = repository
+                .open_connection()
+                .expect("connection should open");
+            // glossary_preferences was absent from the old hand-written
+            // existence checklist; dropping it must now force a rebuild.
+            connection
+                .execute_batch("DROP TABLE glossary_preferences;")
+                .expect("table should drop");
+        }
+
+        repository
+            .initialize()
+            .expect("repository should reinitialize");
+        let connection = repository
+            .open_connection()
+            .expect("connection should open");
+        assert!(
+            table_exists(&connection, "glossary_preferences").expect("table check should pass"),
+            "schema rebuild should restore every relational table"
         );
     }
 

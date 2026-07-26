@@ -1,7 +1,7 @@
-import { invoke } from '@tauri-apps/api/core';
 import { emit, listen } from '@tauri-apps/api/event';
 import i18n from '../i18n/config';
 import { desktopApiV2 } from './desktop-api-v2';
+import { invokeWithTimeoutCore } from './invoke-with-timeout';
 import { prewarmCaptureRoutesRuntime, preconnectOmniRealtimeRuntime } from './audio-runtime';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
@@ -14,8 +14,11 @@ import {
   type RuntimeSnapshot,
 } from '../schema/runtime-core';
 import { useAppStore } from '../stores/app-store';
+import { createLogger } from './logger';
 import { isTauriRuntime, waitForTauriRuntime } from './tauri-runtime';
 import { LocalStorageBackend } from '../utils/persistence-backend';
+
+const runtimeLogger = createLogger('runtime');
 
 type RuntimeCleanup = () => void;
 
@@ -69,25 +72,15 @@ function writeConfigDraftShadow(serializedConfig: string) {
 }
 
 function invokeWithTimeout<T>(
+  operation: () => Promise<T>,
   command: string,
   timeoutMs: number = BRIDGE_INVOKE_TIMEOUT_MS,
-  payload?: Record<string, unknown>,
 ): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error(i18n.t('runtime.desktop.invokeTimeout', { command, timeoutMs })));
-    }, timeoutMs);
-
-    desktopApiV2.runtime.invoke<T>(command, payload)
-      .then((result) => {
-        clearTimeout(timeoutId);
-        resolve(result);
-      })
-      .catch((error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      });
-  });
+  return invokeWithTimeoutCore(
+    operation,
+    timeoutMs,
+    () => new Error(i18n.t('runtime.desktop.invokeTimeout', { command, timeoutMs })),
+  );
 }
 
 async function pingDesktopRuntime(): Promise<number> {
@@ -96,7 +89,7 @@ async function pingDesktopRuntime(): Promise<number> {
 
   for (let attempt = 0; attempt <= IPC_PING_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      await invokeWithTimeout<string>('debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+      await invokeWithTimeout(() => desktopApiV2.runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
       return Math.round(performance.now() - startedAt);
     } catch (error) {
       lastError = error;
@@ -139,17 +132,17 @@ async function _refreshAndAutostartBridge(
   startTimeoutMs: number,
 ) {
   try {
-    const driverSnapshot = await invokeWithTimeout<RuntimeSnapshot>('refresh_bridge_runtime', refreshTimeoutMs);
+    const driverSnapshot = await invokeWithTimeout(() => desktopApiV2.legacyBridge.refresh(), 'refresh_bridge_runtime', refreshTimeoutMs);
     useAppStore.getState().setRuntimeSnapshot(driverSnapshot);
 
     if (isWatchModeAutostartRuntime() || !shouldAutostartBridge(driverSnapshot)) {
       return;
     }
 
-    const startedSnapshot = await invokeWithTimeout<RuntimeSnapshot>(
+    const startedSnapshot = await invokeWithTimeout(
+      () => desktopApiV2.legacyBridge.start(config),
       'start_bridge_service',
       startTimeoutMs,
-      { config },
     );
     useAppStore.getState().setRuntimeSnapshot(startedSnapshot);
   } catch (error) {
@@ -323,15 +316,17 @@ function forwardStepToNativeLog(stepId: BootstrapStepId, status: BootstrapStepSt
   if (!isTauriRuntime() || !nativeLogForwardingEnabled) {
     return;
   }
-  const level = status === 'error' ? 'error' : status === 'active' ? 'debug' : 'info';
-  void invoke('append_frontend_diagnostics_log', {
-    category: 'runtime',
-    level,
-    summary: `startup.step ${stepId}=${status}`,
-    detail: detail ?? null,
-  }).catch(() => {
-    /* best-effort: a failed diagnostic forward must never affect startup */
-  });
+  // Routed through the unified logger: `startup.*` summaries take its urgent
+  // path, so step transitions keep the immediate, best-effort forwarding this
+  // helper always had while gaining buffering + retry once IPC is proven.
+  const summary = `startup.step ${stepId}=${status}`;
+  if (status === 'error') {
+    runtimeLogger.error(summary, detail);
+  } else if (status === 'active') {
+    runtimeLogger.debug(summary, detail);
+  } else {
+    runtimeLogger.info(summary, detail);
+  }
 }
 
 function markStep(onStep: OnBootstrapStep | undefined, stepId: BootstrapStepId, status: BootstrapStepStatus, detail?: string) {
@@ -407,7 +402,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
 
   markStep(onStep, 'init-runtime', 'active');
   try {
-    const snapshot = await invokeWithTimeout<RuntimeSnapshot>('bootstrap_runtime');
+    const snapshot = await invokeWithTimeout(() => desktopApiV2.configuration.bootstrapRuntime(), 'bootstrap_runtime');
     useAppStore.getState().setRuntimeSnapshot(snapshot);
     markStep(onStep, 'init-runtime', 'done');
   } catch (error) {
@@ -429,7 +424,13 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
 
   let persistedConfig = useAppStore.getState().configDraft;
   try {
-    persistedConfig = await invokeWithTimeout<AppConfigDraft>('load_config_draft');
+    persistedConfig = await invokeWithTimeout(
+      // `loadDraft` is typed `T | null` for general drafts, but the Rust
+      // `load_config_draft` command always materializes a full config draft;
+      // keep this call site's pre-existing non-null contract.
+      () => desktopApiV2.persistence.loadDraft<AppConfigDraft>() as Promise<AppConfigDraft>,
+      'load_config_draft',
+    );
     useAppStore.getState().setConfigDraft(persistedConfig);
     markStep(onStep, 'load-config', 'done');
   } catch (configError) {
@@ -443,7 +444,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   }
 
   try {
-    const audioSnapshot = await invokeWithTimeout<AudioRuntimeSnapshot>('bootstrap_audio');
+    const audioSnapshot = await invokeWithTimeout(() => desktopApiV2.runtime.bootstrapAudio(), 'bootstrap_audio');
     useAppStore.getState().setAudioRuntimeSnapshot(audioSnapshot);
     markStep(onStep, 'init-audio', 'done', `${audioSnapshot.renderDevices.length} devices`);
   } catch (error) {
@@ -453,7 +454,7 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
   }
 
   try {
-    const hydratedSnapshot = await invokeWithTimeout<RuntimeSnapshot>('get_runtime_snapshot');
+    const hydratedSnapshot = await invokeWithTimeout(() => desktopApiV2.configuration.runtimeSnapshot(), 'get_runtime_snapshot');
     useAppStore.getState().setRuntimeSnapshot(hydratedSnapshot);
   } catch (snapshotError) {
     pushDesktopRuntimeNotification(
@@ -502,9 +503,9 @@ async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<Ru
       for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
         if (disposed) return;
         try {
-          await desktopApiV2.runtime.invoke('save_config_draft', { config: nextConfig });
+          await desktopApiV2.persistence.saveDraft(nextConfig);
           if (disposed) return;
-          const latestSnapshot = await desktopApiV2.runtime.invoke<RuntimeSnapshot>('get_runtime_snapshot');
+          const latestSnapshot = await desktopApiV2.configuration.runtimeSnapshot();
           if (disposed) return;
           useAppStore.getState().setRuntimeSnapshot(latestSnapshot);
           const savedSerialized = JSON.stringify(nextConfig);
@@ -690,7 +691,10 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
         }
         cleanup = nextCleanup;
       } catch (error) {
-        console.error('[omni][desktop-runtime] late heal failed:', error);
+        runtimeLogger.error(
+          'desktop runtime late heal failed',
+          error instanceof Error ? error.message : String(error),
+        );
       }
     });
 
@@ -717,7 +721,7 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     markStep(onStep, 'check-ipc', 'done', `${pingElapsedMs}ms`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error('[omni][desktop-runtime] debug_ipc_ping 失败:', message);
+    runtimeLogger.error('debug_ipc_ping failed', message);
     store.setRuntimeSnapshot(createRuntimeErrorSnapshot(
       new Error(i18n.t('runtime.desktop.ipcDiagFailed', { message }))
     ));
@@ -739,7 +743,7 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
     const recoverIpc = async () => {
       if (disposed || Date.now() - recoveryStartedAt >= IPC_RECOVERY_TIMEOUT_MS) return;
       try {
-        await invokeWithTimeout<string>('debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+        await invokeWithTimeout(() => desktopApiV2.runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
         const nextCleanup = await connectDesktopRuntimeBridge();
         if (disposed) {
           nextCleanup();
@@ -796,7 +800,10 @@ async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promi
         }
       } catch { /* ok */ }
     } catch (error) {
-      console.error('[omni][desktop-runtime] connectIfAvailable 异常:', error);
+      runtimeLogger.error(
+        'connectIfAvailable threw after IPC ping',
+        error instanceof Error ? error.message : String(error),
+      );
       if (!disposed) {
         const message = formatRuntimeError(error);
         markStep(onStep, 'init-runtime', 'error', message);

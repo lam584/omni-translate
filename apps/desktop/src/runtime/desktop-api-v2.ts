@@ -3,13 +3,14 @@ import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
 import { Menu } from '@tauri-apps/api/menu';
 import { currentMonitor, cursorPosition, getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
-import type { AppConfigDraft, DiagnosticsExportScope, ProviderDraft } from '../schema/config';
+import type { AppConfigDraft, DiagnosticsExportScope, ProviderDraft, RealtimeAudioMode } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
+import type { ProviderInteractionCapability } from '../schema/provider-contract';
 import type { CredentialRefStatus, CredentialSecretPayload, ProviderModelCatalogRuntime, ProviderProbeProfileRuntime, ProviderSmokeResult } from '../schema/provider-runtime';
-import type { RuntimeSnapshot } from '../schema/runtime-core';
+import type { DiagnosticLogEntryRuntime, RuntimeSnapshot } from '../schema/runtime-core';
 
 export type ServiceWarning = { code: string; message: string };
-export type ServiceResult<T> = { data: T; warnings: ServiceWarning[] };
+export type ServiceResult<T> = { data: T; warnings: ServiceWarning[]; requestId?: string };
 export type ServiceErrorV2 = { code: string; message: string; retriable: boolean; details?: unknown };
 export type ConfigExportArtifact = {
   filePath: string;
@@ -18,6 +19,27 @@ export type ConfigExportArtifact = {
   snapshotCount: number;
 };
 export type ConfigSnapshotRecord = { snapshotId: string; reason: string; createdAt: string };
+export type FrontendDiagnosticsBatchEntry = {
+  category: string;
+  level: string;
+  summary: string;
+  detail: string | null;
+  emittedAt: string;
+};
+export type DiagnosticsLogLevel = 'error' | 'warning' | 'info' | 'debug' | 'verbose';
+/** Flat args for the legacy 'run_model_benchmark' command; mirrors the benchmark-runtime call site. */
+export type ModelBenchmarkRunPayload = {
+  model: string;
+  apiKey: string;
+  mp3Path: string;
+  runId: string;
+  realtimeAudioMode?: RealtimeAudioMode;
+  interactionCapabilities?: ProviderInteractionCapability[];
+  providerKind?: string;
+  baseUrl?: string;
+  authHeaderName?: string;
+  authScheme?: string;
+};
 
 export type InvokeFn = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
 export type DesktopPoint = { x: number; y: number };
@@ -64,6 +86,12 @@ export class DesktopApiV2 {
     syncOverlayWindowState: async (locked: boolean, rounded: boolean, hotspotInteractive: boolean) => unwrap(await this.invokeFn<ServiceResult<AudioRuntimeSnapshot>>('session_v2', {
       command: { action: 'syncOverlayWindowState', locked, rounded, hotspotInteractive },
     })),
+    // Performance-sensitive legacy direct command, distinct from `startRoute`
+    // above (session_v2 envelope): route startup must keep the sub-second
+    // native acknowledgement on the click path, so it bypasses the
+    // ServiceResult unwrap entirely.
+    startAudioRoute: async (direction: 'inbound' | 'outbound', config: AppConfigDraft) =>
+      this.invokeFn<AudioRuntimeSnapshot>('start_audio_route', { direction, config }),
   };
 
   readonly bridge = {
@@ -76,11 +104,36 @@ export class DesktopApiV2 {
     repair: async (repairAction: DriverRepairAction, config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'repair', repairAction, config } })),
   };
 
+  /**
+   * Legacy bridge lifecycle commands that pre-date bridge_v2. Same runtime
+   * area as `bridge` above, but different commands with different semantics:
+   * these direct commands are used on the startup/autostart path and do not
+   * go through the ServiceResult envelope.
+   */
+  readonly legacyBridge = {
+    refresh: () => this.invokeFn<RuntimeSnapshot>('refresh_bridge_runtime'),
+    start: (config: AppConfigDraft) => this.invokeFn<RuntimeSnapshot>('start_bridge_service', { config }),
+  };
+
   readonly diagnostics = {
     selfCheck: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('diagnostics_v2', { command: { action: 'selfCheck' } })),
     overlaySelfCheck: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('diagnostics_v2', { command: { action: 'overlaySelfCheck' } })),
     export: async (scope: DiagnosticsExportScope) => unwrap(await this.invokeFn<ServiceResult<{ scope: string; outputPath: string; generatedAt: string; fileCount: number }>>('diagnostics_v2', { command: { action: 'export', scope } })),
     liveSessionEvents: async <T>() => unwrap(await this.invokeFn<ServiceResult<T>>('diagnostics_v2', { command: { action: 'liveSessionEvents' } })),
+    // Batched frontend log forwarding + dynamic level control stay direct
+    // commands (not v2 envelopes): they are fire-and-forget plumbing used by
+    // the logger itself and must not depend on snapshot rebuilds.
+    appendLogs: async (entries: readonly FrontendDiagnosticsBatchEntry[], droppedCount: number) =>
+      this.invokeFn<void>('append_frontend_diagnostics_logs', { entries: [...entries], droppedCount }),
+    setLogLevel: async (level: DiagnosticsLogLevel) =>
+      this.invokeFn<void>('set_diagnostics_log_level', { level }),
+    // Direct native log-ring snapshot (not a diagnostics_v2 envelope): scene
+    // launch attribution reads recent route markers without a snapshot rebuild.
+    snapshot: () => this.invokeFn<{ recentLogs?: DiagnosticLogEntryRuntime[] }>('get_diagnostics_snapshot'),
+    // Legacy 'get_live_session_events' direct command returning a raw JSON
+    // string that callers parse themselves. Deliberately distinct from
+    // `liveSessionEvents` above, which is the diagnostics_v2 envelope action.
+    liveSessionEventsRaw: () => this.invokeFn<string>('get_live_session_events'),
   };
 
   readonly configuration = {
@@ -106,9 +159,28 @@ export class DesktopApiV2 {
     availableCommands: async () => this.invokeFn<string[]>('list_commands'),
   };
 
-  /** Transitional runtime capability for startup orchestration. */
+  /** Startup-orchestration commands used by the desktop runtime bootstrap. */
   readonly runtime = {
-    invoke: <T>(command: string, args?: Record<string, unknown>) => this.invokeFn<T>(command, args),
+    debugIpcPing: () => this.invokeFn<string>('debug_ipc_ping'),
+    bootstrapAudio: () => this.invokeFn<AudioRuntimeSnapshot>('bootstrap_audio'),
+  };
+
+  /**
+   * Subtitle-overlay native window commands. These stay direct commands (not
+   * v2 envelopes): the overlay is a separately bootstrapped renderer and can
+   * issue them before the V2 desktop service bridge has hydrated.
+   */
+  readonly overlay = {
+    sync: (locked: boolean, rounded: boolean, hotspotInteractive: boolean) =>
+      this.invokeFn<void>('sync_subtitle_overlay_window_state', { locked, rounded, hotspotInteractive }),
+    unlock: () => this.invokeFn<void>('unlock_subtitle_overlay'),
+    toggle: () => this.invokeFn<RuntimeSnapshot>('toggle_subtitle_overlay'),
+    show: () => this.invokeFn<RuntimeSnapshot>('show_subtitle_overlay'),
+  };
+
+  readonly benchmark = {
+    /** Returns the benchmark report as a raw JSON string; callers parse it. */
+    runModelBenchmark: (payload: ModelBenchmarkRunPayload) => this.invokeFn<string>('run_model_benchmark', payload),
   };
 
   // Secrets are intentionally not represented in the generic configuration

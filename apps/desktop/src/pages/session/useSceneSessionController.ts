@@ -16,11 +16,17 @@ import {
   stopSpeechDispatchRuntime,
   stopTranslateWorkerRuntime,
 } from '../../runtime/audio-runtime';
+import {
+  installDriverRuntime,
+  refreshBridgeRuntime,
+  repairDriverRuntime,
+  startBridgeServiceRuntime,
+} from '../../runtime/bridge-runtime';
 import { appendFrontendDiagnosticsLog, getRecentDiagnosticsLogsRuntime } from '../../runtime/diagnostics-runtime';
-import { useDesktopApiV2 } from '../../runtime/desktop-api-context';
 import type { SceneMode } from '../../utils/scene-readiness';
 import { watchModeNeedsBridge } from '../../utils/scene-readiness';
 import { stringifyRedacted } from '../../utils/redact-sensitive-data';
+import { extractSessionErrorCode } from '../../utils/session-error-presentation';
 import { buildSceneLaunchPlan, buildWatchFallbackPlan, type SceneLaunchStage } from './sceneLaunchPlan';
 import { executeSceneLaunchPlan, SceneLaunchError } from './sceneLaunchExecutor';
 import { sceneLaunchTimeoutMs } from './sceneLaunchTimeout';
@@ -74,7 +80,13 @@ async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMs: numbe
 }
 
 function isBridgeStartupError(error: unknown) {
-  const lower = (error instanceof Error ? error.message : String(error ?? '')).toLowerCase();
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  // Session-domain errors carry an explicit `| code:` marker; they must never
+  // be misread as bridge failures by the keyword fallback below.
+  if (extractSessionErrorCode(message) !== null) {
+    return false;
+  }
+  const lower = message.toLowerCase();
   return ['bridge', 'driver', 'source pipe', 'virtual', 'sysvad', 'package', 'wasapi'].some((token) => lower.includes(token));
 }
 
@@ -111,7 +123,6 @@ async function describeWatchLaunchFailure(
 /** Coordinates the Bridge readiness sequence used before scene startup. */
 export function useSceneSessionController(controller: SceneSessionControllerOptions) {
   const { runtimeSnapshot, setRuntimeSnapshot } = controller;
-  const desktopApi = useDesktopApiV2();
   const ensureBridgeReady = async (mode: SceneMode, nextConfig: AppConfigDraft): Promise<RuntimeSnapshot> => {
     if (!watchModeNeedsBridge(nextConfig)) {
       return runtimeSnapshot;
@@ -125,9 +136,13 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
       return runtimeSnapshot;
     }
 
+    // Bridge lifecycle IPC goes through the bridge-runtime wrappers so every
+    // step carries the shared timeout gate and lifecycle trace: a hung native
+    // command surfaces as an attributable timeout error instead of leaving the
+    // launch path suspended forever.
     let latestRuntime: RuntimeSnapshot;
     try {
-      latestRuntime = await desktopApi.bridge.refresh();
+      latestRuntime = await refreshBridgeRuntime();
       setRuntimeSnapshot(latestRuntime);
     } catch (refreshError) {
       appendFrontendDiagnosticsLog(
@@ -139,7 +154,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     }
 
     if (latestRuntime.bridge.driverHealth === 'not-installed') {
-      const installed = await desktopApi.bridge.install(nextConfig);
+      const installed = await installDriverRuntime(nextConfig);
       setRuntimeSnapshot(installed);
       return installed;
     }
@@ -149,11 +164,11 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         : latestRuntime.bridge.recommendedAction === 'restart-bridge'
           ? 'restart-bridge' as const
           : 'reinstall-driver' as const;
-      latestRuntime = await desktopApi.bridge.repair(repairAction, nextConfig);
+      latestRuntime = await repairDriverRuntime(repairAction, nextConfig);
       setRuntimeSnapshot(latestRuntime);
     }
     if (latestRuntime.bridge.bridgeState !== 'running') {
-      const started = await desktopApi.bridge.start(nextConfig);
+      const started = await startBridgeServiceRuntime(nextConfig);
       setRuntimeSnapshot(started);
       return started;
     }

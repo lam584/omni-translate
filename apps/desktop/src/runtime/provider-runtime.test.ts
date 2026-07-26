@@ -8,6 +8,7 @@ vi.mock('@tauri-apps/api/core', () => ({
   isTauri: () => Boolean((globalThis as typeof globalThis & { isTauri?: boolean }).isTauri),
 }));
 
+import { getRecentFrontendLogEntries, loggerTestHelpers } from './logger';
 import {
   fetchProviderModels,
   getProviderSecretStatus,
@@ -17,6 +18,16 @@ import {
   runProviderSmoke,
   saveProviderSecret,
 } from './provider-runtime';
+
+/** Entries recorded through the unified logger, newest first. */
+function recentTraceEntries() {
+  return [...getRecentFrontendLogEntries()].reverse();
+}
+
+/** Invoke calls issued by the code under test, excluding logger forwarding. */
+function nonLoggerInvokeCalls() {
+  return invokeMock.mock.calls.filter((call) => call[0] !== 'append_frontend_diagnostics_logs');
+}
 
 function enableTauriRuntime() {
   Object.defineProperty(globalThis, 'isTauri', {
@@ -35,15 +46,13 @@ describe('provider-runtime saveProviderSecret', () => {
     disableTauriRuntime();
     enableTauriRuntime();
     invokeMock.mockReset();
-    Reflect.deleteProperty(window, '__OMNI_FRONTEND_DIAGNOSTICS__');
-    window.localStorage.removeItem('omni.frontendDiagnosticsTrace');
+    loggerTestHelpers.reset();
     vi.useRealTimers();
   });
 
   afterEach(() => {
     disableTauriRuntime();
-    Reflect.deleteProperty(window, '__OMNI_FRONTEND_DIAGNOSTICS__');
-    window.localStorage.removeItem('omni.frontendDiagnosticsTrace');
+    loggerTestHelpers.reset();
     vi.useRealTimers();
   });
 
@@ -61,9 +70,9 @@ describe('provider-runtime saveProviderSecret', () => {
       backend: 'windows-credential-manager',
       hasSecret: true,
     });
-    expect(invokeMock.mock.calls).toHaveLength(1);
-    expect(invokeMock.mock.calls[0]?.[0]).toBe('upsert_secret_ref');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__?.[0]).toMatchObject({
+    expect(nonLoggerInvokeCalls()).toHaveLength(1);
+    expect(nonLoggerInvokeCalls()[0]?.[0]).toBe('upsert_secret_ref');
+    expect(recentTraceEntries()[0]).toMatchObject({
       category: 'storage',
       level: 'info',
       summary: '前端收到 API Key 保存结果。',
@@ -75,9 +84,9 @@ describe('provider-runtime saveProviderSecret', () => {
 
     await expect(saveProviderSecret('credential://provider/dashscope/default', 'secret-token')).rejects.toThrow('backend failure');
 
-    expect(invokeMock.mock.calls).toHaveLength(1);
-    expect(invokeMock.mock.calls[0]?.[0]).toBe('upsert_secret_ref');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__?.[0]).toMatchObject({
+    expect(nonLoggerInvokeCalls()).toHaveLength(1);
+    expect(nonLoggerInvokeCalls()[0]?.[0]).toBe('upsert_secret_ref');
+    expect(recentTraceEntries()[0]).toMatchObject({
       category: 'storage',
       level: 'error',
       summary: '前端保存 API Key 失败。',
@@ -101,9 +110,9 @@ describe('provider-runtime saveProviderSecret', () => {
     const error = await rejection;
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('CredWriteW failed with code 5');
-    expect(invokeMock.mock.calls).toHaveLength(1);
-    expect(invokeMock.mock.calls[0]?.[0]).toBe('upsert_secret_ref');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__?.[0]).toMatchObject({
+    expect(nonLoggerInvokeCalls()).toHaveLength(1);
+    expect(nonLoggerInvokeCalls()[0]?.[0]).toBe('upsert_secret_ref');
+    expect(recentTraceEntries()[0]).toMatchObject({
       category: 'storage',
       level: 'error',
       summary: '前端保存 API Key 失败。',
@@ -126,9 +135,9 @@ describe('provider-runtime saveProviderSecret', () => {
       retriable: true,
     });
     expect((error as Error).message).toContain('API Key 原生保存命令超时');
-    expect(invokeMock.mock.calls).toHaveLength(1);
-    expect(invokeMock.mock.calls[0]?.[0]).toBe('upsert_secret_ref');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__).toEqual(
+    expect(nonLoggerInvokeCalls()).toHaveLength(1);
+    expect(nonLoggerInvokeCalls()[0]?.[0]).toBe('upsert_secret_ref');
+    expect(recentTraceEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           category: 'storage',
@@ -168,7 +177,7 @@ describe('provider-runtime saveProviderSecret', () => {
     });
     await Promise.resolve();
 
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__).toEqual(
+    expect(recentTraceEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           category: 'storage',
@@ -177,7 +186,6 @@ describe('provider-runtime saveProviderSecret', () => {
         }),
       ]),
     );
-    expect(window.localStorage.getItem('omni.frontendDiagnosticsTrace')).toContain('前端等待运行时命令超时。');
   });
 
   it('returns the browser preview result without issuing invoke when tauri runtime is unavailable', async () => {
@@ -198,7 +206,7 @@ describe('provider-runtime saveProviderSecret', () => {
     expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it('keeps a persisted local trace buffer for later inspection', async () => {
+  it('keeps a bounded in-memory trace buffer for later inspection', async () => {
     invokeMock.mockResolvedValue({
       reference: 'credential://provider/dashscope/default',
       backend: 'windows-credential-manager',
@@ -212,44 +220,41 @@ describe('provider-runtime saveProviderSecret', () => {
       backend: 'windows-credential-manager',
       hasSecret: true,
     });
-    expect(window.localStorage.getItem('omni.frontendDiagnosticsTrace')).toContain('前端收到 API Key 保存结果。');
+    expect(recentTraceEntries().map((entry) => entry.summary)).toContain('前端收到 API Key 保存结果。');
   });
 });
 
-describe('provider-runtime diagnostics cache', () => {
+describe('provider-runtime diagnostics trace', () => {
   beforeEach(() => {
     enableTauriRuntime();
     invokeMock.mockReset();
-    Reflect.deleteProperty(window, '__OMNI_FRONTEND_DIAGNOSTICS__');
-    window.localStorage.removeItem('omni.frontendDiagnosticsTrace');
+    loggerTestHelpers.reset();
   });
 
   afterEach(() => {
     disableTauriRuntime();
-    Reflect.deleteProperty(window, '__OMNI_FRONTEND_DIAGNOSTICS__');
-    window.localStorage.removeItem('omni.frontendDiagnosticsTrace');
+    loggerTestHelpers.reset();
   });
 
-  it('recovers from malformed and non-array diagnostics cache entries', async () => {
+  it('accumulates trace entries across appends in the logger ring', async () => {
     invokeMock.mockResolvedValue({
       reference: 'credential://provider/dashscope/default',
       backend: 'windows-credential-manager',
       hasSecret: true,
     });
 
-    window.localStorage.setItem('omni.frontendDiagnosticsTrace', '{broken-json');
     await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
-    const firstTraceCount = window.__OMNI_FRONTEND_DIAGNOSTICS__?.length ?? 0;
+    const firstTraceCount = recentTraceEntries().length;
     expect(firstTraceCount).toBeGreaterThan(0);
 
-    window.localStorage.setItem('omni.frontendDiagnosticsTrace', '{}');
     await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__?.length ?? 0).toBeGreaterThan(
-      firstTraceCount,
-    );
+    expect(recentTraceEntries().length).toBeGreaterThan(firstTraceCount);
   });
 
-  it('keeps save diagnostics in memory when local storage writes fail', async () => {
+  it('keeps save diagnostics in memory even when local storage is unavailable', async () => {
+    // The unified logger never touches localStorage (the legacy
+    // omni.frontendDiagnosticsTrace persistence was removed), so a broken
+    // storage backend must not affect trace recording.
     invokeMock.mockResolvedValue({
       reference: 'credential://provider/dashscope/default',
       backend: 'windows-credential-manager',
@@ -261,7 +266,7 @@ describe('provider-runtime diagnostics cache', () => {
 
     await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
 
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__?.length).toBeGreaterThan(0);
+    expect(recentTraceEntries().length).toBeGreaterThan(0);
     setItem.mockRestore();
   });
 
@@ -269,21 +274,19 @@ describe('provider-runtime diagnostics cache', () => {
     invokeMock.mockRejectedValue('save unavailable');
 
     await expect(saveProviderSecret('credential://provider/dashscope/default', 'secret-token')).rejects.toBe('save unavailable');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__?.[0]?.detail).toContain('save unavailable');
+    expect(recentTraceEntries()[0]?.detail).toContain('save unavailable');
   });
 
-  it('reads persisted array traces and handles warning traces without detail', () => {
-    window.localStorage.setItem('omni.frontendDiagnosticsTrace', JSON.stringify([{ summary: 'stored' }]));
-    expect(providerRuntimeTestHelpers.readFrontendDiagnosticsTrace()).toEqual([{ summary: 'stored' }]);
+  it('handles warning traces without detail', () => {
     providerRuntimeTestHelpers.appendFrontendDiagnosticsTrace('provider', 'warning', 'warning trace');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__?.[0]).toMatchObject({ level: 'warning', summary: 'warning trace' });
+    expect(recentTraceEntries()[0]).toMatchObject({ level: 'warning', summary: 'warning trace', detail: null });
   });
 
-  it('does not buffer traces when window is unavailable', () => {
+  it('still records traces when window is unavailable', () => {
     vi.stubGlobal('window', undefined);
-    expect(providerRuntimeTestHelpers.readFrontendDiagnosticsTrace()).toEqual([]);
-    expect(() => providerRuntimeTestHelpers.appendFrontendDiagnosticsTrace('provider', 'info', 'ignored')).not.toThrow();
+    expect(() => providerRuntimeTestHelpers.appendFrontendDiagnosticsTrace('provider', 'info', 'window-free')).not.toThrow();
     vi.unstubAllGlobals();
+    expect(recentTraceEntries().map((entry) => entry.summary)).toContain('window-free');
   });
 });
 
@@ -320,7 +323,7 @@ describe('provider-runtime timeout helpers', () => {
       rejectInvoke = reject;
     }));
     const rejection = providerRuntimeTestHelpers
-      .invokeWithTimeout('late_reject', {}, '操作', 1000, 'provider-test')
+      .invokeWithTimeout(() => invokeMock('late_reject', {}), '操作', 1000, 'provider-test')
       .catch((error) => error);
     await vi.advanceTimersByTimeAsync(1000);
     await expect(rejection).resolves.toMatchObject({ code: 'timeout' });
@@ -331,7 +334,7 @@ describe('provider-runtime timeout helpers', () => {
   it('ignores an uncleared timeout callback after native resolve', async () => {
     const clearTimeout = vi.spyOn(window, 'clearTimeout').mockImplementation(() => undefined);
     invokeMock.mockResolvedValue('done');
-    await expect(providerRuntimeTestHelpers.invokeWithTimeout('resolved', {}, '操作', 1000, 'provider-test')).resolves.toBe('done');
+    await expect(providerRuntimeTestHelpers.invokeWithTimeout(() => invokeMock('resolved', {}), '操作', 1000, 'provider-test')).resolves.toBe('done');
     await vi.advanceTimersByTimeAsync(1000);
     clearTimeout.mockRestore();
   });
@@ -401,14 +404,12 @@ describe('provider-runtime native command wrappers', () => {
   beforeEach(() => {
     enableTauriRuntime();
     invokeMock.mockReset();
-    Reflect.deleteProperty(window, '__OMNI_FRONTEND_DIAGNOSTICS__');
-    window.localStorage.removeItem('omni.frontendDiagnosticsTrace');
+    loggerTestHelpers.reset();
   });
 
   afterEach(() => {
     disableTauriRuntime();
-    Reflect.deleteProperty(window, '__OMNI_FRONTEND_DIAGNOSTICS__');
-    window.localStorage.removeItem('omni.frontendDiagnosticsTrace');
+    loggerTestHelpers.reset();
   });
 
   it('reads credential status and secret payloads from the native credential backend', async () => {
@@ -432,17 +433,23 @@ describe('provider-runtime native command wrappers', () => {
       backend: 'windows-credential-manager',
       secret: 'stored-secret',
     });
-    expect(invokeMock.mock.calls.map((call) => call[0])).toEqual(['get_secret_ref_status', 'read_secret_ref']);
+    expect(nonLoggerInvokeCalls().map((call) => call[0])).toEqual(['get_secret_ref_status', 'read_secret_ref']);
   });
 
   it('propagates credential read failures and records diagnostics traces', async () => {
-    invokeMock.mockRejectedValueOnce(new Error('status unavailable')).mockRejectedValueOnce('secret unavailable');
+    // Dispatch by command: the logger's own batched forwarding also calls
+    // invoke, so consumable mockRejectedValueOnce chains would race with it.
+    invokeMock.mockImplementation((command: unknown) => {
+      if (command === 'get_secret_ref_status') return Promise.reject(new Error('status unavailable'));
+      if (command === 'read_secret_ref') return Promise.reject('secret unavailable');
+      return Promise.resolve(undefined);
+    });
 
     await expect(getProviderSecretStatus('credential://provider/dashscope/default')).rejects.toThrow(
       'status unavailable',
     );
     await expect(readProviderSecret('credential://provider/dashscope/default')).rejects.toBe('secret unavailable');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__).toEqual(
+    expect(recentTraceEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ summary: '前端读取 API Key 状态失败。', level: 'error' }),
         expect.objectContaining({ summary: '前端读取 API Key 明文失败。', level: 'error' }),
@@ -451,7 +458,11 @@ describe('provider-runtime native command wrappers', () => {
   });
 
   it('records non-error status failures and Error secret failures', async () => {
-    invokeMock.mockRejectedValueOnce('status string failure').mockRejectedValueOnce(new Error('secret Error failure'));
+    invokeMock.mockImplementation((command: unknown) => {
+      if (command === 'get_secret_ref_status') return Promise.reject('status string failure');
+      if (command === 'read_secret_ref') return Promise.reject(new Error('secret Error failure'));
+      return Promise.resolve(undefined);
+    });
     await expect(getProviderSecretStatus('credential://provider/dashscope/default')).rejects.toBe('status string failure');
     await expect(readProviderSecret('credential://provider/dashscope/default')).rejects.toThrow('secret Error failure');
   });
@@ -489,23 +500,25 @@ describe('provider-runtime non-error native failures', () => {
   beforeEach(() => {
     enableTauriRuntime();
     invokeMock.mockReset();
-    Reflect.deleteProperty(window, '__OMNI_FRONTEND_DIAGNOSTICS__');
-    window.localStorage.removeItem('omni.frontendDiagnosticsTrace');
+    loggerTestHelpers.reset();
   });
 
   afterEach(() => {
     disableTauriRuntime();
-    Reflect.deleteProperty(window, '__OMNI_FRONTEND_DIAGNOSTICS__');
-    window.localStorage.removeItem('omni.frontendDiagnosticsTrace');
+    loggerTestHelpers.reset();
   });
 
   it('records non-error native probe and smoke failures', async () => {
     const provider = structuredClone(appConfigDraftMock.providers[0]);
-    invokeMock.mockRejectedValueOnce('probe unavailable').mockRejectedValueOnce('smoke unavailable');
+    // Dispatch by command so the logger's own forwarding invokes cannot
+    // consume the queued provider_v2 rejections.
+    const providerFailures = ['probe unavailable', 'smoke unavailable'];
+    invokeMock.mockImplementation((command: unknown) =>
+      command === 'provider_v2' ? Promise.reject(providerFailures.shift()) : Promise.resolve(undefined));
 
     await expect(runProviderProbe(provider)).rejects.toBe('probe unavailable');
     await expect(runProviderSmoke(provider, 'hello', 'en-US', 'zh-CN')).rejects.toBe('smoke unavailable');
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__).toEqual(
+    expect(recentTraceEntries()).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           level: 'error',
@@ -519,14 +532,13 @@ describe('provider-runtime non-error native failures', () => {
     );
   });
 
-  it('discards a non-array persisted diagnostics payload before recording IPC failure', async () => {
-    window.localStorage.setItem('omni.frontendDiagnosticsTrace', JSON.stringify({ stale: true }));
-    invokeMock.mockRejectedValueOnce(new Error('probe unavailable'));
+  it('records exactly the probe invocation and failure traces for one failed probe', async () => {
+    invokeMock.mockImplementation((command: unknown) =>
+      command === 'provider_v2' ? Promise.reject(new Error('probe unavailable')) : Promise.resolve(undefined));
 
     await expect(runProviderProbe(structuredClone(appConfigDraftMock.providers[0]))).rejects.toThrow('probe unavailable');
 
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__).toHaveLength(2);
-    expect(window.__OMNI_FRONTEND_DIAGNOSTICS__).not.toEqual(expect.arrayContaining([expect.objectContaining({ stale: true })]));
+    expect(recentTraceEntries()).toHaveLength(2);
   });
 });
 

@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import i18n from '../i18n/config';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
@@ -6,7 +5,11 @@ import type { AppConfigDraft } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import { desktopApiV2 } from './desktop-api-v2';
+import { invokeWithTimeoutCore } from './invoke-with-timeout';
+import { createLogger } from './logger';
 import { isTauriRuntime } from './tauri-runtime';
+
+const audioLogger = createLogger('audio');
 
 const AUDIO_ROUTE_TIMEOUT_MS = 30_000;
 const OVERLAY_WINDOW_TIMEOUT_MS = 15_000;
@@ -30,34 +33,23 @@ async function invokeAudioWithTimeout<T>(
   timeoutMs: number,
   recoverAfterTimeout?: (settledOperation: Promise<T>) => Promise<void>,
 ): Promise<T> {
-  const pendingOperation = operation();
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const timer = window.setTimeout(() => {
-      if (settled) return;
-      settled = true;
-      reject(createAudioRuntimeTimeoutError(actionLabel, timeoutMs));
-      if (recoverAfterTimeout) {
-        void recoverAfterTimeout(pendingOperation).catch((error) => {
-          console.error(`[audio-runtime] ${actionLabel} timeout recovery failed`, error);
-        });
-      }
-    }, timeoutMs);
-
-    pendingOperation
-      .then((result) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timer);
-        resolve(result);
-      })
-      .catch((error) => {
-        if (settled) return;
-        settled = true;
-        window.clearTimeout(timer);
-        reject(error);
-      });
-  });
+  return invokeWithTimeoutCore(
+    operation,
+    timeoutMs,
+    () => createAudioRuntimeTimeoutError(actionLabel, timeoutMs),
+    recoverAfterTimeout
+      ? {
+          onTimeout: (pendingOperation) => {
+            void recoverAfterTimeout(pendingOperation).catch((error) => {
+              audioLogger.error(
+                `${actionLabel} timeout recovery failed`,
+                error instanceof Error ? error.message : String(error),
+              );
+            });
+          },
+        }
+      : undefined,
+  );
 }
 
 export async function refreshAudioDevicesRuntime(): Promise<AudioRuntimeSnapshot> {
@@ -84,10 +76,11 @@ export async function startAudioRouteRuntime(direction: 'inbound' | 'outbound', 
   }
 
   return invokeAudioWithTimeout(
-    // Route startup uses the direct native command. The V2 wrapper remains
-    // available for other session operations, but must not sit between the
-    // click path and the sub-second native acknowledgement.
-    () => desktopApiV2.runtime.invoke<AudioRuntimeSnapshot>('start_audio_route', { direction, config }),
+    // Route startup uses `session.startAudioRoute`, the legacy direct-command
+    // wrapper (not the `startRoute` V2 envelope): it must not put the
+    // ServiceResult unwrap between the click path and the sub-second native
+    // acknowledgement.
+    () => desktopApiV2.session.startAudioRoute(direction, config),
     i18n.t('runtime.audio.actionStartCapture'),
     AUDIO_ROUTE_TIMEOUT_MS,
     async (lateStart) => {
@@ -289,7 +282,7 @@ export async function toggleSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
     return runtimeSnapshotMock;
   }
 
-  return invokeAudioWithTimeout(() => invoke<RuntimeSnapshot>('toggle_subtitle_overlay'), i18n.t('runtime.audio.actionToggleOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.overlay.toggle(), i18n.t('runtime.audio.actionToggleOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
 }
 
 export async function showSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
@@ -302,5 +295,5 @@ export async function showSubtitleOverlayWindow(): Promise<RuntimeSnapshot> {
     };
   }
 
-  return invokeAudioWithTimeout(() => invoke<RuntimeSnapshot>('show_subtitle_overlay'), i18n.t('runtime.audio.actionShowOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
+  return invokeAudioWithTimeout(() => desktopApiV2.overlay.show(), i18n.t('runtime.audio.actionShowOverlay'), OVERLAY_WINDOW_TIMEOUT_MS);
 }

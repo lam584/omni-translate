@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 import { useTranslation } from 'react-i18next';
 
 import { clearSubtitleCuesRuntime, toggleSubtitleOverlayWindow } from '../runtime/audio-runtime';
+import { desktopApiV2 } from '../runtime/desktop-api-v2';
 import { isTauriRuntime } from '../runtime/tauri-runtime';
 import { useAppStore } from '../stores/app-store';
 import OverlayContextMenu from './overlay/OverlayContextMenu';
@@ -69,7 +69,7 @@ function SubtitleOverlayPage() {
     setLockedReveal({ interactive: false, visible: false });
     updateSubtitleDraft({ overlayLocked: !overlayLocked });
     if (overlayLocked && isTauriRuntime()) {
-      void invoke('unlock_subtitle_overlay').catch((error) => {
+      void desktopApiV2.overlay.unlock().catch((error) => {
         pushRuntimeNotification({
           id: `subtitle-overlay-unlock-failed-${Date.now()}`,
           level: 'error',

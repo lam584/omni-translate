@@ -53,15 +53,11 @@ vi.mock('../../runtime/diagnostics-runtime', () => ({
   getRecentDiagnosticsLogsRuntime: (...args: unknown[]) => mocks.recentLogs(...args),
 }));
 
-vi.mock('../../runtime/desktop-api-context', () => ({
-  useDesktopApiV2: () => ({
-    bridge: {
-      refresh: mocks.refreshBridge,
-      install: mocks.installBridge,
-      repair: mocks.repairBridge,
-      start: mocks.startBridge,
-    },
-  }),
+vi.mock('../../runtime/bridge-runtime', () => ({
+  refreshBridgeRuntime: (...args: unknown[]) => mocks.refreshBridge(...args),
+  installDriverRuntime: (...args: unknown[]) => mocks.installBridge(...args),
+  repairDriverRuntime: (...args: unknown[]) => mocks.repairBridge(...args),
+  startBridgeServiceRuntime: (...args: unknown[]) => mocks.startBridge(...args),
 }));
 
 vi.mock('../../utils/scene-readiness', async (importOriginal) => {

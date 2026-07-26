@@ -1,9 +1,11 @@
-import { invoke } from '@tauri-apps/api/core';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { DiagnosticsExportScope } from '../schema/config';
 import type { DiagnosticLogEntryRuntime, DiagnosticsExportArtifact, RuntimeSnapshot } from '../schema/runtime-core';
 import { desktopApiV2 } from './desktop-api-v2';
+import { createLogger } from './logger';
 import { isTauriRuntime } from './tauri-runtime';
+
+const runtimeLogger = createLogger('runtime');
 
 function withDiagnosticsPatch(patch: Partial<RuntimeSnapshot['diagnostics']>): RuntimeSnapshot {
   return {
@@ -59,7 +61,7 @@ export async function exportDiagnosticsBundleRuntime(
   }
 
   const artifact = await desktopApiV2.diagnostics.export(scope) as DiagnosticsExportArtifact;
-  const snapshot = await invoke<RuntimeSnapshot>('get_runtime_snapshot');
+  const snapshot = await desktopApiV2.configuration.runtimeSnapshot();
   return { artifact, snapshot };
 }
 
@@ -74,36 +76,49 @@ export async function getRecentDiagnosticsLogsRuntime(): Promise<DiagnosticLogEn
   }
 
   try {
-    const snapshot = await invoke<{ recentLogs?: DiagnosticLogEntryRuntime[] }>('get_diagnostics_snapshot');
+    const snapshot = await desktopApiV2.diagnostics.snapshot();
     return snapshot.recentLogs ?? [];
   } catch (error) {
-    console.warn('[diagnostics] get_diagnostics_snapshot failed:', error);
+    runtimeLogger.warn(
+      'get_diagnostics_snapshot failed',
+      error instanceof Error ? error.message : String(error),
+    );
     return [];
   }
 }
 
+const loggersByCategory = new Map<string, ReturnType<typeof createLogger>>();
+
+function loggerFor(category: string) {
+  let logger = loggersByCategory.get(category);
+  if (!logger) {
+    logger = createLogger(category);
+    loggersByCategory.set(category, logger);
+  }
+  return logger;
+}
+
+/**
+ * @deprecated Compatibility adapter over `createLogger(category)`. Entries now
+ * flow through the unified frontend logger (console mirror + bounded ring +
+ * batched forwarding with retry) instead of one IPC call per line. Prefer
+ * holding a `createLogger(category)` instance at new call sites.
+ */
 export function appendFrontendDiagnosticsLog(
   category: string,
   level: 'debug' | 'info' | 'warning' | 'error',
   summary: string,
   detail?: string,
 ): Promise<void> {
-  if (!isTauriRuntime()) {
-    const prefix = `[${level.toUpperCase()}] [${category}]`;
-    if (detail) {
-      console.log(`${prefix} ${summary}\n${detail}`);
-    } else {
-      console.log(`${prefix} ${summary}`);
-    }
-    return Promise.resolve();
+  const logger = loggerFor(category);
+  if (level === 'error') {
+    logger.error(summary, detail);
+  } else if (level === 'warning') {
+    logger.warn(summary, detail);
+  } else if (level === 'info') {
+    logger.info(summary, detail);
+  } else {
+    logger.debug(summary, detail);
   }
-
-  return invoke<void>('append_frontend_diagnostics_log', {
-    category,
-    level,
-    summary,
-    detail: detail ?? null,
-  }).catch((err) => {
-    console.warn('[diagnostics] append_frontend_diagnostics_log failed:', err);
-  });
+  return Promise.resolve();
 }

@@ -21,6 +21,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 }));
 
 import { bootstrapDesktopRuntimeBridge, CONFIG_DRAFT_SYNC_EVENT, desktopRuntimeTestHelpers, scheduleCapturePrewarmAfterStartup } from './desktop-runtime';
+import { loggerTestHelpers } from './logger';
 
 function resetStore() {
   useAppStore.setState((state) => ({
@@ -48,7 +49,7 @@ function installHappyInvoke(snapshot = structuredClone(runtimeSnapshotMock)) {
       return 'pong storage_status=ready elapsed_ms=0';
     }
 
-    if (command === 'append_frontend_diagnostics_log') {
+    if (command.startsWith('append_frontend_diagnostics_log')) {
       return undefined;
     }
 
@@ -78,7 +79,9 @@ function installHappyInvoke(snapshot = structuredClone(runtimeSnapshotMock)) {
 
 /** Filter out diagnostic log forwarding calls that are fire-and-forget noise. */
 function invokeCommandCalls(): string[] {
-  return invokeMock.mock.calls.map((call) => call[0]).filter((c) => c !== 'append_frontend_diagnostics_log');
+  return invokeMock.mock.calls
+    .map((call) => call[0])
+    .filter((c) => !String(c).startsWith('append_frontend_diagnostics_log'));
 }
 
 describe('bootstrapDesktopRuntimeBridge', () => {
@@ -87,6 +90,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
     invokeMock.mockReset();
     emitMock.mockReset().mockResolvedValue(undefined);
     listenMock.mockReset().mockResolvedValue(() => {});
+    loggerTestHelpers.reset();
     Reflect.deleteProperty(globalThis, 'isTauri');
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
     window.localStorage.clear();
@@ -122,7 +126,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
-      if (command === 'append_frontend_diagnostics_log') {
+      if (command.startsWith('append_frontend_diagnostics_log')) {
         return undefined;
       }
 
@@ -248,7 +252,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return liveSnapshot;
       }
 
-      if (command === 'append_frontend_diagnostics_log') {
+      if (command.startsWith('append_frontend_diagnostics_log')) {
         return undefined;
       }
 
@@ -325,7 +329,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=preview elapsed_ms=0';
       }
 
-      if (command === 'append_frontend_diagnostics_log') {
+      if (command.startsWith('append_frontend_diagnostics_log')) {
         return undefined;
       }
 
@@ -386,7 +390,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
-      if (command === 'append_frontend_diagnostics_log') {
+      if (command.startsWith('append_frontend_diagnostics_log')) {
         return undefined;
       }
 
@@ -452,7 +456,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
-      if (command === 'append_frontend_diagnostics_log') {
+      if (command.startsWith('append_frontend_diagnostics_log')) {
         return undefined;
       }
 
@@ -520,7 +524,7 @@ describe('bootstrapDesktopRuntimeBridge', () => {
         return 'pong storage_status=ready elapsed_ms=0';
       }
 
-      if (command === 'append_frontend_diagnostics_log') {
+      if (command.startsWith('append_frontend_diagnostics_log')) {
         return undefined;
       }
 
@@ -997,8 +1001,7 @@ describe('desktop runtime helpers', () => {
 
   it('times out invokes and creates snapshots for unknown errors', async () => {
     vi.useFakeTimers();
-    invokeMock.mockImplementation(() => new Promise(() => undefined));
-    const rejection = desktopRuntimeTestHelpers.invokeWithTimeout('never_returns', 50).catch((error) => error);
+    const rejection = desktopRuntimeTestHelpers.invokeWithTimeout(() => new Promise(() => undefined), 'never_returns', 50).catch((error) => error);
     await vi.advanceTimersByTimeAsync(50);
     await expect(rejection).resolves.toMatchObject({ message: expect.stringContaining("invoke 'never_returns' 超时") });
     expect(desktopRuntimeTestHelpers.createRuntimeErrorSnapshot('unknown').notifications[0]?.message).toContain('未知错误');
@@ -1006,9 +1009,8 @@ describe('desktop runtime helpers', () => {
 
   it('resolves and rejects invoke helpers without waiting for their timeout', async () => {
     vi.useFakeTimers();
-    invokeMock.mockResolvedValueOnce('ok').mockRejectedValueOnce(new Error('invoke failed'));
-    await expect(desktopRuntimeTestHelpers.invokeWithTimeout('resolve_now', 50)).resolves.toBe('ok');
-    await expect(desktopRuntimeTestHelpers.invokeWithTimeout('reject_now', 50)).rejects.toThrow('invoke failed');
+    await expect(desktopRuntimeTestHelpers.invokeWithTimeout(() => Promise.resolve('ok'), 'resolve_now', 50)).resolves.toBe('ok');
+    await expect(desktopRuntimeTestHelpers.invokeWithTimeout(() => Promise.reject(new Error('invoke failed')), 'reject_now', 50)).rejects.toThrow('invoke failed');
   });
 });
 
@@ -1016,6 +1018,7 @@ describe('scheduleCapturePrewarmAfterStartup', () => {
   beforeEach(() => {
     resetStore();
     invokeMock.mockReset();
+    loggerTestHelpers.reset();
   });
 
   afterEach(() => {
@@ -1060,6 +1063,7 @@ describe('capture warm signature re-warm on device drift', () => {
     invokeMock.mockReset();
     emitMock.mockReset().mockResolvedValue(undefined);
     listenMock.mockReset().mockResolvedValue(() => {});
+    loggerTestHelpers.reset();
     Reflect.deleteProperty(globalThis, 'isTauri');
     Reflect.deleteProperty(window, '__TAURI_INTERNALS__');
     window.localStorage.clear();

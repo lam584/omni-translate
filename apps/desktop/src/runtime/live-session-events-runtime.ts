@@ -1,4 +1,4 @@
-import { invoke } from '@tauri-apps/api/core';
+import { desktopApiV2 } from './desktop-api-v2';
 import { isTauriRuntime } from './tauri-runtime';
 
 export type LiveSessionAsrDelta = {
@@ -68,7 +68,7 @@ export async function getLiveSessionEventsRuntime(): Promise<LiveSessionEvents> 
     return { ...EMPTY_LIVE_SESSION_EVENTS };
   }
 
-  const json = await invoke<string>('get_live_session_events');
+  const json = await desktopApiV2.diagnostics.liveSessionEventsRaw();
   const parsed = JSON.parse(json) as Partial<LiveSessionEvents>;
   return {
     ...EMPTY_LIVE_SESSION_EVENTS,

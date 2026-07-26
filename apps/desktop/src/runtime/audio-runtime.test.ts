@@ -406,8 +406,9 @@ describe('audio runtime', () => {
     await Promise.resolve();
 
     expect(consoleSpy).toHaveBeenCalledWith(
+      '[omni][audio]',
       expect.stringContaining('启动语音播报 timeout recovery failed'),
-      expect.any(Error),
+      expect.any(String),
     );
     consoleSpy.mockRestore();
     vi.useRealTimers();

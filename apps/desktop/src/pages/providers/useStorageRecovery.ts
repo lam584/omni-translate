@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import { useDesktopApiV2 } from '../../runtime/desktop-api-context';
+import { invokeWithTimeoutCore } from '../../runtime/invoke-with-timeout';
 import { isTauriRuntime } from '../../runtime/tauri-runtime';
 
 const POLL_INTERVAL_MS = 2_000;
 const MAX_POLL_ATTEMPTS = 8;
+const RECOVERY_INVOKE_TIMEOUT_MS = 5_000;
 
 type StorageRecoveryOptions = {
   runtimeStatus: RuntimeSnapshot['storage']['status'];
@@ -13,21 +15,11 @@ type StorageRecoveryOptions = {
 };
 
 async function invokeWithTimeout<T>(operation: () => Promise<T>, name: string): Promise<T> {
-  return new Promise((resolve, reject) => {
-    const timeoutId = window.setTimeout(
-      () => reject(new Error(`${name} timed out after 5000ms`)),
-      5_000,
-    );
-    operation()
-      .then((result) => {
-        window.clearTimeout(timeoutId);
-        resolve(result);
-      })
-      .catch((error) => {
-        window.clearTimeout(timeoutId);
-        reject(error);
-      });
-  });
+  return invokeWithTimeoutCore(
+    operation,
+    RECOVERY_INVOKE_TIMEOUT_MS,
+    () => new Error(`${name} timed out after 5000ms`),
+  );
 }
 
 export const storageRecoveryHelpers = { invokeWithTimeout };

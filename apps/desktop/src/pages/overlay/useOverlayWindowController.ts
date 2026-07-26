@@ -1,7 +1,7 @@
 import { useCallback, type MutableRefObject } from 'react';
-import { invoke } from '@tauri-apps/api/core';
 
 import { useDesktopApiV2 } from '../../runtime/desktop-api-context';
+import { desktopApiV2 } from '../../runtime/desktop-api-v2';
 import { isTauriRuntime } from '../../runtime/tauri-runtime';
 
 type OverlayPosition = { x: number; y: number };
@@ -53,16 +53,12 @@ export function useOverlayWindowController({
     hotspotInteractive = false,
   ) => {
     if (isTauriRuntime()) {
-      // Keep this on the direct native command. The overlay is a separately
-      // bootstrapped renderer and can render before the V2 desktop service
-      // bridge has hydrated; routing this through that bridge left the real
-      // window in its initial interactive state even though the config was
-      // already locked.
-      await invoke('sync_subtitle_overlay_window_state', {
-        locked,
-        rounded,
-        hotspotInteractive,
-      });
+      // Keep this on the desktopApiV2.overlay surface, which issues the direct
+      // native command. The overlay is a separately bootstrapped renderer and
+      // can render before the V2 desktop service bridge has hydrated; routing
+      // this through that bridge (session_v2) left the real window in its
+      // initial interactive state even though the config was already locked.
+      await desktopApiV2.overlay.sync(locked, rounded, hotspotInteractive);
     }
   }, [overlayLocked]);
 

@@ -1,9 +1,11 @@
-import { invoke } from '@tauri-apps/api/core';
 import i18n from '../i18n/config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import type { AppConfigDraft } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
+import { desktopApiV2 } from './desktop-api-v2';
+import { invokeWithTimeoutCore } from './invoke-with-timeout';
+import { createLogger } from './logger';
 import { isTauriRuntime } from './tauri-runtime';
 
 const BRIDGE_REFRESH_TIMEOUT_MS = 120000;
@@ -11,79 +13,23 @@ const BRIDGE_START_TIMEOUT_MS = 20000;
 const BRIDGE_INSTALL_TIMEOUT_MS = 120000;
 const BRIDGE_REPAIR_TIMEOUT_MS = 120000;
 const BRIDGE_UNINSTALL_TIMEOUT_MS = 60000;
-const BRIDGE_TRACE_LIMIT = 80;
-const BRIDGE_TRACE_STORAGE_KEY = 'omni.bridgeRuntimeTrace';
 
-type BridgeRuntimeTrace = {
-  category: 'bridge';
-  level: 'info' | 'warning' | 'error';
-  summary: string;
-  detail?: string;
-  emittedAt: string;
-};
+const bridgeLogger = createLogger('bridge');
 
-declare global {
-  interface Window {
-    __OMNI_BRIDGE_RUNTIME_TRACE__?: BridgeRuntimeTrace[];
-  }
-}
-
-function readBridgeTrace() {
-  if (typeof window === 'undefined') {
-    return [] as BridgeRuntimeTrace[];
-  }
-
-  if (Array.isArray(window.__OMNI_BRIDGE_RUNTIME_TRACE__)) {
-    return window.__OMNI_BRIDGE_RUNTIME_TRACE__;
-  }
-
-  try {
-    const raw = window.localStorage.getItem(BRIDGE_TRACE_STORAGE_KEY);
-    if (!raw) {
-      return [] as BridgeRuntimeTrace[];
-    }
-
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as BridgeRuntimeTrace[]) : ([] as BridgeRuntimeTrace[]);
-  } catch {
-    return [] as BridgeRuntimeTrace[];
-  }
-}
-
-function appendBridgeTrace(level: BridgeRuntimeTrace['level'], summary: string, detail?: string) {
-  if (typeof window === 'undefined') {
-    return;
-  }
-
-  const entry: BridgeRuntimeTrace = {
-    category: 'bridge',
-    level,
-    summary,
-    detail,
-    emittedAt: new Date().toISOString(),
-  };
-
-  const nextTrace = [entry, ...readBridgeTrace()].slice(0, BRIDGE_TRACE_LIMIT);
-  window.__OMNI_BRIDGE_RUNTIME_TRACE__ = nextTrace;
-
-  try {
-    window.localStorage.setItem(BRIDGE_TRACE_STORAGE_KEY, JSON.stringify(nextTrace));
-  } catch {
-    // Diagnostics buffering must never block the main workflow.
-  }
-
-  const message = detail ? `${summary} ${detail}` : summary;
+/**
+ * Bridge lifecycle trace, routed through the unified frontend logger (console
+ * mirror + bounded ring + batched forwarding). The former localStorage
+ * (`omni.bridgeRuntimeTrace`) and `window.__OMNI_BRIDGE_RUNTIME_TRACE__`
+ * write-only sinks were removed: nothing in production ever read them.
+ */
+function appendBridgeTrace(level: 'info' | 'warning' | 'error', summary: string, detail?: string) {
   if (level === 'error') {
-    console.error('[omni][bridge-runtime]', message);
-    return;
+    bridgeLogger.error(summary, detail);
+  } else if (level === 'warning') {
+    bridgeLogger.warn(summary, detail);
+  } else {
+    bridgeLogger.info(summary, detail);
   }
-
-  if (level === 'warning') {
-    console.warn('[omni][bridge-runtime]', message);
-    return;
-  }
-
-  console.info('[omni][bridge-runtime]', message);
 }
 
 function createBridgeRuntimeTimeoutError(actionLabel: string, timeoutMs: number, operation: string) {
@@ -100,51 +46,45 @@ function createBridgeRuntimeTimeoutError(actionLabel: string, timeoutMs: number,
   return error;
 }
 
+/**
+ * Thunk-shaped timeout wrapper (same paradigm as audio-runtime's
+ * `invokeAudioWithTimeout`): the race mechanics — single-settle gate, timer
+ * cleanup, late-settle unhandled-rejection protection — live in
+ * `invokeWithTimeoutCore`. This module keeps only what is bridge-specific:
+ * the four lifecycle trace probes and the decorated timeout error. Every
+ * production `operation` routes through `desktopApiV2.bridge`, i.e. the
+ * native `bridge_v2` command, which is why the trace detail pins
+ * `command=bridge_v2`.
+ */
 async function invokeBridgeWithTimeout<T>(
-  command: string,
-  payload: Record<string, unknown> | undefined,
+  operation: () => Promise<T>,
   actionLabel: string,
   timeoutMs: number,
-  operation: string,
+  operationName: string,
 ): Promise<T> {
   const startedAt = Date.now();
-  appendBridgeTrace('info', i18n.t('runtime.bridge.traceInvokeStart'), `command=${command} operation=${operation} timeoutMs=${timeoutMs}`);
+  appendBridgeTrace('info', i18n.t('runtime.bridge.traceInvokeStart'), `command=bridge_v2 operation=${operationName} timeoutMs=${timeoutMs}`);
 
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const timer = window.setTimeout(() => {
-      if (settled) {
-        return;
-      }
-
-      settled = true;
-      appendBridgeTrace('error', i18n.t('runtime.bridge.traceInvokeTimeout'), `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
-      reject(createBridgeRuntimeTimeoutError(actionLabel, timeoutMs, operation));
-    }, timeoutMs);
-
-    invoke<T>(command, payload)
-      .then((result) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        window.clearTimeout(timer);
-        appendBridgeTrace('info', i18n.t('runtime.bridge.traceInvokeResult'), `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`);
-        resolve(result);
-      })
-      .catch((error) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        window.clearTimeout(timer);
+  let timeoutError: Error | undefined;
+  return invokeWithTimeoutCore(operation, timeoutMs, () => {
+    appendBridgeTrace('error', i18n.t('runtime.bridge.traceInvokeTimeout'), `command=bridge_v2 operation=${operationName} elapsedMs=${Date.now() - startedAt}`);
+    timeoutError = createBridgeRuntimeTimeoutError(actionLabel, timeoutMs, operationName);
+    return timeoutError;
+  }).then(
+    (result) => {
+      appendBridgeTrace('info', i18n.t('runtime.bridge.traceInvokeResult'), `command=bridge_v2 operation=${operationName} elapsedMs=${Date.now() - startedAt}`);
+      return result;
+    },
+    (error: unknown) => {
+      // The timeout path already traced traceInvokeTimeout inside the error
+      // factory above; only genuine operation failures trace traceInvokeFailed.
+      if (timeoutError === undefined || error !== timeoutError) {
         const detail = error instanceof Error ? error.message : String(error);
-        appendBridgeTrace('error', i18n.t('runtime.bridge.traceInvokeFailed'), `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt} error=${detail}`);
-        reject(error);
-      });
-  });
+        appendBridgeTrace('error', i18n.t('runtime.bridge.traceInvokeFailed'), `command=bridge_v2 operation=${operationName} elapsedMs=${Date.now() - startedAt} error=${detail}`);
+      }
+      throw error;
+    },
+  );
 }
 
 function withBridgePatch(patch: Partial<RuntimeSnapshot['bridge']>): RuntimeSnapshot {
@@ -162,7 +102,7 @@ export async function refreshBridgeRuntime(): Promise<RuntimeSnapshot> {
     return runtimeSnapshotMock;
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'refresh' } }, i18n.t('runtime.bridge.actionRefresh'), BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh').then((result) => result.data);
+  return invokeBridgeWithTimeout(() => desktopApiV2.bridge.refresh(), i18n.t('runtime.bridge.actionRefresh'), BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh');
 }
 
 export async function startBridgeServiceRuntime(config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -182,7 +122,7 @@ export async function startBridgeServiceRuntime(config: AppConfigDraft): Promise
     });
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'start', config } }, i18n.t('runtime.bridge.actionStart'), BRIDGE_START_TIMEOUT_MS, 'bridge-start').then((result) => result.data);
+  return invokeBridgeWithTimeout(() => desktopApiV2.bridge.start(config), i18n.t('runtime.bridge.actionStart'), BRIDGE_START_TIMEOUT_MS, 'bridge-start');
 }
 
 export async function stopBridgeServiceRuntime(): Promise<RuntimeSnapshot> {
@@ -195,7 +135,7 @@ export async function stopBridgeServiceRuntime(): Promise<RuntimeSnapshot> {
     });
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'stop' } }, i18n.t('runtime.bridge.actionStop'), BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-stop').then((result) => result.data);
+  return invokeBridgeWithTimeout(() => desktopApiV2.bridge.stop(), i18n.t('runtime.bridge.actionStop'), BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-stop');
 }
 
 export async function installDriverRuntime(config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -215,7 +155,7 @@ export async function installDriverRuntime(config: AppConfigDraft): Promise<Runt
     });
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'install', config } }, i18n.t('runtime.bridge.actionInstall'), BRIDGE_INSTALL_TIMEOUT_MS, 'bridge-install').then((result) => result.data);
+  return invokeBridgeWithTimeout(() => desktopApiV2.bridge.install(config), i18n.t('runtime.bridge.actionInstall'), BRIDGE_INSTALL_TIMEOUT_MS, 'bridge-install');
 }
 
 export async function uninstallDriverRuntime(): Promise<RuntimeSnapshot> {
@@ -233,7 +173,7 @@ export async function uninstallDriverRuntime(): Promise<RuntimeSnapshot> {
     });
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'uninstall' } }, i18n.t('runtime.bridge.actionUninstall'), BRIDGE_UNINSTALL_TIMEOUT_MS, 'bridge-uninstall').then((result) => result.data);
+  return invokeBridgeWithTimeout(() => desktopApiV2.bridge.uninstall(), i18n.t('runtime.bridge.actionUninstall'), BRIDGE_UNINSTALL_TIMEOUT_MS, 'bridge-uninstall');
 }
 
 export async function repairDriverRuntime(action: DriverRepairAction, config: AppConfigDraft): Promise<RuntimeSnapshot> {
@@ -241,11 +181,10 @@ export async function repairDriverRuntime(action: DriverRepairAction, config: Ap
     return action === 'restart-bridge' ? startBridgeServiceRuntime(config) : installDriverRuntime(config);
   }
 
-  return invokeBridgeWithTimeout<{ data: RuntimeSnapshot }>('bridge_v2', { command: { action: 'repair', repairAction: action, config } }, i18n.t('runtime.bridge.actionRepair'), BRIDGE_REPAIR_TIMEOUT_MS, 'bridge-repair').then((result) => result.data);
+  return invokeBridgeWithTimeout(() => desktopApiV2.bridge.repair(action, config), i18n.t('runtime.bridge.actionRepair'), BRIDGE_REPAIR_TIMEOUT_MS, 'bridge-repair');
 }
 
 export const bridgeRuntimeTestHelpers = {
-  readBridgeTrace,
   appendBridgeTrace,
   createBridgeRuntimeTimeoutError,
   invokeBridgeWithTimeout,

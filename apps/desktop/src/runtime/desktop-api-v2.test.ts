@@ -95,6 +95,7 @@ describe('DesktopApiV2 configuration client', () => {
     await api.session.stopTranslation();
     await api.session.syncOverlayRegion();
     await api.session.syncOverlayWindowState(true, false, true);
+    await api.session.startAudioRoute('inbound', config);
     await api.bridge.snapshot();
     await api.bridge.refresh();
     await api.bridge.start(config);
@@ -102,10 +103,14 @@ describe('DesktopApiV2 configuration client', () => {
     await api.bridge.install(config);
     await api.bridge.uninstall();
     await api.bridge.repair('restart-bridge', config);
+    await api.legacyBridge.refresh();
+    await api.legacyBridge.start(config);
     await api.diagnostics.selfCheck();
     await api.diagnostics.overlaySelfCheck();
     await api.diagnostics.export('summary');
     await api.diagnostics.liveSessionEvents();
+    await api.diagnostics.snapshot();
+    await api.diagnostics.liveSessionEventsRaw();
     await api.configuration.load();
     await api.configuration.save(config);
     await api.configuration.reset();
@@ -119,7 +124,19 @@ describe('DesktopApiV2 configuration client', () => {
     await api.persistence.loadDraft();
     await api.persistence.deleteDraft();
     await api.persistence.availableCommands();
-    await api.runtime.invoke('custom_command', { value: 1 });
+    await api.runtime.debugIpcPing();
+    await api.runtime.bootstrapAudio();
+    await api.overlay.sync(true, false, true);
+    await api.overlay.unlock();
+    await api.overlay.toggle();
+    await api.overlay.show();
+    const benchmarkPayload = {
+      model: 'model-test',
+      apiKey: 'api-key-test',
+      mp3Path: 'C:/audio/sample.mp3',
+      runId: 'benchmark-run-1',
+    };
+    await api.benchmark.runModelBenchmark(benchmarkPayload);
     await api.credentials.status('secret-ref');
     await api.credentials.read('secret-ref');
     await api.credentials.save('secret-ref', 'secret-value');
@@ -136,7 +153,22 @@ describe('DesktopApiV2 configuration client', () => {
       'upsert_secret_ref',
       { reference: 'secret-ref', secret: 'secret-value' },
     ]);
-    expect(calls).toHaveLength(43);
+    expect(calls).toContainEqual(['start_audio_route', { direction: 'inbound', config }]);
+    expect(calls).toContainEqual(['refresh_bridge_runtime', undefined]);
+    expect(calls).toContainEqual(['start_bridge_service', { config }]);
+    expect(calls).toContainEqual(['get_diagnostics_snapshot', undefined]);
+    expect(calls).toContainEqual(['get_live_session_events', undefined]);
+    expect(calls).toContainEqual(['debug_ipc_ping', undefined]);
+    expect(calls).toContainEqual(['bootstrap_audio', undefined]);
+    expect(calls).toContainEqual([
+      'sync_subtitle_overlay_window_state',
+      { locked: true, rounded: false, hotspotInteractive: true },
+    ]);
+    expect(calls).toContainEqual(['unlock_subtitle_overlay', undefined]);
+    expect(calls).toContainEqual(['toggle_subtitle_overlay', undefined]);
+    expect(calls).toContainEqual(['show_subtitle_overlay', undefined]);
+    expect(calls).toContainEqual(['run_model_benchmark', benchmarkPayload]);
+    expect(calls).toHaveLength(54);
   });
 
   it('adapts native window coordinates, sizing and popup menus', async () => {
@@ -173,7 +205,7 @@ describe('DesktopApiV2 configuration client', () => {
     let maxInFlight = 0;
     const calls: number[] = [];
     const invoke: InvokeFn = async <T>(_command: string, args?: Record<string, unknown>) => {
-      const requestId = Number((args?.command as { requestId?: number } | undefined)?.requestId ?? calls.length);
+      const requestId = Number(String(args?.reference ?? calls.length).replace('stress-', ''));
       calls.push(requestId);
       inFlight += 1;
       maxInFlight = Math.max(maxInFlight, inFlight);
@@ -185,7 +217,7 @@ describe('DesktopApiV2 configuration client', () => {
     const api = new DesktopApiV2(invoke);
 
     const results = await Promise.allSettled(Array.from({ length: 300 }, (_, requestId) =>
-      api.runtime.invoke<{ requestId: number }>('stress_ipc', { command: { requestId } })));
+      api.credentials.read(`stress-${requestId}`) as unknown as Promise<{ requestId: number }>));
 
     expect(maxInFlight).toBe(300);
     expect(calls).toHaveLength(300);

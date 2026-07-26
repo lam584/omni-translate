@@ -1,8 +1,11 @@
-import { invoke } from '@tauri-apps/api/core';
+// Event subscription stays on the direct Tauri channel: the desktopApiV2
+// capability surface covers native commands only, not event listeners.
 import { listen } from '@tauri-apps/api/event';
 import i18n from '../i18n/config';
 import type { RealtimeAudioMode } from '../schema/config';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
+import { desktopApiV2 } from './desktop-api-v2';
+import { invokeWithTimeoutCore } from './invoke-with-timeout';
 import { isTauriRuntime } from './tauri-runtime';
 
 export type BenchmarkOutputDelta = {
@@ -117,37 +120,34 @@ export async function runModelBenchmark(
     }
   });
 
-  return new Promise<BenchmarkReport>((resolve, reject) => {
-    const timeoutId = setTimeout(() => {
-      reject(new Error(i18n.t('runtime.benchmark.timeout', { seconds: BENCHMARK_INVOKE_TIMEOUT_MS / 1000 })));
-    }, BENCHMARK_INVOKE_TIMEOUT_MS);
-
-    invoke<string>('run_model_benchmark', {
-      model,
-      apiKey,
-      mp3Path,
-      runId,
-      realtimeAudioMode: options.realtimeAudioMode,
-      interactionCapabilities: options.interactionCapabilities,
-      providerKind: options.providerKind,
-      baseUrl: options.baseUrl,
-      authHeaderName: options.authHeaderName,
-      authScheme: options.authScheme,
-    })
-      .then((jsonString) => {
-        clearTimeout(timeoutId);
-        try {
-          resolve(JSON.parse(jsonString) as BenchmarkReport);
-        } catch (parseError) {
-          reject(new Error(i18n.t('runtime.benchmark.parseFailed', { error: parseError instanceof Error ? parseError.message : String(parseError) })));
-        }
-      })
-      .catch((error) => {
-        clearTimeout(timeoutId);
-        reject(error);
-      })
-      .finally(() => {
-        unlisten();
+  return invokeWithTimeoutCore(
+    async () => {
+      const jsonString = await desktopApiV2.benchmark.runModelBenchmark({
+        model,
+        apiKey,
+        mp3Path,
+        runId,
+        realtimeAudioMode: options.realtimeAudioMode,
+        interactionCapabilities: options.interactionCapabilities,
+        providerKind: options.providerKind,
+        baseUrl: options.baseUrl,
+        authHeaderName: options.authHeaderName,
+        authScheme: options.authScheme,
       });
-  });
+      try {
+        return JSON.parse(jsonString) as BenchmarkReport;
+      } catch (parseError) {
+        throw new Error(
+          i18n.t('runtime.benchmark.parseFailed', { error: parseError instanceof Error ? parseError.message : String(parseError) }),
+          { cause: parseError },
+        );
+      }
+    },
+    BENCHMARK_INVOKE_TIMEOUT_MS,
+    () => new Error(i18n.t('runtime.benchmark.timeout', { seconds: BENCHMARK_INVOKE_TIMEOUT_MS / 1000 })),
+    // Same lifetime as the former `.finally(() => unlisten())`: the progress
+    // listener is released when the native command settles (either outcome),
+    // even if the caller already saw the timeout rejection.
+    { onSettle: () => unlisten() },
+  );
 }

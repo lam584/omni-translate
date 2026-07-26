@@ -1,4 +1,3 @@
-import { invoke } from '@tauri-apps/api/core';
 import i18n from '../i18n/config';
 import { defaultProviderProbeProfile } from '../mocks/provider-probes';
 import type { ModelPreset } from '../schema/provider-template';
@@ -11,27 +10,13 @@ import type {
   ProviderProbeProfileRuntime,
   ProviderSmokeResult,
 } from '../schema/provider-runtime';
+import { desktopApiV2 } from './desktop-api-v2';
+import { invokeWithTimeoutCore } from './invoke-with-timeout';
+import { createLogger } from './logger';
 import { isTauriRuntime } from './tauri-runtime';
 
 const MIN_PROVIDER_RUNTIME_TIMEOUT_MS = 1000;
 const SAVE_PROVIDER_SECRET_TIMEOUT_MS = 7000;
-const FRONTEND_DIAGNOSTICS_TRACE_LIMIT = 80;
-const FRONTEND_DIAGNOSTICS_STORAGE_KEY = 'omni.frontendDiagnosticsTrace';
-
-type FrontendDiagnosticsTrace = {
-  scope: 'provider-runtime';
-  category: string;
-  level: string;
-  summary: string;
-  detail?: string;
-  emittedAt: string;
-};
-
-declare global {
-  interface Window {
-    __OMNI_FRONTEND_DIAGNOSTICS__?: FrontendDiagnosticsTrace[];
-  }
-}
 
 function resolveRuntimeTimeoutMs(timeoutMs: number) {
   return Math.max(timeoutMs, MIN_PROVIDER_RUNTIME_TIMEOUT_MS);
@@ -51,63 +36,29 @@ function createProviderRuntimeTimeoutError(actionLabel: string, timeoutMs: numbe
   return error;
 }
 
-function readFrontendDiagnosticsTrace() {
-  if (typeof window === 'undefined') {
-    return [] as FrontendDiagnosticsTrace[];
-  }
+const providerTraceLoggers = new Map<string, ReturnType<typeof createLogger>>();
 
-  if (Array.isArray(window.__OMNI_FRONTEND_DIAGNOSTICS__)) {
-    return window.__OMNI_FRONTEND_DIAGNOSTICS__;
-  }
-
-  try {
-    const raw = window.localStorage.getItem(FRONTEND_DIAGNOSTICS_STORAGE_KEY);
-    if (!raw) {
-      return [] as FrontendDiagnosticsTrace[];
-    }
-
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as FrontendDiagnosticsTrace[]) : ([] as FrontendDiagnosticsTrace[]);
-  } catch {
-    return [] as FrontendDiagnosticsTrace[];
-  }
-}
-
+/**
+ * Provider/credential runtime trace, routed through the unified frontend
+ * logger (console mirror + bounded ring + batched forwarding). The former
+ * localStorage (`omni.frontendDiagnosticsTrace`) and
+ * `window.__OMNI_FRONTEND_DIAGNOSTICS__` write-only sinks were removed:
+ * nothing in production ever read them.
+ */
 function appendFrontendDiagnosticsTrace(category: string, level: string, summary: string, detail?: string) {
-  if (typeof window === 'undefined') {
-    return;
+  let logger = providerTraceLoggers.get(category);
+  if (!logger) {
+    logger = createLogger(category);
+    providerTraceLoggers.set(category, logger);
   }
 
-  const entry: FrontendDiagnosticsTrace = {
-    scope: 'provider-runtime',
-    category,
-    level,
-    summary,
-    detail,
-    emittedAt: new Date().toISOString(),
-  };
-
-  const nextTrace = [entry, ...readFrontendDiagnosticsTrace()].slice(0, FRONTEND_DIAGNOSTICS_TRACE_LIMIT);
-  window.__OMNI_FRONTEND_DIAGNOSTICS__ = nextTrace;
-
-  try {
-    window.localStorage.setItem(FRONTEND_DIAGNOSTICS_STORAGE_KEY, JSON.stringify(nextTrace));
-  } catch {
-    // Diagnostics buffering must never block the main workflow.
-  }
-
-  const message = detail ? `${summary} ${detail}` : summary;
   if (level === 'error') {
-    console.error('[omni][provider-runtime]', message);
-    return;
+    logger.error(summary, detail);
+  } else if (level === 'warning') {
+    logger.warn(summary, detail);
+  } else {
+    logger.info(summary, detail);
   }
-
-  if (level === 'warning') {
-    console.warn('[omni][provider-runtime]', message);
-    return;
-  }
-
-  console.info('[omni][provider-runtime]', message);
 }
 
 function diagnosticsCategoryForOperation(operation: string) {
@@ -133,80 +84,66 @@ function previewRoutingForVerdict(verdict: ProviderProbeProfileRuntime['verdict'
 }
 
 async function invokeWithTimeout<T>(
-  command: string,
-  payload: Record<string, unknown>,
+  operation: () => Promise<T>,
   actionLabel: string,
   timeoutMs: number | null,
-  operation: string,
+  operationName: string,
   guidance?: string,
 ): Promise<T> {
   const startedAt = Date.now();
-  const category = diagnosticsCategoryForOperation(operation);
+  const category = diagnosticsCategoryForOperation(operationName);
   const effectiveTimeoutMs = timeoutMs === null ? null : resolveRuntimeTimeoutMs(timeoutMs);
 
   appendFrontendDiagnosticsTrace(
     category,
     'info',
     i18n.t('runtime.provider.traceInvokeStart'),
-    `command=${command} operation=${operation} timeoutMs=${effectiveTimeoutMs ?? 'none'} payloadKeys=${Object.keys(payload).join(',')}`,
+    `operation=${operationName} timeoutMs=${effectiveTimeoutMs ?? 'none'}`,
   );
 
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const timeoutId =
-      effectiveTimeoutMs === null
-        ? null
-        : window.setTimeout(() => {
-            if (settled) {
-              return;
-            }
+  // Mirrors the pre-core `settled` gate for traces: once the timeout won the
+  // race, a late settle of the underlying operation must not emit a
+  // result/failure trace.
+  let timedOut = false;
 
-            settled = true;
-            appendFrontendDiagnosticsTrace(
-              category,
-              'error',
-              i18n.t('runtime.provider.traceInvokeTimeout'),
-              `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`,
-            );
-            reject(createProviderRuntimeTimeoutError(actionLabel, effectiveTimeoutMs, operation, guidance));
-          }, effectiveTimeoutMs);
+  const tracedOperation = () =>
+    operation().then(
+      (result) => {
+        if (!timedOut) {
+          appendFrontendDiagnosticsTrace(
+            category,
+            'info',
+            i18n.t('runtime.provider.traceInvokeResult'),
+            `operation=${operationName} elapsedMs=${Date.now() - startedAt}`,
+          );
+        }
+        return result;
+      },
+      (error: unknown) => {
+        if (!timedOut) {
+          const detail = error instanceof Error ? error.message : String(error);
+          appendFrontendDiagnosticsTrace(
+            category,
+            'error',
+            i18n.t('runtime.provider.traceInvokeFailed'),
+            `operation=${operationName} elapsedMs=${Date.now() - startedAt} error=${detail}`,
+          );
+        }
+        throw error;
+      },
+    );
 
-    invoke<T>(command, payload)
-      .then((result) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        if (timeoutId !== null) {
-          window.clearTimeout(timeoutId);
-        }
-        appendFrontendDiagnosticsTrace(
-          category,
-          'info',
-          i18n.t('runtime.provider.traceInvokeResult'),
-          `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt}`,
-        );
-        resolve(result);
-      })
-      .catch((error) => {
-        if (settled) {
-          return;
-        }
-
-        settled = true;
-        if (timeoutId !== null) {
-          window.clearTimeout(timeoutId);
-        }
-        const detail = error instanceof Error ? error.message : String(error);
-        appendFrontendDiagnosticsTrace(
-          category,
-          'error',
-          i18n.t('runtime.provider.traceInvokeFailed'),
-          `command=${command} operation=${operation} elapsedMs=${Date.now() - startedAt} error=${detail}`,
-        );
-        reject(error);
-      });
+  return invokeWithTimeoutCore(tracedOperation, effectiveTimeoutMs, () => {
+    timedOut = true;
+    appendFrontendDiagnosticsTrace(
+      category,
+      'error',
+      i18n.t('runtime.provider.traceInvokeTimeout'),
+      `operation=${operationName} elapsedMs=${Date.now() - startedAt}`,
+    );
+    // The core only calls this factory when a timer was armed, i.e. the
+    // effective timeout is a number; the fallback merely satisfies the type.
+    return createProviderRuntimeTimeoutError(actionLabel, effectiveTimeoutMs ?? MIN_PROVIDER_RUNTIME_TIMEOUT_MS, operationName, guidance);
   });
 }
 
@@ -222,9 +159,8 @@ export async function getProviderSecretStatus(reference: string): Promise<Creden
   appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretStatusStart'), `reference=${reference}`);
 
   try {
-    const result = await invokeWithTimeout<CredentialRefStatus>(
-      'get_secret_ref_status',
-      { reference },
+    const result = await invokeWithTimeout(
+      () => desktopApiV2.credentials.status(reference),
       i18n.t('runtime.provider.actionSecretStatus'),
       null,
       'credential-status',
@@ -257,9 +193,8 @@ export async function saveProviderSecret(reference: string, secret: string): Pro
   appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretSaveStart'), `reference=${reference} secretLength=${secret.length}`);
 
   try {
-    const result = await invokeWithTimeout<CredentialRefStatus>(
-      'upsert_secret_ref',
-      { reference, secret },
+    const result = await invokeWithTimeout(
+      () => desktopApiV2.credentials.save(reference, secret),
       i18n.t('runtime.provider.actionSecretSave'),
       SAVE_PROVIDER_SECRET_TIMEOUT_MS,
       'credential-save',
@@ -293,9 +228,8 @@ export async function readProviderSecret(reference: string): Promise<CredentialS
   appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretReadStart'), `reference=${reference}`);
 
   try {
-    const result = await invokeWithTimeout<CredentialSecretPayload>(
-      'read_secret_ref',
-      { reference },
+    const result = await invokeWithTimeout(
+      () => desktopApiV2.credentials.read(reference),
       i18n.t('runtime.provider.actionSecretRead'),
       null,
       'credential-read',
@@ -339,14 +273,13 @@ export async function runProviderProbe(provider: ProviderDraft): Promise<Provide
     };
   }
 
-  return invokeWithTimeout<{ data: ProviderProbeProfileRuntime }>(
-    'provider_v2',
-    { command: { action: 'probe', provider } },
+  return invokeWithTimeout(
+    () => desktopApiV2.provider.probe(provider),
     i18n.t('runtime.provider.actionProbe'),
     provider.timeoutMs + 3000,
     'provider-probe',
     i18n.t('runtime.provider.guidanceProbe'),
-  ).then((result) => result.data);
+  );
 }
 
 export async function fetchProviderModels(
@@ -365,14 +298,13 @@ export async function fetchProviderModels(
     };
   }
 
-  return invokeWithTimeout<{ data: ProviderModelCatalogRuntime }>(
-    'provider_v2',
-    { command: { action: 'fetchModels', provider } },
+  return invokeWithTimeout(
+    () => desktopApiV2.provider.fetchModels(provider),
     i18n.t('runtime.provider.actionFetchModels'),
     provider.timeoutMs + 3000,
     'provider-models',
     i18n.t('runtime.provider.guidanceFetchModels'),
-  ).then((result) => result.data);
+  );
 }
 
 export async function runProviderSmoke(
@@ -423,22 +355,18 @@ export async function runProviderSmoke(
     };
   }
 
-  return invokeWithTimeout<{ data: ProviderSmokeResult }>(
-    'provider_v2',
-    {
-      command: { action: 'smoke', provider, sourceText, sourceLanguage, targetLanguage },
-    },
+  return invokeWithTimeout(
+    () => desktopApiV2.provider.smoke(provider, sourceText, sourceLanguage, targetLanguage),
     i18n.t('runtime.provider.actionSmoke'),
     provider.timeoutMs + 3000,
     'provider-smoke',
     i18n.t('runtime.provider.guidanceSmoke'),
-  ).then((result) => result.data);
+  );
 }
 
 export const providerRuntimeTestHelpers = {
   resolveRuntimeTimeoutMs,
   createProviderRuntimeTimeoutError,
-  readFrontendDiagnosticsTrace,
   appendFrontendDiagnosticsTrace,
   diagnosticsCategoryForOperation,
   mapPresetToRuntimeModel,

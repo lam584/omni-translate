@@ -24,21 +24,21 @@ import {
   stopBridgeServiceRuntime,
   uninstallDriverRuntime,
 } from './bridge-runtime';
+import { getRecentFrontendLogEntries, loggerTestHelpers } from './logger';
 
 describe('bridge runtime', () => {
   beforeEach(() => {
     vi.useFakeTimers();
     mocks.invoke.mockReset();
     mocks.isTauriRuntime.mockReset().mockReturnValue(false);
-    window.localStorage.clear();
-    Reflect.deleteProperty(window, '__OMNI_BRIDGE_RUNTIME_TRACE__');
+    loggerTestHelpers.reset();
     vi.restoreAllMocks();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
-    Reflect.deleteProperty(window, '__OMNI_BRIDGE_RUNTIME_TRACE__');
+    loggerTestHelpers.reset();
   });
 
   it('provides complete browser preview lifecycle snapshots', async () => {
@@ -79,25 +79,24 @@ describe('bridge runtime', () => {
     ]);
   });
 
-  it('buffers trace variants and tolerates malformed or unavailable storage', () => {
+  it('records trace variants in the logger ring without any storage dependency', () => {
     const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
-    expect(bridgeRuntimeTestHelpers.readBridgeTrace()).toEqual([]);
-    window.localStorage.setItem('omni.bridgeRuntimeTrace', '{bad json');
-    expect(bridgeRuntimeTestHelpers.readBridgeTrace()).toEqual([]);
-    window.localStorage.setItem('omni.bridgeRuntimeTrace', '{}');
-    expect(bridgeRuntimeTestHelpers.readBridgeTrace()).toEqual([]);
-    window.localStorage.setItem('omni.bridgeRuntimeTrace', '[]');
     bridgeRuntimeTestHelpers.appendBridgeTrace('info', 'info');
     bridgeRuntimeTestHelpers.appendBridgeTrace('warning', 'warning', 'detail');
     bridgeRuntimeTestHelpers.appendBridgeTrace('error', 'error', 'detail');
     expect(info).toHaveBeenCalled();
     expect(warning).toHaveBeenCalled();
     expect(error).toHaveBeenCalled();
-    expect(bridgeRuntimeTestHelpers.readBridgeTrace()).toHaveLength(3);
+    const bridgeEntries = getRecentFrontendLogEntries().filter((entry) => entry.category === 'bridge');
+    expect(bridgeEntries).toHaveLength(3);
+    expect(bridgeEntries.map((entry) => entry.level)).toEqual(['info', 'warning', 'error']);
 
+    // The unified logger never touches localStorage (the legacy
+    // omni.bridgeRuntimeTrace persistence was removed), so a broken storage
+    // backend must not affect trace recording.
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('quota');
     });
@@ -105,8 +104,9 @@ describe('bridge runtime', () => {
     setItem.mockRestore();
 
     vi.stubGlobal('window', undefined);
-    expect(bridgeRuntimeTestHelpers.readBridgeTrace()).toEqual([]);
-    expect(() => bridgeRuntimeTestHelpers.appendBridgeTrace('info', 'ignored')).not.toThrow();
+    expect(() => bridgeRuntimeTestHelpers.appendBridgeTrace('info', 'window-free')).not.toThrow();
+    vi.unstubAllGlobals();
+    expect(getRecentFrontendLogEntries().map((entry) => entry.summary)).toContain('window-free');
   });
 
   it('creates timeout metadata and ignores late resolutions and rejections', async () => {
@@ -114,40 +114,40 @@ describe('bridge runtime', () => {
     expect(timeout).toMatchObject({ code: 'timeout', operation: 'start', retriable: true });
     expect(timeout.message).toContain('2 秒');
 
-    let resolveInvoke: ((value: string) => void) | undefined;
-    mocks.invoke.mockImplementationOnce(() => new Promise<string>((resolve) => {
-      resolveInvoke = resolve;
+    let resolveOperation: ((value: string) => void) | undefined;
+    const lateResolveOperation = vi.fn(() => new Promise<string>((resolve) => {
+      resolveOperation = resolve;
     }));
-    const lateResolve = bridgeRuntimeTestHelpers.invokeBridgeWithTimeout('late-resolve', undefined, '迟到', 20, 'late');
+    const lateResolve = bridgeRuntimeTestHelpers.invokeBridgeWithTimeout(lateResolveOperation, '迟到', 20, 'late');
     const lateResolveRejection = lateResolve.catch((error) => error);
     await vi.advanceTimersByTimeAsync(20);
     await expect(lateResolveRejection).resolves.toMatchObject({ code: 'timeout' });
-    resolveInvoke?.('ignored');
+    resolveOperation?.('ignored');
     await Promise.resolve();
 
-    let rejectInvoke: ((reason: unknown) => void) | undefined;
-    mocks.invoke.mockImplementationOnce(() => new Promise<string>((_resolve, reject) => {
-      rejectInvoke = reject;
+    let rejectOperation: ((reason: unknown) => void) | undefined;
+    const lateRejectOperation = vi.fn(() => new Promise<string>((_resolve, reject) => {
+      rejectOperation = reject;
     }));
-    const lateReject = bridgeRuntimeTestHelpers.invokeBridgeWithTimeout('late-reject', undefined, '迟到', 20, 'late');
+    const lateReject = bridgeRuntimeTestHelpers.invokeBridgeWithTimeout(lateRejectOperation, '迟到', 20, 'late');
     const lateRejectRejection = lateReject.catch((error) => error);
     await vi.advanceTimersByTimeAsync(20);
     await expect(lateRejectRejection).resolves.toMatchObject({ code: 'timeout' });
-    rejectInvoke?.('ignored');
+    rejectOperation?.('ignored');
     await Promise.resolve();
   });
 
   it('propagates immediate Error and non-error native failures', async () => {
-    mocks.invoke.mockRejectedValueOnce(new Error('native error'));
-    await expect(bridgeRuntimeTestHelpers.invokeBridgeWithTimeout('error', undefined, '失败', 20, 'error')).rejects.toThrow('native error');
-    mocks.invoke.mockRejectedValueOnce('native string');
-    await expect(bridgeRuntimeTestHelpers.invokeBridgeWithTimeout('string', undefined, '失败', 20, 'error')).rejects.toBe('native string');
+    const errorOperation = vi.fn().mockRejectedValueOnce(new Error('native error'));
+    await expect(bridgeRuntimeTestHelpers.invokeBridgeWithTimeout(errorOperation, '失败', 20, 'error')).rejects.toThrow('native error');
+    const stringOperation = vi.fn().mockRejectedValueOnce('native string');
+    await expect(bridgeRuntimeTestHelpers.invokeBridgeWithTimeout(stringOperation, '失败', 20, 'error')).rejects.toBe('native string');
   });
 
   it('ignores a retained timeout callback after native resolution', async () => {
     vi.spyOn(window, 'clearTimeout').mockImplementation(() => undefined);
-    mocks.invoke.mockResolvedValueOnce('done');
-    await expect(bridgeRuntimeTestHelpers.invokeBridgeWithTimeout('done', undefined, '完成', 20, 'done')).resolves.toBe('done');
+    const doneOperation = vi.fn().mockResolvedValueOnce('done');
+    await expect(bridgeRuntimeTestHelpers.invokeBridgeWithTimeout(doneOperation, '完成', 20, 'done')).resolves.toBe('done');
     await vi.advanceTimersByTimeAsync(20);
   });
 });

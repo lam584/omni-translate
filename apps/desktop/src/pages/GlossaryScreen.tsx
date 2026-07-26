@@ -21,6 +21,7 @@ import {
 } from './glossary/glossaryDomain';
 import { providerTemplates } from '../mocks/provider-templates';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
+import { collectProviderModelOptions } from '../utils/provider-model-options';
 import {
   buildProviderTemplateCatalogEntries,
   readProviderTemplateCatalogPreferences,
@@ -56,39 +57,29 @@ export default function GlossaryPage() {
       entries.filter((e) => e.enabled).map((e) => e.template.id),
     );
 
-    const allProviderDrafts: ProviderDraft[] = configDraft.providers;
-
-    const models: Array<{ modelId: string; displayName: string; providerName: string }> = [];
-    const seen = new Set<string>();
-
-    for (const draft of allProviderDrafts) {
-      if (!enabledTemplateIds.has(draft.templateId)) continue;
-
-      const subtitleAssignment = draft.sceneModelAssignments?.find(
-        (a) => a.scenario === 'subtitle-translate',
-      );
-      if (!subtitleAssignment || subtitleAssignment.modelIds.length === 0) continue;
-
-      const modelNameMap = new Map<string, string>();
-      if (draft.modelCatalogCache?.models) {
-        for (const m of draft.modelCatalogCache.models) {
+    const modelNameMaps = new Map<ProviderDraft, Map<string, string>>();
+    const resolveDisplayName = (draft: ProviderDraft, modelId: string) => {
+      let modelNameMap = modelNameMaps.get(draft);
+      if (!modelNameMap) {
+        modelNameMap = new Map<string, string>();
+        for (const m of draft.modelCatalogCache?.models ?? []) {
           modelNameMap.set(m.id, m.displayName);
         }
+        modelNameMaps.set(draft, modelNameMap);
       }
+      return modelNameMap.get(modelId) ?? modelId;
+    };
 
-      for (const modelId of subtitleAssignment.modelIds) {
-        if (seen.has(modelId)) continue;
-        seen.add(modelId);
-
-        models.push({
-          modelId,
-          displayName: modelNameMap.get(modelId) ?? modelId,
-          providerName: draft.displayName,
-        });
-      }
-    }
-
-    return models;
+    return collectProviderModelOptions(configDraft.providers, {
+      scenarios: ['subtitle-translate'],
+      templateFilter: enabledTemplateIds,
+      dedupeKey: 'model',
+      project: ({ modelId, provider }) => ({
+        modelId,
+        displayName: resolveDisplayName(provider, modelId),
+        providerName: provider.displayName,
+      }),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [configDraft.providers, catalogVersion]);
 

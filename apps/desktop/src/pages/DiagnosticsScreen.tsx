@@ -12,6 +12,8 @@ import type { RuntimeSnapshot } from '../schema/runtime-core';
 import { useAppStore } from '../stores/app-store';
 import { resolveRecommendedDriverAction } from '../utils/driver-management';
 import { resolveInteractionCapabilities, resolveRealtimeAudioMode } from '../utils/provider-model-capabilities';
+import { collectProviderModelOptions } from '../utils/provider-model-options';
+import { LogLevelControl } from './diagnostics/LogLevelControl';
 import { useDiagnosticsWorkbenchController } from './diagnostics/useDiagnosticsActions';
 import { useBenchmarkController, type BenchmarkVoiceModel } from './diagnostics/useBenchmarkController';
 import {
@@ -73,34 +75,28 @@ function DiagnosticsPage() {
   const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
   const diagnostics = runtimeSnapshot.diagnostics;
   const exportScope = diagnostics.lastExportScope ?? configDraft.diagnostics.lastExportScope;
-  const voiceModelOptions = useMemo(() => {
-    const modelMap = new Map<string, BenchmarkVoiceModel>();
-    for (const provider of configDraft.providers) {
-      for (const assignment of provider.sceneModelAssignments ?? []) {
-        if (!['watch', 'game', 'voice-room'].includes(assignment.scenario)) {
-          continue;
-        }
-        for (const modelId of assignment.modelIds) {
-          if (!modelMap.has(modelId)) {
-            const apiModelId = modelId.includes('::') ? modelId.split('::')[1] || modelId : modelId;
-            modelMap.set(modelId, {
-              modelId,
-              apiModelId,
-              displayName: modelId,
-              authReference: provider.authRef?.reference ?? '',
-              realtimeAudioMode: resolveRealtimeAudioMode(apiModelId, provider.localModelCapabilityRegistry ?? [], apiModelId),
-              interactionCapabilities: resolveInteractionCapabilities(apiModelId, provider.localModelCapabilityRegistry ?? [], apiModelId),
-              providerKind: provider.kind,
-              baseUrl: provider.baseUrl,
-              authHeaderName: provider.authRef?.headerName ?? 'Authorization',
-              authScheme: provider.authRef?.scheme ?? 'bearer',
-            });
-          }
-        }
-      }
-    }
-    return [...modelMap.values()];
-  }, [configDraft.providers]);
+  const voiceModelOptions = useMemo(
+    () => collectProviderModelOptions(configDraft.providers, {
+      scenarios: ['watch', 'game', 'voice-room'],
+      dedupeKey: 'model',
+      project: ({ modelId, provider }): BenchmarkVoiceModel => {
+        const apiModelId = modelId.includes('::') ? modelId.split('::')[1] || modelId : modelId;
+        return {
+          modelId,
+          apiModelId,
+          displayName: modelId,
+          authReference: provider.authRef?.reference ?? '',
+          realtimeAudioMode: resolveRealtimeAudioMode(apiModelId, provider.localModelCapabilityRegistry ?? [], apiModelId),
+          interactionCapabilities: resolveInteractionCapabilities(apiModelId, provider.localModelCapabilityRegistry ?? [], apiModelId),
+          providerKind: provider.kind,
+          baseUrl: provider.baseUrl,
+          authHeaderName: provider.authRef?.headerName ?? 'Authorization',
+          authScheme: provider.authRef?.scheme ?? 'bearer',
+        };
+      },
+    }),
+    [configDraft.providers],
+  );
 
   const {
     modelId: benchmarkModelId,
@@ -386,6 +382,7 @@ function DiagnosticsPage() {
           </div>
           {benchmarkError ? <div className="diagnostics-benchmark-error">{benchmarkError}</div> : null}
           {benchmarkRunning ? <div className="diagnostics-benchmark-progress">{i18n.t('diagnostics.benchmark.streamingProgress')}</div> : null}
+          <LogLevelControl />
         </div>
       </section>
 

@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+﻿import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCallback } from 'react';
 import { useAudioDeviceTestController } from './audio-routing/useAudioDeviceTestController';
@@ -17,15 +17,18 @@ import AppIcon from '../components/icons/AppIcon';
 import StatusBadge from '../components/page/StatusBadge';
 import { providerTemplates } from '../mocks/provider-templates';
 import type { AudioInputProcessingContract } from '../schema/audio-contract';
-import type { DeviceDraft, FeedbackLoopPrevention, ProviderDraft, SpeechDraft } from '../schema/config';
+import type { DeviceDraft, FeedbackLoopPrevention, SpeechDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
 import { buildAudioRuntimeBadges } from '../utils/audio-runtime-badges';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
+import { collectProviderModelOptions } from '../utils/provider-model-options';
 import { PROVIDER_TEMPLATE_CATALOG_UPDATED_EVENT, buildProviderTemplateCatalogEntries, readProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
 import ScenarioCard, { tWithDefault, type ScenarioCardProps } from './audio-routing/ScenarioCard';
 
 
+
+const sliderFillStyle = (percent: number) => ({ '--fill': `${percent}%` } as CSSProperties);
 
 function AudioRoutingPage() {
   const { t } = useTranslation();
@@ -61,52 +64,31 @@ function AudioRoutingPage() {
     [templateCatalogEntries],
   );
 
-  const allModelOptions = useMemo<RoutingModelOption[]>(() => {
-    const modelMap = new Map<string, RoutingModelOption>();
-    const addModelsFromProvider = (
-      sceneAssignments: ProviderDraft['sceneModelAssignments'],
-      modelCacheModels: ProviderDraft['modelCatalogCache']['models'],
-      localRegistry: ProviderDraft['localModelCapabilityRegistry'],
-      providerName: string,
-      providerTemplateId: string,
-    ) => {
-      if (!enabledProviderTemplateIds.has(providerTemplateId)) return;
-      for (const assignment of sceneAssignments) {
-        for (const modelId of assignment.modelIds) {
-          const key = `${providerTemplateId}::${modelId}`;
-          const existing = modelMap.get(key);
-          if (existing) continue;
-          const cachedModel = modelCacheModels.find((model) => model.id === modelId);
-          const baseModel = {
-            id: modelId,
-            displayName: cachedModel?.displayName ?? modelId,
-            capabilities: cachedModel?.capabilities ?? [],
-          };
-          modelMap.set(key, {
-            id: key,
-            model: key,
-            displayName: `${providerName}: ${baseModel.displayName}`,
-            capabilities: resolveProviderModelCapabilities(baseModel, localRegistry),
-            description: cachedModel?.ownedBy ?? providerName,
-            providerTemplateId,
-            rawModelId: modelId,
-          });
-        }
-      }
-    };
-
-    for (const provider of configDraft.providers) {
-      addModelsFromProvider(
-        provider.sceneModelAssignments ?? [],
-        provider.modelCatalogCache?.models ?? [],
-        provider.localModelCapabilityRegistry ?? [],
-        provider.displayName,
-        provider.templateId,
-      );
-    }
-
-    return [...modelMap.values()];
-  }, [configDraft, enabledProviderTemplateIds]);
+  const allModelOptions = useMemo<RoutingModelOption[]>(
+    () => collectProviderModelOptions(configDraft.providers, {
+      templateFilter: enabledProviderTemplateIds,
+      dedupeKey: 'provider-model',
+      project: ({ templateId, modelId, provider }) => {
+        const cachedModel = (provider.modelCatalogCache?.models ?? []).find((model) => model.id === modelId);
+        const baseModel = {
+          id: modelId,
+          displayName: cachedModel?.displayName ?? modelId,
+          capabilities: cachedModel?.capabilities ?? [],
+        };
+        const key = `${templateId}::${modelId}`;
+        return {
+          id: key,
+          model: key,
+          displayName: `${provider.displayName}: ${baseModel.displayName}`,
+          capabilities: resolveProviderModelCapabilities(baseModel, provider.localModelCapabilityRegistry ?? []),
+          description: cachedModel?.ownedBy ?? provider.displayName,
+          providerTemplateId: templateId,
+          rawModelId: modelId,
+        };
+      },
+    }),
+    [configDraft, enabledProviderTemplateIds],
+  );
 
   const voiceModelOptions = useMemo(() => allModelOptions.filter(isVoiceModel), [allModelOptions]);
   const inboundModelOptions = useMemo(() => voiceModelOptions.filter((model) => supportsRoutingScenario(model, 'inbound')), [voiceModelOptions]);
@@ -458,20 +440,20 @@ function AudioRoutingPage() {
               <span className="routing-slider-label">{tWithDefault(t, 'audioRouting.inputLevel')}</span>
               <strong>{configDraft.devices.inputLevel}%</strong>
             </div>
-            <input className="routing-slider-input" max={100} min={0} onChange={(event) => patchDeviceConfig({ inputLevel: Number(event.target.value) })} type="range" value={configDraft.devices.inputLevel} />
+            <input aria-label={tWithDefault(t, 'audioRouting.inputLevel')} className="routing-slider-input ui-range" max={100} min={0} onChange={(event) => patchDeviceConfig({ inputLevel: Number(event.target.value) })} style={sliderFillStyle(configDraft.devices.inputLevel)} type="range" value={configDraft.devices.inputLevel} />
           </div>
 
           <div className="routing-toggle-stack">
             <label className={['routing-toggle-pill', configDraft.devices.aecEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
-              <input checked={configDraft.devices.aecEnabled} onChange={(event) => handleProcessingToggle('aecEnabled', 'echoCancellationEnabled', event.target.checked)} type="checkbox" />
+              <input aria-checked={configDraft.devices.aecEnabled} checked={configDraft.devices.aecEnabled} className="ui-switch" onChange={(event) => handleProcessingToggle('aecEnabled', 'echoCancellationEnabled', event.target.checked)} role="switch" type="checkbox" />
               <span>{tWithDefault(t, 'audioRouting.aecEchoCancellation')}</span>
             </label>
             <label className={['routing-toggle-pill', configDraft.devices.ansEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
-              <input checked={configDraft.devices.ansEnabled} onChange={(event) => handleProcessingToggle('ansEnabled', 'noiseSuppressionEnabled', event.target.checked)} type="checkbox" />
+              <input aria-checked={configDraft.devices.ansEnabled} checked={configDraft.devices.ansEnabled} className="ui-switch" onChange={(event) => handleProcessingToggle('ansEnabled', 'noiseSuppressionEnabled', event.target.checked)} role="switch" type="checkbox" />
               <span>{tWithDefault(t, 'audioRouting.ansNoiseSuppression')}</span>
             </label>
             <label className={['routing-toggle-pill', configDraft.devices.agcEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
-              <input checked={configDraft.devices.agcEnabled} onChange={(event) => handleProcessingToggle('agcEnabled', 'autoGainControlEnabled', event.target.checked)} type="checkbox" />
+              <input aria-checked={configDraft.devices.agcEnabled} checked={configDraft.devices.agcEnabled} className="ui-switch" onChange={(event) => handleProcessingToggle('agcEnabled', 'autoGainControlEnabled', event.target.checked)} role="switch" type="checkbox" />
               <span>{tWithDefault(t, 'audioRouting.agcAutoGain')}</span>
             </label>
           </div>
@@ -524,7 +506,7 @@ function AudioRoutingPage() {
               <span className="routing-slider-label">{tWithDefault(t, 'audioRouting.outputVolume')}</span>
               <strong>{configDraft.devices.outputLevel}%</strong>
             </div>
-            <input className="routing-slider-input" max={100} min={0} onChange={(event) => patchDeviceConfig({ outputLevel: Number(event.target.value) })} type="range" value={configDraft.devices.outputLevel} />
+            <input aria-label={tWithDefault(t, 'audioRouting.outputVolume')} className="routing-slider-input ui-range" max={100} min={0} onChange={(event) => patchDeviceConfig({ outputLevel: Number(event.target.value) })} style={sliderFillStyle(configDraft.devices.outputLevel)} type="range" value={configDraft.devices.outputLevel} />
           </div>
 
           <label className="routing-slider-row">
@@ -535,11 +517,12 @@ function AudioRoutingPage() {
             <input
               aria-describedby={originalAudioVolumeControllable ? undefined : 'original-audio-volume-virtual-driver-hint'}
               aria-label={tWithDefault(t, 'audioRouting.originalAudioVolume')}
-              className="routing-slider-input"
+              className="routing-slider-input ui-range"
               disabled={!originalAudioVolumeControllable}
               max={100}
               min={0}
               onChange={(event) => patchInboundMixGain('originalAudioGainDb', Number(event.target.value))}
+              style={sliderFillStyle(originalAudioVolumePercent)}
               type="range"
               value={originalAudioVolumePercent}
             />
@@ -557,10 +540,11 @@ function AudioRoutingPage() {
             </span>
             <input
               aria-label={tWithDefault(t, 'audioRouting.translatedAudioVolume')}
-              className="routing-slider-input"
+              className="routing-slider-input ui-range"
               max={100}
               min={0}
               onChange={(event) => patchInboundMixGain('translatedAudioGainDb', Number(event.target.value))}
+              style={sliderFillStyle(translatedAudioVolumePercent)}
               type="range"
               value={translatedAudioVolumePercent}
             />

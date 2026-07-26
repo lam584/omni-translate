@@ -19,6 +19,8 @@ function logEntry(summary: string): DiagnosticLogEntryRuntime {
     summary,
     detail: null,
     emittedAt: '2026-07-21T00:00:00.000Z',
+    source: null,
+    elapsedMs: null,
   };
 }
 

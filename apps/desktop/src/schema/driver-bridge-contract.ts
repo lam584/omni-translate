@@ -1,198 +1,65 @@
+/**
+ * Driver bridge NDJSON contract. The payload shapes are GENERATED from the
+ * Rust structs (see ./generated/bridge-ipc.ts, ./generated/driver-bridge-contract.ts
+ * and the contract_export cargo test); this module composes them with the
+ * `type` discriminants added by the internally-tagged serde enums
+ * (DriverBridgeCommand / DriverBridgeEvent in src-tauri/src/bridge/contracts.rs),
+ * derives the union aliases the rest of the app imports, and keeps the pinned
+ * protocol version literal.
+ */
+import type {
+  BridgeAudioFrame as GeneratedBridgeAudioFrame,
+  BridgeInitRequest as GeneratedBridgeInitRequest,
+  BridgeInitResponse as GeneratedBridgeInitResponse,
+  BridgeShutdownRequest as GeneratedBridgeShutdownRequest,
+  BridgeStateQuery as GeneratedBridgeStateQuery,
+  BridgeStateResponse as GeneratedBridgeStateResponse,
+  BridgeWriteFrameAck as GeneratedBridgeWriteFrameAck,
+  BridgeWriteFrameRequest as GeneratedBridgeWriteFrameRequest,
+  DriverBridgeErrorEvent as GeneratedDriverBridgeErrorEvent,
+} from './generated/bridge-ipc';
+import type {
+  AudioFrameAck as GeneratedAudioFrameAck,
+  AudioFrameHeader as GeneratedAudioFrameHeader,
+  MixControl as GeneratedMixControl,
+} from './generated/driver-bridge-contract';
+
 export type DriverBridgeProtocolVersion = '2026-06-02-loopback-v2';
 
-export type BridgeAudioEncoding = 'pcm16le';
+// Union aliases derived from the generated fields, so the literal members
+// have exactly one source of truth (the Rust contract).
+export type BridgeAudioEncoding = GeneratedBridgeAudioFrame['encoding'];
+export type BridgeChannelLayout = GeneratedBridgeAudioFrame['channelLayout'];
+export type BridgeLifecycleState = GeneratedBridgeStateResponse['lifecycleState'];
+export type BridgeRuntimeState = GeneratedBridgeStateResponse['bridgeState'];
+export type DriverHealthState = GeneratedBridgeStateResponse['driverHealth'];
+export type DriverRepairAction = NonNullable<GeneratedDriverBridgeErrorEvent['suggestedAction']>;
+export type DriverBridgeErrorCode = GeneratedDriverBridgeErrorEvent['code'];
 
-export type BridgeChannelLayout = 'mono' | 'stereo';
+export type BridgeAudioFrame = GeneratedBridgeAudioFrame;
 
-export type BridgeLifecycleState = 'idle' | 'initializing' | 'ready' | 'writing' | 'draining' | 'stopped' | 'error';
+// The inline-PCM frame protocol trio is GENERATED from the shared Rust crate
+// (crates/omni-bridge-protocol) that both the desktop shell and the bridge
+// service compile against; the aliases keep the historical Bridge* names.
+export type BridgeInlinePcmFrameHeader = GeneratedAudioFrameHeader;
+export type BridgeTranslationFrameAck = GeneratedAudioFrameAck;
+export type BridgeMixControl = GeneratedMixControl;
 
-export type BridgeRuntimeState = 'stopped' | 'starting' | 'running' | 'degraded';
+export type BridgeInitRequest = { type: 'bridge.init' } & GeneratedBridgeInitRequest;
 
-export type DriverHealthState = 'not-installed' | 'damaged' | 'version-mismatch' | 'running';
+export type BridgeInitResponse = { type: 'bridge.init.ack' } & GeneratedBridgeInitResponse;
 
-export type DriverRepairAction = 'reinstall-driver' | 'restart-bridge' | 'rollback-driver' | 'open-diagnostics';
+export type BridgeWriteFrameRequest = { type: 'bridge.frame.write' } & GeneratedBridgeWriteFrameRequest;
 
-export type BridgeAudioFrame = {
-  frameId: string;
-  streamId: string;
-  encoding: BridgeAudioEncoding;
-  channelLayout: BridgeChannelLayout;
-  sampleRateHz: 16000 | 24000 | 48000;
-  channelCount: 1 | 2;
-  frameCount: number;
-  timestampMs: number;
-  payloadRef: string;
-};
+export type BridgeWriteFrameAck = { type: 'bridge.frame.ack' } & GeneratedBridgeWriteFrameAck;
 
-export type BridgeInitRequest = {
-  type: 'bridge.init';
-  requestId: string;
-  protocolVersion: DriverBridgeProtocolVersion;
-  sessionId: string;
-  installChannel: 'development' | 'release';
-  targetDeviceId: string;
-  virtualRenderDeviceId: string;
-  physicalPlaybackDeviceId: string;
-  physicalPlaybackLevel: number;
-  mixControl: BridgeMixControl;
-  monitorPlaybackEnabled: boolean;
-  expectedDriverVersion: string;
-  expectedBridgeVersion: string;
-};
+export type BridgeStateQuery = { type: 'bridge.state.query' } & GeneratedBridgeStateQuery;
 
-export type BridgeInlinePcmFrameHeader = {
-  type: 'bridge.source.frame' | 'bridge.translation.frame';
-  requestId: string;
-  sessionId: string;
-  frameId: string;
-  streamId: string;
-  sampleRateHz: 16000 | 24000 | 48000;
-  channelCount: 1 | 2;
-  frameCount: number;
-  timestampMs: number;
-  payloadBytes: number;
-};
+export type BridgeStateSnapshot = { type: 'bridge.state.snapshot' } & GeneratedBridgeStateResponse;
 
-export type BridgeTranslationFrameAck = {
-  type: 'bridge.source.ack' | 'bridge.translation.ack' | 'bridge.translation.nack';
-  requestId: string;
-  frameId: string;
-  acceptedFrames: number;
-  playbackFramesWritten: number;
-  /** Present on bridge.translation.nack responses (e.g. bridge.session-mismatch). */
-  errorCode?: string;
-  message?: string;
-};
+export type BridgeShutdownRequest = { type: 'bridge.shutdown' } & GeneratedBridgeShutdownRequest;
 
-export type BridgeMixControl = {
-  keepOriginalAudio: boolean;
-  translatedAudioEnabled: boolean;
-  translatedAudioGainDb: number;
-  originalAudioGainDb: number;
-  duckingEnabled: boolean;
-  duckingDepthPercent: number;
-  monitorMode: string;
-};
-
-export type BridgeInitResponse = {
-  type: 'bridge.init.ack';
-  requestId: string;
-  protocolVersion: DriverBridgeProtocolVersion;
-  bridgeState: BridgeRuntimeState;
-  driverHealth: DriverHealthState;
-  activeDriverVersion?: string;
-};
-
-export type BridgeWriteFrameRequest = {
-  type: 'bridge.frame.write';
-  requestId: string;
-  sessionId: string;
-  frame: BridgeAudioFrame;
-};
-
-export type BridgeWriteFrameAck = {
-  type: 'bridge.frame.ack';
-  requestId: string;
-  frameId: string;
-  acceptedAt: string;
-  queueDepth: number;
-};
-
-export type BridgeStateQuery = {
-  type: 'bridge.state.query';
-  requestId: string;
-};
-
-export type BridgeStateSnapshot = {
-  type: 'bridge.state.snapshot';
-  requestId: string;
-  protocolVersion: DriverBridgeProtocolVersion;
-  bridgeState: BridgeRuntimeState;
-  lifecycleState: BridgeLifecycleState;
-  driverHealth: DriverHealthState;
-  driverVersion?: string;
-  bridgeVersion: string;
-  captureBackend: string;
-  captureLifecycleState: string;
-  captureRestartCount: number;
-  capturePacketCount: number;
-  captureFramesReceived: number;
-  capturePeak: number;
-  captureRms: number;
-  captureSilentPacketCount: number;
-  captureInvalidSampleCount: number;
-  resolvedPhysicalPlaybackDeviceId: string;
-  monitorBufferedMs: number;
-  monitorUnderrunCount: number;
-  monitorOverrunCount: number;
-  queuedFrames: number;
-  sourceFramesCaptured: number;
-  translatedFramesAccepted: number;
-  playbackFramesWritten: number;
-  underrunCount: number;
-  droppedFrameCount: number;
-  driverBufferedBytes: number;
-  driverMaxBufferedBytes: number;
-  driverCapturedBytes: number;
-  driverDeliveredBytes: number;
-  driverDroppedBytes: number;
-  sourcePendingBytes: number;
-  sourcePacerQueuedFrames: number;
-  monitorSourceQueuedFrames: number;
-  staleSourceFramesDropped: number;
-  sourceSubscriberActive: boolean;
-  sourceGeneration: number;
-  sourceWorkerPhase: string;
-  sourceWorkerLastProgressTimestampMs?: number;
-  sourceReadCalls: number;
-  sourceZeroByteReads: number;
-  monitorPlaybackState: string;
-  lastFrameTimestampMs?: number;
-  lastErrorCode?: DriverBridgeErrorCode;
-};
-
-export type BridgeShutdownRequest = {
-  type: 'bridge.shutdown';
-  requestId: string;
-  sessionId: string;
-  reason: 'session-ended' | 'installer-rollback' | 'manual-stop';
-};
-
-export type DriverBridgeErrorCode =
-  | 'driver.not-installed'
-  | 'driver.version-mismatch'
-  | 'driver.write-failed'
-  | 'driver.testsigning-disabled'
-  | 'driver.secure-boot-enabled'
-  | 'driver.memory-integrity-enabled'
-  | 'driver.reboot-required'
-  | 'driver.audio-probe-failed'
-  | 'driver.duplicate-root-devices'
-  | 'driver.endpoint-missing'
-  | 'driver.ioctl-unavailable'
-  | 'driver.abi-mismatch'
-  | 'driver.elevation-cancelled'
-  | 'driver.probe-failed'
-  | 'driver.operation-failed'
-  | 'bridge.not-ready'
-  | 'bridge.queue-overflow'
-  | 'bridge.permission-denied'
-  | 'bridge.timeout'
-  | 'bridge.session-mismatch'
-  | 'bridge.singleton-already-running'
-  | 'monitor.virtual-playback-loop'
-  | 'installer.rollback-triggered';
-
-export type DriverBridgeErrorEvent = {
-  type: 'bridge.error';
-  requestId?: string;
-  code: DriverBridgeErrorCode;
-  message: string;
-  retriable: boolean;
-  bridgeState: BridgeRuntimeState;
-  driverHealth: DriverHealthState;
-  suggestedAction?: DriverRepairAction;
-};
+export type DriverBridgeErrorEvent = { type: 'bridge.error' } & GeneratedDriverBridgeErrorEvent;
 
 export type DriverBridgeCommand = BridgeInitRequest | BridgeWriteFrameRequest | BridgeStateQuery | BridgeShutdownRequest;
 

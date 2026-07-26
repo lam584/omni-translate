@@ -964,7 +964,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
   it('renders recent diagnostic issues without routes and safely ignores export before live events arrive', async () => {
     const runtime = structuredClone(useAppStore.getState().runtimeSnapshot);
     runtime.diagnostics.recentErrors = [{
-      id: 'local-warning', category: 'runtime', level: 'warning', summary: 'local warning', detail: null, emittedAt: 'test',
+      id: 'local-warning', category: 'runtime', level: 'warning', summary: 'local warning', detail: null, emittedAt: 'test', source: null, elapsedMs: null,
     }];
     const audio = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
     audio.sessionStartedAt = 'unix-ms:5000';
@@ -994,7 +994,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     configDraft.speech.localPlaybackEnabled = undefined as never;
     configDraft.speech.virtualMicOutputEnabled = undefined as never;
     const runtime = structuredClone(runtimeSnapshotMock);
-    runtime.diagnostics.recentErrors = [{ id: 'draft-warning', category: 'runtime', level: 'warning', summary: 'draft warning', detail: null, emittedAt: 'test' }];
+    runtime.diagnostics.recentErrors = [{ id: 'draft-warning', category: 'runtime', level: 'warning', summary: 'draft warning', detail: null, emittedAt: 'test', source: null, elapsedMs: null }];
     const audio = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
     audio.sessionStartedAt = 'unix-ms:5000';
     audio.inbound.streamBound = false;

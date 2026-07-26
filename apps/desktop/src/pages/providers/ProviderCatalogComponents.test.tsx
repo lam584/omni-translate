@@ -271,7 +271,7 @@ describe('provider catalog components', () => {
       checks: [],
       guidance: activeProbe.guidance,
       routingDecision: { subtitlePriority: 'subtitle-first', speechDisposition: 'ready', rationale: 'ok' },
-      error: { code: 'timeout', message: 'probe failed', retriable: true, suggestion: 'retry' },
+      error: { code: 'timeout', message: 'probe failed', retriable: true, httpStatus: null, providerCode: null, suggestion: 'retry' },
     };
     const smokeResult: ProviderSmokeResult = {
       requestId: 'smoke-1',
@@ -286,12 +286,12 @@ describe('provider catalog components', () => {
       transcript: '',
       sourceLanguage: 'zh',
       targetLanguage: 'en',
-      eventLog: [{ eventType: 'error', summary: 'failed' }],
+      eventLog: [{ eventType: 'error', summary: 'failed', segmentId: null, textDelta: null, text: null, audioChunkRef: null }],
       inputTokens: null,
       outputTokens: null,
       audioSeconds: null,
       routingDecision: { subtitlePriority: 'balanced', speechDisposition: 'deferred', rationale: 'failed' },
-      error: { code: 'timeout', message: 'smoke failed', retriable: true },
+      error: { code: 'timeout', message: 'smoke failed', retriable: true, httpStatus: null, providerCode: null, suggestion: null },
     };
     const onClose = vi.fn();
     ({ container, root } = render(
@@ -390,7 +390,7 @@ describe('provider catalog components', () => {
       ...activeProbe,
       verdict: 'unavailable' as const,
       routingDecision: { subtitlePriority: 'balanced', speechDisposition: 'deferred', rationale: 'failed' },
-      error: { code: 'failed', message: 'no suggestion', retriable: false },
+      error: { code: 'failed', message: 'no suggestion', retriable: false, httpStatus: null, providerCode: null, suggestion: null },
     };
     await act(async () => root!.render(<ProviderVerificationPanel activeProbe={activeProbe} probeResult={probeResult}
       smokeResult={smokeResult} summaryLabel="warning" summaryTone="warning" onClose={vi.fn()} />));

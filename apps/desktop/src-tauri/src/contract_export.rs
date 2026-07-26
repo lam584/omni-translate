@@ -61,8 +61,10 @@ struct GeneratedFile {
 }
 
 fn generated_files() -> Vec<GeneratedFile> {
+    use omni_bridge_protocol as protocol;
     use crate::audio::contracts as audio;
     use crate::bridge::contracts as bridge;
+    use crate::provider::contracts as provider;
     use crate::runtime::contracts as runtime;
     use crate::shared::contracts as shared;
     use crate::storage::contracts as storage;
@@ -77,6 +79,8 @@ fn generated_files() -> Vec<GeneratedFile> {
                 &[
                     decl::<shared::RuntimeNotification>(),
                     decl::<storage::StorageRuntimeSnapshot>(),
+                    decl::<storage::ConfigExportArtifact>(),
+                    decl::<storage::ConfigSnapshotRecord>(),
                     decl::<runtime::RuntimeWindowSnapshot>(),
                     decl::<bridge::BridgeRuntimeSnapshot>(),
                     decl::<bridge::DriverOperationResult>(),
@@ -88,6 +92,62 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<shared::DiagnosticsRuntimeSnapshot>(),
                     decl::<shared::DiagnosticsExportArtifact>(),
                     decl::<runtime::RuntimeSnapshot>(),
+                ],
+            ),
+        },
+        GeneratedFile {
+            name: "driver-bridge-contract.ts",
+            source: "crates/omni-bridge-protocol/src/lib.rs",
+            content: render(
+                "crates/omni-bridge-protocol/src/lib.rs",
+                &[],
+                &[
+                    decl::<protocol::MixControl>(),
+                    decl::<protocol::AudioFrameHeader>(),
+                    decl::<protocol::AudioFrameAck>(),
+                ],
+            ),
+        },
+        GeneratedFile {
+            name: "bridge-ipc.ts",
+            source: "apps/desktop/src-tauri/src/bridge/contracts.rs",
+            content: render(
+                "apps/desktop/src-tauri/src/bridge/contracts.rs",
+                &["import type { MixControl } from './driver-bridge-contract';"],
+                &[
+                    decl::<bridge::BridgeAudioFrame>(),
+                    decl::<bridge::BridgeInitRequest>(),
+                    decl::<bridge::BridgeInitResponse>(),
+                    decl::<bridge::BridgeStateQuery>(),
+                    decl::<bridge::BridgeStateResponse>(),
+                    decl::<bridge::BridgeWriteFrameRequest>(),
+                    decl::<bridge::BridgeWriteFrameAck>(),
+                    decl::<bridge::BridgeShutdownRequest>(),
+                    decl::<bridge::DriverBridgeErrorEvent>(),
+                ],
+            ),
+        },
+        GeneratedFile {
+            name: "provider-runtime.ts",
+            source: "apps/desktop/src-tauri/src/{provider,storage}/contracts.rs + main.rs",
+            content: render(
+                "apps/desktop/src-tauri/src/{provider,storage}/contracts.rs + main.rs",
+                &[
+                    "import type { ProviderCapability } from '../provider-contract';",
+                    "import type { ProviderProbeCheckStatus, ProviderProbeVerdict } from '../provider-probe';",
+                ],
+                &[
+                    decl::<provider::ProviderRuntimeError>(),
+                    decl::<provider::ProviderRoutingDecision>(),
+                    decl::<provider::ProviderProbeCheckRuntime>(),
+                    decl::<provider::ProviderProbeProfileRuntime>(),
+                    decl::<provider::ProviderStreamEventRecord>(),
+                    decl::<provider::ProviderSmokeResult>(),
+                    decl::<provider::ProviderModelRuntime>(),
+                    decl::<provider::ProviderModelCatalogRuntime>(),
+                    decl::<storage::CredentialRefStatus>(),
+                    decl::<storage::CredentialSecretPayload>(),
+                    decl::<crate::CredentialDirectResultEvent>(),
                 ],
             ),
         },

@@ -135,6 +135,8 @@ describe('diagnostics page helpers', () => {
       summary: index === 1 ? 'duplicate' : `error ${index}`,
       detail: index === 0 ? 'details' : null,
       emittedAt: 'test',
+      source: null,
+      elapsedMs: null,
     }));
     const alternateAudio = structuredClone(audio);
     alternateAudio.inbound.recommendedAction = null;
@@ -162,6 +164,8 @@ describe('diagnostics page helpers', () => {
       summary: '浏览器预览态',
       detail: null,
       emittedAt: 'test',
+      source: null,
+      elapsedMs: null,
     }];
     const previewSummary = diagnosticsPageHelpers.getRuntimeEnvironmentSummary(preview, audio);
     expect(diagnosticsPageHelpers.buildOverviewIssues(preview, audio, previewSummary)[0]).toMatchObject({
@@ -193,6 +197,8 @@ describe('diagnostics page helpers', () => {
       summary: failedSummary.label,
       detail: null,
       emittedAt: 'test',
+      source: null,
+      elapsedMs: null,
     }];
     const duplicateIssues = diagnosticsPageHelpers.buildOverviewIssues(duplicateRuntime, audio, failedSummary);
     expect(duplicateIssues.filter((issue) => issue.title === failedSummary.label)).toHaveLength(1);

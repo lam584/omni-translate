@@ -14,6 +14,7 @@ export const runtimeSnapshotMock: RuntimeSnapshot = {
   activeProfileId: 'desktop-shell-preview',
   trayReady: false,
   lastSyncAt: 'browser-preview',
+  sessionId: 'browser-preview',
   bridge: {
     processStatus: 'stopped',
     installChannel: 'development',
@@ -158,9 +159,13 @@ export const runtimeSnapshotMock: RuntimeSnapshot = {
         summary: '当前运行在浏览器预览模式。',
         detail: 'Rust Core 命令桥会在 Tauri shell 中接管。',
         emittedAt: 'browser-preview',
+        source: null,
+        elapsedMs: null,
       },
     ],
     recentErrors: [],
+    logDroppedCount: 0,
+    logWriteErrorCount: 0,
   },
   storage: {
     status: 'preview',

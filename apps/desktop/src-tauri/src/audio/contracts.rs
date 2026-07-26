@@ -79,8 +79,12 @@ pub struct SubtitleCueRuntime {
     pub route_direction: String,
     pub source_text: String,
     #[serde(skip_serializing_if = "String::is_empty")]
+    #[ts(as = "Option<String>")]
+    #[ts(optional)]
     pub display_source_text: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[ts(as = "Option<Vec<SubtitleDisplaySegmentRuntime>>")]
+    #[ts(optional)]
     pub display_segments: Vec<SubtitleDisplaySegmentRuntime>,
     pub translated_text: String,
     pub started_at: String,

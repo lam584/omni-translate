@@ -8,7 +8,7 @@ export type AudioRouteRuntimeSnapshot = { routeId: string, direction: 'inbound' 
 
 export type SubtitleDisplaySegmentRuntime = { sourceText: string, translatedText: string, pending: boolean, };
 
-export type SubtitleCueRuntime = { cueId: string, routeDirection: 'inbound' | 'outbound', sourceText: string, displaySourceText: string, displaySegments: Array<SubtitleDisplaySegmentRuntime>, translatedText: string, startedAt: string, endedAt: string, committed: boolean, };
+export type SubtitleCueRuntime = { cueId: string, routeDirection: 'inbound' | 'outbound', sourceText: string, displaySourceText?: string, displaySegments?: Array<SubtitleDisplaySegmentRuntime>, translatedText: string, startedAt: string, endedAt: string, committed: boolean, };
 
 export type SubtitleOverlayRuntimeSnapshot = { queueDepth: number, droppedCueCount: number, firstTranslationAverageMs: number | null, firstTranslationLastMs: number | null, firstTranslationSampleCount: number, activeCue: SubtitleCueRuntime | null, recentCues: Array<SubtitleCueRuntime>, };
 

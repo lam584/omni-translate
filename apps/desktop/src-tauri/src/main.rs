@@ -5,8 +5,6 @@ mod bridge;
 mod common;
 #[cfg(test)]
 mod contract_export;
-#[cfg(test)]
-mod contract_keys_fixture;
 mod diagnostics;
 mod provider;
 mod runtime;
@@ -62,7 +60,7 @@ static IPC_PING_RECEIVED: AtomicBool = AtomicBool::new(false);
 // initialize, and destroying the sole main window quits/crashes the whole app.
 const IPC_WATCHDOG_GRACE: Duration = Duration::from_secs(65);
 
-#[derive(Clone, Serialize)]
+#[derive(Clone, Serialize, ts_rs::TS)]
 #[serde(rename_all = "camelCase")]
 struct CredentialDirectResultEvent {
     job_id: String,

@@ -39,18 +39,13 @@ import type { DriverRepairAction } from '../schema/driver-bridge-contract';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
 import type { ModelPreset } from '../schema/provider-template';
 import type { CredentialRefStatus, CredentialSecretPayload, ProviderModelCatalogRuntime, ProviderProbeProfileRuntime, ProviderSmokeResult } from '../schema/provider-runtime';
+import type { ConfigExportArtifact, ConfigSnapshotRecord } from '../schema/generated/runtime-core';
 import type { DiagnosticLogEntryRuntime, RuntimeSnapshot } from '../schema/runtime-core';
 
 export type ServiceWarning = { code: string; message: string };
 export type ServiceResult<T> = { data: T; warnings: ServiceWarning[]; requestId?: string };
 export type ServiceErrorV2 = { code: string; message: string; retriable: boolean; details?: unknown };
-export type ConfigExportArtifact = {
-  filePath: string;
-  exportedAt: string;
-  configContractVersion: number;
-  snapshotCount: number;
-};
-export type ConfigSnapshotRecord = { snapshotId: string; reason: string; createdAt: string };
+export type { ConfigExportArtifact, ConfigSnapshotRecord };
 export type FrontendDiagnosticsBatchEntry = {
   category: string;
   level: string;

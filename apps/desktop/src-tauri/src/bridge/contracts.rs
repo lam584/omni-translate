@@ -268,8 +268,10 @@ pub enum DriverBridgeEvent {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeInitRequest {
     pub request_id: String,
+    #[ts(type = "'2026-06-02-loopback-v2'")]
     pub protocol_version: String,
     pub session_id: String,
+    #[ts(type = "'development' | 'release'")]
     pub install_channel: String,
     pub target_device_id: String,
     pub virtual_render_device_id: String,
@@ -285,9 +287,13 @@ pub struct BridgeInitRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeInitResponse {
     pub request_id: String,
+    #[ts(type = "'2026-06-02-loopback-v2'")]
     pub protocol_version: String,
+    #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,
+    #[ts(type = "'not-installed' | 'damaged' | 'version-mismatch' | 'running'")]
     pub driver_health: String,
+    #[ts(optional)]
     pub active_driver_version: Option<String>,
 }
 
@@ -307,10 +313,15 @@ pub struct BridgeSourceFlushRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStateResponse {
     pub request_id: String,
+    #[ts(type = "'2026-06-02-loopback-v2'")]
     pub protocol_version: String,
+    #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,
+    #[ts(type = "'idle' | 'initializing' | 'ready' | 'writing' | 'draining' | 'stopped' | 'error'")]
     pub lifecycle_state: String,
+    #[ts(type = "'not-installed' | 'damaged' | 'version-mismatch' | 'running'")]
     pub driver_health: String,
+    #[ts(optional)]
     pub driver_version: Option<String>,
     pub bridge_version: String,
     #[serde(default)]
@@ -375,6 +386,7 @@ pub struct BridgeStateResponse {
     #[serde(default)]
     pub source_worker_phase: String,
     #[serde(default)]
+    #[ts(optional)]
     pub source_worker_last_progress_timestamp_ms: Option<u64>,
     #[serde(default)]
     pub source_read_calls: u64,
@@ -382,7 +394,10 @@ pub struct BridgeStateResponse {
     pub source_zero_byte_reads: u64,
     #[serde(default)]
     pub monitor_playback_state: String,
+    #[ts(optional)]
     pub last_frame_timestamp_ms: Option<u64>,
+    #[ts(optional)]
+    #[ts(type = "'driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered'")]
     pub last_error_code: Option<String>,
 }
 
@@ -391,9 +406,13 @@ pub struct BridgeStateResponse {
 pub struct BridgeAudioFrame {
     pub frame_id: String,
     pub stream_id: String,
+    #[ts(type = "'pcm16le'")]
     pub encoding: String,
+    #[ts(type = "'mono' | 'stereo'")]
     pub channel_layout: String,
+    #[ts(type = "16000 | 24000 | 48000")]
     pub sample_rate_hz: u32,
+    #[ts(type = "1 | 2")]
     pub channel_count: u16,
     pub frame_count: usize,
     pub timestamp_ms: u64,
@@ -422,18 +441,25 @@ pub struct BridgeWriteFrameAck {
 pub struct BridgeShutdownRequest {
     pub request_id: String,
     pub session_id: String,
+    #[ts(type = "'session-ended' | 'installer-rollback' | 'manual-stop'")]
     pub reason: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverBridgeErrorEvent {
+    #[ts(optional)]
     pub request_id: Option<String>,
+    #[ts(type = "'driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered'")]
     pub code: String,
     pub message: String,
     pub retriable: bool,
+    #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,
+    #[ts(type = "'not-installed' | 'damaged' | 'version-mismatch' | 'running'")]
     pub driver_health: String,
+    #[ts(optional)]
+    #[ts(type = "'reinstall-driver' | 'restart-bridge' | 'rollback-driver' | 'open-diagnostics'")]
     pub suggested_action: Option<String>,
 }
 

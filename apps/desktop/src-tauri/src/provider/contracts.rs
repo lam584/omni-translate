@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use ts_rs::TS;
 
 fn default_provider_temperature() -> f64 {
     0.2
@@ -108,7 +109,7 @@ pub struct ProviderDraftInput {
     pub model_catalog_cache: ProviderModelCatalogCacheInput,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRuntimeError {
     pub code: String,
@@ -152,10 +153,12 @@ impl ProviderRuntimeError {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderRoutingDecision {
+    #[ts(type = "'balanced' | 'subtitle-first'")]
     pub subtitle_priority: String,
+    #[ts(type = "'ready' | 'deferred' | 'queued'")]
     pub speech_disposition: String,
     pub rationale: String,
 }
@@ -189,22 +192,25 @@ impl ProviderRoutingDecision {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProbeCheckRuntime {
     pub id: String,
+    #[ts(type = "'streaming' | 'latency' | 'error-shape' | 'response-shape'")]
     pub key: String,
     pub label: String,
+    #[ts(type = "ProviderProbeCheckStatus")]
     pub status: String,
     pub summary: String,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderProbeProfileRuntime {
     pub id: String,
     pub template_id: String,
     pub provider_id: String,
+    #[ts(type = "ProviderProbeVerdict")]
     pub verdict: String,
     pub checked_at: String,
     pub measured_latency_ms: u64,
@@ -221,7 +227,7 @@ pub struct ProviderProbeProfileRuntime {
     pub error: Option<ProviderRuntimeError>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderStreamEventRecord {
     pub event_type: String,
@@ -261,11 +267,12 @@ impl ProviderStreamEventRecord {
     }
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderSmokeResult {
     pub request_id: String,
     pub provider_id: String,
+    #[ts(type = "'completed' | 'failed'")]
     pub status: String,
     pub transport_requested: String,
     pub transport_effective: String,
@@ -284,17 +291,18 @@ pub struct ProviderSmokeResult {
     pub error: Option<ProviderRuntimeError>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelRuntime {
     pub id: String,
     pub display_name: String,
     pub owned_by: Option<String>,
     pub created_at: Option<u64>,
+    #[ts(type = "Array<ProviderCapability>")]
     pub capabilities: Vec<String>,
 }
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct ProviderModelCatalogRuntime {
     pub provider_id: String,

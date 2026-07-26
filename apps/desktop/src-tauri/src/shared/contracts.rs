@@ -1,8 +1,8 @@
 //! Contract types shared by the runtime aggregate snapshot and the
 //! diagnostics subsystem. Moved verbatim from `diagnostics::contracts` and
 //! `runtime::contracts` (which re-export them for their existing callers):
-//! field names and serde output are pinned by `test:contracts` and the
-//! contract-keys fixture and must not change here.
+//! field names and serde output are pinned by the generated TypeScript
+//! contract files (`cargo test contract_export`) and must not change here.
 
 use serde::Serialize;
 use ts_rs::TS;
@@ -90,13 +90,20 @@ pub struct DiagnosticSupportSignalRuntime {
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct DiagnosticsRuntimeSnapshot {
+    #[ts(type = "('draft' | 'ready' | 'warning' | 'unsupported' | 'unknown') | 'preview'")]
     pub status: String,
+    #[ts(type = "'stable' | 'experimental'")]
     pub support_tier: String,
+    #[ts(type = "'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown'")]
     pub install_status: String,
+    #[ts(type = "'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown'")]
     pub provider_status: String,
+    #[ts(type = "'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown'")]
     pub driver_status: String,
+    #[ts(type = "'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown'")]
     pub device_status: String,
     pub last_self_check_at: Option<String>,
+    #[ts(type = "('summary' | 'quick' | 'full') | null")]
     pub last_export_scope: Option<String>,
     pub last_export_path: Option<String>,
     pub last_exported_at: Option<String>,

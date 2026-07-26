@@ -51,12 +51,15 @@ impl Default for MixControl {
 #[serde(rename_all = "camelCase")]
 pub struct AudioFrameHeader {
     #[serde(rename = "type")]
+    #[ts(type = "'bridge.source.frame' | 'bridge.translation.frame'")]
     pub event_type: String,
     pub request_id: String,
     pub session_id: String,
     pub frame_id: String,
     pub stream_id: String,
+    #[ts(type = "16000 | 24000 | 48000")]
     pub sample_rate_hz: u32,
+    #[ts(type = "1 | 2")]
     pub channel_count: u16,
     pub frame_count: usize,
     pub timestamp_ms: u64,
@@ -67,14 +70,17 @@ pub struct AudioFrameHeader {
 #[serde(rename_all = "camelCase")]
 pub struct AudioFrameAck {
     #[serde(rename = "type")]
+    #[ts(type = "'bridge.source.ack' | 'bridge.translation.ack' | 'bridge.translation.nack'")]
     pub event_type: String,
     pub request_id: String,
     pub frame_id: String,
     pub accepted_frames: usize,
     pub playback_frames_written: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub error_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
     pub message: Option<String>,
 }
 

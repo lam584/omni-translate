@@ -22,6 +22,7 @@ param(
   [int]$Runs = 10,
   [string]$OutputRoot = "artifacts/testing/startup-ipc-stress",
   [string]$ReleaseExecutablePath = "",
+  [string]$RuntimeAppLogPath = "",
   [int]$PingTimeoutMs = 90000,
   [int]$PollIntervalMs = 250,
   [int]$BetweenRunsSettleMs = 1500
@@ -130,9 +131,21 @@ function Stop-ProcessTree {
 }
 
 function Stop-DesktopShellProcesses {
-  Get-Process -Name 'omni-desktop-shell' -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Start-Sleep -Milliseconds 400
-  return (@(Get-Process -Name 'omni-desktop-shell' -ErrorAction SilentlyContinue).Count -eq 0)
+  $deadline = [DateTimeOffset]::UtcNow.AddSeconds(10)
+  $stableSince = $null
+  while ([DateTimeOffset]::UtcNow -lt $deadline) {
+    $processes = @(Get-Process -Name 'omni-desktop-shell' -ErrorAction SilentlyContinue)
+    if ($processes.Count -gt 0) {
+      $processes | Stop-Process -Force -ErrorAction SilentlyContinue
+      $stableSince = $null
+    } elseif ($null -eq $stableSince) {
+      $stableSince = [DateTimeOffset]::UtcNow
+    } elseif (([DateTimeOffset]::UtcNow - $stableSince).TotalMilliseconds -ge 1000) {
+      return $true
+    }
+    Start-Sleep -Milliseconds 200
+  }
+  return $false
 }
 
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
@@ -151,6 +164,10 @@ $planArguments = @(
 )
 if ($ReleaseExecutablePath) {
   $planArguments += @('--release-executable-path', $ReleaseExecutablePath)
+}
+if ($RuntimeAppLogPath) {
+  $resolvedAppLogPath = [System.IO.Path]::GetFullPath($RuntimeAppLogPath)
+  $planArguments += @('--app-log-path', $resolvedAppLogPath)
 }
 if ($DryRun) {
   $planArguments += '--dry-run'
@@ -182,7 +199,11 @@ if ($existingShells.Count -gt 0) {
   throw "omni-desktop-shell is already running (pid=$(($existingShells | ForEach-Object { $_.Id }) -join ',')); close it so the stress measures fresh launches"
 }
 
-$appLogPath = Join-Path $workspaceRoot $plan.appLogPath
+$appLogPath = if ([System.IO.Path]::IsPathRooted([string]$plan.appLogPath)) {
+  [string]$plan.appLogPath
+} else {
+  Join-Path $workspaceRoot $plan.appLogPath
+}
 $exePath = [string]$plan.releaseExecutable.path
 $markers = @($plan.ipcConnectedMarkers)
 $neverConnectedMarker = [string]$plan.neverConnectedMarker
@@ -234,7 +255,9 @@ try {
     if ($null -ne $process) {
       Stop-ProcessTree -RootProcessId $process.Id
     }
-    [void](Stop-DesktopShellProcesses)
+    if (-not (Stop-DesktopShellProcesses)) {
+      throw "omni-desktop-shell processes remained after the 10-second cleanup window"
+    }
     Start-Sleep -Milliseconds 500
 
     $finalDelta = Read-TextDelta -Path $appLogPath -Offset $logOffset

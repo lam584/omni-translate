@@ -1,0 +1,645 @@
+{
+  "harvest": {
+    "sourceLog": "artifacts/diagnostics/logs/app.log",
+    "harvestedOn": "2026-07-27",
+    "harvestedBy": "manual extraction of [EVENT] transcription.completed / [EVENT_CONTEXT] response.done / [EVENT] response.done COMMIT lines",
+    "credentialScan": "app.log scanned in full for sk-*, Bearer <token>, api[-_]key=<value>, AKIA*, ghp_* — 0 matches. No provider session ids (sess_*), response ids (resp_*), item ids (item_*), device ids, file paths or diagnostics sid values were carried into this fixture.",
+    "cueShape": "Every cue object below is a literal tauri::test-side SubtitleCueRuntime payload (see apps/desktop/src/schema/generated/audio-runtime.ts). startedAt/endedAt use the real 'unix-ms:<millis>' marker format produced by shared::time::unix_millis_marker.",
+    "notes": [
+      "displaySourceText and displaySegments are absent on every cue because the recorded build never logged them; the overlay therefore renders these traces through the fallback branch of getCueDisplaySegments, which is the branch that actually ran for these sessions.",
+      "startedAt is recovered from the cue id itself (omni-cue-<unix millis>); endedAt is the wall clock of the log line that produced the frame, converted from the log's local +08:00 stamps.",
+      "The ST_SOURCE_ONLY / ST_NATIVE_TRANSLATION_COMMIT markers do not exist anywhere in this log (they were added to protocol.rs after it was recorded), and individual transcription.delta events are not logged either — only the final delta text survives, inside the [EVENT_CONTEXT] response.done line's lastAsrDelta field. Frames are therefore built from the states the log actually pins."
+    ]
+  },
+  "sequences": [
+    {
+      "id": "partial-translation-window",
+      "kind": "cue-stream",
+      "title": "Source lands first, translation lands 0.2s-2.0s later on the same cue id",
+      "session": "2026-07-26 12:07 local (+08:00), watch mode, inbound route, st_active=false",
+      "shapes": ["partial-translation"],
+      "logLines": [86347, 86351, 86357, 86361, 86363, 86371],
+      "frames": [
+        {
+          "label": "cue-1 source only",
+          "logLine": 86347,
+          "atMs": 1785038850750,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785038850148",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one of.",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785038850148",
+              "endedAt": "unix-ms:1785038850750",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-1 commit",
+          "logLine": 86351,
+          "atMs": 1785038850951,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785038850148",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one of.",
+              "translatedText": "这是一个",
+              "startedAt": "unix-ms:1785038850148",
+              "endedAt": "unix-ms:1785038850951",
+              "committed": true
+            }
+          ]
+        },
+        {
+          "label": "cue-2 source only",
+          "logLine": 86357,
+          "atMs": 1785038860827,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785038850148",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one of.",
+              "translatedText": "这是一个",
+              "startedAt": "unix-ms:1785038850148",
+              "endedAt": "unix-ms:1785038850951",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785038850965",
+              "routeDirection": "inbound",
+              "sourceText": "Billion dollar rocket ship of future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785038850965",
+              "endedAt": "unix-ms:1785038860827",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-2 commit",
+          "logLine": 86361,
+          "atMs": 1785038862746,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785038850148",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one of.",
+              "translatedText": "这是一个",
+              "startedAt": "unix-ms:1785038850148",
+              "endedAt": "unix-ms:1785038850951",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785038850965",
+              "routeDirection": "inbound",
+              "sourceText": "Billion dollar rocket ship of future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar",
+              "translatedText": "这是一艘价值数百万美元的火箭飞船，一项未来的技术，总有一天会带你一路前往火星，住进你全新的家园，一个价值五亿美元的……",
+              "startedAt": "unix-ms:1785038850965",
+              "endedAt": "unix-ms:1785038862746",
+              "committed": true
+            }
+          ]
+        },
+        {
+          "label": "cue-3 source only",
+          "logLine": 86363,
+          "atMs": 1785038871229,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785038850148",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one of.",
+              "translatedText": "这是一个",
+              "startedAt": "unix-ms:1785038850148",
+              "endedAt": "unix-ms:1785038850951",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785038850965",
+              "routeDirection": "inbound",
+              "sourceText": "Billion dollar rocket ship of future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar",
+              "translatedText": "这是一艘价值数百万美元的火箭飞船，一项未来的技术，总有一天会带你一路前往火星，住进你全新的家园，一个价值五亿美元的……",
+              "startedAt": "unix-ms:1785038850965",
+              "endedAt": "unix-ms:1785038862746",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785038862759",
+              "routeDirection": "inbound",
+              "sourceText": "Oh my gosh! And throughout this video, we'll show you just how epic the future is about to be. Oh my gosh! You'll see how we're going to bring extinct species back to life. This is",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785038862759",
+              "endedAt": "unix-ms:1785038871229",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-3 commit",
+          "logLine": 86371,
+          "atMs": 1785038873016,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785038850148",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one of.",
+              "translatedText": "这是一个",
+              "startedAt": "unix-ms:1785038850148",
+              "endedAt": "unix-ms:1785038850951",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785038850965",
+              "routeDirection": "inbound",
+              "sourceText": "Billion dollar rocket ship of future technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar",
+              "translatedText": "这是一艘价值数百万美元的火箭飞船，一项未来的技术，总有一天会带你一路前往火星，住进你全新的家园，一个价值五亿美元的……",
+              "startedAt": "unix-ms:1785038850965",
+              "endedAt": "unix-ms:1785038862746",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785038862759",
+              "routeDirection": "inbound",
+              "sourceText": "Oh my gosh! And throughout this video, we'll show you just how epic the future is about to be. Oh my gosh! You'll see how we're going to bring extinct species back to life. This is",
+              "translatedText": "这段视频将向你展示未来有多么史诗级。天哪！你会看到我们将如何让灭绝的物种复活。这简直……",
+              "startedAt": "unix-ms:1785038862759",
+              "endedAt": "unix-ms:1785038873016",
+              "committed": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "overlapping-rehypothesis",
+      "kind": "cue-stream",
+      "title": "A cue that never commits stays live while two later cues open, commit, and re-hypothesise its text",
+      "session": "2026-07-26 17:29-17:31 local (+08:00), watch mode, inbound route, manual response gate",
+      "shapes": ["partial-translation", "overlapping-rehypothesis", "empty-asr-completed"],
+      "logLines": [90015, 90022, 90028, 90041, 90042, 90056, 90051, 90057],
+      "frameOrderNote": "Frames are ordered by real event time, not by log line: line 90056 (the [EVENT_CONTEXT] response.done for cue …248796) reports lastAsrDeltaAtMs=117653, which is 1785058257766 — earlier than the empty transcription.completed printed on line 90051 at 1785058311132. The session clock origin used for the *AtMs offsets is 1785058140113 (line 90041: responseDoneAtMs=72298 at wall clock 1785058212411).",
+      "rehypothesisNote": "cue omni-cue-1785058206713 committed with source_len=14 (\"With this one.\"); the next cue omni-cue-1785058248796 committed with source_len=347 whose text REPEATS and extends that same phrase (\"With this one dollar light, which when you combine millions of them…\"). That repeat is the overlapping re-hypothesis: the ASR stream restated already-committed words inside a new cue id.",
+      "frames": [
+        {
+          "label": "cue-A source only",
+          "logLine": 90015,
+          "atMs": 1785058152119,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058152119",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-A commit",
+          "logLine": 90022,
+          "atMs": 1785058156360,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，是一项未来技术，总有一天会……",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058156360",
+              "committed": true
+            }
+          ]
+        },
+        {
+          "label": "cue-B source only (this cue never commits)",
+          "logLine": 90028,
+          "atMs": 1785058175330,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，是一项未来技术，总有一天会……",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058156360",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058156892",
+              "routeDirection": "inbound",
+              "sourceText": "Technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058156892",
+              "endedAt": "unix-ms:1785058175330",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-C opens with a 14-char hypothesis while cue-B is still live",
+          "logLine": 90041,
+          "atMs": 1785058211358,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，是一项未来技术，总有一天会……",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058156360",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058156892",
+              "routeDirection": "inbound",
+              "sourceText": "Technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058156892",
+              "endedAt": "unix-ms:1785058175330",
+              "committed": false
+            },
+            {
+              "cueId": "omni-cue-1785058206713",
+              "routeDirection": "inbound",
+              "sourceText": "With this one.",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058206713",
+              "endedAt": "unix-ms:1785058211358",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-C commits a 110-character translation over its 14-character source",
+          "logLine": 90042,
+          "atMs": 1785058212411,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，是一项未来技术，总有一天会……",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058156360",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058156892",
+              "routeDirection": "inbound",
+              "sourceText": "Technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058156892",
+              "endedAt": "unix-ms:1785058175330",
+              "committed": false
+            },
+            {
+              "cueId": "omni-cue-1785058206713",
+              "routeDirection": "inbound",
+              "sourceText": "With this one.",
+              "translatedText": "一路飞到火星，住进你全新的家园，一个价值五亿美元的生态圈。天哪。在整个视频中，我们会向你展示未来将会有多震撼。你会看到我们如何让灭绝的物种复活。这简直就是未来。能带你去任何地方的飞行汽车，还有更多。不可能。一切即将开始。",
+              "startedAt": "unix-ms:1785058206713",
+              "endedAt": "unix-ms:1785058212411",
+              "committed": true
+            }
+          ]
+        },
+        {
+          "label": "cue-D accumulates a 347-char re-hypothesis that repeats cue-C's committed words",
+          "logLine": 90056,
+          "atMs": 1785058257766,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，是一项未来技术，总有一天会……",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058156360",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058156892",
+              "routeDirection": "inbound",
+              "sourceText": "Technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058156892",
+              "endedAt": "unix-ms:1785058175330",
+              "committed": false
+            },
+            {
+              "cueId": "omni-cue-1785058206713",
+              "routeDirection": "inbound",
+              "sourceText": "With this one.",
+              "translatedText": "一路飞到火星，住进你全新的家园，一个价值五亿美元的生态圈。天哪。在整个视频中，我们会向你展示未来将会有多震撼。你会看到我们如何让灭绝的物种复活。这简直就是未来。能带你去任何地方的飞行汽车，还有更多。不可能。一切即将开始。",
+              "startedAt": "unix-ms:1785058206713",
+              "endedAt": "unix-ms:1785058212411",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058248796",
+              "routeDirection": "inbound",
+              "sourceText": "With this one dollar light, which when you combine millions of them can simulate the future of humanity, or Mars, and in this video I'm excited to show you guys the most futuristic technology on the planet. But next we're going with the ten zero technology, Neuralink, which is a computer chip surgically implanted into the brain, enabling people.",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058248796",
+              "endedAt": "unix-ms:1785058257766",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "empty transcription.completed arrives for cue-D and must not clear it",
+          "logLine": 90051,
+          "atMs": 1785058311132,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，是一项未来技术，总有一天会……",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058156360",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058156892",
+              "routeDirection": "inbound",
+              "sourceText": "Technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058156892",
+              "endedAt": "unix-ms:1785058175330",
+              "committed": false
+            },
+            {
+              "cueId": "omni-cue-1785058206713",
+              "routeDirection": "inbound",
+              "sourceText": "With this one.",
+              "translatedText": "一路飞到火星，住进你全新的家园，一个价值五亿美元的生态圈。天哪。在整个视频中，我们会向你展示未来将会有多震撼。你会看到我们如何让灭绝的物种复活。这简直就是未来。能带你去任何地方的飞行汽车，还有更多。不可能。一切即将开始。",
+              "startedAt": "unix-ms:1785058206713",
+              "endedAt": "unix-ms:1785058212411",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058248796",
+              "routeDirection": "inbound",
+              "sourceText": "With this one dollar light, which when you combine millions of them can simulate the future of humanity, or Mars, and in this video I'm excited to show you guys the most futuristic technology on the planet. But next we're going with the ten zero technology, Neuralink, which is a computer chip surgically implanted into the brain, enabling people.",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058248796",
+              "endedAt": "unix-ms:1785058311132",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-D commit",
+          "logLine": 90057,
+          "atMs": 1785058315593,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，是一项未来技术，总有一天会……",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058156360",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058156892",
+              "routeDirection": "inbound",
+              "sourceText": "Technology that will one day take you all the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785058156892",
+              "endedAt": "unix-ms:1785058175330",
+              "committed": false
+            },
+            {
+              "cueId": "omni-cue-1785058206713",
+              "routeDirection": "inbound",
+              "sourceText": "With this one.",
+              "translatedText": "一路飞到火星，住进你全新的家园，一个价值五亿美元的生态圈。天哪。在整个视频中，我们会向你展示未来将会有多震撼。你会看到我们如何让灭绝的物种复活。这简直就是未来。能带你去任何地方的飞行汽车，还有更多。不可能。一切即将开始。",
+              "startedAt": "unix-ms:1785058206713",
+              "endedAt": "unix-ms:1785058212411",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785058248796",
+              "routeDirection": "inbound",
+              "sourceText": "With this one dollar light, which when you combine millions of them can simulate the future of humanity, or Mars, and in this video I'm excited to show you guys the most futuristic technology on the planet. But next we're going with the ten zero technology, Neuralink, which is a computer chip surgically implanted into the brain, enabling people.",
+              "translatedText": "当把它们数百万个结合起来时，就能模拟人类或火星的未来。在这个视频里，我很兴奋地向大家展示地球上最具未来感的技术。接下来我们要介绍的是一万美元的技术Neuralink，它是一种通过手术植入大脑的电脑芯片，能够让人们……",
+              "startedAt": "unix-ms:1785058248796",
+              "endedAt": "unix-ms:1785058315593",
+              "committed": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "rolling-commit-window",
+      "kind": "cue-stream",
+      "title": "Three consecutive cues of one rolling ASR window, each source-only then committed",
+      "session": "2026-07-27 01:06 local (+08:00), watch mode, inbound route, manual response gate",
+      "shapes": ["partial-translation", "rolling-window"],
+      "logLines": [93499, 93505, 93512, 93518, 93527, 93534],
+      "frames": [
+        {
+          "label": "cue-1 source only",
+          "logLine": 93499,
+          "atMs": 1785085565790,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785085559460",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship. A future technology that will one day take you.",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785085559460",
+              "endedAt": "unix-ms:1785085565790",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-1 commit",
+          "logLine": 93505,
+          "atMs": 1785085567445,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785085559460",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship. A future technology that will one day take you.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，一项未来的技术，总有一天会带你一路前行。",
+              "startedAt": "unix-ms:1785085559460",
+              "endedAt": "unix-ms:1785085567445",
+              "committed": true
+            }
+          ]
+        },
+        {
+          "label": "cue-2 source only",
+          "logLine": 93512,
+          "atMs": 1785085575984,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785085559460",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship. A future technology that will one day take you.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，一项未来的技术，总有一天会带你一路前行。",
+              "startedAt": "unix-ms:1785085559460",
+              "endedAt": "unix-ms:1785085567445",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785085567508",
+              "routeDirection": "inbound",
+              "sourceText": "All the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this video, we'll show you just how epic the future's about.",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785085567508",
+              "endedAt": "unix-ms:1785085575984",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-2 commit",
+          "logLine": 93518,
+          "atMs": 1785085578126,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785085559460",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship. A future technology that will one day take you.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，一项未来的技术，总有一天会带你一路前行。",
+              "startedAt": "unix-ms:1785085559460",
+              "endedAt": "unix-ms:1785085567445",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785085567508",
+              "routeDirection": "inbound",
+              "sourceText": "All the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this video, we'll show you just how epic the future's about.",
+              "translatedText": "全新的家园，价值五亿美元的生态圈。天哪，看完这段视频你就会知道未来有多震撼。",
+              "startedAt": "unix-ms:1785085567508",
+              "endedAt": "unix-ms:1785085578126",
+              "committed": true
+            }
+          ]
+        },
+        {
+          "label": "cue-3 source only",
+          "logLine": 93527,
+          "atMs": 1785085586108,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785085559460",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship. A future technology that will one day take you.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，一项未来的技术，总有一天会带你一路前行。",
+              "startedAt": "unix-ms:1785085559460",
+              "endedAt": "unix-ms:1785085567445",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785085567508",
+              "routeDirection": "inbound",
+              "sourceText": "All the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this video, we'll show you just how epic the future's about.",
+              "translatedText": "全新的家园，价值五亿美元的生态圈。天哪，看完这段视频你就会知道未来有多震撼。",
+              "startedAt": "unix-ms:1785085567508",
+              "endedAt": "unix-ms:1785085578126",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785085578831",
+              "routeDirection": "inbound",
+              "sourceText": "Oh my gosh! You'll see how we're going to bring extinct species back to life. This is literally the future: flying cars that can take you anywhere and so much more.",
+              "translatedText": "",
+              "startedAt": "unix-ms:1785085578831",
+              "endedAt": "unix-ms:1785085586108",
+              "committed": false
+            }
+          ]
+        },
+        {
+          "label": "cue-3 commit",
+          "logLine": 93534,
+          "atMs": 1785085587888,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785085559460",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship. A future technology that will one day take you.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，一项未来的技术，总有一天会带你一路前行。",
+              "startedAt": "unix-ms:1785085559460",
+              "endedAt": "unix-ms:1785085567445",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785085567508",
+              "routeDirection": "inbound",
+              "sourceText": "All the way to Mars to live in your brand new home, a five hundred million dollar biosphere. Oh my gosh! And throughout this video, we'll show you just how epic the future's about.",
+              "translatedText": "全新的家园，价值五亿美元的生态圈。天哪，看完这段视频你就会知道未来有多震撼。",
+              "startedAt": "unix-ms:1785085567508",
+              "endedAt": "unix-ms:1785085578126",
+              "committed": true
+            },
+            {
+              "cueId": "omni-cue-1785085578831",
+              "routeDirection": "inbound",
+              "sourceText": "Oh my gosh! You'll see how we're going to bring extinct species back to life. This is literally the future: flying cars that can take you anywhere and so much more.",
+              "translatedText": "我们要让灭绝的物种复活。这简直就是未来。能带你去任何地方的飞行汽车，还有更多。",
+              "startedAt": "unix-ms:1785085578831",
+              "endedAt": "unix-ms:1785085587888",
+              "committed": true
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "replay-retranslation",
+      "kind": "replay-comparison",
+      "title": "The same opening audio, replayed in two sessions, produced a shorter and a longer ASR hypothesis with different translations",
+      "session": "cross-session: 2026-07-26 17:29 (line 90022) vs 2026-07-27 01:06 (line 93505)",
+      "shapes": ["retranslation"],
+      "logLines": [90022, 93505],
+      "provenanceWarning": "These two cues come from DIFFERENT sessions and carry different cue ids. The log contains no case of one cue id being committed twice or having its translation replaced, so this is the closest real re-translation evidence available. The replay test therefore treats these frames as independent renders and only asserts that appending a further sentence to the source does not re-flow the rows the shorter hypothesis already produced.",
+      "frames": [
+        {
+          "label": "shorter hypothesis of the opening line",
+          "logLine": 90022,
+          "atMs": 1785058156360,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785058148981",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，是一项未来技术，总有一天会……",
+              "startedAt": "unix-ms:1785058148981",
+              "endedAt": "unix-ms:1785058156360",
+              "committed": true
+            }
+          ]
+        },
+        {
+          "label": "longer hypothesis of the same audio, retranslated",
+          "logLine": 93505,
+          "atMs": 1785085567445,
+          "cues": [
+            {
+              "cueId": "omni-cue-1785085559460",
+              "routeDirection": "inbound",
+              "sourceText": "This is a one billion dollar rocket ship. A future technology that will one day take you.",
+              "translatedText": "这是一艘价值十亿美元的火箭飞船，一项未来的技术，总有一天会带你一路前行。",
+              "startedAt": "unix-ms:1785085559460",
+              "endedAt": "unix-ms:1785085567445",
+              "committed": true
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

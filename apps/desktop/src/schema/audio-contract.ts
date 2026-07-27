@@ -67,6 +67,7 @@ export type AudioMixControlContract = {
   keepOriginalAudio: boolean;
   translatedAudioEnabled: boolean;
   translatedAudioGainDb: number;
+  translatedAudioAutoGainEnabled: boolean;
   originalAudioGainDb: number;
   duckingEnabled: boolean;
   duckingDepthPercent: number;

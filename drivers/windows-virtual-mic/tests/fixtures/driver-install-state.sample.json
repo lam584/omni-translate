@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "2026-06-02-loopback-v2",
+  "protocolVersion": "2026-07-27-smart-gain-v3",
   "installChannel": "development",
   "driverVersion": "0.10.0-dev",
   "bridgeVersion": "0.1.0",

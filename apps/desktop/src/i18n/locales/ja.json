@@ -339,6 +339,8 @@
     "outputVolume": "音声ルーティング - 出力",
     "originalAudioVolume": "元音声の音量",
     "translatedAudioVolume": "LLM 翻訳音声の音量",
+    "translatedAudioAutoGain": "スマート音量補正",
+    "translatedAudioAutoGainHint": "翻訳音声の音量を自動で揃え、クリッピングを防ぎます",
     "originalAudioVolumeVirtualDriverHint": "元音声の音量は仮想ドライバーモードでのみ調整できます。現在の物理ループバックモードでは、プレーヤーまたは Windows の音量を使用してください。",
     "inputLevel": "音声ルーティング - 入力",
     "testing": "音声ルーティングの設定と状態を確認してください。",

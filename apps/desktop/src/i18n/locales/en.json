@@ -339,6 +339,8 @@
     "outputVolume": "Output volume",
     "originalAudioVolume": "Original audio volume",
     "translatedAudioVolume": "LLM translated audio volume",
+    "translatedAudioAutoGain": "Smart loudness boost",
+    "translatedAudioAutoGainHint": "Automatically levels translated speech and prevents clipping",
     "originalAudioVolumeVirtualDriverHint": "Original audio volume is adjustable only in virtual-driver mode. In the current physical-loopback mode, use the player or Windows volume control.",
     "inputLevel": "Input level",
     "testing": "Testing...",

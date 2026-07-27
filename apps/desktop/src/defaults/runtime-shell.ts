@@ -27,6 +27,7 @@ export const runtimeSnapshotMock: RuntimeSnapshot = {
       keepOriginalAudio: true,
       translatedAudioEnabled: true,
       translatedAudioGainDb: 0,
+      translatedAudioAutoGainEnabled: true,
       originalAudioGainDb: 0,
       duckingEnabled: true,
       duckingDepthPercent: 35,

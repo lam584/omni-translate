@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { useCallback } from 'react';
 import { Link } from 'react-router-dom';
 import { useAudioDeviceTestController } from './audio-routing/useAudioDeviceTestController';
-import { gainDbToVolumePercent, volumePercentToGainDb } from './audio-routing/audioGain';
+import { gainDbToVolumePercent, MAX_TRANSLATED_VOLUME_PERCENT, volumePercentToGainDb } from './audio-routing/audioGain';
 import ChainFlow from './audio-routing/ChainFlow';
 import {
   detectScenarioCapabilities,
@@ -17,7 +17,7 @@ import AudioLevelMeter from '../components/audio/AudioLevelMeter';
 import AppIcon from '../components/icons/AppIcon';
 import StatusBadge from '../components/page/StatusBadge';
 import { providerTemplates } from '../defaults/provider-templates';
-import type { AudioInputProcessingContract } from '../schema/audio-contract';
+import type { AudioInputProcessingContract, AudioMixControlContract } from '../schema/audio-contract';
 import type { DeviceDraft, FeedbackLoopPrevention, SpeechDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
 import { refreshAudioDevicesRuntime } from '../runtime/audio-runtime';
@@ -193,19 +193,24 @@ function AudioRoutingPage() {
     updateSpeechDraft({ ...patch, status: 'draft' });
   };
 
-  const patchInboundMixGain = (
-    gainKey: 'originalAudioGainDb' | 'translatedAudioGainDb',
-    volumePercent: number,
-  ) => {
+  const patchInboundMixControl = (patch: Partial<AudioMixControlContract>) => {
     patchDeviceConfig({
       inboundRoute: {
         ...configDraft.devices.inboundRoute,
         mixControl: {
           ...configDraft.devices.inboundRoute.mixControl,
-          [gainKey]: volumePercentToGainDb(volumePercent),
+          ...patch,
         },
       },
     });
+  };
+
+  const patchInboundMixGain = (
+    gainKey: 'originalAudioGainDb' | 'translatedAudioGainDb',
+    volumePercent: number,
+    maximumPercent = 100,
+  ) => {
+    patchInboundMixControl({ [gainKey]: volumePercentToGainDb(volumePercent, maximumPercent) });
   };
 
   const handleProcessingToggle = (
@@ -366,6 +371,7 @@ function AudioRoutingPage() {
   );
   const translatedAudioVolumePercent = gainDbToVolumePercent(
     configDraft.devices.inboundRoute.mixControl.translatedAudioGainDb,
+    MAX_TRANSLATED_VOLUME_PERCENT,
   );
 
   const inboundSecondaryModelOption = resolveSelectedModel(
@@ -581,13 +587,27 @@ function AudioRoutingPage() {
             <input
               aria-label={tWithDefault(t, 'audioRouting.translatedAudioVolume')}
               className="routing-slider-input ui-range"
-              max={100}
+              max={MAX_TRANSLATED_VOLUME_PERCENT}
               min={0}
-              onChange={(event) => patchInboundMixGain('translatedAudioGainDb', Number(event.target.value))}
-              style={sliderFillStyle(translatedAudioVolumePercent)}
+              onChange={(event) => patchInboundMixGain('translatedAudioGainDb', Number(event.target.value), MAX_TRANSLATED_VOLUME_PERCENT)}
+              style={sliderFillStyle(translatedAudioVolumePercent / 2)}
               type="range"
               value={translatedAudioVolumePercent}
             />
+          </label>
+          <label className={['routing-toggle-pill', configDraft.devices.inboundRoute.mixControl.translatedAudioAutoGainEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
+            <input
+              aria-checked={configDraft.devices.inboundRoute.mixControl.translatedAudioAutoGainEnabled}
+              checked={configDraft.devices.inboundRoute.mixControl.translatedAudioAutoGainEnabled}
+              className="ui-switch"
+              onChange={(event) => patchInboundMixControl({ translatedAudioAutoGainEnabled: event.target.checked })}
+              role="switch"
+              type="checkbox"
+            />
+            <span>
+              <strong>{tWithDefault(t, 'audioRouting.translatedAudioAutoGain')}</strong>
+              <small>{tWithDefault(t, 'audioRouting.translatedAudioAutoGainHint')}</small>
+            </span>
           </label>
 
           <div className="routing-feedback">

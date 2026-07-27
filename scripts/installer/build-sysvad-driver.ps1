@@ -164,7 +164,7 @@ Invoke-Checked $infverif @('/u', $stagedInf)
 if ($SkipSigning) {
   $unsignedMetadata = [ordered]@{
     generatedAt = (Get-Date).ToUniversalTime().ToString('o')
-    protocolVersion = '2026-06-02-loopback-v2'
+    protocolVersion = '2026-07-27-smart-gain-v3'
     configuration = $Configuration
     platform = $Platform
     signingMode = 'unsigned'
@@ -220,7 +220,7 @@ if ($isDevelopmentTestSigner -and (Test-Path -LiteralPath $certificatePath -Path
 
 $packageMetadata = [ordered]@{
   generatedAt = (Get-Date).ToUniversalTime().ToString('o')
-  protocolVersion = '2026-06-02-loopback-v2'
+  protocolVersion = '2026-07-27-smart-gain-v3'
   configuration = $Configuration
   platform = $Platform
   signingMode = if ($isDevelopmentTestSigner) { 'development-test' } else { 'release-injected' }

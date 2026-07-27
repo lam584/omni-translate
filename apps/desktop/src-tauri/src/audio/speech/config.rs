@@ -6,6 +6,7 @@ struct RouteMixConfig {
     keep_original_audio: bool,
     translated_audio_enabled: bool,
     translated_audio_gain_db: f32,
+    translated_audio_auto_gain_enabled: bool,
     original_audio_gain_db: f32,
     ducking_enabled: bool,
     ducking_depth_percent: u64,
@@ -281,6 +282,10 @@ fn parse_mix(config: &Value, prefix: &str) -> RouteMixConfig {
             .pointer(&format!("{prefix}/translatedAudioGainDb"))
             .and_then(Value::as_f64)
             .unwrap_or(0.0) as f32,
+        translated_audio_auto_gain_enabled: config
+            .pointer(&format!("{prefix}/translatedAudioAutoGainEnabled"))
+            .and_then(Value::as_bool)
+            .unwrap_or(prefix.contains("inboundRoute")),
         original_audio_gain_db: config
             .pointer(&format!("{prefix}/originalAudioGainDb"))
             .and_then(Value::as_f64)
@@ -299,6 +304,16 @@ fn parse_mix(config: &Value, prefix: &str) -> RouteMixConfig {
 #[cfg(test)]
 mod config_tests {
     use super::*;
+
+    #[test]
+    fn legacy_mix_defaults_smart_gain_only_for_inbound_watch_audio() {
+        let config = json!({});
+        let inbound = parse_mix(&config, "/devices/inboundRoute/mixControl");
+        let outbound = parse_mix(&config, "/devices/outboundRoute/mixControl");
+
+        assert!(inbound.translated_audio_auto_gain_enabled);
+        assert!(!outbound.translated_audio_auto_gain_enabled);
+    }
 
     #[test]
     fn explicit_missing_tts_provider_fails_closed() {

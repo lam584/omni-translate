@@ -326,11 +326,11 @@ impl ConfigRepository {
                   direction_key, route_id, direction, input_source_id, input_kind, input_device_id,
                   input_state, input_muted, input_buffer_ahead_ms, input_pre_buffer_state,
                   keep_original_audio, translated_audio_enabled, translated_audio_gain_db,
-                  original_audio_gain_db, ducking_enabled, ducking_depth_percent, monitor_mode,
+                  translated_audio_auto_gain_enabled, original_audio_gain_db, ducking_enabled, ducking_depth_percent, monitor_mode,
                   capture_buffer_ms, translation_buffer_ms, playback_buffer_ms, compensation_ms,
                   push_to_talk_enabled, push_to_talk_hotkey, push_to_talk_state,
                   push_to_talk_release_delay_ms, updated_at
-                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)",
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
                 params![
                     direction_key,
                     string_at(route, "/routeId"),
@@ -345,6 +345,7 @@ impl ConfigRepository {
                     bool_at(route, "/mixControl/keepOriginalAudio").map(bool_to_i64),
                     bool_at(route, "/mixControl/translatedAudioEnabled").map(bool_to_i64),
                     f64_at(route, "/mixControl/translatedAudioGainDb"),
+                    bool_at(route, "/mixControl/translatedAudioAutoGainEnabled").map(bool_to_i64),
                     f64_at(route, "/mixControl/originalAudioGainDb"),
                     bool_at(route, "/mixControl/duckingEnabled").map(bool_to_i64),
                     i64_at(route, "/mixControl/duckingDepthPercent"),

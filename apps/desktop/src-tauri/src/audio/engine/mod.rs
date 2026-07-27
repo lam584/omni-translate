@@ -1012,6 +1012,7 @@ mod tests {
             frame_count: 1,
             timestamp_ms: 1,
             payload_bytes: payload.len(),
+            translated_audio_enhancement_applied: false,
         };
         let header = serde_json::to_vec(&header).unwrap();
         let mut envelope = Vec::new();
@@ -1037,6 +1038,7 @@ mod tests {
             frame_count: 0,
             timestamp_ms: 1,
             payload_bytes: 0,
+            translated_audio_enhancement_applied: false,
         };
         let header = serde_json::to_vec(&header).unwrap();
         let mut envelope = Vec::new();
@@ -1061,6 +1063,7 @@ mod tests {
             frame_count: 0,
             timestamp_ms: 1,
             payload_bytes: 0,
+            translated_audio_enhancement_applied: false,
         };
         let header = serde_json::to_vec(&header).unwrap();
         let mut envelope = Vec::new();

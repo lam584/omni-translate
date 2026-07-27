@@ -3688,10 +3688,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "omni-audio-dsp"
+version = "0.1.0"
+
+[[package]]
 name = "omni-bridge-protocol"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
  "ts-rs",
 ]
 
@@ -3701,6 +3706,7 @@ version = "0.1.0"
 dependencies = [
  "cpal",
  "minimp3",
+ "omni-audio-dsp",
  "omni-bridge-protocol",
  "omni-logging",
  "rodio",
@@ -3723,6 +3729,7 @@ dependencies = [
  "keyring",
  "log",
  "minimp3",
+ "omni-audio-dsp",
  "omni-bridge-protocol",
  "omni-logging",
  "reqwest",

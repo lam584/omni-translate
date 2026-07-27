@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use omni_audio_dsp::enhance_speech_i16;
+
 pub use omni_bridge_protocol::{
     accepted_audio_frame_ack, decode_pcm16le, encode_pcm16le, rejected_audio_frame_ack,
     AudioFrameAck, AudioFrameHeader, MixControl, BRIDGE_PROTOCOL_VERSION,
@@ -239,19 +241,46 @@ pub fn mix_for_monitor(
     translated_channel_count: u16,
     mix: &MixControl,
 ) -> Vec<f32> {
+    mix_for_monitor_with_metrics(
+        original,
+        translated,
+        translated_sample_rate_hz,
+        translated_channel_count,
+        mix,
+    )
+    .0
+}
+
+pub fn mix_for_monitor_with_metrics(
+    original: &[i16],
+    translated: &[i16],
+    translated_sample_rate_hz: u32,
+    translated_channel_count: u16,
+    mix: &MixControl,
+) -> (Vec<f32>, Option<omni_audio_dsp::SpeechEnhancementMetrics>) {
     let original_track = if mix.keep_original_audio {
         normalize_track(original, INTERNAL_SAMPLE_RATE_HZ, INTERNAL_CHANNEL_COUNT)
     } else {
         Vec::new()
     };
-    let translated_track = if mix.translated_audio_enabled {
-        normalize_track(
+    let (translated_track, enhancement_metrics) = if mix.translated_audio_enabled {
+        let (enhanced, metrics) = enhance_speech_i16(
             translated,
             translated_sample_rate_hz,
             translated_channel_count,
+            mix.translated_audio_gain_db,
+            mix.translated_audio_auto_gain_enabled,
+        );
+        (
+            normalize_track(
+                &enhanced,
+                translated_sample_rate_hz,
+                translated_channel_count,
+            ),
+            Some(metrics),
         )
     } else {
-        Vec::new()
+        (Vec::new(), None)
     };
     let output_len = original_track.len().max(translated_track.len());
     let original_gain_db = if mix.ducking_enabled && !translated_track.is_empty() {
@@ -260,17 +289,27 @@ pub fn mix_for_monitor(
         mix.original_audio_gain_db
     };
     let original_gain = db_to_gain(original_gain_db);
-    let translated_gain = db_to_gain(mix.translated_audio_gain_db);
     let mut output = Vec::with_capacity(output_len);
 
     for index in 0..output_len {
         let original_sample = original_track.get(index).copied().unwrap_or(0.0) * original_gain;
-        let translated_sample =
-            translated_track.get(index).copied().unwrap_or(0.0) * translated_gain;
+        let translated_sample = translated_track.get(index).copied().unwrap_or(0.0);
         output.push((original_sample + translated_sample).clamp(-1.0, 1.0));
     }
 
-    output
+    (output, enhancement_metrics)
+}
+
+pub fn mix_control_for_translation_frame(
+    mix: &MixControl,
+    translated_audio_enhancement_applied: bool,
+) -> MixControl {
+    let mut effective = mix.clone();
+    if translated_audio_enhancement_applied {
+        effective.translated_audio_gain_db = 0.0;
+        effective.translated_audio_auto_gain_enabled = false;
+    }
+    effective
 }
 
 fn normalize_track(samples: &[i16], sample_rate_hz: u32, channel_count: u16) -> Vec<f32> {
@@ -380,6 +419,36 @@ mod tests {
             ..MixControl::default()
         };
         assert!(mix_for_monitor(&[], &[1000], 24_000, 1, &mix).is_empty());
+    }
+
+    #[test]
+    fn translated_monitor_uses_shared_smart_gain_once() {
+        let input = vec![1_036; 2_400];
+        let mix = MixControl {
+            keep_original_audio: false,
+            translated_audio_auto_gain_enabled: true,
+            ..MixControl::default()
+        };
+        let (output, metrics) = mix_for_monitor_with_metrics(&[], &input, 24_000, 1, &mix);
+        let metrics = metrics.expect("translated track should report enhancement metrics");
+
+        assert!((metrics.auto_gain_db - 12.0).abs() < 0.1);
+        assert!(output[0] > 0.12 && output[0] < 0.14);
+    }
+
+    #[test]
+    fn preprocessed_translation_frame_bypasses_second_gain_pass() {
+        let configured = MixControl {
+            translated_audio_gain_db: 6.0206,
+            translated_audio_auto_gain_enabled: true,
+            ..MixControl::default()
+        };
+        let effective = mix_control_for_translation_frame(&configured, true);
+
+        assert_eq!(effective.translated_audio_gain_db, 0.0);
+        assert!(!effective.translated_audio_auto_gain_enabled);
+        assert_eq!(configured.translated_audio_gain_db, 6.0206);
+        assert!(configured.translated_audio_auto_gain_enabled);
     }
 
     #[test]
@@ -532,6 +601,7 @@ mod tests {
             frame_count: 2,
             timestamp_ms: 1,
             payload_bytes: 4,
+            translated_audio_enhancement_applied: false,
         }
     }
 

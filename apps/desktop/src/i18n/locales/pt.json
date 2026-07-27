@@ -339,6 +339,8 @@
     "outputVolume": "Volume de saída",
     "originalAudioVolume": "Volume do áudio original",
     "translatedAudioVolume": "Volume do áudio traduzido pelo LLM",
+    "translatedAudioAutoGain": "Aumento inteligente de volume",
+    "translatedAudioAutoGainHint": "Uniformiza automaticamente a fala traduzida e evita cortes",
     "originalAudioVolumeVirtualDriverHint": "O volume do áudio original só pode ser ajustado no modo de driver virtual. No modo de loopback físico atual, use o volume do player ou do Windows.",
     "inputLevel": "Nível de entrada",
     "testing": "Testando...",

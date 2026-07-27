@@ -24,7 +24,7 @@ import type {
   MixControl as GeneratedMixControl,
 } from './generated/driver-bridge-contract';
 
-export type DriverBridgeProtocolVersion = '2026-06-02-loopback-v2';
+export type DriverBridgeProtocolVersion = '2026-07-27-smart-gain-v3';
 
 // Union aliases derived from the generated fields, so the literal members
 // have exactly one source of truth (the Rust contract).

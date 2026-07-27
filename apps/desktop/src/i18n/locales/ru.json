@@ -339,6 +339,8 @@
     "outputVolume": "Громкость вывода",
     "originalAudioVolume": "Громкость оригинального звука",
     "translatedAudioVolume": "Громкость перевода LLM",
+    "translatedAudioAutoGain": "Умное усиление громкости",
+    "translatedAudioAutoGainHint": "Автоматически выравнивает громкость перевода и предотвращает перегрузку",
     "originalAudioVolumeVirtualDriverHint": "Громкость оригинального звука регулируется только в режиме виртуального драйвера. В текущем режиме физического loopback используйте громкость плеера или Windows.",
     "inputLevel": "Уровень ввода",
     "testing": "Проверка...",

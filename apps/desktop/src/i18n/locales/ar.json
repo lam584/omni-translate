@@ -339,6 +339,8 @@
     "outputVolume": "حجم الإنتاج",
     "originalAudioVolume": "مستوى صوت الصوت الأصلي",
     "translatedAudioVolume": "مستوى صوت الترجمة من LLM",
+    "translatedAudioAutoGain": "تعزيز ذكي للصوت",
+    "translatedAudioAutoGainHint": "يضبط مستوى صوت الترجمة تلقائيًا ويمنع التشويش",
     "originalAudioVolumeVirtualDriverHint": "يمكن ضبط مستوى الصوت الأصلي فقط في وضع برنامج التشغيل الافتراضي؛ في وضع الاسترجاع الفعلي الحالي، استخدم مستوى صوت المشغل أو Windows.",
     "inputLevel": "الحد الأقصى للإدخال",
     "testing": "<g id=\"Bold\">الاختبار</g>",

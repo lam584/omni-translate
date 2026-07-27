@@ -161,6 +161,7 @@ struct MixPlan {
     channel_count: u16,
     mix_mode: String,
     ducking_active: bool,
+    enhancement_metrics: SpeechEnhancementMetrics,
 }
 
 struct SpeechMixPlanner<'a> {
@@ -203,7 +204,13 @@ impl<'a> SpeechMixPlanner<'a> {
     } else {
         &config.inbound_mix
     };
-    let mut translated = apply_i16_gain(&translated_pcm, route_mix.translated_audio_gain_db);
+    let (mut translated, enhancement_metrics) = enhance_speech_i16(
+        &translated_pcm,
+        sample_rate_hz,
+        channel_count,
+        route_mix.translated_audio_gain_db,
+        route_mix.translated_audio_auto_gain_enabled,
+    );
     let prompt = generate_prompt_tone(sample_rate_hz, PROMPT_TONE_MS);
     let mut translated_with_prompt = prompt;
     translated_with_prompt.append(&mut translated);
@@ -249,6 +256,7 @@ impl<'a> SpeechMixPlanner<'a> {
             "translated-plus-prompt".to_string()
         },
         ducking_active: route_mix.ducking_enabled && !original.is_empty(),
+        enhancement_metrics,
     }
 }
 }

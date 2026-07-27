@@ -239,6 +239,7 @@ mod probe {
                     "keepOriginalAudio": false,
                     "translatedAudioEnabled": true,
                     "translatedAudioGainDb": 0,
+                    "translatedAudioAutoGainEnabled": false,
                     "originalAudioGainDb": 0,
                     "duckingEnabled": false,
                     "duckingDepthPercent": 0,
@@ -536,6 +537,7 @@ mod probe {
             frame_count: payload.len() / (CHANNELS * 2),
             timestamp_ms: unix_ms(),
             payload_bytes: payload.len(),
+            translated_audio_enhancement_applied: false,
         };
         let header_bytes = serde_json::to_vec(&header).map_err(error_text)?;
         pipe.write_all(&(header_bytes.len() as u32).to_le_bytes())

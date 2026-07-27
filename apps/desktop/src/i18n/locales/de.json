@@ -339,6 +339,8 @@
     "outputVolume": "Ausgangslautstärke",
     "originalAudioVolume": "Lautstärke des Originaltons",
     "translatedAudioVolume": "Lautstärke der LLM-Übersetzung",
+    "translatedAudioAutoGain": "Intelligente Lautstärkeanhebung",
+    "translatedAudioAutoGainHint": "Gleicht die Übersetzungslautstärke automatisch aus und verhindert Übersteuerung",
     "originalAudioVolumeVirtualDriverHint": "Die Lautstärke des Originaltons ist nur im Modus „Virtueller Treiber“ regelbar. Verwenden Sie im aktuellen physischen Loopback-Modus die Lautstärke des Players oder von Windows.",
     "inputLevel": "Eingangspegel",
     "testing": "Testen...",

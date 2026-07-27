@@ -101,6 +101,10 @@ fn apply_driver_config(snapshot: &mut BridgeRuntimeSnapshot, config: &Value) {
             .and_then(Value::as_f64)
             .map(|value| value as f32)
             .unwrap_or(snapshot.mix_control.translated_audio_gain_db),
+        translated_audio_auto_gain_enabled: config
+            .pointer("/devices/inboundRoute/mixControl/translatedAudioAutoGainEnabled")
+            .and_then(Value::as_bool)
+            .unwrap_or(snapshot.mix_control.translated_audio_auto_gain_enabled),
         original_audio_gain_db: config
             .pointer("/devices/inboundRoute/mixControl/originalAudioGainDb")
             .and_then(Value::as_f64)

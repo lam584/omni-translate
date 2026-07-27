@@ -339,6 +339,8 @@
     "outputVolume": "வெளியீட்டு ஒலியளவு",
     "originalAudioVolume": "அசல் ஒலியின் அளவு",
     "translatedAudioVolume": "LLM மொழிபெயர்ப்பு ஒலியின் அளவு",
+    "translatedAudioAutoGain": "நுண்ணறிவு ஒலி உயர்வு",
+    "translatedAudioAutoGainHint": "மொழிபெயர்ப்பு குரலின் அளவைத் தானாகச் சீராக்கி கிளிப்பிங்கைத் தடுக்கிறது",
     "originalAudioVolumeVirtualDriverHint": "அசல் ஒலியின் அளவை மெய்நிகர் இயக்கி பயன்முறையில் மட்டுமே மாற்றலாம். தற்போதைய இயற்பியல் loopback பயன்முறையில் பிளேயர் அல்லது Windows ஒலியளவைப் பயன்படுத்தவும்.",
     "inputLevel": "உள்ளீட்டு நிலை",
     "testing": "சோதிக்கப்படுகிறது...",

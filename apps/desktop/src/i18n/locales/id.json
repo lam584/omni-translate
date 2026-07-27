@@ -339,6 +339,8 @@
     "outputVolume": "Keluaran volume",
     "originalAudioVolume": "Volume audio asli",
     "translatedAudioVolume": "Volume audio terjemahan LLM",
+    "translatedAudioAutoGain": "Peningkatan volume pintar",
+    "translatedAudioAutoGainHint": "Meratakan volume suara terjemahan dan mencegah clipping secara otomatis",
     "originalAudioVolumeVirtualDriverHint": "Volume audio asli hanya dapat diatur dalam mode driver virtual. Dalam mode loopback fisik saat ini, gunakan volume pemutar atau Windows.",
     "inputLevel": "Masukan level",
     "testing": "Periksa pengaturan dan status Perutean audio.",

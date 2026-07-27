@@ -339,6 +339,8 @@
     "outputVolume": "আউটপুট ভলিউম",
     "originalAudioVolume": "মূল অডিওর ভলিউম",
     "translatedAudioVolume": "LLM অনুবাদ অডিওর ভলিউম",
+    "translatedAudioAutoGain": "স্মার্ট ভলিউম বুস্ট",
+    "translatedAudioAutoGainHint": "অনুবাদিত কণ্ঠের ভলিউম স্বয়ংক্রিয়ভাবে সমান করে এবং ক্লিপিং রোধ করে",
     "originalAudioVolumeVirtualDriverHint": "মূল অডিওর ভলিউম শুধু ভার্চুয়াল ড্রাইভার মোডে নিয়ন্ত্রণ করা যায়; বর্তমান ফিজিক্যাল লুপব্যাক মোডে প্লেয়ার বা Windows-এর ভলিউম ব্যবহার করুন।",
     "inputLevel": "ইনপুট লেভেল",
     "testing": "পরীক্ষা চলছে...",

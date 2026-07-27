@@ -385,6 +385,19 @@
   accent-color: #10b981;
 }
 
+.routing-toggle-pill > span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.routing-toggle-pill small {
+  color: #64748b;
+  font-size: 11px;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
 .routing-toggle-pill-on {
   background: var(--rt-accent-soft);
   border-color: rgba(16, 185, 129, 0.55);

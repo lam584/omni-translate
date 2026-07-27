@@ -3,6 +3,7 @@ resolver = "2"
 members = [
   "apps/bridge-service-native",
   "apps/desktop/src-tauri",
+  "crates/omni-audio-dsp",
   "crates/omni-bridge-protocol",
   "crates/omni-logging",
 ]

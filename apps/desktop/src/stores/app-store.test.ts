@@ -111,13 +111,15 @@ describe('app store', () => {
     legacyMix.keepOriginalAudio = false;
     delete legacyMix.originalAudioGainDb;
     delete legacyMix.translatedAudioGainDb;
+    delete legacyMix.translatedAudioAutoGainEnabled;
 
     const merged = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft);
 
     expect(merged.devices.inboundRoute.mixControl.keepOriginalAudio).toBe(false);
     expect(merged.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(true);
     expect(merged.devices.inboundRoute.mixControl.originalAudioGainDb).toBe(-4);
-    expect(merged.devices.inboundRoute.mixControl.translatedAudioGainDb).toBe(-1);
+    expect(merged.devices.inboundRoute.mixControl.translatedAudioGainDb).toBe(0);
+    expect(merged.devices.inboundRoute.mixControl.translatedAudioAutoGainEnabled).toBe(true);
   });
 
   it('fills missing outbound mix gains without replacing persisted mix settings', () => {
@@ -126,6 +128,7 @@ describe('app store', () => {
     legacyMix.keepOriginalAudio = false;
     delete legacyMix.originalAudioGainDb;
     delete legacyMix.translatedAudioGainDb;
+    delete legacyMix.translatedAudioAutoGainEnabled;
 
     const merged = appStoreTestHelpers.mergeConfigDraftWithDefaults(legacyDraft);
 
@@ -133,6 +136,7 @@ describe('app store', () => {
     expect(merged.devices.outboundRoute.mixControl.translatedAudioEnabled).toBe(true);
     expect(merged.devices.outboundRoute.mixControl.originalAudioGainDb).toBe(-4);
     expect(merged.devices.outboundRoute.mixControl.translatedAudioGainDb).toBe(-1);
+    expect(merged.devices.outboundRoute.mixControl.translatedAudioAutoGainEnabled).toBe(false);
   });
 
   it('deduplicates notifications, keeps six items and updates runtime sync metadata', () => {

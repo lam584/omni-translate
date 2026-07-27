@@ -339,6 +339,8 @@
     "outputVolume": "Volume de sortie",
     "originalAudioVolume": "Volume de l’audio original",
     "translatedAudioVolume": "Volume de l’audio traduit par le LLM",
+    "translatedAudioAutoGain": "Amplification intelligente",
+    "translatedAudioAutoGainHint": "Uniformise automatiquement le volume traduit et évite l’écrêtage",
     "originalAudioVolumeVirtualDriverHint": "Le volume de l’audio original est réglable uniquement en mode pilote virtuel. Dans le mode de bouclage physique actuel, utilisez le volume du lecteur ou de Windows.",
     "inputLevel": "Niveau d'entrée",
     "testing": "Test...",

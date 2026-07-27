@@ -16,13 +16,23 @@ pub(crate) fn scale_i16_by_output_level(samples: &[i16], output_level: u64) -> V
 
 fn mix_pcm_tracks(left: &[i16], right: &[i16]) -> Vec<i16> {
     let len = left.len().max(right.len());
-    let mut mixed = Vec::with_capacity(len);
+    let mut summed = Vec::with_capacity(len);
     for index in 0..len {
         let lhs = left.get(index).copied().unwrap_or(0) as i32;
         let rhs = right.get(index).copied().unwrap_or(0) as i32;
-        mixed.push((lhs + rhs).clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+        summed.push(lhs + rhs);
     }
-    mixed
+    let peak = summed.iter().map(|sample| sample.abs()).max().unwrap_or(0) as f32;
+    let ceiling = 10.0_f32.powf(-1.0 / 20.0) * i16::MAX as f32;
+    let scale = if peak > ceiling { ceiling / peak } else { 1.0 };
+    summed
+        .into_iter()
+        .map(|sample| {
+            (sample as f32 * scale)
+                .round()
+                .clamp(i16::MIN as f32, i16::MAX as f32) as i16
+        })
+        .collect()
 }
 
 fn convert_captured_audio_to_mono_i16_24k(audio: &CapturedSegmentAudio) -> Vec<i16> {

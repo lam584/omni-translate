@@ -4,7 +4,7 @@ import type { BridgeStateSnapshot, DriverRepairAction } from '../schema/driver-b
 export const driverStateSnapshotMock: BridgeStateSnapshot = {
   type: 'bridge.state.snapshot',
   requestId: 'bridge-state-query-default',
-  protocolVersion: '2026-06-02-loopback-v2',
+  protocolVersion: '2026-07-27-smart-gain-v3',
   bridgeState: 'degraded',
   lifecycleState: 'error',
   driverHealth: 'version-mismatch',

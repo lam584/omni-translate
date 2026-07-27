@@ -1220,7 +1220,7 @@ function Invoke-BridgeSourceProbe {
   $probeRuntimeRoot = Join-Path $OutputDirectory "bridge-source-probe-runtime"
   New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
   $installStateJson = [ordered]@{
-    protocolVersion = '2026-06-02-loopback-v2'
+    protocolVersion = '2026-07-27-smart-gain-v3'
     installChannel = 'development'
     driverVersion = '0.10.0-dev'
     bridgeVersion = '0.1.0'
@@ -1250,7 +1250,7 @@ function Invoke-BridgeSourceProbe {
     $init = Write-NamedPipeJsonLine $pipeName ([ordered]@{
       type = 'bridge.init'
       requestId = "watch-mode-probe-init-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
-      protocolVersion = '2026-06-02-loopback-v2'
+      protocolVersion = '2026-07-27-smart-gain-v3'
       sessionId = "watch-mode-probe-session-$PID"
       installChannel = 'development'
       targetDeviceId = 'virtual-mic-default'

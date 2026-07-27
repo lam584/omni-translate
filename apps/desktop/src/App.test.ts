@@ -250,7 +250,7 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
         direction: 'inbound' as const,
         input: { sourceId: '', kind: 'microphone' as const, deviceId: '', state: 'idle' as const, muted: false, bufferAheadMs: 0, preBufferState: 'primed' as const, processing: { inputLevel: 80, echoCancellationEnabled: false, noiseSuppressionEnabled: false, autoGainControlEnabled: false } },
         outputs: [],
-        mixControl: { keepOriginalAudio: false, translatedAudioEnabled: false, translatedAudioGainDb: 0, originalAudioGainDb: 0, duckingEnabled: false, duckingDepthPercent: 0, monitorMode: 'original-only' as const },
+        mixControl: { keepOriginalAudio: false, translatedAudioEnabled: false, translatedAudioGainDb: 0, translatedAudioAutoGainEnabled: true, originalAudioGainDb: 0, duckingEnabled: false, duckingDepthPercent: 0, monitorMode: 'original-only' as const },
         latencyControl: { captureBufferMs: 0, translationBufferMs: 0, playbackBufferMs: 0, compensationMs: 0 },
       },
       outboundRoute: {
@@ -258,7 +258,7 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
         direction: 'outbound' as const,
         input: { sourceId: '', kind: 'microphone' as const, deviceId: '', state: 'idle' as const, muted: false, bufferAheadMs: 0, preBufferState: 'primed' as const, processing: { inputLevel: 80, echoCancellationEnabled: false, noiseSuppressionEnabled: false, autoGainControlEnabled: false } },
         outputs: [],
-        mixControl: { keepOriginalAudio: false, translatedAudioEnabled: false, translatedAudioGainDb: 0, originalAudioGainDb: 0, duckingEnabled: false, duckingDepthPercent: 0, monitorMode: 'original-only' as const },
+        mixControl: { keepOriginalAudio: false, translatedAudioEnabled: false, translatedAudioGainDb: 0, translatedAudioAutoGainEnabled: false, originalAudioGainDb: 0, duckingEnabled: false, duckingDepthPercent: 0, monitorMode: 'original-only' as const },
         latencyControl: { captureBufferMs: 0, translationBufferMs: 0, playbackBufferMs: 0, compensationMs: 0 },
         pushToTalk: { enabled: false, hotkey: '', state: 'idle' as const, releaseDelayMs: 0 },
       },
@@ -314,7 +314,8 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
     expect(config.devices.inboundRoute.mixControl.keepOriginalAudio).toBe(true);
     expect(config.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(true);
     expect(config.devices.inboundRoute.mixControl.originalAudioGainDb).toBe(-4);
-    expect(config.devices.inboundRoute.mixControl.translatedAudioGainDb).toBe(-1);
+    expect(config.devices.inboundRoute.mixControl.translatedAudioGainDb).toBe(0);
+    expect(config.devices.inboundRoute.mixControl.translatedAudioAutoGainEnabled).toBe(true);
     expect(config.devices.inboundRoute.mixControl.duckingEnabled).toBe(true);
     expect(config.devices.inboundRoute.mixControl.monitorMode).toBe('original-and-translated');
     expect(config.speech.textToSpeechModelId).toBe('template-dashscope-realtime::qwen3.5-omni-plus-realtime');

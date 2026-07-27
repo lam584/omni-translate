@@ -79,6 +79,7 @@ fn handle_source_subscriber(
             frame_count: payload.len() / (INTERNAL_CHANNEL_COUNT as usize * 2),
             timestamp_ms: unix_ms(),
             payload_bytes: payload.len(),
+            translated_audio_enhancement_applied: false,
         };
         if write_framed_audio(handle, &header, &payload).is_err() {
             break;

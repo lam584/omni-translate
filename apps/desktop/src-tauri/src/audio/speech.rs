@@ -6,6 +6,7 @@ use std::thread;
 use std::time::Duration;
 
 use cpal::traits::{DeviceTrait, HostTrait};
+use omni_audio_dsp::{enhance_speech_i16, SpeechEnhancementMetrics};
 use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
@@ -315,6 +316,7 @@ mod tests {
                 keep_original_audio: false,
                 translated_audio_enabled: true,
                 translated_audio_gain_db: 0.0,
+                translated_audio_auto_gain_enabled: true,
                 original_audio_gain_db: 0.0,
                 ducking_enabled: false,
                 ducking_depth_percent: 0,
@@ -323,6 +325,7 @@ mod tests {
                 keep_original_audio: true,
                 translated_audio_enabled: true,
                 translated_audio_gain_db: 0.0,
+                translated_audio_auto_gain_enabled: false,
                 original_audio_gain_db: 0.0,
                 ducking_enabled: true,
                 ducking_depth_percent: 30,
@@ -351,6 +354,7 @@ mod tests {
         assert!(!plan.virtual_mic_samples.is_empty());
         assert_eq!(plan.mix_mode, "original-plus-translated");
         assert!(plan.ducking_active);
+        assert_eq!(plan.enhancement_metrics.auto_gain_db, 0.0);
     }
 
     #[test]
@@ -932,6 +936,16 @@ mod tests {
         );
         assert_eq!(scale_i16_by_output_level(&[1000], 0), vec![0]);
         assert_eq!(scale_i16_by_output_level(&[1000], 200), vec![1000]);
+    }
+
+    #[test]
+    fn final_speech_mix_uses_peak_safe_scaling_instead_of_hard_clipping() {
+        let mixed = mix_pcm_tracks(&[30_000, -30_000], &[20_000, -20_000]);
+        let ceiling = 10.0_f32.powf(-1.0 / 20.0) * i16::MAX as f32;
+
+        assert!(mixed.iter().all(|sample| (*sample as f32).abs() <= ceiling + 1.0));
+        assert_eq!(mixed[0], -mixed[1]);
+        assert!(mixed[0] < i16::MAX);
     }
 
     #[test]

@@ -106,7 +106,8 @@ export const appConfigDraftMock: AppConfigDraft = {
       mixControl: {
         keepOriginalAudio: true,
         translatedAudioEnabled: true,
-        translatedAudioGainDb: -1,
+        translatedAudioGainDb: 0,
+        translatedAudioAutoGainEnabled: true,
         originalAudioGainDb: -4,
         duckingEnabled: true,
         duckingDepthPercent: 35,
@@ -155,6 +156,7 @@ export const appConfigDraftMock: AppConfigDraft = {
         keepOriginalAudio: true,
         translatedAudioEnabled: true,
         translatedAudioGainDb: -1,
+        translatedAudioAutoGainEnabled: false,
         originalAudioGainDb: -4,
         duckingEnabled: true,
         duckingDepthPercent: 45,
@@ -255,7 +257,7 @@ export const appConfigDraftMock: AppConfigDraft = {
     status: 'warning',
   },
   driver: {
-    protocolVersion: '2026-06-02-loopback-v2',
+    protocolVersion: '2026-07-27-smart-gain-v3',
     installChannel: 'development',
     installPhase: 'rollback-required',
     targetDeviceId: 'virtual-mic-default',

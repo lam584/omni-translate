@@ -339,6 +339,8 @@
     "outputVolume": "అవుట్‌పుట్ వాల్యూమ్",
     "originalAudioVolume": "అసలు ఆడియో వాల్యూమ్",
     "translatedAudioVolume": "LLM అనువాద ఆడియో వాల్యూమ్",
+    "translatedAudioAutoGain": "స్మార్ట్ వాల్యూమ్ బూస్ట్",
+    "translatedAudioAutoGainHint": "అనువాద స్వర స్థాయిని స్వయంచాలకంగా సమం చేసి క్లిప్పింగ్‌ను నివారిస్తుంది",
     "originalAudioVolumeVirtualDriverHint": "అసలు ఆడియో వాల్యూమ్‌ను వర్చువల్ డ్రైవర్ మోడ్‌లో మాత్రమే సర్దుబాటు చేయవచ్చు. ప్రస్తుత ఫిజికల్ loopback మోడ్‌లో ప్లేయర్ లేదా Windows వాల్యూమ్‌ను ఉపయోగించండి.",
     "inputLevel": "ఇన్‌పుట్ స్థాయి",
     "testing": "పరీక్షిస్తోంది...",

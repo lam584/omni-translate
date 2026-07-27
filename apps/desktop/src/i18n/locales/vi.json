@@ -339,6 +339,8 @@
     "outputVolume": "Âm lượng đầu ra",
     "originalAudioVolume": "Âm lượng âm thanh gốc",
     "translatedAudioVolume": "Âm lượng âm thanh dịch bởi LLM",
+    "translatedAudioAutoGain": "Tăng âm lượng thông minh",
+    "translatedAudioAutoGainHint": "Tự động cân bằng giọng dịch và ngăn méo tiếng",
     "originalAudioVolumeVirtualDriverHint": "Âm lượng âm thanh gốc chỉ có thể điều chỉnh trong chế độ trình điều khiển ảo. Ở chế độ loopback vật lý hiện tại, hãy dùng âm lượng của trình phát hoặc Windows.",
     "inputLevel": "Mức đầu vào",
     "testing": "Đang thử nghiệm...",

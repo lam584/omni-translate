@@ -116,6 +116,7 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         frame_count: samples.len() / channel_count as usize,
         timestamp_ms: now_unix_ms(),
         payload_bytes: bytes.len(),
+        translated_audio_enhancement_applied: true,
     };
     let header_bytes = serde_json::to_vec(&header).map_err(|error| error.to_string())?;
     let mut audio_pipe = OpenOptions::new()

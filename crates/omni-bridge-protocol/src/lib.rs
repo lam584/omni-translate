@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-06-02-loopback-v2";
+pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-07-27-smart-gain-v3";
 
 pub const DEFAULT_PIPE_NAME: &str = "omni-bridge-ipc";
 
@@ -27,6 +27,8 @@ pub struct MixControl {
     pub keep_original_audio: bool,
     pub translated_audio_enabled: bool,
     pub translated_audio_gain_db: f32,
+    #[serde(default = "default_translated_audio_auto_gain_enabled")]
+    pub translated_audio_auto_gain_enabled: bool,
     pub original_audio_gain_db: f32,
     pub ducking_enabled: bool,
     pub ducking_depth_percent: u64,
@@ -39,12 +41,17 @@ impl Default for MixControl {
             keep_original_audio: true,
             translated_audio_enabled: true,
             translated_audio_gain_db: 0.0,
+            translated_audio_auto_gain_enabled: true,
             original_audio_gain_db: 0.0,
             ducking_enabled: true,
             ducking_depth_percent: 35,
             monitor_mode: "original-and-translated".to_string(),
         }
     }
+}
+
+fn default_translated_audio_auto_gain_enabled() -> bool {
+    true
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -64,6 +71,8 @@ pub struct AudioFrameHeader {
     pub frame_count: usize,
     pub timestamp_ms: u64,
     pub payload_bytes: usize,
+    #[serde(default)]
+    pub translated_audio_enhancement_applied: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, TS)]
@@ -150,6 +159,7 @@ mod tests {
             frame_count: 2,
             timestamp_ms: 1,
             payload_bytes: 4,
+            translated_audio_enhancement_applied: false,
         }
     }
 
@@ -167,6 +177,25 @@ mod tests {
         assert_eq!(ack.playback_frames_written, 12);
         assert_eq!(ack.error_code, None);
         assert_eq!(ack.message, None);
+    }
+
+    #[test]
+    fn legacy_audio_header_defaults_to_unprocessed_translation() {
+        let header: AudioFrameHeader = serde_json::from_value(serde_json::json!({
+            "type": "bridge.translation.frame",
+            "requestId": "request-1",
+            "sessionId": "session-1",
+            "frameId": "frame-1",
+            "streamId": "stream-1",
+            "sampleRateHz": 24000,
+            "channelCount": 1,
+            "frameCount": 2,
+            "timestampMs": 1,
+            "payloadBytes": 4
+        }))
+        .expect("legacy header should deserialize");
+
+        assert!(!header.translated_audio_enhancement_applied);
     }
 
     #[test]

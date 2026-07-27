@@ -339,6 +339,8 @@
     "outputVolume": "आउटपुट आवाज",
     "originalAudioVolume": "मूळ ऑडिओचा आवाज",
     "translatedAudioVolume": "LLM भाषांतरित ऑडिओचा आवाज",
+    "translatedAudioAutoGain": "स्मार्ट आवाज वाढ",
+    "translatedAudioAutoGainHint": "भाषांतरित आवाजाची पातळी आपोआप समान करते आणि क्लिपिंग टाळते",
     "originalAudioVolumeVirtualDriverHint": "मूळ ऑडिओचा आवाज फक्त व्हर्च्युअल ड्रायव्हर मोडमध्ये समायोजित करता येतो. सध्याच्या फिजिकल लूपबॅक मोडमध्ये प्लेयर किंवा Windows चा आवाज वापरा.",
     "inputLevel": "इनपुट पातळी",
     "testing": "चाचणी सुरू आहे...",

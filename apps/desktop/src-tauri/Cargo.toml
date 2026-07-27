@@ -9,6 +9,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 chrono = "0.4"
+omni-audio-dsp = { path = "../../../crates/omni-audio-dsp" }
 omni-bridge-protocol = { path = "../../../crates/omni-bridge-protocol" }
 omni-logging = { path = "../../../crates/omni-logging" }
 cpal = "0.17.3"

@@ -1,5 +1,5 @@
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 1;
-pub(super) const RELATIONAL_SCHEMA_NAME: &str = "0001_relational_config_storage";
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 2;
+pub(super) const RELATIONAL_SCHEMA_NAME: &str = "0002_translated_audio_auto_gain";
 pub(super) const DEFAULT_CONFIG_JSON: &str =
     include_str!("../../../defaults/app-config.default.json");
 
@@ -222,6 +222,7 @@ CREATE TABLE audio_routes (
   keep_original_audio INTEGER,
   translated_audio_enabled INTEGER,
   translated_audio_gain_db REAL,
+  translated_audio_auto_gain_enabled INTEGER,
   original_audio_gain_db REAL,
   ducking_enabled INTEGER,
   ducking_depth_percent INTEGER,

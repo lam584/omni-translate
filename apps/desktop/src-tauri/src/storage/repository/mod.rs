@@ -272,6 +272,18 @@ impl ConfigRepository {
         if self.schema_needs_reset(connection)? {
             self.rebuild_schema(connection)?;
         }
+        if !table_has_column(
+            connection,
+            "audio_routes",
+            "translated_audio_auto_gain_enabled",
+        )? {
+            connection
+                .execute(
+                    "ALTER TABLE audio_routes ADD COLUMN translated_audio_auto_gain_enabled INTEGER",
+                    [],
+                )
+                .map_err_str()?;
+        }
 
         connection
             .execute(
@@ -520,7 +532,7 @@ mod tests {
     use serde_json::{json, Value};
     use tempfile::TempDir;
 
-    use super::{default_config_value, table_exists, ConfigRepository};
+    use super::{default_config_value, table_exists, table_has_column, ConfigRepository};
 
     fn test_repository() -> (TempDir, ConfigRepository) {
         let temp_dir = TempDir::new().expect("temp dir should be created");
@@ -553,6 +565,43 @@ mod tests {
         assert!(
             !table_exists(&connection, "provider_settings").expect("table check should pass"),
             "old payload table should not exist"
+        );
+    }
+
+    #[test]
+    fn smart_gain_column_migration_preserves_existing_config_document() {
+        let (_temp_dir, repository) = test_repository();
+        repository.initialize().expect("repository should initialize");
+        let mut config = default_config_value().expect("default config should parse");
+        config["devices"]["outputLevel"] = json!(73);
+        repository.save_config(&config).expect("config should save");
+
+        {
+            let connection = repository.open_connection().expect("connection should open");
+            connection
+                .execute_batch(
+                    "ALTER TABLE audio_routes DROP COLUMN translated_audio_auto_gain_enabled;",
+                )
+                .expect("v1 column shape should be simulated");
+        }
+
+        repository.initialize().expect("repository should migrate");
+        let connection = repository.open_connection().expect("connection should open");
+        assert!(
+            table_has_column(
+                &connection,
+                "audio_routes",
+                "translated_audio_auto_gain_enabled",
+            )
+            .expect("column check should pass")
+        );
+        let loaded = repository.load_config().expect("config should load");
+        assert_eq!(loaded.pointer("/devices/outputLevel"), Some(&json!(73)));
+        assert_eq!(
+            loaded.pointer(
+                "/devices/inboundRoute/mixControl/translatedAudioAutoGainEnabled",
+            ),
+            Some(&json!(true))
         );
     }
 

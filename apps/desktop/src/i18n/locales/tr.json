@@ -339,6 +339,8 @@
     "outputVolume": "Çıkış hacmi",
     "originalAudioVolume": "Orijinal ses düzeyi",
     "translatedAudioVolume": "LLM çeviri ses düzeyi",
+    "translatedAudioAutoGain": "Akıllı ses yükseltme",
+    "translatedAudioAutoGainHint": "Çeviri sesini otomatik olarak dengeler ve kırpılmayı önler",
     "originalAudioVolumeVirtualDriverHint": "Orijinal ses düzeyi yalnızca sanal sürücü modunda ayarlanabilir. Geçerli fiziksel loopback modunda oynatıcı veya Windows ses düzeyini kullanın.",
     "inputLevel": "Giriş seviyesi",
     "testing": "Test ediliyor...",

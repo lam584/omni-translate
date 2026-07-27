@@ -255,9 +255,23 @@ describe('AudioRoutingPage', () => {
     expect(originalVolume.value).toBe('63');
     expect(originalVolume.disabled).toBe(true);
     expect(originalVolume.getAttribute('aria-describedby')).toBe('original-audio-volume-virtual-driver-hint');
-    expect(translatedVolume.value).toBe('89');
+    expect(translatedVolume.value).toBe('100');
+    expect(translatedVolume.max).toBe('200');
     expect(translatedVolume.disabled).toBe(false);
+    const smartGain = inputText(Array.from(container.querySelectorAll('label')).find((item) => item.textContent?.includes('智能增响'))?.querySelector('input') ?? null);
+    expect(smartGain.checked).toBe(true);
     expect(container.textContent).toContain('原声音量仅在虚拟驱动模式下可调');
+  });
+
+  it('stores 200 percent translated gain and can disable smart loudness', async () => {
+    await renderPage();
+
+    await changeValue(rangeInputByLabel(container, 'LLM 译声音量'), '200');
+    await act(async () => clickCheckbox(container, '智能增响'));
+
+    const mixControl = useAppStore.getState().configDraft.devices.inboundRoute.mixControl;
+    expect(mixControl.translatedAudioGainDb).toBeCloseTo(6.0206, 4);
+    expect(mixControl.translatedAudioAutoGainEnabled).toBe(false);
   });
 
   it('stores both virtual-driver mix sliders as independent dB gains', async () => {

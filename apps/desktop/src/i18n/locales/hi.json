@@ -339,6 +339,8 @@
     "outputVolume": "आउटपुट वॉल्यूम",
     "originalAudioVolume": "मूल ऑडियो वॉल्यूम",
     "translatedAudioVolume": "LLM अनुवादित ऑडियो वॉल्यूम",
+    "translatedAudioAutoGain": "स्मार्ट वॉल्यूम बूस्ट",
+    "translatedAudioAutoGainHint": "अनुवादित आवाज़ का स्तर अपने आप बराबर करता है और क्लिपिंग रोकता है",
     "originalAudioVolumeVirtualDriverHint": "मूल ऑडियो वॉल्यूम केवल वर्चुअल ड्राइवर मोड में समायोजित किया जा सकता है। वर्तमान फिजिकल लूपबैक मोड में प्लेयर या Windows वॉल्यूम का उपयोग करें।",
     "inputLevel": "इनपुट स्तर",
     "testing": "परीक्षण हो रहा है...",

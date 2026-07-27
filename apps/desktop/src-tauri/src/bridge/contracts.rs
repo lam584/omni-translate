@@ -268,7 +268,7 @@ pub enum DriverBridgeEvent {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeInitRequest {
     pub request_id: String,
-    #[ts(type = "'2026-06-02-loopback-v2'")]
+    #[ts(type = "'2026-07-27-smart-gain-v3'")]
     pub protocol_version: String,
     pub session_id: String,
     #[ts(type = "'development' | 'release'")]
@@ -287,7 +287,7 @@ pub struct BridgeInitRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeInitResponse {
     pub request_id: String,
-    #[ts(type = "'2026-06-02-loopback-v2'")]
+    #[ts(type = "'2026-07-27-smart-gain-v3'")]
     pub protocol_version: String,
     #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,
@@ -313,7 +313,7 @@ pub struct BridgeSourceFlushRequest {
 #[serde(rename_all = "camelCase")]
 pub struct BridgeStateResponse {
     pub request_id: String,
-    #[ts(type = "'2026-06-02-loopback-v2'")]
+    #[ts(type = "'2026-07-27-smart-gain-v3'")]
     pub protocol_version: String,
     #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,

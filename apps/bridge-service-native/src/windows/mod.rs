@@ -13,7 +13,8 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use omni_bridge_protocol::{audio_pipe_path, control_pipe_path, source_pipe_path, DEFAULT_PIPE_NAME};
 use omni_bridge_service::{
     accepted_audio_frame_ack, classify_driver_health_with_device_evidence, decode_pcm16le,
-    mix_for_monitor, should_exit_after_control_command, singleton_mutex_name,
+    mix_control_for_translation_frame, mix_for_monitor, mix_for_monitor_with_metrics,
+    should_exit_after_control_command, singleton_mutex_name,
     validate_translation_frame, AudioFrameHeader, AudioFramePacer, DriverInstallState, MixControl,
     BRIDGE_PROTOCOL_VERSION, INTERNAL_CHANNEL_COUNT, INTERNAL_SAMPLE_RATE_HZ,
 };
@@ -714,13 +715,34 @@ fn handle_audio_client(
     };
     current.translated_frames_accepted += header.frame_count as u64;
     current.last_frame_timestamp_ms = Some(header.timestamp_ms);
-    let monitor_samples = mix_for_monitor(
+    let playback_mix = mix_control_for_translation_frame(
+        &current.mix_control,
+        header.translated_audio_enhancement_applied,
+    );
+    let (monitor_samples, enhancement) = mix_for_monitor_with_metrics(
         &[],
         &samples,
         header.sample_rate_hz,
         header.channel_count,
-        &current.mix_control,
+        &playback_mix,
     );
+    if let Some(metrics) = enhancement {
+        service_log(
+            LogLevel::Info,
+            &header.request_id,
+            &format!(
+                "event=translation_gain_applied preprocessed={} activeRmsDbfs={:?} inputPeakDbfs={:?} autoGainDb={:.3} requestedGainDb={:.3} appliedGainDb={:.3} peakLimited={} muted={}",
+                header.translated_audio_enhancement_applied,
+                metrics.active_rms_dbfs,
+                metrics.input_peak_dbfs,
+                metrics.auto_gain_db,
+                metrics.requested_gain_db,
+                metrics.applied_gain_db,
+                metrics.peak_limited,
+                metrics.muted,
+            ),
+        );
+    }
     if current.monitor_playback_enabled && !monitor_samples.is_empty() {
         let playback_frames = monitor_samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
         match playback_tx.try_send(PlaybackCommand::Play(PlaybackJob {

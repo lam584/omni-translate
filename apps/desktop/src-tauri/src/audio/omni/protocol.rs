@@ -897,22 +897,22 @@ pub(super) enum OmniPlaybackCommand {
 
 fn render_omni_output_samples(
     samples: &[i16],
+    sample_rate_hz: u32,
     output_level: u64,
     translated_audio_gain_db: f32,
-) -> Vec<i16> {
-    let translated_gain = if translated_audio_gain_db.is_finite() {
-        10.0_f32.powf(translated_audio_gain_db / 20.0)
-    } else {
-        0.0
-    };
-    let combined_gain = output_level.min(100) as f32 / 100.0 * translated_gain;
-    samples
-        .iter()
-        .map(|sample| {
-            ((*sample as f32) * combined_gain).clamp(i16::MIN as f32, i16::MAX as f32)
-                as i16
-        })
-        .collect()
+    translated_audio_auto_gain_enabled: bool,
+) -> (Vec<i16>, omni_audio_dsp::SpeechEnhancementMetrics) {
+    let (enhanced, metrics) = omni_audio_dsp::enhance_speech_i16(
+        samples,
+        sample_rate_hz,
+        1,
+        translated_audio_gain_db,
+        translated_audio_auto_gain_enabled,
+    );
+    (
+        crate::audio::speech::scale_i16_by_output_level(&enhanced, output_level),
+        metrics,
+    )
 }
 
 fn omni_playback_queue_age_expired(age: Duration) -> bool {
@@ -935,6 +935,7 @@ pub(crate) struct OmniSpeechConfig {
     speaker_device_id: Option<String>,
     speaker_output_level: u64,
     translated_audio_gain_db: f32,
+    translated_audio_auto_gain_enabled: bool,
     echo_guard_enabled: bool,
 }
 
@@ -982,7 +983,11 @@ impl OmniSpeechConfig {
             translated_audio_gain_db: config_value
                 .pointer("/devices/inboundRoute/mixControl/translatedAudioGainDb")
                 .and_then(Value::as_f64)
-                .unwrap_or(-1.0) as f32,
+                .unwrap_or(0.0) as f32,
+            translated_audio_auto_gain_enabled: config_value
+                .pointer("/devices/inboundRoute/mixControl/translatedAudioAutoGainEnabled")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
             echo_guard_enabled,
         }
     }
@@ -1091,10 +1096,27 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                             cfg.local_playback_enabled,
                             cfg.virtual_mic_output_enabled,
                         );
-                        let output_samples = render_omni_output_samples(
+                        let (output_samples, enhancement) = render_omni_output_samples(
                             &samples,
+                            sample_rate_hz,
                             cfg.speaker_output_level,
                             cfg.translated_audio_gain_db,
+                            cfg.translated_audio_auto_gain_enabled,
+                        );
+                        let _ = diag_log(
+                            &app,
+                            "omni",
+                            "info",
+                            format!(
+                                "[AUDIO] native translation gain applied: cue_id={cue_id} active_rms_dbfs={:?} input_peak_dbfs={:?} auto_gain_db={:.3} requested_gain_db={:.3} applied_gain_db={:.3} peak_limited={} muted={}",
+                                enhancement.active_rms_dbfs,
+                                enhancement.input_peak_dbfs,
+                                enhancement.auto_gain_db,
+                                enhancement.requested_gain_db,
+                                enhancement.applied_gain_db,
+                                enhancement.peak_limited,
+                                enhancement.muted,
+                            ),
                         );
                         let speaker_frames = if output_route.play_to_speaker {
                             // The AEC reference must be the exact PCM submitted to the
@@ -1202,7 +1224,8 @@ mod omni_playback_tests {
                 "outputLevel": 75,
                 "inboundRoute": {
                     "mixControl": {
-                        "translatedAudioGainDb": -6.0206
+                        "translatedAudioGainDb": -6.0206,
+                        "translatedAudioAutoGainEnabled": false
                     }
                 }
             },
@@ -1215,14 +1238,17 @@ mod omni_playback_tests {
         let speech = OmniSpeechConfig::from_config(&config);
         assert_eq!(speech.speaker_output_level, 75);
         assert!((speech.translated_audio_gain_db + 6.0206).abs() < f32::EPSILON);
+        assert!(!speech.translated_audio_auto_gain_enabled);
         assert!(speech.echo_guard_enabled());
     }
 
     #[test]
     fn native_output_gain_is_applied_to_the_pcm_used_for_playback() {
         let samples = [20_000, -20_000, i16::MAX, i16::MIN];
-        let half_from_route_gain = render_omni_output_samples(&samples, 100, -6.0206);
-        let half_from_output_level = render_omni_output_samples(&samples, 50, 0.0);
+        let (half_from_route_gain, _) =
+            render_omni_output_samples(&samples, 24_000, 100, -6.0206, false);
+        let (half_from_output_level, _) =
+            render_omni_output_samples(&samples, 24_000, 50, 0.0, false);
 
         for (route_sample, level_sample) in
             half_from_route_gain.iter().zip(&half_from_output_level)
@@ -1231,14 +1257,17 @@ mod omni_playback_tests {
         }
         assert_eq!(half_from_output_level, vec![10_000, -10_000, 16_383, -16_384]);
 
-        let clipped = render_omni_output_samples(&samples, 100, 6.0206);
-        assert_eq!(clipped[0], i16::MAX);
-        assert_eq!(clipped[1], i16::MIN);
+        let (protected, metrics) =
+            render_omni_output_samples(&samples, 24_000, 100, 6.0206, false);
+        let ceiling = 10.0_f32.powf(-1.0 / 20.0) * i16::MAX as f32;
+        assert!(protected.iter().all(|sample| (*sample as f32).abs() <= ceiling + 1.0));
+        assert!(metrics.peak_limited);
     }
 
     #[test]
     fn echo_reference_conversion_uses_the_gain_adjusted_samples() {
-        let rendered = render_omni_output_samples(&[12_000, -8_000], 50, 0.0);
+        let (rendered, _) =
+            render_omni_output_samples(&[12_000, -8_000], 24_000, 50, 0.0, false);
         let echo_reference = crate::audio::speech::i16_to_f32(&rendered);
 
         assert_eq!(rendered, vec![6_000, -4_000]);

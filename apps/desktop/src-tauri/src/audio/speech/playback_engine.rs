@@ -34,6 +34,27 @@ impl<'a> SpeechPlaybackEngine<'a> {
             self.config.local_playback_enabled,
             self.config.virtual_mic_output_enabled,
         );
+        let enhancement = mix.enhancement_metrics;
+        let _ = append_diagnostics_log(
+            self.app,
+            "audio",
+            "info",
+            "speech.translation_gain_applied",
+            Some(format!(
+                "cue={} segmentIndex={} activeRmsDbfs={:?} inputPeakDbfs={:?} autoGainDb={:.3} requestedGainDb={:.3} appliedGainDb={:.3} peakLimited={} muted={}",
+                cue.cue_id,
+                segment_index,
+                enhancement.active_rms_dbfs,
+                enhancement.input_peak_dbfs,
+                enhancement.auto_gain_db,
+                enhancement.requested_gain_db,
+                enhancement.applied_gain_db,
+                enhancement.peak_limited,
+                enhancement.muted,
+            )),
+            None,
+            None,
+        );
         let speaker_frames = if output_route.play_to_speaker {
             let echo_reference = i16_to_f32(&mix.speaker_samples);
             self.store.push_echo_reference(

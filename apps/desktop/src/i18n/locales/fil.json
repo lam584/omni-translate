@@ -339,6 +339,8 @@
     "outputVolume": "Dami ng output",
     "originalAudioVolume": "Volume ng orihinal na audio",
     "translatedAudioVolume": "Volume ng salin na audio ng LLM",
+    "translatedAudioAutoGain": "Matalinong pagpapalakas ng tunog",
+    "translatedAudioAutoGainHint": "Awtomatikong pinapantay ang lakas ng salin at iniiwasan ang clipping",
     "originalAudioVolumeVirtualDriverHint": "Sa virtual-driver mode lamang naa-adjust ang volume ng orihinal na audio. Sa kasalukuyang physical-loopback mode, gamitin ang volume ng player o ng Windows.",
     "inputLevel": "Antas ng input",
     "testing": "Pagsubok...",

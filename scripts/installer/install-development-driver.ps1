@@ -125,7 +125,7 @@ if (-not $?) {
 }
 
 $state = [ordered]@{
-  protocolVersion = '2026-06-02-loopback-v2'
+  protocolVersion = '2026-07-27-smart-gain-v3'
   installChannel = $InstallChannel
   driverVersion = $DriverVersion
   bridgeVersion = $BridgeVersion

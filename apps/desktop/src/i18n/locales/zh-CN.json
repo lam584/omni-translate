@@ -339,6 +339,8 @@
     "outputVolume": "输出音量",
     "originalAudioVolume": "原声音量",
     "translatedAudioVolume": "LLM 译声音量",
+    "translatedAudioAutoGain": "智能增响",
+    "translatedAudioAutoGainHint": "自动拉齐译声响度并防止爆音",
     "originalAudioVolumeVirtualDriverHint": "原声音量仅在虚拟驱动模式下可调；当前物理回环模式请使用播放器或 Windows 音量控制。",
     "inputLevel": "输入电平",
     "testing": "测试中...",

@@ -339,6 +339,8 @@
     "outputVolume": "Volumen de salida",
     "originalAudioVolume": "Volumen del audio original",
     "translatedAudioVolume": "Volumen del audio traducido por LLM",
+    "translatedAudioAutoGain": "Aumento de volumen inteligente",
+    "translatedAudioAutoGainHint": "Nivela automáticamente la voz traducida y evita la saturación",
     "originalAudioVolumeVirtualDriverHint": "El volumen del audio original solo se puede ajustar en el modo de controlador virtual. En el modo de bucle físico actual, usa el volumen del reproductor o de Windows.",
     "inputLevel": "Nivel de entrada",
     "testing": "Probando...",

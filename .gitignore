@@ -41,6 +41,7 @@ write_ps.js
 .claude/
 .codewhale/
 .qoder/
+LOOP_*.md
 
 # =============================================================================
 # OS generated files

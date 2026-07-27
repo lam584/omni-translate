@@ -94,4 +94,13 @@ describe('resolveDriverDiagnosis', () => {
       ).key,
     ).toBe('ready');
   });
+
+  it('never reports ready when the post-operation driver probe failed', () => {
+    const diagnosis = resolveDriverDiagnosis(bridgePatch({
+      driverHealth: 'running', bridgeState: 'running', driverProbeState: 'failed', lastErrorCode: null,
+    }));
+    expect(diagnosis.key).toBe('operationFailed');
+    expect(diagnosis.tone).toBe('error');
+    expect(diagnosis.reason).toContain('could not be verified');
+  });
 });

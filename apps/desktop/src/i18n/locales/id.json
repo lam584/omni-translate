@@ -83,6 +83,7 @@
     "idle": "Diam"
   },
   "settings": {
+    "languageLoadFailed": "Sumber daya bahasa gagal dimuat sehingga bahasa sebelumnya dipulihkan. Coba lagi. Detail: {{error}}",
     "title": "Pengaturan",
     "subtitle": "Adjust the interface Bahasa and general preferences. Changes apply immediately without a restart.",
     "sectionLanguage": "Bahasa antarmuka",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Manage the Omni Translate Virtual Speaker Driver and Bridge Service."
   },
   "welcome": {
+    "languageLoadFailed": "Sumber daya bahasa gagal dimuat sehingga pilihan sebelumnya dipulihkan. Detail: {{error}}",
     "title": "Penyiapan awal - Judul",
     "subtitle": "Pick a Bahasa, connect a Penyedia, then check the Driver and Bridge Service. You can update these anytime from Pengaturan.",
     "confirm": "Use this Bahasa",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "Overlay subtitel gagal diinisialisasi",
+    "bootstrapFailedHint": "Overlay berada dalam mode aman terbatas. Coba lagi atau ekspor diagnostik dari jendela utama.",
     "contextMenuTitle": "Overlay subtitel - Judul",
     "previewTitleEnglish": "Subtitel Siap",
     "previewTitle": "Subtitel Siap",
@@ -615,6 +619,7 @@
       "testOverlay": "Test Subtitel overlay",
       "exporting": "Periksa pengaturan dan status Diagnostik.",
       "exportBundle": "Ekspor Diagnostik bundle",
+      "openExportDirectory": "Buka folder penyimpanan",
       "refreshing": "Periksa pengaturan dan status Diagnostik.",
       "refreshRuntime": "Segarkan Runtime",
       "selectAll": "Diagnostik"
@@ -989,6 +994,7 @@
     "expandSection": "Bentangkan bagian"
   },
   "session": {
+    "speechFailureRecovery": "Subtitel tetap tersedia, tetapi keluaran suara tidak. Periksa perutean audio lalu mulai ulang.",
     "watchMode": "Viewing Mode",
     "conversationMode": "Percakapan Mode",
     "cueStartedAt": "Mulai {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "Mulai ulang sesi",
     "restartSessionHint": " Mulai ulang sesi lalu coba lagi.",
     "errorCode": {
+      "modelReferenceInvalid": "Model terjemahan sekunder hilang atau tidak lagi terhubung ke penyedia aktif. Pilih model lain di pengaturan penyedia.",
+      "audioCaptureFailed": "Proses perekaman audio berhenti. Periksa perangkat audio lalu coba lagi.",
       "credentialInvalid": "Kunci API tidak valid atau kedaluwarsa. Perbarui kredensial penyedia.",
       "quotaExceeded": "Kuota atau batas laju penyedia tercapai. Periksa penggunaan Anda lalu coba lagi.",
       "voiceUnsupported": "Suara yang dipilih tidak didukung. Pilih suara lain di pengaturan penyedia.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "The Virtual Audio route is unavailable. The session has temporarily switched to physical Speaker playback with AEC. This Mode still has loopback risk.",
     "virtualDriverFallbackConfirm": "The Virtual Audio Driver or Bridge Service is not available yet. Click OK to enter Subtitel-only Mode; click Batal to temporarily fall back to physical Speaker playback with AEC. The AEC fallback still has loopback risk.",
     "sceneLaunchFailed": "Gagal to Mulai {{scene}} ({{stage}}): {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "Penyedia melaporkan kesalahan internal. Mulai ulang sesi nanti. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "Penyedia melaporkan kesalahan internal. Mulai ulang sesi nanti. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "Penyedia melaporkan kesalahan internal. Mulai ulang sesi nanti. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "For example: game Istilah, film Subtitel, professional vocabulary..."
     },
     "conflictResolution": {
+      "overwriteHint": "Ganti semua entri yang konflik dengan terjemahan ini.",
+      "skipHint": "Jangan simpan entri ini; entri yang ada tidak berubah.",
+      "keep-allHint": "Simpan entri lain dengan istilah sumber yang sama dan pertahankan semua terjemahan.",
       "overwrite": "Glosarium",
       "skip": "Glosarium",
       "keep-all": "Glosarium"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "Tidak dapat menghubungi layanan suara. Periksa jaringan lalu mulai ulang sesi. Proses perekaman audio berhenti. Periksa perangkat audio lalu coba lagi.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "Tidak dapat menghubungi layanan suara. Periksa jaringan lalu mulai ulang sesi. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "Penyedia melaporkan kesalahan internal. Mulai ulang sesi nanti. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "Tidak dapat menghubungi layanan suara. Periksa jaringan lalu mulai ulang sesi. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

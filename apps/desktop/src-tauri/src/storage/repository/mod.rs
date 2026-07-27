@@ -187,8 +187,11 @@ impl ConfigRepository {
             &exported_at,
         )?;
 
+        let exported_path = file_path.to_string_lossy().to_string();
         Ok(ConfigExportArtifact {
-            file_path: file_path.to_string_lossy().to_string(),
+            file_path: exported_path.clone(),
+            output_path: exported_path,
+            file_count: 1,
             exported_at,
             config_contract_version: CONFIG_CONTRACT_VERSION,
             snapshot_count: stats.snapshot_count,

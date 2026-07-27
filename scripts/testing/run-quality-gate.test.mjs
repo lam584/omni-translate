@@ -253,6 +253,7 @@ test('buildQualityGateSummary throws when the integration step is missing', () =
 test('buildAutoSteps honors the skip switches', () => {
   assert.deepEqual(buildAutoSteps().map((step) => step.name), [
     'audit-architecture',
+    'audit-error-handling',
     'verify-desktop',
     'contracts',
     'integration-bridge-contract',
@@ -264,6 +265,6 @@ test('buildAutoSteps honors the skip switches', () => {
   ]);
   assert.deepEqual(
     buildAutoSteps({ skipDesktopShell: true, skipBridgeService: true }).map((step) => step.name),
-    ['audit-architecture', 'verify-desktop', 'contracts', 'integration-bridge-contract', 'coverage-all'],
+    ['audit-architecture', 'audit-error-handling', 'verify-desktop', 'contracts', 'integration-bridge-contract', 'coverage-all'],
   );
 });

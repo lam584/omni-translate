@@ -1,2 +1,3 @@
-export { providersPageHelpers } from './ProvidersScreen';
-export { default } from './ProvidersScreen';
+// Stable route/test entrypoint; implementation details live in ProvidersWorkspace.
+export { providersPageHelpers } from './providers/providersPageHelpers';
+export { default } from './ProvidersWorkspace';

@@ -148,10 +148,29 @@ describe('app store', () => {
     expect(state.runtimeSnapshot.lastSyncAt).toBe('time-notice-3');
   });
 
+  it('preserves local notifications when a native snapshot arrives without them', () => {
+    const local = notification('local-unacknowledged');
+    useAppStore.getState().pushRuntimeNotification(local);
+    const native = notification('native-notice');
+
+    useAppStore.getState().setRuntimeSnapshot({
+      ...runtimeSnapshotMock,
+      notifications: [native],
+    });
+
+    expect(useAppStore.getState().runtimeNotifications.map((item) => item.id).slice(0, 2)).toEqual([
+      'native-notice',
+      'local-unacknowledged',
+    ]);
+    expect(useAppStore.getState().runtimeSnapshot.notifications).toEqual(
+      useAppStore.getState().runtimeNotifications,
+    );
+  });
+
   it('updates runtime snapshots and each nested configuration section', () => {
     const runtime = { ...runtimeSnapshotMock, lastSyncAt: 'updated' };
     useAppStore.getState().setRuntimeSnapshot(runtime);
-    expect(useAppStore.getState().runtimeSnapshot).toBe(runtime);
+    expect(useAppStore.getState().runtimeSnapshot).toStrictEqual(runtime);
 
     const activeTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
     useAppStore.getState().updateActiveProviderDraft({ displayName: 'Updated Provider' });

@@ -87,6 +87,7 @@
     "subtitle": "Adjust the interface language and general preferences. Changes apply immediately without a restart.",
     "sectionLanguage": "Interface language",
     "languageHint": "Pick the language for the desktop UI. Takes effect instantly and does not change the subtitle translation target.",
+    "languageLoadFailed": "The language resources could not be loaded, so the previous language was restored. Retry the selection. Technical detail: {{error}}",
     "languageLabel": "Display language",
     "currentLanguage": "Current language: {{name}}",
     "sectionTranslationPreference": "Translation language preference",
@@ -186,6 +187,7 @@
   },
   "welcome": {
     "title": "Welcome to Omni Translate",
+    "languageLoadFailed": "The language resources could not be loaded, so the previous language was restored. Select it again to retry. Technical detail: {{error}}",
     "subtitle": "Pick a language, connect a provider, then check the driver and bridge. You can update these anytime from Settings.",
     "confirm": "Use this language",
     "hint": "Pick a language from the list below; click to switch instantly.",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "Subtitle overlay failed to initialize",
+    "bootstrapFailedHint": "The overlay is in a safe degraded state. Retry, or export diagnostics from the main window if it still fails.",
     "contextMenuTitle": "Overlay controls",
     "previewTitleEnglish": "Subtitles ready",
     "previewTitle": "Subtitles ready",
@@ -618,6 +622,7 @@
       "testOverlay": "Test subtitle overlay",
       "exporting": "Exporting...",
       "exportBundle": "Export diagnostics bundle",
+      "openExportDirectory": "Open containing folder",
       "refreshing": "Refreshing...",
       "refreshRuntime": "Refresh runtime",
       "selectAll": "Select all"
@@ -1012,6 +1017,7 @@
     "framesCaptured": "Frames captured",
     "speechSegments": "Speech segments",
     "systemAudioError": "System audio capture error: {{error}}",
+    "speechFailureRecovery": " Subtitles remain available; check the speech model and output device, then retry.",
     "restartBridgeHint": " Restart Bridge Service and try again.",
     "connectionReconnecting": "Connection interrupted, reconnecting (attempt {{attempt}}/{{max}})...",
     "connectionRestored": "Connection restored",
@@ -1024,7 +1030,9 @@
       "voiceUnsupported": "The selected voice is not supported. Choose another voice in provider settings.",
       "networkUnreachable": "Unable to reach the speech service. Check your network and restart the session.",
       "providerInternal": "The provider reported an internal error. Restart the session and try again later.",
+      "modelReferenceInvalid": "The secondary translation model is missing or no longer linked to an enabled provider. Choose another model in provider settings.",
       "audioDeviceLost": "The audio device was disconnected or is unavailable. Check the device and try again.",
+      "audioCaptureFailed": "The audio capture worker stopped. Check the audio device and retry.",
       "audioFlowStalled": "The audio stream stalled. Confirm the audio source is still playing."
     },
     "errorAction": {
@@ -1361,7 +1369,10 @@
     "conflictResolution": {
       "overwrite": "Overwrite",
       "skip": "Skip",
-      "keep-all": "Keep all"
+      "keep-all": "Keep all",
+      "overwriteHint": "Replace every conflicting entry with this translation.",
+      "skipHint": "Do not save this entry; existing entries remain unchanged.",
+      "keep-allHint": "Save another entry with the same source term and keep every existing translation."
     },
     "errors": {
       "libraryNameRequired": "Enter a glossary library name",

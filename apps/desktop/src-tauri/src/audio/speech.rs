@@ -102,6 +102,17 @@ pub fn start_dispatch(
                     speech.last_error = Some(error.clone());
                     push_event(speech, "speech.error", error.clone(), None, None);
                 });
+                let runtime_state = app_handle.state::<crate::runtime::state::RuntimeStateStore>();
+                let _ = crate::runtime::events::emit_runtime_notification(
+                    &app_handle,
+                    &runtime_state,
+                    crate::runtime::contracts::RuntimeNotification::warning(
+                        "subtitle-tts-worker-failed",
+                        "session",
+                        &format!("字幕仍可用，但语音播报不可用：{error} | recommended: restart-route"),
+                        crate::shared::time::now_unix_millis_marker(),
+                    ),
+                );
                 let _ = append_diagnostics_log(
                     &app_handle,
                     "audio",
@@ -114,7 +125,28 @@ pub fn start_dispatch(
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);
             }
         })
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| {
+            let message = format!("字幕仍可用，但语音播报 worker 启动失败：{error} | recommended: restart-route");
+            store.update_speech(|speech| {
+                speech.status = "degraded".to_string();
+                speech.dispatch_state = "error".to_string();
+                speech.last_error = Some(message.clone());
+                push_event(speech, "speech.error", message.clone(), None, None);
+            });
+            let runtime_state = app.state::<crate::runtime::state::RuntimeStateStore>();
+            let _ = crate::runtime::events::emit_runtime_notification(
+                &app,
+                &runtime_state,
+                crate::runtime::contracts::RuntimeNotification::warning(
+                    "subtitle-tts-worker-start-failed",
+                    "session",
+                    &message,
+                    crate::shared::time::now_unix_millis_marker(),
+                ),
+            );
+            let _ = emit_audio_snapshot(&app, store);
+            message
+        })?;
 
     store.insert_session(
         "speech",

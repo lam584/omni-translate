@@ -32,9 +32,14 @@ export type SessionErrorCode =
   | 'session.credential-invalid'
   | 'session.quota-exceeded'
   | 'session.voice-unsupported'
+  | 'session.model-reference-invalid'
+  | 'session.launch-precheck-failed'
+  | 'session.launch-stage-failed'
+  | 'session.launch-timeout'
   | 'session.network-unreachable'
   | 'session.provider-internal'
   | 'audio.device-lost'
+  | 'audio.capture-failed'
   | 'audio.flow-stalled';
 
 export const AUDIO_RUNTIME_SNAPSHOT_EVENT = 'audio://snapshot';

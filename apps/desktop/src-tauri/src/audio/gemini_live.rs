@@ -218,6 +218,9 @@ pub fn start_gemini_live(
                 audio_rx,
                 stop_rx,
             ) {
+                let error = crate::audio::omni::session_errors::report_realtime_worker_failure(
+                    &app_handle, "gemini", &error,
+                );
                 let _ = audio_state.set_stt_connected_if_current(stt_epoch, false, 0);
                 let _ = diag_log(
                     &app_handle,

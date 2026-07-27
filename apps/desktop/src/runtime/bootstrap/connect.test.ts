@@ -163,7 +163,7 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
     const cleanup = await connectDesktopRuntimeBridge();
 
     const messages = pushSpy.mock.calls.map(([notification]) => notification.message);
-    expect(messages.some((message) => message.includes('Config load failed'))).toBe(true);
+    expect(messages.some((message) => message.includes('配置读取失败') || message.includes('Configuration loading failed'))).toBe(true);
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).not.toBe('runtime-error');
     cleanup();
     pushSpy.mockRestore();

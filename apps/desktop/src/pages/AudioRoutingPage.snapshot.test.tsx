@@ -81,6 +81,23 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     }
   });
 
+  it('shows a Bridge autostart blocker beside the virtual microphone option', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      runtimeNotifications: [{
+        id: 'bridge-autostart-failed-test', level: 'warning', source: 'desktop-runtime',
+        message: 'Bridge Service 自动启动失败：命名管道超时', emittedAt: '2026-07-27T00:00:00Z',
+      }],
+    }));
+    await act(async () => {
+      host.root.render(<MemoryRouter><AudioRoutingPage /></MemoryRouter>);
+    });
+
+    const virtualMicToggle = Array.from(host.container.querySelectorAll('.scenario-card'))
+      .find((card) => card.textContent?.includes('将翻译语音发送到虚拟麦克风'));
+    expect(virtualMicToggle?.querySelector('.scenario-card-error-hint')?.textContent).toContain('命名管道超时');
+  });
+
   it('does not render the auto-save indicator', async () => {
     await act(async () => {
       host.root.render(

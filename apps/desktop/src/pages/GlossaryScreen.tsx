@@ -23,6 +23,8 @@ import {
 import { providerTemplates } from '../defaults/provider-templates';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
+import { writeExportArtifactRuntime } from '../runtime/export-artifact-runtime';
+import { openExportDirectoryRuntime } from '../runtime/diagnostics-runtime';
 import {
   buildProviderTemplateCatalogEntries,
   readProviderTemplateCatalogPreferences,
@@ -87,7 +89,7 @@ export default function GlossaryPage() {
   const {
     selectedLibraryId, setSelectedLibraryId, searchQuery, setSearchQuery,
     filterStrategy, setFilterStrategy, filterImportant, setFilterImportant,
-    page, setPage, dialogOpen, setDialogOpen, dialogState, setDialogState,
+    page, setPage, dialogOpen, setDialogOpen, dialogState, setDialogState, entryError, setEntryError,
     conflictEntries, setConflictEntries, conflictResolution, setConflictResolution,
     previewText, setPreviewText, testResult, setTestResult, importMessage, setImportMessage,
     draggedLibraryId, setDraggedLibraryId, libraryDialogOpen, setLibraryDialogOpen,
@@ -205,15 +207,22 @@ export default function GlossaryPage() {
     reader.readAsText(file);
   };
 
-  const exportLibraries = (libraryIds?: string[]) => {
-    const data = libraryIds ? libraries.filter((library) => libraryIds.includes(library.id)) : libraries;
-    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = resolveGlossaryExportFilename(libraries, libraryIds);
-    anchor.click();
-    URL.revokeObjectURL(url);
+  const exportLibraries = async (libraryIds?: string[]) => {
+    try {
+      const data = libraryIds ? libraries.filter((library) => libraryIds.includes(library.id)) : libraries;
+      const filename = resolveGlossaryExportFilename(libraries, libraryIds);
+      const artifact = await writeExportArtifactRuntime(filename, JSON.stringify(data, null, 2), 'application/json');
+      setImportMessage({
+        text: `${t('glossary.messages.exportSuccess', { defaultValue: `已导出 ${data.length} 个术语库` })}：${artifact.outputPath} · ${artifact.fileCount}`,
+        tone: 'success',
+        outputPath: artifact.outputPath,
+      });
+    } catch (error) {
+      setImportMessage({
+        text: t('glossary.messages.exportFailed', { defaultValue: `导出失败：${error instanceof Error ? error.message : String(error)}` }),
+        tone: 'error',
+      });
+    }
   };
 
   const removeLibrary = (libraryId: string) => {
@@ -273,7 +282,11 @@ export default function GlossaryPage() {
   };
 
   const saveEntry = () => {
-    if (!dialogState.sourceTerm.trim() || !dialogState.targetTerm.trim()) return;
+    if (!dialogState.sourceTerm.trim() || !dialogState.targetTerm.trim()) {
+      setEntryError(t('glossary.errors.termRequired', { defaultValue: '源术语与目标术语均为必填。' }));
+      return;
+    }
+    setEntryError('');
 
     const entry: GlossaryPackageEntry = {
       id: dialogState.id ?? generateEntryId(),
@@ -289,6 +302,10 @@ export default function GlossaryPage() {
 
     const result = upsertGlossaryEntry(libraries, selectedLibrary!.id, entry, conflictResolution, conflictEntries);
     if (result.skipped) {
+      setImportMessage({
+        text: t('glossary.messages.entrySkipped', { defaultValue: `已按“跳过”策略处理，词条“${entry.sourceTerm}”未保存。` }),
+        tone: 'warning',
+      });
       setDialogOpen(false);
       return;
     }
@@ -363,6 +380,7 @@ export default function GlossaryPage() {
           selectedLibraryId={effectiveSelectedLibraryId}
           draggedLibraryId={draggedLibraryId}
           importMessage={importMessage}
+          onOpenExportDirectory={(path) => void openExportDirectoryRuntime(path).catch((error) => setImportMessage({ text: String(error), tone: 'error' }))}
           onDismissImport={() => setImportMessage(null)}
           onCreateLibrary={openLibraryDialog}
           onSelect={(id) => { setSelectedLibraryId(id); setPage(1); setReminderMessage(null); }}
@@ -517,6 +535,8 @@ export default function GlossaryPage() {
       {/* Add/edit entry dialog */}
       {dialogOpen ? (
         <GlossaryEntryDialog
+          clearError={() => setEntryError('')}
+          error={entryError}
           state={dialogState}
           setState={setDialogState}
           conflicts={conflictEntries}

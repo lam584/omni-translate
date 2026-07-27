@@ -8,7 +8,7 @@ export type SessionCommandV2 = { "action": "snapshot" } | { "action": "bootstrap
 
 export type BridgeCommandV2 = { "action": "snapshot" } | { "action": "refresh" } | { "action": "start", config: unknown, } | { "action": "stop" } | { "action": "install", config: unknown, } | { "action": "uninstall" } | { "action": "repair", config: unknown, repairAction: string, };
 
-export type DiagnosticsCommandV2 = { "action": "selfCheck" } | { "action": "overlaySelfCheck" } | { "action": "export", scope: string, } | { "action": "liveSessionEvents" } | { "action": "snapshot" };
+export type DiagnosticsCommandV2 = { "action": "selfCheck" } | { "action": "overlaySelfCheck" } | { "action": "export", scope: string, } | { "action": "liveSessionEvents" } | { "action": "snapshot" } | { "action": "openExportDirectory", outputPath: string, } | { "action": "writeExportArtifact", filename: string, content: string, };
 
 export type ConfigurationCommandV2 = { "action": "load" } | { "action": "save", config: unknown, } | { "action": "reset" } | { "action": "export" } | { "action": "import", filePath: string, } | { "action": "createSnapshot", reason?: string, } | { "action": "rollback", snapshotId: string, } | { "action": "runtimeSnapshot" } | { "action": "bootstrapRuntime" } | { "action": "secretStatus", reference: string, } | { "action": "secretRead", reference: string, } | { "action": "secretUpsert", reference: string, secret: string, };
 

@@ -83,6 +83,7 @@
     "idle": "செயலற்ற"
   },
   "settings": {
+    "languageLoadFailed": "மொழி வளங்களை ஏற்ற முடியாததால் முந்தைய மொழி மீட்டமைக்கப்பட்டது. மீண்டும் முயலவும். விவரம்: {{error}}",
     "title": "அமைப்புகள்",
     "subtitle": "இடைமுக மொழி மற்றும் பொது விருப்பங்களை சரிசெய்யவும். மறுதொடக்கமின்றி உடனடியாக பயன்படும்.",
     "sectionLanguage": "இடைமுக மொழி",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Omni Translate மெய்நிகர் ஸ்பீக்கர் இயக்கி மற்றும் Bridge Service ஐ நிர்வகிக்கவும்."
   },
   "welcome": {
+    "languageLoadFailed": "மொழி வளங்களை ஏற்ற முடியாததால் முந்தைய தேர்வு மீட்டமைக்கப்பட்டது. விவரம்: {{error}}",
     "title": "Omni Translate க்கு வரவேற்கிறோம்",
     "subtitle": "நீங்கள் விரும்பும் இடைமுக மொழியை தேர்ந்தெடுக்கவும். அமைப்புகளில் எப்போதும் மாற்றலாம்.",
     "confirm": "இந்த மொழியை பயன்படுத்து",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "வசன மேலடுக்கைத் தொடங்க முடியவில்லை",
+    "bootstrapFailedHint": "மேலடுக்கு பாதுகாப்பான வரையறுக்கப்பட்ட நிலையில் உள்ளது. மீண்டும் முயலவும் அல்லது முதன்மை சாளரத்தில் கண்டறிதலை ஏற்றுமதி செய்யவும்.",
     "contextMenuTitle": "மேலடுக்குக் கட்டுப்பாடுகள்",
     "previewTitleEnglish": "வசனங்கள் தயார்",
     "previewTitle": "முன்னோட்ட முறை",
@@ -615,6 +619,7 @@
       "testOverlay": "வசன மேலடுக்கைச் சோதி",
       "exporting": "ஏற்றுமதி செய்யப்படுகிறது...",
       "exportBundle": "கண்டறிதல் தொகுப்பை ஏற்றுமதி செய்",
+      "openExportDirectory": "கொண்டுள்ள கோப்புறையைத் திற",
       "refreshing": "புதுப்பிக்கப்படுகிறது...",
       "refreshRuntime": "இயக்கநேரத்தைப் புதுப்பி",
       "selectAll": "அனைத்தையும் தேர்ந்தெடு"
@@ -989,6 +994,7 @@
     "expandSection": "பிரிவை விரி"
   },
   "session": {
+    "speechFailureRecovery": "வசனங்கள் கிடைக்கும்; குரல் வெளியீடு கிடைக்காது. ஒலி வழித்தடத்தைச் சரிபார்த்து மீண்டும் தொடங்கவும்.",
     "watchMode": "பார்வை முறை",
     "conversationMode": "உரையாடல் முறை",
     "cueStartedAt": "தொடக்கம் {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "அமர்வை மறுதொடக்கம் செய்",
     "restartSessionHint": " அமர்வை மறுதொடக்கம் செய்து மீண்டும் முயற்சிக்கவும்.",
     "errorCode": {
+      "modelReferenceInvalid": "இரண்டாம் மொழிபெயர்ப்பு மாதிரி இல்லை அல்லது இயக்கப்பட்ட வழங்குநருடன் இணைக்கப்படவில்லை. அமைப்புகளில் வேறு மாதிரியைத் தேர்ந்தெடுக்கவும்.",
+      "audioCaptureFailed": "ஒலி பதிவு செயலி நின்றது. ஒலி சாதனத்தைச் சரிபார்த்து மீண்டும் முயலவும்.",
       "credentialInvalid": "API விசை தவறானது அல்லது காலாவதியானது. வழங்குநர் சான்றுகளைப் புதுப்பிக்கவும்.",
       "quotaExceeded": "வழங்குநர் ஒதுக்கீடு அல்லது வீத வரம்பு எட்டப்பட்டது. உங்கள் பயன்பாட்டைச் சரிபார்த்து மீண்டும் முயற்சிக்கவும்.",
       "voiceUnsupported": "தேர்ந்தெடுத்த குரல் ஆதரிக்கப்படவில்லை. வழங்குநர் அமைப்புகளில் வேறு குரலைத் தேர்ந்தெடுக்கவும்.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "மெய்நிகர் ஆடியோ வழி கிடைக்கவில்லை. அமர்வு தற்காலிகமாக AEC உடன் இயற்பியல் ஸ்பீக்கர் ஒலிப்பிற்கு மாறியுள்ளது. இந்த முறையிலும் loopback ஆபத்து உள்ளது.",
     "virtualDriverFallbackConfirm": "மெய்நிகர் ஆடியோ driver அல்லது Bridge இன்னும் கிடைக்கவில்லை. வசனம்-மட்டும் முறைக்குச் செல்ல OK-ஐ கிளிக் செய்யவும்; AEC உடன் இயற்பியல் ஸ்பீக்கர் ஒலிப்பிற்குத் தற்காலிகமாகத் திரும்ப Cancel-ஐ கிளிக் செய்யவும். AEC மாற்று வழியிலும் loopback ஆபத்து உள்ளது.",
     "sceneLaunchFailed": "தொடங்க தோல்வி {{scene}} ({{stage}}): {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "வழங்குநர் உள் பிழையைத் தெரிவித்தது. பின்னர் அமர்வை மறுதொடக்கம் செய்யவும். {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "வழங்குநர் உள் பிழையைத் தெரிவித்தது. பின்னர் அமர்வை மறுதொடக்கம் செய்யவும். {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "வழங்குநர் உள் பிழையைத் தெரிவித்தது. பின்னர் அமர்வை மறுதொடக்கம் செய்யவும். {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "எடுத்துக்காட்டாக: விளையாட்டுச் சொற்கள், திரைப்பட வசனங்கள், தொழில்முறைச் சொற்கள்..."
     },
     "conflictResolution": {
+      "overwriteHint": "முரண்படும் எல்லா பதிவுகளையும் இந்த மொழிபெயர்ப்பால் மாற்றவும்.",
+      "skipHint": "இந்த பதிவு சேமிக்கப்படாது; தற்போதைய பதிவுகள் மாறாது.",
+      "keep-allHint": "அதே மூலச் சொல்லுடன் மற்றொரு பதிவைச் சேமித்து எல்லா மொழிபெயர்ப்புகளையும் வைத்திருக்கவும்.",
       "overwrite": "மேலெழுது",
       "skip": "தவிர்",
       "keep-all": "அனைத்தையும் வைத்திரு"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "குரல் சேவையை அணுக முடியவில்லை. நெட்வொர்க்கைச் சரிபார்த்து அமர்வை மறுதொடக்கம் செய்யவும். ஒலி பதிவு செயலி நின்றது. ஒலி சாதனத்தைச் சரிபார்த்து மீண்டும் முயலவும்.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "குரல் சேவையை அணுக முடியவில்லை. நெட்வொர்க்கைச் சரிபார்த்து அமர்வை மறுதொடக்கம் செய்யவும். {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "வழங்குநர் உள் பிழையைத் தெரிவித்தது. பின்னர் அமர்வை மறுதொடக்கம் செய்யவும். {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "குரல் சேவையை அணுக முடியவில்லை. நெட்வொர்க்கைச் சரிபார்த்து அமர்வை மறுதொடக்கம் செய்யவும். {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

@@ -282,28 +282,39 @@ export function updateCustomProviderTemplate(template: ProviderTemplate, draft: 
   };
 }
 
-export function readCustomProviderTemplates(): ProviderTemplate[] {
+export function readCustomProviderTemplatesResult(): { templates: ProviderTemplate[]; error: string | null } {
   if (!storageAvailable()) {
-    return [];
+    return { templates: [], error: null };
   }
 
   try {
     const raw = window.localStorage.getItem(CUSTOM_PROVIDER_TEMPLATES_STORAGE_KEY);
     if (!raw) {
-      return [];
+      return { templates: [], error: null };
     }
 
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as ProviderTemplate[]) : [];
-  } catch {
-    return [];
+    return Array.isArray(parsed)
+      ? { templates: parsed as ProviderTemplate[], error: null }
+      : { templates: [], error: 'Stored custom provider data is not an array' };
+  } catch (error) {
+    return { templates: [], error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+export function readCustomProviderTemplates(): ProviderTemplate[] {
+  return readCustomProviderTemplatesResult().templates;
 }
 
 export function writeCustomProviderTemplates(templates: ProviderTemplate[]) {
   if (!storageAvailable()) {
-    return;
+    return { ok: false as const, error: 'Browser storage is unavailable' };
   }
 
-  window.localStorage.setItem(CUSTOM_PROVIDER_TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
+  try {
+    window.localStorage.setItem(CUSTOM_PROVIDER_TEMPLATES_STORAGE_KEY, JSON.stringify(templates));
+    return { ok: true as const, error: null };
+  } catch (error) {
+    return { ok: false as const, error: error instanceof Error ? error.message : String(error) };
+  }
 }

@@ -1,0 +1,14 @@
+[
+  "session.credential-invalid",
+  "session.quota-exceeded",
+  "session.voice-unsupported",
+  "session.model-reference-invalid",
+  "session.network-unreachable",
+  "session.provider-internal",
+  "session.launch-precheck-failed",
+  "session.launch-stage-failed",
+  "session.launch-timeout",
+  "audio.device-lost",
+  "audio.capture-failed",
+  "audio.flow-stalled"
+]

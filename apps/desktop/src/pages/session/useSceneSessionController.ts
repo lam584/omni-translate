@@ -64,6 +64,10 @@ function sceneLaunchTimeoutError(message: string) {
   return new Error(message);
 }
 
+function tagSceneLaunchError(message: string, code: 'session.launch-precheck-failed' | 'session.launch-stage-failed' | 'session.launch-timeout') {
+  return `${message} | code: ${code} | recommended: restart-session`;
+}
+
 async function withSceneLaunchTimeout<T>(operation: Promise<T>, timeoutMs: number, timeoutMessage: string, onTimeout: () => Promise<void>): Promise<T> {
   let rejectTimeout!: (reason: Error) => void;
   const timeout = new Promise<never>((_, reject) => { rejectTimeout = reject; });
@@ -329,7 +333,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
   const launchScene = async (options: SceneLaunchOptions) => {
     const { launchAttemptId, mode } = options;
     if ([options.audioSnapshot.inbound.captureState, options.audioSnapshot.outbound.captureState].includes('stopping')) {
-      controller.pushNotification({ id: `scene-launch-stopping-${Date.now()}`, level: 'warning', source: 'session', message: i18n.t('session.stoppingPreviousRoute'), emittedAt: new Date().toISOString() });
+      controller.pushNotification({ id: `scene-launch-stopping-${Date.now()}`, level: 'warning', source: 'session', message: tagSceneLaunchError(i18n.t('session.stoppingPreviousRoute'), 'session.launch-precheck-failed'), emittedAt: new Date().toISOString() });
       return;
     }
     const plan = buildSceneLaunchPlan(options);
@@ -530,7 +534,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
             id: `watch-fallback-failed-${Date.now()}`,
             level: 'error',
             source: 'session',
-            message: i18n.t('session.watchFallbackFailed', { fallback, cause: fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause) }),
+            message: tagSceneLaunchError(i18n.t('session.watchFallbackFailed', { fallback, cause: fallbackCause instanceof Error ? fallbackCause.message : String(fallbackCause) }), 'session.launch-stage-failed'),
             emittedAt: new Date().toISOString(),
           });
         }
@@ -541,7 +545,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           id: `scene-overlay-${mode}-${Date.now()}`,
           level: 'error',
           source: 'session',
-          message: i18n.t('session.overlayOpenFailed', { error: launchError instanceof Error ? launchError.message : String(launchError) }),
+          message: tagSceneLaunchError(i18n.t('session.overlayOpenFailed', { error: launchError instanceof Error ? launchError.message : String(launchError) }), 'session.launch-stage-failed'),
           emittedAt: new Date().toISOString(),
         });
       }
@@ -551,7 +555,11 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
       const failureError = mode === 'watch' && launchStage !== 'subtitle-overlay'
         ? await describeWatchLaunchFailure(launchStage, launchError, routeCommandAccepted)
         : launchError;
-      controller.pushNotification({ id: `scene-launch-${mode}-${Date.now()}`, level: 'error', source: 'session', message: controller.sceneLaunchFailureMessage(mode, launchStage, failureError), emittedAt: new Date().toISOString() });
+      const failureMessage = controller.sceneLaunchFailureMessage(mode, launchStage, failureError);
+      const failureCode = failureError instanceof Error && failureError.message === launchTimeoutMessage
+        ? 'session.launch-timeout'
+        : 'session.launch-stage-failed';
+      controller.pushNotification({ id: `scene-launch-${mode}-${Date.now()}`, level: 'error', source: 'session', message: tagSceneLaunchError(failureMessage, failureCode), emittedAt: new Date().toISOString() });
     }
   };
 

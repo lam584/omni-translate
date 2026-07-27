@@ -52,6 +52,7 @@ vi.mock('../runtime/bridge-runtime', () => ({
 
 vi.mock('../runtime/diagnostics-runtime', () => ({
   exportDiagnosticsBundleRuntime: (...args: unknown[]) => exportDiagnosticsBundleRuntimeMock(...args),
+  openExportDirectoryRuntime: vi.fn(),
   runDiagnosticsSelfCheckRuntime: (...args: unknown[]) => runDiagnosticsSelfCheckRuntimeMock(...args),
   runSubtitleOverlaySelfCheckRuntime: (...args: unknown[]) => runSubtitleOverlaySelfCheckRuntimeMock(...args),
 }));
@@ -922,8 +923,8 @@ describe('DiagnosticsPage monitoring boundary', () => {
   });
 
   it('exports benchmark and live-event reports through both formats', async () => {
-    const benchmarkExport = vi.spyOn(DiagnosticsReportExporter, 'exportBenchmark').mockImplementation(() => undefined);
-    const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockImplementation(() => undefined);
+    const benchmarkExport = vi.spyOn(DiagnosticsReportExporter, 'exportBenchmark').mockResolvedValue({ outputPath: 'benchmark.json', fileCount: 1 });
+    const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockResolvedValue({ outputPath: 'events.json', fileCount: 1 });
     runModelBenchmarkMock.mockResolvedValue(benchmarkReport('export result'));
     const audio = structuredClone(audioRuntimeSnapshotMock);
     audio.sessionStartedAt = 'unix-ms:5000';
@@ -1013,7 +1014,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     report.audioDurationSecs = undefined as never;
     report.runs = [];
     runModelBenchmarkMock.mockResolvedValue(report);
-    const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockImplementation(() => undefined);
+    const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockResolvedValue({ outputPath: 'events.json', fileCount: 1 });
     const audio = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
     audio.sessionStartedAt = 'unix-ms:5000';
     audio.inbound.streamBound = true;

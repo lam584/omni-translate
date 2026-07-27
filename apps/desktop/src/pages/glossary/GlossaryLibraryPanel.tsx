@@ -3,13 +3,14 @@ import { useTranslation } from 'react-i18next';
 import AppIcon from '../../components/icons/AppIcon';
 import type { GlossaryLibrary } from '../../schema/glossary-package';
 
-type ImportMessage = { text: string; tone: 'success' | 'warning' | 'error' };
+type ImportMessage = { text: string; tone: 'success' | 'warning' | 'error'; outputPath?: string };
 type Props = {
   libraries: GlossaryLibrary[];
   selectedLibraryId: string | null;
   draggedLibraryId: string | null;
   importMessage: ImportMessage | null;
   onDismissImport: () => void;
+  onOpenExportDirectory: (path: string) => void;
   onCreateLibrary: () => void;
   onSelect: (id: string) => void;
   onDragStart: (event: DragEvent<HTMLDivElement>, id: string) => void;
@@ -24,7 +25,7 @@ export default function GlossaryLibraryPanel(props: Props) {
   const { t } = useTranslation();
   return <aside className="glossary-library-panel">
     <div className="glossary-panel-head"><div><h3>{t('glossary.library.title')}</h3></div></div>
-    {props.importMessage ? <div className={`glossary-toast glossary-toast-${props.importMessage.tone}`} role="status"><div className="glossary-toast-body"><strong>{t(`glossary.importTone.${props.importMessage.tone}`)}</strong><p>{props.importMessage.text}</p></div><button aria-label={t('glossary.actions.closeNotice')} className="glossary-toast-close" onClick={props.onDismissImport} type="button"><AppIcon name="close" size={14} /></button></div> : null}
+    {props.importMessage ? <div className={`glossary-toast glossary-toast-${props.importMessage.tone}`} role="status"><div className="glossary-toast-body"><strong>{t(`glossary.importTone.${props.importMessage.tone}`)}</strong><p>{props.importMessage.text}</p>{props.importMessage.outputPath ? <button className="text-button" onClick={() => props.onOpenExportDirectory(props.importMessage!.outputPath!)} type="button">{t('diagnostics.actions.openExportDirectory')}</button> : null}</div><button aria-label={t('glossary.actions.closeNotice')} className="glossary-toast-close" onClick={props.onDismissImport} type="button"><AppIcon name="close" size={14} /></button></div> : null}
     {!props.libraries.length ? <div className="glossary-empty"><strong>{t('glossary.empty.noLibrariesTitle')}</strong><p>{t('glossary.empty.noLibrariesDescription')}</p><button className="icon-button routing-primary-action" onClick={props.onCreateLibrary} type="button" style={{ justifySelf: 'start', marginTop: 4 }}><AppIcon name="book" size={14} />{t('glossary.actions.newLibrary')}</button></div> : <div className="glossary-library-list">{props.libraries.map((library, index) => <div
       className={['glossary-library-item', library.id === props.selectedLibraryId ? 'glossary-library-item-active' : '', library.id === props.draggedLibraryId ? 'glossary-library-item-dragging' : ''].filter(Boolean).join(' ')}
       draggable

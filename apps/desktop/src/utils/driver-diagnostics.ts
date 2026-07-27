@@ -49,6 +49,9 @@ export function resolveDriverDiagnosis(bridge: RuntimeSnapshot['bridge']): Drive
   if (bridge.lastErrorCode === 'driver.secure-boot-enabled') {
     return { key: 'secureBootEnabled', tone: 'error', recommendedAction, reason };
   }
+  if (bridge.driverProbeState === 'failed') {
+    return { key: 'operationFailed', tone: 'error', recommendedAction, reason: reason ?? 'Driver probe failed; installation state could not be verified.' };
+  }
   if (ready) {
     return { key: 'ready', tone: 'success', recommendedAction, reason };
   }

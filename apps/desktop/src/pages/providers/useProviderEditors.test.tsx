@@ -82,6 +82,34 @@ describe('provider editor controllers', () => {
     expect(setPreferences).not.toHaveBeenCalled();
   });
 
+  it('keeps catalog UI preferences unchanged when enabling or reordering cannot persist', async () => {
+    const activeProvider = structuredClone(appConfigDraftMock.providers[0]!);
+    const entries: ProviderTemplateCatalogEntry[] = providerTemplates.slice(0, 2).map((template, order) => ({ template, enabled: true, hidden: false, order }));
+    const activeCustomTemplateDraft = customProviderTemplateToDraft(providerTemplates[0]!);
+    const providerDraftForCustomTemplate = providersPageHelpers.providerDraftToCustomProviderTemplateDraft(activeProvider);
+    const setPreferences = vi.fn();
+    let api!: ReturnType<typeof useProviderEditorController>;
+    const draggingRef = createRef<string | null>(); draggingRef.current = entries[0]!.template.id;
+    function Harness() {
+      api = useProviderEditorController({ entries, draggingTemplateId: entries[0]!.template.id, setDraggingTemplateId: vi.fn(),
+        setTemplateCatalogPreferences: setPreferences, draggingTemplateIdRef: draggingRef,
+        templateMouseDragMovedRef: { current: false }, templateMouseHoverTargetRef: { current: null }, activeProvider,
+        activeTemplate: providerTemplates[0]!, activeCustomTemplateDraft, customTemplates: [],
+        providerDraftForCustomTemplate, sceneAssignments: activeProvider.sceneModelAssignments,
+        setCustomTemplates: vi.fn(), onTemplateChanged: vi.fn() });
+      return null;
+    }
+    await act(async () => root.render(<Harness />));
+    const storageSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage denied'); });
+
+    act(() => api.handleTemplateEnabledToggle(entries[0]!.template.id));
+    act(() => api.updateTemplateCatalogEntries([...entries].reverse()));
+
+    expect(setPreferences).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('界面已回滚');
+    storageSpy.mockRestore();
+  });
+
   it('covers empty, inferred, missing-entry, and no-op model editor paths', async () => {
     const activeProvider = structuredClone(appConfigDraftMock.providers[0]!);
     const activeTemplate = providerTemplates[0]!;

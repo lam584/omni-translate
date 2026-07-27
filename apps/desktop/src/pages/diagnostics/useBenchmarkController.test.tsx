@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
-import { useBenchmarkController, type BenchmarkVoiceModel } from './useBenchmarkController';
+import { classifyBenchmarkError, useBenchmarkController, type BenchmarkVoiceModel } from './useBenchmarkController';
 
 const runtime = vi.hoisted(() => ({
   readProviderSecret: vi.fn(),
@@ -111,7 +111,16 @@ describe('useBenchmarkController', () => {
 
     runtime.readProviderSecret.mockRejectedValueOnce('offline');
     await act(async () => controller.run());
-    expect(controller.error).toBe('offline');
-    expect(controller.progress).toMatchObject({ status: 'error', error: 'offline' });
+    expect(controller.error).toContain('offline');
+    expect(controller.progress).toMatchObject({ status: 'error' });
+    expect(controller.progress?.error).toContain('offline');
+  });
+
+  it('classifies common benchmark failures and preserves technical details', () => {
+    expect(classifyBenchmarkError(new Error('401 Unauthorized'))).toContain('API Key');
+    expect(classifyBenchmarkError(new Error('No such file or directory'))).toContain('绝对路径');
+    expect(classifyBenchmarkError(new Error('websocket timed out'))).toContain('连接失败或超时');
+    expect(classifyBenchmarkError(new Error('model unsupported'))).toContain('实时音频');
+    expect(classifyBenchmarkError('unknown failure')).toContain('unknown failure');
   });
 });

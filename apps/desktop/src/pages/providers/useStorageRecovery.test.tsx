@@ -2,7 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeSnapshotMock } from '../../mocks/runtime-shell';
-import { storageRecoveryHelpers, useStorageRecovery } from './useStorageRecovery';
+import { classifyStorageRecoveryError, storageRecoveryHelpers, useStorageRecovery } from './useStorageRecovery';
 
 const mocks = vi.hoisted(() => ({
   bootstrapRuntime: vi.fn(), bootstrapStorage: vi.fn(), runtimeSnapshot: vi.fn(), isTauri: vi.fn(),
@@ -26,8 +26,9 @@ describe('useStorageRecovery', () => {
   let root: Root;
   let container: HTMLDivElement;
   let failure: string | null;
+  let retry: () => void;
   let props: Parameters<typeof useStorageRecovery>[0];
-  function Harness() { failure = useStorageRecovery(props); return <output>{failure}</output>; }
+  function Harness() { ({ failure, retry } = useStorageRecovery(props)); return <output>{failure}</output>; }
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -74,7 +75,16 @@ describe('useStorageRecovery', () => {
     props = { ...props, bridgeStatus: 'tauri-shell-2', setRuntimeSnapshot: vi.fn() };
     mocks.bootstrapStorage.mockRejectedValueOnce('storage offline');
     await act(async () => { root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
-    expect(failure).toBe('storage offline');
+    expect(failure).toContain('storage offline');
+    const callsBeforeRetry = mocks.bootstrapStorage.mock.calls.length;
+    await act(async () => { retry(); await Promise.resolve(); });
+    expect(mocks.bootstrapStorage.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
+  });
+
+  it('classifies timeout, credential, and database recovery failures', () => {
+    expect(classifyStorageRecoveryError(new Error('operation timed out'))).toContain('超时');
+    expect(classifyStorageRecoveryError(new Error('keyring unavailable'))).toContain('凭据');
+    expect(classifyStorageRecoveryError(new Error('sqlite locked'))).toContain('数据库');
   });
 
   it('does not start recovery outside Tauri or after storage is ready', async () => {

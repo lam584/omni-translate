@@ -105,3 +105,15 @@
   color:#84dca8e6
 }
 
+.settings-inline-feedback-error {
+  display:flex;
+  align-items:center;
+  gap:6px;
+  margin:10px 0 0;
+  color:#b91c1c;
+  background:#fef2f2;
+  border:1px solid rgba(220, 38, 38, .28);
+  border-radius:8px;
+  padding:8px 10px
+}
+

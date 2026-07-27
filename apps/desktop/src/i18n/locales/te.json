@@ -83,6 +83,7 @@
     "idle": "నిష్క్రియం"
   },
   "settings": {
+    "languageLoadFailed": "భాషా వనరులు లోడ్ కాలేదు, అందువల్ల మునుపటి భాషను పునరుద్ధరించాం. మళ్లీ ప్రయత్నించండి. వివరాలు: {{error}}",
     "title": "సెట్టింగ్‌లు",
     "subtitle": "ఇంటర్ఫేస్ భాష మరియు సాధారణ ప్రాధాన్యతలను సర్దుబాటు చేయండి. పున:ప్రారంభం లేకుండా తక్షణమే అమలవుతుంది.",
     "sectionLanguage": "ఇంటర్ఫేస్ భాష",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Omni Translate వర్చువల్ స్పీకర్ డ్రైవర్ మరియు Bridge Service ను నిర్వహించండి."
   },
   "welcome": {
+    "languageLoadFailed": "భాషా వనరులు లోడ్ కాలేదు, అందువల్ల మునుపటి ఎంపికను పునరుద్ధరించాం. వివరాలు: {{error}}",
     "title": "Omni Translate కు స్వాగతం",
     "subtitle": "మీకు నచ్చిన ఇంటర్ఫేస్ భాషను ఎంచుకోండి. సెట్టింగ్‌లలో ఎప్పుడైనా మార్చుకోవచ్చు.",
     "confirm": "ఈ భాషను వాడండి",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "ఉపశీర్షిక ఓవర్లే ప్రారంభం కాలేదు",
+    "bootstrapFailedHint": "ఓవర్లే సురక్షిత పరిమిత మోడ్‌లో ఉంది. మళ్లీ ప్రయత్నించండి లేదా ప్రధాన విండో నుండి డయాగ్నస్టిక్స్ ఎగుమతి చేయండి.",
     "contextMenuTitle": "ఓవర్‌లే నియంత్రణలు",
     "previewTitleEnglish": "సబ్‌టైటిల్స్ సిద్ధం",
     "previewTitle": "ప్రివ్యూ మోడ్",
@@ -615,6 +619,7 @@
       "testOverlay": "సబ్‌టైటిల్ ఓవర్‌లే పరీక్షించు",
       "exporting": "ఎగుమతి అవుతోంది...",
       "exportBundle": "డయాగ్నొస్టిక్స్ బండిల్ ఎగుమతి చేయి",
+      "openExportDirectory": "ఉన్న ఫోల్డర్‌ను తెరవండి",
       "refreshing": "రిఫ్రెష్ అవుతోంది...",
       "refreshRuntime": "రన్‌టైమ్ రిఫ్రెష్ చేయి",
       "selectAll": "అన్నీ ఎంచుకో"
@@ -989,6 +994,7 @@
     "expandSection": "విభాగాన్ని విస్తరించండి"
   },
   "session": {
+    "speechFailureRecovery": "ఉపశీర్షికలు అందుబాటులో ఉంటాయి, కానీ వాయిస్ అవుట్‌పుట్ లేదు. ఆడియో రూటింగ్ తనిఖీ చేసి మళ్లీ ప్రారంభించండి.",
     "watchMode": "వీక్షణ మోడ్",
     "conversationMode": "సంభాషణ మోడ్",
     "cueStartedAt": "ప్రారంభం {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "సెషన్‌ను పునఃప్రారంభించండి",
     "restartSessionHint": " సెషన్‌ను పునఃప్రారంభించి మళ్లీ ప్రయత్నించండి.",
     "errorCode": {
+      "modelReferenceInvalid": "ద్వితీయ అనువాద మోడల్ లేదు లేదా సక్రియ ప్రొవైడర్‌కు అనుసంధానించబడలేదు. సెట్టింగుల్లో మరొకదాన్ని ఎంచుకోండి.",
+      "audioCaptureFailed": "ఆడియో క్యాప్చర్ ప్రక్రియ ఆగింది. ఆడియో పరికరాన్ని తనిఖీ చేసి మళ్లీ ప్రయత్నించండి.",
       "credentialInvalid": "API కీ చెల్లదు లేదా గడువు ముగిసింది. ప్రొవైడర్ ఆధారాలను నవీకరించండి.",
       "quotaExceeded": "ప్రొవైడర్ కోటా లేదా రేట్ పరిమితి చేరుకుంది. మీ వినియోగాన్ని తనిఖీ చేసి మళ్లీ ప్రయత్నించండి.",
       "voiceUnsupported": "ఎంచుకున్న వాయిస్‌కు మద్దతు లేదు. ప్రొవైడర్ సెట్టింగ్‌లలో వేరే వాయిస్ ఎంచుకోండి.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "వర్చువల్ ఆడియో మార్గం అందుబాటులో లేదు. సెషన్ తాత్కాలికంగా AEC తో భౌతిక స్పీకర్ ప్లేబ్యాక్‌కు మారింది. ఈ మోడ్‌లో ఇంకా లూప్‌బ్యాక్ ప్రమాదం ఉంది.",
     "virtualDriverFallbackConfirm": "వర్చువల్ ఆడియో డ్రైవర్ లేదా Bridge ఇంకా అందుబాటులో లేదు. సబ్‌టైటిల్-మాత్రమే మోడ్‌లోకి ప్రవేశించడానికి OK క్లిక్ చేయండి; AEC తో భౌతిక స్పీకర్ ప్లేబ్యాక్‌కు తాత్కాలికంగా మారడానికి Cancel క్లిక్ చేయండి. AEC ఫాల్‌బ్యాక్‌లో ఇంకా లూప్‌బ్యాక్ ప్రమాదం ఉంది.",
     "sceneLaunchFailed": "ప్రారంభించడంలో విఫలమైంది {{scene}} ({{stage}}): {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "ప్రొవైడర్ అంతర్గత లోపాన్ని నివేదించింది. తర్వాత సెషన్‌ను పునఃప్రారంభించండి. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "ప్రొవైడర్ అంతర్గత లోపాన్ని నివేదించింది. తర్వాత సెషన్‌ను పునఃప్రారంభించండి. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "ప్రొవైడర్ అంతర్గత లోపాన్ని నివేదించింది. తర్వాత సెషన్‌ను పునఃప్రారంభించండి. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "ఉదాహరణకు: గేమ్ పదాలు, సినిమా ఉపశీర్షికలు, వృత్తిపరమైన పదజాలం..."
     },
     "conflictResolution": {
+      "overwriteHint": "విరుద్ధమైన అన్ని నమోదులను ఈ అనువాదంతో భర్తీ చేయండి.",
+      "skipHint": "ఈ నమోదు సేవ్ కాదు; ప్రస్తుత నమోదులు మారవు.",
+      "keep-allHint": "అదే మూల పదంతో మరో నమోదును సేవ్ చేసి అన్ని అనువాదాలను ఉంచండి.",
       "overwrite": "ఓవర్‌రైట్ చేయండి",
       "skip": "దాటవేయండి",
       "keep-all": "అన్నీ ఉంచండి"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "వాయిస్ సేవకు కనెక్ట్ కాలేకపోయింది. నెట్‌వర్క్ తనిఖీ చేసి సెషన్‌ను పునఃప్రారంభించండి. ఆడియో క్యాప్చర్ ప్రక్రియ ఆగింది. ఆడియో పరికరాన్ని తనిఖీ చేసి మళ్లీ ప్రయత్నించండి.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "వాయిస్ సేవకు కనెక్ట్ కాలేకపోయింది. నెట్‌వర్క్ తనిఖీ చేసి సెషన్‌ను పునఃప్రారంభించండి. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "ప్రొవైడర్ అంతర్గత లోపాన్ని నివేదించింది. తర్వాత సెషన్‌ను పునఃప్రారంభించండి. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "వాయిస్ సేవకు కనెక్ట్ కాలేకపోయింది. నెట్‌వర్క్ తనిఖీ చేసి సెషన్‌ను పునఃప్రారంభించండి. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

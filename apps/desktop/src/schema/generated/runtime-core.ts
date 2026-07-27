@@ -8,7 +8,7 @@ export type RuntimeNotification = { id: string, level: 'info' | 'warning' | 'err
 
 export type StorageRuntimeSnapshot = { status: 'preview' | 'ready', schemaVersion: number, databasePath: string, credentialBackend: string, hasPersistedConfig: boolean, snapshotCount: number, lastSavedAt: string | null, lastExportPath: string | null, lastImportPath: string | null, };
 
-export type ConfigExportArtifact = { filePath: string, exportedAt: string, configContractVersion: number, snapshotCount: number, };
+export type ConfigExportArtifact = { filePath: string, outputPath: string, fileCount: number, exportedAt: string, configContractVersion: number, snapshotCount: number, };
 
 export type ConfigSnapshotRecord = { snapshotId: string, reason: string, createdAt: string, };
 

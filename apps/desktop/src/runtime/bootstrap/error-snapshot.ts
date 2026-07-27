@@ -1,9 +1,10 @@
 import i18n from '../../i18n/config';
 import { runtimeSnapshotMock } from '../../defaults/runtime-shell';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
+import { describeRuntimeError } from '../../utils/runtime-error-text';
 
 export function createRuntimeErrorSnapshot(error: unknown): RuntimeSnapshot {
-  const message = error instanceof Error ? error.message : i18n.t('runtime.desktop.unknownError');
+  const message = describeRuntimeError(error) || i18n.t('runtime.desktop.unknownError');
 
   return {
     ...runtimeSnapshotMock,
@@ -23,5 +24,5 @@ export function createRuntimeErrorSnapshot(error: unknown): RuntimeSnapshot {
 }
 
 export function formatRuntimeError(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  return describeRuntimeError(error);
 }

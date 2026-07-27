@@ -33,6 +33,26 @@ const BRIDGE_POST_KILL_SETTLE_MS: u64 = 50;
 /// diagnostics log instead of accumulating without bound.
 const BRIDGE_STDERR_MAX_LINES: usize = 200;
 
+fn verify_post_operation_driver_probe(bridge_state: &BridgeStateStore) -> Result<(), String> {
+    match probe_driver(&bridge_state.snapshot(), false) {
+        Ok(probe) => {
+            bridge_state.update_snapshot(|current| apply_driver_probe(current, probe));
+            Ok(())
+        }
+        Err(error) => {
+            bridge_state.update_snapshot(|current| {
+                current.driver_probe_state = "failed".to_string();
+                current.last_error_code = Some("driver.probe-failed".to_string());
+                current.driver_detail = Some(error.clone());
+                current.install_phase = "verification-failed".to_string();
+            });
+            Err(format!(
+                "driver.probe-failed: 驱动操作已执行，但无法验证安装结果：{error}"
+            ))
+        }
+    }
+}
+
 fn extract_driver_string(config: &Value, pointer: &str, default: &str) -> String {
     config
         .pointer(pointer)
@@ -706,9 +726,7 @@ pub fn install_driver_runtime(
         current.last_driver_operation = Some(operation.clone());
         current.install_phase = "starting-bridge".to_string();
     });
-    if let Ok(probe) = probe_driver(&bridge_state.snapshot(), false) {
-        bridge_state.update_snapshot(|current| apply_driver_probe(current, probe));
-    }
+    verify_post_operation_driver_probe(&bridge_state)?;
 
     let mut started = bridge_state.snapshot();
     started.session_id = Some(super::new_bridge_session_id());
@@ -765,9 +783,7 @@ pub fn uninstall_driver_runtime(
         current.last_driver_operation = Some(operation.clone());
         reconcile_bridge_snapshot(current);
     });
-    if let Ok(probe) = probe_driver(&bridge_state.snapshot(), false) {
-        bridge_state.update_snapshot(|current| apply_driver_probe(current, probe));
-    }
+    verify_post_operation_driver_probe(&bridge_state)?;
     log_bridge_event(
         &app,
         "info",
@@ -828,9 +844,7 @@ pub fn repair_driver_runtime(
         *current = snapshot.clone();
         current.last_driver_operation = Some(operation.clone());
     });
-    if let Ok(probe) = probe_driver(&bridge_state.snapshot(), false) {
-        bridge_state.update_snapshot(|current| apply_driver_probe(current, probe));
-    }
+    verify_post_operation_driver_probe(&bridge_state)?;
 
     let mut restarted = bridge_state.snapshot();
     restarted.session_id = Some(super::new_bridge_session_id());

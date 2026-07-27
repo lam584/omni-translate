@@ -83,6 +83,7 @@
     "idle": "유휴"
   },
   "settings": {
+    "languageLoadFailed": "언어 리소스를 불러오지 못해 이전 언어로 복원했습니다. 다시 시도하세요. 세부 정보: {{error}}",
     "title": "설정",
     "subtitle": "설정 설정과 상태를 확인하세요.",
     "sectionLanguage": "인터페이스 언어",
@@ -185,6 +186,7 @@
     "driverManagementHint": "설정 설정과 상태를 확인하세요."
   },
   "welcome": {
+    "languageLoadFailed": "언어 리소스를 불러오지 못해 이전 선택으로 복원했습니다. 다시 시도하세요. 세부 정보: {{error}}",
     "title": "시작 설정 - 제목",
     "subtitle": "시작 설정 설정과 상태를 확인하세요.",
     "confirm": "시작 설정",
@@ -195,13 +197,13 @@
     "providerLabel": "제공자 템플릿",
     "apiKeyLabel": "API 키",
     "apiKeyPlaceholder": "API key를 붙여넣으세요",
-    "apiKeySaved": "시작 설정 설정과 상태를 확인하세요.",
-    "apiKeySaveTimeout": "시작 설정 설정과 상태를 확인하세요.",
-    "apiKeySaveInvokeTimeout": "시작 설정 설정과 상태를 확인하세요.",
-    "apiKeySaveUiTimeout": "시작 설정 설정과 상태를 확인하세요.",
-    "apiKeySavedDeferred": "시작 설정 설정과 상태를 확인하세요.",
-    "apiKeyProbeFailed": "시작 설정 설정과 상태를 확인하세요.",
-    "apiKeyProbeTimeout": "시작 설정 설정과 상태를 확인하세요.",
+    "apiKeySaved": "API 키를 저장했습니다.",
+    "apiKeySaveTimeout": "API 키 저장 시간이 초과되었습니다. Windows 자격 증명 관리자를 확인한 후 다시 시도하세요.",
+    "apiKeySaveInvokeTimeout": "저장 명령이 7초 안에 응답하지 않았습니다. 진단 로그를 확인한 후 다시 시도하세요.",
+    "apiKeySaveUiTimeout": "저장 결과를 15초 넘게 기다리고 있습니다. 진단을 확인한 후 다시 시도하세요.",
+    "apiKeySavedDeferred": "API 키를 저장했습니다. 연결 확인은 나중에 설정 › 공급자에서 실행할 수 있습니다.",
+    "apiKeyProbeFailed": "API 키는 저장되었지만 연결 확인에 실패했습니다. 네트워크와 키를 확인하고 다시 시도하세요.",
+    "apiKeyProbeTimeout": "API 키는 저장되었지만 연결 확인 시간이 초과되었습니다. 네트워크, 엔드포인트, 키를 확인하세요.",
     "showApiKey": "API 키 표시",
     "hideApiKey": "API 키 숨기기",
     "apiKeyRevealSuccess": "시작 설정 설정과 상태를 확인하세요.",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "자막 오버레이를 초기화하지 못했습니다",
+    "bootstrapFailedHint": "오버레이가 안전한 제한 모드로 실행 중입니다. 다시 시도하거나 기본 창에서 진단을 내보내세요.",
     "contextMenuTitle": "자막 오버레이 - 제목",
     "previewTitleEnglish": "자막 준비됨",
     "previewTitle": "자막 준비됨",
@@ -615,6 +619,7 @@
       "testOverlay": "진단",
       "exporting": "진단 설정과 상태를 확인하세요.",
       "exportBundle": "진단 - 내보내기",
+      "openExportDirectory": "저장 폴더 열기",
       "refreshing": "진단 설정과 상태를 확인하세요.",
       "refreshRuntime": "새로 고침 런타임",
       "selectAll": "진단"
@@ -869,15 +874,15 @@
       "storageBlocked": "제공자 설정과 상태를 확인하세요. {{detail}}",
       "runtimeBlockedAction": "제공자 설정과 상태를 확인하세요. {{action}}",
       "storageBlockedAction": "제공자 설정과 상태를 확인하세요. {{action}}",
-      "secretStatusReadFailed": "비밀 키 상태를 읽지 못했습니다",
+      "secretStatusReadFailed": "저장된 키 상태를 읽지 못했습니다. 자격 증명 관리자를 확인하고 다시 시도하세요.",
       "emptyModelCatalog": "제공자 설정과 상태를 확인하세요.",
       "fetchModelCatalogFailed": "모델 카탈로그를 가져오지 못했습니다",
       "secretSaved": "제공자 설정과 상태를 확인하세요.",
-      "secretWriteFailed": "제공자 - 실패",
+      "secretWriteFailed": "API 키를 저장하지 못했습니다. 입력과 자격 증명 관리자를 확인하고 다시 시도하세요.",
       "noStoredSecret": "제공자 설정과 상태를 확인하세요.",
       "secretPlainLoaded": "제공자 설정과 상태를 확인하세요.",
-      "secretPlainReadFailed": "제공자 - 실패",
-      "verifyFailed": "제공자 - 실패",
+      "secretPlainReadFailed": "저장된 API 키를 읽지 못했습니다. 마스크 상태를 유지합니다. 다시 시도하세요.",
+      "verifyFailed": "공급자 검증에 실패했습니다. URL, API 키, 네트워크를 확인하고 다시 시도하세요.",
       "providerNameRequired": "제공자 설정과 상태를 확인하세요.",
       "baseUrlRequired": "제공자 설정과 상태를 확인하세요.",
       "keepOneProvider": "제공자 설정과 상태를 확인하세요.",
@@ -989,6 +994,7 @@
     "expandSection": "섹션 펼치기"
   },
   "session": {
+    "speechFailureRecovery": "자막은 계속 사용할 수 있지만 음성 출력은 사용할 수 없습니다. 오디오 라우팅을 확인한 후 다시 시작하세요.",
     "watchMode": "보기 모드",
     "conversationMode": "대화 모드",
     "cueStartedAt": "세션 {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "세션 다시 시작",
     "restartSessionHint": " 세션을 다시 시작한 후 재시도하세요.",
     "errorCode": {
+      "modelReferenceInvalid": "보조 번역 모델이 없거나 활성 공급자에 연결되어 있지 않습니다. 공급자 설정에서 다른 모델을 선택하세요.",
+      "audioCaptureFailed": "오디오 캡처 작업이 중지되었습니다. 오디오 장치를 확인한 후 다시 시도하세요.",
       "credentialInvalid": "API 키가 유효하지 않거나 만료되었습니다. 공급자 자격 증명을 업데이트하세요.",
       "quotaExceeded": "공급자 할당량 또는 속도 제한에 도달했습니다. 사용량을 확인한 후 다시 시도하세요.",
       "voiceUnsupported": "선택한 음색은 지원되지 않습니다. 공급자 설정에서 다른 음색을 선택하세요.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "세션 설정과 상태를 확인하세요.",
     "virtualDriverFallbackConfirm": "가상 오디오 드라이버 또는 Bridge를 사용할 수 없습니다. ‘확인’을 누르면 자막 전용 모드로, ‘취소’를 누르면 물리 스피커 재생과 AEC 모드로 임시 전환됩니다. AEC에도 루프백 위험이 있습니다.",
     "sceneLaunchFailed": "세션 - 실패 {{scene}} ({{stage}}) {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "공급자 내부 오류가 발생했습니다. 잠시 후 세션을 다시 시작하세요. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "공급자 내부 오류가 발생했습니다. 잠시 후 세션을 다시 시작하세요. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "공급자 내부 오류가 발생했습니다. 잠시 후 세션을 다시 시작하세요. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "용어집 설정과 상태를 확인하세요."
     },
     "conflictResolution": {
+      "overwriteHint": "충돌하는 모든 항목을 이 번역으로 바꿉니다.",
+      "skipHint": "이 항목을 저장하지 않으며 기존 항목은 변경하지 않습니다.",
+      "keep-allHint": "같은 원문 용어로 새 항목을 저장하고 기존 번역도 모두 유지합니다.",
       "overwrite": "용어집",
       "skip": "용어집",
       "keep-all": "용어집"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "음성 서비스에 연결할 수 없습니다. 네트워크를 확인한 후 세션을 다시 시작하세요. 오디오 캡처 작업이 중지되었습니다. 오디오 장치를 확인한 후 다시 시도하세요.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "음성 서비스에 연결할 수 없습니다. 네트워크를 확인한 후 세션을 다시 시작하세요. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "공급자 내부 오류가 발생했습니다. 잠시 후 세션을 다시 시작하세요. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "음성 서비스에 연결할 수 없습니다. 네트워크를 확인한 후 세션을 다시 시작하세요. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

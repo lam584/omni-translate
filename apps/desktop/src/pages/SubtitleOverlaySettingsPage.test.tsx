@@ -113,6 +113,18 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
     expect(useAppStore.getState().runtimeSnapshot.windows.find((item) => item.label === 'subtitle-overlay')?.visible).toBe(true);
   });
 
+  it('shows an inline error when toggling the subtitle overlay fails', async () => {
+    toggleSubtitleOverlayWindowMock.mockRejectedValue(new Error('window unavailable'));
+    await act(async () => root.render(<MemoryRouter><SubtitleOverlaySettingsPage /></MemoryRouter>));
+    const toggleButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
+      button.textContent?.includes('settings.overlayShowSubtitlesAction'),
+    );
+    await act(async () => toggleButton?.click());
+    const alert = container.querySelector('[role="alert"]');
+    expect(alert?.textContent).toContain('session.overlayOpenFailed');
+    expect(toggleButton?.disabled).toBe(false);
+  });
+
   it('shows the overlay lock action before the subtitle visibility action', async () => {
     await act(async () => {
       root.render(

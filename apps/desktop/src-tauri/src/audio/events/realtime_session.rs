@@ -385,6 +385,9 @@ pub(crate) fn preconnect_omni_realtime_inner(
         requested_voice_model,
         voice_provider,
     );
+    if let Some(error) = plan.configuration_error.clone() {
+        return Err(error);
+    }
     let st_active = plan.session_reuse_key.subtitle_translate_active;
     if state
         .matching_ready_omni_session(

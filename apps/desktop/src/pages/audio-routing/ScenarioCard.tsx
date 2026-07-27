@@ -34,6 +34,7 @@ export type ScenarioCardProps = {
   onEnabledChange?: (enabled: boolean) => void;
   enableLabel?: string;
   enableChecked?: boolean;
+  errorHint?: string | null;
 };
 
 export default function ScenarioCard(props: ScenarioCardProps) {
@@ -108,6 +109,7 @@ export default function ScenarioCard(props: ScenarioCardProps) {
           </button>)}
       </div> : null}
       {(!enabled || props.muted) && props.mutedHint ? <p className="scenario-card-hint">{props.mutedHint}</p> : null}
+      {props.errorHint ? <p className="scenario-card-hint scenario-card-error-hint" role="alert">{props.errorHint}</p> : null}
       {props.tags.length ? <div className="scenario-card-tags">{props.tags.map((tag) => <span className={['scenario-card-tag', `scenario-card-tag-${tag}`, !enabled || props.muted ? 'scenario-card-tag-muted' : ''].join(' ')} key={tag}><AppIcon name="check" size={11} />{tagLabels[tag]}</span>)}</div> : null}
     </div>
   </div>;

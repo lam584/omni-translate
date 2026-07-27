@@ -8,8 +8,10 @@ describe('welcomeLanguagePickerHelpers', () => {
     expect(welcomeLanguagePickerHelpers.formatProviderSetupError({ code: 'timeout', operation: 'credential-save' }, translate)).toBe('welcome.apiKeySaveInvokeTimeout');
     expect(welcomeLanguagePickerHelpers.formatProviderSetupError({ code: 'timeout', operation: 'provider-probe' }, translate)).toBe('welcome.apiKeyProbeTimeout');
     expect(welcomeLanguagePickerHelpers.formatProviderSetupError({ code: null, operation: null }, translate)).toBe('welcome.apiKeyProbeFailed');
-    expect(welcomeLanguagePickerHelpers.formatProviderSetupError(new Error('backend unavailable'), translate)).toBe('backend unavailable');
-    expect(welcomeLanguagePickerHelpers.formatProviderSetupError('string failure', translate)).toBe('string failure');
+    expect(welcomeLanguagePickerHelpers.formatProviderSetupError(new Error('401 unauthorized'), translate)).toBe('session.errorCode.credentialInvalid');
+    expect(welcomeLanguagePickerHelpers.formatProviderSetupError('429 quota exhausted', translate)).toBe('session.errorCode.quotaExceeded');
+    expect(welcomeLanguagePickerHelpers.formatProviderSetupError(new Error('network connection failed'), translate)).toBe('session.errorCode.networkUnreachable');
+    expect(welcomeLanguagePickerHelpers.formatProviderSetupError('opaque failure', translate)).toBe('welcome.apiKeyProbeFailed');
     expect(welcomeLanguagePickerHelpers.formatProviderSetupError(null, translate)).toBe('welcome.apiKeyProbeFailed');
   });
 });

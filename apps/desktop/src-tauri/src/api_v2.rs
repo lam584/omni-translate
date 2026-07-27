@@ -440,6 +440,8 @@ pub enum DiagnosticsCommandV2 {
     Export { scope: String },
     LiveSessionEvents,
     Snapshot,
+    OpenExportDirectory { output_path: String },
+    WriteExportArtifact { filename: String, content: String },
 }
 
 // Runs off the main thread (async) so bundle/file I/O (e.g. export) cannot
@@ -492,6 +494,10 @@ pub async fn diagnostics_v2(
                 .map_err(ServiceErrorV2::from),
             DiagnosticsCommandV2::Snapshot => to_value(diagnostics_events::get_diagnostics_snapshot(app.clone()))
                 .map_err(|error| ServiceErrorV2::from(error.to_string())),
+            DiagnosticsCommandV2::OpenExportDirectory { output_path } =>
+                serialize_result(crate::diagnostics::export_artifacts::open_export_directory(&output_path)),
+            DiagnosticsCommandV2::WriteExportArtifact { filename, content } =>
+                serialize_result(crate::diagnostics::export_artifacts::write_export_artifact(&app, &filename, &content)),
         }
     }
     .await;

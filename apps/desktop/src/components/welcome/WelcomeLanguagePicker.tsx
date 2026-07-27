@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import AppIcon from '../icons/AppIcon';
 import DriverManagementCard from '../driver/DriverManagementCard';
 import { supportedLanguages } from '../../i18n/languages';
-import { markWelcomeCompleted, setUiLanguage } from '../../i18n/config';
+import { getCurrentLanguage, markWelcomeCompleted, setUiLanguage } from '../../i18n/config';
 import { defaultProviderTemplate, providerTemplates } from '../../defaults/provider-templates';
 import { readProviderSecret, runProviderProbe, saveProviderSecret } from '../../runtime/provider-runtime';
 import { resolveRuntimeBridgeStatus } from '../../runtime/runtime-status';
@@ -32,12 +32,22 @@ function formatProviderSetupError(error: unknown, translate: (key: string) => st
     return operation === 'credential-save' ? translate('welcome.apiKeySaveInvokeTimeout') : translate('welcome.apiKeyProbeTimeout');
   }
 
-  if (error instanceof Error && error.message) {
-    return error.message;
+  const message = error instanceof Error
+    ? error.message
+    : typeof error === 'string'
+      ? error
+      : typeof error === 'object' && error && 'message' in error
+        ? String((error as { message?: unknown }).message ?? '')
+        : '';
+  const signature = `${code} ${message}`.toLowerCase();
+  if (/invalid.?api.?key|unauthorized|forbidden|authentication|denied|401|403|鉴权|凭据/.test(signature)) {
+    return translate('session.errorCode.credentialInvalid');
   }
-
-  if (typeof error === 'string' && error) {
-    return error;
+  if (/quota|rate.?limit|too many requests|429|配额|限流/.test(signature)) {
+    return translate('session.errorCode.quotaExceeded');
+  }
+  if (/network|fetch|dns|connect|socket|offline|econn|网络|连接/.test(signature)) {
+    return translate('session.errorCode.networkUnreachable');
   }
 
   return translate('welcome.apiKeyProbeFailed');
@@ -72,6 +82,8 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
   const [revealing, setRevealing] = useState<boolean>(false);
   const [savedMessage, setSavedMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [driverRefreshError, setDriverRefreshError] = useState<string | null>(null);
+  const [driverRefreshing, setDriverRefreshing] = useState(false);
   const selectedLanguageRef = useRef<HTMLButtonElement>(null);
   const providerSelectRef = useRef<HTMLSelectElement>(null);
   const driverHeadingRef = useRef<HTMLHeadingElement>(null);
@@ -105,24 +117,34 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
     queueMicrotask(() => setApiBaseUrl(currentTemplate.defaultDraft.baseUrl));
   }, [currentTemplate]);
 
-  useEffect(() => {
-    if (!isDriverStep) {
-      return;
+  const refreshDriverState = async () => {
+    setDriverRefreshing(true);
+    setDriverRefreshError(null);
+    try {
+      setRuntimeSnapshot(await refreshBridgeRuntime());
+    } catch (err) {
+      setDriverRefreshError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDriverRefreshing(false);
     }
+  };
 
+  useEffect(() => {
+    if (!isDriverStep) return;
     let active = true;
-
-    void refreshBridgeRuntime()
-      .then((snapshot) => {
-        if (active) {
-          setRuntimeSnapshot(snapshot);
-        }
-      })
-      .catch((err) => {
-        if (active) {
-          setErrorMessage(err instanceof Error ? err.message : String(err));
-        }
-      });
+    queueMicrotask(() => {
+      if (active) {
+        setDriverRefreshing(true);
+        setDriverRefreshError(null);
+      }
+    });
+    void refreshBridgeRuntime().then((snapshot) => {
+      if (active) setRuntimeSnapshot(snapshot);
+    }).catch((err) => {
+      if (active) setDriverRefreshError(err instanceof Error ? err.message : String(err));
+    }).finally(() => {
+      if (active) setDriverRefreshing(false);
+    });
 
     return () => {
       active = false;
@@ -130,8 +152,16 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
   }, [isDriverStep, setRuntimeSnapshot]);
 
   const handleSelect = async (code: string) => {
+    const previous = getCurrentLanguage();
     setSelected(code);
-    await setUiLanguage(code);
+    setErrorMessage(null);
+    try {
+      await setUiLanguage(code);
+    } catch (error) {
+      setSelected(previous);
+      try { await setUiLanguage(previous); } catch { /* The previous bundle remains active. */ }
+      setErrorMessage(t('welcome.languageLoadFailed', { error: error instanceof Error ? error.message : String(error) }));
+    }
   };
 
   const finishWizard = () => {
@@ -183,8 +213,9 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
       setApiKey(payload.secret);
       setApiKeyVisible(true);
       setSavedMessage(t('welcome.apiKeyRevealSuccess'));
-    } catch (err) {
-      setErrorMessage(err instanceof Error ? err.message : String(err));
+    } catch {
+      setApiKeyVisible(false);
+      setErrorMessage(t('providers.messages.secretPlainReadFailed'));
     } finally {
       setRevealing(false);
     }
@@ -234,8 +265,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
           updateDiagnosticsDraft({ providerStatus: verificationPatch.status });
 
           if (probeResult.verdict === 'unavailable') {
-            const detail = probeResult.error?.message?.trim();
-            setErrorMessage(detail ? `${t('welcome.apiKeyProbeFailed')} ${detail}` : t('welcome.apiKeyProbeFailed'));
+            setErrorMessage(formatProviderSetupError(probeResult.error, (key) => t(key)));
           }
         })
         .catch((err) => {
@@ -277,6 +307,7 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
 
         <div className="welcome-language-body">
           {isLanguageStep ? (
+            <>
             <ul className="welcome-language-list" role="listbox" aria-label={t('common.language')}>
               {languages.map((item) => {
                 const isActive = item.code === selected;
@@ -299,6 +330,8 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
                 );
               })}
             </ul>
+            {errorMessage ? <p className="welcome-provider-error" role="alert">{errorMessage}</p> : null}
+            </>
           ) : step === 'provider' ? (
             <div className="welcome-provider-form">
               <h2 className="welcome-step-title">{t('welcome.stepProviderTitle')}</h2>
@@ -384,6 +417,15 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
               </p>
 
               <DriverManagementCard variant="onboarding" />
+
+              {driverRefreshError ? (
+                <div className="welcome-provider-error" role="alert">
+                  <span>{driverRefreshError}</span>
+                  <button type="button" className="welcome-language-secondary" disabled={driverRefreshing} onClick={() => void refreshDriverState()}>
+                    {driverRefreshing ? t('driverManagement.processing') : t('driverManagement.action.refresh')}
+                  </button>
+                </div>
+              ) : null}
 
               {savedMessage ? <p className="welcome-provider-feedback" role="status">{savedMessage}</p> : null}
               {errorMessage ? <p className="welcome-provider-error" role="alert">{errorMessage}</p> : null}

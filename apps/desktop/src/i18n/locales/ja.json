@@ -83,6 +83,7 @@
     "idle": "アイドル"
   },
   "settings": {
+    "languageLoadFailed": "言語リソースを読み込めなかったため、以前の言語に戻しました。再試行してください。詳細: {{error}}",
     "title": "設定",
     "subtitle": "設定の設定と状態を確認してください。",
     "sectionLanguage": "表示言語",
@@ -185,6 +186,7 @@
     "driverManagementHint": "設定の設定と状態を確認してください。"
   },
   "welcome": {
+    "languageLoadFailed": "言語リソースを読み込めなかったため、以前の選択に戻しました。再試行してください。詳細: {{error}}",
     "title": "初期設定 - タイトル",
     "subtitle": "初期設定の設定と状態を確認してください。",
     "confirm": "初期設定",
@@ -195,13 +197,13 @@
     "providerLabel": "プロバイダー テンプレート",
     "apiKeyLabel": "API キー",
     "apiKeyPlaceholder": "初期設定 - API・キー・プレースホルダー",
-    "apiKeySaved": "初期設定の設定と状態を確認してください。",
-    "apiKeySaveTimeout": "初期設定の設定と状態を確認してください。",
-    "apiKeySaveInvokeTimeout": "初期設定の設定と状態を確認してください。",
-    "apiKeySaveUiTimeout": "初期設定の設定と状態を確認してください。",
-    "apiKeySavedDeferred": "初期設定の設定と状態を確認してください。",
-    "apiKeyProbeFailed": "初期設定の設定と状態を確認してください。",
-    "apiKeyProbeTimeout": "初期設定の設定と状態を確認してください。",
+    "apiKeySaved": "APIキーを保存しました。",
+    "apiKeySaveTimeout": "APIキーの保存がタイムアウトしました。Windows資格情報マネージャーを確認して再試行してください。",
+    "apiKeySaveInvokeTimeout": "保存コマンドが7秒以内に応答しませんでした。診断ログを確認して再試行してください。",
+    "apiKeySaveUiTimeout": "保存結果を15秒以上待っています。診断を確認してから再試行してください。",
+    "apiKeySavedDeferred": "APIキーを保存しました。接続確認は後で「設定 › プロバイダー」から実行できます。",
+    "apiKeyProbeFailed": "APIキーは保存されましたが、接続確認に失敗しました。ネットワークとキーを確認し、後で再試行してください。",
+    "apiKeyProbeTimeout": "APIキーは保存されましたが、接続確認がタイムアウトしました。ネットワーク、エンドポイント、キーを確認してください。",
     "showApiKey": "API キーを表示",
     "hideApiKey": "API キーを非表示",
     "apiKeyRevealSuccess": "初期設定の設定と状態を確認してください。",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "字幕オーバーレイを初期化できませんでした",
+    "bootstrapFailedHint": "オーバーレイは安全な制限モードです。再試行するか、メイン画面から診断をエクスポートしてください。",
     "contextMenuTitle": "字幕オーバーレイ - タイトル",
     "previewTitleEnglish": "字幕 準備完了",
     "previewTitle": "字幕 準備完了",
@@ -615,6 +619,7 @@
       "testOverlay": "診断",
       "exporting": "診断の設定と状態を確認してください。",
       "exportBundle": "診断 - エクスポート",
+      "openExportDirectory": "保存先フォルダーを開く",
       "refreshing": "診断の設定と状態を確認してください。",
       "refreshRuntime": "更新 ランタイム",
       "selectAll": "診断"
@@ -869,15 +874,15 @@
       "storageBlocked": "プロバイダーの設定と状態を確認してください。 {{detail}}",
       "runtimeBlockedAction": "プロバイダーの設定と状態を確認してください。 {{action}}",
       "storageBlockedAction": "プロバイダーの設定と状態を確認してください。 {{action}}",
-      "secretStatusReadFailed": "プロバイダー - 状態・失敗",
+      "secretStatusReadFailed": "保存済みキーの状態を取得できませんでした。資格情報マネージャーを確認して再試行してください。",
       "emptyModelCatalog": "プロバイダーの設定と状態を確認してください。",
       "fetchModelCatalogFailed": "プロバイダー - モデル・失敗",
       "secretSaved": "プロバイダーの設定と状態を確認してください。",
-      "secretWriteFailed": "プロバイダー - 失敗",
+      "secretWriteFailed": "APIキーを保存できませんでした。入力内容と資格情報マネージャーを確認して再試行してください。",
       "noStoredSecret": "プロバイダーの設定と状態を確認してください。",
       "secretPlainLoaded": "プロバイダーの設定と状態を確認してください。",
-      "secretPlainReadFailed": "プロバイダー - 失敗",
-      "verifyFailed": "プロバイダー - 失敗",
+      "secretPlainReadFailed": "保存済みAPIキーを読み取れませんでした。マスク表示を維持します。再試行してください。",
+      "verifyFailed": "プロバイダーの検証に失敗しました。URL、APIキー、ネットワークを確認して再試行してください。",
       "providerNameRequired": "プロバイダーの設定と状態を確認してください。",
       "baseUrlRequired": "プロバイダーの設定と状態を確認してください。",
       "keepOneProvider": "プロバイダーの設定と状態を確認してください。",
@@ -989,6 +994,7 @@
     "expandSection": "セクションを展開"
   },
   "session": {
+    "speechFailureRecovery": "字幕は利用できますが、音声出力は利用できません。音声ルーティングを確認して再起動してください。",
     "watchMode": "セッション - 視聴・モード",
     "conversationMode": "会話 モード",
     "cueStartedAt": "セッション {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "セッションを再起動",
     "restartSessionHint": " セッションを再起動して再試行してください。",
     "errorCode": {
+      "modelReferenceInvalid": "二次翻訳モデルが見つからないか、有効なプロバイダーに関連付けられていません。プロバイダー設定で選び直してください。",
+      "audioCaptureFailed": "音声キャプチャ処理が停止しました。音声デバイスを確認して再試行してください。",
       "credentialInvalid": "APIキーが無効か期限切れです。プロバイダーの認証情報を更新してください。",
       "quotaExceeded": "プロバイダーのクォータまたはレート制限に達しました。利用状況を確認して再試行してください。",
       "voiceUnsupported": "選択した音声は対応していません。プロバイダー設定で別の音声を選択してください。",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "セッションの設定と状態を確認してください。",
     "virtualDriverFallbackConfirm": "仮想オーディオドライバーまたは Bridge を利用できません。「OK」で字幕のみモードに進み、「キャンセル」で物理スピーカー再生＋AECへ一時的に切り替えます。AECでもループバックの危険があります。",
     "sceneLaunchFailed": "セッション - 失敗 {{scene}} ({{stage}}) {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "プロバイダーで内部エラーが発生しました。しばらくしてからセッションを再起動してください。 {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "プロバイダーで内部エラーが発生しました。しばらくしてからセッションを再起動してください。 {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "プロバイダーで内部エラーが発生しました。しばらくしてからセッションを再起動してください。 {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "用語集の設定と状態を確認してください。"
     },
     "conflictResolution": {
+      "overwriteHint": "競合するすべての項目を今回の訳語で置き換えます。",
+      "skipHint": "この項目は保存せず、既存の項目は変更しません。",
+      "keep-allHint": "同じ原語の項目を追加し、既存の訳語もすべて残します。",
       "overwrite": "用語集",
       "skip": "用語集",
       "keep-all": "用語集"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "音声サービスに接続できません。ネットワークを確認してセッションを再起動してください。 音声キャプチャ処理が停止しました。音声デバイスを確認して再試行してください。",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "音声サービスに接続できません。ネットワークを確認してセッションを再起動してください。 {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "プロバイダーで内部エラーが発生しました。しばらくしてからセッションを再起動してください。 {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "音声サービスに接続できません。ネットワークを確認してセッションを再起動してください。 {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

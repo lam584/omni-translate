@@ -60,27 +60,49 @@ function SubtitleOverlayPage() {
     overlayTranslationTextStyle, updateSubtitleDraft });
 
   const hideWindow = useCallback(async () => {
-    setRuntimeSnapshot(await toggleSubtitleOverlayWindow());
-  }, [setRuntimeSnapshot]);
+    try {
+      setRuntimeSnapshot(await toggleSubtitleOverlayWindow());
+    } catch (error) {
+      pushRuntimeNotification({
+        id: `subtitle-overlay-hide-failed-${Date.now()}`,
+        level: 'error',
+        source: 'session',
+        message: t('session.overlayOpenFailed', { error: error instanceof Error ? error.message : String(error) }),
+        emittedAt: new Date().toISOString(),
+      });
+    }
+  }, [pushRuntimeNotification, setRuntimeSnapshot, t]);
   const clearCues = useCallback(async () => {
-    setAudioRuntimeSnapshot(await clearSubtitleCuesRuntime());
-  }, [setAudioRuntimeSnapshot]);
+    try {
+      setAudioRuntimeSnapshot(await clearSubtitleCuesRuntime());
+    } catch (error) {
+      pushRuntimeNotification({
+        id: `subtitle-overlay-clear-failed-${Date.now()}`,
+        level: 'error',
+        source: 'session',
+        message: `${menuText('overlay.clearAction')} · ${t('diagnostics.status.failed')}：${error instanceof Error ? error.message : String(error)}`,
+        emittedAt: new Date().toISOString(),
+      });
+    }
+  }, [menuText, pushRuntimeNotification, setAudioRuntimeSnapshot, t]);
   const lockOverlay = useCallback(() => updateSubtitleDraft({ overlayLocked: true }), [updateSubtitleDraft]);
   const toggleOverlayLock = useCallback(() => {
     setLockedReveal({ interactive: false, visible: false });
     updateSubtitleDraft({ overlayLocked: !overlayLocked });
     if (overlayLocked && hasNativeShell) {
       void desktopApi.overlay.unlock().catch((error) => {
+        updateSubtitleDraft({ overlayLocked: true });
+        setLockedReveal((current) => ({ ...current, interactive: false, visible: true }));
         pushRuntimeNotification({
           id: `subtitle-overlay-unlock-failed-${Date.now()}`,
           level: 'error',
-          source: 'subtitle-overlay',
-          message: `Failed to persist subtitle overlay unlock: ${error instanceof Error ? error.message : String(error)}`,
+          source: 'session',
+          message: `${menuText('overlay.unlockAction')} · ${t('diagnostics.status.failed')}：${error instanceof Error ? error.message : String(error)}`,
           emittedAt: new Date().toISOString(),
         });
       });
     }
-  }, [overlayLocked, pushRuntimeNotification, setLockedReveal, updateSubtitleDraft, desktopApi.overlay, hasNativeShell]);
+  }, [overlayLocked, pushRuntimeNotification, setLockedReveal, updateSubtitleDraft, desktopApi.overlay, hasNativeShell, menuText, t]);
   const contextController = useOverlayContextMenuController({
     applyBackgroundOpacity: styleController.applyOverlayBackgroundOpacity,
     applyFontSize: styleController.applyOverlayFontSize,

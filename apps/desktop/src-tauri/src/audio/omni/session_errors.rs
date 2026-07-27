@@ -7,6 +7,8 @@
 //! error strings via the `" | code: "` marker, mirroring the existing
 //! `" | recommended: "` convention from `engine/workers.rs`.
 
+use tauri::{AppHandle, Manager};
+
 pub(crate) const SESSION_ERROR_CODE_MARKER: &str = " | code: ";
 pub(crate) const RECOMMENDED_ACTION_MARKER: &str = " | recommended: ";
 
@@ -15,6 +17,7 @@ pub(crate) enum SessionErrorCode {
     CredentialInvalid,
     QuotaExceeded,
     VoiceUnsupported,
+    ModelReferenceInvalid,
     NetworkUnreachable,
     ProviderInternal,
 }
@@ -25,6 +28,7 @@ impl SessionErrorCode {
             SessionErrorCode::CredentialInvalid => "session.credential-invalid",
             SessionErrorCode::QuotaExceeded => "session.quota-exceeded",
             SessionErrorCode::VoiceUnsupported => "session.voice-unsupported",
+            SessionErrorCode::ModelReferenceInvalid => "session.model-reference-invalid",
             SessionErrorCode::NetworkUnreachable => "session.network-unreachable",
             SessionErrorCode::ProviderInternal => "session.provider-internal",
         }
@@ -35,6 +39,7 @@ impl SessionErrorCode {
             SessionErrorCode::CredentialInvalid => "update-provider-credentials",
             SessionErrorCode::QuotaExceeded => "check-provider-quota",
             SessionErrorCode::VoiceUnsupported => "switch-voice",
+            SessionErrorCode::ModelReferenceInvalid => "open-providers",
             SessionErrorCode::NetworkUnreachable | SessionErrorCode::ProviderInternal => {
                 "restart-session"
             }
@@ -96,6 +101,44 @@ pub(crate) fn classify_connect_error(message: &str) -> SessionErrorCode {
         return SessionErrorCode::CredentialInvalid;
     }
     SessionErrorCode::NetworkUnreachable
+}
+
+/// Classifies a terminal worker exit across realtime providers. Provider
+/// payloads, handshake failures and retry-exhaustion strings all converge on
+/// the same session-domain codes consumed by the renderer.
+pub(crate) fn classify_realtime_worker_error(message: &str) -> SessionErrorCode {
+    let provider_code = classify_provider_error("", message);
+    if provider_code != SessionErrorCode::ProviderInternal {
+        return provider_code;
+    }
+    let lower = message.to_ascii_lowercase();
+    if ["reconnect", "socket", "network", "connection", "timed out", "timeout", "dns"]
+        .iter().any(|token| lower.contains(token))
+    {
+        return classify_connect_error(message);
+    }
+    SessionErrorCode::ProviderInternal
+}
+
+pub(crate) fn report_realtime_worker_failure(
+    app: &AppHandle,
+    provider: &str,
+    error: &str,
+) -> String {
+    let code = classify_realtime_worker_error(error);
+    let tagged = with_error_markers(error, code);
+    let runtime_state = app.state::<crate::runtime::state::RuntimeStateStore>();
+    let _ = crate::runtime::events::emit_runtime_notification(
+        app,
+        &runtime_state,
+        crate::runtime::contracts::RuntimeNotification::error(
+            &format!("realtime-provider-failed-{provider}"),
+            "session",
+            &tagged,
+            crate::shared::time::now_unix_millis_marker(),
+        ),
+    );
+    tagged
 }
 
 /// The voice rejection check previously lived in `protocol.rs`; it moved here
@@ -207,6 +250,13 @@ mod tests {
             classify_connect_error("IO error: connection timed out (os error 10060)"),
             SessionErrorCode::NetworkUnreachable
         );
+    }
+
+    #[test]
+    fn realtime_worker_exits_share_terminal_codes() {
+        assert_eq!(classify_realtime_worker_error("HTTP 401 Unauthorized"), SessionErrorCode::CredentialInvalid);
+        assert_eq!(classify_realtime_worker_error("429 quota exhausted"), SessionErrorCode::QuotaExceeded);
+        assert_eq!(classify_realtime_worker_error("socket closed and reconnects exhausted"), SessionErrorCode::NetworkUnreachable);
     }
 
     #[test]

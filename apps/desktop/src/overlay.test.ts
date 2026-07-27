@@ -57,4 +57,17 @@ describe('overlay entry', () => {
   it('fails fast when the overlay root element is missing', () => {
     expect(() => mountOverlayApp(null)).toThrow('Overlay root element not found.');
   });
+
+  it('renders a retryable degraded view when runtime bootstrap fails', async () => {
+    overlayMocks.bootstrapDesktopRuntimeBridge.mockRejectedValueOnce(new Error('bootstrap failed'));
+
+    await act(async () => {
+      root?.render(React.createElement(OverlayApp));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.querySelector('.overlay-bootstrap-fallback')).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+  });
 });

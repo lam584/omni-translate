@@ -15,6 +15,7 @@ import {
 } from './config-fallback';
 import { createRuntimeErrorSnapshot, formatRuntimeError } from './error-snapshot';
 import { invokeWithTimeout, pingDesktopRuntime, IPC_PING_TIMEOUT_MS } from './invoke';
+import { DESKTOP_RUNTIME_RETRY_EVENT } from './retry-events';
 import { enableNativeLogForwarding, markStep, type OnBootstrapStep } from './steps';
 
 const runtimeLogger = createLogger('runtime');
@@ -153,8 +154,10 @@ export async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep)
     const recoveryStartedAt = Date.now();
     // Definitely assigned right below; the catch arm only reassigns it.
     let recoveryTimer!: ReturnType<typeof setTimeout>;
+    let recoveryInFlight = false;
     const recoverIpc = async () => {
-      if (disposed || Date.now() - recoveryStartedAt >= IPC_RECOVERY_TIMEOUT_MS) return;
+      if (disposed || recoveryInFlight || Date.now() - recoveryStartedAt >= IPC_RECOVERY_TIMEOUT_MS) return;
+      recoveryInFlight = true;
       try {
         await invokeWithTimeout(() => activeDesktopApi().runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
         const nextCleanup = await connectDesktopRuntimeBridge();
@@ -165,13 +168,21 @@ export async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep)
         cleanup = nextCleanup;
       } catch {
         if (!disposed) recoveryTimer = setTimeout(() => void recoverIpc(), IPC_RECOVERY_RETRY_INTERVAL_MS);
+      } finally {
+        recoveryInFlight = false;
       }
     };
+    const handleRuntimeRetry = () => {
+      clearTimeout(recoveryTimer);
+      void recoverIpc();
+    };
+    window.addEventListener(DESKTOP_RUNTIME_RETRY_EVENT, handleRuntimeRetry);
     recoveryTimer = setTimeout(() => void recoverIpc(), IPC_RECOVERY_RETRY_INTERVAL_MS);
 
     return () => {
       disposed = true;
       clearTimeout(recoveryTimer);
+      window.removeEventListener(DESKTOP_RUNTIME_RETRY_EVENT, handleRuntimeRetry);
       fallbackActive = false;
       unsubscribeFallback();
       cleanup();

@@ -24,6 +24,7 @@ import {
 import { createRuntimeErrorSnapshot, formatRuntimeError } from './error-snapshot';
 import { invokeWithTimeout } from './invoke';
 import { markStep, type OnBootstrapStep } from './steps';
+import { CONFIG_PERSIST_RETRY_EVENT, DESKTOP_RUNTIME_RETRY_EVENT } from './retry-events';
 
 export const CONFIG_DRAFT_SYNC_EVENT = 'config://draft-updated';
 
@@ -175,6 +176,7 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
   markStep(onStep, 'load-config', 'active');
 
   let persistedConfig = useAppStore.getState().configDraft;
+  let configLoadFailed = false;
   try {
     persistedConfig = await invokeWithTimeout(
       () => activeDesktopApi().configuration.load(),
@@ -183,12 +185,15 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
     useAppStore.getState().setConfigDraft(persistedConfig);
     markStep(onStep, 'load-config', 'done');
   } catch (configError) {
+    configLoadFailed = true;
     const message = formatRuntimeError(configError);
     markStep(onStep, 'load-config', 'error', message);
     pushDesktopRuntimeNotification(
       'warning',
       'config-load-failed',
-      `Config load failed: ${message}. Runtime and audio bootstrap state were preserved.`,
+      i18n.language.toLowerCase().startsWith('zh')
+        ? `配置读取失败，当前正在使用回退配置：${message}。可点击“重试”再次读取。`
+        : `Configuration loading failed, so the fallback configuration is active: ${message}. Select Retry to load it again.`,
     );
   }
 
@@ -287,7 +292,9 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
           id: `config-persist-failed-${Date.now()}`,
           level: 'error',
           source: 'desktop-runtime',
-          message: `Config write to SQLite failed: ${lastError instanceof Error ? lastError.message : String(lastError)}. Saved a localStorage fallback.`,
+          message: i18n.language.toLowerCase().startsWith('zh')
+            ? `配置未写入主存储：${lastError instanceof Error ? lastError.message : String(lastError)}。已保存本地回退副本，请点击“重试”。`
+            : `The configuration was not written to primary storage: ${lastError instanceof Error ? lastError.message : String(lastError)}. A local fallback copy was saved; select Retry.`,
           emittedAt: new Date().toISOString(),
         });
       }
@@ -318,6 +325,30 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
       void prewarmCaptureRoutesRuntime(state.configDraft);
     }
   });
+
+  const handleConfigPersistRetry = () => {
+    if (disposed) return;
+    queueState.pending = useAppStore.getState().configDraft;
+    void flushPersistQueue();
+  };
+  const handleDesktopRuntimeRetry = () => {
+    if (disposed || !configLoadFailed) return;
+    void (async () => {
+      try {
+        const config = await invokeWithTimeout(() => activeDesktopApi().configuration.load(), 'configuration_v2.load');
+        useAppStore.getState().setConfigDraft(config);
+        useAppStore.getState().setRuntimeSnapshot(await activeDesktopApi().configuration.runtimeSnapshot());
+        configLoadFailed = false;
+        markStep(onStep, 'load-config', 'done');
+      } catch (error) {
+        pushDesktopRuntimeNotification('error', 'config-load-retry-failed', i18n.language.toLowerCase().startsWith('zh')
+          ? `配置重试仍然失败：${formatRuntimeError(error)}`
+          : `Configuration retry failed again: ${formatRuntimeError(error)}`);
+      }
+    })();
+  };
+  window.addEventListener(CONFIG_PERSIST_RETRY_EVENT, handleConfigPersistRetry);
+  window.addEventListener(DESKTOP_RUNTIME_RETRY_EVENT, handleDesktopRuntimeRetry);
 
   const handleConfigDraftStorage = (event: StorageEvent) => {
     if (event.key !== CONFIG_DRAFT_SYNC_STORAGE_KEY || !event.newValue) return;
@@ -356,6 +387,8 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
     disposed = true;
     bridgeAutostart.cleanup();
     unsubscribeConfig();
+    window.removeEventListener(CONFIG_PERSIST_RETRY_EVENT, handleConfigPersistRetry);
+    window.removeEventListener(DESKTOP_RUNTIME_RETRY_EVENT, handleDesktopRuntimeRetry);
     window.removeEventListener('storage', handleConfigDraftStorage);
     window.removeEventListener('beforeunload', handleBeforeUnload);
     unlisteners.forEach((unlisten) => unlisten());

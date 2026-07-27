@@ -23,6 +23,22 @@ async function invokeWithTimeout<T>(operation: () => Promise<T>, name: string): 
 
 export const storageRecoveryHelpers = { invokeWithTimeout };
 
+export function classifyStorageRecoveryError(cause: unknown) {
+  const detail = cause instanceof Error ? cause.message : String(cause);
+  const normalized = detail.toLowerCase();
+  const chinese = (document.documentElement.lang || 'zh-CN').toLowerCase().startsWith('zh');
+  if (/timeout|timed out|超时/.test(normalized)) {
+    return chinese ? `存储恢复超时：${detail}` : `Storage recovery timed out: ${detail}`;
+  }
+  if (/credential|keyring|vault|凭据|密钥/.test(normalized)) {
+    return chinese ? `系统凭据存储不可用：${detail}` : `The system credential store is unavailable: ${detail}`;
+  }
+  if (/sqlite|database|数据库/.test(normalized)) {
+    return chinese ? `配置数据库不可用：${detail}` : `The configuration database is unavailable: ${detail}`;
+  }
+  return chinese ? `存储恢复失败：${detail}` : `Storage recovery failed: ${detail}`;
+}
+
 /** Restores storage after startup without coupling provider editing to IPC. */
 export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnapshot }: StorageRecoveryOptions) {
   const desktopApi = useDesktopApiV2();
@@ -31,6 +47,7 @@ export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnap
   const attemptsRef = useRef(0);
   const recoveryKey = `${runtimeStatus}:${bridgeStatus}`;
   const [failure, setFailure] = useState<{ key: string; message: string } | null>(null);
+  const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
     if (!hasNativeShell || runtimeStatus === 'ready' || bridgeStatus === 'runtime-error') {
@@ -56,7 +73,7 @@ export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnap
           }
         }
       } catch (cause) {
-        if (active) setFailure({ key: recoveryKey, message: cause instanceof Error ? cause.message : String(cause) });
+        if (active) setFailure({ key: recoveryKey, message: classifyStorageRecoveryError(cause) });
       }
     };
 
@@ -77,7 +94,10 @@ export function useStorageRecovery({ runtimeStatus, bridgeStatus, setRuntimeSnap
       if (intervalRef.current) window.clearInterval(intervalRef.current);
       intervalRef.current = null;
     };
-  }, [bridgeStatus, desktopApi, recoveryKey, runtimeStatus, setRuntimeSnapshot, hasNativeShell]);
+  }, [bridgeStatus, desktopApi, recoveryKey, retryToken, runtimeStatus, setRuntimeSnapshot, hasNativeShell]);
 
-  return failure?.key === recoveryKey ? failure.message : null;
+  return {
+    failure: failure?.key === recoveryKey ? failure.message : null,
+    retry: () => setRetryToken((current) => current + 1),
+  };
 }

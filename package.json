@@ -45,6 +45,7 @@
     "audit:architecture:strict": "node ./scripts/testing/audit-architecture-boundaries.mjs --strict",
     "audit:dead-code": "node ./scripts/testing/audit-rust-dead-code.mjs",
     "audit:repository-hygiene": "node ./scripts/testing/audit-repository-hygiene.mjs",
+    "audit:error-handling": "node ./scripts/testing/audit-error-handling.mjs",
     "i18n:coverage": "node ./scripts/testing/i18n-coverage.mjs",
     "i18n:coverage:strict": "node ./scripts/testing/i18n-coverage.mjs --min-translation-coverage=100",
     "test:watch-mode-report": "node --test ./scripts/testing/watch-mode-report.test.mjs ./scripts/testing/run-watch-mode-live.test.mjs ./scripts/testing/run-watch-mode-live-matrix.test.mjs ./scripts/testing/generate-watch-mode-live-fixtures.test.mjs ./scripts/testing/verify-watch-mode-evidence.test.mjs",

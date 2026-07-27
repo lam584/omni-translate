@@ -1279,6 +1279,7 @@ describe('ProvidersPage', () => {
     readProviderSecretMock.mockRejectedValueOnce('read unavailable');
     await click(revealSecretButton(container));
     expect(container.textContent).toContain('read unavailable');
+    expect(secretInput(container)?.type).toBe('password');
   });
 
   it('saves endpoint-only auth changes without writing an empty secret', async () => {

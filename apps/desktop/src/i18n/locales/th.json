@@ -83,6 +83,7 @@
     "idle": "ไม่ได้ใช้งาน"
   },
   "settings": {
+    "languageLoadFailed": "โหลดทรัพยากรภาษาไม่สำเร็จ จึงคืนค่าภาษาก่อนหน้า โปรดลองอีกครั้ง รายละเอียด: {{error}}",
     "title": "การตั้งค่า",
     "subtitle": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่า",
     "sectionLanguage": "ภาษาของอินเทอร์เฟซ",
@@ -185,6 +186,7 @@
     "driverManagementHint": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่า"
   },
   "welcome": {
+    "languageLoadFailed": "โหลดทรัพยากรภาษาไม่สำเร็จ จึงคืนค่าตัวเลือกก่อนหน้า โปรดลองอีกครั้ง รายละเอียด: {{error}}",
     "title": "การตั้งค่าเริ่มต้น - ชื่อเรื่อง",
     "subtitle": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
     "confirm": "การตั้งค่าเริ่มต้น",
@@ -195,13 +197,13 @@
     "providerLabel": "ผู้ให้บริการ เทมเพลต",
     "apiKeyLabel": "คีย์ API",
     "apiKeyPlaceholder": "วาง API key ของคุณ",
-    "apiKeySaved": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
-    "apiKeySaveTimeout": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
-    "apiKeySaveInvokeTimeout": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
-    "apiKeySaveUiTimeout": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
-    "apiKeySavedDeferred": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
-    "apiKeyProbeFailed": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
-    "apiKeyProbeTimeout": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
+    "apiKeySaved": "บันทึก API คีย์แล้ว",
+    "apiKeySaveTimeout": "หมดเวลาบันทึก API คีย์ โปรดตรวจสอบ Windows Credential Manager แล้วลองอีกครั้ง",
+    "apiKeySaveInvokeTimeout": "คำสั่งบันทึกไม่ตอบกลับภายใน 7 วินาที โปรดตรวจสอบบันทึกการวินิจฉัยแล้วลองอีกครั้ง",
+    "apiKeySaveUiTimeout": "รอผลการบันทึกเกิน 15 วินาที โปรดตรวจสอบการวินิจฉัยก่อนลองอีกครั้ง",
+    "apiKeySavedDeferred": "บันทึก API คีย์แล้ว คุณตรวจสอบการเชื่อมต่อภายหลังได้ที่ การตั้งค่า › ผู้ให้บริการ",
+    "apiKeyProbeFailed": "บันทึก API คีย์แล้ว แต่ตรวจสอบการเชื่อมต่อไม่ผ่าน โปรดตรวจสอบเครือข่ายและคีย์แล้วลองอีกครั้ง",
+    "apiKeyProbeTimeout": "บันทึก API คีย์แล้ว แต่การตรวจสอบหมดเวลา โปรดตรวจสอบเครือข่าย ปลายทาง และคีย์",
     "showApiKey": "แสดงคีย์ API",
     "hideApiKey": "ซ่อนคีย์ API",
     "apiKeyRevealSuccess": "ตรวจสอบการตั้งค่าและสถานะของการตั้งค่าเริ่มต้น",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "เริ่มต้นหน้าต่างคำบรรยายไม่สำเร็จ",
+    "bootstrapFailedHint": "หน้าต่างอยู่ในโหมดจำกัดที่ปลอดภัย โปรดลองอีกครั้งหรือส่งออกการวินิจฉัยจากหน้าต่างหลัก",
     "contextMenuTitle": "โอเวอร์เลย์คำบรรยาย - ชื่อเรื่อง",
     "previewTitleEnglish": "คำบรรยาย พร้อม",
     "previewTitle": "คำบรรยาย พร้อม",
@@ -615,6 +619,7 @@
       "testOverlay": "การวินิจฉัย",
       "exporting": "ตรวจสอบการตั้งค่าและสถานะของการวินิจฉัย",
       "exportBundle": "การวินิจฉัย - ส่งออก",
+      "openExportDirectory": "เปิดโฟลเดอร์ที่เก็บไฟล์",
       "refreshing": "ตรวจสอบการตั้งค่าและสถานะของการวินิจฉัย",
       "refreshRuntime": "รีเฟรช รันไทม์",
       "selectAll": "การวินิจฉัย"
@@ -869,15 +874,15 @@
       "storageBlocked": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ {{detail}}",
       "runtimeBlockedAction": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ {{action}}",
       "storageBlockedAction": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ {{action}}",
-      "secretStatusReadFailed": "อ่านสถานะข้อมูลลับไม่สำเร็จ",
+      "secretStatusReadFailed": "อ่านสถานะคีย์ที่บันทึกไว้ไม่สำเร็จ โปรดตรวจสอบ Credential Manager แล้วลองอีกครั้ง",
       "emptyModelCatalog": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
       "fetchModelCatalogFailed": "ดึงแคตตาล็อกโมเดลไม่สำเร็จ",
       "secretSaved": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
-      "secretWriteFailed": "ผู้ให้บริการ - ล้มเหลว",
+      "secretWriteFailed": "บันทึก API คีย์ไม่สำเร็จ โปรดตรวจสอบข้อมูลและ Credential Manager แล้วลองอีกครั้ง",
       "noStoredSecret": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
       "secretPlainLoaded": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
-      "secretPlainReadFailed": "ผู้ให้บริการ - ล้มเหลว",
-      "verifyFailed": "ผู้ให้บริการ - ล้มเหลว",
+      "secretPlainReadFailed": "อ่าน API คีย์ที่บันทึกไว้ไม่สำเร็จ ระบบจะคงการปกปิดไว้ โปรดลองอีกครั้ง",
+      "verifyFailed": "ตรวจสอบผู้ให้บริการไม่สำเร็จ โปรดตรวจสอบ URL, API คีย์ และเครือข่ายแล้วลองอีกครั้ง",
       "providerNameRequired": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
       "baseUrlRequired": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
       "keepOneProvider": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
@@ -989,6 +994,7 @@
     "expandSection": "ขยายส่วน"
   },
   "session": {
+    "speechFailureRecovery": "คำบรรยายยังใช้ได้ แต่เสียงพูดใช้ไม่ได้ โปรดตรวจสอบเส้นทางเสียงแล้วเริ่มใหม่",
     "watchMode": "โหมดรับชม",
     "conversationMode": "การสนทนา โหมด",
     "cueStartedAt": "เซสชัน {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "เริ่มเซสชันใหม่",
     "restartSessionHint": " โปรดเริ่มเซสชันใหม่แล้วลองอีกครั้ง",
     "errorCode": {
+      "modelReferenceInvalid": "ไม่พบโมเดลแปลรองหรือไม่ได้เชื่อมกับผู้ให้บริการที่เปิดใช้ โปรดเลือกใหม่ในการตั้งค่าผู้ให้บริการ",
+      "audioCaptureFailed": "กระบวนการจับเสียงหยุดทำงาน โปรดตรวจสอบอุปกรณ์เสียงแล้วลองอีกครั้ง",
       "credentialInvalid": "คีย์ API ไม่ถูกต้องหรือหมดอายุ โปรดอัปเดตข้อมูลรับรองของผู้ให้บริการ",
       "quotaExceeded": "ถึงโควตาหรือขีดจำกัดอัตราของผู้ให้บริการแล้ว โปรดตรวจสอบการใช้งานแล้วลองอีกครั้ง",
       "voiceUnsupported": "ไม่รองรับเสียงที่เลือก โปรดเลือกเสียงอื่นในการตั้งค่าผู้ให้บริการ",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "ตรวจสอบการตั้งค่าและสถานะของเซสชัน",
     "virtualDriverFallbackConfirm": "ยังไม่พร้อมใช้งานไดรเวอร์เสียงเสมือนหรือ Bridge กด “ตกลง” เพื่อใช้โหมดคำบรรยายเท่านั้น หรือกด “ยกเลิก” เพื่อสลับชั่วคราวไปยังลำโพงจริงพร้อม AEC ซึ่งยังมีความเสี่ยงต่อเสียงวนกลับ",
     "sceneLaunchFailed": "เซสชัน - ล้มเหลว {{scene}} ({{stage}}) {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "ผู้ให้บริการรายงานข้อผิดพลาดภายใน โปรดเริ่มเซสชันใหม่ภายหลัง {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "ผู้ให้บริการรายงานข้อผิดพลาดภายใน โปรดเริ่มเซสชันใหม่ภายหลัง {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "ผู้ให้บริการรายงานข้อผิดพลาดภายใน โปรดเริ่มเซสชันใหม่ภายหลัง {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "ตรวจสอบการตั้งค่าและสถานะของอภิธานศัพท์"
     },
     "conflictResolution": {
+      "overwriteHint": "แทนที่รายการที่ขัดแย้งทั้งหมดด้วยคำแปลนี้",
+      "skipHint": "ไม่บันทึกรายการนี้ และรายการเดิมจะไม่เปลี่ยนแปลง",
+      "keep-allHint": "บันทึกรายการใหม่ที่มีคำต้นทางเดียวกันและเก็บคำแปลเดิมทั้งหมด",
       "overwrite": "อภิธานศัพท์",
       "skip": "อภิธานศัพท์",
       "keep-all": "อภิธานศัพท์"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "ไม่สามารถเชื่อมต่อบริการเสียงได้ โปรดตรวจสอบเครือข่ายแล้วเริ่มเซสชันใหม่ กระบวนการจับเสียงหยุดทำงาน โปรดตรวจสอบอุปกรณ์เสียงแล้วลองอีกครั้ง",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "ไม่สามารถเชื่อมต่อบริการเสียงได้ โปรดตรวจสอบเครือข่ายแล้วเริ่มเซสชันใหม่ {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "ผู้ให้บริการรายงานข้อผิดพลาดภายใน โปรดเริ่มเซสชันใหม่ภายหลัง {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "ไม่สามารถเชื่อมต่อบริการเสียงได้ โปรดตรวจสอบเครือข่ายแล้วเริ่มเซสชันใหม่ {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

@@ -21,6 +21,25 @@ export type BenchmarkVoiceModel = {
 
 type BenchmarkProgressView = Pick<BenchmarkProgressEvent, 'status' | 'phase' | 'message' | 'audioChunksSent' | 'totalAudioChunks' | 'error'>;
 
+export function classifyBenchmarkError(error: unknown) {
+  const detail = error instanceof Error ? error.message : String(error);
+  const normalized = detail.toLowerCase();
+  const chinese = i18n.language.toLowerCase().startsWith('zh');
+  let guidance: string;
+  if (/401|403|unauthori[sz]ed|invalid.*key|credential|鉴权|密钥/.test(normalized)) {
+    guidance = chinese ? '模型鉴权失败，请检查该提供商的 API Key 后重试。' : 'Model authentication failed. Check the provider API key and retry.';
+  } else if (/no such file|not found|enoent|找不到.*文件|文件.*不存在/.test(normalized)) {
+    guidance = chinese ? '音频文件不存在，请填写可访问的绝对路径后重试。' : 'The audio file does not exist. Enter an accessible absolute path and retry.';
+  } else if (/timeout|timed out|websocket|network|connect|超时|网络|连接/.test(normalized)) {
+    guidance = chinese ? '模型连接失败或超时，请检查网络、接口地址和服务状态后重试。' : 'The model connection failed or timed out. Check the network, endpoint, and service status, then retry.';
+  } else if (/unsupported|not support|不支持/.test(normalized)) {
+    guidance = chinese ? '当前模型不支持该实时音频测试，请选择具备实时语音能力的模型。' : 'This model does not support the realtime audio benchmark. Choose a realtime-capable voice model.';
+  } else {
+    guidance = chinese ? '模型基准测试失败，请检查配置后重试。' : 'The model benchmark failed. Check the configuration and retry.';
+  }
+  return `${guidance}\n${chinese ? '技术详情' : 'Technical details'}：${detail}`;
+}
+
 export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[]) {
   const [modelId, setModelId] = useState('');
   const [mp3Path, setMp3Path] = useState('scripts/testing/fixtures/watch-mode-en-original.wav');
@@ -61,7 +80,7 @@ export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[])
       setReport(nextReport);
       setProgress((current) => ({ status: 'completed', phase: 'completed', message: current!.message || i18n.t('diagnostics.benchmark.completed'), audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: null }));
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
+      const message = classifyBenchmarkError(caught);
       setError(message);
       setProgress((current) => ({ status: 'error', phase: current!.phase, message, audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: message }));
     } finally {

@@ -21,6 +21,10 @@ export async function exportDiagnosticsBundleRuntime(
   return { artifact, snapshot };
 }
 
+export async function openExportDirectoryRuntime(outputPath: string): Promise<void> {
+  await activeDesktopApi().diagnostics.openExportDirectory(outputPath);
+}
+
 /**
  * Reads the recent native diagnostics log entries. Used by the scene launch
  * attribution path to recover route_start_acknowledged/route_ready/route_error

@@ -14,6 +14,7 @@ import {
   appendFrontendDiagnosticsLog,
   exportDiagnosticsBundleRuntime,
   getRecentDiagnosticsLogsRuntime,
+  openExportDirectoryRuntime,
   runDiagnosticsSelfCheckRuntime,
   runSubtitleOverlaySelfCheckRuntime,
 } from './diagnostics-runtime';
@@ -68,19 +69,33 @@ describe('diagnostics runtime', () => {
     ]);
   });
 
+  it('opens an exported artifact through the diagnostics command boundary', async () => {
+    installDesktopApi(new TauriDesktopApi());
+    mocks.invoke.mockResolvedValue({ data: null, warnings: [] });
+
+    await expect(openExportDirectoryRuntime('C:/exports/report.zip')).resolves.toBeUndefined();
+    expect(mocks.invoke).toHaveBeenCalledWith('diagnostics_v2', {
+      command: { action: 'openExportDirectory', outputPath: 'C:/exports/report.zip' },
+    });
+  });
+
   it('mirrors browser diagnostics to the console with and without detail', () => {
     const infoSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const debugSpy = vi.spyOn(console, 'debug').mockImplementation(() => undefined);
 
     appendFrontendDiagnosticsLog('runtime', 'info', 'ready');
     appendFrontendDiagnosticsLog('runtime', 'warning', 'degraded', 'driver missing');
+    appendFrontendDiagnosticsLog('runtime', 'debug', 'trace');
 
     expect(infoSpy).toHaveBeenCalledWith('[omni][runtime]', 'ready');
     expect(warnSpy).toHaveBeenCalledWith('[omni][runtime]', 'degraded', 'driver missing');
-    expect(getRecentFrontendLogEntries().map((entry) => entry.summary)).toEqual(['ready', 'degraded']);
+    expect(debugSpy).toHaveBeenCalledWith('[omni][runtime]', 'trace');
+    expect(getRecentFrontendLogEntries().map((entry) => entry.summary)).toEqual(['ready', 'degraded', 'trace']);
 
     infoSpy.mockRestore();
     warnSpy.mockRestore();
+    debugSpy.mockRestore();
   });
 
   it('forwards batched frontend diagnostics logs and retains entries on IPC failure', async () => {

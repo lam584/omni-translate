@@ -123,7 +123,7 @@ export function useProviderVerificationController(params: Params) {
         'error',
         blockedMessage(params.t('providers.actions.fetchModelList')),
       ));
-      return;
+      return false;
     }
 
     params.setModelCatalog((current) => ({ ...current, status: 'loading', error: null }));
@@ -158,12 +158,14 @@ export function useProviderVerificationController(params: Params) {
         fetchedAt: catalog.fetchedAt,
         endpoint: catalog.endpoint,
       });
+      return !error;
     } catch (error) {
       params.setModelCatalog(providersPageHelpers.createEmptyModelCatalog(
         params.modelCatalogSignature,
         'error',
         providersPageHelpers.formatRuntimeErrorMessage(params.t('providers.messages.fetchModelCatalogFailed'), error),
       ));
+      return false;
     }
   };
 
@@ -183,7 +185,12 @@ export function useProviderVerificationController(params: Params) {
         params.setSecretVisible(false);
       }
       params.setSecretStatusMessage(params.t('providers.messages.secretSaved'));
-      void refreshModelCatalog();
+      const catalogRefreshed = await refreshModelCatalog();
+      if (!catalogRefreshed) {
+        params.setSecretStatusMessage(params.t('providers.messages.secretSavedCatalogUnknown', {
+          defaultValue: 'API Key 已保存，但模型状态刷新失败；密钥无需重新填写，请稍后刷新模型列表。',
+        }));
+      }
     } catch (error) {
       params.setSecretStatusMessage(providersPageHelpers.formatRuntimeErrorMessage(
         params.t('providers.messages.secretWriteFailed'),
@@ -222,6 +229,7 @@ export function useProviderVerificationController(params: Params) {
       params.setSecretVisible(true);
       params.setSecretStatusMessage(params.t('providers.messages.secretPlainLoaded'));
     } catch (error) {
+      params.setSecretVisible(false);
       params.setSecretStatusMessage(providersPageHelpers.formatRuntimeErrorMessage(
         params.t('providers.messages.secretPlainReadFailed'),
         error,
@@ -267,5 +275,11 @@ export function useProviderVerificationController(params: Params) {
     }
   };
 
-  return { handleSecretSave, handleSecretVisibilityToggle, handleVerificationRun, refreshModelCatalog, resetForTemplate };
+  return {
+    handleSecretSave,
+    handleSecretVisibilityToggle,
+    handleVerificationRun,
+    refreshModelCatalog: async () => { await refreshModelCatalog(); },
+    resetForTemplate,
+  };
 }

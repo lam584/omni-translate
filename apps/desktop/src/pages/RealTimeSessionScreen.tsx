@@ -17,10 +17,11 @@ import type { SceneMode } from '../utils/scene-readiness';
 import i18n from '../i18n/config';
 import { parseRuntimeTimestampMs, useSessionElapsed } from './session/useSessionElapsed';
 import { extractSessionErrorCode, sessionErrorPresentation } from '../utils/session-error-presentation';
+import { describeRuntimeError } from '../utils/runtime-error-text';
 import { useSceneSessionController } from './session/useSceneSessionController';
 import { logSceneLaunchConfig } from './session/logSceneLaunchConfig';
 import { getCueDisplaySegments } from './overlay/overlayDomain';
-import { appendFrontendDiagnosticsLog, exportDiagnosticsBundleRuntime } from '../runtime/diagnostics-runtime';
+import { appendFrontendDiagnosticsLog, exportDiagnosticsBundleRuntime, openExportDirectoryRuntime } from '../runtime/diagnostics-runtime';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | 'export-diagnostics' | null;
 
@@ -33,25 +34,6 @@ function createLaunchAttemptId(mode: SceneMode): string {
     ? crypto.randomUUID()
     : `${Date.now()}-${Math.random().toString(16).slice(2)}`;
   return `${mode}-${id}`;
-}
-
-function describeRuntimeError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error && typeof error === 'object') {
-    const candidate = error as { code?: unknown; message?: unknown };
-    if (typeof candidate.message === 'string' && candidate.message.trim()) {
-      const code = typeof candidate.code === 'string' && candidate.code.trim() ? ` (${candidate.code})` : '';
-      return `${candidate.message}${code}`;
-    }
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return String(error);
-    }
-  }
-  return String(error);
 }
 
 function resolveSceneLabel(mode: SceneMode) {
@@ -357,8 +339,12 @@ function RealTimeSessionPage() {
   const inboundErrorCode = audioRuntimeSnapshot.inbound.lastErrorCode
     ?? (audioRuntimeSnapshot.inbound.lastError ? extractSessionErrorCode(audioRuntimeSnapshot.inbound.lastError) : null);
   const inboundErrorPresentation = sessionErrorPresentation(inboundErrorCode);
+  const outboundErrorCode = audioRuntimeSnapshot.outbound.lastErrorCode
+    ?? (audioRuntimeSnapshot.outbound.lastError ? extractSessionErrorCode(audioRuntimeSnapshot.outbound.lastError) : null);
+  const outboundErrorPresentation = sessionErrorPresentation(outboundErrorCode);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [sessionLaunchProblem, setSessionLaunchProblem] = useState<string | null>(null);
+  const [sessionActionProblem, setSessionActionProblem] = useState<string | null>(null);
   const [watchFallbackResolver, setWatchFallbackResolver] = useState<WatchFallbackResolver | null>(null);
 
   const hasSpeechActivity = audioRuntimeSnapshot.speech.dispatchState !== 'idle';
@@ -405,12 +391,45 @@ function RealTimeSessionPage() {
     }
   };
 
+  const showSessionActionError = (actionLabel: string, error: unknown) => {
+    const detail = describeRuntimeError(error);
+    const message = `${actionLabel} · ${t('diagnostics.status.failed')}：${detail}`;
+    setSessionActionProblem(message);
+    pushRuntimeNotification({
+      id: `session-action-failed-${Date.now()}`,
+      level: 'error',
+      source: 'session',
+      message,
+      emittedAt: new Date().toISOString(),
+    });
+  };
+
   // Quick diagnostics export shortcut on session error surfaces, reusing the
   // diagnostics page export pipeline without a page switch.
   const handleExportDiagnostics = () =>
     void runBusyAction('export-diagnostics', async () => {
-      const result = await exportDiagnosticsBundleRuntime('quick');
-      setRuntimeSnapshot(result.snapshot);
+      setSessionActionProblem(null);
+      try {
+        const result = await exportDiagnosticsBundleRuntime('quick');
+        setRuntimeSnapshot(result.snapshot);
+        pushRuntimeNotification({
+          id: `session-diagnostics-exported-${Date.now()}`,
+          level: 'info',
+          source: 'session',
+          message: `${t('session.exportDiagnostics')} · ${t('diagnostics.status.completed')}：${result.artifact.outputPath} · ${result.artifact.fileCount}`,
+          emittedAt: new Date().toISOString(),
+        });
+        try {
+          await openExportDirectoryRuntime(result.artifact.outputPath);
+        } catch (error) {
+          showSessionActionError(
+            `${t('session.exportDiagnostics')} · ${t('diagnostics.status.completed')}：${result.artifact.outputPath} · ${t('diagnostics.actions.openExportDirectory')}`,
+            error,
+          );
+        }
+      } catch (error) {
+        showSessionActionError(t('session.exportDiagnostics'), error);
+      }
     });
 
   const resolveWatchFallback = (subtitlesOnly: boolean) => {
@@ -520,6 +539,7 @@ function RealTimeSessionPage() {
       }
       handleSceneLaunchClick(configDraft.devices.routeMode);
     })().catch((error) => {
+      showSessionActionError(t('session.restartSessionButton'), error);
       appendFrontendDiagnosticsLog('runtime', 'error', '[SessionRestart] stop before relaunch failed', JSON.stringify({ error: describeRuntimeError(error) }));
     });
   };
@@ -556,6 +576,16 @@ function RealTimeSessionPage() {
             <div className="session-launch-feedback session-launch-feedback-success" role="status">
               <AppIcon name="check" size={15} />
               <span>{t('session.connectionRestored')}</span>
+            </div>
+          )}
+          {sessionActionProblem && (
+            <div className="session-launch-feedback session-launch-feedback-error" role="alert">
+              <AppIcon name="alert" size={15} />
+              <span>{sessionActionProblem}</span>
+              <Link className="cue-queue-error-action" to="/diagnostics">{t('nav.diagnostics')}</Link>
+              <button aria-label={t('common.close')} className="icon-button" onClick={() => setSessionActionProblem(null)} type="button">
+                <AppIcon name="close" size={14} />
+              </button>
             </div>
           )}
           {sessionRestartAdvised && (
@@ -600,12 +630,25 @@ function RealTimeSessionPage() {
             <button
               className="icon-button"
               disabled={busyAction !== null}
-              onClick={() =>
+              onClick={() => {
+                setSessionActionProblem(null);
                 void runBusyAction('overlay', async () => {
-                  const snapshot = await toggleSubtitleOverlayWindow();
-                  setRuntimeSnapshot(snapshot);
-                })
-              }
+                  try {
+                    const snapshot = await toggleSubtitleOverlayWindow();
+                    setRuntimeSnapshot(snapshot);
+                  } catch (error) {
+                    const message = t('session.overlayOpenFailed', { error: error instanceof Error ? error.message : String(error) });
+                    setSessionActionProblem(message);
+                    pushRuntimeNotification({
+                      id: `session-overlay-toggle-failed-${Date.now()}`,
+                      level: 'error',
+                      source: 'session',
+                      message,
+                      emittedAt: new Date().toISOString(),
+                    });
+                  }
+                });
+              }}
               type="button"
             >
               <AppIcon name="subtitles" size={14} />
@@ -692,6 +735,31 @@ function RealTimeSessionPage() {
               </button>
             </p>
           )}
+          {audioRuntimeSnapshot.outbound.lastError && (
+            <p className="cue-queue-error" role="alert">
+              {outboundErrorPresentation
+                ? `${t(outboundErrorPresentation.messageKey)} [${outboundErrorCode}]`
+                : t('diagnostics.issues.outboundError', { error: audioRuntimeSnapshot.outbound.lastError })}
+              {outboundErrorPresentation?.action === 'open-providers' && outboundErrorPresentation.actionKey ? (
+                <Link className="cue-queue-error-action" to="/settings/providers">{t(outboundErrorPresentation.actionKey)}</Link>
+              ) : (
+                <Link className="cue-queue-error-action" to="/audio-routing">{t('nav.audioRouting')}</Link>
+              )}
+              <button className="cue-queue-error-action" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
+                {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
+              </button>
+            </p>
+          )}
+          {audioRuntimeSnapshot.speech.lastError && (
+            <p className="cue-queue-error" role="alert">
+              {t('diagnostics.issues.speechError', { error: audioRuntimeSnapshot.speech.lastError })}
+              <span>{t('session.speechFailureRecovery')}</span>
+              <Link className="cue-queue-error-action" to="/audio-routing">{t('nav.audioRouting')}</Link>
+              <button className="cue-queue-error-action" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
+                {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
+              </button>
+            </p>
+          )}
           {sessionLaunchProblem && !isSessionRunning && (
             <div className="session-launch-feedback session-launch-feedback-error" role="alert">
               <AppIcon name="alert" size={15} />
@@ -702,12 +770,17 @@ function RealTimeSessionPage() {
             <button
               className="icon-button icon-button-danger"
               disabled={busyAction !== null}
-              onClick={() =>
+              onClick={() => {
+                setSessionActionProblem(null);
                 void runBusyAction('clear-cues', async () => {
-                  const snapshot = await clearSubtitleCuesRuntime();
-                  setAudioRuntimeSnapshot(snapshot);
-                })
-              }
+                  try {
+                    const snapshot = await clearSubtitleCuesRuntime();
+                    setAudioRuntimeSnapshot(snapshot);
+                  } catch (error) {
+                    showSessionActionError(t('session.clearSubtitles'), error);
+                  }
+                });
+              }}
               type="button"
             >
               <AppIcon name="trash" size={14} />

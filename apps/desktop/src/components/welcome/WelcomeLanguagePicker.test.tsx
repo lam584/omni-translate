@@ -215,6 +215,19 @@ describe('WelcomeLanguagePicker', () => {
     expect(container.querySelectorAll('.welcome-language-item')).not.toHaveLength(0);
   });
 
+  it('restores the previous selection and reports a locale activation failure', async () => {
+    await i18n.changeLanguage('zh-CN');
+    const changeSpy = vi.spyOn(i18n, 'changeLanguage').mockRejectedValueOnce(new Error('locale chunk unavailable'));
+    await renderPicker();
+    const languageButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('.welcome-language-item'));
+
+    await click(languageButtons.find((button) => button.textContent?.includes('English'))!);
+
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('locale chunk unavailable');
+    expect(container.querySelector<HTMLButtonElement>('.welcome-language-item[aria-selected="true"]')?.textContent).toContain('简体中文');
+    changeSpy.mockRestore();
+  });
+
   it('skips provider setup, returns from the driver step and completes the wizard', async () => {
     const onDone = vi.fn();
     await renderPicker(onDone);
@@ -276,11 +289,14 @@ describe('WelcomeLanguagePicker', () => {
 
     readProviderSecretMock.mockRejectedValueOnce(new Error('credential backend unavailable'));
     await click(toggle);
-    expect(container.textContent).toContain('credential backend unavailable');
+    expect(container.textContent).toContain('读取密钥明文失败');
+    expect(container.textContent).not.toContain('credential backend unavailable');
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')).not.toBeNull();
 
     readProviderSecretMock.mockRejectedValueOnce('credential string failure');
     await click(toggle);
-    expect(container.textContent).toContain('credential string failure');
+    expect(container.textContent).not.toContain('credential string failure');
+    expect(container.querySelector<HTMLInputElement>('input[type="password"]')).not.toBeNull();
   });
 
   it('falls back to the default template for an unknown selection', async () => {
@@ -307,6 +323,22 @@ describe('WelcomeLanguagePicker', () => {
     await click(getFooterButtons(container)[0]!);
     await act(async () => rejectRefresh(new Error('late failure')));
     expect(container.textContent).not.toContain('late failure');
+  });
+
+  it('shows the driver refresh reason and retries from the onboarding step', async () => {
+    refreshBridgeRuntimeMock.mockRejectedValueOnce(new Error('Bridge pipe timed out'));
+    await renderPicker();
+    await click(getFooterButtons(container)[0]!);
+    await click(getFooterButtons(container)[1]!);
+    await act(async () => { await Promise.resolve(); });
+
+    const alert = container.querySelector<HTMLElement>('.welcome-provider-error');
+    expect(alert?.textContent).toContain('Bridge pipe timed out');
+
+    refreshBridgeRuntimeMock.mockResolvedValueOnce(structuredClone(runtimeSnapshotMock));
+    await click(alert!.querySelector<HTMLButtonElement>('button')!);
+    expect(refreshBridgeRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('.welcome-provider-error')).toBeNull();
   });
 
   it('updates the provider template and API address before surfacing save timeouts', async () => {
@@ -410,7 +442,7 @@ describe('WelcomeLanguagePicker', () => {
     });
 
     expect(runProviderProbeMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: expect.stringMatching(/^https?:/) }));
-    expect(container.textContent).toContain('denied');
+    expect(container.textContent).toContain('API Key 无效或已失效');
   });
 
   it('returns safely when provider configuration is empty and formats unavailable probes without detail', async () => {

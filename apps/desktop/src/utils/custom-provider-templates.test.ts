@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createCustomProviderTemplate,
   customProviderTemplateToDraft,
-  readCustomProviderTemplates,
+  readCustomProviderTemplates, readCustomProviderTemplatesResult,
   updateCustomProviderTemplate,
   writeCustomProviderTemplates,
   type CustomProviderTemplateDraft,
@@ -101,19 +101,21 @@ describe('custom provider templates', () => {
   it('persists custom templates and ignores missing, non-array and malformed storage', () => {
     expect(readCustomProviderTemplates()).toEqual([]);
     const template = createCustomProviderTemplate(draft());
-    writeCustomProviderTemplates([template]);
+    expect(writeCustomProviderTemplates([template]).ok).toBe(true);
     expect(readCustomProviderTemplates()).toEqual([template]);
 
     window.localStorage.setItem('omni.customProviderTemplates', '{}');
     expect(readCustomProviderTemplates()).toEqual([]);
     window.localStorage.setItem('omni.customProviderTemplates', '{broken-json');
     expect(readCustomProviderTemplates()).toEqual([]);
+    expect(readCustomProviderTemplatesResult().error).toBeTruthy();
+    expect(window.localStorage.getItem('omni.customProviderTemplates')).toBe('{broken-json');
   });
 
   it('ignores template persistence when browser storage is unavailable', () => {
     vi.stubGlobal('window', undefined);
     expect(readCustomProviderTemplates()).toEqual([]);
-    expect(() => writeCustomProviderTemplates([])).not.toThrow();
+    expect(writeCustomProviderTemplates([]).ok).toBe(false);
     vi.unstubAllGlobals();
   });
 });

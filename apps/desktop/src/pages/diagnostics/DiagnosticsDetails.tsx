@@ -3,6 +3,7 @@ import AppIcon from '../../components/icons/AppIcon';
 import i18n from '../../i18n/config';
 import type { BenchmarkProgressEvent, BenchmarkReport } from '../../runtime/benchmark-runtime';
 import type { LiveSessionEvents } from '../../runtime/live-session-events-runtime';
+import { writeExportArtifactRuntime, type ExportArtifactReceipt } from '../../runtime/export-artifact-runtime';
 
 type BenchmarkProgressView = Pick<BenchmarkProgressEvent, 'status' | 'phase' | 'message' | 'audioChunksSent' | 'totalAudioChunks' | 'error'>;
 
@@ -393,36 +394,28 @@ export function fmtMs(value: number | null | undefined): string {
   return `${value.toFixed(0)}ms`;
 }
 
-export function exportFile(content: string, filename: string, mimeType: string) {
-  const blob = new Blob([content], { type: mimeType });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  a.click();
-  URL.revokeObjectURL(url);
+export function exportFile(content: string, filename: string, mimeType: string): Promise<ExportArtifactReceipt> {
+  return writeExportArtifactRuntime(filename, content, mimeType);
 }
 
-export function exportJson(data: unknown, filename: string) {
-  exportFile(JSON.stringify(data, null, 2), filename, 'application/json');
+export function exportJson(data: unknown, filename: string): Promise<ExportArtifactReceipt> {
+  return exportFile(JSON.stringify(data, null, 2), filename, 'application/json');
 }
 
 // eslint-disable-next-line react-refresh/only-export-components -- static download facade is shared by the diagnostics screen and export tests.
 export class DiagnosticsReportExporter {
   static exportBenchmark(report: BenchmarkReport, basename: string, format: 'json' | 'txt') {
     if (format === 'json') {
-      exportJson(report, `${basename}.json`);
-      return;
+      return exportJson(report, `${basename}.json`);
     }
-    exportFile(formatBenchmarkTxt(report), `${basename}.txt`, 'text/plain');
+    return exportFile(formatBenchmarkTxt(report), `${basename}.txt`, 'text/plain');
   }
 
   static exportLiveEvents(events: LiveSessionEvents, basename: string, format: 'json' | 'txt') {
     if (format === 'json') {
-      exportJson(events, `${basename}.json`);
-      return;
+      return exportJson(events, `${basename}.json`);
     }
-    exportFile(formatLiveEventsTxt(events), `${basename}.txt`, 'text/plain');
+    return exportFile(formatLiveEventsTxt(events), `${basename}.txt`, 'text/plain');
   }
 }
 
@@ -600,9 +593,18 @@ export function PipelineMilestonesGrid({ milestones }: { milestones?: LiveSessio
   );
 }
 
-export function LiveSessionEventDetail({ events, loading }: { events: LiveSessionEvents | null; loading: boolean }) {
+export function LiveSessionEventDetail({ error = null, events, loading }: { error?: string | null; events: LiveSessionEvents | null; loading: boolean }) {
   if (loading && !events) {
     return <div className="benchmark-empty">{i18n.t('diagnostics.liveEvents.loading')}</div>;
+  }
+
+  if (error) {
+    return (
+      <div className="benchmark-empty benchmark-empty-error" role="alert">
+        <strong>{i18n.t('diagnostics.liveEvents.title')} · {i18n.t('diagnostics.status.failed')}</strong>
+        <p>{error}</p>
+      </div>
+    );
   }
 
   if (!events) {

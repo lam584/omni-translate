@@ -13,6 +13,7 @@ export function useGlossaryWorkspaceController(
   const [page, setPage] = useState(1);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [dialogState, setDialogState] = useState<EntryDialogState>(initialDialogState);
+  const [entryError, setEntryError] = useState('');
   const [conflictEntries, setConflictEntries] = useState<GlossaryPackageEntry[]>([]);
   const [conflictResolution, setConflictResolution] = useState<'overwrite' | 'skip' | 'keep-all'>('overwrite');
   const [previewText, setPreviewText] = useState('');
@@ -22,7 +23,7 @@ export function useGlossaryWorkspaceController(
     matches: GlossaryPackageEntry[];
     elapsedMs: number;
   } | null>(null);
-  const [importMessage, setImportMessage] = useState<{ text: string; tone: 'success' | 'warning' | 'error' } | null>(null);
+  const [importMessage, setImportMessage] = useState<{ text: string; tone: 'success' | 'warning' | 'error'; outputPath?: string } | null>(null);
   const [draggedLibraryId, setDraggedLibraryId] = useState<string | null>(null);
   const [libraryDialogOpen, setLibraryDialogOpen] = useState(false);
   const [newLibraryName, setNewLibraryName] = useState('');
@@ -32,7 +33,7 @@ export function useGlossaryWorkspaceController(
   return {
     selectedLibraryId, setSelectedLibraryId, searchQuery, setSearchQuery,
     filterStrategy, setFilterStrategy, filterImportant, setFilterImportant,
-    page, setPage, dialogOpen, setDialogOpen, dialogState, setDialogState,
+    page, setPage, dialogOpen, setDialogOpen, dialogState, setDialogState, entryError, setEntryError,
     conflictEntries, setConflictEntries, conflictResolution, setConflictResolution,
     previewText, setPreviewText, testResult, setTestResult, importMessage, setImportMessage,
     draggedLibraryId, setDraggedLibraryId, libraryDialogOpen, setLibraryDialogOpen,

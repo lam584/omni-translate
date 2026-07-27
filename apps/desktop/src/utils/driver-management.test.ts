@@ -28,3 +28,15 @@ describe('resolveRecommendedDriverAction', () => {
     expect(resolveRecommendedDriverAction(bridge)).toBe('start-bridge');
   });
 });
+
+describe('Bridge timeout recovery', () => {
+  it('recommends restarting the Bridge while leaving refresh available to the management card', () => {
+    const bridge = structuredClone(runtimeSnapshotMock.bridge);
+    bridge.driverHealth = 'running';
+    bridge.bridgeState = 'degraded';
+    bridge.lastErrorCode = 'bridge.timeout';
+    bridge.recommendedAction = 'restart-bridge';
+
+    expect(resolveRecommendedDriverAction(bridge)).toBe('start-bridge');
+  });
+});

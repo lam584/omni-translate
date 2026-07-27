@@ -127,6 +127,10 @@ describe('PreviewDesktopApi', () => {
     expect(await api.diagnostics.liveSessionEvents()).toEqual({});
     await expect(api.diagnostics.appendLogs([], 0)).resolves.toBeUndefined();
     await expect(api.diagnostics.setLogLevel('info')).resolves.toBeUndefined();
+    await expect(api.diagnostics.openExportDirectory('report.zip')).rejects.toThrow('browser-preview');
+    await expect(api.diagnostics.writeExportArtifact('report.json', '{}')).rejects.toThrow('browser-preview');
+    await expect(api.configuration.bootstrapStorage()).resolves.toBeUndefined();
+    await expect(api.configuration.bootstrapRuntime()).resolves.toMatchObject({ bridgeStatus: 'browser-preview' });
   });
 
   it('round-trips the config draft and rejects operations without preview meaning', async () => {
@@ -203,7 +207,11 @@ describe('PreviewDesktopApi', () => {
 
     expect(await api.window.currentMonitor()).toBeNull();
     await expect(api.window.cursorPosition()).rejects.toThrow('browser-preview');
+    await expect(api.window.outerPosition()).rejects.toThrow('browser-preview');
+    await expect(api.window.outerSize()).rejects.toThrow('browser-preview');
+    await expect(api.window.scaleFactor()).rejects.toThrow('browser-preview');
     await expect(api.window.setPosition({ x: 0, y: 0 })).resolves.toBeUndefined();
+    await expect(api.window.setLogicalSize({ width: 1, height: 1 })).resolves.toBeUndefined();
     await expect(api.window.popupMenu([], { x: 0, y: 0 })).resolves.toBeUndefined();
     expect(await api.runtime.bootstrapAudio()).toEqual(audioRuntimeSnapshotMock);
   });

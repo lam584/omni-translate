@@ -67,7 +67,14 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
         tone: nextReady ? 'success' : 'warning',
         message: t(nextReady ? 'driverManagement.feedbackReady' : 'driverManagement.feedbackNeedsAttention'),
       });
-    } catch {
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      const normalized = detail.toLowerCase();
+      const category = /cancel|canceled|cancelled|1223|拒绝|取消/.test(normalized)
+        ? '用户取消了 UAC 授权'
+        : /timeout|timed out|超时/.test(normalized)
+          ? '驱动操作超时'
+          : '驱动脚本执行失败';
       let refreshedSnapshot: RuntimeSnapshot | null = null;
       try {
         refreshedSnapshot = await refreshBridgeRuntime();
@@ -76,7 +83,10 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
         // Keep the original action failure visible even if the follow-up refresh also fails.
       }
       const feedbackKey = refreshedSnapshot ? resolveDriverDiagnosis(refreshedSnapshot.bridge).key : 'operationFailed';
-      setFeedback({ tone: 'error', message: t(`driverManagement.feedback.${feedbackKey}`) });
+      setFeedback({
+        tone: 'error',
+        message: `${category}。${t(`driverManagement.feedback.${feedbackKey}`)}`,
+      });
     } finally {
       setBusy(null);
     }

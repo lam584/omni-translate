@@ -1,6 +1,7 @@
 ﻿import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { useAudioDeviceTestController } from './audio-routing/useAudioDeviceTestController';
 import { gainDbToVolumePercent, volumePercentToGainDb } from './audio-routing/audioGain';
 import ChainFlow from './audio-routing/ChainFlow';
@@ -19,6 +20,7 @@ import { providerTemplates } from '../defaults/provider-templates';
 import type { AudioInputProcessingContract } from '../schema/audio-contract';
 import type { DeviceDraft, FeedbackLoopPrevention, SpeechDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
+import { refreshAudioDevicesRuntime } from '../runtime/audio-runtime';
 import { buildAudioRuntimeBadges } from '../utils/audio-runtime-badges';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
@@ -34,6 +36,8 @@ function AudioRoutingPage() {
   const { t } = useTranslation();
   const configDraft = useAppStore((state) => state.configDraft);
   const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
+  const runtimeNotifications = useAppStore((state) => state.runtimeNotifications);
+  const setAudioRuntimeSnapshot = useAppStore((state) => state.setAudioRuntimeSnapshot);
   const updateDeviceDraft = useAppStore((state) => state.updateDeviceDraft);
   const updateSpeechDraft = useAppStore((state) => state.updateSpeechDraft);
   const [customTemplates] = useState(() => readCustomProviderTemplates());
@@ -42,7 +46,9 @@ function AudioRoutingPage() {
     (kind: 'microphone' | 'speaker') => tWithDefault(t, kind === 'microphone' ? 'audioRouting.micTestPassed' : 'audioRouting.speakerTestPassed'),
     [t],
   );
-  const deviceTests = useAudioDeviceTestController(resolveDeviceTestLabel);
+  const deviceTests = useAudioDeviceTestController(resolveDeviceTestLabel, configDraft.devices.inputDeviceId);
+  const [deviceRefreshBusy, setDeviceRefreshBusy] = useState(false);
+  const [deviceRefreshError, setDeviceRefreshError] = useState<string | null>(null);
 
   useEffect(() => {
     const refreshCatalogPreferences = () => setCatalogPreferences(readProviderTemplateCatalogPreferences());
@@ -112,6 +118,25 @@ function AudioRoutingPage() {
   const selectedInputAvailable = captureDevices.some((device) => device.deviceId === configDraft.devices.inputDeviceId);
   const selectedOutputAvailable = physicalRenderDevices.some((device) => device.deviceId === configDraft.devices.outputDeviceId);
   const unavailableDeviceLabel = `${tWithDefault(t, 'audioRouting.status.missing')}: ${tWithDefault(t, 'audioRouting.notSelected')}`;
+  const startupDeviceError = [...runtimeNotifications].reverse()
+    .find((item) => item.id.startsWith('audio-bootstrap-deferred-'))?.message ?? null;
+  const bridgeAutostartError = runtimeNotifications
+    .find((item) => item.id.startsWith('bridge-autostart-failed-'))?.message ?? null;
+  const routeRuntimeError = audioRuntimeSnapshot.inbound.lastError ?? audioRuntimeSnapshot.outbound.lastError ?? null;
+  const deviceEnumerationError = deviceRefreshError
+    ?? (captureDevices.length === 0 || physicalRenderDevices.length === 0 ? startupDeviceError : null);
+
+  const retryDeviceRefresh = async () => {
+    setDeviceRefreshBusy(true);
+    setDeviceRefreshError(null);
+    try {
+      setAudioRuntimeSnapshot(await refreshAudioDevicesRuntime());
+    } catch (error) {
+      setDeviceRefreshError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeviceRefreshBusy(false);
+    }
+  };
 
   const inboundModelOption = resolveSelectedModel(inboundModelOptions, configDraft.devices.inboundVoiceModelId);
   const outboundModelOption = resolveSelectedModel(outboundModelOptions, configDraft.devices.outboundVoiceModelId);
@@ -375,6 +400,7 @@ function AudioRoutingPage() {
     {
       active: configDraft.devices.virtualMicOutputEnabled, caption: tWithDefault(t, 'audioRouting.scenarioOutboundCaption'),
       enableChecked: configDraft.devices.virtualMicOutputEnabled, enableLabel: tWithDefault(t, 'audioRouting.sendVoiceToVirtualMic'), icon: 'mic',
+      errorHint: bridgeAutostartError,
       modelName: outboundModelOption?.displayName ?? '—', modelOptions: outboundModelOptions, modelProvider: outboundModelOption?.description ?? '',
       onEnabledChange: handleVirtualMicToggle,
       onSelect: (modelId) => selectModel('outbound', modelId),
@@ -392,6 +418,20 @@ function AudioRoutingPage() {
 
   return (
     <div className="routing-workspace-v9">
+      {deviceEnumerationError ? (
+        <div className="provider-inline-alert provider-inline-alert-warning" role="alert">
+          <span>音频设备枚举失败：{deviceEnumerationError}</span>
+          <button className="icon-button" disabled={deviceRefreshBusy} onClick={() => void retryDeviceRefresh()} type="button">
+            <AppIcon name="refresh" size={13} />{deviceRefreshBusy ? tWithDefault(t, 'audioRouting.testing') : t('common.retry')}
+          </button>
+        </div>
+      ) : null}
+      {routeRuntimeError ? (
+        <div className="provider-inline-alert provider-inline-alert-warning" role="alert">
+          <span>{routeRuntimeError}</span>
+          <Link className="icon-button" to="/diagnostics"><AppIcon name="wrench" size={13} />{t('nav.diagnostics')}</Link>
+        </div>
+      ) : null}
       <section className="routing-top-grid">
         <article className="routing-panel routing-capture-panel">
           <div className="routing-panel-head">

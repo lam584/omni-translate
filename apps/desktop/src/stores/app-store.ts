@@ -166,9 +166,19 @@ export const useAppStore = create<AppStoreState>((set) => ({
       };
     }),
   setRuntimeSnapshot: (snapshot) =>
-    set({
-      runtimeSnapshot: snapshot,
-      runtimeNotifications: snapshot.notifications,
+    set((state) => {
+      // Native snapshots may lag notifications created locally between two IPC
+      // reads. Merge by id instead of replacing the list so an unacknowledged
+      // local error cannot disappear before the toast host renders it.
+      const nativeIds = new Set(snapshot.notifications.map((item) => item.id));
+      const notifications = [
+        ...snapshot.notifications,
+        ...state.runtimeNotifications.filter((item) => !nativeIds.has(item.id)),
+      ].slice(0, 6);
+      return {
+        runtimeSnapshot: { ...snapshot, notifications },
+        runtimeNotifications: notifications,
+      };
     }),
   setAudioRuntimeSnapshot: (snapshot) =>
     set((state) => {

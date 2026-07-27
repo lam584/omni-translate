@@ -72,25 +72,12 @@ function New-WatchModeOutputDirectory {
 }
 
 function Resolve-OmniBuiltExecutable {
-  # Prefers the root Cargo workspace target directory and falls back to the
-  # legacy per-crate target directory for artifacts built before the root
-  # workspace existed. Returns the preferred candidate when neither exists yet
-  # so callers surface the canonical path in their error messages.
+  # Every workspace member builds into the root Cargo target directory.
   param(
     [Parameter(Mandatory = $true)][string]$BuildProfile,
-    [Parameter(Mandatory = $true)][string]$ExecutableName,
-    [Parameter(Mandatory = $true)][string]$LegacyCratePath
+    [Parameter(Mandatory = $true)][string]$ExecutableName
   )
-  $candidates = @(
-    (Join-Path $workspaceRoot "target/$BuildProfile/$ExecutableName"),
-    (Join-Path $workspaceRoot "$LegacyCratePath/target/$BuildProfile/$ExecutableName")
-  )
-  foreach ($candidate in $candidates) {
-    if (Test-Path -LiteralPath $candidate -PathType Leaf) {
-      return $candidate
-    }
-  }
-  return $candidates[0]
+  return (Join-Path $workspaceRoot "target/$BuildProfile/$ExecutableName")
 }
 
 function Invoke-Step {
@@ -656,7 +643,7 @@ function Start-WatchModeDesktopShell {
     throw "desktop shell build failed with exit code $cargoExit; see $cargoLog and $cargoErrLog"
   }
   $frontendServer = Start-DesktopFrontendServer $OutputDirectory
-  $exe = Resolve-OmniBuiltExecutable -BuildProfile "debug" -ExecutableName "omni-desktop-shell.exe" -LegacyCratePath "apps/desktop/src-tauri"
+  $exe = Resolve-OmniBuiltExecutable -BuildProfile "debug" -ExecutableName "omni-desktop-shell.exe"
   if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
     throw "desktop shell executable was not built: $exe"
   }
@@ -830,9 +817,7 @@ function Invoke-ProcessWithTimeout {
 function Invoke-StopWatchRouteViaTauriCli {
   $candidates = @(
     (Join-Path $workspaceRoot "target/debug/omni-desktop-shell.exe"),
-    (Join-Path $workspaceRoot "apps/desktop/src-tauri/target/debug/omni-desktop-shell.exe"),
-    (Join-Path $workspaceRoot "target/release/omni-desktop-shell.exe"),
-    (Join-Path $workspaceRoot "apps/desktop/src-tauri/target/release/omni-desktop-shell.exe")
+    (Join-Path $workspaceRoot "target/release/omni-desktop-shell.exe")
   )
   $exe = $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
   if (-not $exe) {
@@ -870,7 +855,7 @@ function Invoke-StartWatchModeViaTauriCli {
   if (-not ($DesktopProcessStep -and $DesktopProcessStep.ok -and $DesktopProcessStep.result -and $DesktopProcessStep.result.pid)) {
     throw "desktop shell is not running; cannot start watch mode via Tauri CLI"
   }
-  $exe = Resolve-OmniBuiltExecutable -BuildProfile "debug" -ExecutableName "omni-desktop-shell.exe" -LegacyCratePath "apps/desktop/src-tauri"
+  $exe = Resolve-OmniBuiltExecutable -BuildProfile "debug" -ExecutableName "omni-desktop-shell.exe"
   $ping = Invoke-ProcessWithTimeout -FilePath $exe -ArgumentList @("tauri", "invoke", "debug_ipc_ping") -TimeoutSeconds 10
   if ($ping.exitCode -ne 0 -or $ping.timedOut) {
     throw "desktop shell IPC ping failed. ExitCode=$($ping.exitCode) TimedOut=$($ping.timedOut) Stdout=$($ping.stdout) Stderr=$($ping.stderr)"
@@ -1053,7 +1038,7 @@ function Start-TestMediaPlayback {
   if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
     throw "Test media file not found: $PathToMedia"
   }
-  $injectorExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-watch-media-injector.exe" -LegacyCratePath "apps/bridge-service-native"
+  $injectorExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-watch-media-injector.exe"
   if (Test-Path -LiteralPath $injectorExe -PathType Leaf) {
     $args = @("--media", (Resolve-Path -LiteralPath $PathToMedia).Path)
     $referencePcmPath = $null
@@ -1228,7 +1213,7 @@ function Read-BridgeSourceFrame {
 
 function Invoke-BridgeSourceProbe {
   param([string]$OutputDirectory)
-  $bridgeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-bridge-service.exe" -LegacyCratePath "apps/bridge-service-native"
+  $bridgeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-bridge-service.exe"
   if (-not (Test-Path -LiteralPath $bridgeExe -PathType Leaf)) {
     throw "Bridge executable not found: $bridgeExe"
   }
@@ -1358,8 +1343,8 @@ function Invoke-BridgeSourceProbe {
 
 function Invoke-PhysicalOutputProbe {
   param([string]$OutputDirectory)
-  $probeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-physical-output-probe.exe" -LegacyCratePath "apps/bridge-service-native"
-  $bridgeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-bridge-service.exe" -LegacyCratePath "apps/bridge-service-native"
+  $probeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-physical-output-probe.exe"
+  $bridgeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-bridge-service.exe"
   if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf)) {
     throw "Physical output probe executable not found: $probeExe"
   }
@@ -1405,7 +1390,7 @@ function Invoke-PhysicalOutputProbe {
 
 function Start-PhysicalOutputContentRecorder {
   param([string]$OutputDirectory, [string]$PhysicalDeviceId)
-  $probeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-physical-output-probe.exe" -LegacyCratePath "apps/bridge-service-native"
+  $probeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-physical-output-probe.exe"
   if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf)) {
     throw "Physical output recorder executable not found: $probeExe"
   }

@@ -24,6 +24,8 @@ type Props = {
   clearConflicts: () => void;
   conflictResolution: ConflictResolution;
   setConflictResolution: (resolution: ConflictResolution) => void;
+  error: string;
+  clearError: () => void;
   onSave: () => void;
   onClose: () => void;
 };
@@ -38,12 +40,13 @@ export default function GlossaryEntryDialog(props: Props) {
       <div className="glossary-dialog-grid">
         <label className="field-stack"><span>{t('glossary.dialog.sourceLanguage')}</span><select className="select-input" onChange={(event) => patch({ sourceLang: event.target.value })} value={props.state.sourceLang}>{languages.map((language) => <option key={language} value={language}>{language}</option>)}</select></label>
         <label className="field-stack"><span>{t('glossary.dialog.targetLanguage')}</span><select className="select-input" onChange={(event) => patch({ targetLang: event.target.value })} value={props.state.targetLang}>{languages.filter((language) => language !== 'auto').map((language) => <option key={language} value={language}>{language}</option>)}</select></label>
-        <label className="field-stack field-span-full"><span>{t('glossary.table.sourceTerm')}</span><input className="text-input" onChange={(event) => { patch({ sourceTerm: event.target.value }); props.clearConflicts(); }} value={props.state.sourceTerm} /></label>
-        <label className="field-stack field-span-full"><span>{t('glossary.table.targetTerm')}</span><input className="text-input" onChange={(event) => patch({ targetTerm: event.target.value })} value={props.state.targetTerm} /></label>
+        <label className="field-stack field-span-full"><span>{t('glossary.table.sourceTerm')}</span><input aria-invalid={Boolean(props.error && !props.state.sourceTerm.trim())} className="text-input" onChange={(event) => { patch({ sourceTerm: event.target.value }); props.clearConflicts(); props.clearError(); }} value={props.state.sourceTerm} /></label>
+        <label className="field-stack field-span-full"><span>{t('glossary.table.targetTerm')}</span><input aria-invalid={Boolean(props.error && !props.state.targetTerm.trim())} className="text-input" onChange={(event) => { patch({ targetTerm: event.target.value }); props.clearError(); }} value={props.state.targetTerm} /></label>
         <div className="field-stack field-span-full"><span>{t('glossary.table.strategy')}</span><div className="glossary-segmented">{(['force', 'suggest', 'keep'] as const).map((strategy) => <button className={props.state.strategy === strategy ? 'glossary-segment glossary-segment-active' : 'glossary-segment'} key={strategy} onClick={() => patch({ strategy })} type="button">{t(`glossary.strategy.${strategy}`)}</button>)}</div></div>
         <div className="glossary-dialog-toggles field-span-full">{([['important', 'glossary.dialog.markAsImportant'], ['caseSensitive', 'glossary.labels.caseSensitive'], ['wholeWord', 'glossary.labels.wholeWord']] as const).map(([field, key]) => <label className="routing-toggle" key={field}><input checked={props.state[field]} onChange={(event) => patch({ [field]: event.target.checked })} type="checkbox" /><span>{t(key)}</span></label>)}</div>
-        {props.conflicts.length ? <div className="glossary-conflict-box field-span-full"><strong>{t('glossary.dialog.conflictCount', { count: props.conflicts.length })}</strong><div className="glossary-preview-result">{props.conflicts.map((entry) => <span className="chip" key={entry.id}>{entry.sourceTerm} → {entry.targetTerm}</span>)}</div><div className="glossary-segmented">{(['overwrite', 'skip', 'keep-all'] as const).map((resolution) => <button className={props.conflictResolution === resolution ? 'glossary-segment glossary-segment-active' : 'glossary-segment'} key={resolution} onClick={() => props.setConflictResolution(resolution)} type="button">{t(`glossary.conflictResolution.${resolution}`)}</button>)}</div></div> : null}
+        {props.conflicts.length ? <div className="glossary-conflict-box field-span-full"><strong>{t('glossary.dialog.conflictCount', { count: props.conflicts.length })}</strong><div className="glossary-preview-result">{props.conflicts.map((entry) => <span className="chip" key={entry.id}>{entry.sourceTerm} → {entry.targetTerm}</span>)}</div><div className="glossary-segmented">{(['overwrite', 'skip', 'keep-all'] as const).map((resolution) => <button className={props.conflictResolution === resolution ? 'glossary-segment glossary-segment-active' : 'glossary-segment'} key={resolution} onClick={() => props.setConflictResolution(resolution)} type="button">{t(`glossary.conflictResolution.${resolution}`)}</button>)}</div><p className="field-hint" role="status">{t(`glossary.conflictResolution.${props.conflictResolution}Hint`)}</p></div> : null}
       </div>
+      {props.error ? <p className="glossary-dialog-error" role="alert">{props.error}</p> : null}
       <div className="routing-action-row"><button className="icon-button routing-primary-action" onClick={props.onSave} type="button">{t('common.save')}</button><button className="icon-button" onClick={props.onClose} type="button">{t('common.cancel')}</button></div>
   </ModalDialog>;
 }

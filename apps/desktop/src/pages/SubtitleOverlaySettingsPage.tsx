@@ -82,6 +82,7 @@ function SubtitleOverlaySettingsPage() {
   const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
   const updateSubtitleDraft = useAppStore((state) => state.updateSubtitleDraft);
   const [overlayTogglePending, setOverlayTogglePending] = useState(false);
+  const [overlayToggleError, setOverlayToggleError] = useState<string | null>(null);
   const [activeTextRole, setActiveTextRole] = useState<'source' | 'translation'>('translation');
   const [previewScene, setPreviewScene] = useState<'dark' | 'light' | 'scene'>('scene');
   const overlayFontSize = clamp(
@@ -137,8 +138,11 @@ function SubtitleOverlaySettingsPage() {
 
   const handleToggleOverlay = async () => {
     setOverlayTogglePending(true);
+    setOverlayToggleError(null);
     try {
       setRuntimeSnapshot(await toggleSubtitleOverlayWindow());
+    } catch (error) {
+      setOverlayToggleError(t('session.overlayOpenFailed', { error: error instanceof Error ? error.message : String(error) }));
     } finally {
       setOverlayTogglePending(false);
     }
@@ -197,6 +201,14 @@ function SubtitleOverlaySettingsPage() {
         )}
         className="settings-page-head settings-page-head-actions"
       />
+
+      {overlayToggleError ? (
+        <div className="settings-inline-feedback settings-inline-feedback-error" role="alert">
+          <AppIcon name="alert" size={14} />
+          <span>{overlayToggleError}</span>
+          <Link to="/diagnostics">{t('nav.diagnostics')}</Link>
+        </div>
+      ) : null}
 
       <div className="overlay-settings-main">
         <div className="overlay-settings-controls">

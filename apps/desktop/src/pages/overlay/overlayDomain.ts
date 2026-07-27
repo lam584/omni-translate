@@ -204,6 +204,73 @@ function expandExplicitSegment(
   }));
 }
 
+function isCjkBoundary(character: string) {
+  return /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/u.test(character);
+}
+
+function joinCaptionRows(rows: string[]) {
+  return rows.reduce((joined, row) => {
+    const trimmed = row.trim();
+    if (!joined) return trimmed;
+    if (!trimmed) return joined;
+    const previousCharacter = Array.from(joined).at(-1) ?? '';
+    const nextCharacter = Array.from(trimmed)[0] ?? '';
+    const separator = isCjkBoundary(previousCharacter) || isCjkBoundary(nextCharacter) ? '' : ' ';
+    return `${joined}${separator}${trimmed}`;
+  }, '');
+}
+
+function groupCaptionRows(rows: string[], groupCount: number) {
+  return Array.from({ length: groupCount }, (_, groupIndex) => {
+    const start = Math.ceil((groupIndex * rows.length) / groupCount);
+    const end = Math.ceil(((groupIndex + 1) * rows.length) / groupCount);
+    return joinCaptionRows(rows.slice(start, end));
+  });
+}
+
+/**
+ * Native Omni commits deliberately use a source block followed by a
+ * translation block when the two sides contain different numbers of wrapped
+ * rows. Preserve that safety boundary, but present the blocks as compact
+ * bilingual groups so viewers never have to scan one full language block and
+ * then find its translation below it.
+ */
+function pairCommittedBlockLayout(
+  cueId: string,
+  segments: SubtitleDisplaySegmentRuntime[],
+): OverlayDisplaySegment[] | undefined {
+  const sourceRows: string[] = [];
+  const translatedRows: string[] = [];
+  let layout: 'source' | 'translation' | null = null;
+  let transitioned = false;
+
+  for (const segment of segments) {
+    const sourceText = segment.sourceText.trim();
+    const translatedText = segment.translatedText.trim();
+    if (!sourceText && !translatedText) continue;
+    if (sourceText && translatedText) return undefined;
+    const nextLayout = sourceText ? 'source' : 'translation';
+    if (layout && layout !== nextLayout) {
+      if (transitioned) return undefined;
+      transitioned = true;
+    }
+    layout = nextLayout;
+    if (sourceText) sourceRows.push(sourceText);
+    else translatedRows.push(translatedText);
+  }
+
+  if (!transitioned || !sourceRows.length || !translatedRows.length) return undefined;
+  const groupCount = Math.min(sourceRows.length, translatedRows.length);
+  const groupedSources = groupCaptionRows(sourceRows, groupCount);
+  const groupedTranslations = groupCaptionRows(translatedRows, groupCount);
+  return Array.from({ length: groupCount }, (_, groupIndex) => ({
+    id: `${cueId}-block-pair-${groupIndex}`,
+    sourceText: groupedSources[groupIndex],
+    translatedText: groupedTranslations[groupIndex],
+    pending: false,
+  }));
+}
+
 export function getCueDisplaySegments(cue: SubtitleCueRuntime): OverlayDisplaySegment[] {
   const rawExplicitSegments = cue.displaySegments
     ?.filter((segment) => segment.sourceText.trim().length > 0 || segment.translatedText.trim().length > 0);
@@ -215,9 +282,10 @@ export function getCueDisplaySegments(cue: SubtitleCueRuntime): OverlayDisplaySe
   const explicitSegments = rawExplicitSegments
     && normalizedExplicitSource === normalizedAuthoritativeSource
     && normalizedExplicitTranslation === normalizedAuthoritativeTranslation
-    ? rawExplicitSegments.flatMap((segment, segmentIndex) => (
-      expandExplicitSegment(cue.cueId, segment, segmentIndex, cue.committed)
-    ))
+    ? (cue.committed ? pairCommittedBlockLayout(cue.cueId, rawExplicitSegments) : undefined)
+      ?? rawExplicitSegments.flatMap((segment, segmentIndex) => (
+        expandExplicitSegment(cue.cueId, segment, segmentIndex, cue.committed)
+      ))
     : undefined;
 
   if (explicitSegments && explicitSegments.length > 0) {

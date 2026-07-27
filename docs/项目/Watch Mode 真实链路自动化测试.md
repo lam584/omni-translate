@@ -139,7 +139,7 @@ npm run test:watch-mode-evidence:strict
 为了覆盖“用户到底有没有听到声音”，live runner 会额外运行物理输出 probe 和内容录制：
 
 ```text
-apps/bridge-service-native/target/release/omni-physical-output-probe.exe
+target/release/omni-physical-output-probe.exe
 ```
 
 该 probe 做的事：

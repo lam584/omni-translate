@@ -18,18 +18,27 @@ export function LogLevelControl() {
   const desktopApi = useDesktopApiV2();
   const [level, setLevel] = useState<DiagnosticsLogLevel | ''>('');
   const [applyState, setApplyState] = useState<'idle' | 'applied' | 'failed'>('idle');
+  const [applyError, setApplyError] = useState<string | null>(null);
+  const [retryLevel, setRetryLevel] = useState<DiagnosticsLogLevel | null>(null);
 
   const applyLevel = async (nextLevel: DiagnosticsLogLevel) => {
+    const previousLevel = level;
     setLevel(nextLevel);
+    setApplyError(null);
     try {
       await desktopApi.diagnostics.setLogLevel(nextLevel);
       setApplyState('applied');
+      setRetryLevel(null);
       logger.info('diagnostics log level changed', `level=${nextLevel}`);
     } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      setLevel(previousLevel);
       setApplyState('failed');
+      setApplyError(detail);
+      setRetryLevel(nextLevel);
       logger.error(
         'set_diagnostics_log_level failed',
-        error instanceof Error ? error.message : String(error),
+        detail,
       );
     }
   };
@@ -61,7 +70,13 @@ export function LogLevelControl() {
       ) : null}
       {applyState === 'failed' ? (
         <span aria-live="polite" role="alert">
-          {i18n.t('diagnostics.logLevel.failed', { defaultValue: '设置失败，详见诊断日志' })}
+          {i18n.t('diagnostics.logLevel.failed', { defaultValue: '日志级别切换失败，请刷新运行时后重试' })}
+          {applyError ? `：${applyError}` : ''}
+          {retryLevel ? (
+            <button className="icon-button" onClick={() => void applyLevel(retryLevel)} type="button">
+              {i18n.t('common.retry')}
+            </button>
+          ) : null}
         </span>
       ) : null}
     </div>

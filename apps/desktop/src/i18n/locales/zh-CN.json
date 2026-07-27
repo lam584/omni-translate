@@ -87,6 +87,7 @@
     "subtitle": "调整界面语言和通用偏好。更改会立即生效，无需重启。",
     "sectionLanguage": "界面语言",
     "languageHint": "选择桌面界面的显示语言。会立即生效，不会改变字幕翻译目标语言。",
+    "languageLoadFailed": "语言资源加载失败，已恢复原语言。请重试；技术详情：{{error}}",
     "languageLabel": "显示语言",
     "currentLanguage": "当前语言：{{name}}",
     "sectionTranslationPreference": "翻译语言偏好",
@@ -186,6 +187,7 @@
   },
   "welcome": {
     "title": "欢迎使用 Omni Translate",
+    "languageLoadFailed": "语言资源加载失败，已恢复原语言。请重新选择；技术详情：{{error}}",
     "subtitle": "先选择语言，然后完成模型提供商和驱动设置。之后可以随时在设置中修改。",
     "confirm": "使用此语言",
     "hint": "从下方列表选择语言；点击后会立即切换。",
@@ -462,6 +464,8 @@
     "directionSpeak": "说"
   },
   "overlay": {
+    "bootstrapFailed": "字幕浮窗初始化失败",
+    "bootstrapFailedHint": "浮窗已进入安全降级状态。请重试；若仍失败，请在主窗口导出诊断信息。",
     "contextMenuTitle": "悬浮窗控制",
     "previewTitleEnglish": "字幕已就绪",
     "previewTitle": "字幕已就绪",
@@ -618,6 +622,7 @@
       "testOverlay": "测试字幕浮窗",
       "exporting": "导出中...",
       "exportBundle": "导出诊断包",
+      "openExportDirectory": "打开所在目录",
       "refreshing": "刷新中...",
       "refreshRuntime": "刷新运行态",
       "selectAll": "全选"
@@ -1012,6 +1017,7 @@
     "framesCaptured": "采集帧数",
     "speechSegments": "语音分段",
     "systemAudioError": "系统音频采集异常：{{error}}",
+    "speechFailureRecovery": " 字幕仍可继续使用；请检查语音模型与输出设备后重试。",
     "restartBridgeHint": " 建议重启 Bridge Service 后重试。",
     "connectionReconnecting": "连接中断，正在重连（第 {{attempt}}/{{max}} 次）…",
     "connectionRestored": "连接已恢复",
@@ -1024,7 +1030,9 @@
       "voiceUnsupported": "当前音色不受支持，请在平台页更换音色。",
       "networkUnreachable": "无法连接语音服务，请检查网络后重新启动会话。",
       "providerInternal": "平台服务内部错误，请稍后重新启动会话。",
+      "modelReferenceInvalid": "二次翻译模型已失效或未关联到启用的平台，请前往模型设置重新选择。",
       "audioDeviceLost": "音频设备已断开或不可用，请检查设备后重试。",
+      "audioCaptureFailed": "音频采集线程已退出，请检查音频设备后重试。",
       "audioFlowStalled": "音频流已停滞，请确认音频源仍在播放。"
     },
     "errorAction": {
@@ -1361,7 +1369,10 @@
     "conflictResolution": {
       "overwrite": "覆盖",
       "skip": "跳过",
-      "keep-all": "保留全部"
+      "keep-all": "保留全部",
+      "overwriteHint": "用本次译文替换所有冲突词条。",
+      "skipHint": "本词条不会保存，现有词条保持不变。",
+      "keep-allHint": "新增同名源词条，并保留所有现有译文。"
     },
     "errors": {
       "libraryNameRequired": "请输入术语库名称",

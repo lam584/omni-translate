@@ -209,4 +209,12 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     await act(async () => findButton(container, '清空字幕')?.click());
     expect(runtimeMocks.clearSubtitleCuesRuntime).toHaveBeenCalledTimes(1);
   });
+
+  it('publishes a visible session notification when clearing cues fails', async () => {
+    runtimeMocks.clearSubtitleCuesRuntime.mockRejectedValue(new Error('cue clear failed'));
+    await renderOverlay();
+    await openContextMenu();
+    await act(async () => findButton(container, '清空字幕')?.click());
+    expect(useAppStore.getState().runtimeNotifications.some((item) => item.message.includes('cue clear failed'))).toBe(true);
+  });
 });

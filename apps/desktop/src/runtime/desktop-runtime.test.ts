@@ -1027,7 +1027,10 @@ describe('desktop runtime helpers', () => {
     const rejection = desktopRuntimeTestHelpers.invokeWithTimeout(() => new Promise(() => undefined), 'never_returns', 50).catch((error) => error);
     await vi.advanceTimersByTimeAsync(50);
     await expect(rejection).resolves.toMatchObject({ message: expect.stringContaining("invoke 'never_returns' 超时") });
-    expect(desktopRuntimeTestHelpers.createRuntimeErrorSnapshot('unknown').notifications[0]?.message).toContain('未知错误');
+    expect(desktopRuntimeTestHelpers.createRuntimeErrorSnapshot('unknown').notifications[0]?.message).toContain('unknown');
+    expect(desktopRuntimeTestHelpers.createRuntimeErrorSnapshot({
+      code: 'IPC_TIMEOUT', message: 'bridge unavailable', details: { requestId: 'req-42' },
+    }).notifications[0]?.message).toContain('bridge unavailable (IPC_TIMEOUT, requestId=req-42)');
   });
 
   it('resolves and rejects invoke helpers without waiting for their timeout', async () => {

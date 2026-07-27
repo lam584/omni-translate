@@ -520,6 +520,9 @@ pub fn start_openai_realtime(
                 audio_rx,
                 stop_rx,
             ) {
+                let error = crate::audio::omni::session_errors::report_realtime_worker_failure(
+                    &app_handle, "openai", &error,
+                );
                 let _ = audio_state.set_stt_connected_if_current(stt_epoch, false, 0);
                 let _ = diag_log(
                     &app_handle,

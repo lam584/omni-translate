@@ -1,5 +1,6 @@
 pub mod contracts;
 pub mod events;
+pub mod export_artifacts;
 pub mod file_logger;
 pub mod log_pipeline;
 pub mod macros;

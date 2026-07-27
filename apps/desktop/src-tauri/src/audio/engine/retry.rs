@@ -10,6 +10,7 @@ pub(super) const DEVICE_INIT_TIMEOUT_SECS: u64 = 10;
 pub(super) enum AudioInitError {
     AccessDenied(String),
     DeviceInUse(String),
+    FormatUnsupported(String),
     Unknown(String),
 }
 
@@ -17,8 +18,10 @@ impl AudioInitError {
     pub(super) fn from_string(message: String) -> Self {
         if message.contains("0x80070005") || message.contains("拒绝访问") {
             AudioInitError::AccessDenied(message)
-        } else if message.contains("0x88890003") {
+        } else if message.contains("0x88890003") || message.contains("0x8889000A") {
             AudioInitError::DeviceInUse(message)
+        } else if message.contains("0x88890008") {
+            AudioInitError::FormatUnsupported(message)
         } else {
             AudioInitError::Unknown(message)
         }
@@ -28,6 +31,7 @@ impl AudioInitError {
         match self {
             AudioInitError::AccessDenied(msg)
             | AudioInitError::DeviceInUse(msg)
+            | AudioInitError::FormatUnsupported(msg)
             | AudioInitError::Unknown(msg) => msg,
         }
     }
@@ -36,6 +40,7 @@ impl AudioInitError {
         match self {
             AudioInitError::AccessDenied(_) => "grant-mic-permission",
             AudioInitError::DeviceInUse(_) => "switch-audio-device",
+            AudioInitError::FormatUnsupported(_) => "switch-audio-device",
             AudioInitError::Unknown(_) => "retry",
         }
     }
@@ -49,7 +54,9 @@ impl AudioInitError {
     /// the session; the recommended action still distinguishes the fix.
     pub(super) fn error_code(&self) -> Option<&'static str> {
         match self {
-            AudioInitError::AccessDenied(_) | AudioInitError::DeviceInUse(_) => {
+            AudioInitError::AccessDenied(_)
+            | AudioInitError::DeviceInUse(_)
+            | AudioInitError::FormatUnsupported(_) => {
                 Some("audio.device-lost")
             }
             AudioInitError::Unknown(_) => None,
@@ -59,19 +66,42 @@ impl AudioInitError {
     /// Final-failure error string carrying the `| code:` / `| recommended:`
     /// markers consumed by `session_errors::split_error_markers`.
     pub(super) fn tagged_error(&self) -> String {
+        let user_message = match self {
+            AudioInitError::AccessDenied(raw) => format!("麦克风访问被拒绝，请在 Windows 隐私设置中允许访问。技术详情：{raw}"),
+            AudioInitError::DeviceInUse(raw) => format!("音频设备正被其他程序独占或已失效，请关闭占用程序或切换设备。技术详情：{raw}"),
+            AudioInitError::FormatUnsupported(raw) => format!("当前设备不支持所需的音频格式，请切换设备或关闭独占模式。技术详情：{raw}"),
+            AudioInitError::Unknown(raw) => raw.clone(),
+        };
         match self.error_code() {
             Some(code) => format!(
                 "{} | code: {} | recommended: {}",
-                self.message(),
+                user_message,
                 code,
                 self.recommended_action()
             ),
             None => format!(
                 "{} | recommended: {}",
-                self.message(),
+                user_message,
                 self.recommended_action()
             ),
         }
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_exclusive_use_and_format_errors_with_recovery_guidance() {
+        let exclusive = AudioInitError::from_string("WASAPI 0x8889000A".to_string());
+        assert!(matches!(exclusive, AudioInitError::DeviceInUse(_)));
+        assert!(exclusive.tagged_error().contains("其他程序独占"));
+        assert!(exclusive.tagged_error().contains("switch-audio-device"));
+
+        let format = AudioInitError::from_string("WASAPI 0x88890008".to_string());
+        assert!(matches!(format, AudioInitError::FormatUnsupported(_)));
+        assert!(format.tagged_error().contains("不支持所需的音频格式"));
     }
 }
 

@@ -83,6 +83,7 @@
     "idle": "Leerlauf"
   },
   "settings": {
+    "languageLoadFailed": "Die Sprachressourcen konnten nicht geladen werden. Die vorherige Sprache wurde wiederhergestellt. Erneut versuchen. Details: {{error}}",
     "title": "Einstellungen",
     "subtitle": "Passen Sie die Sprache der Benutzeroberfläche und die allgemeinen Einstellungen an. Änderungen werden ohne Neustart sofort wirksam.",
     "sectionLanguage": "Schnittstellensprache",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Verwalten Sie den virtuellen Lautsprechertreiber Omni Translate und Bridge Service."
   },
   "welcome": {
+    "languageLoadFailed": "Die Sprachressourcen konnten nicht geladen werden. Die vorherige Auswahl wurde wiederhergestellt. Details: {{error}}",
     "title": "Willkommen bei Omni Translate",
     "subtitle": "Wählen Sie eine Sprache aus, verbinden Sie einen Anbieter und überprüfen Sie dann den Treiber und die Bridge. Sie können diese jederzeit über die Einstellungen aktualisieren.",
     "confirm": "Benutzen Sie diese Sprache",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "Untertitel-Overlay konnte nicht initialisiert werden",
+    "bootstrapFailedHint": "Das Overlay läuft im sicheren eingeschränkten Modus. Erneut versuchen oder Diagnose im Hauptfenster exportieren.",
     "contextMenuTitle": "Overlay-Steuerelemente",
     "previewTitleEnglish": "Untertitel bereit",
     "previewTitle": "Untertitel bereit",
@@ -615,6 +619,7 @@
       "testOverlay": "Untertitel-Overlay testen",
       "exporting": "Exportieren...",
       "exportBundle": "Diagnosepaket exportieren",
+      "openExportDirectory": "Enthaltenden Ordner öffnen",
       "refreshing": "Erfrischend...",
       "refreshRuntime": "Laufzeit aktualisieren",
       "selectAll": "Alles auswählen"
@@ -989,6 +994,7 @@
     "expandSection": "Abschnitt erweitern"
   },
   "session": {
+    "speechFailureRecovery": "Untertitel bleiben verfügbar, aber die Sprachausgabe ist ausgefallen. Audio-Routing prüfen und neu starten.",
     "watchMode": "Ansichtsmodus",
     "conversationMode": "Konversationsmodus",
     "cueStartedAt": "Starten Sie {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "Sitzung neu starten",
     "restartSessionHint": " Starten Sie die Sitzung neu und versuchen Sie es erneut.",
     "errorCode": {
+      "modelReferenceInvalid": "Das sekundäre Übersetzungsmodell fehlt oder ist keinem aktivierten Anbieter zugeordnet. In den Anbietereinstellungen neu auswählen.",
+      "audioCaptureFailed": "Die Audioaufnahme wurde beendet. Audiogerät prüfen und erneut versuchen.",
       "credentialInvalid": "Der API-Schlüssel ist ungültig oder abgelaufen. Aktualisieren Sie Ihre Anbieter-Zugangsdaten.",
       "quotaExceeded": "Anbieter-Kontingent oder Ratenlimit erreicht. Prüfen Sie Ihre Nutzung und versuchen Sie es erneut.",
       "voiceUnsupported": "Die gewählte Stimme wird nicht unterstützt. Wählen Sie in den Anbieter-Einstellungen eine andere Stimme.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "Die virtuelle Audioroute ist nicht verfügbar. Die Sitzung wurde mit AEC vorübergehend auf die Wiedergabe über physische Lautsprecher umgestellt. Dieser Modus birgt immer noch das Risiko eines Loopbacks.",
     "virtualDriverFallbackConfirm": "Der virtuelle Audiotreiber oder Bridge ist noch nicht verfügbar. Klicken Sie auf „OK“, um in den Nur-Untertitel-Modus zu wechseln. Klicken Sie auf „Abbrechen“, um vorübergehend auf die Wiedergabe über physische Lautsprecher mit AEC zurückzugreifen. Beim AEC-Fallback besteht weiterhin das Loopback-Risiko.",
     "sceneLaunchFailed": "{{scene}} ({{stage}}) konnte nicht gestartet werden: {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "Der Anbieter meldete einen internen Fehler. Starten Sie die Sitzung später neu. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "Der Anbieter meldete einen internen Fehler. Starten Sie die Sitzung später neu. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "Der Anbieter meldete einen internen Fehler. Starten Sie die Sitzung später neu. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "Zum Beispiel: Spielbegriffe, Filmuntertitel, Fachvokabular ..."
     },
     "conflictResolution": {
+      "overwriteHint": "Alle Konflikte durch diese Übersetzung ersetzen.",
+      "skipHint": "Diesen Eintrag nicht speichern; vorhandene Einträge bleiben unverändert.",
+      "keep-allHint": "Weiteren Eintrag mit demselben Ausgangsbegriff speichern und alle Übersetzungen behalten.",
       "overwrite": "Überschreiben",
       "skip": "Überspringen",
       "keep-all": "Behalten Sie alle"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "Der Sprachdienst ist nicht erreichbar. Prüfen Sie Ihr Netzwerk und starten Sie die Sitzung neu. Die Audioaufnahme wurde beendet. Audiogerät prüfen und erneut versuchen.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "Der Sprachdienst ist nicht erreichbar. Prüfen Sie Ihr Netzwerk und starten Sie die Sitzung neu. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "Der Anbieter meldete einen internen Fehler. Starten Sie die Sitzung später neu. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "Der Sprachdienst ist nicht erreichbar. Prüfen Sie Ihr Netzwerk und starten Sie die Sitzung neu. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

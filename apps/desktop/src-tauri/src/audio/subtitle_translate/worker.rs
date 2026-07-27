@@ -362,6 +362,17 @@ impl SubtitleTranslationWorker {
         }
         scheduler.dispatch_ready(&translation_tx);
 
+        if let Some(error) = fatal_provider_error.take() {
+            let classified = super::omni::session_errors::classify_provider_error(
+                error.provider_code.as_deref().unwrap_or(&error.code),
+                &error.message,
+            );
+            return Err(super::omni::session_errors::with_error_markers(
+                &format!("字幕二次翻译已停止：{}", error.message),
+                classified,
+            ));
+        }
+
         if stop_rx.try_recv().is_ok() {
             let _ = diag_log(
                 &app,

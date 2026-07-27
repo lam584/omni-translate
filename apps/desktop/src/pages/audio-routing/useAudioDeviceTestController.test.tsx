@@ -12,7 +12,7 @@ describe('useAudioDeviceTestController', () => {
   let controller: Controller;
 
   function Harness() {
-    controller = useAudioDeviceTestController((kind) => `${kind} passed`);
+    controller = useAudioDeviceTestController((kind) => `${kind} passed`, 'selected-microphone');
     return null;
   }
 
@@ -58,14 +58,14 @@ describe('useAudioDeviceTestController', () => {
     expect(controller.microphone.result).toBe('permission denied');
   });
 
-  it('samples microphone energy, closes the context, and stops every track', async () => {
+  it('tests the selected microphone, samples audible energy, and releases resources', async () => {
     vi.useFakeTimers();
     const stop = vi.fn();
     const close = vi.fn().mockResolvedValue(undefined);
     const connect = vi.fn();
     const analyser = {
       fftSize: 0,
-      getFloatTimeDomainData: vi.fn((samples: Float32Array) => samples.fill(0)),
+      getFloatTimeDomainData: vi.fn((samples: Float32Array) => samples.fill(0.01)),
     };
     const context = {
       createAnalyser: vi.fn(() => analyser),
@@ -89,10 +89,56 @@ describe('useAudioDeviceTestController', () => {
 
     expect(analyser.fftSize).toBe(1024);
     expect(connect).toHaveBeenCalledWith(analyser);
-    expect(controller.microphone).toMatchObject({ testing: false, result: 'microphone passed' });
-    expect(controller.microphone.energyDb).toBe(-90);
+    expect(navigator.mediaDevices.getUserMedia).toHaveBeenCalledWith({
+      audio: { deviceId: { exact: 'selected-microphone' } },
+    });
+    expect(controller.microphone.testing).toBe(false);
+    expect(controller.microphone.result).toContain('microphone passed');
+    expect(controller.microphone.result).toContain('-40.0 dB');
+    expect(controller.microphone.energyDb).toBeCloseTo(-40);
     expect(stop).toHaveBeenCalled();
     expect(close).toHaveBeenCalled();
+  });
+
+  it('classifies microphone permission, disconnect, and exclusive-use failures', async () => {
+    const getUserMedia = vi.fn()
+      .mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
+      .mockRejectedValueOnce(new DOMException('gone', 'NotFoundError'))
+      .mockRejectedValueOnce(new DOMException('busy', 'NotReadableError'));
+    Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: { getUserMedia } });
+    await mount();
+    await act(async () => controller.testMicrophone());
+    expect(controller.microphone.result).toContain('权限');
+    await act(async () => controller.testMicrophone());
+    expect(controller.microphone.result).toContain('断开');
+    await act(async () => controller.testMicrophone());
+    expect(controller.microphone.result).toContain('独占');
+  });
+
+  it('reports a no-signal failure instead of a false pass', async () => {
+    vi.useFakeTimers();
+    const analyser = { fftSize: 0, getFloatTimeDomainData: vi.fn((samples: Float32Array) => samples.fill(0)) };
+    Object.defineProperty(navigator, 'mediaDevices', {
+      configurable: true,
+      value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [] }) },
+    });
+    vi.stubGlobal('AudioContext', vi.fn(function AudioContextMock() {
+      return {
+        createAnalyser: () => analyser,
+        createMediaStreamSource: () => ({ connect: () => undefined }),
+        close: vi.fn().mockResolvedValue(undefined),
+      };
+    }));
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(901);
+    await mount();
+    await act(async () => {
+      const test = controller.testMicrophone();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+      await test;
+    });
+    expect(controller.microphone.result).not.toContain('microphone passed');
+    expect(controller.microphone.result).toContain('-90.0 dB');
   });
 
   it('plays the speaker tone and publishes a passed result after the ended event', async () => {
@@ -134,6 +180,37 @@ describe('useAudioDeviceTestController', () => {
     await act(async () => controller.testSpeaker());
 
     expect(controller.speaker.result).toBe('Audio device test failed');
+  });
+
+  it('resumes suspended audio and times out when the speaker tone never ends', async () => {
+    vi.useFakeTimers();
+    const close = vi.fn().mockResolvedValue(undefined);
+    const resume = vi.fn().mockResolvedValue(undefined);
+    const oscillator = {
+      frequency: { value: 0 },
+      connect: () => ({ connect: () => undefined }),
+      start: vi.fn(),
+      stop: vi.fn(),
+      addEventListener: vi.fn(),
+    };
+    vi.stubGlobal('AudioContext', vi.fn(function AudioContextMock() {
+      return {
+        state: 'suspended', resume, currentTime: 0, destination: {}, close,
+        createOscillator: () => oscillator,
+        createGain: () => ({ gain: { value: 0 } }),
+      };
+    }));
+    await mount();
+    await act(async () => {
+      const test = controller.testSpeaker();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(2400);
+      await test;
+    });
+    expect(resume).toHaveBeenCalledOnce();
+    expect(controller.speaker.testing).toBe(false);
+    expect(controller.speaker.result).toContain('扬声器测试未能完成');
+    expect(close).toHaveBeenCalledOnce();
   });
 
   it('ignores microphone completion and failure from superseded runs', async () => {

@@ -2,8 +2,7 @@
 //!
 //! Callers format complete lines and hand them over through a bounded
 //! channel; the dedicated writer thread owns the file handle, performs
-//! rotation, and counts failures. Contract-critical properties (see
-//! LOOP_LOGGING_REFACTOR_GOAL_PROMPT.md):
+//! rotation, and counts failures. Contract-critical properties:
 //!
 //! - the handle is opened with `OpenOptions::append` and the Windows default
 //!   share mode, so external processes (`Add-Content` run markers) can append

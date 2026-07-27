@@ -33,7 +33,7 @@ for (const file of trackedFiles) {
   if (stat.size > 2 * 1024 * 1024 || /\.(wav|png|ico|mp3)$/i.test(file)) continue;
 
   const content = fs.readFileSync(file, 'utf8');
-  const isVendoredProviderDocumentation = file.startsWith('docs/阿里云API文档/');
+  const isVendoredProviderDocumentation = file.startsWith('docs/vendor/aliyun/');
   if (!isVendoredProviderDocumentation && (/[A-Za-z]:\\Users\\[^\\\r\n]+/i.test(content) || /\/home\/[A-Za-z0-9._-]+\//.test(content))) {
     violations.push(`${file}: contains an absolute user-home path`);
   }

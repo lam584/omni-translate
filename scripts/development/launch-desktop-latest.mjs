@@ -1,17 +1,14 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, readFileSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
 const workspaceRoot = resolve(scriptDirectory, '..', '..');
 const desktopRoot = join(workspaceRoot, 'apps', 'desktop');
-const targetDirectory = join(desktopRoot, 'src-tauri', 'target-shortcut');
+const targetDirectory = join(workspaceRoot, 'target');
 const executablePath = join(targetDirectory, 'release', 'omni-desktop-shell.exe');
-// Canonical release location: the root Cargo workspace target directory, which is
-// where a plain `cargo build --release` now places the desktop executable.
-const canonicalExecutablePath = join(workspaceRoot, 'target', 'release', 'omni-desktop-shell.exe');
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
@@ -112,33 +109,12 @@ if (builtExecutable.mtimeMs + 1_000 < buildStartedAt) {
   process.exit(3);
 }
 
-console.log('[Omni Translate] Build complete. Updating the canonical release executable...');
-mkdirSync(dirname(canonicalExecutablePath), { recursive: true });
-let copyError;
-for (let attempt = 1; attempt <= 20; attempt += 1) {
-  try {
-    copyFileSync(executablePath, canonicalExecutablePath);
-    copyError = undefined;
-    break;
-  } catch (error) {
-    copyError = error;
-    if (attempt < 20) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 250);
-  }
-}
-if (copyError) throw copyError;
-
 const builtHash = sha256(executablePath);
-const canonicalHash = sha256(canonicalExecutablePath);
-if (builtHash !== canonicalHash) {
-  console.error('[Omni Translate] Refusing to launch: copied executable hash does not match this build.');
-  process.exit(4);
-}
-
 console.log(`[Omni Translate] Verified latest build (${builtHash.slice(0, 12)}). Starting the application as the desktop user...`);
 // The launcher is elevated only so it can retire stale elevated builds. Route
 // the final launch through the existing Explorer shell so the app itself runs
 // at the normal desktop integrity level.
-const child = spawn('explorer.exe', [canonicalExecutablePath], {
+const child = spawn('explorer.exe', [executablePath], {
   cwd: workspaceRoot,
   detached: true,
   stdio: 'ignore',

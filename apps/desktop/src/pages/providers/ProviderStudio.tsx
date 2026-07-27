@@ -16,6 +16,7 @@ type Props = {
   providerRuntimeBlocked: boolean;
   providerRuntimeStatusMessage: string | null;
   storagePollError: string | null;
+  onStorageRetry: () => void;
   hasVerificationDetail: boolean;
   secretDraft: string;
   secretStored: boolean;
@@ -62,7 +63,12 @@ export default function ProviderStudio(props: Props) {
         </div>
         {props.secretStatusMessage ? <div className={`provider-inline-alert${props.secretStatusMessage === t('providers.messages.secretPlainLoaded') ? ' provider-inline-alert-plain' : ''}`}>{props.secretStatusMessage}</div> : null}
         {props.providerRuntimeStatusMessage && props.secretStatusMessage !== props.providerRuntimeStatusMessage ? <div className="provider-inline-alert provider-inline-alert-warning">{props.providerRuntimeStatusMessage}</div> : null}
-        {props.storagePollError ? <div className="provider-inline-alert provider-inline-alert-warning">{t('providers.messages.storageRecoveryFailed', { error: props.storagePollError })}</div> : null}
+        {props.storagePollError ? (
+          <div className="provider-inline-alert provider-inline-alert-warning" role="alert">
+            <span>{t('providers.messages.storageRecoveryFailed', { error: props.storagePollError })}</span>
+            <button className="icon-button" onClick={props.onStorageRetry} type="button"><AppIcon name="refresh" size={13} />{t('common.retry')}</button>
+          </div>
+        ) : null}
       </header>
 
       <div className="provider-studio-grid provider-studio-grid-compact provider-studio-grid-single">

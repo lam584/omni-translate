@@ -33,6 +33,26 @@ const SESSION_ERROR_PRESENTATIONS: Record<SessionErrorCode, SessionErrorPresenta
     action: 'open-providers',
     actionKey: 'session.errorAction.openProviders',
   },
+  'session.model-reference-invalid': {
+    messageKey: 'session.errorCode.modelReferenceInvalid',
+    action: 'open-providers',
+    actionKey: 'session.errorAction.openProviders',
+  },
+  'session.launch-precheck-failed': {
+    messageKey: 'session.errorCode.providerInternal',
+    action: 'restart-session',
+    actionKey: null,
+  },
+  'session.launch-stage-failed': {
+    messageKey: 'session.errorCode.providerInternal',
+    action: 'restart-session',
+    actionKey: null,
+  },
+  'session.launch-timeout': {
+    messageKey: 'session.errorCode.networkUnreachable',
+    action: 'restart-session',
+    actionKey: null,
+  },
   'session.network-unreachable': {
     messageKey: 'session.errorCode.networkUnreachable',
     action: 'restart-session',
@@ -45,6 +65,11 @@ const SESSION_ERROR_PRESENTATIONS: Record<SessionErrorCode, SessionErrorPresenta
   },
   'audio.device-lost': {
     messageKey: 'session.errorCode.audioDeviceLost',
+    action: 'check-audio-device',
+    actionKey: null,
+  },
+  'audio.capture-failed': {
+    messageKey: 'session.errorCode.audioCaptureFailed',
     action: 'check-audio-device',
     actionKey: null,
   },

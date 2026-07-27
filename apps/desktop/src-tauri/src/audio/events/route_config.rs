@@ -52,6 +52,7 @@ pub(super) struct ResolvedRoutePlan {
     pub(super) omni_speech_config: omni::OmniSpeechConfig,
     pub(super) provider: ProviderDraftInput,
     pub(super) secondary_subtitle_provider: Option<ProviderDraftInput>,
+    pub(super) configuration_error: Option<String>,
     pub(super) subtitle_translation_model_id: String,
     pub(super) realtime_audio_mode: String,
     pub(super) legacy_vad_bypass: bool,
@@ -93,9 +94,16 @@ impl ResolvedRoutePlan {
             ResolvedRouteKind::LocalVad
         };
         let (subtitle_mode, subtitle_model_id) = subtitle_translate_mode_and_model(config);
-        let secondary_subtitle_provider = (subtitle_mode == "secondary" && !subtitle_model_id.trim().is_empty())
+        let secondary_requested = subtitle_mode == "secondary" && !subtitle_model_id.trim().is_empty();
+        let secondary_subtitle_provider = secondary_requested
             .then(|| resolve_model_provider_from_config_value(config, subtitle_model_id))
             .flatten();
+        let configuration_error = (secondary_requested && secondary_subtitle_provider.is_none()).then(|| {
+            super::super::omni::session_errors::with_error_markers(
+                &format!("Configured subtitle translation model '{subtitle_model_id}' cannot be resolved to an enabled provider"),
+                super::super::omni::session_errors::SessionErrorCode::ModelReferenceInvalid,
+            )
+        });
         let subtitle_translate_active = secondary_subtitle_provider.is_some();
         let subtitle_fallback_policy = if subtitle_translate_active {
             SubtitleFallbackPolicy::Secondary
@@ -148,6 +156,7 @@ impl ResolvedRoutePlan {
             omni_speech_config: omni::OmniSpeechConfig::from_config(config),
             provider,
             secondary_subtitle_provider,
+            configuration_error,
             subtitle_translation_model_id: subtitle_model_id.to_string(),
             realtime_audio_mode: effective_audio_mode,
             legacy_vad_bypass,

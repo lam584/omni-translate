@@ -109,6 +109,10 @@ describe('DesktopApiV2 configuration client', () => {
     await api.diagnostics.export('summary');
     await api.diagnostics.liveSessionEvents();
     await api.diagnostics.snapshot();
+    await api.diagnostics.appendLogs([], 2);
+    await api.diagnostics.setLogLevel('warning');
+    await api.diagnostics.openExportDirectory('C:/exports/report.json');
+    await api.diagnostics.writeExportArtifact('report.json', '{}');
     await api.configuration.load();
     await api.configuration.save(config);
     await api.configuration.reset();
@@ -151,6 +155,14 @@ describe('DesktopApiV2 configuration client', () => {
     expect(calls).toContainEqual(['start_bridge_service', { config }]);
     expect(calls).toContainEqual(['diagnostics_v2', { command: { action: 'snapshot' } }]);
     expect(calls).toContainEqual(['diagnostics_v2', { command: { action: 'liveSessionEvents' } }]);
+    expect(calls).toContainEqual(['append_frontend_diagnostics_logs', { entries: [], droppedCount: 2 }]);
+    expect(calls).toContainEqual(['set_diagnostics_log_level', { level: 'warning' }]);
+    expect(calls).toContainEqual(['diagnostics_v2', {
+      command: { action: 'openExportDirectory', outputPath: 'C:/exports/report.json' },
+    }]);
+    expect(calls).toContainEqual(['diagnostics_v2', {
+      command: { action: 'writeExportArtifact', filename: 'report.json', content: '{}' },
+    }]);
     expect(calls).toContainEqual(['debug_ipc_ping', undefined]);
     expect(calls).toContainEqual(['session_v2', { command: { action: 'bootstrap' } }]);
     expect(calls).toContainEqual(['configuration_v2', { command: { action: 'runtimeSnapshot' } }]);
@@ -167,7 +179,7 @@ describe('DesktopApiV2 configuration client', () => {
       'provider_v2',
       { command: { action: 'runModelBenchmark', ...benchmarkPayload } },
     ]);
-    expect(calls).toHaveLength(48);
+    expect(calls).toHaveLength(52);
   });
 
   it('adapts native window coordinates, sizing and popup menus', async () => {

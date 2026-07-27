@@ -83,6 +83,7 @@
     "idle": "Простаивает"
   },
   "settings": {
+    "languageLoadFailed": "Не удалось загрузить языковые ресурсы, поэтому восстановлен предыдущий язык. Повторите попытку. Подробности: {{error}}",
     "title": "Настройки",
     "subtitle": "Измените язык интерфейса и общие параметры. Применяется сразу, без перезапуска.",
     "sectionLanguage": "Язык интерфейса",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Управляйте драйвером виртуального динамика Omni Translate и Bridge Service."
   },
   "welcome": {
+    "languageLoadFailed": "Не удалось загрузить языковые ресурсы, поэтому восстановлен предыдущий выбор. Подробности: {{error}}",
     "title": "Добро пожаловать в Omni Translate",
     "subtitle": "Выберите удобный язык интерфейса. Его можно сменить в настройках в любое время.",
     "confirm": "Использовать этот язык",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "Не удалось инициализировать окно субтитров",
+    "bootstrapFailedHint": "Окно работает в безопасном ограниченном режиме. Повторите попытку или экспортируйте диагностику из главного окна.",
     "contextMenuTitle": "Управление оверлеем",
     "previewTitleEnglish": "Субтитры готовы",
     "previewTitle": "Режим превью",
@@ -615,6 +619,7 @@
       "testOverlay": "Проверить оверлей субтитров",
       "exporting": "Экспорт...",
       "exportBundle": "Экспортировать диагностический пакет",
+      "openExportDirectory": "Открыть папку с файлом",
       "refreshing": "Обновление...",
       "refreshRuntime": "Обновить среду выполнения",
       "selectAll": "Выбрать всё"
@@ -989,6 +994,7 @@
     "expandSection": "Развернуть раздел"
   },
   "session": {
+    "speechFailureRecovery": "Субтитры остаются доступны, но озвучивание отключено. Проверьте маршрутизацию звука и перезапустите его.",
     "watchMode": "Режим просмотра",
     "conversationMode": "Режим разговора",
     "cueStartedAt": "Начало {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "Перезапустить сеанс",
     "restartSessionHint": " Перезапустите сеанс и попробуйте снова.",
     "errorCode": {
+      "modelReferenceInvalid": "Модель вторичного перевода отсутствует или не связана с включённым провайдером. Выберите другую в настройках.",
+      "audioCaptureFailed": "Процесс захвата звука остановлен. Проверьте аудиоустройство и повторите попытку.",
       "credentialInvalid": "Ключ API недействителен или истёк. Обновите учётные данные провайдера.",
       "quotaExceeded": "Достигнута квота или лимит запросов провайдера. Проверьте использование и повторите попытку.",
       "voiceUnsupported": "Выбранный голос не поддерживается. Выберите другой голос в настройках провайдера.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "Виртуальный аудиомаршрут недоступен. Сессия временно переключилась на воспроизведение через физический динамик с AEC. В этом режиме все еще есть риск loopback.",
     "virtualDriverFallbackConfirm": "Виртуальный аудиодрайвер или Bridge пока недоступны. Нажмите OK, чтобы перейти в режим только субтитров; нажмите Cancel, чтобы временно вернуться к воспроизведению через физический динамик с AEC. Fallback AEC все еще имеет риск loopback.",
     "sceneLaunchFailed": "Не удалось запустить {{scene}} ({{stage}}): {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "Провайдер сообщил о внутренней ошибке. Перезапустите сеанс позже. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "Провайдер сообщил о внутренней ошибке. Перезапустите сеанс позже. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "Провайдер сообщил о внутренней ошибке. Перезапустите сеанс позже. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "Например: игровые термины, субтитры фильмов, профессиональная лексика..."
     },
     "conflictResolution": {
+      "overwriteHint": "Заменить все конфликтующие записи этим переводом.",
+      "skipHint": "Не сохранять эту запись; существующие записи не изменятся.",
+      "keep-allHint": "Сохранить ещё одну запись с тем же исходным термином и оставить все переводы.",
       "overwrite": "Перезаписать",
       "skip": "Пропустить",
       "keep-all": "Сохранить все"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "Не удалось подключиться к речевому сервису. Проверьте сеть и перезапустите сеанс. Процесс захвата звука остановлен. Проверьте аудиоустройство и повторите попытку.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "Не удалось подключиться к речевому сервису. Проверьте сеть и перезапустите сеанс. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "Провайдер сообщил о внутренней ошибке. Перезапустите сеанс позже. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "Не удалось подключиться к речевому сервису. Проверьте сеть и перезапустите сеанс. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

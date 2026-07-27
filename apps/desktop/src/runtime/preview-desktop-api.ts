@@ -332,6 +332,8 @@ export class PreviewDesktopApi {
     appendLogs: async (_entries: readonly FrontendDiagnosticsBatchEntry[], _droppedCount: number) => undefined,
     setLogLevel: async (_level: DiagnosticsLogLevel) => undefined,
     snapshot: async (): Promise<{ recentLogs?: DiagnosticLogEntryRuntime[] }> => ({ recentLogs: [] }),
+    openExportDirectory: async (_outputPath: string) => Promise.reject(previewUnavailable('diagnostics.openExportDirectory')),
+    writeExportArtifact: async (_filename: string, _content: string) => Promise.reject(previewUnavailable('diagnostics.writeExportArtifact')),
   };
 
   readonly configuration = {

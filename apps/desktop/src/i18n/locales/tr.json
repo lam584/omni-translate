@@ -83,6 +83,7 @@
     "idle": "Boşta"
   },
   "settings": {
+    "languageLoadFailed": "Dil kaynakları yüklenemediği için önceki dil geri yüklendi. Yeniden deneyin. Ayrıntı: {{error}}",
     "title": "Ayarlar",
     "subtitle": "Arayüz dilini ve genel tercihleri ayarlayın. Değişiklikler yeniden başlatmaya gerek kalmadan hemen uygulanır.",
     "sectionLanguage": "Arayüz dili",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Omni Translate sanal hoparlör sürücüsünü ve Bridge Service'i yönetin."
   },
   "welcome": {
+    "languageLoadFailed": "Dil kaynakları yüklenemediği için önceki seçim geri yüklendi. Ayrıntı: {{error}}",
     "title": "Omni Translate'e hoş geldiniz",
     "subtitle": "Bir dil seçin, bir sağlayıcıya bağlanın, ardından sürücüyü ve köprüyü kontrol edin. Bunları istediğiniz zaman Ayarlar'dan güncelleyebilirsiniz.",
     "confirm": "Bu dili kullan",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "Altyazı katmanı başlatılamadı",
+    "bootstrapFailedHint": "Katman güvenli sınırlı modda. Yeniden deneyin veya ana pencereden tanılamayı dışa aktarın.",
     "contextMenuTitle": "Yer paylaşımı kontrolleri",
     "previewTitleEnglish": "Altyazı hazır",
     "previewTitle": "Altyazı hazır",
@@ -615,6 +619,7 @@
       "testOverlay": "Altyazı katmanını test edin",
       "exporting": "Dışa aktarılıyor...",
       "exportBundle": "Teşhis paketini dışa aktar",
+      "openExportDirectory": "Bulunduğu klasörü aç",
       "refreshing": "Yenileniyor...",
       "refreshRuntime": "Çalışma zamanını yenile",
       "selectAll": "Tümünü seç"
@@ -989,6 +994,7 @@
     "expandSection": "Bölümü genişlet"
   },
   "session": {
+    "speechFailureRecovery": "Altyazılar kullanılabilir, ancak ses çıkışı kullanılamıyor. Ses yönlendirmesini denetleyip yeniden başlatın.",
     "watchMode": "Görüntüleme modu",
     "conversationMode": "Konuşma modu",
     "cueStartedAt": "{{started}}'i başlatın",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "Oturumu yeniden başlat",
     "restartSessionHint": " Oturumu yeniden başlatıp tekrar deneyin.",
     "errorCode": {
+      "modelReferenceInvalid": "İkincil çeviri modeli eksik veya etkin bir sağlayıcıya bağlı değil. Sağlayıcı ayarlarından başka bir model seçin.",
+      "audioCaptureFailed": "Ses yakalama işlemi durdu. Ses aygıtını denetleyip yeniden deneyin.",
       "credentialInvalid": "API anahtarı geçersiz veya süresi dolmuş. Sağlayıcı kimlik bilgilerinizi güncelleyin.",
       "quotaExceeded": "Sağlayıcı kotasına veya hız sınırına ulaşıldı. Kullanımınızı kontrol edip yeniden deneyin.",
       "voiceUnsupported": "Seçilen ses desteklenmiyor. Sağlayıcı ayarlarından başka bir ses seçin.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "Sanal ses yolu kullanılamıyor. Oturum geçici olarak AEC ile fiziksel hoparlör çalmaya geçti. Bu modun hala geridöngü riski vardır.",
     "virtualDriverFallbackConfirm": "Sanal ses sürücüsü veya Köprü henüz mevcut değil. Yalnızca altyazı moduna girmek için Tamam'ı tıklayın; AEC ile geçici olarak fiziksel hoparlörden çalmaya geri dönmek için İptal'e tıklayın. AEC geri dönüşü hala geridöngü riskine sahiptir.",
     "sceneLaunchFailed": "{{scene}} ({{stage}}) başlatılamadı: {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "Sağlayıcı dahili bir hata bildirdi. Oturumu daha sonra yeniden başlatın. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "Sağlayıcı dahili bir hata bildirdi. Oturumu daha sonra yeniden başlatın. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "Sağlayıcı dahili bir hata bildirdi. Oturumu daha sonra yeniden başlatın. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "Örneğin: oyun terimleri, film altyazıları, mesleki terimler..."
     },
     "conflictResolution": {
+      "overwriteHint": "Çakışan tüm kayıtları bu çeviriyle değiştirir.",
+      "skipHint": "Bu kaydı kaydetmez; mevcut kayıtlar değişmeden kalır.",
+      "keep-allHint": "Aynı kaynak terimle başka bir kayıt kaydeder ve tüm çevirileri korur.",
       "overwrite": "Üzerine yaz",
       "skip": "Atla",
       "keep-all": "Hepsini sakla"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "Ses hizmetine ulaşılamıyor. Ağınızı kontrol edip oturumu yeniden başlatın. Ses yakalama işlemi durdu. Ses aygıtını denetleyip yeniden deneyin.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "Ses hizmetine ulaşılamıyor. Ağınızı kontrol edip oturumu yeniden başlatın. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "Sağlayıcı dahili bir hata bildirdi. Oturumu daha sonra yeniden başlatın. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "Ses hizmetine ulaşılamıyor. Ağınızı kontrol edip oturumu yeniden başlatın. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

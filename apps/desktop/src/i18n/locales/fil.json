@@ -83,6 +83,7 @@
     "idle": "Nakatengga"
   },
   "settings": {
+    "languageLoadFailed": "Hindi ma-load ang mga resource ng wika kaya ibinalik ang dating wika. Subukan muli. Detalye: {{error}}",
     "title": "Mga setting",
     "subtitle": "Ayusin ang wika ng interface at pangkalahatang mga kagustuhan. Nalalapat kaagad ang mga pagbabago nang walang pag-restart.",
     "sectionLanguage": "Wika ng interface",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Pamahalaan ang Omni Translate virtual speaker driver at Bridge Service."
   },
   "welcome": {
+    "languageLoadFailed": "Hindi ma-load ang mga resource ng wika kaya ibinalik ang dating pagpili. Detalye: {{error}}",
     "title": "Maligayang pagdating sa Omni Translate",
     "subtitle": "Pumili ng wika, kumonekta sa isang provider, pagkatapos ay suriin ang driver at tulay. Maaari mong i-update ang mga ito anumang oras mula sa Mga Setting.",
     "confirm": "Gamitin ang wikang ito",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "Hindi masimulan ang subtitle overlay",
+    "bootstrapFailedHint": "Nasa ligtas na limitadong mode ang overlay. Subukan muli o mag-export ng diagnostics sa pangunahing window.",
     "contextMenuTitle": "Mga kontrol sa overlay",
     "previewTitleEnglish": "Handa na ang mga subtitle",
     "previewTitle": "Handa na ang mga subtitle",
@@ -615,6 +619,7 @@
       "testOverlay": "Subukan ang overlay ng subtitle",
       "exporting": "Ini-export...",
       "exportBundle": "I-export ang mga diagnostic bundle",
+      "openExportDirectory": "Buksan ang folder",
       "refreshing": "Nire-refresh...",
       "refreshRuntime": "I-refresh ang runtime",
       "selectAll": "Piliin lahat"
@@ -989,6 +994,7 @@
     "expandSection": "Palawakin ang seksyon"
   },
   "session": {
+    "speechFailureRecovery": "Available pa rin ang subtitles ngunit walang voice output. Suriin ang audio routing at i-restart.",
     "watchMode": "Mode ng pagtingin",
     "conversationMode": "Mode ng pag-uusap",
     "cueStartedAt": "Simulan ang {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "I-restart ang session",
     "restartSessionHint": " I-restart ang session at subukang muli.",
     "errorCode": {
+      "modelReferenceInvalid": "Nawawala o hindi na nakakabit sa enabled provider ang secondary translation model. Pumili ulit sa provider settings.",
+      "audioCaptureFailed": "Huminto ang audio capture worker. Suriin ang audio device at subukan muli.",
       "credentialInvalid": "Ang API key ay invalid o expired na. I-update ang mga kredensyal ng provider.",
       "quotaExceeded": "Naabot na ang quota o rate limit ng provider. Suriin ang paggamit at subukang muli.",
       "voiceUnsupported": "Hindi suportado ang napiling boses. Pumili ng ibang boses sa mga setting ng provider.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "Ang virtual na ruta ng audio ay hindi magagamit. Ang session ay pansamantalang lumipat sa pisikal na pag-playback ng speaker gamit ang AEC. Ang mode na ito ay mayroon pa ring panganib sa loopback.",
     "virtualDriverFallbackConfirm": "Hindi pa available ang virtual audio driver o Bridge. I-click ang OK upang pumasok sa subtitle-only mode; i-click ang Kanselahin upang pansamantalang bumalik sa pisikal na pag-playback ng speaker gamit ang AEC. Ang AEC fallback ay mayroon pa ring panganib sa loopback.",
     "sceneLaunchFailed": "Nabigong simulan ang {{scene}} ({{stage}}): {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "Nag-ulat ang provider ng internal na error. I-restart ang session mamaya. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "Nag-ulat ang provider ng internal na error. I-restart ang session mamaya. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "Nag-ulat ang provider ng internal na error. I-restart ang session mamaya. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "Halimbawa: mga termino ng laro, mga subtitle ng pelikula, propesyonal na bokabularyo..."
     },
     "conflictResolution": {
+      "overwriteHint": "Palitan ng saling ito ang lahat ng conflict.",
+      "skipHint": "Hindi ise-save ang entry na ito; hindi mababago ang kasalukuyan.",
+      "keep-allHint": "Mag-save ng isa pang entry na may parehong source term at panatilihin ang lahat ng salin.",
       "overwrite": "I-overwrite",
       "skip": "Laktawan",
       "keep-all": "Panatilihin ang lahat"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "Hindi maabot ang serbisyo ng boses. Suriin ang network at i-restart ang session. Huminto ang audio capture worker. Suriin ang audio device at subukan muli.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "Hindi maabot ang serbisyo ng boses. Suriin ang network at i-restart ang session. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "Nag-ulat ang provider ng internal na error. I-restart ang session mamaya. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "Hindi maabot ang serbisyo ng boses. Suriin ang network at i-restart ang session. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

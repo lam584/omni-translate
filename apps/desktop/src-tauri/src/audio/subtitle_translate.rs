@@ -520,6 +520,25 @@ pub fn start_subtitle_translate(
                 stop_rx,
             );
             if let Err(error) = worker.run(&audio_state) {
+                let (message, code, recommended) =
+                    super::omni::session_errors::split_error_markers(&error);
+                audio_state.mark_route_last_error(
+                    "inbound",
+                    message.clone(),
+                    code,
+                    recommended,
+                );
+                let runtime_state = app_handle.state::<crate::runtime::state::RuntimeStateStore>();
+                let _ = crate::runtime::events::emit_runtime_notification(
+                    &app_handle,
+                    &runtime_state,
+                    crate::runtime::contracts::RuntimeNotification::error(
+                        "subtitle-translate-worker-failed",
+                        "session",
+                        &error,
+                        crate::shared::time::now_unix_millis_marker(),
+                    ),
+                );
                 let _ = diag_log_detail(
                     &app_handle,
                     "subtitle-translate",
@@ -530,7 +549,10 @@ pub fn start_subtitle_translate(
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);
             }
         })
-        .map_err(|e| e.to_string())?;
+        .map_err(|error| super::omni::session_errors::with_error_markers(
+            &format!("字幕二次翻译 worker 启动失败：{error}"),
+            super::omni::session_errors::SessionErrorCode::ProviderInternal,
+        ))?;
 
     store.insert_session(
         "subtitle-translate",

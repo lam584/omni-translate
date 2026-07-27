@@ -17,6 +17,7 @@ const defaultOutputRoot = 'artifacts/logs/testing/quality-gate-auto';
 export const buildAutoSteps = ({ skipDesktopShell = false, skipBridgeService = false } = {}) => {
   const steps = [
     { name: 'audit-architecture', command: 'npm run audit:architecture' },
+    { name: 'audit-error-handling', command: 'npm run audit:error-handling' },
     { name: 'verify-desktop', command: 'npm run verify:desktop' },
     { name: 'contracts', command: 'npm run test:contracts' },
     { name: 'integration-bridge-contract', command: 'npm run test:integration:bridge-contract' },

@@ -1109,6 +1109,46 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(useAppStore.getState().audioRuntimeSnapshot.outbound.streamBound).toBe(false);
   });
 
+  it('surfaces microphone capture and TTS playback failures with recovery actions', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audioRuntimeSnapshot.outbound.lastError = 'microphone device disconnected';
+    audioRuntimeSnapshot.outbound.lastErrorCode = 'audio.device-lost';
+    audioRuntimeSnapshot.speech.lastError = 'speaker write timeout';
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await renderPage();
+
+    expect(container.textContent).toContain('音频设备已断开或不可用');
+    expect(container.textContent).toContain('语音播报异常');
+    expect(container.textContent).toContain('字幕仍可继续使用');
+    expect(container.querySelector('a[href="/audio-routing"]')).not.toBeNull();
+  });
+
+  it('surfaces overlay toggle failures in the session page and notification stream', async () => {
+    toggleSubtitleOverlayWindowMock.mockRejectedValue(new Error('overlay timeout'));
+    await renderPage();
+    const toolbarButtons = container.querySelectorAll<HTMLButtonElement>('.control-toolbar button');
+    await act(async () => {
+      toolbarButtons[1].click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('overlay timeout');
+    expect(useAppStore.getState().runtimeNotifications.some((item) => item.message.includes('overlay timeout'))).toBe(true);
+  });
+
+  it('surfaces clear-subtitle failures instead of creating an unhandled rejection', async () => {
+    clearSubtitleCuesRuntimeMock.mockRejectedValue(new Error('cue store locked'));
+    await renderPage();
+    const clearButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.control-toolbar button'))
+      .find((button) => button.textContent?.includes('清空字幕'));
+    await act(async () => {
+      clearButton?.click();
+      await Promise.resolve();
+    });
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('cue store locked');
+    expect(useAppStore.getState().runtimeNotifications.some((item) => item.message.includes('cue store locked'))).toBe(true);
+  });
+
   it('does not synchronously install Bridge for speech outputTarget both', async () => {
     await act(async () => {
       useAppStore.setState((state) => ({

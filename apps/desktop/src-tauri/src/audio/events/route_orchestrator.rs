@@ -4,6 +4,9 @@ use tauri::{AppHandle, Manager};
 use super::super::contracts::AudioRuntimeSnapshot;
 use super::super::engine;
 use super::super::engine::AudioRouteSupervisor;
+use super::super::omni::session_errors::{
+    split_error_markers, with_error_markers, SessionErrorCode,
+};
 use super::super::state::AudioStateStore;
 use super::super::{speech, stt, subtitle_translate};
 use super::realtime_session::{
@@ -85,10 +88,25 @@ where
 {
     let outcome = run_fast_watch_start_body(run_inner);
     if let FastWatchStartOutcome::Failed(reason) = &outcome {
-        state.mark_route_error("inbound", reason.clone(), None, Some("restart-route".to_string()));
+        let (message, error_code, recommended_action) = split_error_markers(reason);
+        state.mark_route_error(
+            "inbound",
+            message,
+            error_code,
+            recommended_action.or_else(|| Some("restart-route".to_string())),
+        );
         emit_snapshot();
     }
     outcome
+}
+
+fn unsupported_realtime_model_error(model: &str) -> String {
+    with_error_markers(
+        &format!(
+            "所选模型 {model} 不支持实时语音识别或翻译。请在提供商设置中为当前场景选择支持实时语音的模型"
+        ),
+        SessionErrorCode::VoiceUnsupported,
+    )
 }
 
 #[tauri::command]
@@ -626,6 +644,9 @@ fn start_inbound_route_locked(
                 requested_voice_model.clone(),
                 voice_provider,
             );
+            if let Some(error) = plan.configuration_error.clone() {
+                return Err(error);
+            }
             let _ = append_diagnostics_log(
                 &app,
                 "audio",
@@ -711,7 +732,7 @@ fn start_inbound_route_locked(
                     None,
                     None,
                 );
-                start_route_with_overlay(app, &state, &direction, config, None)
+                Err(unsupported_realtime_model_error(&plan.requested_voice_model))
             }
             }
         } else {
@@ -724,6 +745,15 @@ mod fast_watch_supersede_tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
+
+    #[test]
+    fn unsupported_realtime_models_return_a_structured_session_error() {
+        let error = unsupported_realtime_model_error("chat-only-model");
+        let (message, code, action) = split_error_markers(&error);
+        assert!(message.contains("chat-only-model"));
+        assert_eq!(code.as_deref(), Some("session.voice-unsupported"));
+        assert_eq!(action.as_deref(), Some("switch-voice"));
+    }
 
     /// Field incident: the user pressed stop while a detached fast-watch start
     /// was still queued behind the pipeline lock. The stop won the lock, tore

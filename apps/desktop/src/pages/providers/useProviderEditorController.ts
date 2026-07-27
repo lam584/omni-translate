@@ -1,4 +1,4 @@
-import { useEffect, type Dispatch, type MouseEvent, type MutableRefObject, type SetStateAction } from 'react';
+import { useCallback, useEffect, type Dispatch, type MouseEvent, type MutableRefObject, type SetStateAction } from 'react';
 import type { ProviderDraft, ProviderSceneModelAssignment } from '../../schema/config';
 import type { ProviderTemplate } from '../../schema/provider-template';
 import { useAppStore } from '../../stores/app-store';
@@ -50,15 +50,27 @@ export function useProviderEditorController({
   const updateActiveProviderTemplateId = useAppStore((state) => state.updateActiveProviderTemplateId);
   const updateDiagnosticsDraft = useAppStore((state) => state.updateDiagnosticsDraft);
   const updateProviders = useAppStore((state) => state.updateProviders);
+  const pushRuntimeNotification = useAppStore((state) => state.pushRuntimeNotification);
+
+  const reportCustomTemplateWriteFailure = useCallback((detail: string) => {
+    pushRuntimeNotification({
+      id: `custom-provider-write-failed-${Date.now()}`,
+      level: 'error',
+      source: 'desktop-runtime',
+      message: `自定义提供商未保存：${detail}。请检查浏览器存储权限后重试。`,
+      emittedAt: new Date().toISOString(),
+    });
+  }, [pushRuntimeNotification]);
 
   useEffect(() => {
     if (activeTemplate.source !== 'custom' || !activeCustomTemplateDraft
       || JSON.stringify(activeCustomTemplateDraft) === JSON.stringify(providerDraftForCustomTemplate)) return;
     const nextTemplate = updateCustomProviderTemplate(activeTemplate, providerDraftForCustomTemplate);
     const nextTemplates = customTemplates.map((template) => template.id === activeTemplate.id ? nextTemplate : template);
-    writeCustomProviderTemplates(nextTemplates);
-    queueMicrotask(() => setCustomTemplates(nextTemplates));
-  }, [activeCustomTemplateDraft, activeTemplate, customTemplates, providerDraftForCustomTemplate, setCustomTemplates]);
+    const result = writeCustomProviderTemplates(nextTemplates);
+    if (result.ok) queueMicrotask(() => setCustomTemplates(nextTemplates));
+    else reportCustomTemplateWriteFailure(result.error);
+  }, [activeCustomTemplateDraft, activeTemplate, customTemplates, providerDraftForCustomTemplate, reportCustomTemplateWriteFailure, setCustomTemplates]);
 
   const applyTemplate = (template: ProviderTemplate) => {
     const currentTemplateId = useAppStore.getState().configDraft.activeProviderTemplateId;
@@ -93,8 +105,13 @@ export function useProviderEditorController({
   };
 
   const persistCustomTemplates = (templates: ProviderTemplate[]) => {
-    writeCustomProviderTemplates(templates);
+    const result = writeCustomProviderTemplates(templates);
+    if (!result.ok) {
+      reportCustomTemplateWriteFailure(result.error);
+      return false;
+    }
     setCustomTemplates(templates);
+    return true;
   };
 
   const removeProviderDraft = (templateId: string) => {
@@ -107,8 +124,18 @@ export function useProviderEditorController({
       hidden: entry.hidden,
       order: index,
     }));
-    setTemplateCatalogPreferences(nextPreferences);
-    persistProviderTemplateCatalogEntries(nextEntries);
+    try {
+      persistProviderTemplateCatalogEntries(nextEntries);
+      setTemplateCatalogPreferences(nextPreferences);
+    } catch (error) {
+      pushRuntimeNotification({
+        id: `provider-catalog-persist-failed-${Date.now()}`,
+        level: 'error',
+        source: 'desktop-runtime',
+        message: `平台启用状态或排序未保存，界面已回滚。请检查本地存储权限后重试。技术详情：${error instanceof Error ? error.message : String(error)}`,
+        emittedAt: new Date().toISOString(),
+      });
+    }
   };
 
   const handleTemplateEnabledToggle = (templateId: string) => {

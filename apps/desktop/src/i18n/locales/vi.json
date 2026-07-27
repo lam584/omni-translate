@@ -83,6 +83,7 @@
     "idle": "Nhàn rỗi"
   },
   "settings": {
+    "languageLoadFailed": "Không thể tải tài nguyên ngôn ngữ nên đã khôi phục ngôn ngữ trước. Hãy thử lại. Chi tiết: {{error}}",
     "title": "Cài đặt",
     "subtitle": "Điều chỉnh ngôn ngữ giao diện và tùy chọn chung. Các thay đổi được áp dụng ngay lập tức mà không cần khởi động lại.",
     "sectionLanguage": "Ngôn ngữ giao diện",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Quản lý trình điều khiển loa ảo Omni Translate và Bridge Service."
   },
   "welcome": {
+    "languageLoadFailed": "Không thể tải tài nguyên ngôn ngữ nên đã khôi phục lựa chọn trước. Hãy thử lại. Chi tiết: {{error}}",
     "title": "Chào mừng đến với Omni Translate",
     "subtitle": "Chọn ngôn ngữ, kết nối nhà cung cấp, sau đó kiểm tra trình điều khiển và cầu nối. Bạn có thể cập nhật những thông tin này bất cứ lúc nào từ Cài đặt.",
     "confirm": "Sử dụng ngôn ngữ này",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "Không thể khởi tạo lớp phủ phụ đề",
+    "bootstrapFailedHint": "Lớp phủ đang ở chế độ giới hạn an toàn. Hãy thử lại hoặc xuất chẩn đoán từ cửa sổ chính.",
     "contextMenuTitle": "Điều khiển lớp phủ",
     "previewTitleEnglish": "Phụ đề đã sẵn sàng",
     "previewTitle": "Phụ đề đã sẵn sàng",
@@ -615,6 +619,7 @@
       "testOverlay": "Kiểm tra lớp phủ phụ đề",
       "exporting": "Đang xuất...",
       "exportBundle": "Xuất gói chẩn đoán",
+      "openExportDirectory": "Mở thư mục chứa",
       "refreshing": "Đang làm mới...",
       "refreshRuntime": "Làm mới thời gian chạy",
       "selectAll": "Chọn tất cả"
@@ -989,6 +994,7 @@
     "expandSection": "Mở rộng phần"
   },
   "session": {
+    "speechFailureRecovery": "Phụ đề vẫn dùng được nhưng giọng nói không khả dụng. Kiểm tra định tuyến âm thanh rồi khởi động lại.",
     "watchMode": "Chế độ xem",
     "conversationMode": "Chế độ hội thoại",
     "cueStartedAt": "Bắt đầu {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "Khởi động lại phiên",
     "restartSessionHint": " Hãy khởi động lại phiên và thử lại.",
     "errorCode": {
+      "modelReferenceInvalid": "Mô hình dịch phụ bị thiếu hoặc không còn liên kết với nhà cung cấp đang bật. Chọn mô hình khác trong cài đặt.",
+      "audioCaptureFailed": "Tiến trình thu âm thanh đã dừng. Kiểm tra thiết bị âm thanh rồi thử lại.",
       "credentialInvalid": "Khóa API không hợp lệ hoặc đã hết hạn. Hãy cập nhật thông tin xác thực của nhà cung cấp.",
       "quotaExceeded": "Đã đạt hạn mức hoặc giới hạn tốc độ của nhà cung cấp. Kiểm tra mức sử dụng rồi thử lại.",
       "voiceUnsupported": "Giọng đọc đã chọn không được hỗ trợ. Hãy chọn giọng khác trong cài đặt nhà cung cấp.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "Tuyến âm thanh ảo không khả dụng. Phiên đã tạm thời chuyển sang phát lại loa vật lý với AEC. Chế độ này vẫn có nguy cơ lặp lại.",
     "virtualDriverFallbackConfirm": "Trình điều khiển âm thanh ảo hoặc Bridge chưa có sẵn. Bấm OK để vào chế độ chỉ có phụ đề; nhấp vào Hủy để tạm thời quay lại phát lại loa vật lý với AEC. Dự phòng AEC vẫn có rủi ro lặp lại.",
     "sceneLaunchFailed": "Không khởi động được {{scene}} ({{stage}}): {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "Nhà cung cấp báo lỗi nội bộ. Hãy khởi động lại phiên sau. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "Nhà cung cấp báo lỗi nội bộ. Hãy khởi động lại phiên sau. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "Nhà cung cấp báo lỗi nội bộ. Hãy khởi động lại phiên sau. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "Ví dụ: thuật ngữ game, phụ đề phim, từ vựng chuyên ngành..."
     },
     "conflictResolution": {
+      "overwriteHint": "Thay mọi mục xung đột bằng bản dịch này.",
+      "skipHint": "Không lưu mục này; các mục hiện có không thay đổi.",
+      "keep-allHint": "Lưu thêm một mục có cùng thuật ngữ nguồn và giữ mọi bản dịch hiện có.",
       "overwrite": "Ghi đè",
       "skip": "Bỏ qua",
       "keep-all": "Giữ tất cả"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "Không thể kết nối dịch vụ giọng nói. Kiểm tra mạng rồi khởi động lại phiên. Tiến trình thu âm thanh đã dừng. Kiểm tra thiết bị âm thanh rồi thử lại.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "Không thể kết nối dịch vụ giọng nói. Kiểm tra mạng rồi khởi động lại phiên. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "Nhà cung cấp báo lỗi nội bộ. Hãy khởi động lại phiên sau. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "Không thể kết nối dịch vụ giọng nói. Kiểm tra mạng rồi khởi động lại phiên. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

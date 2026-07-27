@@ -211,8 +211,20 @@ pub fn start_route(
                 init_done: Some(init_done_for_worker),
             };
             if let Err(error) = worker.run(&audio_state) {
-                let (message, error_code, recommended_action) =
+                let (mut message, mut error_code, mut recommended_action) =
                     crate::audio::omni::session_errors::split_error_markers(&error);
+                if error_code.is_none() {
+                    let _ = diag_log_detail(
+                        &app_handle,
+                        "audio-engine",
+                        "error",
+                        format!("audio capture worker exited: direction={route_direction}"),
+                        error.clone(),
+                    );
+                    message = "音频采集线程异常退出，请检查音频设备后重试".to_string();
+                    error_code = Some("audio.capture-failed".to_string());
+                    recommended_action = Some("check-audio-device".to_string());
+                }
                 notify_route_worker_error(
                     &app_handle,
                     &route_direction,

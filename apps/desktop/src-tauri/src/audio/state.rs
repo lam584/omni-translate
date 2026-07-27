@@ -2,19 +2,16 @@ use std::collections::HashMap;
 use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
-
 use super::contracts::{
     AudioDeviceRuntime, AudioRouteRuntimeSnapshot, AudioRuntimeSnapshot, SpeechRuntimeSnapshot,
     SubtitleCueRuntime, SubtitleDisplaySegmentRuntime, SubtitleOverlayRuntimeSnapshot,
 };
 use super::echo_cancel::{EchoCancellationResult, EchoReferenceBuffer};
 use super::live_session_events::LiveSessionEventBuffer;
-
 use super::engine::CaptureRouteWarmer;
 use super::omni::{OmniHandle, OmniSpeechConfig};
 use super::stt::SttHandle;
 use super::time_utils::{ms_marker, unix_ms};
-
 mod translation_latency;
 mod audio_cache;
 mod cue_lifecycle;
@@ -32,12 +29,10 @@ use omni_sessions::OmniSessionStore;
 use session_registry::SessionRegistry;
 use metrics::AudioMetricsStore;
 use subtitle_store::SubtitleStore;
-
 pub struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
     pub join_handle: JoinHandle<()>,
 }
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OmniSessionLifecycle {
     Starting,
@@ -45,7 +40,6 @@ pub(crate) enum OmniSessionLifecycle {
     Failed,
     Stopping,
 }
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct OmniSessionMetadata {
     pub direction: String,
@@ -55,7 +49,6 @@ pub(crate) struct OmniSessionMetadata {
     pub state: OmniSessionLifecycle,
     pub last_error: Option<String>,
 }
-
 pub struct AudioStateStore {
     inner: Mutex<AudioRuntimeSnapshot>,
     metrics: AudioMetricsStore,
@@ -77,7 +70,6 @@ pub struct AudioStateStore {
     stt_session_epoch: std::sync::atomic::AtomicU64,
     pub live_session_events: LiveSessionEventBuffer,
 }
-
 impl AudioStateStore {
     pub fn new() -> Self {
         let preview = AudioRuntimeSnapshot::preview();
@@ -98,7 +90,6 @@ impl AudioStateStore {
             live_session_events: LiveSessionEventBuffer::new(),
         }
     }
-
     /// Shared pre-warmer that pre-opens capture devices during idle time so a
     /// later `start_route` only has to `start_stream`.
     pub(crate) fn warmer(&self) -> &CaptureRouteWarmer {

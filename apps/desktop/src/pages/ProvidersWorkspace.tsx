@@ -64,7 +64,7 @@ function ProvidersPage() {
   );
 
   const {
-    customTemplates, setCustomTemplates, templateCatalogPreferences, setTemplateCatalogPreferences,
+    customTemplates, setCustomTemplates, customTemplateReadError, templateCatalogPreferences, setTemplateCatalogPreferences,
     secretDraft, setSecretDraft, secretStored, setSecretStored, busyAction, setBusyAction,
     probeResult, setProbeResult, smokeResult, setSmokeResult,
     secretStatusMessage, setSecretStatusMessage, secretVisible, setSecretVisible,
@@ -149,7 +149,7 @@ function ProvidersPage() {
     return null;
   }, [effectiveBridgeStatus, latestRuntimeError, runtimeSnapshot.storage, storageBlocked, t]);
 
-  const storagePollError = useStorageRecovery({
+  const { failure: storagePollError, retry: retryStorageRecovery } = useStorageRecovery({
     runtimeStatus: runtimeSnapshot.storage.status,
     bridgeStatus: effectiveBridgeStatus,
     setRuntimeSnapshot,
@@ -284,7 +284,10 @@ function ProvidersPage() {
     const nextTemplates = [...customTemplates, createCustomProviderTemplate(customProviderDraft)];
     const activeCustomTemplate = nextTemplates[nextTemplates.length - 1];
 
-    persistCustomTemplates(nextTemplates);
+    if (!persistCustomTemplates(nextTemplates)) {
+      setCustomProviderError(t('providers.messages.customProviderSaveFailed', { defaultValue: '自定义提供商保存失败，请检查本地存储权限后重试。' }));
+      return;
+    }
 
     applyTemplate(activeCustomTemplate);
 
@@ -319,7 +322,7 @@ function ProvidersPage() {
       return;
     }
 
-    persistCustomTemplates(nextTemplates);
+    if (!persistCustomTemplates(nextTemplates)) return;
     applyTemplate(fallbackTemplate);
     removeProviderDraft(activeTemplate.id);
     setSecretStatusMessage(t('providers.messages.customProviderDeleted'));
@@ -399,8 +402,9 @@ function ProvidersPage() {
         activeTemplate={activeTemplate}
         busyAction={busyAction}
         providerRuntimeBlocked={providerRuntimeBlocked}
-        providerRuntimeStatusMessage={providerRuntimeStatusMessage}
+        providerRuntimeStatusMessage={providerRuntimeStatusMessage ?? customTemplateReadError}
         storagePollError={storagePollError}
+        onStorageRetry={retryStorageRecovery}
         hasVerificationDetail={hasVerificationDetail}
         secretDraft={secretDraft}
         secretStored={secretStored}

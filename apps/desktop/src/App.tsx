@@ -38,6 +38,7 @@ const DEFAULT_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID =
   'template-dashscope-realtime::qwen3.5-omni-plus-realtime';
 const STARTUP_MEASURE_RUN_ID = watchModeEnvString(import.meta.env, 'VITE_OMNI_STARTUP_MEASURE_RUN_ID');
 const BOOTSTRAP_OVERLAY_COMPLETION_DELAY_MS = 0;
+const BOOTSTRAP_HARD_TIMEOUT_MS = 45_000;
 const startedWatchModeAutostartMarkers = new Set<string>();
 
 type StartupStepTiming = {
@@ -270,6 +271,26 @@ function App() {
       }
       handleBootstrapStep(stepId, status, detail);
     };
+    const bootstrapHardTimeout = window.setTimeout(() => {
+      if (disposed || bootstrapGenerationRef.current !== generation) return;
+      const detail = (i18n.language ?? 'zh-CN').toLowerCase().startsWith('zh')
+        ? '启动超过 45 秒仍未完成，已进入可恢复的降级界面。'
+        : 'Startup did not finish within 45 seconds. The app entered a recoverable degraded state.';
+      STEP_ORDER.forEach((stepId) => {
+        const timing = startupStepTimingsRef.current[stepId];
+        if (!timing || (timing.doneAtMs === undefined && timing.errorAtMs === undefined)) {
+          guardedBootstrapStep(stepId, 'error', detail);
+        }
+      });
+      useAppStore.getState().pushRuntimeNotification({
+        id: `startup-timeout-${Date.now()}`,
+        level: 'error',
+        source: 'desktop-runtime',
+        message: detail,
+        emittedAt: new Date().toISOString(),
+      });
+      setBootstrapReady(true);
+    }, BOOTSTRAP_HARD_TIMEOUT_MS);
 
     // 兜底：无论步骤回调是否收齐，只要整体 bootstrap 承诺已 settle 就强制关闭弹窗，
     // 避免晚订阅者漏收终态或异常路径导致进度弹窗永久卡死。
@@ -313,19 +334,31 @@ function App() {
         );
       });
     }).catch((error) => {
+      const detail = error instanceof Error ? error.message : String(error);
       void appendFrontendDiagnosticsLog(
         'runtime',
         'error',
         'startup.bootstrap_failed',
-        error instanceof Error ? error.message : String(error),
+        detail,
       );
+      useAppStore.getState().pushRuntimeNotification({
+        id: `startup-bootstrap-failed-${Date.now()}`,
+        level: 'error',
+        source: 'desktop-runtime',
+        message: (i18n.language ?? 'zh-CN').toLowerCase().startsWith('zh')
+          ? `桌面运行时启动失败：${detail}`
+          : `Desktop runtime startup failed: ${detail}`,
+        emittedAt: new Date().toISOString(),
+      });
       forceCloseOverlayOnSettle('rejected', error);
     }).finally(() => {
+      window.clearTimeout(bootstrapHardTimeout);
       forceCloseOverlayOnSettle('resolved');
     });
 
     return () => {
       disposed = true;
+      window.clearTimeout(bootstrapHardTimeout);
       if (bootstrapGenerationRef.current === generation) {
         bootstrapGenerationRef.current += 1;
       }

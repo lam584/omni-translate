@@ -83,6 +83,7 @@
     "idle": "خامل"
   },
   "settings": {
+    "languageLoadFailed": "تعذر تحميل موارد اللغة، لذا تمت استعادة اللغة السابقة. حاول مرة أخرى. التفاصيل: {{error}}",
     "title": "الإعدادات",
     "subtitle": "اضبط لغة الواجهة والتفضيلات العامة، وتُطبَّق التغييرات فورًا دون إعادة تشغيل.",
     "sectionLanguage": "لغة الواجهة",
@@ -185,6 +186,7 @@
     "driverManagementHint": "إدارة برنامج تشغيل مكبر الصوت الافتراضي في Omni Translate وخدمة Bridge Service."
   },
   "welcome": {
+    "languageLoadFailed": "تعذر تحميل موارد اللغة، لذا تمت استعادة الاختيار السابق. حاول مرة أخرى. التفاصيل: {{error}}",
     "title": "مرحبًا بك في Omni Translate",
     "subtitle": "اختر لغة الواجهة المفضلة لديك، ويمكنك تغييرها لاحقًا من الإعدادات.",
     "confirm": "استخدم هذه اللغة",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "تعذر تهيئة نافذة الترجمة",
+    "bootstrapFailedHint": "النافذة في وضع آمن محدود. أعد المحاولة أو صدّر التشخيصات من النافذة الرئيسية.",
     "contextMenuTitle": "عناصر التحكم في الطبقة العلوية",
     "previewTitleEnglish": "الترجمة النصية جاهزة",
     "previewTitle": "وضع المعاينة",
@@ -615,6 +619,7 @@
       "testOverlay": "اختبار طبقة الترجمة النصية",
       "exporting": "جارٍ التصدير...",
       "exportBundle": "تصدير حزمة التشخيص",
+      "openExportDirectory": "فتح المجلد المحتوي",
       "refreshing": "جارٍ التحديث...",
       "refreshRuntime": "تحديث بيئة التشغيل",
       "selectAll": "تحديد الكل"
@@ -989,6 +994,7 @@
     "expandSection": "توسيع القسم"
   },
   "session": {
+    "speechFailureRecovery": "تظل الترجمة النصية متاحة، لكن الصوت غير متاح. تحقق من توجيه الصوت ثم أعد تشغيله.",
     "watchMode": "وضع المشاهدة",
     "conversationMode": "وضع المحادثة",
     "cueStartedAt": "البدء {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "إعادة تشغيل الجلسة",
     "restartSessionHint": " أعد تشغيل الجلسة وحاول مرة أخرى.",
     "errorCode": {
+      "modelReferenceInvalid": "نموذج الترجمة الثانوية مفقود أو غير مرتبط بموفر مفعّل. اختر نموذجًا آخر من إعدادات الموفر.",
+      "audioCaptureFailed": "توقفت عملية التقاط الصوت. تحقق من جهاز الصوت ثم أعد المحاولة.",
       "credentialInvalid": "مفتاح API غير صالح أو منتهي الصلاحية. حدّث بيانات اعتماد المزوّد.",
       "quotaExceeded": "تم بلوغ حصة المزوّد أو حد المعدل. تحقق من استخدامك وحاول مرة أخرى.",
       "voiceUnsupported": "الصوت المحدد غير مدعوم. اختر صوتًا آخر في إعدادات المزوّد.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "مسار الصوت الافتراضي غير متاح. تحولت الجلسة مؤقتاً إلى تشغيل السماعة الفعلية مع AEC. لا يزال هذا الوضع يحمل خطر loopback.",
     "virtualDriverFallbackConfirm": "برنامج تشغيل الصوت الافتراضي أو Bridge غير متاح بعد. انقر OK للدخول إلى وضع الترجمات فقط؛ انقر Cancel للرجوع مؤقتاً إلى تشغيل السماعة الفعلية مع AEC. لا يزال رجوع AEC يحمل خطر loopback.",
     "sceneLaunchFailed": "فشل بدء {{scene}} ({{stage}}): {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "أبلغ المزوّد عن خطأ داخلي. أعد تشغيل الجلسة لاحقًا. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "أبلغ المزوّد عن خطأ داخلي. أعد تشغيل الجلسة لاحقًا. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "أبلغ المزوّد عن خطأ داخلي. أعد تشغيل الجلسة لاحقًا. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "على سبيل المثال: مصطلحات الألعاب، ترجمات الأفلام، المفردات المهنية..."
     },
     "conflictResolution": {
+      "overwriteHint": "استبدال كل العناصر المتعارضة بهذه الترجمة.",
+      "skipHint": "لن يُحفظ هذا العنصر وستبقى العناصر الحالية دون تغيير.",
+      "keep-allHint": "حفظ عنصر آخر بالمصطلح نفسه مع الاحتفاظ بكل الترجمات الحالية.",
       "overwrite": "استبدال",
       "skip": "تخطي",
       "keep-all": "الاحتفاظ بالكل"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "تعذر الوصول إلى خدمة الصوت. تحقق من الشبكة وأعد تشغيل الجلسة. توقفت عملية التقاط الصوت. تحقق من جهاز الصوت ثم أعد المحاولة.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "تعذر الوصول إلى خدمة الصوت. تحقق من الشبكة وأعد تشغيل الجلسة. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "أبلغ المزوّد عن خطأ داخلي. أعد تشغيل الجلسة لاحقًا. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "تعذر الوصول إلى خدمة الصوت. تحقق من الشبكة وأعد تشغيل الجلسة. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

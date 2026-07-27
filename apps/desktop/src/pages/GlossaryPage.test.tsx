@@ -332,6 +332,7 @@ describe('GlossaryPage compact labels', () => {
     await click(buttonByText(container, '跳过'));
     await click(buttonByText(container, '保存'));
     expect(container.querySelector('.glossary-modal')).toBeNull();
+    expect(container.querySelector('.glossary-toast-warning')?.textContent).toContain('未保存');
 
     await click(buttonByText(container, '添加术语'));
     dialogInputs = container.querySelectorAll<HTMLInputElement>('.glossary-dialog-grid .text-input');
@@ -439,6 +440,8 @@ describe('GlossaryPage compact labels', () => {
     expect(container.querySelector('.glossary-modal')).toBeTruthy();
     await click(container.querySelector<HTMLButtonElement>('.glossary-modal .routing-primary-action'));
     expect(container.querySelector('.glossary-modal')).toBeTruthy();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('源术语与目标术语均为必填');
+    expect(container.querySelectorAll('[aria-invalid="true"]')).toHaveLength(2);
     await click(container.querySelector<HTMLButtonElement>('.glossary-modal .routing-action-row .icon-button:not(.routing-primary-action)'));
     expect(container.querySelector('.glossary-modal')).toBeNull();
 

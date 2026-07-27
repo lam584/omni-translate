@@ -34,6 +34,7 @@ export type RuntimeBridgeStatus = RuntimeSnapshot['bridgeStatus'];
 export type BridgeProcessStatus = BridgeRuntimeSnapshot['processStatus'];
 export type RuntimeWindowKind = RuntimeWindowSnapshot['kind'];
 export type RuntimeNotificationLevel = RuntimeNotification['level'];
+export type ExportArtifactReceipt = { outputPath: string; fileCount: number };
 
 export const RUNTIME_SNAPSHOT_EVENT = 'runtime://snapshot';
 export const RUNTIME_NOTIFICATION_EVENT = 'runtime://notification';

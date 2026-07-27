@@ -336,6 +336,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
       await Promise.resolve();
     });
     expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('native offline');
+    expect(useAppStore.getState().runtimeNotifications[0]?.source).toBe('session');
+    expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
   });
 
   it('reports Error instances from native unlock persistence', async () => {

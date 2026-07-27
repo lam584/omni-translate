@@ -1,3 +1,4 @@
+/* Foundation: tokens, resets, and reusable layout primitives. */
 @import './global/tokens.css';
 @import './global/base.css';
 @import './global/backgrounds.css';
@@ -11,6 +12,8 @@
 @import './global/layout-components.css';
 @import './global/console-cards.css';
 @import './global/typography.css';
+
+/* Feature styles and their first compatibility layer. Keep this order stable. */
 @import './pages/diagnostics.css';
 @import './global/layout-overrides.css';
 @import './global/forms.css';
@@ -22,6 +25,8 @@
 @import './pages/driver-management.css';
 @import './pages/settings-controls.css';
 @import './global/responsive-overrides.css';
+
+/* Historical cascade layers. New rules should live with their owning feature. */
 @import './pages/subtitle-overlay-isolation.css';
 @import './global/app-theme-overrides.css';
 @import './global/forms-overrides.css';
@@ -37,6 +42,8 @@
 @import './pages/routing-overrides.css';
 @import './pages/glossary-overrides.css';
 @import './global/responsive-overrides-5.css';
+
+/* Late shared controls and narrowly scoped component styles. */
 @import './global/controls-modern.css';
 @import './pages/settings-overlay-preview.css';
 @import './pages/driver-management-overrides.css';

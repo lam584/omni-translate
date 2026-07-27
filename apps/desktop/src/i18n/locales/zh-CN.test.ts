@@ -84,6 +84,32 @@ describe('zh-CN locale', () => {
     expect(zhCN.overlay.hideAction).toBe('隐藏字幕悬浮窗');
   });
 
+  it('localizes user-facing runtime failures and glossary conflict consequences', () => {
+    const nonEnglishLocales = Object.entries(locales).filter(([code]) => code !== 'en');
+    const read = (value: typeof en, path: string) => path.split('.').reduce<unknown>(
+      (current, key) => (current as Record<string, unknown>)[key],
+      value,
+    );
+    const requiredPaths = [
+      'runtime.desktop.rustCoreFailed',
+      'runtime.bridge.timeoutError',
+      'runtime.provider.timeoutError',
+      'sceneReadiness.runtimeErrorBlocker',
+      'session.stopStepFailed',
+      'session.watchFallbackFailed',
+      'session.attribution.commandRejectedReason',
+      'glossary.conflictResolution.overwriteHint',
+      'glossary.conflictResolution.skipHint',
+      'glossary.conflictResolution.keep-allHint',
+    ];
+
+    for (const [code, locale] of nonEnglishLocales) {
+      for (const path of requiredPaths) {
+        expect(read(locale as typeof en, path), `${code}: ${path}`).not.toBe(read(en, path));
+      }
+    }
+  });
+
   it('does not lock in mojibake or replacement characters', () => {
     const serialized = JSON.stringify(locales);
     expect(serialized).not.toContain('\uFFFD');

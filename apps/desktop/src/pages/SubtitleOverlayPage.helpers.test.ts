@@ -224,6 +224,77 @@ describe('subtitle overlay page helpers', () => {
     ]);
   });
 
+  it('turns committed Omni language blocks into adjacent bilingual groups', () => {
+    const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    const sourceLines = [
+      'The future: flying cars that',
+      'can take you anywhere and so much more.',
+      'All starting with this one dollar light, which you can find',
+    ];
+    const translatedLines = [
+      '而且还有很多其他的东西。',
+      '一切都从这个一美元的灯开始，你可以买到……',
+    ];
+    cue.cueId = 'omni-cue-1785124891551';
+    cue.committed = true;
+    cue.sourceText = sourceLines.join('\n');
+    cue.displaySourceText = cue.sourceText;
+    cue.translatedText = translatedLines.join('\n');
+    cue.displaySegments = [
+      ...sourceLines.map((sourceText) => ({ sourceText, translatedText: '', pending: false })),
+      ...translatedLines.map((translatedText) => ({ sourceText: '', translatedText, pending: false })),
+    ];
+
+    const segments = subtitleOverlayPageHelpers.getCueDisplaySegments(cue);
+
+    expect(segments).toHaveLength(2);
+    expect(segments.every((segment) => segment.sourceText && segment.translatedText)).toBe(true);
+    expect(segments).toEqual([
+      expect.objectContaining({
+        sourceText: 'The future: flying cars that can take you anywhere and so much more.',
+        translatedText: '而且还有很多其他的东西。',
+        pending: false,
+      }),
+      expect.objectContaining({
+        sourceText: 'All starting with this one dollar light, which you can find',
+        translatedText: '一切都从这个一美元的灯开始，你可以买到……',
+        pending: false,
+      }),
+    ]);
+    expect(segments.map((segment) => segment.sourceText).join('').replace(/\s+/gu, ''))
+      .toBe(sourceLines.join('').replace(/\s+/gu, ''));
+    expect(segments.map((segment) => segment.translatedText).join('').replace(/\s+/gu, ''))
+      .toBe(translatedLines.join('').replace(/\s+/gu, ''));
+  });
+
+  it('keeps correctly paired and live segment layouts unchanged', () => {
+    const cue = structuredClone(audioRuntimeSnapshotMock.subtitleOverlay.recentCues[0]);
+    cue.sourceText = 'First. Second.';
+    cue.displaySourceText = cue.sourceText;
+    cue.translatedText = '第一句。第二句。';
+    cue.displaySegments = [
+      { sourceText: 'First.', translatedText: '第一句。', pending: false },
+      { sourceText: 'Second.', translatedText: '第二句。', pending: false },
+    ];
+    expect(subtitleOverlayPageHelpers.getCueDisplaySegments(cue)).toEqual([
+      expect.objectContaining({ sourceText: 'First.', translatedText: '第一句。' }),
+      expect.objectContaining({ sourceText: 'Second.', translatedText: '第二句。' }),
+    ]);
+
+    cue.committed = false;
+    cue.sourceText = 'First.';
+    cue.displaySourceText = cue.sourceText;
+    cue.translatedText = '第一句。';
+    cue.displaySegments = [
+      { sourceText: 'First.', translatedText: '', pending: true },
+      { sourceText: '', translatedText: '第一句。', pending: true },
+    ];
+    expect(subtitleOverlayPageHelpers.getCueDisplaySegments(cue)).toEqual([
+      expect.objectContaining({ sourceText: 'First.', translatedText: '', pending: true }),
+      expect.objectContaining({ sourceText: '', translatedText: '第一句。', pending: false }),
+    ]);
+  });
+
   it('calculates every resize direction and enforces minimum dimensions', () => {
     const base = {
       direction: 'SouthEast' as const,

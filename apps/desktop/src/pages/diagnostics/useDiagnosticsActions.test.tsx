@@ -8,11 +8,12 @@ import { useDiagnosticsWorkbenchController, type DiagnosticsRepairTask } from '.
 
 const runtime = vi.hoisted(() => ({
   exportBundle: vi.fn(), getEvents: vi.fn(), isTauri: vi.fn(), refreshBridge: vi.fn(),
-  selfCheck: vi.fn(), overlaySelfCheck: vi.fn(),
+  selfCheck: vi.fn(), overlaySelfCheck: vi.fn(), openExportDirectory: vi.fn(),
 }));
 
 vi.mock('../../runtime/diagnostics-runtime', () => ({
   exportDiagnosticsBundleRuntime: runtime.exportBundle,
+  openExportDirectoryRuntime: runtime.openExportDirectory,
   runDiagnosticsSelfCheckRuntime: runtime.selfCheck,
   runSubtitleOverlaySelfCheckRuntime: runtime.overlaySelfCheck,
 }));
@@ -45,7 +46,10 @@ describe('useDiagnosticsWorkbenchController', () => {
     runtime.refreshBridge.mockResolvedValue(snapshot);
     runtime.selfCheck.mockResolvedValue(snapshot);
     runtime.overlaySelfCheck.mockResolvedValue(snapshot);
-    runtime.exportBundle.mockResolvedValue({ snapshot });
+    runtime.exportBundle.mockResolvedValue({
+      artifact: { scope: 'full', outputPath: 'C:\\diagnostics.zip', generatedAt: '2026-07-27T00:00:00.000Z', fileCount: 3 },
+      snapshot,
+    });
     runtime.getEvents.mockResolvedValue({ events: [], truncated: false });
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -74,6 +78,8 @@ describe('useDiagnosticsWorkbenchController', () => {
     await act(async () => controller.runAutomaticRepair());
     const notification = useAppStore.getState().runtimeNotifications.find((item) => item.id.startsWith('auto-repair-bad-'));
     expect(notification?.message).toContain('offline');
+    expect(controller.actionFeedback?.tone).toBe('error');
+    expect(controller.actionFeedback?.detail).toContain('offline');
   });
 
   it('refreshes a native bridge after successful repairs', async () => {
@@ -85,6 +91,39 @@ describe('useDiagnosticsWorkbenchController', () => {
     await act(async () => controller.runAutomaticRepair());
     expect(run).toHaveBeenCalledOnce();
     expect(runtime.refreshBridge).toHaveBeenCalledOnce();
+    expect(controller.actionFeedback?.tone).toBe('ready');
+  });
+
+  it('keeps repair results visible when the post-repair refresh fails', async () => {
+    repairs = [{ id: 'ok', label: 'Repair', run: vi.fn().mockResolvedValue(undefined) }];
+    selected = ['ok'];
+    runtime.isTauri.mockReturnValue(true);
+    runtime.refreshBridge.mockRejectedValue(new Error('bridge offline'));
+    await mount();
+    await act(async () => controller.runAutomaticRepair());
+    expect(controller.actionFeedback?.tone).toBe('error');
+    expect(controller.actionFeedback?.detail).toContain('bridge offline');
+  });
+
+  it('turns rejected workbench actions into visible feedback', async () => {
+    runtime.selfCheck.mockRejectedValue(new Error('ipc timeout'));
+    await mount();
+    await act(async () => controller.runSelfCheck());
+    expect(controller.actionFeedback?.tone).toBe('error');
+    expect(controller.actionFeedback?.detail).toBe('ipc timeout');
+    expect(controller.busyAction).toBeNull();
+  });
+
+  it('reports diagnostics export success and failure', async () => {
+    await mount();
+    await act(async () => controller.runExportAction('full'));
+    expect(controller.actionFeedback?.tone).toBe('ready');
+    expect(controller.actionFeedback?.detail).toContain('C:\\diagnostics.zip');
+
+    runtime.exportBundle.mockRejectedValue(new Error('disk full'));
+    await act(async () => controller.runExportAction('full'));
+    expect(controller.actionFeedback?.tone).toBe('error');
+    expect(controller.actionFeedback?.detail).toBe('disk full');
   });
 
   it('runs every workbench action and live-event transition', async () => {
@@ -99,5 +138,15 @@ describe('useDiagnosticsWorkbenchController', () => {
     await act(async () => controller.refreshLiveEvents());
     await act(async () => controller.closeLiveEventsModal());
     expect(controller.liveEventsModalOpen).toBe(false);
+  });
+
+  it('distinguishes a live-event read failure from an empty event list', async () => {
+    runtime.getEvents.mockRejectedValue(new Error('event store unavailable'));
+    await mount();
+    await act(async () => controller.openLiveEventsModal());
+    expect(controller.liveEventsModalOpen).toBe(true);
+    expect(controller.liveEvents).toBeNull();
+    expect(controller.liveEventsError).toBe('event store unavailable');
+    expect(controller.liveEventsLoading).toBe(false);
   });
 });

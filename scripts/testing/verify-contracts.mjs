@@ -420,6 +420,31 @@ export function findTaggedEnumRenameGaps(source, relativePath) {
 // shapes. This script keeps only the version/event-name pins and governance
 // checks above and below.
 
+// Stable user-facing error codes have a small language-neutral manifest.
+// The TypeScript union and presentation map must cover it exactly, while each
+// code must be emitted by either the native or renderer implementation.
+{
+  const expectedCodes = readJson(path.join('contracts', 'error-codes.json'));
+  const schemaText = readText(path.join('apps', 'desktop', 'src', 'schema', 'audio-runtime.ts'));
+  const presentationText = readText(path.join('apps', 'desktop', 'src', 'utils', 'session-error-presentation.ts'));
+  const implementationText = [
+    ...collectFiles(path.join(rootDir, 'apps', 'desktop', 'src'), (filePath) => /\.(?:ts|tsx)$/.test(filePath)
+      && !filePath.endsWith(path.join('schema', 'audio-runtime.ts'))
+      && !filePath.endsWith(path.join('utils', 'session-error-presentation.ts'))),
+    ...collectFiles(path.join(rootDir, 'apps', 'desktop', 'src-tauri', 'src'), (filePath) => filePath.endsWith('.rs')),
+  ].map((filePath) => fs.readFileSync(filePath, 'utf8')).join('\n');
+  const unionBlock = schemaText.match(/export type SessionErrorCode\s*=([\s\S]*?);/)?.[1] ?? '';
+  const actualCodes = [...unionBlock.matchAll(/'((?:session|audio)\.[^']+)'/g)].map((match) => match[1]).sort();
+  const expectedSorted = [...expectedCodes].sort();
+  if (JSON.stringify(actualCodes) !== JSON.stringify(expectedSorted)) {
+    fail(`SessionErrorCode differs from contracts/error-codes.json: expected=${expectedSorted.join(',')} actual=${actualCodes.join(',')}`);
+  }
+  for (const code of expectedCodes) {
+    if (!presentationText.includes(`'${code}'`)) fail(`Error presentation missing code: ${code}`);
+    if (!implementationText.includes(code)) fail(`No implementation emits stable error code: ${code}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Config-path guard (阶段6 方案B): every JSON-pointer literal the Rust side
 // touches must resolve in the default config document, be an allowed

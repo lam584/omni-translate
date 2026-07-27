@@ -3,6 +3,7 @@ import i18n from '../../i18n/config';
 import { refreshBridgeRuntime } from '../../runtime/bridge-runtime';
 import {
   exportDiagnosticsBundleRuntime,
+  openExportDirectoryRuntime,
   runDiagnosticsSelfCheckRuntime,
   runSubtitleOverlaySelfCheckRuntime,
 } from '../../runtime/diagnostics-runtime';
@@ -14,20 +15,40 @@ import { useAppStore } from '../../stores/app-store';
 
 export type DiagnosticsRepairTask = { id: string; label: string; run: () => Promise<void> };
 
+export type DiagnosticsActionFeedback = {
+  tone: 'ready' | 'warning' | 'error';
+  title: string;
+  detail?: string;
+  outputPath?: string;
+};
+
+function errorDetail(error: unknown) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepairTask[], selectedRepairIds: string[]) {
   const { hasNativeShell } = useDesktopCapabilities();
   const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
   const updateDiagnosticsDraft = useAppStore((state) => state.updateDiagnosticsDraft);
   const pushRuntimeNotification = useAppStore((state) => state.pushRuntimeNotification);
   const [busyAction, setBusyAction] = useState<string | null>(null);
+  const [actionFeedback, setActionFeedback] = useState<DiagnosticsActionFeedback | null>(null);
   const [liveEventsModalOpen, setLiveEventsModalOpen] = useState(false);
   const [liveEvents, setLiveEvents] = useState<LiveSessionEvents | null>(null);
+  const [liveEventsError, setLiveEventsError] = useState<string | null>(null);
   const [liveEventsLoading, setLiveEventsLoading] = useState(false);
 
-  const runBusyAction = async (actionId: string, runner: () => Promise<RuntimeSnapshot>) => {
+  const runBusyAction = async (actionId: string, actionLabel: string, runner: () => Promise<RuntimeSnapshot>) => {
     setBusyAction(actionId);
+    setActionFeedback(null);
     try {
       setRuntimeSnapshot(await runner());
+    } catch (error) {
+      setActionFeedback({
+        tone: 'error',
+        title: `${actionLabel} · ${i18n.t('diagnostics.status.failed')}`,
+        detail: errorDetail(error),
+      });
     } finally {
       setBusyAction(null);
     }
@@ -37,28 +58,44 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
     const selected = repairOptions.filter((option) => selectedRepairIds.includes(option.id));
     if (selected.length === 0) return;
     setBusyAction('auto-repair');
+    setActionFeedback(null);
     try {
       const failures: string[] = [];
       for (const option of selected) {
         try {
           await option.run();
         } catch (error) {
-          failures.push(option.label);
+          const message = i18n.t('diagnostics.notifications.autoRepairFailed', { label: option.label, error: errorDetail(error) });
+          failures.push(message);
           pushRuntimeNotification({
             id: `auto-repair-${option.id}-${Date.now()}`,
             level: 'error', source: 'diagnostics',
-            message: i18n.t('diagnostics.notifications.autoRepairFailed', { label: option.label, error: error instanceof Error ? error.message : String(error) }),
+            message,
             emittedAt: new Date().toISOString(),
           });
         }
       }
-      if (hasNativeShell) setRuntimeSnapshot(await refreshBridgeRuntime());
+      if (hasNativeShell) {
+        try {
+          setRuntimeSnapshot(await refreshBridgeRuntime());
+        } catch (error) {
+          failures.push(`${i18n.t('diagnostics.actions.refreshRuntime')} · ${errorDetail(error)}`);
+        }
+      }
       if (failures.length === 0) {
+        const message = i18n.t('diagnostics.notifications.autoRepairSuccess', { count: selected.length });
+        setActionFeedback({ tone: 'ready', title: message });
         pushRuntimeNotification({
           id: `auto-repair-success-${Date.now()}`,
           level: 'info', source: 'diagnostics',
-          message: i18n.t('diagnostics.notifications.autoRepairSuccess', { count: selected.length }),
+          message,
           emittedAt: new Date().toISOString(),
+        });
+      } else {
+        setActionFeedback({
+          tone: 'error',
+          title: `${i18n.t('diagnostics.repairs.autoRepair')} · ${i18n.t('diagnostics.status.failed')}`,
+          detail: failures.join('\n'),
         });
       }
     } finally {
@@ -68,10 +105,23 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
 
   const runExportAction = async (scope: DiagnosticsExportScope) => {
     setBusyAction('export');
+    setActionFeedback(null);
     try {
       const result = await exportDiagnosticsBundleRuntime(scope);
       setRuntimeSnapshot(result.snapshot);
       updateDiagnosticsDraft({ lastExportScope: scope });
+      setActionFeedback({
+        tone: 'ready',
+        title: `${i18n.t('diagnostics.actions.exportBundle')} · ${i18n.t('diagnostics.status.completed')}`,
+        detail: `${result.artifact.outputPath} · ${i18n.t('diagnostics.labels.itemCount', { count: result.artifact.fileCount })}`,
+        outputPath: result.artifact.outputPath,
+      });
+    } catch (error) {
+      setActionFeedback({
+        tone: 'error',
+        title: `${i18n.t('diagnostics.actions.exportBundle')} · ${i18n.t('diagnostics.status.failed')}`,
+        detail: errorDetail(error),
+      });
     } finally {
       setBusyAction(null);
     }
@@ -79,8 +129,11 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
 
   const refreshLiveEvents = async () => {
     setLiveEventsLoading(true);
+    setLiveEventsError(null);
     try {
       setLiveEvents(await getLiveSessionEventsRuntime());
+    } catch (error) {
+      setLiveEventsError(errorDetail(error));
     } finally {
       setLiveEventsLoading(false);
     }
@@ -92,12 +145,14 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
   };
 
   return {
-    busyAction, liveEvents, liveEventsLoading, liveEventsModalOpen,
+    actionFeedback, busyAction, liveEvents, liveEventsError, liveEventsLoading, liveEventsModalOpen,
+    clearActionFeedback: () => setActionFeedback(null),
     closeLiveEventsModal: () => setLiveEventsModalOpen(false),
     openLiveEventsModal, refreshLiveEvents, runAutomaticRepair, runBusyAction, runExportAction,
-    runSelfCheck: () => runBusyAction('self-check', runDiagnosticsSelfCheckRuntime),
-    runOverlaySelfCheck: () => runBusyAction('overlay-self-check', runSubtitleOverlaySelfCheckRuntime),
-    runBridgeRefresh: () => runBusyAction('bridge-refresh', refreshBridgeRuntime),
+    openExportDirectory: openExportDirectoryRuntime,
+    runSelfCheck: () => runBusyAction('self-check', i18n.t('diagnostics.actions.rerunDiagnostics'), runDiagnosticsSelfCheckRuntime),
+    runOverlaySelfCheck: () => runBusyAction('overlay-self-check', i18n.t('diagnostics.actions.testOverlay'), runSubtitleOverlaySelfCheckRuntime),
+    runBridgeRefresh: () => runBusyAction('bridge-refresh', i18n.t('diagnostics.actions.refreshRuntime'), refreshBridgeRuntime),
   };
 }
 

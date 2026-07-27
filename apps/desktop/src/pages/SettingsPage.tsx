@@ -19,6 +19,7 @@ function SettingsPage() {
   const { t, i18n } = useTranslation();
   const [resetMessage, setResetMessage] = useState<string | null>(null);
   const [providerResetMessage, setProviderResetMessage] = useState<string | null>(null);
+  const [languageError, setLanguageError] = useState<string | null>(null);
 
   const configDraft = useAppStore((state) => state.configDraft);
   const updateDiagnosticsDraft = useAppStore((state) => state.updateDiagnosticsDraft);
@@ -39,7 +40,14 @@ function SettingsPage() {
 
   const handleLanguageChange = async (event: React.ChangeEvent<HTMLSelectElement>) => {
     const next = event.target.value;
-    await setUiLanguage(next);
+    const previous = current;
+    setLanguageError(null);
+    try {
+      await setUiLanguage(next);
+    } catch (error) {
+      try { await setUiLanguage(previous); } catch { /* The previous bundle remains active. */ }
+      setLanguageError(t('settings.languageLoadFailed', { error: error instanceof Error ? error.message : String(error) }));
+    }
   };
 
   const handleTranslationPreferenceChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
@@ -118,6 +126,7 @@ function SettingsPage() {
           <p className="settings-field-meta">
             {t('settings.currentLanguage', { name: `${currentMeta.nativeName} (${currentMeta.englishName})` })}
           </p>
+          {languageError ? <p className="settings-feedback settings-feedback-error" role="alert">{languageError}</p> : null}
         </div>
       </div>
 

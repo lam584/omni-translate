@@ -3,7 +3,7 @@ import type { ProviderDraft, ProviderScenario } from '../../schema/config';
 import type { ProviderProbeProfileRuntime, ProviderSmokeResult } from '../../schema/provider-runtime';
 import type { ProviderTemplate } from '../../schema/provider-template';
 import {
-  readCustomProviderTemplates,
+  readCustomProviderTemplatesResult,
   type CustomProviderTemplateDraft,
 } from '../../utils/custom-provider-templates';
 import { readProviderTemplateCatalogPreferences, type ProviderTemplateCatalogPreference } from '../../utils/provider-template-catalog';
@@ -21,7 +21,11 @@ const {
 } = providersPageHelpers;
 
 export function useProviderWorkspaceController(activeProvider: ProviderDraft) {
-  const [customTemplates, setCustomTemplates] = useState<ProviderTemplate[]>(() => readCustomProviderTemplates());
+  const [initialCustomTemplates] = useState(() => readCustomProviderTemplatesResult());
+  const [customTemplates, setCustomTemplates] = useState<ProviderTemplate[]>(initialCustomTemplates.templates);
+  const customTemplateReadError = initialCustomTemplates.error
+    ? `自定义提供商数据无法读取：${initialCustomTemplates.error}。原始数据仍保留在本地存储中。`
+    : null;
   const [templateCatalogPreferences, setTemplateCatalogPreferences] = useState<ProviderTemplateCatalogPreference[]>(() => readProviderTemplateCatalogPreferences());
   const [secretDraft, setSecretDraft] = useState('');
   const [secretStored, setSecretStored] = useState(false);
@@ -53,7 +57,7 @@ export function useProviderWorkspaceController(activeProvider: ProviderDraft) {
   const [modelCatalog, setModelCatalog] = useState<ModelCatalogState>(() => createEmptyModelCatalog(buildModelCatalogSignature(activeProvider)));
 
   return {
-    customTemplates, setCustomTemplates,
+    customTemplates, setCustomTemplates, customTemplateReadError,
     templateCatalogPreferences, setTemplateCatalogPreferences,
     secretDraft, setSecretDraft, secretStored, setSecretStored,
     busyAction, setBusyAction, probeResult, setProbeResult, smokeResult, setSmokeResult,

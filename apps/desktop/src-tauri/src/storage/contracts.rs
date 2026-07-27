@@ -36,6 +36,8 @@ impl StorageRuntimeSnapshot {
 #[serde(rename_all = "camelCase")]
 pub struct ConfigExportArtifact {
     pub file_path: String,
+    pub output_path: String,
+    pub file_count: usize,
     pub exported_at: String,
     pub config_contract_version: i64,
     pub snapshot_count: usize,

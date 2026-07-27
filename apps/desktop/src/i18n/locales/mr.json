@@ -83,6 +83,7 @@
     "idle": "निष्क्रिय"
   },
   "settings": {
+    "languageLoadFailed": "भाषा संसाधने लोड झाली नाहीत, त्यामुळे मागील भाषा पुनर्संचयित केली. पुन्हा प्रयत्न करा. तपशील: {{error}}",
     "title": "सेटिंग्ज",
     "subtitle": "इंटरफेस भाषा आणि सामान्य प्राधान्ये समायोजित करा. पुन्हा सुरू न करता बदल लगेच लागू होतात.",
     "sectionLanguage": "इंटरफेस भाषा",
@@ -185,6 +186,7 @@
     "driverManagementHint": "Omni Translate आभासी स्पीकर ड्रायव्हर आणि Bridge Service व्यवस्थापित करा."
   },
   "welcome": {
+    "languageLoadFailed": "भाषा संसाधने लोड झाली नाहीत, त्यामुळे मागील निवड पुनर्संचयित केली. तपशील: {{error}}",
     "title": "Omni Translate मध्ये आपले स्वागत आहे",
     "subtitle": "आपल्याला आवडणारी इंटरफेस भाषा निवडा. आपण ती कधीही सेटिंग्जमध्ये बदलू शकता.",
     "confirm": "ही भाषा वापरा",
@@ -462,6 +464,8 @@
     "directionSpeak": "Speak"
   },
   "overlay": {
+    "bootstrapFailed": "उपशीर्षक ओव्हरले सुरू झाले नाही",
+    "bootstrapFailedHint": "ओव्हरले सुरक्षित मर्यादित मोडमध्ये आहे. पुन्हा प्रयत्न करा किंवा मुख्य विंडोमधून निदान निर्यात करा.",
     "contextMenuTitle": "ओव्हरले नियंत्रणे",
     "previewTitleEnglish": "सबटायटल तयार",
     "previewTitle": "ब्राउझर पूर्वावलोकन मोड",
@@ -615,6 +619,7 @@
       "testOverlay": "सबटायटल ओव्हरले चाचणी करा",
       "exporting": "एक्सपोर्ट करत आहे...",
       "exportBundle": "निदान बंडल एक्सपोर्ट करा",
+      "openExportDirectory": "समाविष्ट फोल्डर उघडा",
       "refreshing": "रीफ्रेश करत आहे...",
       "refreshRuntime": "रनटाइम रीफ्रेश करा",
       "selectAll": "सर्व निवडा"
@@ -989,6 +994,7 @@
     "expandSection": "विभाग विस्तृत करा"
   },
   "session": {
+    "speechFailureRecovery": "उपशीर्षके उपलब्ध आहेत, पण आवाज उपलब्ध नाही. ऑडिओ रूटिंग तपासून पुन्हा सुरू करा.",
     "watchMode": "पाहण्याचा मोड",
     "conversationMode": "संभाषण मोड",
     "cueStartedAt": "Start शुरू {{started}}",
@@ -1019,6 +1025,8 @@
     "restartSessionButton": "सत्र पुन्हा सुरू करा",
     "restartSessionHint": " सत्र पुन्हा सुरू करून पुन्हा प्रयत्न करा.",
     "errorCode": {
+      "modelReferenceInvalid": "दुय्यम भाषांतर मॉडेल सापडले नाही किंवा सक्षम प्रदात्याशी जोडलेले नाही. प्रदाता सेटिंगमध्ये दुसरे मॉडेल निवडा.",
+      "audioCaptureFailed": "ऑडिओ कॅप्चर प्रक्रिया थांबली. ऑडिओ उपकरण तपासून पुन्हा प्रयत्न करा.",
       "credentialInvalid": "API की अवैध आहे किंवा कालबाह्य झाली आहे. प्रदात्याची क्रेडेन्शियल्स अपडेट करा.",
       "quotaExceeded": "प्रदात्याचा कोटा किंवा दर मर्यादा गाठली आहे. तुमचा वापर तपासा आणि पुन्हा प्रयत्न करा.",
       "voiceUnsupported": "निवडलेला आवाज समर्थित नाही. प्रदात्याच्या सेटिंग्जमध्ये दुसरा आवाज निवडा.",
@@ -1062,12 +1070,12 @@
     "fallbackAec": "The virtual audio route उपलब्ध नहीं है. The session has अस्थायी रूप से switched to physical speaker playback with AEC. इस mode में अभी loopback risk है.",
     "virtualDriverFallbackConfirm": "The virtual audio driver या Bridge अभी उपलब्ध नहीं है. subtitle-only mode में जाने के लिए OK क्लिक करें; temporary fallback के लिए Cancel क्लिक करें to physical speaker playback with AEC. AEC fallback में अभी loopback risk है.",
     "sceneLaunchFailed": "सुरू करण्यात अयशस्वी {{scene}} ({{stage}}): {{error}}",
-    "stopStepFailed": "Failed to stop {{label}}: {{detail}}",
+    "stopStepFailed": "प्रदात्याने अंतर्गत त्रुटी नोंदवली. नंतर सत्र पुन्हा सुरू करा. {{label}}: {{detail}}",
     "fallbackSubtitlesOnlyMode": "Degraded to subtitles-only mode (original error: {{error}})",
     "fallbackAecMode": "Degraded to echo cancellation mode (original error: {{error}})",
     "stoppingPreviousRoute": "Stopping the previous route. Please start a new scene later.",
     "preconnectFailedFallback": "Omni preconnect failed, falling back to normal launch path: {{error}}",
-    "watchFallbackFailed": "Watch mode launch failed, {{fallback}} fallback also failed: {{cause}}",
+    "watchFallbackFailed": "प्रदात्याने अंतर्गत त्रुटी नोंदवली. नंतर सत्र पुन्हा सुरू करा. {{fallback}}: {{cause}}",
     "overlayOpenFailed": "Failed to open subtitle overlay: {{error}}",
     "attribution": {
       "stageBridgeReady": "Bridge/driver preparation",
@@ -1084,7 +1092,7 @@
       "boundNo": "no",
       "nativeMarker": "Native diagnostics: {{marker}}",
       "noMarker": "no relevant records",
-      "commandRejectedReason": "{{stage}} command was not accepted ({{context}}{{detail}})",
+      "commandRejectedReason": "प्रदात्याने अंतर्गत त्रुटी नोंदवली. नंतर सत्र पुन्हा सुरू करा. {{stage}} ({{context}}{{detail}})",
       "commandRejectedHint": "Please confirm the desktop shell and audio service are running, then retry. If the issue persists, restart the app before starting watch mode.",
       "captureErrorReason": "{{stage}} error: {{nativeError}} ({{context}})",
       "captureErrorDefault": "Native capture returned an error",
@@ -1202,6 +1210,9 @@
       "libraryNamePlaceholder": "उदाहरणार्थ: गेम संज्ञा, चित्रपट सबटायटल, व्यावसायिक शब्दसंग्रह..."
     },
     "conflictResolution": {
+      "overwriteHint": "या भाषांतराने सर्व विरोधी नोंदी बदला.",
+      "skipHint": "ही नोंद जतन होणार नाही; विद्यमान नोंदी बदलणार नाहीत.",
+      "keep-allHint": "त्याच स्रोत संज्ञेची आणखी एक नोंद जतन करा आणि सर्व भाषांतरे ठेवा.",
       "overwrite": "ओव्हरराइट करा",
       "skip": "वगळा",
       "keep-all": "सर्व ठेवा"
@@ -1221,7 +1232,7 @@
   },
   "sceneReadiness": {
     "browserPreviewBlocker": "Still in browser preview mode; bridge, capture, and subtitle overlay state must be confirmed in the desktop shell",
-    "runtimeErrorBlocker": "Desktop runtime is not connected; cannot confirm bridge, capture, and subtitle overlay state",
+    "runtimeErrorBlocker": "व्हॉइस सेवेशी संपर्क होऊ शकला नाही. नेटवर्क तपासा आणि सत्र पुन्हा सुरू करा. ऑडिओ कॅप्चर प्रक्रिया थांबली. ऑडिओ उपकरण तपासून पुन्हा प्रयत्न करा.",
     "providerNotVerified": "Model verification pending",
     "watchLabel": "Watch mode",
     "watchDescription": "Ready to start when model, system audio, and subtitle overlay are all available.",
@@ -1294,7 +1305,7 @@
   },
   "runtime": {
     "provider": {
-      "timeoutError": "{{action}} timed out, no result within {{seconds}}s. {{guidance}}",
+      "timeoutError": "व्हॉइस सेवेशी संपर्क होऊ शकला नाही. नेटवर्क तपासा आणि सत्र पुन्हा सुरू करा. {{action}} ({{seconds}}s) {{guidance}}",
       "defaultGuidance": "Please try again later.",
       "previewRationale": "Running in browser preview mode, using mock probe results.",
       "traceInvokeStart": "Frontend invoked runtime command.",
@@ -1329,7 +1340,7 @@
       "invokeTimeout": "invoke '{{command}}' timed out ({{timeoutMs}}ms), IPC channel may not be ready or Rust Core is not responding",
       "bridgeAutostartFailed": "Bridge Service auto-start failed: {{error}}",
       "unknownError": "Unknown error",
-      "rustCoreFailed": "Rust Core failed to start bridge: {{message}}",
+      "rustCoreFailed": "प्रदात्याने अंतर्गत त्रुटी नोंदवली. नंतर सत्र पुन्हा सुरू करा. {{message}}",
       "audioDegraded": "Degraded, will auto-refresh devices later",
       "browserPreview": "Browser preview mode",
       "skipped": "Skipped",
@@ -1358,7 +1369,7 @@
       "actionShowOverlay": "Show subtitle overlay"
     },
     "bridge": {
-      "timeoutError": "{{action}} timed out: no Rust runtime result within {{seconds}}s. Check the Desktop Shell terminal and Bridge diagnostics log.",
+      "timeoutError": "व्हॉइस सेवेशी संपर्क होऊ शकला नाही. नेटवर्क तपासा आणि सत्र पुन्हा सुरू करा. {{action}} ({{seconds}}s)",
       "traceInvokeStart": "Frontend invoked Bridge runtime command.",
       "traceInvokeTimeout": "Frontend timed out waiting for Bridge runtime command.",
       "traceInvokeResult": "Frontend received Bridge runtime command result.",

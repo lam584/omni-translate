@@ -226,6 +226,34 @@
   background:#fffbeb
 }
 
+.diagnostics-action-feedback {
+  display:flex;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:12px;
+  margin-top:10px;
+  padding:10px 12px;
+  border:1px solid rgba(47, 191, 159, .42);
+  border-radius:10px;
+  background:#effdf6
+}
+
+.diagnostics-action-feedback-warning {
+  border-color:rgba(217, 119, 6, .32);
+  background:#fffbeb
+}
+
+.diagnostics-action-feedback-error {
+  border-color:rgba(220, 38, 38, .32);
+  background:#fef2f2
+}
+
+.diagnostics-action-feedback p {
+  margin:4px 0 0;
+  white-space:pre-line;
+  overflow-wrap:anywhere
+}
+
 .diagnostics-primary-issue-error {
   border-color:rgba(220, 38, 38, .32);
   background:#fef2f2

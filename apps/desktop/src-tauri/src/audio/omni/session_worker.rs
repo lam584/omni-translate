@@ -195,8 +195,16 @@ pub fn start_omni(
                 // last_error_code and recommended_action so the session page
                 // can surface a translated message and a concrete next step
                 // instead of a silent session death.
+                let normalized_error = if split_error_markers(&error).1.is_some() {
+                    error.clone()
+                } else {
+                    super::session_errors::with_error_markers(
+                        &error,
+                        super::session_errors::SessionErrorCode::ProviderInternal,
+                    )
+                };
                 let (route_message, error_code, recommended_action) =
-                    split_error_markers(&error);
+                    split_error_markers(&normalized_error);
                 audio_state.mark_route_last_error(
                     &worker_direction,
                     route_message.clone(),
@@ -206,10 +214,10 @@ pub fn start_omni(
                 let _ = audio_state.mark_omni_session_failed(
                     &worker_direction,
                     session_generation,
-                    error.clone(),
+                    normalized_error.clone(),
                 );
                 if !readiness_sent_for_worker.swap(true, Ordering::SeqCst) {
-                    let _ = readiness_tx_for_worker.send(Err(error.clone()));
+                    let _ = readiness_tx_for_worker.send(Err(normalized_error.clone()));
                 }
                 let _ = diag_log_detail(
                     &app_handle,
@@ -226,13 +234,13 @@ pub fn start_omni(
                     crate::runtime::contracts::RuntimeNotification::error(
                         &format!("omni-session-failed-{worker_direction}"),
                         "session",
-                        &format!("实时翻译会话中断（{worker_direction}）: {route_message}"),
+                        &normalized_error,
                         ms_marker(unix_ms()),
                     ),
                 );
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);
                 let _ =
-                    audio_state.clear_omni_session(&worker_direction, session_generation, error);
+                    audio_state.clear_omni_session(&worker_direction, session_generation, normalized_error);
             } else {
                 if !readiness_sent_for_worker.swap(true, Ordering::SeqCst) {
                     let _ = readiness_tx_for_worker.send(Err(

@@ -698,6 +698,7 @@ describe('LiveSessionEventDetail', () => {
   });
 
   it('exports diagnostic reports through the browser download adapter', () => {
+    vi.useFakeTimers();
     const createObjectUrl = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:report');
     const revokeObjectUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
@@ -718,10 +719,12 @@ describe('LiveSessionEventDetail', () => {
     DiagnosticsReportExporter.exportBenchmark(report, 'benchmark', 'txt');
     DiagnosticsReportExporter.exportLiveEvents(events, 'events', 'json');
     DiagnosticsReportExporter.exportLiveEvents(events, 'events', 'txt');
+    vi.runAllTimers();
 
     expect(createObjectUrl).toHaveBeenCalledTimes(5);
     expect(click).toHaveBeenCalledTimes(5);
     expect(revokeObjectUrl).toHaveBeenCalledTimes(5);
+    vi.useRealTimers();
   });
 });
 

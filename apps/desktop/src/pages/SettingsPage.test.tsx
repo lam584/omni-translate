@@ -26,6 +26,7 @@ vi.mock('react-i18next', () => ({
         'driverManagement.action.refresh': '重新检测',
         'driverManagement.action.uninstall': '卸载',
         'driverManagement.action.reinstall': '重新安装',
+        'settings.languageLoadFailed': '语言资源加载失败，已恢复原语言',
       })[key] ?? key,
   }),
 }));
@@ -177,6 +178,24 @@ describe('SettingsPage driver management', () => {
       selects[1].dispatchEvent(new Event('change', { bubbles: true }));
     });
     expect(useAppStore.getState().configDraft.subtitles.translationLanguagePreference).toBe('en');
+  });
+
+  it('restores the previous UI language and reports a lazy-load failure', async () => {
+    vi.mocked(setUiLanguage).mockRejectedValueOnce(new Error('chunk unavailable')).mockResolvedValueOnce();
+    await renderSettings();
+    const select = container.querySelector<HTMLSelectElement>('select')!;
+
+    await act(async () => {
+      select.value = 'ja';
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(setUiLanguage).toHaveBeenNthCalledWith(1, 'ja');
+    expect(setUiLanguage).toHaveBeenNthCalledWith(2, 'zh-CN');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('语言资源加载失败');
+    expect(select.value).toBe('zh-CN');
   });
 
   it('falls back to the first language metadata for an unknown persisted language', async () => {

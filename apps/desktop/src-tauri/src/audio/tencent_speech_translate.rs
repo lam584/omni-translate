@@ -380,9 +380,20 @@ pub fn start_tencent_speech_translate(
     // Resolve + parse the combined credential up front so configuration
     // errors surface synchronously to the route layer.
     let secret = resolve_secret(&provider.auth_ref)
-        .map_err(|error| format!("腾讯凭据读取失败: {}", error.message))?
-        .ok_or_else(|| "腾讯凭据缺失：请在 Providers 页面保存 appid|SecretId|SecretKey".to_string())?;
-    let credentials = parse_combined_credential(&secret)?;
+        .map_err(|error| crate::audio::omni::session_errors::with_error_markers(
+            &format!("腾讯凭据读取失败: {}", error.message),
+            crate::audio::omni::session_errors::SessionErrorCode::CredentialInvalid,
+        ))?
+        .ok_or_else(|| crate::audio::omni::session_errors::with_error_markers(
+            "腾讯凭据缺失：请在 Providers 页面保存 appid|SecretId|SecretKey",
+            crate::audio::omni::session_errors::SessionErrorCode::CredentialInvalid,
+        ))?;
+    let credentials = parse_combined_credential(&secret).map_err(|error|
+        crate::audio::omni::session_errors::with_error_markers(
+            &error,
+            crate::audio::omni::session_errors::SessionErrorCode::CredentialInvalid,
+        )
+    )?;
 
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
@@ -406,6 +417,9 @@ pub fn start_tencent_speech_translate(
                 audio_rx,
                 stop_rx,
             ) {
+                let error = crate::audio::omni::session_errors::report_realtime_worker_failure(
+                    &app_handle, "tencent", &error,
+                );
                 let _ = audio_state.set_stt_connected_if_current(stt_epoch, false, 0);
                 diag_log(
                     &app_handle,

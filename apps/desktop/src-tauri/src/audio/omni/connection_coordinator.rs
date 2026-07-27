@@ -203,7 +203,7 @@ impl OmniConnectionCoordinator {
                 ),
                 format!("errorCode={err_code}"),
             );
-            if let Ok(new_socket) = try_reconnect(
+            match try_reconnect(
                 connector,
                 &mut state.reconnect_count,
                 &mut state.pending_audio_buffer,
@@ -217,8 +217,20 @@ impl OmniConnectionCoordinator {
                 buffer_size,
                 &format!("provider rejected voice: {err_msg}"),
             ) {
-                state.socket = new_socket;
-                state.socket_reconnected = true;
+                Ok(new_socket) => {
+                    state.socket = new_socket;
+                    state.socket_reconnected = true;
+                }
+                Err(reconnect_error) => {
+                    let chained = format!(
+                        "Provider rejected voice '{rejected_voice}' (code={err_code}): {err_msg}; reconnect without voice also failed: {reconnect_error}. Choose a supported voice and restart the session"
+                    );
+                    trace_call.error(chained.clone());
+                    return Err(with_error_markers(
+                        &chained,
+                        SessionErrorCode::VoiceUnsupported,
+                    ));
+                }
             }
             return Ok(state);
         }

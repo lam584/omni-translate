@@ -4,7 +4,9 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
+import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
 import RealTimeSessionPage from './RealTimeSessionPage';
 import { useAppStore } from '../stores/app-store';
 
@@ -16,6 +18,10 @@ type ControllerOptions = {
 let capturedOptions: ControllerOptions | null = null;
 const launchSceneMock = vi.hoisted(() => vi.fn());
 
+// The scene controller is this suite's SUBJECT BOUNDARY: the tests drive its
+// `confirmWatchFallback` / `runBusyAction` callbacks directly to exercise the
+// screen's dialog and busy-state behavior. Its own IPC behavior is covered by
+// useSceneSessionController.test.ts and the bridge-contract integration suite.
 vi.mock('./session/useSceneSessionController', () => ({
   useSceneSessionController: (options: ControllerOptions) => {
     capturedOptions = options;
@@ -23,20 +29,34 @@ vi.mock('./session/useSceneSessionController', () => ({
   },
 }));
 
-vi.mock('../runtime/audio-runtime', () => ({
-  clearSubtitleCuesRuntime: vi.fn(),
-  toggleSubtitleOverlayWindow: vi.fn(),
+// Everything else runs the REAL runtime modules against the fake bridge
+// contract double instead of stubbing the runtime layer away.
+const harness = vi.hoisted(() => ({
+  invoke: null as null | (<T>(command: string, args?: Record<string, unknown>) => Promise<T>),
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+    if (!harness.invoke) return Promise.reject(new Error(`fake bridge not installed for command ${command}`));
+    return harness.invoke(command, args);
+  },
+  isTauri: () => true,
 }));
 
 describe('RealTimeSessionScreen watch fallback confirmation', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let fake: FakeBridge;
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     capturedOptions = null;
     launchSceneMock.mockReset();
     launchSceneMock.mockResolvedValue(undefined);
+    fake = createFakeBridge();
+    harness.invoke = fake.invoke;
+    resetDesktopApiForTests();
+    installDesktopApi(new TauriDesktopApi());
 
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
@@ -64,6 +84,8 @@ describe('RealTimeSessionScreen watch fallback confirmation', () => {
       root.unmount();
     });
     container.remove();
+    harness.invoke = null;
+    resetDesktopApiForTests();
   });
 
   it('replaces the blocking native confirm with a non-blocking in-app dialog and clears busy before the decision', async () => {

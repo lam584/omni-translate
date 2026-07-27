@@ -5,6 +5,7 @@ import { readProviderSecret } from '../../runtime/provider-runtime';
 import type { RealtimeAudioMode } from '../../schema/config';
 import type { ProviderInteractionCapability } from '../../schema/provider-contract';
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
+import { describeUnknownError } from '../../utils/describe-unknown-error';
 
 export type BenchmarkVoiceModel = {
   modelId: string;
@@ -61,7 +62,7 @@ export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[])
       setReport(nextReport);
       setProgress((current) => ({ status: 'completed', phase: 'completed', message: current!.message || i18n.t('diagnostics.benchmark.completed'), audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: null }));
     } catch (caught) {
-      const message = caught instanceof Error ? caught.message : String(caught);
+      const message = describeUnknownError(caught);
       setError(message);
       setProgress((current) => ({ status: 'error', phase: current!.phase, message, audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: message }));
     } finally {

@@ -114,4 +114,13 @@ describe('useBenchmarkController', () => {
     expect(controller.error).toBe('offline');
     expect(controller.progress).toMatchObject({ status: 'error', error: 'offline' });
   });
+
+  it('renders the message and code from a ServiceErrorV2 rejection', async () => {
+    runtime.readProviderSecret.mockResolvedValue({ secret: 'key' });
+    runtime.runModelBenchmark.mockRejectedValue({ code: 'provider.failed', message: 'network failed', retriable: true });
+    await mount();
+    await act(async () => controller.run());
+    expect(controller.error).toBe('network failed (provider.failed)');
+    expect(controller.progress?.error).toBe('network failed (provider.failed)');
+  });
 });

@@ -26,6 +26,11 @@ jobs:
         run: npm ci
 
       - name: Verify release baseline
+        env:
+          # This workflow is the static verifier and does not build a release
+          # shell or install WebDriver. verify-release prints a loud skip
+          # banner; the real smoke remains mandatory for local release runs.
+          OMNI_SKIP_DRIVER_SMOKE: '1'
         run: node ./scripts/release/verify-release.mjs
 
       - name: Verify contracts

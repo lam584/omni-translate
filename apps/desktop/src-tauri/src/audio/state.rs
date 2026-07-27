@@ -4,7 +4,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use super::contracts::{
-    AudioDeviceRuntime, AudioRouteRuntimeSnapshot, AudioRuntimeSnapshot, SpeechRuntimeSnapshot,
+    AudioDeviceRuntime, AudioRuntimeSnapshot, SpeechRuntimeSnapshot,
     SubtitleCueRuntime, SubtitleDisplaySegmentRuntime, SubtitleOverlayRuntimeSnapshot,
 };
 use super::echo_cancel::{EchoCancellationResult, EchoReferenceBuffer};
@@ -22,6 +22,7 @@ mod echo_activity;
 mod omni_sessions;
 mod session_registry;
 mod metrics;
+mod route_state;
 mod subtitle_store;
 pub use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
 use cue_lifecycle::{finalize_cue_display_segments, trim_recent_subtitle_cues};
@@ -31,6 +32,7 @@ use audio_cache::AudioCacheStore;
 use omni_sessions::OmniSessionStore;
 use session_registry::SessionRegistry;
 use metrics::AudioMetricsStore;
+use route_state::route_mut;
 use subtitle_store::SubtitleStore;
 
 pub struct AudioRouteHandle {
@@ -891,17 +893,6 @@ impl AudioStateStore {
 
     pub fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.session_registry.take(direction)
-    }
-}
-
-fn route_mut<'a>(
-    state: &'a mut AudioRuntimeSnapshot,
-    direction: &str,
-) -> &'a mut AudioRouteRuntimeSnapshot {
-    if direction == "outbound" {
-        &mut state.outbound
-    } else {
-        &mut state.inbound
     }
 }
 

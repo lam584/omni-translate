@@ -25,6 +25,12 @@ const tauriMocks = vi.hoisted(() => {
     scaleFactorMock: vi.fn(),
     setDecorationsMock: vi.fn(),
     setIgnoreCursorEventsMock: vi.fn(),
+    // Physical cursor coordinates. The unlock hotspot sits at the overlay's
+    // top-right: with the window at (100,200) sized 1440x330 physical
+    // (960x220 logical at scale 1.5), it spans x 1433.5..1531, y 209..263 —
+    // hence the { x: 1480, y: 230 } probes below. { x: 220, y: 280 } is
+    // inside the overlay but outside the hotspot; { x: 20, y: 20 } is outside
+    // the overlay entirely.
     setPointerPosition: (next: { x: number; y: number }) => {
       pointerPosition = next;
     },
@@ -195,10 +201,16 @@ describe('SubtitleOverlayPage locked interaction', () => {
     tauriMocks.startDraggingMock.mockReset().mockResolvedValue(undefined);
     tauriMocks.startResizeDraggingMock.mockReset().mockResolvedValue(undefined);
     tauriMocks.outerPositionMock.mockReset().mockResolvedValue({ x: 100, y: 200 });
-    tauriMocks.outerSizeMock.mockReset().mockResolvedValue({ height: 220, width: 960 });
-    tauriMocks.innerSizeMock.mockReset().mockResolvedValue({ height: 220, width: 960 });
+    // Physical sizes reported by the OS for the 960x220 LOGICAL draft at the
+    // 1.5 scale factor above. Keeping these consistent matters: with a 1.0
+    // fixture the logical and physical spaces coincide, so a missing
+    // physical->logical conversion is undetectable.
+    tauriMocks.outerSizeMock.mockReset().mockResolvedValue({ height: 330, width: 1440 });
+    tauriMocks.innerSizeMock.mockReset().mockResolvedValue({ height: 330, width: 1440 });
     tauriMocks.onResizedMock.mockReset().mockResolvedValue(() => undefined);
-    tauriMocks.scaleFactorMock.mockReset().mockResolvedValue(1);
+    // HiDPI by default: overlay geometry mixes logical sizes with physical
+    // cursor/window coordinates, and a 1.0 fixture hides scale mistakes.
+    tauriMocks.scaleFactorMock.mockReset().mockResolvedValue(1.5);
 
     const { audioRuntimeSnapshot, configDraft, runtimeSnapshot } = cloneStoreState();
     useAppStore.setState((state) => ({
@@ -266,8 +278,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
   it('stops passthrough inside the unlock hotspot and unlocks the overlay when the button is clicked', async () => {
     await view.render(<SubtitleOverlayPage />);
 
-    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
-    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
+    tauriMocks.setPointerPosition({ x: 1480, y: 230 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1480, y: 230 }));
     await advanceLockedRevealPoll();
 
     const button = container.querySelector('.subtitle-overlay-toggle-lock');
@@ -301,8 +313,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
   it('restores cursor passthrough when the cursor leaves the unlock hotspot', async () => {
     await view.render(<SubtitleOverlayPage />);
 
-    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
-    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
+    tauriMocks.setPointerPosition({ x: 1480, y: 230 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1480, y: 230 }));
     await advanceLockedRevealPoll();
 
     tauriMocks.setPointerPosition({ x: 220, y: 280 });
@@ -389,8 +401,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
   it('re-syncs native window state only once when the lock button toggles overlayLocked', async () => {
     await view.render(<SubtitleOverlayPage />);
 
-    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
-    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
+    tauriMocks.setPointerPosition({ x: 1480, y: 230 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1480, y: 230 }));
     await advanceLockedRevealPoll();
 
     const windowStateSyncCallsBeforeClick = countSessionActionCalls('syncOverlayWindowState');
@@ -442,7 +454,9 @@ describe('SubtitleOverlayPage locked interaction', () => {
     expect(tauriMocks.setSizeMock).toHaveBeenCalled();
     expect(tauriMocks.setPositionMock).toHaveBeenCalled();
     expect(tauriMocks.startResizeDraggingMock).not.toHaveBeenCalled();
-    expect(useAppStore.getState().configDraft.subtitles.overlayWidth).toBeGreaterThan(960);
+    // 60 screen px dragged east = round(60 * 1.5) = 90 physical px added to the
+    // 1440-physical-px window, persisted back as round(1530 / 1.5) logical px.
+    expect(useAppStore.getState().configDraft.subtitles.overlayWidth).toBe(1_020);
   });
 
   it('opens the native context menu and executes style and lock callbacks', async () => {
@@ -584,9 +598,13 @@ describe('SubtitleOverlayPage locked interaction', () => {
       await Promise.resolve();
       await Promise.resolve();
     });
+    // 720x180 PHYSICAL px reported by the OS becomes 480x120 LOGICAL px in the
+    // persisted draft (round(physical / 1.5)). At the previous 1.0 fixture the
+    // expectation was 720x180, which passes whether or not the code divides by
+    // the scale factor at all.
     expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
-      overlayHeight: 180,
-      overlayWidth: 720,
+      overlayHeight: 120,
+      overlayWidth: 480,
     });
 
     tauriMocks.currentMonitorMock.mockResolvedValueOnce(null);
@@ -606,8 +624,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
   it('runs locked reveal button hover and blur handlers', async () => {
     await view.render(<SubtitleOverlayPage />);
-    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
-    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1020, y: 220 }));
+    tauriMocks.setPointerPosition({ x: 1480, y: 230 });
+    tauriMocks.cursorPositionMock.mockImplementation(async () => ({ x: 1480, y: 230 }));
     await advanceLockedRevealPoll();
 
     const button = container.querySelector('.subtitle-overlay-toggle-lock');
@@ -650,8 +668,8 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
   it('hides a revealed lock button when native cursor polling fails', async () => {
     await view.render(<SubtitleOverlayPage />);
-    tauriMocks.setPointerPosition({ x: 1020, y: 220 });
-    tauriMocks.cursorPositionMock.mockResolvedValue({ x: 1020, y: 220 });
+    tauriMocks.setPointerPosition({ x: 1480, y: 230 });
+    tauriMocks.cursorPositionMock.mockResolvedValue({ x: 1480, y: 230 });
     await advanceLockedRevealPoll();
     expect(container.querySelector('.subtitle-overlay-toggle-lock')).not.toBeNull();
 

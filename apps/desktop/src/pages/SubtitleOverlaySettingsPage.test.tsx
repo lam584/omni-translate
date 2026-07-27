@@ -3,21 +3,35 @@ import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
+import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
 import { useAppStore } from '../stores/app-store';
 import SubtitleOverlaySettingsPage from './SubtitleOverlaySettingsPage';
 
-const toggleSubtitleOverlayWindowMock = vi.fn();
-
+// react-i18next stays stubbed (leaf externality: key passthrough keeps the
+// assertions readable). The overlay command path is NOT stubbed: it runs the
+// real audio-runtime module against the fake bridge contract double.
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string) => key,
   }),
 }));
 
-vi.mock('../runtime/audio-runtime', () => ({
-  toggleSubtitleOverlayWindow: (...args: unknown[]) => toggleSubtitleOverlayWindowMock(...args),
+const harness = vi.hoisted(() => ({
+  invoke: null as null | (<T>(command: string, args?: Record<string, unknown>) => Promise<T>),
+  /** When set, this command hangs so tests can observe pending UI states. */
+  holdCommand: null as null | { command: string; promise: Promise<unknown> },
+}));
+
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+    if (harness.holdCommand?.command === command) return harness.holdCommand.promise as Promise<T>;
+    if (!harness.invoke) return Promise.reject(new Error(`fake bridge not installed for command ${command}`));
+    return harness.invoke(command, args);
+  },
+  isTauri: () => true,
 }));
 
 function setInputValue(input: HTMLInputElement, value: string) {
@@ -28,10 +42,15 @@ function setInputValue(input: HTMLInputElement, value: string) {
 describe('SubtitleOverlaySettingsPage font size controls', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let fake: FakeBridge;
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    toggleSubtitleOverlayWindowMock.mockReset();
+    fake = createFakeBridge();
+    harness.invoke = fake.invoke;
+    harness.holdCommand = null;
+    resetDesktopApiForTests();
+    installDesktopApi(new TauriDesktopApi());
 
     useAppStore.setState((state) => ({
       ...state,
@@ -40,12 +59,6 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
       runtimeNotifications: runtimeSnapshotMock.notifications,
       runtimeSnapshot: structuredClone(runtimeSnapshotMock),
     }));
-
-    const overlayVisibleSnapshot = structuredClone(runtimeSnapshotMock);
-    overlayVisibleSnapshot.windows = overlayVisibleSnapshot.windows.map((item) =>
-      item.label === 'subtitle-overlay' ? { ...item, visible: true } : item,
-    );
-    toggleSubtitleOverlayWindowMock.mockResolvedValue(overlayVisibleSnapshot);
 
     container = document.createElement('div');
     document.body.appendChild(container);
@@ -57,6 +70,9 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
       root.unmount();
     });
     container.remove();
+    harness.invoke = null;
+    harness.holdCommand = null;
+    resetDesktopApiForTests();
   });
 
   it('updates large subtitle font size and overlay height from the appearance sliders', async () => {
@@ -109,7 +125,8 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
       toggleButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
 
-    expect(toggleSubtitleOverlayWindowMock).toHaveBeenCalledTimes(1);
+    // The real runtime module issued the native overlay toggle command...
+    expect(fake.commandCalls('toggle_subtitle_overlay')).toHaveLength(1);
     expect(useAppStore.getState().runtimeSnapshot.windows.find((item) => item.label === 'subtitle-overlay')?.visible).toBe(true);
   });
 
@@ -256,10 +273,12 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
   });
 
   it('shows pending text while the overlay visibility command is unresolved', async () => {
+    // Hold the native toggle command unresolved to observe the pending UI.
     let resolveToggle!: (snapshot: typeof runtimeSnapshotMock) => void;
-    toggleSubtitleOverlayWindowMock.mockReturnValue(new Promise((resolve) => {
-      resolveToggle = resolve;
-    }));
+    harness.holdCommand = {
+      command: 'toggle_subtitle_overlay',
+      promise: new Promise((resolve) => { resolveToggle = resolve; }),
+    };
     await act(async () => {
       root.render(
         <MemoryRouter>

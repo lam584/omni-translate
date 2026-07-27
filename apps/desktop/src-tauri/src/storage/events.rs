@@ -13,8 +13,8 @@ use super::credential::{CredentialVault, KeyringCredentialVault};
 use super::service::ConfigurationService;
 use super::StorageStateStore;
 
-fn log_storage_event(
-    app: &AppHandle,
+fn log_storage_event<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     level: &str,
     summary: impl Into<String>,
     detail: Option<String>,
@@ -52,8 +52,8 @@ fn summarize_provider_config(config: &Value) -> String {
 }
 
 #[tauri::command(async)]
-pub fn bootstrap_storage(
-    app: AppHandle,
+pub fn bootstrap_storage<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
 ) -> Result<StorageRuntimeSnapshot, String> {
     let snapshot = storage.ensure_initialized(&app)?;
@@ -74,8 +74,8 @@ pub fn bootstrap_storage(
 }
 
 #[tauri::command(async)]
-pub fn load_config_draft(
-    app: AppHandle,
+pub fn load_config_draft<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
 ) -> Result<Value, String> {
     storage.ensure_initialized(&app)?;
@@ -96,8 +96,8 @@ pub fn load_config_draft(
     }
 }
 
-pub fn save_config_draft(
-    app: AppHandle,
+pub fn save_config_draft<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
     config: Value,
 ) -> Result<StorageRuntimeSnapshot, String> {
@@ -128,8 +128,8 @@ pub fn save_config_draft(
     }
 }
 
-pub fn reset_config_draft(
-    app: AppHandle,
+pub fn reset_config_draft<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
 ) -> Result<Value, String> {
     storage.ensure_initialized(&app)?;
@@ -150,8 +150,8 @@ pub fn reset_config_draft(
     }
 }
 
-pub fn export_config_draft(
-    app: AppHandle,
+pub fn export_config_draft<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
 ) -> Result<ConfigExportArtifact, String> {
     storage.ensure_initialized(&app)?;
@@ -175,8 +175,8 @@ pub fn export_config_draft(
     }
 }
 
-pub fn import_config_draft(
-    app: AppHandle,
+pub fn import_config_draft<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
     file_path: String,
 ) -> Result<Value, String> {
@@ -207,8 +207,8 @@ pub fn import_config_draft(
     }
 }
 
-pub fn create_config_snapshot(
-    app: AppHandle,
+pub fn create_config_snapshot<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
     reason: Option<String>,
 ) -> Result<ConfigSnapshotRecord, String> {
@@ -243,8 +243,8 @@ pub fn create_config_snapshot(
     }
 }
 
-pub fn rollback_config_snapshot(
-    app: AppHandle,
+pub fn rollback_config_snapshot<R: tauri::Runtime>(
+    app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
     snapshot_id: String,
 ) -> Result<Value, String> {
@@ -279,8 +279,8 @@ pub fn rollback_config_snapshot(
     }
 }
 
-pub async fn upsert_secret_ref(
-    app: AppHandle,
+pub async fn upsert_secret_ref<R: tauri::Runtime>(
+    app: AppHandle<R>,
     reference: String,
     secret: String,
 ) -> Result<CredentialRefStatus, String> {
@@ -373,8 +373,8 @@ pub async fn upsert_secret_ref(
     }
 }
 
-pub async fn get_secret_ref_status(
-    app: AppHandle,
+pub async fn get_secret_ref_status<R: tauri::Runtime>(
+    app: AppHandle<R>,
     reference: String,
 ) -> Result<CredentialRefStatus, String> {
     let command_started_at = Instant::now();
@@ -440,8 +440,8 @@ pub async fn get_secret_ref_status(
     }
 }
 
-pub async fn read_secret_ref(
-    app: AppHandle,
+pub async fn read_secret_ref<R: tauri::Runtime>(
+    app: AppHandle<R>,
     reference: String,
 ) -> Result<CredentialSecretPayload, String> {
     let command_started_at = Instant::now();

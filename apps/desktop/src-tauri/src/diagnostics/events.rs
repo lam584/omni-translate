@@ -104,7 +104,9 @@ fn support_signal(
     }
 }
 
-fn build_support_matrix(app: &AppHandle) -> Vec<DiagnosticSupportSignalRuntime> {
+fn build_support_matrix<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> Vec<DiagnosticSupportSignalRuntime> {
     let audio_snapshot = app
         .try_state::<AudioStateStore>()
         .map(|state| state.snapshot())
@@ -211,7 +213,9 @@ fn build_support_matrix(app: &AppHandle) -> Vec<DiagnosticSupportSignalRuntime> 
     ]
 }
 
-pub fn build_diagnostics_snapshot(app: &AppHandle) -> DiagnosticsRuntimeSnapshot {
+pub fn build_diagnostics_snapshot<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> DiagnosticsRuntimeSnapshot {
     let diagnostics = app
         .try_state::<DiagnosticsStateStore>()
         .map(|store| store.snapshot_base())
@@ -327,7 +331,7 @@ pub fn set_diagnostics_log_level(
     Ok(())
 }
 
-pub fn get_diagnostics_snapshot(app: AppHandle) -> DiagnosticsRuntimeSnapshot {
+pub fn get_diagnostics_snapshot<R: tauri::Runtime>(app: AppHandle<R>) -> DiagnosticsRuntimeSnapshot {
     build_diagnostics_snapshot(&app)
 }
 
@@ -388,8 +392,8 @@ pub async fn append_frontend_diagnostics_logs(
 /// snapshot state and record the outcome. The runtime-snapshot emission and
 /// aggregate return value are orchestrated by the `diagnostics_v2` dispatch
 /// (the composition layer), so this module no longer calls into `runtime`.
-pub fn run_diagnostics_self_check(
-    app: AppHandle,
+pub fn run_diagnostics_self_check<R: tauri::Runtime>(
+    app: AppHandle<R>,
     diagnostics: State<'_, DiagnosticsStateStore>,
 ) -> Result<(), String> {
     let snapshot = build_diagnostics_snapshot(&app);
@@ -432,7 +436,7 @@ pub fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
 }
 
 /// The log line the overlay self check records after the cue became visible.
-pub fn log_overlay_self_check_cue(app: &AppHandle) -> Result<(), String> {
+pub fn log_overlay_self_check_cue<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     append_diagnostics_log(
         app,
         "runtime",
@@ -450,8 +454,8 @@ pub fn log_overlay_self_check_cue(app: &AppHandle) -> Result<(), String> {
 // thread, freezing the message pump (and therefore all IPC + the tray) until
 // the export finishes -- exactly the "导出中" stall users hit. Moving it off
 // the main thread keeps the UI/IPC responsive while the bundle is written.
-pub async fn export_diagnostics_bundle(
-    app: AppHandle,
+pub async fn export_diagnostics_bundle<R: tauri::Runtime>(
+    app: AppHandle<R>,
     diagnostics: State<'_, DiagnosticsStateStore>,
     scope: String,
 ) -> Result<DiagnosticsExportArtifact, String> {

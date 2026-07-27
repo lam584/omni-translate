@@ -39,7 +39,10 @@ impl StorageStateStore {
         }
     }
 
-    pub fn ensure_initialized(&self, app: &AppHandle) -> Result<StorageRuntimeSnapshot, String> {
+    pub fn ensure_initialized<R: tauri::Runtime>(
+        &self,
+        app: &AppHandle<R>,
+    ) -> Result<StorageRuntimeSnapshot, String> {
         if let Some(snapshot) = self.current_snapshot() {
             return Ok(snapshot);
         }
@@ -158,7 +161,7 @@ impl StorageStateStore {
     }
 }
 
-fn storage_paths(app: &AppHandle) -> Result<StoragePaths, String> {
+fn storage_paths<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<StoragePaths, String> {
     let roaming_dir = app
         .path()
         .app_data_dir()

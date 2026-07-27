@@ -210,8 +210,8 @@ fn driver_signature_preflight_error(
     None
 }
 
-fn fail_driver_preflight(
-    app: &AppHandle,
+fn fail_driver_preflight<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     runtime_state: &RuntimeStateStore,
     bridge_state: &BridgeStateStore,
     error: String,
@@ -329,10 +329,10 @@ fn should_use_full_bridge_pipe_query(snapshot: &BridgeRuntimeSnapshot) -> bool {
     snapshot.process_status == "running" && snapshot.session_id.is_some()
 }
 
-fn start_bridge_from_snapshot(
+fn start_bridge_from_snapshot<R: tauri::Runtime>(
     snapshot: &BridgeRuntimeSnapshot,
     bridge_state: &BridgeStateStore,
-    app: &AppHandle,
+    app: &AppHandle<R>,
 ) -> Result<(), String> {
     cleanup_existing_bridge_process(snapshot, bridge_state)?;
     BridgeProcessSupervisor::new(snapshot).ensure_runtime_root()?;
@@ -446,8 +446,8 @@ fn start_bridge_from_snapshot(
     Ok(())
 }
 
-fn emit_bridge_notification(
-    app: &AppHandle,
+fn emit_bridge_notification<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     runtime_state: &RuntimeStateStore,
     id: &str,
     message: &str,
@@ -466,8 +466,8 @@ fn emit_bridge_notification(
     }
 }
 
-fn log_bridge_event(
-    app: &AppHandle,
+fn log_bridge_event<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     level: &str,
     summary: impl Into<String>,
     detail: Option<String>,
@@ -483,8 +483,8 @@ pub fn get_bridge_runtime_snapshot(
 
 // `(async)` runs the IPC path off the main thread so blocking driver probing
 // cannot starve the event loop. The plain fn stays callable by `bridge_v2`.
-pub fn refresh_bridge_runtime(
-    app: AppHandle,
+pub fn refresh_bridge_runtime<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
@@ -596,8 +596,8 @@ pub fn refresh_bridge_runtime(
 // `(async)` runs the IPC path off the main thread so blocking process launch
 // cannot starve the event loop. The plain fn stays callable by `bridge_v2`.
 #[tauri::command(async)]
-pub fn start_bridge_service(
-    app: AppHandle,
+pub fn start_bridge_service<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
     config: Value,
@@ -648,8 +648,8 @@ pub fn start_bridge_service(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-pub fn stop_bridge_service(
-    app: AppHandle,
+pub fn stop_bridge_service<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
@@ -684,8 +684,8 @@ pub fn stop_bridge_service(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-pub fn install_driver_runtime(
-    app: AppHandle,
+pub fn install_driver_runtime<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
     config: Value,
@@ -749,8 +749,8 @@ pub fn install_driver_runtime(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-pub fn uninstall_driver_runtime(
-    app: AppHandle,
+pub fn uninstall_driver_runtime<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
@@ -800,8 +800,8 @@ pub fn uninstall_driver_runtime(
     Ok(build_runtime_snapshot(&app, &runtime_state))
 }
 
-pub fn repair_driver_runtime(
-    app: AppHandle,
+pub fn repair_driver_runtime<R: tauri::Runtime>(
+    app: AppHandle<R>,
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
     config: Value,

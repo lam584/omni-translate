@@ -24,8 +24,8 @@ pub(crate) fn open_export_directory(output_path: &str) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn write_export_artifact(
-    app: &AppHandle,
+pub(crate) fn write_export_artifact<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     filename: &str,
     content: &str,
 ) -> Result<ExportArtifactReceipt, String> {

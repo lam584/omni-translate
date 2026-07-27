@@ -4,74 +4,69 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
 import DiagnosticsPage, { runRecommendedBridgeAction } from './DiagnosticsPage';
 import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
 import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
+import { loggerTestHelpers } from '../runtime/logger';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils';
 import type { BenchmarkReport } from '../runtime/benchmark-runtime';
 import { DiagnosticsReportExporter } from './diagnostics/DiagnosticsDetails';
 
-const startAudioRouteRuntimeMock = vi.fn();
-const startSpeechDispatchRuntimeMock = vi.fn();
-const installDriverRuntimeMock = vi.fn();
-const refreshBridgeRuntimeMock = vi.fn();
-const repairDriverRuntimeMock = vi.fn();
-const startBridgeServiceRuntimeMock = vi.fn();
-const stopBridgeServiceRuntimeMock = vi.fn();
-const uninstallDriverRuntimeMock = vi.fn();
-const exportDiagnosticsBundleRuntimeMock = vi.fn();
-const runDiagnosticsSelfCheckRuntimeMock = vi.fn();
-const runSubtitleOverlaySelfCheckRuntimeMock = vi.fn();
-const runModelBenchmarkMock = vi.fn();
-const readProviderSecretMock = vi.fn();
-const getLiveSessionEventsRuntimeMock = vi.fn();
-const tauriRuntimeMock = vi.hoisted(() => ({
+// The diagnostics workbench runs against the injectable fake bridge instead of
+// stubbed runtime modules: every action goes through the real
+// diagnostics/bridge/provider/configuration runtime code down to a fake
+// `invoke`, so the assertions are recorded v2 commands plus the resulting
+// store/DOM state. vi.mock is reserved for leaf externalities (the Tauri
+// core/event channels). Unless a case says otherwise it runs the NATIVE path
+// (TauriDesktopApi + fake bridge + a present `__TAURI_INTERNALS__.invoke`);
+// the one browser-PREVIEW case is named and commented as such.
 
-  invoke: vi.fn(),
+const harness = vi.hoisted(() => ({
+  nativeShell: true,
+  invoke: null as null | (<T>(command: string, args?: Record<string, unknown>) => Promise<T>),
+  listen: null as
+    | null
+    | (<T>(eventName: string, handler: (event: { event: string; payload: T }) => void) => Promise<() => void>),
 }));
 
 vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => tauriRuntimeMock.invoke(...args),
-  isTauri: () => false,
+  invoke: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+    if (!harness.invoke) {
+      return Promise.reject(new Error(`fake bridge not installed for command ${command}`));
+    }
+    return harness.invoke(command, args);
+  },
+  isTauri: () => harness.nativeShell,
 }));
 
-vi.mock('../runtime/audio-runtime', () => ({
-  startAudioRouteRuntime: (...args: unknown[]) => startAudioRouteRuntimeMock(...args),
-  startSpeechDispatchRuntime: (...args: unknown[]) => startSpeechDispatchRuntimeMock(...args),
+// benchmark-runtime subscribes to the native `benchmark://progress` channel.
+// Event delivery is a leaf externality, so it is routed into the fake bridge's
+// own event bus rather than stubbing the runtime module.
+vi.mock('@tauri-apps/api/event', () => ({
+  listen: <T,>(eventName: string, handler: (event: { event: string; payload: T }) => void): Promise<() => void> => {
+    if (!harness.listen) {
+      return Promise.reject(new Error(`fake bridge not installed for event ${eventName}`));
+    }
+    return harness.listen(eventName, handler);
+  },
 }));
 
-vi.mock('../runtime/bridge-runtime', () => ({
-  installDriverRuntime: (...args: unknown[]) => installDriverRuntimeMock(...args),
-  refreshBridgeRuntime: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
-  repairDriverRuntime: (...args: unknown[]) => repairDriverRuntimeMock(...args),
-  startBridgeServiceRuntime: (...args: unknown[]) => startBridgeServiceRuntimeMock(...args),
-  stopBridgeServiceRuntime: (...args: unknown[]) => stopBridgeServiceRuntimeMock(...args),
-  uninstallDriverRuntime: (...args: unknown[]) => uninstallDriverRuntimeMock(...args),
-}));
+type TauriInternalsWindow = Window & { __TAURI_INTERNALS__?: { invoke?: unknown } };
 
-vi.mock('../runtime/diagnostics-runtime', () => ({
-  exportDiagnosticsBundleRuntime: (...args: unknown[]) => exportDiagnosticsBundleRuntimeMock(...args),
-  openExportDirectoryRuntime: vi.fn(),
-  runDiagnosticsSelfCheckRuntime: (...args: unknown[]) => runDiagnosticsSelfCheckRuntimeMock(...args),
-  runSubtitleOverlaySelfCheckRuntime: (...args: unknown[]) => runSubtitleOverlaySelfCheckRuntimeMock(...args),
-}));
+/** The raw probe `hasInvokeBridge()` reads; present only in the native shell. */
+function installInvokeBridge(installed: boolean) {
+  const scope = window as TauriInternalsWindow;
+  if (installed) {
+    scope.__TAURI_INTERNALS__ = { invoke: () => undefined };
+  } else {
+    delete scope.__TAURI_INTERNALS__;
+  }
+}
 
-vi.mock('../runtime/benchmark-runtime', () => ({
-  runModelBenchmark: (...args: unknown[]) => runModelBenchmarkMock(...args),
-}));
-
-vi.mock('../runtime/provider-runtime', () => ({
-  readProviderSecret: (...args: unknown[]) => readProviderSecretMock(...args),
-}));
-
-vi.mock('../runtime/live-session-events-runtime', () => ({
-  getLiveSessionEventsRuntime: (...args: unknown[]) => getLiveSessionEventsRuntimeMock(...args),
-}));
-
-vi.mock('../runtime/tauri-runtime', () => ({
-  hasInvokeBridge: () => false,
-}));
+const providerSecretRef = appConfigDraftMock.providers[0]?.authRef?.reference ?? '';
+const defaultBenchmarkMp3Path = 'scripts/testing/fixtures/watch-mode-en-original.wav';
 
 function findButtonByText(container: HTMLElement, text: string) {
   return Array.from(container.querySelectorAll('button')).find((element) => element.textContent?.trim() === text) as
@@ -88,6 +83,22 @@ async function changeValue(element: HTMLInputElement | HTMLSelectElement, value:
     element.dispatchEvent(new Event('input', { bubbles: true }));
     element.dispatchEvent(new Event('change', { bubbles: true }));
   });
+}
+
+/** Drains the microtask queue (and any 0ms timer) inside act(). */
+async function settleUi() {
+  await act(async () => {
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  });
+}
+
+async function clickAndSettle(element: HTMLElement | null | undefined) {
+  await act(async () => {
+    element?.click();
+  });
+  await settleUi();
 }
 
 function benchmarkReport(text: string): BenchmarkReport {
@@ -150,6 +161,7 @@ function benchmarkReport(text: string): BenchmarkReport {
 describe('DiagnosticsPage monitoring boundary', () => {
   let view: TestRootHandle;
   let container: HTMLDivElement;
+  let fake: FakeBridge;
 
   async function renderPage() {
     await view.render(
@@ -170,42 +182,50 @@ describe('DiagnosticsPage monitoring boundary', () => {
     });
   }
 
-  beforeEach(() => {
-    // Re-install per test so a previous test's Tauri/preview choice cannot leak.
+  /**
+   * Freezes one in-flight command so pending state can be observed, then hands
+   * back a release that lets it reach the fake bridge. Used instead of
+   * re-introducing a runtime-module stub for "still running" assertions.
+   */
+  function holdCommand(command: string, action?: string) {
+    const passthrough = fake.invoke;
+    let release = () => {};
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+
+    harness.invoke = <T,>(name: string, args?: Record<string, unknown>): Promise<T> => {
+      const calledAction = (args?.command as { action?: string } | undefined)?.action;
+      if (name === command && (action === undefined || calledAction === action)) {
+        return gate.then(() => passthrough<T>(name, args));
+      }
+      return passthrough<T>(name, args);
+    };
+
+    return async () => {
+      harness.invoke = passthrough;
+      release();
+      await settleUi();
+    };
+  }
+
+  /** Swaps the installed boundary to the browser-preview implementation. */
+  function installPreviewShell() {
+    harness.nativeShell = false;
+    installInvokeBridge(false);
     resetDesktopApiForTests();
     installDesktopApi(new PreviewDesktopApi());
-    tauriRuntimeMock.invoke.mockReset();
-    tauriRuntimeMock.invoke.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
-      const action = args?.command?.action;
-      if (command === 'configuration_v2' && (action === 'runtimeSnapshot' || action === 'bootstrapRuntime')) {
-        return { data: structuredClone(useAppStore.getState().runtimeSnapshot), warnings: [] };
-      }
-      return undefined;
-    });
-    startAudioRouteRuntimeMock.mockReset();
-    startSpeechDispatchRuntimeMock.mockReset();
-    installDriverRuntimeMock.mockReset();
-    refreshBridgeRuntimeMock.mockReset();
-    repairDriverRuntimeMock.mockReset();
-    startBridgeServiceRuntimeMock.mockReset();
-    stopBridgeServiceRuntimeMock.mockReset();
-    uninstallDriverRuntimeMock.mockReset();
-    exportDiagnosticsBundleRuntimeMock.mockReset();
-    runDiagnosticsSelfCheckRuntimeMock.mockReset();
-    runSubtitleOverlaySelfCheckRuntimeMock.mockReset();
-    runModelBenchmarkMock.mockReset();
-    readProviderSecretMock.mockReset();
-    readProviderSecretMock.mockResolvedValue({ secret: 'test-key' });
-    getLiveSessionEventsRuntimeMock.mockReset();
-    getLiveSessionEventsRuntimeMock.mockResolvedValue({
-      sessionStartedAt: '',
-      elapsedMs: 0,
-      model: '',
-      asrDeltas: [],
-      outputDeltas: [],
-      asrFinal: '',
-      translationFinal: '',
-    });
+  }
+
+  beforeEach(() => {
+    fake = createFakeBridge();
+    harness.invoke = fake.invoke;
+    harness.listen = fake.listen;
+    harness.nativeShell = true;
+    installInvokeBridge(true);
+    // Re-install per test so a previous test's Tauri/preview choice cannot leak.
+    resetDesktopApiForTests();
+    installDesktopApi(new TauriDesktopApi());
 
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
@@ -242,6 +262,11 @@ describe('DiagnosticsPage monitoring boundary', () => {
     configDraft.speech.localPlaybackEnabled = true;
     configDraft.speech.status = 'warning';
 
+    // The backend reports the same machine state the store starts from, so a
+    // refresh/self-check does not silently rewrite the scenario under test.
+    fake.seedRuntimeSnapshot(runtimeSnapshot);
+    fake.setProviderSecret(providerSecretRef, 'fake-api-key');
+
     useAppStore.setState((state) => ({
       ...state,
       configDraft,
@@ -256,6 +281,13 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
   afterEach(async () => {
     await view.cleanup();
+    // The frontend logger forwards batches over the same bridge; drop the
+    // queue before the fake is uninstalled so no retry loop outlives the test.
+    loggerTestHelpers.reset();
+    harness.invoke = null;
+    harness.listen = null;
+    installInvokeBridge(false);
+    resetDesktopApiForTests();
   });
 
   it('treats idle bridge and capture as neutral monitoring state', async () => {
@@ -268,51 +300,56 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.textContent).not.toContain('桥接链路待启动');
     expect(container.textContent).not.toContain('系统音频待启动采集');
     expect(container.textContent).not.toContain('修正译音输出目标');
+    // Native posture: the environment panel reports a live invoke bridge.
+    expect(container.querySelector('.diagnostics-raw-signals')?.textContent).toContain('IPC Bridge: true');
   });
 
-  it('dispatches each recommended bridge action', async () => {
+  it('dispatches each recommended bridge action as its bridge_v2 command', async () => {
     const config = useAppStore.getState().configDraft;
     const snapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
-    installDriverRuntimeMock.mockResolvedValue(snapshot);
-    repairDriverRuntimeMock.mockResolvedValue(snapshot);
-    startBridgeServiceRuntimeMock.mockResolvedValue(snapshot);
 
     snapshot.bridge.driverHealth = 'not-installed';
     await runRecommendedBridgeAction(snapshot, config);
-    expect(installDriverRuntimeMock).toHaveBeenCalledWith(config);
 
     snapshot.bridge.driverHealth = 'damaged';
     await runRecommendedBridgeAction(snapshot, config);
-    expect(repairDriverRuntimeMock).toHaveBeenCalledWith('reinstall-driver', config);
 
     snapshot.bridge.driverHealth = 'running';
     snapshot.bridge.bridgeState = 'stopped';
     await runRecommendedBridgeAction(snapshot, config);
-    expect(startBridgeServiceRuntimeMock).toHaveBeenCalledWith(config);
 
     snapshot.bridge.bridgeState = 'running';
     await runRecommendedBridgeAction(snapshot, config);
-    expect(repairDriverRuntimeMock).toHaveBeenCalledWith('restart-bridge', config);
+
+    const bridgeCalls = fake.commandCalls('bridge_v2');
+    expect(bridgeCalls.map((call) => call.action)).toEqual(['install', 'repair', 'start', 'repair']);
+    expect(bridgeCalls[0]?.args).toMatchObject({ command: { action: 'install', config } });
+    expect(bridgeCalls[1]?.args).toMatchObject({ command: { repairAction: 'reinstall-driver', config } });
+    expect(bridgeCalls[2]?.args).toMatchObject({ command: { action: 'start', config } });
+    expect(bridgeCalls[3]?.args).toMatchObject({ command: { repairAction: 'restart-bridge', config } });
+    // …and the backend really came up as a result of those commands.
+    expect(fake.getRuntimeSnapshot().bridge.bridgeState).toBe('running');
   });
 
   it('runs diagnostics, overlay self-check, export and refresh actions', async () => {
-    const snapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
-    runDiagnosticsSelfCheckRuntimeMock.mockResolvedValue(snapshot);
-    runSubtitleOverlaySelfCheckRuntimeMock.mockResolvedValue(snapshot);
-    exportDiagnosticsBundleRuntimeMock.mockResolvedValue({ snapshot });
-    refreshBridgeRuntimeMock.mockResolvedValue(snapshot);
     await renderPage();
 
     for (const label of ['重新诊断', '测试字幕浮窗', '导出诊断包', '刷新运行态']) {
-      await act(async () => {
-        findButtonByText(container, label)?.click();
-        await Promise.resolve();
-      });
+      await clickAndSettle(findButtonByText(container, label));
     }
-    expect(runDiagnosticsSelfCheckRuntimeMock).toHaveBeenCalled();
-    expect(runSubtitleOverlaySelfCheckRuntimeMock).toHaveBeenCalled();
-    expect(exportDiagnosticsBundleRuntimeMock).toHaveBeenCalled();
-    expect(refreshBridgeRuntimeMock).toHaveBeenCalled();
+
+    const diagnosticsCalls = fake.commandCalls('diagnostics_v2');
+    expect(diagnosticsCalls.map((call) => call.action)).toEqual(['selfCheck', 'overlaySelfCheck', 'export']);
+    expect(diagnosticsCalls[2]?.args).toMatchObject({ command: { scope: 'summary' } });
+    expect(fake.commandCalls('bridge_v2').map((call) => call.action)).toEqual(['refresh']);
+    // The export artifact is only a receipt: the scope lands in the UI through
+    // the runtime snapshot the export publishes.
+    expect(fake.commandCalls('configuration_v2').map((call) => call.action)).toEqual(['runtimeSnapshot']);
+
+    const state = useAppStore.getState();
+    expect(state.configDraft.diagnostics.lastExportScope).toBe('summary');
+    expect(state.runtimeSnapshot.diagnostics.lastExportScope).toBe('summary');
+    expect(state.runtimeSnapshot.diagnostics.lastExportPath).toContain('summary');
   });
 
   it('records automatic repair failures for damaged bridge state', async () => {
@@ -320,6 +357,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     snapshot.bridge.driverHealth = 'damaged';
     snapshot.bridge.lifecycleState = 'error';
     snapshot.bridge.lastErrorCode = 'bridge.singleton-already-running';
+    fake.seedRuntimeSnapshot(snapshot);
     useAppStore.setState((state) => ({
       ...state,
       runtimeSnapshot: snapshot,
@@ -328,44 +366,61 @@ describe('DiagnosticsPage monitoring boundary', () => {
         devices: { ...state.configDraft.devices, routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' },
       },
     }));
-    repairDriverRuntimeMock.mockRejectedValue(new Error('repair failed'));
+    fake.rejectNextAction('repair', { code: 'driver.operation-failed', message: 'repair failed' });
+    // Hold the refresh to exercise the ordering: the failure must be appended
+    // after the backend snapshot replaces the notification list.
+    const releaseRefresh = holdCommand('bridge_v2', 'refresh');
+
     await renderPageAndFlush();
-    await act(async () => {
-      findButtonByText(container, '自动修复已选项')?.click();
-      await Promise.resolve();
+    await clickAndSettle(findButtonByText(container, '自动修复已选项'));
+
+    expect(fake.commandCalls('bridge_v2')[0]?.args).toMatchObject({
+      command: { action: 'repair', repairAction: 'reinstall-driver' },
     });
-    expect(repairDriverRuntimeMock).toHaveBeenCalledWith('reinstall-driver', expect.anything());
-    expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('repair failed');
+    expect(useAppStore.getState().runtimeNotifications).toHaveLength(0);
+    await releaseRefresh();
+    const notification = useAppStore.getState().runtimeNotifications[0];
+    expect(notification?.level).toBe('error');
+    expect(notification?.source).toBe('diagnostics');
+    expect(notification?.message).toContain('执行桥接推荐修复');
+    expect(notification?.message).toContain('repair failed');
+    expect(notification?.message).toContain('driver.operation-failed');
+
+    expect(fake.commandCalls('bridge_v2').map((call) => call.action)).toEqual(['repair', 'refresh']);
   });
 
   it('opens benchmark results immediately and streams progress into the modal', async () => {
     const partialReport = benchmarkReport('实时');
     const finalReport = benchmarkReport('实时结果');
-    runModelBenchmarkMock.mockImplementation(async (_model, _secret, _path, options) => {
-      options.onProgress({
-        runId: 'test-run',
-        status: 'running',
+    fake.programBenchmarkRun({
+      progress: [{
         phase: 'output-delta',
         message: '收到模型输出 delta',
         report: partialReport,
-        error: null,
         audioChunksSent: 2,
         totalAudioChunks: 10,
-      });
-      return finalReport;
+      }],
+      report: finalReport,
     });
 
     await renderPage();
+    await clickAndSettle(findButtonByText(container, '开始基准测试'));
 
-    await act(async () => {
-      findButtonByText(container, '开始基准测试')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
+    const configurationCalls = fake.commandCalls('configuration_v2');
+    expect(configurationCalls.map((call) => call.action)).toEqual(['secretRead']);
+    expect(configurationCalls[0]?.args).toMatchObject({ command: { reference: providerSecretRef } });
+
+    const benchmarkCall = fake.commandCalls('provider_v2')[0];
+    expect(benchmarkCall?.action).toBe('runModelBenchmark');
+    // The secret read above is what unlocks the run: it must reach the payload.
+    expect(benchmarkCall?.args).toMatchObject({
+      command: {
+        model: 'qwen3.5-omni-plus-realtime',
+        apiKey: 'fake-api-key',
+        mp3Path: defaultBenchmarkMp3Path,
+        realtimeAudioMode: 'manual',
+      },
     });
-
-    expect(readProviderSecretMock).toHaveBeenCalled();
-    expect(runModelBenchmarkMock).toHaveBeenCalled();
-    expect(runModelBenchmarkMock.mock.calls[0]?.[3]).toMatchObject({ realtimeAudioMode: 'manual' });
     expect(container.textContent).toContain('基准测试结果');
     expect(container.textContent).toContain('收到模型输出 delta');
     expect(container.textContent).toContain('实时结果');
@@ -373,30 +428,27 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
   it('keeps the latest benchmark stream data visible when the run fails', async () => {
     const partialReport = benchmarkReport('部分输出');
-    runModelBenchmarkMock.mockImplementation(async (_model, _secret, _path, options) => {
-      options.onProgress({
-        runId: 'test-run',
-        status: 'running',
+    fake.programBenchmarkRun({
+      progress: [{
         phase: 'output-delta',
         message: '收到模型输出 delta',
         report: partialReport,
-        error: null,
         audioChunksSent: 3,
         totalAudioChunks: 10,
-      });
-      throw new Error('network failed');
+      }],
+      failure: { message: 'network failed' },
     });
 
     await renderPage();
+    await clickAndSettle(findButtonByText(container, '开始基准测试'));
 
-    await act(async () => {
-      findButtonByText(container, '开始基准测试')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(container.textContent).toContain('network failed');
+    // The partial report streamed before the failure stays on screen…
     expect(container.textContent).toContain('部分输出');
+    // …and the run is presented as failed, with the backend's terminal phase.
+    expect(container.querySelector('.benchmark-progress-card')?.className).toContain('benchmark-progress-error');
+    expect(container.querySelector('.benchmark-progress-head strong')?.textContent).toBe('failed');
+    expect(container.querySelector('.diagnostics-benchmark-error')?.textContent).toContain('network failed');
+    expect(container.querySelector('.diagnostics-benchmark-error')?.textContent).toContain('runtime.operation-failed');
   });
 
   it('shows the newest benchmark output and ASR events first', async () => {
@@ -418,15 +470,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
     report.summary.avgOutputDeltasPerRun = run.outputDeltas.length;
     run.translationFinal = '第一段第二段第三段';
 
-    runModelBenchmarkMock.mockResolvedValue(report);
+    fake.programBenchmarkRun({ report });
 
     await renderPage();
-
-    await act(async () => {
-      findButtonByText(container, '开始基准测试')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(findButtonByText(container, '开始基准测试'));
 
     const eventTables = Array.from(container.querySelectorAll('.benchmark-section'))
       .filter((section) => section.querySelector('h4')?.textContent?.includes('事件明细'))
@@ -438,6 +485,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(eventTables[1]![0]?.textContent).toContain('第三句');
     expect(eventTables[1]![0]?.querySelector('.benchmark-delta-idx')?.textContent).toBe('3');
   });
+
   it('renders audio transcript events as benchmark output', async () => {
     const report = benchmarkReport('complete translated output from audio transcript');
     const run = report.runs[0]!;
@@ -466,15 +514,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
     run.responseDoneMs = 210;
     run.translationFinal = 'complete translated output from audio transcript';
     report.summary.avgOutputDeltasPerRun = run.outputDeltas.length;
-    runModelBenchmarkMock.mockResolvedValue(report);
+    fake.programBenchmarkRun({ report });
 
     await renderPage();
-
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action'));
 
     expect(container.querySelector('.benchmark-translation')?.textContent).toContain('complete translated output');
     expect(container.querySelectorAll('.benchmark-warning')).toHaveLength(1);
@@ -515,12 +558,13 @@ describe('DiagnosticsPage monitoring boundary', () => {
     await renderPageAndFlush();
 
     await changeValue(container.querySelector<HTMLInputElement>('.diagnostics-benchmark-input')!, '   ');
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
-      await Promise.resolve();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action'));
+
     expect(container.textContent).toContain('请输入 MP3 文件路径');
-    expect(runModelBenchmarkMock).not.toHaveBeenCalled();
+    // The run is rejected client-side: neither the credential nor the provider
+    // command ever reaches the bridge.
+    expect(fake.commandCalls('configuration_v2')).toHaveLength(0);
+    expect(fake.commandCalls('provider_v2')).toHaveLength(0);
   });
 
   it('updates benchmark model selection and reports missing provider secrets', async () => {
@@ -539,7 +583,8 @@ describe('DiagnosticsPage monitoring boundary', () => {
         providers: [provider],
       },
     });
-    readProviderSecretMock.mockResolvedValueOnce({ secret: '' });
+    // No secret stored for this reference: the keyring answers `secret: null`.
+    fake.setProviderSecret(providerSecretRef, null);
 
     await renderPageAndFlush();
 
@@ -547,26 +592,18 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(select.options.length).toBe(2);
     await changeValue(select, 'second-live');
     await changeValue(container.querySelector<HTMLInputElement>('.diagnostics-benchmark-input')!, 'E:\\audio\\sample.mp3');
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action'));
 
-    expect(readProviderSecretMock).toHaveBeenCalled();
-    expect(runModelBenchmarkMock).not.toHaveBeenCalled();
+    expect(fake.commandCalls('configuration_v2').map((call) => call.action)).toEqual(['secretRead']);
+    expect(fake.commandCalls('provider_v2')).toHaveLength(0);
     expect(container.textContent).toContain('未找到模型 second-live 的 API Key');
   });
 
   it('closes benchmark result modal from the close button and backdrop', async () => {
-    runModelBenchmarkMock.mockResolvedValue(benchmarkReport('modal result'));
+    fake.programBenchmarkRun({ report: benchmarkReport('modal result') });
 
     await renderPage();
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action'));
 
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     await act(async () => {
@@ -589,6 +626,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     snapshot.bridge.driverHealth = 'damaged';
     snapshot.bridge.lifecycleState = 'error';
     snapshot.bridge.lastErrorCode = 'bridge.singleton-already-running';
+    fake.seedRuntimeSnapshot(snapshot);
     useAppStore.setState((state) => ({
       ...state,
       runtimeSnapshot: snapshot,
@@ -608,11 +646,8 @@ describe('DiagnosticsPage monitoring boundary', () => {
     });
     expect(findButtonByText(container, '自动修复已选项')?.disabled).toBe(true);
 
-    await act(async () => {
-      findButtonByText(container, '自动修复已选项')?.click();
-      await Promise.resolve();
-    });
-    expect(repairDriverRuntimeMock).not.toHaveBeenCalled();
+    await clickAndSettle(findButtonByText(container, '自动修复已选项'));
+    expect(fake.commandCalls('bridge_v2')).toHaveLength(0);
 
     await act(async () => {
       repairInputs[1]!.click();
@@ -622,38 +657,29 @@ describe('DiagnosticsPage monitoring boundary', () => {
   });
 
   it('runs runtime-error repair and refreshes after successful Tauri repairs', async () => {
-    installDesktopApi(new TauriDesktopApi());
+    // `runtime-error` is synthesised by the renderer bootstrap, never sent by
+    // the shell: the store holds it while the backend still reports a healthy
+    // snapshot, which is exactly what the repair re-reads.
     const snapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
     snapshot.bridgeStatus = 'runtime-error';
     snapshot.bridge.driverHealth = 'running';
     snapshot.bridge.bridgeState = 'running';
-    const refreshed = { ...snapshot, bridgeStatus: 'tauri-shell' };
-    refreshBridgeRuntimeMock.mockResolvedValue(refreshed);
-    tauriRuntimeMock.invoke.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
-      const action = args?.command?.action;
-      if (command === 'configuration_v2' && (action === 'runtimeSnapshot' || action === 'bootstrapRuntime')) {
-        return { data: refreshed, warnings: [] };
-      }
-      return undefined;
-    });
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
 
     await renderPageAndFlush();
+    await clickAndSettle(findButtonByText(container, '自动修复已选项'));
 
-    await act(async () => {
-      findButtonByText(container, '自动修复已选项')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
-
-    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('configuration_v2', { command: { action: 'bootstrapRuntime' } });
-    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('bootstrap_storage');
-    expect(tauriRuntimeMock.invoke).toHaveBeenCalledWith('configuration_v2', { command: { action: 'runtimeSnapshot' } });
+    expect(fake.commandCalls('configuration_v2').map((call) => call.action)).toEqual([
+      'bootstrapRuntime',
+      'runtimeSnapshot',
+    ]);
+    expect(fake.commandCalls('bootstrap_storage')).toHaveLength(1);
+    expect(fake.commandCalls('bridge_v2').map((call) => call.action)).toEqual(['refresh']);
+    expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('tauri-shell');
     expect(useAppStore.getState().runtimeNotifications[0]?.level).toBe('info');
   });
 
   it('shows the original runtime error in the current issue card without repeating it in the conclusion', async () => {
-    installDesktopApi(new TauriDesktopApi());
     const snapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
     snapshot.bridgeStatus = 'runtime-error';
     snapshot.notifications = [{
@@ -697,40 +723,28 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.inbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
 
-    getLiveSessionEventsRuntimeMock.mockResolvedValue({
-      sessionStartedAt: 'unix-ms:1000',
-      elapsedMs: 5000,
-      model: 'qwen3.5-omni-plus-realtime',
-      asrDeltas: [
-        { elapsedMs: 100, stash: '你好', text: '', eventType: 'conversation.item.input_audio_transcription.delta' },
-        { elapsedMs: 200, stash: '', text: '你好世界', eventType: 'conversation.item.input_audio_transcription.completed' },
-      ],
-      outputDeltas: [
-        { elapsedMs: 300, eventType: 'response.audio_transcript.delta', stash: 'Hello', committedText: '' },
-        { elapsedMs: 500, eventType: 'response.done', stash: '', committedText: '' },
-      ],
-      asrFinal: '你好世界',
-      translationFinal: 'Hello world',
-    });
+    fake.startLiveSession({ model: 'qwen3.5-omni-plus-realtime', sessionStartedAt: 'unix-ms:1000' });
+    fake.pushLiveAsrDelta({ elapsedMs: 100, stash: '你好', text: '', eventType: 'conversation.item.input_audio_transcription.delta' });
+    fake.pushLiveAsrDelta({ elapsedMs: 200, stash: '', text: '你好世界', eventType: 'conversation.item.input_audio_transcription.completed' });
+    fake.pushLiveOutputDelta({ elapsedMs: 300, eventType: 'response.audio_transcript.delta', stash: 'Hello', committedText: '' });
+    fake.pushLiveOutputDelta({ elapsedMs: 500, eventType: 'response.done', stash: '', committedText: 'Hello world' });
 
     await renderPage();
 
     const liveButton = findButtonByText(container, '查看实时事件');
     expect(liveButton).toBeDefined();
 
-    await act(async () => {
-      liveButton!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(liveButton);
 
-    expect(getLiveSessionEventsRuntimeMock).toHaveBeenCalled();
+    expect(fake.commandCalls('diagnostics_v2').map((call) => call.action)).toEqual(['liveSessionEvents']);
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     expect(container.textContent).toContain('实时事件明细');
     expect(container.textContent).toContain('qwen3.5-omni-plus-realtime');
     expect(container.textContent).toContain('ASR 事件明细');
     expect(container.textContent).toContain('输出事件明细');
+    // The finals are derived by the native buffer from the committed deltas.
     expect(container.textContent).toContain('你好世界');
+    expect(container.textContent).toContain('Hello world');
   });
 
   it('closes live events modal from close button and backdrop', async () => {
@@ -738,14 +752,11 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.sessionStartedAt = 'unix-ms:2000';
     audio.inbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
+    fake.startLiveSession({ sessionStartedAt: 'unix-ms:2000' });
 
     await renderPage();
 
-    await act(async () => {
-      findButtonByText(container, '查看实时事件')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(findButtonByText(container, '查看实时事件'));
 
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
 
@@ -758,11 +769,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.querySelector('.benchmark-modal')).toBeNull();
 
     // Reopen and close via backdrop
-    await act(async () => {
-      findButtonByText(container, '查看实时事件')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(findButtonByText(container, '查看实时事件'));
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     await act(async () => {
       container.querySelector<HTMLElement>('.modal-backdrop--benchmark')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -776,23 +783,11 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.inbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
 
-    getLiveSessionEventsRuntimeMock.mockResolvedValue({
-      sessionStartedAt: 'unix-ms:3000',
-      elapsedMs: 1000,
-      model: 'test-model',
-      asrDeltas: [],
-      outputDeltas: [],
-      asrFinal: '',
-      translationFinal: '',
-    });
+    fake.startLiveSession({ model: 'test-model', sessionStartedAt: 'unix-ms:3000' });
 
     await renderPage();
 
-    await act(async () => {
-      findButtonByText(container, '查看实时事件')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(findButtonByText(container, '查看实时事件'));
 
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     expect(container.textContent).toContain('暂无事件数据');
@@ -804,64 +799,35 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.inbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
 
-    getLiveSessionEventsRuntimeMock.mockResolvedValue({
-      sessionStartedAt: 'unix-ms:4000',
-      elapsedMs: 2000,
-      model: 'refresh-model',
-      asrDeltas: [{ elapsedMs: 100, stash: '', text: 'first', eventType: 'asr' }],
-      outputDeltas: [],
-      asrFinal: 'first',
-      translationFinal: '',
-    });
+    fake.startLiveSession({ model: 'refresh-model', sessionStartedAt: 'unix-ms:4000' });
+    fake.pushLiveAsrDelta({ elapsedMs: 100, stash: '', text: 'first', eventType: 'asr' });
 
     await renderPage();
 
-    await act(async () => {
-      findButtonByText(container, '查看实时事件')!.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(findButtonByText(container, '查看实时事件'));
 
-    expect(getLiveSessionEventsRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(fake.commandCalls('diagnostics_v2')).toHaveLength(1);
     expect(container.textContent).toContain('first');
 
-    // Update mock to return new data
-    getLiveSessionEventsRuntimeMock.mockResolvedValue({
-      sessionStartedAt: 'unix-ms:4000',
-      elapsedMs: 5000,
-      model: 'refresh-model',
-      asrDeltas: [
-        { elapsedMs: 100, stash: '', text: 'first', eventType: 'asr' },
-        { elapsedMs: 300, stash: '', text: 'second', eventType: 'asr' },
-      ],
-      outputDeltas: [],
-      asrFinal: 'second',
-      translationFinal: '',
-    });
+    // The native buffer keeps recording while the modal is open.
+    fake.pushLiveAsrDelta({ elapsedMs: 300, stash: '', text: 'second', eventType: 'asr' });
 
     // Click refresh button (the refresh icon-button in the modal head)
     const modalHead = container.querySelector('.benchmark-modal-head')!;
     const refreshButton = modalHead.querySelectorAll<HTMLButtonElement>('.icon-button')[1];
-    await act(async () => {
-      refreshButton?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(refreshButton);
 
-    expect(getLiveSessionEventsRuntimeMock).toHaveBeenCalledTimes(2);
+    expect(fake.commandCalls('diagnostics_v2')).toHaveLength(2);
     expect(container.textContent).toContain('second');
   });
 
   it('runs the empty-state self-check action', async () => {
-    runDiagnosticsSelfCheckRuntimeMock.mockResolvedValue(structuredClone(useAppStore.getState().runtimeSnapshot));
     await renderPage();
 
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.diagnostics-empty-actions .icon-button')?.click();
-      await Promise.resolve();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-empty-actions .icon-button'));
 
-    expect(runDiagnosticsSelfCheckRuntimeMock).toHaveBeenCalled();
+    expect(fake.commandCalls('diagnostics_v2').map((call) => call.action)).toEqual(['selfCheck']);
+    expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).toBe('tauri-shell');
   });
 
   it('exercises both select-all directions and individual repair deselection', async () => {
@@ -888,16 +854,11 @@ describe('DiagnosticsPage monitoring boundary', () => {
   });
 
   it('publishes a successful bridge repair snapshot', async () => {
-    installDesktopApi(new TauriDesktopApi());
     const damaged = structuredClone(useAppStore.getState().runtimeSnapshot);
     damaged.bridge.driverHealth = 'damaged';
     damaged.bridge.lifecycleState = 'error';
     damaged.bridge.lastErrorCode = 'bridge.singleton-already-running';
-    const repaired = structuredClone(damaged);
-    repaired.bridge.driverHealth = 'running';
-    repaired.bridge.bridgeState = 'running';
-    repairDriverRuntimeMock.mockResolvedValue(repaired);
-    refreshBridgeRuntimeMock.mockResolvedValue(repaired);
+    fake.seedRuntimeSnapshot(damaged);
     useAppStore.setState((state) => ({
       ...state,
       runtimeSnapshot: damaged,
@@ -914,33 +875,28 @@ describe('DiagnosticsPage monitoring boundary', () => {
       expect(repairButton).not.toBeNull();
       expect(repairButton?.disabled).toBe(false);
       repairButton?.click();
-      await Promise.resolve();
-      await Promise.resolve();
     });
+    await settleUi();
 
-    expect(repairDriverRuntimeMock).toHaveBeenCalled();
+    expect(fake.commandCalls('bridge_v2').map((call) => call.action)).toEqual(['repair', 'refresh']);
+    expect(fake.getRuntimeSnapshot().bridge.bridgeState).toBe('running');
     expect(useAppStore.getState().runtimeSnapshot.bridge.driverHealth).toBe('running');
   });
 
   it('exports benchmark and live-event reports through both formats', async () => {
+    // The exporter is a browser download facade (Blob + anchor click), the one
+    // leaf externality of the export path.
     const benchmarkExport = vi.spyOn(DiagnosticsReportExporter, 'exportBenchmark').mockResolvedValue({ outputPath: 'benchmark.json', fileCount: 1 });
     const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockResolvedValue({ outputPath: 'events.json', fileCount: 1 });
-    runModelBenchmarkMock.mockResolvedValue(benchmarkReport('export result'));
+    fake.programBenchmarkRun({ report: benchmarkReport('export result') });
     const audio = structuredClone(audioRuntimeSnapshotMock);
     audio.sessionStartedAt = 'unix-ms:5000';
     audio.inbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
-    getLiveSessionEventsRuntimeMock.mockResolvedValue({
-      sessionStartedAt: 'unix-ms:5000', elapsedMs: 1000, model: 'live-model',
-      asrDeltas: [], outputDeltas: [], asrFinal: '', translationFinal: '',
-    });
+    fake.startLiveSession({ model: 'live-model', sessionStartedAt: 'unix-ms:5000' });
     await renderPage();
 
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action'));
     for (const format of ['JSON', 'TXT']) {
       await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
       await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button'))
@@ -949,11 +905,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(benchmarkExport).toHaveBeenCalledTimes(2);
 
     await act(async () => container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head .icon-button')[1]?.click());
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button')?.click();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button'));
     for (const format of ['JSON', 'TXT']) {
       await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
       await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button'))
@@ -971,7 +923,8 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.sessionStartedAt = 'unix-ms:5000';
     audio.sttConnected = true;
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: runtime, audioRuntimeSnapshot: audio }));
-    getLiveSessionEventsRuntimeMock.mockImplementation(() => new Promise(() => undefined));
+    // Never released: the live-events read stays in flight for the whole case.
+    holdCommand('diagnostics_v2', 'liveSessionEvents');
 
     await renderPage();
     expect(Array.from(container.querySelectorAll('.compact-alert-item')).some((item) =>
@@ -1013,23 +966,48 @@ describe('DiagnosticsPage monitoring boundary', () => {
     const report = benchmarkReport('sparse');
     report.audioDurationSecs = undefined as never;
     report.runs = [];
-    runModelBenchmarkMock.mockResolvedValue(report);
+    fake.programBenchmarkRun({ report });
     const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockResolvedValue({ outputPath: 'events.json', fileCount: 1 });
     const audio = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
     audio.sessionStartedAt = 'unix-ms:5000';
     audio.inbound.streamBound = true;
     useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
-    getLiveSessionEventsRuntimeMock.mockResolvedValue({ sessionStartedAt: 'unix-ms:5000', elapsedMs: 0, model: '', asrDeltas: [], outputDeltas: [], asrFinal: '', translationFinal: '' });
+    fake.startLiveSession({ model: '', sessionStartedAt: 'unix-ms:5000' });
     await renderPage();
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action')?.click();
-      await Promise.resolve(); await Promise.resolve();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action'));
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     await act(async () => container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head .icon-button')[1]?.click());
-    await act(async () => { container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button')?.click(); await Promise.resolve(); await Promise.resolve(); });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button'));
     await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
     await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button')).find((button) => button.textContent === 'JSON')?.click());
     expect(liveExport).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('live-events-unknown-'), 'json');
+  });
+
+  it('PREVIEW path: repairs through the browser-preview boundary without touching the native bridge', async () => {
+    installPreviewShell();
+    const damaged = structuredClone(useAppStore.getState().runtimeSnapshot);
+    damaged.bridge.driverHealth = 'damaged';
+    damaged.bridge.lifecycleState = 'error';
+    damaged.bridge.lastErrorCode = 'bridge.singleton-already-running';
+    useAppStore.setState((state) => ({
+      ...state,
+      runtimeSnapshot: damaged,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' },
+      },
+    }));
+
+    await renderPageAndFlush();
+    expect(container.querySelector('.diagnostics-raw-signals')?.textContent).toContain('IPC Bridge: false');
+
+    await clickAndSettle(findButtonByText(container, '自动修复已选项'));
+
+    // Nothing reached the IPC bridge: the preview implementation answered.
+    expect(fake.calls).toHaveLength(0);
+    expect(useAppStore.getState().runtimeSnapshot.bridge.driverHealth).toBe('running');
+    // Without a native shell the controller skips the follow-up bridge refresh,
+    // so the success notification stays at the head of the list.
+    expect(useAppStore.getState().runtimeNotifications[0]?.level).toBe('info');
   });
 });

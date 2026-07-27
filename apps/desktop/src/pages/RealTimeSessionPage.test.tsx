@@ -4,88 +4,60 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { appConfigDraftMock } from '../mocks/app-config';
+import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import RealTimeSessionPage from './RealTimeSessionPage';
 import { diagnosticsReadyPatchForMode, WatchFallbackDialog } from './RealTimeSessionScreen';
-import { waitForWatchRouteReadyRuntime } from '../runtime/audio-runtime';
+import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
+import { loggerTestHelpers } from '../runtime/logger';
+import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
+import type { AppConfigDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils';
 
-const startAudioRouteRuntimeMock = vi.fn();
-const preconnectOmniRealtimeRuntimeMock = vi.fn();
-const startSpeechDispatchRuntimeMock = vi.fn();
-const startTranslateWorkerRuntimeMock = vi.fn();
-const stopAudioRouteRuntimeMock = vi.fn();
-const stopSpeechDispatchRuntimeMock = vi.fn();
-const stopTranslateWorkerRuntimeMock = vi.fn();
-const clearSubtitleCuesRuntimeMock = vi.fn();
-const showSubtitleOverlayWindowMock = vi.fn();
-const toggleSubtitleOverlayWindowMock = vi.fn();
-const installDriverRuntimeMock = vi.fn();
-const repairDriverRuntimeMock = vi.fn();
-const startBridgeServiceRuntimeMock = vi.fn();
-const refreshBridgeRuntimeMock = vi.fn();
+// The session page runs against the injectable fake bridge instead of stubbed
+// runtime modules: every renderer→shell call travels the real
+// audio-runtime / bridge-runtime / desktop-api-v2 code path, commands only
+// acknowledge, and route/speech state converges later over the push channel
+// (`audio://snapshot`) exactly like the native backend. Assertions therefore
+// observe recorded commands plus the resulting store/DOM state.
 
-function createDeferred<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (reason?: unknown) => void;
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
-  });
-  return { promise, resolve, reject };
-}
+const harness = vi.hoisted(() => ({
+  invoke: null as null | (<T>(command: string, args?: Record<string, unknown>) => Promise<T>),
+}));
 
+vi.mock('@tauri-apps/api/core', () => ({
+  invoke: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+    if (!harness.invoke) {
+      return Promise.reject(new Error(`fake bridge not installed for command ${command}`));
+    }
+    return harness.invoke(command, args);
+  },
+  isTauri: () => true,
+}));
+
+// Presentational leaf: kept mocked so this suite stays about the session page.
 vi.mock('../components/page/DiagnosticsQuickLink', () => ({
   default: () => <div data-testid="diagnostics-quick-link" />,
 }));
 
-vi.mock('../runtime/audio-runtime', () => ({
-  startAudioRouteRuntime: (...args: unknown[]) => startAudioRouteRuntimeMock(...args),
-  preconnectOmniRealtimeRuntime: (...args: unknown[]) => preconnectOmniRealtimeRuntimeMock(...args),
-  cancelOmniPreconnectRuntime: vi.fn().mockResolvedValue(structuredClone(audioRuntimeSnapshotMock)),
-  getAudioRuntimeSnapshotRuntime: vi.fn().mockResolvedValue({
-    ...structuredClone(audioRuntimeSnapshotMock),
-    inbound: { ...structuredClone(audioRuntimeSnapshotMock).inbound, streamBound: true, captureState: 'capturing', framesCaptured: 960 },
-    outbound: { ...structuredClone(audioRuntimeSnapshotMock).outbound, streamBound: true, captureState: 'capturing' },
-  }),
-  waitForWatchRouteReadyRuntime: vi.fn().mockResolvedValue({
-    ...structuredClone(audioRuntimeSnapshotMock),
-    inbound: { ...structuredClone(audioRuntimeSnapshotMock).inbound, streamBound: true, captureState: 'capturing', framesCaptured: 960 },
-  }),
-  prewarmCaptureRoutesRuntime: vi.fn().mockResolvedValue(undefined),
-  startSpeechDispatchRuntime: (...args: unknown[]) => startSpeechDispatchRuntimeMock(...args),
-  startTranslateWorkerRuntime: (...args: unknown[]) => startTranslateWorkerRuntimeMock(...args),
-  stopAudioRouteRuntime: (...args: unknown[]) => stopAudioRouteRuntimeMock(...args),
-  stopSpeechDispatchRuntime: (...args: unknown[]) => stopSpeechDispatchRuntimeMock(...args),
-  stopTranslateWorkerRuntime: (...args: unknown[]) => stopTranslateWorkerRuntimeMock(...args),
-  clearSubtitleCuesRuntime: (...args: unknown[]) => clearSubtitleCuesRuntimeMock(...args),
-  showSubtitleOverlayWindow: (...args: unknown[]) => showSubtitleOverlayWindowMock(...args),
-  toggleSubtitleOverlayWindow: (...args: unknown[]) => toggleSubtitleOverlayWindowMock(...args),
-}));
-
-vi.mock('../runtime/bridge-runtime', () => ({
-  installDriverRuntime: (...args: unknown[]) => installDriverRuntimeMock(...args),
-  repairDriverRuntime: (...args: unknown[]) => repairDriverRuntimeMock(...args),
-  startBridgeServiceRuntime: (...args: unknown[]) => startBridgeServiceRuntimeMock(...args),
-  refreshBridgeRuntime: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
-}));
-
-vi.mock('../runtime/desktop-api-v2', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../runtime/desktop-api-v2')>()),
-  desktopApiV2: {
-    bridge: {
-      install: (...args: unknown[]) => installDriverRuntimeMock(...args),
-      refresh: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
-      repair: (...args: unknown[]) => repairDriverRuntimeMock(...args),
-      start: (...args: unknown[]) => startBridgeServiceRuntimeMock(...args),
-    },
-  },
-}));
+/** Stable label for one renderer→shell call: v2 action (plus direction) or raw command. */
+function describeCall(command: string, args?: Record<string, unknown>): string {
+  const envelope = (args?.command ?? {}) as { action?: unknown; direction?: unknown };
+  if (typeof envelope.action === 'string') {
+    return typeof envelope.direction === 'string' ? `${envelope.action}:${envelope.direction}` : envelope.action;
+  }
+  return typeof args?.direction === 'string' ? `${command}:${args.direction}` : command;
+}
 
 describe('RealTimeSessionPage one-click launch', () => {
   let view: TestRootHandle;
   let container: HTMLDivElement;
+  let fake: FakeBridge;
+  /** Commands as they were issued, including the ones still held by a gate. */
+  let issued: string[];
+  /** Per-command gates: a held command hangs until the test releases it. */
+  let gates: Map<string, Promise<void>>;
 
   async function renderPage() {
     await view.render(
@@ -95,21 +67,129 @@ describe('RealTimeSessionPage one-click launch', () => {
     );
   }
 
+  /** Makes the next call carrying `label` hang; returns its release function. */
+  function holdCommand(label: string): () => void {
+    let release!: () => void;
+    gates.set(label, new Promise<void>((resolve) => {
+      release = resolve;
+    }));
+    return release;
+  }
+
+  /**
+   * Runs `action` and drains the microtask chain it starts, all inside act():
+   * a scene launch keeps resolving promises long after the click handler
+   * returned, and every store write it makes must stay inside the act scope.
+   */
+  async function runInAct(action?: () => void) {
+    await act(async () => {
+      action?.();
+      for (let index = 0; index < 80; index += 1) {
+        await Promise.resolve();
+      }
+    });
+  }
+
+  async function sleepInAct(ms: number) {
+    await act(async () => {
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, ms);
+      });
+    });
+  }
+
+  /** The clear-subtitles button is disabled exactly while a busy action runs. */
+  function isBusy() {
+    const toolbars = container.querySelectorAll<HTMLElement>('.control-toolbar');
+    return toolbars[1]?.querySelector('button')?.disabled === true;
+  }
+
+  /**
+   * Lets the fake backend's queued worker transitions land — they arrive on the
+   * push channel, never in a command return — and gives React a chance to
+   * render the resulting store updates.
+   */
+  async function settleSession() {
+    await sleepInAct(30);
+    const deadline = Date.now() + 2_000;
+    while (isBusy() && Date.now() < deadline) {
+      await sleepInAct(20);
+    }
+    await sleepInAct(20);
+  }
+
+  /** Clicks a control, then lets the launch/stop flow it started settle. */
+  async function clickAndSettle(element: Element | null | undefined) {
+    await runInAct(() => {
+      (element as HTMLElement | null | undefined)?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    await settleSession();
+  }
+
+  function bridgeLifecycleCalls() {
+    return [...fake.commandCalls('bridge_v2'), ...fake.commandCalls('start_bridge_service')];
+  }
+
+  function routeStartArgs(index = 0): Record<string, unknown> {
+    return fake.commandCalls('start_audio_route')[index]?.args ?? {};
+  }
+
+  function routeStartDirections() {
+    return fake.commandCalls('start_audio_route').map((call) => call.args?.direction);
+  }
+
+  function sessionCommandArgs(action: string, index = 0): Record<string, unknown> {
+    return (fake.sessionActionCalls(action)[index]?.args?.command ?? {}) as Record<string, unknown>;
+  }
+
+  function stopRouteDirections() {
+    return fake.sessionActionCalls('stopRoute')
+      .map((call) => ((call.args?.command ?? {}) as { direction?: string }).direction);
+  }
+
+  function stopActionOrder() {
+    return issued.filter((label) => label.startsWith('stop'));
+  }
+
+  /**
+   * Brings the fake backend into a genuinely running session (both capture
+   * routes bound, speech worker started) and publishes the converged native
+   * snapshot the way the bootstrap push listener does.
+   */
+  async function startNativeSession() {
+    const draft = useAppStore.getState().configDraft;
+    const config: AppConfigDraft = {
+      ...draft,
+      speech: { ...draft.speech, enabled: true, outputTarget: 'speaker' },
+    };
+    await fake.invoke('start_audio_route', { direction: 'inbound', config });
+    await fake.invoke('start_audio_route', { direction: 'outbound', config });
+    await fake.invoke('session_v2', { command: { action: 'startSpeech', config } });
+    await fake.settle();
+    useAppStore.getState().setAudioRuntimeSnapshot(fake.getAudioSnapshot());
+  }
+
   beforeEach(() => {
-    startAudioRouteRuntimeMock.mockReset();
-    preconnectOmniRealtimeRuntimeMock.mockReset();
-    startSpeechDispatchRuntimeMock.mockReset();
-    startTranslateWorkerRuntimeMock.mockReset();
-    stopAudioRouteRuntimeMock.mockReset();
-    stopSpeechDispatchRuntimeMock.mockReset();
-    stopTranslateWorkerRuntimeMock.mockReset();
-    clearSubtitleCuesRuntimeMock.mockReset();
-    showSubtitleOverlayWindowMock.mockReset();
-    toggleSubtitleOverlayWindowMock.mockReset();
-    installDriverRuntimeMock.mockReset();
-    repairDriverRuntimeMock.mockReset();
-    startBridgeServiceRuntimeMock.mockReset();
-    refreshBridgeRuntimeMock.mockReset();
+    fake = createFakeBridge();
+    issued = [];
+    gates = new Map();
+    harness.invoke = <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
+      const label = describeCall(command, args);
+      issued.push(label);
+      const gate = gates.get(label);
+      if (!gate) {
+        return fake.invoke<T>(command, args);
+      }
+      gates.delete(label);
+      return gate.then(() => fake.invoke<T>(command, args));
+    };
+    resetDesktopApiForTests();
+    installDesktopApi(new TauriDesktopApi());
+    // The desktop-runtime bootstrap forwards native audio pushes into the
+    // store; without it the page would never observe worker convergence.
+    void fake.listen<AudioRuntimeSnapshot>('audio://snapshot', (event) => {
+      useAppStore.getState().setAudioRuntimeSnapshot(event.payload);
+    });
 
     const configDraft = structuredClone(appConfigDraftMock);
     const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
@@ -130,45 +210,6 @@ describe('RealTimeSessionPage one-click launch', () => {
     audioRuntimeSnapshot.outbound.streamBound = false;
     audioRuntimeSnapshot.speech.dispatchState = 'idle';
 
-    const bridgeReadySnapshot = structuredClone(runtimeSnapshot);
-    bridgeReadySnapshot.bridge.driverHealth = 'running';
-    bridgeReadySnapshot.bridge.bridgeState = 'running';
-    bridgeReadySnapshot.bridge.installPhase = 'ready';
-    installDriverRuntimeMock.mockResolvedValue(bridgeReadySnapshot);
-    refreshBridgeRuntimeMock.mockImplementation(async () => structuredClone(useAppStore.getState().runtimeSnapshot));
-
-    const inboundReadySnapshot = structuredClone(audioRuntimeSnapshot);
-    inboundReadySnapshot.inbound.streamBound = true;
-    startAudioRouteRuntimeMock.mockImplementation(async (direction: 'inbound' | 'outbound') => {
-      if (direction === 'inbound') {
-        return inboundReadySnapshot;
-      }
-
-      const outboundReadySnapshot = structuredClone(inboundReadySnapshot);
-      outboundReadySnapshot.outbound.streamBound = true;
-      return outboundReadySnapshot;
-    });
-    preconnectOmniRealtimeRuntimeMock.mockResolvedValue(audioRuntimeSnapshot);
-
-    const speechReadySnapshot = structuredClone(audioRuntimeSnapshot);
-    speechReadySnapshot.inbound.streamBound = true;
-    speechReadySnapshot.outbound.streamBound = true;
-    speechReadySnapshot.speech.dispatchState = 'playing';
-    speechReadySnapshot.speech.outputTarget = 'both';
-    startSpeechDispatchRuntimeMock.mockResolvedValue(speechReadySnapshot);
-    startTranslateWorkerRuntimeMock.mockResolvedValue(speechReadySnapshot);
-    stopAudioRouteRuntimeMock.mockResolvedValue(audioRuntimeSnapshot);
-    stopSpeechDispatchRuntimeMock.mockResolvedValue(audioRuntimeSnapshot);
-    stopTranslateWorkerRuntimeMock.mockResolvedValue(audioRuntimeSnapshot);
-    clearSubtitleCuesRuntimeMock.mockResolvedValue(audioRuntimeSnapshot);
-
-    const overlayVisibleSnapshot = structuredClone(bridgeReadySnapshot);
-    overlayVisibleSnapshot.windows = overlayVisibleSnapshot.windows.map((item) =>
-      item.label === 'subtitle-overlay' ? { ...item, visible: true } : item,
-    );
-    showSubtitleOverlayWindowMock.mockResolvedValue(overlayVisibleSnapshot);
-    toggleSubtitleOverlayWindowMock.mockResolvedValue(overlayVisibleSnapshot);
-
     useAppStore.setState((state) => ({
       ...state,
       configDraft,
@@ -183,6 +224,9 @@ describe('RealTimeSessionPage one-click launch', () => {
 
   afterEach(async () => {
     await view.cleanup();
+    loggerTestHelpers.reset();
+    harness.invoke = null;
+    resetDesktopApiForTests();
     vi.useRealTimers();
   });
 
@@ -343,28 +387,39 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(launchButton).toBeDefined();
     expect(launchButton?.disabled).toBe(false);
 
-    await act(async () => {
-      launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(launchButton);
 
-    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
-    expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(2);
-    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(1, 'inbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'voice-room', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false }) }));
-    expect(startAudioRouteRuntimeMock).toHaveBeenNthCalledWith(2, 'outbound', expect.objectContaining({ devices: expect.objectContaining({ routeMode: 'voice-room', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false }) }));
-    expect(startSpeechDispatchRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(showSubtitleOverlayWindowMock).toHaveBeenCalledTimes(1);
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(routeStartDirections()).toEqual(['inbound', 'outbound']);
+    expect(routeStartArgs(0)).toMatchObject({
+      direction: 'inbound',
+      config: { devices: { routeMode: 'voice-room', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false } },
+    });
+    expect(routeStartArgs(1)).toMatchObject({
+      direction: 'outbound',
+      config: { devices: { routeMode: 'voice-room', feedbackLoopPrevention: 'echo-cancel', aecEnabled: true, virtualMicOutputEnabled: false } },
+    });
+    expect(fake.sessionActionCalls('startSpeech')).toHaveLength(1);
+    expect(fake.commandCalls('show_subtitle_overlay')).toHaveLength(1);
 
     expect(useAppStore.getState().configDraft.devices.routeMode).toBe('voice-room');
     expect(useAppStore.getState().configDraft.speech.enabled).toBe(true);
     expect(useAppStore.getState().configDraft.speech.outputTarget).toBe('speaker');
-    expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('playing');
+    // Real start_speech_dispatch semantics: the worker is up and waiting for a
+    // subtitle; nothing has played and no frame counter moved yet.
+    expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('waiting-subtitle');
+    expect(useAppStore.getState().audioRuntimeSnapshot.speech.speakerFramesWritten).toBe(0);
     expect(container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.getAttribute('aria-pressed')).toBe('true');
     expect(container.querySelector<HTMLButtonElement>('.control-toolbar button')?.disabled).toBe(false);
     expect(Array.from(container.querySelectorAll('.audio-route-status-group h4')).map((element) => element.textContent)).toEqual([
       '系统音频',
       '麦克风音频',
     ]);
+
+    // The counters only advance once the worker actually dispatches a cue.
+    fake.dispatchSpeechCue();
+    await settleSession();
+    expect(useAppStore.getState().audioRuntimeSnapshot.speech.speakerFramesWritten).toBeGreaterThan(0);
   });
 
   it('rejects conversation startup before native calls when no reply model is selected', async () => {
@@ -378,11 +433,10 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     await renderPage();
 
-    await act(async () => {
-      container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.click();
-    });
+    await clickAndSettle(container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]);
 
-    expect(startAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    expect(fake.commandCalls('start_audio_route')).toHaveLength(0);
+    expect(fake.sessionActionCalls('startSpeech')).toHaveLength(0);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('选择适用于当前场景的语音模型');
   });
 
@@ -426,37 +480,37 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(launchButton).toBeDefined();
     expect(launchButton?.disabled).toBe(false);
 
-    await act(async () => {
-      launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(launchButton);
 
-    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
-    expect(repairDriverRuntimeMock).not.toHaveBeenCalled();
-    expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
-    expect(preconnectOmniRealtimeRuntimeMock).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
-      'inbound',
-      expect.objectContaining({
-        devices: expect.objectContaining({
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(fake.sessionActionCalls('preconnect')).toHaveLength(0);
+    expect(routeStartDirections()).toEqual(['inbound']);
+    expect(routeStartArgs(0)).toMatchObject({
+      direction: 'inbound',
+      config: {
+        devices: {
           routeMode: 'watch',
           subtitleTranslationMode: 'secondary',
           subtitleTranslationModelId: 'template-dashscope-realtime::qwen3.6-flash-2026-04-16',
-        }),
-      }),
-    );
-    expect(startSpeechDispatchRuntimeMock).not.toHaveBeenCalled();
+        },
+      },
+    });
+    expect(fake.sessionActionCalls('startSpeech')).toHaveLength(0);
     // Watch routes create the native overlay together with capture; the renderer
     // does not re-open it (sceneLaunchPlan skips subtitle-overlay for watch mode).
-    expect(showSubtitleOverlayWindowMock).not.toHaveBeenCalled();
+    expect(fake.commandCalls('show_subtitle_overlay')).toHaveLength(0);
 
     expect(useAppStore.getState().configDraft.devices.routeMode).toBe('watch');
     expect(useAppStore.getState().configDraft.speech.enabled).toBe(false);
+    // The accepted route converged over the push channel, not in the command return.
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(true);
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.captureState).toBe('capturing');
   });
 
 
   it('does not block watch launch on the legacy Omni preconnect command', async () => {
-    preconnectOmniRealtimeRuntimeMock.mockRejectedValue(new Error('preconnect denied'));
+    // Armed so a preconnect attempt would fail loudly if the launch ever made one.
+    fake.rejectNextAction('preconnect', { code: 'session.preconnect-denied', message: 'preconnect denied' });
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -483,19 +537,18 @@ describe('RealTimeSessionPage one-click launch', () => {
       );
     });
 
-    await act(async () => {
-      (container.querySelector('button') as HTMLButtonElement | null)?.click();
-    });
+    await clickAndSettle(container.querySelector('button'));
 
-    expect(preconnectOmniRealtimeRuntimeMock).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(fake.sessionActionCalls('preconnect')).toHaveLength(0);
+    expect(routeStartDirections()).toEqual(['inbound']);
     expect(useAppStore.getState().runtimeNotifications.some((item) =>
       item.message.includes('Omni 预连接失败'),
     )).toBe(false);
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(true);
   });
 
   it('keeps the watch route active when the background overlay fails to open', async () => {
-    showSubtitleOverlayWindowMock.mockRejectedValue(new Error('overlay denied'));
+    fake.rejectNextAction('show_subtitle_overlay', { code: 'overlay.open-failed', message: 'overlay denied' });
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -522,12 +575,11 @@ describe('RealTimeSessionPage one-click launch', () => {
       );
     });
 
-    await act(async () => {
-      (container.querySelector('button') as HTMLButtonElement | null)?.click();
-    });
+    await clickAndSettle(container.querySelector('button'));
 
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
-    expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    expect(routeStartArgs(0)).toMatchObject({ direction: 'inbound' });
+    expect(stopRouteDirections()).toEqual([]);
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(true);
   });
 
   it('does not tear down or fail the watch route when readiness is still converging at the deadline', async () => {
@@ -536,10 +588,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     // the route or surface a failure — the route keeps initializing and pushes a
     // bound (or failed) snapshot on its own. Previously this case tore the route
     // down and swallowed the outcome, so clicking watch appeared to do nothing.
-    vi.mocked(waitForWatchRouteReadyRuntime).mockResolvedValueOnce({
-      ...structuredClone(audioRuntimeSnapshotMock),
-      inbound: { ...structuredClone(audioRuntimeSnapshotMock).inbound, streamBound: false, captureState: 'armed', lastError: null },
-    });
+    vi.useFakeTimers();
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -566,13 +615,33 @@ describe('RealTimeSessionPage one-click launch', () => {
       );
     });
 
-    await act(async () => {
-      (container.querySelector('button') as HTMLButtonElement | null)?.click();
-    });
+    // Hold the first readiness poll so the native worker cannot converge while
+    // the client budget runs out: the launch observes an accepted, still-armed,
+    // error-free route exactly at its deadline.
+    const releaseReadinessPoll = holdCommand('snapshot');
+    const launchButton = container.querySelector('button') as HTMLButtonElement | null;
+    await runInAct(() => launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    vi.setSystemTime(Date.now() + 2_000);
+    await runInAct(releaseReadinessPoll);
 
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
-    expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    // The launch finished at its deadline instead of hanging: the busy state is
+    // released and the watch button is clickable again.
+    expect(isBusy()).toBe(false);
+    expect(container.querySelectorAll<HTMLButtonElement>('.provider-list button')[0]?.textContent).toBe('看片');
+    expect(routeStartDirections()).toEqual(['inbound']);
+    expect(stopRouteDirections()).toEqual([]);
     expect(useAppStore.getState().runtimeNotifications.some((item) => item.level === 'error')).toBe(false);
+    // Still converging natively rather than torn down.
+    expect(fake.getAudioSnapshot().inbound.captureState).toBe('armed');
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(false);
+
+    // …and the worker's own convergence still lands afterwards and drives the UI.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(5);
+    });
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(true);
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.captureState).toBe('capturing');
+    vi.useRealTimers();
   });
 
   it('does not reopen the subtitle overlay when it is already visible during watch launch', async () => {
@@ -605,12 +674,11 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     await renderPage();
 
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('button')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('button'));
 
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
-    expect(showSubtitleOverlayWindowMock).not.toHaveBeenCalled();
+    expect(routeStartArgs(0)).toMatchObject({ direction: 'inbound' });
+    expect(fake.commandCalls('show_subtitle_overlay')).toHaveLength(0);
+    expect(fake.commandCalls('toggle_subtitle_overlay')).toHaveLength(0);
   });
 
   it('starts speech dispatch for Omni watch mode when device translated speech output is enabled', async () => {
@@ -637,25 +705,24 @@ describe('RealTimeSessionPage one-click launch', () => {
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
 
-    await act(async () => {
-      launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(launchButton);
 
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(startSpeechDispatchRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(startSpeechDispatchRuntimeMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        devices: expect.objectContaining({
+    expect(routeStartDirections()).toEqual(['inbound']);
+    expect(fake.sessionActionCalls('startSpeech')).toHaveLength(1);
+    expect(sessionCommandArgs('startSpeech')).toMatchObject({
+      config: {
+        devices: {
           routeMode: 'watch',
           outputSpeechEnabled: true,
           subtitleTranslationMode: 'secondary',
-        }),
-        speech: expect.objectContaining({
+        },
+        speech: {
           enabled: true,
           localPlaybackEnabled: true,
-        }),
-      }),
-    );
+        },
+      },
+    });
+    expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('waiting-subtitle');
   });
 
   it('starts speech dispatch for Omni watch mode when secondary translation speech is enabled', async () => {
@@ -678,24 +745,23 @@ describe('RealTimeSessionPage one-click launch', () => {
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
 
-    await act(async () => {
-      launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(launchButton);
 
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(startSpeechDispatchRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(startSpeechDispatchRuntimeMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        devices: expect.objectContaining({
+    expect(routeStartDirections()).toEqual(['inbound']);
+    expect(fake.sessionActionCalls('startSpeech')).toHaveLength(1);
+    expect(sessionCommandArgs('startSpeech')).toMatchObject({
+      config: {
+        devices: {
           routeMode: 'watch',
           subtitleTranslationMode: 'secondary',
-        }),
-        speech: expect.objectContaining({
+        },
+        speech: {
           enabled: true,
           localPlaybackEnabled: true,
-        }),
-      }),
-    );
+        },
+      },
+    });
+    expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('waiting-subtitle');
   });
 
   it('delegates virtual-driver readiness to the background watch worker', async () => {
@@ -723,11 +789,6 @@ describe('RealTimeSessionPage one-click launch', () => {
     runtimeSnapshot.bridgeStatus = 'tauri-shell';
     runtimeSnapshot.bridge.driverHealth = 'not-installed';
     runtimeSnapshot.bridge.bridgeState = 'stopped';
-    const bridgeReady = structuredClone(runtimeSnapshot);
-    bridgeReady.bridge.driverHealth = 'running';
-    bridgeReady.bridge.bridgeState = 'running';
-    bridgeReady.bridge.installPhase = 'ready';
-    installDriverRuntimeMock.mockResolvedValue(bridgeReady);
 
     await act(async () => {
       useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
@@ -738,25 +799,20 @@ describe('RealTimeSessionPage one-click launch', () => {
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
 
-    await act(async () => {
-      launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(launchButton);
 
-    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
-    expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith(
-      'inbound',
-      expect.objectContaining({
-        speech: expect.objectContaining({
-          localPlaybackEnabled: true,
-        }),
-      }),
-    );
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(routeStartArgs(0)).toMatchObject({
+      direction: 'inbound',
+      config: { speech: { localPlaybackEnabled: true } },
+    });
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(true);
   });
 
   it('does not synchronously repair or downgrade virtual-driver watch startup', async () => {
     const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(true);
-    installDriverRuntimeMock.mockRejectedValue(new Error('SYSVAD package missing'));
+    // Armed so a synchronous driver install during launch would fail loudly.
+    fake.rejectNextAction('install', { code: 'bridge.install-failed', message: 'SYSVAD package missing' });
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -775,20 +831,18 @@ describe('RealTimeSessionPage one-click launch', () => {
       );
     });
 
-    await act(async () => {
-      (container.querySelector('button') as HTMLButtonElement | null)?.dispatchEvent(
-        new MouseEvent('click', { bubbles: true }),
-      );
-    });
+    await clickAndSettle(container.querySelector('button'));
 
     expect(confirmMock).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
+    expect(container.querySelector('[role="dialog"]')).toBeNull();
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(routeStartArgs(0)).toMatchObject({ direction: 'inbound' });
     confirmMock.mockRestore();
   });
 
   it('preserves the requested watch route while Bridge converges in the background', async () => {
     const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(false);
-    installDriverRuntimeMock.mockRejectedValue(new Error('SYSVAD package missing'));
+    fake.rejectNextAction('install', { code: 'bridge.install-failed', message: 'SYSVAD package missing' });
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -807,13 +861,13 @@ describe('RealTimeSessionPage one-click launch', () => {
       );
     });
 
-    await act(async () => {
-      (container.querySelector('button') as HTMLButtonElement | null)?.dispatchEvent(
-        new MouseEvent('click', { bubbles: true }),
-      );
-    });
+    await clickAndSettle(container.querySelector('button'));
 
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
+    expect(routeStartArgs(0)).toMatchObject({
+      direction: 'inbound',
+      config: { devices: { routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' } },
+    });
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
     confirmMock.mockRestore();
   });
 
@@ -836,7 +890,7 @@ describe('RealTimeSessionPage one-click launch', () => {
   ]) {
     it(`does not block watch startup on Bridge repair for ${scenario.name}`, async () => {
       const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(true);
-      installDriverRuntimeMock.mockRejectedValue(new Error('driver package missing'));
+      fake.rejectNextAction('install', { code: 'bridge.install-failed', message: 'driver package missing' });
       await act(async () => {
         useAppStore.setState((state) => ({
           ...state,
@@ -862,14 +916,12 @@ describe('RealTimeSessionPage one-click launch', () => {
         );
       });
 
-      await act(async () => {
-        (container.querySelector('button') as HTMLButtonElement | null)?.dispatchEvent(
-          new MouseEvent('click', { bubbles: true }),
-        );
-      });
+      await clickAndSettle(container.querySelector('button'));
 
       expect(confirmMock).not.toHaveBeenCalled();
-      expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.any(Object));
+      expect(container.querySelector('[role="dialog"]')).toBeNull();
+      expect(bridgeLifecycleCalls()).toHaveLength(0);
+      expect(routeStartArgs(0)).toMatchObject({ direction: 'inbound' });
       confirmMock.mockRestore();
     });
   }
@@ -894,11 +946,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     runtimeSnapshot.bridgeStatus = 'tauri-shell';
     runtimeSnapshot.bridge.driverHealth = 'not-installed';
     runtimeSnapshot.bridge.bridgeState = 'stopped';
-    const bridgeReady = structuredClone(runtimeSnapshot);
-    bridgeReady.bridge.driverHealth = 'running';
-    bridgeReady.bridge.bridgeState = 'running';
-    bridgeReady.bridge.installPhase = 'ready';
-    installDriverRuntimeMock.mockResolvedValue(bridgeReady);
+    fake.rejectNextAction('install', { code: 'bridge.install-failed', message: 'driver package missing' });
 
     await act(async () => {
       useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
@@ -909,12 +957,10 @@ describe('RealTimeSessionPage one-click launch', () => {
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
 
-    await act(async () => {
-      launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(launchButton);
 
-    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
-    expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(routeStartArgs(0)).toMatchObject({ direction: 'inbound' });
   });
 
   it('does not synchronously install Bridge for speech outputTarget virtual-mic', async () => {
@@ -941,11 +987,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     runtimeSnapshot.bridgeStatus = 'tauri-shell';
     runtimeSnapshot.bridge.driverHealth = 'not-installed';
     runtimeSnapshot.bridge.bridgeState = 'stopped';
-    const bridgeReady = structuredClone(runtimeSnapshot);
-    bridgeReady.bridge.driverHealth = 'running';
-    bridgeReady.bridge.bridgeState = 'running';
-    bridgeReady.bridge.installPhase = 'ready';
-    installDriverRuntimeMock.mockResolvedValue(bridgeReady);
+    fake.rejectNextAction('install', { code: 'bridge.install-failed', message: 'driver package missing' });
 
     await act(async () => {
       useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
@@ -956,12 +998,10 @@ describe('RealTimeSessionPage one-click launch', () => {
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
 
-    await act(async () => {
-      launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(launchButton);
 
-    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
-    expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(routeStartArgs(0)).toMatchObject({ direction: 'inbound' });
   });
 
   it('blocks a new watch launch while the previous route is stopping', async () => {
@@ -972,12 +1012,10 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     await renderPage();
 
-    await act(async () => {
-      (container.querySelector('button') as HTMLButtonElement | null)?.click();
-    });
+    await clickAndSettle(container.querySelector('button'));
 
-    expect(preconnectOmniRealtimeRuntimeMock).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    expect(fake.sessionActionCalls('preconnect')).toHaveLength(0);
+    expect(fake.commandCalls('start_audio_route')).toHaveLength(0);
     expect(useAppStore.getState().runtimeNotifications.some((item) =>
       item.message.includes('正在停止上一条链路'),
     )).toBe(true);
@@ -991,122 +1029,85 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     await renderPage();
 
-    await act(async () => {
-      container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]?.click();
-    });
+    await clickAndSettle(container.querySelectorAll<HTMLButtonElement>('.provider-list button')[1]);
 
-    expect(startAudioRouteRuntimeMock).not.toHaveBeenCalled();
+    expect(fake.commandCalls('start_audio_route')).toHaveLength(0);
     expect(useAppStore.getState().runtimeNotifications.some((item) =>
       item.message.includes('正在停止上一条链路'),
     )).toBe(true);
   });
 
   it('keeps launch buttons disabled and stops runtimes sequentially while stop is pending', async () => {
-    const activeAudioSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
-    activeAudioSnapshot.inbound.streamBound = true;
-    activeAudioSnapshot.outbound.streamBound = true;
-    activeAudioSnapshot.speech.dispatchState = 'playing';
-    const speechStop = createDeferred<typeof activeAudioSnapshot>();
-    const translateStop = createDeferred<typeof activeAudioSnapshot>();
-    const outboundStop = createDeferred<typeof activeAudioSnapshot>();
-    const inboundStop = createDeferred<typeof activeAudioSnapshot>();
-    stopSpeechDispatchRuntimeMock.mockReturnValue(speechStop.promise);
-    stopTranslateWorkerRuntimeMock.mockReturnValue(translateStop.promise);
-    stopAudioRouteRuntimeMock.mockImplementation((direction: 'inbound' | 'outbound') =>
-      direction === 'outbound' ? outboundStop.promise : inboundStop.promise,
-    );
-    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: activeAudioSnapshot }));
+    await startNativeSession();
+    const releaseSpeechStop = holdCommand('stopSpeech');
+    const releaseTranslateStop = holdCommand('stopTranslation');
+    const releaseOutboundStop = holdCommand('stopRoute:outbound');
+    const releaseInboundStop = holdCommand('stopRoute:inbound');
 
     await renderPage();
 
     const launchButtons = container.querySelectorAll<HTMLButtonElement>('.provider-list button');
     const stopButton = container.querySelector<HTMLButtonElement>('.control-toolbar button');
-    await act(async () => {
-      stopButton?.click();
-      await Promise.resolve();
-    });
+    await runInAct(() => stopButton?.click());
 
     expect(launchButtons[0].disabled).toBe(true);
     expect(launchButtons[1].disabled).toBe(true);
-    expect(stopSpeechDispatchRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(stopTranslateWorkerRuntimeMock).not.toHaveBeenCalled();
+    expect(stopActionOrder()).toEqual(['stopSpeech']);
 
-    await act(async () => {
-      speechStop.resolve(activeAudioSnapshot);
-      await Promise.resolve();
-    });
-    expect(stopTranslateWorkerRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalled();
-
-    await act(async () => {
-      translateStop.resolve(activeAudioSnapshot);
-      await Promise.resolve();
-    });
-    expect(stopAudioRouteRuntimeMock).toHaveBeenCalledWith('outbound');
-    expect(stopAudioRouteRuntimeMock).not.toHaveBeenCalledWith('inbound');
-
-    await act(async () => {
-      outboundStop.resolve(activeAudioSnapshot);
-      await Promise.resolve();
-    });
-    expect(stopAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound');
-
-    await act(async () => {
-      inboundStop.resolve(activeAudioSnapshot);
-      await Promise.resolve();
-    });
+    await runInAct(releaseSpeechStop);
+    expect(stopActionOrder()).toEqual(['stopSpeech', 'stopTranslation']);
     expect(launchButtons[0].disabled).toBe(true);
-    expect(stopSpeechDispatchRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
-      stopTranslateWorkerRuntimeMock.mock.invocationCallOrder[0],
-    );
-    expect(stopTranslateWorkerRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
-      stopAudioRouteRuntimeMock.mock.invocationCallOrder[0],
-    );
-    expect(stopAudioRouteRuntimeMock.mock.invocationCallOrder[0]).toBeLessThan(
-      stopAudioRouteRuntimeMock.mock.invocationCallOrder[1],
-    );
+
+    await runInAct(releaseTranslateStop);
+    expect(stopActionOrder()).toEqual(['stopSpeech', 'stopTranslation', 'stopRoute:outbound']);
+    expect(launchButtons[0].disabled).toBe(true);
+
+    await runInAct(releaseOutboundStop);
+    expect(stopActionOrder()).toEqual([
+      'stopSpeech',
+      'stopTranslation',
+      'stopRoute:outbound',
+      'stopRoute:inbound',
+    ]);
+    expect(launchButtons[0].disabled).toBe(true);
+
+    await runInAct(releaseInboundStop);
+    await settleSession();
+
+    // Every stop converged natively and the chain is genuinely down again.
+    expect(stopRouteDirections()).toEqual(['outbound', 'inbound']);
+    const stopped = fake.getAudioSnapshot();
+    expect(stopped.inbound.captureState).toBe('idle');
+    expect(stopped.outbound.captureState).toBe('idle');
+    expect(stopped.speech.dispatchState).toBe('idle');
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(false);
+    expect(launchButtons[0].disabled).toBe(false);
   });
 
   it('toggles overlay, clears cues and stops every active runtime path', async () => {
-    const activeAudioSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
-    activeAudioSnapshot.inbound.streamBound = true;
-    activeAudioSnapshot.outbound.streamBound = true;
-    activeAudioSnapshot.speech.dispatchState = 'playing';
-    const stoppedAudioSnapshot = structuredClone(activeAudioSnapshot);
-    stoppedAudioSnapshot.inbound.streamBound = false;
-    stoppedAudioSnapshot.outbound.streamBound = false;
-    stoppedAudioSnapshot.speech.dispatchState = 'idle';
-    stopAudioRouteRuntimeMock.mockResolvedValue(stoppedAudioSnapshot);
-    stopSpeechDispatchRuntimeMock.mockResolvedValue(stoppedAudioSnapshot);
-    stopTranslateWorkerRuntimeMock.mockResolvedValue(stoppedAudioSnapshot);
-    clearSubtitleCuesRuntimeMock.mockResolvedValue(activeAudioSnapshot);
-    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: activeAudioSnapshot }));
+    await startNativeSession();
+    expect(fake.getAudioSnapshot().subtitleOverlay.recentCues.length).toBeGreaterThan(0);
 
     await renderPage();
 
-    const toolbarButtons = container.querySelectorAll<HTMLButtonElement>('.control-toolbar button');
-    await act(async () => {
-      toolbarButtons[1].click();
-      await Promise.resolve();
-    });
-    expect(toggleSubtitleOverlayWindowMock).toHaveBeenCalledTimes(1);
+    await clickAndSettle(container.querySelectorAll<HTMLButtonElement>('.control-toolbar button')[1]);
+    expect(fake.commandCalls('toggle_subtitle_overlay')).toHaveLength(1);
+    expect(useAppStore.getState().runtimeSnapshot.windows.find((item) => item.label === 'subtitle-overlay')?.visible).toBe(true);
+    expect(container.textContent).toContain('隐藏浮窗');
 
-    await act(async () => {
-      toolbarButtons[2].click();
-      await Promise.resolve();
-    });
-    expect(clearSubtitleCuesRuntimeMock).toHaveBeenCalledTimes(1);
+    await clickAndSettle(container.querySelectorAll<HTMLButtonElement>('.control-toolbar button')[2]);
+    expect(fake.sessionActionCalls('clearCues')).toHaveLength(1);
+    expect(fake.getAudioSnapshot().subtitleOverlay.recentCues).toEqual([]);
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.recentCues).toEqual([]);
+    expect(container.textContent).toContain('暂无字幕事件');
 
-    await act(async () => {
-      toolbarButtons[0].click();
-      await Promise.resolve();
-    });
-    expect(stopSpeechDispatchRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(stopTranslateWorkerRuntimeMock).toHaveBeenCalledTimes(1);
-    expect(stopAudioRouteRuntimeMock).toHaveBeenCalledWith('outbound');
-    expect(stopAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound');
+    await clickAndSettle(container.querySelectorAll<HTMLButtonElement>('.control-toolbar button')[0]);
+    expect(fake.sessionActionCalls('stopSpeech')).toHaveLength(1);
+    expect(fake.sessionActionCalls('stopTranslation')).toHaveLength(1);
+    expect(stopRouteDirections()).toEqual(['outbound', 'inbound']);
     expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(false);
     expect(useAppStore.getState().audioRuntimeSnapshot.outbound.streamBound).toBe(false);
+    expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('idle');
   });
 
   it('surfaces microphone capture and TTS playback failures with recovery actions', async () => {
@@ -1125,7 +1126,7 @@ describe('RealTimeSessionPage one-click launch', () => {
   });
 
   it('surfaces overlay toggle failures in the session page and notification stream', async () => {
-    toggleSubtitleOverlayWindowMock.mockRejectedValue(new Error('overlay timeout'));
+    fake.rejectNextAction('toggle_subtitle_overlay', { message: 'overlay timeout' });
     await renderPage();
     const toolbarButtons = container.querySelectorAll<HTMLButtonElement>('.control-toolbar button');
     await act(async () => {
@@ -1137,7 +1138,7 @@ describe('RealTimeSessionPage one-click launch', () => {
   });
 
   it('surfaces clear-subtitle failures instead of creating an unhandled rejection', async () => {
-    clearSubtitleCuesRuntimeMock.mockRejectedValue(new Error('cue store locked'));
+    fake.rejectNextAction('clearCues', { message: 'cue store locked' });
     await renderPage();
     const clearButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.control-toolbar button'))
       .find((button) => button.textContent?.includes('清空字幕'));
@@ -1173,11 +1174,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     runtimeSnapshot.bridgeStatus = 'tauri-shell';
     runtimeSnapshot.bridge.driverHealth = 'not-installed';
     runtimeSnapshot.bridge.bridgeState = 'stopped';
-    const bridgeReady = structuredClone(runtimeSnapshot);
-    bridgeReady.bridge.driverHealth = 'running';
-    bridgeReady.bridge.bridgeState = 'running';
-    bridgeReady.bridge.installPhase = 'ready';
-    installDriverRuntimeMock.mockResolvedValue(bridgeReady);
+    fake.rejectNextAction('install', { code: 'bridge.install-failed', message: 'driver package missing' });
 
     await act(async () => {
       useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
@@ -1188,12 +1185,10 @@ describe('RealTimeSessionPage one-click launch', () => {
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
     expect(launchButton).toBeDefined();
 
-    await act(async () => {
-      launchButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    await clickAndSettle(launchButton);
 
-    expect(installDriverRuntimeMock).not.toHaveBeenCalled();
-    expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(routeStartArgs(0)).toMatchObject({ direction: 'inbound' });
   });
 
   it('renders queue warnings, source fallback and every translated cue state', async () => {
@@ -1295,11 +1290,13 @@ describe('RealTimeSessionPage one-click launch', () => {
     }));
 
     await renderPage();
-    await act(async () => {
-      container.querySelector<HTMLButtonElement>('button')?.click();
-    });
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('button'));
 
-    expect(startTranslateWorkerRuntimeMock).toHaveBeenCalledTimes(1);
+    expect(fake.sessionActionCalls('startTranslation')).toHaveLength(1);
+    expect(sessionCommandArgs('startTranslation')).toMatchObject({
+      config: { devices: { routeMode: 'watch', inboundVoiceModelId: 'provider::plain-model' } },
+    });
+    expect(fake.getAudioSnapshot().sessionStartedAt).not.toBeNull();
   });
 
   it('ignores a damaged optional driver when starting AEC conversation capture', async () => {
@@ -1307,51 +1304,48 @@ describe('RealTimeSessionPage one-click launch', () => {
     runtimeSnapshot.bridge.driverHealth = 'damaged';
     runtimeSnapshot.bridge.bridgeState = 'stopped';
     runtimeSnapshot.bridge.recommendedAction = 'rollback-driver';
-    const repaired = structuredClone(runtimeSnapshot);
-    repaired.bridge.driverHealth = 'running';
-    const started = structuredClone(repaired);
-    started.bridge.bridgeState = 'running';
-    repairDriverRuntimeMock.mockResolvedValue(repaired);
-    startBridgeServiceRuntimeMock.mockResolvedValue(started);
+    fake.rejectNextAction('repair', { code: 'bridge.repair-failed', message: 'driver repair unavailable' });
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
 
     await renderPage();
-    await act(async () => {
-      container.querySelectorAll<HTMLButtonElement>('button')[1]?.click();
-    });
+    await clickAndSettle(container.querySelectorAll<HTMLButtonElement>('button')[1]);
 
-    expect(repairDriverRuntimeMock).not.toHaveBeenCalled();
-    expect(startBridgeServiceRuntimeMock).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledTimes(2);
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('inbound', expect.anything());
-    expect(startAudioRouteRuntimeMock).toHaveBeenCalledWith('outbound', expect.anything());
+    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(routeStartDirections()).toEqual(['inbound', 'outbound']);
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.streamBound).toBe(true);
+    expect(useAppStore.getState().audioRuntimeSnapshot.outbound.streamBound).toBe(true);
   });
 
   it('reports non-error conversation launch failures', async () => {
     const runtimeSnapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
     runtimeSnapshot.bridge.driverHealth = 'running';
     runtimeSnapshot.bridge.bridgeState = 'running';
-    startAudioRouteRuntimeMock.mockRejectedValue('capture unavailable');
+    // The native side rejects with a ServiceErrorV2 record, not an Error.
+    fake.rejectNextAction('start_audio_route', { code: 'session.capture-unavailable', message: 'capture unavailable' });
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot }));
 
     await renderPage();
-    await act(async () => {
-      container.querySelectorAll<HTMLButtonElement>('button')[1]?.click();
-    });
+    await clickAndSettle(container.querySelectorAll<HTMLButtonElement>('button')[1]);
 
     expect(useAppStore.getState().runtimeNotifications[0]?.message).toContain('capture unavailable');
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('capture unavailable');
+    // A route that never started must not be torn down.
+    expect(stopRouteDirections()).toEqual([]);
   });
 
   it('shows degraded inbound capture and the bridge restart recommendation', async () => {
-    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
-    audioRuntimeSnapshot.inbound.streamBound = false;
-    audioRuntimeSnapshot.inbound.lastError = 'Bridge source pipe initialization timed out (10s).';
-    audioRuntimeSnapshot.inbound.recommendedAction = 'restart-bridge';
-    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+    // Accepted-then-failed capture: the command succeeds and the failure lands
+    // later as a lastError snapshot push, exactly like the native worker.
+    fake.failNextRouteStart('inbound', {
+      lastError: 'Bridge source pipe initialization timed out (10s).',
+      recommendedAction: 'restart-bridge',
+    });
 
     await renderPage();
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('button'));
 
+    expect(routeStartDirections()).toEqual(['inbound']);
+    expect(useAppStore.getState().audioRuntimeSnapshot.inbound.lastError).toContain('Bridge source pipe initialization timed out');
     expect(container.textContent).toContain('系统音频采集异常');
     expect(container.textContent).toContain('Bridge source pipe initialization timed out (10s).');
     expect(container.textContent).toContain('建议重启 Bridge Service 后重试');

@@ -9,11 +9,9 @@ import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 import { useAppStore } from '../stores/app-store';
 import SubtitleOverlayPage from './SubtitleOverlayPage';
 
-const runtimeMocks = vi.hoisted(() => ({
-  clearSubtitleCuesRuntime: vi.fn(),
-  toggleSubtitleOverlayWindow: vi.fn(),
-}));
-
+// This suite's subject is the BROWSER PREVIEW path, so the real runtime
+// modules run against the real PreviewDesktopApi (installed below) instead of
+// stubbing the runtime layer away. Only true leaf externalities are mocked.
 vi.mock('@tauri-apps/api/core', () => ({ invoke: vi.fn() }));
 vi.mock('@tauri-apps/api/menu', () => ({ Menu: { new: vi.fn() } }));
 vi.mock('@tauri-apps/api/window', () => ({
@@ -24,7 +22,6 @@ vi.mock('@tauri-apps/api/window', () => ({
   cursorPosition: vi.fn(),
   getCurrentWindow: vi.fn(),
 }));
-vi.mock('../runtime/audio-runtime', () => runtimeMocks);
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
@@ -38,13 +35,13 @@ function findButton(container: HTMLElement, text: string) {
 describe('SubtitleOverlayPage browser preview interaction', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let previewApi: PreviewDesktopApi;
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     resetDesktopApiForTests();
-    installDesktopApi(new PreviewDesktopApi());
-    runtimeMocks.clearSubtitleCuesRuntime.mockReset().mockResolvedValue(structuredClone(audioRuntimeSnapshotMock));
-    runtimeMocks.toggleSubtitleOverlayWindow.mockReset().mockResolvedValue(structuredClone(runtimeSnapshotMock));
+    previewApi = new PreviewDesktopApi();
+    installDesktopApi(previewApi);
     useAppStore.setState((state) => ({
       ...state,
       audioRuntimeSnapshot: structuredClone(audioRuntimeSnapshotMock),
@@ -201,17 +198,29 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     await act(async () => overlay?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
     expect(findButton(container, '锁定')).toBeUndefined();
 
+    // Hide: the real runtime module drives the preview overlay implementation,
+    // which flips the window's visibility and publishes the shell snapshot.
+    const overlayVisibleBefore = useAppStore.getState().runtimeSnapshot.windows
+      .find((item) => item.label === 'subtitle-overlay')?.visible;
     await openContextMenu();
     await act(async () => findButton(container, '隐藏字幕悬浮窗')?.click());
-    expect(runtimeMocks.toggleSubtitleOverlayWindow).toHaveBeenCalledTimes(1);
+    const overlayVisibleAfter = useAppStore.getState().runtimeSnapshot.windows
+      .find((item) => item.label === 'subtitle-overlay')?.visible;
+    expect(overlayVisibleAfter).toBe(!overlayVisibleBefore);
 
+    // Clear: the preview implementation empties the cue store, and the page
+    // publishes that snapshot (the fixture starts with one cue queued).
+    expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.recentCues.length).toBeGreaterThan(0);
     await openContextMenu();
     await act(async () => findButton(container, '清空字幕')?.click());
-    expect(runtimeMocks.clearSubtitleCuesRuntime).toHaveBeenCalledTimes(1);
+    const clearedOverlay = useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay;
+    expect(clearedOverlay.recentCues).toEqual([]);
+    expect(clearedOverlay.activeCue).toBeNull();
+    expect(clearedOverlay.queueDepth).toBe(0);
   });
 
   it('publishes a visible session notification when clearing cues fails', async () => {
-    runtimeMocks.clearSubtitleCuesRuntime.mockRejectedValue(new Error('cue clear failed'));
+    vi.spyOn(previewApi.session, 'clearCues').mockRejectedValue(new Error('cue clear failed'));
     await renderOverlay();
     await openContextMenu();
     await act(async () => findButton(container, '清空字幕')?.click());

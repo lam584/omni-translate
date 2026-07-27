@@ -12,6 +12,7 @@ import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import type { DiagnosticsExportScope } from '../../schema/config';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import { useAppStore } from '../../stores/app-store';
+import { describeUnknownError } from '../../utils/describe-unknown-error';
 
 export type DiagnosticsRepairTask = { id: string; label: string; run: () => Promise<void> };
 
@@ -60,27 +61,35 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
     setBusyAction('auto-repair');
     setActionFeedback(null);
     try {
-      const failures: string[] = [];
+      const failures: Array<{ id: string; label: string; error: unknown }> = [];
       for (const option of selected) {
         try {
           await option.run();
         } catch (error) {
-          const message = i18n.t('diagnostics.notifications.autoRepairFailed', { label: option.label, error: errorDetail(error) });
-          failures.push(message);
-          pushRuntimeNotification({
-            id: `auto-repair-${option.id}-${Date.now()}`,
-            level: 'error', source: 'diagnostics',
-            message,
-            emittedAt: new Date().toISOString(),
-          });
+          failures.push({ id: option.id, label: option.label, error });
         }
       }
       if (hasNativeShell) {
         try {
           setRuntimeSnapshot(await refreshBridgeRuntime());
         } catch (error) {
-          failures.push(`${i18n.t('diagnostics.actions.refreshRuntime')} · ${errorDetail(error)}`);
+          failures.push({
+            id: 'refresh-runtime',
+            label: i18n.t('diagnostics.actions.refreshRuntime'),
+            error,
+          });
         }
+      }
+      for (const failure of failures) {
+        pushRuntimeNotification({
+          id: `auto-repair-${failure.id}-${Date.now()}`,
+          level: 'error', source: 'diagnostics',
+          message: i18n.t('diagnostics.notifications.autoRepairFailed', {
+            label: failure.label,
+            error: describeUnknownError(failure.error),
+          }),
+          emittedAt: new Date().toISOString(),
+        });
       }
       if (failures.length === 0) {
         const message = i18n.t('diagnostics.notifications.autoRepairSuccess', { count: selected.length });
@@ -95,7 +104,9 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
         setActionFeedback({
           tone: 'error',
           title: `${i18n.t('diagnostics.repairs.autoRepair')} · ${i18n.t('diagnostics.status.failed')}`,
-          detail: failures.join('\n'),
+          detail: failures
+            .map((failure) => `${failure.label} · ${describeUnknownError(failure.error)}`)
+            .join('\n'),
         });
       }
     } finally {

@@ -1,0 +1,88 @@
+name: Nightly Startup Stress
+
+# Nightly only. There is deliberately no `pull_request` / `push` trigger: this
+# workflow builds the release shell and must never sit on the PR critical path.
+on:
+  schedule:
+    # 18:00 UTC = 02:00 China Standard Time.
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
+
+jobs:
+  startup-stress:
+    name: Release shell build + startup IPC stress plan
+    runs-on: windows-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: "."
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      # Pure-logic coverage for the stress runner: marker detection, latency
+      # statistics and the never-connected verdict. Runs everywhere, no app.
+      - name: Startup orchestration unit tests
+        run: npm run test:startup-readiness
+
+      - name: Build the release desktop shell
+        run: npm run build:desktop-shell
+
+      - name: Assert the release shell binary exists
+        shell: pwsh
+        run: |
+          $exe = 'target/release/omni-desktop-shell.exe'
+          if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
+            throw "Release desktop shell was not produced at $exe"
+          }
+          Write-Host "Release desktop shell: $((Get-Item -LiteralPath $exe).Length) bytes"
+
+      # DELIBERATE LIMITATION — the real N-run stress does NOT execute here.
+      #
+      # The stress launches the packaged shell 10 times and waits for the
+      # WebView2 renderer to reach `debug_ipc_ping`. A GitHub-hosted
+      # windows-latest runner cannot honestly reproduce that: the app opens a
+      # WebView2 window in a session with no interactive desktop guarantee, and
+      # it opens WASAPI capture/render endpoints at startup on a runner that has
+      # no audio device installed. A green run here would therefore prove
+      # nothing about the startup hang this stress exists to catch, and a red
+      # one would be indistinguishable from an environment failure.
+      #
+      # CI stops at "the release shell builds and the plan is coherent".
+      # The real 10-run stress executes on the dev machine:
+      #     npm run test:startup-ipc-stress
+      # (or `powershell -File scripts/testing/run-startup-ipc-stress.ps1 -Runs 25`)
+      # and its JSON report lands under artifacts/testing/startup-ipc-stress/.
+      - name: Startup IPC stress (plan only)
+        run: npm run test:startup-ipc-stress:dry-run
+
+      - name: Upload startup stress artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-ipc-stress-plan
+          path: artifacts/testing/startup-ipc-stress/
+          if-no-files-found: warn
+          retention-days: 14

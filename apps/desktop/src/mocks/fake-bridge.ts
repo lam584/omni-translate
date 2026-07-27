@@ -1,8 +1,16 @@
+import { appConfigDraftMock } from './app-config';
 import { audioRuntimeSnapshotMock } from './audio-runtime';
 import { runtimeSnapshotMock } from './runtime-shell';
+import type { BenchmarkReport } from '../runtime/benchmark-runtime';
+import type {
+  LiveSessionAsrDelta,
+  LiveSessionEvents,
+  LiveSessionOutputDelta,
+} from '../runtime/live-session-events-runtime';
 import type { AudioRuntimeSnapshot, SubtitleCueRuntime } from '../schema/audio-runtime';
-import type { AppConfigDraft } from '../schema/config';
-import type { RuntimeSnapshot, RuntimeNotification } from '../schema/runtime-core';
+import type { AppConfigDraft, DiagnosticsExportScope } from '../schema/config';
+import type { CredentialRefStatus, CredentialSecretPayload } from '../schema/provider-runtime';
+import type { DiagnosticsExportArtifact, RuntimeSnapshot, RuntimeNotification } from '../schema/runtime-core';
 import type { SpeechEventKind } from '../schema/speech-event-kinds';
 
 /**
@@ -48,6 +56,40 @@ export type FakeServiceErrorV2 = {
   details?: Record<string, unknown>;
 };
 
+/**
+ * One streamed `benchmark://progress` payload. Mirrors
+ * `benchmark::BenchmarkProgressState::emit`: every event carries the *partial*
+ * report built so far, so the renderer can render a run before it finishes.
+ */
+export type FakeBenchmarkProgressStep = {
+  phase: string;
+  message: string;
+  report: BenchmarkReport;
+  status?: 'running' | 'completed' | 'error';
+  error?: string | null;
+  audioChunksSent?: number;
+  totalAudioChunks?: number;
+};
+
+/** A programmed `provider_v2` benchmark run: progress stream + final outcome. */
+export type FakeBenchmarkRun = {
+  progress?: FakeBenchmarkProgressStep[];
+  /** Final report; the native command returns it JSON-encoded as a string. */
+  report?: BenchmarkReport;
+  /** When set the run fails after streaming `progress` (ServiceErrorV2). */
+  failure?: Partial<FakeServiceErrorV2> & { message: string };
+};
+
+export type FakeLiveSessionOptions = { model?: string; sessionStartedAt?: string };
+
+/** The five milestone names `LiveSessionEventBuffer::record_milestone` accepts. */
+export type FakeLiveSessionMilestone =
+  | 'preconnectStartedMs'
+  | 'sessionReadyMs'
+  | 'routeStartedMs'
+  | 'firstAudioSentMs'
+  | 'firstSpeechStartedMs';
+
 type ServiceEnvelope<T> = { data: T; warnings: never[] };
 
 type FakeEvent<T> = { event: string; payload: T };
@@ -55,9 +97,36 @@ type FakeEventHandler = (event: FakeEvent<never>) => void;
 
 const SPEECH_FRAMES_PER_DISPATCH = 4800;
 const CAPTURE_FRAMES_PER_START = 960;
+/** Mirrors `benchmark::BENCHMARK_PROGRESS_EVENT`. */
+const BENCHMARK_PROGRESS_EVENT = 'benchmark://progress';
+/** Mirrors the backend reported by `storage_events::read_secret_ref`. */
+const CREDENTIAL_BACKEND = 'windows-credential-manager';
+/** Mirrors `PipelineMilestones::default()`. */
+const EMPTY_PIPELINE_MILESTONES: LiveSessionEvents['pipelineMilestones'] = {
+  preconnectStartedMs: null,
+  sessionReadyMs: null,
+  routeStartedMs: null,
+  firstAudioSentMs: null,
+  firstSpeechStartedMs: null,
+  queuedAudioChunks: null,
+  droppedBeforeReady: null,
+  firstAudibleChunkMs: null,
+  silenceSkippedBeforeAudible: null,
+  totalInputChunksAtSpeech: null,
+};
 
 function envelope<T>(data: T): ServiceEnvelope<T> {
   return { data, warnings: [] };
+}
+
+/** Builds the ServiceErrorV2 the shell produces from a plain `Err(String)`. */
+function serviceErrorV2(error: Partial<FakeServiceErrorV2> & { message: string }): FakeServiceErrorV2 {
+  return {
+    code: error.code ?? 'runtime.operation-failed',
+    message: error.message,
+    retriable: error.retriable ?? false,
+    details: error.details ?? { rawError: error.message },
+  };
 }
 
 function extractAction(args: Record<string, unknown> | undefined): string | null {
@@ -108,6 +177,9 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
 
   const runtime: RuntimeSnapshot = structuredClone(runtimeSnapshotMock);
   runtime.bridgeStatus = 'tauri-shell';
+
+  /** Persisted config document behind `configuration_v2` load/save. */
+  let configDocument: AppConfigDraft = structuredClone(appConfigDraftMock);
 
   const calls: FakeBridgeCall[] = [];
   let overlayWindowState: FakeOverlayWindowState | null = null;
@@ -201,12 +273,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
   const heldInvokeActions = new Set<string>();
 
   function rejectNextAction(action: string, error: Partial<FakeServiceErrorV2> & { message: string }) {
-    pendingActionRejections.set(action, {
-      code: error.code ?? 'runtime.operation-failed',
-      message: error.message,
-      retriable: error.retriable ?? false,
-      details: error.details ?? { rawError: error.message },
-    });
+    pendingActionRejections.set(action, serviceErrorV2(error));
   }
 
   /**
@@ -607,13 +674,55 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     return envelope(structuredClone(runtime));
   }
 
-  function handleConfigurationAction(action: string | null) {
+  // ── Credential vault (configuration_v2 secret* actions) ──
+  //
+  // `storage_events::{get_secret_ref_status,read_secret_ref}` answer from the
+  // OS keyring: an unknown reference is not an error, it reports
+  // `hasSecret: false` / `secret: null`.
+
+  const credentialSecrets = new Map<string, string | null>();
+
+  /** Stores (or, with `null`, clears) the secret behind a credential ref. */
+  function setProviderSecret(reference: string, secret: string | null) {
+    credentialSecrets.set(reference, secret);
+  }
+
+  function credentialStatus(reference: string): CredentialRefStatus {
+    return {
+      reference,
+      backend: CREDENTIAL_BACKEND,
+      hasSecret: Boolean(credentialSecrets.get(reference)),
+    };
+  }
+
+  function credentialSecret(reference: string): CredentialSecretPayload {
+    return {
+      reference,
+      backend: CREDENTIAL_BACKEND,
+      secret: credentialSecrets.get(reference) ?? null,
+    };
+  }
+
+  function handleConfigurationAction(action: string | null, args: Record<string, unknown> | undefined) {
+    const command = (args?.command ?? {}) as Record<string, unknown>;
     switch (action) {
       case 'runtimeSnapshot':
       case 'bootstrapRuntime':
         return envelope(structuredClone(runtime));
+      case 'load':
+        return envelope(structuredClone(configDocument));
       case 'save':
+        configDocument = structuredClone(command.config as AppConfigDraft);
         return envelope(structuredClone(runtime.storage));
+      case 'secretStatus':
+        return envelope(credentialStatus(String(command.reference ?? '')));
+      case 'secretRead':
+        return envelope(credentialSecret(String(command.reference ?? '')));
+      case 'secretUpsert': {
+        const reference = String(command.reference ?? '');
+        credentialSecrets.set(reference, String(command.secret ?? ''));
+        return envelope(credentialStatus(reference));
+      }
       default:
         throw new Error(`fake bridge: unsupported configuration_v2 action ${String(action)}`);
     }
@@ -638,15 +747,176 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     });
   }
 
-  function handleDiagnosticsAction(action: string | null) {
+  // ── Live session event buffer (diagnostics_v2 liveSessionEvents) ──
+  //
+  // Mirrors `audio::live_session_events::LiveSessionEventBuffer`: workers push
+  // deltas in arrival order and the finals are *derived* (the last non-blank
+  // committed text wins) rather than set directly. The Rust snapshot's
+  // `elapsedMs` is a wall clock; the fake reports the latest recorded event
+  // time instead so tests stay deterministic.
+
+  function createEmptyLiveSession(): LiveSessionEvents {
+    return {
+      sessionStartedAt: '',
+      elapsedMs: 0,
+      model: '',
+      asrDeltas: [],
+      outputDeltas: [],
+      asrFinal: '',
+      translationFinal: '',
+      pipelineMilestones: { ...EMPTY_PIPELINE_MILESTONES },
+    };
+  }
+
+  let liveSession = createEmptyLiveSession();
+
+  /** Mirrors `LiveSessionEventBuffer::clear`: a new session drops everything. */
+  function startLiveSession(options: FakeLiveSessionOptions = {}) {
+    liveSession = createEmptyLiveSession();
+    liveSession.model = options.model ?? '';
+    liveSession.sessionStartedAt = options.sessionStartedAt ?? new Date().toISOString();
+  }
+
+  function pushLiveAsrDelta(delta: LiveSessionAsrDelta) {
+    liveSession.asrDeltas.push({ ...delta });
+    if (delta.text.trim() !== '') {
+      liveSession.asrFinal = delta.text;
+    }
+    liveSession.elapsedMs = Math.max(liveSession.elapsedMs, delta.elapsedMs);
+  }
+
+  function pushLiveOutputDelta(delta: LiveSessionOutputDelta) {
+    liveSession.outputDeltas.push({ ...delta });
+    if (delta.committedText !== '') {
+      liveSession.translationFinal = delta.committedText;
+    }
+    liveSession.elapsedMs = Math.max(liveSession.elapsedMs, delta.elapsedMs);
+  }
+
+  function recordLiveMilestone(milestone: FakeLiveSessionMilestone, elapsedMs: number) {
+    liveSession.pipelineMilestones[milestone] = elapsedMs;
+    liveSession.elapsedMs = Math.max(liveSession.elapsedMs, elapsedMs);
+  }
+
+  function handleDiagnosticsAction(action: string | null, args: Record<string, unknown> | undefined) {
+    const command = (args?.command ?? {}) as Record<string, unknown>;
     switch (action) {
       case 'snapshot':
         return envelope({ recentLogs: structuredClone(diagnosticsLogs) });
       case 'selfCheck':
       case 'overlaySelfCheck':
         return envelope(structuredClone(runtime));
+      case 'export':
+        return envelope(exportDiagnosticsBundle(String(command.scope ?? 'summary') as DiagnosticsExportScope));
+      case 'liveSessionEvents':
+        return envelope(structuredClone(liveSession));
       default:
         throw new Error(`fake bridge: unsupported diagnostics_v2 action ${String(action)}`);
+    }
+  }
+
+  /**
+   * Mirrors `diagnostics_events::export_diagnostics_bundle`: the bundle is
+   * written, the export is marked on the diagnostics state (so the *next*
+   * runtime snapshot carries it), a log line is appended and a runtime
+   * snapshot is pushed — the artifact itself is only the receipt.
+   */
+  function exportDiagnosticsBundle(scope: DiagnosticsExportScope): DiagnosticsExportArtifact {
+    const generatedAt = new Date().toISOString();
+    const outputPath = `C:\\Users\\fake\\AppData\\Roaming\\omni-translate\\diagnostics\\exports\\${generatedAt.replace(/:/g, '-')}-${scope}`;
+    runtime.diagnostics = {
+      ...runtime.diagnostics,
+      lastExportScope: scope,
+      lastExportPath: outputPath,
+      lastExportedAt: generatedAt,
+    };
+    appendDiagnosticsLog({
+      category: 'runtime',
+      level: 'info',
+      summary: `已生成 diagnostics 导出包，scope=${scope}。`,
+      detail: outputPath,
+    });
+    pushRuntimeSnapshot();
+    return { scope, outputPath, generatedAt, fileCount: scope === 'full' ? 7 : 5 };
+  }
+
+  // ── Provider benchmark runs (provider_v2 runModelBenchmark) ──
+  //
+  // `benchmark::run_model_benchmark` streams `benchmark://progress` events
+  // while the blocking task runs and finally returns the report as a JSON
+  // *string*; a failing run emits its terminal error event first and then
+  // rejects the command with a ServiceErrorV2.
+
+  const benchmarkRuns: FakeBenchmarkRun[] = [];
+
+  /** Queues the outcome of the next `runModelBenchmark` command. */
+  function programBenchmarkRun(run: FakeBenchmarkRun) {
+    benchmarkRuns.push(run);
+  }
+
+  function emitBenchmarkProgress(runId: string, step: Required<FakeBenchmarkProgressStep>) {
+    emitEvent(BENCHMARK_PROGRESS_EVENT, {
+      runId,
+      status: step.status,
+      phase: step.phase,
+      message: step.message,
+      report: structuredClone(step.report),
+      error: step.error,
+      audioChunksSent: step.audioChunksSent,
+      totalAudioChunks: step.totalAudioChunks,
+    });
+  }
+
+  function runProgrammedBenchmark(command: Record<string, unknown>): ServiceEnvelope<string> {
+    const runId = String(command.runId ?? '');
+    const plan = benchmarkRuns.shift();
+    if (!plan) {
+      // Native pre-flight: the run bails out before opening a socket when the
+      // audio file is missing.
+      throw serviceErrorV2({ message: `MP3 file not found: ${String(command.mp3Path ?? '')}` });
+    }
+
+    let lastStep: Required<FakeBenchmarkProgressStep> | null = null;
+    for (const step of plan.progress ?? []) {
+      lastStep = {
+        phase: step.phase,
+        message: step.message,
+        report: step.report,
+        status: step.status ?? 'running',
+        error: step.error ?? null,
+        audioChunksSent: step.audioChunksSent ?? 0,
+        totalAudioChunks: step.totalAudioChunks ?? 0,
+      };
+      emitBenchmarkProgress(runId, lastStep);
+    }
+
+    if (plan.failure) {
+      const error = serviceErrorV2(plan.failure);
+      if (lastStep) {
+        emitBenchmarkProgress(runId, {
+          ...lastStep,
+          status: 'error',
+          phase: 'failed',
+          message: error.message,
+          error: error.message,
+        });
+      }
+      throw error;
+    }
+
+    if (!plan.report) {
+      throw serviceErrorV2({ message: 'fake bridge: programmed benchmark run has neither report nor failure' });
+    }
+    return envelope(JSON.stringify(plan.report));
+  }
+
+  function handleProviderAction(action: string | null, args: Record<string, unknown> | undefined) {
+    const command = (args?.command ?? {}) as Record<string, unknown>;
+    switch (action) {
+      case 'runModelBenchmark':
+        return runProgrammedBenchmark(command);
+      default:
+        throw new Error(`fake bridge: unsupported provider_v2 action ${String(action)}`);
     }
   }
 
@@ -668,10 +938,12 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
           return handleSessionAction(action, args) as T;
         case 'bridge_v2':
           return handleBridgeAction(action, args) as T;
+        case 'provider_v2':
+          return handleProviderAction(action, args) as T;
         case 'configuration_v2':
-          return handleConfigurationAction(action) as T;
+          return handleConfigurationAction(action, args) as T;
         case 'diagnostics_v2':
-          return handleDiagnosticsAction(action) as T;
+          return handleDiagnosticsAction(action, args) as T;
         case 'start_audio_route':
           acceptRouteStart(args?.direction as 'inbound' | 'outbound');
           return structuredClone(audio) as T;
@@ -698,6 +970,8 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
           applyBridgeRunning(args?.config as AppConfigDraft | undefined);
           return structuredClone(runtime) as T;
         case 'append_frontend_diagnostics_logs':
+        case 'set_diagnostics_log_level':
+        case 'bootstrap_storage':
           return undefined as T;
         default:
           throw new Error(`fake bridge: unsupported command ${command}`);
@@ -728,7 +1002,18 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       ),
     getAudioSnapshot: () => structuredClone(audio),
     getRuntimeSnapshot: () => structuredClone(runtime),
+    getLiveSessionEvents: () => structuredClone(liveSession),
     getOverlayWindowState: () => (overlayWindowState ? { ...overlayWindowState } : null),
+    /**
+     * Installs the machine state the native runtime reports (damaged driver,
+     * stopped bridge, …). Every snapshot-returning command then answers from
+     * it, exactly like the native RuntimeStateStore. `bridgeStatus` must stay
+     * a backend value: `runtime-error` is synthesised by the renderer
+     * bootstrap and never arrives over the bridge.
+     */
+    seedRuntimeSnapshot: (snapshot: RuntimeSnapshot) => {
+      Object.assign(runtime, structuredClone(snapshot));
+    },
     // Failure / scenario injection
     rejectNextAction,
     failNextRouteStart,
@@ -743,6 +1028,12 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     restoreRealtimeConnection,
     pushNotification,
     appendDiagnosticsLog,
+    programBenchmarkRun,
+    setProviderSecret,
+    startLiveSession,
+    pushLiveAsrDelta,
+    pushLiveOutputDelta,
+    recordLiveMilestone,
   };
 }
 

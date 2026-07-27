@@ -23,8 +23,8 @@ fn should_ignore_subtitle_overlay_cursor_events(locked: bool, hotspot_interactiv
     locked && !hotspot_interactive
 }
 
-fn apply_subtitle_overlay_input_policy(
-    window: &tauri::WebviewWindow,
+fn apply_subtitle_overlay_input_policy<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
     locked: bool,
     hotspot_interactive: bool,
 ) -> Result<(), String> {
@@ -35,7 +35,10 @@ fn apply_subtitle_overlay_input_policy(
     )
 }
 
-fn sync_persisted_subtitle_overlay_input(app: &AppHandle, window: &tauri::WebviewWindow) {
+fn sync_persisted_subtitle_overlay_input<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    window: &tauri::WebviewWindow<R>,
+) {
     let locked = app
         .state::<StorageStateStore>()
         .load_config()
@@ -143,8 +146,8 @@ pub fn emit_runtime_notification<R: tauri::Runtime>(
     emit_runtime_snapshot(app, state)
 }
 
-pub fn toggle_subtitle_overlay_with_state(
-    app: &AppHandle,
+pub fn toggle_subtitle_overlay_with_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     state: &RuntimeStateStore,
 ) -> Result<RuntimeSnapshot, String> {
     let window = ensure_subtitle_overlay_window(app).map_err(|error| error.to_string())?;
@@ -175,8 +178,8 @@ pub fn toggle_subtitle_overlay_with_state(
     Ok(build_runtime_snapshot(app, state))
 }
 
-pub fn show_subtitle_overlay_with_state(
-    app: &AppHandle,
+pub fn show_subtitle_overlay_with_state<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     state: &RuntimeStateStore,
 ) -> Result<RuntimeSnapshot, String> {
     let window = ensure_subtitle_overlay_window(app).map_err(|error| error.to_string())?;
@@ -219,15 +222,15 @@ pub fn show_subtitle_overlay_with_state(
 // main thread; keeping command bodies off it prevents a burst of concurrent
 // invokes from starving that handler (which manifested as `invoke` round-trips
 // that never returned -> `bootstrap_runtime` "timeout").
-pub async fn get_runtime_snapshot(
-    app: AppHandle,
+pub async fn get_runtime_snapshot<R: tauri::Runtime>(
+    app: AppHandle<R>,
     state: State<'_, RuntimeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
     Ok(build_runtime_snapshot(&app, &state))
 }
 
-pub async fn bootstrap_runtime(
-    app: AppHandle,
+pub async fn bootstrap_runtime<R: tauri::Runtime>(
+    app: AppHandle<R>,
     state: State<'_, RuntimeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
     state.mark_ready();

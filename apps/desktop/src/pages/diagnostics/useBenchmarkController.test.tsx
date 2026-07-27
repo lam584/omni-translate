@@ -123,4 +123,14 @@ describe('useBenchmarkController', () => {
     expect(classifyBenchmarkError(new Error('model unsupported'))).toContain('实时音频');
     expect(classifyBenchmarkError('unknown failure')).toContain('unknown failure');
   });
+
+  it('renders the message and code from a ServiceErrorV2 rejection', async () => {
+    runtime.readProviderSecret.mockResolvedValue({ secret: 'key' });
+    runtime.runModelBenchmark.mockRejectedValue({ code: 'provider.failed', message: 'network failed', retriable: true });
+    await mount();
+    await act(async () => controller.run());
+    expect(controller.error).toContain('模型连接失败或超时');
+    expect(controller.error).toContain('network failed (provider.failed)');
+    expect(controller.progress?.error).toBe(controller.error);
+  });
 });

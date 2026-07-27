@@ -4,6 +4,7 @@ import { runModelBenchmark, type BenchmarkProgressEvent, type BenchmarkReport } 
 import { readProviderSecret } from '../../runtime/provider-runtime';
 import type { RealtimeAudioMode } from '../../schema/config';
 import type { ProviderInteractionCapability } from '../../schema/provider-contract';
+import { describeUnknownError } from '../../utils/describe-unknown-error';
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
 
 export type BenchmarkVoiceModel = {
@@ -22,7 +23,7 @@ export type BenchmarkVoiceModel = {
 type BenchmarkProgressView = Pick<BenchmarkProgressEvent, 'status' | 'phase' | 'message' | 'audioChunksSent' | 'totalAudioChunks' | 'error'>;
 
 export function classifyBenchmarkError(error: unknown) {
-  const detail = error instanceof Error ? error.message : String(error);
+  const detail = describeUnknownError(error);
   const normalized = detail.toLowerCase();
   const chinese = i18n.language.toLowerCase().startsWith('zh');
   let guidance: string;

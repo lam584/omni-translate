@@ -637,7 +637,7 @@ function RealTimeSessionPage() {
                     const snapshot = await toggleSubtitleOverlayWindow();
                     setRuntimeSnapshot(snapshot);
                   } catch (error) {
-                    const message = t('session.overlayOpenFailed', { error: error instanceof Error ? error.message : String(error) });
+                    const message = t('session.overlayOpenFailed', { error: describeRuntimeError(error) });
                     setSessionActionProblem(message);
                     pushRuntimeNotification({
                       id: `session-overlay-toggle-failed-${Date.now()}`,

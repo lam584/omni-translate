@@ -239,7 +239,9 @@ fn suppress_subtitle_overlay_dwm_frame(hwnd: isize) {
     }
 }
 
-pub fn apply_subtitle_overlay_window_chrome(window: &WebviewWindow) -> Result<(), String> {
+pub fn apply_subtitle_overlay_window_chrome<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let hwnd = window.hwnd().map_err(|error| error.to_string())?;
@@ -334,8 +336,8 @@ fn for_each_child_window(mut hwnd: isize, visit: &mut impl FnMut(isize)) {
     }
 }
 
-pub fn apply_subtitle_overlay_click_through(
-    window: &WebviewWindow,
+pub fn apply_subtitle_overlay_click_through<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
     enabled: bool,
 ) -> Result<(), String> {
     window
@@ -361,7 +363,10 @@ pub fn apply_subtitle_overlay_click_through(
     Ok(())
 }
 
-pub fn apply_subtitle_overlay_region(window: &WebviewWindow, rounded: bool) -> Result<(), String> {
+pub fn apply_subtitle_overlay_region<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
+    rounded: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "windows")]
     {
         let hwnd = window.hwnd().map_err(|error| error.to_string())?;
@@ -414,8 +419,8 @@ pub fn apply_subtitle_overlay_region(window: &WebviewWindow, rounded: bool) -> R
     Ok(())
 }
 
-pub fn sync_subtitle_overlay_input_state(
-    window: &WebviewWindow,
+pub fn sync_subtitle_overlay_input_state<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
     locked: bool,
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -450,13 +455,17 @@ pub fn sync_subtitle_overlay_input_state(
     Ok(())
 }
 
-pub fn apply_subtitle_overlay_background(window: &WebviewWindow) -> Result<(), String> {
+pub fn apply_subtitle_overlay_background<R: tauri::Runtime>(
+    window: &WebviewWindow<R>,
+) -> Result<(), String> {
     window
         .set_background_color(Some(SUBTITLE_OVERLAY_BACKGROUND_COLOR))
         .map_err(|error| error.to_string())
 }
 
-pub fn ensure_subtitle_overlay_window(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+pub fn ensure_subtitle_overlay_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> tauri::Result<WebviewWindow<R>> {
     // Single lookup to avoid TOCTOU race between is_some() and expect()
     if let Some(window) = app.get_webview_window("subtitle-overlay") {
         let _ = apply_subtitle_overlay_background(&window);

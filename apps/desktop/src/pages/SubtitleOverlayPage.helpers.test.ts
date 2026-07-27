@@ -332,6 +332,53 @@ describe('subtitle overlay page helpers', () => {
     });
   });
 
+  // The resize math converts screen deltas and the min/max overlay bounds from
+  // logical into physical pixels, so both the applied delta and the clamp
+  // floor grow with the display scale. Expected values below come straight
+  // from the production formula (delta = round(screenDelta * scale),
+  // minWidth = round(220 * scale), minHeight = round(72 * scale)).
+  it.each([
+    [1.25, { deltaWidth: 425, deltaHeight: 238, minWidth: 275, minHeight: 90 }],
+    [1.5, { deltaWidth: 430, deltaHeight: 245, minWidth: 330, minHeight: 108 }],
+    [2, { deltaWidth: 440, deltaHeight: 260, minWidth: 440, minHeight: 144 }],
+  ] as const)('scales resize deltas and clamp floors to physical pixels at scaleFactor %s', (scaleFactor, expected) => {
+    const base = {
+      direction: 'SouthEast' as const,
+      frameId: null,
+      pointerId: 1,
+      scaleFactor,
+      startScreenX: 10,
+      startScreenY: 20,
+      startWindowHeight: 200,
+      startWindowWidth: 400,
+      startWindowX: 100,
+      startWindowY: 150,
+      targetHeight: 200,
+      targetWidth: 400,
+      targetX: 100,
+      targetY: 150,
+    };
+
+    // A 20x30 screen-pixel drag moves more physical pixels on a HiDPI display.
+    expect(subtitleOverlayPageHelpers.calculateOverlayResizeBounds(base, 30, 50)).toEqual({
+      width: expected.deltaWidth, height: expected.deltaHeight, x: 100, y: 150,
+    });
+
+    // Shrinking past the limit stops at the DPI-scaled minimum, not at the
+    // logical 220x72 (which would let the window collapse on HiDPI screens).
+    expect(subtitleOverlayPageHelpers.calculateOverlayResizeBounds({ ...base, direction: 'East' }, -1_000, 20).width)
+      .toBe(expected.minWidth);
+    expect(subtitleOverlayPageHelpers.calculateOverlayResizeBounds({ ...base, direction: 'South' }, 10, -1_000).height)
+      .toBe(expected.minHeight);
+
+    // West/North additionally shift the origin by exactly the width/height the
+    // window gave up, keeping the opposite edge pinned.
+    const west = subtitleOverlayPageHelpers.calculateOverlayResizeBounds({ ...base, direction: 'West' }, 1_000, 20);
+    expect(west).toEqual({ width: expected.minWidth, height: 200, x: 100 + (400 - expected.minWidth), y: 150 });
+    const north = subtitleOverlayPageHelpers.calculateOverlayResizeBounds({ ...base, direction: 'North' }, 10, 1_000);
+    expect(north).toEqual({ width: 400, height: expected.minHeight, x: 100, y: 150 + (200 - expected.minHeight) });
+  });
+
   it('calculates locked reveal visibility and interaction hotspot boundaries', () => {
     const position = { x: 100, y: 200 };
     const size = { width: 400, height: 100 };

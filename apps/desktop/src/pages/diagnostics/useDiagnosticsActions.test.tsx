@@ -126,6 +126,22 @@ describe('useDiagnosticsWorkbenchController', () => {
     expect(controller.actionFeedback?.detail).toBe('disk full');
   });
 
+  it('keeps a native repair failure after the refreshed snapshot replaces notifications', async () => {
+    repairs = [{
+      id: 'bad',
+      label: 'Repair',
+      run: vi.fn().mockRejectedValue({ code: 'bridge.failed', message: 'repair failed', retriable: true }),
+    }];
+    selected = ['bad'];
+    runtime.isTauri.mockReturnValue(true);
+    runtime.refreshBridge.mockResolvedValue({ ...snapshot, notifications: [] });
+    await mount();
+    await act(async () => controller.runAutomaticRepair());
+    const notification = useAppStore.getState().runtimeNotifications
+      .find((item) => item.id.startsWith('auto-repair-bad-'));
+    expect(notification?.message).toContain('repair failed (bridge.failed)');
+  });
+
   it('runs every workbench action and live-event transition', async () => {
     await mount();
     await act(async () => controller.runSelfCheck());

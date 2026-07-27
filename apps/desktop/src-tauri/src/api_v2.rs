@@ -97,7 +97,7 @@ fn attach_request_id(mut error: ServiceErrorV2, request_id: &str) -> ServiceErro
     error
 }
 
-fn log_v2_entry(app: &AppHandle, command: &str, request_id: &str) {
+fn log_v2_entry<R: tauri::Runtime>(app: &AppHandle<R>, command: &str, request_id: &str) {
     crate::log_debug!(
         app,
         "runtime",
@@ -109,8 +109,8 @@ fn log_v2_entry(app: &AppHandle, command: &str, request_id: &str) {
 /// Shared exit path for the five v2 commands: logs the outcome with its
 /// elapsed time and stamps the request id on the success envelope or into
 /// `ServiceErrorV2.details.requestId` on failure.
-fn finish_v2<T>(
-    app: &AppHandle,
+fn finish_v2<T, R: tauri::Runtime>(
+    app: &AppHandle<R>,
     command: &str,
     request_id: String,
     started: std::time::Instant,
@@ -412,7 +412,10 @@ pub enum BridgeCommandV2 {
 // Runs off the main thread (async) so blocking driver/process management cannot
 // starve the Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub async fn bridge_v2(app: AppHandle, command: BridgeCommandV2) -> Result<ServiceResult<Value>, ServiceErrorV2> {
+pub async fn bridge_v2<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    command: BridgeCommandV2,
+) -> Result<ServiceResult<Value>, ServiceErrorV2> {
     let request_id = new_request_id();
     let started = std::time::Instant::now();
     log_v2_entry(&app, "bridge_v2", &request_id);
@@ -447,8 +450,8 @@ pub enum DiagnosticsCommandV2 {
 // Runs off the main thread (async) so bundle/file I/O (e.g. export) cannot
 // freeze the Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub async fn diagnostics_v2(
-    app: AppHandle,
+pub async fn diagnostics_v2<R: tauri::Runtime>(
+    app: AppHandle<R>,
     command: DiagnosticsCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
     let request_id = new_request_id();
@@ -530,8 +533,8 @@ pub enum ConfigurationCommandV2 {
 // Runs off the main thread (async) so SQLite/config I/O cannot starve the Tauri
 // IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub async fn configuration_v2(
-    app: AppHandle,
+pub async fn configuration_v2<R: tauri::Runtime>(
+    app: AppHandle<R>,
     command: ConfigurationCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
     let request_id = new_request_id();

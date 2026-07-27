@@ -11,6 +11,7 @@ import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import type { DiagnosticsExportScope } from '../../schema/config';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import { useAppStore } from '../../stores/app-store';
+import { describeUnknownError } from '../../utils/describe-unknown-error';
 
 export type DiagnosticsRepairTask = { id: string; label: string; run: () => Promise<void> };
 
@@ -38,21 +39,26 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
     if (selected.length === 0) return;
     setBusyAction('auto-repair');
     try {
-      const failures: string[] = [];
+      const failures: Array<{ id: string; label: string; error: unknown }> = [];
       for (const option of selected) {
         try {
           await option.run();
         } catch (error) {
-          failures.push(option.label);
-          pushRuntimeNotification({
-            id: `auto-repair-${option.id}-${Date.now()}`,
-            level: 'error', source: 'diagnostics',
-            message: i18n.t('diagnostics.notifications.autoRepairFailed', { label: option.label, error: error instanceof Error ? error.message : String(error) }),
-            emittedAt: new Date().toISOString(),
-          });
+          failures.push({ id: option.id, label: option.label, error });
         }
       }
       if (hasNativeShell) setRuntimeSnapshot(await refreshBridgeRuntime());
+      for (const failure of failures) {
+        pushRuntimeNotification({
+          id: `auto-repair-${failure.id}-${Date.now()}`,
+          level: 'error', source: 'diagnostics',
+          message: i18n.t('diagnostics.notifications.autoRepairFailed', {
+            label: failure.label,
+            error: describeUnknownError(failure.error),
+          }),
+          emittedAt: new Date().toISOString(),
+        });
+      }
       if (failures.length === 0) {
         pushRuntimeNotification({
           id: `auto-repair-success-${Date.now()}`,

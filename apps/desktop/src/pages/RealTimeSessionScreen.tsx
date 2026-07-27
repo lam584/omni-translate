@@ -21,6 +21,7 @@ import { useSceneSessionController } from './session/useSceneSessionController';
 import { logSceneLaunchConfig } from './session/logSceneLaunchConfig';
 import { getCueDisplaySegments } from './overlay/overlayDomain';
 import { appendFrontendDiagnosticsLog, exportDiagnosticsBundleRuntime } from '../runtime/diagnostics-runtime';
+import { describeUnknownError } from '../utils/describe-unknown-error';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | 'export-diagnostics' | null;
 
@@ -36,22 +37,7 @@ function createLaunchAttemptId(mode: SceneMode): string {
 }
 
 function describeRuntimeError(error: unknown): string {
-  if (error instanceof Error) {
-    return error.message;
-  }
-  if (error && typeof error === 'object') {
-    const candidate = error as { code?: unknown; message?: unknown };
-    if (typeof candidate.message === 'string' && candidate.message.trim()) {
-      const code = typeof candidate.code === 'string' && candidate.code.trim() ? ` (${candidate.code})` : '';
-      return `${candidate.message}${code}`;
-    }
-    try {
-      return JSON.stringify(error);
-    } catch {
-      return String(error);
-    }
-  }
-  return String(error);
+  return describeUnknownError(error);
 }
 
 function resolveSceneLabel(mode: SceneMode) {

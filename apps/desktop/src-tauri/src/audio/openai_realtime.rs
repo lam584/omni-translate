@@ -437,6 +437,7 @@ fn connect_openai_socket(
 
 /// Per-turn subtitle cue accumulation shared by the three dialects.
 struct CueState {
+    direction: String,
     cue_id: Option<String>,
     source_text: String,
     output_text: String,
@@ -444,8 +445,9 @@ struct CueState {
 }
 
 impl CueState {
-    fn new() -> Self {
+    fn new(direction: String) -> Self {
         Self {
+            direction,
             cue_id: None,
             source_text: String::new(),
             output_text: String::new(),
@@ -454,8 +456,10 @@ impl CueState {
     }
 
     fn ensure_cue_id(&mut self) -> String {
+        // Direction inside the id drives the created cue's route_direction
+        // (see cue_lifecycle::route_direction_from_cue_id).
         self.cue_id
-            .get_or_insert_with(|| format!("openai-cue-{}", unix_ms()))
+            .get_or_insert_with(|| format!("openai-cue-{}-{}", self.direction, unix_ms()))
             .clone()
     }
 
@@ -492,6 +496,7 @@ pub fn start_openai_realtime(
     app: AppHandle,
     store: &AudioStateStore,
     provider: ProviderDraftInput,
+    direction: String,
     instructions: String,
     audio_mode: RealtimeAudioMode,
     target_language: String,
@@ -513,6 +518,7 @@ pub fn start_openai_realtime(
                 &audio_state,
                 stt_epoch,
                 provider,
+                direction,
                 instructions,
                 audio_mode,
                 target_language,
@@ -584,6 +590,7 @@ fn run_openai_worker(
     store: &AudioStateStore,
     stt_epoch: u64,
     provider: ProviderDraftInput,
+    direction: String,
     instructions: String,
     audio_mode: RealtimeAudioMode,
     target_language: String,
@@ -620,7 +627,7 @@ fn run_openai_worker(
 
     let timed_manual_commit = uses_timed_manual_commit(dialect, audio_mode, &provider.model);
     let input_rate = dialect_input_rate(dialect);
-    let mut cue = CueState::new();
+    let mut cue = CueState::new(direction);
     let mut gate = SilenceGate::new(OPENAI_ASR_MIN_CHUNK_RMS, OPENAI_ASR_SILENCE_GRACE_CHUNKS);
     let mut pre_session_queue: VecDeque<String> = VecDeque::new();
     let mut buffer_size = 0u64;

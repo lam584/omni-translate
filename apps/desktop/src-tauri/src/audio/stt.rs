@@ -95,6 +95,7 @@ pub fn start_stt(
     app: AppHandle,
     store: &AudioStateStore,
     provider: ProviderDraftInput,
+    direction: String,
 ) -> Result<(mpsc::Sender<Vec<u8>>, SttHandle), String> {
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
@@ -125,6 +126,7 @@ pub fn start_stt(
                 app_handle.clone(),
                 &audio_state,
                 provider,
+                direction,
                 audio_rx,
                 stop_rx,
             ) {
@@ -169,6 +171,7 @@ pub fn start_stt(
 fn handle_stt_text_event(
     app: &AppHandle,
     store: &AudioStateStore,
+    direction: &str,
     payload: &str,
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
@@ -178,7 +181,9 @@ fn handle_stt_text_event(
     };
     match evt["type"].as_str() {
         Some("input_audio_buffer.speech_started") => {
-            *current_cue_id = Some(format!("stt-cue-{}", unix_ms()));
+            // Direction inside the id drives the created cue's route_direction
+            // (see cue_lifecycle::route_direction_from_cue_id).
+            *current_cue_id = Some(format!("stt-cue-{direction}-{}", unix_ms()));
             pending_source_text.clear();
             let _ = append_diagnostics_log(
                 app, "stt", "debug", "检测到语音开始", None, None, None,
@@ -201,8 +206,8 @@ fn handle_stt_text_event(
             let transcript = evt["transcript"].as_str().unwrap_or("");
             let cue_id = current_cue_id
                 .take()
-                .unwrap_or_else(|| format!("stt-cue-{}", unix_ms()));
-            store.commit_stt_cue(&cue_id, transcript, "inbound");
+                .unwrap_or_else(|| format!("stt-cue-{direction}-{}", unix_ms()));
+            store.commit_stt_cue(&cue_id, transcript, direction);
             store.live_session_events.push_asr_delta(
                 "conversation.item.input_audio_transcription.completed",
                 "",
@@ -246,6 +251,8 @@ fn run_stt_worker(
     store: &AudioStateStore,
 
     provider: ProviderDraftInput,
+
+    direction: String,
 
     audio_rx: mpsc::Receiver<Vec<u8>>,
 
@@ -373,6 +380,7 @@ fn run_stt_worker(
                 Message::Text(text) => handle_stt_text_event(
                     &app,
                     store,
+                    &direction,
                     &text,
                     &mut current_cue_id,
                     &mut pending_source_text,

@@ -9,6 +9,28 @@ pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-07-27-smart-gain-v3";
 
 pub const DEFAULT_PIPE_NAME: &str = "omni-bridge-ipc";
 
+/// Stable bridge IPC error codes: every `errorCode` value the sidecar or the
+/// desktop bridge layer can attach to a nack, control-pipe error event or
+/// runtime snapshot. The list is mirrored in `contracts/error-codes.json`
+/// (`bridge` category); the sync test below fails when the two drift, so a
+/// code added on either side must land in both places. `bridge.stale-*`
+/// entries are stable prefixes — implementations may append `: detail`.
+pub const BRIDGE_ERROR_CODES: &[&str] = &[
+    "bridge.singleton-already-running",
+    "bridge.session-mismatch",
+    "bridge.invalid-audio-direction",
+    "bridge.invalid-pcm-payload",
+    "bridge.timeout",
+    "bridge.queue-overflow",
+    "bridge.start-failed",
+    "bridge.stale-pid-invalid",
+    "bridge.stale-pid-points-to-desktop-process",
+    "bridge.stale-process-path-mismatch",
+    "bridge.stale-process-open-failed",
+    "bridge.stale-process-query-failed",
+    "bridge.stale-process-terminate-failed",
+];
+
 pub fn control_pipe_path(pipe_name: &str) -> String {
     format!(r"\\.\pipe\{}", pipe_name)
 }
@@ -167,6 +189,74 @@ mod tests {
     fn pcm16le_round_trip() {
         let samples = vec![0, 1, -1, i16::MAX, i16::MIN];
         assert_eq!(decode_pcm16le(&encode_pcm16le(&samples)).unwrap(), samples);
+    }
+
+    #[test]
+    fn pcm16le_decode_rejects_odd_byte_payloads() {
+        let error = decode_pcm16le(&[0x01, 0x02, 0x03]).unwrap_err();
+        assert_eq!(error, "pcm16le payload must contain an even number of bytes");
+        assert_eq!(decode_pcm16le(&[]).unwrap(), Vec::<i16>::new());
+    }
+
+    #[test]
+    fn audio_frame_header_tolerates_unknown_wire_fields() {
+        // A newer peer may send fields this build does not know about; the
+        // deserializer must ignore them instead of rejecting the frame.
+        let header: AudioFrameHeader = serde_json::from_value(serde_json::json!({
+            "type": "bridge.translation.frame",
+            "requestId": "request-1",
+            "sessionId": "session-1",
+            "frameId": "frame-1",
+            "streamId": "stream-1",
+            "sampleRateHz": 24000,
+            "channelCount": 1,
+            "frameCount": 2,
+            "timestampMs": 1,
+            "payloadBytes": 4,
+            "someFutureField": { "nested": true }
+        }))
+        .expect("headers with unknown fields must deserialize");
+        assert_eq!(header.frame_count, 2);
+
+        let mix: MixControl = serde_json::from_value(serde_json::json!({
+            "keepOriginalAudio": true,
+            "translatedAudioEnabled": true,
+            "translatedAudioGainDb": 0.0,
+            "originalAudioGainDb": 0.0,
+            "duckingEnabled": true,
+            "duckingDepthPercent": 35,
+            "monitorMode": "original-and-translated",
+            "someFutureKnob": 1
+        }))
+        .expect("mix control with unknown fields must deserialize");
+        assert!(mix.translated_audio_auto_gain_enabled, "missing optional field falls back to its default");
+    }
+
+    #[test]
+    fn bridge_error_codes_match_the_shared_contract_manifest() {
+        let manifest: serde_json::Value =
+            serde_json::from_str(include_str!("../../../contracts/error-codes.json"))
+                .expect("contracts/error-codes.json must be valid JSON");
+        let mut from_manifest: Vec<String> = manifest
+            .get("bridge")
+            .and_then(|codes| codes.as_array())
+            .expect("contracts/error-codes.json must contain a bridge array")
+            .iter()
+            .map(|code| code.as_str().expect("bridge codes must be strings").to_string())
+            .collect();
+        from_manifest.sort();
+
+        let mut from_crate: Vec<String> =
+            BRIDGE_ERROR_CODES.iter().map(|code| code.to_string()).collect();
+        from_crate.sort();
+
+        assert_eq!(
+            from_crate, from_manifest,
+            "BRIDGE_ERROR_CODES and contracts/error-codes.json (bridge) drifted: update both sides together"
+        );
+        for code in BRIDGE_ERROR_CODES {
+            assert!(code.starts_with("bridge."), "bridge error code must carry the bridge. prefix: {code}");
+        }
     }
 
     #[test]

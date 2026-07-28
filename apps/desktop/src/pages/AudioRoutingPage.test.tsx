@@ -1,4 +1,4 @@
-﻿import { act } from 'react';
+import { act } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
@@ -238,7 +238,7 @@ describe('AudioRoutingPage', () => {
     expect(headings).toEqual(expect.arrayContaining(['采集', '输出', '听译模型', '回复模型']));
 
     expect(container.querySelectorAll('.routing-top-grid > article')).toHaveLength(2);
-    expect(container.querySelector('.routing-models-grid')).toBeTruthy();
+    expect(container.querySelector('.routing-models-grid')).toBeInstanceOf(HTMLElement);
     expect(container.querySelectorAll('.routing-models-grid > article')).toHaveLength(2);
     expect(container.querySelectorAll('.scenario-card')).toHaveLength(5);
     expect(container.querySelectorAll('.chain-flow-outbound')).toHaveLength(1);
@@ -466,7 +466,7 @@ describe('AudioRoutingPage', () => {
     const owningSection = virtualMicToggle?.closest('.routing-models-outbound-panel');
     const owningCard = virtualMicToggle?.closest('.scenario-card');
 
-    expect(owningSection).toBeTruthy();
+    expect(owningSection).toBeInstanceOf(HTMLElement);
     expect(owningCard?.textContent).toContain('说给对方');
   });
 
@@ -479,7 +479,7 @@ describe('AudioRoutingPage', () => {
     const owningSection = speechToggle?.closest('.routing-models-inbound-panel');
     const owningCard = speechToggle?.closest('.scenario-card');
 
-    expect(owningSection).toBeTruthy();
+    expect(owningSection).toBeInstanceOf(HTMLElement);
     expect(owningCard?.textContent).toContain('听对方 · 二次语音识别');
   });
 
@@ -520,7 +520,7 @@ describe('AudioRoutingPage', () => {
 
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const owningSection = subtitleCard.closest('.routing-models-inbound-panel');
-    expect(owningSection).toBeTruthy();
+    expect(owningSection).toBeInstanceOf(HTMLElement);
   });
 
   it('toggles the secondary audio switch from the scenario card', async () => {
@@ -557,7 +557,7 @@ describe('AudioRoutingPage', () => {
     const subtitleCard = scenarioCardByTitle(container, '字幕翻译');
     const subtitleToggle = inputText(subtitleCard.querySelector('input[type="checkbox"]'));
     const owningSection = subtitleCard.closest('.routing-models-inbound-panel');
-    expect(owningSection).toBeTruthy();
+    expect(owningSection).toBeInstanceOf(HTMLElement);
     expect(subtitleToggle.checked).toBe(true);
   });
 
@@ -646,7 +646,7 @@ describe('AudioRoutingPage', () => {
 
     const outputSelect = Array.from(container.querySelectorAll<HTMLSelectElement>('select.select-input'))
       .find((select) => Array.from(select.options).some((option) => option.textContent?.includes('扬声器')));
-    expect(outputSelect).toBeTruthy();
+    expect(outputSelect).toBeInstanceOf(HTMLSelectElement);
     expect(
       Array.from(outputSelect!.options).some((option) =>
         option.textContent?.includes('Omni Translate Virtual Speaker'),
@@ -853,11 +853,11 @@ describe('AudioRoutingPage', () => {
 
     const outboundFlow = container.querySelector('.chain-flow-outbound');
     const inboundFlow = container.querySelector('.chain-flow-inbound');
-    expect(outboundFlow).toBeTruthy();
-    expect(inboundFlow).toBeTruthy();
-    expect(container.textContent).toContain('系统/对方声音');
-    expect(container.textContent).toContain('本地播放');
-    expect(container.textContent).toContain('返回对方');
+    expect(outboundFlow).toBeInstanceOf(HTMLElement);
+    expect(inboundFlow).toBeInstanceOf(HTMLElement);
+    expect(inboundFlow?.textContent).toContain('系统/对方声音');
+    expect(inboundFlow?.textContent).toContain('本地播放');
+    expect(outboundFlow?.textContent).toContain('返回对方');
   });
 
   it('exposes scenario toggles as ARIA switches with aria-checked', async () => {
@@ -873,30 +873,38 @@ describe('AudioRoutingPage', () => {
   it('supports keyboard navigation inside scenario listboxes', async () => {
     await renderPage();
 
-    const cards = Array.from(container.querySelectorAll('.scenario-card'));
-    const firstCard = cards[0] as HTMLElement;
-    const selector = firstCard.querySelector('.scenario-card-selector') as HTMLButtonElement;
+    const outboundCard = scenarioCardByTitle(container, '说给对方');
+    const selector = outboundCard.querySelector('.scenario-card-selector') as HTMLButtonElement;
     selector.focus();
     await act(async () => {
       selector.click();
     });
-    const list = firstCard.querySelector('[role="listbox"]') as HTMLElement;
-    expect(list).toBeTruthy();
+    const list = outboundCard.querySelector('[role="listbox"]') as HTMLElement;
+    expect(list).not.toBeNull();
 
+    // aria-activedescendant must reference a real option in the open list.
+    const optionIds = Array.from(list.querySelectorAll('[role="option"]')).map((option) => option.id);
+    expect(optionIds.length).toBeGreaterThan(1);
     const initialActive = list.getAttribute('aria-activedescendant');
-    expect(initialActive).toBeTruthy();
+    expect(optionIds).toContain(initialActive);
 
     await act(async () => {
       list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
     });
     const nextActive = list.getAttribute('aria-activedescendant');
-    expect(nextActive).toBeTruthy();
+    expect(optionIds).toContain(nextActive);
     expect(nextActive).not.toBe(initialActive);
 
+    const focused = list.querySelector<HTMLButtonElement>(`[id="${nextActive}"]`);
+    const before = useAppStore.getState().configDraft.devices.outboundVoiceModelId;
     await act(async () => {
       list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
-    expect(useAppStore.getState().configDraft.devices.inboundVoiceModelId).toBeTruthy();
+    // Enter must commit exactly the highlighted option into the draft field
+    // this card owns, not just leave any truthy value behind.
+    const committed = useAppStore.getState().configDraft.devices.outboundVoiceModelId;
+    expect(committed).not.toBe(before);
+    expect(committed).toBe(focused?.getAttribute('data-value'));
   });
 
   it('handles scenario selector keyboard open, close and boundary navigation', async () => {
@@ -908,14 +916,18 @@ describe('AudioRoutingPage', () => {
       selector.dispatchEvent(new KeyboardEvent('keydown', { key: ' ', bubbles: true }));
     });
     let list = card.querySelector<HTMLElement>('[role="listbox"]')!;
-    expect(list).toBeTruthy();
+    expect(list).not.toBeNull();
+    const optionIds = Array.from(list.querySelectorAll('[role="option"]')).map((option) => option.id);
+    expect(optionIds.length).toBeGreaterThan(1);
 
     await act(async () => {
       list.dispatchEvent(new KeyboardEvent('keydown', { key: 'End', bubbles: true }));
       list.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true }));
       list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Home', bubbles: true }));
     });
-    expect(list.getAttribute('aria-activedescendant')).toBeTruthy();
+    // End → ArrowUp → Home lands on the FIRST option and stays inside the
+    // list; a broken boundary clamp would leave a dangling descendant id.
+    expect(list.getAttribute('aria-activedescendant')).toBe(optionIds[0]);
 
     await act(async () => {
       list.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));

@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
 import SubtitleOverlayPage from '../pages/SubtitleOverlayPage';
-import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
+import { AUDIO_RUNTIME_SNAPSHOT_EVENT, type AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
 import {
@@ -186,7 +186,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
   it('acknowledges route start with an armed snapshot and converges to capturing via the event channel', async () => {
     const config = createConfig();
     const pushedSnapshots: AudioRuntimeSnapshot[] = [];
-    await fake.listen<AudioRuntimeSnapshot>('audio://snapshot', (event) => {
+    await fake.listen<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => {
       pushedSnapshots.push(event.payload);
       useAppStore.getState().setAudioRuntimeSnapshot(event.payload);
     });
@@ -236,7 +236,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
       recommendedAction: 'restart-bridge',
     });
     const pushed: AudioRuntimeSnapshot[] = [];
-    await fake.listen<AudioRuntimeSnapshot>('audio://snapshot', (event) => pushed.push(event.payload));
+    await fake.listen<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => pushed.push(event.payload));
 
     // The command itself still succeeds — the native worker fails later.
     const accepted = await startAudioRouteRuntime('inbound', config);
@@ -269,7 +269,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
   it('resolves an in-flight invoke only after the newer push snapshot landed (interleaving)', async () => {
     const config = createConfig();
     const order: string[] = [];
-    await fake.listen<AudioRuntimeSnapshot>('audio://snapshot', (event) => {
+    await fake.listen<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => {
       if (event.payload.inbound.streamBound) order.push('push:capturing');
     });
 
@@ -293,7 +293,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
     // uncommitted and displaySegments entirely absent — the serde
     // skip_serializing_if shape the real backend sends.
     const pushed: AudioRuntimeSnapshot[] = [];
-    await fake.listen<AudioRuntimeSnapshot>('audio://snapshot', (event) => pushed.push(event.payload));
+    await fake.listen<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => pushed.push(event.payload));
 
     const cueId = fake.streamCue('inbound', ['fake partial', 'fake partial sentence', 'fake partial se']);
     for (const snapshot of pushed) {
@@ -321,7 +321,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
 
   it('surfaces realtime reconnect transitions through sttConnection and a progress cue', async () => {
     const pushed: AudioRuntimeSnapshot[] = [];
-    await fake.listen<AudioRuntimeSnapshot>('audio://snapshot', (event) => pushed.push(event.payload));
+    await fake.listen<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => pushed.push(event.payload));
 
     fake.dropRealtimeConnection('provider closed the WebSocket');
     const reconnecting = pushed.at(-1);
@@ -454,7 +454,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
     fake.degradeNextSpeechDispatch('扬声器设备缺失：无法打开输出流');
 
     const pushed: AudioRuntimeSnapshot[] = [];
-    await fake.listen<AudioRuntimeSnapshot>('audio://snapshot', (event) => pushed.push(event.payload));
+    await fake.listen<AudioRuntimeSnapshot>(AUDIO_RUNTIME_SNAPSHOT_EVENT, (event) => pushed.push(event.payload));
     fake.dispatchSpeechCue();
     await fake.settle();
 

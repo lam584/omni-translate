@@ -39,11 +39,13 @@ jobs:
       - name: Test watch-mode report tooling
         run: npm run test:watch-mode-report
 
-      - name: Check desktop shell
-        run: npm run check:desktop-shell
+      # Full cargo tests, not just `cargo check`: a release verifier that only
+      # type-checks the Rust side gives false confidence.
+      - name: Test desktop shell
+        run: npm run test:desktop-shell
 
-      - name: Check native bridge
-        run: npm run check:bridge-service-native
+      - name: Test native bridge
+        run: npm run test:bridge-service-native
 
       - name: Ensure installer layout script is native-only
         shell: pwsh

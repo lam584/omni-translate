@@ -306,58 +306,58 @@ assertJsonValue(
 );
 
 // ---------------------------------------------------------------------------
-// Event name pins: the TS and Rust literals for cross-process event channels
-// must stay identical (and match the pinned value).
-function extractLiteral(relativePath, pattern, label) {
-  const match = pattern.exec(readText(relativePath));
-  if (!match) {
-    fail(`${label} literal not found in ${relativePath}`);
-    return null;
+// Cross-process event channels. The Rust side is enumerated automatically so
+// a new `..._EVENT` constant cannot ship unguarded; the pinned set below is
+// the governance anchor that catches a silent rename on both sides at once.
+// Adding a Rust event constant therefore requires: a TS constant with the
+// same wire value, plus an entry here.
+const EXPECTED_CROSS_PROCESS_EVENTS = [
+  'audio://snapshot',
+  'benchmark://progress',
+  'config://draft-updated',
+  'credential://direct-result',
+  'runtime://notification',
+  'runtime://snapshot',
+];
+
+function collectEventConstants(rootPath, pattern, filePredicate) {
+  const constants = new Map();
+  for (const filePath of collectFiles(rootPath, filePredicate)) {
+    const source = fs.readFileSync(filePath, 'utf8');
+    for (const match of source.matchAll(pattern)) {
+      constants.set(match[1], { value: match[2], file: path.relative(rootDir, filePath) });
+    }
   }
-  return match[1];
+  return constants;
 }
 
-const runtimeCoreSchemaPath = path.join('apps', 'desktop', 'src', 'schema', 'runtime-core.ts');
+const rustEventConstants = collectEventConstants(
+  path.join(rootDir, 'apps', 'desktop', 'src-tauri', 'src'),
+  /(?:pub )?const ([A-Z][A-Z0-9_]*_EVENT): &str = "([^"]+)"/g,
+  (filePath) => filePath.endsWith('.rs'),
+);
+const tsEventConstants = collectEventConstants(
+  path.join(rootDir, 'apps', 'desktop', 'src'),
+  /export const ([A-Z][A-Z0-9_]*_EVENT) = '([^']+)'/g,
+  (filePath) => /\.(?:ts|tsx)$/.test(filePath) && !/\.test\.(?:ts|tsx)$/.test(filePath),
+);
 
-const eventNamePins = [
-  {
-    label: 'runtime snapshot event',
-    expected: 'runtime://snapshot',
-    ts: [runtimeCoreSchemaPath, /export const RUNTIME_SNAPSHOT_EVENT = '([^']+)'/],
-    rust: [
-      path.join('apps', 'desktop', 'src-tauri', 'src', 'runtime', 'events.rs'),
-      /pub const RUNTIME_SNAPSHOT_EVENT: &str = "([^"]+)"/,
-    ],
-  },
-  {
-    label: 'runtime notification event',
-    expected: 'runtime://notification',
-    ts: [runtimeCoreSchemaPath, /export const RUNTIME_NOTIFICATION_EVENT = '([^']+)'/],
-    rust: [
-      path.join('apps', 'desktop', 'src-tauri', 'src', 'runtime', 'events.rs'),
-      /pub const RUNTIME_NOTIFICATION_EVENT: &str = "([^"]+)"/,
-    ],
-  },
-  {
-    label: 'audio runtime snapshot event',
-    expected: 'audio://snapshot',
-    ts: [path.join('apps', 'desktop', 'src', 'schema', 'audio-runtime.ts'), /export const AUDIO_RUNTIME_SNAPSHOT_EVENT = '([^']+)'/],
-    rust: [
-      path.join('apps', 'desktop', 'src-tauri', 'src', 'audio', 'events.rs'),
-      /pub const AUDIO_RUNTIME_SNAPSHOT_EVENT: &str = "([^"]+)"/,
-    ],
-  },
-];
-for (const pin of eventNamePins) {
-  const tsValue = extractLiteral(pin.ts[0], pin.ts[1], `${pin.label} (TypeScript)`);
-  const rustValue = extractLiteral(pin.rust[0], pin.rust[1], `${pin.label} (Rust)`);
-  if (tsValue === null || rustValue === null) {
-    continue;
+const rustEventValues = [...new Set([...rustEventConstants.values()].map((entry) => entry.value))].sort();
+if (JSON.stringify(rustEventValues) !== JSON.stringify([...EXPECTED_CROSS_PROCESS_EVENTS].sort())) {
+  fail(
+    `Rust cross-process event set drifted from the pinned manifest: pinned=${EXPECTED_CROSS_PROCESS_EVENTS.join(',')} actual=${rustEventValues.join(',')}. `
+    + 'Update EXPECTED_CROSS_PROCESS_EVENTS together with the TypeScript listener constant.',
+  );
+}
+
+const tsEventValues = new Set([...tsEventConstants.values()].map((entry) => entry.value));
+for (const [name, rustEntry] of rustEventConstants) {
+  if (!tsEventValues.has(rustEntry.value)) {
+    fail(`Rust event ${name}="${rustEntry.value}" (${rustEntry.file}) has no TypeScript constant with the same wire value`);
   }
-  if (tsValue !== rustValue) {
-    fail(`${pin.label} literals disagree: TS='${tsValue}' (${pin.ts[0]}) vs Rust='${rustValue}' (${pin.rust[0]})`);
-  } else if (tsValue !== pin.expected) {
-    fail(`${pin.label} drifted from pinned '${pin.expected}': both sides now use '${tsValue}'`);
+  const tsEntry = tsEventConstants.get(name);
+  if (tsEntry && tsEntry.value !== rustEntry.value) {
+    fail(`Event constant ${name} disagrees: Rust='${rustEntry.value}' (${rustEntry.file}) vs TS='${tsEntry.value}' (${tsEntry.file})`);
   }
 }
 
@@ -420,19 +420,56 @@ export function findTaggedEnumRenameGaps(source, relativePath) {
 // shapes. This script keeps only the version/event-name pins and governance
 // checks above and below.
 
-// Stable user-facing error codes have a small language-neutral manifest.
-// The TypeScript union and presentation map must cover it exactly, while each
-// code must be emitted by either the native or renderer implementation.
+// Stable user-facing error codes have a small language-neutral manifest,
+// categorized by domain (contracts/error-codes.json). session/audio codes are
+// user-facing: the TypeScript union and presentation map must cover them
+// exactly. bridge codes are wire codes: the omni-bridge-protocol crate pins
+// them via bridge_error_codes_match_the_shared_contract_manifest. Every code
+// must additionally be emitted by non-test implementation code — appearances
+// inside comments or test modules do not count.
 {
-  const expectedCodes = readJson(path.join('contracts', 'error-codes.json'));
+  const manifest = readJson(path.join('contracts', 'error-codes.json'));
+  for (const [category, prefix] of [['session', 'session.'], ['audio', 'audio.'], ['bridge', 'bridge.']]) {
+    if (!Array.isArray(manifest[category]) || manifest[category].length === 0) {
+      fail(`contracts/error-codes.json is missing a non-empty ${category} array`);
+      continue;
+    }
+    for (const code of manifest[category]) {
+      if (!code.startsWith(prefix)) {
+        fail(`contracts/error-codes.json ${category} entry has the wrong prefix: ${code}`);
+      }
+    }
+  }
+
+  // Drop everything below the first #[cfg(test)] (same convention as
+  // verify-config-paths) and every pure comment line, so "emitted by the
+  // implementation" means emitted by shipping code.
+  const stripRustTestCode = (source) => source.split('#[cfg(test)]')[0];
+  const stripCommentLines = (source) => source
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trimStart();
+      return !trimmed.startsWith('//') && !trimmed.startsWith('*') && !trimmed.startsWith('/*');
+    })
+    .join('\n');
+  // Word-boundary match: the code must stand alone (quoted literal or inside
+  // a diagnostic message), not be a substring of a longer identifier.
+  const emissionPattern = (code) => new RegExp(`(?<![\\w.-])${code.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![\\w-])`);
+
+  const sessionImplementationText = [
+    ...collectFiles(path.join(rootDir, 'apps', 'desktop', 'src'), (filePath) => /\.(?:ts|tsx)$/.test(filePath)
+      && !/\.test\.(?:ts|tsx)$/.test(filePath)
+      && !filePath.includes(`${path.sep}mocks${path.sep}`)
+      && !filePath.endsWith(path.join('schema', 'audio-runtime.ts'))
+      && !filePath.endsWith(path.join('utils', 'session-error-presentation.ts')))
+      .map((filePath) => stripCommentLines(fs.readFileSync(filePath, 'utf8'))),
+    ...collectFiles(path.join(rootDir, 'apps', 'desktop', 'src-tauri', 'src'), (filePath) => filePath.endsWith('.rs'))
+      .map((filePath) => stripCommentLines(stripRustTestCode(fs.readFileSync(filePath, 'utf8')))),
+  ].join('\n');
+
+  const expectedCodes = [...manifest.session, ...manifest.audio];
   const schemaText = readText(path.join('apps', 'desktop', 'src', 'schema', 'audio-runtime.ts'));
   const presentationText = readText(path.join('apps', 'desktop', 'src', 'utils', 'session-error-presentation.ts'));
-  const implementationText = [
-    ...collectFiles(path.join(rootDir, 'apps', 'desktop', 'src'), (filePath) => /\.(?:ts|tsx)$/.test(filePath)
-      && !filePath.endsWith(path.join('schema', 'audio-runtime.ts'))
-      && !filePath.endsWith(path.join('utils', 'session-error-presentation.ts'))),
-    ...collectFiles(path.join(rootDir, 'apps', 'desktop', 'src-tauri', 'src'), (filePath) => filePath.endsWith('.rs')),
-  ].map((filePath) => fs.readFileSync(filePath, 'utf8')).join('\n');
   const unionBlock = schemaText.match(/export type SessionErrorCode\s*=([\s\S]*?);/)?.[1] ?? '';
   const actualCodes = [...unionBlock.matchAll(/'((?:session|audio)\.[^']+)'/g)].map((match) => match[1]).sort();
   const expectedSorted = [...expectedCodes].sort();
@@ -441,7 +478,27 @@ export function findTaggedEnumRenameGaps(source, relativePath) {
   }
   for (const code of expectedCodes) {
     if (!presentationText.includes(`'${code}'`)) fail(`Error presentation missing code: ${code}`);
-    if (!implementationText.includes(code)) fail(`No implementation emits stable error code: ${code}`);
+    if (!emissionPattern(code).test(sessionImplementationText)) {
+      fail(`No non-test implementation emits stable error code: ${code}`);
+    }
+  }
+
+  const bridgeImplementationText = [
+    ...collectFiles(path.join(rootDir, 'apps', 'bridge-service-native', 'src'), (filePath) => filePath.endsWith('.rs')),
+    ...collectFiles(path.join(rootDir, 'apps', 'desktop', 'src-tauri', 'src', 'bridge'), (filePath) => filePath.endsWith('.rs')),
+  ].map((filePath) => stripCommentLines(stripRustTestCode(fs.readFileSync(filePath, 'utf8')))).join('\n');
+  for (const code of manifest.bridge) {
+    if (!emissionPattern(code).test(bridgeImplementationText)) {
+      fail(`No non-test bridge implementation emits stable error code: ${code}`);
+    }
+  }
+
+  // Self-check: the emission matcher must keep rejecting comment-only and
+  // test-only appearances, so the guard cannot rot into substring matching.
+  const commentOnly = stripCommentLines('// "session.fake-code" mentioned in prose');
+  const testOnly = stripRustTestCode('#[cfg(test)]\nmod tests { const X: &str = "session.fake-code"; }');
+  if (emissionPattern('session.fake-code').test(commentOnly) || emissionPattern('session.fake-code').test(testOnly)) {
+    fail('error-code emission self-check failed: comment/test appearances still count as implementation');
   }
 }
 

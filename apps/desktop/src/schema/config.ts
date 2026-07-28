@@ -179,6 +179,8 @@ export type DeviceDraft = {
 export type SubtitleDraft = {
   sourceLanguage: string;
   targetLanguage: string;
+  /** Conversation-mode microphone translation target; empty = derive from sourceLanguage (auto falls back to en). */
+  outboundTargetLanguage: string;
   translationLanguagePreference: string;
   mode: SubtitleMode;
   captionDensity: CaptionDensity;
@@ -332,6 +334,7 @@ export const appConfigFieldMappings: SQLiteFieldMapping[] = [
   { draftPath: 'devices.outboundRoute.pushToTalk.hotkey', sqliteTable: 'audio_routes', sqliteColumn: 'push_to_talk_hotkey', note: 'Outbound push-to-talk hotkey.' },
   { draftPath: 'devices.inboundRoute.outputs[]', sqliteTable: 'audio_route_outputs', sqliteColumn: 'target_id', note: 'Route output child rows.' },
   { draftPath: 'subtitles.targetLanguage', sqliteTable: 'subtitle_preferences', sqliteColumn: 'target_language', note: 'Subtitle target language.' },
+  { draftPath: 'subtitles.outboundTargetLanguage', sqliteTable: 'config_documents', sqliteColumn: 'config_json', note: 'Outbound (microphone) translation target language; document fallback keeps older SQLite schemas compatible.' },
   { draftPath: 'subtitles.translationLanguagePreference', sqliteTable: 'subtitle_preferences', sqliteColumn: 'translation_language_preference', note: 'Preferred translation language.' },
   { draftPath: 'subtitles.priority', sqliteTable: 'subtitle_preferences', sqliteColumn: 'priority_mode', note: 'Subtitle priority mode.' },
   { draftPath: 'subtitles.overlayOpacity', sqliteTable: 'subtitle_preferences', sqliteColumn: 'overlay_opacity', note: 'Overlay opacity.' },

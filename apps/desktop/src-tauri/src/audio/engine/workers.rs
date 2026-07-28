@@ -597,9 +597,36 @@ fn process_captured_chunk(
     if let Some(segment) = update.finalized_segment {
         store.increment_segment_count(direction);
         store.cache_segment_audio(segment.audio);
-        if direction != "inbound" {
+        if should_push_placeholder_cue(direction, stt_sender.is_some()) {
             store.push_subtitle_cue(segment.cue);
         }
     }
     emit_audio_snapshot(app, store)
+}
+
+/// Whether a finalized VAD segment should surface a placeholder subtitle cue
+/// ("检测到麦克风片段 N"). These exist only to show microphone activity when
+/// no recognition session is attached: inbound never shows them (loopback can
+/// be legitimately silent), and once outbound has an ASR/realtime sender the
+/// session emits the real transcript cues, so the placeholder would otherwise
+/// pollute the translate queue with untranslatable diagnostic text.
+fn should_push_placeholder_cue(direction: &str, has_recognition_sender: bool) -> bool {
+    direction != "inbound" && !has_recognition_sender
+}
+
+#[cfg(test)]
+mod placeholder_cue_tests {
+    use super::should_push_placeholder_cue;
+
+    #[test]
+    fn outbound_without_sender_shows_placeholder_but_with_sender_does_not() {
+        // Mic-only, no recognition session: keep the activity placeholder.
+        assert!(should_push_placeholder_cue("outbound", false));
+        // Mic with a real ASR/realtime session: the session emits transcript
+        // cues, so no placeholder must be pushed.
+        assert!(!should_push_placeholder_cue("outbound", true));
+        // Inbound never surfaces placeholders regardless of sender presence.
+        assert!(!should_push_placeholder_cue("inbound", false));
+        assert!(!should_push_placeholder_cue("inbound", true));
+    }
 }

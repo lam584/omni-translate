@@ -66,7 +66,12 @@ function New-WatchModeOutputDirectory {
   $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $modelSuffix = if ($WatchModelId) { "-$($WatchModelId -replace '[^A-Za-z0-9_.-]', '_')" } else { "" }
   $feedbackSuffix = if ($FeedbackLoopPrevention -eq "echo-cancel") { "-echo-cancel" } else { "" }
-  $target = Join-Path (Resolve-Path ".").Path (Join-Path $Root "$timestamp$modelSuffix$feedbackSuffix")
+  $resolvedRoot = if ([System.IO.Path]::IsPathRooted($Root)) {
+    [System.IO.Path]::GetFullPath($Root)
+  } else {
+    Join-Path (Resolve-Path ".").Path $Root
+  }
+  $target = Join-Path $resolvedRoot "$timestamp$modelSuffix$feedbackSuffix"
   New-Item -ItemType Directory -Force -Path $target | Out-Null
   return $target
 }

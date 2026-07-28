@@ -252,6 +252,7 @@ pub(super) fn start_or_reuse_openai_realtime_session(
         app.clone(),
         state,
         voice_provider,
+        direction.to_string(),
         instructions,
         audio_mode,
         target_lang.to_string(),
@@ -281,6 +282,7 @@ pub(super) fn start_or_reuse_gemini_live_session(
         app.clone(),
         state,
         voice_provider,
+        direction.to_string(),
         instructions,
         mode,
         target_lang.to_string(),
@@ -307,6 +309,7 @@ pub(super) fn start_or_reuse_tencent_speech_translate_session(
         app.clone(),
         state,
         voice_provider,
+        direction.to_string(),
         source_lang.to_string(),
         target_lang.to_string(),
     )?;

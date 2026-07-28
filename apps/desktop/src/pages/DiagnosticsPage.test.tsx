@@ -714,7 +714,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     await renderPage();
 
-    expect(findButtonByText(container, '查看实时事件')).toBeDefined();
+    expect(findButtonByText(container, '查看实时事件')).toBeInstanceOf(HTMLButtonElement);
   });
 
   it('shows live events button when session is active and opens modal on click', async () => {
@@ -732,7 +732,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     await renderPage();
 
     const liveButton = findButtonByText(container, '查看实时事件');
-    expect(liveButton).toBeDefined();
+    expect(liveButton).toBeInstanceOf(HTMLButtonElement);
 
     await clickAndSettle(liveButton);
 

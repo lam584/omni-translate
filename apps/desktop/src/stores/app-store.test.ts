@@ -52,12 +52,16 @@ describe('app store', () => {
     started.inbound.streamBound = true;
     started.sessionStartedAt = null;
     useAppStore.getState().setAudioRuntimeSnapshot(started);
-    expect(useAppStore.getState().audioRuntimeSnapshot.sessionStartedAt).toBeTruthy();
+    const startedAt = useAppStore.getState().audioRuntimeSnapshot.sessionStartedAt;
+    expect(startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+    expect(Number.isNaN(new Date(startedAt!).getTime())).toBe(false);
 
     const continued = structuredClone(started);
     continued.sessionStartedAt = null;
     useAppStore.getState().setAudioRuntimeSnapshot(continued);
-    expect(useAppStore.getState().audioRuntimeSnapshot.sessionStartedAt).toBeTruthy();
+    // A snapshot from the same running session must keep the ORIGINAL
+    // timestamp, not mint a new one (the elapsed timer would reset).
+    expect(useAppStore.getState().audioRuntimeSnapshot.sessionStartedAt).toBe(startedAt);
 
     const stopped = structuredClone(audioRuntimeSnapshotMock);
     useAppStore.getState().setAudioRuntimeSnapshot(stopped);

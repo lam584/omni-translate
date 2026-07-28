@@ -2,8 +2,24 @@ struct SubtitleTranslationWorker {
     app: AppHandle,
     text_model_provider: ProviderDraftInput,
     target_language: String,
+    outbound_target_language: String,
     trace: ModelTraceRecorder,
     stop_rx: mpsc::Receiver<()>,
+}
+
+/// Target language for a cue, keyed by its route direction. Outbound (mic)
+/// cues translate the local speaker into the peer language; inbound cues keep
+/// the subtitle target. An empty outbound target falls back to the inbound one.
+fn cue_target_language<'a>(
+    direction: &str,
+    inbound_target: &'a str,
+    outbound_target: &'a str,
+) -> &'a str {
+    if direction == "outbound" && !outbound_target.trim().is_empty() {
+        outbound_target
+    } else {
+        inbound_target
+    }
 }
 
 fn process_translation_cues(
@@ -15,6 +31,7 @@ fn process_translation_cues(
     fatal_provider_error: &Option<ProviderRuntimeError>,
     next_translation_sequence: &mut u64,
     target_language: &str,
+    outbound_target_language: &str,
     text_model_provider: &ProviderDraftInput,
     trace: &ModelTraceRecorder,
     translation_tx: &mpsc::Sender<TranslationUpdate>,
@@ -25,6 +42,8 @@ fn process_translation_cues(
         if source_text.is_empty() {
             continue;
         }
+        let target_language =
+            cue_target_language(&cue.route_direction, target_language, outbound_target_language);
 
         let cue_state = cue_states
             .entry(cue.cue_id.clone())
@@ -306,6 +325,7 @@ impl SubtitleTranslationWorker {
         app: AppHandle,
         text_model_provider: ProviderDraftInput,
         target_language: String,
+        outbound_target_language: String,
         trace: ModelTraceRecorder,
         stop_rx: mpsc::Receiver<()>,
     ) -> Self {
@@ -313,6 +333,7 @@ impl SubtitleTranslationWorker {
             app,
             text_model_provider,
             target_language,
+            outbound_target_language,
             trace,
             stop_rx,
         }
@@ -323,6 +344,7 @@ impl SubtitleTranslationWorker {
             app,
             text_model_provider,
             target_language,
+            outbound_target_language,
             trace,
             stop_rx,
         } = self;
@@ -454,6 +476,7 @@ impl SubtitleTranslationWorker {
             &fatal_provider_error,
             &mut next_translation_sequence,
             &target_language,
+            &outbound_target_language,
             &text_model_provider,
             &trace,
             &translation_tx,

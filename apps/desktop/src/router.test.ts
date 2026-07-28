@@ -16,7 +16,7 @@ vi.mock('./pages/SubtitleOverlaySettingsPage', () => ({ default: () => React.cre
 describe('router', () => {
   it('keeps the primary routes and compatibility redirects registered', () => {
     const rootRoute = router.routes.find((route) => route.path === '/');
-    expect(rootRoute).toBeDefined();
+    expect(rootRoute?.path).toBe('/');
 
     const routeKeys = rootRoute?.children?.map((route) => (route.index ? 'index' : route.path)) ?? [];
     expect(routeKeys).toEqual([

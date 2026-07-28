@@ -61,9 +61,11 @@ test('install state identity matches the omni driver manifest', () => {
 });
 
 test('install state protocol version matches the bridge protocol constant', () => {
-  const bridgeLib = readRepoText('apps', 'bridge-service-native', 'src', 'lib.rs');
-  const constant = bridgeLib.match(/BRIDGE_PROTOCOL_VERSION: &str = "([^"]+)"/);
-  assert.ok(constant, 'BRIDGE_PROTOCOL_VERSION constant not found in bridge lib.rs');
+  // The constant moved into the shared omni-bridge-protocol crate (the bridge
+  // lib.rs only re-exports it), so read it from the authoritative source.
+  const protocolLib = readRepoText('crates', 'omni-bridge-protocol', 'src', 'lib.rs');
+  const constant = protocolLib.match(/BRIDGE_PROTOCOL_VERSION: &str = "([^"]+)"/);
+  assert.ok(constant, 'BRIDGE_PROTOCOL_VERSION constant not found in omni-bridge-protocol lib.rs');
   assert.equal(installState.protocolVersion, constant[1]);
 });
 

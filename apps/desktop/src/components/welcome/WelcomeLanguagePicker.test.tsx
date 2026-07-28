@@ -304,7 +304,9 @@ describe('WelcomeLanguagePicker', () => {
     await click(getFooterButtons(container)[0]!);
     const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
     await selectValue(templateSelect, 'missing-template');
-    expect(container.querySelector<HTMLInputElement>('input[type="url"]')?.value).toBeTruthy();
+    const customUrlInput = container.querySelector<HTMLInputElement>('input[type="url"]');
+    expect(customUrlInput).toBeInstanceOf(HTMLInputElement);
+    expect(customUrlInput!.value).toMatch(/\S/);
   });
 
   it('does not update driver state after a late bridge refresh resolution or rejection', async () => {

@@ -50,6 +50,10 @@ impl SessionRegistry {
         self.sessions.lock().expect("audio sessions poisoned").insert(direction.to_string(), handle);
     }
 
+    pub(super) fn has(&self, direction: &str) -> bool {
+        self.sessions.lock().expect("audio sessions poisoned").contains_key(direction)
+    }
+
     pub(super) fn take(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.sessions.lock().expect("audio sessions poisoned").remove(direction)
     }

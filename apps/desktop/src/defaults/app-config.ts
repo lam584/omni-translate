@@ -196,6 +196,7 @@ export const appConfigDraftMock: AppConfigDraft = {
   subtitles: {
     sourceLanguage: 'auto',
     targetLanguage: 'zh-CN',
+    outboundTargetLanguage: '',
     translationLanguagePreference: 'zh-CN',
     mode: 'bilingual',
     captionDensity: 'balanced',

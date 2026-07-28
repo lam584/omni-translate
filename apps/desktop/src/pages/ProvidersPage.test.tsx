@@ -1,4 +1,4 @@
-﻿import { act } from 'react';
+import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -135,7 +135,7 @@ function modalInput(container: HTMLElement, index: number) {
 }
 
 async function click(element: HTMLElement | null | undefined) {
-  expect(element).toBeTruthy();
+  expect(element).toBeInstanceOf(HTMLElement);
   await act(async () => {
     element?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await Promise.resolve();
@@ -529,7 +529,7 @@ describe('ProvidersPage', () => {
     await click(sceneAddButtons(container)[0]);
     await inputText(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')!, 'manual-scene-model');
     await click(buttonByText(container, '手动添加'));
-    expect(pendingRegistrationDialog(container, 'manual-scene-model')).toBeTruthy();
+    expect(pendingRegistrationDialog(container, 'manual-scene-model')).toBeInstanceOf(HTMLElement);
     await confirmPendingModelRegistration(container);
 
     expect(useAppStore.getState().configDraft.providers[0].sceneModelAssignments[0]?.modelIds).toContain('manual-scene-model');
@@ -599,11 +599,11 @@ describe('ProvidersPage', () => {
     const apiFormatSelect = Array.from(dialog!.querySelectorAll<HTMLSelectElement>('select')).find((select) =>
       Array.from(select.options).some((option) => option.value === 'openai-compatible'),
     );
-    expect(apiFormatSelect).toBeDefined();
+    expect(apiFormatSelect).toBeInstanceOf(HTMLSelectElement);
     await selectValue(apiFormatSelect!, 'openai-compatible');
 
     const baseUrlInput = Array.from(dialog!.querySelectorAll<HTMLInputElement>('input')).find((input) => input.value.includes('/v1'));
-    expect(baseUrlInput).toBeDefined();
+    expect(baseUrlInput).toBeInstanceOf(HTMLInputElement);
     await inputText(baseUrlInput!, 'https://api.deepseek.com/v1');
 
     expect(useAppStore.getState().configDraft.providers[0].kind).toBe('openai-compatible');
@@ -944,7 +944,7 @@ describe('ProvidersPage', () => {
 
     const uncategorizedRow = Array.from(dialog.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) => item.textContent?.includes('uncategorized-runtime-model'))!;
     await click(uncategorizedRow.querySelector<HTMLButtonElement>('.provider-row-action'));
-    expect(pendingRegistrationDialog(container, 'uncategorized-runtime-model')).toBeTruthy();
+    expect(pendingRegistrationDialog(container, 'uncategorized-runtime-model')).toBeInstanceOf(HTMLElement);
     await click(pendingRegistrationDialog(container, 'uncategorized-runtime-model')?.querySelector<HTMLButtonElement>('.provider-header-icon'));
     expect(pendingRegistrationDialog(container, 'uncategorized-runtime-model')).toBeUndefined();
   });
@@ -1522,7 +1522,7 @@ describe('ProvidersPage', () => {
     const helpDialog = Array.from(container.querySelectorAll<HTMLElement>('.provider-advanced-modal')).find((item) =>
       item.querySelector('.audio-mode-help-list'),
     )!;
-    expect(helpDialog).toBeTruthy();
+    expect(helpDialog).toBeInstanceOf(HTMLElement);
     await click(helpDialog.parentElement);
     expect(Array.from(container.querySelectorAll<HTMLElement>('.provider-advanced-modal')).some((item) => item.querySelector('.audio-mode-help-list'))).toBe(false);
 
@@ -1618,7 +1618,7 @@ describe('ProvidersPage', () => {
     const dialog = capabilityRegistryDialog(container)!;
     const entries = Array.from(dialog.querySelectorAll<HTMLElement>('.provider-capability-registry-item'));
     expect(entries).toHaveLength(2);
-    expect(entries[0].querySelector<HTMLSelectElement>('.provider-capability-mode-select')?.value).toBeTruthy();
+    expect(entries[0].querySelector<HTMLSelectElement>('.provider-capability-mode-select')?.value).toMatch(/^(server_vad|semantic_vad|manual|gemini_auto_activity)$/);
     expect(entries[1].querySelectorAll<HTMLButtonElement>('.provider-scenario-pill-active').length).toBeGreaterThan(0);
 
     for (const entry of entries) {
@@ -1648,9 +1648,9 @@ describe('ProvidersPage', () => {
       row = Array.from(modelCatalogDialog(container)!.querySelectorAll<HTMLElement>('.provider-model-item')).find((item) =>
         item.textContent?.includes('qwen3.5-omni-plus-realtime'),
       );
-      expect(row, modelCatalogDialog(container)?.textContent ?? '').toBeTruthy();
+      expect(row, modelCatalogDialog(container)?.textContent ?? '').toBeInstanceOf(HTMLElement);
     });
-    expect(row).toBeTruthy();
+    expect(row).toBeInstanceOf(HTMLElement);
     await click(row!.querySelector<HTMLButtonElement>('.provider-row-action'));
 
     const provider = useAppStore.getState().configDraft.providers[0];
@@ -1701,7 +1701,7 @@ describe('ProvidersPage', () => {
     const registryEntry = useAppStore.getState().configDraft.providers[0].localModelCapabilityRegistry.find((item) =>
       item.modelId === 'invalid-mode-model',
     );
-    expect(registryEntry?.realtimeAudioMode).toBeTruthy();
+    expect(registryEntry?.realtimeAudioMode).toMatch(/^(server_vad|semantic_vad|manual|gemini_auto_activity)$/);
     expect(registryEntry?.realtimeAudioMode).not.toBe('not-a-mode');
   });
 

@@ -239,6 +239,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &AudioStateStore,
     trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    direction: &str,
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     pending_translated_text: &mut String,
@@ -256,7 +257,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
         .get_or_insert(response_done_at_ms);
     let cue_id = current_cue_id
         .take()
-        .unwrap_or_else(|| format!("omni-cue-{}", unix_ms()));
+        .unwrap_or_else(|| format!("omni-cue-{direction}-{}", unix_ms()));
     let source_len = pending_source_text.len();
     let translated_len = pending_translated_text.len();
     let st_flag = if subtitle_translate_active {
@@ -601,19 +602,25 @@ pub(super) fn is_livetranslate_model(model: &str) -> bool {
     model.to_ascii_lowercase().contains("livetranslate")
 }
 
-pub(super) fn ensure_transcription_cue_id(current_cue_id: &mut Option<String>) -> String {
+pub(super) fn ensure_transcription_cue_id(
+    direction: &str,
+    current_cue_id: &mut Option<String>,
+) -> String {
+    // The direction marker inside the id is how the state store tags the
+    // created cue's route_direction (see cue_lifecycle::route_direction_from_cue_id).
     current_cue_id
-        .get_or_insert_with(|| format!("omni-cue-{}", unix_ms()))
+        .get_or_insert_with(|| format!("omni-cue-{direction}-{}", unix_ms()))
         .clone()
 }
 
 pub(super) fn write_live_source_to_cue(
     store: &AudioStateStore,
+    direction: &str,
     current_cue_id: &mut Option<String>,
     source_text: &str,
     defer_secondary_translation: bool,
 ) -> String {
-    let cue_id = ensure_transcription_cue_id(current_cue_id);
+    let cue_id = ensure_transcription_cue_id(direction, current_cue_id);
     if defer_secondary_translation {
         store.defer_subtitle_cue_translation(&cue_id);
     }
@@ -623,11 +630,12 @@ pub(super) fn write_live_source_to_cue(
 
 pub(super) fn write_native_output_preview_to_cue(
     store: &AudioStateStore,
+    direction: &str,
     current_cue_id: &mut Option<String>,
     source_text: &str,
     translated_text: &str,
 ) -> String {
-    let cue_id = ensure_transcription_cue_id(current_cue_id);
+    let cue_id = ensure_transcription_cue_id(direction, current_cue_id);
     write_native_translation_payload_to_cue(
         store,
         &cue_id,
@@ -643,11 +651,12 @@ pub(super) fn write_native_output_preview_to_cue(
 
 pub(super) fn write_native_output_final_to_cue(
     store: &AudioStateStore,
+    direction: &str,
     current_cue_id: &mut Option<String>,
     source_text: &str,
     translated_text: &str,
 ) -> String {
-    let cue_id = ensure_transcription_cue_id(current_cue_id);
+    let cue_id = ensure_transcription_cue_id(direction, current_cue_id);
     write_native_translation_payload_to_cue(
         store,
         &cue_id,

@@ -51,6 +51,13 @@ function flattenKeys(value: unknown, prefix = ''): string[] {
   return Object.entries(value).flatMap(([key, child]) => flattenKeys(child, prefix ? `${prefix}.${key}` : key));
 }
 
+function readPath(value: typeof en, path: string): unknown {
+  return path.split('.').reduce<unknown>(
+    (current, key) => (current as Record<string, unknown>)[key],
+    value,
+  );
+}
+
 describe('zh-CN locale', () => {
   it('keeps all locale files on the same key set', () => {
     const expected = flattenKeys(zhCN).sort();
@@ -72,24 +79,30 @@ describe('zh-CN locale', () => {
     }
   });
 
-  it('keeps settings and welcome copy localized', () => {
-    expect(zhCN.settings.languageLabel).toBe('显示语言');
-    expect(zhCN.settings.sectionLanguage).toBe('界面语言');
-    expect(zhCN.settings.resetProvidersAction).toBe('重置所有模型提供商');
-    expect(zhCN.settings.resetProvidersDone).toBe('已恢复模型提供商预设。');
-    expect(zhCN.settings.resetWelcome).toBe('重置欢迎向导');
-    expect(zhCN.welcome.confirm).toBe('使用此语言');
-    expect(zhCN.welcome.stepProviderTitle).toBe('模型提供商');
-    expect(zhCN.audioRouting.outputDevice).toBe('输出设备');
-    expect(zhCN.overlay.hideAction).toBe('隐藏字幕悬浮窗');
+  it('keeps settings and welcome copy present and written in Chinese', () => {
+    // Key existence + "actually Chinese" semantic check instead of exact copy
+    // equality: wording is allowed to evolve, missing/untranslated keys are not.
+    const requiredChinesePaths = [
+      'settings.languageLabel',
+      'settings.sectionLanguage',
+      'settings.resetProvidersAction',
+      'settings.resetProvidersDone',
+      'settings.resetWelcome',
+      'welcome.confirm',
+      'welcome.stepProviderTitle',
+      'audioRouting.outputDevice',
+      'overlay.hideAction',
+    ];
+    for (const path of requiredChinesePaths) {
+      const value = readPath(zhCN as unknown as typeof en, path);
+      expect(typeof value, path).toBe('string');
+      expect(value as string, path).toMatch(/\p{Script=Han}/u);
+      expect(value, path).not.toBe(readPath(en, path));
+    }
   });
 
   it('localizes user-facing runtime failures and glossary conflict consequences', () => {
     const nonEnglishLocales = Object.entries(locales).filter(([code]) => code !== 'en');
-    const read = (value: typeof en, path: string) => path.split('.').reduce<unknown>(
-      (current, key) => (current as Record<string, unknown>)[key],
-      value,
-    );
     const requiredPaths = [
       'runtime.desktop.rustCoreFailed',
       'runtime.bridge.timeoutError',
@@ -105,7 +118,7 @@ describe('zh-CN locale', () => {
 
     for (const [code, locale] of nonEnglishLocales) {
       for (const path of requiredPaths) {
-        expect(read(locale as typeof en, path), `${code}: ${path}`).not.toBe(read(en, path));
+        expect(readPath(locale as typeof en, path), `${code}: ${path}`).not.toBe(readPath(en, path));
       }
     }
   });
@@ -118,9 +131,11 @@ describe('zh-CN locale', () => {
 
   it('uses unified peer/microphone terminology in the audio routing page', () => {
     const audioRouting = zhCN.audioRouting as unknown as Record<string, string>;
-    expect(audioRouting.chainSystemAudio).toBe('系统/对方声音');
-    expect(audioRouting.chainReturnToPeer).toBe('返回对方');
-    expect(audioRouting.scenarioInboundSecondaryTitle).toBe('听对方 · 二次语音识别');
+    // Terminology contract, not copy freeze: the chain labels must speak of
+    // “对方” and the secondary card must say “二次”, but exact wording may evolve.
+    expect(audioRouting.chainSystemAudio).toContain('对方');
+    expect(audioRouting.chainReturnToPeer).toContain('对方');
+    expect(audioRouting.scenarioInboundSecondaryTitle).toContain('二次');
     expect(audioRouting.translationAudioSecondary).toContain('二次字幕译音');
     expect(audioRouting.translationAudioSecondary).not.toContain('副 TTS');
     const serialized = JSON.stringify(zhCN.audioRouting);

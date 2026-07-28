@@ -303,14 +303,16 @@ fn push_bounded_frame(queue: &mut VecDeque<Vec<u8>>, frame: Vec<u8>) {
 /// full current-sentence text, so updates overwrite instead of appending;
 /// `sentence_end` commits the cue and the next result opens a fresh one.
 struct TencentCueState {
+    direction: String,
     cue_id: Option<String>,
     source_text: String,
     target_text: String,
 }
 
 impl TencentCueState {
-    fn new() -> Self {
+    fn new(direction: String) -> Self {
         Self {
+            direction,
             cue_id: None,
             source_text: String::new(),
             target_text: String::new(),
@@ -318,8 +320,10 @@ impl TencentCueState {
     }
 
     fn ensure_cue_id(&mut self) -> String {
+        // Direction inside the id drives the created cue's route_direction
+        // (see cue_lifecycle::route_direction_from_cue_id).
         self.cue_id
-            .get_or_insert_with(|| format!("tencent-cue-{}", unix_ms()))
+            .get_or_insert_with(|| format!("tencent-cue-{}-{}", self.direction, unix_ms()))
             .clone()
     }
 
@@ -374,6 +378,7 @@ pub fn start_tencent_speech_translate(
     app: AppHandle,
     store: &AudioStateStore,
     provider: ProviderDraftInput,
+    direction: String,
     source_language: String,
     target_language: String,
 ) -> Result<(mpsc::Sender<Vec<u8>>, OmniHandle), String> {
@@ -411,6 +416,7 @@ pub fn start_tencent_speech_translate(
                 &audio_state,
                 stt_epoch,
                 provider,
+                direction,
                 credentials,
                 source_language,
                 target_language,
@@ -524,6 +530,7 @@ fn run_tencent_worker(
     store: &AudioStateStore,
     stt_epoch: u64,
     provider: ProviderDraftInput,
+    direction: String,
     credentials: TencentCredentials,
     source_language: String,
     target_language: String,
@@ -558,7 +565,7 @@ fn run_tencent_worker(
     let _ = store.set_stt_connected_if_current(stt_epoch, true, 0);
     let _ = emit_audio_snapshot(&app, store);
 
-    let mut cue = TencentCueState::new();
+    let mut cue = TencentCueState::new(direction);
     let mut sample_accumulator: Vec<i16> = Vec::new();
     let mut pending_frames: VecDeque<Vec<u8>> = VecDeque::new();
     let mut buffer_size = 0u64;

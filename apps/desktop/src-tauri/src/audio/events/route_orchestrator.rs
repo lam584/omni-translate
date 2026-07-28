@@ -15,12 +15,13 @@ use super::realtime_session::{
     start_or_reuse_tencent_speech_translate_session, stop_preconnected_omni_session,
 };
 use super::route_config::{
-    resolve_model_provider_from_config, ResolvedRouteKind, ResolvedRoutePlan, SpeechDispatchPolicy,
-    SubtitleFallbackPolicy,
+    resolve_model_provider_from_config, resolve_route_target_language, ResolvedRouteKind,
+    ResolvedRoutePlan, SpeechDispatchPolicy, SubtitleFallbackPolicy,
 };
 use super::{
     route_command_timeout, route_command_timeout_message, start_route_with_overlay,
-    stop_existing_inbound_pipeline, OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
+    stop_existing_inbound_pipeline, stop_existing_route_pipeline,
+    OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
 };
 use crate::diagnostics::events::append_diagnostics_log;
 
@@ -198,9 +199,10 @@ pub async fn start_audio_route(
             let outcome = execute_fast_watch_start(
                 &task_state,
                 std::panic::AssertUnwindSafe(|| {
-                    start_inbound_route_locked(
+                    start_recognized_route_locked(
                         task_app.clone(),
                         &task_state,
+                        "inbound",
                         config,
                     )
                 }),
@@ -319,7 +321,8 @@ fn start_omni_inbound_route(
             app.clone(),
             &state,
             text_provider,
-            target_lang.clone(),
+            resolve_route_target_language("inbound", &omni_route_config),
+            resolve_route_target_language("outbound", &omni_route_config),
         ) {
             Ok(snapshot) => {
                 st_active = true;
@@ -511,7 +514,8 @@ fn start_openai_inbound_route(
             app.clone(),
             &state,
             text_provider,
-            plan.target_language.clone(),
+            resolve_route_target_language("inbound", &config),
+            resolve_route_target_language("outbound", &config),
         ) {
             Ok(_) => {
                 st_active = true;
@@ -572,25 +576,35 @@ pub(crate) fn start_audio_route_inner(
 ) -> Result<AudioRuntimeSnapshot, String> {
     if direction == "inbound" {
         let _pipeline_guard = state.lock_inbound_pipeline();
-        start_inbound_route_locked(app, state, config)
+        start_recognized_route_locked(app, state, "inbound", config)
     } else {
-        start_route_with_overlay(app, state, &direction, config, None)
+        // Outbound (microphone) does not share the inbound pipeline lock or the
+        // Bridge loopback source, but otherwise resolves and starts the same
+        // realtime recognition/translation session so conversation mode is not
+        // limited to local VAD placeholder cues.
+        start_recognized_route_locked(app, state, &direction, config)
     }
 }
 
-/// Inbound route startup body. Caller must hold the inbound pipeline lock
-/// (and, for detached fast-watch starts, must have re-checked the route
-/// generation while holding it).
-fn start_inbound_route_locked(
+/// Route startup body shared by both directions. The inbound caller holds the
+/// inbound pipeline lock (and, for detached fast-watch starts, re-checked the
+/// route generation while holding it); outbound has no such lock.
+fn start_recognized_route_locked(
     app: AppHandle,
     state: &AudioStateStore,
+    direction: &str,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
-    let direction = "inbound".to_string();
-        let keep_omni = state.has_omni_sender("inbound");
-        stop_existing_inbound_pipeline(&app, &state, keep_omni)?;
+    let direction = direction.to_string();
+        let keep_omni = state.has_omni_sender(&direction);
+        stop_existing_route_pipeline(&app, &state, &direction, keep_omni)?;
+        let voice_model_pointer = if direction == "outbound" {
+            "/devices/outboundVoiceModelId"
+        } else {
+            "/devices/inboundVoiceModelId"
+        };
         let requested_voice_model = config
-            .pointer("/devices/inboundVoiceModelId")
+            .pointer(voice_model_pointer)
             .and_then(Value::as_str)
             .filter(|model| !model.trim().is_empty())
             .unwrap_or("")
@@ -609,7 +623,7 @@ fn start_inbound_route_locked(
                         "audio",
                         "info",
                         format!(
-                            "start_audio_route inbound: provider.kind={} provider.model={} provider.template_id={}",
+                            "start_audio_route {direction}: provider.kind={} provider.model={} provider.template_id={}",
                             resolved_provider.kind,
                             resolved_provider.model,
                             resolved_provider.template_id
@@ -693,9 +707,17 @@ fn start_inbound_route_locked(
             }
             ResolvedRouteKind::TencentSpeechTranslate => {
                 // Tencent's speech_translate stream carries ASR + Hunyuan
-                // translation natively; no secondary worker is wired.
+                // translation natively; no secondary worker is wired. Outbound
+                // reverses the pair: the microphone carries the user's own
+                // language (the subtitle target), translated into the peer
+                // language that plan.target_language already resolved.
+                let source_pointer = if direction == "outbound" {
+                    "/subtitles/targetLanguage"
+                } else {
+                    "/subtitles/sourceLanguage"
+                };
                 let source_language = config
-                    .pointer("/subtitles/sourceLanguage")
+                    .pointer(source_pointer)
                     .and_then(Value::as_str)
                     .map(str::trim)
                     .filter(|lang| !lang.is_empty() && !lang.eq_ignore_ascii_case("auto"))
@@ -716,8 +738,8 @@ fn start_inbound_route_locked(
                 start_openai_inbound_route(app, state, &direction, config, plan)
             }
             ResolvedRouteKind::DashscopeStt => {
-                let (stt_sender, handle) = stt::start_stt(app.clone(), &state, plan.provider)?;
-                if let Some(previous) = state.store_stt_handle("inbound", handle) {
+                let (stt_sender, handle) = stt::start_stt(app.clone(), &state, plan.provider, direction.clone())?;
+                if let Some(previous) = state.store_stt_handle(&direction, handle) {
                     let _ = previous.stop_tx.send(());
                 }
                 start_route_with_overlay(app, &state, &direction, config, Some(stt_sender))

@@ -13,6 +13,7 @@ export default mergeConfig(
       coverage: {
         provider: 'v8',
         include: [
+          'src/App.tsx',
           'src/{components,pages,runtime,stores,utils,i18n,schema}/**/*.{ts,tsx}',
         ],
         exclude: [
@@ -20,7 +21,8 @@ export default mergeConfig(
           'src/main.tsx',
           // Application composition roots and lazy route registration are
           // exercised by integration tests, not counted as unit-test code.
-          'src/App.tsx',
+          // (App.tsx is covered by App.test.tsx since the shallow-integration
+          // rewrite; only the pure render entrypoints stay excluded.)
           'src/router.tsx',
           'src/overlay.tsx',
           'src/mocks/**',
@@ -34,10 +36,13 @@ export default mergeConfig(
         reporter: ['text', 'json', 'json-summary', 'html'],
         reportsDirectory: '../../artifacts/testing/coverage/desktop',
         thresholds: {
-          statements: 100,
-          lines: 100,
-          functions: 100,
-          branches: 100,
+          // 95% instead of 100%: the last few percent forced hollow assertions
+          // (tests written only to touch lines). Spend that effort on assertion
+          // strength instead; the ratchet lives in the eslint weak-matcher ban.
+          statements: 95,
+          lines: 95,
+          functions: 95,
+          branches: 95,
         },
       },
     },

@@ -43,6 +43,12 @@ jobs:
       - name: Verify desktop (lint + check + test + build)
         run: npm run verify:desktop
 
+      # coverage:gate also measures the Rust side with cargo-llvm-cov, which is
+      # pinned to nightly-2026-06-01. Install the exact toolchain explicitly so
+      # the gate cannot silently diverge from local runs.
+      - name: Bootstrap coverage tooling (nightly-2026-06-01 + cargo-llvm-cov)
+        run: npm run coverage:tooling
+
       # The frontend coverage thresholds previously lived only in local runs,
       # so the gate could rot without anyone noticing. Same thresholds, now on
       # every PR.
@@ -54,6 +60,33 @@ jobs:
 
       - name: Test desktop shell
         run: npm run test:desktop-shell
+
+      # The native bridge previously only got cargo *check* on PRs while its
+      # sidecar integration tests ran nowhere in CI.
+      - name: Test native bridge
+        run: npm run test:bridge-service-native
+
+      - name: Bridge contract integration tests
+        run: npm run test:integration:bridge-contract
+
+      # The gate/report tooling is executable code too; its own node:test
+      # suites used to run only on developer machines. One step per suite so a
+      # failing suite cannot be masked by a later command's exit code.
+      - name: Node tooling self-tests (watch-mode report)
+        run: npm run test:watch-mode-report
+
+      - name: Node tooling self-tests (release lib)
+        run: npm run test:release-lib
+
+      - name: Node tooling self-tests (quality gate)
+        run: npm run test:quality-gate-tooling
+
+      - name: Node tooling self-tests (startup readiness)
+        run: npm run test:startup-readiness
+
+      # Pure-Node driver boundary tests had no CI carrier at all.
+      - name: Driver boundary tests
+        run: npm run test:driver-boundaries
 
       - name: Audit architecture boundaries
         run: npm run audit:architecture

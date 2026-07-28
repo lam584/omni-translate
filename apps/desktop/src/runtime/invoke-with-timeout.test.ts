@@ -143,7 +143,7 @@ describe('invokeWithTimeoutCore', () => {
       removeListener(event: 'unhandledRejection', listener: (reason: unknown) => void): unknown;
     };
     const nodeProcess = (globalThis as { process?: ProcessLike }).process;
-    expect(nodeProcess).toBeDefined();
+    expect(typeof nodeProcess?.on).toBe('function');
     const unhandled = vi.fn();
     nodeProcess?.on('unhandledRejection', unhandled);
     try {

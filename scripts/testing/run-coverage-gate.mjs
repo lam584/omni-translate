@@ -25,7 +25,7 @@ export const runCoverageStep = (outputDir, name, command) => {
   }
 };
 
-export const assertRustCoverage = (name, reportPath) => {
+export const assertRustCoverage = (name, reportPath, thresholds = { lines: 100, functions: 100, branches: 100 }) => {
   const totals = readJson(reportPath).data[0].totals;
   const metrics = {
     lines: Number(totals.lines.percent),
@@ -33,8 +33,8 @@ export const assertRustCoverage = (name, reportPath) => {
     branches: Number(totals.branches.percent),
   };
   for (const [metric, value] of Object.entries(metrics)) {
-    if (value < 100) {
-      throw new Error(`${name} ${metric} coverage is ${value}%, below 100%.`);
+    if (value < thresholds[metric]) {
+      throw new Error(`${name} ${metric} coverage is ${value}%, below ${thresholds[metric]}%.`);
     }
   }
 };
@@ -64,6 +64,19 @@ export const runCoverageGate = ({ outputRoot = defaultOutputRoot } = {}) => {
     `cargo +${nightlyToolchain} llvm-cov --manifest-path apps/bridge-service-native/Cargo.toml --branch --json --output-path "${nativeBridgeReport}"`,
   );
   assertRustCoverage('native-bridge-rust', nativeBridgeReport);
+
+  // Shared workspace crates (audio-dsp / bridge-protocol / logging) were
+  // previously outside every coverage gate. Ratchet baseline as of 2026-07-27:
+  // measured 86% lines / 88% functions / 78% branches (panic_hook is a
+  // process-level hook with no unit-test harness). Raise these thresholds
+  // when coverage improves — never lower them.
+  const sharedCratesReport = path.join(outputDir, 'shared-crates.json');
+  runCoverageStep(
+    outputDir,
+    'shared-crates-rust',
+    `cargo +${nightlyToolchain} llvm-cov -p omni-audio-dsp -p omni-bridge-protocol -p omni-logging --branch --json --output-path "${sharedCratesReport}"`,
+  );
+  assertRustCoverage('shared-crates-rust', sharedCratesReport, { lines: 85, functions: 85, branches: 75 });
 
   return outputDir;
 };

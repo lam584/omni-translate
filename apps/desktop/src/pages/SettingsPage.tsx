@@ -14,6 +14,7 @@ import { buildProviderDraftPatchFromTemplate } from '../utils/provider-draft';
 import { writeProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
 
 const TRANSLATION_CUSTOM_VALUE = '__custom__';
+const OUTBOUND_LANGUAGE_AUTO_VALUE = '__auto__';
 
 function SettingsPage() {
   const { t, i18n } = useTranslation();
@@ -74,6 +75,11 @@ function SettingsPage() {
       setCustomPreferenceSelected(false);
       updateSubtitleDraft({ translationLanguagePreference: current });
     }
+  };
+
+  const handleOutboundLanguageChange = (event: React.ChangeEvent<HTMLSelectElement>) => {
+    const value = event.target.value;
+    updateSubtitleDraft({ outboundTargetLanguage: value === OUTBOUND_LANGUAGE_AUTO_VALUE ? '' : value });
   };
 
   const resolveTranslationPreferenceName = (): string => {
@@ -169,6 +175,24 @@ function SettingsPage() {
           <p className="settings-field-meta">
             {t('settings.currentTranslationPreference', { name: resolveTranslationPreferenceName() })}
           </p>
+
+          <label className="settings-field" style={{ marginTop: 10 }}>
+            <span className="settings-field-label">{t('settings.outboundLanguageLabel')}</span>
+            <select
+              className="settings-field-control"
+              value={configDraft.subtitles.outboundTargetLanguage || OUTBOUND_LANGUAGE_AUTO_VALUE}
+              onChange={handleOutboundLanguageChange}
+            >
+              <option value={OUTBOUND_LANGUAGE_AUTO_VALUE}>{t('settings.outboundLanguageAuto')}</option>
+              {languages.map((item) => (
+                <option key={item.code} value={item.code}>
+                  {item.nativeName} · {item.englishName}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <p className="settings-field-meta">{t('settings.outboundLanguageHint')}</p>
         </div>
       </div>
 

@@ -35,8 +35,9 @@ use route_config::is_omni_model;
 #[cfg(test)]
 use route_config::{
     is_openai_realtime_provider, resolve_realtime_audio_mode_for_route,
-    resolve_realtime_audio_mode_value, should_start_secondary_speech_dispatch, ResolvedRoutePlan,
-    ResolvedVadPolicy, SpeechDispatchPolicy, SubtitleFallbackPolicy,
+    resolve_realtime_audio_mode_value, resolve_route_target_language,
+    should_start_secondary_speech_dispatch, ResolvedRoutePlan, ResolvedVadPolicy,
+    SpeechDispatchPolicy, SubtitleFallbackPolicy,
 };
 
 pub use route_orchestrator::{start_audio_route, stop_audio_route, stop_speech_dispatch};
@@ -121,6 +122,33 @@ fn stop_existing_inbound_pipeline(
     }
     let _ = subtitle_translate::stop_subtitle_translate(app.clone(), state);
     let _ = speech::stop_dispatch(app.clone(), state);
+    Ok(())
+}
+
+/// Tear down any prior session for `direction` before a new route start.
+/// Inbound also owns the Bridge loopback source and the shared
+/// subtitle-translate / speech-dispatch singletons; outbound only owns its own
+/// capture route and realtime session handles, so it must not stop those
+/// shared workers (doing so would kill an active inbound pipeline in
+/// conversation mode).
+fn stop_existing_route_pipeline(
+    app: &AppHandle,
+    state: &AudioStateStore,
+    direction: &str,
+    keep_omni: bool,
+) -> Result<(), String> {
+    if direction == "inbound" {
+        return stop_existing_inbound_pipeline(app, state, keep_omni);
+    }
+    AudioRouteSupervisor::new(app.clone(), state).stop(direction)?;
+    if let Some(handle) = state.take_stt_handle(direction) {
+        let _ = handle.stop_tx.send(());
+    }
+    if !keep_omni {
+        if let Some(handle) = state.take_omni_handle(direction) {
+            let _ = handle.stop_tx.send(());
+        }
+    }
     Ok(())
 }
 
@@ -783,6 +811,53 @@ mod tests {
             true,
             "waiting-subtitle"
         ));
+    }
+
+    #[test]
+    fn outbound_target_language_reverses_and_falls_back() {
+        // Explicit outbound target wins.
+        let explicit = json!({
+            "subtitles": { "sourceLanguage": "en", "targetLanguage": "zh-CN", "outboundTargetLanguage": "ja" }
+        });
+        assert_eq!(resolve_route_target_language("outbound", &explicit), "ja");
+        // No explicit outbound target -> derive from the subtitle source language.
+        let derived = json!({
+            "subtitles": { "sourceLanguage": "en", "targetLanguage": "zh-CN", "outboundTargetLanguage": "" }
+        });
+        assert_eq!(resolve_route_target_language("outbound", &derived), "en");
+        // Source language is auto -> fall back to English.
+        let auto = json!({
+            "subtitles": { "sourceLanguage": "auto", "targetLanguage": "zh-CN", "outboundTargetLanguage": "" }
+        });
+        assert_eq!(resolve_route_target_language("outbound", &auto), "en");
+        // Inbound keeps the subtitle target regardless of outbound settings.
+        assert_eq!(resolve_route_target_language("inbound", &explicit), "zh-CN");
+    }
+
+    #[test]
+    fn outbound_resolved_route_plan_targets_the_reversed_language() {
+        let provider: ProviderDraftInput = serde_json::from_value(provider_value(
+            "template-dashscope-realtime",
+            "dashscope",
+            "dashscope",
+            "qwen3.5-omni-plus-realtime",
+            "https://dashscope.aliyuncs.com/api/v1",
+            "websocket",
+            "dashscope",
+        ))
+        .expect("provider should parse");
+        let config = json!({
+            "devices": { "routeMode": "voice-room" },
+            "subtitles": { "sourceLanguage": "en", "targetLanguage": "zh-CN", "outboundTargetLanguage": "" }
+        });
+        let plan = ResolvedRoutePlan::from_resolved_provider(
+            "outbound", &config, provider.model.clone(), provider.clone(),
+        );
+        assert_eq!(plan.direction, "outbound");
+        // sourceLanguage=en (non-auto) becomes the outbound target.
+        assert_eq!(plan.target_language, "en");
+        // Outbound Omni instructions are parameterized to the resolved target.
+        assert!(plan.instructions.contains("en"));
     }
 
     #[test]

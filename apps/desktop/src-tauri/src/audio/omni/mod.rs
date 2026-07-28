@@ -575,18 +575,21 @@ mod native_translation_tests {
 
         let first_id = write_live_source_to_cue(
             &store,
+            "inbound",
             &mut current_cue_id,
             "With or",
             false,
         );
         let second_id = write_live_source_to_cue(
             &store,
+            "inbound",
             &mut current_cue_id,
             "With or without you",
             false,
         );
         let preview_id = write_native_output_preview_to_cue(
             &store,
+            "inbound",
             &mut current_cue_id,
             "With or without you",
             "translated partial",
@@ -702,6 +705,7 @@ mod native_translation_tests {
 
         let cue_id = write_native_output_preview_to_cue(
             &store,
+            "inbound",
             &mut current_cue_id,
             "First source. Second source is still live",
             "第一句。第二句仍在输出",
@@ -724,6 +728,7 @@ mod native_translation_tests {
 
         write_native_output_final_to_cue(
             &store,
+            "inbound",
             &mut current_cue_id,
             "First source. Second source is complete.",
             "第一句。第二句完成。",
@@ -746,6 +751,7 @@ mod native_translation_tests {
 
         let cue_id = write_native_output_preview_to_cue(
             &store,
+            "inbound",
             &mut current_cue_id,
             "This is a long source hypothesis without terminal punctuation that keeps growing quickly across the overlay.",
             long_translation,
@@ -773,6 +779,7 @@ mod native_translation_tests {
 
         let cue_id = write_native_output_preview_to_cue(
             &store,
+            "inbound",
             &mut current_cue_id,
             "source one\nsource two\nsource three\nsource four",
             "译文一\n译文二\n译文三",

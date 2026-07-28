@@ -80,7 +80,7 @@ describe('DriverManagementCard', () => {
     });
 
     expect(container.textContent).toContain(title);
-    expect(findButtonByText(container, action)).toBeDefined();
+    expect(findButtonByText(container, action)).toBeInstanceOf(HTMLButtonElement);
     expect(findButtonByText(container, '卸载')).toBeUndefined();
     expect(findButtonByText(container, '重新安装')).toBeUndefined();
   });
@@ -94,8 +94,8 @@ describe('DriverManagementCard', () => {
       root.render(<DriverManagementCard />);
     });
 
-    expect(findButtonByText(container, '卸载')).toBeDefined();
-    expect(findButtonByText(container, '重新安装')).toBeDefined();
+    expect(findButtonByText(container, '卸载')).toBeInstanceOf(HTMLButtonElement);
+    expect(findButtonByText(container, '重新安装')).toBeInstanceOf(HTMLButtonElement);
     expect(container.textContent).not.toContain('driver.operation-failed');
 
     await click(findButtonByText(container, '查看高级详情')!);

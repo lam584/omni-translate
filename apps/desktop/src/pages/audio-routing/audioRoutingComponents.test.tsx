@@ -34,7 +34,7 @@ describe('audio-routing components', () => {
       <ChainFlow direction="outbound" directionLabel="custom" inboundLabel="in" inboundSubtitle="i" modelLabel="model" modelSubtitle="m" outboundLabel="out" outboundSubtitle="o" />
     </>));
     expect(container.textContent).toContain('custom');
-    expect(container.querySelector('.chain-flow-outbound')).toBeTruthy();
+    expect(container.querySelector('.chain-flow-outbound')).toBeInstanceOf(HTMLElement);
     expect(resolveChineseFallback('audioRouting')).toBe('audioRouting');
     expect(resolveChineseFallback('missing.path')).toBe('missing.path');
   });
@@ -81,7 +81,7 @@ describe('audio-routing components', () => {
     const selector = container.querySelector<HTMLButtonElement>('.scenario-card-selector')!;
     await act(async () => selector.click());
     await act(async () => selector.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
-    expect(container.querySelector('[role="listbox"]')).toBeTruthy();
+    expect(container.querySelector('[role="listbox"]')).toBeInstanceOf(HTMLElement);
     await act(async () => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
     expect(container.querySelector('[role="listbox"]')).toBeNull();
   });

@@ -119,7 +119,7 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
     const toggleButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
       button.textContent?.includes('settings.overlayShowSubtitlesAction'),
     );
-    expect(toggleButton).toBeDefined();
+    expect(toggleButton).toBeInstanceOf(HTMLButtonElement);
 
     await act(async () => {
       toggleButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }));

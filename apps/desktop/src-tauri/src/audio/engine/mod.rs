@@ -179,12 +179,12 @@ pub fn start_route(
         format!("已启动 {} 音频采集。", direction),
         format!("routeId={} device={}", spec.route_id, effective_device_id),
     );
-    if direction == "inbound" && stt_sender.is_none() {
+    if stt_sender.is_none() {
         diag_log(
             &app,
             "audio",
             "warning",
-            "inbound 音频采集已启动但没有 STT/Omni sender，音频将只做本地 VAD 而不进行语音识别，subtitles 不会产生任何 cue！",
+            format!("{direction} 音频采集已启动但没有 STT/Omni sender，音频将只做本地 VAD 而不进行语音识别，subtitles 不会产生任何 cue！"),
         );
     }
     emit_audio_snapshot(&app, store)?;

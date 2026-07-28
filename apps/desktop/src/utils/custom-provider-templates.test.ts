@@ -108,7 +108,7 @@ describe('custom provider templates', () => {
     expect(readCustomProviderTemplates()).toEqual([]);
     window.localStorage.setItem('omni.customProviderTemplates', '{broken-json');
     expect(readCustomProviderTemplates()).toEqual([]);
-    expect(readCustomProviderTemplatesResult().error).toBeTruthy();
+    expect(readCustomProviderTemplatesResult().error).toMatch(/JSON/);
     expect(window.localStorage.getItem('omni.customProviderTemplates')).toBe('{broken-json');
   });
 

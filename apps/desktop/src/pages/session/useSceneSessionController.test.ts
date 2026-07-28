@@ -259,7 +259,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     const optimistic = controller.setAudioSnapshot.mock.calls
       .map(([snapshot]) => snapshot as AudioRuntimeSnapshot)
       .find((snapshot) => snapshot.inbound.captureState === 'stopping');
-    expect(optimistic).toBeDefined();
+    expect(optimistic?.inbound.captureState).toBe('stopping');
     expect(optimistic?.inbound.streamBound).toBe(false);
   });
 

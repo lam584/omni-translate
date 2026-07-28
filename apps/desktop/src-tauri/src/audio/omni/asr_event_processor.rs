@@ -33,6 +33,7 @@ impl OmniAsrEventProcessor {
         state: OmniAsrEventState,
         app: &AppHandle<R>,
         store: &AudioStateStore,
+        direction: &str,
         evt: &Value,
         event_type: &str,
         session_started_at: &SystemTime,
@@ -89,7 +90,7 @@ impl OmniAsrEventProcessor {
                         ),
                     );
                 }
-                let cue_id = format!("omni-cue-{}", unix_ms());
+                let cue_id = format!("omni-cue-{direction}-{}", unix_ms());
                 store.update_or_push_stt_cue(&cue_id, "", false);
                 current_cue_id = Some(cue_id.clone());
                 event_diagnostics.current_cue_origin =
@@ -145,6 +146,7 @@ impl OmniAsrEventProcessor {
                 if !pending_source_text.trim().is_empty() {
                     write_live_source_to_cue(
                         store,
+                        direction,
                         &mut current_cue_id,
                         &pending_source_text,
                         defer_secondary_translation,
@@ -192,7 +194,7 @@ impl OmniAsrEventProcessor {
                 pending_source_text = resolved.display_text;
                 completed_source_text = Some(resolved.response_gate_text);
                 if !pending_source_text.trim().is_empty() {
-                    let cue_id = ensure_transcription_cue_id(&mut current_cue_id);
+                    let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
                     if defer_secondary_translation {
                         store.defer_subtitle_cue_translation(&cue_id);
                     }
@@ -221,7 +223,7 @@ impl OmniAsrEventProcessor {
                 if subtitle_translate_active
                     && !pending_source_text.trim().is_empty()
                 {
-                    let cue_id = ensure_transcription_cue_id(&mut current_cue_id);
+                    let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
                     if event_diagnostics.current_cue_origin.is_none() {
                         event_diagnostics.current_cue_origin =
                             Some("transcription_completed".to_string());

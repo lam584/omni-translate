@@ -122,6 +122,21 @@ export default tseslint.config(
     rules: {
       // Tests may spy on and assert against console output.
       'no-console': 'off',
+      // Weak matchers created hollow tests before (expect(null).toBeDefined()
+      // passes, toBeTruthy accepts any non-empty value). Assert content
+      // instead: toBe/toEqual/toBeInstanceOf/toContain/not.toBeNull.
+      'no-restricted-syntax': [
+        'error',
+        ...moduleScopeI18nRestrictions,
+        {
+          selector: "CallExpression[callee.property.name='toBeTruthy']",
+          message: 'toBeTruthy() is too weak for a test assertion; assert the concrete value (toBe/toEqual/toBeInstanceOf/toContain).',
+        },
+        {
+          selector: "CallExpression[callee.property.name='toBeDefined']",
+          message: 'toBeDefined() passes for null and hides regressions; assert the concrete value (toBe/toEqual/toBeInstanceOf/not.toBeNull).',
+        },
+      ],
     },
   },
 );

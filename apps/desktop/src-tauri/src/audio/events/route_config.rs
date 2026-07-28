@@ -72,6 +72,7 @@ impl ResolvedRoutePlan {
         requested_voice_model: String,
         provider: ProviderDraftInput,
     ) -> Self {
+        let target_language = resolve_route_target_language(direction, config);
         let realtime_audio_mode = resolve_realtime_audio_mode_value(&provider, &provider.model);
         let effective_audio_mode = if resolve_legacy_vad_bypass_for_route(direction, config) {
             "manual".to_string()
@@ -129,18 +130,23 @@ impl ResolvedRoutePlan {
         let legacy_vad_bypass = resolve_legacy_vad_bypass_for_route(direction, config);
         let reuse_model = provider.model.clone();
         let default_instructions = if kind == ResolvedRouteKind::Omni {
-            "你是一个只输出译文的实时翻译引擎。把听到的所有内容（人声对话、旁白、歌词、视频与音乐中的人声等）直接翻译成中文。只输出译文，禁止任何解释、确认、寒暄或对音频本身的描述（如“我没听到有人说话”“只听到音乐”）。若确实没有可翻译的语言内容，保持静默，不输出任何文字。"
+            if direction == "outbound" {
+                // The microphone route translates the local speaker's voice for
+                // the peer, so the target language is the resolved outbound one
+                // instead of the subtitle target hardcoded as Chinese.
+                format!(
+                    "你是一个只输出译文的实时翻译引擎。把听到的所有语音内容直接翻译成 {target_language}。只输出译文，禁止任何解释、确认、寒暄或对音频本身的描述（如“我没听到有人说话”）。若确实没有可翻译的语言内容，保持静默，不输出任何文字。"
+                )
+            } else {
+                "你是一个只输出译文的实时翻译引擎。把听到的所有内容（人声对话、旁白、歌词、视频与音乐中的人声等）直接翻译成中文。只输出译文，禁止任何解释、确认、寒暄或对音频本身的描述（如“我没听到有人说话”“只听到音乐”）。若确实没有可翻译的语言内容，保持静默，不输出任何文字。".to_string()
+            }
         } else {
-            "You are a translation engine that outputs translations only. Translate everything you hear (speech, narration, lyrics, vocals in music or video) into concise subtitles. Output only the translation itself; never add confirmations, explanations, or meta commentary about the audio (e.g. 'I only hear music'). If there is truly no translatable speech, output nothing."
+            "You are a translation engine that outputs translations only. Translate everything you hear (speech, narration, lyrics, vocals in music or video) into concise subtitles. Output only the translation itself; never add confirmations, explanations, or meta commentary about the audio (e.g. 'I only hear music'). If there is truly no translatable speech, output nothing.".to_string()
         };
         Self {
             direction: direction.to_string(),
             requested_voice_model: requested_voice_model.clone(),
-            target_language: config
-                .pointer("/subtitles/targetLanguage")
-                .and_then(Value::as_str)
-                .unwrap_or("zh-CN")
-                .to_string(),
+            target_language,
             voice: config
                 .pointer("/speech/voice")
                 .and_then(Value::as_str)
@@ -151,8 +157,8 @@ impl ResolvedRoutePlan {
                 .and_then(Value::as_str)
                 .map(str::trim)
                 .filter(|text| !text.is_empty() && !is_legacy_default_instructions(text))
-                .unwrap_or(default_instructions)
-                .to_string(),
+                .map(str::to_string)
+                .unwrap_or(default_instructions),
             omni_speech_config: omni::OmniSpeechConfig::from_config(config),
             provider,
             secondary_subtitle_provider,
@@ -173,6 +179,36 @@ impl ResolvedRoutePlan {
             kind,
         }
     }
+}
+
+/// Effective translation target for a route direction. Inbound keeps the
+/// subtitle target (peer speech -> user language). Outbound reverses the
+/// pair: the microphone is translated into the peer's language, taken from
+/// the explicit `outboundTargetLanguage`, otherwise derived from the subtitle
+/// source language, and finally falling back to English when that is `auto`.
+pub(super) fn resolve_route_target_language(direction: &str, config: &Value) -> String {
+    if direction == "outbound" {
+        if let Some(configured) = config
+            .pointer("/subtitles/outboundTargetLanguage")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|lang| !lang.is_empty())
+        {
+            return configured.to_string();
+        }
+        return config
+            .pointer("/subtitles/sourceLanguage")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|lang| !lang.is_empty() && !lang.eq_ignore_ascii_case("auto"))
+            .unwrap_or("en")
+            .to_string();
+    }
+    config
+        .pointer("/subtitles/targetLanguage")
+        .and_then(Value::as_str)
+        .unwrap_or("zh-CN")
+        .to_string()
 }
 
 /// Instructions persisted by older versions were weak enough that models

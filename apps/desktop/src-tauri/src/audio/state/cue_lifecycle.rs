@@ -12,6 +12,19 @@ pub(super) fn finalize_cue_display_segments(cue: &mut SubtitleCueRuntime) {
     }
 }
 
+/// Realtime session workers embed their route direction in the cue ids they
+/// generate (e.g. `omni-cue-outbound-<ts>`). Cue creation derives the
+/// `route_direction` from that marker so the translate/speech pipelines pick
+/// the correct language pair and output routing; ids without the marker are
+/// legacy inbound cues.
+pub(super) fn route_direction_from_cue_id(cue_id: &str) -> &'static str {
+    if cue_id.contains("outbound") {
+        "outbound"
+    } else {
+        "inbound"
+    }
+}
+
 fn cue_needs_more_time(cue: &SubtitleCueRuntime) -> bool {
     if !cue.committed || cue.translated_text.trim().is_empty() {
         return true;
@@ -48,4 +61,22 @@ pub(super) fn trim_recent_subtitle_cues(overlay: &mut SubtitleOverlayRuntimeSnap
     }
 
     overlay.queue_depth = overlay.recent_cues.len();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cue_id_direction_marker_maps_to_route_direction() {
+        // Session workers embed the direction in the cue id; cue creation reads
+        // it back so outbound (mic) transcripts get the correct language pair.
+        assert_eq!(route_direction_from_cue_id("omni-cue-outbound-123"), "outbound");
+        assert_eq!(route_direction_from_cue_id("openai-cue-outbound-9"), "outbound");
+        assert_eq!(route_direction_from_cue_id("stt-cue-outbound-1"), "outbound");
+        // Inbound and legacy ids without the marker default to inbound.
+        assert_eq!(route_direction_from_cue_id("omni-cue-inbound-123"), "inbound");
+        assert_eq!(route_direction_from_cue_id("omni-cue-123"), "inbound");
+        assert_eq!(route_direction_from_cue_id("cue-42"), "inbound");
+    }
 }

@@ -22,7 +22,7 @@ mod metrics;
 mod route_state;
 mod subtitle_store;
 pub use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
-use cue_lifecycle::{finalize_cue_display_segments, trim_recent_subtitle_cues};
+use cue_lifecycle::{finalize_cue_display_segments, route_direction_from_cue_id, trim_recent_subtitle_cues};
 use echo_activity::EchoAsrActivity;
 pub(crate) use echo_activity::EchoSuppressionSnapshot;
 use audio_cache::AudioCacheStore;
@@ -364,6 +364,7 @@ impl AudioStateStore {
     }
 
     pub fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
+        let route_direction = route_direction_from_cue_id(cue_id).to_string();
         self.subtitles.update(|overlay| {
             let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
             if exists {
@@ -402,7 +403,7 @@ impl AudioStateStore {
                 let now = ms_marker(unix_ms());
                 let cue = SubtitleCueRuntime {
                     cue_id: cue_id.to_string(),
-                    route_direction: "inbound".to_string(),
+                    route_direction: route_direction.clone(),
                     source_text: source_text.to_string(),
                     display_source_text: String::new(),
                     display_segments: Vec::new(),
@@ -882,6 +883,10 @@ impl AudioStateStore {
         self.session_registry.insert(direction, handle);
     }
 
+    pub fn has_session(&self, direction: &str) -> bool {
+        self.session_registry.has(direction)
+    }
+
     pub fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.session_registry.take(direction)
     }
@@ -917,6 +922,69 @@ mod tests {
 
         store.mark_route_stopped("inbound");
         assert_eq!(store.snapshot().session_started_at, started_at);
+    }
+
+    #[test]
+    fn stopping_an_idle_route_is_a_safe_noop_and_never_touches_a_running_session() {
+        let store = AudioStateStore::new();
+        store.mark_route_stopped("inbound");
+        let idle = store.snapshot();
+        assert_eq!(idle.inbound.capture_state, "idle");
+        assert_eq!(idle.session_started_at, None);
+
+        store.mark_route_started("outbound", "talk-attempt", "default", "microphone");
+        let started_at = store.snapshot().session_started_at;
+        store.mark_route_stopped("inbound");
+        assert_eq!(store.snapshot().session_started_at, started_at);
+        assert!(store.snapshot().outbound.stream_bound);
+    }
+
+    #[test]
+    fn stale_stop_confirmations_cannot_tear_down_a_restarted_route() {
+        let store = AudioStateStore::new();
+        store.mark_route_started("inbound", "watch-attempt", "default", "loopback");
+
+        // A stop confirmation without a preceding stop request is ignored.
+        assert!(!store.mark_route_stopped_if_stopping("inbound"));
+        assert_eq!(store.snapshot().inbound.capture_state, "capturing");
+
+        // The route is stopped and immediately restarted; the native worker's
+        // late confirmation for the OLD stop must not tear the new route down.
+        store.mark_route_stopping("inbound");
+        store.mark_route_started("inbound", "watch-attempt-2", "default", "loopback");
+        assert!(!store.mark_route_stopped_if_stopping("inbound"));
+        let restarted = store.snapshot();
+        assert_eq!(restarted.inbound.capture_state, "capturing");
+        assert!(restarted.inbound.stream_bound);
+        assert!(restarted.session_started_at.is_some());
+
+        // A legitimate stop still converges to idle and releases the session.
+        store.mark_route_stopping("inbound");
+        assert!(store.mark_route_stopped_if_stopping("inbound"));
+        let stopped = store.snapshot();
+        assert_eq!(stopped.inbound.capture_state, "idle");
+        assert_eq!(stopped.session_started_at, None);
+    }
+
+    #[test]
+    fn route_restart_clears_the_previous_error_attribution() {
+        let store = AudioStateStore::new();
+        store.mark_route_started("inbound", "watch-attempt", "default", "loopback");
+        store.mark_route_last_error(
+            "inbound",
+            "capture initialization timed out".to_string(),
+            Some("session.launch-timeout".to_string()),
+            Some("restart-session".to_string()),
+        );
+        assert_eq!(store.snapshot().status, "degraded");
+
+        store.mark_route_started("inbound", "watch-attempt-2", "default", "loopback");
+        let restarted = store.snapshot().inbound;
+        assert_eq!(restarted.last_error, None);
+        assert_eq!(restarted.last_error_code, None);
+        assert_eq!(restarted.recommended_action, None);
+        assert_eq!(restarted.capture_state, "capturing");
+        assert_eq!(restarted.route_id, "watch-attempt-2");
     }
 
     #[test]

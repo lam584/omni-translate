@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import i18n from '../../i18n/config';
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
 import { classifyBenchmarkError, useBenchmarkController, type BenchmarkVoiceModel } from './useBenchmarkController';
 
@@ -56,7 +57,7 @@ describe('useBenchmarkController', () => {
     options = [];
     await mount();
     await act(async () => controller.run());
-    expect(controller.error).toBeTruthy();
+    expect(controller.error).toBe(i18n.t('diagnostics.benchmark.selectVoiceModelFirst'));
 
     options = [option];
     await act(async () => {
@@ -66,7 +67,7 @@ describe('useBenchmarkController', () => {
     await act(async () => controller.setModelId(option.modelId));
     await act(async () => controller.setMp3Path('   '));
     await act(async () => controller.run());
-    expect(controller.error).toBeTruthy();
+    expect(controller.error).toBe(i18n.t('diagnostics.benchmark.enterMp3Path'));
   });
 
   it('uses report fallbacks when the runtime completes without progress', async () => {
@@ -100,14 +101,19 @@ describe('useBenchmarkController', () => {
       return report;
     });
     await act(async () => controller.run());
-    expect(controller.progress?.message).toBeTruthy();
+    // An empty streamed message must fall back to the localized "completed"
+    // wording instead of leaving the modal blank.
+    expect(controller.progress?.message).toBe(i18n.t('diagnostics.benchmark.completed'));
+    expect(controller.progress?.status).toBe('completed');
   });
 
   it('reports missing credentials and non-Error runtime failures', async () => {
     runtime.readProviderSecret.mockResolvedValueOnce({ secret: '' });
     await mount();
     await act(async () => controller.run());
-    expect(controller.error).toBeTruthy();
+    expect(controller.error).toContain(
+      i18n.t('diagnostics.benchmark.missingApiKey', { model: option.displayName }),
+    );
 
     runtime.readProviderSecret.mockRejectedValueOnce('offline');
     await act(async () => controller.run());

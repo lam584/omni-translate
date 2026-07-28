@@ -7,7 +7,7 @@ import { writeProviderTemplateCatalogPreferences } from '../utils/provider-templ
 import GlossaryPage from './GlossaryPage';
 
 async function click(element: HTMLElement | null | undefined) {
-  expect(element).toBeTruthy();
+  expect(element).toBeInstanceOf(HTMLElement);
   await act(async () => {
     element?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
@@ -397,7 +397,7 @@ describe('GlossaryPage compact labels', () => {
     await act(async () => {
       input.dispatchEvent(new Event('change', { bubbles: true }));
     });
-    expect(container.querySelector('.glossary-toast-warning')).toBeTruthy();
+    expect(container.querySelector('.glossary-toast-warning')).toBeInstanceOf(HTMLElement);
     await click(container.querySelector<HTMLButtonElement>('.glossary-toast-close'));
     expect(container.querySelector('.glossary-toast-warning')).toBeNull();
 
@@ -437,9 +437,9 @@ describe('GlossaryPage compact labels', () => {
     await view.render(<GlossaryPage />);
 
     await click(container.querySelector<HTMLButtonElement>('.glossary-table-panel .routing-primary-action'));
-    expect(container.querySelector('.glossary-modal')).toBeTruthy();
+    expect(container.querySelector('.glossary-modal')).toBeInstanceOf(HTMLElement);
     await click(container.querySelector<HTMLButtonElement>('.glossary-modal .routing-primary-action'));
-    expect(container.querySelector('.glossary-modal')).toBeTruthy();
+    expect(container.querySelector('.glossary-modal')).toBeInstanceOf(HTMLElement);
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('源术语与目标术语均为必填');
     expect(container.querySelectorAll('[aria-invalid="true"]')).toHaveLength(2);
     await click(container.querySelector<HTMLButtonElement>('.glossary-modal .routing-action-row .icon-button:not(.routing-primary-action)'));
@@ -456,7 +456,7 @@ describe('GlossaryPage compact labels', () => {
     expect(container.querySelector('.glossary-modal')).toBeNull();
 
     await click(container.querySelector<HTMLButtonElement>('.routing-hero-actions .routing-primary-action'));
-    expect(container.querySelector('.glossary-library-dialog')).toBeTruthy();
+    expect(container.querySelector('.glossary-library-dialog')).toBeInstanceOf(HTMLElement);
     await click(container.querySelector<HTMLButtonElement>('.glossary-library-secondary-action'));
     expect(container.querySelector('.glossary-library-dialog')).toBeNull();
 
@@ -525,9 +525,9 @@ describe('GlossaryPage compact labels', () => {
   it('keeps shared routing classes available after CSS cleanup', async () => {
     await view.render(<GlossaryPage />);
 
-    expect(container.querySelector('.routing-hero-actions')).toBeTruthy();
-    expect(container.querySelector('.routing-primary-action')).toBeTruthy();
-    expect(container.querySelector('.routing-toggle')).toBeTruthy();
-    expect(container.querySelector('.routing-action-row')).toBeTruthy();
+    expect(container.querySelector('.routing-hero-actions')).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector('.routing-primary-action')).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector('.routing-toggle')).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector('.routing-action-row')).toBeInstanceOf(HTMLElement);
   });
 });

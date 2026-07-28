@@ -129,7 +129,7 @@ describe('desktop-api-v2 command fixture (renderer→shell wire pin)', () => {
     const seen = new Set<string>();
     for (const entry of v2Entries) {
       const action = (entry.payload.command as { action?: string } | undefined)?.action;
-      expect(action, `entry ${entry.label} must carry an action`).toBeTruthy();
+      expect(action, `entry ${entry.label} must carry an action`).toMatch(/\S/);
       const key = `${entry.command}:${action}`;
       expect(seen.has(key), `duplicate fixture entry for ${key}`).toBe(false);
       seen.add(key);

@@ -376,7 +376,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       overlay.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       overlay.dispatchEvent(new MouseEvent('mouseout', { bubbles: true }));
     });
-    expect(container.querySelector('.subtitle-overlay-root-locked')).toBeTruthy();
+    expect(container.querySelector('.subtitle-overlay-root-locked')).toBeInstanceOf(HTMLElement);
   });
 
   it('shows and hides the lock action while an unlocked overlay is hovered', async () => {
@@ -388,7 +388,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     const overlay = container.querySelector<HTMLElement>('.subtitle-overlay-root')!;
     await act(async () => overlay.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
     const button = container.querySelector<HTMLButtonElement>('.subtitle-overlay-toggle-lock');
-    expect(button).toBeTruthy();
+    expect(button).toBeInstanceOf(HTMLButtonElement);
     await act(async () => {
       button?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
       button?.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
@@ -590,7 +590,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
       view.root.render(<SubtitleOverlayPage />);
       await Promise.resolve();
     });
-    expect(onResized).toBeDefined();
+    expect(onResized).toBeTypeOf('function');
 
     await act(async () => {
       await onResized?.();
@@ -815,7 +815,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
     }
     expect(
       historySegment.compareDocumentPosition(streamSlot) & Node.DOCUMENT_POSITION_FOLLOWING,
-    ).toBeTruthy();
+    ).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
 
     await act(async () => {
       useAppStore.setState((state) => {

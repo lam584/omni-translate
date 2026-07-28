@@ -1,14 +1,33 @@
-[
-  "session.credential-invalid",
-  "session.quota-exceeded",
-  "session.voice-unsupported",
-  "session.model-reference-invalid",
-  "session.network-unreachable",
-  "session.provider-internal",
-  "session.launch-precheck-failed",
-  "session.launch-stage-failed",
-  "session.launch-timeout",
-  "audio.device-lost",
-  "audio.capture-failed",
-  "audio.flow-stalled"
-]
+{
+  "session": [
+    "session.credential-invalid",
+    "session.quota-exceeded",
+    "session.voice-unsupported",
+    "session.model-reference-invalid",
+    "session.network-unreachable",
+    "session.provider-internal",
+    "session.launch-precheck-failed",
+    "session.launch-stage-failed",
+    "session.launch-timeout"
+  ],
+  "audio": [
+    "audio.device-lost",
+    "audio.capture-failed",
+    "audio.flow-stalled"
+  ],
+  "bridge": [
+    "bridge.singleton-already-running",
+    "bridge.session-mismatch",
+    "bridge.invalid-audio-direction",
+    "bridge.invalid-pcm-payload",
+    "bridge.timeout",
+    "bridge.queue-overflow",
+    "bridge.start-failed",
+    "bridge.stale-pid-invalid",
+    "bridge.stale-pid-points-to-desktop-process",
+    "bridge.stale-process-path-mismatch",
+    "bridge.stale-process-open-failed",
+    "bridge.stale-process-query-failed",
+    "bridge.stale-process-terminate-failed"
+  ]
+}

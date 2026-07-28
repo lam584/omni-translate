@@ -1,7 +1,8 @@
-﻿import { act } from 'react';
+import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import i18n from '../i18n/config';
 import { useAppStore } from '../stores/app-store';
 import AudioRoutingPage from './AudioRoutingPage';
 
@@ -50,7 +51,7 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     });
 
     const workspace = host.container.querySelector('.routing-workspace-v9');
-    expect(workspace).toBeTruthy();
+    expect(workspace).toBeInstanceOf(HTMLElement);
     const orderedSections = Array.from(workspace?.querySelectorAll(':scope > section, :scope > article, :scope > div') ?? []).map((node) => node.className.split(' ').filter(Boolean)).flat();
     expect(orderedSections).toEqual(expect.arrayContaining(['routing-top-grid', 'routing-models-grid']));
     expect(orderedSections.indexOf('routing-top-grid')).toBeLessThan(orderedSections.indexOf('routing-models-grid'));
@@ -66,11 +67,13 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     });
 
     const toggleLabels = Array.from(host.container.querySelectorAll('.scenario-card-head .scenario-card-toggle'));
+    // Resolve the labels through i18n keys so copy edits do not break this
+    // structural test; the copy itself is guarded by the locale tests.
     expect(toggleLabels.map((node) => node.textContent?.trim())).toEqual(expect.arrayContaining([
-      '启用字幕翻译',
-      '用二次字幕生成译音',
-      '将翻译语音发送到虚拟麦克风',
-      '独立 TTS',
+      i18n.t('audioRouting.subtitleTranslationCardToggle'),
+      i18n.t('audioRouting.secondaryAudioCardToggle'),
+      i18n.t('audioRouting.sendVoiceToVirtualMic'),
+      i18n.t('audioRouting.scenarioTtsRole'),
     ]));
 
     const switches = toggleLabels.map((label) => label.querySelector('input[type="checkbox"]'));
@@ -94,7 +97,7 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     });
 
     const virtualMicToggle = Array.from(host.container.querySelectorAll('.scenario-card'))
-      .find((card) => card.textContent?.includes('将翻译语音发送到虚拟麦克风'));
+      .find((card) => card.textContent?.includes(i18n.t('audioRouting.sendVoiceToVirtualMic')));
     expect(virtualMicToggle?.querySelector('.scenario-card-error-hint')?.textContent).toContain('命名管道超时');
   });
 
@@ -133,9 +136,9 @@ describe('AudioRoutingPage v9 layout snapshot', () => {
     });
 
     const secondaryGroup = host.container.querySelector('.routing-secondary-group') as HTMLElement | null;
-    expect(secondaryGroup).toBeTruthy();
-    expect(secondaryGroup?.textContent).toContain('字幕翻译');
-    expect(secondaryGroup?.textContent).toContain('听对方 · 二次语音识别');
+    expect(secondaryGroup).toBeInstanceOf(HTMLElement);
+    expect(secondaryGroup?.textContent).toContain(i18n.t('audioRouting.scenarioSubtitleTitle'));
+    expect(secondaryGroup?.textContent).toContain(i18n.t('audioRouting.scenarioInboundSecondaryTitle'));
     const switches = secondaryGroup?.querySelectorAll('input[role="switch"]') ?? [];
     expect(switches).toHaveLength(2);
     for (const node of Array.from(switches) as HTMLInputElement[]) {

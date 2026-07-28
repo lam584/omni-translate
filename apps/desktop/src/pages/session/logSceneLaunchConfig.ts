@@ -148,6 +148,7 @@ export function logSceneLaunchConfig(
   section('Subtitle configuration (subtitles)');
   log('sourceLanguage', subtitles.sourceLanguage);
   log('targetLanguage', subtitles.targetLanguage);
+  log('outboundTargetLanguage', subtitles.outboundTargetLanguage || '(auto)');
   log('translationLanguagePreference', subtitles.translationLanguagePreference);
   log('mode', subtitles.mode);
   log('captionDensity', subtitles.captionDensity);

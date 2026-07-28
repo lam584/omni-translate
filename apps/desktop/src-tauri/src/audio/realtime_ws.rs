@@ -102,3 +102,65 @@ pub(crate) fn collect_text_fields(value: &Value, include_transcript: bool) -> St
     walk(value, include_transcript, &mut out);
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn stt_backoff_doubles_and_caps_at_ten_seconds() {
+        assert_eq!(backoff_delay(0), Duration::from_secs(1));
+        assert_eq!(backoff_delay(1), Duration::from_secs(2));
+        assert_eq!(backoff_delay(3), Duration::from_secs(8));
+        assert_eq!(backoff_delay(4), Duration::from_secs(10));
+        // Large retry counts must stay capped instead of shifting into
+        // overflow territory.
+        assert_eq!(backoff_delay(40), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn attempt_backoff_starts_at_one_second_and_caps_at_ten() {
+        // Attempt numbering starts at 1; 0 must not underflow the shift.
+        assert_eq!(attempt_backoff_delay(0), Duration::from_secs(1));
+        assert_eq!(attempt_backoff_delay(1), Duration::from_secs(1));
+        assert_eq!(attempt_backoff_delay(2), Duration::from_secs(2));
+        assert_eq!(attempt_backoff_delay(5), Duration::from_secs(10));
+        assert_eq!(attempt_backoff_delay(60), Duration::from_secs(10));
+    }
+
+    #[test]
+    fn reconnecting_cue_is_committed_and_prefixed() {
+        let store = AudioStateStore::new();
+        push_reconnecting_cue(&store, "omni-reconnect", "正在重新连接…".to_string());
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id.starts_with("omni-reconnect-"))
+            .expect("reconnect cue must reach the overlay");
+        assert!(cue.committed, "progress cues must not linger as active partials");
+        assert_eq!(cue.source_text, "正在重新连接…");
+        assert_eq!(cue.route_direction, "inbound");
+    }
+
+    #[test]
+    fn collect_text_fields_walks_nested_payloads_depth_first() {
+        let event = json!({
+            "response": {
+                "output": [
+                    { "content": [ { "text": "你好" }, { "transcript": "hello" } ] },
+                    { "text": "世界" }
+                ]
+            }
+        });
+
+        assert_eq!(collect_text_fields(&event, false), "你好世界");
+        assert_eq!(collect_text_fields(&event, true), "你好hello世界");
+        // Non-object payloads collapse to empty rather than panicking.
+        assert_eq!(collect_text_fields(&json!("bare string"), true), "");
+        assert_eq!(collect_text_fields(&json!(null), true), "");
+    }
+}

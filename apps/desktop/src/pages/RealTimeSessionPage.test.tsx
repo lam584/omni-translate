@@ -384,7 +384,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     await renderPage();
 
     const launchButton = container.querySelectorAll('button')[1] as HTMLButtonElement | undefined;
-    expect(launchButton).toBeDefined();
+    expect(launchButton).toBeInstanceOf(HTMLButtonElement);
     expect(launchButton?.disabled).toBe(false);
 
     await clickAndSettle(launchButton);
@@ -477,7 +477,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
-    expect(launchButton).toBeDefined();
+    expect(launchButton).toBeInstanceOf(HTMLButtonElement);
     expect(launchButton?.disabled).toBe(false);
 
     await clickAndSettle(launchButton);
@@ -703,7 +703,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     });
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
-    expect(launchButton).toBeDefined();
+    expect(launchButton).toBeInstanceOf(HTMLButtonElement);
 
     await clickAndSettle(launchButton);
 
@@ -743,7 +743,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     });
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
-    expect(launchButton).toBeDefined();
+    expect(launchButton).toBeInstanceOf(HTMLButtonElement);
 
     await clickAndSettle(launchButton);
 
@@ -797,7 +797,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
-    expect(launchButton).toBeDefined();
+    expect(launchButton).toBeInstanceOf(HTMLButtonElement);
 
     await clickAndSettle(launchButton);
 
@@ -955,7 +955,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
-    expect(launchButton).toBeDefined();
+    expect(launchButton).toBeInstanceOf(HTMLButtonElement);
 
     await clickAndSettle(launchButton);
 
@@ -996,7 +996,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
-    expect(launchButton).toBeDefined();
+    expect(launchButton).toBeInstanceOf(HTMLButtonElement);
 
     await clickAndSettle(launchButton);
 
@@ -1183,7 +1183,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     await renderPage();
 
     const launchButton = container.querySelector('button') as HTMLButtonElement | null;
-    expect(launchButton).toBeDefined();
+    expect(launchButton).toBeInstanceOf(HTMLButtonElement);
 
     await clickAndSettle(launchButton);
 

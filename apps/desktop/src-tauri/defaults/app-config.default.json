@@ -648,6 +648,7 @@
   "subtitles": {
     "sourceLanguage": "auto",
     "targetLanguage": "zh-CN",
+    "outboundTargetLanguage": "",
     "translationLanguagePreference": "",
     "mode": "bilingual",
     "captionDensity": "balanced",

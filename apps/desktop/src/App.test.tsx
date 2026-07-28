@@ -1,8 +1,9 @@
-﻿import React from 'react';
+import React from 'react';
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import App, { buildWatchModeDiagnosticAutostartConfig, isWatchModeDiagnosticAutostartAllowed } from './App';
+import i18n, { WELCOME_DONE_STORAGE_KEY } from './i18n/config';
 import { startAudioRouteRuntime } from './runtime/audio-runtime';
 import { startBridgeServiceRuntime } from './runtime/bridge-runtime';
 import { appendFrontendDiagnosticsLog } from './runtime/diagnostics-runtime';
@@ -13,25 +14,12 @@ const appMocks = vi.hoisted(() => ({
   bootstrapCleanup: vi.fn(),
   bootstrapDesktopRuntimeBridge: vi.fn(),
   scheduleBridgeAutostartAfterStartup: vi.fn().mockReturnValue({ cleanup: vi.fn(), promise: Promise.resolve() }),
-  hasCompletedWelcome: vi.fn(),
 }));
 
-vi.mock('react-router-dom', () => ({
-  RouterProvider: () => null,
-}));
-
-vi.mock('./router', () => ({
-  router: {},
-}));
-
-vi.mock('./i18n/config', () => ({
-  default: {
-    t: (key: string) => key,
-  },
-  getCurrentLanguage: () => 'zh-CN',
-  hasCompletedWelcome: () => appMocks.hasCompletedWelcome(),
-}));
-
+// Only the native-facing runtime seams stay mocked (they reach the Tauri
+// shell). Router, i18n, pages and the welcome picker are the real modules, so
+// this file exercises the actual composition: the real route table and the
+// shipped zh-CN copy.
 vi.mock('./runtime/desktop-runtime', () => ({
   bootstrapDesktopRuntimeBridge: (...args: Parameters<typeof appMocks.bootstrapDesktopRuntimeBridge>) =>
     appMocks.bootstrapDesktopRuntimeBridge(...args),
@@ -40,20 +28,19 @@ vi.mock('./runtime/desktop-runtime', () => ({
   scheduleCapturePrewarmAfterStartup: vi.fn().mockReturnValue({ cleanup: vi.fn(), promise: Promise.resolve() }),
 }));
 
-vi.mock('./runtime/audio-runtime', () => ({
+vi.mock('./runtime/audio-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./runtime/audio-runtime')>()),
   startAudioRouteRuntime: vi.fn(),
 }));
 
-vi.mock('./runtime/bridge-runtime', () => ({
+vi.mock('./runtime/bridge-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./runtime/bridge-runtime')>()),
   startBridgeServiceRuntime: vi.fn(),
 }));
 
-vi.mock('./runtime/diagnostics-runtime', () => ({
+vi.mock('./runtime/diagnostics-runtime', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./runtime/diagnostics-runtime')>()),
   appendFrontendDiagnosticsLog: vi.fn(),
-}));
-
-vi.mock('./components/welcome/WelcomeLanguagePicker', () => ({
-  default: () => null,
 }));
 
 describe('watch mode diagnostic autostart gate', () => {
@@ -85,19 +72,19 @@ describe('watch mode diagnostic autostart gate', () => {
   });
 });
 
-describe('App bootstrap shell', () => {
+describe('App bootstrap shell (real router + real i18n)', () => {
   let container: HTMLDivElement;
   let root: Root | null;
 
   beforeEach(() => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
     vi.useFakeTimers();
+    window.localStorage.setItem(WELCOME_DONE_STORAGE_KEY, '1');
     delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_AUTOSTART;
     delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_RUN_MARKER;
     delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS;
     appMocks.bootstrapCleanup.mockReset();
     appMocks.scheduleBridgeAutostartAfterStartup.mockReset().mockReturnValue({ cleanup: () => {}, promise: Promise.resolve() });
-    appMocks.hasCompletedWelcome.mockReset().mockReturnValue(true);
     appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockImplementation(async (onStep?: OnBootstrapStep) => {
       const stepIds: BootstrapStepId[] = ['detect-runtime', 'check-ipc', 'init-runtime', 'init-audio', 'load-config'];
       for (const stepId of stepIds) {
@@ -122,23 +109,49 @@ describe('App bootstrap shell', () => {
     vi.useRealTimers();
   });
 
-  it('boots the desktop runtime and cleans up the subscription on unmount', async () => {
+  it('boots the runtime, localizes the overlay and routes to the session page', async () => {
     await act(async () => {
-      root?.render(React.createElement(App));
+      root?.render(<App />);
     });
 
     expect(appMocks.bootstrapDesktopRuntimeBridge).toHaveBeenCalledTimes(1);
-    expect(container.querySelector('.bootstrap-overlay')).not.toBeNull();
+    const overlay = container.querySelector('.bootstrap-overlay');
+    expect(overlay).toBeInstanceOf(HTMLElement);
+    // Real i18n: the overlay steps must carry the shipped zh-CN copy, not raw keys.
+    expect(overlay?.textContent).toContain(i18n.t('common.bootstrapDetecting'));
+    expect(overlay?.textContent).not.toContain('common.bootstrapDetecting');
 
     await act(async () => {
       vi.runOnlyPendingTimers();
     });
 
     expect(container.querySelector('.bootstrap-overlay')).toBeNull();
+    // Real router: the index route redirects to /session and the layout mounts.
+    expect(window.location.hash).toBe('#/session');
+    expect(container.querySelector('.console-shell')).toBeInstanceOf(HTMLElement);
+    expect(container.querySelector('.console-nav')?.getAttribute('aria-label')).toBe(i18n.t('nav.ariaMain'));
 
     await act(async () => root?.unmount());
     root = null;
     expect(appMocks.bootstrapCleanup).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the real welcome picker after bootstrap when welcome is not completed', async () => {
+    window.localStorage.removeItem(WELCOME_DONE_STORAGE_KEY);
+
+    await act(async () => {
+      root?.render(<App />);
+    });
+    expect(container.querySelector('.welcome-language-overlay')).toBeNull();
+
+    await act(async () => {
+      vi.runOnlyPendingTimers();
+    });
+
+    const picker = container.querySelector('.welcome-language-overlay');
+    expect(picker).toBeInstanceOf(HTMLElement);
+    expect(picker?.getAttribute('role')).toBe('dialog');
+    expect(picker?.textContent).toContain(i18n.t('welcome.subtitle'));
   });
 
   it('closes the overlay when bootstrap settles without delivering every step', async () => {
@@ -149,7 +162,7 @@ describe('App bootstrap shell', () => {
     });
 
     await act(async () => {
-      root?.render(React.createElement(App));
+      root?.render(<App />);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -167,7 +180,7 @@ describe('App bootstrap shell', () => {
     });
 
     await act(async () => {
-      root?.render(React.createElement(App));
+      root?.render(<App />);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -191,7 +204,7 @@ describe('App bootstrap shell', () => {
     });
 
     await act(async () => {
-      root?.render(React.createElement(App));
+      root?.render(<App />);
       await Promise.resolve();
     });
 
@@ -214,14 +227,14 @@ describe('App bootstrap shell', () => {
     });
 
     await act(async () => {
-      root?.render(React.createElement(App));
+      root?.render(<App />);
       await Promise.resolve();
     });
     await act(async () => root?.unmount());
     root = createRoot(container);
 
     await act(async () => {
-      root?.render(React.createElement(App));
+      root?.render(<App />);
       await Promise.resolve();
     });
 
@@ -356,6 +369,3 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
     expect(config.devices.outboundVoiceModelId).toBe('qwen3.5-omni-flash-realtime');
   });
 });
-
-
-

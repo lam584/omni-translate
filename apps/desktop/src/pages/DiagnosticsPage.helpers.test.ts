@@ -141,7 +141,9 @@ describe('diagnostics page helpers', () => {
     const alternateAudio = structuredClone(audio);
     alternateAudio.inbound.recommendedAction = null;
     alternateAudio.outbound.recommendedAction = 'restart-output';
-    expect(diagnosticsPageHelpers.buildOverviewIssues(runtime, alternateAudio, readySummary)[0]).toBeTruthy();
+    expect(diagnosticsPageHelpers.buildOverviewIssues(runtime, alternateAudio, readySummary)).toContainEqual(
+      expect.objectContaining({ id: 'audio-runtime', detail: 'input failed · output failed [建议: restart-output] · speech failed' }),
+    );
     const failedSummary = diagnosticsPageHelpers.getRuntimeEnvironmentSummary(runtime, audio);
     expect(diagnosticsPageHelpers.buildOverviewIssues(runtime, audio, failedSummary)).toMatchObject([
       { id: 'runtime-live-action-needed' },

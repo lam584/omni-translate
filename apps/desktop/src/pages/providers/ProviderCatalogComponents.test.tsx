@@ -24,7 +24,7 @@ function render(element: React.ReactNode) {
 }
 
 async function click(element: Element | null | undefined) {
-  expect(element).toBeTruthy();
+  expect(element).toBeInstanceOf(Element);
   await act(async () => {
     element?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await Promise.resolve();
@@ -80,7 +80,7 @@ describe('provider catalog components', () => {
       />,
     ));
 
-    expect(container.querySelector('.provider-directory-empty')).toBeTruthy();
+    expect(container.querySelector('.provider-directory-empty')).toBeInstanceOf(HTMLElement);
     expect(container.querySelector('.provider-directory-add')).toBeNull();
     await change(container.querySelector<HTMLInputElement>('.provider-directory-search-input')!, 'dash');
     expect(onQueryChange).toHaveBeenCalledWith('dash');
@@ -183,7 +183,7 @@ describe('provider catalog components', () => {
     ));
 
     expect(container.querySelector('.provider-inline-alert')?.textContent).toContain('catalog unavailable');
-    expect(container.querySelector('.provider-model-item-active')).toBeTruthy();
+    expect(container.querySelector('.provider-model-item-active')).toBeInstanceOf(HTMLElement);
     expect(container.textContent).toContain('model-b');
     expect(container.querySelector<HTMLInputElement>('.provider-scene-manual-row input')?.value).toBe('manual-model');
     await click(container.querySelector('.provider-model-item-active button'));
@@ -384,7 +384,7 @@ describe('provider catalog components', () => {
     ({ container, root } = render(<ProviderVerificationPanel activeProbe={activeProbe} probeResult={null}
       smokeResult={smokeResult} summaryLabel="ready" summaryTone="ready" onClose={vi.fn()} />));
     expect(container.querySelector('.result-log')).toBeNull();
-    expect(container.textContent).toBeTruthy();
+    expect(container.textContent).toContain('ready');
 
     const probeResult: ProviderProbeProfileRuntime = {
       ...activeProbe,

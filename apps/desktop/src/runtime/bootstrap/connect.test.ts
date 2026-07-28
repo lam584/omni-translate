@@ -178,7 +178,7 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
     await Promise.resolve();
 
     const audioDone = steps.find(([stepId, status]) => stepId === 'init-audio' && status === 'done');
-    expect(audioDone).toBeDefined();
+    expect(audioDone?.[0]).toBe('init-audio');
     const messages = pushSpy.mock.calls.map(([notification]) => notification.message);
     expect(messages.some((message) => message.includes('Audio device refresh deferred'))).toBe(true);
     cleanup();

@@ -218,8 +218,7 @@ fn run_translate_worker(
             let tx = result_tx.clone();
             let provider = config.provider.clone();
             let source_text = cue.source_text.clone();
-            let source_language = config.source_language.clone();
-            let target_language = config.target_language.clone();
+            let (source_language, target_language) = config.languages_for_direction(&cue.route_direction);
             let cue_id = cue.cue_id.clone();
 
             let same_lang = detect_language(&source_text)
@@ -298,6 +297,26 @@ struct TranslateConfig {
     provider: ProviderDraftInput,
     source_language: String,
     target_language: String,
+    /// Outbound (microphone) reverses the pair: the user's own language is the
+    /// source and the peer's language is the target.
+    outbound_source_language: String,
+    outbound_target_language: String,
+}
+
+impl TranslateConfig {
+    /// Language pair to use for a cue, keyed by its route direction. Outbound
+    /// (mic) translates the local speaker into the peer language; inbound keeps
+    /// the subtitle source -> user target pair.
+    fn languages_for_direction(&self, direction: &str) -> (String, String) {
+        if direction == "outbound" {
+            (
+                self.outbound_source_language.clone(),
+                self.outbound_target_language.clone(),
+            )
+        } else {
+            (self.source_language.clone(), self.target_language.clone())
+        }
+    }
 }
 
 impl TranslateConfig {
@@ -348,10 +367,79 @@ impl TranslateConfig {
                     .unwrap_or("zh-CN")
             })
             .to_string();
+        // Outbound source is the user's own language (the inbound target);
+        // outbound target follows the explicit outboundTargetLanguage, then the
+        // subtitle source language, and finally English when that is auto.
+        let outbound_source_language = config
+            .pointer("/subtitles/targetLanguage")
+            .and_then(Value::as_str)
+            .unwrap_or("zh-CN")
+            .to_string();
+        let outbound_target_language = config
+            .pointer("/subtitles/outboundTargetLanguage")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|lang| !lang.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| {
+                config
+                    .pointer("/subtitles/sourceLanguage")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|lang| !lang.is_empty() && !lang.eq_ignore_ascii_case("auto"))
+                    .unwrap_or("en")
+                    .to_string()
+            });
         Self {
             provider,
             source_language,
             target_language,
+            outbound_source_language,
+            outbound_target_language,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn translate_config_selects_language_pair_by_cue_direction() {
+        let config = json!({
+            "providers": [],
+            "subtitles": {
+                "sourceLanguage": "en",
+                "targetLanguage": "zh-CN",
+                "translationLanguagePreference": "",
+                "outboundTargetLanguage": ""
+            }
+        });
+        let translate_config = TranslateConfig::from_value(&config);
+        // Inbound: subtitle source -> user target.
+        let (inbound_src, inbound_tgt) = translate_config.languages_for_direction("inbound");
+        assert_eq!(inbound_src, "en");
+        assert_eq!(inbound_tgt, "zh-CN");
+        // Outbound reverses: user language (subtitle target) -> peer language
+        // derived from the subtitle source (en) since no explicit target.
+        let (outbound_src, outbound_tgt) = translate_config.languages_for_direction("outbound");
+        assert_eq!(outbound_src, "zh-CN");
+        assert_eq!(outbound_tgt, "en");
+    }
+
+    #[test]
+    fn outbound_target_falls_back_to_english_when_source_is_auto() {
+        let config = json!({
+            "providers": [],
+            "subtitles": {
+                "sourceLanguage": "auto",
+                "targetLanguage": "zh-CN",
+                "outboundTargetLanguage": ""
+            }
+        });
+        let translate_config = TranslateConfig::from_value(&config);
+        let (_, outbound_tgt) = translate_config.languages_for_direction("outbound");
+        assert_eq!(outbound_tgt, "en");
     }
 }

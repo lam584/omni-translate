@@ -465,6 +465,7 @@ pub fn start_subtitle_translate(
     store: &AudioStateStore,
     text_model_provider: ProviderDraftInput,
     target_language: String,
+    outbound_target_language: String,
 ) -> Result<AudioRuntimeSnapshot, String> {
     stop_subtitle_translate(app.clone(), store)?;
 
@@ -506,6 +507,7 @@ pub fn start_subtitle_translate(
     let app_handle = app.clone();
     let provider = text_model_provider;
     let lang = target_language;
+    let outbound_lang = outbound_target_language;
     let worker_trace = trace.clone();
 
     let join_handle = thread::Builder::new()
@@ -516,6 +518,7 @@ pub fn start_subtitle_translate(
                 app_handle.clone(),
                 provider,
                 lang,
+                outbound_lang,
                 worker_trace,
                 stop_rx,
             );
@@ -640,6 +643,15 @@ mod tests {
             },
             trace: None,
         }
+    }
+
+    #[test]
+    fn cue_target_language_is_selected_by_direction() {
+        // Outbound cues use the peer language; inbound cues keep the subtitle target.
+        assert_eq!(cue_target_language("outbound", "zh-CN", "en"), "en");
+        assert_eq!(cue_target_language("inbound", "zh-CN", "en"), "zh-CN");
+        // An empty outbound target falls back to the inbound target.
+        assert_eq!(cue_target_language("outbound", "zh-CN", ""), "zh-CN");
     }
 
     #[test]

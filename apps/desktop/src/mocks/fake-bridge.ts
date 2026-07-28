@@ -1,16 +1,23 @@
 import { appConfigDraftMock } from './app-config';
 import { audioRuntimeSnapshotMock } from './audio-runtime';
 import { runtimeSnapshotMock } from './runtime-shell';
-import type { BenchmarkReport } from '../runtime/benchmark-runtime';
+import { BENCHMARK_PROGRESS_EVENT, type BenchmarkReport } from '../runtime/benchmark-runtime';
+import type { ServiceErrorV2 } from '../runtime/desktop-api-v2';
 import type {
   LiveSessionAsrDelta,
   LiveSessionEvents,
   LiveSessionOutputDelta,
 } from '../runtime/live-session-events-runtime';
-import type { AudioRuntimeSnapshot, SubtitleCueRuntime } from '../schema/audio-runtime';
+import { AUDIO_RUNTIME_SNAPSHOT_EVENT, type AudioRuntimeSnapshot, type SubtitleCueRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft, DiagnosticsExportScope } from '../schema/config';
 import type { CredentialRefStatus, CredentialSecretPayload } from '../schema/provider-runtime';
-import type { DiagnosticsExportArtifact, RuntimeSnapshot, RuntimeNotification } from '../schema/runtime-core';
+import {
+  RUNTIME_NOTIFICATION_EVENT,
+  RUNTIME_SNAPSHOT_EVENT,
+  type DiagnosticsExportArtifact,
+  type RuntimeSnapshot,
+  type RuntimeNotification,
+} from '../schema/runtime-core';
 import type { SpeechEventKind } from '../schema/speech-event-kinds';
 
 /**
@@ -48,11 +55,12 @@ export type FakeOverlayWindowState = {
   hotspotInteractive: boolean;
 };
 
-/** Wire shape of api_v2::ServiceErrorV2. */
-export type FakeServiceErrorV2 = {
-  code: string;
-  message: string;
-  retriable: boolean;
+/**
+ * Wire shape of api_v2::ServiceErrorV2 — consumed directly from the runtime
+ * layer's type so a contract change breaks this fake at compile time instead
+ * of drifting silently.
+ */
+export type FakeServiceErrorV2 = ServiceErrorV2 & {
   details?: Record<string, unknown>;
 };
 
@@ -97,8 +105,6 @@ type FakeEventHandler = (event: FakeEvent<never>) => void;
 
 const SPEECH_FRAMES_PER_DISPATCH = 4800;
 const CAPTURE_FRAMES_PER_START = 960;
-/** Mirrors `benchmark::BENCHMARK_PROGRESS_EVENT`. */
-const BENCHMARK_PROGRESS_EVENT = 'benchmark://progress';
 /** Mirrors the backend reported by `storage_events::read_secret_ref`. */
 const CREDENTIAL_BACKEND = 'windows-credential-manager';
 /** Mirrors `PipelineMilestones::default()`. */
@@ -208,12 +214,13 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
   }
 
   function pushAudioSnapshot() {
-    emitEvent('audio://snapshot', structuredClone(audio));
+    emitEvent(AUDIO_RUNTIME_SNAPSHOT_EVENT, structuredClone(audio));
   }
 
   function pushRuntimeSnapshot() {
-    emitEvent('runtime://snapshot', structuredClone(runtime));
+    emitEvent(RUNTIME_SNAPSHOT_EVENT, structuredClone(runtime));
     runtimeEventSequence += 1;
+    // Dynamic Rust event name: api_v2.rs formats `runtime-v2://{topic}`.
     emitEvent('runtime-v2://snapshot', {
       topic: 'snapshot',
       sequence: runtimeEventSequence,
@@ -224,7 +231,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
 
   function pushNotification(notification: RuntimeNotification) {
     runtime.notifications = [notification, ...runtime.notifications];
-    emitEvent('runtime://notification', structuredClone(notification));
+    emitEvent(RUNTIME_NOTIFICATION_EVENT, structuredClone(notification));
   }
 
   // ── Async convergence machinery ──

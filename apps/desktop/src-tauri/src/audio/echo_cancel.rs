@@ -393,4 +393,74 @@ mod tests {
         assert_eq!(cancellation.samples, captured);
         assert!(!cancellation.suppress_asr);
     }
+
+    #[test]
+    fn ignores_degenerate_push_inputs() {
+        let mut buffer = EchoReferenceBuffer::new(4);
+        buffer.push_samples(&[], 48_000, 1);
+        buffer.push_samples(&[0.5], 0, 1);
+        buffer.push_samples(&[0.5], 48_000, 0);
+        // Fewer samples than one full frame of the claimed channel count.
+        buffer.push_samples(&[0.5], 48_000, 2);
+
+        assert!(buffer.is_empty());
+        assert_eq!(buffer.depth_samples(), 0);
+    }
+
+    #[test]
+    fn capture_before_playback_reaches_the_delay_passes_through() {
+        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
+        let reference = sine_mono(48_000, 0.5);
+        let playback_started = Instant::now();
+        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+
+        // The echo path is TEST_DELAY_SAMPLES long, so a capture taken right
+        // at playback start cannot contain any speaker output yet; the
+        // canceller must not carve the aligned-to-nothing reference out of it.
+        let captured: Vec<f32> = (0..TEST_CHUNK_SAMPLES)
+            .map(|index| (index as f32 * 0.031).cos() * 0.4)
+            .collect();
+        let cancellation = buffer.subtract_from_at(&captured, TEST_DELAY_SAMPLES, playback_started);
+
+        assert_eq!(cancellation.samples, captured);
+        assert!(!cancellation.suppress_asr);
+    }
+
+    #[test]
+    fn new_segment_after_a_silence_gap_realigns_the_play_cursor() {
+        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
+        let playback_started = Instant::now();
+        // First 1-second segment, then 4 seconds of silence: the playback
+        // clock runs far past the buffered audio.
+        buffer.push_samples_at(&sine_mono(48_000, 0.5), 48_000, 1, playback_started);
+
+        // A new segment starts after the gap; the cursor must snap back to
+        // the end of the buffered audio so this segment aligns with "now".
+        let second_segment = sine_mono(48_000, 0.3);
+        let second_started = playback_started + Duration::from_secs(5);
+        buffer.push_samples_at(&second_segment, 48_000, 1, second_started);
+
+        // One second into the second segment the microphone hears its echo:
+        // the reference block that ended TEST_DELAY_SAMPLES behind the cursor,
+        // located near the end of the second segment.
+        let first_segment_samples = 48_000 * TARGET_CHANNEL_COUNT;
+        let cursor = first_segment_samples + 48_000 * TARGET_CHANNEL_COUNT;
+        let block_start = cursor - TEST_DELAY_SAMPLES - TEST_CHUNK_SAMPLES;
+        let captured: Vec<f32> = (0..TEST_CHUNK_SAMPLES)
+            .map(|index| second_segment[(block_start + index - first_segment_samples) / 2] * ATTENUATION)
+            .collect();
+        let cancellation = buffer.subtract_from_at(
+            &captured,
+            TEST_DELAY_SAMPLES,
+            second_started + Duration::from_secs(1),
+        );
+
+        assert!(
+            rms(&cancellation.samples) < rms(&captured) * 0.05,
+            "cursor misaligned after silence gap: cleaned_rms={} captured_rms={}",
+            rms(&cancellation.samples),
+            rms(&captured)
+        );
+        assert!(cancellation.suppress_asr);
+    }
 }

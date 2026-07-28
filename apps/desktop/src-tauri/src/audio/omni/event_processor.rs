@@ -254,6 +254,7 @@ impl OmniEventProcessor {
         state: OmniSubtitleEventState,
         app: &AppHandle<R>,
         store: &AudioStateStore,
+        direction: &str,
         evt: &Value,
         event_type: &str,
         subtitle_translate_active: bool,
@@ -280,7 +281,7 @@ impl OmniEventProcessor {
             .live_session_events
             .push_output_delta(event_type, delta, "");
         if native_translation_reuse_active {
-            let cue_id = ensure_transcription_cue_id(&mut current_cue_id);
+            let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
             if event_diagnostics.current_cue_origin.is_none() {
                 event_diagnostics.current_cue_origin =
                     Some("native_audio_transcript_delta".to_string());
@@ -320,6 +321,7 @@ impl OmniEventProcessor {
         } else {
             write_native_output_preview_to_cue(
                 store,
+                direction,
                 &mut current_cue_id,
                 &pending_source_text,
                 &pending_translated_text,
@@ -348,6 +350,7 @@ impl OmniEventProcessor {
         state: OmniSubtitleEventState,
         app: &AppHandle<R>,
         store: &AudioStateStore,
+        direction: &str,
         evt: &Value,
         session_started_at: &SystemTime,
         subtitle_translate_active: bool,
@@ -376,7 +379,7 @@ impl OmniEventProcessor {
         if native_translation_reuse_active
             && !pending_translated_text.trim().is_empty()
         {
-            let cue_id = ensure_transcription_cue_id(&mut current_cue_id);
+            let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
             if event_diagnostics.current_cue_origin.is_none() {
                 event_diagnostics.current_cue_origin =
                     Some("native_audio_transcript_done".to_string());
@@ -401,6 +404,7 @@ impl OmniEventProcessor {
         } else if !subtitle_translate_active && !pending_translated_text.trim().is_empty() {
             let cue_id = write_native_output_final_to_cue(
                 store,
+                direction,
                 &mut current_cue_id,
                 &pending_source_text,
                 &pending_translated_text,

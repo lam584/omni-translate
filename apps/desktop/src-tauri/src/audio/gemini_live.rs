@@ -192,6 +192,7 @@ pub fn start_gemini_live(
     app: AppHandle,
     store: &AudioStateStore,
     provider: ProviderDraftInput,
+    direction: String,
     instructions: String,
     mode: GeminiActivityMode,
     target_language: String,
@@ -212,6 +213,7 @@ pub fn start_gemini_live(
                 &audio_state,
                 stt_epoch,
                 provider,
+                direction,
                 instructions,
                 mode,
                 target_language,
@@ -307,14 +309,16 @@ fn open_gemini_session(
 }
 
 struct GeminiCueState {
+    direction: String,
     cue_id: Option<String>,
     source_text: String,
     output_text: String,
 }
 
 impl GeminiCueState {
-    fn new() -> Self {
+    fn new(direction: String) -> Self {
         Self {
+            direction,
             cue_id: None,
             source_text: String::new(),
             output_text: String::new(),
@@ -322,8 +326,10 @@ impl GeminiCueState {
     }
 
     fn ensure_cue_id(&mut self) -> String {
+        // Direction inside the id drives the created cue's route_direction
+        // (see cue_lifecycle::route_direction_from_cue_id).
         self.cue_id
-            .get_or_insert_with(|| format!("gemini-cue-{}", unix_ms()))
+            .get_or_insert_with(|| format!("gemini-cue-{}-{}", self.direction, unix_ms()))
             .clone()
     }
 
@@ -358,6 +364,7 @@ fn run_gemini_worker(
     store: &AudioStateStore,
     stt_epoch: u64,
     provider: ProviderDraftInput,
+    direction: String,
     instructions: String,
     mode: GeminiActivityMode,
     target_language: String,
@@ -386,7 +393,7 @@ fn run_gemini_worker(
         &mut trace_call,
     )?;
 
-    let mut cue = GeminiCueState::new();
+    let mut cue = GeminiCueState::new(direction);
     let mut gate = SilenceGate::new(GEMINI_ASR_MIN_CHUNK_RMS, GEMINI_ASR_SILENCE_GRACE_CHUNKS);
     let mut pre_session_queue: VecDeque<String> = VecDeque::new();
     let mut buffer_size = 0u64;

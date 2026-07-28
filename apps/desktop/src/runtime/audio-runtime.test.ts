@@ -52,7 +52,7 @@ describe('audio runtime', () => {
     expect((await stopSpeechDispatchRuntime()).speech).toMatchObject({ dispatchState: 'idle', currentCueId: null, currentRequestId: null });
     expect((await startTranslateWorkerRuntime(config)).sessionStartedAt).toEqual(expect.any(String));
     expect((await stopTranslateWorkerRuntime()).status).toBe('preview');
-    expect((await toggleSubtitleOverlayWindow()).windows).toBeDefined();
+    expect((await toggleSubtitleOverlayWindow()).windows.map((item) => item.label)).toContain('subtitle-overlay');
 
     const overlay = await showSubtitleOverlayWindow();
     expect(overlay.windows.find((item) => item.label === 'subtitle-overlay')?.visible).toBe(true);

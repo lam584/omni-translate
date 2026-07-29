@@ -91,3 +91,5 @@ Pull Request 应包含：
 维护者可能要求缩小范围、补充测试、更新契约或提供真实 Windows 链路证据。请优先回应阻断正确性、安全性和兼容性的问题。PR 通过必要检查并完成评审后，由维护者决定合并方式。
 
 贡献一经合并，将按仓库的 [Apache License 2.0](LICENSE) 发布。
+
+<!-- CI negative-control trace: non-driver change; the Driver Build workflow must NOT run on this PR. -->

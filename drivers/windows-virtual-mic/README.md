@@ -11,3 +11,5 @@ Directory responsibilities:
 4. `src/`: retired placeholder kept only for migration history.
 
 See `BUILDING.md` for build, signing, and test-machine deployment.
+
+<!-- CI trigger trace: drivers/** change to exercise the Driver Build gate. -->

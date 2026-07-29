@@ -1,0 +1,70 @@
+name: 功能请求 / Feature request
+description: 提议新功能、体验改进、Provider 支持或架构演进
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        请先描述要解决的问题，再描述方案。大型协议、驱动或架构变更应在实现前达成共识。
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: 提交前检查
+      options:
+        - label: 我已搜索现有 Issue 和 Pull Request，未找到相同提议。
+          required: true
+        - label: 这项请求与 Omni Translate 的实时音频翻译目标相关。
+          required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: 功能领域
+      options:
+        - 字幕与界面体验
+        - 实时语音识别、翻译或合成
+        - 音频路由与回声处理
+        - Provider / 模型集成
+        - Native Bridge / IPC
+        - Windows 虚拟音频驱动
+        - 安装、发布与更新
+        - 诊断、测试与开发者体验
+        - 文档与本地化
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: 要解决的问题
+      description: 谁在什么场景遇到了什么限制？当前影响是什么？
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: 建议方案
+      description: 描述用户流程、配置、接口或预期行为。可附草图、示例或伪代码。
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: 替代方案
+      description: 你考虑过哪些替代方法？为什么不足？
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: 兼容性与风险
+      description: 是否影响现有配置、协议、驱动 ABI、权限、安全、性能、多语言或旧版本？
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 验收标准
+      placeholder: |
+        - [ ] 用户可以...
+        - [ ] 失败时会...
+        - [ ] 已覆盖...
+  - type: textarea
+    id: context
+    attributes:
+      label: 补充信息
+      description: 相关资料、截图、原型或实现意愿。

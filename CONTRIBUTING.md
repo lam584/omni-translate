@@ -51,6 +51,7 @@ npm run dev:desktop-shell
 - 使用清晰的 Conventional Commit 标题，例如 `fix(audio): ...`、`feat(driver): ...`、`docs: ...`。
 - 不要混入无关重构、生成文件或个人工具配置。
 - Codex 对提交有实质贡献时，按 `AGENTS.md` 添加 `Co-authored-by: Codex <noreply@openai.com>`；仅提供建议或只读检查时不添加。
+- Qoder 对提交有实质贡献时，按 `AGENTS.md` 添加 `Co-authored-by: Qoder <noreply@qoder.com>`；仅提供建议或只读检查时不添加。
 
 ## 验证要求
 

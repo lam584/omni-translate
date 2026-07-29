@@ -748,6 +748,7 @@ impl RouteProcessor {
             started_at,
             ended_at: ms_marker(ended_at_ms),
             committed: false,
+            translation_committed: false,
         };
 
         Some(FinalizedSegment {
@@ -1122,6 +1123,7 @@ mod tests {
                 started_at: "unix-ms:1".to_string(),
                 ended_at: "unix-ms:2".to_string(),
                 committed: true,
+                translation_committed: true,
             });
         }
 

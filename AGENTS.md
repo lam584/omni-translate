@@ -11,7 +11,8 @@
 # AI-assisted commit attribution
 
 - When Codex materially contributes code, tests, documentation, review fixes, or implementation decisions to a commit, include the exact trailer `Co-authored-by: Codex <noreply@openai.com>` in that commit message.
-- Do not add the Codex trailer when Codex only performs a read-only check or gives advice without contributing to the committed result.
+- When Qoder materially contributes code, tests, documentation, review fixes, or implementation decisions to a commit, include the exact trailer `Co-authored-by: Qoder <noreply@qoder.com>` in that commit message.
+- Do not add an AI trailer when the agent only performs a read-only check or gives advice without contributing to the committed result.
 
 # 命令路由表（改动层 → 验证命令）
 
@@ -25,12 +26,13 @@
 | 跨进程契约变更（事件/命令/协议） | `npm run test:contracts` | Node 契约校验脚本（含配置路径守卫） |
 | Rust 侧新增/改动配置 `.pointer` 读写 | `npm run test:config-paths` | 配置路径守卫：路径必须在 `app-config.default.json` 可解析或有成文豁免；`--report-defaults` 产出默认值清点 |
 | `drivers/windows-virtual-mic`（虚拟麦克风驱动） | `npm run driver:build-sysvad` | 需要 WDK/EWDK 构建环境；驱动自测用 `npm run driver:test`；进入该目录前必读 [drivers/windows-virtual-mic/AGENTS.md](drivers/windows-virtual-mic/AGENTS.md) |
+| 翻译链路性能改动（首字/首句延迟等） | `npm run test:watch-mode-evidence:strict` | strict 模式对 `firstVisibleTranslationLatencySeconds` 等已产出延迟字段做阈值断言（默认 8s/15s，可用 `--latency-thresholds 字段=秒` 覆盖或 `=off` 关闭）；证据需先由 `npm run test:watch-mode-live:matrix` 产出；脚本自测用 `npm run test:watch-mode-report` |
 | 发布前 / 提交合并前全量门禁 | `npm run quality:gate:release` | 综合质量门禁（Node 脚本） |
 
 # 运行时诊断路由（最小索引）
 
 - 运行时日志：`artifacts/diagnostics/logs/app.log`；应用内诊断导出位于 `artifacts/diagnostics/exports/`。
-- 诊断脚本入口：[scripts/diagnostics/README.md](scripts/diagnostics/README.md)（环境检查、IPC 自测、凭据/实时链路探针）。
+- 诊断脚本入口：[scripts/diagnostics/README.md](scripts/diagnostics/README.md)（环境检查、IPC 自测、凭据/实时链路探针；其中 `omni-benchmark` 提供延迟/性能基准，用于量化 provider 段耗时）。
 - 按进程的复现与排查起点：
   - desktop（前端 + Tauri 壳）：[apps/desktop/AGENTS.md](apps/desktop/AGENTS.md)
   - bridge（Rust 桥接服务）：[apps/bridge-service-native/README.md](apps/bridge-service-native/README.md)

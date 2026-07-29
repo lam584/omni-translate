@@ -71,6 +71,12 @@ pub struct SubtitleDisplaySegmentRuntime {
     pub pending: bool,
 }
 
+/// serde `skip_serializing_if` predicate: omit `false` booleans from the wire
+/// so newly added flags stay optional on the TypeScript side.
+fn is_false(value: &bool) -> bool {
+    !*value
+}
+
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub struct SubtitleCueRuntime {
@@ -89,7 +95,18 @@ pub struct SubtitleCueRuntime {
     pub translated_text: String,
     pub started_at: String,
     pub ended_at: String,
+    /// Transcription lifecycle: `true` once the ASR transcript for this cue is
+    /// finalized (ASR-commit). Independent from translation completion.
     pub committed: bool,
+    /// Translation lifecycle: `true` once a finalized translation exists for the
+    /// current `source_text`. A late final transcript that overwrites
+    /// `source_text` clears this so the cue is re-translated against the
+    /// committed text. Serialized only when `true` to keep the wire lean and the
+    /// TypeScript field optional.
+    #[serde(skip_serializing_if = "is_false")]
+    #[ts(as = "Option<bool>")]
+    #[ts(optional)]
+    pub translation_committed: bool,
 }
 
 #[derive(Clone, Serialize, TS)]

@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -15,6 +14,7 @@ use super::time_utils::{ms_marker, unix_ms};
 mod translation_latency;
 mod audio_cache;
 mod cue_lifecycle;
+mod deferred_translation;
 mod echo_activity;
 mod omni_sessions;
 mod session_registry;
@@ -23,6 +23,7 @@ mod route_state;
 mod subtitle_store;
 pub use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
 use cue_lifecycle::{finalize_cue_display_segments, route_direction_from_cue_id, trim_recent_subtitle_cues};
+use deferred_translation::DeferredTranslationStore;
 use echo_activity::EchoAsrActivity;
 pub(crate) use echo_activity::EchoSuppressionSnapshot;
 use audio_cache::AudioCacheStore;
@@ -60,7 +61,7 @@ pub struct AudioStateStore {
     audio_cache: AudioCacheStore,
     echo_buffer: Mutex<EchoReferenceBuffer>,
     echo_asr_activity: Mutex<EchoAsrActivity>,
-    deferred_subtitle_translation_cues: Mutex<HashMap<String, Instant>>,
+    deferred_subtitle_translation_cues: DeferredTranslationStore,
     /// Live speech config shared with the active Omni playback thread. The
     /// playback thread re-reads it per Play command; config saves update it
     /// in place so device/toggle changes apply without a route restart.
@@ -85,7 +86,7 @@ impl AudioStateStore {
             audio_cache: AudioCacheStore::new(),
             echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
             echo_asr_activity: Mutex::new(EchoAsrActivity::default()),
-            deferred_subtitle_translation_cues: Mutex::new(HashMap::new()),
+            deferred_subtitle_translation_cues: DeferredTranslationStore::new(),
             active_omni_speech_config: Mutex::new(None),
             warmer: CaptureRouteWarmer::new(),
             stt_session_epoch: std::sync::atomic::AtomicU64::new(0),
@@ -377,6 +378,11 @@ impl AudioStateStore {
                                 break;
                             }
                         }
+                        if cue.source_text != source_text {
+                            // Source changed: any prior translation no longer
+                            // matches, so reopen it for (re)translation.
+                            cue.translation_committed = false;
+                        }
                         cue.source_text = source_text.to_string();
                         cue.committed = committed;
                         if committed {
@@ -392,6 +398,9 @@ impl AudioStateStore {
                             || source_text.is_empty()
                             || source_text.len() >= active.source_text.len())
                     {
+                        if active.source_text != source_text {
+                            active.translation_committed = false;
+                        }
                         active.source_text = source_text.to_string();
                         active.committed = committed;
                         if committed {
@@ -411,6 +420,7 @@ impl AudioStateStore {
                     started_at: now.clone(),
                     ended_at: now,
                     committed,
+                    translation_committed: false,
                 };
                 overlay.active_cue = Some(cue.clone());
                 overlay.recent_cues.insert(0, cue);
@@ -426,6 +436,12 @@ impl AudioStateStore {
             if exists {
                 for cue in overlay.recent_cues.iter_mut() {
                     if cue.cue_id == cue_id {
+                        if cue.source_text != source_text {
+                            // Final transcript overwrote the source: reopen
+                            // translation so it reflects the committed text
+                            // (转写终稿覆盖原文后允许重译).
+                            cue.translation_committed = false;
+                        }
                         cue.source_text = source_text.to_string();
                         cue.committed = true;
                         finalize_cue_display_segments(cue);
@@ -435,6 +451,9 @@ impl AudioStateStore {
                 }
                 if let Some(active) = overlay.active_cue.as_mut() {
                     if active.cue_id == cue_id {
+                        if active.source_text != source_text {
+                            active.translation_committed = false;
+                        }
                         active.source_text = source_text.to_string();
                         active.committed = true;
                         finalize_cue_display_segments(active);
@@ -453,6 +472,7 @@ impl AudioStateStore {
                     started_at: now.clone(),
                     ended_at: now,
                     committed: true,
+                    translation_committed: false,
                 };
                 overlay.active_cue = Some(cue.clone());
                 overlay.recent_cues.insert(0, cue);
@@ -568,10 +588,7 @@ impl AudioStateStore {
             *overlay = SubtitleOverlayRuntimeSnapshot::empty();
             self.reset_first_translation_latency(overlay);
         });
-        self.deferred_subtitle_translation_cues
-            .lock()
-            .expect("deferred subtitle cues poisoned")
-            .clear();
+        self.deferred_subtitle_translation_cues.clear();
         self.audio_cache.clear();
         let mut state = self.inner.lock().expect("audio state poisoned");
         state.speech = SpeechRuntimeSnapshot::preview();
@@ -581,10 +598,7 @@ impl AudioStateStore {
         // Deferred-translation entries only ever describe uncommitted cues, so
         // they are released together with the cues they gate. Leaving them
         // behind would leak entries for the app lifetime.
-        self.deferred_subtitle_translation_cues
-            .lock()
-            .expect("deferred subtitle cues poisoned")
-            .clear();
+        self.deferred_subtitle_translation_cues.clear();
         self.subtitles.update(|overlay| {
             overlay.recent_cues.retain(|cue| cue.committed);
             if overlay.active_cue.as_ref().is_some_and(|cue| !cue.committed) {
@@ -595,10 +609,7 @@ impl AudioStateStore {
     }
 
     pub fn discard_uncommitted_subtitle_cue(&self, cue_id: &str) {
-        self.deferred_subtitle_translation_cues
-            .lock()
-            .expect("deferred subtitle cues poisoned")
-            .remove(cue_id);
+        self.deferred_subtitle_translation_cues.remove(cue_id);
         self.subtitles.update(|overlay| {
             overlay
                 .recent_cues
@@ -613,25 +624,15 @@ impl AudioStateStore {
     }
 
     pub(crate) fn defer_subtitle_cue_translation(&self, cue_id: &str) {
-        self.deferred_subtitle_translation_cues
-            .lock()
-            .expect("deferred subtitle cues poisoned")
-            .insert(cue_id.to_string(), Instant::now());
+        self.deferred_subtitle_translation_cues.defer(cue_id);
     }
 
     pub(crate) fn approve_subtitle_cue_translation(&self, cue_id: &str) {
-        self.deferred_subtitle_translation_cues
-            .lock()
-            .expect("deferred subtitle cues poisoned")
-            .remove(cue_id);
+        self.deferred_subtitle_translation_cues.remove(cue_id);
     }
 
     pub(crate) fn subtitle_cue_translation_allowed(&self, cue_id: &str) -> bool {
-        !self
-            .deferred_subtitle_translation_cues
-            .lock()
-            .expect("deferred subtitle cues poisoned")
-            .contains_key(cue_id)
+        self.deferred_subtitle_translation_cues.allowed(cue_id)
     }
 
     /// Removes deferred-translation entries whose last defer touch is at least
@@ -644,24 +645,9 @@ impl AudioStateStore {
         &self,
         max_age: Duration,
     ) -> Vec<String> {
-        let now = Instant::now();
-        let expired: Vec<String> = {
-            let mut deferred = self
-                .deferred_subtitle_translation_cues
-                .lock()
-                .expect("deferred subtitle cues poisoned");
-            let expired: Vec<String> = deferred
-                .iter()
-                .filter(|(_, deferred_at)| {
-                    now.saturating_duration_since(**deferred_at) >= max_age
-                })
-                .map(|(cue_id, _)| cue_id.clone())
-                .collect();
-            for cue_id in &expired {
-                deferred.remove(cue_id);
-            }
-            expired
-        };
+        let expired = self
+            .deferred_subtitle_translation_cues
+            .take_expired(max_age);
         for cue_id in &expired {
             self.discard_uncommitted_subtitle_cue(cue_id);
         }
@@ -791,8 +777,8 @@ impl AudioStateStore {
         for cue in overlay.recent_cues.iter_mut() {
             if cue.cue_id == cue_id {
                 cue.translated_text = translated_text.clone();
-                cue.committed = committed || cue.committed;
                 if committed {
+                    cue.translation_committed = true;
                     finalize_cue_display_segments(cue);
                     cue.ended_at = ms_marker(unix_ms());
                 }
@@ -802,8 +788,8 @@ impl AudioStateStore {
         if let Some(active) = overlay.active_cue.as_mut() {
             if active.cue_id == cue_id {
                 active.translated_text = translated_text;
-                active.committed = committed || active.committed;
                 if committed {
+                    active.translation_committed = true;
                     finalize_cue_display_segments(active);
                     active.ended_at = ms_marker(unix_ms());
                 }
@@ -1101,6 +1087,7 @@ mod tests {
                 started_at: "unix-ms:1".to_string(),
                 ended_at: "unix-ms:2".to_string(),
                 committed: true,
+                translation_committed: true,
             });
         }
 
@@ -1118,6 +1105,7 @@ mod tests {
             started_at: "unix-ms:1".to_string(),
             ended_at: "unix-ms:2".to_string(),
             committed: false,
+            translation_committed: false,
         });
 
         let snapshot = store.snapshot();
@@ -1172,6 +1160,68 @@ mod tests {
     }
 
     #[test]
+    fn asr_commit_and_translation_track_independent_cue_lifecycles() {
+        // Transcription (`committed`) and translation (`translation_committed`)
+        // lifecycles must stay independent so an ASR-commit interleaving with
+        // translation neither strands a finalized transcript untranslated nor
+        // freezes a stale partial translation.
+        let store = AudioStateStore::new();
+        let cue_id = "stt-cue-inbound-1";
+        let find = |id: &str| {
+            store
+                .snapshot()
+                .subtitle_overlay
+                .recent_cues
+                .into_iter()
+                .find(|cue| cue.cue_id == id)
+                .expect("cue should exist")
+        };
+
+        // Partial transcript: neither lifecycle finalized.
+        store.update_or_push_stt_cue(cue_id, "hel", false);
+        let partial = find(cue_id);
+        assert!(!partial.committed);
+        assert!(!partial.translation_committed);
+
+        // ASR-commit finalizes only the transcription; translation stays pending.
+        store.commit_stt_cue(cue_id, "hello world", "inbound");
+        let committed = find(cue_id);
+        assert!(committed.committed, "transcription is finalized");
+        assert!(
+            !committed.translation_committed,
+            "ASR-commit must not imply a finished translation"
+        );
+        assert_eq!(committed.source_text, "hello world");
+
+        // Translation completes: only the translation lifecycle flips.
+        store.update_subtitle_cue_translation(cue_id, "你好世界".to_string(), true);
+        let translated = find(cue_id);
+        assert!(translated.committed, "transcription stays finalized");
+        assert!(translated.translation_committed, "translation is finalized");
+        assert_eq!(translated.translated_text, "你好世界");
+
+        // A late corrected final transcript overwrites the source and reopens
+        // translation (转写终稿覆盖原文后允许重译).
+        store.commit_stt_cue(cue_id, "hello, world!", "inbound");
+        let recommitted = find(cue_id);
+        assert!(recommitted.committed);
+        assert!(
+            !recommitted.translation_committed,
+            "a changed final transcript must reopen translation"
+        );
+        assert_eq!(recommitted.source_text, "hello, world!");
+
+        // Re-committing the identical transcript keeps the finished translation.
+        store.update_subtitle_cue_translation(cue_id, "你好，世界！".to_string(), true);
+        store.commit_stt_cue(cue_id, "hello, world!", "inbound");
+        let unchanged = find(cue_id);
+        assert!(
+            unchanged.translation_committed,
+            "an identical re-commit must not force a re-translation"
+        );
+    }
+
+    #[test]
     fn first_translation_latency_resets_with_cues_and_sessions() {
         let store = AudioStateStore::new();
 
@@ -1210,6 +1260,7 @@ mod tests {
             started_at: "0".to_string(),
             ended_at: "0".to_string(),
             committed,
+            translation_committed: committed,
         };
 
         store.push_subtitle_cue(cue("finished", true));

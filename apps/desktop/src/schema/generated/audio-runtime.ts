@@ -8,7 +8,20 @@ export type AudioRouteRuntimeSnapshot = { routeId: string, direction: 'inbound' 
 
 export type SubtitleDisplaySegmentRuntime = { sourceText: string, translatedText: string, pending: boolean, };
 
-export type SubtitleCueRuntime = { cueId: string, routeDirection: 'inbound' | 'outbound', sourceText: string, displaySourceText?: string, displaySegments?: Array<SubtitleDisplaySegmentRuntime>, translatedText: string, startedAt: string, endedAt: string, committed: boolean, };
+export type SubtitleCueRuntime = { cueId: string, routeDirection: 'inbound' | 'outbound', sourceText: string, displaySourceText?: string, displaySegments?: Array<SubtitleDisplaySegmentRuntime>, translatedText: string, startedAt: string, endedAt: string, 
+/**
+ * Transcription lifecycle: `true` once the ASR transcript for this cue is
+ * finalized (ASR-commit). Independent from translation completion.
+ */
+committed: boolean, 
+/**
+ * Translation lifecycle: `true` once a finalized translation exists for the
+ * current `source_text`. A late final transcript that overwrites
+ * `source_text` clears this so the cue is re-translated against the
+ * committed text. Serialized only when `true` to keep the wire lean and the
+ * TypeScript field optional.
+ */
+translationCommitted?: boolean, };
 
 export type SubtitleOverlayRuntimeSnapshot = { queueDepth: number, droppedCueCount: number, firstTranslationAverageMs: number | null, firstTranslationLastMs: number | null, firstTranslationSampleCount: number, activeCue: SubtitleCueRuntime | null, recentCues: Array<SubtitleCueRuntime>, };
 

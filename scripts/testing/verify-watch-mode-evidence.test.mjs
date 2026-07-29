@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { ECHO_CANCEL_REQUIRED_LAYERS, REQUIRED_LAYERS, findWatchModeEvidence, strictProvenanceFailure } from './verify-watch-mode-evidence.mjs';
+import { ECHO_CANCEL_REQUIRED_LAYERS, REQUIRED_LAYERS, findWatchModeEvidence, normalizeLatencyThresholds, strictLatencyFailure, strictProvenanceFailure } from './verify-watch-mode-evidence.mjs';
 
 // Frozen "now" + always-ancestor stub so the strict provenance gate can be
 // exercised deterministically against the fixture timestamps.
@@ -464,6 +464,138 @@ test('non-strict mode does not apply the provenance gate', () => {
   const result = findWatchModeEvidence({ root, now: FIXTURE_NOW });
 
   assert.equal(result.ok, true);
+});
+
+function strictLayersWithSubtitleQueue(subtitleQueue) {
+  return Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
+    layer,
+    {
+      status: 'passed',
+      reason: null,
+      data: layer === 'strictContent'
+        ? { applicable: true, passed: true, coverage: 1 }
+        : layer === 'app'
+          ? { routeState: 'capturing', subtitleQueue }
+          : undefined,
+    },
+  ]));
+}
+
+test('strict mode fails when a produced latency field exceeds the default threshold and reports the measured value', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260605-191332', {
+    layers: strictLayersWithSubtitleQueue({
+      firstVisibleTranslationLatencySeconds: 34,
+      firstFinalTranslationLatencySeconds: 7,
+    }),
+  });
+
+  const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
+
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /latency evidence exceeded threshold/);
+  assert.match(result.reason, /firstVisibleTranslationLatencySeconds=34s exceeds the 8s threshold/);
+  assert.deepEqual(result.failedLayers, ['latency']);
+});
+
+test('strict mode passes when produced latency fields stay within the thresholds', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260605-191332', {
+    layers: strictLayersWithSubtitleQueue({
+      firstVisibleTranslationLatencySeconds: 7,
+      firstFinalTranslationLatencySeconds: 7,
+      firstTtsQueuedLatencySeconds: 30,
+      firstPlaybackLatencySeconds: 40,
+    }),
+  });
+
+  const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
+
+  assert.equal(result.ok, true);
+});
+
+test('strict latency gate honors configured thresholds, including opting fields in and out', () => {
+  const root = makeTempRoot();
+  writeReport(root, '20260605-191332', {
+    layers: strictLayersWithSubtitleQueue({
+      firstVisibleTranslationLatencySeconds: 7,
+      firstTtsQueuedLatencySeconds: 5,
+    }),
+  });
+
+  const tightened = findWatchModeEvidence({
+    root,
+    strict: true,
+    latencyThresholds: 'firstVisibleTranslationLatencySeconds=6,firstTtsQueuedLatencySeconds=3',
+    ...provenanceOk,
+  });
+  assert.equal(tightened.ok, false);
+  assert.match(tightened.reason, /firstVisibleTranslationLatencySeconds=7s exceeds the 6s threshold/);
+  assert.match(tightened.reason, /firstTtsQueuedLatencySeconds=5s exceeds the 3s threshold/);
+
+  const relaxed = findWatchModeEvidence({
+    root,
+    strict: true,
+    latencyThresholds: 'firstVisibleTranslationLatencySeconds=off',
+    ...provenanceOk,
+  });
+  assert.equal(relaxed.ok, true);
+});
+
+test('strict latency gate skips fields the run did not produce and non-strict mode never applies it', () => {
+  const strictRoot = makeTempRoot();
+  writeReport(strictRoot, '20260605-191332', {
+    layers: strictLayersWithSubtitleQueue({ duplicateFinalTranslations: 0 }),
+  });
+  const strictResult = findWatchModeEvidence({ root: strictRoot, strict: true, ...provenanceOk });
+  assert.equal(strictResult.ok, true);
+
+  const nonStrictRoot = makeTempRoot();
+  writeReport(nonStrictRoot, '20260605-191332', {
+    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
+      layer,
+      {
+        status: 'passed',
+        reason: null,
+        data: layer === 'app'
+          ? { subtitleQueue: { firstVisibleTranslationLatencySeconds: 120 } }
+          : undefined,
+      },
+    ])),
+  });
+  const nonStrictResult = findWatchModeEvidence({ root: nonStrictRoot });
+  assert.equal(nonStrictResult.ok, true);
+});
+
+test('normalizeLatencyThresholds rejects unknown fields and invalid values', () => {
+  assert.deepEqual(normalizeLatencyThresholds(undefined), {
+    firstVisibleTranslationLatencySeconds: 8,
+    firstFinalTranslationLatencySeconds: 15,
+    firstTtsQueuedLatencySeconds: null,
+    firstPlaybackLatencySeconds: null,
+  });
+  assert.throws(() => normalizeLatencyThresholds('bogusField=3'), /unknown latency threshold field/);
+  assert.throws(() => normalizeLatencyThresholds('firstVisibleTranslationLatencySeconds=-1'), /invalid latency threshold/);
+  assert.throws(() => normalizeLatencyThresholds('firstVisibleTranslationLatencySeconds=abc'), /invalid latency threshold/);
+});
+
+test('strictLatencyFailure returns the measured value for each violated field', () => {
+  const report = {
+    layers: {
+      app: {
+        data: {
+          subtitleQueue: {
+            firstVisibleTranslationLatencySeconds: 9.5,
+            firstFinalTranslationLatencySeconds: 16,
+          },
+        },
+      },
+    },
+  };
+  const reason = strictLatencyFailure(report);
+  assert.match(reason, /firstVisibleTranslationLatencySeconds=9\.5s exceeds the 8s threshold/);
+  assert.match(reason, /firstFinalTranslationLatencySeconds=16s exceeds the 15s threshold/);
+  assert.equal(strictLatencyFailure({ layers: { app: { data: {} } } }), null);
 });
 
 test('strictProvenanceFailure honors a custom age budget', () => {

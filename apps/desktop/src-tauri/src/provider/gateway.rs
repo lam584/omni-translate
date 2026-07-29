@@ -41,23 +41,6 @@ impl ProviderGateway {
         }
     }
 
-    pub(crate) fn translate_text(
-        &self,
-        provider: ProviderDraftInput,
-        source_text: String,
-        source_language: String,
-        target_language: String,
-    ) -> Result<String, ProviderRuntimeError> {
-        self.translate_text_streaming_traced(
-            provider,
-            source_text,
-            source_language,
-            target_language,
-            None,
-            |_| Ok(()),
-        )
-    }
-
     pub(crate) fn translate_text_streaming_traced<F>(
         &self,
         provider: ProviderDraftInput,

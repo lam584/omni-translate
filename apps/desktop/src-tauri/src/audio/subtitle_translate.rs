@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -14,9 +14,14 @@ use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime, SubtitleDisplay
 use super::engine::emit_audio_snapshot;
 use super::sentence::{detect_language, is_target_language, SentenceResult, SentenceSplitter};
 use super::state::{AudioRouteHandle, AudioStateStore};
+use super::translation_scheduler::{
+    normalize_sentence_key, should_accept_translation, should_dedupe_written_translation,
+    translation_attempt_key, translation_job_key, translation_rank, TranslationDelta,
+    TranslationJob, TranslationOutcome, TranslationRank, TranslationScheduler, TranslationUpdate,
+    TranslationWriteState, MAX_RETRIABLE_SENTENCE_ATTEMPTS,
+};
 
 const POLL_INTERVAL_MS: u64 = 50;
-const MAX_RETRIABLE_SENTENCE_ATTEMPTS: u32 = 3;
 // Increased from 3 to 8: LLM calls take 10-12s each, so 3 slots gave only ~0.3 tx/s.
 // With 8 slots all sentences from a speech turn can be dispatched simultaneously.
 const MAX_CONCURRENT_TRANSLATIONS: usize = 8;
@@ -32,25 +37,6 @@ fn is_fatal_translate_error(error: &ProviderRuntimeError) -> bool {
             error.code.as_str(),
             "model.unsupported" | "request.invalid" | "auth.invalid"
         )
-}
-
-fn normalize_sentence_key(sentence: &str) -> String {
-    sentence.split_whitespace().collect::<Vec<_>>().join(" ")
-}
-
-fn translation_attempt_key(cue_id: &str, sentence: &str) -> String {
-    format!("{cue_id}:{}", normalize_sentence_key(sentence))
-}
-
-fn translation_job_key(cue_id: &str, cue_revision: u64, result: &SentenceResult) -> String {
-    format!(
-        "{}:{}:{}:{}:{}",
-        cue_id,
-        cue_revision,
-        result.pending_id.as_deref().unwrap_or("final"),
-        result.is_forced,
-        normalize_sentence_key(&result.sentence)
-    )
 }
 
 include!("subtitle_translate/scheduler.rs");
@@ -580,6 +566,11 @@ pub fn stop_subtitle_translate(app: AppHandle, store: &AudioStateStore) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::audio::translation_scheduler::InFlightJob;
+
+    fn scheduler_for_test() -> TranslationScheduler {
+        TranslationScheduler::new(MAX_CONCURRENT_TRANSLATIONS, MAX_CONCURRENT_FORCED_TRANSLATIONS)
+    }
 
     fn sentence_result(sentence: &str, is_forced: bool, is_replacement: bool) -> SentenceResult {
         SentenceResult {
@@ -733,7 +724,7 @@ mod tests {
 
     #[test]
     fn scheduler_rejects_duplicate_queued_or_in_flight_keys() {
-        let mut scheduler = TranslationScheduler::default();
+        let mut scheduler = scheduler_for_test();
 
         assert!(scheduler.enqueue_key_for_test("cue-1:hello"));
         assert!(!scheduler.enqueue_key_for_test("cue-1:hello"));
@@ -745,7 +736,7 @@ mod tests {
 
     #[test]
     fn scheduler_allows_same_sentence_for_new_revision_while_old_is_in_flight() {
-        let mut scheduler = TranslationScheduler::default();
+        let mut scheduler = scheduler_for_test();
         let result = sentence_result("same sentence.", false, false);
         let old_job = job_for_test_with_revision("cue-1", 1, 0, result.clone());
         let new_job = job_for_test_with_revision("cue-1", 2, 1, result);
@@ -758,7 +749,7 @@ mod tests {
 
     #[test]
     fn scheduler_keeps_only_latest_queued_forced_job_per_cue() {
-        let mut scheduler = TranslationScheduler::default();
+        let mut scheduler = scheduler_for_test();
         let first = job_for_test("cue-1", 1, sentence_result("first partial", true, false));
         let second = job_for_test("cue-1", 2, sentence_result("second partial", true, false));
 
@@ -771,7 +762,7 @@ mod tests {
 
     #[test]
     fn scheduler_drops_all_queued_jobs_for_revised_cue() {
-        let mut scheduler = TranslationScheduler::default();
+        let mut scheduler = scheduler_for_test();
 
         assert!(scheduler.enqueue(job_for_test(
             "cue-1",
@@ -797,7 +788,7 @@ mod tests {
 
     #[test]
     fn scheduler_prioritizes_replacement_before_forced() {
-        let mut scheduler = TranslationScheduler::default();
+        let mut scheduler = scheduler_for_test();
         let forced = job_for_test("cue-1", 1, sentence_result("partial", true, false));
         let replacement = job_for_test("cue-1", 2, sentence_result("complete.", false, true));
 
@@ -817,7 +808,7 @@ mod tests {
 
     #[test]
     fn scheduler_prioritizes_final_before_forced() {
-        let mut scheduler = TranslationScheduler::default();
+        let mut scheduler = scheduler_for_test();
         let forced = job_for_test("cue-1", 1, sentence_result("partial", true, false));
         let final_job = job_for_test("cue-1", 2, sentence_result("complete.", false, false));
 
@@ -830,7 +821,7 @@ mod tests {
 
     #[test]
     fn scheduler_dedupes_same_sentence_across_revisions() {
-        let mut scheduler = TranslationScheduler::default();
+        let mut scheduler = scheduler_for_test();
         let first = job_for_test_with_revision(
             "cue-1",
             1,
@@ -851,7 +842,7 @@ mod tests {
 
     #[test]
     fn scheduler_limits_forced_in_flight() {
-        let mut scheduler = TranslationScheduler::default();
+        let mut scheduler = scheduler_for_test();
         // Saturate the forced in-flight limit (MAX_CONCURRENT_FORCED_TRANSLATIONS = 2)
         scheduler.in_flight.insert(
             "forced-1".to_string(),

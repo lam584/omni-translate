@@ -295,6 +295,7 @@ mod tests {
             started_at: "unix-ms:1".to_string(),
             ended_at: "unix-ms:2".to_string(),
             committed: true,
+            translation_committed: true,
         };
         let config = SpeechConfig {
             provider: provider_input(),
@@ -493,6 +494,7 @@ mod tests {
             started_at: "unix-ms:1".to_string(),
             ended_at: "unix-ms:2".to_string(),
             committed: false,
+            translation_committed: false,
         };
 
         assert!(is_speech_ready_cue(&cue));
@@ -514,6 +516,7 @@ mod tests {
             started_at: "unix-ms:1".to_string(),
             ended_at: "unix-ms:2".to_string(),
             committed: false,
+            translation_committed: false,
         };
 
         assert!(!is_speech_ready_cue(&cue));
@@ -546,6 +549,7 @@ mod tests {
             started_at: "unix-ms:1".to_string(),
             ended_at: "unix-ms:2".to_string(),
             committed: true,
+            translation_committed: true,
         };
 
         let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
@@ -589,6 +593,7 @@ mod tests {
             started_at: "unix-ms:1".to_string(),
             ended_at: "unix-ms:2".to_string(),
             committed: false,
+            translation_committed: false,
         };
 
         let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
@@ -633,6 +638,7 @@ mod tests {
             started_at: "unix-ms:1".to_string(),
             ended_at: "unix-ms:2".to_string(),
             committed: false,
+            translation_committed: false,
         };
 
         let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
@@ -670,6 +676,7 @@ mod tests {
             started_at: "unix-ms:1".to_string(),
             ended_at: "unix-ms:2".to_string(),
             committed: false,
+            translation_committed: false,
         };
         let first = SpeechDispatchTask {
             cue: cue.clone(),

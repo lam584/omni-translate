@@ -67,6 +67,7 @@ pub(crate) fn push_reconnecting_cue(
         started_at: ms_marker(unix_ms()),
         ended_at: ms_marker(unix_ms()),
         committed: true,
+        translation_committed: true,
     };
     store.push_subtitle_cue(cue);
 }

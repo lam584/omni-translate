@@ -152,6 +152,7 @@ pub fn start_stt(
                     started_at: ms_marker(unix_ms()),
                     ended_at: ms_marker(unix_ms()),
                     committed: true,
+                    translation_committed: true,
                 });
 
                 let _ = emit_audio_snapshot(&app_handle, &audio_state);

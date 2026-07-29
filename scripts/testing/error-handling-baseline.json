@@ -51,7 +51,7 @@
   "apps/desktop/src/pages/SubtitleOverlaySettingsPage.tsx:void-call-without-catch:void handleToggleOverlay()",
   "apps/desktop/src/pages/diagnostics/LogLevelControl.tsx:void-call-without-catch:void applyLevel(event.target.value as DiagnosticsLogLevel)",
   "apps/desktop/src/pages/diagnostics/LogLevelControl.tsx:void-call-without-catch:void applyLevel(retryLevel)",
-  "apps/desktop/src/pages/diagnostics/useDiagnosticsActions.ts:try-finally-without-catch:try { const failures: string[] = []; for (const option of selected) { try { await option.run(); } catch (error) { const message = i18n.t('diagnostics.notifications.autoRepairFailed",
+  "apps/desktop/src/pages/diagnostics/useDiagnosticsActions.ts:try-finally-without-catch:try { const failures: Array<{ id: string; label: string; error: unknown }> = []; for (const option of selected) { try { await option.run(); } catch (error) { failures.push({ id: op",
   "apps/desktop/src/pages/overlay/OverlayContextMenu.tsx:void-call-without-catch:void clearSubtitleOverlayCues()",
   "apps/desktop/src/pages/overlay/OverlayContextMenu.tsx:void-call-without-catch:void hideSubtitleOverlayWindow()",
   "apps/desktop/src/pages/overlay/useOverlayContextMenuController.ts:try-finally-without-catch:try { await menu.popup(new LogicalPosition(event.clientX, event.clientY), getCurrentWindow()); } finally { await menu.close().catch(() => undefined); }",

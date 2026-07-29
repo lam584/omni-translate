@@ -313,7 +313,7 @@ fn process_translation_cues(
                 cue_state
                     .sentence_attempt_count
                     .insert(attempt_key, attempts + 1);
-                scheduler.dispatch_ready(&translation_tx);
+                scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));
             }
         }
     }
@@ -355,7 +355,8 @@ impl SubtitleTranslationWorker {
     let mut translate_success_count: u64 = 0;
     let mut translate_error_count: u64 = 0;
     let (translation_tx, translation_rx) = mpsc::channel::<TranslationUpdate>();
-    let mut scheduler = TranslationScheduler::default();
+    let mut scheduler =
+        TranslationScheduler::new(MAX_CONCURRENT_TRANSLATIONS, MAX_CONCURRENT_FORCED_TRANSLATIONS);
     let mut written_final_keys: HashSet<String> = HashSet::new();
     let mut wake_update: Option<TranslationUpdate> = None;
 
@@ -382,7 +383,7 @@ impl SubtitleTranslationWorker {
                 }
             }
         }
-        scheduler.dispatch_ready(&translation_tx);
+        scheduler.dispatch_ready(|job| spawn_translation_job(translation_tx.clone(), job));
 
         if let Some(error) = fatal_provider_error.take() {
             let classified = super::omni::session_errors::classify_provider_error(

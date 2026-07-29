@@ -19,3 +19,4 @@ pub mod tencent_speech_translate;
 pub mod subtitle_translate;
 pub mod time_utils;
 pub mod translate;
+pub(crate) mod translation_scheduler;

@@ -432,6 +432,7 @@ pub fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
         started_at: emitted_at.clone(),
         ended_at: emitted_at,
         committed: true,
+        translation_committed: true,
     });
 }
 

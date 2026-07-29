@@ -650,6 +650,8 @@
     "targetLanguage": "zh-CN",
     "outboundTargetLanguage": "",
     "translationLanguagePreference": "",
+    "translateWorkerMaxConcurrentRequests": 3,
+    "translateWorkerRequestTimeoutMs": 30000,
     "mode": "bilingual",
     "captionDensity": "balanced",
     "priority": "subtitle-first",

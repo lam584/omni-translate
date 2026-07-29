@@ -99,6 +99,71 @@ function strictContentFailure(report) {
 /** Strict evidence must be recent AND produced from an ancestor of HEAD. */
 export const DEFAULT_MAX_EVIDENCE_AGE_DAYS = 14;
 
+/**
+ * Strict-mode latency gate: threshold starting points come from historical
+ * passing evidence reports (full runs measured firstVisible<=7s and
+ * firstFinal<=7s; the live report generator already rejects secondary runs
+ * above 8s/15s, so the evidence gate starts at those documented bounds).
+ * firstTtsQueued/firstPlayback only have a non-representative 12s short
+ * sample (1s/2s) as history, so they default to null and are asserted only
+ * when configured via --latency-thresholds.
+ */
+export const DEFAULT_STRICT_LATENCY_THRESHOLDS = {
+  firstVisibleTranslationLatencySeconds: 8,
+  firstFinalTranslationLatencySeconds: 15,
+  firstTtsQueuedLatencySeconds: null,
+  firstPlaybackLatencySeconds: null,
+};
+
+export function normalizeLatencyThresholds(value) {
+  const thresholds = { ...DEFAULT_STRICT_LATENCY_THRESHOLDS };
+  if (value == null || value === true) return thresholds;
+  const entries = typeof value === 'string'
+    ? value
+        .split(',')
+        .map((item) => item.trim())
+        .filter(Boolean)
+        .map((item) => item.split('=').map((part) => part.trim()))
+    : Object.entries(value);
+  for (const [field, raw] of entries) {
+    if (!(field in thresholds)) {
+      throw new Error(`unknown latency threshold field: ${field}; expected one of ${Object.keys(thresholds).join(', ')}`);
+    }
+    if (raw == null || raw === 'off' || raw === 'none') {
+      thresholds[field] = null;
+      continue;
+    }
+    const numeric = Number(raw);
+    if (!Number.isFinite(numeric) || numeric < 0) {
+      throw new Error(`invalid latency threshold for ${field}: ${raw} (expected a non-negative number of seconds, or off)`);
+    }
+    thresholds[field] = numeric;
+  }
+  return thresholds;
+}
+
+/**
+ * Rejects a passed report whose produced latency fields exceed the configured
+ * thresholds. Fields that the run did not produce are not asserted; the
+ * failure reason always carries the measured value.
+ */
+export function strictLatencyFailure(report, options = {}) {
+  const thresholds = normalizeLatencyThresholds(options.latencyThresholds);
+  const subtitleQueue = report.layers?.app?.data?.subtitleQueue;
+  if (!subtitleQueue) return null;
+  const violations = [];
+  for (const [field, threshold] of Object.entries(thresholds)) {
+    if (threshold == null) continue;
+    const measured = Number(subtitleQueue[field]);
+    if (!Number.isFinite(measured)) continue;
+    if (measured > threshold) {
+      violations.push(`${field}=${measured}s exceeds the ${threshold}s threshold`);
+    }
+  }
+  if (violations.length === 0) return null;
+  return `latency evidence exceeded threshold(s): ${violations.join('; ')} (adjust with --latency-thresholds field=seconds)`;
+}
+
 export function defaultIsAncestorOfHead(commit) {
   try {
     execFileSync('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { stdio: 'ignore' });
@@ -171,6 +236,14 @@ function basicFailure(entry, options = {}) {
         failedLayers: ['provenance'],
         latestFailure: describeLatestFailure(entry, ['provenance'], options, provenanceReason),
         reason: provenanceReason,
+      };
+    }
+    const latencyReason = strictLatencyFailure(entry.report, options);
+    if (latencyReason) {
+      return {
+        failedLayers: ['latency'],
+        latestFailure: describeLatestFailure(entry, ['latency'], options, latencyReason),
+        reason: latencyReason,
       };
     }
   }
@@ -379,7 +452,7 @@ export function findWatchModeEvidence(options = {}) {
           reason: `no complete live watch-mode report found for model ${model} feedbackLoopPrevention ${feedbackMode}`,
         };
       }
-      const failure = basicFailure(latest, { strict, now: options.now, maxAgeDays: options.maxAgeDays, isAncestorOfHead: options.isAncestorOfHead });
+      const failure = basicFailure(latest, { strict, now: options.now, maxAgeDays: options.maxAgeDays, isAncestorOfHead: options.isAncestorOfHead, latencyThresholds: options.latencyThresholds });
       return {
         modelId: model,
         feedbackMode,
@@ -418,7 +491,7 @@ export function findWatchModeEvidence(options = {}) {
       modelResults: [],
     };
   }
-  const failure = basicFailure(latest, { strict, now: options.now, maxAgeDays: options.maxAgeDays, isAncestorOfHead: options.isAncestorOfHead });
+  const failure = basicFailure(latest, { strict, now: options.now, maxAgeDays: options.maxAgeDays, isAncestorOfHead: options.isAncestorOfHead, latencyThresholds: options.latencyThresholds });
   return {
     ok: failure.reason == null,
     reason: failure.reason == null
@@ -515,12 +588,21 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     .concat(strict && !args.models ? DEFAULT_STRICT_MODELS : [])
     .filter((value, index, list) => list.indexOf(value) === index);
   const feedbackModes = normalizeModels(args['feedback-modes']);
+  let latencyThresholds;
+  try {
+    latencyThresholds = normalizeLatencyThresholds(args['latency-thresholds']);
+  } catch (error) {
+    console.error(`Invalid --latency-thresholds: ${error instanceof Error ? error.message : error}`);
+    process.exitCode = 1;
+    process.exit();
+  }
   const result = findWatchModeEvidence({
     root: args.root ?? DEFAULT_ROOT,
     strict,
     models,
     feedbackModes,
     maxAgeDays: args['max-age-days'],
+    latencyThresholds,
   });
   printEvidence(result);
   process.exitCode = result.ok ? 0 : 1;

@@ -12,28 +12,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$WorkspaceRoot = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
-$RuntimeRoot = [System.IO.Path]::GetFullPath($RuntimeRoot)
-$ResultPath = [System.IO.Path]::GetFullPath($ResultPath)
-$startedAt = (Get-Date).ToUniversalTime().ToString('o')
-$logPath = [System.IO.Path]::ChangeExtension($ResultPath, '.log')
+# Shared preamble: normalizes the path parameters and defines $startedAt,
+# $logPath and Write-DriverOperationResultFile in this script's scope.
+. (Join-Path $PSScriptRoot 'driver-operation-common.ps1')
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ResultPath) | Out-Null
 
 function Write-RequestResult([string]$ErrorCode, [string]$Summary) {
-  $result = [ordered]@{
-    schemaVersion = 1
-    operationId = $OperationId
-    action = $Action
-    succeeded = $false
-    phase = 'failed'
-    errorCode = $ErrorCode
-    summary = $Summary
-    logPath = $logPath
-    startedAt = $startedAt
-    finishedAt = (Get-Date).ToUniversalTime().ToString('o')
-  }
-  New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ResultPath) | Out-Null
-  [System.IO.File]::WriteAllText($ResultPath, ($result | ConvertTo-Json -Depth 4), (New-Object System.Text.UTF8Encoding($false)))
+  Write-DriverOperationResultFile -ResultPath $ResultPath -LogPath $logPath `
+    -OperationId $OperationId -Action $Action -StartedAt $startedAt `
+    -Succeeded $false -Phase 'failed' -ErrorCode $ErrorCode -Summary $Summary
 }
 
 function Test-IsAdministrator {

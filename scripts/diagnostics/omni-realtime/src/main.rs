@@ -309,19 +309,8 @@ fn read_mp3_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
     let mut sample_rate: Option<u32> = None;
 
     loop {
-        match decoder.next_frame() {
-            Ok(frame) => {
-                sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
-                let channels = frame.channels.max(1);
-                mono.extend(frame.data.chunks(channels).map(|frame| {
-                    frame
-                        .iter()
-                        .copied()
-                        .map(|sample| sample as f32 / i16::MAX as f32)
-                        .sum::<f32>()
-                        / frame.len().max(1) as f32
-                }));
-            }
+        let frame = match decoder.next_frame() {
+            Ok(frame) => frame,
             Err(minimp3::Error::Eof) => break,
             Err(error) => {
                 return Err(format!(
@@ -329,6 +318,15 @@ fn read_mp3_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
                     path.display()
                 ));
             }
+        };
+        sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
+        let channels = frame.channels.max(1);
+        for interleaved in frame.data.chunks(channels) {
+            let sum: f32 = interleaved
+                .iter()
+                .map(|&sample| sample as f32 / i16::MAX as f32)
+                .sum();
+            mono.push(sum / interleaved.len().max(1) as f32);
         }
     }
 
@@ -345,18 +343,19 @@ fn resample_mono_to_16k_i16(samples: &[f32], source_rate: u32) -> Vec<i16> {
     }
 
     let target_len =
-        ((samples.len() as u64 * TARGET_RATE as u64) / source_rate.max(1) as u64).max(1);
+        ((samples.len() as u64 * TARGET_RATE as u64) / source_rate.max(1) as u64).max(1) as usize;
     let ratio = source_rate as f64 / TARGET_RATE as f64;
-    (0..target_len as usize)
-        .map(|index| {
-            let source_pos = index as f64 * ratio;
-            let left_index = source_pos.floor() as usize;
-            let right_index = (left_index + 1).min(samples.len() - 1);
-            let fraction = (source_pos - left_index as f64) as f32;
-            let sample = samples[left_index] * (1.0 - fraction) + samples[right_index] * fraction;
-            (sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16
-        })
-        .collect()
+    let last_index = samples.len() - 1;
+    let mut resampled = Vec::with_capacity(target_len);
+    for index in 0..target_len {
+        let source_pos = index as f64 * ratio;
+        let left_index = source_pos.floor() as usize;
+        let right_index = (left_index + 1).min(last_index);
+        let fraction = (source_pos - left_index as f64) as f32;
+        let sample = samples[left_index] * (1.0 - fraction) + samples[right_index] * fraction;
+        resampled.push((sample.clamp(-1.0, 1.0) * i16::MAX as f32) as i16);
+    }
+    resampled
 }
 
 fn is_livetranslate_model(model: &str) -> bool {
@@ -539,16 +538,11 @@ fn receive_result(
 fn set_read_timeout(
     socket: &mut tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
 ) {
-    match socket.get_mut() {
-        tungstenite::stream::MaybeTlsStream::Plain(stream) => {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
-        }
-        tungstenite::stream::MaybeTlsStream::Rustls(stream) => {
-            let _ = stream
-                .get_mut()
-                .set_read_timeout(Some(Duration::from_secs(10)));
-        }
-        _ => {}
+    let timeout = Some(Duration::from_secs(10));
+    if let tungstenite::stream::MaybeTlsStream::Plain(stream) = socket.get_mut() {
+        let _ = stream.set_read_timeout(timeout);
+    } else if let tungstenite::stream::MaybeTlsStream::Rustls(stream) = socket.get_mut() {
+        let _ = stream.get_mut().set_read_timeout(timeout);
     }
 }
 

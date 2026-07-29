@@ -198,19 +198,15 @@ fn process_translation_cues(
 
             if !result.is_forced {
                 if let Some(cached) = cue_state.cached_final_translation(&result.sentence) {
-                    let write_state = TranslationWriteState {
-                        rank: translation_rank(result),
-                        sequence: *next_translation_sequence,
-                    };
-                    *next_translation_sequence = next_translation_sequence.saturating_add(1);
-                    TranslationResultWriter::write(
+                    TranslationResultWriter::write_ranked(
                         &app,
                         store,
                         &cue.cue_id,
                         cue_state,
                         display_index,
+                        result,
+                        next_translation_sequence,
                         cached,
-                        write_state,
                     );
                     continue;
                 }
@@ -219,19 +215,15 @@ fn process_translation_cues(
             let detected_lang = detect_language(&result.sentence);
             if let Some(lang) = detected_lang {
                 if is_target_language(lang, &target_language) {
-                    let write_state = TranslationWriteState {
-                        rank: translation_rank(result),
-                        sequence: *next_translation_sequence,
-                    };
-                    *next_translation_sequence = next_translation_sequence.saturating_add(1);
-                    TranslationResultWriter::write(
+                    TranslationResultWriter::write_ranked(
                         &app,
                         store,
                         &cue.cue_id,
                         cue_state,
                         display_index,
+                        result,
+                        next_translation_sequence,
                         result.sentence.trim().to_string(),
-                        write_state,
                     );
                     continue;
                 }

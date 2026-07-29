@@ -3,6 +3,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parseLooseArgs } from '../lib/testing-common.mjs';
+
 export const REQUIRED_LAYERS = [
   'driver',
   'wasapi',
@@ -507,18 +509,6 @@ export function findWatchModeEvidence(options = {}) {
   };
 }
 
-function parseArgs(argv) {
-  const args = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith('--')) continue;
-    const key = arg.slice(2);
-    const next = argv[index + 1];
-    args[key] = next && !next.startsWith('--') ? argv[++index] : true;
-  }
-  return args;
-}
-
 function printEntry(entry, label = 'Latest Watch Mode report') {
   if (!entry) return;
   const report = entry.report;
@@ -582,7 +572,7 @@ function printEvidence(result) {
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const args = parseArgs(process.argv.slice(2));
+  const args = parseLooseArgs(process.argv.slice(2));
   const strict = args.strict === true || args.strict === 'true';
   const models = normalizeModels(args.models)
     .concat(strict && !args.models ? DEFAULT_STRICT_MODELS : [])

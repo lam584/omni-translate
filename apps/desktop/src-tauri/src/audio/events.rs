@@ -31,6 +31,8 @@ pub(crate) use realtime_session::preconnect_omni_realtime_inner;
 use realtime_session::should_wait_for_omni_session_readiness;
 
 pub(crate) use route_config::resolve_model_provider_from_config_value;
+pub(crate) use route_config::resolve_composite_template_provider;
+pub(crate) use route_config::subtitle_source_language_or_english;
 use route_config::is_omni_model;
 #[cfg(test)]
 use route_config::{

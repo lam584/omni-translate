@@ -1,13 +1,8 @@
-import path from 'node:path';
-
 import {
-  compactTimestamp,
-  ensureDir,
   isMain,
-  parseCliArgs,
-  repoRoot,
-  sortableTimestamp,
+  runPrepareReportCli,
   writeJson,
+  writeTimestampedReport,
 } from '../lib/testing-common.mjs';
 
 const defaultOutputRoot = 'artifacts/testing/perf-baseline';
@@ -42,19 +37,14 @@ const baselinePayload = (generatedAt) => ({
   ],
 });
 
-export const preparePerformanceBaselineReport = ({ outputRoot = defaultOutputRoot } = {}) => {
-  const targetDir = ensureDir(path.resolve(repoRoot, outputRoot));
-  const reportPath = path.join(targetDir, `desktop-perf-baseline-${compactTimestamp()}.json`);
-  writeJson(reportPath, baselinePayload(sortableTimestamp()));
-  return reportPath;
-};
+export const preparePerformanceBaselineReport = ({ outputRoot = defaultOutputRoot } = {}) =>
+  writeTimestampedReport({
+    outputRoot,
+    filePrefix: 'desktop-perf-baseline',
+    extension: 'json',
+    render: (reportPath, generatedAt) => writeJson(reportPath, baselinePayload(generatedAt)),
+  });
 
 if (isMain(import.meta.url)) {
-  try {
-    const args = parseCliArgs(process.argv.slice(2), { defaults: { outputRoot: defaultOutputRoot } });
-    console.log(preparePerformanceBaselineReport(args));
-  } catch (error) {
-    console.error(error.message);
-    process.exit(1);
-  }
+  runPrepareReportCli(preparePerformanceBaselineReport, { outputRoot: defaultOutputRoot });
 }

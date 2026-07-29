@@ -20,6 +20,7 @@ fn main() {
 
 #[cfg(windows)]
 mod injector {
+    use omni_bridge_service::probe_support::open_render_stream;
     use serde::Serialize;
     use std::collections::VecDeque;
     use std::path::PathBuf;
@@ -27,7 +28,7 @@ mod injector {
     use std::time::{Duration, Instant};
     use wasapi::{
         initialize_mta, AudioClient, AudioRenderClient, Device, DeviceEnumerator, Direction,
-        SampleType, StreamMode, WaveFormat,
+        SampleType, WaveFormat,
     };
 
     const TARGET_SAMPLE_RATE: usize = 48_000;
@@ -86,20 +87,7 @@ mod injector {
 
     impl MediaRender {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let mut audio_client = device.get_iaudioclient().map_err(error_text)?;
-            let (_, minimum_period) = audio_client.get_device_period().map_err(error_text)?;
-            audio_client
-                .initialize_client(
-                    format,
-                    &Direction::Render,
-                    &StreamMode::PollingShared {
-                        autoconvert: true,
-                        buffer_duration_hns: minimum_period,
-                    },
-                )
-                .map_err(error_text)?;
-            let render_client = audio_client.get_audiorenderclient().map_err(error_text)?;
-            audio_client.start_stream().map_err(error_text)?;
+            let (audio_client, render_client) = open_render_stream(device, format)?;
             Ok(Self {
                 audio_client,
                 render_client,
@@ -255,9 +243,11 @@ mod injector {
     }
 
     fn next_arg(args: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
-        args.next()
-            .filter(|value| !value.trim().is_empty())
-            .ok_or_else(|| format!("{name} requires a value"))
+        let value = args.next().unwrap_or_default();
+        if value.trim().is_empty() {
+            return Err(format!("{name} requires a value"));
+        }
+        Ok(value)
     }
 
     fn find_render_device(

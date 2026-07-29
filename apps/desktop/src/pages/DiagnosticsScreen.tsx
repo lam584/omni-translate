@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import AppIcon from '../components/icons/AppIcon';
 import ModalDialog from '../components/ModalDialog';
@@ -11,6 +11,7 @@ import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
 import { hasInvokeBridge } from '../runtime/tauri-runtime';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import { useAppStore } from '../stores/app-store';
+import { useRuntimeSessionStoreSlices } from '../stores/app-store-slices';
 import { resolveRecommendedDriverAction } from '../utils/driver-management';
 import { resolveInteractionCapabilities, resolveRealtimeAudioMode } from '../utils/provider-model-capabilities';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
@@ -70,10 +71,7 @@ export async function runRecommendedBridgeAction(snapshot: RuntimeSnapshot, conf
 
 function DiagnosticsPage() {
   const desktopApi = useDesktopApiV2();
-  const configDraft = useAppStore((state) => state.configDraft);
-  const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
-  const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
-  const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
+  const { configDraft, runtimeSnapshot, audioRuntimeSnapshot, setRuntimeSnapshot } = useRuntimeSessionStoreSlices();
   const diagnostics = runtimeSnapshot.diagnostics;
   const exportScope = diagnostics.lastExportScope ?? configDraft.diagnostics.lastExportScope;
   const voiceModelOptions = useMemo(
@@ -186,6 +184,19 @@ function DiagnosticsPage() {
     }
   };
 
+  // Shared by the benchmark/live-events modals: timestamped filename plus the
+  // export invocation with the error feedback fallback.
+  const exportReportWithFeedback = (
+    prefix: string,
+    format: string,
+    exporter: (base: string) => Promise<{ outputPath: string; fileCount: number }>,
+  ) => {
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const base = `${prefix}-${ts}`;
+    const filename = `${base}.${format}`;
+    void runReportExport(filename, () => exporter(base)).catch((error) => setReportExportFeedback({ tone: 'error', message: String(error) }));
+  };
+
   useEffect(() => {
     const availableIds = new Set(repairOptions.map((option) => option.id));
     const defaultIds = repairOptions.map((option) => option.id);
@@ -225,6 +236,14 @@ function DiagnosticsPage() {
     runOverlaySelfCheck,
     runSelfCheck,
   } = useDiagnosticsWorkbenchController(repairOptions, selectedRepairIds);
+
+  const reportExportFeedbackBanner = reportExportFeedback ? (
+    <div className={`diagnostics-action-feedback diagnostics-action-feedback-${reportExportFeedback.tone}`} role={reportExportFeedback.tone === 'error' ? 'alert' : 'status'}>
+      <span>{reportExportFeedback.message}</span>
+      {reportExportFeedback.outputPath ? <button className="text-button" onClick={() => void openExportDirectory(reportExportFeedback.outputPath!).catch((error) => setReportExportFeedback({ tone: 'error', message: String(error) }))} type="button">{i18n.t('diagnostics.actions.openExportDirectory')}</button> : null}
+    </div>
+  ) : null;
+
   const allRepairSelected = repairOptions.length > 0 && repairOptions.every((option) => selectedRepairIds.includes(option.id));
   const stableServiceCount = serviceMonitorItems.filter((item) => item.tone !== 'warning').length;
   const healthSummaryLabel = overviewIssues.length === 0 ? i18n.t('diagnostics.health.normal') : i18n.t('diagnostics.health.issueCount', { count: overviewIssues.length });
@@ -572,22 +591,14 @@ function DiagnosticsPage() {
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <ExportButton onExport={(format) => {
-                  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-                  const base = `benchmark-${benchmarkReport.model}-${ts}`;
-                  const filename = `${base}.${format}`;
-                  void runReportExport(filename, () => DiagnosticsReportExporter.exportBenchmark(benchmarkReport, base, format)).catch((error) => setReportExportFeedback({ tone: 'error', message: String(error) }));
+                  exportReportWithFeedback(`benchmark-${benchmarkReport.model}`, format, (base) => DiagnosticsReportExporter.exportBenchmark(benchmarkReport, base, format));
                 }} />
                 <button className="icon-button" onClick={() => setBenchmarkModalOpen(false)} type="button">
                   <AppIcon name="close" size={16} />
                 </button>
               </div>
             </div>
-            {reportExportFeedback ? (
-              <div className={`diagnostics-action-feedback diagnostics-action-feedback-${reportExportFeedback.tone}`} role={reportExportFeedback.tone === 'error' ? 'alert' : 'status'}>
-                <span>{reportExportFeedback.message}</span>
-                {reportExportFeedback.outputPath ? <button className="text-button" onClick={() => void openExportDirectory(reportExportFeedback.outputPath!).catch((error) => setReportExportFeedback({ tone: 'error', message: String(error) }))} type="button">{i18n.t('diagnostics.actions.openExportDirectory')}</button> : null}
-              </div>
-            ) : null}
+            {reportExportFeedbackBanner}
             <BenchmarkProgressBanner error={benchmarkError} progress={benchmarkProgress} />
             <BenchmarkReportDetail report={benchmarkReport} />
         </ModalDialog>
@@ -608,10 +619,7 @@ function DiagnosticsPage() {
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <ExportButton onExport={(format) => {
                   if (!liveEvents) return;
-                  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-                  const base = `live-events-${liveEvents.model || 'unknown'}-${ts}`;
-                  const filename = `${base}.${format}`;
-                  void runReportExport(filename, () => DiagnosticsReportExporter.exportLiveEvents(liveEvents, base, format)).catch((error) => setReportExportFeedback({ tone: 'error', message: String(error) }));
+                  exportReportWithFeedback(`live-events-${liveEvents.model || 'unknown'}`, format, (base) => DiagnosticsReportExporter.exportLiveEvents(liveEvents, base, format));
                 }} />
                 <button className="icon-button" onClick={() => void refreshLiveEvents()} disabled={liveEventsLoading} type="button" title={i18n.t('diagnostics.liveEvents.refresh')}>
                   <AppIcon name="refresh" size={14} />
@@ -621,12 +629,7 @@ function DiagnosticsPage() {
                 </button>
               </div>
             </div>
-            {reportExportFeedback ? (
-              <div className={`diagnostics-action-feedback diagnostics-action-feedback-${reportExportFeedback.tone}`} role={reportExportFeedback.tone === 'error' ? 'alert' : 'status'}>
-                <span>{reportExportFeedback.message}</span>
-                {reportExportFeedback.outputPath ? <button className="text-button" onClick={() => void openExportDirectory(reportExportFeedback.outputPath!).catch((error) => setReportExportFeedback({ tone: 'error', message: String(error) }))} type="button">{i18n.t('diagnostics.actions.openExportDirectory')}</button> : null}
-              </div>
-            ) : null}
+            {reportExportFeedbackBanner}
             <LiveSessionEventDetail error={liveEventsError} events={liveEvents} loading={liveEventsLoading} />
         </ModalDialog>
       ) : null}

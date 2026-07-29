@@ -168,6 +168,17 @@ function SubtitleOverlaySettingsPage() {
     </label>
   );
 
+  const colorField = (label: string, value: string, onChange: (value: string) => void) => (
+    <label className="settings-field">
+      <span className="settings-field-label">{label}</span>
+      <div className="settings-color-field">
+        <input className="settings-color-picker" type="color" value={value}
+          onChange={(event) => onChange(event.target.value)} />
+        <span className="settings-color-value">{value.toUpperCase()}</span>
+      </div>
+    </label>
+  );
+
   return (
     <section className="settings-workspace overlay-settings-workspace">
       <PageSectionHeader
@@ -299,14 +310,8 @@ function SubtitleOverlaySettingsPage() {
                 ))}
               </div>
               <div className="settings-grid-two">
-                <label className="settings-field">
-                  <span className="settings-field-label">{t('settings.overlayTextColorLabel')}</span>
-                  <div className="settings-color-field">
-                    <input className="settings-color-picker" type="color" value={activeStyle.color}
-                      onChange={(event) => updateActiveTextStyle({ color: event.target.value })} />
-                    <span className="settings-color-value">{activeStyle.color.toUpperCase()}</span>
-                  </div>
-                </label>
+                {colorField(t('settings.overlayTextColorLabel'), activeStyle.color,
+                  (value) => updateActiveTextStyle({ color: value }))}
                 <label className="settings-field">
                   <span className="settings-field-label">{t('settings.overlayFontWeightLabel')}</span>
                   <select className="settings-field-control" value={activeStyle.fontWeight}
@@ -323,14 +328,8 @@ function SubtitleOverlaySettingsPage() {
                     onChange={(event) => updateActiveTextStyle({ outlineEnabled: event.target.checked })} />
                 </label>
                 <div className="settings-grid-two">
-                  <label className="settings-field">
-                    <span className="settings-field-label">{t('settings.overlayEffectColorLabel')}</span>
-                    <div className="settings-color-field">
-                      <input className="settings-color-picker" type="color" value={activeStyle.outlineColor}
-                        onChange={(event) => updateActiveTextStyle({ outlineColor: event.target.value })} />
-                      <span className="settings-color-value">{activeStyle.outlineColor.toUpperCase()}</span>
-                    </div>
-                  </label>
+                  {colorField(t('settings.overlayEffectColorLabel'), activeStyle.outlineColor,
+                    (value) => updateActiveTextStyle({ outlineColor: value }))}
                   {slider(t('settings.overlayOutlineWidthLabel'), activeStyle.outlineWidth, 0.5, 4, 0.5, 'px',
                     (value) => updateActiveTextStyle({ outlineWidth: value }))}
                 </div>
@@ -343,14 +342,8 @@ function SubtitleOverlaySettingsPage() {
                     onChange={(event) => updateActiveTextStyle({ shadowEnabled: event.target.checked })} />
                 </label>
                 <div className="settings-grid-two">
-                  <label className="settings-field">
-                    <span className="settings-field-label">{t('settings.overlayEffectColorLabel')}</span>
-                    <div className="settings-color-field">
-                      <input className="settings-color-picker" type="color" value={activeStyle.shadowColor}
-                        onChange={(event) => updateActiveTextStyle({ shadowColor: event.target.value })} />
-                      <span className="settings-color-value">{activeStyle.shadowColor.toUpperCase()}</span>
-                    </div>
-                  </label>
+                  {colorField(t('settings.overlayEffectColorLabel'), activeStyle.shadowColor,
+                    (value) => updateActiveTextStyle({ shadowColor: value }))}
                   {slider(t('settings.overlayShadowOpacityLabel'), Math.round(activeStyle.shadowOpacity * 100),
                     0, 100, 5, '%', (value) => updateActiveTextStyle({ shadowOpacity: value / 100 }))}
                   {slider(t('settings.overlayShadowXLabel'), activeStyle.shadowOffsetX, -10, 10, 1, 'px',

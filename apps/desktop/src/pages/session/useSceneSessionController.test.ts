@@ -152,6 +152,31 @@ function makeLaunchOptions(mode: 'watch' | 'voice-room' = 'watch') {
   };
 }
 
+/** Runs stopAll with the controller's spies wired in as the callbacks. */
+async function runStopAll(
+  { api, controller }: ReturnType<typeof makeHarness>,
+  options: { audioSnapshot?: AudioRuntimeSnapshot; hasSpeechActivity?: boolean } = {},
+) {
+  await api.stopAll({
+    audioSnapshot: options.audioSnapshot ?? cloneAudio(),
+    hasSpeechActivity: options.hasSpeechActivity ?? false,
+    setAudioSnapshot: controller.setAudioSnapshot,
+    pushNotification: controller.pushNotification,
+    runBusyAction: controller.runBusyAction,
+  });
+}
+
+/** Launches under fake timers, runs past the outer timeout, and asserts the timeout log. */
+async function launchPastOuterTimeout(options: ReturnType<typeof makeLaunchOptions>) {
+  const harness = makeHarness();
+  const launch = harness.api.launchScene(options);
+  await vi.advanceTimersByTimeAsync(100);
+  await launch;
+  await vi.advanceTimersByTimeAsync(50);
+  expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', '[SceneLaunch] timeout', expect.any(String));
+  return harness;
+}
+
 beforeEach(() => {
   vi.useRealTimers();
   for (const mock of Object.values(mocks)) mock.mockReset();
@@ -246,13 +271,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     mocks.getAudioSnapshot.mockResolvedValue(converging);
     const { api, controller } = makeHarness();
 
-    await api.stopAll({
-      audioSnapshot: cloneAudio(),
-      hasSpeechActivity: false,
-      setAudioSnapshot: controller.setAudioSnapshot,
-      pushNotification: controller.pushNotification,
-      runBusyAction: controller.runBusyAction,
-    });
+    await runStopAll({ api, controller });
 
     expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toEqual(['inbound']);
     // The optimistic pre-stop snapshot must show the converging route as stopping.
@@ -267,8 +286,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     const audio = cloneAudio(); audio.inbound.streamBound = false; audio.outbound.streamBound = false; audio.speech.dispatchState = 'idle';
     mocks.getAudioSnapshot.mockResolvedValue(audio);
     const { api, controller } = makeHarness();
-    await api.stopAll({ audioSnapshot: audio, hasSpeechActivity: true, setAudioSnapshot: controller.setAudioSnapshot,
-      pushNotification: controller.pushNotification, runBusyAction: controller.runBusyAction as never });
+    await runStopAll({ api, controller }, { audioSnapshot: audio, hasSpeechActivity: true });
     expect(mocks.stopSpeech).toHaveBeenCalled();
   });
 
@@ -401,13 +419,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     mocks.getAudioSnapshot.mockResolvedValue(active);
     const { api, controller } = makeHarness();
 
-    await api.stopAll({
-      audioSnapshot: cloneAudio(),
-      hasSpeechActivity: false,
-      setAudioSnapshot: controller.setAudioSnapshot,
-      pushNotification: controller.pushNotification,
-      runBusyAction: controller.runBusyAction,
-    });
+    await runStopAll({ api, controller });
 
     expect(mocks.stopSpeech).toHaveBeenCalledTimes(1);
     expect(mocks.stopTranslation).toHaveBeenCalledTimes(1);
@@ -420,13 +432,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     mocks.stopTranslation.mockRejectedValue('translation stop failed');
     const { api, controller } = makeHarness();
 
-    await api.stopAll({
-      audioSnapshot: cloneAudio(),
-      hasSpeechActivity: true,
-      setAudioSnapshot: controller.setAudioSnapshot,
-      pushNotification: controller.pushNotification,
-      runBusyAction: controller.runBusyAction,
-    });
+    await runStopAll({ api, controller }, { hasSpeechActivity: true });
 
     expect(mocks.stopSpeech).toHaveBeenCalledTimes(1);
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({
@@ -436,8 +442,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', expect.stringContaining('snapshot IPC failed'));
     mocks.getAudioSnapshot.mockResolvedValue(cloneAudio());
     mocks.stopTranslation.mockRejectedValue(new Error('translation error'));
-    await api.stopAll({ audioSnapshot: cloneAudio(), hasSpeechActivity: false, setAudioSnapshot: controller.setAudioSnapshot,
-      pushNotification: controller.pushNotification, runBusyAction: controller.runBusyAction });
+    await runStopAll({ api, controller });
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('translation error') }));
   });
 
@@ -730,14 +735,9 @@ describe('useSceneSessionController IPC orchestration', () => {
     if (lateStage === 'outbound-route') mocks.startRoute.mockResolvedValueOnce(cloneAudio()).mockImplementationOnce(delayed);
     if (kind === 'translate') mocks.startTranslation.mockImplementationOnce(delayed);
     if (kind === 'speech') mocks.startSpeech.mockImplementationOnce(delayed);
-    const { api, controller } = makeHarness();
 
-    const launch = api.launchScene(options);
-    await vi.advanceTimersByTimeAsync(100);
-    await launch;
-    await vi.advanceTimersByTimeAsync(50);
+    const { controller } = await launchPastOuterTimeout(options);
 
-    expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', '[SceneLaunch] timeout', expect.any(String));
     // The late stage's own stop command must run when its start resolves after
     // the timeout, and its started-state snapshot must never be published.
     const expectedStop = lateStage === 'inbound-route' ? ['inbound']
@@ -772,14 +772,9 @@ describe('useSceneSessionController IPC orchestration', () => {
       setTimeout(() => resolve(lateRuntime), 150);
     }));
     mocks.toggleOverlay.mockResolvedValue(hiddenRuntime);
-    const { api, controller } = makeHarness();
 
-    const launch = api.launchScene(options);
-    await vi.advanceTimersByTimeAsync(100);
-    await launch;
-    await vi.advanceTimersByTimeAsync(50);
+    const { controller } = await launchPastOuterTimeout(options);
 
-    expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', '[SceneLaunch] timeout', expect.any(String));
     expect(mocks.toggleOverlay).toHaveBeenCalled();
     expect(controller.setRuntimeSnapshot).not.toHaveBeenCalledWith(lateRuntime);
     expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(hiddenRuntime);

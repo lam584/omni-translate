@@ -241,16 +241,12 @@ mod tests {
     use std::fs;
     use std::io::Write;
     use std::path::PathBuf;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     use super::LogPipeline;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let marker = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("omni-logging-pipeline-{name}-{marker}"))
+        crate::test_support::temp_dir("pipeline", name)
     }
 
     #[test]

@@ -1,6 +1,7 @@
 import { act, useRef } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -44,8 +45,6 @@ import { useOverlayWindowController } from './useOverlayWindowController';
 type Controller = ReturnType<typeof useOverlayWindowController>;
 
 describe('useOverlayWindowController native IPC coordination', () => {
-  let container: HTMLDivElement;
-  let root: Root;
   let controller: Controller;
   const updatePosition = vi.fn();
   const updateSize = vi.fn();
@@ -78,40 +77,38 @@ describe('useOverlayWindowController native IPC coordination', () => {
     return null;
   }
 
-  beforeEach(async () => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    for (const mock of Object.values(mocks)) mock.mockReset();
-    updatePosition.mockReset();
-    updateSize.mockReset();
-    mocks.isTauri.mockReturnValue(true);
-    mocks.syncRegion.mockResolvedValue(undefined);
-    mocks.invoke.mockResolvedValue(undefined);
-    mocks.currentMonitor.mockResolvedValue({ workArea: { position: { x: 100, y: 200 }, size: { width: 1000, height: 800 } } });
-    mocks.outerSize.mockResolvedValue({ width: 400, height: 200 });
-    mocks.outerPosition.mockResolvedValue({ x: 400, y: 500 });
-    mocks.setPosition.mockResolvedValue(undefined);
-    mocks.setLogicalSize.mockResolvedValue(undefined);
-    refs.overlayPosition = { current: { x: 10, y: 20 } };
-    refs.drag = { current: null };
-    refs.resize = { current: null };
-    refs.size = { current: null };
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-    await act(async () => root.render(<Harness />));
+  const view = registerDomHarness({
+    setup: () => {
+      for (const mock of Object.values(mocks)) mock.mockReset();
+      updatePosition.mockReset();
+      updateSize.mockReset();
+      mocks.isTauri.mockReturnValue(true);
+      mocks.syncRegion.mockResolvedValue(undefined);
+      mocks.invoke.mockResolvedValue(undefined);
+      mocks.currentMonitor.mockResolvedValue({ workArea: { position: { x: 100, y: 200 }, size: { width: 1000, height: 800 } } });
+      mocks.outerSize.mockResolvedValue({ width: 400, height: 200 });
+      mocks.outerPosition.mockResolvedValue({ x: 400, y: 500 });
+      mocks.setPosition.mockResolvedValue(undefined);
+      mocks.setLogicalSize.mockResolvedValue(undefined);
+      refs.overlayPosition = { current: { x: 10, y: 20 } };
+      refs.drag = { current: null };
+      refs.resize = { current: null };
+      refs.size = { current: null };
+    },
+    beforeUnmount: () => {
+      vi.restoreAllMocks();
+    },
   });
 
-  afterEach(async () => {
-    vi.restoreAllMocks();
-    await act(async () => root.unmount());
-    container.remove();
+  beforeEach(async () => {
+    await view.render(<Harness />);
   });
 
   it('skips native synchronization outside Tauri', async () => {
     mocks.isTauri.mockReturnValue(false);
     // Capability is read at render time (a real preview -> Tauri upgrade
     // re-renders through the provider), so refresh the hook closure.
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
 
     await controller.syncNativeOverlayRegion();
     await controller.syncNativeOverlayWindowState();

@@ -151,23 +151,23 @@ function makeFieldGroups(kind: ProviderKind): ProviderTemplate['fieldGroups'] {
   return groups;
 }
 
-export function createCustomProviderTemplate(draft: CustomProviderTemplateDraft): ProviderTemplate {
-  const slug = makeSlug(draft.displayName);
-  const templateId = `template-custom-${slug}-${Date.now()}`;
-  const version = makeVersionStamp();
+// Shared body for create/update: everything a custom template derives from its
+// draft, minus the identity fields (`id`/`source`) and `presetModels`.
+function makeCustomProviderTemplatePatch(
+  draft: CustomProviderTemplateDraft,
+  providerId: string,
+): Omit<ProviderTemplate, 'id' | 'source' | 'presetModels'> {
   const authReference = resolveCustomProviderAuthReference(draft.displayName, draft.authReference);
 
   return {
-    id: templateId,
-    source: 'custom',
-    version,
+    version: makeVersionStamp(),
     displayName: draft.displayName.trim(),
     description: i18n.t('customProvider.description', { platform: draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible' }),
     protocolLabel: makeProtocolLabel(draft.transport),
     notes: i18n.t('customProvider.notes'),
     supportedTransports: supportedTransportsForKind(draft.kind),
     defaultDraft: {
-      providerId: `provider-custom-${slug}`,
+      providerId,
       kind: draft.kind,
       displayName: draft.displayName.trim(),
       model: draft.model.trim(),
@@ -206,6 +206,16 @@ export function createCustomProviderTemplate(draft: CustomProviderTemplateDraft)
         note: i18n.t('customProvider.mappingTransport'),
       },
     ],
+  };
+}
+
+export function createCustomProviderTemplate(draft: CustomProviderTemplateDraft): ProviderTemplate {
+  const slug = makeSlug(draft.displayName);
+
+  return {
+    id: `template-custom-${slug}-${Date.now()}`,
+    source: 'custom',
+    ...makeCustomProviderTemplatePatch(draft, `provider-custom-${slug}`),
     presetModels: [],
   };
 }
@@ -229,56 +239,10 @@ export function customProviderTemplateToDraft(template: ProviderTemplate): Custo
 
 export function updateCustomProviderTemplate(template: ProviderTemplate, draft: CustomProviderTemplateDraft): ProviderTemplate {
   const slug = makeSlug(draft.displayName);
-  const authReference = resolveCustomProviderAuthReference(draft.displayName, draft.authReference);
 
   return {
     ...template,
-    version: makeVersionStamp(),
-    displayName: draft.displayName.trim(),
-    description: i18n.t('customProvider.description', { platform: draft.kind === 'dashscope' ? 'DashScope' : 'OpenAI Compatible' }),
-    protocolLabel: makeProtocolLabel(draft.transport),
-    notes: i18n.t('customProvider.notes'),
-    supportedTransports: supportedTransportsForKind(draft.kind),
-    defaultDraft: {
-      providerId: template.defaultDraft.providerId || `provider-custom-${slug}`,
-      kind: draft.kind,
-      displayName: draft.displayName.trim(),
-      model: draft.model.trim(),
-      baseUrl: draft.baseUrl.trim(),
-      transport: draft.transport,
-      auth: {
-        headerName: draft.authHeaderName.trim(),
-        reference: authReference,
-        scheme: draft.authScheme,
-      },
-      region: draft.region.trim() || undefined,
-      streamEnabled: draft.streamEnabled,
-      timeoutMs: draft.timeoutMs,
-      systemPromptTemplate: draft.systemPromptTemplate.trim(),
-    },
-    fieldGroups: makeFieldGroups(draft.kind),
-    contractMappings: [
-      {
-        templateFieldKey: 'model',
-        contractFieldPath: 'request.model',
-        note: i18n.t('customProvider.mappingModel'),
-      },
-      {
-        templateFieldKey: 'baseUrl',
-        contractFieldPath: 'metadata.baseUrl',
-        note: i18n.t('customProvider.mappingBaseUrl'),
-      },
-      {
-        templateFieldKey: 'authRef.reference',
-        contractFieldPath: 'auth.reference',
-        note: i18n.t('customProvider.mappingAuth'),
-      },
-      {
-        templateFieldKey: 'transport',
-        contractFieldPath: 'request.transport',
-        note: i18n.t('customProvider.mappingTransport'),
-      },
-    ],
+    ...makeCustomProviderTemplatePatch(draft, template.defaultDraft.providerId || `provider-custom-${slug}`),
   };
 }
 

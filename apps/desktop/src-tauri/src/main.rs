@@ -79,7 +79,29 @@ fn env_flag_enabled(name: &str) -> bool {
         .unwrap_or(false)
 }
 
-fn set_json_pointer_string(config: &mut Value, path: &[&str], value: String) {
+/// Emit the credential direct-write failure event. Shared by the vault-error
+/// and the join-error branches, which publish an identical failure payload.
+fn emit_credential_direct_failure(
+    app_handle: &AppHandle,
+    job_id: String,
+    reference: String,
+    error: String,
+    elapsed_ms: u128,
+) {
+    let _ = app_handle.emit(
+        CREDENTIAL_DIRECT_RESULT_EVENT,
+        CredentialDirectResultEvent {
+            job_id,
+            reference,
+            success: false,
+            detail: None,
+            error: Some(error),
+            elapsed_ms,
+        },
+    );
+}
+
+fn set_json_pointer_value(config: &mut Value, path: &[&str], value: Value) {
     if path.is_empty() {
         return;
     }
@@ -92,39 +114,19 @@ fn set_json_pointer_string(config: &mut Value, path: &[&str], value: String) {
             .get_mut(*key)
             .expect("object key exists after insert");
     }
-    current[path[path.len() - 1]] = Value::String(value);
+    current[path[path.len() - 1]] = value;
+}
+
+fn set_json_pointer_string(config: &mut Value, path: &[&str], value: String) {
+    set_json_pointer_value(config, path, Value::String(value));
 }
 
 fn set_json_pointer_number(config: &mut Value, path: &[&str], value: i64) {
-    if path.is_empty() {
-        return;
-    }
-    let mut current = config;
-    for key in &path[..path.len() - 1] {
-        if !current.get(*key).is_some_and(Value::is_object) {
-            current[*key] = Value::Object(Default::default());
-        }
-        current = current
-            .get_mut(*key)
-            .expect("object key exists after insert");
-    }
-    current[path[path.len() - 1]] = Value::Number(value.into());
+    set_json_pointer_value(config, path, Value::Number(value.into()));
 }
 
 fn set_json_pointer_bool(config: &mut Value, path: &[&str], value: bool) {
-    if path.is_empty() {
-        return;
-    }
-    let mut current = config;
-    for key in &path[..path.len() - 1] {
-        if !current.get(*key).is_some_and(Value::is_object) {
-            current[*key] = Value::Object(Default::default());
-        }
-        current = current
-            .get_mut(*key)
-            .expect("object key exists after insert");
-    }
-    current[path[path.len() - 1]] = Value::Bool(value);
+    set_json_pointer_value(config, path, Value::Bool(value));
 }
 
 fn configure_watch_mode(
@@ -601,16 +603,12 @@ async fn debug_cred_direct(
                         job_id_for_task, reference_for_event, elapsed_ms, error
                     )
                 );
-                let _ = app_handle.emit(
-                    CREDENTIAL_DIRECT_RESULT_EVENT,
-                    CredentialDirectResultEvent {
-                        job_id: job_id_for_event,
-                        reference: reference_for_event,
-                        success: false,
-                        detail: None,
-                        error: Some(error),
-                        elapsed_ms,
-                    },
+                emit_credential_direct_failure(
+                    &app_handle,
+                    job_id_for_event,
+                    reference_for_event,
+                    error,
+                    elapsed_ms,
                 );
             }
             Err(join_error) => {
@@ -624,16 +622,12 @@ async fn debug_cred_direct(
                         job_id_for_task, reference_for_event, elapsed_ms, error
                     )
                 );
-                let _ = app_handle.emit(
-                    CREDENTIAL_DIRECT_RESULT_EVENT,
-                    CredentialDirectResultEvent {
-                        job_id: job_id_for_event,
-                        reference: reference_for_event,
-                        success: false,
-                        detail: None,
-                        error: Some(error),
-                        elapsed_ms,
-                    },
+                emit_credential_direct_failure(
+                    &app_handle,
+                    job_id_for_event,
+                    reference_for_event,
+                    error,
+                    elapsed_ms,
                 );
             }
         }

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { type ReactNode, useState } from 'react';
 import AppIcon from '../../components/icons/AppIcon';
 import i18n from '../../i18n/config';
 import type { BenchmarkProgressEvent, BenchmarkReport } from '../../runtime/benchmark-runtime';
@@ -13,6 +13,59 @@ const EMPTY_PIPELINE_MILESTONES: LiveSessionEvents['pipelineMilestones'] = {
   droppedBeforeReady: null, firstAudibleChunkMs: null,
   silenceSkippedBeforeAudible: null, totalInputChunksAtSpeech: null,
 };
+
+// Shared building blocks for the metric grids and delta tables below.
+function BenchmarkMetric({ hint, label, value }: { hint?: ReactNode; label: ReactNode; value: ReactNode }) {
+  return (
+    <div className="benchmark-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+      {hint !== undefined ? <small>{hint}</small> : null}
+    </div>
+  );
+}
+
+function DeltaTableSection({ finalText, headers, rows, title }: {
+  finalText?: string | null;
+  headers: string[];
+  rows: ReactNode;
+  title: string;
+}) {
+  return (
+    <div className="benchmark-section">
+      <h4>{title}</h4>
+      {finalText ? <p className="benchmark-translation">{finalText}</p> : null}
+      <div className="benchmark-delta-table-wrap">
+        <table className="benchmark-delta-table">
+          <thead>
+            <tr>
+              {headers.map((header) => (
+                <th key={header}>{header}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>{rows}</tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function LiveDeltaRow({ delta, position, text }: {
+  delta: { elapsedMs: number; eventType: string; stash?: string | null };
+  position: number;
+  text?: string | null;
+}) {
+  return (
+    <tr>
+      <td className="benchmark-delta-idx">{position}</td>
+      <td className="benchmark-delta-time">{delta.elapsedMs.toFixed(1)}ms</td>
+      <td className="benchmark-delta-event">{delta.eventType}</td>
+      <td className="benchmark-delta-stash">{delta.stash || '—'}</td>
+      <td className="benchmark-delta-committed">{text || '—'}</td>
+    </tr>
+  );
+}
 
 export function BenchmarkProgressBanner({
   error,
@@ -183,63 +236,24 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
       <div className="benchmark-section">
         <h4>{i18n.t('diagnostics.benchmark.stageDurations')}</h4>
         <div className="benchmark-metrics-grid">
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.websocketConnect')}</span>
-            <strong>{fmt(run.connectMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.sessionReady')}</span>
-            <strong>{fmt(run.sessionReadyMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.audioSend')}</span>
-            <strong>{fmt(run.audioSendMs)}</strong>
-            <small>{i18n.t('diagnostics.benchmark.audioChunksDuration', { chunks: run.audioChunksSent, seconds: run.audioDurationSecs.toFixed(1) })}</small>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.firstAsr')}</span>
-            <strong>{fmt(run.firstAsrMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.firstToken')}</span>
-            <strong>{fmt(run.firstOutputMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.responseDone')}</span>
-            <strong>{fmt(run.responseDoneMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.audioSentAtDone')}</span>
-            <strong>{responseDoneAudioSentSecs == null ? 'N/A' : `${responseDoneAudioSentSecs.toFixed(1)}s`}</strong>
-            <small>{responseDoneAudioChunksSent == null ? i18n.t('diagnostics.benchmark.noChunkRecorded') : `${responseDoneAudioChunksSent} chunks · ${responseDoneAudioPct?.toFixed(1) ?? 'N/A'}%`}</small>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.firstTokenAfterResponse')}</span>
-            <strong>{modelTTFT == null ? 'N/A' : modelTTFT < 0 ? i18n.t('diagnostics.benchmark.beforeResponse') : fmt(modelTTFT)}</strong>
-          </div>
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.websocketConnect')} value={fmt(run.connectMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.sessionReady')} value={fmt(run.sessionReadyMs)} />
+          <BenchmarkMetric hint={i18n.t('diagnostics.benchmark.audioChunksDuration', { chunks: run.audioChunksSent, seconds: run.audioDurationSecs.toFixed(1) })} label={i18n.t('diagnostics.benchmark.audioSend')} value={fmt(run.audioSendMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.firstAsr')} value={fmt(run.firstAsrMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.firstToken')} value={fmt(run.firstOutputMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.responseDone')} value={fmt(run.responseDoneMs)} />
+          <BenchmarkMetric hint={responseDoneAudioChunksSent == null ? i18n.t('diagnostics.benchmark.noChunkRecorded') : `${responseDoneAudioChunksSent} chunks · ${responseDoneAudioPct?.toFixed(1) ?? 'N/A'}%`} label={i18n.t('diagnostics.benchmark.audioSentAtDone')} value={responseDoneAudioSentSecs == null ? 'N/A' : `${responseDoneAudioSentSecs.toFixed(1)}s`} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.firstTokenAfterResponse')} value={modelTTFT == null ? 'N/A' : modelTTFT < 0 ? i18n.t('diagnostics.benchmark.beforeResponse') : fmt(modelTTFT)} />
         </div>
       </div>
 
       <div className="benchmark-section">
         <h4>{i18n.t('diagnostics.benchmark.vadAndAsr')}</h4>
         <div className="benchmark-metrics-grid">
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.vadMode')}</span>
-            <strong>{vadModeLabel}</strong>
-            <small>{isManualMode ? i18n.t('diagnostics.benchmark.manualModeNoServerVad') : i18n.t('diagnostics.benchmark.serverDecidesSpeechBoundaries')}</small>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.vadSpeechStart')}</span>
-            <strong>{isManualMode ? i18n.t('diagnostics.benchmark.notApplicable') : fmt(run.speechStartedMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.vadSpeechEnd')}</span>
-            <strong>{isManualMode ? i18n.t('diagnostics.benchmark.notApplicable') : fmt(run.speechStoppedMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.streamingAsrEvents')}</span>
-            <strong>{asrEventCount}</strong>
-          </div>
+          <BenchmarkMetric hint={isManualMode ? i18n.t('diagnostics.benchmark.manualModeNoServerVad') : i18n.t('diagnostics.benchmark.serverDecidesSpeechBoundaries')} label={i18n.t('diagnostics.benchmark.vadMode')} value={vadModeLabel} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.vadSpeechStart')} value={isManualMode ? i18n.t('diagnostics.benchmark.notApplicable') : fmt(run.speechStartedMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.vadSpeechEnd')} value={isManualMode ? i18n.t('diagnostics.benchmark.notApplicable') : fmt(run.speechStoppedMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.streamingAsrEvents')} value={asrEventCount} />
           <div className="benchmark-metric benchmark-metric-wide">
             <span>{i18n.t('diagnostics.benchmark.asrFinalText')}</span>
             <small className="benchmark-text-preview">{asrFinal || i18n.t('diagnostics.benchmark.none')}</small>
@@ -249,71 +263,26 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
       <div className="benchmark-section">
         <h4>{i18n.t('diagnostics.benchmark.outputTimingStats')}</h4>
         <div className="benchmark-metrics-grid">
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.responseCreated')}</span>
-            <strong>{fmt(run.responseCreatedMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.firstToken')}</span>
-            <strong>{fmt(run.firstOutputMs)}</strong>
-            <small>{responseToFirst == null ? 'N/A' : responseToFirst < 0 ? i18n.t('diagnostics.benchmark.beforeResponseWithTime', { time: fmt(Math.abs(responseToFirst)) }) : i18n.t('diagnostics.benchmark.afterResponseWithTime', { time: fmt(responseToFirst) })}</small>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.firstCommit')}</span>
-            <strong>{fmt(run.firstCommittedMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.totalOutputDuration')}</span>
-            <strong>{fmt(outputDuration)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.outputEventCount')}</span>
-            <strong>{textOutputDeltas.length}</strong>
-            <small>{i18n.t('diagnostics.benchmark.responseDoneCount', { count: run.responseCount })}</small>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.responseSegments')}</span>
-            <strong>{Math.max(run.responseCount, outputSegments.length)}</strong>
-            <small>{isManualMode ? i18n.t('diagnostics.benchmark.manualUsuallyOneSegment') : i18n.t('diagnostics.benchmark.serverVadMultiSegment')}</small>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.outputCharacters')}</span>
-            <strong>{translationChars}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.throughput')}</span>
-            <strong>{translationThroughput == null ? 'N/A' : i18n.t('diagnostics.benchmark.charactersPerSecond', { value: translationThroughput.toFixed(1) })}</strong>
-          </div>
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.responseCreated')} value={fmt(run.responseCreatedMs)} />
+          <BenchmarkMetric hint={responseToFirst == null ? 'N/A' : responseToFirst < 0 ? i18n.t('diagnostics.benchmark.beforeResponseWithTime', { time: fmt(Math.abs(responseToFirst)) }) : i18n.t('diagnostics.benchmark.afterResponseWithTime', { time: fmt(responseToFirst) })} label={i18n.t('diagnostics.benchmark.firstToken')} value={fmt(run.firstOutputMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.firstCommit')} value={fmt(run.firstCommittedMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.totalOutputDuration')} value={fmt(outputDuration)} />
+          <BenchmarkMetric hint={i18n.t('diagnostics.benchmark.responseDoneCount', { count: run.responseCount })} label={i18n.t('diagnostics.benchmark.outputEventCount')} value={textOutputDeltas.length} />
+          <BenchmarkMetric hint={isManualMode ? i18n.t('diagnostics.benchmark.manualUsuallyOneSegment') : i18n.t('diagnostics.benchmark.serverVadMultiSegment')} label={i18n.t('diagnostics.benchmark.responseSegments')} value={Math.max(run.responseCount, outputSegments.length)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.outputCharacters')} value={translationChars} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.throughput')} value={translationThroughput == null ? 'N/A' : i18n.t('diagnostics.benchmark.charactersPerSecond', { value: translationThroughput.toFixed(1) })} />
         </div>
       </div>
 
       <div className="benchmark-section">
         <h4>{i18n.t('diagnostics.benchmark.deltaIntervalStats')}</h4>
         <div className="benchmark-metrics-grid">
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.averageInterval')}</span>
-            <strong>{fmt(summary.avgOutputDeltaIntervalMs ?? avgInterval)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>P50</span>
-            <strong>{fmt(summary.p50DeltaIntervalMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>P90</span>
-            <strong>{fmt(summary.p90DeltaIntervalMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>P99</span>
-            <strong>{fmt(summary.p99DeltaIntervalMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.minInterval')}</span>
-            <strong>{fmt(summary.minDeltaIntervalMs)}</strong>
-          </div>
-          <div className="benchmark-metric">
-            <span>{i18n.t('diagnostics.benchmark.maxInterval')}</span>
-            <strong>{fmt(summary.maxDeltaIntervalMs)}</strong>
-          </div>
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.averageInterval')} value={fmt(summary.avgOutputDeltaIntervalMs ?? avgInterval)} />
+          <BenchmarkMetric label="P50" value={fmt(summary.p50DeltaIntervalMs)} />
+          <BenchmarkMetric label="P90" value={fmt(summary.p90DeltaIntervalMs)} />
+          <BenchmarkMetric label="P99" value={fmt(summary.p99DeltaIntervalMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.minInterval')} value={fmt(summary.minDeltaIntervalMs)} />
+          <BenchmarkMetric label={i18n.t('diagnostics.benchmark.maxInterval')} value={fmt(summary.maxDeltaIntervalMs)} />
         </div>
       </div>
 
@@ -329,61 +298,34 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
       ) : null}
 
       {textOutputDeltas.length > 0 ? (
-        <div className="benchmark-section">
-          <h4>{i18n.t('diagnostics.benchmark.outputEventDetails', { count: textOutputDeltas.length })}</h4>
-          <div className="benchmark-delta-table-wrap">
-            <table className="benchmark-delta-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>{i18n.t('diagnostics.benchmark.timeMs')}</th>
-                  <th>{i18n.t('diagnostics.benchmark.event')}</th>
-                  <th>Stash / Delta</th>
-                  <th>{i18n.t('diagnostics.benchmark.committedText')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {latestOutputDeltas.map(({ delta, index }) => (
-                  <tr key={`${delta.elapsedMs}-${index}`}>
-                    <td className="benchmark-delta-idx">{index + 1}</td>
-                    <td className="benchmark-delta-time">{delta.elapsedMs.toFixed(1)}</td>
-                    <td className="benchmark-delta-type">{delta.eventType.replace('response.', '')}</td>
-                    <td className="benchmark-delta-stash">{delta.stash || (!delta.committedText ? delta.rawText : '') || '—'}</td>
-                    <td className="benchmark-delta-committed">{delta.committedText || (!delta.stash ? delta.rawText : '') || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DeltaTableSection
+          headers={['#', i18n.t('diagnostics.benchmark.timeMs'), i18n.t('diagnostics.benchmark.event'), 'Stash / Delta', i18n.t('diagnostics.benchmark.committedText')]}
+          rows={latestOutputDeltas.map(({ delta, index }) => (
+            <tr key={`${delta.elapsedMs}-${index}`}>
+              <td className="benchmark-delta-idx">{index + 1}</td>
+              <td className="benchmark-delta-time">{delta.elapsedMs.toFixed(1)}</td>
+              <td className="benchmark-delta-type">{delta.eventType.replace('response.', '')}</td>
+              <td className="benchmark-delta-stash">{delta.stash || (!delta.committedText ? delta.rawText : '') || '—'}</td>
+              <td className="benchmark-delta-committed">{delta.committedText || (!delta.stash ? delta.rawText : '') || '—'}</td>
+            </tr>
+          ))}
+          title={i18n.t('diagnostics.benchmark.outputEventDetails', { count: textOutputDeltas.length })}
+        />
       ) : null}
 
       {run.asrDeltas.length > 0 ? (
-        <div className="benchmark-section">
-          <h4>{i18n.t('diagnostics.benchmark.asrEventDetails', { count: run.asrDeltas.length })}</h4>
-          <div className="benchmark-delta-table-wrap">
-            <table className="benchmark-delta-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>{i18n.t('diagnostics.benchmark.timeMs')}</th>
-                  <th>Stash</th>
-                  <th>{i18n.t('diagnostics.benchmark.text')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {latestAsrDeltas.map(({ delta, index }) => (
-                  <tr key={`${delta.elapsedMs}-${index}`}>
-                    <td className="benchmark-delta-idx">{index + 1}</td>
-                    <td className="benchmark-delta-time">{delta.elapsedMs.toFixed(1)}</td>
-                    <td className="benchmark-delta-stash">{delta.stash || '—'}</td>
-                    <td className="benchmark-delta-committed">{delta.text || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DeltaTableSection
+          headers={['#', i18n.t('diagnostics.benchmark.timeMs'), 'Stash', i18n.t('diagnostics.benchmark.text')]}
+          rows={latestAsrDeltas.map(({ delta, index }) => (
+            <tr key={`${delta.elapsedMs}-${index}`}>
+              <td className="benchmark-delta-idx">{index + 1}</td>
+              <td className="benchmark-delta-time">{delta.elapsedMs.toFixed(1)}</td>
+              <td className="benchmark-delta-stash">{delta.stash || '—'}</td>
+              <td className="benchmark-delta-committed">{delta.text || '—'}</td>
+            </tr>
+          ))}
+          title={i18n.t('diagnostics.benchmark.asrEventDetails', { count: run.asrDeltas.length })}
+        />
       ) : null}
     </div>
   );
@@ -528,14 +470,12 @@ export function ExportButton({ onExport }: { onExport: (format: 'json' | 'txt') 
           borderRadius: 6, boxShadow: '0 4px 12px rgba(0,0,0,0.15)', zIndex: 10,
           minWidth: 80, padding: '4px 0',
         }}>
-          <button type="button" onClick={() => { onExport('json'); setOpen(false); }}
-            style={{ display: 'block', width: '100%', padding: '6px 12px', border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}>
-            JSON
-          </button>
-          <button type="button" onClick={() => { onExport('txt'); setOpen(false); }}
-            style={{ display: 'block', width: '100%', padding: '6px 12px', border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}>
-            TXT
-          </button>
+          {(['json', 'txt'] as const).map((format) => (
+            <button key={format} type="button" onClick={() => { onExport(format); setOpen(false); }}
+              style={{ display: 'block', width: '100%', padding: '6px 12px', border: 'none', background: 'none', cursor: 'pointer', textAlign: 'left', fontSize: 13 }}>
+              {format.toUpperCase()}
+            </button>
+          ))}
         </div>
       ) : null}
     </div>
@@ -548,46 +488,16 @@ export function PipelineMilestonesGrid({ milestones }: { milestones?: LiveSessio
     <div className="benchmark-section">
       <h4>{i18n.t('diagnostics.liveEvents.pipelineTitle')}</h4>
       <div className="benchmark-metrics-grid">
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.preconnect')}</span>
-          <strong>{fmtMs(safeMilestones.preconnectStartedMs)}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.sessionReady')}</span>
-          <strong>{fmtMs(safeMilestones.sessionReadyMs)}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.routeStarted')}</span>
-          <strong>{fmtMs(safeMilestones.routeStartedMs)}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.firstAudioSent')}</span>
-          <strong>{fmtMs(safeMilestones.firstAudioSentMs)}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.firstSpeechStarted')}</span>
-          <strong>{fmtMs(safeMilestones.firstSpeechStartedMs)}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.queuedChunks')}</span>
-          <strong>{safeMilestones.queuedAudioChunks ?? 'N/A'}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.droppedBeforeReady')}</span>
-          <strong>{safeMilestones.droppedBeforeReady ?? 'N/A'}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.firstAudibleChunk')}</span>
-          <strong>{fmtMs(safeMilestones.firstAudibleChunkMs)}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.silenceSkipped')}</span>
-          <strong>{safeMilestones.silenceSkippedBeforeAudible ?? 'N/A'}</strong>
-        </div>
-        <div className="benchmark-metric">
-          <span>{i18n.t('diagnostics.liveEvents.totalInputChunks')}</span>
-          <strong>{safeMilestones.totalInputChunksAtSpeech ?? 'N/A'}</strong>
-        </div>
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.preconnect')} value={fmtMs(safeMilestones.preconnectStartedMs)} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.sessionReady')} value={fmtMs(safeMilestones.sessionReadyMs)} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.routeStarted')} value={fmtMs(safeMilestones.routeStartedMs)} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.firstAudioSent')} value={fmtMs(safeMilestones.firstAudioSentMs)} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.firstSpeechStarted')} value={fmtMs(safeMilestones.firstSpeechStartedMs)} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.queuedChunks')} value={safeMilestones.queuedAudioChunks ?? 'N/A'} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.droppedBeforeReady')} value={safeMilestones.droppedBeforeReady ?? 'N/A'} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.firstAudibleChunk')} value={fmtMs(safeMilestones.firstAudibleChunkMs)} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.silenceSkipped')} value={safeMilestones.silenceSkippedBeforeAudible ?? 'N/A'} />
+        <BenchmarkMetric label={i18n.t('diagnostics.liveEvents.totalInputChunks')} value={safeMilestones.totalInputChunksAtSpeech ?? 'N/A'} />
       </div>
     </div>
   );
@@ -624,65 +534,25 @@ export function LiveSessionEventDetail({ error = null, events, loading }: { erro
       <PipelineMilestonesGrid milestones={events.pipelineMilestones} />
 
       {asrDeltas.length > 0 ? (
-        <div className="benchmark-section">
-          <h4>{i18n.t('diagnostics.liveEvents.asrTable')} ({events.asrDeltas.length})</h4>
-          {events.asrFinal ? <p className="benchmark-translation">{events.asrFinal}</p> : null}
-          <div className="benchmark-delta-table-wrap">
-            <table className="benchmark-delta-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>{i18n.t('diagnostics.liveEvents.time')}</th>
-                  <th>{i18n.t('diagnostics.liveEvents.eventType')}</th>
-                  <th>{i18n.t('diagnostics.liveEvents.stash')}</th>
-                  <th>{i18n.t('diagnostics.liveEvents.text')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {asrDeltas.map((delta, index) => (
-                  <tr key={`asr-${index}`}>
-                    <td className="benchmark-delta-idx">{events.asrDeltas.length - index}</td>
-                    <td className="benchmark-delta-time">{delta.elapsedMs.toFixed(1)}ms</td>
-                    <td className="benchmark-delta-event">{delta.eventType}</td>
-                    <td className="benchmark-delta-stash">{delta.stash || '—'}</td>
-                    <td className="benchmark-delta-committed">{delta.text || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DeltaTableSection
+          finalText={events.asrFinal}
+          headers={['#', i18n.t('diagnostics.liveEvents.time'), i18n.t('diagnostics.liveEvents.eventType'), i18n.t('diagnostics.liveEvents.stash'), i18n.t('diagnostics.liveEvents.text')]}
+          rows={asrDeltas.map((delta, index) => (
+            <LiveDeltaRow delta={delta} key={`asr-${index}`} position={events.asrDeltas.length - index} text={delta.text} />
+          ))}
+          title={`${i18n.t('diagnostics.liveEvents.asrTable')} (${events.asrDeltas.length})`}
+        />
       ) : null}
 
       {outputDeltas.length > 0 ? (
-        <div className="benchmark-section">
-          <h4>{i18n.t('diagnostics.liveEvents.outputTable')} ({events.outputDeltas.length})</h4>
-          {events.translationFinal ? <p className="benchmark-translation">{events.translationFinal}</p> : null}
-          <div className="benchmark-delta-table-wrap">
-            <table className="benchmark-delta-table">
-              <thead>
-                <tr>
-                  <th>#</th>
-                  <th>{i18n.t('diagnostics.liveEvents.time')}</th>
-                  <th>{i18n.t('diagnostics.liveEvents.eventType')}</th>
-                  <th>{i18n.t('diagnostics.liveEvents.stash')}</th>
-                  <th>{i18n.t('diagnostics.liveEvents.committedText')}</th>
-                </tr>
-              </thead>
-              <tbody>
-                {outputDeltas.map((delta, index) => (
-                  <tr key={`out-${index}`}>
-                    <td className="benchmark-delta-idx">{events.outputDeltas.length - index}</td>
-                    <td className="benchmark-delta-time">{delta.elapsedMs.toFixed(1)}ms</td>
-                    <td className="benchmark-delta-event">{delta.eventType}</td>
-                    <td className="benchmark-delta-stash">{delta.stash || '—'}</td>
-                    <td className="benchmark-delta-committed">{delta.committedText || '—'}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
+        <DeltaTableSection
+          finalText={events.translationFinal}
+          headers={['#', i18n.t('diagnostics.liveEvents.time'), i18n.t('diagnostics.liveEvents.eventType'), i18n.t('diagnostics.liveEvents.stash'), i18n.t('diagnostics.liveEvents.committedText')]}
+          rows={outputDeltas.map((delta, index) => (
+            <LiveDeltaRow delta={delta} key={`out-${index}`} position={events.outputDeltas.length - index} text={delta.committedText} />
+          ))}
+          title={`${i18n.t('diagnostics.liveEvents.outputTable')} (${events.outputDeltas.length})`}
+        />
       ) : null}
     </div>
   );

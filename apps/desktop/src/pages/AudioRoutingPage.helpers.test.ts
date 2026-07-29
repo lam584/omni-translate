@@ -19,13 +19,14 @@ function model(capabilities: ModelPreset['capabilities']): ModelPreset {
   };
 }
 
+const stt = model(['speech-to-text']);
+const tts = model(['text-to-speech']);
+const s2s = model(['speech-to-speech']);
+const text = model(['text-generation']);
+const all = model(['speech-to-text', 'text-to-speech', 'speech-to-speech', 'text-generation']);
+
 describe('AudioRoutingPage helpers', () => {
   it('detects voice models and selected options', () => {
-    const stt = model(['speech-to-text']);
-    const tts = model(['text-to-speech']);
-    const s2s = model(['speech-to-speech']);
-    const text = model(['text-generation']);
-
     expect([stt, tts, s2s, text].map(isVoiceModel)).toEqual([true, true, true, false]);
     expect(resolveSelectedModel([
       { ...stt, providerTemplateId: 'template-a', rawModelId: 'stt' },
@@ -35,10 +36,6 @@ describe('AudioRoutingPage helpers', () => {
   });
 
   it('maps scenario capabilities for empty and single-purpose models', () => {
-    const stt = model(['speech-to-text']);
-    const tts = model(['text-to-speech']);
-    const text = model(['text-generation']);
-
     expect(detectScenarioCapabilities(undefined, 'inbound')).toEqual([]);
     expect(detectScenarioCapabilities(stt, 'inbound')).toEqual(['stt', 'translation', 'subtitle']);
     expect(detectScenarioCapabilities(tts, 'inbound')).toEqual([]);
@@ -51,10 +48,6 @@ describe('AudioRoutingPage helpers', () => {
   });
 
   it('maps scenario capabilities for speech-to-speech and default branches', () => {
-    const s2s = model(['speech-to-speech']);
-    const tts = model(['text-to-speech']);
-    const all = model(['speech-to-text', 'text-to-speech', 'speech-to-speech', 'text-generation']);
-
     expect(detectScenarioCapabilities(s2s, 'inbound')).toEqual(['translation', 'subtitle']);
     expect(detectScenarioCapabilities(s2s, 'subtitle')).toEqual(['translation']);
     expect(detectScenarioCapabilities(s2s, 'outbound')).toEqual(['translation', 'speech']);
@@ -65,11 +58,6 @@ describe('AudioRoutingPage helpers', () => {
   });
 
   it('filters routing candidates by the capability each card actually requires', () => {
-    const stt = model(['speech-to-text']);
-    const tts = model(['text-to-speech']);
-    const s2s = model(['speech-to-speech']);
-    const text = model(['text-generation']);
-
     expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'inbound'))).toEqual([true, false, true]);
     expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'outbound'))).toEqual([false, false, true]);
     expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'inboundSecondary'))).toEqual([true, false, false]);

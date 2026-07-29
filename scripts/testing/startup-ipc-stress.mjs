@@ -18,17 +18,17 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 
+import { isMain, sortableTimestamp } from '../lib/testing-common.mjs';
 import {
-  isMain,
-  parseCliArgs,
-  readJson,
-  repoRoot,
-  sortableTimestamp,
-  writeJson,
-} from '../lib/testing-common.mjs';
-import { currentGitCommit } from './watch-mode-report.mjs';
+  emitPlanArtifacts,
+  parseSmokeCliArgs,
+  readPackageVersion,
+  releaseExecutablePlanLines,
+  resolveSmokeDirs,
+  smokeExitCode,
+  writeReportFromEvidence,
+} from './lib/smoke-common.mjs';
 import {
   IPC_NEVER_CONNECTED_MARKER,
   RELEASE_EXECUTABLE_NAME,
@@ -168,9 +168,7 @@ export function formatStartupIpcStressPlanText(plan) {
     `poll interval: ${plan.pollIntervalMs}ms`,
     `app log:       ${plan.appLogPath}`,
     '',
-    `release executable: ${plan.releaseExecutable.path}`,
-    `release executable found: ${plan.releaseExecutable.found}`,
-    ...(plan.releaseExecutable.found ? [] : [`  build it with: ${plan.releaseExecutable.buildHint}`]),
+    ...releaseExecutablePlanLines(plan.releaseExecutable),
     '',
     `launch environment: ${Object.entries(plan.environment).map(([key, value]) => `${key}=${value}`).join(' ')}`,
     `IPC connected markers: ${plan.ipcConnectedMarkers.join(', ')}`,
@@ -299,48 +297,28 @@ export function buildStartupIpcStressReport({
   };
 }
 
-export function startupIpcStressExitCode(report) {
-  return report?.verdict === 'failed' ? 1 : 0;
-}
+export const startupIpcStressExitCode = smokeExitCode;
 
 // ---------------------------------------------------------------------------
 // Thin CLI seam: JSON in, JSON out.
 //   --mode plan   (writes plan.json, prints the plan text)
 //   --mode report (reads evidence.json, writes report.json, sets the exit code)
 
-function readVersion(workspaceRoot) {
-  try {
-    return readJson(path.join(workspaceRoot, 'package.json')).version ?? null;
-  } catch {
-    return null;
-  }
-}
-
 if (isMain(import.meta.url)) {
   try {
-    const args = parseCliArgs(process.argv.slice(2), {
-      booleans: ['dry-run'],
-      defaults: {
-        mode: 'plan',
-        output: '',
-        input: '',
-        workspaceRoot: '',
-        runs: String(DEFAULT_RUN_COUNT),
-        pingTimeoutMs: String(DEFAULT_PING_TIMEOUT_MS),
-        pollIntervalMs: String(DEFAULT_POLL_INTERVAL_MS),
-        releaseExecutablePath: '',
-        outputRoot: DEFAULT_OUTPUT_ROOT,
-        appLogPath: DEFAULT_APP_LOG_PATH,
-      },
+    const args = parseSmokeCliArgs(process.argv.slice(2), {
+      runs: String(DEFAULT_RUN_COUNT),
+      pingTimeoutMs: String(DEFAULT_PING_TIMEOUT_MS),
+      pollIntervalMs: String(DEFAULT_POLL_INTERVAL_MS),
+      outputRoot: DEFAULT_OUTPUT_ROOT,
+      appLogPath: DEFAULT_APP_LOG_PATH,
     });
-    const workspaceRoot = args.workspaceRoot || repoRoot;
-    const outputDir = args.output || path.join(workspaceRoot, DEFAULT_OUTPUT_ROOT);
-    fs.mkdirSync(outputDir, { recursive: true });
+    const { workspaceRoot, outputDir } = resolveSmokeDirs(args, DEFAULT_OUTPUT_ROOT);
 
     if (args.mode === 'plan') {
       const plan = buildStartupIpcStressPlan({
         workspaceRoot,
-        version: readVersion(workspaceRoot),
+        version: readPackageVersion(workspaceRoot),
         runs: Number(args.runs),
         pingTimeoutMs: Number(args.pingTimeoutMs),
         pollIntervalMs: Number(args.pollIntervalMs),
@@ -349,23 +327,13 @@ if (isMain(import.meta.url)) {
         appLogPath: args.appLogPath,
         exists: (candidate) => fs.existsSync(candidate),
       });
-      const planPath = path.join(outputDir, 'plan.json');
-      writeJson(planPath, plan);
-      console.log(formatStartupIpcStressPlanText(plan));
-      if (args.dryRun) {
-        const reportPath = path.join(outputDir, 'report.json');
-        writeJson(
-          reportPath,
-          buildStartupIpcStressReport({
-            evidence: { dryRun: true, plan, runId: path.basename(outputDir) },
-            gitCommit: currentGitCommit(),
-            artifacts: { plan: planPath, report: reportPath },
-          }),
-        );
-        console.log(reportPath);
-      } else {
-        console.log(planPath);
-      }
+      emitPlanArtifacts({
+        outputDir,
+        plan,
+        planText: formatStartupIpcStressPlanText(plan),
+        dryRun: args.dryRun,
+        buildReport: buildStartupIpcStressReport,
+      });
       process.exit(0);
     }
 
@@ -373,19 +341,12 @@ if (isMain(import.meta.url)) {
       throw new Error(`Unknown --mode ${args.mode}; expected plan or report`);
     }
 
-    const inputDir = args.input || outputDir;
-    const evidencePath = path.join(inputDir, 'evidence.json');
-    if (!fs.existsSync(evidencePath)) {
-      throw new Error(`startup IPC stress evidence was not written: ${evidencePath}`);
-    }
-    const reportPath = path.join(outputDir, 'report.json');
-    const report = buildStartupIpcStressReport({
-      evidence: readJson(evidencePath),
-      gitCommit: currentGitCommit(),
-      artifacts: { evidence: evidencePath, report: reportPath, plan: path.join(inputDir, 'plan.json') },
+    const report = writeReportFromEvidence({
+      inputDir: args.input || outputDir,
+      outputDir,
+      label: 'startup IPC stress',
+      buildReport: buildStartupIpcStressReport,
     });
-    writeJson(reportPath, report);
-    console.log(reportPath);
     console.log(
       `runs=${report.summary.totalRuns} connected=${report.summary.connectedRuns} `
       + `neverConnected=${report.summary.neverConnectedRuns} watchdogLines=${report.summary.watchdogRuns} `

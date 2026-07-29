@@ -2,15 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 
-const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
-}));
-
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
-  isTauri: () => false,
-}));
-
+vi.mock('@tauri-apps/api/core', async () => (await import('../test-utils/tauri-invoke-mock')).tauriCoreMockModule());
 
 import {
   bridgeRuntimeTestHelpers,
@@ -21,16 +13,15 @@ import {
   stopBridgeServiceRuntime,
   uninstallDriverRuntime,
 } from './bridge-runtime';
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
-import { PreviewDesktopApi } from './preview-desktop-api';
 import { getRecentFrontendLogEntries, loggerTestHelpers } from './logger';
+import { invokeMock } from '../test-utils/tauri-invoke-mock';
+import { enablePreviewDesktopRuntime, enableTauriDesktopRuntime } from '../test-utils/runtime-test-harness';
 
 describe('bridge runtime', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    mocks.invoke.mockReset();
-    resetDesktopApiForTests();
-    installDesktopApi(new PreviewDesktopApi());
+    invokeMock.mockReset();
+    enablePreviewDesktopRuntime();
     loggerTestHelpers.reset();
     vi.restoreAllMocks();
   });
@@ -55,12 +46,12 @@ describe('bridge runtime', () => {
     expect((await uninstallDriverRuntime()).bridge).toMatchObject({ driverHealth: 'not-installed', lastErrorCode: 'driver.not-installed' });
     expect((await repairDriverRuntime('restart-bridge', config)).bridge.bridgeState).toBe('running');
     expect((await repairDriverRuntime('reinstall-driver', config)).bridge.driverHealth).toBe('running');
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('maps every desktop lifecycle action to native invoke commands', async () => {
-    installDesktopApi(new TauriDesktopApi());
-    mocks.invoke.mockResolvedValue({ data: runtimeSnapshotMock });
+    enableTauriDesktopRuntime();
+    invokeMock.mockResolvedValue({ data: runtimeSnapshotMock });
     const config = structuredClone(appConfigDraftMock);
 
     await refreshBridgeRuntime();
@@ -70,7 +61,7 @@ describe('bridge runtime', () => {
     await uninstallDriverRuntime();
     await repairDriverRuntime('restart-bridge', config);
 
-    expect(mocks.invoke.mock.calls).toEqual([
+    expect(invokeMock.mock.calls).toEqual([
       ['bridge_v2', { command: { action: 'refresh' } }],
       ['bridge_v2', { command: { action: 'start', config } }],
       ['bridge_v2', { command: { action: 'stop' } }],

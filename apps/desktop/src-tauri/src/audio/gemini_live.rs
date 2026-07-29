@@ -12,6 +12,7 @@ use url::Url;
 use super::diagnostics::diag_log;
 use super::engine::emit_audio_snapshot;
 use super::omni::OmniHandle;
+use super::realtime_cue::commit_realtime_cue;
 use super::pcm_resample::{
     base64_encode_pcm16, pcm16_chunk_rms, resample_capture_to_mono_i16, SilenceGate,
 };
@@ -340,20 +341,13 @@ impl GeminiCueState {
     }
 
     fn commit(&mut self, app: &AppHandle, store: &AudioStateStore) {
-        if let Some(id) = self.cue_id.as_deref() {
-            let source = if self.source_text.trim().is_empty() {
-                self.output_text.as_str()
-            } else {
-                self.source_text.as_str()
-            };
-            if !source.trim().is_empty() {
-                store.update_or_push_stt_cue(id, source, true);
-                if !self.output_text.trim().is_empty() {
-                    store.update_subtitle_cue_translation(id, self.output_text.clone(), true);
-                }
-                let _ = emit_audio_snapshot(app, store);
-            }
-        }
+        commit_realtime_cue(
+            app,
+            store,
+            self.cue_id.as_deref(),
+            &self.source_text,
+            &self.output_text,
+        );
         self.reset();
     }
 }

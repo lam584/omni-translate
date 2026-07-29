@@ -8,6 +8,31 @@ import type { BenchmarkReport, BenchmarkRunResult } from '../runtime/benchmark-r
 import { diagnosticsPageHelpers } from './DiagnosticsPage';
 import { DiagnosticsReportExporter, exportJson } from './diagnostics/DiagnosticsDetails';
 
+type LiveEvents = Parameters<typeof diagnosticsPageHelpers.formatLiveEventsTxt>[0];
+
+/** Live-session events payload with all milestone fields nulled; override per test. */
+function liveEvents(overrides: Partial<LiveEvents> = {}): LiveEvents {
+  return {
+    sessionStartedAt: 'unix-ms:1000',
+    elapsedMs: 5000,
+    model: 'test-model',
+    asrDeltas: [],
+    outputDeltas: [],
+    asrFinal: '',
+    translationFinal: '',
+    pipelineMilestones: { preconnectStartedMs: null, sessionReadyMs: null, routeStartedMs: null, firstAudioSentMs: null, firstSpeechStartedMs: null, queuedAudioChunks: null, droppedBeforeReady: null, firstAudibleChunkMs: null, silenceSkippedBeforeAudible: null, totalInputChunksAtSpeech: null },
+    ...overrides,
+  };
+}
+
+/** Renders LiveSessionEventDetail for the given live-events overrides. */
+function renderLiveDetail(overrides: Partial<LiveEvents> = {}) {
+  return renderToStaticMarkup(createElement(diagnosticsPageHelpers.LiveSessionEventDetail, {
+    events: liveEvents(overrides),
+    loading: false,
+  }));
+}
+
 describe('diagnostics page helpers', () => {
   it('maps all status, bridge, capture, driver and rank labels', () => {
     expect(['ready', 'warning', 'stable', 'experimental', 'unsupported', 'draft', 'preview', 'other'].map(diagnosticsPageHelpers.resolveStatusTone))
@@ -523,39 +548,21 @@ describe('LiveSessionEventDetail', () => {
   });
 
   it('renders empty state when events have no deltas', () => {
-    const html = renderToStaticMarkup(createElement(diagnosticsPageHelpers.LiveSessionEventDetail, {
-      events: {
-        sessionStartedAt: 'unix-ms:1000',
-        elapsedMs: 5000,
-        model: 'test-model',
-        asrDeltas: [],
-        outputDeltas: [],
-        asrFinal: '',
-        translationFinal: '',
-        pipelineMilestones: { preconnectStartedMs: null, sessionReadyMs: null, routeStartedMs: null, firstAudioSentMs: null, firstSpeechStartedMs: null, queuedAudioChunks: null, droppedBeforeReady: null, firstAudibleChunkMs: null, silenceSkippedBeforeAudible: null, totalInputChunksAtSpeech: null }
-      },
-      loading: false,
-    }));
+    const html = renderLiveDetail();
     expect(html).toContain('暂无事件数据');
   });
 
   it('renders ASR event table with newest events first', () => {
-    const html = renderToStaticMarkup(createElement(diagnosticsPageHelpers.LiveSessionEventDetail, {
-      events: {
-        sessionStartedAt: 'unix-ms:2000',
-        elapsedMs: 8000,
-        model: 'asr-model',
-        asrDeltas: [
-          { elapsedMs: 100, stash: 'first-stash', text: 'first-text', eventType: 'asr.delta' },
-          { elapsedMs: 200, stash: '', text: 'second-text', eventType: 'asr.completed' },
-        ],
-        outputDeltas: [],
-        asrFinal: 'second-text',
-        translationFinal: '',
-        pipelineMilestones: { preconnectStartedMs: null, sessionReadyMs: null, routeStartedMs: null, firstAudioSentMs: null, firstSpeechStartedMs: null, queuedAudioChunks: null, droppedBeforeReady: null, firstAudibleChunkMs: null, silenceSkippedBeforeAudible: null, totalInputChunksAtSpeech: null }
-      },
-      loading: false,
-    }));
+    const html = renderLiveDetail({
+      sessionStartedAt: 'unix-ms:2000',
+      elapsedMs: 8000,
+      model: 'asr-model',
+      asrDeltas: [
+        { elapsedMs: 100, stash: 'first-stash', text: 'first-text', eventType: 'asr.delta' },
+        { elapsedMs: 200, stash: '', text: 'second-text', eventType: 'asr.completed' },
+      ],
+      asrFinal: 'second-text',
+    });
     expect(html).toContain('ASR 事件明细');
     expect(html).toContain('first-stash');
     expect(html).toContain('second-text');
@@ -568,22 +575,16 @@ describe('LiveSessionEventDetail', () => {
   });
 
   it('renders output event table with committed text', () => {
-    const html = renderToStaticMarkup(createElement(diagnosticsPageHelpers.LiveSessionEventDetail, {
-      events: {
-        sessionStartedAt: 'unix-ms:3000',
-        elapsedMs: 10000,
-        model: 'output-model',
-        asrDeltas: [],
-        outputDeltas: [
-          { elapsedMs: 300, eventType: 'response.audio_transcript.delta', stash: 'Hello', committedText: '' },
-          { elapsedMs: 500, eventType: 'response.done', stash: '', committedText: 'Hello world' },
-        ],
-        asrFinal: '',
-        translationFinal: 'Hello world',
-        pipelineMilestones: { preconnectStartedMs: null, sessionReadyMs: null, routeStartedMs: null, firstAudioSentMs: null, firstSpeechStartedMs: null, queuedAudioChunks: null, droppedBeforeReady: null, firstAudibleChunkMs: null, silenceSkippedBeforeAudible: null, totalInputChunksAtSpeech: null }
-      },
-      loading: false,
-    }));
+    const html = renderLiveDetail({
+      sessionStartedAt: 'unix-ms:3000',
+      elapsedMs: 10000,
+      model: 'output-model',
+      outputDeltas: [
+        { elapsedMs: 300, eventType: 'response.audio_transcript.delta', stash: 'Hello', committedText: '' },
+        { elapsedMs: 500, eventType: 'response.done', stash: '', committedText: 'Hello world' },
+      ],
+      translationFinal: 'Hello world',
+    });
     expect(html).toContain('输出事件明细');
     expect(html).toContain('Hello');
     expect(html).toContain('Hello world');
@@ -592,23 +593,19 @@ describe('LiveSessionEventDetail', () => {
   });
 
   it('renders both ASR and output tables when both have data', () => {
-    const html = renderToStaticMarkup(createElement(diagnosticsPageHelpers.LiveSessionEventDetail, {
-      events: {
-        sessionStartedAt: 'unix-ms:4000',
-        elapsedMs: 12000,
-        model: 'both-model',
-        asrDeltas: [
-          { elapsedMs: 50, stash: 's1', text: 't1', eventType: 'asr' },
-        ],
-        outputDeltas: [
-          { elapsedMs: 100, eventType: 'out', stash: 'os1', committedText: 'oc1' },
-        ],
-        asrFinal: 't1',
-        translationFinal: 'oc1',
-        pipelineMilestones: { preconnectStartedMs: null, sessionReadyMs: null, routeStartedMs: null, firstAudioSentMs: null, firstSpeechStartedMs: null, queuedAudioChunks: null, droppedBeforeReady: null, firstAudibleChunkMs: null, silenceSkippedBeforeAudible: null, totalInputChunksAtSpeech: null }
-      },
-      loading: false,
-    }));
+    const html = renderLiveDetail({
+      sessionStartedAt: 'unix-ms:4000',
+      elapsedMs: 12000,
+      model: 'both-model',
+      asrDeltas: [
+        { elapsedMs: 50, stash: 's1', text: 't1', eventType: 'asr' },
+      ],
+      outputDeltas: [
+        { elapsedMs: 100, eventType: 'out', stash: 'os1', committedText: 'oc1' },
+      ],
+      asrFinal: 't1',
+      translationFinal: 'oc1',
+    });
     expect(html).toContain('ASR 事件明细');
     expect(html).toContain('输出事件明细');
     expect(html).toContain('t1');
@@ -616,7 +613,7 @@ describe('LiveSessionEventDetail', () => {
   });
 
   it('formats complete live-event and benchmark text exports', () => {
-    const liveText = diagnosticsPageHelpers.formatLiveEventsTxt({
+    const liveText = diagnosticsPageHelpers.formatLiveEventsTxt(liveEvents({
       sessionStartedAt: 'unix-ms:4000',
       elapsedMs: 12000,
       model: 'export-model',
@@ -636,7 +633,7 @@ describe('LiveSessionEventDetail', () => {
         silenceSkippedBeforeAudible: 2,
         totalInputChunksAtSpeech: 4,
       },
-    });
+    }));
     expect(liveText).toContain('Audio Sent -> Audible:     20ms');
     expect(liveText).toContain('Audible -> VAD Speech:     20ms');
     expect(liveText).toContain('source final');
@@ -705,16 +702,7 @@ describe('LiveSessionEventDetail', () => {
     const revokeObjectUrl = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
     const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
     const report = benchmarkReport();
-    const events = {
-      sessionStartedAt: 'unix-ms:1', elapsedMs: 2, model: 'model', asrDeltas: [], outputDeltas: [],
-      asrFinal: '', translationFinal: '',
-      pipelineMilestones: {
-        preconnectStartedMs: null, sessionReadyMs: null, routeStartedMs: null,
-        firstAudioSentMs: null, firstSpeechStartedMs: null, queuedAudioChunks: null,
-        droppedBeforeReady: null, firstAudibleChunkMs: null,
-        silenceSkippedBeforeAudible: null, totalInputChunksAtSpeech: null,
-      },
-    };
+    const events = liveEvents({ sessionStartedAt: 'unix-ms:1', elapsedMs: 2, model: 'model' });
 
     exportJson({ ok: true }, 'diagnostics.json');
     DiagnosticsReportExporter.exportBenchmark(report, 'benchmark', 'json');

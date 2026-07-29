@@ -398,23 +398,16 @@ fn run_stt_worker(
                         None,
                     );
 
-                    if reconnect_count < STT_RECONNECT_MAX_RETRIES {
-                        reconnect_count += 1;
+                    socket = reconnect_stt_or_fail(
+                        &app,
+                        store,
+                        &provider,
+                        &mut reconnect_count,
+                        buffer_size,
+                        "ASR WebSocket 连接已关闭且重连次数已用完。".to_string(),
+                    )?;
 
-                        notify_reconnecting(store, reconnect_count);
-
-                        thread::sleep(backoff_delay(reconnect_count));
-
-                        socket = reconnect_socket(app.clone(), &provider)?;
-
-                        store.set_stt_connected(true, buffer_size);
-
-                        continue;
-                    }
-
-                    store.set_stt_connected(false, buffer_size);
-
-                    return Err("ASR WebSocket 连接已关闭且重连次数已用完。".to_string());
+                    continue;
                 }
 
                 _ => {}
@@ -440,23 +433,16 @@ fn run_stt_worker(
                     None,
                 );
 
-                if reconnect_count < STT_RECONNECT_MAX_RETRIES {
-                    reconnect_count += 1;
+                socket = reconnect_stt_or_fail(
+                    &app,
+                    store,
+                    &provider,
+                    &mut reconnect_count,
+                    buffer_size,
+                    format!("ASR WebSocket 读错且重连次数已用完: {error}"),
+                )?;
 
-                    notify_reconnecting(store, reconnect_count);
-
-                    thread::sleep(backoff_delay(reconnect_count));
-
-                    socket = reconnect_socket(app.clone(), &provider)?;
-
-                    store.set_stt_connected(true, buffer_size);
-
-                    continue;
-                }
-
-                store.set_stt_connected(false, buffer_size);
-
-                return Err(format!("ASR WebSocket 读错且重连次数已用完: {error}"));
+                continue;
             }
         }
 
@@ -489,6 +475,36 @@ fn reconnect_socket(
     );
 
     Ok(socket)
+}
+
+/// Shared reconnect step for the close/read failure paths. On success the
+/// caller resumes the loop with the fresh socket; exhausting the retry budget
+/// marks the STT link disconnected and surfaces `exhausted_error`.
+fn reconnect_stt_or_fail(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    provider: &ProviderDraftInput,
+    reconnect_count: &mut usize,
+    buffer_size: u64,
+    exhausted_error: String,
+) -> Result<WsSocket, String> {
+    if *reconnect_count < STT_RECONNECT_MAX_RETRIES {
+        *reconnect_count += 1;
+
+        notify_reconnecting(store, *reconnect_count);
+
+        thread::sleep(backoff_delay(*reconnect_count));
+
+        let socket = reconnect_socket(app.clone(), provider)?;
+
+        store.set_stt_connected(true, buffer_size);
+
+        return Ok(socket);
+    }
+
+    store.set_stt_connected(false, buffer_size);
+
+    Err(exhausted_error)
 }
 
 #[cfg(test)]

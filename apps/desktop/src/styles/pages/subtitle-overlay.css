@@ -232,31 +232,9 @@
   overflow:hidden
 }
 
-.subtitle-overlay-stream-source {
-  width:100%;
-  min-height:1.25em;
-  max-height:2.5em;
-  margin:0;
-  display:-webkit-box;
-  -webkit-box-orient:vertical;
-  -webkit-line-clamp:2;
-  text-align:var(--subtitle-overlay-text-align, center);
-  white-space:pre-wrap;
-  overflow-wrap:anywhere;
-  overflow:hidden;
-  color:var(--subtitle-overlay-source-text, #fff8ef);
-  font-weight:var(--subtitle-overlay-source-weight, 500);
-  paint-order:stroke fill;
-  -webkit-text-stroke:var(--subtitle-overlay-source-outline-width, 1px) var(--subtitle-overlay-source-outline-color, #000);
-  opacity:0;
-  text-shadow:var(--subtitle-overlay-source-shadow, 0 2px 8px rgba(0, 0, 0, .48))
-}
-
-.subtitle-overlay-stream-slot-active .subtitle-overlay-stream-source {
-  opacity:calc(var(--subtitle-overlay-translation-opacity,
-  .92) * .8)
-}
-
+/* Shared clamped-two-line layout; only the color/weight/outline/shadow
+   variables differ between the source and translation lines below. */
+.subtitle-overlay-stream-source,
 .subtitle-overlay-stream-text {
   width:100%;
   min-height:1.25em;
@@ -269,11 +247,26 @@
   white-space:pre-wrap;
   overflow-wrap:anywhere;
   overflow:hidden;
+  paint-order:stroke fill;
+  opacity:0
+}
+
+.subtitle-overlay-stream-source {
+  color:var(--subtitle-overlay-source-text, #fff8ef);
+  font-weight:var(--subtitle-overlay-source-weight, 500);
+  -webkit-text-stroke:var(--subtitle-overlay-source-outline-width, 1px) var(--subtitle-overlay-source-outline-color, #000);
+  text-shadow:var(--subtitle-overlay-source-shadow, 0 2px 8px rgba(0, 0, 0, .48))
+}
+
+.subtitle-overlay-stream-slot-active .subtitle-overlay-stream-source {
+  opacity:calc(var(--subtitle-overlay-translation-opacity,
+  .92) * .8)
+}
+
+.subtitle-overlay-stream-text {
   color:var(--subtitle-overlay-translation-text, #fff8ef);
   font-weight:var(--subtitle-overlay-translation-weight, 700);
-  paint-order:stroke fill;
   -webkit-text-stroke:var(--subtitle-overlay-translation-outline-width, 1px) var(--subtitle-overlay-translation-outline-color, #000);
-  opacity:0;
   text-shadow:var(--subtitle-overlay-translation-shadow, 0 2px 8px rgba(0, 0, 0, .42))
 }
 

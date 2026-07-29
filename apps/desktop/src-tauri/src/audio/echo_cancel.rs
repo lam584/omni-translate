@@ -216,6 +216,13 @@ fn lerp(left: f32, right: f32, frac: f32) -> f32 {
     left + (right - left) * frac
 }
 
+/// Root-mean-square level of a sample block. Shared by the echo-cancel and
+/// acoustic-loop test suites.
+#[cfg(test)]
+pub(crate) fn rms(samples: &[f32]) -> f32 {
+    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -232,10 +239,6 @@ mod tests {
             .collect()
     }
 
-    fn rms(samples: &[f32]) -> f32 {
-        (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
-    }
-
     /// Builds the capture chunk the microphone hears `seconds_played` seconds
     /// into playback: the reference block that ended `TEST_DELAY_SAMPLES`
     /// behind the playback position, scaled by the acoustic echo path gain.
@@ -245,6 +248,27 @@ mod tests {
         let block_start = cursor - TEST_DELAY_SAMPLES - TEST_CHUNK_SAMPLES;
         (0..TEST_CHUNK_SAMPLES)
             .map(|index| reference_mono[(block_start + index) / 2] * gain)
+            .collect()
+    }
+
+    /// Seeds a 30-second-capacity reference buffer with `seconds` of a tone at
+    /// `amplitude`, pushed at a freshly captured playback start instant.
+    fn seeded_reference_buffer(
+        seconds: usize,
+        amplitude: f32,
+    ) -> (EchoReferenceBuffer, Vec<f32>, Instant) {
+        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
+        let reference = sine_mono(seconds * 48_000, amplitude);
+        let playback_started = Instant::now();
+        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+        (buffer, reference, playback_started)
+    }
+
+    /// A cosine capture block unrelated to the reference tone, scaled by `gain`;
+    /// used to prove pass-through/double-talk behavior with no aligned echo.
+    fn cosine_capture_block(gain: f32) -> Vec<f32> {
+        (0..TEST_CHUNK_SAMPLES)
+            .map(|index| (index as f32 * 0.031).cos() * gain)
             .collect()
     }
 
@@ -292,10 +316,7 @@ mod tests {
 
     #[test]
     fn cancels_echo_aligned_to_actual_playback_progress() {
-        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
-        let reference = sine_mono(3 * 48_000, 0.5);
-        let playback_started = Instant::now();
-        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+        let (mut buffer, reference, playback_started) = seeded_reference_buffer(3, 0.5);
 
         // Two seconds into playback the capture loop receives the echo of the
         // block played `TEST_DELAY_SAMPLES` earlier, at the exact path gain
@@ -318,10 +339,7 @@ mod tests {
 
     #[test]
     fn suppresses_residual_echo_while_tts_is_playing() {
-        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
-        let reference = sine_mono(3 * 48_000, 0.5);
-        let playback_started = Instant::now();
-        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+        let (mut buffer, reference, playback_started) = seeded_reference_buffer(3, 0.5);
 
         // The acoustic path gain differs from ATTENUATION, so plain linear
         // subtraction leaves an audible residual; the playback gate must
@@ -347,16 +365,11 @@ mod tests {
 
     #[test]
     fn keeps_double_talk_audible_during_playback() {
-        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
-        let reference = sine_mono(3 * 48_000, 0.2);
-        let playback_started = Instant::now();
-        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+        let (mut buffer, _reference, playback_started) = seeded_reference_buffer(3, 0.2);
 
         // The listener talks loudly over quiet TTS playback; the gate must
         // back off so their speech still reaches STT.
-        let captured: Vec<f32> = (0..TEST_CHUNK_SAMPLES)
-            .map(|index| (index as f32 * 0.031).cos() * 0.9)
-            .collect();
+        let captured = cosine_capture_block(0.9);
         let cancellation = buffer.subtract_from_at(
             &captured,
             TEST_DELAY_SAMPLES,
@@ -374,16 +387,11 @@ mod tests {
 
     #[test]
     fn passes_capture_through_after_playback_finished() {
-        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
-        let reference = sine_mono(48_000, 0.5);
-        let playback_started = Instant::now();
-        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+        let (mut buffer, _reference, playback_started) = seeded_reference_buffer(1, 0.5);
 
         // Long after the one-second reference finished playing, capture must
         // pass through untouched even though old samples remain buffered.
-        let captured: Vec<f32> = (0..TEST_CHUNK_SAMPLES)
-            .map(|index| (index as f32 * 0.031).cos() * 0.4)
-            .collect();
+        let captured = cosine_capture_block(0.4);
         let cancellation = buffer.subtract_from_at(
             &captured,
             TEST_DELAY_SAMPLES,
@@ -409,17 +417,12 @@ mod tests {
 
     #[test]
     fn capture_before_playback_reaches_the_delay_passes_through() {
-        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
-        let reference = sine_mono(48_000, 0.5);
-        let playback_started = Instant::now();
-        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+        let (mut buffer, _reference, playback_started) = seeded_reference_buffer(1, 0.5);
 
         // The echo path is TEST_DELAY_SAMPLES long, so a capture taken right
         // at playback start cannot contain any speaker output yet; the
         // canceller must not carve the aligned-to-nothing reference out of it.
-        let captured: Vec<f32> = (0..TEST_CHUNK_SAMPLES)
-            .map(|index| (index as f32 * 0.031).cos() * 0.4)
-            .collect();
+        let captured = cosine_capture_block(0.4);
         let cancellation = buffer.subtract_from_at(&captured, TEST_DELAY_SAMPLES, playback_started);
 
         assert_eq!(cancellation.samples, captured);

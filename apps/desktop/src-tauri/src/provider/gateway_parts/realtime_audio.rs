@@ -1,13 +1,12 @@
-use std::io::ErrorKind;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde_json::{json, Value};
-use tungstenite::{Error as WebSocketError, Message};
 
 use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError, ProviderStreamEventRecord, TtsAudioChunk, TtsSynthesisResult};
-use super::{time::now_unix_seconds_marker, transport::WebSocketTransport};
+use super::time::now_unix_seconds_marker;
+use super::transport::{read_json_frame, send_json_frame, WebSocketFrame, WebSocketTransport};
 
 #[derive(Debug, Default)]
 pub(crate) struct RealtimeAudioSynthesizer;
@@ -53,14 +52,7 @@ pub(crate) fn synthesize(
     if !trimmed_voice.is_empty() {
         session["session"]["voice"] = json!(trimmed_voice);
     }
-    socket
-        .send(Message::Text(session.to_string().into()))
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("realtime audio session.update failed: {error}"),
-            )
-        })?;
+    send_json_frame(&mut socket, &session, "realtime audio session.update failed")?;
 
     let item_create = json!({
       "event_id": format!("evt_{}_item", safe_id),
@@ -76,14 +68,11 @@ pub(crate) fn synthesize(
         ]
       }
     });
-    socket
-        .send(Message::Text(item_create.to_string().into()))
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("realtime audio conversation.item.create failed: {error}"),
-            )
-        })?;
+    send_json_frame(
+        &mut socket,
+        &item_create,
+        "realtime audio conversation.item.create failed",
+    )?;
 
     let response_create = json!({
       "event_id": format!("evt_{}_resp", safe_id),
@@ -92,14 +81,7 @@ pub(crate) fn synthesize(
         "modalities": ["audio", "text"]
       }
     });
-    socket
-        .send(Message::Text(response_create.to_string().into()))
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("realtime audio response.create failed: {error}"),
-            )
-        })?;
+    send_json_frame(&mut socket, &response_create, "realtime audio response.create failed")?;
 
     let started_at = Instant::now();
     let mut pcm_i16 = Vec::new();
@@ -110,17 +92,12 @@ pub(crate) fn synthesize(
     )];
 
     loop {
-        let message = socket
-            .read()
-            .map_err(|error| normalize_websocket_read_error(error, websocket_timeout))?;
-        match message {
-            Message::Text(frame) => {
-                let value: Value = serde_json::from_str(frame.as_str()).map_err(|error| {
-                    ProviderRuntimeError::new(
-                        "response.unparseable",
-                        format!("failed to parse realtime audio websocket frame: {error}"),
-                    )
-                })?;
+        match read_json_frame(
+            &mut socket,
+            websocket_timeout,
+            "failed to parse realtime audio websocket frame",
+        )? {
+            WebSocketFrame::Json(value) => {
                 let event_type = value.pointer("/type").and_then(Value::as_str).unwrap_or("");
                 match event_type {
                     "response.audio.delta" => {
@@ -150,8 +127,8 @@ pub(crate) fn synthesize(
                     _ => {}
                 }
             }
-            Message::Close(_) => break,
-            _ => {}
+            WebSocketFrame::Closed => break,
+            WebSocketFrame::Ignored => {}
         }
     }
 
@@ -192,27 +169,6 @@ pub(crate) fn synthesize(
 }
 
 
-}
-
-fn normalize_websocket_read_error(error: WebSocketError, timeout: Duration) -> ProviderRuntimeError {
-    match error {
-        WebSocketError::Io(io_error)
-            if matches!(io_error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
-        {
-            ProviderRuntimeError::new(
-                "timeout",
-                format!("DashScope WebSocket 在 {} 秒内未返回新的响应事件。", timeout.as_secs().max(1)),
-            )
-            .retriable(true)
-            .with_suggestion("请检查 API Key、模型名与网络连通性，或改用 HTTP 模式继续配置。")
-        }
-        other => ProviderRuntimeError::new(
-            "transport.unavailable",
-            format!("DashScope WebSocket 接收失败: {other}"),
-        )
-        .retriable(true)
-        .with_suggestion("请检查 WebSocket 入口、网络连通性和代理设置。"),
-    }
 }
 
 fn decode_realtime_audio_delta(delta: &str) -> Result<Vec<i16>, ProviderRuntimeError> {

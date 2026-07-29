@@ -12,6 +12,7 @@ use url::Url;
 use super::diagnostics::diag_log;
 use super::engine::emit_audio_snapshot;
 use super::omni::{OmniHandle, RealtimeAudioMode};
+use super::realtime_cue::commit_realtime_cue;
 use super::pcm_resample::{
     base64_encode_pcm16, pcm16_chunk_rms, resample_capture_to_mono_i16, SilenceGate,
 };
@@ -474,20 +475,13 @@ impl CueState {
     }
 
     fn commit(&mut self, app: &AppHandle, store: &AudioStateStore) {
-        if let Some(id) = self.cue_id.as_deref() {
-            let source = if self.source_text.trim().is_empty() {
-                self.output_text.as_str()
-            } else {
-                self.source_text.as_str()
-            };
-            if !source.trim().is_empty() {
-                store.update_or_push_stt_cue(id, source, true);
-                if !self.output_text.trim().is_empty() {
-                    store.update_subtitle_cue_translation(id, self.output_text.clone(), true);
-                }
-                let _ = emit_audio_snapshot(app, store);
-            }
-        }
+        commit_realtime_cue(
+            app,
+            store,
+            self.cue_id.as_deref(),
+            &self.source_text,
+            &self.output_text,
+        );
         self.reset();
     }
 }
@@ -636,6 +630,29 @@ fn run_openai_worker(
     let mut reconnect_retries = 0usize;
 
     'session_loop: loop {
+        // The three send paths below all recover the same way: attempt a
+        // reconnect and bail out of the worker when the retry budget is spent.
+        // A local macro keeps that 10-argument call and its bail-out in one
+        // place while preserving the `return`/`continue 'session_loop` control
+        // flow a helper function could not express.
+        macro_rules! reconnect_or_bail {
+            () => {
+                if !try_reconnect(
+                    &app,
+                    store,
+                    stt_epoch,
+                    &provider,
+                    dialect,
+                    &session_update,
+                    &mut session,
+                    &mut cue,
+                    &mut reconnect_retries,
+                    &mut trace_call,
+                ) {
+                    return Err("OpenAI realtime reconnect retries exhausted".to_string());
+                }
+            };
+        }
         if stop_rx.try_recv().is_ok() {
             shutdown_session(
                 &app,
@@ -694,20 +711,7 @@ fn run_openai_worker(
         }
 
         if send_failed {
-            if !try_reconnect(
-                &app,
-                store,
-                stt_epoch,
-                &provider,
-                dialect,
-                &session_update,
-                &mut session,
-                &mut cue,
-                &mut reconnect_retries,
-                &mut trace_call,
-            ) {
-                return Err("OpenAI realtime reconnect retries exhausted".to_string());
-            }
+            reconnect_or_bail!();
             continue 'session_loop;
         }
 
@@ -725,20 +729,7 @@ fn run_openai_worker(
                     .is_err()
                 {
                     pre_session_queue.push_front(encoded);
-                    if !try_reconnect(
-                        &app,
-                        store,
-                        stt_epoch,
-                        &provider,
-                        dialect,
-                        &session_update,
-                        &mut session,
-                        &mut cue,
-                        &mut reconnect_retries,
-                        &mut trace_call,
-                    ) {
-                        return Err("OpenAI realtime reconnect retries exhausted".to_string());
-                    }
+                    reconnect_or_bail!();
                     continue 'session_loop;
                 }
             }
@@ -758,20 +749,7 @@ fn run_openai_worker(
                     .send(Message::Text(msg.to_string().into()))
                     .is_err()
                 {
-                    if !try_reconnect(
-                        &app,
-                        store,
-                        stt_epoch,
-                        &provider,
-                        dialect,
-                        &session_update,
-                        &mut session,
-                        &mut cue,
-                        &mut reconnect_retries,
-                        &mut trace_call,
-                    ) {
-                        return Err("OpenAI realtime reconnect retries exhausted".to_string());
-                    }
+                    reconnect_or_bail!();
                     continue 'session_loop;
                 }
             }
@@ -863,6 +841,28 @@ fn run_openai_worker(
     }
 }
 
+/// Appends a transcription delta to the cue's source text and republishes the
+/// in-progress cue snapshot. Shared by the conversation- and session-namespace
+/// source-transcript delta events.
+fn push_source_delta(app: &AppHandle, store: &AudioStateStore, cue: &mut CueState, delta: &str) {
+    let id = cue.ensure_cue_id();
+    cue.source_text.push_str(delta);
+    cue.last_delta_at = Instant::now();
+    store.update_or_push_stt_cue(&id, &cue.source_text, false);
+    let _ = emit_audio_snapshot(app, store);
+}
+
+/// Mirrors the current translated output into `id`, seeding the source row when
+/// no transcription arrived, then republishes the cue snapshot. Shared by the
+/// translated-text delta/done events across the GA/beta/session namespaces.
+fn publish_output_translation(app: &AppHandle, store: &AudioStateStore, cue: &CueState, id: &str) {
+    if cue.source_text.trim().is_empty() {
+        store.update_or_push_stt_cue(id, &cue.output_text, false);
+    }
+    store.update_subtitle_cue_translation(id, cue.output_text.clone(), false);
+    let _ = emit_audio_snapshot(app, store);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn handle_server_event(
     app: &AppHandle,
@@ -897,11 +897,7 @@ fn handle_server_event(
         "conversation.item.input_audio_transcription.delta"
         | "conversation.item.input_audio_transcription.text" => {
             if let Some(delta) = extract_text_delta(evt) {
-                let id = cue.ensure_cue_id();
-                cue.source_text.push_str(delta);
-                cue.last_delta_at = Instant::now();
-                store.update_or_push_stt_cue(&id, &cue.source_text, false);
-                let _ = emit_audio_snapshot(app, store);
+                push_source_delta(app, store, cue, delta);
             }
         }
         "conversation.item.input_audio_transcription.completed" => {
@@ -930,11 +926,7 @@ fn handle_server_event(
             if let Some(delta) = extract_text_delta(evt) {
                 let id = cue.ensure_cue_id();
                 cue.output_text.push_str(delta);
-                if cue.source_text.trim().is_empty() {
-                    store.update_or_push_stt_cue(&id, &cue.output_text, false);
-                }
-                store.update_subtitle_cue_translation(&id, cue.output_text.clone(), false);
-                let _ = emit_audio_snapshot(app, store);
+                publish_output_translation(app, store, cue, &id);
             }
         }
         "response.output_audio_transcript.done"
@@ -946,11 +938,7 @@ fn handle_server_event(
                     cue.output_text = text.to_string();
                 }
                 let id = cue.ensure_cue_id();
-                if cue.source_text.trim().is_empty() {
-                    store.update_or_push_stt_cue(&id, &cue.output_text, false);
-                }
-                store.update_subtitle_cue_translation(&id, cue.output_text.clone(), false);
-                let _ = emit_audio_snapshot(app, store);
+                publish_output_translation(app, store, cue, &id);
             }
         }
         "response.done" => {
@@ -963,11 +951,7 @@ fn handle_server_event(
         // Translation endpoint stream (session.* namespace).
         "session.input_transcript.delta" => {
             if let Some(delta) = extract_text_delta(evt) {
-                let id = cue.ensure_cue_id();
-                cue.source_text.push_str(delta);
-                cue.last_delta_at = Instant::now();
-                store.update_or_push_stt_cue(&id, &cue.source_text, false);
-                let _ = emit_audio_snapshot(app, store);
+                push_source_delta(app, store, cue, delta);
             }
         }
         "session.output_transcript.delta" => {
@@ -975,11 +959,7 @@ fn handle_server_event(
                 let id = cue.ensure_cue_id();
                 cue.output_text.push_str(delta);
                 cue.last_delta_at = Instant::now();
-                if cue.source_text.trim().is_empty() {
-                    store.update_or_push_stt_cue(&id, &cue.output_text, false);
-                }
-                store.update_subtitle_cue_translation(&id, cue.output_text.clone(), false);
-                let _ = emit_audio_snapshot(app, store);
+                publish_output_translation(app, store, cue, &id);
             }
         }
         "session.output_audio.delta" => {

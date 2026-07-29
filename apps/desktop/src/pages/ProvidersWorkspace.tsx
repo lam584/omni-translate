@@ -5,7 +5,7 @@ import { defaultProviderTemplate, providerTemplates } from '../defaults/provider
 import type { ProviderKind } from '../schema/provider-contract';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
 import { useDesktopCapabilities } from '../runtime/desktop-api-context';
-import { useAppStore } from '../stores/app-store';
+import { useProviderWorkspaceStoreSlices } from '../stores/app-store-slices';
 import { buildProviderTemplateCatalogEntries } from '../utils/provider-template-catalog';
 import {
   createCustomProviderTemplate,
@@ -52,11 +52,7 @@ const {
 function ProvidersPage() {
   const { hasNativeShell } = useDesktopCapabilities();
   const { t } = useTranslation();
-  const configDraft = useAppStore((state) => state.configDraft);
-  const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
-  const runtimeNotifications = useAppStore((state) => state.runtimeNotifications);
-  const updateActiveProviderDraft = useAppStore((state) => state.updateActiveProviderDraft);
-  const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
+  const { configDraft, runtimeSnapshot, runtimeNotifications, updateActiveProviderDraft, setRuntimeSnapshot } = useProviderWorkspaceStoreSlices();
 
   const activeProvider = useMemo(
     () => configDraft.providers.find((p) => p.templateId === configDraft.activeProviderTemplateId) ?? configDraft.providers[0],

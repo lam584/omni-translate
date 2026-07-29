@@ -105,6 +105,15 @@ struct LiveSessionEventBufferInner {
     pipeline_milestones: PipelineMilestones,
 }
 
+impl LiveSessionEventBufferInner {
+    /// Milliseconds elapsed since the session start point, or 0 before `clear`.
+    fn elapsed_ms(&self) -> u64 {
+        self.started_at
+            .map(|t| t.elapsed().as_millis() as u64)
+            .unwrap_or(0)
+    }
+}
+
 impl LiveSessionEventBuffer {
     /// Creates a new, empty event buffer.
     pub fn new() -> Self {
@@ -144,10 +153,7 @@ impl LiveSessionEventBuffer {
     /// the session was cleared.
     pub fn record_milestone_now(&self, name: &str) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
-        let elapsed_ms = inner
-            .started_at
-            .map(|t| t.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+        let elapsed_ms = inner.elapsed_ms();
         match name {
             "route_started" => inner.pipeline_milestones.route_started_ms = Some(elapsed_ms),
             _ => {}
@@ -184,10 +190,7 @@ impl LiveSessionEventBuffer {
     /// the oldest entry is removed.
     pub fn push_asr_delta(&self, event_type: &str, stash: &str, text: &str) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
-        let elapsed_ms = inner
-            .started_at
-            .map(|t| t.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+        let elapsed_ms = inner.elapsed_ms();
         inner.asr_deltas.push(LiveSessionAsrDelta {
             elapsed_ms,
             stash: stash.to_string(),
@@ -206,10 +209,7 @@ impl LiveSessionEventBuffer {
     /// the oldest entry is removed.
     pub fn push_output_delta(&self, event_type: &str, stash: &str, committed_text: &str) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
-        let elapsed_ms = inner
-            .started_at
-            .map(|t| t.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+        let elapsed_ms = inner.elapsed_ms();
         inner.output_deltas.push(LiveSessionOutputDelta {
             elapsed_ms,
             event_type: event_type.to_string(),
@@ -228,10 +228,7 @@ impl LiveSessionEventBuffer {
     /// serialization.
     pub fn snapshot(&self) -> LiveSessionEvents {
         let inner = self.inner.lock().expect("live session events poisoned");
-        let elapsed_ms = inner
-            .started_at
-            .map(|t| t.elapsed().as_millis() as u64)
-            .unwrap_or(0);
+        let elapsed_ms = inner.elapsed_ms();
         LiveSessionEvents {
             session_started_at: inner.session_started_at.clone(),
             elapsed_ms,

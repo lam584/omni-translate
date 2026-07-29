@@ -23,6 +23,7 @@ import {
 } from './config-fallback';
 import { createRuntimeErrorSnapshot, formatRuntimeError } from './error-snapshot';
 import { invokeWithTimeout } from './invoke';
+import { pushDesktopRuntimeNotification } from './notifications';
 import { markStep, type OnBootstrapStep } from './steps';
 import { CONFIG_PERSIST_RETRY_EVENT, DESKTOP_RUNTIME_RETRY_EVENT } from './retry-events';
 
@@ -38,16 +39,6 @@ type PersistQueueState = {
   pending: AppConfigDraft | null;
   lastSerializedConfig: string;
 };
-
-function pushDesktopRuntimeNotification(level: RuntimeNotification['level'], idPrefix: string, message: string) {
-  useAppStore.getState().pushRuntimeNotification({
-    id: `${idPrefix}-${Date.now()}`,
-    level,
-    source: 'desktop-runtime',
-    message,
-    emittedAt: new Date().toISOString(),
-  });
-}
 
 // ── Core connect ──
 
@@ -288,15 +279,13 @@ export async function connectDesktopRuntimeBridge(onStep?: OnBootstrapStep): Pro
           void saveConfigDraftFallback(nextConfig);
         } catch { /* silently fail */ }
 
-        useAppStore.getState().pushRuntimeNotification({
-          id: `config-persist-failed-${Date.now()}`,
-          level: 'error',
-          source: 'desktop-runtime',
-          message: i18n.language.toLowerCase().startsWith('zh')
+        pushDesktopRuntimeNotification(
+          'error',
+          'config-persist-failed',
+          i18n.language.toLowerCase().startsWith('zh')
             ? `配置未写入主存储：${lastError instanceof Error ? lastError.message : String(lastError)}。已保存本地回退副本，请点击“重试”。`
             : `The configuration was not written to primary storage: ${lastError instanceof Error ? lastError.message : String(lastError)}. A local fallback copy was saved; select Retry.`,
-          emittedAt: new Date().toISOString(),
-        });
+        );
       }
     } finally {
       queueState.inflight = false;

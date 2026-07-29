@@ -1,13 +1,12 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { appConfigDraftMock } from '../mocks/app-config';
-import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { type FakeBridge } from '../mocks/fake-bridge';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
-import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
 import { useAppStore } from '../stores/app-store';
+import { buttonByText } from '../test-utils/dom-interactions';
+import { registerFakeBridgeDomHarness } from '../test-utils/fake-bridge-dom-harness';
+import { fakeBridgeHarness } from '../test-utils/fake-bridge-harness';
 import SubtitleOverlaySettingsPage from './SubtitleOverlaySettingsPage';
 
 // react-i18next stays stubbed (leaf externality: key passthrough keeps the
@@ -19,20 +18,8 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-const harness = vi.hoisted(() => ({
-  invoke: null as null | (<T>(command: string, args?: Record<string, unknown>) => Promise<T>),
-  /** When set, this command hangs so tests can observe pending UI states. */
-  holdCommand: null as null | { command: string; promise: Promise<unknown> },
-}));
-
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
-    if (harness.holdCommand?.command === command) return harness.holdCommand.promise as Promise<T>;
-    if (!harness.invoke) return Promise.reject(new Error(`fake bridge not installed for command ${command}`));
-    return harness.invoke(command, args);
-  },
-  isTauri: () => true,
-}));
+vi.mock('@tauri-apps/api/core', async () =>
+  (await import('../test-utils/fake-bridge-harness')).fakeBridgeTauriCoreModule());
 
 function setInputValue(input: HTMLInputElement, value: string) {
   const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
@@ -41,52 +28,34 @@ function setInputValue(input: HTMLInputElement, value: string) {
 
 describe('SubtitleOverlaySettingsPage font size controls', () => {
   let container: HTMLDivElement;
-  let root: Root;
   let fake: FakeBridge;
 
+  const harness = registerFakeBridgeDomHarness();
+  const view = harness.view;
+
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    fake = createFakeBridge();
-    harness.invoke = fake.invoke;
-    harness.holdCommand = null;
-    resetDesktopApiForTests();
-    installDesktopApi(new TauriDesktopApi());
-
-    useAppStore.setState((state) => ({
-      ...state,
-      audioRuntimeSnapshot: structuredClone(audioRuntimeSnapshotMock),
-      configDraft: structuredClone(appConfigDraftMock),
-      runtimeNotifications: runtimeSnapshotMock.notifications,
-      runtimeSnapshot: structuredClone(runtimeSnapshotMock),
-    }));
-
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    fake = harness.fake;
+    ({ container } = view);
   });
 
-  afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
-    harness.invoke = null;
-    harness.holdCommand = null;
-    resetDesktopApiForTests();
-  });
+  async function renderPage() {
+    await view.render(
+      <MemoryRouter>
+        <SubtitleOverlaySettingsPage />
+      </MemoryRouter>,
+    );
+  }
+
+  function findOverlayToggleButton() {
+    return buttonByText(container, 'settings.overlayShowSubtitlesAction');
+  }
 
   it('updates large subtitle font size and overlay height from the appearance sliders', async () => {
     useAppStore.setState((state) => ({
       ...state,
       configDraft: { ...state.configDraft, subtitles: { ...state.configDraft.subtitles, overlayFontSize: 0 } },
     }));
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SubtitleOverlaySettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const fontSizeSlider = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="range"]'))
       .find((input) => input.min === '16' && input.max === '96');
@@ -108,17 +77,9 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
   });
 
   it('toggles the subtitle overlay window from the settings page action', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SubtitleOverlaySettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
-    const toggleButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
-      button.textContent?.includes('settings.overlayShowSubtitlesAction'),
-    );
+    const toggleButton = findOverlayToggleButton();
     expect(toggleButton).toBeInstanceOf(HTMLButtonElement);
 
     await act(async () => {
@@ -132,10 +93,8 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
 
   it('shows an inline error when toggling the subtitle overlay fails', async () => {
     fake.rejectNextAction('toggle_subtitle_overlay', { message: 'window unavailable' });
-    await act(async () => root.render(<MemoryRouter><SubtitleOverlaySettingsPage /></MemoryRouter>));
-    const toggleButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
-      button.textContent?.includes('settings.overlayShowSubtitlesAction'),
-    );
+    await renderPage();
+    const toggleButton = findOverlayToggleButton();
     await act(async () => toggleButton?.click());
     const alert = container.querySelector('[role="alert"]');
     expect(alert?.textContent).toContain('session.overlayOpenFailed');
@@ -143,13 +102,7 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
   });
 
   it('shows the overlay lock action before the subtitle visibility action', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SubtitleOverlaySettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const actionButtons = Array.from(container.querySelectorAll<HTMLButtonElement>('.settings-page-action-group button'));
     expect(actionButtons[0]?.textContent).toContain('audioRouting.restoreDefaults');
@@ -182,17 +135,9 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
         },
       },
     }));
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SubtitleOverlaySettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
-    const resetButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
-      button.textContent?.includes('audioRouting.restoreDefaults'),
-    );
+    const resetButton = buttonByText(container, 'audioRouting.restoreDefaults');
     await act(async () => resetButton?.click());
 
     expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
@@ -208,13 +153,7 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
   });
 
   it('updates every appearance field from its form control', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SubtitleOverlaySettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const fieldInput = <T extends HTMLInputElement | HTMLSelectElement>(labelKey: string, selector: string) =>
       Array.from(container.querySelectorAll<HTMLLabelElement>('label'))
@@ -246,10 +185,9 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
   });
 
   it('applies independent text effects and can copy them to both subtitle rows', async () => {
-    await act(async () => root.render(<MemoryRouter><SubtitleOverlaySettingsPage /></MemoryRouter>));
+    await renderPage();
 
-    const noneButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('settings.overlayEffectPreset.none'))!;
+    const noneButton = buttonByText(container, 'settings.overlayEffectPreset.none')!;
     await act(async () => noneButton.click());
 
     let subtitles = useAppStore.getState().configDraft.subtitles;
@@ -257,8 +195,7 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
     expect(subtitles.overlayTranslationTextStyle.shadowEnabled).toBe(false);
     expect(subtitles.overlaySourceTextStyle.outlineEnabled).toBe(true);
 
-    const applyBoth = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('settings.overlayApplyBoth'))!;
+    const applyBoth = buttonByText(container, 'settings.overlayApplyBoth')!;
     await act(async () => applyBoth.click());
 
     subtitles = useAppStore.getState().configDraft.subtitles;
@@ -266,12 +203,10 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
   });
 
   it('applies layout presets and alignment to the live preview', async () => {
-    await act(async () => root.render(<MemoryRouter><SubtitleOverlaySettingsPage /></MemoryRouter>));
+    await renderPage();
 
-    const lyricsPreset = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('settings.overlayPreset.lyrics'))!;
-    const leftAlign = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
-      .find((button) => button.textContent?.includes('settings.overlayAlign.left'))!;
+    const lyricsPreset = buttonByText(container, 'settings.overlayPreset.lyrics')!;
+    const leftAlign = buttonByText(container, 'settings.overlayAlign.left')!;
     await act(async () => {
       lyricsPreset.click();
       leftAlign.click();
@@ -287,21 +222,13 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
   it('shows pending text while the overlay visibility command is unresolved', async () => {
     // Hold the native toggle command unresolved to observe the pending UI.
     let resolveToggle!: (snapshot: typeof runtimeSnapshotMock) => void;
-    harness.holdCommand = {
+    fakeBridgeHarness.holdCommand = {
       command: 'toggle_subtitle_overlay',
       promise: new Promise((resolve) => { resolveToggle = resolve; }),
     };
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SubtitleOverlaySettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
-    const toggleButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
-      button.textContent?.includes('settings.overlayShowSubtitlesAction'),
-    )!;
+    const toggleButton = findOverlayToggleButton()!;
     await act(async () => {
       toggleButton.click();
       await Promise.resolve();

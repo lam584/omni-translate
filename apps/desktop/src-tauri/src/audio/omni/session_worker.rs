@@ -226,11 +226,8 @@ pub fn start_omni(
                     format!("Omni 实时翻译出错: {error}"),
                     format!("model={model}"),
                 );
-                let runtime_state =
-                    app_handle.state::<crate::runtime::state::RuntimeStateStore>();
-                let _ = crate::runtime::events::emit_runtime_notification(
+                let _ = crate::audio::worker_notify::emit_worker_notification(
                     &app_handle,
-                    &runtime_state,
                     crate::runtime::contracts::RuntimeNotification::error(
                         &format!("omni-session-failed-{worker_direction}"),
                         "session",
@@ -434,27 +431,36 @@ fn run_omni_worker(
         pending_audio_buffer = pump_state.pending_audio_buffer;
         provider_input_dump = pump_state.provider_input_dump;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
+        // Both the pre-pump and post-poll reconnect paths must reset the exact
+        // same manual-gate/turn/pre-session-audio locals. A local macro keeps
+        // that 18-argument call in one place without threading the locals
+        // through a helper struct across the whole pump loop.
+        macro_rules! reset_gate_after_reconnect {
+            () => {
+                reset_manual_gate_after_reconnect(
+                    &app,
+                    store,
+                    audio_mode,
+                    &mut manual_response_pending,
+                    &mut manual_response_item_id,
+                    &mut sent_audio_since_commit,
+                    &mut last_commit_time,
+                    &mut current_cue_id,
+                    &mut pending_source_text,
+                    &mut pending_translated_text,
+                    &mut transcription_completed_flag,
+                    &mut transcription_completed_at,
+                    &mut event_diagnostics,
+                    &mut pending_audio_buffer,
+                    &mut pending_audio_delta_count,
+                    &mut pending_audio_delta_base64_bytes,
+                    &mut pending_audio_response_id,
+                    &mut session_ready_for_audio,
+                )
+            };
+        }
         if pump_state.socket_reconnected {
-            reset_manual_gate_after_reconnect(
-                &app,
-                store,
-                audio_mode,
-                &mut manual_response_pending,
-                &mut manual_response_item_id,
-                &mut sent_audio_since_commit,
-                &mut last_commit_time,
-                &mut current_cue_id,
-                &mut pending_source_text,
-                &mut pending_translated_text,
-                &mut transcription_completed_flag,
-                &mut transcription_completed_at,
-                &mut event_diagnostics,
-                &mut pending_audio_buffer,
-                &mut pending_audio_delta_count,
-                &mut pending_audio_delta_base64_bytes,
-                &mut pending_audio_response_id,
-                &mut session_ready_for_audio,
-            );
+            reset_gate_after_reconnect!();
         }
 
         OmniAudioPump::log_waiting_if_needed(
@@ -607,26 +613,7 @@ fn run_omni_worker(
         manual_response_pending = poll.state.manual_response_pending;
         manual_response_item_id = poll.state.manual_response_item_id;
         if poll.socket_reconnected {
-            reset_manual_gate_after_reconnect(
-                &app,
-                store,
-                audio_mode,
-                &mut manual_response_pending,
-                &mut manual_response_item_id,
-                &mut sent_audio_since_commit,
-                &mut last_commit_time,
-                &mut current_cue_id,
-                &mut pending_source_text,
-                &mut pending_translated_text,
-                &mut transcription_completed_flag,
-                &mut transcription_completed_at,
-                &mut event_diagnostics,
-                &mut pending_audio_buffer,
-                &mut pending_audio_delta_count,
-                &mut pending_audio_delta_base64_bytes,
-                &mut pending_audio_response_id,
-                &mut session_ready_for_audio,
-            );
+            reset_gate_after_reconnect!();
         }
         if poll.skip_tick {
             continue;
@@ -834,14 +821,7 @@ pub(super) fn reconnect_socket<R: tauri::Runtime>(
             provider.kind, provider.provider_id
         ));
     }
-    let ws_url = to_websocket_url(&provider.base_url, &provider.model)
-        .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
-    let mut request = ws_url
-        .as_str()
-        .into_client_request()
-        .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
-    apply_ws_auth(provider, request.headers_mut())
-        .map_err(|error| format!("无法应用认证头: {}", error.message))?;
+    let request = build_dashscope_ws_request(provider)?;
 
     let (mut socket, _) =
         connect(request).map_err(|error| format!("无法重新连接 Omni 服务: {error}"))?;

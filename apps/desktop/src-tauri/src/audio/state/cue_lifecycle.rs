@@ -2,9 +2,34 @@
 //! `state.rs` (module line budget); behavior is unchanged.
 
 use crate::audio::contracts::{SubtitleCueRuntime, SubtitleOverlayRuntimeSnapshot};
+use crate::audio::time_utils::{ms_marker, unix_ms};
 
 const MAX_RECENT_SUBTITLE_CUES: usize = 12;
 const HARD_MAX_RECENT_SUBTITLE_CUES: usize = 18;
+
+/// Builds a fresh cue with empty display/translation fields and the current
+/// timestamp for both bounds; shared by the transcript-cue creation paths in
+/// `update_or_push_stt_cue`/`commit_stt_cue`.
+pub(super) fn new_subtitle_cue(
+    cue_id: &str,
+    route_direction: &str,
+    source_text: &str,
+    committed: bool,
+) -> SubtitleCueRuntime {
+    let now = ms_marker(unix_ms());
+    SubtitleCueRuntime {
+        cue_id: cue_id.to_string(),
+        route_direction: route_direction.to_string(),
+        source_text: source_text.to_string(),
+        display_source_text: String::new(),
+        display_segments: Vec::new(),
+        translated_text: String::new(),
+        started_at: now.clone(),
+        ended_at: now,
+        committed,
+        translation_committed: false,
+    }
+}
 
 pub(super) fn finalize_cue_display_segments(cue: &mut SubtitleCueRuntime) {
     for segment in &mut cue.display_segments {

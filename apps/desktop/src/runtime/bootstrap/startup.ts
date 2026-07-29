@@ -15,6 +15,7 @@ import {
 } from './config-fallback';
 import { createRuntimeErrorSnapshot, formatRuntimeError } from './error-snapshot';
 import { invokeWithTimeout, pingDesktopRuntime, IPC_PING_TIMEOUT_MS } from './invoke';
+import { pushDesktopRuntimeNotification } from './notifications';
 import { DESKTOP_RUNTIME_RETRY_EVENT } from './retry-events';
 import { enableNativeLogForwarding, markStep, type OnBootstrapStep } from './steps';
 
@@ -28,16 +29,6 @@ const IPC_RECOVERY_RETRY_INTERVAL_MS = 2000;
 const IPC_RECOVERY_TIMEOUT_MS = 60000;
 
 type RuntimeCleanup = () => void;
-
-function pushDesktopRuntimeNotification(level: 'info' | 'warning' | 'error', idPrefix: string, message: string) {
-  useAppStore.getState().pushRuntimeNotification({
-    id: `${idPrefix}-${Date.now()}`,
-    level,
-    source: 'desktop-runtime',
-    message,
-    emittedAt: new Date().toISOString(),
-  });
-}
 
 export async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep): Promise<RuntimeCleanup> {
   const store = useAppStore.getState();

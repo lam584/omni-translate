@@ -68,26 +68,9 @@ pub(crate) fn apply_ws_auth(
     provider: &ProviderDraftInput,
     headers: &mut tungstenite::http::HeaderMap,
 ) -> Result<(), ProviderRuntimeError> {
-    let secret = resolve_secret(&provider.auth_ref)?;
-    if let Some(secret) = secret {
-        let header_name = tungstenite::http::header::HeaderName::from_bytes(
-            provider.auth_ref.header_name.as_bytes(),
-        )
-        .map_err(|error| {
-            ProviderRuntimeError::new("request.invalid", format!("非法认证头字段: {error}"))
-        })?;
-        let value = match provider.auth_ref.scheme.as_str() {
-            "bearer" => format!("Bearer {secret}"),
-            "api-key" => secret,
-            _ => secret,
-        };
-        let header_value = tungstenite::http::HeaderValue::from_str(&value).map_err(|error| {
-            ProviderRuntimeError::new("request.invalid", format!("非法认证头值: {error}"))
-        })?;
-        headers.insert(header_name, header_value);
-    }
-
-    Ok(())
+    // `reqwest` 与 `tungstenite` 共享同一套 `http` 头部类型，WebSocket 路径
+    // 直接复用 HTTP 的认证头构造逻辑。
+    apply_auth_header(provider, headers)
 }
 
 pub(super) fn apply_custom_headers(
@@ -116,27 +99,7 @@ pub(crate) fn apply_ws_custom_headers(
     provider: &ProviderDraftInput,
     headers: &mut tungstenite::http::HeaderMap,
 ) -> Result<(), ProviderRuntimeError> {
-    for header in provider
-        .custom_headers
-        .iter()
-        .filter(|item| item.enabled && !item.name.trim().is_empty())
-    {
-        let header_name =
-            tungstenite::http::header::HeaderName::from_bytes(header.name.trim().as_bytes())
-                .map_err(|error| {
-                    ProviderRuntimeError::new(
-                        "request.invalid",
-                        format!("非法自定义头字段: {error}"),
-                    )
-                })?;
-        let header_value =
-            tungstenite::http::HeaderValue::from_str(header.value.trim()).map_err(|error| {
-                ProviderRuntimeError::new("request.invalid", format!("非法自定义头值: {error}"))
-            })?;
-        headers.insert(header_name, header_value);
-    }
-
-    Ok(())
+    apply_custom_headers(provider, headers)
 }
 
 pub(crate) fn resolve_secret(

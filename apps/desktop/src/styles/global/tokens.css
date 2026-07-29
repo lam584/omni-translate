@@ -123,9 +123,7 @@
   --transition-interactive: transform .2s ease,
   border-color .2s ease,
   background .2s ease;
-  font-family:var(--font-family-sans);
-  color:var(--color-text-primary);
-  background:radial-gradient(circle at top left,
+  --gradient-page-background: radial-gradient(circle at top left,
   var(--gradient-spot-warm),
   transparent 26%),
   radial-gradient(circle at top right,
@@ -135,6 +133,9 @@
   var(--gradient-base-start) 0%,
   var(--gradient-base-mid) 52%,
   var(--gradient-base-end) 100%);
+  font-family:var(--font-family-sans);
+  color:var(--color-text-primary);
+  background:var(--gradient-page-background);
   line-height:1.5;
   font-weight:400;
   color-scheme:dark;

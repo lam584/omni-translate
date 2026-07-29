@@ -68,16 +68,7 @@ pub fn start_translate(
     });
     store.mark_session_started(&session_started_at);
 
-    let _ = append_diagnostics_log(
-        &app,
-        "audio",
-        "info",
-        "已启动 translation worker。",
-        None,
-        None,
-        None,
-    );
-    emit_audio_snapshot(&app, store)?;
+    crate::audio::worker_notify::announce_worker_started(&app, store, "已启动 translation worker。")?;
 
     let (stop_tx, stop_rx) = mpsc::channel();
     let app_handle = app.clone();
@@ -507,6 +498,27 @@ impl TranslateConfig {
     }
 }
 
+/// Builds an empty [`ProviderDraftInput`] placeholder with the given request
+/// timeout. Used as the last-resort fallback when no provider resolves from the
+/// config, and by tests that need a minimal provider. The static JSON literal
+/// is guaranteed to match the struct shape, so parse failure is unreachable.
+fn placeholder_provider_draft(timeout_ms: u64) -> ProviderDraftInput {
+    serde_json::from_value(serde_json::json!({
+        "templateId": "",
+        "providerId": "",
+        "kind": "",
+        "displayName": "",
+        "model": "",
+        "baseUrl": "",
+        "transport": "http",
+        "authRef": { "kind": "", "reference": "", "headerName": "", "scheme": "" },
+        "streamEnabled": false,
+        "timeoutMs": timeout_ms,
+        "systemPromptTemplate": ""
+    }))
+    .unwrap_or_else(|_| unreachable!("static JSON literal must match ProviderDraftInput"))
+}
+
 impl TranslateConfig {
     fn from_value(config: &Value) -> Self {
         // Try to resolve the subtitle translation model first; fall back to first provider.
@@ -524,21 +536,7 @@ impl TranslateConfig {
                     .and_then(|arr| arr.first())
                     .and_then(|v| serde_json::from_value::<ProviderDraftInput>(v.clone()).ok())
             })
-            .unwrap_or_else(|| {
-                serde_json::from_value(serde_json::json!({
-                    "templateId": "",
-                    "providerId": "",
-                    "kind": "",
-                    "displayName": "",
-                    "model": "",
-                    "baseUrl": "",
-                    "transport": "http",
-                    "authRef": { "kind": "", "reference": "", "headerName": "", "scheme": "" },
-                    "streamEnabled": false,
-                    "timeoutMs": 30000u64,
-                    "systemPromptTemplate": ""
-                })).unwrap_or_else(|_| unreachable!("static JSON literal must match ProviderDraftInput"))
-            });
+            .unwrap_or_else(|| placeholder_provider_draft(30_000));
         let source_language = config
             .pointer("/subtitles/sourceLanguage")
             .and_then(Value::as_str)
@@ -569,15 +567,7 @@ impl TranslateConfig {
             .map(str::trim)
             .filter(|lang| !lang.is_empty())
             .map(str::to_string)
-            .unwrap_or_else(|| {
-                config
-                    .pointer("/subtitles/sourceLanguage")
-                    .and_then(Value::as_str)
-                    .map(str::trim)
-                    .filter(|lang| !lang.is_empty() && !lang.eq_ignore_ascii_case("auto"))
-                    .unwrap_or("en")
-                    .to_string()
-            });
+            .unwrap_or_else(|| super::events::subtitle_source_language_or_english(config));
         let max_concurrent_requests = config
             .pointer("/subtitles/translateWorkerMaxConcurrentRequests")
             .and_then(Value::as_u64)
@@ -743,20 +733,7 @@ mod tests {
     }
 
     fn scheduling_job(cue_id: &str, sequence: u64, sentence: &str) -> TranslationJob {
-        let provider: ProviderDraftInput = serde_json::from_value(json!({
-            "templateId": "",
-            "providerId": "",
-            "kind": "",
-            "displayName": "",
-            "model": "",
-            "baseUrl": "",
-            "transport": "http",
-            "authRef": { "kind": "", "reference": "", "headerName": "", "scheme": "" },
-            "streamEnabled": false,
-            "timeoutMs": 1000u64,
-            "systemPromptTemplate": ""
-        }))
-        .expect("static JSON literal must match ProviderDraftInput");
+        let provider: ProviderDraftInput = placeholder_provider_draft(1000);
         let result = SentenceResult {
             sentence: sentence.to_string(),
             context: Vec::new(),

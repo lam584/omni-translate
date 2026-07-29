@@ -1,17 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
-}));
+vi.mock('@tauri-apps/api/core', async () => (await import('../test-utils/tauri-invoke-mock')).tauriCoreMockModule());
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
-  isTauri: () => false,
-}));
-
-
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
-import { PreviewDesktopApi } from './preview-desktop-api';
+import { invokeMock } from '../test-utils/tauri-invoke-mock';
+import { enablePreviewDesktopRuntime, enableTauriDesktopRuntime } from '../test-utils/runtime-test-harness';
 import {
   createLogger,
   getRecentFrontendLogEntries,
@@ -20,7 +12,7 @@ import {
 } from './logger';
 
 function batchPayload(callIndex: number) {
-  return mocks.invoke.mock.calls[callIndex]?.[1] as {
+  return invokeMock.mock.calls[callIndex]?.[1] as {
     entries: Array<{ category: string; level: string; summary: string; detail: string | null }>;
     droppedCount: number;
   };
@@ -29,9 +21,8 @@ function batchPayload(callIndex: number) {
 describe('frontend logger', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    mocks.invoke.mockReset().mockResolvedValue(undefined);
-    resetDesktopApiForTests();
-    installDesktopApi(new TauriDesktopApi());
+    invokeMock.mockReset().mockResolvedValue(undefined);
+    enableTauriDesktopRuntime();
     loggerTestHelpers.reset();
     vi.spyOn(console, 'debug').mockImplementation(() => undefined);
     vi.spyOn(console, 'info').mockImplementation(() => undefined);
@@ -52,8 +43,8 @@ describe('frontend logger', () => {
     }
     await vi.advanceTimersByTimeAsync(0);
 
-    expect(mocks.invoke).toHaveBeenCalledTimes(1);
-    expect(mocks.invoke.mock.calls[0]?.[0]).toBe('append_frontend_diagnostics_logs');
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock.mock.calls[0]?.[0]).toBe('append_frontend_diagnostics_logs');
     expect(batchPayload(0).entries).toHaveLength(20);
     expect(batchPayload(0).droppedCount).toBe(0);
     expect(loggerTestHelpers.pendingCount()).toBe(0);
@@ -64,9 +55,9 @@ describe('frontend logger', () => {
     logger.info('single line');
 
     await vi.advanceTimersByTimeAsync(1999);
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
-    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(batchPayload(0).entries[0]).toMatchObject({
       category: 'audio',
       level: 'info',
@@ -76,30 +67,30 @@ describe('frontend logger', () => {
   });
 
   it('retries with exponential backoff and resends buffered entries after recovery', async () => {
-    mocks.invoke.mockRejectedValue(new Error('ipc down'));
+    invokeMock.mockRejectedValue(new Error('ipc down'));
     const logger = createLogger('runtime');
     logger.error('must survive');
 
     // Error entries take the urgent path: first attempt at t=0.
     await vi.advanceTimersByTimeAsync(0);
-    expect(mocks.invoke).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledTimes(1);
     expect(loggerTestHelpers.pendingCount()).toBe(1);
 
     // First retry after 1s.
     await vi.advanceTimersByTimeAsync(1000);
-    expect(mocks.invoke).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
 
     // Second retry doubles the delay to 2s.
     await vi.advanceTimersByTimeAsync(1999);
-    expect(mocks.invoke).toHaveBeenCalledTimes(2);
+    expect(invokeMock).toHaveBeenCalledTimes(2);
     await vi.advanceTimersByTimeAsync(1);
-    expect(mocks.invoke).toHaveBeenCalledTimes(3);
+    expect(invokeMock).toHaveBeenCalledTimes(3);
 
     // Recovery: the buffered entry is re-sent, nothing was lost.
-    mocks.invoke.mockResolvedValue(undefined);
+    invokeMock.mockResolvedValue(undefined);
     await vi.advanceTimersByTimeAsync(4000);
     expect(loggerTestHelpers.pendingCount()).toBe(0);
-    const lastPayload = batchPayload(mocks.invoke.mock.calls.length - 1);
+    const lastPayload = batchPayload(invokeMock.mock.calls.length - 1);
     expect(lastPayload.entries[0]).toMatchObject({ summary: 'must survive' });
   });
 
@@ -118,7 +109,7 @@ describe('frontend logger', () => {
     expect(batchPayload(0).droppedCount).toBe(5);
     // The oldest five entries were dropped, so forwarding starts at line 5.
     expect(batchPayload(0).entries[0]?.summary).toBe('line 5');
-    const forwarded = mocks.invoke.mock.calls.reduce(
+    const forwarded = invokeMock.mock.calls.reduce(
       (total, _call, index) => total + batchPayload(index).entries.length,
       0,
     );
@@ -126,7 +117,7 @@ describe('frontend logger', () => {
   });
 
   it('keeps only the most recent 500 entries in the ring buffer', () => {
-    installDesktopApi(new PreviewDesktopApi());
+    enablePreviewDesktopRuntime();
     const logger = createLogger('runtime');
     for (let index = 0; index < 510; index += 1) {
       logger.info(`entry ${index}`);
@@ -138,16 +129,16 @@ describe('frontend logger', () => {
   });
 
   it('never invokes IPC outside the Tauri runtime', async () => {
-    installDesktopApi(new PreviewDesktopApi());
+    enablePreviewDesktopRuntime();
     const logger = createLogger('runtime');
     logger.error('browser only');
     await vi.runAllTimersAsync();
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
     expect(getRecentFrontendLogEntries().map((entry) => entry.summary)).toContain('browser only');
   });
 
   it('captures window errors and unhandled promise rejections', () => {
-    installDesktopApi(new PreviewDesktopApi());
+    enablePreviewDesktopRuntime();
     installGlobalErrorCapture();
 
     window.dispatchEvent(new ErrorEvent('error', { message: 'boom', filename: 'app.js', lineno: 1, colno: 2 }));

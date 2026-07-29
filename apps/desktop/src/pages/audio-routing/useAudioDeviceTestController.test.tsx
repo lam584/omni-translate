@@ -1,14 +1,12 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { useAudioDeviceTestController } from './useAudioDeviceTestController';
 
 type Controller = ReturnType<typeof useAudioDeviceTestController>;
 
 describe('useAudioDeviceTestController', () => {
-  let container: HTMLDivElement;
-  let root: Root;
   let controller: Controller;
 
   function Harness() {
@@ -16,25 +14,27 @@ describe('useAudioDeviceTestController', () => {
     return null;
   }
 
+  const view = registerDomHarness({
+    beforeUnmount: () => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    },
+  });
+
   async function mount() {
-    await act(async () => {
-      root.render(<Harness />);
-    });
+    await view.render(<Harness />);
   }
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    vi.useRealTimers();
-    vi.restoreAllMocks();
-    await act(async () => root.unmount());
-    container.remove();
-  });
+  async function mountAndSampleMicrophone() {
+    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(901);
+    await mount();
+    await act(async () => {
+      const test = controller.testMicrophone();
+      await Promise.resolve();
+      await vi.advanceTimersByTimeAsync(50);
+      await test;
+    });
+  }
 
   it('reports unsupported microphone capture', async () => {
     Object.defineProperty(navigator, 'mediaDevices', { configurable: true, value: undefined });
@@ -77,15 +77,7 @@ describe('useAudioDeviceTestController', () => {
       value: { getUserMedia: vi.fn().mockResolvedValue({ getTracks: () => [{ stop }] }) },
     });
     vi.stubGlobal('AudioContext', vi.fn(function AudioContextMock() { return context; }));
-    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(901);
-    await mount();
-
-    await act(async () => {
-      const test = controller.testMicrophone();
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(50);
-      await test;
-    });
+    await mountAndSampleMicrophone();
 
     expect(analyser.fftSize).toBe(1024);
     expect(connect).toHaveBeenCalledWith(analyser);
@@ -129,14 +121,7 @@ describe('useAudioDeviceTestController', () => {
         close: vi.fn().mockResolvedValue(undefined),
       };
     }));
-    vi.spyOn(performance, 'now').mockReturnValueOnce(0).mockReturnValueOnce(0).mockReturnValue(901);
-    await mount();
-    await act(async () => {
-      const test = controller.testMicrophone();
-      await Promise.resolve();
-      await vi.advanceTimersByTimeAsync(50);
-      await test;
-    });
+    await mountAndSampleMicrophone();
     expect(controller.microphone.result).not.toContain('microphone passed');
     expect(controller.microphone.result).toContain('-90.0 dB');
   });

@@ -13,35 +13,8 @@
 @import './global/console-cards.css';
 @import './global/typography.css';
 
-/* Feature styles and their first compatibility layer. Keep this order stable. */
-@import './pages/diagnostics.css';
-@import './global/layout-overrides.css';
-@import './global/forms.css';
-@import './pages/subtitle-overlay.css';
-@import './pages/provider.css';
-@import './global/responsive-overrides-provider.css';
-@import './pages/welcome.css';
-@import './pages/settings.css';
-@import './pages/driver-management.css';
-@import './pages/settings-controls.css';
-@import './global/responsive-overrides.css';
-
-/* Historical cascade layers. New rules should live with their owning feature. */
-@import './pages/subtitle-overlay-isolation.css';
-@import './global/app-theme-overrides.css';
-@import './global/forms-overrides.css';
-@import './pages/routing.css';
-@import './global/layout-modern.css';
-@import './global/responsive-overrides-2.css';
-@import './global/app-theme-overrides-late.css';
-@import './pages/provider-overrides.css';
-@import './pages/realtime-session.css';
-@import './global/responsive-overrides-3.css';
-@import './pages/glossary.css';
-@import './global/responsive-overrides-4.css';
-@import './pages/routing-overrides.css';
-@import './pages/glossary-overrides.css';
-@import './global/responsive-overrides-5.css';
+/* Feature styles and historical override layers (shared with deferred.css). */
+@import './feature-and-overrides.css';
 
 /* Late shared controls and narrowly scoped component styles. */
 @import './global/controls-modern.css';

@@ -88,6 +88,32 @@ fn status_from_probe_verdict(verdict: Option<&str>) -> String {
     }
 }
 
+/// Fetch the audio snapshot from the managed state, falling back to the
+/// preview baseline before the audio store is registered.
+fn audio_snapshot_or_preview<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+) -> crate::audio::contracts::AudioRuntimeSnapshot {
+    app.try_state::<AudioStateStore>()
+        .map(|state| state.snapshot())
+        .unwrap_or_else(crate::audio::contracts::AudioRuntimeSnapshot::preview)
+}
+
+/// Fetch the bridge snapshot from the managed state, falling back to the
+/// default snapshot before the bridge store is registered.
+fn bridge_snapshot_or_default<R: tauri::Runtime>(app: &AppHandle<R>) -> BridgeRuntimeSnapshot {
+    app.try_state::<BridgeStateStore>()
+        .map(|state| state.snapshot())
+        .unwrap_or_default()
+}
+
+/// Load the persisted config value, falling back to JSON null when the storage
+/// store is unavailable or the config cannot be read.
+fn config_value_or_null<R: tauri::Runtime>(app: &AppHandle<R>) -> Value {
+    app.try_state::<StorageStateStore>()
+        .and_then(|storage| storage.load_config().ok())
+        .unwrap_or(Value::Null)
+}
+
 fn support_signal(
     id: &str,
     label: &str,
@@ -107,18 +133,9 @@ fn support_signal(
 fn build_support_matrix<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> Vec<DiagnosticSupportSignalRuntime> {
-    let audio_snapshot = app
-        .try_state::<AudioStateStore>()
-        .map(|state| state.snapshot())
-        .unwrap_or_else(crate::audio::contracts::AudioRuntimeSnapshot::preview);
-    let bridge_snapshot = app
-        .try_state::<BridgeStateStore>()
-        .map(|state| state.snapshot())
-        .unwrap_or_default();
-    let config_value = app
-        .try_state::<StorageStateStore>()
-        .and_then(|storage| storage.load_config().ok())
-        .unwrap_or(Value::Null);
+    let audio_snapshot = audio_snapshot_or_preview(app);
+    let bridge_snapshot = bridge_snapshot_or_default(app);
+    let config_value = config_value_or_null(app);
     // Probe data lives in the provider state store (recorded by
     // events::probe_provider); before the first probe the row falls back to
     // the configured transport of the active provider.
@@ -220,10 +237,7 @@ pub fn build_diagnostics_snapshot<R: tauri::Runtime>(
         .try_state::<DiagnosticsStateStore>()
         .map(|store| store.snapshot_base())
         .unwrap_or_else(DiagnosticsRuntimeSnapshot::preview);
-    let bridge_snapshot = app
-        .try_state::<BridgeStateStore>()
-        .map(|state| state.snapshot())
-        .unwrap_or_default();
+    let bridge_snapshot = bridge_snapshot_or_default(app);
     let support_matrix = build_support_matrix(app);
     let install_status = if bridge_snapshot.install_phase == "ready" {
         "ready"
@@ -471,22 +485,13 @@ pub async fn export_diagnostics_bundle<R: tauri::Runtime>(
     fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
 
     let diagnostics_snapshot = build_diagnostics_snapshot(&app);
-    let audio_snapshot = app
-        .try_state::<AudioStateStore>()
-        .map(|state| state.snapshot())
-        .unwrap_or_else(crate::audio::contracts::AudioRuntimeSnapshot::preview);
-    let bridge_snapshot = app
-        .try_state::<BridgeStateStore>()
-        .map(|state| state.snapshot())
-        .unwrap_or_default();
+    let audio_snapshot = audio_snapshot_or_preview(&app);
+    let bridge_snapshot = bridge_snapshot_or_default(&app);
     let storage_snapshot = app
         .try_state::<StorageStateStore>()
         .map(|state| state.snapshot())
         .unwrap_or_else(crate::storage::contracts::StorageRuntimeSnapshot::preview);
-    let config_value = app
-        .try_state::<StorageStateStore>()
-        .and_then(|storage| storage.load_config().ok())
-        .unwrap_or(Value::Null);
+    let config_value = config_value_or_null(&app);
 
     let file_count = write_diagnostics_bundle(
         Path::new(&export_dir),
@@ -530,8 +535,7 @@ pub fn get_live_session_events(
 #[cfg(test)]
 mod tests {
     use std::fs;
-    use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::path::{Path, PathBuf};
 
     use serde_json::json;
 
@@ -542,37 +546,57 @@ mod tests {
     use super::{write_diagnostics_bundle, DiagnosticsRuntimeSnapshot};
 
     fn temp_dir(name: &str) -> PathBuf {
-        let marker = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("omni-diagnostics-export-{name}-{marker}"))
+        crate::diagnostics::test_support::temp_dir("diagnostics-export", name)
     }
 
-    #[test]
-    fn write_diagnostics_bundle_outputs_expected_files() {
-        let root_dir = temp_dir("root");
+    /// Create the standard `root/logs` + `root/bundle` layout shared by the
+    /// bundle tests and return the three paths.
+    fn make_bundle_dirs(name: &str) -> (PathBuf, PathBuf, PathBuf) {
+        let root_dir = temp_dir(name);
         let logs_dir = root_dir.join("logs");
         let export_dir = root_dir.join("bundle");
         fs::create_dir_all(&logs_dir).expect("create logs dir");
         fs::create_dir_all(&export_dir).expect("create export dir");
-        fs::write(
-            logs_dir.join("app.log"),
-            "2025-01-01 00:00:00.000 [NORMAL] [runtime] test.rs:1 - ready\n",
-        )
-        .expect("write log file");
+        (root_dir, logs_dir, export_dir)
+    }
 
-        let file_count = write_diagnostics_bundle(
-            &export_dir,
+    /// Invoke `write_diagnostics_bundle` with the fixed preview snapshots the
+    /// tests share, leaving only the config value and bridge runtime root to
+    /// vary per case.
+    fn write_bundle_with(
+        export_dir: &Path,
+        logs_dir: &str,
+        bridge_runtime_root: &str,
+        config: serde_json::Value,
+    ) -> Result<usize, String> {
+        write_diagnostics_bundle(
+            export_dir,
             "2025-01-01T00:00:00Z",
             "full",
             &DiagnosticsRuntimeSnapshot::preview(),
             &AudioRuntimeSnapshot::preview(),
             &BridgeRuntimeSnapshot::default(),
             &StorageRuntimeSnapshot::preview(),
-            &json!({"provider": {"transport": "http"}}),
+            &config,
+            logs_dir,
+            bridge_runtime_root,
+        )
+    }
+
+    #[test]
+    fn write_diagnostics_bundle_outputs_expected_files() {
+        let (root_dir, logs_dir, export_dir) = make_bundle_dirs("root");
+        fs::write(
+            logs_dir.join("app.log"),
+            "2025-01-01 00:00:00.000 [NORMAL] [runtime] test.rs:1 - ready\n",
+        )
+        .expect("write log file");
+
+        let file_count = write_bundle_with(
+            &export_dir,
             &logs_dir.to_string_lossy(),
             &root_dir.join("bridge-runtime").to_string_lossy(),
+            json!({"provider": {"transport": "http"}}),
         )
         .expect("write diagnostics bundle");
 
@@ -590,31 +614,21 @@ mod tests {
 
     #[test]
     fn write_diagnostics_bundle_never_exports_config_credentials() {
-        let root_dir = temp_dir("redacted");
-        let logs_dir = root_dir.join("logs");
-        let export_dir = root_dir.join("bundle");
-        fs::create_dir_all(&logs_dir).expect("create logs dir");
-        fs::create_dir_all(&export_dir).expect("create export dir");
+        let (root_dir, logs_dir, export_dir) = make_bundle_dirs("redacted");
         fs::write(logs_dir.join("app.log"), "safe log\n").expect("write log file");
         let secret = "diagnostics-test-secret-7f3a";
 
-        write_diagnostics_bundle(
+        write_bundle_with(
             &export_dir,
-            "2025-01-01T00:00:00Z",
-            "full",
-            &DiagnosticsRuntimeSnapshot::preview(),
-            &AudioRuntimeSnapshot::preview(),
-            &BridgeRuntimeSnapshot::default(),
-            &StorageRuntimeSnapshot::preview(),
-            &json!({
+            &logs_dir.to_string_lossy(),
+            &root_dir.join("bridge-runtime").to_string_lossy(),
+            json!({
                 "providers": [{
                     "apiKey": secret,
                     "customHeaders": [{"name": "Authorization", "value": secret}],
                     "baseUrl": format!("https://example.test/v1?token={secret}")
                 }]
             }),
-            &logs_dir.to_string_lossy(),
-            &root_dir.join("bridge-runtime").to_string_lossy(),
         )
         .expect("write diagnostics bundle");
 
@@ -627,28 +641,18 @@ mod tests {
 
     #[test]
     fn write_diagnostics_bundle_copies_optional_bridge_service_log() {
-        let root_dir = temp_dir("bridge-log");
-        let logs_dir = root_dir.join("logs");
+        let (root_dir, logs_dir, export_dir) = make_bundle_dirs("bridge-log");
         let bridge_runtime_root = root_dir.join("bridge-runtime");
-        let export_dir = root_dir.join("bundle");
-        fs::create_dir_all(&logs_dir).expect("create logs dir");
         fs::create_dir_all(&bridge_runtime_root).expect("create bridge runtime dir");
-        fs::create_dir_all(&export_dir).expect("create export dir");
         fs::write(logs_dir.join("app.log"), "app\n").expect("write app log");
         fs::write(bridge_runtime_root.join("bridge-service.log"), "bridge\n")
             .expect("write bridge log");
 
-        let file_count = write_diagnostics_bundle(
+        let file_count = write_bundle_with(
             &export_dir,
-            "2025-01-01T00:00:00Z",
-            "full",
-            &DiagnosticsRuntimeSnapshot::preview(),
-            &AudioRuntimeSnapshot::preview(),
-            &BridgeRuntimeSnapshot::default(),
-            &StorageRuntimeSnapshot::preview(),
-            &json!({}),
             &logs_dir.to_string_lossy(),
             &bridge_runtime_root.to_string_lossy(),
+            json!({}),
         )
         .expect("write diagnostics bundle");
 

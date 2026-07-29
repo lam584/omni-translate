@@ -43,6 +43,49 @@ function writeReport(root, directoryName, overrides = {}) {
   return report;
 }
 
+// The strict-gate tests only vary the strictContent layer's data payload.
+function strictContentLayers(strictContentData = { applicable: true, passed: true, coverage: 1 }) {
+  return Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
+    layer,
+    {
+      status: 'passed',
+      reason: null,
+      data: layer === 'strictContent' ? strictContentData : undefined,
+    },
+  ]));
+}
+
+// A report.json whose layers object is missing most required layers.
+function writeIncompleteReport(root, directoryName = '20260605-201332') {
+  const directory = path.join(root, directoryName);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, 'report.json'), JSON.stringify({
+    mode: 'live',
+    generatedAt: '2026-06-05T12:13:32.000Z',
+    verdict: 'failed',
+    failureLayer: 'app',
+    failureReason: 'runner crashed before snapshots completed',
+    layers: {
+      app: { status: 'failed', reason: 'runner crashed before snapshots completed' },
+    },
+  }));
+}
+
+// A report.json that is not valid JSON at all.
+function writeUnparsableReport(root, directoryName = '20260605-201332') {
+  const directory = path.join(root, directoryName);
+  fs.mkdirSync(directory, { recursive: true });
+  fs.writeFileSync(path.join(directory, 'report.json'), '{ invalid json');
+}
+
+// Strict provenance tests: a passing strict-content report plus one override.
+function writeStrictReport(root, directoryName, overrides = {}) {
+  return writeReport(root, directoryName, {
+    layers: strictContentLayers({ applicable: true, passed: true }),
+    ...overrides,
+  });
+}
+
 test('fails when no live report exists', () => {
   const root = makeTempRoot();
   const result = findWatchModeEvidence({ root });
@@ -122,18 +165,7 @@ test('failure summaries preserve report reason, failed steps, and key evidence',
 
 test('reports incomplete and invalid latest reports with concrete paths', () => {
   const root = makeTempRoot();
-  const incompleteDir = path.join(root, '20260605-201332');
-  fs.mkdirSync(incompleteDir, { recursive: true });
-  fs.writeFileSync(path.join(incompleteDir, 'report.json'), JSON.stringify({
-    mode: 'live',
-    generatedAt: '2026-06-05T12:13:32.000Z',
-    verdict: 'failed',
-    failureLayer: 'app',
-    failureReason: 'runner crashed before snapshots completed',
-    layers: {
-      app: { status: 'failed', reason: 'runner crashed before snapshots completed' },
-    },
-  }));
+  writeIncompleteReport(root);
 
   const incomplete = findWatchModeEvidence({ root });
 
@@ -144,9 +176,7 @@ test('reports incomplete and invalid latest reports with concrete paths', () => 
   assert.equal(incomplete.invalidCandidates[0].incomplete, true);
 
   const invalidRoot = makeTempRoot();
-  const invalidDir = path.join(invalidRoot, '20260605-201332');
-  fs.mkdirSync(invalidDir, { recursive: true });
-  fs.writeFileSync(path.join(invalidDir, 'report.json'), '{ invalid json');
+  writeUnparsableReport(invalidRoot);
 
   const invalid = findWatchModeEvidence({ root: invalidRoot });
 
@@ -161,18 +191,7 @@ test('does not fall back to stale complete reports when the latest report is inc
   writeReport(incompleteRoot, '20260605-191332', {
     generatedAt: '2026-06-05T11:13:32.000Z',
   });
-  const incompleteDir = path.join(incompleteRoot, '20260605-201332');
-  fs.mkdirSync(incompleteDir, { recursive: true });
-  fs.writeFileSync(path.join(incompleteDir, 'report.json'), JSON.stringify({
-    mode: 'live',
-    generatedAt: '2026-06-05T12:13:32.000Z',
-    verdict: 'failed',
-    failureLayer: 'app',
-    failureReason: 'runner crashed before snapshots completed',
-    layers: {
-      app: { status: 'failed', reason: 'runner crashed before snapshots completed' },
-    },
-  }));
+  writeIncompleteReport(incompleteRoot);
 
   const incomplete = findWatchModeEvidence({ root: incompleteRoot });
 
@@ -186,9 +205,7 @@ test('does not fall back to stale complete reports when the latest report is inc
   writeReport(invalidRoot, '20260605-191332', {
     generatedAt: '2026-06-05T11:13:32.000Z',
   });
-  const invalidDir = path.join(invalidRoot, '20260605-201332');
-  fs.mkdirSync(invalidDir, { recursive: true });
-  fs.writeFileSync(path.join(invalidDir, 'report.json'), '{ invalid json');
+  writeUnparsableReport(invalidRoot);
 
   const invalid = findWatchModeEvidence({ root: invalidRoot });
 
@@ -227,14 +244,7 @@ test('does not use stale root-level report.json', () => {
 test('strict mode fails when strict content is not applicable', () => {
   const root = makeTempRoot();
   writeReport(root, '20260605-191332', {
-    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
-      layer,
-      {
-        status: 'passed',
-        reason: null,
-        data: layer === 'strictContent' ? { applicable: false, passed: true } : undefined,
-      },
-    ])),
+    layers: strictContentLayers({ applicable: false, passed: true }),
   });
 
   const result = findWatchModeEvidence({ root, strict: true });
@@ -248,14 +258,7 @@ test('strict mode passes when strict content is applicable and passed', () => {
   const root = makeTempRoot();
   writeReport(root, '20260605-191332', {
     modelId: 'qwen3.5-omni-flash-realtime',
-    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
-      layer,
-      {
-        status: 'passed',
-        reason: null,
-        data: layer === 'strictContent' ? { applicable: true, passed: true, coverage: 1 } : undefined,
-      },
-    ])),
+    layers: strictContentLayers(),
   });
 
   const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
@@ -266,14 +269,7 @@ test('strict mode passes when strict content is applicable and passed', () => {
 
 test('strict model matrix requires every requested model', () => {
   const root = makeTempRoot();
-  const strictLayers = Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
-    layer,
-    {
-      status: 'passed',
-      reason: null,
-      data: layer === 'strictContent' ? { applicable: true, passed: true, coverage: 1 } : undefined,
-    },
-  ]));
+  const strictLayers = strictContentLayers();
   writeReport(root, '20260605-191332-qwen3.5-omni-flash-realtime', {
     modelId: 'qwen3.5-omni-flash-realtime',
     layers: strictLayers,
@@ -298,14 +294,7 @@ test('strict model matrix requires every requested model', () => {
 
 test('strict model matrix passes when both requested models pass', () => {
   const root = makeTempRoot();
-  const strictLayers = Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
-    layer,
-    {
-      status: 'passed',
-      reason: null,
-      data: layer === 'strictContent' ? { applicable: true, passed: true, coverage: 1 } : undefined,
-    },
-  ]));
+  const strictLayers = strictContentLayers();
   writeReport(root, '20260605-191332-qwen3.5-omni-flash-realtime', {
     generatedAt: '2026-06-05T11:13:32.000Z',
     modelId: 'qwen3.5-omni-flash-realtime',
@@ -366,14 +355,7 @@ test('default gate ignores echo-cancel runs so virtual-driver evidence stays aut
 
 test('strict feedback-mode matrix requires every model and feedback mode combination', () => {
   const root = makeTempRoot();
-  const strictLayers = Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
-    layer,
-    {
-      status: 'passed',
-      reason: null,
-      data: layer === 'strictContent' ? { applicable: true, passed: true, coverage: 1 } : undefined,
-    },
-  ]));
+  const strictLayers = strictContentLayers();
   writeReport(root, '20260605-191332-omni', {
     modelId: 'qwen3.5-omni-flash-realtime',
     layers: strictLayers,
@@ -405,13 +387,7 @@ test('strict feedback-mode matrix requires every model and feedback mode combina
 
 test('strict mode rejects evidence older than the age budget', () => {
   const root = makeTempRoot();
-  writeReport(root, '20260401-191332', {
-    generatedAt: '2026-04-01T11:13:32.000Z',
-    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
-      layer,
-      { status: 'passed', reason: null, data: layer === 'strictContent' ? { applicable: true, passed: true } : undefined },
-    ])),
-  });
+  writeStrictReport(root, '20260401-191332', { generatedAt: '2026-04-01T11:13:32.000Z' });
 
   const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
 
@@ -422,13 +398,7 @@ test('strict mode rejects evidence older than the age budget', () => {
 
 test('strict mode rejects evidence without a producing commit', () => {
   const root = makeTempRoot();
-  writeReport(root, '20260605-191332', {
-    commit: null,
-    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
-      layer,
-      { status: 'passed', reason: null, data: layer === 'strictContent' ? { applicable: true, passed: true } : undefined },
-    ])),
-  });
+  writeStrictReport(root, '20260605-191332', { commit: null });
 
   const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
 
@@ -438,13 +408,7 @@ test('strict mode rejects evidence without a producing commit', () => {
 
 test('strict mode rejects evidence whose commit is not an ancestor of HEAD', () => {
   const root = makeTempRoot();
-  writeReport(root, '20260605-191332', {
-    commit: 'orphaned-rewrite-commit',
-    layers: Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
-      layer,
-      { status: 'passed', reason: null, data: layer === 'strictContent' ? { applicable: true, passed: true } : undefined },
-    ])),
-  });
+  writeStrictReport(root, '20260605-191332', { commit: 'orphaned-rewrite-commit' });
 
   const result = findWatchModeEvidence({
     root,

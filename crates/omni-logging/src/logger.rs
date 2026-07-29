@@ -118,16 +118,22 @@ impl Logger {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+    use std::time::Duration;
 
     use super::{LogLevel, Logger};
 
     fn temp_dir(name: &str) -> PathBuf {
-        let marker = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("omni-logging-logger-{name}-{marker}"))
+        crate::test_support::temp_dir("logger", name)
+    }
+
+    // Flush the logger, read the file back and assert the expected line count,
+    // returning the lines so callers can make further per-line assertions.
+    fn flush_and_read_lines(logger: &Logger, log_path: &PathBuf, expected_len: usize) -> Vec<String> {
+        assert!(logger.flush_blocking(Duration::from_secs(5)));
+        let content = fs::read_to_string(log_path).expect("read log");
+        let lines: Vec<String> = content.lines().map(str::to_string).collect();
+        assert_eq!(lines.len(), expected_len);
+        lines
     }
 
     #[test]
@@ -138,12 +144,9 @@ mod tests {
 
         let message = "source pacer summary: releasedFrames=12 queuedFrames=0 pendingBytes=0 underruns=0 droppedFrames=0 driverBufferedBytes=0 driverDroppedBytes=0 monitorQueuedFrames=0 staleSourceFramesDropped=0";
         logger.log(LogLevel::Info, "-", message);
-        assert!(logger.flush_blocking(Duration::from_secs(5)));
 
-        let content = fs::read_to_string(&log_path).expect("read log");
-        let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 1);
-        let line = lines[0];
+        let lines = flush_and_read_lines(&logger, &log_path, 1);
+        let line = &lines[0];
         assert!(
             line.ends_with(&format!(" [NORMAL] [bridge] - - {message}")),
             "line must keep the verbatim message as a suffix after the prefix: {line}"
@@ -167,11 +170,8 @@ mod tests {
         logger.log(LogLevel::Info, "-", "before handshake key=value");
         logger.set_session_id(Some("0198c0ffee".to_string()));
         logger.log(LogLevel::Info, "-", "after handshake key=value");
-        assert!(logger.flush_blocking(Duration::from_secs(5)));
 
-        let content = fs::read_to_string(&log_path).expect("read log");
-        let lines: Vec<&str> = content.lines().collect();
-        assert_eq!(lines.len(), 2);
+        let lines = flush_and_read_lines(&logger, &log_path, 2);
         assert!(
             lines[0].ends_with("before handshake key=value"),
             "no sid token before the handshake: {}",

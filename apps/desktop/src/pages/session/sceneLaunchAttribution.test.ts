@@ -24,15 +24,42 @@ function logEntry(summary: string): DiagnosticLogEntryRuntime {
   };
 }
 
+/** Acknowledged inbound start that stays armed past the readiness deadline. */
+function armedNeverReadyAttribution() {
+  return describeSceneLaunchAttribution({
+    stage: 'inbound-route',
+    error: new Error('系统音频采集未在启动期限内就绪。'),
+    snapshot: snapshotWithInbound({ captureState: 'armed', streamBound: false, lastError: null }),
+    recentLogs: [logEntry('watch_mode.route_start_acknowledged')],
+    commandAccepted: true,
+  });
+}
+
+/** Acknowledged start whose native capture fails through lastError. */
+function nativeCaptureErrorAttribution() {
+  return describeSceneLaunchAttribution({
+    stage: 'inbound-route',
+    error: new Error('capture unavailable'),
+    snapshot: snapshotWithInbound({ captureState: 'buffering', streamBound: false, lastError: '采集设备被占用' }),
+    recentLogs: [logEntry('watch_mode.route_error')],
+    commandAccepted: true,
+  });
+}
+
+/** Start command that was never acknowledged and leaves capture idle. */
+function commandRejectedAttribution(errorMessage: string) {
+  return describeSceneLaunchAttribution({
+    stage: 'inbound-route',
+    error: new Error(errorMessage),
+    snapshot: snapshotWithInbound({ captureState: 'idle', streamBound: false, lastError: null }),
+    recentLogs: [],
+    commandAccepted: false,
+  });
+}
+
 describe('describeSceneLaunchAttribution', () => {
   it('classifies an acknowledged route that never becomes ready (armed forever)', () => {
-    const result = describeSceneLaunchAttribution({
-      stage: 'inbound-route',
-      error: new Error('系统音频采集未在启动期限内就绪。'),
-      snapshot: snapshotWithInbound({ captureState: 'armed', streamBound: false, lastError: null }),
-      recentLogs: [logEntry('watch_mode.route_start_acknowledged')],
-      commandAccepted: true,
-    });
+    const result = armedNeverReadyAttribution();
 
     expect(result.outcome).toBe('capture-not-ready');
     expect(result.message).toContain('已接受命令但未在期限内就绪');
@@ -41,13 +68,7 @@ describe('describeSceneLaunchAttribution', () => {
   });
 
   it('classifies a native capture error reported through lastError', () => {
-    const result = describeSceneLaunchAttribution({
-      stage: 'inbound-route',
-      error: new Error('capture unavailable'),
-      snapshot: snapshotWithInbound({ captureState: 'buffering', streamBound: false, lastError: '采集设备被占用' }),
-      recentLogs: [logEntry('watch_mode.route_error')],
-      commandAccepted: true,
-    });
+    const result = nativeCaptureErrorAttribution();
 
     expect(result.outcome).toBe('capture-error');
     expect(result.message).toContain('报错');
@@ -55,40 +76,16 @@ describe('describeSceneLaunchAttribution', () => {
   });
 
   it('classifies a rejected start command that was never acknowledged', () => {
-    const result = describeSceneLaunchAttribution({
-      stage: 'inbound-route',
-      error: new Error('启动音频采集超时：30 秒内未收到 Rust 运行时结果。'),
-      snapshot: snapshotWithInbound({ captureState: 'idle', streamBound: false, lastError: null }),
-      recentLogs: [],
-      commandAccepted: false,
-    });
+    const result = commandRejectedAttribution('启动音频采集超时：30 秒内未收到 Rust 运行时结果。');
 
     expect(result.outcome).toBe('command-rejected');
     expect(result.message).toContain('命令未被接受');
   });
 
   it('produces three distinct attributable messages rather than one shared timeout line', () => {
-    const notReady = describeSceneLaunchAttribution({
-      stage: 'inbound-route',
-      error: new Error('系统音频采集未在启动期限内就绪。'),
-      snapshot: snapshotWithInbound({ captureState: 'armed', streamBound: false, lastError: null }),
-      recentLogs: [logEntry('watch_mode.route_start_acknowledged')],
-      commandAccepted: true,
-    });
-    const captureError = describeSceneLaunchAttribution({
-      stage: 'inbound-route',
-      error: new Error('capture unavailable'),
-      snapshot: snapshotWithInbound({ captureState: 'buffering', streamBound: false, lastError: '采集设备被占用' }),
-      recentLogs: [logEntry('watch_mode.route_error')],
-      commandAccepted: true,
-    });
-    const commandRejected = describeSceneLaunchAttribution({
-      stage: 'inbound-route',
-      error: new Error('启动音频采集超时'),
-      snapshot: snapshotWithInbound({ captureState: 'idle', streamBound: false, lastError: null }),
-      recentLogs: [],
-      commandAccepted: false,
-    });
+    const notReady = armedNeverReadyAttribution();
+    const captureError = nativeCaptureErrorAttribution();
+    const commandRejected = commandRejectedAttribution('启动音频采集超时');
 
     const messages = new Set([notReady.message, captureError.message, commandRejected.message]);
     expect(messages.size).toBe(3);

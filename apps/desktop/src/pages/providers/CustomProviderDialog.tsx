@@ -5,6 +5,7 @@ import AppIcon from '../../components/icons/AppIcon';
 import ModalDialog from '../../components/ModalDialog';
 import type { ProviderAuthScheme, ProviderKind, ProviderTransport } from '../../schema/provider-contract';
 import type { CustomProviderTemplateDraft } from '../../utils/custom-provider-templates';
+import { ProviderAuthSchemeOptions, ProviderDialogHeader } from './ProviderDialogShared';
 import { providersPageHelpers } from './providersPageHelpers';
 
 type CustomProviderDialogProps = {
@@ -31,15 +32,7 @@ export default function CustomProviderDialog({
 
   return (
     <ModalDialog aria-label={t('providers.customDialog.title')} className="provider-modal content-card page-card compact-card" onClose={onClose} variant="provider">
-        <div className="provider-panel-heading provider-panel-heading-compact">
-          <div>
-            <h3>{t('providers.customDialog.title')}</h3>
-            <p>{t('providers.customDialog.description')}</p>
-          </div>
-          <button className="provider-header-icon" onClick={onClose} title={t('common.close')} type="button">
-            <AppIcon name="close" size={13} />
-          </button>
-        </div>
+        <ProviderDialogHeader closeTitle={t('common.close')} description={t('providers.customDialog.description')} onClose={onClose} title={t('providers.customDialog.title')} />
 
         <div className="field-grid provider-field-grid provider-modal-grid">
           <label className="field-stack">
@@ -78,9 +71,7 @@ export default function CustomProviderDialog({
           <label className="field-stack">
             <span>{t('providers.customDialog.authScheme')}</span>
             <select className="select-input" onChange={(event) => setDraft((current) => ({ ...current, authScheme: event.target.value as ProviderAuthScheme }))} value={draft.authScheme}>
-              <option value="bearer">Bearer</option>
-              <option value="api-key">API Key</option>
-              <option value="none">{t('providers.common.none')}</option>
+              <ProviderAuthSchemeOptions />
             </select>
           </label>
           {draft.kind === 'dashscope' ? (

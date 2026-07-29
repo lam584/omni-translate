@@ -1,6 +1,7 @@
 import { act, useRef } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 
 const mocks = vi.hoisted(() => ({
   isTauri: vi.fn(),
@@ -25,8 +26,6 @@ vi.mock('../../runtime/overlay-window-adapter', () => ({
 import { useOverlayNativeEventSync } from './useOverlayNativeEventSync';
 
 describe('useOverlayNativeEventSync', () => {
-  let container: HTMLDivElement;
-  let root: Root;
   let resizeCallback: () => Promise<void>;
   const setContextMenu = vi.fn();
   const setHovered = vi.fn();
@@ -63,40 +62,32 @@ describe('useOverlayNativeEventSync', () => {
     return null;
   }
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.useFakeTimers();
-    for (const mock of Object.values(mocks)) mock.mockReset();
-    for (const mock of [setContextMenu, setHovered, syncRegion, syncWindowState, syncPosition, updateDraft]) mock.mockReset();
-    mocks.isTauri.mockReturnValue(true);
-    mocks.scaleFactor.mockResolvedValue(2);
-    mocks.innerSize.mockResolvedValue({ width: 3_000, height: 80 });
-    mocks.currentMonitor.mockResolvedValue({ workArea: {} });
-    mocks.onResized.mockImplementation(async (callback: () => Promise<void>) => {
-      resizeCallback = callback;
-      return vi.fn();
-    });
-    refs.programmatic = { current: false };
-    refs.timer = { current: null };
-    refs.resizing = { current: false };
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    vi.useRealTimers();
+  const view = registerDomHarness({
+    fakeTimers: true,
+    setup: () => {
+      for (const mock of Object.values(mocks)) mock.mockReset();
+      for (const mock of [setContextMenu, setHovered, syncRegion, syncWindowState, syncPosition, updateDraft]) mock.mockReset();
+      mocks.isTauri.mockReturnValue(true);
+      mocks.scaleFactor.mockResolvedValue(2);
+      mocks.innerSize.mockResolvedValue({ width: 3_000, height: 80 });
+      mocks.currentMonitor.mockResolvedValue({ workArea: {} });
+      mocks.onResized.mockImplementation(async (callback: () => Promise<void>) => {
+        resizeCallback = callback;
+        return vi.fn();
+      });
+      refs.programmatic = { current: false };
+      refs.timer = { current: null };
+      refs.resizing = { current: false };
+    },
   });
 
   it('skips subscriptions outside Tauri and syncs unlocked Tauri state without closing UI', async () => {
     mocks.isTauri.mockReturnValue(false);
-    await act(async () => root.render(<Harness locked={false} />));
+    await view.render(<Harness locked={false} />);
     expect(mocks.onResized).not.toHaveBeenCalled();
 
     mocks.isTauri.mockReturnValue(true);
-    await act(async () => root.render(<Harness locked={false} hotspot />));
+    await view.render(<Harness locked={false} hotspot />);
     expect(syncWindowState).toHaveBeenCalledWith(false, true, true);
     expect(setHovered).not.toHaveBeenCalled();
   });
@@ -107,7 +98,7 @@ describe('useOverlayNativeEventSync', () => {
       expect(update({ open: true, x: 2, y: 3 })).toEqual({ open: false, x: 2, y: 3 });
     });
     await act(async () => {
-      root.render(<Harness />);
+      view.root.render(<Harness />);
       await Promise.resolve();
     });
     expect(setHovered).toHaveBeenCalledWith(false);
@@ -130,7 +121,7 @@ describe('useOverlayNativeEventSync', () => {
 
   it('skips draft persistence when no current monitor exists', async () => {
     mocks.currentMonitor.mockResolvedValue(null);
-    await act(async () => root.render(<Harness locked={false} />));
+    await view.render(<Harness locked={false} />);
 
     await resizeCallback();
     await vi.advanceTimersByTimeAsync(300);
@@ -140,7 +131,7 @@ describe('useOverlayNativeEventSync', () => {
 
   it('persists manual resize height up to the expanded 720px limit', async () => {
     mocks.innerSize.mockResolvedValue({ width: 1_920, height: 1_600 });
-    await act(async () => root.render(<Harness locked={false} />));
+    await view.render(<Harness locked={false} />);
 
     await resizeCallback();
     await vi.advanceTimersByTimeAsync(300);
@@ -155,8 +146,8 @@ describe('useOverlayNativeEventSync', () => {
       resizeCallback = callback;
       return new Promise((resolve) => { resolveListener = resolve; });
     });
-    await act(async () => root.render(<Harness />));
-    await act(async () => root.unmount());
+    await view.render(<Harness />);
+    await view.unmount();
 
     await resizeCallback();
     resolveListener(unlisten);
@@ -164,6 +155,6 @@ describe('useOverlayNativeEventSync', () => {
 
     expect(syncRegion).not.toHaveBeenCalled();
     expect(unlisten).toHaveBeenCalled();
-    root = createRoot(container);
+    view.remount();
   });
 });

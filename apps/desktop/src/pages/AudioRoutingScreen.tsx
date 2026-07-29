@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCallback } from 'react';
 import { Link } from 'react-router-dom';
@@ -340,6 +340,42 @@ function AudioRoutingPage() {
   const speakerTestResult = deviceTests.speaker.result;
   const speakerEnergyDb = deviceTests.speaker.energyDb;
 
+  // Shared device picker + test-button scaffolding for the capture/output panels.
+  const deviceSelectField = (
+    label: string,
+    value: string,
+    available: boolean,
+    devices: typeof captureDevices,
+    onChange: (deviceId: string) => void,
+  ) => (
+    <label className="field-stack field-span-full">
+      <span>{label}</span>
+      <select className="select-input" onChange={(event) => onChange(event.target.value)} value={value}>
+        {!available && <option disabled value={value}>{unavailableDeviceLabel}</option>}
+        {devices.map((device) => (
+          <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+
+  const routingTestControls = (
+    testing: boolean,
+    available: boolean,
+    onTest: () => void,
+    icon: 'wave' | 'headphones',
+    actionLabel: string,
+    result: string | null,
+  ) => (
+    <div className="routing-test-row-controls">
+      <button className="icon-button" disabled={testing || !available} onClick={onTest} type="button">
+        <AppIcon name={icon} size={15} />
+        {testing ? tWithDefault(t, 'audioRouting.testing') : actionLabel}
+      </button>
+      {result ? <span className="routing-inline-result">{result}</span> : null}
+    </div>
+  );
+
   const selectModel = (scenario: ScenarioId, modelId: string) => {
     switch (scenario) {
       case 'inbound':
@@ -458,24 +494,10 @@ function AudioRoutingPage() {
             outboundSubtitle={tWithDefault(t, 'audioRouting.chainReturnToPeer')}
           />
 
-          <label className="field-stack field-span-full">
-            <span>{tWithDefault(t, 'audioRouting.microphone')}</span>
-            <select className="select-input" onChange={(event) => handleInputDeviceChange(event.target.value)} value={configDraft.devices.inputDeviceId}>
-              {!selectedInputAvailable && <option disabled value={configDraft.devices.inputDeviceId}>{unavailableDeviceLabel}</option>}
-              {captureDevices.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
-              ))}
-            </select>
-          </label>
+          {deviceSelectField(tWithDefault(t, 'audioRouting.microphone'), configDraft.devices.inputDeviceId, selectedInputAvailable, captureDevices, handleInputDeviceChange)}
 
           <div className="routing-test-row">
-            <div className="routing-test-row-controls">
-              <button className="icon-button" disabled={micTesting || !selectedInputAvailable} onClick={handleMicTest} type="button">
-                <AppIcon name="wave" size={15} />
-                {micTesting ? tWithDefault(t, 'audioRouting.testing') : tWithDefault(t, 'audioRouting.testMic')}
-              </button>
-              {micTestResult ? <span className="routing-inline-result">{micTestResult}</span> : null}
-            </div>
+            {routingTestControls(micTesting, selectedInputAvailable, handleMicTest, 'wave', tWithDefault(t, 'audioRouting.testMic'), micTestResult)}
             <div className="routing-test-meter">
               <AudioLevelMeter energyDb={micEnergyDb} label="" vadState="speech" captureActive={audioRuntimeSnapshot.inbound.captureState === 'capturing' && audioRuntimeSnapshot.inbound.streamBound} />
             </div>
@@ -524,24 +546,10 @@ function AudioRoutingPage() {
             outboundSubtitle={tWithDefault(t, 'audioRouting.chainLocalPlayback')}
           />
 
-          <label className="field-stack field-span-full">
-            <span>{tWithDefault(t, 'audioRouting.speaker')}</span>
-            <select className="select-input" onChange={(event) => handleOutputDeviceChange(event.target.value)} value={configDraft.devices.outputDeviceId}>
-              {!selectedOutputAvailable && <option disabled value={configDraft.devices.outputDeviceId}>{unavailableDeviceLabel}</option>}
-              {physicalRenderDevices.map((device) => (
-                <option key={device.deviceId} value={device.deviceId}>{device.label}</option>
-              ))}
-            </select>
-          </label>
+          {deviceSelectField(tWithDefault(t, 'audioRouting.speaker'), configDraft.devices.outputDeviceId, selectedOutputAvailable, physicalRenderDevices, handleOutputDeviceChange)}
 
           <div className="routing-test-row">
-            <div className="routing-test-row-controls">
-              <button className="icon-button" disabled={speakerTesting || !selectedOutputAvailable} onClick={handleSpeakerTest} type="button">
-                <AppIcon name="headphones" size={15} />
-                {speakerTesting ? tWithDefault(t, 'audioRouting.testing') : tWithDefault(t, 'audioRouting.testSpeaker')}
-              </button>
-              {speakerTestResult ? <span className="routing-inline-result">{speakerTestResult}</span> : null}
-            </div>
+            {routingTestControls(speakerTesting, selectedOutputAvailable, handleSpeakerTest, 'headphones', tWithDefault(t, 'audioRouting.testSpeaker'), speakerTestResult)}
             <div className="routing-test-meter">
               <AudioLevelMeter energyDb={speakerEnergyDb} label="" vadState={speakerTesting ? 'speech' : 'silence'} />
             </div>

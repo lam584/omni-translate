@@ -32,6 +32,13 @@ function SettingsPage() {
   const current = i18n.resolvedLanguage ?? getCurrentLanguage();
   const currentMeta = languages.find((item) => item.code === current) ?? languages[0];
 
+  // Shared <option> list for the three language selects below.
+  const languageOptions = languages.map((item) => (
+    <option key={item.code} value={item.code}>
+      {item.nativeName} · {item.englishName}
+    </option>
+  ));
+
   const translationPreference = configDraft.subtitles.translationLanguagePreference || current;
   const isCustomPreference = !supportedLanguages.some((item) => item.code === translationPreference);
 
@@ -121,11 +128,7 @@ function SettingsPage() {
           <label className="settings-field">
             <span className="settings-field-label">{t('settings.languageLabel')}</span>
             <select className="settings-field-control" value={current} onChange={(event) => void handleLanguageChange(event)}>
-              {languages.map((item) => (
-                <option key={item.code} value={item.code}>
-                  {item.nativeName} · {item.englishName}
-                </option>
-              ))}
+              {languageOptions}
             </select>
           </label>
 
@@ -150,11 +153,7 @@ function SettingsPage() {
               value={showCustomPreference ? TRANSLATION_CUSTOM_VALUE : translationPreference}
               onChange={handleTranslationPreferenceChange}
             >
-              {languages.map((item) => (
-                <option key={item.code} value={item.code}>
-                  {item.nativeName} · {item.englishName}
-                </option>
-              ))}
+              {languageOptions}
               <option value={TRANSLATION_CUSTOM_VALUE}>{t('settings.translationPreferenceCustom')}</option>
             </select>
           </label>
@@ -184,11 +183,7 @@ function SettingsPage() {
               onChange={handleOutboundLanguageChange}
             >
               <option value={OUTBOUND_LANGUAGE_AUTO_VALUE}>{t('settings.outboundLanguageAuto')}</option>
-              {languages.map((item) => (
-                <option key={item.code} value={item.code}>
-                  {item.nativeName} · {item.englishName}
-                </option>
-              ))}
+              {languageOptions}
             </select>
           </label>
 

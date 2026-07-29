@@ -31,6 +31,11 @@ fn main() {
 
 #[cfg(windows)]
 mod probe {
+    use omni_bridge_service::probe_support::{
+        coarse_dominant_frequency, component_amplitude, for_each_capture_packet, open_capture_stream,
+        open_render_stream, DriverStatus, DRIVER_STATUS_BASE_SIZE, IOCTL_OMNI_BRIDGE_QUERY_STATUS,
+        IOCTL_OMNI_BRIDGE_RESET, OMNI_BRIDGE_DEVICE_PATH,
+    };
     use serde::Serialize;
     use std::f32::consts::TAU;
     use std::fs::OpenOptions;
@@ -39,23 +44,10 @@ mod probe {
     use std::time::{Duration, Instant};
     use wasapi::{
         initialize_mta, AudioCaptureClient, AudioClient, AudioRenderClient, Device,
-        DeviceEnumerator, Direction, SampleType, StreamMode, WaveFormat,
+        DeviceEnumerator, Direction, SampleType, WaveFormat,
     };
     use windows_sys::Win32::System::IO::DeviceIoControl;
 
-    const OMNI_BRIDGE_DEVICE_PATH: &str = r"\\.\OmniTranslateVirtualAudio";
-    const FILE_DEVICE_OMNI_TRANSLATE: u32 = 0x8337;
-    const METHOD_BUFFERED: u32 = 0;
-    const FILE_READ_DATA: u32 = 0x0001;
-    const FILE_WRITE_DATA: u32 = 0x0002;
-    const IOCTL_OMNI_BRIDGE_QUERY_STATUS: u32 = (FILE_DEVICE_OMNI_TRANSLATE << 16)
-        | (FILE_READ_DATA << 14)
-        | (0x801 << 2)
-        | METHOD_BUFFERED;
-    const IOCTL_OMNI_BRIDGE_RESET: u32 = (FILE_DEVICE_OMNI_TRANSLATE << 16)
-        | (FILE_WRITE_DATA << 14)
-        | (0x802 << 2)
-        | METHOD_BUFFERED;
     const SAMPLE_RATE: usize = 48_000;
     const CHANNELS: usize = 2;
     const BYTES_PER_SAMPLE: usize = std::mem::size_of::<f32>();
@@ -104,25 +96,6 @@ mod probe {
         pub passed: bool,
         pub detail: String,
     }
-
-    #[repr(C)]
-    #[derive(Clone, Copy, Default)]
-    struct DriverStatus {
-        abi_version: u32,
-        ring_capacity_bytes: u32,
-        buffered_bytes: u32,
-        max_buffered_bytes: u32,
-        captured_bytes: u64,
-        delivered_bytes: u64,
-        dropped_bytes: u64,
-        render_streams_created: u64,
-        render_run_transitions: u64,
-        render_set_write_packet_calls: u64,
-        render_read_bytes_calls: u64,
-        loopback_capture_read_calls: u64,
-    }
-
-    const DRIVER_STATUS_BASE_SIZE: u32 = 40;
 
     #[derive(Default)]
     struct CaptureMetrics {
@@ -176,20 +149,7 @@ mod probe {
 
     impl LoopbackCapture {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let mut audio_client = device.get_iaudioclient().map_err(error_text)?;
-            let (_, minimum_period) = audio_client.get_device_period().map_err(error_text)?;
-            audio_client
-                .initialize_client(
-                    format,
-                    &Direction::Capture,
-                    &StreamMode::PollingShared {
-                        autoconvert: true,
-                        buffer_duration_hns: minimum_period,
-                    },
-                )
-                .map_err(error_text)?;
-            let capture_client = audio_client.get_audiocaptureclient().map_err(error_text)?;
-            audio_client.start_stream().map_err(error_text)?;
+            let (audio_client, capture_client) = open_capture_stream(device, format)?;
             Ok(Self {
                 audio_client,
                 capture_client,
@@ -197,24 +157,9 @@ mod probe {
         }
 
         fn collect_available(&self, metrics: &mut CaptureMetrics) -> Result<(), String> {
-            while let Some(packet_frames) = self
-                .capture_client
-                .get_next_packet_size()
-                .map_err(error_text)?
-                .filter(|frames| *frames > 0)
-            {
-                let mut packet = vec![0_u8; packet_frames as usize * BYTES_PER_FRAME];
-                let (frames_read, buffer_info) = self
-                    .capture_client
-                    .read_from_device(&mut packet)
-                    .map_err(error_text)?;
-                packet.truncate(frames_read as usize * BYTES_PER_FRAME);
-                if buffer_info.flags.silent {
-                    packet.fill(0);
-                }
-                metrics.push_packet(&packet, buffer_info.flags.silent);
-            }
-            Ok(())
+            for_each_capture_packet(&self.capture_client, BYTES_PER_FRAME, |packet, silent| {
+                metrics.push_packet(packet, silent);
+            })
         }
     }
 
@@ -232,20 +177,7 @@ mod probe {
 
     impl ToneRender {
         fn start(device: &Device, format: &WaveFormat) -> Result<Self, String> {
-            let mut audio_client = device.get_iaudioclient().map_err(error_text)?;
-            let (_, minimum_period) = audio_client.get_device_period().map_err(error_text)?;
-            audio_client
-                .initialize_client(
-                    format,
-                    &Direction::Render,
-                    &StreamMode::PollingShared {
-                        autoconvert: true,
-                        buffer_duration_hns: minimum_period,
-                    },
-                )
-                .map_err(error_text)?;
-            let render_client = audio_client.get_audiorenderclient().map_err(error_text)?;
-            audio_client.start_stream().map_err(error_text)?;
+            let (audio_client, render_client) = open_render_stream(device, format)?;
             Ok(Self {
                 audio_client,
                 render_client,
@@ -515,29 +447,8 @@ mod probe {
         }
     }
 
-    fn component_amplitude(samples: &[f32], frequency_hz: f32) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-        let omega = TAU * frequency_hz / SAMPLE_RATE as f32;
-        let mut real = 0.0_f64;
-        let mut imaginary = 0.0_f64;
-        for (index, sample) in samples.iter().enumerate() {
-            let angle = omega as f64 * index as f64;
-            real += *sample as f64 * angle.cos();
-            imaginary -= *sample as f64 * angle.sin();
-        }
-        (2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f64) as f32
-    }
-
     fn estimate_dominant_frequency(samples: &[f32]) -> f32 {
-        let coarse = (100..=5_000)
-            .step_by(25)
-            .map(|frequency| frequency as f32)
-            .max_by(|left, right| {
-                component_amplitude(samples, *left).total_cmp(&component_amplitude(samples, *right))
-            })
-            .unwrap_or(0.0);
+        let coarse = coarse_dominant_frequency(samples);
         let start = (coarse as i32 - 25).max(1);
         let end = coarse as i32 + 25;
         (start..=end)

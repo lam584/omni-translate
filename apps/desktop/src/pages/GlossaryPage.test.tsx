@@ -3,40 +3,37 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils';
+import { buttonByText, click, inputText, selectValue } from '../test-utils/dom-interactions';
 import { writeProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
 import GlossaryPage from './GlossaryPage';
 
-async function click(element: HTMLElement | null | undefined) {
-  expect(element).toBeInstanceOf(HTMLElement);
-  await act(async () => {
-    element?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-  });
-}
-
-function buttonByText(container: HTMLElement, text: string) {
-  return Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.includes(text));
-}
-
-async function inputText(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
-  const prototype = element instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
-  const valueSetter = Object.getOwnPropertyDescriptor(prototype, 'value')?.set;
-  await act(async () => {
-    valueSetter?.call(element, value);
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-}
-
-async function selectValue(element: HTMLSelectElement, value: string) {
-  const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-  await act(async () => {
-    valueSetter?.call(element, value);
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-}
-
 function clickBySelector<T extends HTMLElement = HTMLElement>(container: HTMLElement, selector: string, index = 0) {
   return Array.from(container.querySelectorAll<T>(selector))[index];
+}
+
+/** Seeds the store with a fresh config draft after applying `mutate`. */
+function seedGlossaryConfig(mutate: (configDraft: typeof appConfigDraftMock) => void) {
+  const configDraft = structuredClone(appConfigDraftMock);
+  mutate(configDraft);
+  useAppStore.setState((state) => ({ ...state, configDraft }));
+  return configDraft;
+}
+
+/** Stubs blob URL creation and anchor clicks so export flows run headless. */
+function stubExportDownload() {
+  vi.stubGlobal('URL', {
+    ...URL,
+    createObjectURL: vi.fn(() => 'blob:test'),
+    revokeObjectURL: vi.fn(),
+  });
+  vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+}
+
+/** Builds a bubbling drag event carrying the given dataTransfer stand-in. */
+function dragEventWithTransfer(type: string, transfer: unknown) {
+  const event = new Event(type, { bubbles: true, cancelable: true });
+  Object.defineProperty(event, 'dataTransfer', { value: transfer });
+  return event;
 }
 
 describe('GlossaryPage compact labels', () => {
@@ -108,28 +105,23 @@ describe('GlossaryPage compact labels', () => {
   });
 
   it('renders populated libraries and runs filters, preview, entry and library actions', async () => {
-    const configDraft = structuredClone(appConfigDraftMock);
-    configDraft.glossary.libraries = [
-      {
-        id: 'watch',
-        name: 'Watch Terms',
-        enabled: true,
-        priority: 0,
-        entries: [
-          { id: 'gg', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'GG', targetTerm: '好局', strategy: 'force', important: true, caseSensitive: false, wholeWord: true },
-          { id: 'npc', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'NPC', targetTerm: '角色', strategy: 'suggest', important: false, caseSensitive: false, wholeWord: false },
-          { id: 'raw', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'RAW', targetTerm: '原文', strategy: 'keep', important: false, caseSensitive: false, wholeWord: false },
-        ],
-      },
-      { id: 'secondary', name: 'Secondary', enabled: true, priority: 1, entries: [] },
-    ];
-    useAppStore.setState((state) => ({ ...state, configDraft }));
-    vi.stubGlobal('URL', {
-      ...URL,
-      createObjectURL: vi.fn(() => 'blob:test'),
-      revokeObjectURL: vi.fn(),
+    seedGlossaryConfig((configDraft) => {
+      configDraft.glossary.libraries = [
+        {
+          id: 'watch',
+          name: 'Watch Terms',
+          enabled: true,
+          priority: 0,
+          entries: [
+            { id: 'gg', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'GG', targetTerm: '好局', strategy: 'force', important: true, caseSensitive: false, wholeWord: true },
+            { id: 'npc', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'NPC', targetTerm: '角色', strategy: 'suggest', important: false, caseSensitive: false, wholeWord: false },
+            { id: 'raw', sourceLang: 'en-US', targetLang: 'zh-CN', sourceTerm: 'RAW', targetTerm: '原文', strategy: 'keep', important: false, caseSensitive: false, wholeWord: false },
+          ],
+        },
+        { id: 'secondary', name: 'Secondary', enabled: true, priority: 1, entries: [] },
+      ];
     });
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    stubExportDownload();
 
     await view.render(<GlossaryPage />);
     expect(container.textContent).toContain('Watch Terms');
@@ -199,11 +191,11 @@ describe('GlossaryPage compact labels', () => {
   });
 
   it('removes unselected, selected-with-fallback, and final glossary libraries', async () => {
-    const configDraft = structuredClone(appConfigDraftMock);
-    configDraft.glossary.libraries = ['first', 'second', 'third'].map((id, priority) => ({
-      id, name: id, enabled: true, priority, entries: [],
-    }));
-    useAppStore.setState((state) => ({ ...state, configDraft }));
+    seedGlossaryConfig((configDraft) => {
+      configDraft.glossary.libraries = ['first', 'second', 'third'].map((id, priority) => ({
+        id, name: id, enabled: true, priority, entries: [],
+      }));
+    });
     await view.render(<GlossaryPage />);
     const remove = (id: string) => Array.from(container.querySelectorAll<HTMLElement>('.glossary-library-item'))
       .find((item) => item.textContent?.includes(id))?.querySelector<HTMLButtonElement>('.glossary-mini-button-danger');
@@ -286,12 +278,7 @@ describe('GlossaryPage compact labels', () => {
       },
     ];
     useAppStore.setState((state) => ({ ...state, configDraft }));
-    vi.stubGlobal('URL', {
-      ...URL,
-      createObjectURL: vi.fn(() => 'blob:test'),
-      revokeObjectURL: vi.fn(),
-    });
-    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    stubExportDownload();
     await view.render(<GlossaryPage />);
 
     await click(buttonByText(container, '下一步'));
@@ -307,13 +294,11 @@ describe('GlossaryPage compact labels', () => {
       getData() { return this.value; },
       setData(_type: string, value: string) { this.value = value; },
     };
-    const dragStart = new Event('dragstart', { bubbles: true });
-    Object.defineProperty(dragStart, 'dataTransfer', { value: transfer });
+    const dragStart = dragEventWithTransfer('dragstart', transfer);
     await act(async () => {
       cards[1]?.dispatchEvent(dragStart);
     });
-    const dragOver = new Event('dragover', { bubbles: true, cancelable: true });
-    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer });
+    const dragOver = dragEventWithTransfer('dragover', transfer);
     await act(async () => {
       cards[0]?.dispatchEvent(dragOver);
     });
@@ -391,7 +376,6 @@ describe('GlossaryPage compact labels', () => {
     useAppStore.setState((state) => ({ ...state, configDraft }));
 
     await view.render(<GlossaryPage />);
-
     const input = container.querySelector<HTMLInputElement>('input[type="file"]')!;
     Object.defineProperty(input, 'files', { configurable: true, value: [new File(['test'], 'invalid.json', { type: 'application/json' })] });
     await act(async () => {
@@ -407,20 +391,17 @@ describe('GlossaryPage compact labels', () => {
       getData: vi.fn(() => 'second'),
       setData: vi.fn(),
     };
-    const dragOver = new Event('dragover', { bubbles: true, cancelable: true });
-    Object.defineProperty(dragOver, 'dataTransfer', { value: transfer });
+    const dragOver = dragEventWithTransfer('dragover', transfer);
     await act(async () => {
       cards[0]?.dispatchEvent(dragOver);
     });
     expect(transfer.getData).toHaveBeenCalledWith('text/plain');
     expect(useAppStore.getState().configDraft.glossary.libraries[0]?.id).toBe('second');
 
-    const sameTarget = new Event('dragover', { bubbles: true, cancelable: true });
-    Object.defineProperty(sameTarget, 'dataTransfer', { value: { ...transfer, getData: () => 'second' } });
+    const sameTarget = dragEventWithTransfer('dragover', { ...transfer, getData: () => 'second' });
     await act(async () => cards[1]?.dispatchEvent(sameTarget));
 
-    const noSourceDragOver = new Event('dragover', { bubbles: true, cancelable: true });
-    Object.defineProperty(noSourceDragOver, 'dataTransfer', { value: { getData: vi.fn(() => ''), setData: vi.fn(), effectAllowed: '' } });
+    const noSourceDragOver = dragEventWithTransfer('dragover', { getData: vi.fn(() => ''), setData: vi.fn(), effectAllowed: '' });
     await act(async () => {
       container.querySelector<HTMLElement>('.glossary-library-item')?.dispatchEvent(noSourceDragOver);
     });
@@ -428,11 +409,11 @@ describe('GlossaryPage compact labels', () => {
   });
 
   it('closes entry and library dialogs from each dismiss target and blocks empty entry saves', async () => {
-    const configDraft = structuredClone(appConfigDraftMock);
-    configDraft.glossary.libraries = [
-      { id: 'watch', name: 'Watch Terms', enabled: true, priority: 0, entries: [] },
-    ];
-    useAppStore.setState((state) => ({ ...state, configDraft }));
+    seedGlossaryConfig((configDraft) => {
+      configDraft.glossary.libraries = [
+        { id: 'watch', name: 'Watch Terms', enabled: true, priority: 0, entries: [] },
+      ];
+    });
 
     await view.render(<GlossaryPage />);
 

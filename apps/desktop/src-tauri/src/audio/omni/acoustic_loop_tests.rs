@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use super::connection_coordinator::{
     classify_manual_response, recent_echo_input_is_dominated, ManualResponseDecision,
 };
-use crate::audio::echo_cancel::EchoReferenceBuffer;
+use crate::audio::echo_cancel::{rms, EchoReferenceBuffer};
 
 const SAMPLE_RATE_HZ: usize = 48_000;
 const CHANNELS: usize = 2;
@@ -76,10 +76,6 @@ struct LoopOutcome {
     max_unsuppressed_rms: f32,
     /// Max RMS of the raw microphone chunks (the untreated echo level).
     max_raw_rms: f32,
-}
-
-fn rms(samples: &[f32]) -> f32 {
-    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
 }
 
 /// Plays `speaker_wave` through the echo reference (as push_echo_reference

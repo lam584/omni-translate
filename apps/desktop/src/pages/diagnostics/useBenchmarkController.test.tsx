@@ -1,8 +1,8 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import i18n from '../../i18n/config';
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
 import { classifyBenchmarkError, useBenchmarkController, type BenchmarkVoiceModel } from './useBenchmarkController';
 
@@ -21,8 +21,6 @@ const option: BenchmarkVoiceModel = {
 };
 
 describe('useBenchmarkController', () => {
-  let root: Root;
-  let container: HTMLDivElement;
   let controller: ReturnType<typeof useBenchmarkController>;
   let options: BenchmarkVoiceModel[];
 
@@ -31,27 +29,20 @@ describe('useBenchmarkController', () => {
     return null;
   }
 
+  const view = registerDomHarness({
+    setup: () => {
+      runtime.readProviderSecret.mockReset();
+      runtime.runModelBenchmark.mockReset();
+      options = [option];
+    },
+  });
+
   async function mount() {
     await act(async () => {
-      root.render(<Harness />);
+      view.root.render(<Harness />);
       await Promise.resolve();
     });
   }
-
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    runtime.readProviderSecret.mockReset();
-    runtime.runModelBenchmark.mockReset();
-    options = [option];
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-  });
 
   it('rejects a missing model and an empty input path', async () => {
     options = [];
@@ -60,10 +51,7 @@ describe('useBenchmarkController', () => {
     expect(controller.error).toBe(i18n.t('diagnostics.benchmark.selectVoiceModelFirst'));
 
     options = [option];
-    await act(async () => {
-      root.render(<Harness />);
-      await Promise.resolve();
-    });
+    await mount();
     await act(async () => controller.setModelId(option.modelId));
     await act(async () => controller.setMp3Path('   '));
     await act(async () => controller.run());

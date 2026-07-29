@@ -196,18 +196,25 @@ pub(super) fn resolve_route_target_language(direction: &str, config: &Value) -> 
         {
             return configured.to_string();
         }
-        return config
-            .pointer("/subtitles/sourceLanguage")
-            .and_then(Value::as_str)
-            .map(str::trim)
-            .filter(|lang| !lang.is_empty() && !lang.eq_ignore_ascii_case("auto"))
-            .unwrap_or("en")
-            .to_string();
+        return subtitle_source_language_or_english(config);
     }
     config
         .pointer("/subtitles/targetLanguage")
         .and_then(Value::as_str)
         .unwrap_or("zh-CN")
+        .to_string()
+}
+
+/// Subtitle source language for outbound translation: the configured source,
+/// trimmed and rejected when empty or `auto`, otherwise English. Shared with
+/// the subtitle translate worker's outbound-target derivation.
+pub(crate) fn subtitle_source_language_or_english(config: &Value) -> String {
+    config
+        .pointer("/subtitles/sourceLanguage")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|lang| !lang.is_empty() && !lang.eq_ignore_ascii_case("auto"))
+        .unwrap_or("en")
         .to_string()
 }
 
@@ -412,6 +419,27 @@ pub(super) fn resolve_model_provider_from_config(
     resolved
 }
 
+/// Resolves a `templateId::modelId` composite against the provider array,
+/// overriding the matched provider's model. Shared by the route-config and
+/// speech-config resolvers so the composite lookup lives in one place.
+pub(crate) fn resolve_composite_template_provider(
+    providers: &[Value],
+    template_id: &str,
+    model_id: &str,
+) -> Option<ProviderDraftInput> {
+    for provider_value in providers {
+        let parsed: Option<ProviderDraftInput> =
+            serde_json::from_value(provider_value.clone()).ok();
+        if let Some(mut provider) = parsed {
+            if provider.template_id == template_id {
+                provider.model = model_id.to_string();
+                return Some(provider);
+            }
+        }
+    }
+    None
+}
+
 pub(crate) fn resolve_model_provider_from_config_value(
     config: &Value,
     composite_model_id: &str,
@@ -423,17 +451,7 @@ pub(crate) fn resolve_model_provider_from_config_value(
         .unwrap_or_default();
 
     if let Some((template_id, model_id)) = composite_model_id.split_once("::") {
-        for provider_value in &providers {
-            let parsed: Option<ProviderDraftInput> =
-                serde_json::from_value(provider_value.clone()).ok();
-            if let Some(mut provider) = parsed {
-                if provider.template_id == template_id {
-                    provider.model = model_id.to_string();
-                    return Some(provider);
-                }
-            }
-        }
-        return None;
+        return resolve_composite_template_provider(&providers, template_id, model_id);
     }
 
     // Bare model name: search all providers equally.

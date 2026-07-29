@@ -11,6 +11,7 @@ import {
   toggleSubtitleOverlayWindow,
 } from '../runtime/audio-runtime';
 import { useAppStore } from '../stores/app-store';
+import { useRuntimeSessionStoreSlices } from '../stores/app-store-slices';
 import type { AudioRuntimeSnapshot, SubtitleCueRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import type { SceneMode } from '../utils/scene-readiness';
@@ -322,10 +323,7 @@ export const realTimeSessionPageHelpers = {
 
 function RealTimeSessionPage() {
   const { t } = useTranslation();
-  const configDraft = useAppStore((state) => state.configDraft);
-  const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
-  const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
-  const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
+  const { configDraft, runtimeSnapshot, audioRuntimeSnapshot, setRuntimeSnapshot } = useRuntimeSessionStoreSlices();
   const setAudioRuntimeSnapshot = useAppStore((state) => state.setAudioRuntimeSnapshot);
   const updateDeviceDraft = useAppStore((state) => state.updateDeviceDraft);
   const updateSpeechDraft = useAppStore((state) => state.updateSpeechDraft);
@@ -544,6 +542,13 @@ function RealTimeSessionPage() {
     });
   };
 
+  // Shared quick-export button rendered inside each cue-queue error surface.
+  const exportDiagnosticsButton = (
+    <button className="cue-queue-error-action" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
+      {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
+    </button>
+  );
+
   return (
     <div className="page-shell realtime-session-page">
       <section className="page-layout page-layout-single realtime-session-layout">
@@ -730,9 +735,7 @@ function RealTimeSessionPage() {
               {inboundErrorPresentation?.action === 'open-providers' && inboundErrorPresentation.actionKey && (
                 <Link className="cue-queue-error-action" to="/settings/providers">{t(inboundErrorPresentation.actionKey)}</Link>
               )}
-              <button className="cue-queue-error-action" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
-                {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
-              </button>
+              {exportDiagnosticsButton}
             </p>
           )}
           {audioRuntimeSnapshot.outbound.lastError && (
@@ -745,9 +748,7 @@ function RealTimeSessionPage() {
               ) : (
                 <Link className="cue-queue-error-action" to="/audio-routing">{t('nav.audioRouting')}</Link>
               )}
-              <button className="cue-queue-error-action" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
-                {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
-              </button>
+              {exportDiagnosticsButton}
             </p>
           )}
           {audioRuntimeSnapshot.speech.lastError && (
@@ -755,9 +756,7 @@ function RealTimeSessionPage() {
               {t('diagnostics.issues.speechError', { error: audioRuntimeSnapshot.speech.lastError })}
               <span>{t('session.speechFailureRecovery')}</span>
               <Link className="cue-queue-error-action" to="/audio-routing">{t('nav.audioRouting')}</Link>
-              <button className="cue-queue-error-action" disabled={busyAction !== null} onClick={handleExportDiagnostics} type="button">
-                {busyAction === 'export-diagnostics' ? t('diagnostics.actions.exporting') : t('session.exportDiagnostics')}
-              </button>
+              {exportDiagnosticsButton}
             </p>
           )}
           {sessionLaunchProblem && !isSessionRunning && (

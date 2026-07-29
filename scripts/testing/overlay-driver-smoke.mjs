@@ -21,13 +21,18 @@ import path from 'node:path';
 
 import {
   isMain,
-  parseCliArgs,
-  readJson,
-  repoRoot,
   sortableTimestamp,
-  writeJson,
 } from '../lib/testing-common.mjs';
 import { currentGitCommit } from './watch-mode-report.mjs';
+import {
+  emitPlanArtifacts,
+  parseSmokeCliArgs,
+  readPackageVersion,
+  releaseExecutablePlanLines,
+  resolveSmokeDirs,
+  smokeExitCode,
+  writeReportFromEvidence,
+} from './lib/smoke-common.mjs';
 
 export const DEFAULT_OUTPUT_ROOT = 'artifacts/testing/overlay-driver-smoke';
 export const DEFAULT_DRIVER_HOST = '127.0.0.1';
@@ -378,9 +383,7 @@ export function formatOverlayDriverSmokePlanText(plan) {
     `driver command: ${plan.driver.command} ${plan.driver.args.join(' ')}`,
     `driver endpoint: ${plan.driver.endpoint}`,
     '',
-    `release executable: ${plan.releaseExecutable.path}`,
-    `release executable found: ${plan.releaseExecutable.found}`,
-    ...(plan.releaseExecutable.found ? [] : [`  build it with: ${plan.releaseExecutable.buildHint}`]),
+    ...releaseExecutablePlanLines(plan.releaseExecutable),
     '',
     `new session: POST ${plan.session.request.url}`,
     `  capabilities: ${JSON.stringify(plan.session.request.body.capabilities.alwaysMatch)}`,
@@ -574,44 +577,25 @@ export function buildOverlayDriverSmokeReport({
   };
 }
 
-export function overlayDriverSmokeExitCode(report) {
-  return report?.verdict === 'failed' ? 1 : 0;
-}
+export const overlayDriverSmokeExitCode = smokeExitCode;
 
 // ---------------------------------------------------------------------------
 // Thin CLI seam: reads/writes JSON only. The PowerShell runner calls
 //   --mode plan   (writes plan.json, prints the plan text)
 //   --mode report (reads evidence.json, writes report.json, sets the exit code)
 
-function readVersion(workspaceRoot) {
-  try {
-    return readJson(path.join(workspaceRoot, 'package.json')).version ?? null;
-  } catch {
-    return null;
-  }
-}
-
 if (isMain(import.meta.url)) {
   try {
-    const args = parseCliArgs(process.argv.slice(2), {
-      booleans: ['dry-run'],
-      defaults: {
-        mode: 'plan',
-        output: '',
-        input: '',
-        reason: '',
-        workspaceRoot: '',
-        driverHost: DEFAULT_DRIVER_HOST,
-        driverPort: String(DEFAULT_DRIVER_PORT),
-        nativeDriverPort: String(DEFAULT_NATIVE_DRIVER_PORT),
-        nativeDriverPath: DEFAULT_NATIVE_DRIVER,
-        showMode: 'self-check',
-        sessionTimeoutSeconds: String(DEFAULT_SESSION_TIMEOUT_SECONDS),
-        releaseExecutablePath: '',
-        outputRoot: DEFAULT_OUTPUT_ROOT,
-      },
+    const args = parseSmokeCliArgs(process.argv.slice(2), {
+      reason: '',
+      driverHost: DEFAULT_DRIVER_HOST,
+      driverPort: String(DEFAULT_DRIVER_PORT),
+      nativeDriverPort: String(DEFAULT_NATIVE_DRIVER_PORT),
+      nativeDriverPath: DEFAULT_NATIVE_DRIVER,
+      showMode: 'self-check',
+      sessionTimeoutSeconds: String(DEFAULT_SESSION_TIMEOUT_SECONDS),
+      outputRoot: DEFAULT_OUTPUT_ROOT,
     });
-    const workspaceRoot = args.workspaceRoot || repoRoot;
 
     // Single source for the escape-hatch banner so the PowerShell runner and
     // scripts/release/verify-release.mjs cannot drift into a quieter wording.
@@ -620,13 +604,12 @@ if (isMain(import.meta.url)) {
       process.exit(0);
     }
 
-    const outputDir = args.output || path.join(workspaceRoot, DEFAULT_OUTPUT_ROOT);
-    fs.mkdirSync(outputDir, { recursive: true });
+    const { workspaceRoot, outputDir } = resolveSmokeDirs(args, DEFAULT_OUTPUT_ROOT);
 
     if (args.mode === 'plan') {
       const plan = buildOverlayDriverSmokePlan({
         workspaceRoot,
-        version: readVersion(workspaceRoot),
+        version: readPackageVersion(workspaceRoot),
         host: args.driverHost,
         port: Number(args.driverPort),
         nativePort: Number(args.nativeDriverPort),
@@ -637,23 +620,13 @@ if (isMain(import.meta.url)) {
         outputRoot: args.outputRoot,
         exists: (candidate) => fs.existsSync(candidate),
       });
-      const planPath = path.join(outputDir, 'plan.json');
-      writeJson(planPath, plan);
-      console.log(formatOverlayDriverSmokePlanText(plan));
-      if (args.dryRun) {
-        const reportPath = path.join(outputDir, 'report.json');
-        writeJson(
-          reportPath,
-          buildOverlayDriverSmokeReport({
-            evidence: { dryRun: true, plan, runId: path.basename(outputDir) },
-            gitCommit: currentGitCommit(),
-            artifacts: { plan: planPath, report: reportPath },
-          }),
-        );
-        console.log(reportPath);
-      } else {
-        console.log(planPath);
-      }
+      emitPlanArtifacts({
+        outputDir,
+        plan,
+        planText: formatOverlayDriverSmokePlanText(plan),
+        dryRun: args.dryRun,
+        buildReport: buildOverlayDriverSmokeReport,
+      });
       process.exit(0);
     }
 
@@ -661,20 +634,12 @@ if (isMain(import.meta.url)) {
       throw new Error(`Unknown --mode ${args.mode}; expected plan, report or skip-banner`);
     }
 
-    const inputDir = args.input || outputDir;
-    const evidencePath = path.join(inputDir, 'evidence.json');
-    if (!fs.existsSync(evidencePath)) {
-      throw new Error(`overlay driver smoke evidence was not written: ${evidencePath}`);
-    }
-    const evidence = readJson(evidencePath);
-    const reportPath = path.join(outputDir, 'report.json');
-    const report = buildOverlayDriverSmokeReport({
-      evidence,
-      gitCommit: currentGitCommit(),
-      artifacts: { evidence: evidencePath, report: reportPath, plan: path.join(inputDir, 'plan.json') },
+    const report = writeReportFromEvidence({
+      inputDir: args.input || outputDir,
+      outputDir,
+      label: 'overlay driver smoke',
+      buildReport: buildOverlayDriverSmokeReport,
     });
-    writeJson(reportPath, report);
-    console.log(reportPath);
     for (const check of report.checks) {
       console.log(`  [${check.passed ? 'PASS' : 'FAIL'}] ${check.name}: ${check.detail}`);
     }

@@ -25,6 +25,9 @@ fn main() {
 
 #[cfg(windows)]
 mod probe {
+    use omni_bridge_service::probe_support::{
+        coarse_dominant_frequency, component_amplitude, for_each_capture_packet, open_capture_stream,
+    };
     use omni_bridge_service::{AudioFrameHeader, BRIDGE_PROTOCOL_VERSION};
     use serde::Serialize;
     use serde_json::{json, Value};
@@ -37,7 +40,7 @@ mod probe {
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
         initialize_mta, AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction,
-        SampleType, StreamMode, WaveFormat,
+        SampleType, WaveFormat,
     };
 
     const SAMPLE_RATE: usize = 48_000;
@@ -112,21 +115,8 @@ mod probe {
 
     impl LoopbackCapture {
         fn start(device: &Device) -> Result<Self, String> {
-            let mut audio_client = device.get_iaudioclient().map_err(error_text)?;
-            let (_, minimum_period) = audio_client.get_device_period().map_err(error_text)?;
             let format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE, CHANNELS, None);
-            audio_client
-                .initialize_client(
-                    &format,
-                    &Direction::Capture,
-                    &StreamMode::PollingShared {
-                        autoconvert: true,
-                        buffer_duration_hns: minimum_period,
-                    },
-                )
-                .map_err(error_text)?;
-            let capture_client = audio_client.get_audiocaptureclient().map_err(error_text)?;
-            audio_client.start_stream().map_err(error_text)?;
+            let (audio_client, capture_client) = open_capture_stream(device, &format)?;
             Ok(Self {
                 audio_client,
                 capture_client,
@@ -134,24 +124,10 @@ mod probe {
         }
 
         fn collect_available(&self, metrics: &mut CaptureMetrics) -> Result<(), String> {
-            while let Some(packet_frames) = self
-                .capture_client
-                .get_next_packet_size()
-                .map_err(error_text)?
-                .filter(|frames| *frames > 0)
-            {
-                let mut packet = vec![0_u8; packet_frames as usize * BYTES_PER_FRAME];
-                let (frames_read, buffer_info) = self
-                    .capture_client
-                    .read_from_device(&mut packet)
-                    .map_err(error_text)?;
-                packet.truncate(frames_read as usize * BYTES_PER_FRAME);
-                if buffer_info.flags.silent {
-                    packet.fill(0);
-                }
+            for_each_capture_packet(&self.capture_client, BYTES_PER_FRAME, |packet, _silent| {
                 if packet.is_empty() {
                     metrics.silent_packets += 1;
-                    continue;
+                    return;
                 }
                 for chunk in packet.chunks_exact(4) {
                     let value = f32::from_le_bytes(chunk.try_into().unwrap());
@@ -162,8 +138,7 @@ mod probe {
                         metrics.invalid_samples += 1;
                     }
                 }
-            }
-            Ok(())
+            })
         }
     }
 
@@ -683,21 +658,6 @@ mod probe {
         }
     }
 
-    fn component_amplitude(samples: &[f32], frequency_hz: f32) -> f32 {
-        if samples.is_empty() {
-            return 0.0;
-        }
-        let omega = TAU * frequency_hz / SAMPLE_RATE as f32;
-        let mut real = 0.0_f64;
-        let mut imaginary = 0.0_f64;
-        for (index, sample) in samples.iter().enumerate() {
-            let angle = omega as f64 * index as f64;
-            real += *sample as f64 * angle.cos();
-            imaginary -= *sample as f64 * angle.sin();
-        }
-        (2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f64) as f32
-    }
-
     fn first_channel_samples(samples: &[f32]) -> Vec<f32> {
         samples
             .chunks_exact(CHANNELS)
@@ -706,13 +666,7 @@ mod probe {
     }
 
     fn estimate_dominant_frequency(samples: &[f32]) -> f32 {
-        (100..=5_000)
-            .step_by(25)
-            .map(|frequency| frequency as f32)
-            .max_by(|left, right| {
-                component_amplitude(samples, *left).total_cmp(&component_amplitude(samples, *right))
-            })
-            .unwrap_or(0.0)
+        coarse_dominant_frequency(samples)
     }
 
     fn write_wav_pcm16(

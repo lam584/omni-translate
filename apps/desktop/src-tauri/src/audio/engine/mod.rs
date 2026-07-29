@@ -647,24 +647,14 @@ impl RouteProcessor {
 
         let mut finalized_segment = None;
         if self.skip_local_vad {
-            RouteUpdate {
-                capture_state: if speech_detected {
-                    "capturing".to_string()
-                } else {
-                    "buffering".to_string()
-                },
-                pre_buffer_state: pre_buffer_state.to_string(),
-                vad_state: if speech_detected {
-                    "speech".to_string()
-                } else {
-                    "silence".to_string()
-                },
+            self.route_update(
+                speech_detected,
+                pre_buffer_state,
                 buffer_ahead_ms,
-                frames_captured: self.frames_captured,
-                last_energy_db: energy_db,
-                active_segment_id: None,
+                energy_db,
+                None,
                 finalized_segment,
-            }
+            )
         } else {
             if speech_detected {
                 self.silence_chunks = 0;
@@ -697,27 +687,51 @@ impl RouteProcessor {
                 }
             }
 
-            RouteUpdate {
-                capture_state: if speech_detected {
-                    "capturing".to_string()
-                } else {
-                    "buffering".to_string()
-                },
-                pre_buffer_state: pre_buffer_state.to_string(),
-                vad_state: if speech_detected {
-                    "speech".to_string()
-                } else {
-                    "silence".to_string()
-                },
+            let active_segment_id = self
+                .active_segment
+                .as_ref()
+                .map(|segment| segment.segment_id.clone());
+            self.route_update(
+                speech_detected,
+                pre_buffer_state,
                 buffer_ahead_ms,
-                frames_captured: self.frames_captured,
-                last_energy_db: energy_db,
-                active_segment_id: self
-                    .active_segment
-                    .as_ref()
-                    .map(|segment| segment.segment_id.clone()),
+                energy_db,
+                active_segment_id,
                 finalized_segment,
-            }
+            )
+        }
+    }
+
+    /// Assembles a `RouteUpdate` from the per-tick capture metrics. The
+    /// `capture_state`/`vad_state` labels derive from `speech_detected`; only
+    /// `active_segment_id` and `finalized_segment` differ between the
+    /// skip-VAD and local-VAD paths.
+    fn route_update(
+        &self,
+        speech_detected: bool,
+        pre_buffer_state: &str,
+        buffer_ahead_ms: u64,
+        energy_db: f32,
+        active_segment_id: Option<String>,
+        finalized_segment: Option<FinalizedSegment>,
+    ) -> RouteUpdate {
+        RouteUpdate {
+            capture_state: if speech_detected {
+                "capturing".to_string()
+            } else {
+                "buffering".to_string()
+            },
+            pre_buffer_state: pre_buffer_state.to_string(),
+            vad_state: if speech_detected {
+                "speech".to_string()
+            } else {
+                "silence".to_string()
+            },
+            buffer_ahead_ms,
+            frames_captured: self.frames_captured,
+            last_energy_db: energy_db,
+            active_segment_id,
+            finalized_segment,
         }
     }
 
@@ -811,17 +825,33 @@ mod tests {
         assert!(cue.translated_text.is_empty());
     }
 
+    /// Config with a single outbound mic route + zh-CN→en-US subtitles,
+    /// shared by the outbound route-spec tests.
+    fn outbound_mic7_config() -> serde_json::Value {
+        json!({
+          "devices": {
+            "outboundRoute": { "routeId": "outbound-route", "input": { "deviceId": "mic-7" } }
+          },
+          "subtitles": { "sourceLanguage": "zh-CN", "targetLanguage": "en-US" }
+        })
+    }
+
+    /// Config with a single inbound speaker (loopback) route, shared by the
+    /// inbound route-spec tests.
+    fn inbound_speaker1_config() -> serde_json::Value {
+        json!({
+          "devices": {
+            "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } }
+          }
+        })
+    }
+
     #[test]
     fn route_processor_ignores_bluetooth_headset_noise_floor() {
-        let mut processor = RouteProcessor::new(RouteSpec::from_config(
-            &json!({
-              "devices": {
-                "outboundRoute": { "routeId": "outbound-route", "input": { "deviceId": "mic-7" } }
-              },
-              "subtitles": { "sourceLanguage": "zh-CN", "targetLanguage": "en-US" }
-            }),
-            "outbound",
-        ).expect("route spec should parse"));
+        let mut processor = RouteProcessor::new(
+            RouteSpec::from_config(&outbound_mic7_config(), "outbound")
+                .expect("route spec should parse"),
+        );
 
         for _ in 0..20 {
             let update = processor.ingest_chunk(&speech_chunk(0.02), 0);
@@ -833,16 +863,8 @@ mod tests {
 
     #[test]
     fn route_spec_reads_outbound_device_id_from_config() {
-        let spec = RouteSpec::from_config(
-            &json!({
-              "devices": {
-                "outboundRoute": { "routeId": "outbound-route", "input": { "deviceId": "mic-7" } }
-              },
-              "subtitles": { "sourceLanguage": "zh-CN", "targetLanguage": "en-US" }
-            }),
-            "outbound",
-        )
-        .expect("route spec should parse");
+        let spec = RouteSpec::from_config(&outbound_mic7_config(), "outbound")
+            .expect("route spec should parse");
 
         assert_eq!(spec.route_id, "outbound-route");
         assert_eq!(spec.requested_device_id, "mic-7");
@@ -874,15 +896,8 @@ mod tests {
 
     #[test]
     fn route_spec_uses_capture_direction_for_inbound_loopback_capture() {
-        let spec = RouteSpec::from_config(
-            &json!({
-              "devices": {
-                "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } }
-              }
-            }),
-            "inbound",
-        )
-        .expect("route spec should parse");
+        let spec = RouteSpec::from_config(&inbound_speaker1_config(), "inbound")
+            .expect("route spec should parse");
 
         assert_eq!(spec.capture_direction(), Direction::Capture);
     }
@@ -908,15 +923,8 @@ mod tests {
 
     #[test]
     fn route_spec_defaults_feedback_loop_prevention_to_none() {
-        let spec = RouteSpec::from_config(
-            &json!({
-              "devices": {
-                "inboundRoute": { "routeId": "inbound-route", "input": { "deviceId": "speaker-1" } }
-              }
-            }),
-            "inbound",
-        )
-        .expect("route spec should parse");
+        let spec = RouteSpec::from_config(&inbound_speaker1_config(), "inbound")
+            .expect("route spec should parse");
 
         assert_eq!(spec.feedback_loop_prevention, "none");
         assert!(!spec.echo_cancel_enabled());
@@ -999,27 +1007,49 @@ mod tests {
         assert!(samples[2] < -1.0);
     }
 
-    #[test]
-    fn bridge_source_envelope_reads_inline_pcm() {
-        let payload = vec![1_u8, 0, 2, 0];
-        let header = BridgeTranslationFrameHeader {
-            event_type: "bridge.source.frame".to_string(),
+    /// Builds a bridge audio frame header for envelope tests; only the event
+    /// type / sample rate / frame count / payload size vary between cases.
+    fn bridge_frame_header(
+        event_type: &str,
+        sample_rate_hz: u32,
+        frame_count: usize,
+        payload_bytes: usize,
+    ) -> BridgeTranslationFrameHeader {
+        BridgeTranslationFrameHeader {
+            event_type: event_type.to_string(),
             request_id: "request-1".to_string(),
             session_id: "session-1".to_string(),
             frame_id: "frame-1".to_string(),
             stream_id: "stream-1".to_string(),
-            sample_rate_hz: SAMPLE_RATE_HZ as u32,
+            sample_rate_hz,
             channel_count: CHANNEL_COUNT as u16,
-            frame_count: 1,
+            frame_count,
             timestamp_ms: 1,
-            payload_bytes: payload.len(),
+            payload_bytes,
             translated_audio_enhancement_applied: false,
-        };
-        let header = serde_json::to_vec(&header).unwrap();
+        }
+    }
+
+    /// Length-prefixes the serialized header and appends the PCM payload,
+    /// matching the bridge source wire framing.
+    fn bridge_source_envelope_bytes(
+        header: &BridgeTranslationFrameHeader,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let header = serde_json::to_vec(header).unwrap();
         let mut envelope = Vec::new();
         envelope.extend_from_slice(&(header.len() as u32).to_le_bytes());
         envelope.extend_from_slice(&header);
-        envelope.extend_from_slice(&payload);
+        envelope.extend_from_slice(payload);
+        envelope
+    }
+
+    #[test]
+    fn bridge_source_envelope_reads_inline_pcm() {
+        let payload = vec![1_u8, 0, 2, 0];
+        let header =
+            bridge_frame_header("bridge.source.frame", SAMPLE_RATE_HZ as u32, 1, payload.len());
+        let envelope = bridge_source_envelope_bytes(&header, &payload);
         assert_eq!(
             read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap(),
             BridgeSourceEnvelope::Frame(payload)
@@ -1028,23 +1058,9 @@ mod tests {
 
     #[test]
     fn bridge_source_envelope_ignores_heartbeat() {
-        let header = BridgeTranslationFrameHeader {
-            event_type: "bridge.source.heartbeat".to_string(),
-            request_id: "request-1".to_string(),
-            session_id: "session-1".to_string(),
-            frame_id: "frame-1".to_string(),
-            stream_id: "stream-1".to_string(),
-            sample_rate_hz: SAMPLE_RATE_HZ as u32,
-            channel_count: CHANNEL_COUNT as u16,
-            frame_count: 0,
-            timestamp_ms: 1,
-            payload_bytes: 0,
-            translated_audio_enhancement_applied: false,
-        };
-        let header = serde_json::to_vec(&header).unwrap();
-        let mut envelope = Vec::new();
-        envelope.extend_from_slice(&(header.len() as u32).to_le_bytes());
-        envelope.extend_from_slice(&header);
+        let header =
+            bridge_frame_header("bridge.source.heartbeat", SAMPLE_RATE_HZ as u32, 0, 0);
+        let envelope = bridge_source_envelope_bytes(&header, &[]);
         assert_eq!(
             read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap(),
             BridgeSourceEnvelope::Heartbeat
@@ -1053,23 +1069,8 @@ mod tests {
 
     #[test]
     fn bridge_source_envelope_reports_sample_rate_mismatch() {
-        let header = BridgeTranslationFrameHeader {
-            event_type: "bridge.source.frame".to_string(),
-            request_id: "request-1".to_string(),
-            session_id: "session-1".to_string(),
-            frame_id: "frame-1".to_string(),
-            stream_id: "stream-1".to_string(),
-            sample_rate_hz: 16_000,
-            channel_count: CHANNEL_COUNT as u16,
-            frame_count: 0,
-            timestamp_ms: 1,
-            payload_bytes: 0,
-            translated_audio_enhancement_applied: false,
-        };
-        let header = serde_json::to_vec(&header).unwrap();
-        let mut envelope = Vec::new();
-        envelope.extend_from_slice(&(header.len() as u32).to_le_bytes());
-        envelope.extend_from_slice(&header);
+        let header = bridge_frame_header("bridge.source.frame", 16_000, 0, 0);
+        let envelope = bridge_source_envelope_bytes(&header, &[]);
         assert_eq!(
             read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap(),
             BridgeSourceEnvelope::Ignored(

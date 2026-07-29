@@ -177,6 +177,20 @@ fn record_driver_operation_error(state: &BridgeStateStore, error: &str) {
     });
 }
 
+/// Run an elevated driver operation, recording the failure into bridge state
+/// before propagating it. Shared by install/uninstall/repair, which each ran
+/// this record-and-return sequence identically apart from the action name.
+fn run_elevated_driver_operation_or_record(
+    snapshot: &BridgeRuntimeSnapshot,
+    bridge_state: &BridgeStateStore,
+    action: &str,
+) -> Result<super::contracts::DriverOperationResult, String> {
+    run_elevated_driver_operation(snapshot, action).map_err(|error| {
+        record_driver_operation_error(bridge_state, &error);
+        error
+    })
+}
+
 fn record_bridge_start_error(state: &BridgeStateStore, error_code: &str, detail: String) {
     state.update_snapshot(|current| {
         current.process_status = "error".to_string();
@@ -718,13 +732,7 @@ pub fn install_driver_runtime<R: tauri::Runtime>(
     }
     bridge_state
         .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
-    let operation = match run_elevated_driver_operation(&snapshot, "install") {
-        Ok(operation) => operation,
-        Err(error) => {
-            record_driver_operation_error(&bridge_state, &error);
-            return Err(error);
-        }
-    };
+    let operation = run_elevated_driver_operation_or_record(&snapshot, &bridge_state, "install")?;
     bridge_state.update_snapshot(|current| {
         *current = snapshot.clone();
         current.last_driver_operation = Some(operation.clone());
@@ -768,13 +776,7 @@ pub fn uninstall_driver_runtime<R: tauri::Runtime>(
     cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
     bridge_state
         .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
-    let operation = match run_elevated_driver_operation(&snapshot, "uninstall") {
-        Ok(operation) => operation,
-        Err(error) => {
-            record_driver_operation_error(&bridge_state, &error);
-            return Err(error);
-        }
-    };
+    let operation = run_elevated_driver_operation_or_record(&snapshot, &bridge_state, "uninstall")?;
     bridge_state.update_snapshot(|current| {
         current.process_status = "stopped".to_string();
         current.bridge_state = "stopped".to_string();
@@ -837,13 +839,8 @@ pub fn repair_driver_runtime<R: tauri::Runtime>(
     bridge_state
         .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
     let elevated_action = "reinstall";
-    let operation = match run_elevated_driver_operation(&snapshot, elevated_action) {
-        Ok(operation) => operation,
-        Err(error) => {
-            record_driver_operation_error(&bridge_state, &error);
-            return Err(error);
-        }
-    };
+    let operation =
+        run_elevated_driver_operation_or_record(&snapshot, &bridge_state, elevated_action)?;
     bridge_state.update_snapshot(|current| {
         *current = snapshot.clone();
         current.last_driver_operation = Some(operation.clone());

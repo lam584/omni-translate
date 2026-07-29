@@ -78,6 +78,40 @@ impl OmniSocketEventProcessor {
             pre_session_audio_dropped, echo_guard_enabled,
         } = context;
 let mut socket_reconnected = false;
+        // Every poll exit repackages the same 21 worker-state fields into an
+        // OmniSocketPollResult; a local macro keeps that field list in one place.
+        // Only skip_tick varies: reconnect exits pass true, the per-tick return false.
+        macro_rules! poll_result {
+            ($skip:expr) => {
+                Ok(OmniSocketPollResult {
+                    state: OmniSocketEventState {
+                        socket,
+                        trace_call,
+                        reconnect_count,
+                        pending_audio_buffer,
+                        active_voice,
+                        voice_fallback_applied,
+                        session_ready_for_audio,
+                        event_diagnostics,
+                        current_cue_id,
+                        pending_source_text,
+                        pending_translated_text,
+                        st_skip_logged,
+                        pending_audio_delta_count,
+                        pending_audio_delta_base64_bytes,
+                        pending_audio_response_id,
+                        last_vad_event_time,
+                        vad_event_count,
+                        transcription_completed_flag,
+                        transcription_completed_at,
+                        manual_response_pending,
+                        manual_response_item_id,
+                    },
+                    skip_tick: $skip,
+                    socket_reconnected,
+                })
+            };
+        }
 match socket.read_message() {
     Ok(msg) => match msg {
         Message::Text(text) => {
@@ -189,7 +223,7 @@ match socket.read_message() {
                                             completed_item_id.unwrap_or("(none)"),
                                         ),
                                     );
-                                    return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
+                                    return poll_result!(true);
                                 }
                             }
                         }
@@ -375,7 +409,7 @@ match socket.read_message() {
                             }
                         }
                         if output.skip_tick {
-                            return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
+                            return poll_result!(true);
                         }
                     }
                     "response.audio_transcript.delta"
@@ -558,7 +592,7 @@ match socket.read_message() {
             active_voice = reconnect_state.active_voice;
             voice_fallback_applied = reconnect_state.voice_fallback_applied;
             socket_reconnected = reconnect_state.socket_reconnected;
-            return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
+            return poll_result!(true);
         }
         _ => {}
     },
@@ -588,10 +622,10 @@ match socket.read_message() {
         active_voice = reconnect_state.active_voice;
         voice_fallback_applied = reconnect_state.voice_fallback_applied;
         socket_reconnected = reconnect_state.socket_reconnected;
-        return Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: true, socket_reconnected });
+        return poll_result!(true);
     }
 }
 
-        Ok(OmniSocketPollResult { state: OmniSocketEventState { socket, trace_call, reconnect_count, pending_audio_buffer, active_voice, voice_fallback_applied, session_ready_for_audio, event_diagnostics, current_cue_id, pending_source_text, pending_translated_text, st_skip_logged, pending_audio_delta_count, pending_audio_delta_base64_bytes, pending_audio_response_id, last_vad_event_time, vad_event_count, transcription_completed_flag, transcription_completed_at, manual_response_pending, manual_response_item_id }, skip_tick: false, socket_reconnected })
+        poll_result!(false)
     }
 }

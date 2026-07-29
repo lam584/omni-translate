@@ -1,13 +1,8 @@
-import path from 'node:path';
-
 import {
-  compactTimestamp,
-  ensureDir,
   isMain,
-  parseCliArgs,
-  repoRoot,
-  sortableTimestamp,
+  runPrepareReportCli,
   writeText,
+  writeTimestampedReport,
 } from '../lib/testing-common.mjs';
 
 const defaultOutputRoot = 'artifacts/testing/install-regression';
@@ -49,19 +44,14 @@ const reportLines = (generatedAt) => [
   '- Notes:',
 ];
 
-export const prepareInstallRegressionReport = ({ outputRoot = defaultOutputRoot } = {}) => {
-  const targetDir = ensureDir(path.resolve(repoRoot, outputRoot));
-  const reportPath = path.join(targetDir, `install-regression-${compactTimestamp()}.md`);
-  writeText(reportPath, reportLines(sortableTimestamp()).join('\n'));
-  return reportPath;
-};
+export const prepareInstallRegressionReport = ({ outputRoot = defaultOutputRoot } = {}) =>
+  writeTimestampedReport({
+    outputRoot,
+    filePrefix: 'install-regression',
+    extension: 'md',
+    render: (reportPath, generatedAt) => writeText(reportPath, reportLines(generatedAt).join('\n')),
+  });
 
 if (isMain(import.meta.url)) {
-  try {
-    const args = parseCliArgs(process.argv.slice(2), { defaults: { outputRoot: defaultOutputRoot } });
-    console.log(prepareInstallRegressionReport(args));
-  } catch (error) {
-    console.error(error.message);
-    process.exit(1);
-  }
+  runPrepareReportCli(prepareInstallRegressionReport, { outputRoot: defaultOutputRoot });
 }

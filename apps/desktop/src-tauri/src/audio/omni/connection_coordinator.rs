@@ -203,14 +203,12 @@ impl OmniConnectionCoordinator {
                 ),
                 format!("errorCode={err_code}"),
             );
-            match try_reconnect(
+            match Self::reconnect_socket(
+                &mut state,
                 connector,
-                &mut state.reconnect_count,
-                &mut state.pending_audio_buffer,
-                store,
                 app,
+                store,
                 provider,
-                &state.active_voice,
                 instructions,
                 audio_mode,
                 target_language,
@@ -281,14 +279,12 @@ impl OmniConnectionCoordinator {
         buffer_size: u64,
     ) -> Result<OmniReconnectState<C::Socket>, String> {
         let _ = diag_log(app, "omni", "warning", "[SOCKET] WebSocket closed");
-        state.socket = try_reconnect(
+        state.socket = Self::reconnect_socket(
+            &mut state,
             connector,
-            &mut state.reconnect_count,
-            &mut state.pending_audio_buffer,
-            store,
             app,
+            store,
             provider,
-            &state.active_voice,
             instructions,
             audio_mode,
             target_language,
@@ -331,7 +327,40 @@ impl OmniConnectionCoordinator {
             "warning",
             format!("[SOCKET] read error: {error}"),
         );
-        state.socket = try_reconnect(
+        state.socket = Self::reconnect_socket(
+            &mut state,
+            connector,
+            app,
+            store,
+            provider,
+            instructions,
+            audio_mode,
+            target_language,
+            buffer_size,
+            &format!("WebSocket read failed: {error}"),
+        )
+        .map_err(|_| format!("Omni WebSocket read failed and reconnect limit exhausted: {error}"))?;
+        state.socket_reconnected = true;
+        Ok(state)
+    }
+
+    /// Runs a single `try_reconnect` attempt against `state`, forwarding the
+    /// shared session parameters. Callers apply their own success/failure
+    /// handling around the returned socket.
+    #[allow(clippy::too_many_arguments)]
+    fn reconnect_socket<C: RealtimeSocketConnector, R: tauri::Runtime>(
+        state: &mut OmniReconnectState<C::Socket>,
+        connector: &C,
+        app: &AppHandle<R>,
+        store: &AudioStateStore,
+        provider: &ProviderDraftInput,
+        instructions: &str,
+        audio_mode: RealtimeAudioMode,
+        target_language: &str,
+        buffer_size: u64,
+        reason: &str,
+    ) -> Result<C::Socket, String> {
+        try_reconnect(
             connector,
             &mut state.reconnect_count,
             &mut state.pending_audio_buffer,
@@ -343,11 +372,8 @@ impl OmniConnectionCoordinator {
             audio_mode,
             target_language,
             buffer_size,
-            &format!("WebSocket read failed: {error}"),
+            reason,
         )
-        .map_err(|_| format!("Omni WebSocket read failed and reconnect limit exhausted: {error}"))?;
-        state.socket_reconnected = true;
-        Ok(state)
     }
 }
 
@@ -707,15 +733,7 @@ impl OmniConnectionCoordinator {
                 provider.kind, provider.provider_id
             ));
         }
-        let ws_url = to_websocket_url(&provider.base_url, &provider.model)
-            .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
-
-        let mut request = ws_url
-            .as_str()
-            .into_client_request()
-            .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
-        apply_ws_auth(&provider, request.headers_mut())
-            .map_err(|error| format!("无法应用认证头: {}", error.message))?;
+        let request = build_dashscope_ws_request(provider)?;
 
         let initial_connect_started = SystemTime::now();
         let mut initial_attempt = 0usize;

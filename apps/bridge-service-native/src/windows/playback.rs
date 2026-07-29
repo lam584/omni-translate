@@ -337,11 +337,14 @@ fn playback_device_matches(device: &cpal::Device, requested: &str) -> bool {
 }
 
 fn normalized_device_name(value: &str) -> String {
-    value
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .flat_map(char::to_lowercase)
-        .collect()
+    let mut normalized = String::with_capacity(value.len());
+    for ch in value.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        normalized.extend(ch.to_lowercase());
+    }
+    normalized
 }
 
 fn is_omni_virtual_playback_device_name(name: &str) -> bool {

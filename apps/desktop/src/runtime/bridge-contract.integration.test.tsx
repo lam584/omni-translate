@@ -1,12 +1,14 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
 import SubtitleOverlayPage from '../pages/SubtitleOverlayPage';
 import { AUDIO_RUNTIME_SNAPSHOT_EVENT, type AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
+import { registerDomHarness } from '../test-utils/component-test-harness';
+import { findButtonByText } from '../test-utils/driver-store-fixtures';
+import { connectFakeBridge, disconnectFakeBridge } from '../test-utils/fake-bridge-harness';
 import {
   getAudioRuntimeSnapshotRuntime,
   startAudioRouteRuntime,
@@ -26,18 +28,11 @@ import { getRecentDiagnosticsLogsRuntime, runSubtitleOverlaySelfCheckRuntime } f
 
 const harness = vi.hoisted(() => ({
   runtime: true,
-  invoke: null as null | (<T>(command: string, args?: Record<string, unknown>) => Promise<T>),
   pointer: { x: 0, y: 0 },
 }));
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
-    if (!harness.invoke) {
-      return Promise.reject(new Error(`fake bridge not installed for command ${command}`));
-    }
-    return harness.invoke(command, args);
-  },
-}));
+vi.mock('@tauri-apps/api/core', async () =>
+  (await import('../test-utils/fake-bridge-harness')).fakeBridgeTauriCoreModule());
 
 vi.mock('@tauri-apps/api/dpi', () => ({
   LogicalPosition: class LogicalPosition {
@@ -91,11 +86,8 @@ vi.mock('./tauri-runtime', () => ({
   waitForTauriRuntime: async () => harness.runtime,
 }));
 
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
-  }),
-}));
+vi.mock('react-i18next', async () =>
+  (await import('../test-utils/i18n-stub')).reactI18nextStub({ passthroughDefault: true }));
 
 function createConfig(): AppConfigDraft {
   const config = structuredClone(appConfigDraftMock);
@@ -103,43 +95,31 @@ function createConfig(): AppConfigDraft {
   return config;
 }
 
-function findButton(container: HTMLElement, text: string) {
-  return Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === text);
-}
-
 describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => {
   let fake: FakeBridge;
-  let container: HTMLDivElement;
-  let root: Root;
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.useFakeTimers();
-    harness.runtime = true;
-    harness.pointer = { x: 5000, y: 5000 };
-    fake = createFakeBridge();
-    harness.invoke = fake.invoke;
-    useAppStore.setState((state) => ({
-      ...state,
-      audioRuntimeSnapshot: fake.getAudioSnapshot(),
-      configDraft: createConfig(),
-      runtimeSnapshot: fake.getRuntimeSnapshot(),
-    }));
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    harness.invoke = null;
-    vi.useRealTimers();
+  const view = registerDomHarness({
+    fakeTimers: true,
+    setup: () => {
+      harness.runtime = true;
+      harness.pointer = { x: 5000, y: 5000 };
+      fake = createFakeBridge();
+      connectFakeBridge(fake.invoke);
+      useAppStore.setState((state) => ({
+        ...state,
+        audioRuntimeSnapshot: fake.getAudioSnapshot(),
+        configDraft: createConfig(),
+        runtimeSnapshot: fake.getRuntimeSnapshot(),
+      }));
+    },
+    beforeUnmount: () => {
+      disconnectFakeBridge();
+    },
   });
 
   async function renderOverlay() {
     await act(async () => {
-      root.render(<SubtitleOverlayPage />);
+      view.root.render(<SubtitleOverlayPage />);
       await Promise.resolve();
       await Promise.resolve();
       await Promise.resolve();
@@ -210,7 +190,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
     expect(cue?.translatedText).toBe('译文：fake inbound speech');
 
     await renderOverlay();
-    expect(container.textContent).toContain('译文：fake inbound speech');
+    expect(view.container.textContent).toContain('译文：fake inbound speech');
   });
 
   it('resolves waitForWatchRouteReadyRuntime only after native convergence', async () => {
@@ -379,7 +359,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
     expect(fake.getOverlayWindowState()).toEqual({ locked: true, rounded: true, hotspotInteractive: true });
 
     // Clicking unlock restores normal window interaction (drag/resize/menu).
-    const unlockButton = findButton(container, '解锁');
+    const unlockButton = findButtonByText(view.container, '解锁');
     expect(unlockButton).not.toBeUndefined();
     await act(async () => unlockButton?.click());
     await flushAsync();

@@ -1,6 +1,7 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 
 const mocks = vi.hoisted(() => ({
   isTauri: vi.fn(),
@@ -25,8 +26,6 @@ vi.mock('../../runtime/overlay-window-adapter', () => ({
 import { useOverlayLockReveal } from './useOverlayLockReveal';
 
 describe('useOverlayLockReveal', () => {
-  let container: HTMLDivElement;
-  let root: Root;
   let controller: ReturnType<typeof useOverlayLockReveal>;
 
   function Harness({ locked }: { locked: boolean }) {
@@ -34,32 +33,24 @@ describe('useOverlayLockReveal', () => {
     return null;
   }
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.useFakeTimers();
-    for (const mock of Object.values(mocks)) mock.mockReset();
-    mocks.isTauri.mockReturnValue(true);
-    mocks.cursorPosition.mockResolvedValue({ x: 480, y: 215 });
-    mocks.outerPosition.mockResolvedValue({ x: 100, y: 200 });
-    mocks.outerSize.mockResolvedValue({ width: 400, height: 100 });
-    // Default to a HiDPI desktop: the hotspot is sized in LOGICAL px and
-    // compared against PHYSICAL cursor/window coordinates, so a 1.0 fixture
-    // would make every scale mistake invisible.
-    mocks.scaleFactor.mockResolvedValue(1.5);
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    vi.useRealTimers();
+  const view = registerDomHarness({
+    fakeTimers: true,
+    setup: () => {
+      for (const mock of Object.values(mocks)) mock.mockReset();
+      mocks.isTauri.mockReturnValue(true);
+      mocks.cursorPosition.mockResolvedValue({ x: 480, y: 215 });
+      mocks.outerPosition.mockResolvedValue({ x: 100, y: 200 });
+      mocks.outerSize.mockResolvedValue({ width: 400, height: 100 });
+      // Default to a HiDPI desktop: the hotspot is sized in LOGICAL px and
+      // compared against PHYSICAL cursor/window coordinates, so a 1.0 fixture
+      // would make every scale mistake invisible.
+      mocks.scaleFactor.mockResolvedValue(1.5);
+    },
   });
 
   it('reveals the lock hotspot, avoids duplicate state, and hides it when unlocked', async () => {
     await act(async () => {
-      root.render(<Harness locked />);
+      view.root.render(<Harness locked />);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -67,7 +58,7 @@ describe('useOverlayLockReveal', () => {
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(120);
-      root.render(<Harness locked={false} />);
+      view.root.render(<Harness locked={false} />);
       await Promise.resolve();
     });
     expect(controller.lockedReveal).toEqual({ visible: false, interactive: false });
@@ -95,7 +86,7 @@ describe('useOverlayLockReveal', () => {
     mocks.cursorPosition.mockResolvedValue(pointer);
 
     await act(async () => {
-      root.render(<Harness locked />);
+      view.root.render(<Harness locked />);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -105,12 +96,12 @@ describe('useOverlayLockReveal', () => {
 
   it('does nothing for a locked browser-preview overlay', async () => {
     mocks.isTauri.mockReturnValue(false);
-    await act(async () => root.render(<Harness locked />));
+    await view.render(<Harness locked />);
     expect(mocks.cursorPosition).not.toHaveBeenCalled();
   });
 
   it('hides stale interaction state after polling failure, including interactive-only state', async () => {
-    await act(async () => root.render(<Harness locked />));
+    await view.render(<Harness locked />);
     await act(async () => controller.setLockedReveal({ visible: false, interactive: true }));
     mocks.cursorPosition.mockRejectedValue(new Error('cursor IPC failed'));
 
@@ -124,19 +115,19 @@ describe('useOverlayLockReveal', () => {
   it('ignores a successful or failed poll that settles after disposal', async () => {
     let resolveCursor!: (value: { x: number; y: number }) => void;
     mocks.cursorPosition.mockImplementationOnce(() => new Promise((resolve) => { resolveCursor = resolve; }));
-    await act(async () => root.render(<Harness locked />));
-    await act(async () => root.unmount());
+    await view.render(<Harness locked />);
+    await view.unmount();
     resolveCursor({ x: 480, y: 215 });
     await Promise.resolve();
 
-    root = createRoot(container);
+    view.remount();
     let rejectCursor!: (error: unknown) => void;
     mocks.cursorPosition.mockImplementationOnce(() => new Promise((_resolve, reject) => { rejectCursor = reject; }));
-    await act(async () => root.render(<Harness locked />));
-    await act(async () => root.unmount());
+    await view.render(<Harness locked />);
+    await view.unmount();
     rejectCursor(new Error('late failure'));
     await Promise.resolve();
 
-    root = createRoot(container);
+    view.remount();
   });
 });

@@ -98,17 +98,12 @@ pub fn init(store: DiagnosticsStateStore) {
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{category_for_module_path, diagnostics_level, init};
     use crate::diagnostics::state::{global_log_state_lock, DiagnosticsStateStore};
 
     fn temp_dir(name: &str) -> PathBuf {
-        let marker = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("omni-file-logger-{name}-{marker}"))
+        crate::diagnostics::test_support::temp_dir("file-logger", name)
     }
 
     #[test]

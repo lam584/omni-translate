@@ -6,6 +6,22 @@ use crate::common::MapErrToString;
 use super::json_merge::{bool_at, bool_to_i64, f64_at, i64_at, string_at};
 use super::{insert_string_array, ConfigRepository};
 
+/// Insert each string entry of a `capabilities` array via `insert`, which
+/// receives the capability text and its zero-based position. Non-string
+/// entries are skipped, matching the per-domain loops that previously repeated
+/// this shape.
+fn insert_each_capability_str<F>(capabilities: &[Value], mut insert: F) -> Result<(), String>
+where
+    F: FnMut(&str, i64) -> Result<(), String>,
+{
+    for (position, capability) in capabilities.iter().enumerate() {
+        if let Some(capability) = capability.as_str() {
+            insert(capability, position as i64)?;
+        }
+    }
+    Ok(())
+}
+
 impl ConfigRepository {
     pub(super) fn persist_providers(
         &self,
@@ -180,23 +196,22 @@ impl ConfigRepository {
                 let entry_id =
                     string_at(entry, "/id").unwrap_or_else(|| format!("capability-{position}"));
                 if let Some(capabilities) = entry.get("capabilities").and_then(Value::as_array) {
-                    for (capability_position, capability) in capabilities.iter().enumerate() {
-                        if let Some(capability) = capability.as_str() {
-                            connection
-                                .execute(
-                                    "INSERT INTO provider_model_capabilities (provider_key, entry_id, model_id, capability, position)
+                    insert_each_capability_str(capabilities, |capability, capability_position| {
+                        connection
+                            .execute(
+                                "INSERT INTO provider_model_capabilities (provider_key, entry_id, model_id, capability, position)
                                      VALUES (?1, ?2, ?3, ?4, ?5)",
-                                    params![
-                                        provider_key,
-                                        entry_id,
-                                        string_at(entry, "/modelId"),
-                                        capability,
-                                        capability_position as i64,
-                                    ],
-                                )
-                                .map_err_str()?;
-                        }
-                    }
+                                params![
+                                    provider_key,
+                                    entry_id,
+                                    string_at(entry, "/modelId"),
+                                    capability,
+                                    capability_position,
+                                ],
+                            )
+                            .map_err_str()?;
+                        Ok(())
+                    })?;
                 }
             }
         }
@@ -242,17 +257,16 @@ impl ConfigRepository {
 
                     if let Some(capabilities) = model.get("capabilities").and_then(Value::as_array)
                     {
-                        for (capability_position, capability) in capabilities.iter().enumerate() {
-                            if let Some(capability) = capability.as_str() {
-                                connection
-                                    .execute(
-                                        "INSERT INTO provider_model_catalog_item_capabilities (provider_key, item_id, capability, position)
+                        insert_each_capability_str(capabilities, |capability, capability_position| {
+                            connection
+                                .execute(
+                                    "INSERT INTO provider_model_catalog_item_capabilities (provider_key, item_id, capability, position)
                                          VALUES (?1, ?2, ?3, ?4)",
-                                        params![provider_key, model_id, capability, capability_position as i64],
-                                    )
-                                    .map_err_str()?;
-                            }
-                        }
+                                    params![provider_key, model_id, capability, capability_position],
+                                )
+                                .map_err_str()?;
+                            Ok(())
+                        })?;
                     }
                 }
             }

@@ -70,11 +70,15 @@ trait MapErrToString<T> {
 
 impl<T, E: std::fmt::Display> MapErrToString<T> for Result<T, E> {
     fn map_err_str(self) -> Result<T, String> {
-        self.map_err(|e| e.to_string())
+        self.map_err(|error| format!("{error}"))
     }
 }
 
-const OMNI_BRIDGE_DEVICE_PATH: &str = r"\\.\OmniTranslateVirtualAudio";
+use omni_bridge_service::probe_support::{
+    DriverStatus, DRIVER_STATUS_BASE_SIZE, IOCTL_OMNI_BRIDGE_QUERY_STATUS,
+    IOCTL_OMNI_BRIDGE_READ_PCM, IOCTL_OMNI_BRIDGE_RESET, OMNI_BRIDGE_DEVICE_PATH,
+};
+
 const OMNI_SOURCE_CHUNK_BYTES: usize = 960 * INTERNAL_CHANNEL_COUNT as usize * 2;
 const OMNI_SOURCE_FRAME_INTERVAL_MS: u64 = 20;
 const OMNI_SOURCE_QUEUE_CAPACITY: usize = 5;
@@ -87,35 +91,6 @@ const OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS: u64 = 5;
 #[allow(dead_code, reason = "driverless WASAPI fallback restart policy is retained for recovery builds")]
 const OMNI_SOURCE_RESTART_BACKOFF_MS: [u64; 4] = [250, 500, 1_000, 2_000];
 const MONITOR_VIRTUAL_PLAYBACK_LOOP: &str = "monitor.virtual-playback-loop";
-const FILE_DEVICE_OMNI_TRANSLATE: u32 = 0x8337;
-const METHOD_BUFFERED: u32 = 0;
-const FILE_READ_DATA: u32 = 0x0001;
-const FILE_WRITE_DATA: u32 = 0x0002;
-const IOCTL_OMNI_BRIDGE_READ_PCM: u32 =
-    (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_READ_DATA << 14) | (0x800 << 2) | METHOD_BUFFERED;
-const IOCTL_OMNI_BRIDGE_QUERY_STATUS: u32 =
-    (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_READ_DATA << 14) | (0x801 << 2) | METHOD_BUFFERED;
-const IOCTL_OMNI_BRIDGE_RESET: u32 =
-    (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_WRITE_DATA << 14) | (0x802 << 2) | METHOD_BUFFERED;
-
-#[repr(C)]
-#[derive(Default)]
-struct DriverStatus {
-    abi_version: u32,
-    ring_capacity_bytes: u32,
-    buffered_bytes: u32,
-    max_buffered_bytes: u32,
-    captured_bytes: u64,
-    delivered_bytes: u64,
-    dropped_bytes: u64,
-    render_streams_created: u64,
-    render_run_transitions: u64,
-    render_set_write_packet_calls: u64,
-    render_read_bytes_calls: u64,
-    loopback_capture_read_calls: u64,
-}
-
-const DRIVER_STATUS_BASE_SIZE: u32 = 40;
 
 #[derive(Default)]
 struct BridgeState {
@@ -268,7 +243,7 @@ impl BridgeHost {
         let (source_tx, source_rx) = mpsc::sync_channel::<Vec<u8>>(32);
 
         PlaybackWorker::new(playback_rx, state.clone()).spawn();
-        SourceCaptureSupervisor::new(
+        DriverCaptureWorker::new(
             state.clone(),
             self.runtime_root.clone(),
             playback_tx.clone(),
@@ -327,36 +302,6 @@ impl PlaybackWorker {
 
     fn spawn(self) {
         thread::spawn(move || run_playback_worker(self.receiver, self.state));
-    }
-}
-
-struct SourceCaptureSupervisor {
-    state: Arc<Mutex<BridgeState>>,
-    runtime_root: PathBuf,
-    playback_tx: mpsc::SyncSender<PlaybackCommand>,
-    source_tx: mpsc::SyncSender<Vec<u8>>,
-}
-
-impl SourceCaptureSupervisor {
-    fn new(
-        state: Arc<Mutex<BridgeState>>,
-        runtime_root: PathBuf,
-        playback_tx: mpsc::SyncSender<PlaybackCommand>,
-        source_tx: mpsc::SyncSender<Vec<u8>>,
-    ) -> Self {
-        Self { state, runtime_root, playback_tx, source_tx }
-    }
-
-    fn spawn(self) {
-        thread::spawn(move || {
-            DriverCaptureWorker::new(
-                self.state,
-                self.runtime_root,
-                self.playback_tx,
-                self.source_tx,
-            )
-            .run()
-        });
     }
 }
 

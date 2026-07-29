@@ -61,11 +61,9 @@ if ($env:OMNI_SKIP_DRIVER_SMOKE -eq "1") {
   exit 0
 }
 
-function Set-Utf8NoBomContent {
-  param([string]$Path, [string]$Value)
-  $encoding = [System.Text.UTF8Encoding]::new($false)
-  [System.IO.File]::WriteAllText($Path, $Value, $encoding)
-}
+# Shared file/process helpers (Set-Utf8NoBomContent, Get-FileLength,
+# Read-TextDelta, Get-ChildProcessIds, Stop-ProcessTree).
+. (Join-Path $PSScriptRoot 'lib/desktop-smoke-common.ps1')
 
 function Test-TcpPort {
   param([string]$TargetHost, [int]$Port, [int]$TimeoutMs = 500)
@@ -104,53 +102,6 @@ function Invoke-WebDriverRequest {
     $parameters.Body = [System.Text.Encoding]::UTF8.GetBytes($json)
   }
   return Invoke-RestMethod @parameters
-}
-
-function Get-FileLength {
-  param([string]$Path)
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    return 0
-  }
-  return (Get-Item -LiteralPath $Path).Length
-}
-
-function Read-TextDelta {
-  param([string]$Path, [long]$Offset)
-  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
-    return ''
-  }
-  $stream = $null
-  $reader = $null
-  try {
-    $stream = [System.IO.File]::Open($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
-    if ($stream.Length -lt $Offset) {
-      $Offset = 0
-    }
-    [void]$stream.Seek($Offset, [System.IO.SeekOrigin]::Begin)
-    $reader = [System.IO.StreamReader]::new($stream, [System.Text.Encoding]::UTF8, $true)
-    return $reader.ReadToEnd()
-  } catch {
-    return ''
-  } finally {
-    if ($null -ne $reader) { $reader.Dispose() } elseif ($null -ne $stream) { $stream.Dispose() }
-  }
-}
-
-function Get-ChildProcessIds {
-  param([int]$ParentId)
-  foreach ($child in @(Get-CimInstance Win32_Process -Filter "ParentProcessId=$ParentId" -ErrorAction SilentlyContinue)) {
-    [int]$child.ProcessId
-    Get-ChildProcessIds -ParentId ([int]$child.ProcessId)
-  }
-}
-
-function Stop-ProcessTree {
-  param([int]$RootProcessId)
-  $ids = @((Get-ChildProcessIds -ParentId $RootProcessId) + $RootProcessId | Select-Object -Unique)
-  [array]::Reverse($ids)
-  foreach ($id in $ids) {
-    Stop-Process -Id $id -Force -ErrorAction SilentlyContinue
-  }
 }
 
 function Stop-DesktopShellProcesses {

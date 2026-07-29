@@ -1,3 +1,18 @@
+/// Spawn a background thread that reads a single newline-terminated line from
+/// the pipe and forwards the result over a channel, returning the receiver so
+/// callers can apply their own `recv_timeout` handling. Shared by the retrying
+/// and quiet writers, which previously repeated this spawn verbatim.
+fn spawn_pipe_line_reader(pipe: fs::File) -> mpsc::Receiver<std::io::Result<String>> {
+    let (tx, rx) = mpsc::channel();
+    thread::spawn(move || {
+        let mut reader = BufReader::new(pipe);
+        let mut response = String::new();
+        let result = reader.read_line(&mut response).map(|_| response);
+        let _ = tx.send(result);
+    });
+    rx
+}
+
 fn write_command(
     pipe_path: &str,
     command: &DriverBridgeCommand,
@@ -53,14 +68,7 @@ fn write_command_with_retry(
                 })?;
 
                 let pipe_path_owned = pipe_path.to_string();
-                let pipe_for_read = pipe;
-                let (tx, rx) = mpsc::channel();
-                thread::spawn(move || {
-                    let mut reader = BufReader::new(pipe_for_read);
-                    let mut response = String::new();
-                    let result = reader.read_line(&mut response).map(|_| response);
-                    let _ = tx.send(result);
-                });
+                let rx = spawn_pipe_line_reader(pipe);
                 let response = match rx.recv_timeout(Duration::from_secs(IPC_READ_TIMEOUT_SECS)) {
                     Ok(Ok(response)) => response,
                     Ok(Err(error)) => {
@@ -140,14 +148,7 @@ fn write_command_once_quiet(
     pipe.flush().map_err(|error| error.to_string())?;
 
     let pipe_path_owned = pipe_path.to_string();
-    let pipe_for_read = pipe;
-    let (tx, rx) = mpsc::channel();
-    thread::spawn(move || {
-        let mut reader = BufReader::new(pipe_for_read);
-        let mut response = String::new();
-        let result = reader.read_line(&mut response).map(|_| response);
-        let _ = tx.send(result);
-    });
+    let rx = spawn_pipe_line_reader(pipe);
     let response = match rx.recv_timeout(Duration::from_secs(IPC_READ_TIMEOUT_SECS)) {
         Ok(Ok(response)) => response,
         Ok(Err(error)) => return Err(error.to_string()),
@@ -171,30 +172,35 @@ pub fn now_unix_ms() -> u64 {
         .unwrap_or(0)
 }
 
-pub fn query_state(pipe_path: &str) -> Result<BridgeStateResponse, String> {
-    match write_command(
-        pipe_path,
-        &DriverBridgeCommand::StateQuery(BridgeStateQuery {
-            request_id: format!("bridge-state-{}", now_unix_ms()),
-        }),
-    )? {
+/// Map a bridge state-query response into the public `BridgeStateResponse`
+/// result. Shared by `query_state` and `query_state_fast`, whose response
+/// interpretation is identical.
+fn interpret_state_response(
+    event: DriverBridgeEvent,
+) -> Result<BridgeStateResponse, String> {
+    match event {
         DriverBridgeEvent::StateSnapshot(snapshot) => Ok(snapshot),
         DriverBridgeEvent::Error(error) => Err(format!("{}: {}", error.code, error.message)),
         _ => Err("Bridge Service 返回了意外响应。".to_string()),
     }
 }
 
+pub fn query_state(pipe_path: &str) -> Result<BridgeStateResponse, String> {
+    interpret_state_response(write_command(
+        pipe_path,
+        &DriverBridgeCommand::StateQuery(BridgeStateQuery {
+            request_id: format!("bridge-state-{}", now_unix_ms()),
+        }),
+    )?)
+}
+
 pub fn query_state_fast(pipe_path: &str) -> Result<BridgeStateResponse, String> {
-    match write_command_with_retry(
+    interpret_state_response(write_command_with_retry(
         pipe_path,
         &DriverBridgeCommand::StateQuery(BridgeStateQuery {
             request_id: format!("bridge-state-fast-{}", now_unix_ms()),
         }),
         1,
         Duration::ZERO,
-    )? {
-        DriverBridgeEvent::StateSnapshot(snapshot) => Ok(snapshot),
-        DriverBridgeEvent::Error(error) => Err(format!("{}: {}", error.code, error.message)),
-        _ => Err("Bridge Service 返回了意外响应。".to_string()),
-    }
+    )?)
 }

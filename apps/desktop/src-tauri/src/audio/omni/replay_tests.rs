@@ -20,6 +20,16 @@ use crate::audio::state::AudioStateStore;
 
 type MockHandle = tauri::AppHandle<tauri::test::MockRuntime>;
 
+/// Collects the source text of every recent overlay cue in a snapshot.
+fn cue_source_texts(snapshot: &crate::audio::contracts::AudioRuntimeSnapshot) -> Vec<String> {
+    snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .map(|cue| cue.source_text.clone())
+        .collect()
+}
+
 fn fixture_provider() -> ProviderDraftInput {
     serde_json::from_value(json!({
         "templateId": "t",
@@ -371,12 +381,7 @@ fn replay_commit_then_reconnect_then_old_item_completed() {
     let _socket = harness.tick(socket, &mut slice);
 
     let snapshot = harness.store().snapshot();
-    let cue_texts: Vec<_> = snapshot
-        .subtitle_overlay
-        .recent_cues
-        .iter()
-        .map(|cue| cue.source_text.clone())
-        .collect();
+    let cue_texts = cue_source_texts(&snapshot);
     assert!(
         cue_texts.iter().any(|text| text.contains("the tail of the pre-reconnect turn")),
         "late completed transcription must reach the overlay; cues: {cue_texts:?}"
@@ -488,12 +493,7 @@ fn replay_gate_timeout_then_late_completed() {
     let _socket = harness.tick(late_socket, &mut slice);
 
     let snapshot = harness.store().snapshot();
-    let cue_texts: Vec<_> = snapshot
-        .subtitle_overlay
-        .recent_cues
-        .iter()
-        .map(|cue| cue.source_text.clone())
-        .collect();
+    let cue_texts = cue_source_texts(&snapshot);
     assert!(
         cue_texts.iter().any(|text| text.contains("the user's last sentence")),
         "the late completed transcription must be displayed; cues: {cue_texts:?}"

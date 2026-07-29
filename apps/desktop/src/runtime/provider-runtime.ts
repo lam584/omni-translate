@@ -126,83 +126,91 @@ async function invokeWithTimeout<T>(
   });
 }
 
-export async function getProviderSecretStatus(reference: string): Promise<CredentialRefStatus> {
-  appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretStatusStart'), `reference=${reference}`);
+// Shared start/result/failed trace scaffold for the three credential
+// operations; only the summaries, detail projections and timeout differ.
+async function invokeCredentialOperation<T>(
+  reference: string,
+  operation: () => Promise<T>,
+  actionLabel: string,
+  timeoutMs: number | null,
+  operationName: string,
+  trace: {
+    startSummary: string;
+    startDetail: string;
+    resultSummary: string;
+    resultDetail: (result: T) => string;
+    failedSummary: string;
+  },
+): Promise<T> {
+  appendFrontendDiagnosticsTrace('storage', 'info', trace.startSummary, trace.startDetail);
 
   try {
     const result = await invokeWithTimeout(
-      () => activeDesktopApi().credentials.status(reference),
-      i18n.t('runtime.provider.actionSecretStatus'),
-      null,
-      'credential-status',
+      operation,
+      actionLabel,
+      timeoutMs,
+      operationName,
       i18n.t('runtime.provider.guidanceCredentialManager'),
     );
 
-    appendFrontendDiagnosticsTrace(
-      'storage',
-      'info',
-      i18n.t('runtime.provider.traceSecretStatusResult'),
-      `reference=${reference} backend=${result.backend} hasSecret=${result.hasSecret}`,
-    );
+    appendFrontendDiagnosticsTrace('storage', 'info', trace.resultSummary, trace.resultDetail(result));
     return result;
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    appendFrontendDiagnosticsTrace('storage', 'error', i18n.t('runtime.provider.traceSecretStatusFailed'), `reference=${reference} error=${detail}`);
+    appendFrontendDiagnosticsTrace('storage', 'error', trace.failedSummary, `reference=${reference} error=${detail}`);
     throw error;
   }
+}
+
+export async function getProviderSecretStatus(reference: string): Promise<CredentialRefStatus> {
+  return invokeCredentialOperation(
+    reference,
+    () => activeDesktopApi().credentials.status(reference),
+    i18n.t('runtime.provider.actionSecretStatus'),
+    null,
+    'credential-status',
+    {
+      startSummary: i18n.t('runtime.provider.traceSecretStatusStart'),
+      startDetail: `reference=${reference}`,
+      resultSummary: i18n.t('runtime.provider.traceSecretStatusResult'),
+      resultDetail: (result) => `reference=${reference} backend=${result.backend} hasSecret=${result.hasSecret}`,
+      failedSummary: i18n.t('runtime.provider.traceSecretStatusFailed'),
+    },
+  );
 }
 
 export async function saveProviderSecret(reference: string, secret: string): Promise<CredentialRefStatus> {
-  appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretSaveStart'), `reference=${reference} secretLength=${secret.length}`);
-
-  try {
-    const result = await invokeWithTimeout(
-      () => activeDesktopApi().credentials.save(reference, secret),
-      i18n.t('runtime.provider.actionSecretSave'),
-      SAVE_PROVIDER_SECRET_TIMEOUT_MS,
-      'credential-save',
-      i18n.t('runtime.provider.guidanceCredentialManager'),
-    );
-
-    appendFrontendDiagnosticsTrace(
-      'storage',
-      'info',
-      i18n.t('runtime.provider.traceSecretSaveResult'),
-      `reference=${reference} backend=${result.backend} hasSecret=${result.hasSecret}`,
-    );
-
-    return result;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    appendFrontendDiagnosticsTrace('storage', 'error', i18n.t('runtime.provider.traceSecretSaveFailed'), `reference=${reference} error=${detail}`);
-    throw error;
-  }
+  return invokeCredentialOperation(
+    reference,
+    () => activeDesktopApi().credentials.save(reference, secret),
+    i18n.t('runtime.provider.actionSecretSave'),
+    SAVE_PROVIDER_SECRET_TIMEOUT_MS,
+    'credential-save',
+    {
+      startSummary: i18n.t('runtime.provider.traceSecretSaveStart'),
+      startDetail: `reference=${reference} secretLength=${secret.length}`,
+      resultSummary: i18n.t('runtime.provider.traceSecretSaveResult'),
+      resultDetail: (result) => `reference=${reference} backend=${result.backend} hasSecret=${result.hasSecret}`,
+      failedSummary: i18n.t('runtime.provider.traceSecretSaveFailed'),
+    },
+  );
 }
 
 export async function readProviderSecret(reference: string): Promise<CredentialSecretPayload> {
-  appendFrontendDiagnosticsTrace('storage', 'info', i18n.t('runtime.provider.traceSecretReadStart'), `reference=${reference}`);
-
-  try {
-    const result = await invokeWithTimeout(
-      () => activeDesktopApi().credentials.read(reference),
-      i18n.t('runtime.provider.actionSecretRead'),
-      null,
-      'credential-read',
-      i18n.t('runtime.provider.guidanceCredentialManager'),
-    );
-
-    appendFrontendDiagnosticsTrace(
-      'storage',
-      'info',
-      i18n.t('runtime.provider.traceSecretReadResult'),
-      `reference=${reference} hasSecret=${Boolean(result.secret)}`,
-    );
-    return result;
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    appendFrontendDiagnosticsTrace('storage', 'error', i18n.t('runtime.provider.traceSecretReadFailed'), `reference=${reference} error=${detail}`);
-    throw error;
-  }
+  return invokeCredentialOperation(
+    reference,
+    () => activeDesktopApi().credentials.read(reference),
+    i18n.t('runtime.provider.actionSecretRead'),
+    null,
+    'credential-read',
+    {
+      startSummary: i18n.t('runtime.provider.traceSecretReadStart'),
+      startDetail: `reference=${reference}`,
+      resultSummary: i18n.t('runtime.provider.traceSecretReadResult'),
+      resultDetail: (result) => `reference=${reference} hasSecret=${Boolean(result.secret)}`,
+      failedSummary: i18n.t('runtime.provider.traceSecretReadFailed'),
+    },
+  );
 }
 
 export async function runProviderProbe(provider: ProviderDraft): Promise<ProviderProbeProfileRuntime> {

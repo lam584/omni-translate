@@ -75,16 +75,7 @@ pub fn start_dispatch(
             || initial_config.outbound_ptt_state == "recording";
         speech.last_error = None;
     });
-    let _ = append_diagnostics_log(
-        &app,
-        "audio",
-        "info",
-        "已启动 speech dispatch worker。",
-        None,
-        None,
-        None,
-    );
-    emit_audio_snapshot(&app, store)?;
+    crate::audio::worker_notify::announce_worker_started(&app, store, "已启动 speech dispatch worker。")?;
 
     let (stop_tx, stop_rx) = mpsc::channel();
     let app_handle = app.clone();
@@ -103,10 +94,8 @@ pub fn start_dispatch(
                     speech.last_error = Some(error.clone());
                     push_event(speech, "speech.error", error.clone(), None, None);
                 });
-                let runtime_state = app_handle.state::<crate::runtime::state::RuntimeStateStore>();
-                let _ = crate::runtime::events::emit_runtime_notification(
+                let _ = crate::audio::worker_notify::emit_worker_notification(
                     &app_handle,
-                    &runtime_state,
                     crate::runtime::contracts::RuntimeNotification::warning(
                         "subtitle-tts-worker-failed",
                         "session",
@@ -253,6 +242,69 @@ mod tests {
     use super::super::contracts::SubtitleDisplaySegmentRuntime;
     use super::*;
     use serde_json::json;
+
+    /// Builds a provider entry `Value` for `providers` arrays in config
+    /// fixtures. The auth/region/stream/timeout/template fields are fixed to
+    /// the values these tests share; only the identifying fields vary.
+    fn speech_provider_value(
+        template_id: &str,
+        provider_id: &str,
+        kind: &str,
+        display_name: &str,
+        model: &str,
+        base_url: &str,
+        transport: &str,
+    ) -> serde_json::Value {
+        json!({
+            "templateId": template_id, "providerId": provider_id,
+            "kind": kind, "displayName": display_name,
+            "model": model, "baseUrl": base_url,
+            "transport": transport,
+            "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
+            "region": null, "streamEnabled": false, "timeoutMs": 1000,
+            "systemPromptTemplate": "video-realtime-cn"
+        })
+    }
+
+    /// Builds a `SubtitleDisplaySegmentRuntime` for cue fixtures.
+    fn subtitle_segment(
+        source_text: &str,
+        translated_text: &str,
+        pending: bool,
+    ) -> SubtitleDisplaySegmentRuntime {
+        SubtitleDisplaySegmentRuntime {
+            source_text: source_text.to_string(),
+            translated_text: translated_text.to_string(),
+            pending,
+        }
+    }
+
+    /// Builds a `SubtitleCueRuntime` for cue fixtures. The inbound route
+    /// direction and `unix-ms:1`/`unix-ms:2` timestamps are fixed to the
+    /// values these tests share; only the identifying/segment/commit fields
+    /// vary.
+    fn subtitle_cue_runtime(
+        cue_id: &str,
+        source_text: &str,
+        display_source_text: &str,
+        display_segments: Vec<SubtitleDisplaySegmentRuntime>,
+        translated_text: &str,
+        committed: bool,
+        translation_committed: bool,
+    ) -> SubtitleCueRuntime {
+        SubtitleCueRuntime {
+            cue_id: cue_id.to_string(),
+            route_direction: "inbound".to_string(),
+            source_text: source_text.to_string(),
+            display_source_text: display_source_text.to_string(),
+            display_segments,
+            translated_text: translated_text.to_string(),
+            started_at: "unix-ms:1".to_string(),
+            ended_at: "unix-ms:2".to_string(),
+            committed,
+            translation_committed,
+        }
+    }
 
     fn provider_input() -> ProviderDraftInput {
         ProviderDraftInput {
@@ -480,44 +532,30 @@ mod tests {
 
     #[test]
     fn speech_ready_accepts_final_secondary_translation_before_cue_commit() {
-        let cue = SubtitleCueRuntime {
-            cue_id: "cue-1".to_string(),
-            route_direction: "inbound".to_string(),
-            source_text: "hello".to_string(),
-            display_source_text: "hello".to_string(),
-            display_segments: vec![SubtitleDisplaySegmentRuntime {
-                source_text: "hello".to_string(),
-                translated_text: "你好。".to_string(),
-                pending: false,
-            }],
-            translated_text: "你好。".to_string(),
-            started_at: "unix-ms:1".to_string(),
-            ended_at: "unix-ms:2".to_string(),
-            committed: false,
-            translation_committed: false,
-        };
+        let cue = subtitle_cue_runtime(
+            "cue-1",
+            "hello",
+            "hello",
+            vec![subtitle_segment("hello", "你好。", false)],
+            "你好。",
+            false,
+            false,
+        );
 
         assert!(is_speech_ready_cue(&cue));
     }
 
     #[test]
     fn speech_ready_ignores_pending_secondary_translation() {
-        let cue = SubtitleCueRuntime {
-            cue_id: "cue-1".to_string(),
-            route_direction: "inbound".to_string(),
-            source_text: "hello".to_string(),
-            display_source_text: "hello".to_string(),
-            display_segments: vec![SubtitleDisplaySegmentRuntime {
-                source_text: "hello".to_string(),
-                translated_text: "你".to_string(),
-                pending: true,
-            }],
-            translated_text: "你".to_string(),
-            started_at: "unix-ms:1".to_string(),
-            ended_at: "unix-ms:2".to_string(),
-            committed: false,
-            translation_committed: false,
-        };
+        let cue = subtitle_cue_runtime(
+            "cue-1",
+            "hello",
+            "hello",
+            vec![subtitle_segment("hello", "你", true)],
+            "你",
+            false,
+            false,
+        );
 
         assert!(!is_speech_ready_cue(&cue));
     }
@@ -535,22 +573,15 @@ mod tests {
             }
         }))
         .unwrap();
-        let cue = SubtitleCueRuntime {
-            cue_id: "cue-native".to_string(),
-            route_direction: "inbound".to_string(),
-            source_text: "hello".to_string(),
-            display_source_text: "hello".to_string(),
-            display_segments: vec![SubtitleDisplaySegmentRuntime {
-                source_text: "hello".to_string(),
-                translated_text: "你好。".to_string(),
-                pending: false,
-            }],
-            translated_text: "你好。".to_string(),
-            started_at: "unix-ms:1".to_string(),
-            ended_at: "unix-ms:2".to_string(),
-            committed: true,
-            translation_committed: true,
-        };
+        let cue = subtitle_cue_runtime(
+            "cue-native",
+            "hello",
+            "hello",
+            vec![subtitle_segment("hello", "你好。", false)],
+            "你好。",
+            true,
+            true,
+        );
 
         let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
 
@@ -559,9 +590,10 @@ mod tests {
         assert_eq!(tasks[0].translated_text, "你好。");
     }
 
-    #[test]
-    fn secondary_route_dispatches_only_final_display_segments() {
-        let config = SpeechConfig::from_value(&json!({
+    /// Secondary subtitle-TTS speech config shared by the segment-dispatch
+    /// tests.
+    fn secondary_subtitle_tts_config() -> SpeechConfig {
+        SpeechConfig::from_value(&json!({
             "speech": {
                 "translationAudioSource": "subtitle-tts"
             },
@@ -571,30 +603,24 @@ mod tests {
                 "outputSpeechEnabled": true
             }
         }))
-        .unwrap();
-        let cue = SubtitleCueRuntime {
-            cue_id: "cue-secondary".to_string(),
-            route_direction: "inbound".to_string(),
-            source_text: "hello then wait".to_string(),
-            display_source_text: "hello\nthen wait".to_string(),
-            display_segments: vec![
-                SubtitleDisplaySegmentRuntime {
-                    source_text: "hello".to_string(),
-                    translated_text: "你好。".to_string(),
-                    pending: false,
-                },
-                SubtitleDisplaySegmentRuntime {
-                    source_text: "then wait".to_string(),
-                    translated_text: "然后等等".to_string(),
-                    pending: true,
-                },
+        .unwrap()
+    }
+
+    #[test]
+    fn secondary_route_dispatches_only_final_display_segments() {
+        let config = secondary_subtitle_tts_config();
+        let cue = subtitle_cue_runtime(
+            "cue-secondary",
+            "hello then wait",
+            "hello\nthen wait",
+            vec![
+                subtitle_segment("hello", "你好。", false),
+                subtitle_segment("then wait", "然后等等", true),
             ],
-            translated_text: "你好。\n然后等等".to_string(),
-            started_at: "unix-ms:1".to_string(),
-            ended_at: "unix-ms:2".to_string(),
-            committed: false,
-            translation_committed: false,
-        };
+            "你好。\n然后等等",
+            false,
+            false,
+        );
 
         let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
 
@@ -606,40 +632,23 @@ mod tests {
 
     #[test]
     fn secondary_route_splits_multiline_translation_into_tts_tasks() {
-        let config = SpeechConfig::from_value(&json!({
-            "speech": {
-                "translationAudioSource": "subtitle-tts"
-            },
-            "devices": {
-                "subtitleTranslationMode": "secondary",
-                "subtitleTranslationModelId": "template::text-model",
-                "outputSpeechEnabled": true
-            }
-        }))
-        .unwrap();
-        let cue = SubtitleCueRuntime {
-            cue_id: "cue-secondary".to_string(),
-            route_direction: "inbound".to_string(),
-            source_text: "rocket and future then pending".to_string(),
-            display_source_text: "rocket and future\nthen pending".to_string(),
-            display_segments: vec![
-                SubtitleDisplaySegmentRuntime {
-                    source_text: "rocket and future".to_string(),
-                    translated_text: "现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星".to_string(),
-                    pending: false,
-                },
-                SubtitleDisplaySegmentRuntime {
-                    source_text: "then pending".to_string(),
-                    translated_text: "还在等待".to_string(),
-                    pending: true,
-                },
+        let config = secondary_subtitle_tts_config();
+        let cue = subtitle_cue_runtime(
+            "cue-secondary",
+            "rocket and future then pending",
+            "rocket and future\nthen pending",
+            vec![
+                subtitle_segment(
+                    "rocket and future",
+                    "现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星",
+                    false,
+                ),
+                subtitle_segment("then pending", "还在等待", true),
             ],
-            translated_text: "现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星\n还在等待".to_string(),
-            started_at: "unix-ms:1".to_string(),
-            ended_at: "unix-ms:2".to_string(),
-            committed: false,
-            translation_committed: false,
-        };
+            "现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星\n还在等待",
+            false,
+            false,
+        );
 
         let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
 
@@ -666,18 +675,15 @@ mod tests {
 
     #[test]
     fn secondary_segment_slot_allows_changed_replacement_replay() {
-        let cue = SubtitleCueRuntime {
-            cue_id: "cue-secondary".to_string(),
-            route_direction: "inbound".to_string(),
-            source_text: "hello".to_string(),
-            display_source_text: "hello".to_string(),
-            display_segments: Vec::new(),
-            translated_text: "hello translated".to_string(),
-            started_at: "unix-ms:1".to_string(),
-            ended_at: "unix-ms:2".to_string(),
-            committed: false,
-            translation_committed: false,
-        };
+        let cue = subtitle_cue_runtime(
+            "cue-secondary",
+            "hello",
+            "hello",
+            Vec::new(),
+            "hello translated",
+            false,
+            false,
+        );
         let first = SpeechDispatchTask {
             cue: cue.clone(),
             segment_index: 0,
@@ -714,25 +720,7 @@ mod tests {
     #[test]
     fn speech_config_uses_subtitle_priority_to_compute_dispatch_delay() {
         let config = SpeechConfig::from_value(&json!({
-          "providers": [{
-            "templateId": "template",
-            "providerId": "provider",
-            "kind": "openai-compatible",
-            "displayName": "Provider",
-            "model": "tts-model",
-            "baseUrl": "http://127.0.0.1:1",
-            "transport": "http",
-            "authRef": {
-              "kind": "credential-ref",
-              "reference": "none",
-              "headerName": "Authorization",
-              "scheme": "none"
-            },
-            "region": null,
-            "streamEnabled": false,
-            "timeoutMs": 1000,
-            "systemPromptTemplate": "video-realtime-cn"
-          }],
+          "providers": [speech_provider_value("template", "provider", "openai-compatible", "Provider", "tts-model", "http://127.0.0.1:1", "http")],
           "speech": {
             "enabled": true,
             "targetLanguage": "en-US",
@@ -774,44 +762,10 @@ mod tests {
     #[test]
     fn speech_config_prefers_explicit_text_to_speech_model() {
         let config = SpeechConfig::from_value(&json!({
-          "providers": [{
-            "templateId": "template-main",
-            "providerId": "provider-main",
-            "kind": "openai-compatible",
-            "displayName": "Main Provider",
-            "model": "main-model",
-            "baseUrl": "http://main.test",
-            "transport": "http",
-            "authRef": {
-              "kind": "credential-ref",
-              "reference": "none",
-              "headerName": "Authorization",
-              "scheme": "none"
-            },
-            "region": null,
-            "streamEnabled": false,
-            "timeoutMs": 1000,
-            "systemPromptTemplate": "video-realtime-cn"
-          },
-          {
-            "templateId": "template-linked",
-            "providerId": "provider-linked",
-            "kind": "dashscope",
-            "displayName": "Linked Provider",
-            "model": "linked-default",
-            "baseUrl": "http://linked.test",
-            "transport": "websocket",
-            "authRef": {
-              "kind": "credential-ref",
-              "reference": "none",
-              "headerName": "Authorization",
-              "scheme": "none"
-            },
-            "region": null,
-            "streamEnabled": false,
-            "timeoutMs": 1000,
-            "systemPromptTemplate": "video-realtime-cn"
-          }],
+          "providers": [
+            speech_provider_value("template-main", "provider-main", "openai-compatible", "Main Provider", "main-model", "http://main.test", "http"),
+            speech_provider_value("template-linked", "provider-linked", "dashscope", "Linked Provider", "linked-default", "http://linked.test", "websocket")
+          ],
           "speech": {
             "enabled": true,
             "targetLanguage": "en-US",
@@ -848,34 +802,8 @@ mod tests {
     fn secondary_tts_prefers_inbound_secondary_audio_model() {
         let config = SpeechConfig::from_value(&json!({
           "providers": [
-            {
-              "templateId": "template-default",
-              "providerId": "provider-default",
-              "kind": "openai-compatible",
-              "displayName": "Default Provider",
-              "model": "default-model",
-              "baseUrl": "http://default.test",
-              "transport": "http",
-              "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
-              "region": null,
-              "streamEnabled": false,
-              "timeoutMs": 1000,
-              "systemPromptTemplate": "video-realtime-cn"
-            },
-            {
-              "templateId": "template-secondary",
-              "providerId": "provider-secondary",
-              "kind": "dashscope",
-              "displayName": "Secondary Provider",
-              "model": "old-model",
-              "baseUrl": "http://secondary.test",
-              "transport": "websocket",
-              "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
-              "region": null,
-              "streamEnabled": false,
-              "timeoutMs": 1000,
-              "systemPromptTemplate": "video-realtime-cn"
-            }
+            speech_provider_value("template-default", "provider-default", "openai-compatible", "Default Provider", "default-model", "http://default.test", "http"),
+            speech_provider_value("template-secondary", "provider-secondary", "dashscope", "Secondary Provider", "old-model", "http://secondary.test", "websocket")
           ],
           "devices": {
             "subtitleTranslationMode": "secondary",
@@ -959,24 +887,8 @@ mod tests {
     fn resolve_model_provider_composite_id_matches_linked_by_template() {
         let config = json!({
             "providers": [
-                {
-                    "templateId": "template-main", "providerId": "provider-main",
-                    "kind": "openai-compatible", "displayName": "Main",
-                    "model": "main-model", "baseUrl": "http://main.test",
-                    "transport": "http",
-                    "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
-                    "region": null, "streamEnabled": false, "timeoutMs": 1000,
-                    "systemPromptTemplate": "video-realtime-cn"
-                },
-                {
-                    "templateId": "template-linked", "providerId": "provider-linked",
-                    "kind": "dashscope", "displayName": "Linked",
-                    "model": "linked-default", "baseUrl": "http://linked.test",
-                    "transport": "websocket",
-                    "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
-                    "region": null, "streamEnabled": false, "timeoutMs": 1000,
-                    "systemPromptTemplate": "video-realtime-cn"
-                }
+                speech_provider_value("template-main", "provider-main", "openai-compatible", "Main", "main-model", "http://main.test", "http"),
+                speech_provider_value("template-linked", "provider-linked", "dashscope", "Linked", "linked-default", "http://linked.test", "websocket")
             ]
         });
         let provider =
@@ -990,15 +902,7 @@ mod tests {
     #[test]
     fn resolve_model_provider_returns_none_for_unmatched_model() {
         let config = json!({
-            "providers": [{
-                "templateId": "template-main", "providerId": "provider-main",
-                "kind": "openai-compatible", "displayName": "Main",
-                "model": "main-model", "baseUrl": "http://main.test",
-                "transport": "http",
-                "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
-                "region": null, "streamEnabled": false, "timeoutMs": 1000,
-                "systemPromptTemplate": "video-realtime-cn"
-            }]
+            "providers": [speech_provider_value("template-main", "provider-main", "openai-compatible", "Main", "main-model", "http://main.test", "http")]
         });
         assert!(resolve_model_provider_from_config_value(&config, "unknown-model").is_none());
     }
@@ -1006,15 +910,7 @@ mod tests {
     #[test]
     fn resolve_model_provider_returns_none_for_unknown_composite_template() {
         let config = json!({
-            "providers": [{
-                "templateId": "template-main", "providerId": "provider-main",
-                "kind": "openai-compatible", "displayName": "Main",
-                "model": "main-model", "baseUrl": "http://main.test",
-                "transport": "http",
-                "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
-                "region": null, "streamEnabled": false, "timeoutMs": 1000,
-                "systemPromptTemplate": "video-realtime-cn"
-            }]
+            "providers": [speech_provider_value("template-main", "provider-main", "openai-compatible", "Main", "main-model", "http://main.test", "http")]
         });
         assert!(resolve_model_provider_from_config_value(
             &config,
@@ -1026,15 +922,7 @@ mod tests {
     #[test]
     fn resolve_model_provider_composite_id_matches_main_by_template() {
         let config = json!({
-            "providers": [{
-                "templateId": "template-main", "providerId": "provider-main",
-                "kind": "openai-compatible", "displayName": "Main",
-                "model": "main-model", "baseUrl": "http://main.test",
-                "transport": "http",
-                "authRef": { "kind": "credential-ref", "reference": "none", "headerName": "Authorization", "scheme": "none" },
-                "region": null, "streamEnabled": false, "timeoutMs": 1000,
-                "systemPromptTemplate": "video-realtime-cn"
-            }]
+            "providers": [speech_provider_value("template-main", "provider-main", "openai-compatible", "Main", "main-model", "http://main.test", "http")]
         });
         let provider =
             resolve_model_provider_from_config_value(&config, "template-main::custom-model")

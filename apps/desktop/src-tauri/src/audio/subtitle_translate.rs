@@ -222,6 +222,27 @@ fn write(
     );
     sync_cue_display(app, store, cue_id, cue_state);
 }
+
+/// Assigns the next monotonic write sequence to `translated` and forwards it to
+/// [`Self::write`]. Callers that already resolved the display slot use this to
+/// avoid repeating the write-state bookkeeping.
+fn write_ranked(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    cue_id: &str,
+    cue_state: &mut CueTranslationState,
+    display_index: usize,
+    result: &SentenceResult,
+    next_translation_sequence: &mut u64,
+    translated: String,
+) {
+    let write_state = TranslationWriteState {
+        rank: translation_rank(result),
+        sequence: *next_translation_sequence,
+    };
+    *next_translation_sequence = next_translation_sequence.saturating_add(1);
+    Self::write(app, store, cue_id, cue_state, display_index, translated, write_state);
+}
 }
 
 fn handle_translation_delta(
@@ -517,10 +538,8 @@ pub fn start_subtitle_translate(
                     code,
                     recommended,
                 );
-                let runtime_state = app_handle.state::<crate::runtime::state::RuntimeStateStore>();
-                let _ = crate::runtime::events::emit_runtime_notification(
+                let _ = crate::audio::worker_notify::emit_worker_notification(
                     &app_handle,
-                    &runtime_state,
                     crate::runtime::contracts::RuntimeNotification::error(
                         "subtitle-translate-worker-failed",
                         "session",

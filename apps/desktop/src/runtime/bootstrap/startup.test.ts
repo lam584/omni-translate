@@ -1,16 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
   isTauri: vi.fn(),
   waitForTauri: vi.fn(),
   connect: vi.fn(),
 }));
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
-  isTauri: () => false,
-}));
+vi.mock('@tauri-apps/api/core', async () => (await import('../../test-utils/tauri-invoke-mock')).tauriCoreMockModule());
 
 // This suite tests the composition root's own detection/recovery machine, so
 // simulating the environment module is the sanctioned mechanism here.
@@ -31,29 +27,42 @@ import { getRecentFrontendLogEntries, loggerTestHelpers } from '../logger';
 import { CONFIG_DRAFT_FALLBACK_STORAGE_KEY } from './config-fallback';
 import { runBootstrapDesktopRuntimeBridge } from './startup';
 import { resetNativeLogForwardingForTests } from './steps';
+import { invokeMock } from '../../test-utils/tauri-invoke-mock';
 
-describe('runBootstrapDesktopRuntimeBridge state machine', () => {
+/** Resets timers, IPC/runtime mocks and bootstrap singletons for one describe run. */
+function resetStartupHarness({ isTauri = false } = {}) {
+  vi.useFakeTimers();
+  invokeMock.mockReset();
+  mocks.isTauri.mockReset().mockReturnValue(isTauri);
+  mocks.waitForTauri.mockReset().mockResolvedValue(false);
+  mocks.connect.mockReset().mockResolvedValue(() => {});
+  window.localStorage.clear();
+  loggerTestHelpers.reset();
+  resetNativeLogForwardingForTests();
+  resetDesktopApiForTests();
+}
+
+/** Registers the shared beforeEach/afterEach pair for a bootstrap describe. */
+function registerStartupHooks(options: { isTauri?: boolean } = {}) {
   beforeEach(() => {
-    vi.useFakeTimers();
-    mocks.invoke.mockReset();
-    mocks.isTauri.mockReset().mockReturnValue(false);
-    mocks.waitForTauri.mockReset().mockResolvedValue(false);
-    mocks.connect.mockReset().mockResolvedValue(() => {});
-    window.localStorage.clear();
-    loggerTestHelpers.reset();
+    resetStartupHarness(options);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
     resetNativeLogForwardingForTests();
     resetDesktopApiForTests();
+  });
+}
+
+describe('runBootstrapDesktopRuntimeBridge state machine', () => {
+  registerStartupHooks();
+
+  beforeEach(() => {
     useAppStore.setState((state) => ({
       ...state,
       configDraft: structuredClone(appConfigDraftMock),
       runtimeNotifications: [],
     }));
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    resetNativeLogForwardingForTests();
-    resetDesktopApiForTests();
   });
 
   it('logs a late-heal connect failure without crashing the preview session', async () => {
@@ -94,7 +103,7 @@ describe('runBootstrapDesktopRuntimeBridge state machine', () => {
 
   it('reports connect failures after a successful ping as step errors and a warning', async () => {
     mocks.isTauri.mockReturnValue(true);
-    mocks.invoke.mockResolvedValue('pong');
+    invokeMock.mockResolvedValue('pong');
     mocks.connect.mockRejectedValue(new Error('connect blew up'));
 
     const steps: string[] = [];
@@ -109,7 +118,7 @@ describe('runBootstrapDesktopRuntimeBridge state machine', () => {
 
   it('leaves an equal local fallback in place without rewriting the store draft', async () => {
     mocks.isTauri.mockReturnValue(true);
-    mocks.invoke.mockResolvedValue('pong');
+    invokeMock.mockResolvedValue('pong');
     const current = useAppStore.getState().configDraft;
     window.localStorage.setItem(CONFIG_DRAFT_FALLBACK_STORAGE_KEY, JSON.stringify(current));
     const setConfigDraftSpy = vi.spyOn(useAppStore.getState(), 'setConfigDraft');
@@ -125,7 +134,7 @@ describe('runBootstrapDesktopRuntimeBridge state machine', () => {
   it('recovers over the background IPC probe after the startup ping window fails', async () => {
     mocks.isTauri.mockReturnValue(true);
     let pings = 0;
-    mocks.invoke.mockImplementation(async (command: string) => {
+    invokeMock.mockImplementation(async (command: string) => {
       if (command !== 'debug_ipc_ping') throw new Error(`unexpected ${command}`);
       pings += 1;
       // The startup window burns 11 attempts; the first background probe
@@ -145,40 +154,24 @@ describe('runBootstrapDesktopRuntimeBridge state machine', () => {
 
   it('stops probing once the recovery window has fully elapsed', async () => {
     mocks.isTauri.mockReturnValue(true);
-    mocks.invoke.mockRejectedValue(new Error('ipc permanently down'));
+    invokeMock.mockRejectedValue(new Error('ipc permanently down'));
 
     const cleanupPromise = runBootstrapDesktopRuntimeBridge();
     await vi.advanceTimersByTimeAsync(30_000);
     const cleanup = await cleanupPromise;
     // Exhaust the 60s recovery budget; afterwards no further probes fire.
     await vi.advanceTimersByTimeAsync(70_000);
-    const pingsAtDeadline = mocks.invoke.mock.calls.length;
+    const pingsAtDeadline = invokeMock.mock.calls.length;
     await vi.advanceTimersByTimeAsync(10_000);
 
-    expect(mocks.invoke.mock.calls.length).toBe(pingsAtDeadline);
+    expect(invokeMock.mock.calls.length).toBe(pingsAtDeadline);
     expect(mocks.connect).not.toHaveBeenCalled();
     cleanup();
   });
 });
 
 describe('runBootstrapDesktopRuntimeBridge disposal races', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    mocks.invoke.mockReset();
-    mocks.isTauri.mockReset().mockReturnValue(false);
-    mocks.waitForTauri.mockReset().mockResolvedValue(false);
-    mocks.connect.mockReset().mockResolvedValue(() => {});
-    window.localStorage.clear();
-    loggerTestHelpers.reset();
-    resetNativeLogForwardingForTests();
-    resetDesktopApiForTests();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    resetNativeLogForwardingForTests();
-    resetDesktopApiForTests();
-  });
+  registerStartupHooks();
 
   it('releases a heal connect that resolves after cleanup', async () => {
     mocks.waitForTauri.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
@@ -199,7 +192,7 @@ describe('runBootstrapDesktopRuntimeBridge disposal races', () => {
 
   it('skips connecting when the runtime disappears between ping and connect', async () => {
     mocks.isTauri.mockReturnValueOnce(true).mockReturnValue(false);
-    mocks.invoke.mockResolvedValue('pong');
+    invokeMock.mockResolvedValue('pong');
 
     const cleanup = await runBootstrapDesktopRuntimeBridge();
 
@@ -210,7 +203,7 @@ describe('runBootstrapDesktopRuntimeBridge disposal races', () => {
   it('releases a recovery connect that resolves after cleanup', async () => {
     mocks.isTauri.mockReturnValue(true);
     let pings = 0;
-    mocks.invoke.mockImplementation(async () => {
+    invokeMock.mockImplementation(async () => {
       pings += 1;
       if (pings <= 11) throw new Error('ipc down');
       return 'pong';
@@ -234,26 +227,10 @@ describe('runBootstrapDesktopRuntimeBridge disposal races', () => {
 });
 
 describe('runBootstrapDesktopRuntimeBridge non-Error failures', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    mocks.invoke.mockReset();
-    mocks.isTauri.mockReset().mockReturnValue(true);
-    mocks.waitForTauri.mockReset().mockResolvedValue(false);
-    mocks.connect.mockReset().mockResolvedValue(() => {});
-    window.localStorage.clear();
-    loggerTestHelpers.reset();
-    resetNativeLogForwardingForTests();
-    resetDesktopApiForTests();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    resetNativeLogForwardingForTests();
-    resetDesktopApiForTests();
-  });
+  registerStartupHooks({ isTauri: true });
 
   it('stringifies non-Error ping and connect rejections', async () => {
-    mocks.invoke.mockRejectedValue('raw ipc failure string');
+    invokeMock.mockRejectedValue('raw ipc failure string');
 
     const cleanupPromise = runBootstrapDesktopRuntimeBridge();
     await vi.advanceTimersByTimeAsync(30_000);
@@ -264,7 +241,7 @@ describe('runBootstrapDesktopRuntimeBridge non-Error failures', () => {
     expect(ring.some((entry) => entry.detail?.includes('raw ipc failure string'))).toBe(true);
 
     // Reset for the connect variant.
-    mocks.invoke.mockReset().mockResolvedValue('pong');
+    invokeMock.mockReset().mockResolvedValue('pong');
     mocks.connect.mockRejectedValue('raw connect failure');
     const secondCleanup = await runBootstrapDesktopRuntimeBridge();
     const laterRing = getRecentFrontendLogEntries();
@@ -274,23 +251,7 @@ describe('runBootstrapDesktopRuntimeBridge non-Error failures', () => {
 });
 
 describe('runBootstrapDesktopRuntimeBridge remaining recovery arms', () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-    mocks.invoke.mockReset();
-    mocks.isTauri.mockReset().mockReturnValue(false);
-    mocks.waitForTauri.mockReset().mockResolvedValue(false);
-    mocks.connect.mockReset().mockResolvedValue(() => {});
-    window.localStorage.clear();
-    loggerTestHelpers.reset();
-    resetNativeLogForwardingForTests();
-    resetDesktopApiForTests();
-  });
-
-  afterEach(() => {
-    vi.useRealTimers();
-    resetNativeLogForwardingForTests();
-    resetDesktopApiForTests();
-  });
+  registerStartupHooks();
 
   it('stringifies a non-Error heal connect rejection', async () => {
     mocks.waitForTauri.mockResolvedValueOnce(false).mockResolvedValueOnce(true);
@@ -310,7 +271,7 @@ describe('runBootstrapDesktopRuntimeBridge remaining recovery arms', () => {
     mocks.isTauri.mockReturnValue(true);
     let pings = 0;
     let rejectPendingPing: ((reason: unknown) => void) | undefined;
-    mocks.invoke.mockImplementation(() => {
+    invokeMock.mockImplementation(() => {
       pings += 1;
       if (pings <= 11) return Promise.reject(new Error('startup window down'));
       return new Promise((_resolve, reject) => { rejectPendingPing = reject; });

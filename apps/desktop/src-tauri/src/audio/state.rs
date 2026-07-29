@@ -22,7 +22,10 @@ mod metrics;
 mod route_state;
 mod subtitle_store;
 pub use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
-use cue_lifecycle::{finalize_cue_display_segments, route_direction_from_cue_id, trim_recent_subtitle_cues};
+use cue_lifecycle::{
+    finalize_cue_display_segments, new_subtitle_cue, route_direction_from_cue_id,
+    trim_recent_subtitle_cues,
+};
 use deferred_translation::DeferredTranslationStore;
 use echo_activity::EchoAsrActivity;
 pub(crate) use echo_activity::EchoSuppressionSnapshot;
@@ -31,6 +34,7 @@ use omni_sessions::OmniSessionStore;
 use session_registry::SessionRegistry;
 use metrics::AudioMetricsStore;
 use route_state::route_mut;
+use route_state::{clear_session_start_if_idle, reset_route_to_idle};
 use subtitle_store::SubtitleStore;
 pub struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
@@ -409,19 +413,7 @@ impl AudioStateStore {
                     }
                 }
             } else {
-                let now = ms_marker(unix_ms());
-                let cue = SubtitleCueRuntime {
-                    cue_id: cue_id.to_string(),
-                    route_direction: route_direction.clone(),
-                    source_text: source_text.to_string(),
-                    display_source_text: String::new(),
-                    display_segments: Vec::new(),
-                    translated_text: String::new(),
-                    started_at: now.clone(),
-                    ended_at: now,
-                    committed,
-                    translation_committed: false,
-                };
+                let cue = new_subtitle_cue(cue_id, &route_direction, source_text, committed);
                 overlay.active_cue = Some(cue.clone());
                 overlay.recent_cues.insert(0, cue);
                 trim_recent_subtitle_cues(overlay);
@@ -461,19 +453,7 @@ impl AudioStateStore {
                     }
                 }
             } else {
-                let now = ms_marker(unix_ms());
-                let cue = SubtitleCueRuntime {
-                    cue_id: cue_id.to_string(),
-                    route_direction: direction.to_string(),
-                    source_text: source_text.to_string(),
-                    display_source_text: String::new(),
-                    display_segments: Vec::new(),
-                    translated_text: String::new(),
-                    started_at: now.clone(),
-                    ended_at: now,
-                    committed: true,
-                    translation_committed: false,
-                };
+                let cue = new_subtitle_cue(cue_id, direction, source_text, true);
                 overlay.active_cue = Some(cue.clone());
                 overlay.recent_cues.insert(0, cue);
                 trim_recent_subtitle_cues(overlay);
@@ -690,17 +670,8 @@ impl AudioStateStore {
 
     pub fn mark_route_stopped(&self, direction: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
-        {
-            let route = route_mut(&mut state, direction);
-            route.capture_state = "idle".to_string();
-            route.pre_buffer_state = "cold".to_string();
-            route.vad_state = "silence".to_string();
-            route.stream_bound = false;
-            route.active_segment_id = None;
-        }
-        if !state.inbound.stream_bound && !state.outbound.stream_bound {
-            state.session_started_at = None;
-        }
+        reset_route_to_idle(route_mut(&mut state, direction));
+        clear_session_start_if_idle(&mut state);
     }
 
     pub fn mark_route_stopping(&self, direction: &str) {
@@ -719,15 +690,9 @@ impl AudioStateStore {
             if route.capture_state != "stopping" {
                 return false;
             }
-            route.capture_state = "idle".to_string();
-            route.pre_buffer_state = "cold".to_string();
-            route.vad_state = "silence".to_string();
-            route.stream_bound = false;
-            route.active_segment_id = None;
+            reset_route_to_idle(route);
         }
-        if !state.inbound.stream_bound && !state.outbound.stream_bound {
-            state.session_started_at = None;
-        }
+        clear_session_start_if_idle(&mut state);
         true
     }
 

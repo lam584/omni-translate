@@ -1,24 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
-}));
+vi.mock('@tauri-apps/api/core', async () => (await import('../test-utils/tauri-invoke-mock')).tauriCoreMockModule());
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
-  isTauri: () => false,
-}));
-
-
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
-import { PreviewDesktopApi } from './preview-desktop-api';
+import { invokeMock } from '../test-utils/tauri-invoke-mock';
+import { enablePreviewDesktopRuntime, enableTauriDesktopRuntime } from '../test-utils/runtime-test-harness';
 import { getLiveSessionEventsRuntime } from './live-session-events-runtime';
 
 describe('live session events runtime', () => {
   beforeEach(() => {
-    mocks.invoke.mockReset();
-    resetDesktopApiForTests();
-    installDesktopApi(new PreviewDesktopApi());
+    invokeMock.mockReset();
+    enablePreviewDesktopRuntime();
   });
 
   it('returns empty events in browser preview mode', async () => {
@@ -32,11 +23,11 @@ describe('live session events runtime', () => {
       asrFinal: '',
       translationFinal: '',
     });
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('invokes the diagnostics_v2 command and maps envelope events in Tauri mode', async () => {
-    installDesktopApi(new TauriDesktopApi());
+    enableTauriDesktopRuntime();
     const payload = {
       sessionStartedAt: 'unix-ms:1000',
       elapsedMs: 5000,
@@ -50,10 +41,10 @@ describe('live session events runtime', () => {
       asrFinal: '你好',
       translationFinal: 'Hello',
     };
-    mocks.invoke.mockResolvedValue({ data: payload, warnings: [] });
+    invokeMock.mockResolvedValue({ data: payload, warnings: [] });
 
     const events = await getLiveSessionEventsRuntime();
-    expect(mocks.invoke).toHaveBeenCalledWith('diagnostics_v2', { command: { action: 'liveSessionEvents' } });
+    expect(invokeMock).toHaveBeenCalledWith('diagnostics_v2', { command: { action: 'liveSessionEvents' } });
     expect(events.model).toBe('qwen3.5-omni-plus-realtime');
     expect(events.elapsedMs).toBe(5000);
     expect(events.asrDeltas).toHaveLength(1);
@@ -65,15 +56,15 @@ describe('live session events runtime', () => {
   });
 
   it('rejects when native invoke fails', async () => {
-    installDesktopApi(new TauriDesktopApi());
-    mocks.invoke.mockRejectedValue(new Error('command not found'));
+    enableTauriDesktopRuntime();
+    invokeMock.mockRejectedValue(new Error('command not found'));
 
     await expect(getLiveSessionEventsRuntime()).rejects.toThrow('command not found');
   });
 
   it('rejects when the native envelope payload is malformed', async () => {
-    installDesktopApi(new TauriDesktopApi());
-    mocks.invoke.mockResolvedValue('not-json');
+    enableTauriDesktopRuntime();
+    invokeMock.mockResolvedValue('not-json');
 
     await expect(getLiveSessionEventsRuntime()).rejects.toThrow();
   });

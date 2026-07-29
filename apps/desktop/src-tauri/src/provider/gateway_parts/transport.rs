@@ -6,7 +6,7 @@ use reqwest::blocking::{Client, Response};
 use serde_json::Value;
 use tungstenite::client::IntoClientRequest;
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Error as WebSocketError, WebSocket};
+use tungstenite::{connect, Error as WebSocketError, Message, WebSocket};
 use url::Url;
 
 use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError};
@@ -80,6 +80,54 @@ impl ProviderHttpClient {
 
 pub(super) fn resolve_websocket_timeout(timeout_ms: u64) -> Duration {
     Duration::from_millis(timeout_ms.max(MIN_WEBSOCKET_TIMEOUT_MS))
+}
+
+/// Outcome of a single provider WebSocket frame read after JSON decoding.
+pub(crate) enum WebSocketFrame {
+    Json(Value),
+    Closed,
+    Ignored,
+}
+
+/// Reads the next WebSocket frame and decodes text frames as JSON, mapping
+/// read and parse failures onto provider runtime errors.
+pub(crate) fn read_json_frame(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    websocket_timeout: Duration,
+    parse_error_context: &str,
+) -> Result<WebSocketFrame, ProviderRuntimeError> {
+    let message = socket
+        .read()
+        .map_err(|error| normalize_websocket_read_error(error, websocket_timeout))?;
+    match message {
+        Message::Text(text) => {
+            let value: Value = serde_json::from_str(text.as_str()).map_err(|error| {
+                ProviderRuntimeError::new(
+                    "response.unparseable",
+                    format!("{parse_error_context}: {error}"),
+                )
+            })?;
+            Ok(WebSocketFrame::Json(value))
+        }
+        Message::Close(_) => Ok(WebSocketFrame::Closed),
+        _ => Ok(WebSocketFrame::Ignored),
+    }
+}
+
+/// Serializes a JSON payload into a text frame and sends it on the socket.
+pub(crate) fn send_json_frame(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    payload: &Value,
+    error_context: &str,
+) -> Result<(), ProviderRuntimeError> {
+    socket
+        .send(Message::Text(payload.to_string().into()))
+        .map_err(|error| {
+            ProviderRuntimeError::new(
+                "transport.unavailable",
+                format!("{error_context}: {error}"),
+            )
+        })
 }
 
 pub(super) fn apply_websocket_timeouts(
@@ -260,34 +308,37 @@ pub(super) fn normalize_transport_error(error: reqwest::Error) -> ProviderRuntim
         .with_suggestion("请检查 baseUrl、网络连通性和代理设置。")
 }
 
-pub(super) fn parse_openai_error(response: Response) -> ProviderRuntimeError {
+fn parse_provider_error_body(
+    response: Response,
+    code_pointer: &str,
+    message_pointer: &str,
+    default_message: &str,
+) -> ProviderRuntimeError {
     let status = response.status().as_u16();
     let body = response.text().unwrap_or_default();
     let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
     let provider_code = value
-        .pointer("/error/code")
+        .pointer(code_pointer)
         .and_then(Value::as_str)
         .unwrap_or_default();
     let message = value
-        .pointer("/error/message")
+        .pointer(message_pointer)
         .and_then(Value::as_str)
-        .unwrap_or("OpenAI Compatible 上游返回错误");
+        .unwrap_or(default_message);
     map_error_from_status_and_code(status, provider_code, message).with_http_status(status)
 }
 
+pub(super) fn parse_openai_error(response: Response) -> ProviderRuntimeError {
+    parse_provider_error_body(
+        response,
+        "/error/code",
+        "/error/message",
+        "OpenAI Compatible 上游返回错误",
+    )
+}
+
 pub(super) fn parse_dashscope_error(response: Response) -> ProviderRuntimeError {
-    let status = response.status().as_u16();
-    let body = response.text().unwrap_or_default();
-    let value: Value = serde_json::from_str(&body).unwrap_or(Value::Null);
-    let provider_code = value
-        .pointer("/code")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let message = value
-        .pointer("/message")
-        .and_then(Value::as_str)
-        .unwrap_or("DashScope 上游返回错误");
-    map_error_from_status_and_code(status, provider_code, message).with_http_status(status)
+    parse_provider_error_body(response, "/code", "/message", "DashScope 上游返回错误")
 }
 
 pub(super) fn map_error_from_status_and_code(

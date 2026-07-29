@@ -255,6 +255,24 @@ fn initial_connect_backoff(retry_count: usize) -> Duration {
     Duration::from_millis(250_u64 << retry_count.saturating_sub(1))
 }
 
+/// Build the authenticated DashScope realtime WebSocket request shared by the
+/// initial connect and the reconnect path. Callers keep their own
+/// provider-kind guard because the rejection wording differs; the URL, request
+/// and auth-header construction are byte-for-byte identical in both places.
+fn build_dashscope_ws_request(
+    provider: &ProviderDraftInput,
+) -> Result<tungstenite::handshake::client::Request, String> {
+    let ws_url = to_websocket_url(&provider.base_url, &provider.model)
+        .map_err(|error| format!("无法构建 WebSocket URL: {}", error.message))?;
+    let mut request = ws_url
+        .as_str()
+        .into_client_request()
+        .map_err(|error| format!("无法创建 WebSocket 请求: {error}"))?;
+    apply_ws_auth(provider, request.headers_mut())
+        .map_err(|error| format!("无法应用认证头: {}", error.message))?;
+    Ok(request)
+}
+
 #[cfg(test)]
 mod unit_tests {
     use super::*;

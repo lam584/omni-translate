@@ -1,7 +1,7 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { runtimeSnapshotMock } from '../../mocks/runtime-shell';
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { classifyStorageRecoveryError, storageRecoveryHelpers, useStorageRecovery } from './useStorageRecovery';
 
 const mocks = vi.hoisted(() => ({
@@ -23,23 +23,21 @@ vi.mock('../../runtime/desktop-api-context', () => ({
 }));
 
 describe('useStorageRecovery', () => {
-  let root: Root;
-  let container: HTMLDivElement;
   let failure: string | null;
   let retry: () => void;
   let props: Parameters<typeof useStorageRecovery>[0];
   function Harness() { ({ failure, retry } = useStorageRecovery(props)); return <output>{failure}</output>; }
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.useFakeTimers(); vi.clearAllMocks(); mocks.isTauri.mockReturnValue(true);
-    mocks.bootstrapStorage.mockResolvedValue(undefined);
-    mocks.runtimeSnapshot.mockResolvedValue(structuredClone(runtimeSnapshotMock));
-    mocks.bootstrapRuntime.mockResolvedValue(structuredClone(runtimeSnapshotMock));
-    props = { runtimeStatus: 'preview', bridgeStatus: 'tauri-shell', setRuntimeSnapshot: vi.fn() };
-    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+  const view = registerDomHarness({
+    fakeTimers: true,
+    setup: () => {
+      vi.clearAllMocks(); mocks.isTauri.mockReturnValue(true);
+      mocks.bootstrapStorage.mockResolvedValue(undefined);
+      mocks.runtimeSnapshot.mockResolvedValue(structuredClone(runtimeSnapshotMock));
+      mocks.bootstrapRuntime.mockResolvedValue(structuredClone(runtimeSnapshotMock));
+      props = { runtimeStatus: 'preview', bridgeStatus: 'tauri-shell', setRuntimeSnapshot: vi.fn() };
+    },
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); vi.useRealTimers(); });
 
   it('settles the timeout wrapper on success, rejection, and deadline', async () => {
     await expect(storageRecoveryHelpers.invokeWithTimeout(async () => 1, 'success')).resolves.toBe(1);
@@ -53,7 +51,7 @@ describe('useStorageRecovery', () => {
   it('publishes a ready storage snapshot and ignores non-ready snapshots', async () => {
     const ready = structuredClone(runtimeSnapshotMock); ready.storage.status = 'ready';
     mocks.runtimeSnapshot.mockResolvedValueOnce(ready);
-    await act(async () => { root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { view.root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
     expect(props.setRuntimeSnapshot).toHaveBeenCalledWith(ready);
 
     const notReady = structuredClone(runtimeSnapshotMock); notReady.storage.status = 'preview';
@@ -67,14 +65,14 @@ describe('useStorageRecovery', () => {
     const ready = structuredClone(runtimeSnapshotMock); ready.storage.status = 'ready';
     mocks.runtimeSnapshot.mockResolvedValue({ ...ready, storage: { ...ready.storage, status: 'preview' } });
     mocks.bootstrapRuntime.mockResolvedValueOnce(ready);
-    await act(async () => { root.render(<Harness />); await Promise.resolve(); });
+    await act(async () => { view.root.render(<Harness />); await Promise.resolve(); });
     await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
     expect(mocks.bootstrapRuntime).toHaveBeenCalled();
     expect(props.setRuntimeSnapshot).toHaveBeenCalledWith(ready);
 
     props = { ...props, bridgeStatus: 'tauri-shell-2', setRuntimeSnapshot: vi.fn() };
     mocks.bootstrapStorage.mockRejectedValueOnce('storage offline');
-    await act(async () => { root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
+    await act(async () => { view.root.render(<Harness />); await Promise.resolve(); await Promise.resolve(); });
     expect(failure).toContain('storage offline');
     const callsBeforeRetry = mocks.bootstrapStorage.mock.calls.length;
     await act(async () => { retry(); await Promise.resolve(); });
@@ -89,31 +87,31 @@ describe('useStorageRecovery', () => {
 
   it('does not start recovery outside Tauri or after storage is ready', async () => {
     mocks.isTauri.mockReturnValue(false);
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     expect(mocks.bootstrapStorage).not.toHaveBeenCalled();
     mocks.isTauri.mockReturnValue(true);
     props = { ...props, runtimeStatus: 'ready' };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     props = { ...props, runtimeStatus: 'preview', bridgeStatus: 'runtime-error' };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
   });
 
   it('ignores late ready snapshots, last-resort results, and failures after cleanup', async () => {
     const ready = structuredClone(runtimeSnapshotMock); ready.storage.status = 'ready';
     let resolveStorage!: () => void;
     mocks.bootstrapStorage.mockImplementationOnce(() => new Promise<void>((resolve) => { resolveStorage = resolve; }));
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     props = { ...props, runtimeStatus: 'ready' };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     await act(async () => { resolveStorage(); await Promise.resolve(); await Promise.resolve(); });
     expect(props.setRuntimeSnapshot).not.toHaveBeenCalledWith(ready);
 
     let rejectStorage!: (reason: unknown) => void;
     props = { ...props, runtimeStatus: 'preview', bridgeStatus: 'late-rejection' };
     mocks.bootstrapStorage.mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectStorage = reject; }));
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     props = { ...props, runtimeStatus: 'ready' };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     await act(async () => { rejectStorage('late'); await Promise.resolve(); });
     expect(failure).toBeNull();
 
@@ -122,10 +120,10 @@ describe('useStorageRecovery', () => {
     mocks.bootstrapStorage.mockResolvedValue(undefined);
     mocks.runtimeSnapshot.mockResolvedValue({ ...ready, storage: { ...ready.storage, status: 'preview' } });
     mocks.bootstrapRuntime.mockImplementationOnce(() => new Promise((resolve) => { resolveRuntime = resolve; }));
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     await act(async () => vi.advanceTimersByTimeAsync(16_000));
     props = { ...props, runtimeStatus: 'ready' };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     await act(async () => { resolveRuntime(ready); await Promise.resolve(); });
     expect(props.setRuntimeSnapshot).not.toHaveBeenCalledWith(ready);
   });

@@ -9,83 +9,51 @@ use serde_json::Value;
 
 use super::ConfigRepository;
 
-pub(super) struct ProviderConfigPersister<'a> {
-    repository: &'a ConfigRepository,
+/// Generate a domain persister that borrows the shared `ConfigRepository` and
+/// forwards its `persist` call to one or more repository methods. Every
+/// persister has the same skeleton (`new` + `persist`); only the delegated body
+/// differs, so it lives here once instead of being repeated per domain.
+macro_rules! config_persister {
+    ($name:ident, |$repo:ident, $conn:ident, $config:ident, $timestamp:ident| $body:expr) => {
+        pub(super) struct $name<'a> {
+            repository: &'a ConfigRepository,
+        }
+
+        impl<'a> $name<'a> {
+            pub(super) fn new(repository: &'a ConfigRepository) -> Self {
+                Self { repository }
+            }
+
+            pub(super) fn persist(
+                &self,
+                $conn: &Connection,
+                $config: &Value,
+                $timestamp: &str,
+            ) -> Result<(), String> {
+                let $repo = self.repository;
+                $body
+            }
+        }
+    };
 }
 
-impl<'a> ProviderConfigPersister<'a> {
-    pub(super) fn new(repository: &'a ConfigRepository) -> Self {
-        Self { repository }
-    }
+config_persister!(ProviderConfigPersister, |repo, connection, config, timestamp| {
+    repo.persist_providers(connection, config, timestamp)
+});
 
-    pub(super) fn persist(
-        &self,
-        connection: &Connection,
-        config: &Value,
-        timestamp: &str,
-    ) -> Result<(), String> {
-        self.repository.persist_providers(connection, config, timestamp)
-    }
-}
+config_persister!(AudioConfigPersister, |repo, connection, config, timestamp| {
+    repo.persist_audio(connection, config, timestamp)
+});
 
-pub(super) struct AudioConfigPersister<'a> {
-    repository: &'a ConfigRepository,
-}
+config_persister!(PreferencesPersister, |repo, connection, config, timestamp| {
+    repo.persist_subtitles(connection, config, timestamp)?;
+    repo.persist_speech(connection, config, timestamp)?;
+    repo.persist_driver(connection, config, timestamp)?;
+    repo.persist_glossary(connection, config, timestamp)?;
+    repo.persist_diagnostics(connection, config, timestamp)?;
+    repo.persist_onboarding(connection, config, timestamp)
+});
 
-impl<'a> AudioConfigPersister<'a> {
-    pub(super) fn new(repository: &'a ConfigRepository) -> Self {
-        Self { repository }
-    }
-
-    pub(super) fn persist(
-        &self,
-        connection: &Connection,
-        config: &Value,
-        timestamp: &str,
-    ) -> Result<(), String> {
-        self.repository.persist_audio(connection, config, timestamp)
-    }
-}
-
-pub(super) struct PreferencesPersister<'a> {
-    repository: &'a ConfigRepository,
-}
-
-impl<'a> PreferencesPersister<'a> {
-    pub(super) fn new(repository: &'a ConfigRepository) -> Self {
-        Self { repository }
-    }
-
-    pub(super) fn persist(
-        &self,
-        connection: &Connection,
-        config: &Value,
-        timestamp: &str,
-    ) -> Result<(), String> {
-        self.repository.persist_subtitles(connection, config, timestamp)?;
-        self.repository.persist_speech(connection, config, timestamp)?;
-        self.repository.persist_driver(connection, config, timestamp)?;
-        self.repository.persist_glossary(connection, config, timestamp)?;
-        self.repository.persist_diagnostics(connection, config, timestamp)?;
-        self.repository.persist_onboarding(connection, config, timestamp)
-    }
-}
-
-pub(super) struct RuntimeCachePersister<'a> {
-    repository: &'a ConfigRepository,
-}
-
-impl<'a> RuntimeCachePersister<'a> {
-    pub(super) fn new(repository: &'a ConfigRepository) -> Self {
-        Self { repository }
-    }
-
-    pub(super) fn persist(
-        &self,
-        connection: &Connection,
-        config: &Value,
-        timestamp: &str,
-    ) -> Result<(), String> {
-        self.repository.persist_runtime_cache(connection, config, timestamp)
-    }
-}
+config_persister!(RuntimeCachePersister, |repo, connection, config, timestamp| {
+    repo.persist_runtime_cache(connection, config, timestamp)
+});

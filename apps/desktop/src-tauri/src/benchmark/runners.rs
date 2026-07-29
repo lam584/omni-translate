@@ -68,16 +68,12 @@ pub async fn run_model_benchmark(
             }
         };
 
-        let output_delta_count = result.output_deltas.len();
-        let total_output_duration_ms = match (
-            result.response_done_ms,
-            result.first_output_ms,
-            result.response_created_ms,
-        ) {
-            (Some(done), Some(ftt), _) => Some(done - ftt),
-            (Some(done), None, Some(created)) => Some(done - created),
-            _ => None,
-        };
+        let output_delta_count = result.raw.output_deltas.len();
+        let total_output_duration_ms = total_output_duration_from(
+            result.raw.response_done_ms,
+            result.raw.first_output_ms,
+            result.raw.response_created_ms,
+        );
 
         let run_result = RunResult {
             run_index: 0,
@@ -87,22 +83,22 @@ pub async fn run_model_benchmark(
             audio_send_ms: result.audio_send_ms,
             audio_chunks_sent: result.audio_chunks_sent,
             audio_duration_secs: audio_duration,
-            first_asr_ms: result.first_asr_ms,
-            asr_deltas: result.asr_deltas,
-            asr_final: result.asr_final,
-            first_output_ms: result.first_output_ms,
-            first_committed_ms: result.first_committed_ms,
-            output_deltas: result.output_deltas,
-            translation_final: result.translation_final,
-            response_created_ms: result.response_created_ms,
-            response_done_ms: result.response_done_ms,
-            response_done_audio_chunks_sent: result.response_done_audio_chunks_sent,
-            response_done_audio_sent_secs: result.response_done_audio_sent_secs,
-            response_count: result.response_count,
-            speech_started_ms: result.speech_started_ms,
-            speech_stopped_ms: result.speech_stopped_ms,
-            time_to_first_token_ms: result.first_output_ms,
-            time_to_first_committed_ms: result.first_committed_ms,
+            first_asr_ms: result.raw.first_asr_ms,
+            asr_deltas: result.raw.asr_deltas,
+            asr_final: result.raw.asr_final,
+            first_output_ms: result.raw.first_output_ms,
+            first_committed_ms: result.raw.first_committed_ms,
+            output_deltas: result.raw.output_deltas,
+            translation_final: result.raw.translation_final,
+            response_created_ms: result.raw.response_created_ms,
+            response_done_ms: result.raw.response_done_ms,
+            response_done_audio_chunks_sent: result.raw.response_done_audio_chunks_sent,
+            response_done_audio_sent_secs: result.raw.response_done_audio_sent_secs,
+            response_count: result.raw.response_count,
+            speech_started_ms: result.raw.speech_started_ms,
+            speech_stopped_ms: result.raw.speech_stopped_ms,
+            time_to_first_token_ms: result.raw.first_output_ms,
+            time_to_first_committed_ms: result.raw.first_committed_ms,
             total_output_duration_ms,
             output_delta_count,
         };
@@ -134,20 +130,7 @@ struct IntermediateResult {
     session_ready_ms: f64,
     audio_send_ms: f64,
     audio_chunks_sent: usize,
-    first_asr_ms: Option<f64>,
-    asr_deltas: Vec<AsrDelta>,
-    asr_final: String,
-    first_output_ms: Option<f64>,
-    first_committed_ms: Option<f64>,
-    output_deltas: Vec<OutputDelta>,
-    translation_final: String,
-    response_created_ms: Option<f64>,
-    response_done_ms: Option<f64>,
-    response_done_audio_chunks_sent: Option<usize>,
-    response_done_audio_sent_secs: Option<f64>,
-    response_count: u32,
-    speech_started_ms: Option<f64>,
-    speech_stopped_ms: Option<f64>,
+    raw: RawResult,
 }
 
 fn run_single_benchmark(
@@ -208,22 +191,7 @@ fn run_single_benchmark(
     let chunks: Vec<&[i16]> = samples.chunks(CHUNK_SAMPLES).collect();
     let audio_start = Instant::now();
 
-    let mut raw = RawResult {
-        first_asr_ms: None,
-        asr_deltas: Vec::new(),
-        asr_final: String::new(),
-        first_output_ms: None,
-        first_committed_ms: None,
-        output_deltas: Vec::new(),
-        translation_final: String::new(),
-        response_created_ms: None,
-        response_done_ms: None,
-        response_done_audio_chunks_sent: None,
-        response_done_audio_sent_secs: None,
-        response_count: 0,
-        speech_started_ms: None,
-        speech_stopped_ms: None,
-    };
+    let mut raw = RawResult::default();
     progress.emit(
         "running",
         "audio-streaming",
@@ -260,31 +228,23 @@ fn run_single_benchmark(
 
         // 3. Wait until it's time for the next chunk (poll events during wait)
         let deadline = audio_start + Duration::from_millis((i + 1) as u64 * CHUNK_SEND_INTERVAL_MS);
-        while Instant::now() < deadline {
-            if audio_start.elapsed() > total_timeout {
-                break;
-            }
-            drain_available(
-                &mut socket,
-                &audio_start,
-                &mut raw,
-                &mut last_event,
-                progress,
-            )?;
-            let remain = deadline.saturating_duration_since(Instant::now());
-            if remain > Duration::from_millis(1) {
-                thread::sleep(remain.min(Duration::from_millis(5)));
-            }
-        }
+        poll_events_until_deadline(
+            &mut socket,
+            &audio_start,
+            &mut raw,
+            &mut last_event,
+            progress,
+            deadline,
+            Some(total_timeout),
+            drain_available,
+        )?;
 
         if audio_start.elapsed() > total_timeout {
             break;
         }
     }
 
-    let audio_send_ms = elapsed_ms(&audio_start);
-    progress.run.audio_send_ms = audio_send_ms;
-    progress.run.audio_chunks_sent = chunks.len();
+    let audio_send_ms = finish_audio_send(progress, &audio_start, chunks.len());
     if manual_response {
         socket
             .send(Message::Text(
@@ -315,45 +275,19 @@ fn run_single_benchmark(
     );
 
     // ── Phase 5: Drain remaining server events ──
-    // Switch back to longer timeout, wait for idle or response.done
-    set_read_timeout(&mut socket, Duration::from_secs(5));
-    let done_quiet_period = Duration::from_millis(700);
-    while last_event.elapsed() < idle_timeout && audio_start.elapsed() < total_timeout {
-        drain_available(
-            &mut socket,
-            &audio_start,
-            &mut raw,
-            &mut last_event,
-            progress,
-        )?;
-        if raw.response_done_ms.is_some() && last_event.elapsed() >= done_quiet_period {
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-
-    let _ = socket.close(None);
-
-    Ok(IntermediateResult {
+    drain_remaining_and_finish(
+        &mut socket,
+        &audio_start,
+        raw,
+        &mut last_event,
+        progress,
+        idle_timeout,
+        drain_available,
         connect_ms,
         session_ready_ms,
         audio_send_ms,
-        audio_chunks_sent: chunks.len(),
-        first_asr_ms: raw.first_asr_ms,
-        asr_deltas: raw.asr_deltas,
-        asr_final: raw.asr_final,
-        first_output_ms: raw.first_output_ms,
-        first_committed_ms: raw.first_committed_ms,
-        output_deltas: raw.output_deltas,
-        translation_final: raw.translation_final,
-        response_created_ms: raw.response_created_ms,
-        response_done_ms: raw.response_done_ms,
-        response_done_audio_chunks_sent: raw.response_done_audio_chunks_sent,
-        response_done_audio_sent_secs: raw.response_done_audio_sent_secs,
-        response_count: raw.response_count,
-        speech_started_ms: raw.speech_started_ms,
-        speech_stopped_ms: raw.speech_stopped_ms,
-    })
+        chunks.len(),
+    )
 }
 
 fn run_single_openai_benchmark(
@@ -408,7 +342,6 @@ fn run_single_openai_benchmark(
     let audio_start = Instant::now();
     let mut last_event = Instant::now();
     let idle_timeout = Duration::from_secs(20);
-    let total_timeout = Duration::from_secs(TOTAL_TIMEOUT_SECS);
     set_read_timeout(&mut socket, Duration::from_millis(1));
     progress.emit(
         "running",
@@ -427,25 +360,17 @@ fn run_single_openai_benchmark(
             .map_err(|e| format!("OpenAI audio append send: {e}"))?;
         progress.run.audio_chunks_sent = idx + 1;
         progress.emit_audio_progress(false);
-        let deadline = Instant::now() + Duration::from_millis(CHUNK_SEND_INTERVAL_MS);
-        while Instant::now() < deadline {
-            drain_available(
-                &mut socket,
-                &audio_start,
-                &mut raw,
-                &mut last_event,
-                progress,
-            )?;
-            let remain = deadline.saturating_duration_since(Instant::now());
-            if remain > Duration::from_millis(1) {
-                thread::sleep(remain.min(Duration::from_millis(5)));
-            }
-        }
+        poll_chunk_gap_events(
+            drain_available,
+            &mut socket,
+            &audio_start,
+            &mut raw,
+            &mut last_event,
+            progress,
+        )?;
     }
 
-    let audio_send_ms = elapsed_ms(&audio_start);
-    progress.run.audio_send_ms = audio_send_ms;
-    progress.run.audio_chunks_sent = chunks.len();
+    let audio_send_ms = finish_audio_send(progress, &audio_start, chunks.len());
     if manual_response {
         for msg in [
             json!({ "type": "input_audio_buffer.commit" }),
@@ -469,29 +394,19 @@ fn run_single_openai_benchmark(
         None,
     );
 
-    set_read_timeout(&mut socket, Duration::from_secs(5));
-    while last_event.elapsed() < idle_timeout && audio_start.elapsed() < total_timeout {
-        drain_available(
-            &mut socket,
-            &audio_start,
-            &mut raw,
-            &mut last_event,
-            progress,
-        )?;
-        if raw.response_done_ms.is_some() && last_event.elapsed() >= Duration::from_millis(700) {
-            break;
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    let _ = socket.close(None);
-
-    Ok(intermediate_from_raw(
+    drain_remaining_and_finish(
+        &mut socket,
+        &audio_start,
+        raw,
+        &mut last_event,
+        progress,
+        idle_timeout,
+        drain_available,
         connect_ms,
         session_ready_ms,
         audio_send_ms,
         chunks.len(),
-        raw,
-    ))
+    )
 }
 
 fn run_single_gemini_benchmark(
@@ -529,7 +444,6 @@ fn run_single_gemini_benchmark(
     let audio_start = Instant::now();
     let mut last_event = Instant::now();
     let idle_timeout = Duration::from_secs(20);
-    let total_timeout = Duration::from_secs(TOTAL_TIMEOUT_SECS);
     let manual_activity = config.audio_mode == RealtimeAudioMode::GeminiManualActivity;
     set_read_timeout(&mut socket, Duration::from_millis(1));
     progress.emit(
@@ -563,25 +477,17 @@ fn run_single_gemini_benchmark(
             .map_err(|e| format!("Gemini audio send: {e}"))?;
         progress.run.audio_chunks_sent = idx + 1;
         progress.emit_audio_progress(false);
-        let deadline = Instant::now() + Duration::from_millis(CHUNK_SEND_INTERVAL_MS);
-        while Instant::now() < deadline {
-            drain_gemini_available(
-                &mut socket,
-                &audio_start,
-                &mut raw,
-                &mut last_event,
-                progress,
-            )?;
-            let remain = deadline.saturating_duration_since(Instant::now());
-            if remain > Duration::from_millis(1) {
-                thread::sleep(remain.min(Duration::from_millis(5)));
-            }
-        }
+        poll_chunk_gap_events(
+            drain_gemini_available,
+            &mut socket,
+            &audio_start,
+            &mut raw,
+            &mut last_event,
+            progress,
+        )?;
     }
 
-    let audio_send_ms = elapsed_ms(&audio_start);
-    progress.run.audio_send_ms = audio_send_ms;
-    progress.run.audio_chunks_sent = chunks.len();
+    let audio_send_ms = finish_audio_send(progress, &audio_start, chunks.len());
     let end_msg = if manual_activity {
         json!({ "realtimeInput": { "activityEnd": {} } })
     } else {
@@ -597,29 +503,120 @@ fn run_single_gemini_benchmark(
         None,
     );
 
-    set_read_timeout(&mut socket, Duration::from_secs(5));
+    drain_remaining_and_finish(
+        &mut socket,
+        &audio_start,
+        raw,
+        &mut last_event,
+        progress,
+        idle_timeout,
+        drain_gemini_available,
+        connect_ms,
+        session_ready_ms,
+        audio_send_ms,
+        chunks.len(),
+    )
+}
+
+// ─────────────────────────────── Shared Phases ──────────────────────────────
+
+type DrainEventsFn = fn(
+    &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    &Instant,
+    &mut RawResult,
+    &mut Instant,
+    &mut BenchmarkProgressState,
+) -> Result<(), String>;
+
+/// Marks the audio-send phase complete and returns its duration.
+fn finish_audio_send(
+    progress: &mut BenchmarkProgressState,
+    audio_start: &Instant,
+    total_chunks: usize,
+) -> f64 {
+    let audio_send_ms = elapsed_ms(audio_start);
+    progress.run.audio_send_ms = audio_send_ms;
+    progress.run.audio_chunks_sent = total_chunks;
+    audio_send_ms
+}
+
+/// Polls server events until `deadline`, sleeping in short slices so the next
+/// audio chunk still goes out on schedule.
+fn poll_events_until_deadline(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    audio_start: &Instant,
+    raw: &mut RawResult,
+    last_event: &mut Instant,
+    progress: &mut BenchmarkProgressState,
+    deadline: Instant,
+    total_timeout: Option<Duration>,
+    drain: DrainEventsFn,
+) -> Result<(), String> {
+    while Instant::now() < deadline {
+        if let Some(total) = total_timeout {
+            if audio_start.elapsed() > total {
+                break;
+            }
+        }
+        drain(socket, audio_start, raw, last_event, progress)?;
+        let remain = deadline.saturating_duration_since(Instant::now());
+        if remain > Duration::from_millis(1) {
+            thread::sleep(remain.min(Duration::from_millis(5)));
+        }
+    }
+    Ok(())
+}
+
+/// Fixed 20ms inter-chunk gap poll shared by the OpenAI and Gemini runners.
+fn poll_chunk_gap_events(
+    drain: DrainEventsFn,
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    audio_start: &Instant,
+    raw: &mut RawResult,
+    last_event: &mut Instant,
+    progress: &mut BenchmarkProgressState,
+) -> Result<(), String> {
+    let deadline = Instant::now() + Duration::from_millis(CHUNK_SEND_INTERVAL_MS);
+    poll_events_until_deadline(
+        socket, audio_start, raw, last_event, progress, deadline, None, drain,
+    )
+}
+
+/// Drains the remaining server events after audio send completes: switch back
+/// to a longer read timeout, wait for idle or a settled `response.done`, then
+/// close the socket and assemble the intermediate result.
+fn drain_remaining_and_finish(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    audio_start: &Instant,
+    mut raw: RawResult,
+    last_event: &mut Instant,
+    progress: &mut BenchmarkProgressState,
+    idle_timeout: Duration,
+    drain: DrainEventsFn,
+    connect_ms: f64,
+    session_ready_ms: f64,
+    audio_send_ms: f64,
+    audio_chunks_sent: usize,
+) -> Result<IntermediateResult, String> {
+    let total_timeout = Duration::from_secs(TOTAL_TIMEOUT_SECS);
+    let done_quiet_period = Duration::from_millis(700);
+    set_read_timeout(socket, Duration::from_secs(5));
     while last_event.elapsed() < idle_timeout && audio_start.elapsed() < total_timeout {
-        drain_gemini_available(
-            &mut socket,
-            &audio_start,
-            &mut raw,
-            &mut last_event,
-            progress,
-        )?;
-        if raw.response_done_ms.is_some() && last_event.elapsed() >= Duration::from_millis(700) {
+        drain(socket, audio_start, &mut raw, last_event, progress)?;
+        if raw.response_done_ms.is_some() && last_event.elapsed() >= done_quiet_period {
             break;
         }
         thread::sleep(Duration::from_millis(100));
     }
     let _ = socket.close(None);
 
-    Ok(intermediate_from_raw(
+    Ok(IntermediateResult {
         connect_ms,
         session_ready_ms,
         audio_send_ms,
-        chunks.len(),
+        audio_chunks_sent,
         raw,
-    ))
+    })
 }
 
 // ──────────────────────────────── Event Drain ───────────────────────────────

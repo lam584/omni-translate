@@ -1,5 +1,6 @@
 import type { DriverInstallerPlan } from '../schema/driver-installation';
 import type { BridgeStateSnapshot, DriverRepairAction } from '../schema/driver-bridge-contract';
+import { idleBridgeTelemetryDefaults } from '../defaults/runtime-shell';
 
 export const driverStateSnapshotMock: BridgeStateSnapshot = {
   type: 'bridge.state.snapshot',
@@ -10,40 +11,7 @@ export const driverStateSnapshotMock: BridgeStateSnapshot = {
   driverHealth: 'version-mismatch',
   driverVersion: '0.8.1-dev',
   bridgeVersion: '0.1.0-skeleton',
-  captureBackend: 'wasapi-endpoint-loopback',
-  captureLifecycleState: 'idle',
-  captureRestartCount: 0,
-  capturePacketCount: 0,
-  captureFramesReceived: 0,
-  capturePeak: 0,
-  captureRms: 0,
-  captureSilentPacketCount: 0,
-  captureInvalidSampleCount: 0,
-  resolvedPhysicalPlaybackDeviceId: '',
-  monitorBufferedMs: 0,
-  monitorUnderrunCount: 0,
-  monitorOverrunCount: 0,
-  queuedFrames: 0,
-  sourceFramesCaptured: 0,
-  translatedFramesAccepted: 0,
-  playbackFramesWritten: 0,
-  underrunCount: 0,
-  droppedFrameCount: 0,
-  driverBufferedBytes: 0,
-  driverMaxBufferedBytes: 19200,
-  driverCapturedBytes: 0,
-  driverDeliveredBytes: 0,
-  driverDroppedBytes: 0,
-  sourcePendingBytes: 0,
-  sourcePacerQueuedFrames: 0,
-  monitorSourceQueuedFrames: 0,
-  staleSourceFramesDropped: 0,
-  sourceSubscriberActive: false,
-  sourceGeneration: 0,
-  sourceWorkerPhase: 'idle',
-  sourceReadCalls: 0,
-  sourceZeroByteReads: 0,
-  monitorPlaybackState: 'idle',
+  ...idleBridgeTelemetryDefaults,
   lastErrorCode: 'driver.version-mismatch',
 };
 

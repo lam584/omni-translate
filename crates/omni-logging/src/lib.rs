@@ -25,3 +25,19 @@ pub mod timestamp;
 pub use level::LogLevel;
 pub use logger::Logger;
 pub use pipeline::LogPipeline;
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    /// Build a unique temp directory path shared by the crate test modules.
+    /// `component` distinguishes the caller (e.g. `logger`, `pipeline`).
+    pub(crate) fn temp_dir(component: &str, name: &str) -> PathBuf {
+        let marker = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time before unix epoch")
+            .as_nanos();
+        std::env::temp_dir().join(format!("omni-logging-{component}-{name}-{marker}"))
+    }
+}

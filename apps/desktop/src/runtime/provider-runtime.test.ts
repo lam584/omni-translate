@@ -1,15 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 
-const invokeMock = vi.fn();
+vi.mock('@tauri-apps/api/core', async () => (await import('../test-utils/tauri-invoke-mock')).tauriCoreMockModuleWithRuntimeFlag());
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => invokeMock(...args),
-  isTauri: () => Boolean((globalThis as typeof globalThis & { isTauri?: boolean }).isTauri),
-}));
+import { invokeMock } from '../test-utils/tauri-invoke-mock';
 
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
-import { PreviewDesktopApi } from './preview-desktop-api';
+import {
+  enablePreviewDesktopRuntime as disableTauriRuntime,
+  enableTauriDesktopRuntime as enableTauriRuntime,
+} from '../test-utils/runtime-test-harness';
 import { getRecentFrontendLogEntries, loggerTestHelpers } from './logger';
 import {
   fetchProviderModels,
@@ -31,14 +30,88 @@ function nonLoggerInvokeCalls() {
   return invokeMock.mock.calls.filter((call) => call[0] !== 'append_frontend_diagnostics_logs');
 }
 
-function enableTauriRuntime() {
-  resetDesktopApiForTests();
-  installDesktopApi(new TauriDesktopApi());
+const SECRET_REFERENCE = 'credential://provider/dashscope/default';
+
+/** Success envelope returned by the native secretUpsert command. */
+function credentialSaveEnvelope() {
+  return {
+    data: {
+      reference: SECRET_REFERENCE,
+      backend: 'windows-credential-manager',
+      hasSecret: true,
+    },
+    warnings: [],
+  };
 }
 
-function disableTauriRuntime() {
-  resetDesktopApiForTests();
-  installDesktopApi(new PreviewDesktopApi());
+/** Saves the default secret and asserts the full native result payload. */
+async function saveSecretExpectingNativeResult() {
+  const result = await saveProviderSecret(SECRET_REFERENCE, 'secret-token');
+  expect(result).toEqual({
+    reference: SECRET_REFERENCE,
+    backend: 'windows-credential-manager',
+    hasSecret: true,
+  });
+}
+
+/** Asserts exactly one non-logger invoke carrying the secretUpsert envelope. */
+function expectSingleSecretUpsertInvoke() {
+  expect(nonLoggerInvokeCalls()).toHaveLength(1);
+  expect(nonLoggerInvokeCalls()[0]).toEqual([
+    'configuration_v2',
+    { command: { action: 'secretUpsert', reference: SECRET_REFERENCE, secret: 'secret-token' } },
+  ]);
+}
+
+/** Asserts the newest trace records the localized save failure. */
+function expectLatestSaveFailureTrace() {
+  expect(recentTraceEntries()[0]).toMatchObject({
+    category: 'storage',
+    level: 'error',
+    summary: '前端保存 API Key 失败。',
+  });
+}
+
+/** Starts a save, advances fake timers past the deadline and asserts the timeout error. */
+async function expectSaveTimeoutAfter(ms: number) {
+  const pending = saveProviderSecret(SECRET_REFERENCE, 'secret-token');
+  const rejection = pending.catch((error) => error);
+
+  await vi.advanceTimersByTimeAsync(ms);
+
+  const error = await rejection;
+  expect(error).toMatchObject({
+    code: 'timeout',
+    operation: 'credential-save',
+    retriable: true,
+  });
+  return error as Error;
+}
+
+/** Asserts the trace ring recorded the runtime-command timeout entry. */
+function expectRuntimeTimeoutTrace() {
+  expect(recentTraceEntries()).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        category: 'storage',
+        level: 'error',
+        summary: '前端等待运行时命令超时。',
+      }),
+    ]),
+  );
+}
+
+/** Registers the shared Tauri runtime + logger reset hooks for a describe block. */
+function registerTauriLoggerHooks() {
+  beforeEach(() => {
+    enableTauriRuntime();
+    invokeMock.mockReset();
+    loggerTestHelpers.reset();
+  });
+  afterEach(() => {
+    disableTauriRuntime();
+    loggerTestHelpers.reset();
+  });
 }
 
 describe('provider-runtime saveProviderSecret', () => {
@@ -57,27 +130,11 @@ describe('provider-runtime saveProviderSecret', () => {
   });
 
   it('issues the direct save invoke and records a local frontend trace on success', async () => {
-    invokeMock.mockResolvedValue({
-      data: {
-        reference: 'credential://provider/dashscope/default',
-        backend: 'windows-credential-manager',
-        hasSecret: true,
-      },
-      warnings: [],
-    });
+    invokeMock.mockResolvedValue(credentialSaveEnvelope());
 
-    const result = await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
+    await saveSecretExpectingNativeResult();
 
-    expect(result).toEqual({
-      reference: 'credential://provider/dashscope/default',
-      backend: 'windows-credential-manager',
-      hasSecret: true,
-    });
-    expect(nonLoggerInvokeCalls()).toHaveLength(1);
-    expect(nonLoggerInvokeCalls()[0]).toEqual([
-      'configuration_v2',
-      { command: { action: 'secretUpsert', reference: 'credential://provider/dashscope/default', secret: 'secret-token' } },
-    ]);
+    expectSingleSecretUpsertInvoke();
     expect(recentTraceEntries()[0]).toMatchObject({
       category: 'storage',
       level: 'info',
@@ -88,18 +145,10 @@ describe('provider-runtime saveProviderSecret', () => {
   it('records a local frontend trace when the save command rejects immediately', async () => {
     invokeMock.mockRejectedValue(new Error('backend failure'));
 
-    await expect(saveProviderSecret('credential://provider/dashscope/default', 'secret-token')).rejects.toThrow('backend failure');
+    await expect(saveProviderSecret(SECRET_REFERENCE, 'secret-token')).rejects.toThrow('backend failure');
 
-    expect(nonLoggerInvokeCalls()).toHaveLength(1);
-    expect(nonLoggerInvokeCalls()[0]).toEqual([
-      'configuration_v2',
-      { command: { action: 'secretUpsert', reference: 'credential://provider/dashscope/default', secret: 'secret-token' } },
-    ]);
-    expect(recentTraceEntries()[0]).toMatchObject({
-      category: 'storage',
-      level: 'error',
-      summary: '前端保存 API Key 失败。',
-    });
+    expectSingleSecretUpsertInvoke();
+    expectLatestSaveFailureTrace();
   });
 
   it('surfaces a slow backend failure before the save timeout elapses', async () => {
@@ -112,55 +161,25 @@ describe('provider-runtime saveProviderSecret', () => {
       });
     });
 
-    const pending = saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
+    const pending = saveProviderSecret(SECRET_REFERENCE, 'secret-token');
     const rejection = pending.catch((error) => error);
     await vi.advanceTimersByTimeAsync(6000);
 
     const error = await rejection;
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain('CredWriteW failed with code 5');
-    expect(nonLoggerInvokeCalls()).toHaveLength(1);
-    expect(nonLoggerInvokeCalls()[0]).toEqual([
-      'configuration_v2',
-      { command: { action: 'secretUpsert', reference: 'credential://provider/dashscope/default', secret: 'secret-token' } },
-    ]);
-    expect(recentTraceEntries()[0]).toMatchObject({
-      category: 'storage',
-      level: 'error',
-      summary: '前端保存 API Key 失败。',
-    });
+    expectSingleSecretUpsertInvoke();
+    expectLatestSaveFailureTrace();
   });
 
   it('times out when the native save command never returns', async () => {
     vi.useFakeTimers();
     invokeMock.mockImplementation(() => new Promise(() => undefined));
 
-    const pending = saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
-    const rejection = pending.catch((error) => error);
-
-    await vi.advanceTimersByTimeAsync(7000);
-
-    const error = await rejection;
-    expect(error).toMatchObject({
-      code: 'timeout',
-      operation: 'credential-save',
-      retriable: true,
-    });
-    expect((error as Error).message).toContain('API Key 原生保存命令超时');
-    expect(nonLoggerInvokeCalls()).toHaveLength(1);
-    expect(nonLoggerInvokeCalls()[0]).toEqual([
-      'configuration_v2',
-      { command: { action: 'secretUpsert', reference: 'credential://provider/dashscope/default', secret: 'secret-token' } },
-    ]);
-    expect(recentTraceEntries()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          category: 'storage',
-          level: 'error',
-          summary: '前端等待运行时命令超时。',
-        }),
-      ]),
-    );
+    const error = await expectSaveTimeoutAfter(7000);
+    expect(error.message).toContain('API Key 原生保存命令超时');
+    expectSingleSecretUpsertInvoke();
+    expectRuntimeTimeoutTrace();
   });
 
   it('keeps the timeout conclusion when the native command resolves after the frontend already timed out', async () => {
@@ -175,7 +194,7 @@ describe('provider-runtime saveProviderSecret', () => {
         }),
     );
 
-    const pending = saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
+    const pending = saveProviderSecret(SECRET_REFERENCE, 'secret-token');
     const rejection = pending.catch((error) => error);
 
     await vi.advanceTimersByTimeAsync(7000);
@@ -187,42 +206,20 @@ describe('provider-runtime saveProviderSecret', () => {
       retriable: true,
     });
 
-    resolveInvoke?.({
-      data: {
-        reference: 'credential://provider/dashscope/default',
-        backend: 'windows-credential-manager',
-        hasSecret: true,
-      },
-      warnings: [],
-    });
+    resolveInvoke?.(credentialSaveEnvelope());
     await Promise.resolve();
 
-    expect(recentTraceEntries()).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          category: 'storage',
-          level: 'error',
-          summary: '前端等待运行时命令超时。',
-        }),
-      ]),
-    );
+    expectRuntimeTimeoutTrace();
   });
 
   it('returns the browser preview result without issuing invoke when tauri runtime is unavailable', async () => {
     disableTauriRuntime();
-    invokeMock.mockResolvedValue({
-      data: {
-        reference: 'credential://provider/dashscope/default',
-        backend: 'windows-credential-manager',
-        hasSecret: true,
-      },
-      warnings: [],
-    });
+    invokeMock.mockResolvedValue(credentialSaveEnvelope());
 
-    const result = await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
+    const result = await saveProviderSecret(SECRET_REFERENCE, 'secret-token');
 
     expect(result).toEqual({
-      reference: 'credential://provider/dashscope/default',
+      reference: SECRET_REFERENCE,
       backend: 'browser-preview',
       hasSecret: true,
     });
@@ -230,53 +227,25 @@ describe('provider-runtime saveProviderSecret', () => {
   });
 
   it('keeps a bounded in-memory trace buffer for later inspection', async () => {
-    invokeMock.mockResolvedValue({
-      data: {
-        reference: 'credential://provider/dashscope/default',
-        backend: 'windows-credential-manager',
-        hasSecret: true,
-      },
-      warnings: [],
-    });
+    invokeMock.mockResolvedValue(credentialSaveEnvelope());
 
-    const result = await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
+    await saveSecretExpectingNativeResult();
 
-    expect(result).toEqual({
-      reference: 'credential://provider/dashscope/default',
-      backend: 'windows-credential-manager',
-      hasSecret: true,
-    });
     expect(recentTraceEntries().map((entry) => entry.summary)).toContain('前端收到 API Key 保存结果。');
   });
 });
 
 describe('provider-runtime diagnostics trace', () => {
-  beforeEach(() => {
-    enableTauriRuntime();
-    invokeMock.mockReset();
-    loggerTestHelpers.reset();
-  });
-
-  afterEach(() => {
-    disableTauriRuntime();
-    loggerTestHelpers.reset();
-  });
+  registerTauriLoggerHooks();
 
   it('accumulates trace entries across appends in the logger ring', async () => {
-    invokeMock.mockResolvedValue({
-      data: {
-        reference: 'credential://provider/dashscope/default',
-        backend: 'windows-credential-manager',
-        hasSecret: true,
-      },
-      warnings: [],
-    });
+    invokeMock.mockResolvedValue(credentialSaveEnvelope());
 
-    await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
+    await saveProviderSecret(SECRET_REFERENCE, 'secret-token');
     const firstTraceCount = recentTraceEntries().length;
     expect(firstTraceCount).toBeGreaterThan(0);
 
-    await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
+    await saveProviderSecret(SECRET_REFERENCE, 'secret-token');
     expect(recentTraceEntries().length).toBeGreaterThan(firstTraceCount);
   });
 
@@ -284,19 +253,12 @@ describe('provider-runtime diagnostics trace', () => {
     // The unified logger never touches localStorage (the legacy
     // omni.frontendDiagnosticsTrace persistence was removed), so a broken
     // storage backend must not affect trace recording.
-    invokeMock.mockResolvedValue({
-      data: {
-        reference: 'credential://provider/dashscope/default',
-        backend: 'windows-credential-manager',
-        hasSecret: true,
-      },
-      warnings: [],
-    });
+    invokeMock.mockResolvedValue(credentialSaveEnvelope());
     const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
       throw new Error('storage full');
     });
 
-    await saveProviderSecret('credential://provider/dashscope/default', 'secret-token');
+    await saveProviderSecret(SECRET_REFERENCE, 'secret-token');
 
     expect(recentTraceEntries().length).toBeGreaterThan(0);
     setItem.mockRestore();
@@ -305,7 +267,7 @@ describe('provider-runtime diagnostics trace', () => {
   it('records non-error save failures', async () => {
     invokeMock.mockRejectedValue('save unavailable');
 
-    await expect(saveProviderSecret('credential://provider/dashscope/default', 'secret-token')).rejects.toBe('save unavailable');
+    await expect(saveProviderSecret(SECRET_REFERENCE, 'secret-token')).rejects.toBe('save unavailable');
     expect(recentTraceEntries()[0]?.detail).toContain('save unavailable');
   });
 
@@ -425,16 +387,7 @@ describe('provider-runtime fetchProviderModels', () => {
 });
 
 describe('provider-runtime native command wrappers', () => {
-  beforeEach(() => {
-    enableTauriRuntime();
-    invokeMock.mockReset();
-    loggerTestHelpers.reset();
-  });
-
-  afterEach(() => {
-    disableTauriRuntime();
-    loggerTestHelpers.reset();
-  });
+  registerTauriLoggerHooks();
 
   it('reads credential status and secret payloads from the native credential backend', async () => {
     invokeMock
@@ -532,16 +485,7 @@ describe('provider-runtime native command wrappers', () => {
 });
 
 describe('provider-runtime non-error native failures', () => {
-  beforeEach(() => {
-    enableTauriRuntime();
-    invokeMock.mockReset();
-    loggerTestHelpers.reset();
-  });
-
-  afterEach(() => {
-    disableTauriRuntime();
-    loggerTestHelpers.reset();
-  });
+  registerTauriLoggerHooks();
 
   it('records non-error native probe and smoke failures', async () => {
     const provider = structuredClone(appConfigDraftMock.providers[0]);

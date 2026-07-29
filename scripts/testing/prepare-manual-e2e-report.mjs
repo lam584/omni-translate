@@ -1,13 +1,8 @@
-import path from 'node:path';
-
 import {
-  compactTimestamp,
-  ensureDir,
   isMain,
-  parseCliArgs,
-  repoRoot,
-  sortableTimestamp,
+  runPrepareReportCli,
   writeText,
+  writeTimestampedReport,
 } from '../lib/testing-common.mjs';
 
 const defaultOutputRoot = 'artifacts/testing/manual-e2e';
@@ -69,19 +64,14 @@ const reportLines = (generatedAt) => [
   '- Notes:',
 ];
 
-export const prepareManualE2eReport = ({ outputRoot = defaultOutputRoot } = {}) => {
-  const targetDir = ensureDir(path.resolve(repoRoot, outputRoot));
-  const reportPath = path.join(targetDir, `desktop-e2e-${compactTimestamp()}.md`);
-  writeText(reportPath, reportLines(sortableTimestamp()).join('\n'));
-  return reportPath;
-};
+export const prepareManualE2eReport = ({ outputRoot = defaultOutputRoot } = {}) =>
+  writeTimestampedReport({
+    outputRoot,
+    filePrefix: 'desktop-e2e',
+    extension: 'md',
+    render: (reportPath, generatedAt) => writeText(reportPath, reportLines(generatedAt).join('\n')),
+  });
 
 if (isMain(import.meta.url)) {
-  try {
-    const args = parseCliArgs(process.argv.slice(2), { defaults: { outputRoot: defaultOutputRoot } });
-    console.log(prepareManualE2eReport(args));
-  } catch (error) {
-    console.error(error.message);
-    process.exit(1);
-  }
+  runPrepareReportCli(prepareManualE2eReport, { outputRoot: defaultOutputRoot });
 }

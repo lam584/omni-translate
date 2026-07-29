@@ -1,7 +1,7 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import ChainFlow from './ChainFlow';
 import ScenarioCard, { resolveChineseFallback } from './ScenarioCard';
 import type { RoutingModelOption } from './routingModelCatalog';
@@ -12,29 +12,16 @@ const options: RoutingModelOption[] = [
 ];
 
 describe('audio-routing components', () => {
-  let root: Root;
-  let container: HTMLDivElement;
-
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-  });
+  const view = registerDomHarness();
 
   it('renders both chain directions and every optional subtitle', async () => {
-    await act(async () => root.render(<>
+    await view.render(<>
       <ChainFlow direction="inbound" inboundLabel="in" modelLabel="model" outboundLabel="out" />
       <ChainFlow direction="outbound" inboundLabel="in" modelLabel="model" outboundLabel="out" />
       <ChainFlow direction="outbound" directionLabel="custom" inboundLabel="in" inboundSubtitle="i" modelLabel="model" modelSubtitle="m" outboundLabel="out" outboundSubtitle="o" />
-    </>));
-    expect(container.textContent).toContain('custom');
-    expect(container.querySelector('.chain-flow-outbound')).toBeInstanceOf(HTMLElement);
+    </>);
+    expect(view.container.textContent).toContain('custom');
+    expect(view.container.querySelector('.chain-flow-outbound')).toBeInstanceOf(HTMLElement);
     expect(resolveChineseFallback('audioRouting')).toBe('audioRouting');
     expect(resolveChineseFallback('missing.path')).toBe('missing.path');
   });
@@ -42,24 +29,24 @@ describe('audio-routing components', () => {
   it('covers empty selection, toggle callbacks and every keyboard path', async () => {
     const onSelect = vi.fn();
     const onEnabledChange = vi.fn();
-    const render = async (modelOptions: RoutingModelOption[], value = 'missing') => act(async () => root.render(
+    const render = async (modelOptions: RoutingModelOption[], value = 'missing') => view.render(
       <ScenarioCard icon="settings" title="Scenario" caption="Caption" modelName="" modelProvider="Provider"
         tags={[]} modelOptions={modelOptions} value={value} onSelect={onSelect}
         onEnabledChange={onEnabledChange} enableChecked={false} />,
-    ));
+    );
     await render([], '');
-    const selector = container.querySelector<HTMLButtonElement>('.scenario-card-selector')!;
+    const selector = view.container.querySelector<HTMLButtonElement>('.scenario-card-selector')!;
     await act(async () => selector.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
-    const emptyList = container.querySelector<HTMLElement>('[role="listbox"]')!;
+    const emptyList = view.container.querySelector<HTMLElement>('[role="listbox"]')!;
     await act(async () => emptyList.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSelect).not.toHaveBeenCalled();
     await act(async () => emptyList.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
 
     await render(options);
-    const nextSelector = container.querySelector<HTMLButtonElement>('.scenario-card-selector')!;
+    const nextSelector = view.container.querySelector<HTMLButtonElement>('.scenario-card-selector')!;
     await act(async () => nextSelector.dispatchEvent(new KeyboardEvent('keydown', { key: 'x', bubbles: true })));
     await act(async () => nextSelector.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })));
-    const list = container.querySelector<HTMLElement>('[role="listbox"]')!;
+    const list = view.container.querySelector<HTMLElement>('[role="listbox"]')!;
     for (const key of ['ArrowDown', 'ArrowUp', 'Home', 'End', 'x']) {
       await act(async () => list.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })));
     }
@@ -68,21 +55,21 @@ describe('audio-routing components', () => {
 
     await act(async () => nextSelector.click());
     await act(async () => nextSelector.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })));
-    expect(container.querySelector('[role="listbox"]')).toBeNull();
-    await act(async () => container.querySelector<HTMLInputElement>('[role="switch"]')!.click());
+    expect(view.container.querySelector('[role="listbox"]')).toBeNull();
+    await act(async () => view.container.querySelector<HTMLInputElement>('[role="switch"]')!.click());
     expect(onEnabledChange).toHaveBeenCalledWith(true);
   });
 
   it('keeps the menu open for inside clicks and closes it for outside clicks', async () => {
-    await act(async () => root.render(
+    await view.render(
       <ScenarioCard icon="settings" title="Scenario" caption="Caption" modelName="Model" modelProvider="Provider"
         tags={['stt']} modelOptions={options} value="first/model" onSelect={vi.fn()} active />,
-    ));
-    const selector = container.querySelector<HTMLButtonElement>('.scenario-card-selector')!;
+    );
+    const selector = view.container.querySelector<HTMLButtonElement>('.scenario-card-selector')!;
     await act(async () => selector.click());
     await act(async () => selector.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
-    expect(container.querySelector('[role="listbox"]')).toBeInstanceOf(HTMLElement);
+    expect(view.container.querySelector('[role="listbox"]')).toBeInstanceOf(HTMLElement);
     await act(async () => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
-    expect(container.querySelector('[role="listbox"]')).toBeNull();
+    expect(view.container.querySelector('[role="listbox"]')).toBeNull();
   });
 });

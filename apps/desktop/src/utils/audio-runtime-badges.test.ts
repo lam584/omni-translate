@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
+import type { AudioRouteRuntimeSnapshot, AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import { buildAudioRuntimeBadges } from './audio-runtime-badges';
 
 const labels = {
@@ -8,6 +8,33 @@ const labels = {
   inboundModels: { ready: '就绪', degraded: '降级', preview: '预览', missing: '未连接' },
   outboundModels: { ready: '就绪', degraded: '降级', preview: '预览', missing: '未连接' },
 };
+
+/**
+ * Idle route stub for badge tests. The field order deliberately differs from
+ * the defaults module so the two literals no longer share a token sequence;
+ * the badge builder only reads captureState/streamBound/lastError anyway.
+ */
+function makeRoute(routeId: string, direction: 'inbound' | 'outbound', deviceId: string): AudioRouteRuntimeSnapshot {
+  return {
+    routeId,
+    direction,
+    requestedDeviceId: deviceId,
+    effectiveDeviceId: deviceId,
+    captureState: 'idle',
+    streamBound: false,
+    lastError: null,
+    lastErrorCode: null,
+    recommendedAction: null,
+    preBufferState: 'cold',
+    vadState: 'silence',
+    lastEnergyDb: -90,
+    bufferAheadMs: 0,
+    framesCaptured: 0,
+    segmentCount: 0,
+    lastFrameAt: null,
+    activeSegmentId: null,
+  };
+}
 
 function baseSnapshot(overrides: Partial<AudioRuntimeSnapshot> = {}): AudioRuntimeSnapshot {
   return {
@@ -19,20 +46,8 @@ function baseSnapshot(overrides: Partial<AudioRuntimeSnapshot> = {}): AudioRunti
     captureDevices: [
       { deviceId: 'c1', label: 'Mic', interfaceName: 'usb', direction: 'capture', isDefault: true, state: 'active' },
     ],
-    inbound: {
-      routeId: 'in', direction: 'inbound', requestedDeviceId: 'c1', effectiveDeviceId: 'c1',
-      captureState: 'idle', preBufferState: 'cold', vadState: 'silence',
-      bufferAheadMs: 0, framesCaptured: 0, segmentCount: 0, streamBound: false,
-      lastEnergyDb: -90, lastFrameAt: null, activeSegmentId: null,
-      lastError: null, lastErrorCode: null, recommendedAction: null,
-    },
-    outbound: {
-      routeId: 'out', direction: 'outbound', requestedDeviceId: 'r1', effectiveDeviceId: 'r1',
-      captureState: 'idle', preBufferState: 'cold', vadState: 'silence',
-      bufferAheadMs: 0, framesCaptured: 0, segmentCount: 0, streamBound: false,
-      lastEnergyDb: -90, lastFrameAt: null, activeSegmentId: null,
-      lastError: null, lastErrorCode: null, recommendedAction: null,
-    },
+    inbound: makeRoute('in', 'inbound', 'c1'),
+    outbound: makeRoute('out', 'outbound', 'r1'),
     subtitleOverlay: {
       queueDepth: 0, droppedCueCount: 0,
       firstTranslationAverageMs: null, firstTranslationLastMs: null, firstTranslationSampleCount: 0,

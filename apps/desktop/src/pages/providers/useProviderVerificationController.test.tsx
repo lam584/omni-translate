@@ -1,10 +1,10 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { appConfigDraftMock } from '../../mocks/app-config';
 import { providerTemplates } from '../../mocks/provider-templates';
 import { useAppStore } from '../../stores/app-store';
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { providersPageHelpers, type ModelCatalogState } from './providersPageHelpers';
 import { useProviderVerificationController } from './useProviderVerificationController';
 
@@ -18,36 +18,32 @@ vi.mock('../../runtime/provider-runtime', () => ({
 }));
 
 describe('useProviderVerificationController', () => {
-  let root: Root;
-  let container: HTMLDivElement;
   let params: Parameters<typeof useProviderVerificationController>[0];
   let controller: ReturnType<typeof useProviderVerificationController>;
   const activeTemplate = providerTemplates[0]!;
 
   function Harness() { controller = useProviderVerificationController(params); return null; }
-  async function render() { await act(async () => { root.render(<Harness />); await Promise.resolve(); }); }
+  async function render() { await act(async () => { view.root.render(<Harness />); await Promise.resolve(); }); }
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.clearAllMocks();
-    const configDraft = structuredClone(appConfigDraftMock);
-    useAppStore.setState((state) => ({ ...state, configDraft }));
-    const activeProvider = configDraft.providers[0]!;
-    runtime.getSecretStatus.mockResolvedValue({ hasSecret: false });
-    runtime.fetchModels.mockResolvedValue({ models: [], error: null, endpoint: null, fetchedAt: 'now' });
-    params = {
-      t: ((key: string) => key) as never,
-      activeProvider, activeTemplate, providerRuntimeBlocked: false, providerRuntimeStatusMessage: null,
-      sourceLanguage: 'en', targetLanguage: 'zh', sampleText: 'hello', secretDraft: '', secretVisible: false,
-      setBusyAction: vi.fn(), setProbeResult: vi.fn(), setSmokeResult: vi.fn(), setSecretDraft: vi.fn(),
-      setSecretStored: vi.fn(), setSecretStatusMessage: vi.fn(), setSecretVisible: vi.fn(), setVerificationModalOpen: vi.fn(),
-      modelCatalogSignature: providersPageHelpers.buildModelCatalogSignature(activeProvider),
-      localModelCapabilityRegistry: activeProvider.localModelCapabilityRegistry ?? [], setModelCatalog: vi.fn(),
-    };
-    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+  const view = registerDomHarness({
+    setup: () => {
+      vi.clearAllMocks();
+      const configDraft = structuredClone(appConfigDraftMock);
+      useAppStore.setState((state) => ({ ...state, configDraft }));
+      const activeProvider = configDraft.providers[0]!;
+      runtime.getSecretStatus.mockResolvedValue({ hasSecret: false });
+      runtime.fetchModels.mockResolvedValue({ models: [], error: null, endpoint: null, fetchedAt: 'now' });
+      params = {
+        t: ((key: string) => key) as never,
+        activeProvider, activeTemplate, providerRuntimeBlocked: false, providerRuntimeStatusMessage: null,
+        sourceLanguage: 'en', targetLanguage: 'zh', sampleText: 'hello', secretDraft: '', secretVisible: false,
+        setBusyAction: vi.fn(), setProbeResult: vi.fn(), setSmokeResult: vi.fn(), setSecretDraft: vi.fn(),
+        setSecretStored: vi.fn(), setSecretStatusMessage: vi.fn(), setSecretVisible: vi.fn(), setVerificationModalOpen: vi.fn(),
+        modelCatalogSignature: providersPageHelpers.buildModelCatalogSignature(activeProvider),
+        localModelCapabilityRegistry: activeProvider.localModelCapabilityRegistry ?? [], setModelCatalog: vi.fn(),
+      };
+    },
   });
-
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 
   it('ignores late secret-status success and failure after effect cleanup', async () => {
     let resolve!: (value: { hasSecret: boolean }) => void;

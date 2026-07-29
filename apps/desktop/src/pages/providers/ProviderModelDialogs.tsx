@@ -1,5 +1,4 @@
 import { useTranslation } from 'react-i18next';
-import AppIcon from '../../components/icons/AppIcon';
 import ModalDialog from '../../components/ModalDialog';
 import type { ProviderCapability, ProviderInteractionCapability } from '../../schema/provider-contract';
 import {
@@ -12,6 +11,7 @@ import {
   providerInteractionCapabilityOrder,
   realtimeAudioModeOrder,
 } from '../../utils/provider-model-capabilities';
+import { ProviderDialogHeader } from './ProviderDialogShared';
 import type { PendingModelRegistration } from './providersPageHelpers';
 
 type PendingProps = {
@@ -26,7 +26,7 @@ type PendingProps = {
 export function PendingModelRegistrationDialog(props: PendingProps) {
   const { t } = useTranslation();
   return <ModalDialog aria-label={t('providers.pendingModel.title')} className="provider-modal provider-advanced-modal content-card page-card compact-card" onClose={props.onClose} variant="provider">
-      <div className="provider-panel-heading provider-panel-heading-compact"><div><h3>{t('providers.pendingModel.title')}</h3><p>{props.pending.model.id}</p></div><button className="provider-header-icon" onClick={props.onClose} title={t('providers.pendingModel.closeTitle')} type="button"><AppIcon name="close" size={13} /></button></div>
+      <ProviderDialogHeader closeTitle={t('providers.pendingModel.closeTitle')} description={props.pending.model.id} onClose={props.onClose} title={t('providers.pendingModel.title')} />
       <div className="field-grid provider-field-grid provider-modal-grid">
         <div className="field-stack field-span-full"><span>{t('providers.pendingModel.capabilities')}</span><div className="provider-scenario-switcher provider-capability-registry-pills">{providerCapabilityOrder.map((capability) => <button className={props.pending.capabilities.includes(capability) ? 'provider-scenario-pill provider-scenario-pill-active' : 'provider-scenario-pill'} key={capability} onClick={() => props.onCapabilityToggle(capability)} type="button">{formatProviderCapabilityLabel(capability)}</button>)}</div></div>
         <label className="field-stack field-span-full"><span>{t('providers.pendingModel.realtimeAudioMode')}</span><select className="select-input" onChange={(event) => {
@@ -49,7 +49,7 @@ export function AudioModeHelpDialog({ onClose }: { onClose: () => void }) {
     ['geminiManual', 'Gemini Live', 'client'],
   ] as const;
   return <ModalDialog aria-label={t('providers.audioModeHelp.title')} className="provider-modal provider-advanced-modal content-card page-card compact-card" onClose={onClose} variant="provider">
-      <div className="provider-panel-heading provider-panel-heading-compact"><div><h3>{t('providers.audioModeHelp.title')}</h3><p>{t('providers.audioModeHelp.description')}</p></div><button className="provider-header-icon" onClick={onClose} title={t('providers.audioModeHelp.closeTitle')} type="button"><AppIcon name="close" size={13} /></button></div>
+      <ProviderDialogHeader closeTitle={t('providers.audioModeHelp.closeTitle')} description={t('providers.audioModeHelp.description')} onClose={onClose} title={t('providers.audioModeHelp.title')} />
       <div className="audio-mode-help-list">{modes.map(([key, provider, segmentation]) => <div className="audio-mode-help-item" key={key}><div className="audio-mode-help-header"><span className="audio-mode-help-name">{t(`providers.audioModeHelp.${key}.name`)}</span><span className="audio-mode-help-tag">{provider}</span><span className={`audio-mode-help-tag audio-mode-help-tag-${segmentation}`}>{t(`providers.audioModeHelp.${segmentation}Segmentation`)}</span></div><p className="audio-mode-help-desc">{t(`providers.audioModeHelp.${key}.description`)}</p><p className="audio-mode-help-models">{t(`providers.audioModeHelp.${key}.models`)}</p></div>)}</div>
   </ModalDialog>;
 }

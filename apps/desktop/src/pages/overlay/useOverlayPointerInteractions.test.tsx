@@ -1,6 +1,7 @@
-import { act, useRef, type PointerEvent as ReactPointerEvent } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { useRef, type PointerEvent as ReactPointerEvent } from 'react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 
 const mocks = vi.hoisted(() => ({
   isTauri: vi.fn(),
@@ -32,8 +33,6 @@ import type { OverlayDragState, OverlayResizeState } from './overlayDomain';
 type Controller = ReturnType<typeof useOverlayPointerInteractions>;
 
 describe('useOverlayPointerInteractions imperative IPC cleanup', () => {
-  let container: HTMLDivElement;
-  let root: Root;
   let controller: Controller;
   const refs = {
     drag: { current: null as OverlayDragState | null },
@@ -69,33 +68,31 @@ describe('useOverlayPointerInteractions imperative IPC cleanup', () => {
     return null;
   }
 
-  beforeEach(async () => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    for (const mock of Object.values(mocks)) mock.mockReset();
-    mocks.isTauri.mockReturnValue(true);
-    mocks.setPosition.mockResolvedValue(undefined);
-    mocks.setSize.mockResolvedValue(undefined);
-    mocks.outerPosition.mockResolvedValue({ x: 100, y: 200 });
-    mocks.outerSize.mockResolvedValue({ width: 400, height: 160 });
-    mocks.scaleFactor.mockResolvedValue(2);
-    scheduleDrag.mockReset();
-    scheduleResize.mockReset();
-    syncPosition.mockReset().mockResolvedValue(undefined);
-    persistBounds.mockReset().mockResolvedValue(undefined);
-    refs.drag = { current: null };
-    refs.resize = { current: null };
-    refs.dragBusy = { current: false };
-    refs.resizeBusy = { current: false };
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-    await act(async () => root.render(<Harness />));
+  const view = registerDomHarness({
+    setup: () => {
+      for (const mock of Object.values(mocks)) mock.mockReset();
+      mocks.isTauri.mockReturnValue(true);
+      mocks.setPosition.mockResolvedValue(undefined);
+      mocks.setSize.mockResolvedValue(undefined);
+      mocks.outerPosition.mockResolvedValue({ x: 100, y: 200 });
+      mocks.outerSize.mockResolvedValue({ width: 400, height: 160 });
+      mocks.scaleFactor.mockResolvedValue(2);
+      scheduleDrag.mockReset();
+      scheduleResize.mockReset();
+      syncPosition.mockReset().mockResolvedValue(undefined);
+      persistBounds.mockReset().mockResolvedValue(undefined);
+      refs.drag = { current: null };
+      refs.resize = { current: null };
+      refs.dragBusy = { current: false };
+      refs.resizeBusy = { current: false };
+    },
+    cleanup: () => {
+      vi.restoreAllMocks();
+    },
   });
 
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    vi.restoreAllMocks();
+  beforeEach(async () => {
+    await view.render(<Harness />);
   });
 
   function pointerEvent(pointerId: number, overrides: Record<string, unknown> = {}) {
@@ -118,10 +115,10 @@ describe('useOverlayPointerInteractions imperative IPC cleanup', () => {
     refs.drag.current = { pointerId: 1, frameId: 7 } as OverlayDragState;
     refs.resize.current = { pointerId: 2, frameId: 9 } as OverlayResizeState;
 
-    await act(async () => root.unmount());
+    await view.unmount();
 
     expect(cancel.mock.calls.map(([id]) => id)).toEqual([7, 9]);
-    root = createRoot(container);
+    view.remount();
   });
 
   it('finishes captured drag and resize sessions and cancels their queued frames', async () => {
@@ -184,11 +181,11 @@ describe('useOverlayPointerInteractions imperative IPC cleanup', () => {
     mocks.isTauri.mockReturnValue(false);
     // Capability is read at render time (a real preview -> Tauri upgrade
     // re-renders through the provider), so refresh the hook closure.
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     await controller.handleResizePointerDown('SouthEast', pointerEvent(7));
     expect(mocks.outerSize).not.toHaveBeenCalled();
     mocks.isTauri.mockReturnValue(true);
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
 
     refs.resize.current = {
       direction: 'SouthEast', pointerId: 8, frameId: null, scaleFactor: 1,

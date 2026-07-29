@@ -1,14 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
-}));
-
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
-  isTauri: () => false,
-}));
-
+vi.mock('@tauri-apps/api/core', async () => (await import('../test-utils/tauri-invoke-mock')).tauriCoreMockModule());
 
 import {
   appendFrontendDiagnosticsLog,
@@ -18,15 +10,14 @@ import {
   runDiagnosticsSelfCheckRuntime,
   runSubtitleOverlaySelfCheckRuntime,
 } from './diagnostics-runtime';
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
-import { PreviewDesktopApi } from './preview-desktop-api';
 import { getRecentFrontendLogEntries, loggerTestHelpers } from './logger';
+import { invokeMock } from '../test-utils/tauri-invoke-mock';
+import { enablePreviewDesktopRuntime, enableTauriDesktopRuntime } from '../test-utils/runtime-test-harness';
 
 describe('diagnostics runtime', () => {
   beforeEach(() => {
-    mocks.invoke.mockReset();
-    resetDesktopApiForTests();
-    installDesktopApi(new PreviewDesktopApi());
+    invokeMock.mockReset();
+    enablePreviewDesktopRuntime();
     loggerTestHelpers.reset();
   });
 
@@ -44,12 +35,12 @@ describe('diagnostics runtime', () => {
 
     const quick = await exportDiagnosticsBundleRuntime('quick');
     expect(quick.artifact).toMatchObject({ fileCount: 3, outputPath: 'browser-preview/diagnostics-quick.zip' });
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('maps desktop self-checks and exports to native invoke commands', async () => {
-    installDesktopApi(new TauriDesktopApi());
-    mocks.invoke.mockImplementation(async (command: string) =>
+    enableTauriDesktopRuntime();
+    invokeMock.mockImplementation(async (command: string) =>
       command === 'diagnostics_v2' || command === 'configuration_v2'
         ? { data: { command }, warnings: [] }
         : { command },
@@ -61,7 +52,7 @@ describe('diagnostics runtime', () => {
       artifact: { command: 'diagnostics_v2' },
       snapshot: { command: 'configuration_v2' },
     });
-    expect(mocks.invoke.mock.calls).toEqual([
+    expect(invokeMock.mock.calls).toEqual([
       ['diagnostics_v2', { command: { action: 'selfCheck' } }],
       ['diagnostics_v2', { command: { action: 'overlaySelfCheck' } }],
       ['diagnostics_v2', { command: { action: 'export', scope: 'quick' } }],
@@ -70,11 +61,11 @@ describe('diagnostics runtime', () => {
   });
 
   it('opens an exported artifact through the diagnostics command boundary', async () => {
-    installDesktopApi(new TauriDesktopApi());
-    mocks.invoke.mockResolvedValue({ data: null, warnings: [] });
+    enableTauriDesktopRuntime();
+    invokeMock.mockResolvedValue({ data: null, warnings: [] });
 
     await expect(openExportDirectoryRuntime('C:/exports/report.zip')).resolves.toBeUndefined();
-    expect(mocks.invoke).toHaveBeenCalledWith('diagnostics_v2', {
+    expect(invokeMock).toHaveBeenCalledWith('diagnostics_v2', {
       command: { action: 'openExportDirectory', outputPath: 'C:/exports/report.zip' },
     });
   });
@@ -101,15 +92,15 @@ describe('diagnostics runtime', () => {
   it('forwards batched frontend diagnostics logs and retains entries on IPC failure', async () => {
     vi.useFakeTimers();
     try {
-      installDesktopApi(new TauriDesktopApi());
-      mocks.invoke.mockRejectedValue(new Error('log unavailable'));
+      enableTauriDesktopRuntime();
+      invokeMock.mockRejectedValue(new Error('log unavailable'));
       vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
       appendFrontendDiagnosticsLog('runtime', 'error', 'failed');
       // Error-level entries take the urgent flush path (0ms timer).
       await vi.advanceTimersByTimeAsync(0);
 
-      expect(mocks.invoke).toHaveBeenCalledWith('append_frontend_diagnostics_logs', {
+      expect(invokeMock).toHaveBeenCalledWith('append_frontend_diagnostics_logs', {
         entries: [
           expect.objectContaining({
             category: 'runtime',
@@ -123,10 +114,10 @@ describe('diagnostics runtime', () => {
       // The failed batch stays buffered for the exponential-backoff retry.
       expect(loggerTestHelpers.pendingCount()).toBe(1);
 
-      mocks.invoke.mockClear();
-      mocks.invoke.mockResolvedValue(undefined);
+      invokeMock.mockClear();
+      invokeMock.mockResolvedValue(undefined);
       await vi.advanceTimersByTimeAsync(1000);
-      expect(mocks.invoke).toHaveBeenCalledTimes(1);
+      expect(invokeMock).toHaveBeenCalledTimes(1);
       expect(loggerTestHelpers.pendingCount()).toBe(0);
     } finally {
       vi.useRealTimers();
@@ -135,11 +126,11 @@ describe('diagnostics runtime', () => {
 
   it('returns no recent native logs in browser preview mode', async () => {
     await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([]);
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('maps recent native log IPC responses and missing arrays', async () => {
-    installDesktopApi(new TauriDesktopApi());
+    enableTauriDesktopRuntime();
     const entry = {
       id: 'route-ready',
       category: 'runtime',
@@ -148,18 +139,18 @@ describe('diagnostics runtime', () => {
       detail: null,
       emittedAt: '2026-07-25T00:00:00.000Z',
     } as const;
-    mocks.invoke
+    invokeMock
       .mockResolvedValueOnce({ data: { recentLogs: [entry] }, warnings: [] })
       .mockResolvedValueOnce({ data: {}, warnings: [] });
 
     await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([entry]);
     await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([]);
-    expect(mocks.invoke).toHaveBeenNthCalledWith(1, 'diagnostics_v2', { command: { action: 'snapshot' } });
+    expect(invokeMock).toHaveBeenNthCalledWith(1, 'diagnostics_v2', { command: { action: 'snapshot' } });
   });
 
   it('degrades failed recent-log IPC reads to an empty list', async () => {
-    installDesktopApi(new TauriDesktopApi());
-    mocks.invoke.mockRejectedValue(new Error('diagnostics unavailable'));
+    enableTauriDesktopRuntime();
+    invokeMock.mockRejectedValue(new Error('diagnostics unavailable'));
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
 
     await expect(getRecentDiagnosticsLogsRuntime()).resolves.toEqual([]);

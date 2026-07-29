@@ -313,25 +313,40 @@ mod tests {
     use std::time::Duration;
     use tungstenite::{accept, Message};
 
-    fn openai_provider(base_url: String) -> ProviderDraftInput {
+    /// Build a `ProviderDraftInput` for tests, filling in the auth/tuning fields
+    /// that every fixture shares (credential-ref auth, streaming enabled, 5s
+    /// timeout, text modality) so each provider helper only names the fields
+    /// that actually distinguish it.
+    #[allow(clippy::too_many_arguments)]
+    fn provider_draft(
+        template_id: &str,
+        provider_id: &str,
+        kind: &str,
+        display_name: &str,
+        model: &str,
+        base_url: String,
+        transport: &str,
+        region: Option<String>,
+        system_prompt_template: &str,
+    ) -> ProviderDraftInput {
         ProviderDraftInput {
-            template_id: "template-openai-compatible-realtime".to_string(),
-            provider_id: "provider-openai-compatible".to_string(),
-            kind: "openai-compatible".to_string(),
-            display_name: "OpenAI Compatible".to_string(),
-            model: "test-model".to_string(),
+            template_id: template_id.to_string(),
+            provider_id: provider_id.to_string(),
+            kind: kind.to_string(),
+            display_name: display_name.to_string(),
+            model: model.to_string(),
             base_url,
-            transport: "streaming-http".to_string(),
+            transport: transport.to_string(),
             auth_ref: ProviderAuthRefInput {
                 kind: "credential-ref".to_string(),
                 reference: "none".to_string(),
                 header_name: "Authorization".to_string(),
                 scheme: "none".to_string(),
             },
-            region: None,
+            region,
             stream_enabled: true,
             timeout_ms: 5_000,
-            system_prompt_template: "video-realtime-cn".to_string(),
+            system_prompt_template: system_prompt_template.to_string(),
             temperature: 0.2,
             max_output_tokens: 256,
             response_modalities: vec!["text".to_string()],
@@ -340,84 +355,64 @@ mod tests {
             local_model_capability_registry: vec![],
             model_catalog_cache: Default::default(),
         }
+    }
+
+    fn openai_provider(base_url: String) -> ProviderDraftInput {
+        provider_draft(
+            "template-openai-compatible-realtime",
+            "provider-openai-compatible",
+            "openai-compatible",
+            "OpenAI Compatible",
+            "test-model",
+            base_url,
+            "streaming-http",
+            None,
+            "video-realtime-cn",
+        )
     }
 
     fn dashscope_provider(base_url: String) -> ProviderDraftInput {
-        ProviderDraftInput {
-            template_id: "template-dashscope-realtime".to_string(),
-            provider_id: "provider-dashscope".to_string(),
-            kind: "dashscope".to_string(),
-            display_name: "DashScope".to_string(),
-            model: "qwen-live".to_string(),
+        provider_draft(
+            "template-dashscope-realtime",
+            "provider-dashscope",
+            "dashscope",
+            "DashScope",
+            "qwen-live",
             base_url,
-            transport: "websocket".to_string(),
-            auth_ref: ProviderAuthRefInput {
-                kind: "credential-ref".to_string(),
-                reference: "none".to_string(),
-                header_name: "Authorization".to_string(),
-                scheme: "none".to_string(),
-            },
-            region: Some("cn-beijing".to_string()),
-            stream_enabled: true,
-            timeout_ms: 5_000,
-            system_prompt_template: "game-live-translation-cn".to_string(),
-            temperature: 0.2,
-            max_output_tokens: 256,
-            response_modalities: vec!["text".to_string()],
-            custom_headers: vec![],
-            scene_model_assignments: vec![],
-            local_model_capability_registry: vec![],
-            model_catalog_cache: Default::default(),
-        }
+            "websocket",
+            Some("cn-beijing".to_string()),
+            "game-live-translation-cn",
+        )
     }
 
     fn realtime_provider(base_url: String) -> ProviderDraftInput {
-        ProviderDraftInput {
-            template_id: "template-dashscope-realtime".to_string(),
-            provider_id: "provider-dashscope-realtime".to_string(),
-            kind: "dashscope".to_string(),
-            display_name: "DashScope Realtime".to_string(),
-            model: "qwen3.5-omni-plus-realtime".to_string(),
+        provider_draft(
+            "template-dashscope-realtime",
+            "provider-dashscope-realtime",
+            "dashscope",
+            "DashScope Realtime",
+            "qwen3.5-omni-plus-realtime",
             base_url,
-            transport: "websocket".to_string(),
-            auth_ref: ProviderAuthRefInput {
-                kind: "credential-ref".to_string(),
-                reference: "none".to_string(),
-                header_name: "Authorization".to_string(),
-                scheme: "none".to_string(),
-            },
-            region: Some("cn-beijing".to_string()),
-            stream_enabled: true,
-            timeout_ms: 5_000,
-            system_prompt_template: "game-live-translation-cn".to_string(),
-            temperature: 0.2,
-            max_output_tokens: 256,
-            response_modalities: vec!["text".to_string()],
-            custom_headers: vec![],
-            scene_model_assignments: vec![],
-            local_model_capability_registry: vec![],
-            model_catalog_cache: Default::default(),
-        }
+            "websocket",
+            Some("cn-beijing".to_string()),
+            "game-live-translation-cn",
+        )
     }
 
     #[test]
     fn openai_streaming_smoke_collects_delta_events() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            read_http_request(&mut stream);
-            let body = concat!(
-        "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
-        "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":4}}\n\n",
-        "data: [DONE]\n\n"
-      );
-            write_http_response(&mut stream, "text/event-stream", body);
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":\"Hello\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":\" world\"}}],\"usage\":{\"prompt_tokens\":12,\"completion_tokens\":4}}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (base_url, _server) = spawn_http_server(move |stream| {
+            write_http_response(stream, "text/event-stream", body);
         });
 
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
-            openai_provider(format!("http://{}", addr)),
+            openai_provider(base_url),
             "你好，世界".to_string(),
             "zh-CN".to_string(),
             "en-US".to_string(),
@@ -472,25 +467,12 @@ mod tests {
             stream.flush().expect("remaining response should flush");
         });
 
-        let (delta_tx, delta_rx) = mpsc::channel();
-        let client = thread::spawn(move || {
-            let gateway = ProviderGateway::new();
-            gateway.translate_text_streaming_traced(
-                openai_provider(format!("http://{}", addr)),
-                "hello".to_string(),
-                "en-US".to_string(),
-                "zh-CN".to_string(),
-                None,
-                |delta| {
-                    delta_tx.send(delta.to_string()).map_err(|error| {
-                        ProviderRuntimeError::new(
-                            "test.callback-failed",
-                            format!("failed to observe delta: {error}"),
-                        )
-                    })
-                },
-            )
-        });
+        let (delta_rx, client) = spawn_delta_forwarding_client(
+            openai_provider(format!("http://{}", addr)),
+            "hello",
+            "en-US",
+            "zh-CN",
+        );
 
         assert_eq!(
             delta_rx
@@ -519,19 +501,15 @@ mod tests {
 
     #[test]
     fn openai_non_streaming_translation_forwards_final_text_once() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        let server = thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            read_http_request(&mut stream);
+        let (base_url, server) = spawn_http_server(|stream| {
             write_http_response(
-                &mut stream,
+                stream,
                 "application/json",
                 "{\"choices\":[{\"message\":{\"content\":\"Complete answer\"}}]}",
             );
         });
 
-        let mut provider = openai_provider(format!("http://{}", addr));
+        let mut provider = openai_provider(base_url);
         provider.stream_enabled = false;
         let mut deltas = Vec::new();
         let result = ProviderGateway::new()
@@ -593,22 +571,18 @@ mod tests {
 
     #[test]
     fn openai_streaming_smoke_reads_array_content_delta() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            read_http_request(&mut stream);
-            let body = concat!(
-                "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"你\"}]}}]}\n\n",
-                "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"好\"}]}}]}\n\n",
-                "data: [DONE]\n\n"
-            );
-            write_http_response(&mut stream, "text/event-stream", body);
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"你\"}]}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"content\":[{\"type\":\"text\",\"text\":\"好\"}]}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (base_url, _server) = spawn_http_server(move |stream| {
+            write_http_response(stream, "text/event-stream", body);
         });
 
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
-            openai_provider(format!("http://{}", addr)),
+            openai_provider(base_url),
             "hello".to_string(),
             "en-US".to_string(),
             "zh-CN".to_string(),
@@ -621,22 +595,18 @@ mod tests {
 
     #[test]
     fn openai_streaming_smoke_extracts_reasoning_translation() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            read_http_request(&mut stream);
-            let body = concat!(
-                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Thinking Process:\\n\"}}]}\n\n",
-                "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Decision: 这是一艘价值十亿美元的火箭飞船。\"}}]}\n\n",
-                "data: [DONE]\n\n"
-            );
-            write_http_response(&mut stream, "text/event-stream", body);
+        let body = concat!(
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Thinking Process:\\n\"}}]}\n\n",
+            "data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"Decision: 这是一艘价值十亿美元的火箭飞船。\"}}]}\n\n",
+            "data: [DONE]\n\n"
+        );
+        let (base_url, _server) = spawn_http_server(move |stream| {
+            write_http_response(stream, "text/event-stream", body);
         });
 
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
-            openai_provider(format!("http://{}", addr)),
+            openai_provider(base_url),
             "Project Aurora has a one billion dollar reliability fund.".to_string(),
             "en-US".to_string(),
             "zh-CN".to_string(),
@@ -649,11 +619,7 @@ mod tests {
 
     #[test]
     fn dashscope_websocket_smoke_reads_text_frames() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("client should connect");
-            let mut websocket = accept(stream).expect("websocket should be accepted");
+        let (ws_url, _server) = spawn_ws_server(|websocket| {
             let _ = websocket.read().expect("request payload should arrive");
             websocket
                 .send(Message::Text(
@@ -673,7 +639,7 @@ mod tests {
 
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
-            dashscope_provider(format!("ws://{}/ws", addr)),
+            dashscope_provider(ws_url),
             "你好，世界".to_string(),
             "zh-CN".to_string(),
             "en-US".to_string(),
@@ -688,12 +654,8 @@ mod tests {
 
     #[test]
     fn dashscope_translation_forwards_delta_before_stream_completion() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
         let (release_tx, release_rx) = mpsc::channel();
-        let server = thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("client should connect");
-            let mut websocket = accept(stream).expect("websocket should be accepted");
+        let (ws_url, server) = spawn_ws_server(move |websocket| {
             let _ = websocket.read().expect("request payload should arrive");
             websocket
                 .send(Message::Text(
@@ -714,24 +676,12 @@ mod tests {
                 .expect("completion frame should send");
         });
 
-        let (delta_tx, delta_rx) = mpsc::channel();
-        let client = thread::spawn(move || {
-            ProviderGateway::new().translate_text_streaming_traced(
-                dashscope_provider(format!("ws://{}/ws", addr)),
-                "hello".to_string(),
-                "en-US".to_string(),
-                "zh-CN".to_string(),
-                None,
-                |delta| {
-                    delta_tx.send(delta.to_string()).map_err(|error| {
-                        ProviderRuntimeError::new(
-                            "test.callback-failed",
-                            format!("failed to observe delta: {error}"),
-                        )
-                    })
-                },
-            )
-        });
+        let (delta_rx, client) = spawn_delta_forwarding_client(
+            dashscope_provider(ws_url),
+            "hello",
+            "en-US",
+            "zh-CN",
+        );
 
         assert_eq!(
             delta_rx
@@ -760,11 +710,7 @@ mod tests {
 
     #[test]
     fn realtime_websocket_smoke_uses_realtime_api_protocol() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("client should connect");
-            let mut websocket = accept(stream).expect("websocket should be accepted");
+        let (ws_url, _server) = spawn_ws_server(|websocket| {
             let _ = websocket.read().expect("session.update should arrive");
             let _ = websocket
                 .read()
@@ -802,7 +748,7 @@ mod tests {
 
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
-            realtime_provider(format!("ws://{}/ws", addr)),
+            realtime_provider(ws_url),
             "你好，世界".to_string(),
             "zh-CN".to_string(),
             "en-US".to_string(),
@@ -829,11 +775,7 @@ mod tests {
 
     #[test]
     fn dashscope_realtime_audio_synthesis_reads_audio_delta() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (stream, _) = listener.accept().expect("client should connect");
-            let mut websocket = accept(stream).expect("websocket should be accepted");
+        let (ws_url, _server) = spawn_ws_server(|websocket| {
             let session = websocket.read().expect("session.update should arrive");
             let item = websocket
                 .read()
@@ -864,7 +806,7 @@ mod tests {
         let gateway = ProviderGateway::new();
         let synthesis = gateway
             .synthesize_realtime_audio(
-                realtime_provider(format!("ws://{}/ws", addr)),
+                realtime_provider(ws_url),
                 "你好，世界。".to_string(),
                 "zh-CN".to_string(),
                 "Ethan".to_string(),
@@ -904,20 +846,16 @@ mod tests {
 
     #[test]
     fn openai_model_catalog_reads_models_endpoint() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            read_http_request(&mut stream);
+        let (base_url, _server) = spawn_http_server(|stream| {
             write_http_response(
-                &mut stream,
+                stream,
                 "application/json",
                 r#"{"data":[{"id":"gpt-4.1","owned_by":"openai"},{"id":"gpt-4o-realtime-preview","owned_by":"openai"}]}"#,
             );
         });
 
         let gateway = ProviderGateway::new();
-        let catalog = gateway.fetch_models(openai_provider(format!("http://{}", addr)));
+        let catalog = gateway.fetch_models(openai_provider(base_url));
 
         assert!(catalog.error.is_none());
         assert_eq!(catalog.models.len(), 2);
@@ -978,13 +916,9 @@ mod tests {
 
     #[test]
     fn openai_error_response_is_normalized_for_auth_failures() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            read_http_request(&mut stream);
+        let (base_url, _server) = spawn_http_server(|stream| {
             write_http_error_response(
-                &mut stream,
+                stream,
                 401,
                 "application/json",
                 r#"{"error":{"code":"invalid_api_key","message":"token expired"}}"#,
@@ -993,7 +927,7 @@ mod tests {
 
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
-            openai_provider(format!("http://{}", addr)),
+            openai_provider(base_url),
             "你好，世界".to_string(),
             "zh-CN".to_string(),
             "en-US".to_string(),
@@ -1013,20 +947,16 @@ mod tests {
 
     #[test]
     fn dashscope_error_response_is_normalized_for_rate_limits() {
-        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should have addr");
-        thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("client should connect");
-            read_http_request(&mut stream);
+        let (base_url, _server) = spawn_http_server(|stream| {
             write_http_error_response(
-                &mut stream,
+                stream,
                 429,
                 "application/json",
                 r#"{"code":"RateQuotaExceeded","message":"too many requests"}"#,
             );
         });
 
-        let mut provider = dashscope_provider(format!("http://{}", addr));
+        let mut provider = dashscope_provider(base_url);
         provider.transport = "http".to_string();
         let gateway = ProviderGateway::new();
         let smoke = gateway.execute_smoke(
@@ -1055,6 +985,78 @@ mod tests {
                 break;
             }
         }
+    }
+
+    /// Spawn a client thread that runs a streaming translation and forwards each
+    /// observed delta over a channel, returning the delta receiver and the client
+    /// join handle. Shared by the streaming delta-forwarding tests, which drove
+    /// this identical callback wiring.
+    fn spawn_delta_forwarding_client(
+        provider: ProviderDraftInput,
+        source_text: &'static str,
+        source_language: &'static str,
+        target_language: &'static str,
+    ) -> (
+        mpsc::Receiver<String>,
+        thread::JoinHandle<Result<String, ProviderRuntimeError>>,
+    ) {
+        let (delta_tx, delta_rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            ProviderGateway::new().translate_text_streaming_traced(
+                provider,
+                source_text.to_string(),
+                source_language.to_string(),
+                target_language.to_string(),
+                None,
+                |delta| {
+                    delta_tx.send(delta.to_string()).map_err(|error| {
+                        ProviderRuntimeError::new(
+                            "test.callback-failed",
+                            format!("failed to observe delta: {error}"),
+                        )
+                    })
+                },
+            )
+        });
+        (delta_rx, client)
+    }
+
+    /// Bind an ephemeral loopback HTTP server that accepts one connection, drains
+    /// the request headers, then hands the stream to `respond` so each test can
+    /// write its own canned reply. Returns the base URL and the server thread
+    /// handle. Shared by the smoke/catalog/error tests, which previously
+    /// repeated this bind/accept/read scaffolding verbatim.
+    fn spawn_http_server<F>(respond: F) -> (String, thread::JoinHandle<()>)
+    where
+        F: FnOnce(&mut TcpStream) + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let handle = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            read_http_request(&mut stream);
+            respond(&mut stream);
+        });
+        (format!("http://{}", addr), handle)
+    }
+
+    /// Bind an ephemeral loopback WebSocket server that accepts one connection
+    /// and completes the handshake, then hands the live socket to `exchange` so
+    /// each test drives its own frame read/write sequence. Returns the
+    /// `ws://.../ws` URL and the server thread handle. Shared by the websocket
+    /// smoke tests, which previously repeated the bind/accept/handshake prefix.
+    fn spawn_ws_server<F>(exchange: F) -> (String, thread::JoinHandle<()>)
+    where
+        F: FnOnce(&mut tungstenite::WebSocket<TcpStream>) + Send + 'static,
+    {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let handle = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("client should connect");
+            let mut websocket = accept(stream).expect("websocket should be accepted");
+            exchange(&mut websocket);
+        });
+        (format!("ws://{}/ws", addr), handle)
     }
 
     fn write_http_response(stream: &mut TcpStream, content_type: &str, body: &str) {

@@ -1,13 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { bundleName, readCargoVersion, readJson, releasePaths, repoRoot } from '../lib/release-common.mjs';
+import { bundleName, readWorkspaceVersions, releasePaths, repoRoot } from '../lib/release-common.mjs';
 
 const rootDir = repoRoot;
 
-const rootPackage = readJson('package.json');
-const desktopPackage = readJson(path.join('apps', 'desktop', 'package.json'));
-const nativeBridgeVersion = readCargoVersion(path.join('apps', 'bridge-service-native', 'Cargo.toml'));
+const { rootPackage, desktopPackage, nativeBridgeVersion } = readWorkspaceVersions();
 
 const copyTree = (source, target) => {
   fs.mkdirSync(target, { recursive: true });

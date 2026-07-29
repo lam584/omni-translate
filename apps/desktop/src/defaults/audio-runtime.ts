@@ -1,6 +1,27 @@
 import { appConfigDraftMock } from './app-config';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 
+// Preview cue used both as the active cue and the seed of `recentCues`; the
+// factory keeps the two snapshot entries as independent object instances.
+function makeBrowserPreviewCue(): NonNullable<AudioRuntimeSnapshot['subtitleOverlay']['activeCue']> {
+  return {
+    cueId: 'browser-preview-cue-1',
+    routeDirection: 'inbound',
+    sourceText: '浏览器预览模式',
+    translatedText: '这里会显示真实歌词字幕',
+    displaySegments: [
+      {
+        sourceText: '浏览器预览模式',
+        translatedText: '这里会显示真实歌词字幕',
+        pending: false,
+      },
+    ],
+    startedAt: 'browser-preview',
+    endedAt: 'browser-preview',
+    committed: true,
+  };
+}
+
 export const audioRuntimeSnapshotMock: AudioRuntimeSnapshot = {
   status: 'preview',
   host: 'wasapi',
@@ -77,40 +98,8 @@ export const audioRuntimeSnapshotMock: AudioRuntimeSnapshot = {
     firstTranslationAverageMs: null,
     firstTranslationLastMs: null,
     firstTranslationSampleCount: 0,
-    activeCue: {
-      cueId: 'browser-preview-cue-1',
-      routeDirection: 'inbound',
-      sourceText: '浏览器预览模式',
-      translatedText: '这里会显示真实歌词字幕',
-      displaySegments: [
-        {
-          sourceText: '浏览器预览模式',
-          translatedText: '这里会显示真实歌词字幕',
-          pending: false,
-        },
-      ],
-      startedAt: 'browser-preview',
-      endedAt: 'browser-preview',
-      committed: true,
-    },
-    recentCues: [
-      {
-        cueId: 'browser-preview-cue-1',
-        routeDirection: 'inbound',
-        sourceText: '浏览器预览模式',
-        translatedText: '这里会显示真实歌词字幕',
-        displaySegments: [
-          {
-            sourceText: '浏览器预览模式',
-            translatedText: '这里会显示真实歌词字幕',
-            pending: false,
-          },
-        ],
-        startedAt: 'browser-preview',
-        endedAt: 'browser-preview',
-        committed: true,
-      },
-    ],
+    activeCue: makeBrowserPreviewCue(),
+    recentCues: [makeBrowserPreviewCue()],
   },
   speech: {
     status: 'preview',

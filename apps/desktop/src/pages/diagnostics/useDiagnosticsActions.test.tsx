@@ -1,9 +1,9 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import { useAppStore } from '../../stores/app-store';
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { useDiagnosticsWorkbenchController, type DiagnosticsRepairTask } from './useDiagnosticsActions';
 
 const runtime = vi.hoisted(() => ({
@@ -24,8 +24,6 @@ vi.mock('../../runtime/desktop-api-context', () => ({
 vi.mock('../../runtime/bridge-runtime', () => ({ refreshBridgeRuntime: runtime.refreshBridge }));
 
 describe('useDiagnosticsWorkbenchController', () => {
-  let root: Root;
-  let container: HTMLDivElement;
   let controller: ReturnType<typeof useDiagnosticsWorkbenchController>;
   let repairs: DiagnosticsRepairTask[];
   let selected: string[];
@@ -36,33 +34,26 @@ describe('useDiagnosticsWorkbenchController', () => {
     return null;
   }
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.clearAllMocks();
-    snapshot = useAppStore.getState().runtimeSnapshot;
-    repairs = [];
-    selected = [];
-    runtime.isTauri.mockReturnValue(false);
-    runtime.refreshBridge.mockResolvedValue(snapshot);
-    runtime.selfCheck.mockResolvedValue(snapshot);
-    runtime.overlaySelfCheck.mockResolvedValue(snapshot);
-    runtime.exportBundle.mockResolvedValue({
-      artifact: { scope: 'full', outputPath: 'C:\\diagnostics.zip', generatedAt: '2026-07-27T00:00:00.000Z', fileCount: 3 },
-      snapshot,
-    });
-    runtime.getEvents.mockResolvedValue({ events: [], truncated: false });
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
+  const view = registerDomHarness({
+    setup: () => {
+      vi.clearAllMocks();
+      snapshot = useAppStore.getState().runtimeSnapshot;
+      repairs = [];
+      selected = [];
+      runtime.isTauri.mockReturnValue(false);
+      runtime.refreshBridge.mockResolvedValue(snapshot);
+      runtime.selfCheck.mockResolvedValue(snapshot);
+      runtime.overlaySelfCheck.mockResolvedValue(snapshot);
+      runtime.exportBundle.mockResolvedValue({
+        artifact: { scope: 'full', outputPath: 'C:\\diagnostics.zip', generatedAt: '2026-07-27T00:00:00.000Z', fileCount: 3 },
+        snapshot,
+      });
+      runtime.getEvents.mockResolvedValue({ events: [], truncated: false });
+    },
   });
 
   async function mount() {
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
   }
 
   it('does nothing when no repair is selected', async () => {

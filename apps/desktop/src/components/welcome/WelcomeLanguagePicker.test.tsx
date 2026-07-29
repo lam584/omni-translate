@@ -5,6 +5,7 @@ import i18n from '../../../src/i18n/config';
 import { runtimeSnapshotMock } from '../../../src/mocks/runtime-shell';
 import { useAppStore } from '../../../src/stores/app-store';
 import { cloneStoreState, mountTestRoot, setTauriRuntime, type TestRootHandle } from '../../test-utils';
+import { click, inputText, selectValue } from '../../test-utils/dom-interactions';
 import WelcomeLanguagePicker from './WelcomeLanguagePicker';
 
 const saveProviderSecretMock = vi.fn();
@@ -30,38 +31,74 @@ function getFooterButtons(container: HTMLElement) {
   return Array.from(container.querySelectorAll<HTMLButtonElement>('.welcome-language-foot-actions button'));
 }
 
-async function click(element: HTMLElement) {
-  await act(async () => {
-    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
-  });
-}
-
-async function inputText(element: HTMLInputElement, value: string) {
-  const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;
-
-  await act(async () => {
-    valueSetter?.call(element, value);
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-}
-
-async function selectValue(element: HTMLSelectElement, value: string) {
-  const valueSetter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')?.set;
-
-  await act(async () => {
-    valueSetter?.call(element, value);
-    element.dispatchEvent(new Event('input', { bubbles: true }));
-    element.dispatchEvent(new Event('change', { bubbles: true }));
-  });
-}
-
 describe('WelcomeLanguagePicker', () => {
   let view: TestRootHandle;
   let container: HTMLDivElement;
 
   async function renderPicker(onDone: () => void = vi.fn()) {
     await view.render(<WelcomeLanguagePicker initialLanguage="zh-CN" onDone={onDone} />);
+  }
+
+  /** Clones store slices, applies test drift, then installs them with the Tauri flag set. */
+  function seedTauriStore(mutate?: (slices: ReturnType<typeof cloneStoreState>) => void) {
+    setTauriRuntime(true);
+    const slices = cloneStoreState();
+    mutate?.(slices);
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: slices.configDraft,
+      runtimeSnapshot: slices.runtimeSnapshot,
+    }));
+    return slices;
+  }
+
+  /** Seeds a ready tauri-shell runtime plus optional extra drift. */
+  function seedReadyTauriStore(mutate?: (slices: ReturnType<typeof cloneStoreState>) => void) {
+    return seedTauriStore((slices) => {
+      slices.runtimeSnapshot.bridgeStatus = 'tauri-shell';
+      slices.runtimeSnapshot.storage.status = 'ready';
+      mutate?.(slices);
+    });
+  }
+
+  async function openProviderStepAndEnterSecret() {
+    await renderPicker();
+
+    await click(getFooterButtons(container)[0]!);
+
+    const input = container.querySelector('input[type="password"]') as HTMLInputElement | null;
+    expect(input).not.toBeNull();
+    await inputText(input!, 'dashscope-secret');
+  }
+
+  function seedRuntimeErrorStore() {
+    seedTauriStore((slices) => {
+      slices.runtimeSnapshot.bridgeStatus = 'runtime-error';
+      slices.runtimeSnapshot.coreState = 'degraded';
+      slices.runtimeSnapshot.storage.status = 'preview';
+    });
+  }
+
+  async function selectNonWebsocketTemplate() {
+    const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
+    const nonWebsocketTemplate = Array.from(templateSelect.options).find((option) => option.value.includes('openai-compatible'))!;
+    await selectValue(templateSelect, nonWebsocketTemplate.value);
+  }
+
+  async function saveEnteredSecret(secret: string) {
+    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, secret);
+    await click(getFooterButtons(container)[2]!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+  }
+
+  async function enterDriverStepAndFlush() {
+    await click(getFooterButtons(container)[0]!);
+    await click(getFooterButtons(container)[1]!);
+    await act(async () => {
+      await Promise.resolve();
+    });
   }
 
   beforeEach(async () => {
@@ -93,24 +130,12 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('blocks provider save until the desktop runtime and storage are ready', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'browser-preview';
-    runtimeSnapshot.storage.status = 'preview';
+    seedTauriStore((slices) => {
+      slices.runtimeSnapshot.bridgeStatus = 'browser-preview';
+      slices.runtimeSnapshot.storage.status = 'preview';
+    });
 
-    useAppStore.setState((state) => ({
-      ...state,
-      configDraft,
-      runtimeSnapshot,
-    }));
-
-    await renderPicker();
-
-    await click(getFooterButtons(container)[0]!);
-
-    const input = container.querySelector('input[type="password"]') as HTMLInputElement | null;
-    expect(input).not.toBeNull();
-    await inputText(input!, 'dashscope-secret');
+    await openProviderStepAndEnterSecret();
 
     const footerButtons = getFooterButtons(container);
     expect(footerButtons[2]?.disabled).toBe(true);
@@ -118,16 +143,7 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('saves the default provider key and advances to the driver step', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'tauri-shell';
-    runtimeSnapshot.storage.status = 'ready';
-
-    useAppStore.setState((state) => ({
-      ...state,
-      configDraft,
-      runtimeSnapshot,
-    }));
+    seedReadyTauriStore();
 
     saveProviderSecretMock.mockResolvedValue({
       reference: 'credential://provider/dashscope/default',
@@ -135,13 +151,7 @@ describe('WelcomeLanguagePicker', () => {
       hasSecret: true,
     });
 
-    await renderPicker();
-
-    await click(getFooterButtons(container)[0]!);
-
-    const input = container.querySelector('input[type="password"]') as HTMLInputElement | null;
-    expect(input).not.toBeNull();
-    await inputText(input!, 'dashscope-secret');
+    await openProviderStepAndEnterSecret();
     await click(getFooterButtons(container)[2]!);
 
     expect(saveProviderSecretMock).toHaveBeenCalledWith('credential://provider/dashscope/default', 'dashscope-secret');
@@ -150,19 +160,11 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('shows TESTSIGNING guidance on the driver step when the probe reports it disabled', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'tauri-shell';
-    runtimeSnapshot.storage.status = 'ready';
-    runtimeSnapshot.bridge.driverHealth = 'not-installed';
-    runtimeSnapshot.bridge.lastErrorCode = 'driver.testsigning-disabled';
+    const { runtimeSnapshot } = seedReadyTauriStore((slices) => {
+      slices.runtimeSnapshot.bridge.driverHealth = 'not-installed';
+      slices.runtimeSnapshot.bridge.lastErrorCode = 'driver.testsigning-disabled';
+    });
     refreshBridgeRuntimeMock.mockResolvedValue(structuredClone(runtimeSnapshot));
-
-    useAppStore.setState((state) => ({
-      ...state,
-      configDraft,
-      runtimeSnapshot,
-    }));
 
     await renderPicker();
 
@@ -174,16 +176,9 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('shows the runtime bootstrap error instead of allowing provider completion', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'runtime-error';
-    runtimeSnapshot.coreState = 'degraded';
-    runtimeSnapshot.storage.status = 'preview';
-
+    seedRuntimeErrorStore();
     useAppStore.setState((state) => ({
       ...state,
-      configDraft,
-      runtimeSnapshot,
       runtimeNotifications: [
         {
           id: 'runtime-bootstrap-failed',
@@ -330,9 +325,7 @@ describe('WelcomeLanguagePicker', () => {
   it('shows the driver refresh reason and retries from the onboarding step', async () => {
     refreshBridgeRuntimeMock.mockRejectedValueOnce(new Error('Bridge pipe timed out'));
     await renderPicker();
-    await click(getFooterButtons(container)[0]!);
-    await click(getFooterButtons(container)[1]!);
-    await act(async () => { await Promise.resolve(); });
+    await enterDriverStepAndFlush();
 
     const alert = container.querySelector<HTMLElement>('.welcome-provider-error');
     expect(alert?.textContent).toContain('Bridge pipe timed out');
@@ -344,11 +337,7 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('updates the provider template and API address before surfacing save timeouts', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'tauri-shell';
-    runtimeSnapshot.storage.status = 'ready';
-    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
+    seedReadyTauriStore();
     saveProviderSecretMock.mockRejectedValue({ code: 'timeout', operation: 'credential-save' });
 
     await renderPicker();
@@ -367,11 +356,7 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('reports asynchronous provider probe timeouts after saving a non-websocket provider', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'tauri-shell';
-    runtimeSnapshot.storage.status = 'ready';
-    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
+    seedReadyTauriStore();
     saveProviderSecretMock.mockResolvedValue({
       reference: 'credential://provider/openai-compatible/default',
       backend: 'windows-credential-manager',
@@ -381,25 +366,15 @@ describe('WelcomeLanguagePicker', () => {
 
     await renderPicker();
     await click(getFooterButtons(container)[0]!);
-    const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
-    const nonWebsocketTemplate = Array.from(templateSelect.options).find((option) => option.value.includes('openai-compatible'))!;
-    await selectValue(templateSelect, nonWebsocketTemplate.value);
-    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'provider-secret');
-    await click(getFooterButtons(container)[2]!);
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await selectNonWebsocketTemplate();
+    await saveEnteredSecret('provider-secret');
 
     expect(runProviderProbeMock).toHaveBeenCalledTimes(1);
   });
 
   it('uses the translated runtime fallback when no bootstrap error notification exists', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'runtime-error';
-    runtimeSnapshot.coreState = 'degraded';
-    runtimeSnapshot.storage.status = 'preview';
-    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot, runtimeNotifications: [] }));
+    seedRuntimeErrorStore();
+    useAppStore.setState((state) => ({ ...state, runtimeNotifications: [] }));
 
     await renderPicker();
     await click(getFooterButtons(container)[0]!);
@@ -422,68 +397,44 @@ describe('WelcomeLanguagePicker', () => {
   });
 
   it('uses default endpoint and first provider when saving after active provider identity is stale', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'tauri-shell';
-    runtimeSnapshot.storage.status = 'ready';
-    configDraft.activeProviderTemplateId = 'missing-template';
-    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
+    seedReadyTauriStore((slices) => {
+      slices.configDraft.activeProviderTemplateId = 'missing-template';
+    });
     saveProviderSecretMock.mockResolvedValue({ hasSecret: true });
     runProviderProbeMock.mockResolvedValue({ verdict: 'unavailable', error: { message: '  denied  ' } });
 
     await renderPicker();
     await click(getFooterButtons(container)[0]!);
-    const templateSelect = container.querySelector<HTMLSelectElement>('select')!;
-    const nonWebsocketTemplate = Array.from(templateSelect.options).find((option) => option.value.includes('openai-compatible'))!;
-    await selectValue(templateSelect, nonWebsocketTemplate.value);
+    await selectNonWebsocketTemplate();
     await inputText(container.querySelector<HTMLInputElement>('input[type="url"]')!, '   ');
-    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'provider-secret');
-    await click(getFooterButtons(container)[2]!);
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await saveEnteredSecret('provider-secret');
 
     expect(runProviderProbeMock).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: expect.stringMatching(/^https?:/) }));
     expect(container.textContent).toContain('API Key 无效或已失效');
   });
 
   it('returns safely when provider configuration is empty and formats unavailable probes without detail', async () => {
-    setTauriRuntime(true);
-    const { configDraft, runtimeSnapshot } = cloneStoreState();
-    runtimeSnapshot.bridgeStatus = 'tauri-shell';
-    runtimeSnapshot.storage.status = 'ready';
-    configDraft.providers = [];
-    useAppStore.setState((state) => ({ ...state, configDraft, runtimeSnapshot }));
+    seedReadyTauriStore((slices) => {
+      slices.configDraft.providers = [];
+    });
     await renderPicker();
     await click(getFooterButtons(container)[0]!);
-    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'secret');
-    await click(getFooterButtons(container)[2]!);
+    await saveEnteredSecret('secret');
     expect(saveProviderSecretMock).not.toHaveBeenCalled();
 
-    const next = cloneStoreState();
-    next.runtimeSnapshot.bridgeStatus = 'tauri-shell';
-    next.runtimeSnapshot.storage.status = 'ready';
-    useAppStore.setState((state) => ({ ...state, configDraft: next.configDraft, runtimeSnapshot: next.runtimeSnapshot }));
+    seedReadyTauriStore();
     await renderPicker();
     saveProviderSecretMock.mockResolvedValue({ hasSecret: true });
     runProviderProbeMock.mockResolvedValue({ verdict: 'unavailable', error: { message: '   ' } });
-    const select = container.querySelector<HTMLSelectElement>('select')!;
-    const nonWebsocket = Array.from(select.options).find((option) => option.value.includes('openai-compatible'))!;
-    await selectValue(select, nonWebsocket.value);
-    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'secret');
-    await click(getFooterButtons(container)[2]!);
-    await act(async () => Promise.resolve());
+    await selectNonWebsocketTemplate();
+    await saveEnteredSecret('secret');
     expect(container.textContent).toContain('API Key');
   });
 
   it('shows non-error refresh failures after entering the driver step', async () => {
     refreshBridgeRuntimeMock.mockRejectedValue('bridge refresh unavailable');
     await renderPicker();
-    await click(getFooterButtons(container)[0]!);
-    await click(getFooterButtons(container)[1]!);
-    await act(async () => {
-      await Promise.resolve();
-    });
+    await enterDriverStepAndFlush();
 
     expect(container.textContent).toContain('bridge refresh unavailable');
   });
@@ -491,20 +442,14 @@ describe('WelcomeLanguagePicker', () => {
   it('shows Error refresh failures and accepts an available provider probe', async () => {
     refreshBridgeRuntimeMock.mockRejectedValueOnce(new Error('bridge Error failure'));
     await renderPicker();
-    await click(getFooterButtons(container)[0]!);
-    await click(getFooterButtons(container)[1]!);
-    await act(async () => Promise.resolve());
+    await enterDriverStepAndFlush();
     expect(container.textContent).toContain('bridge Error failure');
 
     await click(getFooterButtons(container)[0]!);
     saveProviderSecretMock.mockResolvedValue({ hasSecret: true });
     runProviderProbeMock.mockResolvedValue({ verdict: 'available', error: null });
-    const select = container.querySelector<HTMLSelectElement>('select')!;
-    const nonWebsocket = Array.from(select.options).find((option) => option.value.includes('openai-compatible'))!;
-    await selectValue(select, nonWebsocket.value);
-    await inputText(container.querySelector<HTMLInputElement>('input[type="password"]')!, 'key');
-    await click(getFooterButtons(container)[2]!);
-    await act(async () => Promise.resolve());
+    await selectNonWebsocketTemplate();
+    await saveEnteredSecret('key');
     expect(runProviderProbeMock).toHaveBeenCalled();
   });
 });

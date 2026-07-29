@@ -117,3 +117,38 @@ export const parseCliArgs = (argv, { booleans = [], defaults = {} } = {}) => {
   }
   return args;
 };
+
+// Timestamped report writer shared by the prepare-* helper scripts: resolves
+// <repoRoot>/<outputRoot>/<filePrefix>-<compactTimestamp>.<extension>, hands
+// the caller the path plus the matching sortable timestamp, returns the path.
+export const writeTimestampedReport = ({ outputRoot, filePrefix, extension, render }) => {
+  const targetDir = ensureDir(path.resolve(repoRoot, outputRoot));
+  const reportPath = path.join(targetDir, `${filePrefix}-${compactTimestamp()}.${extension}`);
+  render(reportPath, sortableTimestamp());
+  return reportPath;
+};
+
+// CLI seam shared by the prepare-* helper scripts: parse the flags, print the
+// produced report path, or exit 1 with the bare error message.
+export const runPrepareReportCli = (prepare, defaults) => {
+  try {
+    const args = parseCliArgs(process.argv.slice(2), { defaults });
+    console.log(prepare(args));
+  } catch (error) {
+    console.error(error.message);
+    process.exit(1);
+  }
+};
+
+// Loose --flag [value] parser used by the watch-mode tooling: keys stay
+// kebab-case, unknown flags are accepted, a flag followed by another flag
+// (or by nothing) becomes boolean true, non-flag tokens are skipped.
+export const parseLooseArgs = (argv) => {
+  const args = {};
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (!arg.startsWith('--')) continue;
+    args[arg.slice(2)] = argv[index + 1]?.startsWith('--') ? true : argv[++index] ?? true;
+  }
+  return args;
+};

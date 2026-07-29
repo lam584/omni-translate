@@ -12,6 +12,175 @@ pub use omni_bridge_protocol::{
 pub const INTERNAL_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const INTERNAL_CHANNEL_COUNT: u16 = 2;
 
+/// Windows-only helpers shared by the diagnostic probe binaries
+/// (`omni-driver-audio-probe`, `omni-physical-output-probe`,
+/// `omni-watch-media-injector`) and the bridge's own driver capture loop.
+///
+/// These consolidate the WASAPI shared-stream boilerplate, the tone-analysis
+/// DSP and the native driver status ABI so the binaries stay byte-for-byte
+/// compatible without copying the same code into each `mod probe`/`mod
+/// injector`.
+#[cfg(windows)]
+pub mod probe_support {
+    use serde::Serialize;
+    use std::f32::consts::TAU;
+    use wasapi::{
+        AudioCaptureClient, AudioClient, AudioRenderClient, Device, Direction, StreamMode,
+        WaveFormat,
+    };
+
+    /// Shared 48 kHz / stereo / f32 stream geometry used by the probes.
+    pub const SAMPLE_RATE: usize = 48_000;
+    pub const CHANNELS: usize = 2;
+
+    /// Tone analysed by the loopback probes.
+    pub const TONE_FREQUENCY_HZ: f32 = 1_000.0;
+
+    /// Native driver control device and IOCTL codes. Kept in one place so the
+    /// probe binary and the bridge capture loop cannot let the ABI drift.
+    pub const OMNI_BRIDGE_DEVICE_PATH: &str = r"\\.\OmniTranslateVirtualAudio";
+    const FILE_DEVICE_OMNI_TRANSLATE: u32 = 0x8337;
+    const METHOD_BUFFERED: u32 = 0;
+    const FILE_READ_DATA: u32 = 0x0001;
+    const FILE_WRITE_DATA: u32 = 0x0002;
+    pub const IOCTL_OMNI_BRIDGE_READ_PCM: u32 =
+        (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_READ_DATA << 14) | (0x800 << 2) | METHOD_BUFFERED;
+    pub const IOCTL_OMNI_BRIDGE_QUERY_STATUS: u32 =
+        (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_READ_DATA << 14) | (0x801 << 2) | METHOD_BUFFERED;
+    pub const IOCTL_OMNI_BRIDGE_RESET: u32 =
+        (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_WRITE_DATA << 14) | (0x802 << 2) | METHOD_BUFFERED;
+
+    /// Snapshot returned by `IOCTL_OMNI_BRIDGE_QUERY_STATUS`. The field order and
+    /// `#[repr(C)]` layout mirror the kernel driver's struct exactly.
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct DriverStatus {
+        pub abi_version: u32,
+        pub ring_capacity_bytes: u32,
+        pub buffered_bytes: u32,
+        pub max_buffered_bytes: u32,
+        pub captured_bytes: u64,
+        pub delivered_bytes: u64,
+        pub dropped_bytes: u64,
+        pub render_streams_created: u64,
+        pub render_run_transitions: u64,
+        pub render_set_write_packet_calls: u64,
+        pub render_read_bytes_calls: u64,
+        pub loopback_capture_read_calls: u64,
+    }
+
+    /// Minimum number of bytes a valid `DriverStatus` query must return.
+    pub const DRIVER_STATUS_BASE_SIZE: u32 = 40;
+
+    /// Render `error` as an owned `String` for the probes' `Result<_, String>`.
+    pub fn error_text(error: impl std::fmt::Display) -> String {
+        error.to_string()
+    }
+
+    /// Create and start a shared-mode `AudioClient` for `direction`, using the
+    /// device's minimum period as the polling buffer duration.
+    fn initialize_shared_stream(
+        device: &Device,
+        format: &WaveFormat,
+        direction: &Direction,
+    ) -> Result<AudioClient, String> {
+        let mut audio_client = device.get_iaudioclient().map_err(error_text)?;
+        let (_, minimum_period) = audio_client.get_device_period().map_err(error_text)?;
+        audio_client
+            .initialize_client(
+                format,
+                direction,
+                &StreamMode::PollingShared {
+                    autoconvert: true,
+                    buffer_duration_hns: minimum_period,
+                },
+            )
+            .map_err(error_text)?;
+        Ok(audio_client)
+    }
+
+    /// Open a shared-mode capture client on `device` with `format` and start it.
+    pub fn open_capture_stream(
+        device: &Device,
+        format: &WaveFormat,
+    ) -> Result<(AudioClient, AudioCaptureClient), String> {
+        let audio_client = initialize_shared_stream(device, format, &Direction::Capture)?;
+        let capture_client = audio_client.get_audiocaptureclient().map_err(error_text)?;
+        audio_client.start_stream().map_err(error_text)?;
+        Ok((audio_client, capture_client))
+    }
+
+    /// Open a shared-mode render client on `device` with `format` and start it.
+    pub fn open_render_stream(
+        device: &Device,
+        format: &WaveFormat,
+    ) -> Result<(AudioClient, AudioRenderClient), String> {
+        let audio_client = initialize_shared_stream(device, format, &Direction::Render)?;
+        let render_client = audio_client.get_audiorenderclient().map_err(error_text)?;
+        audio_client.start_stream().map_err(error_text)?;
+        Ok((audio_client, render_client))
+    }
+
+    /// Drain every capture packet currently available on `capture_client`,
+    /// invoking `on_packet` with the (silence-zeroed) PCM bytes and the hardware
+    /// silent flag. `bytes_per_frame` sizes each packet buffer.
+    pub fn for_each_capture_packet(
+        capture_client: &AudioCaptureClient,
+        bytes_per_frame: usize,
+        mut on_packet: impl FnMut(&[u8], bool),
+    ) -> Result<(), String> {
+        while let Some(packet_frames) = capture_client
+            .get_next_packet_size()
+            .map_err(error_text)?
+            .filter(|frames| *frames > 0)
+        {
+            let mut packet = vec![0_u8; packet_frames as usize * bytes_per_frame];
+            let (frames_read, buffer_info) = capture_client
+                .read_from_device(&mut packet)
+                .map_err(error_text)?;
+            packet.truncate(frames_read as usize * bytes_per_frame);
+            if buffer_info.flags.silent {
+                packet.fill(0);
+            }
+            on_packet(&packet, buffer_info.flags.silent);
+        }
+        Ok(())
+    }
+
+    /// Goertzel-style magnitude of the `frequency_hz` component in `samples`
+    /// (mono, `SAMPLE_RATE`), scaled to the equivalent peak amplitude.
+    pub fn component_amplitude(samples: &[f32], frequency_hz: f32) -> f32 {
+        if samples.is_empty() {
+            return 0.0;
+        }
+        let omega = TAU * frequency_hz / SAMPLE_RATE as f32;
+        let mut real = 0.0_f64;
+        let mut imaginary = 0.0_f64;
+        for (index, sample) in samples.iter().enumerate() {
+            let angle = omega as f64 * index as f64;
+            real += *sample as f64 * angle.cos();
+            imaginary -= *sample as f64 * angle.sin();
+        }
+        (2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f64) as f32
+    }
+
+    /// Coarse dominant-frequency scan (100..=5000 Hz in 25 Hz steps).
+    pub fn coarse_dominant_frequency(samples: &[f32]) -> f32 {
+        (100..=5_000)
+            .step_by(25)
+            .map(|frequency| frequency as f32)
+            .max_by(|left, right| {
+                component_amplitude(samples, *left).total_cmp(&component_amplitude(samples, *right))
+            })
+            .unwrap_or(0.0)
+    }
+
+    /// Print `value` as a single JSON line on stdout (probe result contract).
+    pub fn print_json_line<T: Serialize>(value: &T) {
+        println!("{}", serde_json::to_string(value).unwrap());
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DriverInstallState {
@@ -590,19 +759,8 @@ mod tests {
     }
 
     fn translation_header() -> AudioFrameHeader {
-        AudioFrameHeader {
-            event_type: "bridge.translation.frame".to_string(),
-            request_id: "request-1".to_string(),
-            session_id: "session-1".to_string(),
-            frame_id: "frame-1".to_string(),
-            stream_id: "stream-1".to_string(),
-            sample_rate_hz: 24_000,
-            channel_count: 1,
-            frame_count: 2,
-            timestamp_ms: 1,
-            payload_bytes: 4,
-            translated_audio_enhancement_applied: false,
-        }
+        // Reuse the shared protocol fixture so the literal lives in one place.
+        omni_bridge_protocol::translation_header_fixture()
     }
 
     #[test]

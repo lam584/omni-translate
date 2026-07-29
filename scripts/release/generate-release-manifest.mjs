@@ -1,13 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { RELEASE_DOCS, bundleName, readCargoVersion, readJson, releasePaths, repoRoot } from '../lib/release-common.mjs';
+import { RELEASE_DOCS, bundleName, readWorkspaceVersions, releasePaths, repoRoot } from '../lib/release-common.mjs';
 
 const rootDir = repoRoot;
 
-const rootPackage = readJson('package.json');
-const desktopPackage = readJson(path.join('apps', 'desktop', 'package.json'));
-const nativeBridgeVersion = readCargoVersion(path.join('apps', 'bridge-service-native', 'Cargo.toml'));
+const { rootPackage, desktopPackage, nativeBridgeVersion } = readWorkspaceVersions();
 
 const manifest = {
   generatedAt: new Date().toISOString(),

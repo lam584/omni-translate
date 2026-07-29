@@ -1,6 +1,6 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { ConsoleDock, ConsoleLane, scrollToConsoleSection, useConsoleDock, type ConsoleDockSection } from './ConsoleDock';
 
 const sections: ConsoleDockSection[] = [
@@ -43,25 +43,17 @@ function MissingElementsHarness() {
 }
 
 describe('ConsoleDock', () => {
-  let container: HTMLDivElement;
-  let root: Root;
-
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    observerCallback = undefined;
-    observe.mockReset();
-    disconnect.mockReset();
-    vi.stubGlobal('IntersectionObserver', IntersectionObserverMock);
-    HTMLElement.prototype.scrollIntoView = vi.fn();
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    vi.unstubAllGlobals();
+  const view = registerDomHarness({
+    setup: () => {
+      observerCallback = undefined;
+      observe.mockReset();
+      disconnect.mockReset();
+      vi.stubGlobal('IntersectionObserver', IntersectionObserverMock);
+      HTMLElement.prototype.scrollIntoView = vi.fn();
+    },
+    cleanup: () => {
+      vi.unstubAllGlobals();
+    },
   });
 
   it('renders dock controls and both lane layouts', async () => {
@@ -69,25 +61,23 @@ describe('ConsoleDock', () => {
     const onCollapseAll = vi.fn();
     const onSelectSection = vi.fn();
     const onToggleSection = vi.fn();
-    await act(async () => {
-      root.render(
-        <>
-          <ConsoleDock
-            activeSectionId="first"
-            collapsedSections={{ second: true }}
-            onCollapseAll={onCollapseAll}
-            onExpandAll={onExpandAll}
-            onSelectSection={onSelectSection}
-            onToggleSection={onToggleSection}
-            sections={sections}
-            title="Dock"
-          />
-          <ConsoleLane collapsed={false} id="open" label="Open" layoutClassName="layout" onExpand={vi.fn()} token="03">content</ConsoleLane>
-          <ConsoleLane collapsed id="closed" label="Closed" layoutClassName="layout" onExpand={onExpandAll} token="04">hidden</ConsoleLane>
-        </>,
-      );
-    });
-    const buttons = Array.from(container.querySelectorAll<HTMLButtonElement>('button'));
+    await view.render(
+      <>
+        <ConsoleDock
+          activeSectionId="first"
+          collapsedSections={{ second: true }}
+          onCollapseAll={onCollapseAll}
+          onExpandAll={onExpandAll}
+          onSelectSection={onSelectSection}
+          onToggleSection={onToggleSection}
+          sections={sections}
+          title="Dock"
+        />
+        <ConsoleLane collapsed={false} id="open" label="Open" layoutClassName="layout" onExpand={vi.fn()} token="03">content</ConsoleLane>
+        <ConsoleLane collapsed id="closed" label="Closed" layoutClassName="layout" onExpand={onExpandAll} token="04">hidden</ConsoleLane>
+      </>,
+    );
+    const buttons = Array.from(view.container.querySelectorAll<HTMLButtonElement>('button'));
     await act(async () => buttons.find((button) => button.textContent === '全部展开')?.click());
     await act(async () => buttons.find((button) => button.textContent === '全部折叠')?.click());
     await act(async () => buttons.find((button) => button.textContent?.includes('First'))?.click());
@@ -97,12 +87,12 @@ describe('ConsoleDock', () => {
     expect(onCollapseAll).toHaveBeenCalled();
     expect(onSelectSection).toHaveBeenCalledWith('first');
     expect(onToggleSection).toHaveBeenCalledWith('first');
-    expect(container.textContent).toContain('content');
+    expect(view.container.textContent).toContain('content');
   });
 
   it('tracks section visibility, scrolling, collapse and expansion', async () => {
     const replaceState = vi.spyOn(window.history, 'replaceState');
-    await act(async () => root.render(<HookHarness />));
+    await view.render(<HookHarness />);
     expect(observe).toHaveBeenCalledTimes(2);
 
     await act(async () => {
@@ -111,18 +101,18 @@ describe('ConsoleDock', () => {
         { isIntersecting: true, intersectionRatio: 0.8, target: document.getElementById('second')! },
       ] as unknown as IntersectionObserverEntry[], {} as IntersectionObserver);
     });
-    expect(container.querySelector('output')?.textContent).toContain('second');
+    expect(view.container.querySelector('output')?.textContent).toContain('second');
 
     const click = async (label: string) => act(async () => {
-      Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === label)?.click();
+      Array.from(view.container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent === label)?.click();
     });
     await click('toggle-first');
-    expect(container.querySelector('output')?.textContent).toContain('"first":true');
+    expect(view.container.querySelector('output')?.textContent).toContain('"first":true');
     await click('expand-first');
     await click('collapse-all');
-    expect(container.querySelector('output')?.textContent).toContain('"second":true');
+    expect(view.container.querySelector('output')?.textContent).toContain('"second":true');
     await click('expand-all');
-    expect(container.querySelector('output')?.textContent).toContain('"second":false');
+    expect(view.container.querySelector('output')?.textContent).toContain('"second":false');
     await click('select-first');
     expect(HTMLElement.prototype.scrollIntoView).toHaveBeenCalled();
     expect(replaceState).toHaveBeenCalledWith(null, '', '#first');
@@ -135,18 +125,18 @@ describe('ConsoleDock', () => {
     });
 
     const expandedSections = [...sections, { id: 'third', token: '03', label: 'Third' }];
-    await act(async () => root.render(<HookHarness items={expandedSections} />));
-    expect(container.querySelector('output')?.textContent).toContain('"third":false');
+    await view.render(<HookHarness items={expandedSections} />);
+    expect(view.container.querySelector('output')?.textContent).toContain('"third":false');
   });
 
   it('handles empty dock sections without installing an observer', async () => {
-    await act(async () => root.render(<HookHarness items={[]} />));
-    expect(container.querySelector('output')?.textContent).toBe(':{}');
+    await view.render(<HookHarness items={[]} />);
+    expect(view.container.querySelector('output')?.textContent).toBe(':{}');
     expect(observe).not.toHaveBeenCalled();
   });
 
   it('skips observer setup when configured sections are absent from the document', async () => {
-    await act(async () => root.render(<MissingElementsHarness />));
+    await view.render(<MissingElementsHarness />);
     expect(observe).not.toHaveBeenCalled();
   });
 

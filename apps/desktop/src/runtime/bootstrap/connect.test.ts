@@ -4,23 +4,16 @@ import { appConfigDraftMock } from '../../mocks/app-config';
 import { audioRuntimeSnapshotMock } from '../../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../../mocks/runtime-shell';
 import { useAppStore } from '../../stores/app-store';
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../desktop-api';
+import { resetDesktopApiForTests } from '../desktop-api';
 import { CONFIG_DRAFT_FALLBACK_STORAGE_KEY } from './config-fallback';
 import { connectDesktopRuntimeBridge } from './connect';
 
-const invokeMock = vi.fn();
-const emitMock = vi.fn();
-const listenMock = vi.fn();
+vi.mock('@tauri-apps/api/core', async () => (await import('../../test-utils/tauri-invoke-mock')).tauriCoreMockModule());
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => invokeMock(...args),
-  isTauri: () => false,
-}));
+vi.mock('@tauri-apps/api/event', async () => (await import('../../test-utils/tauri-invoke-mock')).tauriEventMockModule());
 
-vi.mock('@tauri-apps/api/event', () => ({
-  emit: (...args: unknown[]) => emitMock(...args),
-  listen: (...args: unknown[]) => listenMock(...args),
-}));
+import { captureRegisteredListeners, emitMock, invokeMock, listenMock } from '../../test-utils/tauri-invoke-mock';
+import { enableTauriDesktopRuntime } from '../../test-utils/runtime-test-harness';
 
 type V2Args = { command?: { action?: string } };
 
@@ -53,14 +46,57 @@ function happyInvoke(overrides: Record<string, unknown> = {}) {
   });
 }
 
-describe('connectDesktopRuntimeBridge failure and sync edges', () => {
-  beforeEach(() => {
-    invokeMock.mockReset();
-    emitMock.mockReset().mockResolvedValue(undefined);
-    listenMock.mockReset().mockResolvedValue(() => {});
-    window.localStorage.clear();
+/** Resets the shared IPC mocks and re-installs the Tauri desktop API. */
+function resetConnectHarness() {
+  invokeMock.mockReset();
+  emitMock.mockReset().mockResolvedValue(undefined);
+  listenMock.mockReset().mockResolvedValue(() => {});
+  window.localStorage.clear();
+  enableTauriDesktopRuntime();
+}
+
+/** Registers the shared connect-bridge beforeEach/afterEach pair. */
+function registerConnectHooks() {
+  beforeEach(resetConnectHarness);
+  afterEach(() => {
     resetDesktopApiForTests();
-    installDesktopApi(new TauriDesktopApi());
+  });
+}
+
+/** Routes configuration_v2 save through the given handler; every other command succeeds. */
+function mockSaveInvoke(onSave: () => unknown) {
+  invokeMock.mockImplementation(async (command: string, args?: V2Args) => {
+    const action = args?.command?.action;
+    if (command === 'configuration_v2' && action === 'save') {
+      return onSave();
+    }
+    if (command.startsWith('append_frontend_diagnostics_log')) return undefined;
+    if (command === 'session_v2') return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
+    return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
+  });
+}
+
+/** Connects with the given invoke overrides and returns the pushed notification messages. */
+async function connectAndCollectWarnings(
+  overrides: Record<string, unknown> = {},
+  { settleTick = false } = {},
+) {
+  happyInvoke(overrides);
+  const pushSpy = vi.spyOn(useAppStore.getState(), 'pushRuntimeNotification');
+
+  const cleanup = await connectDesktopRuntimeBridge();
+  if (settleTick) await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const messages = pushSpy.mock.calls.map(([notification]) => notification.message);
+  cleanup();
+  pushSpy.mockRestore();
+  return messages;
+}
+
+describe('connectDesktopRuntimeBridge failure and sync edges', () => {
+  registerConnectHooks();
+
+  beforeEach(() => {
     useAppStore.setState((state) => ({
       ...state,
       configDraft: structuredClone(appConfigDraftMock),
@@ -70,23 +106,13 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
     }));
   });
 
-  afterEach(() => {
-    resetDesktopApiForTests();
-  });
-
   it('reports listener registration failures as deferred warnings without blocking connect', async () => {
-    happyInvoke();
     listenMock.mockRejectedValue(new Error('event channel down'));
-    const pushSpy = vi.spyOn(useAppStore.getState(), 'pushRuntimeNotification');
 
-    const cleanup = await connectDesktopRuntimeBridge();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    const messages = await connectAndCollectWarnings({}, { settleTick: true });
 
-    const messages = pushSpy.mock.calls.map(([notification]) => notification.message);
     expect(messages.some((message) => message.includes('Runtime event listener failed'))).toBe(true);
     expect(messages.some((message) => message.includes('Config sync listener failed'))).toBe(true);
-    cleanup();
-    pushSpy.mockRestore();
   });
 
   it('reconciles the audio snapshot once after the background listeners register', async () => {
@@ -157,16 +183,10 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
   });
 
   it('keeps runtime state when config load fails and reports the warning', async () => {
-    happyInvoke({ 'configuration_v2:load': new Error('sqlite offline') });
-    const pushSpy = vi.spyOn(useAppStore.getState(), 'pushRuntimeNotification');
+    const messages = await connectAndCollectWarnings({ 'configuration_v2:load': new Error('sqlite offline') });
 
-    const cleanup = await connectDesktopRuntimeBridge();
-
-    const messages = pushSpy.mock.calls.map(([notification]) => notification.message);
     expect(messages.some((message) => message.includes('配置读取失败') || message.includes('Configuration loading failed'))).toBe(true);
     expect(useAppStore.getState().runtimeSnapshot.bridgeStatus).not.toBe('runtime-error');
-    cleanup();
-    pushSpy.mockRestore();
   });
 
   it('marks audio done-degraded when the audio bootstrap fails', async () => {
@@ -186,24 +206,14 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
   });
 
   it('reports a warning when the post-hydration snapshot refresh fails', async () => {
-    happyInvoke({ 'configuration_v2:runtimeSnapshot': new Error('snapshot rebuild failed') });
-    const pushSpy = vi.spyOn(useAppStore.getState(), 'pushRuntimeNotification');
+    const messages = await connectAndCollectWarnings({ 'configuration_v2:runtimeSnapshot': new Error('snapshot rebuild failed') });
 
-    const cleanup = await connectDesktopRuntimeBridge();
-
-    const messages = pushSpy.mock.calls.map(([notification]) => notification.message);
     expect(messages.some((message) => message.includes('Runtime snapshot refresh after config load failed'))).toBe(true);
-    cleanup();
-    pushSpy.mockRestore();
   });
 
   it('ignores echoed cross-window payloads that match the last serialized config', async () => {
     happyInvoke();
-    const listeners = new Map<string, (event: { payload: unknown }) => void>();
-    listenMock.mockImplementation(async (eventName: string, handler: (event: { payload: unknown }) => void) => {
-      listeners.set(eventName, handler);
-      return () => listeners.delete(eventName);
-    });
+    const listeners = captureRegisteredListeners();
 
     const cleanup = await connectDesktopRuntimeBridge();
     const current = useAppStore.getState().configDraft;
@@ -264,18 +274,7 @@ describe('connectDesktopRuntimeBridge failure and sync edges', () => {
 });
 
 describe('connectDesktopRuntimeBridge disposal races', () => {
-  beforeEach(() => {
-    invokeMock.mockReset();
-    emitMock.mockReset().mockResolvedValue(undefined);
-    listenMock.mockReset().mockResolvedValue(() => {});
-    window.localStorage.clear();
-    resetDesktopApiForTests();
-    installDesktopApi(new TauriDesktopApi());
-  });
-
-  afterEach(() => {
-    resetDesktopApiForTests();
-  });
+  registerConnectHooks();
 
   it('immediately releases listeners that resolve after cleanup', async () => {
     happyInvoke();
@@ -298,15 +297,7 @@ describe('connectDesktopRuntimeBridge disposal races', () => {
     const cleanup = await connectDesktopRuntimeBridge();
 
     let rejectSave: ((reason: unknown) => void) | undefined;
-    invokeMock.mockImplementation(async (command: string, args?: V2Args) => {
-      const action = args?.command?.action;
-      if (command === 'configuration_v2' && action === 'save') {
-        return new Promise((_resolve, reject) => { rejectSave = reject; });
-      }
-      if (command.startsWith('append_frontend_diagnostics_log')) return undefined;
-      if (command === 'session_v2') return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
-      return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
-    });
+    mockSaveInvoke(() => new Promise((_resolve, reject) => { rejectSave = reject; }));
 
     useAppStore.getState().updateSubtitleDraft({ overlayFontSize: 61 });
     cleanup();
@@ -335,18 +326,7 @@ describe('connectDesktopRuntimeBridge disposal races', () => {
 });
 
 describe('connectDesktopRuntimeBridge dispose after successful save', () => {
-  beforeEach(() => {
-    invokeMock.mockReset();
-    emitMock.mockReset().mockResolvedValue(undefined);
-    listenMock.mockReset().mockResolvedValue(() => {});
-    window.localStorage.clear();
-    resetDesktopApiForTests();
-    installDesktopApi(new TauriDesktopApi());
-  });
-
-  afterEach(() => {
-    resetDesktopApiForTests();
-  });
+  registerConnectHooks();
 
   it('does not touch the store when disposed right after the native save settled', async () => {
     happyInvoke();
@@ -355,15 +335,7 @@ describe('connectDesktopRuntimeBridge dispose after successful save', () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
 
     let resolveSave: ((value: unknown) => void) | undefined;
-    invokeMock.mockImplementation(async (command: string, args?: V2Args) => {
-      const action = args?.command?.action;
-      if (command === 'configuration_v2' && action === 'save') {
-        return new Promise((resolve) => { resolveSave = resolve; });
-      }
-      if (command.startsWith('append_frontend_diagnostics_log')) return undefined;
-      if (command === 'session_v2') return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
-      return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
-    });
+    mockSaveInvoke(() => new Promise((resolve) => { resolveSave = resolve; }));
 
     useAppStore.getState().updateSubtitleDraft({ overlayFontSize: 63 });
     const setRuntimeSnapshotSpy = vi.spyOn(useAppStore.getState(), 'setRuntimeSnapshot');
@@ -377,18 +349,10 @@ describe('connectDesktopRuntimeBridge dispose after successful save', () => {
 });
 
 describe('connectDesktopRuntimeBridge retry-loop disposal', () => {
-  beforeEach(() => {
-    invokeMock.mockReset();
-    emitMock.mockReset().mockResolvedValue(undefined);
-    listenMock.mockReset().mockResolvedValue(() => {});
-    window.localStorage.clear();
-    resetDesktopApiForTests();
-    installDesktopApi(new TauriDesktopApi());
-  });
+  registerConnectHooks();
 
   afterEach(() => {
     vi.useRealTimers();
-    resetDesktopApiForTests();
   });
 
   it('stops the retry loop at the loop head when disposed during the backoff sleep', async () => {
@@ -398,15 +362,9 @@ describe('connectDesktopRuntimeBridge retry-loop disposal', () => {
 
     vi.useFakeTimers();
     let saveAttempts = 0;
-    invokeMock.mockImplementation(async (command: string, args?: V2Args) => {
-      const action = args?.command?.action;
-      if (command === 'configuration_v2' && action === 'save') {
-        saveAttempts += 1;
-        throw new Error('sqlite busy');
-      }
-      if (command.startsWith('append_frontend_diagnostics_log')) return undefined;
-      if (command === 'session_v2') return { data: structuredClone(audioRuntimeSnapshotMock), warnings: [] };
-      return { data: structuredClone(runtimeSnapshotMock), warnings: [] };
+    mockSaveInvoke(() => {
+      saveAttempts += 1;
+      throw new Error('sqlite busy');
     });
 
     useAppStore.getState().updateSubtitleDraft({ overlayFontSize: 64 });

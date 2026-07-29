@@ -320,6 +320,10 @@ impl DriverCaptureWorker {
     fn run(self) {
         run_driver_source_worker(self.state, self.runtime_root, self.playback_tx, self.source_tx)
     }
+
+    fn spawn(self) {
+        thread::spawn(move || self.run());
+    }
 }
 
 fn run_driver_source_worker(
@@ -431,23 +435,15 @@ fn run_driver_source_worker(
                     &format!("event=source_generation_active generation={source_generation}"),
                 );
             }
-            let mut released = false;
-            if let Some(frame) = pacer.poll(started_at.elapsed()) {
-                released_frames += 1;
-                if released_frames == 1 {
-                    append_bridge_service_log(
-                        &runtime_root,
-                        &format!(
-                            "source pacer started: frameBytes={} intervalMs={} queueCapacity={}",
-                            OMNI_SOURCE_CHUNK_BYTES,
-                            OMNI_SOURCE_FRAME_INTERVAL_MS,
-                            OMNI_SOURCE_QUEUE_CAPACITY
-                        ),
-                    );
-                }
-                dispatch_source_frame(&state, &runtime_root, &playback_tx, &source_tx, frame);
-                released = true;
-            }
+            let mut released = try_release_source_frame(
+                &mut pacer,
+                started_at,
+                &mut released_frames,
+                &state,
+                &runtime_root,
+                &playback_tx,
+                &source_tx,
+            );
 
             let mut bytes_read = 0;
             if pacer.queued_frames() < OMNI_SOURCE_QUEUE_CAPACITY {
@@ -516,22 +512,15 @@ fn run_driver_source_worker(
             }
 
             if !released {
-                if let Some(frame) = pacer.poll(started_at.elapsed()) {
-                    released_frames += 1;
-                    if released_frames == 1 {
-                        append_bridge_service_log(
-                            &runtime_root,
-                            &format!(
-                                "source pacer started: frameBytes={} intervalMs={} queueCapacity={}",
-                                OMNI_SOURCE_CHUNK_BYTES,
-                                OMNI_SOURCE_FRAME_INTERVAL_MS,
-                                OMNI_SOURCE_QUEUE_CAPACITY
-                            ),
-                        );
-                    }
-                    dispatch_source_frame(&state, &runtime_root, &playback_tx, &source_tx, frame);
-                    released = true;
-                }
+                released = try_release_source_frame(
+                    &mut pacer,
+                    started_at,
+                    &mut released_frames,
+                    &state,
+                    &runtime_root,
+                    &playback_tx,
+                    &source_tx,
+                );
             }
 
             let underruns = pacer.underrun_count();
@@ -595,6 +584,35 @@ fn run_driver_source_worker(
             }
         }
     }
+}
+
+// Poll the pacer once and, when a frame is due, dispatch it downstream while
+// emitting the one-time "source pacer started" log. Returns true when a frame
+// was released so the caller can track pacing activity for the idle backoff.
+fn try_release_source_frame(
+    pacer: &mut AudioFramePacer<Vec<u8>>,
+    started_at: Instant,
+    released_frames: &mut u64,
+    state: &Arc<Mutex<BridgeState>>,
+    runtime_root: &Path,
+    playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+    source_tx: &mpsc::SyncSender<Vec<u8>>,
+) -> bool {
+    let Some(frame) = pacer.poll(started_at.elapsed()) else {
+        return false;
+    };
+    *released_frames += 1;
+    if *released_frames == 1 {
+        append_bridge_service_log(
+            runtime_root,
+            &format!(
+                "source pacer started: frameBytes={} intervalMs={} queueCapacity={}",
+                OMNI_SOURCE_CHUNK_BYTES, OMNI_SOURCE_FRAME_INTERVAL_MS, OMNI_SOURCE_QUEUE_CAPACITY
+            ),
+        );
+    }
+    dispatch_source_frame(state, runtime_root, playback_tx, source_tx, frame);
+    true
 }
 
 fn dispatch_source_frame(

@@ -1,14 +1,9 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
-import { appConfigDraftMock } from '../mocks/app-config';
-import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
-import { runtimeSnapshotMock } from '../mocks/runtime-shell';
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../runtime/desktop-api';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import RealTimeSessionPage from './RealTimeSessionPage';
 import { useAppStore } from '../stores/app-store';
+import { registerFakeBridgeDomHarness } from '../test-utils/fake-bridge-dom-harness';
 
 type ControllerOptions = {
   runBusyAction: (action: string, task: () => Promise<void>) => Promise<void>;
@@ -31,73 +26,42 @@ vi.mock('./session/useSceneSessionController', () => ({
 
 // Everything else runs the REAL runtime modules against the fake bridge
 // contract double instead of stubbing the runtime layer away.
-const harness = vi.hoisted(() => ({
-  invoke: null as null | (<T>(command: string, args?: Record<string, unknown>) => Promise<T>),
-}));
-
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: <T,>(command: string, args?: Record<string, unknown>): Promise<T> => {
-    if (!harness.invoke) return Promise.reject(new Error(`fake bridge not installed for command ${command}`));
-    return harness.invoke(command, args);
-  },
-  isTauri: () => true,
-}));
+vi.mock('@tauri-apps/api/core', async () =>
+  (await import('../test-utils/fake-bridge-harness')).fakeBridgeTauriCoreModule());
 
 describe('RealTimeSessionScreen watch fallback confirmation', () => {
   let container: HTMLDivElement;
-  let root: Root;
-  let fake: FakeBridge;
+
+  const view = registerFakeBridgeDomHarness({
+    beforeBridge: () => {
+      capturedOptions = null;
+      launchSceneMock.mockReset();
+      launchSceneMock.mockResolvedValue(undefined);
+    },
+    seed: (slices) => {
+      slices.audioRuntimeSnapshot.inbound.streamBound = false;
+      slices.audioRuntimeSnapshot.outbound.streamBound = false;
+      slices.audioRuntimeSnapshot.speech.dispatchState = 'idle';
+      slices.audioRuntimeSnapshot.sttConnected = false;
+    },
+  }).view;
 
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    capturedOptions = null;
-    launchSceneMock.mockReset();
-    launchSceneMock.mockResolvedValue(undefined);
-    fake = createFakeBridge();
-    harness.invoke = fake.invoke;
-    resetDesktopApiForTests();
-    installDesktopApi(new TauriDesktopApi());
-
-    const configDraft = structuredClone(appConfigDraftMock);
-    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
-    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    audioRuntimeSnapshot.inbound.streamBound = false;
-    audioRuntimeSnapshot.outbound.streamBound = false;
-    audioRuntimeSnapshot.speech.dispatchState = 'idle';
-    audioRuntimeSnapshot.sttConnected = false;
-
-    useAppStore.setState((state) => ({
-      ...state,
-      configDraft,
-      runtimeSnapshot,
-      audioRuntimeSnapshot,
-      runtimeNotifications: runtimeSnapshot.notifications,
-    }));
-
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+    ({ container } = view);
   });
 
-  afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
-    harness.invoke = null;
-    resetDesktopApiForTests();
-  });
+  async function renderPage() {
+    await view.render(
+      <MemoryRouter>
+        <RealTimeSessionPage />
+      </MemoryRouter>,
+    );
+  }
 
   it('replaces the blocking native confirm with a non-blocking in-app dialog and clears busy before the decision', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm');
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     expect(capturedOptions).not.toBeNull();
     const options = capturedOptions!;
@@ -136,13 +100,7 @@ describe('RealTimeSessionScreen watch fallback confirmation', () => {
   });
 
   it('resolves the fallback decision to AEC (false) when the dialog is cancelled', async () => {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const options = capturedOptions!;
     let decision: Promise<boolean> | null = null;
@@ -175,13 +133,7 @@ describe('RealTimeSessionScreen watch fallback confirmation', () => {
       },
     }));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
 
     const [watchButton, conversationButton] = container.querySelectorAll<HTMLButtonElement>('.provider-list button');
     const stopButton = container.querySelector<HTMLButtonElement>('.control-toolbar button');
@@ -203,13 +155,7 @@ describe('RealTimeSessionScreen watch fallback confirmation', () => {
   it('shows a visible failure when the click handler rejects unexpectedly', async () => {
     launchSceneMock.mockRejectedValueOnce(new Error('unexpected controller failure'));
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <RealTimeSessionPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderPage();
     const watchButton = container.querySelector<HTMLButtonElement>('.provider-list button');
 
     await act(async () => {

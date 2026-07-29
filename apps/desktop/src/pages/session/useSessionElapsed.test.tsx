@@ -1,12 +1,10 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { parseRuntimeTimestampMs, useSessionElapsed } from './useSessionElapsed';
 
 describe('useSessionElapsed', () => {
-  let container: HTMLDivElement;
-  let root: Root;
   let elapsed = -1;
 
   function Harness({ startedAt, running }: { startedAt: string | null; running: boolean }) {
@@ -14,24 +12,16 @@ describe('useSessionElapsed', () => {
     return null;
   }
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-07-25T00:00:10.000Z'));
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
-    vi.useRealTimers();
+  const view = registerDomHarness({
+    fakeTimers: true,
+    setup: () => {
+      vi.setSystemTime(new Date('2026-07-25T00:00:10.000Z'));
+    },
   });
 
   it('updates a running session and clears its interval when stopped', async () => {
     const startedAt = Date.now() - 5_000;
-    await act(async () => root.render(<Harness startedAt={`unix-ms:${startedAt}`} running />));
+    await view.render(<Harness startedAt={`unix-ms:${startedAt}`} running />);
     expect(elapsed).toBe(5);
 
     await act(async () => {
@@ -41,7 +31,7 @@ describe('useSessionElapsed', () => {
     expect(elapsed).toBe(7);
 
     await act(async () => {
-      root.render(<Harness startedAt={`unix-ms:${startedAt}`} running={false} />);
+      view.root.render(<Harness startedAt={`unix-ms:${startedAt}`} running={false} />);
       await Promise.resolve();
     });
     expect(elapsed).toBe(0);

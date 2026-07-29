@@ -223,28 +223,9 @@ impl DiagnosticsStateStore {
     ) -> Result<DiagnosticLogEntryRuntime, String> {
         let summary = summary.into();
 
-        if !self.is_level_enabled(level) {
-            let entry = DiagnosticLogEntryRuntime {
-                id: format!(
-                    "{}-{}-{}",
-                    category,
-                    level,
-                    crate::shared::time::now_unix_seconds_marker()
-                ),
-                category: category.to_string(),
-                level: level.to_string(),
-                summary: summary.clone(),
-                detail: detail.clone(),
-                emitted_at: emitted_at.clone(),
-                source: source.clone(),
-                elapsed_ms,
-            };
-            return Ok(entry);
-        }
-
-        let mut state = self.inner.lock().expect("diagnostics state poisoned");
-
-        let entry = DiagnosticLogEntryRuntime {
+        // Both the level-filtered early return and the persisted path build an
+        // identical entry; the id timestamp is sampled per call.
+        let build_entry = || DiagnosticLogEntryRuntime {
             id: format!(
                 "{}-{}-{}",
                 category,
@@ -259,6 +240,14 @@ impl DiagnosticsStateStore {
             source: source.clone(),
             elapsed_ms,
         };
+
+        if !self.is_level_enabled(level) {
+            return Ok(build_entry());
+        }
+
+        let mut state = self.inner.lock().expect("diagnostics state poisoned");
+
+        let entry = build_entry();
 
         // Format + submit while holding the lock so timestamps in file order
         // stay strictly monotonic, exactly like the legacy synchronous writer.
@@ -553,7 +542,6 @@ pub fn copy_logs_into(target_dir: &str, logs_dir: &str) -> Result<usize, String>
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
         canonical_log_level, copy_logs_into, format_app_log_line, global_log_state_lock,
@@ -563,11 +551,7 @@ mod tests {
     use crate::diagnostics::contracts::{DiagnosticLogEntryRuntime, ModelTraceCallRuntime};
 
     fn temp_dir(name: &str) -> PathBuf {
-        let marker = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("omni-diagnostics-{name}-{marker}"))
+        crate::diagnostics::test_support::temp_dir("diagnostics", name)
     }
 
     #[test]

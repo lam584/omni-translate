@@ -22,6 +22,28 @@ fn log_storage_event<R: tauri::Runtime>(
     let _ = append_diagnostics_log_quiet(app, "storage", level, summary, detail, None, None);
 }
 
+/// Emit the standard info/error diagnostics for a config-draft operation that
+/// returns a provider config, then propagate the result unchanged. Shared by
+/// the load and reset commands, whose success/failure logging is identical
+/// apart from the summary wording.
+fn finish_config_draft<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    result: Result<Value, String>,
+    success_summary: &str,
+    failure_summary: &str,
+) -> Result<Value, String> {
+    match result {
+        Ok(config) => {
+            log_storage_event(app, "info", success_summary, Some(summarize_provider_config(&config)));
+            Ok(config)
+        }
+        Err(error) => {
+            log_storage_event(app, "error", failure_summary, Some(error.clone()));
+            Err(error)
+        }
+    }
+}
+
 fn summarize_provider_config(config: &Value) -> String {
     let providers = config
         .get("providers")
@@ -79,21 +101,12 @@ pub fn load_config_draft<R: tauri::Runtime>(
     storage: State<'_, StorageStateStore>,
 ) -> Result<Value, String> {
     storage.ensure_initialized(&app)?;
-    match ConfigurationService::new(&storage).load() {
-        Ok(config) => {
-            log_storage_event(
-                &app,
-                "info",
-                "已加载配置草稿。",
-                Some(summarize_provider_config(&config)),
-            );
-            Ok(config)
-        }
-        Err(error) => {
-            log_storage_event(&app, "error", "加载配置草稿失败。", Some(error.clone()));
-            Err(error)
-        }
-    }
+    finish_config_draft(
+        &app,
+        ConfigurationService::new(&storage).load(),
+        "已加载配置草稿。",
+        "加载配置草稿失败。",
+    )
 }
 
 pub fn save_config_draft<R: tauri::Runtime>(
@@ -133,21 +146,12 @@ pub fn reset_config_draft<R: tauri::Runtime>(
     storage: State<'_, StorageStateStore>,
 ) -> Result<Value, String> {
     storage.ensure_initialized(&app)?;
-    match ConfigurationService::new(&storage).reset() {
-        Ok(config) => {
-            log_storage_event(
-                &app,
-                "info",
-                "已重置配置草稿。",
-                Some(summarize_provider_config(&config)),
-            );
-            Ok(config)
-        }
-        Err(error) => {
-            log_storage_event(&app, "error", "重置配置草稿失败。", Some(error.clone()));
-            Err(error)
-        }
-    }
+    finish_config_draft(
+        &app,
+        ConfigurationService::new(&storage).reset(),
+        "已重置配置草稿。",
+        "重置配置草稿失败。",
+    )
 }
 
 pub fn export_config_draft<R: tauri::Runtime>(

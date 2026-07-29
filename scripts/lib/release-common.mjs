@@ -33,6 +33,13 @@ export const readCargoVersion = (relativePath, rootDir = repoRoot) => {
   return match[1];
 };
 
+// The three workspace version sources every release script starts from.
+export const readWorkspaceVersions = (rootDir = repoRoot) => ({
+  rootPackage: readJson('package.json', rootDir),
+  desktopPackage: readJson(path.join('apps', 'desktop', 'package.json'), rootDir),
+  nativeBridgeVersion: readCargoVersion(path.join('apps', 'bridge-service-native', 'Cargo.toml'), rootDir),
+});
+
 export const sha256 = (filePath) => crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
 
 export const collectFiles = (dir) =>

@@ -1,12 +1,11 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
-import { appConfigDraftMock } from '../mocks/app-config';
-import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { installDesktopApi, resetDesktopApiForTests } from '../runtime/desktop-api';
 import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 import { useAppStore } from '../stores/app-store';
+import { registerDomHarness } from '../test-utils/component-test-harness';
+import { findButtonByText } from '../test-utils/driver-store-fixtures';
+import { seedRuntimeStore } from '../test-utils/store-seed';
 import SubtitleOverlayPage from './SubtitleOverlayPage';
 
 // This suite's subject is the BROWSER PREVIEW path, so the real runtime
@@ -22,50 +21,30 @@ vi.mock('@tauri-apps/api/window', () => ({
   cursorPosition: vi.fn(),
   getCurrentWindow: vi.fn(),
 }));
-vi.mock('react-i18next', () => ({
-  useTranslation: () => ({
-    t: (key: string, options?: { defaultValue?: string }) => options?.defaultValue ?? key,
-  }),
-}));
-
-function findButton(container: HTMLElement, text: string) {
-  return Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) => button.textContent?.trim() === text);
-}
+vi.mock('react-i18next', async () =>
+  (await import('../test-utils/i18n-stub')).reactI18nextStub({ passthroughDefault: true }));
 
 describe('SubtitleOverlayPage browser preview interaction', () => {
   let container: HTMLDivElement;
-  let root: Root;
   let previewApi: PreviewDesktopApi;
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    resetDesktopApiForTests();
-    previewApi = new PreviewDesktopApi();
-    installDesktopApi(previewApi);
-    useAppStore.setState((state) => ({
-      ...state,
-      audioRuntimeSnapshot: structuredClone(audioRuntimeSnapshotMock),
-      configDraft: {
-        ...structuredClone(appConfigDraftMock),
-        subtitles: {
-          ...structuredClone(appConfigDraftMock).subtitles,
-          overlayLocked: false,
-        },
-      },
-      runtimeSnapshot: structuredClone(runtimeSnapshotMock),
-    }));
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+  const view = registerDomHarness({
+    setup: () => {
+      resetDesktopApiForTests();
+      previewApi = new PreviewDesktopApi();
+      installDesktopApi(previewApi);
+      seedRuntimeStore((slices) => {
+        slices.configDraft.subtitles.overlayLocked = false;
+      });
+    },
   });
 
-  afterEach(async () => {
-    await act(async () => root.unmount());
-    container.remove();
+  beforeEach(() => {
+    ({ container } = view);
   });
 
   async function renderOverlay() {
-    await act(async () => root.render(<SubtitleOverlayPage />));
+    await view.render(<SubtitleOverlayPage />);
   }
 
   async function openContextMenu() {
@@ -99,7 +78,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     expect(container.querySelector('.subtitle-overlay-context-menu')).toBeNull();
 
     await openContextMenu();
-    await act(async () => findButton(container, '锁定')?.click());
+    await act(async () => findButtonByText(container, '锁定')?.click());
     expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
     const overlay = container.querySelector('.subtitle-overlay-root');
     await act(async () => {
@@ -123,7 +102,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
   it('applies every browser menu setting and closes the menu after each action', async () => {
     await renderOverlay();
     await openContextMenu();
-    await act(async () => findButton(container, '玻璃效果')?.click());
+    await act(async () => findButtonByText(container, '玻璃效果')?.click());
     expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
       overlayBackgroundColor: '#0f172a',
       overlayBackgroundOpacity: 0.46,
@@ -132,15 +111,15 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     });
 
     await openContextMenu();
-    await act(async () => findButton(container, '36px')?.click());
+    await act(async () => findButtonByText(container, '36px')?.click());
     expect(useAppStore.getState().configDraft.subtitles.overlayFontSize).toBe(36);
 
     await openContextMenu();
-    await act(async () => findButton(container, '25%')?.click());
+    await act(async () => findButtonByText(container, '25%')?.click());
     expect(useAppStore.getState().configDraft.subtitles.overlayBackgroundOpacity).toBe(0.25);
 
     await openContextMenu();
-    await act(async () => findButton(container, '天空蓝')?.click());
+    await act(async () => findButtonByText(container, '天空蓝')?.click());
     expect(useAppStore.getState().configDraft.subtitles).toMatchObject({
       overlayTextColor: '#bae6fd',
       overlaySourceTextStyle: { color: '#bae6fd' },
@@ -185,7 +164,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
       overlay?.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true }));
     });
 
-    expect(findButton(container, '解锁')).toBeUndefined();
+    expect(findButtonByText(container, '解锁')).toBeUndefined();
     expect(container.querySelector('.subtitle-overlay-context-menu')).toBeNull();
     expect(useAppStore.getState().configDraft.subtitles.overlayLocked).toBe(true);
   });
@@ -194,16 +173,16 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     await renderOverlay();
     const overlay = container.querySelector('.subtitle-overlay-root');
     await act(async () => overlay?.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })));
-    expect(findButton(container, '锁定')).not.toBeUndefined();
+    expect(findButtonByText(container, '锁定')).not.toBeUndefined();
     await act(async () => overlay?.dispatchEvent(new MouseEvent('mouseout', { bubbles: true })));
-    expect(findButton(container, '锁定')).toBeUndefined();
+    expect(findButtonByText(container, '锁定')).toBeUndefined();
 
     // Hide: the real runtime module drives the preview overlay implementation,
     // which flips the window's visibility and publishes the shell snapshot.
     const overlayVisibleBefore = useAppStore.getState().runtimeSnapshot.windows
       .find((item) => item.label === 'subtitle-overlay')?.visible;
     await openContextMenu();
-    await act(async () => findButton(container, '隐藏字幕悬浮窗')?.click());
+    await act(async () => findButtonByText(container, '隐藏字幕悬浮窗')?.click());
     const overlayVisibleAfter = useAppStore.getState().runtimeSnapshot.windows
       .find((item) => item.label === 'subtitle-overlay')?.visible;
     expect(overlayVisibleAfter).toBe(!overlayVisibleBefore);
@@ -212,7 +191,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     // publishes that snapshot (the fixture starts with one cue queued).
     expect(useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay.recentCues.length).toBeGreaterThan(0);
     await openContextMenu();
-    await act(async () => findButton(container, '清空字幕')?.click());
+    await act(async () => findButtonByText(container, '清空字幕')?.click());
     const clearedOverlay = useAppStore.getState().audioRuntimeSnapshot.subtitleOverlay;
     expect(clearedOverlay.recentCues).toEqual([]);
     expect(clearedOverlay.activeCue).toBeNull();
@@ -223,7 +202,7 @@ describe('SubtitleOverlayPage browser preview interaction', () => {
     vi.spyOn(previewApi.session, 'clearCues').mockRejectedValue(new Error('cue clear failed'));
     await renderOverlay();
     await openContextMenu();
-    await act(async () => findButton(container, '清空字幕')?.click());
+    await act(async () => findButtonByText(container, '清空字幕')?.click());
     expect(useAppStore.getState().runtimeNotifications.some((item) => item.message.includes('cue clear failed'))).toBe(true);
   });
 });

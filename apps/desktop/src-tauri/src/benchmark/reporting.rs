@@ -3,17 +3,17 @@ struct RawResult {
     first_asr_ms: Option<f64>,
     asr_deltas: Vec<AsrDelta>,
     asr_final: String,
+    speech_started_ms: Option<f64>,
+    speech_stopped_ms: Option<f64>,
     first_output_ms: Option<f64>,
     first_committed_ms: Option<f64>,
     output_deltas: Vec<OutputDelta>,
     translation_final: String,
+    response_count: u32,
     response_created_ms: Option<f64>,
     response_done_ms: Option<f64>,
     response_done_audio_chunks_sent: Option<usize>,
     response_done_audio_sent_secs: Option<f64>,
-    response_count: u32,
-    speech_started_ms: Option<f64>,
-    speech_stopped_ms: Option<f64>,
 }
 
 fn empty_run_result(run_index: usize, model: String, audio_duration_secs: f64) -> RunResult {
@@ -46,41 +46,20 @@ fn empty_run_result(run_index: usize, model: String, audio_duration_secs: f64) -
     }
 }
 
-fn intermediate_from_raw(
-    connect_ms: f64,
-    session_ready_ms: f64,
-    audio_send_ms: f64,
-    audio_chunks_sent: usize,
-    raw: RawResult,
-) -> IntermediateResult {
-    IntermediateResult {
-        connect_ms,
-        session_ready_ms,
-        audio_send_ms,
-        audio_chunks_sent,
-        first_asr_ms: raw.first_asr_ms,
-        asr_deltas: raw.asr_deltas,
-        asr_final: raw.asr_final,
-        first_output_ms: raw.first_output_ms,
-        first_committed_ms: raw.first_committed_ms,
-        output_deltas: raw.output_deltas,
-        translation_final: raw.translation_final,
-        response_created_ms: raw.response_created_ms,
-        response_done_ms: raw.response_done_ms,
-        response_done_audio_chunks_sent: raw.response_done_audio_chunks_sent,
-        response_done_audio_sent_secs: raw.response_done_audio_sent_secs,
-        response_count: raw.response_count,
-        speech_started_ms: raw.speech_started_ms,
-        speech_stopped_ms: raw.speech_stopped_ms,
-    }
-}
-
 fn compute_total_output_duration(run: &RunResult) -> Option<f64> {
-    match (
+    total_output_duration_from(
         run.response_done_ms,
         run.first_output_ms,
         run.response_created_ms,
-    ) {
+    )
+}
+
+fn total_output_duration_from(
+    response_done_ms: Option<f64>,
+    first_output_ms: Option<f64>,
+    response_created_ms: Option<f64>,
+) -> Option<f64> {
+    match (response_done_ms, first_output_ms, response_created_ms) {
         (Some(done), Some(ftt), _) => Some(done - ftt),
         (Some(done), None, Some(created)) => Some(done - created),
         _ => None,
@@ -298,55 +277,68 @@ fn build_gemini_setup(config: &BenchmarkConfig) -> Value {
     )
 }
 
-fn wait_session_ready(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> Result<(), String> {
-    let deadline = Instant::now() + Duration::from_secs(SESSION_READY_TIMEOUT_SECS);
-    while Instant::now() < deadline {
-        match socket.read() {
-            Ok(Message::Text(text)) => {
-                let event: Value = serde_json::from_str(&text)
-                    .map_err(|e| format!("JSON error during session setup: {e}"))?;
-                match event["type"].as_str().unwrap_or("?") {
-                    "session.created" | "session.updated" => return Ok(()),
-                    "error" => return Err(format!("server error: {}", event["error"])),
-                    _ => {}
-                }
-            }
-            Ok(Message::Close(_)) => {
-                return Err("server closed before session was ready".into());
-            }
-            Err(e) if is_timeout(&e.to_string()) => continue,
-            Err(e) => return Err(format!("read error during session setup: {e}")),
-            _ => {}
-        }
-    }
-    Err("timed out waiting for session.updated".into())
-}
-
-fn wait_gemini_setup_ready(
+fn wait_ready_event(
     socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+    json_error_prefix: &str,
+    closed_error: &str,
+    read_error_prefix: &str,
+    timeout_error: &str,
+    mut classify: impl FnMut(&Value) -> Option<Result<(), String>>,
 ) -> Result<(), String> {
     let deadline = Instant::now() + Duration::from_secs(SESSION_READY_TIMEOUT_SECS);
     while Instant::now() < deadline {
         match socket.read() {
             Ok(Message::Text(text)) => {
                 let event: Value = serde_json::from_str(&text)
-                    .map_err(|e| format!("Gemini JSON error during setup: {e}"))?;
-                if event.get("setupComplete").is_some() {
-                    return Ok(());
-                }
-                if event.get("error").is_some() {
-                    return Err(format!("Gemini server error: {}", event["error"]));
+                    .map_err(|e| format!("{json_error_prefix}: {e}"))?;
+                if let Some(outcome) = classify(&event) {
+                    return outcome;
                 }
             }
             Ok(Message::Close(_)) => {
-                return Err("Gemini server closed before setup completed".into());
+                return Err(closed_error.to_string());
             }
             Err(e) if is_timeout(&e.to_string()) => continue,
-            Err(e) => return Err(format!("Gemini read error during setup: {e}")),
+            Err(e) => return Err(format!("{read_error_prefix}: {e}")),
             _ => {}
         }
     }
-    Err("timed out waiting for Gemini setupComplete".into())
+    Err(timeout_error.to_string())
+}
+
+fn wait_session_ready(socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) -> Result<(), String> {
+    wait_ready_event(
+        socket,
+        "JSON error during session setup",
+        "server closed before session was ready",
+        "read error during session setup",
+        "timed out waiting for session.updated",
+        |event| match event["type"].as_str().unwrap_or("?") {
+            "session.created" | "session.updated" => Some(Ok(())),
+            "error" => Some(Err(format!("server error: {}", event["error"]))),
+            _ => None,
+        },
+    )
+}
+
+fn wait_gemini_setup_ready(
+    socket: &mut WebSocket<MaybeTlsStream<TcpStream>>,
+) -> Result<(), String> {
+    wait_ready_event(
+        socket,
+        "Gemini JSON error during setup",
+        "Gemini server closed before setup completed",
+        "Gemini read error during setup",
+        "timed out waiting for Gemini setupComplete",
+        |event| {
+            if event.get("setupComplete").is_some() {
+                return Some(Ok(()));
+            }
+            event
+                .get("error")
+                .map(|error| Err(format!("Gemini server error: {error}")))
+        },
+    )
 }
 
 // ──────────────────────────────── Audio I/O ─────────────────────────────────

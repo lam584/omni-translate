@@ -168,6 +168,54 @@ pub(super) fn initialize_capture_route(
     let using_device_fallback = !device_fallback_ids.is_empty();
 
     let mut full_retry_count = 0usize;
+
+    // The device-period, event-handle and buffer-size probes all wrap a fallible
+    // WASAPI call in the same retry/fallback/fail handling. Function extraction
+    // cannot carry the loop's `continue`/`break`, so a hygienic local macro keeps
+    // the single owner of that control flow while callers pass the varying probe,
+    // log prefix and the RAII guards to release before restarting the route loop.
+    macro_rules! resolve_audio_init_step {
+        (
+            $fallible:expr,
+            $prefix:expr,
+            $app:expr,
+            $direction:expr,
+            $effective_device_id:expr,
+            $full_retry_count:ident,
+            $device_fallback_index:ident,
+            $device_fallback_ids:ident,
+            $using_device_fallback:expr,
+            [$($guard:ident),* $(,)?]
+        ) => {
+            match with_audio_init_retry(
+                $fallible,
+                $app,
+                $direction,
+                $effective_device_id,
+                $prefix,
+                &mut $full_retry_count,
+                &mut $device_fallback_index,
+                $device_fallback_ids.len(),
+                $using_device_fallback,
+            ) {
+                Ok(value) => value,
+                Err(RetryAction::Retry) => {
+                    $(drop($guard);)*
+                    thread::sleep(Duration::from_millis(
+                        AUDIO_INIT_BASE_DELAY_MS * 2u64.pow(($full_retry_count - 1) as u32),
+                    ));
+                    continue;
+                }
+                Err(RetryAction::DeviceFallback) => {
+                    $(drop($guard);)*
+                    thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
+                    continue;
+                }
+                Err(RetryAction::Fail(msg)) => break Err(msg),
+            }
+        };
+    }
+
     let (
         _device,
         effective_device_id,
@@ -194,66 +242,32 @@ pub(super) fn initialize_capture_route(
         let effective_device_id = device.get_id().map_err_str()?;
         log_device_initialization(app, direction, &device, &effective_device_id);
 
-        let mut audio_client = match with_audio_init_retry(
+        let mut audio_client = resolve_audio_init_step!(
             device.get_iaudioclient(),
+            "获取 AudioClient 失败",
             &app,
             direction,
             &effective_device_id,
-            "获取 AudioClient 失败",
-            &mut full_retry_count,
-            &mut device_fallback_index,
-            device_fallback_ids.len(),
+            full_retry_count,
+            device_fallback_index,
+            device_fallback_ids,
             using_device_fallback,
-        ) {
-            Ok(client) => client,
-            Err(RetryAction::Retry) => {
-                drop(device);
-                drop(enumerator);
-                thread::sleep(Duration::from_millis(
-                    AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32),
-                ));
-                continue;
-            }
-            Err(RetryAction::DeviceFallback) => {
-                drop(device);
-                drop(enumerator);
-                thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
-                continue 'outer;
-            }
-            Err(RetryAction::Fail(msg)) => break Err(msg),
-        };
+            [device, enumerator]
+        );
 
         let desired_format = desired_capture_format();
-        let (_, min_time) = match with_audio_init_retry(
+        let (_, min_time) = resolve_audio_init_step!(
             audio_client.get_device_period(),
+            "获取设备周期失败",
             &app,
             direction,
             &effective_device_id,
-            "获取设备周期失败",
-            &mut full_retry_count,
-            &mut device_fallback_index,
-            device_fallback_ids.len(),
+            full_retry_count,
+            device_fallback_index,
+            device_fallback_ids,
             using_device_fallback,
-        ) {
-            Ok(period) => period,
-            Err(RetryAction::Retry) => {
-                drop(audio_client);
-                drop(device);
-                drop(enumerator);
-                thread::sleep(Duration::from_millis(
-                    AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32),
-                ));
-                continue;
-            }
-            Err(RetryAction::DeviceFallback) => {
-                drop(audio_client);
-                drop(device);
-                drop(enumerator);
-                thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
-                continue 'outer;
-            }
-            Err(RetryAction::Fail(msg)) => break Err(msg),
-        };
+            [audio_client, device, enumerator]
+        );
         let mode = StreamMode::EventsShared {
             autoconvert: true,
             buffer_duration_hns: min_time,
@@ -294,66 +308,30 @@ pub(super) fn initialize_capture_route(
             }
         }
 
-        let event_handle = match with_audio_init_retry(
+        let event_handle = resolve_audio_init_step!(
             audio_client.set_get_eventhandle(),
-            &app,
-            direction,
-            &effective_device_id,
             "获取事件句柄失败",
-            &mut full_retry_count,
-            &mut device_fallback_index,
-            device_fallback_ids.len(),
-            using_device_fallback,
-        ) {
-            Ok(handle) => handle,
-            Err(RetryAction::Retry) => {
-                drop(audio_client);
-                drop(device);
-                drop(enumerator);
-                thread::sleep(Duration::from_millis(
-                    AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32),
-                ));
-                continue;
-            }
-            Err(RetryAction::DeviceFallback) => {
-                drop(audio_client);
-                drop(device);
-                drop(enumerator);
-                thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
-                continue 'outer;
-            }
-            Err(RetryAction::Fail(msg)) => break Err(msg),
-        };
-        let buffer_frame_count = match with_audio_init_retry(
-            audio_client.get_buffer_size(),
             &app,
             direction,
             &effective_device_id,
-            "获取缓冲区大小失败",
-            &mut full_retry_count,
-            &mut device_fallback_index,
-            device_fallback_ids.len(),
+            full_retry_count,
+            device_fallback_index,
+            device_fallback_ids,
             using_device_fallback,
-        ) {
-            Ok(count) => count,
-            Err(RetryAction::Retry) => {
-                drop(audio_client);
-                drop(device);
-                drop(enumerator);
-                thread::sleep(Duration::from_millis(
-                    AUDIO_INIT_BASE_DELAY_MS * 2u64.pow((full_retry_count - 1) as u32),
-                ));
-                continue;
-            }
-            Err(RetryAction::DeviceFallback) => {
-                drop(audio_client);
-                drop(device);
-                drop(enumerator);
-                thread::sleep(Duration::from_millis(DEVICE_FALLBACK_DELAY_MS));
-                continue 'outer;
-            }
-            Err(RetryAction::Fail(msg)) => break Err(msg),
-        };
+            [audio_client, device, enumerator]
+        );
+        let buffer_frame_count = resolve_audio_init_step!(
+            audio_client.get_buffer_size(),
+            "获取缓冲区大小失败",
+            &app,
+            direction,
+            &effective_device_id,
+            full_retry_count,
+            device_fallback_index,
+            device_fallback_ids,
+            using_device_fallback,
+            [audio_client, device, enumerator]
+        );
         let capture_client = match audio_client.get_audiocaptureclient() {
             Ok(client) => client,
             Err(error) => {

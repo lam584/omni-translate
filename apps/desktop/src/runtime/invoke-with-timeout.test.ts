@@ -1,6 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { invokeWithTimeoutCore } from './invoke-with-timeout';
 
+/** Asserts the rejection reason, timer cleanup and the single 'rejected' settle report. */
+async function expectRejectedWithSettle(
+  promise: Promise<unknown>,
+  failure: Error,
+  onSettle: ReturnType<typeof vi.fn>,
+) {
+  await expect(promise).rejects.toBe(failure);
+  expect(vi.getTimerCount()).toBe(0);
+  expect(onSettle).toHaveBeenCalledTimes(1);
+  expect(onSettle).toHaveBeenCalledWith('rejected');
+}
+
 describe('invokeWithTimeoutCore', () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -27,10 +39,7 @@ describe('invokeWithTimeoutCore', () => {
 
     const promise = invokeWithTimeoutCore(() => Promise.reject(failure), 1000, () => new Error('unused timeout'), { onSettle });
 
-    await expect(promise).rejects.toBe(failure);
-    expect(vi.getTimerCount()).toBe(0);
-    expect(onSettle).toHaveBeenCalledTimes(1);
-    expect(onSettle).toHaveBeenCalledWith('rejected');
+    await expectRejectedWithSettle(promise, failure, onSettle);
   });
 
   it('resolves without hooks', async () => {
@@ -108,10 +117,7 @@ describe('invokeWithTimeoutCore', () => {
       { onSettle },
     );
 
-    await expect(promise).rejects.toBe(failure);
-    expect(vi.getTimerCount()).toBe(0);
-    expect(onSettle).toHaveBeenCalledTimes(1);
-    expect(onSettle).toHaveBeenCalledWith('rejected');
+    await expectRejectedWithSettle(promise, failure, onSettle);
   });
 
   it('ignores a rejection that arrives after the timeout without surfacing an unhandled rejection', async () => {

@@ -1,6 +1,5 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
@@ -489,10 +488,7 @@ fn insert_string_array(
 }
 
 fn current_timestamp() -> String {
-    match SystemTime::now().duration_since(UNIX_EPOCH) {
-        Ok(duration) => format!("unix:{}", duration.as_secs()),
-        Err(_) => "unix:0".to_string(),
-    }
+    crate::shared::time::now_unix_seconds_marker()
 }
 
 fn normalize_timestamp(timestamp: &str) -> String {
@@ -542,6 +538,29 @@ mod tests {
             temp_dir.path().join("snapshots"),
         );
 
+        (temp_dir, repository)
+    }
+
+    fn initialized_repository() -> (TempDir, ConfigRepository) {
+        let (temp_dir, repository) = test_repository();
+        repository
+            .initialize()
+            .expect("repository should initialize");
+        (temp_dir, repository)
+    }
+
+    fn repository_with_config_document(config_json: &str) -> (TempDir, ConfigRepository) {
+        let (temp_dir, repository) = initialized_repository();
+        let connection = repository
+            .open_connection()
+            .expect("connection should open");
+        connection
+            .execute(
+                "INSERT INTO config_documents (id, schema_version, config_json, updated_at)
+                 VALUES (1, 1, ?1, 'test')",
+                params![config_json],
+            )
+            .expect("config document should insert");
         (temp_dir, repository)
     }
 
@@ -693,22 +712,9 @@ mod tests {
 
     #[test]
     fn load_config_upgrades_stale_driver_contract_versions() {
-        let (_temp_dir, repository) = test_repository();
-        repository
-            .initialize()
-            .expect("repository should initialize");
-        let connection = repository
-            .open_connection()
-            .expect("connection should open");
-        connection
-            .execute(
-                "INSERT INTO config_documents (id, schema_version, config_json, updated_at)
-                 VALUES (1, 1, ?1, 'test')",
-                params![
-                    r#"{"driver":{"protocolVersion":"2026-05-10","expectedDriverVersion":"0.9.0-dev","expectedBridgeVersion":"0.1.0","targetDeviceId":"custom-device"}}"#
-                ],
-            )
-            .expect("stale config should insert");
+        let (_temp_dir, repository) = repository_with_config_document(
+            r#"{"driver":{"protocolVersion":"2026-05-10","expectedDriverVersion":"0.9.0-dev","expectedBridgeVersion":"0.1.0","targetDeviceId":"custom-device"}}"#,
+        );
 
         let loaded = repository.load_config().expect("config should load");
         let default = default_config_value().expect("default config should parse");
@@ -735,10 +741,7 @@ mod tests {
 
     #[test]
     fn saves_relational_rows_and_loads_full_document() {
-        let (_temp_dir, repository) = test_repository();
-        repository
-            .initialize()
-            .expect("repository should initialize");
+        let (_temp_dir, repository) = initialized_repository();
 
         let mut config = default_config_value().expect("default config should parse");
         config["providers"][0]["model"] = json!("qwen-relational-test");
@@ -975,10 +978,7 @@ mod tests {
 
     #[test]
     fn exports_imports_snapshots_and_rolls_back() {
-        let (_temp_dir, repository) = test_repository();
-        repository
-            .initialize()
-            .expect("repository should initialize");
+        let (_temp_dir, repository) = initialized_repository();
 
         let mut config = default_config_value().expect("default config should parse");
         config["providers"][0]["model"] = json!("snapshot-base");
@@ -1059,20 +1059,9 @@ mod tests {
 
     #[test]
     fn load_merges_missing_document_fields_with_defaults() {
-        let (_temp_dir, repository) = test_repository();
-        repository
-            .initialize()
-            .expect("repository should initialize");
-        let connection = repository
-            .open_connection()
-            .expect("connection should open");
-        connection
-            .execute(
-                "INSERT INTO config_documents (id, schema_version, config_json, updated_at)
-                 VALUES (1, 1, ?1, 'test')",
-                params![r#"{"providers":[{"model":"partial-model"}]}"#],
-            )
-            .expect("partial config should insert");
+        let (_temp_dir, repository) = repository_with_config_document(
+            r#"{"providers":[{"model":"partial-model"}]}"#,
+        );
 
         let loaded = repository.load_config().expect("config should load");
         assert_eq!(

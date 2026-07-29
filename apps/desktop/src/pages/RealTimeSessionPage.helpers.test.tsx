@@ -39,6 +39,16 @@ const baseCue: SubtitleCueRuntime = {
   committed: false,
 };
 
+/** Fresh config/runtime clones plus a silenced console.info spy for logSceneLaunchConfig tests. */
+function sceneLaunchLogFixture() {
+  return {
+    configDraft: structuredClone(appConfigDraftMock),
+    runtimeSnapshot: structuredClone(runtimeSnapshotMock),
+    audioRuntimeSnapshot: structuredClone(audioRuntimeSnapshotMock),
+    consoleSpy: vi.spyOn(console, 'info').mockImplementation(() => undefined),
+  };
+}
+
 describe('realTimeSessionPageHelpers', () => {
   afterEach(() => {
     vi.restoreAllMocks();
@@ -143,10 +153,7 @@ describe('realTimeSessionPageHelpers', () => {
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true }} />)).toContain('翻译失败');
   });
   it('logs scene launch config with populated optional fields', () => {
-    const configDraft = structuredClone(appConfigDraftMock);
-    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
-    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const { configDraft, runtimeSnapshot, audioRuntimeSnapshot, consoleSpy } = sceneLaunchLogFixture();
 
     configDraft.providers[0].displayName = '';
     configDraft.providers[0].customHeaders = [{ id: 'h1', name: 'X-Test', value: '1', enabled: false }];
@@ -194,10 +201,9 @@ describe('realTimeSessionPageHelpers', () => {
   });
 
   it('logs scene launch config when speech is missing and JSON backup fails', () => {
-    const configDraft = structuredClone(appConfigDraftMock) as AppConfigDraft & { circular?: unknown };
-    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
-    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const fixture = sceneLaunchLogFixture();
+    const configDraft = fixture.configDraft as AppConfigDraft & { circular?: unknown };
+    const { runtimeSnapshot, audioRuntimeSnapshot, consoleSpy } = fixture;
 
     configDraft.speech = undefined as unknown as AppConfigDraft['speech'];
     configDraft.circular = configDraft;
@@ -210,10 +216,7 @@ describe('realTimeSessionPageHelpers', () => {
   });
 
   it('logs enabled custom headers', () => {
-    const configDraft = structuredClone(appConfigDraftMock);
-    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
-    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const { configDraft, runtimeSnapshot, audioRuntimeSnapshot, consoleSpy } = sceneLaunchLogFixture();
 
     configDraft.providers[0].customHeaders = [{ id: 'h-enabled', name: 'X-Enabled', value: '1', enabled: true }];
 
@@ -223,10 +226,9 @@ describe('realTimeSessionPageHelpers', () => {
   });
 
   it('falls back safely when inline values and the full config cannot be serialized', () => {
-    const configDraft = structuredClone(appConfigDraftMock) as AppConfigDraft & { unsupported?: bigint };
-    const runtimeSnapshot = structuredClone(runtimeSnapshotMock);
-    const audioRuntimeSnapshot = structuredClone(audioRuntimeSnapshotMock);
-    const consoleSpy = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const fixture = sceneLaunchLogFixture();
+    const configDraft = fixture.configDraft as AppConfigDraft & { unsupported?: bigint };
+    const { runtimeSnapshot, audioRuntimeSnapshot, consoleSpy } = fixture;
     const speechPatch = { enabled: true } as Record<string, unknown> & { enabled: boolean };
     speechPatch.self = speechPatch;
     configDraft.unsupported = 1n;

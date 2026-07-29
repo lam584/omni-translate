@@ -165,24 +165,46 @@ pub fn encode_pcm16le(samples: &[i16]) -> Vec<u8> {
     bytes
 }
 
+/// Canonical `AudioFrameHeader` used by the protocol and bridge test suites.
+///
+/// Exposed (hidden from docs) so both crates share a single fixture instead of
+/// duplicating the literal; it is not part of the wire contract.
+#[doc(hidden)]
+pub fn translation_header_fixture() -> AudioFrameHeader {
+    AudioFrameHeader {
+        event_type: "bridge.translation.frame".to_string(),
+        request_id: "request-1".to_string(),
+        session_id: "session-1".to_string(),
+        frame_id: "frame-1".to_string(),
+        stream_id: "stream-1".to_string(),
+        sample_rate_hz: 24_000,
+        channel_count: 1,
+        frame_count: 2,
+        timestamp_ms: 1,
+        payload_bytes: 4,
+        translated_audio_enhancement_applied: false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn translation_header() -> AudioFrameHeader {
-        AudioFrameHeader {
-            event_type: "bridge.translation.frame".to_string(),
-            request_id: "request-1".to_string(),
-            session_id: "session-1".to_string(),
-            frame_id: "frame-1".to_string(),
-            stream_id: "stream-1".to_string(),
-            sample_rate_hz: 24_000,
-            channel_count: 1,
-            frame_count: 2,
-            timestamp_ms: 1,
-            payload_bytes: 4,
-            translated_audio_enhancement_applied: false,
-        }
+    // Wire-format header shared by the deserialization tests below; individual
+    // tests layer extra fields on top as needed.
+    fn base_translation_header_json() -> serde_json::Value {
+        serde_json::json!({
+            "type": "bridge.translation.frame",
+            "requestId": "request-1",
+            "sessionId": "session-1",
+            "frameId": "frame-1",
+            "streamId": "stream-1",
+            "sampleRateHz": 24000,
+            "channelCount": 1,
+            "frameCount": 2,
+            "timestampMs": 1,
+            "payloadBytes": 4
+        })
     }
 
     #[test]
@@ -202,20 +224,10 @@ mod tests {
     fn audio_frame_header_tolerates_unknown_wire_fields() {
         // A newer peer may send fields this build does not know about; the
         // deserializer must ignore them instead of rejecting the frame.
-        let header: AudioFrameHeader = serde_json::from_value(serde_json::json!({
-            "type": "bridge.translation.frame",
-            "requestId": "request-1",
-            "sessionId": "session-1",
-            "frameId": "frame-1",
-            "streamId": "stream-1",
-            "sampleRateHz": 24000,
-            "channelCount": 1,
-            "frameCount": 2,
-            "timestampMs": 1,
-            "payloadBytes": 4,
-            "someFutureField": { "nested": true }
-        }))
-        .expect("headers with unknown fields must deserialize");
+        let mut wire = base_translation_header_json();
+        wire["someFutureField"] = serde_json::json!({ "nested": true });
+        let header: AudioFrameHeader = serde_json::from_value(wire)
+            .expect("headers with unknown fields must deserialize");
         assert_eq!(header.frame_count, 2);
 
         let mix: MixControl = serde_json::from_value(serde_json::json!({
@@ -261,7 +273,7 @@ mod tests {
 
     #[test]
     fn accepted_ack_reflects_header_counts() {
-        let ack = accepted_audio_frame_ack(&translation_header(), 12);
+        let ack = accepted_audio_frame_ack(&translation_header_fixture(), 12);
         assert_eq!(ack.event_type, "bridge.translation.ack");
         assert_eq!(ack.accepted_frames, 2);
         assert_eq!(ack.playback_frames_written, 12);
@@ -271,19 +283,8 @@ mod tests {
 
     #[test]
     fn legacy_audio_header_defaults_to_unprocessed_translation() {
-        let header: AudioFrameHeader = serde_json::from_value(serde_json::json!({
-            "type": "bridge.translation.frame",
-            "requestId": "request-1",
-            "sessionId": "session-1",
-            "frameId": "frame-1",
-            "streamId": "stream-1",
-            "sampleRateHz": 24000,
-            "channelCount": 1,
-            "frameCount": 2,
-            "timestampMs": 1,
-            "payloadBytes": 4
-        }))
-        .expect("legacy header should deserialize");
+        let header: AudioFrameHeader = serde_json::from_value(base_translation_header_json())
+            .expect("legacy header should deserialize");
 
         assert!(!header.translated_audio_enhancement_applied);
     }

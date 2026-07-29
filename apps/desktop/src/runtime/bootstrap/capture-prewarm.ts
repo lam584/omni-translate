@@ -1,6 +1,7 @@
 import type { AppConfigDraft } from '../../schema/config';
 import { useAppStore } from '../../stores/app-store';
 import { prewarmCaptureRoutesRuntime, preconnectOmniRealtimeRuntime } from '../audio-runtime';
+import { scheduleStartupTask } from './schedule';
 
 // Capture-device pre-warming runs on the same idle window as bridge autostart:
 // pre-open WASAPI devices so a later watch/conversation click only pays
@@ -31,10 +32,8 @@ export function scheduleCapturePrewarmAfterStartup(
   config: AppConfigDraft = useAppStore.getState().configDraft,
   delayMs = CAPTURE_PREWARM_AFTER_READY_DELAY_MS,
 ): { cleanup: RuntimeCleanup; promise: Promise<void> } {
-  let resolvePromise: (() => void) | undefined;
-  const promise = new Promise<void>((resolve) => { resolvePromise = resolve; });
-  const run = () => {
-    void prewarmCaptureRoutesRuntime(config).finally(() => resolvePromise?.());
+  return scheduleStartupTask(() => {
+    const prewarm = prewarmCaptureRoutesRuntime(config);
     // Same idle window: pre-open the Omni realtime websocket so a later watch /
     // conversation click reuses a ready session instead of paying the connect +
     // session.ready handshake on the sub-second critical path (the dominant
@@ -43,16 +42,6 @@ export function scheduleCapturePrewarmAfterStartup(
     // a config/model mismatch at click time simply falls back to connect-on-
     // demand, so there is no regression when the preconnect does not apply.
     void preconnectOmniRealtimeRuntime(config).catch(() => undefined);
-  };
-  const timer = delayMs <= 0 ? null : setTimeout(run, delayMs);
-  if (timer === null) {
-    run();
-  }
-
-  return {
-    cleanup: () => {
-      if (timer !== null) clearTimeout(timer);
-    },
-    promise,
-  };
+    return prewarm;
+  }, delayMs);
 }

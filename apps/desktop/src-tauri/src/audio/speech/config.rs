@@ -1,4 +1,5 @@
 use super::time_utils::now_unix_millis_marker;
+use crate::audio::events::resolve_composite_template_provider;
 
 #[derive(Clone)]
 #[allow(dead_code, reason = "route mix fields are parsed now for forward-compatible mixer policy")]
@@ -238,17 +239,7 @@ fn resolve_model_provider_from_config_value(
         .unwrap_or_default();
 
     if let Some((template_id, model_id)) = requested_model.split_once("::") {
-        for provider_value in &providers {
-            let parsed: Option<ProviderDraftInput> =
-                serde_json::from_value(provider_value.clone()).ok();
-            if let Some(mut provider) = parsed {
-                if provider.template_id == template_id {
-                    provider.model = model_id.to_string();
-                    return Some(provider);
-                }
-            }
-        }
-        return None;
+        return resolve_composite_template_provider(&providers, template_id, model_id);
     }
 
     providers

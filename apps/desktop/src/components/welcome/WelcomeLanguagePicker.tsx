@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import AppIcon from '../icons/AppIcon';
 import DriverManagementCard from '../driver/DriverManagementCard';
@@ -10,6 +10,7 @@ import { resolveRuntimeBridgeStatus } from '../../runtime/runtime-status';
 import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import { refreshBridgeRuntime } from '../../runtime/bridge-runtime';
 import { useAppStore } from '../../stores/app-store';
+import { useProviderWorkspaceStoreSlices } from '../../stores/app-store-slices';
 import {
   buildProviderDraftPatchFromTemplate,
   buildProviderVerificationPatch,
@@ -62,12 +63,8 @@ function formatProviderSetupError(error: unknown, translate: (key: string) => st
 function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePickerProps) {
   const { hasNativeShell } = useDesktopCapabilities();
   const { t } = useTranslation();
-  const configDraft = useAppStore((state) => state.configDraft);
-  const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
-  const runtimeNotifications = useAppStore((state) => state.runtimeNotifications);
-  const updateActiveProviderDraft = useAppStore((state) => state.updateActiveProviderDraft);
+  const { configDraft, runtimeSnapshot, runtimeNotifications, updateActiveProviderDraft, setRuntimeSnapshot } = useProviderWorkspaceStoreSlices();
   const updateDiagnosticsDraft = useAppStore((state) => state.updateDiagnosticsDraft);
-  const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
   const [step, setStep] = useState<WizardStep>('language');
   const [selected, setSelected] = useState<string>(initialLanguage);
 
@@ -286,6 +283,19 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
     setStep('driver');
   };
 
+  // Shared back/skip pair for the driver and provider footers; only the skip
+  // target differs between the two steps.
+  const renderSecondaryActions = (onSkip: () => void) => (
+    <>
+      <button type="button" className="welcome-language-secondary" onClick={handleBack} disabled={saving || revealing}>
+        {t('common.back')}
+      </button>
+      <button type="button" className="welcome-language-secondary" onClick={onSkip} disabled={saving || revealing}>
+        {t('welcome.skip')}
+      </button>
+    </>
+  );
+
   return (
     <div className="welcome-language-overlay" role="dialog" aria-modal="true" aria-labelledby="welcome-language-title">
       <div className="welcome-language-card">
@@ -448,24 +458,14 @@ function WelcomeLanguagePicker({ initialLanguage, onDone }: WelcomeLanguagePicke
               </button>
             ) : isDriverStep ? (
               <>
-                <button type="button" className="welcome-language-secondary" onClick={handleBack} disabled={saving || revealing}>
-                  {t('common.back')}
-                </button>
-                <button type="button" className="welcome-language-secondary" onClick={finishWizard} disabled={saving || revealing}>
-                  {t('welcome.skip')}
-                </button>
+                {renderSecondaryActions(finishWizard)}
                 <button type="button" className="welcome-language-confirm" onClick={finishWizard} disabled={saving || revealing}>
                   {t('common.finish')}
                 </button>
               </>
             ) : (
               <>
-                <button type="button" className="welcome-language-secondary" onClick={handleBack} disabled={saving || revealing}>
-                  {t('common.back')}
-                </button>
-                <button type="button" className="welcome-language-secondary" onClick={handleSkipProvider} disabled={saving || revealing}>
-                  {t('welcome.skip')}
-                </button>
+                {renderSecondaryActions(handleSkipProvider)}
                 <button
                   type="button"
                   className="welcome-language-confirm"

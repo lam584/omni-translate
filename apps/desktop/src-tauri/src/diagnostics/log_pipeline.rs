@@ -31,11 +31,7 @@ mod tests {
     use super::install_panic_hook;
 
     fn temp_dir(name: &str) -> PathBuf {
-        let marker = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("system time before unix epoch")
-            .as_nanos();
-        std::env::temp_dir().join(format!("omni-log-pipeline-{name}-{marker}"))
+        crate::diagnostics::test_support::temp_dir("log-pipeline", name)
     }
 
     #[test]

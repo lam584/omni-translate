@@ -1,9 +1,9 @@
 import React from 'react';
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import App, { buildWatchModeDiagnosticAutostartConfig, isWatchModeDiagnosticAutostartAllowed } from './App';
 import i18n, { WELCOME_DONE_STORAGE_KEY } from './i18n/config';
+import { registerDomHarness } from './test-utils/component-test-harness';
 import { startAudioRouteRuntime } from './runtime/audio-runtime';
 import { startBridgeServiceRuntime } from './runtime/bridge-runtime';
 import { appendFrontendDiagnosticsLog } from './runtime/diagnostics-runtime';
@@ -73,49 +73,56 @@ describe('watch mode diagnostic autostart gate', () => {
 });
 
 describe('App bootstrap shell (real router + real i18n)', () => {
-  let container: HTMLDivElement;
-  let root: Root | null;
+  const view = registerDomHarness({
+    fakeTimers: true,
+    setup: () => {
+      window.localStorage.setItem(WELCOME_DONE_STORAGE_KEY, '1');
+      delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_AUTOSTART;
+      delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_RUN_MARKER;
+      delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS;
+      appMocks.bootstrapCleanup.mockReset();
+      appMocks.scheduleBridgeAutostartAfterStartup.mockReset().mockReturnValue({ cleanup: () => {}, promise: Promise.resolve() });
+      appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockImplementation(async (onStep?: OnBootstrapStep) => {
+        const stepIds: BootstrapStepId[] = ['detect-runtime', 'check-ipc', 'init-runtime', 'init-audio', 'load-config'];
+        for (const stepId of stepIds) {
+          onStep?.(stepId, 'done');
+        }
+        return appMocks.bootstrapCleanup;
+      });
+      vi.mocked(startAudioRouteRuntime).mockReset();
+      vi.mocked(startBridgeServiceRuntime).mockReset();
+      vi.mocked(appendFrontendDiagnosticsLog).mockReset();
+    },
+  });
 
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    vi.useFakeTimers();
-    window.localStorage.setItem(WELCOME_DONE_STORAGE_KEY, '1');
-    delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_AUTOSTART;
-    delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_RUN_MARKER;
-    delete (import.meta.env as Record<string, string | undefined>).VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS;
-    appMocks.bootstrapCleanup.mockReset();
-    appMocks.scheduleBridgeAutostartAfterStartup.mockReset().mockReturnValue({ cleanup: () => {}, promise: Promise.resolve() });
-    appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockImplementation(async (onStep?: OnBootstrapStep) => {
-      const stepIds: BootstrapStepId[] = ['detect-runtime', 'check-ipc', 'init-runtime', 'init-audio', 'load-config'];
-      for (const stepId of stepIds) {
-        onStep?.(stepId, 'done');
+  async function renderApp(flushCount = 0) {
+    await act(async () => {
+      view.root.render(<App />);
+      for (let i = 0; i < flushCount; i += 1) {
+        await Promise.resolve();
       }
-      return appMocks.bootstrapCleanup;
     });
-    vi.mocked(startAudioRouteRuntime).mockReset();
-    vi.mocked(startBridgeServiceRuntime).mockReset();
-    vi.mocked(appendFrontendDiagnosticsLog).mockReset();
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
+  }
 
-  afterEach(async () => {
-    if (root) {
-      await act(async () => root?.unmount());
-      root = null;
-    }
-    container.remove();
-    vi.useRealTimers();
-  });
+  function seedWatchAutostartEnv(runMarker: string) {
+    Object.assign(import.meta.env, {
+      VITE_OMNI_WATCH_MODE_AUTOSTART: '1',
+      VITE_OMNI_WATCH_MODE_RUN_MARKER: runMarker,
+      VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS: String(Date.now() + 60_000),
+    });
+  }
+
+  function expectFrontendAutostartSkipped(summary: string, detail: unknown) {
+    expect(startBridgeServiceRuntime).not.toHaveBeenCalled();
+    expect(startAudioRouteRuntime).not.toHaveBeenCalled();
+    expect(appendFrontendDiagnosticsLog).toHaveBeenCalledWith('runtime', 'info', summary, detail);
+  }
 
   it('boots the runtime, localizes the overlay and routes to the session page', async () => {
-    await act(async () => {
-      root?.render(<App />);
-    });
+    await renderApp();
 
     expect(appMocks.bootstrapDesktopRuntimeBridge).toHaveBeenCalledTimes(1);
-    const overlay = container.querySelector('.bootstrap-overlay');
+    const overlay = view.container.querySelector('.bootstrap-overlay');
     expect(overlay).toBeInstanceOf(HTMLElement);
     // Real i18n: the overlay steps must carry the shipped zh-CN copy, not raw keys.
     expect(overlay?.textContent).toContain(i18n.t('common.bootstrapDetecting'));
@@ -125,30 +132,27 @@ describe('App bootstrap shell (real router + real i18n)', () => {
       vi.runOnlyPendingTimers();
     });
 
-    expect(container.querySelector('.bootstrap-overlay')).toBeNull();
+    expect(view.container.querySelector('.bootstrap-overlay')).toBeNull();
     // Real router: the index route redirects to /session and the layout mounts.
     expect(window.location.hash).toBe('#/session');
-    expect(container.querySelector('.console-shell')).toBeInstanceOf(HTMLElement);
-    expect(container.querySelector('.console-nav')?.getAttribute('aria-label')).toBe(i18n.t('nav.ariaMain'));
+    expect(view.container.querySelector('.console-shell')).toBeInstanceOf(HTMLElement);
+    expect(view.container.querySelector('.console-nav')?.getAttribute('aria-label')).toBe(i18n.t('nav.ariaMain'));
 
-    await act(async () => root?.unmount());
-    root = null;
+    await view.unmount();
     expect(appMocks.bootstrapCleanup).toHaveBeenCalledTimes(1);
   });
 
   it('shows the real welcome picker after bootstrap when welcome is not completed', async () => {
     window.localStorage.removeItem(WELCOME_DONE_STORAGE_KEY);
 
-    await act(async () => {
-      root?.render(<App />);
-    });
-    expect(container.querySelector('.welcome-language-overlay')).toBeNull();
+    await renderApp();
+    expect(view.container.querySelector('.welcome-language-overlay')).toBeNull();
 
     await act(async () => {
       vi.runOnlyPendingTimers();
     });
 
-    const picker = container.querySelector('.welcome-language-overlay');
+    const picker = view.container.querySelector('.welcome-language-overlay');
     expect(picker).toBeInstanceOf(HTMLElement);
     expect(picker?.getAttribute('role')).toBe('dialog');
     expect(picker?.textContent).toContain(i18n.t('welcome.subtitle'));
@@ -161,15 +165,10 @@ describe('App bootstrap shell (real router + real i18n)', () => {
       return appMocks.bootstrapCleanup;
     });
 
-    await act(async () => {
-      root?.render(<App />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await renderApp(3);
 
     // 整体承诺已 settle，弹窗应被兜底关闭。
-    expect(container.querySelector('.bootstrap-overlay')).toBeNull();
+    expect(view.container.querySelector('.bootstrap-overlay')).toBeNull();
   });
 
   it('closes the overlay and logs the stuck step when bootstrap rejects', async () => {
@@ -179,14 +178,9 @@ describe('App bootstrap shell (real router + real i18n)', () => {
       throw new Error('bootstrap boom');
     });
 
-    await act(async () => {
-      root?.render(<App />);
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await renderApp(3);
 
-    expect(container.querySelector('.bootstrap-overlay')).toBeNull();
+    expect(view.container.querySelector('.bootstrap-overlay')).toBeNull();
     expect(appendFrontendDiagnosticsLog).toHaveBeenCalledWith(
       'runtime',
       'warning',
@@ -196,23 +190,11 @@ describe('App bootstrap shell (real router + real i18n)', () => {
   });
 
   it('does not duplicate backend watch autostart from the frontend', async () => {
-    const runMarker = 'watch_mode_diagnostic.run_id=app-test-autostart-skip';
-    Object.assign(import.meta.env, {
-      VITE_OMNI_WATCH_MODE_AUTOSTART: '1',
-      VITE_OMNI_WATCH_MODE_RUN_MARKER: runMarker,
-      VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS: String(Date.now() + 60_000),
-    });
+    seedWatchAutostartEnv('watch_mode_diagnostic.run_id=app-test-autostart-skip');
 
-    await act(async () => {
-      root?.render(<App />);
-      await Promise.resolve();
-    });
+    await renderApp(1);
 
-    expect(startBridgeServiceRuntime).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntime).not.toHaveBeenCalled();
-    expect(appendFrontendDiagnosticsLog).toHaveBeenCalledWith(
-      'runtime',
-      'info',
+    expectFrontendAutostartSkipped(
       'watch_mode.diagnostic_frontend_autostart_skipped',
       expect.stringContaining('backendAutostartAuthoritative=true'),
     );
@@ -220,32 +202,15 @@ describe('App bootstrap shell (real router + real i18n)', () => {
 
   it('dedupes the same watch autostart marker', async () => {
     const runMarker = 'watch_mode_diagnostic.run_id=app-test-autostart-dedupe';
-    Object.assign(import.meta.env, {
-      VITE_OMNI_WATCH_MODE_AUTOSTART: '1',
-      VITE_OMNI_WATCH_MODE_RUN_MARKER: runMarker,
-      VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS: String(Date.now() + 60_000),
-    });
+    seedWatchAutostartEnv(runMarker);
 
-    await act(async () => {
-      root?.render(<App />);
-      await Promise.resolve();
-    });
-    await act(async () => root?.unmount());
-    root = createRoot(container);
+    await renderApp(1);
+    await view.unmount();
+    view.remount();
 
-    await act(async () => {
-      root?.render(<App />);
-      await Promise.resolve();
-    });
+    await renderApp(1);
 
-    expect(startBridgeServiceRuntime).not.toHaveBeenCalled();
-    expect(startAudioRouteRuntime).not.toHaveBeenCalled();
-    expect(appendFrontendDiagnosticsLog).toHaveBeenCalledWith(
-      'runtime',
-      'info',
-      'watch_mode.diagnostic_autostart_already_started',
-      `runMarker=${runMarker}`,
-    );
+    expectFrontendAutostartSkipped('watch_mode.diagnostic_autostart_already_started', `runMarker=${runMarker}`);
   });
 });
 

@@ -1,18 +1,13 @@
 import { act } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { appConfigDraftMock } from '../mocks/app-config';
-import { runtimeSnapshotMock } from '../mocks/runtime-shell';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { useAppStore } from '../stores/app-store';
 import { resetWelcomeFlag, setUiLanguage } from '../i18n/config';
+import { registerDomHarness } from '../test-utils/component-test-harness';
+import { resetDriverRuntimeMocks } from '../test-utils/driver-runtime-mock';
+import { findButtonByText, seedBridgeSnapshot, seedDriverStoreState } from '../test-utils/driver-store-fixtures';
 import SettingsPage from './SettingsPage';
 
-const installDriverRuntimeMock = vi.fn();
-const repairDriverRuntimeMock = vi.fn();
-const uninstallDriverRuntimeMock = vi.fn();
-const refreshBridgeRuntimeMock = vi.fn();
-const startBridgeServiceRuntimeMock = vi.fn();
 const languageMocks = vi.hoisted(() => ({ current: vi.fn(() => 'zh-CN'), resolved: 'zh-CN' as string | undefined }));
 
 vi.mock('react-i18next', () => ({
@@ -38,80 +33,39 @@ vi.mock('../i18n/config', () => ({
   setUiLanguage: vi.fn(),
 }));
 
-vi.mock('../runtime/bridge-runtime', () => ({
-  installDriverRuntime: (...args: unknown[]) => installDriverRuntimeMock(...args),
-  repairDriverRuntime: (...args: unknown[]) => repairDriverRuntimeMock(...args),
-  uninstallDriverRuntime: (...args: unknown[]) => uninstallDriverRuntimeMock(...args),
-  refreshBridgeRuntime: (...args: unknown[]) => refreshBridgeRuntimeMock(...args),
-  startBridgeServiceRuntime: (...args: unknown[]) => startBridgeServiceRuntimeMock(...args),
-}));
-
-function findButtonByText(container: HTMLElement, text: string) {
-  return Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find((button) =>
-    button.textContent?.trim() === text,
-  );
-}
+vi.mock('../runtime/bridge-runtime', async () =>
+  (await import('../test-utils/driver-runtime-mock')).bridgeRuntimeMockModule());
 
 describe('SettingsPage driver management', () => {
+  const view = registerDomHarness({
+    realTimersAfterEach: true,
+    setup: () => {
+      resetDriverRuntimeMocks();
+      vi.mocked(resetWelcomeFlag).mockReset();
+      vi.mocked(setUiLanguage).mockReset();
+      languageMocks.current.mockReturnValue('zh-CN');
+      languageMocks.resolved = 'zh-CN';
+      seedDriverStoreState();
+    },
+  });
   let container: HTMLDivElement;
-  let root: Root;
 
   beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    installDriverRuntimeMock.mockReset();
-    repairDriverRuntimeMock.mockReset();
-    uninstallDriverRuntimeMock.mockReset();
-    refreshBridgeRuntimeMock.mockReset();
-    startBridgeServiceRuntimeMock.mockReset();
-    vi.mocked(resetWelcomeFlag).mockReset();
-    vi.mocked(setUiLanguage).mockReset();
-    languageMocks.current.mockReturnValue('zh-CN');
-    languageMocks.resolved = 'zh-CN';
-
-    useAppStore.setState((state) => ({
-      ...state,
-      configDraft: structuredClone(appConfigDraftMock),
-      runtimeNotifications: [],
-      runtimeSnapshot: structuredClone(runtimeSnapshotMock),
-    }));
-
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
-  });
-
-  afterEach(async () => {
-    await act(async () => {
-      root.unmount();
-    });
-    container.remove();
-    vi.useRealTimers();
+    ({ container } = view);
   });
 
   async function renderSettings() {
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await view.render(
+      <MemoryRouter>
+        <SettingsPage />
+      </MemoryRouter>,
+    );
   }
 
   it('disables install when the driver is installed', async () => {
-    const snapshot = structuredClone(runtimeSnapshotMock);
-    snapshot.bridge.driverHealth = 'running';
-    snapshot.bridge.bridgeState = 'running';
-    snapshot.bridge.driverVersion = '0.9.0-dev';
-    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
+    seedBridgeSnapshot({ driverHealth: 'running', bridgeState: 'running', driverVersion: '0.9.0-dev' });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderSettings();
 
     expect(findButtonByText(container, '重新检测')?.disabled).toBe(true);
     expect(findButtonByText(container, '卸载')?.disabled).toBe(false);
@@ -119,18 +73,9 @@ describe('SettingsPage driver management', () => {
   });
 
   it('disables uninstall when the driver is not installed', async () => {
-    const snapshot = structuredClone(runtimeSnapshotMock);
-    snapshot.bridge.driverHealth = 'not-installed';
-    snapshot.bridge.driverVersion = null;
-    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: snapshot }));
+    seedBridgeSnapshot({ driverHealth: 'not-installed', driverVersion: null });
 
-    await act(async () => {
-      root.render(
-        <MemoryRouter>
-          <SettingsPage />
-        </MemoryRouter>,
-      );
-    });
+    await renderSettings();
 
     expect(findButtonByText(container, '安装驱动')?.disabled).toBe(false);
     expect(findButtonByText(container, '卸载')?.disabled).toBe(true);

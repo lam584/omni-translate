@@ -1,22 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(),
-  listen: vi.fn(),
-}));
+vi.mock('@tauri-apps/api/core', async () => (await import('../test-utils/tauri-invoke-mock')).tauriCoreMockModule());
 
-vi.mock('@tauri-apps/api/core', () => ({
-  invoke: (...args: unknown[]) => mocks.invoke(...args),
-  isTauri: () => false,
-}));
+vi.mock('@tauri-apps/api/event', async () => (await import('../test-utils/tauri-invoke-mock')).tauriEventMockModule());
 
-vi.mock('@tauri-apps/api/event', () => ({
-  listen: (...args: unknown[]) => mocks.listen(...args),
-}));
-
-
-import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from './desktop-api';
-import { PreviewDesktopApi } from './preview-desktop-api';
+import { invokeMock, listenMock } from '../test-utils/tauri-invoke-mock';
+import { enablePreviewDesktopRuntime, enableTauriDesktopRuntime } from '../test-utils/runtime-test-harness';
 import { BENCHMARK_PROGRESS_EVENT, runModelBenchmark, type BenchmarkProgressEvent, type BenchmarkReport } from './benchmark-runtime';
 
 function makeReport(): BenchmarkReport {
@@ -47,28 +36,27 @@ function makeReport(): BenchmarkReport {
 describe('benchmark runtime', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    mocks.invoke.mockReset();
-    mocks.listen.mockReset().mockResolvedValue(vi.fn());
-    resetDesktopApiForTests();
-    installDesktopApi(new TauriDesktopApi());
+    invokeMock.mockReset();
+    listenMock.mockReset().mockResolvedValue(vi.fn());
+    enableTauriDesktopRuntime();
   });
 
   it('rejects when the desktop runtime is unavailable', async () => {
-    installDesktopApi(new PreviewDesktopApi());
+    enablePreviewDesktopRuntime();
 
     await expect(runModelBenchmark('model', 'key', 'audio.mp3')).rejects.toThrow();
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('forwards progress for the active run and resolves parsed reports', async () => {
     const report = makeReport();
     const unlisten = vi.fn();
     let progressHandler: ((event: { payload: BenchmarkProgressEvent }) => void) | undefined;
-    mocks.listen.mockImplementation(async (_eventName: string, handler: (event: { payload: BenchmarkProgressEvent }) => void) => {
+    listenMock.mockImplementation(async (_eventName: string, handler: (event: { payload: BenchmarkProgressEvent }) => void) => {
       progressHandler = handler;
       return unlisten;
     });
-    mocks.invoke.mockResolvedValue({ data: JSON.stringify(report), warnings: [] });
+    invokeMock.mockResolvedValue({ data: JSON.stringify(report), warnings: [] });
     const onProgress = vi.fn();
 
     const resultPromise = runModelBenchmark('model', 'key', 'audio.mp3', {
@@ -107,8 +95,8 @@ describe('benchmark runtime', () => {
 
     await expect(resultPromise).resolves.toEqual(report);
     expect(onProgress).toHaveBeenCalledTimes(1);
-    expect(mocks.listen).toHaveBeenCalledWith(BENCHMARK_PROGRESS_EVENT, expect.any(Function));
-    expect(mocks.invoke).toHaveBeenCalledWith('provider_v2', {
+    expect(listenMock).toHaveBeenCalledWith(BENCHMARK_PROGRESS_EVENT, expect.any(Function));
+    expect(invokeMock).toHaveBeenCalledWith('provider_v2', {
       command: {
         action: 'runModelBenchmark',
         model: 'model',
@@ -130,11 +118,11 @@ describe('benchmark runtime', () => {
     const report = makeReport();
     vi.spyOn(Date, 'now').mockReturnValue(1234);
     vi.spyOn(Math, 'random').mockReturnValue(0.5);
-    mocks.invoke.mockResolvedValue({ data: JSON.stringify(report), warnings: [] });
+    invokeMock.mockResolvedValue({ data: JSON.stringify(report), warnings: [] });
 
     await expect(runModelBenchmark('model', 'key', 'audio.mp3')).resolves.toEqual(report);
 
-    expect(mocks.invoke).toHaveBeenCalledWith('provider_v2', {
+    expect(invokeMock).toHaveBeenCalledWith('provider_v2', {
       command: expect.objectContaining({
         action: 'runModelBenchmark',
         runId: 'benchmark-1234-i',
@@ -143,10 +131,10 @@ describe('benchmark runtime', () => {
   });
 
   it('rejects invalid JSON and native invoke errors', async () => {
-    mocks.invoke.mockResolvedValueOnce({ data: '{bad json', warnings: [] });
+    invokeMock.mockResolvedValueOnce({ data: '{bad json', warnings: [] });
     await expect(runModelBenchmark('model', 'key', 'audio.mp3', { runId: 'parse-fail' })).rejects.toThrow();
 
-    mocks.invoke.mockRejectedValueOnce(new Error('native failed'));
+    invokeMock.mockRejectedValueOnce(new Error('native failed'));
     await expect(runModelBenchmark('model', 'key', 'audio.mp3', { runId: 'native-fail' })).rejects.toThrow('native failed');
   });
 
@@ -154,14 +142,14 @@ describe('benchmark runtime', () => {
     const parseSpy = vi.spyOn(JSON, 'parse').mockImplementationOnce(() => {
       throw 'string parse failure';
     });
-    mocks.invoke.mockResolvedValueOnce({ data: '{}', warnings: [] });
+    invokeMock.mockResolvedValueOnce({ data: '{}', warnings: [] });
 
     await expect(runModelBenchmark('model', 'key', 'audio.mp3', { runId: 'parse-string-fail' })).rejects.toThrow('string parse failure');
     parseSpy.mockRestore();
   });
 
   it('times out slow benchmark runs and removes the listener', async () => {
-    mocks.invoke.mockImplementation(() => new Promise(() => undefined));
+    invokeMock.mockImplementation(() => new Promise(() => undefined));
 
     const result = runModelBenchmark('model', 'key', 'audio.mp3', { runId: 'slow-run' }).catch((error) => error);
     await vi.advanceTimersByTimeAsync(180_000);

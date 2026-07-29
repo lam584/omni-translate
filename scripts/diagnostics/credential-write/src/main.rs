@@ -87,9 +87,10 @@ fn parse_args() -> Result<Config, String> {
 }
 
 fn next_value(args: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
-    args.next()
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| format!("{name} requires a value"))
+    match args.next() {
+        Some(value) if !value.trim().is_empty() => Ok(value),
+        _ => Err(format!("{name} requires a value")),
+    }
 }
 
 fn print_usage() {

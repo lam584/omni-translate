@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { parseLooseArgs } from '../lib/testing-common.mjs';
+
 export const WATCH_MODE_LIVE_FIXTURE_FILES = [
   'snapshots.json',
   'steps.json',
@@ -55,16 +57,6 @@ const healthyPhysicalOutputContent = {
     rms: 0.08,
   },
 };
-
-function parseArgs(argv) {
-  const args = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const arg = argv[index];
-    if (!arg.startsWith('--')) continue;
-    args[arg.slice(2)] = argv[index + 1]?.startsWith('--') ? true : argv[++index] ?? true;
-  }
-  return args;
-}
 
 export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
   if (fixture !== 'pass') {
@@ -128,7 +120,7 @@ export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
   try {
-    const args = parseArgs(process.argv.slice(2));
+    const args = parseLooseArgs(process.argv.slice(2));
     const root = String(args.root ?? 'scripts/testing/fixtures/watch-mode-live');
     const fixture = String(args.fixture ?? 'pass');
     console.log(generateWatchModeLiveFixture({ root, fixture }));

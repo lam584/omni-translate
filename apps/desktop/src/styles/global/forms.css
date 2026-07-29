@@ -36,33 +36,9 @@
   box-shadow .2s ease
 }
 
+/* The shared dropdown chrome (appearance, arrow gradients, spacing) lives in
+   forms-overrides.css, which always loads later in the cascade. */
 .select-input {
-  appearance:none;
-  -webkit-appearance:none;
-  -moz-appearance:none;
-  padding-right:42px;
-  background-image:linear-gradient(45deg,
-  transparent 50%,
-  rgba(237,
-  244,
-  251,
-  .82) 50%),
-  linear-gradient(135deg,
-  rgba(237,
-  244,
-  251,
-  .82) 50%,
-  transparent 50%),
-  linear-gradient(180deg,
-  #ffffff0e,
-  #ffffff08);
-  background-position:calc(100% - 18px) calc(50% - 2px),
-  calc(100% - 12px) calc(50% - 2px),
-  0 0;
-  background-size:6px 6px,
-  6px 6px,
-  100% 100%;
-  background-repeat:no-repeat;
   box-shadow:inset 0 1px #ffffff09
 }
 

@@ -3,6 +3,7 @@ import AppIcon from '../../components/icons/AppIcon';
 import ModalDialog from '../../components/ModalDialog';
 import type { ProviderCustomHeaderDraft, ProviderDraft, ProviderResponseModality } from '../../schema/config';
 import type { ProviderAuthScheme, ProviderKind, ProviderTransport } from '../../schema/provider-contract';
+import { ProviderAuthSchemeOptions, ProviderDialogHeader } from './ProviderDialogShared';
 import { providersPageHelpers } from './providersPageHelpers';
 
 type Props = {
@@ -22,14 +23,14 @@ export default function ProviderAdvancedSettingsDialog(props: Props) {
   const { t } = useTranslation();
   const draft = (patch: Partial<ProviderDraft>) => props.onProviderChange({ ...patch, status: 'draft' });
   return <ModalDialog aria-label={t('providers.actions.advancedSettings')} className="provider-modal provider-advanced-modal content-card page-card compact-card" onClose={props.onClose} variant="provider">
-      <div className="provider-panel-heading provider-panel-heading-compact"><div><h3>{t('providers.actions.advancedSettings')}</h3></div><button className="provider-header-icon" onClick={props.onClose} title={t('providers.advanced.closeTitle')} type="button"><AppIcon name="close" size={13} /></button></div>
+      <ProviderDialogHeader closeTitle={t('providers.advanced.closeTitle')} onClose={props.onClose} title={t('providers.actions.advancedSettings')} />
       <div className="field-grid provider-field-grid provider-modal-grid">
         <label className="field-stack"><span>{t('providers.advanced.displayName')}</span><input className="text-input" onChange={(event) => draft({ displayName: event.target.value })} value={props.provider.displayName} /></label>
         <label className="field-stack"><span>{t('providers.advanced.apiFormat')}</span><select className="select-input" onChange={(event) => props.onKindChange(event.target.value as ProviderKind)} value={props.provider.kind}>{['openai-compatible', 'dashscope', 'openrouter', 'nvidia', 'ollama', 'lmstudio'].map((kind) => <option key={kind} value={kind}>{kind}</option>)}</select></label>
         <label className="field-stack field-span-full"><span>{t('providers.advanced.endpointUrl')}</span><input className="text-input" onChange={(event) => draft({ baseUrl: event.target.value })} value={props.provider.baseUrl} /></label>
         <label className="field-stack"><span>{t('providers.advanced.transport')}</span><select className="select-input" onChange={(event) => draft({ transport: event.target.value as ProviderTransport })} value={props.provider.transport}>{providersPageHelpers.supportedTransportsForKind(props.provider.kind).map((transport) => <option key={transport} value={transport}>{providersPageHelpers.formatTransportLabel(transport)}</option>)}</select></label>
         <label className="field-stack"><span>{t('providers.advanced.timeout')}</span><input className="text-input" min={1000} onChange={(event) => draft({ timeoutMs: Number(event.target.value) || 0 })} step={500} type="number" value={props.provider.timeoutMs} /></label>
-        <label className="field-stack"><span>{t('providers.advanced.authScheme')}</span><select className="select-input" onChange={(event) => draft({ authRef: { ...props.provider.authRef, scheme: event.target.value as ProviderAuthScheme } })} value={props.provider.authRef.scheme}><option value="bearer">Bearer</option><option value="api-key">API Key</option><option value="none">{t('providers.common.none')}</option></select></label>
+        <label className="field-stack"><span>{t('providers.advanced.authScheme')}</span><select className="select-input" onChange={(event) => draft({ authRef: { ...props.provider.authRef, scheme: event.target.value as ProviderAuthScheme } })} value={props.provider.authRef.scheme}><ProviderAuthSchemeOptions /></select></label>
         <label className="field-stack"><span>{t('providers.advanced.authHeader')}</span><input className="text-input" onChange={(event) => draft({ authRef: { ...props.provider.authRef, headerName: event.target.value } })} value={props.provider.authRef.headerName} /></label>
         <label className="field-stack"><span>{t('providers.advanced.streaming')}</span><select className="select-input" onChange={(event) => draft({ streamEnabled: event.target.value === 'true' })} value={String(props.provider.streamEnabled)}><option value="true">{t('providers.common.enabled')}</option><option value="false">{t('providers.common.disabled')}</option></select></label>
         <label className="field-stack"><span>{t('providers.advanced.temperature')}</span><input className="text-input" max={2} min={0} onChange={(event) => draft({ temperature: Number(event.target.value) || 0 })} step={0.1} type="number" value={props.provider.temperature} /></label>

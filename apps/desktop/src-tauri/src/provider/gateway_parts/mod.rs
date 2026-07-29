@@ -11,5 +11,6 @@ pub(crate) mod openai;
 pub(crate) mod probe;
 pub(crate) mod realtime_audio;
 pub(crate) mod routing;
+pub(crate) mod shared;
 pub(crate) mod time;
 pub(crate) mod transport;

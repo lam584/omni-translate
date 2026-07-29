@@ -1,26 +1,23 @@
 import { act, createRef } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../../mocks/app-config';
 import { providerTemplates } from '../../mocks/provider-templates';
 import type { ProviderModelRuntime } from '../../schema/provider-runtime';
 import { useAppStore } from '../../stores/app-store';
 import { customProviderTemplateToDraft } from '../../utils/custom-provider-templates';
 import type { ProviderTemplateCatalogEntry } from '../../utils/provider-template-catalog';
+import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { providersPageHelpers } from './providersPageHelpers';
 import { useProviderEditorController } from './useProviderEditorController';
 import { useProviderModelEditorController } from './useProviderModelEditorController';
 
 describe('provider editor controllers', () => {
-  let root: Root;
-  let container: HTMLDivElement;
-  beforeEach(() => {
-    (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
-    localStorage.clear();
-    useAppStore.setState((state) => ({ ...state, configDraft: structuredClone(appConfigDraftMock) }));
-    container = document.createElement('div'); document.body.appendChild(container); root = createRoot(container);
+  const view = registerDomHarness({
+    setup: () => {
+      localStorage.clear();
+      useAppStore.setState((state) => ({ ...state, configDraft: structuredClone(appConfigDraftMock) }));
+    },
   });
-  afterEach(async () => { await act(async () => root.unmount()); container.remove(); });
 
   it('updates custom templates and covers every template-application branch', async () => {
     const activeProvider = structuredClone(appConfigDraftMock.providers[0]!);
@@ -42,7 +39,7 @@ describe('provider editor controllers', () => {
         setCustomTemplates, onTemplateChanged: vi.fn() });
       return null;
     }
-    await act(async () => { root.render(<Harness />); await Promise.resolve(); });
+    await act(async () => { view.root.render(<Harness />); await Promise.resolve(); });
     expect(setCustomTemplates).toHaveBeenCalled();
 
     api.applyTemplate(customTemplate);
@@ -99,7 +96,7 @@ describe('provider editor controllers', () => {
         setCustomTemplates: vi.fn(), onTemplateChanged: vi.fn() });
       return null;
     }
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     const storageSpy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('storage denied'); });
 
     act(() => api.handleTemplateEnabledToggle(entries[0]!.template.id));
@@ -110,6 +107,21 @@ describe('provider editor controllers', () => {
     storageSpy.mockRestore();
   });
 
+  function makeModelEditorBase(
+    activeProvider: (typeof appConfigDraftMock)['providers'][number],
+    activeTemplate: (typeof providerTemplates)[number],
+  ) {
+    return {
+      t: ((key: string) => key) as never, activeProvider, activeTemplate,
+      sceneAssignments: activeProvider.sceneModelAssignments, localModelCapabilityRegistry: [],
+      modelLookup: new Map<string, ProviderModelRuntime>(), modelCatalogSignature: 'sig', modelCatalogTargetScenario: 'watch' as const,
+      manualModelIdDraft: '', pendingModelRegistration: null, draggingSceneModel: null, routeMode: 'watch' as const,
+      providerRuntimeBlocked: false, providerRuntimeStatusMessage: null, setModelCatalog: vi.fn(),
+      setModelCatalogTargetScenario: vi.fn(), setSelectedCatalogScenario: vi.fn(), setModelCatalogModalOpen: vi.fn(),
+      setManualModelIdDraft: vi.fn(), setPendingModelRegistration: vi.fn(), refreshModelCatalog: vi.fn().mockResolvedValue(undefined),
+    };
+  }
+
   it('covers empty, inferred, missing-entry, and no-op model editor paths', async () => {
     const activeProvider = structuredClone(appConfigDraftMock.providers[0]!);
     const activeTemplate = providerTemplates[0]!;
@@ -117,17 +129,9 @@ describe('provider editor controllers', () => {
     let params!: Parameters<typeof useProviderModelEditorController>[0];
     let api!: ReturnType<typeof useProviderModelEditorController>;
     function Harness() { api = useProviderModelEditorController(params); return null; }
-    const base = {
-      t: ((key: string) => key) as never, activeProvider, activeTemplate,
-      sceneAssignments: activeProvider.sceneModelAssignments, localModelCapabilityRegistry: [],
-      modelLookup: new Map<string, ProviderModelRuntime>(), modelCatalogSignature: 'sig', modelCatalogTargetScenario: 'watch' as const,
-      manualModelIdDraft: '   ', pendingModelRegistration: null, draggingSceneModel: null, routeMode: 'watch' as const,
-      providerRuntimeBlocked: false, providerRuntimeStatusMessage: null, setModelCatalog: vi.fn(),
-      setModelCatalogTargetScenario: vi.fn(), setSelectedCatalogScenario: vi.fn(), setModelCatalogModalOpen: vi.fn(),
-      setManualModelIdDraft: vi.fn(), setPendingModelRegistration: vi.fn(), refreshModelCatalog: vi.fn().mockResolvedValue(undefined),
-    };
+    const base = { ...makeModelEditorBase(activeProvider, activeTemplate), manualModelIdDraft: '   ' };
     params = base;
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     act(() => api.handleManualModelAdd());
     act(() => api.handleCapabilityRegistryEntryToggle('missing', 'speech-to-text'));
     act(() => api.handleCapabilityRegistryInteractionToggle('missing', 'streaming'));
@@ -136,13 +140,13 @@ describe('provider editor controllers', () => {
     expect(api.isModelAddedToScenario('watch', 'missing')).toBe(false);
 
     params = { ...base, manualModelIdDraft: model.id, modelLookup: new Map([[model.id, model]]) };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     act(() => api.handleManualModelAdd());
     expect(params.setPendingModelRegistration).toHaveBeenCalled();
 
     const inferredEntry = { id: 'entry', modelId: 'm', capabilities: ['speech-to-text' as const], realtimeAudioMode: undefined as never, interactionCapabilities: undefined as never };
     params = { ...base, localModelCapabilityRegistry: [inferredEntry] };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     act(() => api.handleCapabilityRegistryEntryChange('entry', { modelId: ' m ' }));
     act(() => api.handleCapabilityRegistryEntryToggle('entry', 'text-to-speech'));
     act(() => api.handleCapabilityRegistryInteractionToggle('entry', 'streaming'));
@@ -164,15 +168,12 @@ describe('provider editor controllers', () => {
     let api!: ReturnType<typeof useProviderModelEditorController>;
     function Harness() { api = useProviderModelEditorController(params); return null; }
     const base = {
-      t: ((key: string) => key) as never, activeProvider, activeTemplate,
-      sceneAssignments: activeProvider.sceneModelAssignments, localModelCapabilityRegistry: [], modelLookup: new Map<string, ProviderModelRuntime>(),
-      modelCatalogSignature: 'sig', modelCatalogTargetScenario: 'watch' as const, manualModelIdDraft: '', pendingModelRegistration: null,
-      draggingSceneModel: null, routeMode: 'watch' as const, providerRuntimeBlocked: true, providerRuntimeStatusMessage: null,
-      setModelCatalog: vi.fn(), setModelCatalogTargetScenario: vi.fn(), setSelectedCatalogScenario: vi.fn(), setModelCatalogModalOpen: vi.fn(),
-      setManualModelIdDraft: vi.fn(), setPendingModelRegistration: setPending, refreshModelCatalog: vi.fn().mockResolvedValue(undefined),
+      ...makeModelEditorBase(activeProvider, activeTemplate),
+      providerRuntimeBlocked: true,
+      setPendingModelRegistration: setPending,
     };
     params = base;
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     act(() => api.handleModelCatalogOpen());
     expect(api.isModelAddedToScenario('missing' as never, 'none')).toBe(false);
     act(() => api.handlePendingRegistrationCapabilityToggle('speech-to-text'));
@@ -181,7 +182,7 @@ describe('provider editor controllers', () => {
 
     pending = { scenario: 'watch', model, capabilities: ['speech-to-text'], realtimeAudioMode: 'server_vad', interactionCapabilities: ['streaming'] };
     params = { ...base, providerRuntimeStatusMessage: 'blocked', pendingModelRegistration: pending };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     act(() => api.handleModelCatalogOpen('game'));
     act(() => api.handlePendingRegistrationCapabilityToggle('speech-to-text'));
     act(() => api.handlePendingRegistrationCapabilityToggle('text-to-speech'));
@@ -189,10 +190,10 @@ describe('provider editor controllers', () => {
     act(() => api.handlePendingRegistrationInteractionToggle('auto_vad'));
 
     params = { ...params, pendingModelRegistration: { ...pending, capabilities: [] } };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     act(() => api.handlePendingRegistrationConfirm());
     params = { ...params, pendingModelRegistration: pending };
-    await act(async () => root.render(<Harness />));
+    await view.render(<Harness />);
     act(() => api.handlePendingRegistrationConfirm());
     expect(useAppStore.getState().configDraft.providers[0]?.localModelCapabilityRegistry.some((entry) => entry.modelId === model.id)).toBe(true);
   });

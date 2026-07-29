@@ -146,6 +146,27 @@ pub fn emit_runtime_notification<R: tauri::Runtime>(
     emit_runtime_snapshot(app, state)
 }
 
+/// Apply the full show sequence for the subtitle overlay window: sync persisted
+/// input, strip decorations/shadow, apply chrome/background, unminimize, show,
+/// then re-apply background/chrome/region once visible. Shared by the toggle and
+/// show commands, which historically repeated this exact ordering.
+fn reveal_subtitle_overlay_window<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    window: &tauri::WebviewWindow<R>,
+) -> Result<(), String> {
+    sync_persisted_subtitle_overlay_input(app, window);
+    let _ = apply_subtitle_overlay_background(window);
+    let _ = window.set_decorations(false);
+    let _ = window.set_shadow(false);
+    let _ = apply_subtitle_overlay_window_chrome(window);
+    let _ = window.unminimize();
+    window.show().map_err(|error| error.to_string())?;
+    let _ = apply_subtitle_overlay_background(window);
+    let _ = apply_subtitle_overlay_window_chrome(window);
+    let _ = apply_subtitle_overlay_region(window, true);
+    Ok(())
+}
+
 pub fn toggle_subtitle_overlay_with_state<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &RuntimeStateStore,
@@ -160,16 +181,7 @@ pub fn toggle_subtitle_overlay_with_state<R: tauri::Runtime>(
         window.hide().map_err(|error| error.to_string())?;
         state.set_overlay_window_visible(false);
     } else {
-        sync_persisted_subtitle_overlay_input(app, &window);
-        let _ = apply_subtitle_overlay_background(&window);
-        let _ = window.set_decorations(false);
-        let _ = window.set_shadow(false);
-        let _ = apply_subtitle_overlay_window_chrome(&window);
-        let _ = window.unminimize();
-        window.show().map_err(|error| error.to_string())?;
-        let _ = apply_subtitle_overlay_background(&window);
-        let _ = apply_subtitle_overlay_window_chrome(&window);
-        let _ = apply_subtitle_overlay_region(&window, true);
+        reveal_subtitle_overlay_window(app, &window)?;
         state.set_overlay_window_visible(true);
     }
 
@@ -190,16 +202,7 @@ pub fn show_subtitle_overlay_with_state<R: tauri::Runtime>(
     let is_visible = state.overlay_window_visible();
 
     if !is_visible {
-        sync_persisted_subtitle_overlay_input(app, &window);
-        let _ = apply_subtitle_overlay_background(&window);
-        let _ = window.set_decorations(false);
-        let _ = window.set_shadow(false);
-        let _ = apply_subtitle_overlay_window_chrome(&window);
-        let _ = window.unminimize();
-        window.show().map_err(|error| error.to_string())?;
-        let _ = apply_subtitle_overlay_background(&window);
-        let _ = apply_subtitle_overlay_window_chrome(&window);
-        let _ = apply_subtitle_overlay_region(&window, true);
+        reveal_subtitle_overlay_window(app, &window)?;
     }
 
     state.set_overlay_window_visible(true);

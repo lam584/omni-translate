@@ -1,64 +1,36 @@
 use std::time::Instant;
 
 use serde_json::{json, Value};
-use tungstenite::Message;
 
-use super::super::contracts::{
-    ProviderDraftInput, ProviderRuntimeError, ProviderSmokeResult, ProviderStreamEventRecord,
+use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError, ProviderSmokeResult};
+use super::routing::{build_messages, build_translation_system_prompt};
+use super::shared::{
+    finish_websocket_result, impl_provider_adapter_execute, new_streaming_smoke_result,
+    push_response_completed, push_translation_completed, push_usage_event,
+    record_translation_delta, record_usage_update, DeltaCallback, ProviderCallContext,
 };
-use super::routing::{build_messages, build_routing_decision, build_translation_system_prompt};
 use super::transport::{
     join_url, normalize_dashscope_compatible_base_url, normalize_transport_error,
-    normalize_websocket_read_error, parse_dashscope_error, ProviderHttpClient, WebSocketTransport,
+    parse_dashscope_error, read_json_frame, send_json_frame, ProviderHttpClient, WebSocketFrame,
+    WebSocketTransport,
 };
 
 /// Stateful protocol boundary for DashScope HTTP and realtime WebSocket calls.
 #[derive(Debug, Default)]
 pub(crate) struct DashScopeProviderAdapter;
 
-impl DashScopeProviderAdapter {
-    pub(crate) fn execute(
-        &self,
-        provider: &ProviderDraftInput,
-        transport_effective: &str,
-        request_id: &str,
-        source_text: &str,
-        source_language: &str,
-        target_language: &str,
-        on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
-    ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
-        execute(
-            provider,
-            transport_effective,
-            request_id,
-            source_text,
-            source_language,
-            target_language,
-            on_delta,
-        )
-    }
-}
+impl_provider_adapter_execute!(DashScopeProviderAdapter);
 
 pub(super) fn execute(
-    provider: &ProviderDraftInput,
+    context: &ProviderCallContext<'_>,
     transport_effective: &str,
-    request_id: &str,
-    source_text: &str,
-    source_language: &str,
-    target_language: &str,
-    on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
+    on_delta: DeltaCallback<'_>,
 ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
     if transport_effective == "websocket" {
-        return execute_websocket(
-            provider,
-            request_id,
-            source_text,
-            source_language,
-            target_language,
-            on_delta,
-        );
+        return execute_websocket(context, on_delta);
     }
 
+    let provider = context.provider;
     let compatible_base_url = normalize_dashscope_compatible_base_url(&provider.base_url);
     let endpoint = join_url(&compatible_base_url, "chat/completions")?;
     log::info!(
@@ -71,7 +43,7 @@ pub(super) fn execute(
     let client = ProviderHttpClient::new(provider.timeout_ms)?;
     let payload = json!({
       "model": provider.model,
-      "messages": build_messages(provider, source_text, source_language, target_language, &[]),
+      "messages": build_messages(provider, context.source_text, context.source_language, context.target_language, &[]),
       "temperature": provider.temperature,
       "max_tokens": provider.max_output_tokens
     });
@@ -83,223 +55,99 @@ pub(super) fn execute(
 
     let value: Value = response.json().map_err(normalize_transport_error)?;
     let text = extract_dashscope_text(&value)?;
-    Ok(ProviderSmokeResult {
-        request_id: request_id.to_string(),
-        provider_id: provider.provider_id.clone(),
-        status: "completed".to_string(),
-        transport_requested: transport_effective.to_string(),
-        transport_effective: transport_effective.to_string(),
-        fallback_applied: false,
-        stream_observed: false,
-        duration_ms: 0,
-        first_event_latency_ms: Some(0),
-        transcript: text.clone(),
-        source_language: source_language.to_string(),
-        target_language: target_language.to_string(),
-        event_log: vec![
-            ProviderStreamEventRecord {
-                event_type: "session.started".to_string(),
-                summary: format!("{} 已建立请求会话。", provider.display_name),
-                segment_id: None,
-                text_delta: None,
-                text: None,
-                audio_chunk_ref: None,
-            },
-            ProviderStreamEventRecord {
-                event_type: "translation.completed".to_string(),
-                summary: "DashScope HTTP 返回完整文本。".to_string(),
-                segment_id: Some("segment-1".to_string()),
-                text_delta: None,
-                text: Some(text),
-                audio_chunk_ref: None,
-            },
-            ProviderStreamEventRecord {
-                event_type: "response.completed".to_string(),
-                summary: "Provider 响应已结束。".to_string(),
-                segment_id: None,
-                text_delta: None,
-                text: None,
-                audio_chunk_ref: None,
-            },
-        ],
-        input_tokens: value
-            .pointer("/usage/input_tokens")
-            .or_else(|| value.pointer("/usage/prompt_tokens"))
-            .and_then(Value::as_u64),
-        output_tokens: value
-            .pointer("/usage/output_tokens")
-            .or_else(|| value.pointer("/usage/completion_tokens"))
-            .and_then(Value::as_u64),
-        audio_seconds: None,
-        routing_decision: build_routing_decision("available", 0, false),
-        error: None,
-    })
+    let mut result = new_streaming_smoke_result(
+        context,
+        transport_effective,
+        format!("{} 已建立请求会话。", provider.display_name),
+    );
+    result.first_event_latency_ms = Some(0);
+    result.transcript = text;
+    push_translation_completed(&mut result, "DashScope HTTP 返回完整文本。");
+    push_response_completed(&mut result);
+    result.input_tokens = value
+        .pointer("/usage/input_tokens")
+        .or_else(|| value.pointer("/usage/prompt_tokens"))
+        .and_then(Value::as_u64);
+    result.output_tokens = value
+        .pointer("/usage/output_tokens")
+        .or_else(|| value.pointer("/usage/completion_tokens"))
+        .and_then(Value::as_u64);
+    Ok(result)
 }
 
 fn execute_websocket(
-    provider: &ProviderDraftInput,
-    request_id: &str,
-    source_text: &str,
-    source_language: &str,
-    target_language: &str,
-    on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
+    context: &ProviderCallContext<'_>,
+    on_delta: DeltaCallback<'_>,
 ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
+    let provider = context.provider;
     if provider.model.to_ascii_lowercase().contains("realtime") {
-        return execute_realtime_websocket(
-            provider,
-            request_id,
-            source_text,
-            source_language,
-            target_language,
-            on_delta,
-        );
+        return execute_realtime_websocket(context, on_delta);
     }
 
     let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(provider)?;
     let payload = json!({
-      "request_id": request_id,
+      "request_id": context.request_id,
       "model": provider.model,
       "input": {
-        "messages": build_messages(provider, source_text, source_language, target_language, &[])
+        "messages": build_messages(provider, context.source_text, context.source_language, context.target_language, &[])
       },
       "parameters": {
         "stream": true,
         "region": provider.region
       }
     });
-    socket
-        .send(Message::Text(payload.to_string().into()))
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("DashScope WebSocket 发送失败: {error}"),
-            )
-        })?;
+    send_json_frame(&mut socket, &payload, "DashScope WebSocket 发送失败")?;
 
     let started = Instant::now();
-    let mut result = ProviderSmokeResult {
-        request_id: request_id.to_string(),
-        provider_id: provider.provider_id.clone(),
-        status: "completed".to_string(),
-        transport_requested: "websocket".to_string(),
-        transport_effective: "websocket".to_string(),
-        fallback_applied: false,
-        stream_observed: false,
-        duration_ms: 0,
-        first_event_latency_ms: None,
-        transcript: String::new(),
-        source_language: source_language.to_string(),
-        target_language: target_language.to_string(),
-        event_log: vec![ProviderStreamEventRecord {
-            event_type: "session.started".to_string(),
-            summary: format!("{} WebSocket 会话已建立。", provider.display_name),
-            segment_id: None,
-            text_delta: None,
-            text: None,
-            audio_chunk_ref: None,
-        }],
-        input_tokens: None,
-        output_tokens: None,
-        audio_seconds: None,
-        routing_decision: build_routing_decision("available", 0, false),
-        error: None,
-    };
+    let mut result = new_streaming_smoke_result(
+        context,
+        "websocket",
+        format!("{} WebSocket 会话已建立。", provider.display_name),
+    );
 
     loop {
-        let message = socket
-            .read()
-            .map_err(|error| normalize_websocket_read_error(error, websocket_timeout))?;
-        match message {
-            Message::Text(text) => {
-                let value: Value = serde_json::from_str(text.as_str()).map_err(|error| {
-                    ProviderRuntimeError::new(
-                        "response.unparseable",
-                        format!("无法解析 DashScope WebSocket 响应: {error}"),
-                    )
-                })?;
-
+        match read_json_frame(&mut socket, websocket_timeout, "无法解析 DashScope WebSocket 响应")? {
+            WebSocketFrame::Json(value) => {
                 if let Some(delta) = extract_dashscope_delta(&value) {
-                    if result.first_event_latency_ms.is_none() {
-                        result.first_event_latency_ms = Some(started.elapsed().as_millis() as u64);
-                    }
-                    result.stream_observed = true;
-                    result.transcript.push_str(&delta);
-                    on_delta(&delta)?;
-                    result.event_log.push(ProviderStreamEventRecord {
-                        event_type: "translation.delta".to_string(),
-                        summary: format!("收到 DashScope 增量文本: {}", delta),
-                        segment_id: Some("segment-1".to_string()),
-                        text_delta: Some(delta),
-                        text: None,
-                        audio_chunk_ref: None,
-                    });
+                    record_translation_delta(
+                        &mut result,
+                        &started,
+                        &delta,
+                        format!("收到 DashScope 增量文本: {}", delta),
+                        on_delta,
+                    )?;
                 }
 
                 if let Some((input_tokens, output_tokens)) = extract_dashscope_usage(&value) {
-                    result.input_tokens = Some(input_tokens);
-                    result.output_tokens = Some(output_tokens);
-                    result.event_log.push(ProviderStreamEventRecord {
-                        event_type: "usage.updated".to_string(),
-                        summary: format!(
-                            "usage 已更新: input={} / output={}",
-                            input_tokens, output_tokens
-                        ),
-                        segment_id: None,
-                        text_delta: None,
-                        text: None,
-                        audio_chunk_ref: None,
-                    });
+                    record_usage_update(&mut result, input_tokens, output_tokens);
                 }
 
                 if extract_dashscope_completed(&value) {
-                    result.event_log.push(ProviderStreamEventRecord {
-                        event_type: "translation.completed".to_string(),
-                        summary: "DashScope WebSocket 分段已完成。".to_string(),
-                        segment_id: Some("segment-1".to_string()),
-                        text_delta: None,
-                        text: Some(result.transcript.clone()),
-                        audio_chunk_ref: None,
-                    });
+                    push_translation_completed(&mut result, "DashScope WebSocket 分段已完成。");
                     break;
                 }
             }
-            Message::Close(_) => break,
-            _ => {}
+            WebSocketFrame::Closed => break,
+            WebSocketFrame::Ignored => {}
         }
     }
 
-    result.event_log.push(ProviderStreamEventRecord {
-        event_type: "response.completed".to_string(),
-        summary: "Provider 响应已结束。".to_string(),
-        segment_id: None,
-        text_delta: None,
-        text: None,
-        audio_chunk_ref: None,
-    });
-
-    if result.transcript.trim().is_empty() {
-        return Err(ProviderRuntimeError::new(
-            "response.empty",
-            "DashScope WebSocket completed without translation text.",
-        ));
-    }
-
-    Ok(result)
+    finish_websocket_result(
+        result,
+        "DashScope WebSocket completed without translation text.",
+    )
 }
 
 fn execute_realtime_websocket(
-    provider: &ProviderDraftInput,
-    request_id: &str,
-    source_text: &str,
-    source_language: &str,
-    target_language: &str,
-    on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
+    context: &ProviderCallContext<'_>,
+    on_delta: DeltaCallback<'_>,
 ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
+    let provider = context.provider;
     let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(provider)?;
 
-    let safe_id = request_id.replace(':', "_").replace('-', "_");
+    let safe_id = context.request_id.replace(':', "_").replace('-', "_");
     let instructions =
-        build_translation_system_prompt(provider, source_language, target_language);
+        build_translation_system_prompt(provider, context.source_language, context.target_language);
 
     let session_update = json!({
       "event_id": format!("evt_{}_session", safe_id),
@@ -310,14 +158,11 @@ fn execute_realtime_websocket(
         "turn_detection": null
       }
     });
-    socket
-        .send(Message::Text(session_update.to_string().into()))
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("DashScope Realtime session.update 发送失败: {error}"),
-            )
-        })?;
+    send_json_frame(
+        &mut socket,
+        &session_update,
+        "DashScope Realtime session.update 发送失败",
+    )?;
 
     let item_create = json!({
       "event_id": format!("evt_{}_item", safe_id),
@@ -328,94 +173,52 @@ fn execute_realtime_websocket(
         "content": [
           {
             "type": "input_text",
-            "text": source_text
+            "text": context.source_text
           }
         ]
       }
     });
-    socket
-        .send(Message::Text(item_create.to_string().into()))
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("DashScope Realtime conversation.item.create 发送失败: {error}"),
-            )
-        })?;
+    send_json_frame(
+        &mut socket,
+        &item_create,
+        "DashScope Realtime conversation.item.create 发送失败",
+    )?;
 
     let response_create = json!({
       "event_id": format!("evt_{}_resp", safe_id),
       "type": "response.create"
     });
-    socket
-        .send(Message::Text(response_create.to_string().into()))
-        .map_err(|error| {
-            ProviderRuntimeError::new(
-                "transport.unavailable",
-                format!("DashScope Realtime response.create 发送失败: {error}"),
-            )
-        })?;
+    send_json_frame(
+        &mut socket,
+        &response_create,
+        "DashScope Realtime response.create 发送失败",
+    )?;
 
     let started = Instant::now();
-    let mut result = ProviderSmokeResult {
-        request_id: request_id.to_string(),
-        provider_id: provider.provider_id.clone(),
-        status: "completed".to_string(),
-        transport_requested: "websocket".to_string(),
-        transport_effective: "websocket".to_string(),
-        fallback_applied: false,
-        stream_observed: false,
-        duration_ms: 0,
-        first_event_latency_ms: None,
-        transcript: String::new(),
-        source_language: source_language.to_string(),
-        target_language: target_language.to_string(),
-        event_log: vec![ProviderStreamEventRecord {
-            event_type: "session.started".to_string(),
-            summary: format!("{} Realtime WebSocket 会话已建立。", provider.display_name),
-            segment_id: None,
-            text_delta: None,
-            text: None,
-            audio_chunk_ref: None,
-        }],
-        input_tokens: None,
-        output_tokens: None,
-        audio_seconds: None,
-        routing_decision: build_routing_decision("available", 0, false),
-        error: None,
-    };
+    let mut result = new_streaming_smoke_result(
+        context,
+        "websocket",
+        format!("{} Realtime WebSocket 会话已建立。", provider.display_name),
+    );
 
     loop {
-        let message = socket
-            .read()
-            .map_err(|error| normalize_websocket_read_error(error, websocket_timeout))?;
-        match message {
-            Message::Text(text) => {
-                let value: Value = serde_json::from_str(text.as_str()).map_err(|error| {
-                    ProviderRuntimeError::new(
-                        "response.unparseable",
-                        format!("无法解析 DashScope Realtime WebSocket 响应: {error}"),
-                    )
-                })?;
-
+        match read_json_frame(
+            &mut socket,
+            websocket_timeout,
+            "无法解析 DashScope Realtime WebSocket 响应",
+        )? {
+            WebSocketFrame::Json(value) => {
                 let event_type = value.pointer("/type").and_then(Value::as_str).unwrap_or("");
 
                 if event_type == "response.text.delta" {
                     if let Some(delta) = value.pointer("/delta").and_then(Value::as_str) {
-                        if result.first_event_latency_ms.is_none() {
-                            result.first_event_latency_ms =
-                                Some(started.elapsed().as_millis() as u64);
-                        }
-                        result.stream_observed = true;
-                        result.transcript.push_str(delta);
-                        on_delta(delta)?;
-                        result.event_log.push(ProviderStreamEventRecord {
-                            event_type: "translation.delta".to_string(),
-                            summary: format!("收到 DashScope Realtime 增量文本: {}", delta),
-                            segment_id: Some("segment-1".to_string()),
-                            text_delta: Some(delta.to_string()),
-                            text: None,
-                            audio_chunk_ref: None,
-                        });
+                        record_translation_delta(
+                            &mut result,
+                            &started,
+                            delta,
+                            format!("收到 DashScope Realtime 增量文本: {}", delta),
+                            on_delta,
+                        )?;
                     }
                 }
 
@@ -433,48 +236,21 @@ fn execute_realtime_websocket(
                             usage.pointer("/output_tokens").and_then(Value::as_u64);
                         let input = result.input_tokens.unwrap_or(0);
                         let output = result.output_tokens.unwrap_or(0);
-                        result.event_log.push(ProviderStreamEventRecord {
-                            event_type: "usage.updated".to_string(),
-                            summary: format!("usage 已更新: input={} / output={}", input, output),
-                            segment_id: None,
-                            text_delta: None,
-                            text: None,
-                            audio_chunk_ref: None,
-                        });
+                        push_usage_event(&mut result, input, output);
                     }
-                    result.event_log.push(ProviderStreamEventRecord {
-                        event_type: "translation.completed".to_string(),
-                        summary: "DashScope Realtime 响应已完成。".to_string(),
-                        segment_id: Some("segment-1".to_string()),
-                        text_delta: None,
-                        text: Some(result.transcript.clone()),
-                        audio_chunk_ref: None,
-                    });
+                    push_translation_completed(&mut result, "DashScope Realtime 响应已完成。");
                     break;
                 }
             }
-            Message::Close(_) => break,
-            _ => {}
+            WebSocketFrame::Closed => break,
+            WebSocketFrame::Ignored => {}
         }
     }
 
-    result.event_log.push(ProviderStreamEventRecord {
-        event_type: "response.completed".to_string(),
-        summary: "Provider 响应已结束。".to_string(),
-        segment_id: None,
-        text_delta: None,
-        text: None,
-        audio_chunk_ref: None,
-    });
-
-    if result.transcript.trim().is_empty() {
-        return Err(ProviderRuntimeError::new(
-            "response.empty",
-            "DashScope Realtime WebSocket completed without translation text.",
-        ));
-    }
-
-    Ok(result)
+    finish_websocket_result(
+        result,
+        "DashScope Realtime WebSocket completed without translation text.",
+    )
 }
 
 fn extract_dashscope_text(value: &Value) -> Result<String, ProviderRuntimeError> {

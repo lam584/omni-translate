@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
 import { useAppStore } from '../stores/app-store';
-import { mountTestRoot, type TestRootHandle } from '../test-utils';
+import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
 import type { ProviderCapability } from '../schema/provider-contract';
 import AudioRoutingPage, { audioRoutingPageHelpers } from './AudioRoutingPage';
 

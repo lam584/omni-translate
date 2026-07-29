@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { runtimeSnapshotMock } from '../../mocks/runtime-shell';
 import { useAppStore } from '../../stores/app-store';
-import { mountTestRoot, type TestRootHandle } from '../../test-utils';
+import { mountTestRoot, type TestRootHandle } from '../../test-utils/react-root';
 
 const content = vi.hoisted(() => ({
   brandContent: { eyebrow: '', copy: '' },

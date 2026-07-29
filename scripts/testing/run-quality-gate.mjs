@@ -60,6 +60,7 @@ export const buildQualityGateSummary = ({
   e2eIssues,
   performanceIssues,
   installIssues,
+  allowPendingManual = false,
   generatedAt = sortableTimestamp(),
 }) => {
   const manualArtifactResults = [
@@ -83,6 +84,23 @@ export const buildQualityGateSummary = ({
     );
   }
 
+  // Audit trail: make every degradation lever of this run explicit in the
+  // summary, so an exit-0 run with skipped suites or pending manual reports
+  // stays reviewable. Does not affect step selection or the exit code.
+  const autoDegradation = autoSummary.degradation ?? {};
+  const degradation = {
+    allowPendingManual,
+    skipDesktopShell: autoDegradation.skipDesktopShell ?? false,
+    skipBridgeService: autoDegradation.skipBridgeService ?? false,
+    manualArtifactStatuses: Object.fromEntries(
+      manualArtifactResults.map((artifact) => [artifact.name, artifact.status]),
+    ),
+    degradedPass:
+      (autoDegradation.skipDesktopShell ?? false) ||
+      (autoDegradation.skipBridgeService ?? false) ||
+      (allowPendingManual && manualVerificationStatus !== 'passed'),
+  };
+
   return {
     generatedAt,
     workspaceRoot,
@@ -94,6 +112,7 @@ export const buildQualityGateSummary = ({
       coveredManualScenarios: ['subtitle-display', 'locked-overlay-click-through', 'tts-counters'],
     },
     manualVerificationStatus,
+    degradation,
     manualArtifacts: {
       e2eReport,
       performanceBaseline,
@@ -108,6 +127,7 @@ export const runQualityGate = ({
   manualE2eReport = '',
   performanceBaselineReport = '',
   installRegressionReport = '',
+  allowPendingManual = false,
 } = {}) => {
   const autoSummaryPath = runQualityGateAuto({ outputRoot });
   if (isBlank(autoSummaryPath) || !fs.existsSync(autoSummaryPath)) {
@@ -136,6 +156,7 @@ export const runQualityGate = ({
     e2eIssues: testMarkdownManualReport(readReportText(e2eReport)),
     performanceIssues: testPerformanceReport(readJson(performanceBaseline)),
     installIssues: testMarkdownManualReport(readReportText(installRegression)),
+    allowPendingManual,
   });
 
   const summaryPath = path.join(path.dirname(autoSummaryPath), 'quality-gate-summary.json');

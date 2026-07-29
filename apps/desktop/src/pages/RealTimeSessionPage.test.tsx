@@ -13,7 +13,7 @@ import { loggerTestHelpers } from '../runtime/logger';
 import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
-import { mountTestRoot, type TestRootHandle } from '../test-utils';
+import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
 
 // The session page runs against the injectable fake bridge instead of stubbed
 // runtime modules: every renderer→shell call travels the real

@@ -215,6 +215,17 @@ test('buildQualityGateSummary marks artifacts with issues as pending', () => {
     { name: 'performance-baseline', path: 'perf.json', status: 'passed', issues: [] },
     { name: 'install-regression', path: 'install.md', status: 'passed', issues: [] },
   ]);
+  assert.deepEqual(summary.degradation, {
+    allowPendingManual: false,
+    skipDesktopShell: false,
+    skipBridgeService: false,
+    manualArtifactStatuses: {
+      'manual-e2e': 'pending',
+      'performance-baseline': 'passed',
+      'install-regression': 'passed',
+    },
+    degradedPass: false,
+  });
 });
 
 test('buildQualityGateSummary reports passed when every artifact is clean', () => {
@@ -233,6 +244,62 @@ test('buildQualityGateSummary reports passed when every artifact is clean', () =
     'passed',
     'passed',
   ]);
+  assert.equal(summary.degradation.degradedPass, false);
+});
+
+test('buildQualityGateSummary records the degraded path when switches are used', () => {
+  const summary = buildQualityGateSummary({
+    autoSummary: {
+      ...autoSummaryFixture,
+      degradation: { skipDesktopShell: true, skipBridgeService: false },
+    },
+    e2eReport: 'e2e.md',
+    performanceBaseline: 'perf.json',
+    installRegression: 'install.md',
+    e2eIssues: ['contains TODO placeholders'],
+    performanceIssues: [],
+    installIssues: [],
+    allowPendingManual: true,
+  });
+  assert.equal(summary.manualVerificationStatus, 'pending');
+  assert.deepEqual(summary.degradation, {
+    allowPendingManual: true,
+    skipDesktopShell: true,
+    skipBridgeService: false,
+    manualArtifactStatuses: {
+      'manual-e2e': 'pending',
+      'performance-baseline': 'passed',
+      'install-regression': 'passed',
+    },
+    degradedPass: true,
+  });
+});
+
+test('buildQualityGateSummary marks degradedPass when pending manual is allowed', () => {
+  const summary = buildQualityGateSummary({
+    autoSummary: autoSummaryFixture,
+    e2eReport: 'e2e.md',
+    performanceBaseline: 'perf.json',
+    installRegression: 'install.md',
+    e2eIssues: [],
+    performanceIssues: ['verdict is not PASS'],
+    installIssues: [],
+    allowPendingManual: true,
+  });
+  assert.equal(summary.degradation.allowPendingManual, true);
+  assert.equal(summary.degradation.degradedPass, true);
+  const passedManual = buildQualityGateSummary({
+    autoSummary: autoSummaryFixture,
+    e2eReport: 'e2e.md',
+    performanceBaseline: 'perf.json',
+    installRegression: 'install.md',
+    e2eIssues: [],
+    performanceIssues: [],
+    installIssues: [],
+    allowPendingManual: true,
+  });
+  assert.equal(passedManual.degradation.allowPendingManual, true);
+  assert.equal(passedManual.degradation.degradedPass, false);
 });
 
 test('buildQualityGateSummary throws when the integration step is missing', () => {

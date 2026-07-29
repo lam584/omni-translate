@@ -20,12 +20,12 @@
 
 | 改动层 | 验证命令 | 说明 |
 | --- | --- | --- |
-| `apps/desktop` 前端（src、vite、TS/React） | `npm run verify:desktop` | 依次执行 lint + tsc 检查 + vitest + 构建 |
+| `apps/desktop` 前端（src、vite、TS/React） | `npm run verify:desktop` | 依次执行 lint + tsc 检查 + vitest + 构建；PR CI 另行强制覆盖率门禁与架构边界审计，本地对应 `npm run coverage:gate`（首次需先 `npm run coverage:tooling`）与 `npm run audit:architecture` |
 | `apps/desktop/src-tauri`（Rust 桌面壳） | `npm run test:desktop-shell` | cargo test；仅需类型/编译检查可用 `npm run check:desktop-shell` |
-| `apps/bridge-service-native`（Rust 桥接服务） | `npm run check:bridge-service-native` | cargo check；完整测试用 `npm run test:bridge-service-native` |
+| `apps/bridge-service-native`（Rust 桥接服务） | `npm run check:bridge-service-native` + `npm run test:integration:bridge-contract` | cargo check + 桥接契约集成测试；PR CI 运行的是完整 `npm run test:bridge-service-native`（cargo test），提交前建议本地跑齐 |
 | 跨进程契约变更（事件/命令/协议） | `npm run test:contracts` | Node 契约校验脚本（含配置路径守卫） |
 | Rust 侧新增/改动配置 `.pointer` 读写 | `npm run test:config-paths` | 配置路径守卫：路径必须在 `app-config.default.json` 可解析或有成文豁免；`--report-defaults` 产出默认值清点 |
-| `drivers/windows-virtual-mic`（虚拟麦克风驱动） | `npm run driver:build-sysvad` | 需要 WDK/EWDK 构建环境；驱动自测用 `npm run driver:test`；进入该目录前必读 [drivers/windows-virtual-mic/AGENTS.md](drivers/windows-virtual-mic/AGENTS.md) |
+| `drivers/windows-virtual-mic`（虚拟麦克风驱动） | `npm run test:driver-boundaries`；`npm run driver:build-sysvad` | 前者为纯 Node 边界测试（无需 WDK/管理员，PR CI 同款快速信号）；后者需要 WDK/EWDK 构建环境，PR CI 会对触碰 `drivers/**` 的变更自动运行同款构建（`.github/workflows/driver-build.yml`，机械编译信号）；驱动自测用 `npm run driver:test`；进入该目录前必读 [drivers/windows-virtual-mic/AGENTS.md](drivers/windows-virtual-mic/AGENTS.md) |
 | 翻译链路性能改动（首字/首句延迟等） | `npm run test:watch-mode-evidence:strict` | strict 模式对 `firstVisibleTranslationLatencySeconds` 等已产出延迟字段做阈值断言（默认 8s/15s，可用 `--latency-thresholds 字段=秒` 覆盖或 `=off` 关闭）；证据需先由 `npm run test:watch-mode-live:matrix` 产出；脚本自测用 `npm run test:watch-mode-report` |
 | 发布前 / 提交合并前全量门禁 | `npm run quality:gate:release` | 综合质量门禁（Node 脚本） |
 

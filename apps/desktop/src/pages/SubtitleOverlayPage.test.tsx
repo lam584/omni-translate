@@ -8,7 +8,8 @@ import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 import SubtitleOverlayPage from './SubtitleOverlayPage';
 import SubtitleOverlayContent from './overlay/SubtitleOverlayContent';
 import { useAppStore } from '../stores/app-store';
-import { cloneStoreState as cloneBaseStoreState, mountTestRoot, type TestRootHandle } from '../test-utils';
+import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
+import { cloneStoreState as cloneBaseStoreState } from '../test-utils/store-state';
 
 const tauriMocks = vi.hoisted(() => {
   let pointerPosition = { x: 0, y: 0 };

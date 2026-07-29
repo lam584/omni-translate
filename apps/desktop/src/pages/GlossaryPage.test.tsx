@@ -2,7 +2,7 @@ import { act } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { useAppStore } from '../stores/app-store';
-import { mountTestRoot, type TestRootHandle } from '../test-utils';
+import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
 import { buttonByText, click, inputText, selectValue } from '../test-utils/dom-interactions';
 import { writeProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
 import GlossaryPage from './GlossaryPage';

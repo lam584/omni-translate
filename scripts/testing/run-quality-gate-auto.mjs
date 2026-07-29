@@ -57,6 +57,8 @@ export const runQualityGateAuto = ({
   writeJson(summaryPath, {
     generatedAt: sortableTimestamp(),
     workspaceRoot: repoRoot,
+    // Audit trail: record which automated suites were skipped for this run.
+    degradation: { skipDesktopShell, skipBridgeService },
     automatedResults: results,
   });
   return summaryPath;

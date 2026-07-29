@@ -1,0 +1,109 @@
+# Mechanical compile signal for drivers/** changes.
+#
+# Why a standalone workflow instead of a conditional job in pr-fast-checks.yml:
+# workflow-level `paths` filtering is the only native mechanism that guarantees
+# non-driver PRs are completely unaffected (no queued job, no extra runner).
+#
+# Why WDK instead of EWDK: build-sysvad-driver.ps1 hard-codes the installed
+# Windows Kits layout (C:\Program Files (x86)\Windows Kits\10) and a Visual
+# Studio installation root. The EWDK is a ~12 GB ISO with a different mounted
+# layout, so using it in CI would require modifying the production build
+# script. The windows-2025 runner image already ships VS 2022 with the
+# Windows Driver Kit component (10.0.26100), Windows 11 SDK 26100 and the x64
+# Spectre-mitigated runtimes; when the Kits layout is incomplete on a given
+# image revision, the step below silently installs WDK 10.0.26100.6584 — the
+# same version pinned in drivers/windows-virtual-mic/BUILDING.md.
+
+name: Driver Build
+
+on:
+  pull_request:
+    paths:
+      - "drivers/**"
+      - "scripts/installer/build-sysvad-driver.ps1"
+      - ".github/workflows/driver-build.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "drivers/**"
+      - "scripts/installer/build-sysvad-driver.ps1"
+      - ".github/workflows/driver-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-sysvad:
+    name: SYSVAD compile signal
+    runs-on: windows-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # build-sysvad-driver.ps1 asserts these exact files before building
+      # (WDK build props, Inf2Cat, SignTool, InfVerif). Install the WDK only
+      # when the runner image does not already provide a complete layout.
+      - name: Ensure WDK 10.0.26100 toolset
+        shell: powershell
+        run: |
+          $kitsRoot = 'C:\Program Files (x86)\Windows Kits\10'
+          $required = @(
+            (Join-Path $kitsRoot 'build\10.0.26100.0\WindowsDriver.Default.props'),
+            (Join-Path $kitsRoot 'bin\10.0.26100.0\x86\Inf2Cat.exe'),
+            (Join-Path $kitsRoot 'bin\10.0.26100.0\x64\signtool.exe'),
+            (Join-Path $kitsRoot 'Tools\10.0.26100.0\x64\infverif.exe')
+          )
+          $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+          if ($missing.Count -eq 0) {
+            Write-Output 'WDK 10.0.26100 layout already present on the runner image.'
+            exit 0
+          }
+          Write-Output "Missing WDK files:`n$($missing -join "`n")"
+          Write-Output 'Installing WDK 10.0.26100.6584 silently (fwlink 2335869)...'
+          $setup = Join-Path $env:RUNNER_TEMP 'wdksetup.exe'
+          $logPath = Join-Path $env:RUNNER_TEMP 'wdksetup.log'
+          Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2335869' -OutFile $setup
+          $process = Start-Process -FilePath $setup `
+            -ArgumentList '/features', '+', '/quiet', '/norestart', '/log', $logPath `
+            -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            if (Test-Path -LiteralPath $logPath) { Get-Content -LiteralPath $logPath -Tail 50 }
+            throw "wdksetup.exe failed. ExitCode=$($process.ExitCode)"
+          }
+          $stillMissing = @($required | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+          if ($stillMissing.Count -ne 0) {
+            throw "WDK install finished but the layout is still incomplete:`n$($stillMissing -join "`n")"
+          }
+
+      # Same entry point as `npm run driver:build-sysvad`, with CI-only
+      # parameter overrides: the runner ships VS Enterprise (not the Community
+      # default) and signing is skipped because the compile + InfVerif +
+      # kernel-import checks are the mechanical signal; signing credentials
+      # stay local/release-only.
+      - name: Build SYSVAD driver package
+        shell: powershell
+        run: |
+          $vswhere = 'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $visualStudioRoot = & $vswhere -latest -products * `
+            -requires Microsoft.Component.MSBuild -property installationPath
+          if (-not $visualStudioRoot) { throw 'vswhere found no Visual Studio installation with MSBuild.' }
+          Write-Output "Using Visual Studio at $visualStudioRoot"
+          ./scripts/installer/build-sysvad-driver.ps1 `
+            -WorkspaceRoot . `
+            -VisualStudioRoot $visualStudioRoot `
+            -SkipSigning
+
+      - name: Upload staged driver package
+        uses: actions/upload-artifact@v4
+        with:
+          name: sysvad-driver-package-unsigned
+          path: drivers/windows-virtual-mic/package/
+          retention-days: 7

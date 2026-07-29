@@ -17,6 +17,9 @@ import {
 const contract = readFixture('bridge-ioctl-contract.json');
 const header = readRepoText('drivers', 'windows-virtual-mic', 'include', 'omni_bridge_ioctl.h');
 const bridgeMod = readRepoText('apps', 'bridge-service-native', 'src', 'windows', 'mod.rs');
+// The ioctl codes, device path and status base size live in probe_support
+// (src/lib.rs) since the bridge/probe dedup refactor.
+const bridgeProbeSupport = readRepoText('apps', 'bridge-service-native', 'src', 'lib.rs');
 
 function headerHex(name) {
   const match = header.match(new RegExp(`#define ${name} (0x[0-9A-Fa-f]+)`));
@@ -69,12 +72,12 @@ test('header ioctl codes resolve to the pinned contract values', () => {
 });
 
 test('bridge service reimplements the exact same ioctl codes in user mode', () => {
-  assert.ok(bridgeMod.includes('r"\\\\.\\OmniTranslateVirtualAudio"'));
-  assert.ok(bridgeMod.includes(`FILE_DEVICE_OMNI_TRANSLATE: u32 = ${contract.deviceType}`));
+  assert.ok(bridgeProbeSupport.includes('r"\\\\.\\OmniTranslateVirtualAudio"'));
+  assert.ok(bridgeProbeSupport.includes(`FILE_DEVICE_OMNI_TRANSLATE: u32 = ${contract.deviceType}`));
   for (const [name, expected] of Object.entries(contract.ioctls)) {
     assert.ok(
-      bridgeMod.includes(`(${expected.function} << 2)`),
-      `bridge mod.rs no longer derives the ${name} function ${expected.function}`,
+      bridgeProbeSupport.includes(`(${expected.function} << 2)`),
+      `bridge lib.rs no longer derives the ${name} function ${expected.function}`,
     );
   }
 });
@@ -95,8 +98,8 @@ test('status struct layout matches the header field-for-field', () => {
   assert.equal(sizeBytes, contract.statusStruct.sizeBytes);
   // The bridge reads this struct as a 40-byte base prefix.
   assert.ok(
-    bridgeMod.includes(`DRIVER_STATUS_BASE_SIZE: u32 = ${contract.statusStruct.sizeBytes}`),
-    'bridge mod.rs no longer pins the 40-byte OMNI_BRIDGE_STATUS base size',
+    bridgeProbeSupport.includes(`DRIVER_STATUS_BASE_SIZE: u32 = ${contract.statusStruct.sizeBytes}`),
+    'bridge lib.rs no longer pins the 40-byte OMNI_BRIDGE_STATUS base size',
   );
 });
 

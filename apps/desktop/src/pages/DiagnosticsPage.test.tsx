@@ -10,7 +10,7 @@ import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../
 import { PreviewDesktopApi } from '../runtime/preview-desktop-api';
 import { loggerTestHelpers } from '../runtime/logger';
 import { useAppStore } from '../stores/app-store';
-import { mountTestRoot, type TestRootHandle } from '../test-utils';
+import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
 import type { BenchmarkReport } from '../runtime/benchmark-runtime';
 import { DiagnosticsReportExporter } from './diagnostics/DiagnosticsDetails';
 

@@ -4,7 +4,8 @@ import '../../../src/i18n/config';
 import i18n from '../../../src/i18n/config';
 import { runtimeSnapshotMock } from '../../../src/mocks/runtime-shell';
 import { useAppStore } from '../../../src/stores/app-store';
-import { cloneStoreState, mountTestRoot, setTauriRuntime, type TestRootHandle } from '../../test-utils';
+import { mountTestRoot, type TestRootHandle } from '../../test-utils/react-root';
+import { cloneStoreState, setTauriRuntime } from '../../test-utils/store-state';
 import { click, inputText, selectValue } from '../../test-utils/dom-interactions';
 import WelcomeLanguagePicker from './WelcomeLanguagePicker';
 

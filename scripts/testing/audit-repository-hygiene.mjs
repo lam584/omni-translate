@@ -6,6 +6,13 @@ const trackedFiles = execFileSync('git', ['ls-files', '-z'], { encoding: 'utf8' 
   .filter(Boolean)
   .map((file) => file.replace(/\\/g, '/'));
 
+const untrackedEntries = execFileSync('git', ['ls-files', '--others', '--exclude-standard', '--directory', '-z'], { encoding: 'utf8' })
+  .split('\0')
+  .filter(Boolean)
+  .map((entry) => entry.replace(/\\/g, '/'));
+
+const untrackedGeneratedPattern = /(^|\/)\.(jscpd-[^/]+|codex|claude|codewhale|qoder|tmp)(\/|$)/i;
+
 const allowedLogFixtures = /^scripts\/testing\/fixtures\/watch-mode-live\/[^/]+\/[^/]+\.log$/i;
 const forbiddenPaths = [
   { pattern: /(^|\/)(artifacts|node_modules|target|dist|coverage)(\/|$)/i, reason: 'generated directory' },
@@ -17,6 +24,11 @@ const forbiddenPaths = [
 ];
 
 const violations = [];
+for (const entry of untrackedEntries) {
+  if (untrackedGeneratedPattern.test(entry)) {
+    violations.push(`${entry}: untracked generated or agent-local artifact missing from .gitignore`);
+  }
+}
 for (const file of trackedFiles) {
   if (!fs.existsSync(file)) continue;
   for (const rule of forbiddenPaths) {

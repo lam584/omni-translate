@@ -11,7 +11,8 @@ Windows 虚拟麦克风内核驱动（基于 sysvad 示例改造），为桌面�
 
 | 改动范围 | 验证命令 | 前置条件 |
 | --- | --- | --- |
-| 驱动源码 / INF | `npm run driver:build-sysvad` | 需要 WDK/EWDK 构建环境 |
+| 任意驱动相关改动（快速信号） | `npm run test:driver-boundaries` | 无需 WDK/管理员，纯 Node 边界测试（安装状态/桥接帧写入/端点隔离），PR CI 强制运行同款命令 |
+| 驱动源码 / INF | `npm run driver:build-sysvad` | 需要 WDK/EWDK 构建环境；PR CI 对触碰 `drivers/**` 的变更强制运行同款构建（`.github/workflows/driver-build.yml`，不签名，编译 + InfVerif + 内核导入表校验） |
 | 驱动安装链路 | `npm run driver:test` | 需要管理员权限与测试签名环境 |
 
 ## 边界约束

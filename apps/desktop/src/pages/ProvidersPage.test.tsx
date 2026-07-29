@@ -6,7 +6,8 @@ import { appConfigDraftMock } from '../mocks/app-config';
 import { providerTemplates } from '../mocks/provider-templates';
 import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import { useAppStore } from '../stores/app-store';
-import { cloneStoreState, mountTestRoot, setTauriRuntime, type TestRootHandle } from '../test-utils';
+import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
+import { cloneStoreState, setTauriRuntime } from '../test-utils/store-state';
 import ProvidersPage, { providersPageHelpers } from './ProvidersPage';
 
 const invokeMock = vi.fn();

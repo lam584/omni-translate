@@ -8,6 +8,11 @@
 - If terminal output shows garbled Chinese, consider setting UTF-8 output for the session before diagnosing file corruption: `chcp 65001`, `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8`, and `$OutputEncoding = [System.Text.Encoding]::UTF8`.
 - 禁止使用格式化命令批量修改文件
 
+# AI-assisted commit attribution
+
+- When Codex materially contributes code, tests, documentation, review fixes, or implementation decisions to a commit, include the exact trailer `Co-authored-by: Codex <noreply@openai.com>` in that commit message.
+- Do not add the Codex trailer when Codex only performs a read-only check or gives advice without contributing to the committed result.
+
 # 命令路由表（改动层 → 验证命令）
 
 以下命令均在仓库根目录直接运行（前置条件：已执行 `npm install`；Rust 相关命令需要本机 cargo 工具链；驱动与 Watch Mode 真实链路等 Windows 专属命令需要 Windows PowerShell，测试/门禁编排脚本均为 Node 实现）。

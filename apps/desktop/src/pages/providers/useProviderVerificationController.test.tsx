@@ -74,7 +74,16 @@ describe('useProviderVerificationController', () => {
     await act(async () => controller.handleSecretVisibilityToggle());
     await act(async () => controller.handleVerificationRun());
     await act(async () => controller.refreshModelCatalog());
-    expect(params.setSecretStatusMessage).toHaveBeenCalled();
+    // 保存/读取/验证三个被阻断动作各产生一条回退文案（t 桩直接回显 key）。
+    const blockedMessages = vi.mocked(params.setSecretStatusMessage).mock.calls
+      .filter(([message]) => message === 'providers.messages.storageBlockedAction');
+    expect(blockedMessages).toHaveLength(3);
+    // 被阻断的目录刷新则落到目录错误态，而非密钥状态文案。
+    expect(params.setModelCatalog).toHaveBeenCalledWith(expect.objectContaining({
+      signature: params.modelCatalogSignature,
+      status: 'error',
+      error: 'providers.messages.storageBlockedAction',
+    }));
   });
 
   it('resets a template without a capability registry and exercises visibility short-circuits', async () => {
@@ -112,6 +121,13 @@ describe('useProviderVerificationController', () => {
     runtime.probe.mockResolvedValueOnce({ verdict: 'available', error: null });
     runtime.smoke.mockResolvedValueOnce({ error: null, streamObserved: true });
     await act(async () => controller.handleVerificationRun());
+    expect(runtime.fetchModels).toHaveBeenCalledWith(params.activeProvider, []);
+    expect(runtime.saveSecret).toHaveBeenCalledWith(params.activeProvider.authRef.reference, 'key');
+    expect(runtime.readSecret).toHaveBeenCalledWith(params.activeProvider.authRef.reference);
+    expect(params.setSecretStatusMessage).toHaveBeenCalledWith('providers.messages.noStoredSecret');
+    expect(params.setSecretDraft).toHaveBeenCalledWith('stored');
+    expect(runtime.probe).toHaveBeenCalledWith(params.activeProvider);
+    expect(runtime.smoke).toHaveBeenCalledWith(params.activeProvider, 'hello', 'en', 'zh');
     expect(params.setVerificationModalOpen).toHaveBeenCalledWith(true);
   });
 

@@ -67,7 +67,9 @@ describe('useStorageRecovery', () => {
     mocks.bootstrapRuntime.mockResolvedValueOnce(ready);
     await act(async () => { view.root.render(<Harness />); await Promise.resolve(); });
     await act(async () => { await vi.advanceTimersByTimeAsync(16_000); });
-    expect(mocks.bootstrapRuntime).toHaveBeenCalled();
+    // 第 8 次轮询后清除定时器并仅触发一次无参的兜底 bootstrapRuntime。
+    expect(mocks.bootstrapRuntime).toHaveBeenCalledTimes(1);
+    expect(mocks.bootstrapRuntime).toHaveBeenCalledWith();
     expect(props.setRuntimeSnapshot).toHaveBeenCalledWith(ready);
 
     props = { ...props, bridgeStatus: 'tauri-shell-2', setRuntimeSnapshot: vi.fn() };

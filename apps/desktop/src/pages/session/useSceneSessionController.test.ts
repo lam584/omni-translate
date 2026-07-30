@@ -208,10 +208,13 @@ beforeEach(() => {
 });
 
 describe('useSceneSessionController IPC orchestration', () => {
-  it('covers timeout cleanup values and Bridge error classification helpers', async () => {
+  it('classifies Bridge startup errors without treating unrelated or empty failures as Bridge errors', () => {
     expect(sceneSessionControllerHelpers.isBridgeStartupError(new Error('WASAPI driver failed'))).toBe(true);
     expect(sceneSessionControllerHelpers.isBridgeStartupError('ordinary failure')).toBe(false);
     expect(sceneSessionControllerHelpers.isBridgeStartupError(null)).toBe(false);
+  });
+
+  it('preserves the launch timeout when asynchronous cleanup itself fails', async () => {
     vi.useFakeTimers();
     const timed = sceneSessionControllerHelpers.withSceneLaunchTimeout(
       new Promise<never>(() => undefined), 10, 'deadline', async () => { throw 'cleanup string'; },
@@ -220,6 +223,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     await vi.advanceTimersByTimeAsync(10);
     await rejected;
     expect(mocks.appendLog).toHaveBeenCalledWith('runtime', 'warning', expect.stringContaining('cleanup string'));
+    vi.useRealTimers();
   });
 
   it('describes Watch attribution when snapshot IPC rejects a non-Error', async () => {
@@ -292,7 +296,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     mocks.getAudioSnapshot.mockResolvedValue(audio);
     const { api, controller } = makeHarness();
     await runStopAll({ api, controller }, { audioSnapshot: audio, hasSpeechActivity: true });
-    expect(mocks.stopSpeech).toHaveBeenCalled();
+    expect(mocks.stopSpeech).toHaveBeenCalledWith();
   });
 
   it('reports a fallback failure and rolls the AEC fallback back when its speech stage fails', async () => {
@@ -345,7 +349,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     mocks.showOverlay.mockRejectedValueOnce('overlay string');
     const { api, controller } = makeHarness();
     await api.launchScene(options);
-    expect(mocks.stopSpeech).toHaveBeenCalled();
+    expect(mocks.stopSpeech).toHaveBeenCalledWith();
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('overlay string') }));
   });
 
@@ -378,7 +382,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     const { api, controller } = makeHarness();
 
     await expect(api.ensureBridgeReady('voice-room', structuredClone(appConfigDraftMock))).resolves.toBe(installed);
-    expect(mocks.installBridge).toHaveBeenCalled();
+    expect(mocks.installBridge).toHaveBeenCalledWith(expect.objectContaining({ devices: expect.any(Object) }));
     expect(controller.setRuntimeSnapshot).toHaveBeenLastCalledWith(installed);
   });
 
@@ -412,7 +416,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     const { api, controller } = makeHarness();
 
     await expect(api.ensureBridgeReady('voice-room', structuredClone(appConfigDraftMock))).resolves.toBe(started);
-    expect(mocks.startBridge).toHaveBeenCalled();
+    expect(mocks.startBridge).toHaveBeenCalledWith(expect.objectContaining({ devices: expect.any(Object) }));
     expect(controller.setRuntimeSnapshot).toHaveBeenLastCalledWith(started);
   });
 
@@ -429,7 +433,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.stopSpeech).toHaveBeenCalledTimes(1);
     expect(mocks.stopTranslation).toHaveBeenCalledTimes(1);
     expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toEqual(['outbound', 'inbound']);
-    expect(controller.setAudioSnapshot).toHaveBeenCalled();
+    expect(controller.setAudioSnapshot).toHaveBeenLastCalledWith(audioRuntimeSnapshotMock);
   });
 
   it('continues stop compensation and reports IPC failures when snapshot refresh and a stop step fail', async () => {
@@ -475,8 +479,8 @@ describe('useSceneSessionController IPC orchestration', () => {
 
     await api.launchScene(makeLaunchOptions('voice-room'));
 
-    expect(mocks.preconnect).toHaveBeenCalled();
-    expect(mocks.cancelPreconnect).toHaveBeenCalled();
+    expect(mocks.preconnect).toHaveBeenCalledWith(expect.objectContaining({ devices: expect.any(Object) }));
+    expect(mocks.cancelPreconnect).toHaveBeenCalledWith();
   });
 
   it('logs and continues when parallel Omni preconnect IPC rejects', async () => {
@@ -546,8 +550,8 @@ describe('useSceneSessionController IPC orchestration', () => {
 
     await api.launchScene(makeLaunchOptions('watch'));
 
-    expect(mocks.getAudioSnapshot).toHaveBeenCalled();
-    expect(mocks.recentLogs).toHaveBeenCalled();
+    expect(mocks.getAudioSnapshot).toHaveBeenCalledWith();
+    expect(mocks.recentLogs).toHaveBeenCalledWith();
     expect(controller.sceneLaunchFailureMessage).toHaveBeenCalledWith('watch', 'inbound-route', expect.any(Error));
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
   });
@@ -613,7 +617,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     await api.launchScene(makeLaunchOptions('watch'));
 
     expect(mocks.startRoute.mock.calls.map(([direction]) => direction)).toEqual(['inbound', 'inbound']);
-    expect(mocks.startSpeech).toHaveBeenCalled();
+    expect(mocks.startSpeech).toHaveBeenCalledWith(expect.objectContaining({ speech: expect.any(Object) }));
     expect(mocks.startTranslation).not.toHaveBeenCalled();
     expect(mocks.showOverlay).not.toHaveBeenCalled();
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'warning' }));
@@ -632,8 +636,8 @@ describe('useSceneSessionController IPC orchestration', () => {
 
     await api.launchScene(options);
 
-    expect(mocks.stopSpeech).toHaveBeenCalled();
-    expect(mocks.stopTranslation).toHaveBeenCalled();
+    expect(mocks.stopSpeech).toHaveBeenCalledWith();
+    expect(mocks.stopTranslation).toHaveBeenCalledWith();
     expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toEqual(['outbound', 'inbound']);
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
   });
@@ -676,8 +680,8 @@ describe('useSceneSessionController IPC orchestration', () => {
 
     await api.launchScene(options);
 
-    expect(mocks.stopSpeech).toHaveBeenCalled();
-    expect(mocks.stopTranslation).toHaveBeenCalled();
+    expect(mocks.stopSpeech).toHaveBeenCalledWith();
+    expect(mocks.stopTranslation).toHaveBeenCalledWith();
   });
 
   it('times out a hung conversation IPC launch and runs all native cleanup commands', async () => {
@@ -690,9 +694,9 @@ describe('useSceneSessionController IPC orchestration', () => {
     await vi.advanceTimersByTimeAsync(100);
     await launch;
 
-    expect(mocks.cancelPreconnect).toHaveBeenCalled();
-    expect(mocks.stopSpeech).toHaveBeenCalled();
-    expect(mocks.stopTranslation).toHaveBeenCalled();
+    expect(mocks.cancelPreconnect).toHaveBeenCalledWith();
+    expect(mocks.stopSpeech).toHaveBeenCalledWith();
+    expect(mocks.stopTranslation).toHaveBeenCalledWith();
     expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toEqual(['outbound', 'inbound']);
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('timeout') }));
     vi.useRealTimers();
@@ -752,8 +756,8 @@ describe('useSceneSessionController IPC orchestration', () => {
     for (const direction of expectedStop) {
       expect(mocks.stopRoute.mock.calls.map(([d]) => d)).toContain(direction);
     }
-    if (kind === 'translate') expect(mocks.stopTranslation).toHaveBeenCalled();
-    if (kind === 'speech') expect(mocks.stopSpeech).toHaveBeenCalled();
+    if (kind === 'translate') expect(mocks.stopTranslation).toHaveBeenCalledWith();
+    if (kind === 'speech') expect(mocks.stopSpeech).toHaveBeenCalledWith();
     expect(controller.setAudioSnapshot).not.toHaveBeenCalledWith(lateSnapshot);
     // Snapshot order: the last published audio snapshot is the late stage's
     // stop result, not any started-state snapshot.
@@ -782,7 +786,7 @@ describe('useSceneSessionController IPC orchestration', () => {
 
     const { controller } = await launchPastOuterTimeout(options);
 
-    expect(mocks.toggleOverlay).toHaveBeenCalled();
+    expect(mocks.toggleOverlay).toHaveBeenCalledWith();
     expect(controller.setRuntimeSnapshot).not.toHaveBeenCalledWith(lateRuntime);
     expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(hiddenRuntime);
     vi.useRealTimers();

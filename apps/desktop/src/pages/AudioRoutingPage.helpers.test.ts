@@ -28,10 +28,13 @@ const all = model(['speech-to-text', 'text-to-speech', 'speech-to-speech', 'text
 describe('AudioRoutingPage helpers', () => {
   it('detects voice models and selected options', () => {
     expect([stt, tts, s2s, text].map(isVoiceModel)).toEqual([true, true, true, false]);
-    expect(resolveSelectedModel([
+    expect(isVoiceModel(model(['text-generation', 'speech-to-text']))).toBe(true);
+    const options = [
       { ...stt, providerTemplateId: 'template-a', rawModelId: 'stt' },
       { ...text, providerTemplateId: 'template-a', rawModelId: 'text' },
-    ], text.model)?.rawModelId).toBe('text');
+    ];
+    expect(resolveSelectedModel(options, text.model)).toBe(options[1]);
+    expect(resolveSelectedModel(options, 'missing')).toBeUndefined();
     expect(resolveSelectedModel([], 'missing')).toBeUndefined();
   });
 

@@ -76,8 +76,6 @@
   "apps/desktop/src/pages/session/useSceneSessionController.ts:log-only-catch:catch (snapshotError) { appendFrontendDiagnosticsLog('runtime', 'warning', `[SceneLaunch] attribution snapshot read failed: ${snapshotError instanceof Error ? snapshotError.message",
   "apps/desktop/src/pages/session/useSceneSessionController.ts:try-finally-without-catch:try { return await Promise.race([operation, timeout]); } finally { clearTimeout(timerId); }",
   "apps/desktop/src/runtime/audio-runtime.ts:empty-catch:catch { // Warming is purely an optimization; ignore failures and fall back to cold start. }",
-  "apps/desktop/src/runtime/bootstrap/bridge-autostart.ts:void-call-without-catch:void refreshAndAutostartBridgeStartup(config).finally(() => resolvePromise?.())",
-  "apps/desktop/src/runtime/bootstrap/capture-prewarm.ts:void-call-without-catch:void prewarmCaptureRoutesRuntime(config).finally(() => resolvePromise?.())",
   "apps/desktop/src/runtime/bootstrap/connect.ts:empty-catch:catch { /* SQLite persistence already succeeded; local cleanup is best-effort */ }",
   "apps/desktop/src/runtime/bootstrap/connect.ts:empty-catch:catch { /* silently fail */ }",
   "apps/desktop/src/runtime/bootstrap/connect.ts:empty-catch:catch { /* silently fail */ }",

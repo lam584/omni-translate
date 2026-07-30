@@ -67,14 +67,14 @@ struct DiagnosticsState {
 /// pipeline, so the `log::` forwarder can hold a clone while Tauri manages the
 /// original.
 #[derive(Clone)]
-pub struct DiagnosticsStateStore {
+pub(crate) struct DiagnosticsStateStore {
     inner: Arc<Mutex<DiagnosticsState>>,
     min_log_level: Arc<AtomicU8>,
     pipeline: LogPipeline,
 }
 
 impl DiagnosticsStateStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let root_dir = default_diagnostics_root();
         let store = Self::new_with_root(root_dir.clone());
 
@@ -86,7 +86,7 @@ impl DiagnosticsStateStore {
         store
     }
 
-    pub fn new_with_root(root_dir: impl Into<String>) -> Self {
+    pub(crate) fn new_with_root(root_dir: impl Into<String>) -> Self {
         let root_dir = root_dir.into();
         let logs_dir = format!(r"{}\logs", root_dir);
         let exports_dir = format!(r"{}\exports", root_dir);
@@ -153,7 +153,7 @@ impl DiagnosticsStateStore {
     }
 
     #[allow(dead_code, reason = "diagnostics bundle tooling reads the root path in non-desktop builds")]
-    pub fn root_dir(&self) -> String {
+    pub(crate) fn root_dir(&self) -> String {
         self.inner
             .lock()
             .expect("diagnostics state poisoned")
@@ -161,7 +161,7 @@ impl DiagnosticsStateStore {
             .clone()
     }
 
-    pub fn logs_dir(&self) -> String {
+    pub(crate) fn logs_dir(&self) -> String {
         self.inner
             .lock()
             .expect("diagnostics state poisoned")
@@ -169,7 +169,7 @@ impl DiagnosticsStateStore {
             .clone()
     }
 
-    pub fn exports_dir(&self) -> String {
+    pub(crate) fn exports_dir(&self) -> String {
         self.inner
             .lock()
             .expect("diagnostics state poisoned")
@@ -177,14 +177,14 @@ impl DiagnosticsStateStore {
             .clone()
     }
 
-    pub fn ensure_directories(&self) -> Result<(), String> {
+    pub(crate) fn ensure_directories(&self) -> Result<(), String> {
         let state = self.inner.lock().expect("diagnostics state poisoned");
         fs::create_dir_all(&state.logs_dir).map_err(|error| error.to_string())?;
         fs::create_dir_all(&state.exports_dir).map_err(|error| error.to_string())?;
         Ok(())
     }
 
-    pub fn set_min_log_level(&self, level: &str) {
+    pub(crate) fn set_min_log_level(&self, level: &str) {
         let priority = log_level_priority(level);
         self.min_log_level.store(priority, Ordering::Relaxed);
         // Keep the `log::` facade's global filter in sync so disabled levels
@@ -207,11 +207,11 @@ impl DiagnosticsStateStore {
         not(test),
         allow(dead_code, reason = "flush barrier is exercised by unit tests and kept for orderly shutdown")
     )]
-    pub fn flush_logs(&self) -> bool {
+    pub(crate) fn flush_logs(&self) -> bool {
         self.pipeline.flush_blocking(Duration::from_secs(5))
     }
 
-    pub fn append_log(
+    pub(crate) fn append_log(
         &self,
         category: &str,
         level: &str,
@@ -280,7 +280,7 @@ impl DiagnosticsStateStore {
         Ok(entry)
     }
 
-    pub fn record_model_trace_call_started(&self, call: ModelTraceCallRuntime) {
+    pub(crate) fn record_model_trace_call_started(&self, call: ModelTraceCallRuntime) {
         let mut state = self.inner.lock().expect("diagnostics state poisoned");
         state.model_trace_summary.active_trace_id = Some(call.trace_id.clone());
         state.model_trace_summary.total_calls += 1;
@@ -292,7 +292,7 @@ impl DiagnosticsStateStore {
             .truncate(MAX_RECENT_MODEL_TRACE_CALLS);
     }
 
-    pub fn record_model_trace_call_finished(
+    pub(crate) fn record_model_trace_call_finished(
         &self,
         trace_id: &str,
         call_id: &str,
@@ -326,19 +326,19 @@ impl DiagnosticsStateStore {
         }
     }
 
-    pub fn mark_self_check(&self, emitted_at: String) {
+    pub(crate) fn mark_self_check(&self, emitted_at: String) {
         let mut state = self.inner.lock().expect("diagnostics state poisoned");
         state.last_self_check_at = Some(emitted_at);
     }
 
-    pub fn mark_export(&self, scope: String, output_path: String, emitted_at: String) {
+    pub(crate) fn mark_export(&self, scope: String, output_path: String, emitted_at: String) {
         let mut state = self.inner.lock().expect("diagnostics state poisoned");
         state.last_export_scope = Some(scope);
         state.last_export_path = Some(output_path);
         state.last_exported_at = Some(emitted_at);
     }
 
-    pub fn snapshot_base(&self) -> DiagnosticsRuntimeSnapshot {
+    pub(crate) fn snapshot_base(&self) -> DiagnosticsRuntimeSnapshot {
         let state = self.inner.lock().expect("diagnostics state poisoned");
 
         DiagnosticsRuntimeSnapshot {
@@ -534,7 +534,7 @@ fn copy_directory_files(source_dir: &Path, target_dir: &Path) -> Result<usize, S
     Ok(copied)
 }
 
-pub fn copy_logs_into(target_dir: &str, logs_dir: &str) -> Result<usize, String> {
+pub(crate) fn copy_logs_into(target_dir: &str, logs_dir: &str) -> Result<usize, String> {
     copy_directory_files(Path::new(logs_dir), Path::new(target_dir))
 }
 

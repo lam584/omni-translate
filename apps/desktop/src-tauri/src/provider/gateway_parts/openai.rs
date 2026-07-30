@@ -17,7 +17,7 @@ use super::transport::{join_url, normalize_transport_error, parse_openai_error, 
 /// The adapter itself is intentionally stateless today, while the explicit
 /// type keeps provider protocol ownership out of the gateway facade and gives
 /// tests a stable dependency seam.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct OpenAiProviderAdapter;
 
 impl_provider_adapter_execute!(OpenAiProviderAdapter);

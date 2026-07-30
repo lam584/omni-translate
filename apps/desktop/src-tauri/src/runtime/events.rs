@@ -15,8 +15,8 @@ use super::windows::collect_window_snapshots;
 use super::windows::ensure_subtitle_overlay_window;
 use super::windows::sync_subtitle_overlay_input_state;
 
-pub const RUNTIME_SNAPSHOT_EVENT: &str = "runtime://snapshot";
-pub const RUNTIME_NOTIFICATION_EVENT: &str = "runtime://notification";
+pub(crate) const RUNTIME_SNAPSHOT_EVENT: &str = "runtime://snapshot";
+pub(crate) const RUNTIME_NOTIFICATION_EVENT: &str = "runtime://notification";
 const CONFIG_DRAFT_UPDATED_EVENT: &str = "config://draft-updated";
 
 fn should_ignore_subtitle_overlay_cursor_events(locked: bool, hotspot_interactive: bool) -> bool {
@@ -71,13 +71,13 @@ fn sync_persisted_subtitle_overlay_input<R: tauri::Runtime>(
 /// `emit_audio_snapshot` path, so only their warnings/errors need to be
 /// surfaced live here. Every other category (runtime/bridge/storage/...)
 /// always emits so startup progress and lifecycle updates are unaffected.
-pub fn log_should_emit_runtime_snapshot(category: &str, level: &str) -> bool {
+pub(crate) fn log_should_emit_runtime_snapshot(category: &str, level: &str) -> bool {
     let is_high_frequency_trace =
         matches!(category, "audio" | "omni") && !matches!(level, "warning" | "error");
     !is_high_frequency_trace
 }
 
-pub fn build_runtime_snapshot<R: tauri::Runtime>(
+pub(crate) fn build_runtime_snapshot<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &RuntimeStateStore,
 ) -> RuntimeSnapshot {
@@ -107,7 +107,7 @@ pub fn build_runtime_snapshot<R: tauri::Runtime>(
     snapshot
 }
 
-pub fn emit_runtime_snapshot<R: tauri::Runtime>(
+pub(crate) fn emit_runtime_snapshot<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &RuntimeStateStore,
 ) -> tauri::Result<()> {
@@ -120,7 +120,7 @@ pub fn emit_runtime_snapshot<R: tauri::Runtime>(
     crate::api_v2::emit_runtime_event_v2(app, "snapshot", payload)
 }
 
-pub fn emit_runtime_notification<R: tauri::Runtime>(
+pub(crate) fn emit_runtime_notification<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &RuntimeStateStore,
     notification: RuntimeNotification,
@@ -167,7 +167,7 @@ fn reveal_subtitle_overlay_window<R: tauri::Runtime>(
     Ok(())
 }
 
-pub fn toggle_subtitle_overlay_with_state<R: tauri::Runtime>(
+pub(crate) fn toggle_subtitle_overlay_with_state<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &RuntimeStateStore,
 ) -> Result<RuntimeSnapshot, String> {
@@ -190,7 +190,7 @@ pub fn toggle_subtitle_overlay_with_state<R: tauri::Runtime>(
     Ok(build_runtime_snapshot(app, state))
 }
 
-pub fn show_subtitle_overlay_with_state<R: tauri::Runtime>(
+pub(crate) fn show_subtitle_overlay_with_state<R: tauri::Runtime>(
     app: &AppHandle<R>,
     state: &RuntimeStateStore,
 ) -> Result<RuntimeSnapshot, String> {
@@ -225,14 +225,14 @@ pub fn show_subtitle_overlay_with_state<R: tauri::Runtime>(
 // main thread; keeping command bodies off it prevents a burst of concurrent
 // invokes from starving that handler (which manifested as `invoke` round-trips
 // that never returned -> `bootstrap_runtime` "timeout").
-pub async fn get_runtime_snapshot<R: tauri::Runtime>(
+pub(crate) async fn get_runtime_snapshot<R: tauri::Runtime>(
     app: AppHandle<R>,
     state: State<'_, RuntimeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
     Ok(build_runtime_snapshot(&app, &state))
 }
 
-pub async fn bootstrap_runtime<R: tauri::Runtime>(
+pub(crate) async fn bootstrap_runtime<R: tauri::Runtime>(
     app: AppHandle<R>,
     state: State<'_, RuntimeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
@@ -253,7 +253,7 @@ pub async fn bootstrap_runtime<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub fn toggle_subtitle_overlay(
+pub(crate) fn toggle_subtitle_overlay(
     app: AppHandle,
     state: State<'_, RuntimeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
@@ -261,20 +261,20 @@ pub fn toggle_subtitle_overlay(
 }
 
 #[tauri::command]
-pub fn show_subtitle_overlay(
+pub(crate) fn show_subtitle_overlay(
     app: AppHandle,
     state: State<'_, RuntimeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
     show_subtitle_overlay_with_state(&app, &state)
 }
 
-pub fn sync_subtitle_overlay_region(app: AppHandle, rounded: bool) -> Result<(), String> {
+pub(crate) fn sync_subtitle_overlay_region(app: AppHandle, rounded: bool) -> Result<(), String> {
     let window = ensure_subtitle_overlay_window(&app).map_err(|error| error.to_string())?;
     apply_subtitle_overlay_region(&window, rounded)
 }
 
 #[tauri::command]
-pub fn sync_subtitle_overlay_window_state(
+pub(crate) fn sync_subtitle_overlay_window_state(
     app: AppHandle,
     locked: bool,
     _rounded: bool,
@@ -292,7 +292,7 @@ pub fn sync_subtitle_overlay_window_state(
 }
 
 #[tauri::command]
-pub fn unlock_subtitle_overlay(app: AppHandle) -> Result<(), String> {
+pub(crate) fn unlock_subtitle_overlay(app: AppHandle) -> Result<(), String> {
     let storage = app.state::<StorageStateStore>();
     storage.ensure_initialized(&app)?;
     let mut config = storage.load_config()?;

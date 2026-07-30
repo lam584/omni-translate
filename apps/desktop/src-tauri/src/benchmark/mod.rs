@@ -19,7 +19,7 @@ const CHUNK_SAMPLES: usize = 320; // 20ms @ 16kHz
 const CHUNK_SEND_INTERVAL_MS: u64 = 18;
 const TOTAL_TIMEOUT_SECS: u64 = 180;
 const SESSION_READY_TIMEOUT_SECS: u64 = 30;
-pub const BENCHMARK_PROGRESS_EVENT: &str = "benchmark://progress";
+pub(crate) const BENCHMARK_PROGRESS_EVENT: &str = "benchmark://progress";
 
 // ──────────────────────────────── Config ────────────────────────────────
 

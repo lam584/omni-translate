@@ -1,8 +1,8 @@
-pub mod contracts;
-pub mod credential;
-pub mod events;
-pub mod repository;
-pub mod service;
+pub(crate) mod contracts;
+pub(crate) mod credential;
+pub(crate) mod events;
+pub(crate) mod repository;
+pub(crate) mod service;
 
 use std::path::PathBuf;
 use std::sync::Mutex;
@@ -28,18 +28,18 @@ struct StorageState {
     snapshot: StorageRuntimeSnapshot,
 }
 
-pub struct StorageStateStore {
+pub(crate) struct StorageStateStore {
     inner: Mutex<Option<StorageState>>,
 }
 
 impl StorageStateStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(None),
         }
     }
 
-    pub fn ensure_initialized<R: tauri::Runtime>(
+    pub(crate) fn ensure_initialized<R: tauri::Runtime>(
         &self,
         app: &AppHandle<R>,
     ) -> Result<StorageRuntimeSnapshot, String> {
@@ -70,23 +70,23 @@ impl StorageStateStore {
         Ok(snapshot)
     }
 
-    pub fn snapshot(&self) -> StorageRuntimeSnapshot {
+    pub(crate) fn snapshot(&self) -> StorageRuntimeSnapshot {
         self.current_snapshot()
             .unwrap_or_else(StorageRuntimeSnapshot::preview)
     }
 
-    pub fn load_config(&self) -> Result<Value, String> {
+    pub(crate) fn load_config(&self) -> Result<Value, String> {
         let repository = self.repository()?;
         repository.load_config()
     }
 
-    pub fn save_config(&self, config: &Value) -> Result<StorageRuntimeSnapshot, String> {
+    pub(crate) fn save_config(&self, config: &Value) -> Result<StorageRuntimeSnapshot, String> {
         let repository = self.repository()?;
         let stats = repository.save_config(config)?;
         self.refresh_snapshot(&repository, stats)
     }
 
-    pub fn reset_config(&self) -> Result<Value, String> {
+    pub(crate) fn reset_config(&self) -> Result<Value, String> {
         let repository = self.repository()?;
         let config = repository.reset_config()?;
         let stats = repository.initialize()?;
@@ -94,7 +94,7 @@ impl StorageStateStore {
         Ok(config)
     }
 
-    pub fn export_config(&self) -> Result<ConfigExportArtifact, String> {
+    pub(crate) fn export_config(&self) -> Result<ConfigExportArtifact, String> {
         let repository = self.repository()?;
         let artifact = repository.export_config()?;
         let stats = repository.initialize()?;
@@ -102,7 +102,7 @@ impl StorageStateStore {
         Ok(artifact)
     }
 
-    pub fn import_config(&self, file_path: &str) -> Result<Value, String> {
+    pub(crate) fn import_config(&self, file_path: &str) -> Result<Value, String> {
         let repository = self.repository()?;
         let config = repository.import_config(PathBuf::from(file_path).as_path())?;
         let stats = repository.initialize()?;
@@ -110,7 +110,7 @@ impl StorageStateStore {
         Ok(config)
     }
 
-    pub fn create_snapshot(&self, reason: &str) -> Result<ConfigSnapshotRecord, String> {
+    pub(crate) fn create_snapshot(&self, reason: &str) -> Result<ConfigSnapshotRecord, String> {
         let repository = self.repository()?;
         let snapshot = repository.create_snapshot(reason)?;
         let stats = repository.initialize()?;
@@ -118,7 +118,7 @@ impl StorageStateStore {
         Ok(snapshot)
     }
 
-    pub fn rollback_snapshot(&self, snapshot_id: &str) -> Result<Value, String> {
+    pub(crate) fn rollback_snapshot(&self, snapshot_id: &str) -> Result<Value, String> {
         let repository = self.repository()?;
         let config = repository.rollback_snapshot(snapshot_id)?;
         let stats = repository.initialize()?;

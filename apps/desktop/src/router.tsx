@@ -5,16 +5,21 @@ import AudioRoutingPage from './pages/AudioRoutingPage';
 import DiagnosticsPage from './pages/DiagnosticsPage';
 import GlossaryPage from './pages/GlossaryPage';
 import ProvidersPage from './pages/ProvidersPage';
-import RealTimeSessionPage from './pages/RealTimeSessionPage';
 import SettingsPage from './pages/SettingsPage';
 import SubtitleOverlaySettingsPage from './pages/SubtitleOverlaySettingsPage';
-import { preloadDefaultRoute, onRouteReady } from './router-startup';
+import { loadDefaultRoute, preloadDefaultRoute, onRouteReady } from './router-startup';
+
+const RealTimeSessionPage = React.lazy(loadDefaultRoute);
 
 function SessionPageWithStartup() {
   React.useEffect(() => {
     onRouteReady();
   }, []);
-  return <RealTimeSessionPage />;
+  return (
+    <React.Suspense fallback={null}>
+      <RealTimeSessionPage />
+    </React.Suspense>
+  );
 }
 
 preloadDefaultRoute();

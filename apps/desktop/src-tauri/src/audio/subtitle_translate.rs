@@ -467,7 +467,7 @@ fn handle_translation_outcome(
     }
 }
 
-pub fn start_subtitle_translate(
+pub(crate) fn start_subtitle_translate(
     app: AppHandle,
     store: &AudioStateStore,
     text_model_provider: ProviderDraftInput,
@@ -574,7 +574,7 @@ pub fn start_subtitle_translate(
 }
 
 include!("subtitle_translate/worker.rs");
-pub fn stop_subtitle_translate(app: AppHandle, store: &AudioStateStore) -> Result<(), String> {
+pub(crate) fn stop_subtitle_translate(app: AppHandle, store: &AudioStateStore) -> Result<(), String> {
     if let Some(handle) = store.take_session("subtitle-translate") {
         let _ = handle.stop_tx.send(());
     }

@@ -3,7 +3,7 @@
 /// Unlike byte-based slicing (`&s[..n]`), this never panics on multi-byte
 /// UTF-8 sequences because it counts characters and finds the correct byte
 /// boundary before slicing.
-pub fn truncate_chars(s: &str, max_chars: usize) -> &str {
+pub(crate) fn truncate_chars(s: &str, max_chars: usize) -> &str {
     match s.char_indices().nth(max_chars) {
         Some((byte_idx, _)) => &s[..byte_idx],
         None => s,

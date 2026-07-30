@@ -16,7 +16,7 @@ use super::transport::{
 };
 
 /// Stateful protocol boundary for DashScope HTTP and realtime WebSocket calls.
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct DashScopeProviderAdapter;
 
 impl_provider_adapter_execute!(DashScopeProviderAdapter);

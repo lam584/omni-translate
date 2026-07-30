@@ -3,7 +3,7 @@ use ts_rs::TS;
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct AudioDeviceRuntime {
+pub(crate) struct AudioDeviceRuntime {
     pub device_id: String,
     pub label: String,
     pub interface_name: String,
@@ -15,7 +15,7 @@ pub struct AudioDeviceRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct AudioRouteRuntimeSnapshot {
+pub(crate) struct AudioRouteRuntimeSnapshot {
     pub route_id: String,
     #[ts(type = "'inbound' | 'outbound'")]
     pub direction: String,
@@ -40,7 +40,7 @@ pub struct AudioRouteRuntimeSnapshot {
 }
 
 impl AudioRouteRuntimeSnapshot {
-    pub fn idle(route_id: &str, direction: &str) -> Self {
+    pub(crate) fn idle(route_id: &str, direction: &str) -> Self {
         Self {
             route_id: route_id.to_string(),
             direction: direction.to_string(),
@@ -65,7 +65,7 @@ impl AudioRouteRuntimeSnapshot {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct SubtitleDisplaySegmentRuntime {
+pub(crate) struct SubtitleDisplaySegmentRuntime {
     pub source_text: String,
     pub translated_text: String,
     pub pending: bool,
@@ -79,16 +79,16 @@ fn is_false(value: &bool) -> bool {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct SubtitleCueRuntime {
+pub(crate) struct SubtitleCueRuntime {
     pub cue_id: String,
     #[ts(type = "'inbound' | 'outbound'")]
     pub route_direction: String,
     pub source_text: String,
-    #[serde(skip_serializing_if = "String::is_empty")]
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     #[ts(as = "Option<String>")]
     #[ts(optional)]
     pub display_source_text: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     #[ts(as = "Option<Vec<SubtitleDisplaySegmentRuntime>>")]
     #[ts(optional)]
     pub display_segments: Vec<SubtitleDisplaySegmentRuntime>,
@@ -103,7 +103,7 @@ pub struct SubtitleCueRuntime {
     /// `source_text` clears this so the cue is re-translated against the
     /// committed text. Serialized only when `true` to keep the wire lean and the
     /// TypeScript field optional.
-    #[serde(skip_serializing_if = "is_false")]
+    #[serde(default, skip_serializing_if = "is_false")]
     #[ts(as = "Option<bool>")]
     #[ts(optional)]
     pub translation_committed: bool,
@@ -111,7 +111,7 @@ pub struct SubtitleCueRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct SubtitleOverlayRuntimeSnapshot {
+pub(crate) struct SubtitleOverlayRuntimeSnapshot {
     pub queue_depth: usize,
     pub dropped_cue_count: u64,
     pub first_translation_average_ms: Option<u64>,
@@ -122,7 +122,7 @@ pub struct SubtitleOverlayRuntimeSnapshot {
 }
 
 impl SubtitleOverlayRuntimeSnapshot {
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             queue_depth: 0,
             dropped_cue_count: 0,
@@ -137,7 +137,7 @@ impl SubtitleOverlayRuntimeSnapshot {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct SpeechDispatchEventRuntime {
+pub(crate) struct SpeechDispatchEventRuntime {
     pub event_id: String,
     pub kind: String,
     pub summary: String,
@@ -148,7 +148,7 @@ pub struct SpeechDispatchEventRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct SpeechRuntimeSnapshot {
+pub(crate) struct SpeechRuntimeSnapshot {
     #[ts(type = "'preview' | 'ready' | 'degraded'")]
     pub status: String,
     #[ts(type = "'idle' | 'waiting-subtitle' | 'queued' | 'deferred' | 'playing' | 'error'")]
@@ -171,7 +171,7 @@ pub struct SpeechRuntimeSnapshot {
 }
 
 impl SpeechRuntimeSnapshot {
-    pub fn preview() -> Self {
+    pub(crate) fn preview() -> Self {
         Self {
             status: "preview".to_string(),
             dispatch_state: "idle".to_string(),
@@ -199,7 +199,7 @@ impl SpeechRuntimeSnapshot {
 /// the legacy `stt_connected` boolean.
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct SttConnectionRuntime {
+pub(crate) struct SttConnectionRuntime {
     /// "idle" | "connected" | "reconnecting" | "disconnected"
     #[ts(type = "'idle' | 'connected' | 'reconnecting' | 'disconnected'")]
     pub state: String,
@@ -209,7 +209,7 @@ pub struct SttConnectionRuntime {
 }
 
 impl SttConnectionRuntime {
-    pub fn idle() -> Self {
+    pub(crate) fn idle() -> Self {
         Self {
             state: "idle".to_string(),
             reconnect_attempt: 0,
@@ -221,7 +221,7 @@ impl SttConnectionRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct AudioRuntimeSnapshot {
+pub(crate) struct AudioRuntimeSnapshot {
     #[ts(type = "'preview' | 'ready' | 'degraded'")]
     pub status: String,
     pub host: String,
@@ -238,7 +238,7 @@ pub struct AudioRuntimeSnapshot {
 }
 
 impl AudioRuntimeSnapshot {
-    pub fn preview() -> Self {
+    pub(crate) fn preview() -> Self {
         Self {
             status: "preview".to_string(),
             host: "wasapi".to_string(),
@@ -253,5 +253,44 @@ impl AudioRuntimeSnapshot {
             stt_buffer_size: 0,
             stt_connection: SttConnectionRuntime::idle(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_cue() -> SubtitleCueRuntime {
+        SubtitleCueRuntime {
+            cue_id: "cue-1".to_string(),
+            route_direction: "inbound".to_string(),
+            source_text: "hello".to_string(),
+            display_source_text: String::new(),
+            display_segments: Vec::new(),
+            translated_text: "你好".to_string(),
+            started_at: "2026-07-30T00:00:00Z".to_string(),
+            ended_at: "2026-07-30T00:00:01Z".to_string(),
+            committed: true,
+            translation_committed: false,
+        }
+    }
+
+    #[test]
+    fn cue_omits_empty_optional_wire_fields() {
+        let value = serde_json::to_value(empty_cue()).expect("cue should serialize");
+        let object = value.as_object().expect("cue should serialize as an object");
+
+        assert!(!object.contains_key("displaySourceText"));
+        assert!(!object.contains_key("displaySegments"));
+        assert!(!object.contains_key("translationCommitted"));
+    }
+
+    #[test]
+    fn cue_typescript_keeps_omitted_wire_fields_optional() {
+        let declaration = SubtitleCueRuntime::decl(&ts_rs::Config::default());
+
+        assert!(declaration.contains("displaySourceText?: string"));
+        assert!(declaration.contains("displaySegments?: Array<SubtitleDisplaySegmentRuntime>"));
+        assert!(declaration.contains("translationCommitted?: boolean"));
     }
 }

@@ -2,17 +2,15 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::Mutex;
 
 #[derive(Clone)]
-#[allow(dead_code, reason = "captured audio metadata is retained for diagnostics and future replay export")]
-pub struct CapturedSegmentAudio {
+pub(crate) struct CapturedSegmentAudio {
     pub cue_id: String,
-    pub route_direction: String,
     pub sample_rate_hz: u32,
     pub channel_count: u16,
     pub pcm_f32le: Vec<u8>,
 }
 
 #[derive(Clone)]
-pub struct CachedTtsAudio {
+pub(crate) struct CachedTtsAudio {
     pub cache_key: String,
     pub request_id: String,
     pub sample_rate_hz: u32,

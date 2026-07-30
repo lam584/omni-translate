@@ -125,7 +125,7 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
     // deliver Close — that is what the worker feeds into try_reconnect.
     let mut saw_disconnect = false;
     for _ in 0..50 {
-        match socket.read_message() {
+        match socket.read() {
             Ok(Message::Close(_)) => {
                 saw_disconnect = true;
                 break;

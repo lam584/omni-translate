@@ -11,7 +11,7 @@ use super::gateway::ProviderGateway;
 // `async fn`: the gateway performs blocking network IO. Keep it off the main
 // thread so a slow/hung provider endpoint never freezes the message pump
 // (IPC + tray). Same main-thread-starvation hazard as export.
-pub async fn fetch_provider_models(
+pub(crate) async fn fetch_provider_models(
     app: AppHandle,
     provider: ProviderDraftInput,
 ) -> ProviderModelCatalogRuntime {
@@ -40,7 +40,7 @@ pub async fn fetch_provider_models(
 }
 
 // `async fn`: blocking network probe, kept off the main thread.
-pub async fn probe_provider(app: AppHandle, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
+pub(crate) async fn probe_provider(app: AppHandle, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
     let result = ProviderGateway::new().probe(provider);
     if let Some(store) = app.try_state::<crate::provider::state::ProviderStateStore>() {
         store.record_probe(crate::provider::state::ProviderProbeSummary {
@@ -74,7 +74,7 @@ pub async fn probe_provider(app: AppHandle, provider: ProviderDraftInput) -> Pro
 }
 
 // `async fn`: blocking network smoke test, kept off the main thread.
-pub async fn execute_provider_smoke(
+pub(crate) async fn execute_provider_smoke(
     app: AppHandle,
     provider: ProviderDraftInput,
     source_text: Option<String>,

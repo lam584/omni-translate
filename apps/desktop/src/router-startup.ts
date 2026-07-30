@@ -2,11 +2,13 @@
 let routeReady = false;
 let onReady: (() => void) | null = null;
 
+export const loadDefaultRoute = () => import('./pages/RealTimeSessionPage');
+
 export function preloadDefaultRoute() {
   if (prefetched) return;
   prefetched = true;
   // Trigger lazy chunk load for default /session page.
-  import('./pages/RealTimeSessionPage');
+  void loadDefaultRoute().catch(() => undefined);
 }
 
 export function isPrefetched() {

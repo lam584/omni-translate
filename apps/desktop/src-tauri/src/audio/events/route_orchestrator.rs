@@ -111,7 +111,7 @@ fn unsupported_realtime_model_error(model: &str) -> String {
 }
 
 #[tauri::command]
-pub async fn start_audio_route(
+pub(crate) async fn start_audio_route(
     app: AppHandle,
     direction: String,
     config: Value,
@@ -831,7 +831,7 @@ mod fast_watch_supersede_tests {
     }
 }
 
-pub async fn stop_speech_dispatch(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
+pub(crate) async fn stop_speech_dispatch(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let app2 = app.clone();
@@ -843,7 +843,7 @@ pub async fn stop_speech_dispatch(app: AppHandle) -> Result<AudioRuntimeSnapshot
 }
 
 #[tauri::command]
-pub async fn stop_audio_route(
+pub(crate) async fn stop_audio_route(
     app: AppHandle,
     direction: String,
 ) -> Result<AudioRuntimeSnapshot, String> {

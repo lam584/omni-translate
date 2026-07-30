@@ -19,16 +19,16 @@ const CREDENTIAL_OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
 #[cfg(target_os = "windows")]
 const CREDENTIAL_BLOB_MAX_BYTES: usize = 5 * 512;
 
-pub trait CredentialVault: Send + Sync {
+pub(crate) trait CredentialVault: Send + Sync {
     fn upsert_secret(&self, reference: &str, secret: &str) -> Result<(), String>;
     fn has_secret(&self, reference: &str) -> Result<bool, String>;
     fn read_secret(&self, reference: &str) -> Result<Option<String>, String>;
 }
 
-pub struct KeyringCredentialVault;
+pub(crate) struct KeyringCredentialVault;
 
 impl KeyringCredentialVault {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self
     }
 }
@@ -297,13 +297,13 @@ where
 }
 
 #[allow(dead_code, reason = "in-memory vault is a deterministic test and non-Windows fallback")]
-pub struct MemoryCredentialVault {
+pub(crate) struct MemoryCredentialVault {
     inner: Mutex<HashMap<String, String>>,
 }
 
 impl MemoryCredentialVault {
     #[allow(dead_code, reason = "constructor is used by tests and non-Windows fallback wiring")]
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(HashMap::new()),
         }

@@ -320,7 +320,7 @@ pub(super) fn start_or_reuse_tencent_speech_translate_session(
 }
 
 #[tauri::command]
-pub async fn preconnect_omni_realtime(
+pub(crate) async fn preconnect_omni_realtime(
     app: AppHandle,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
@@ -357,7 +357,7 @@ pub async fn preconnect_omni_realtime(
     }
 }
 
-pub async fn cancel_omni_preconnect(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
+pub(crate) async fn cancel_omni_preconnect(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
     let state = app.state::<AudioStateStore>();
     stop_preconnected_omni_session(&app, &state, "inbound", "preconnect_cancelled");
     Ok(state.snapshot())

@@ -21,7 +21,7 @@ mod session_registry;
 mod metrics;
 mod route_state;
 mod subtitle_store;
-pub use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
+pub(crate) use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
 use cue_lifecycle::{
     finalize_cue_display_segments, new_subtitle_cue, route_direction_from_cue_id,
     trim_recent_subtitle_cues,
@@ -36,7 +36,7 @@ use metrics::AudioMetricsStore;
 use route_state::route_mut;
 use route_state::{clear_session_start_if_idle, reset_route_to_idle};
 use subtitle_store::SubtitleStore;
-pub struct AudioRouteHandle {
+pub(crate) struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
     pub join_handle: JoinHandle<()>,
 }
@@ -56,7 +56,7 @@ pub(crate) struct OmniSessionMetadata {
     pub state: OmniSessionLifecycle,
     pub last_error: Option<String>,
 }
-pub struct AudioStateStore {
+pub(crate) struct AudioStateStore {
     inner: Mutex<AudioRuntimeSnapshot>,
     metrics: AudioMetricsStore,
     subtitles: SubtitleStore,
@@ -83,7 +83,7 @@ pub struct AudioStateStore {
     pub live_session_events: LiveSessionEventBuffer,
 }
 impl AudioStateStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let preview = AudioRuntimeSnapshot::preview();
         let subtitle_preview = preview.subtitle_overlay.clone();
         Self {
@@ -109,7 +109,7 @@ impl AudioStateStore {
         &self.warmer
     }
 
-    pub fn snapshot(&self) -> AudioRuntimeSnapshot {
+    pub(crate) fn snapshot(&self) -> AudioRuntimeSnapshot {
         let mut snapshot = self.inner.lock().expect("audio state poisoned").clone();
         snapshot.subtitle_overlay = self.subtitles.snapshot();
         snapshot
@@ -228,18 +228,18 @@ impl AudioStateStore {
     /// Increments the reconnect generation counter. The translate worker
     /// detects the change on its next loop iteration and clears its
     /// `processed` map.
-    pub fn bump_reconnect_generation(&self) {
+    pub(crate) fn bump_reconnect_generation(&self) {
         self.reconnect_generation
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     }
 
     /// Current value of the reconnect generation counter.
-    pub fn reconnect_generation(&self) -> u64 {
+    pub(crate) fn reconnect_generation(&self) -> u64 {
         self.reconnect_generation
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
-    pub fn set_stt_connected(&self, connected: bool, buffer_size: u64) {
+    pub(crate) fn set_stt_connected(&self, connected: bool, buffer_size: u64) {
         let mut state = self.inner.lock().expect("audio state poisoned");
         state.stt_connected = connected;
         state.stt_buffer_size = buffer_size;
@@ -257,7 +257,7 @@ impl AudioStateStore {
     /// Claims a new STT worker epoch. Each realtime worker captures the
     /// returned value at start and passes it to
     /// [`Self::set_stt_connected_if_current`] for every later state write.
-    pub fn begin_stt_session_epoch(&self) -> u64 {
+    pub(crate) fn begin_stt_session_epoch(&self) -> u64 {
         self.stt_session_epoch
             .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
             + 1
@@ -266,7 +266,7 @@ impl AudioStateStore {
     /// Epoch-guarded variant of [`Self::set_stt_connected`]: a write from a
     /// superseded worker (stale epoch) is dropped. Returns whether the write
     /// was applied.
-    pub fn set_stt_connected_if_current(
+    pub(crate) fn set_stt_connected_if_current(
         &self,
         epoch: u64,
         connected: bool,
@@ -281,7 +281,7 @@ impl AudioStateStore {
 
     /// Marks the realtime provider socket as mid-reconnect so the renderer can
     /// show "reconnecting (attempt N/M)" instead of a silent gap.
-    pub fn mark_stt_reconnecting(&self, attempt: u64, max_attempts: u64, reason: &str) {
+    pub(crate) fn mark_stt_reconnecting(&self, attempt: u64, max_attempts: u64, reason: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
         state.stt_connected = false;
         state.stt_connection.state = "reconnecting".to_string();
@@ -290,31 +290,31 @@ impl AudioStateStore {
         state.stt_connection.last_disconnect_reason = Some(reason.to_string());
     }
 
-    pub fn store_stt_handle(&self, direction: &str, handle: SttHandle) -> Option<SttHandle> {
+    pub(crate) fn store_stt_handle(&self, direction: &str, handle: SttHandle) -> Option<SttHandle> {
         self.session_registry.store_stt(direction, handle)
     }
 
-    pub fn take_stt_handle(&self, direction: &str) -> Option<SttHandle> {
+    pub(crate) fn take_stt_handle(&self, direction: &str) -> Option<SttHandle> {
         self.session_registry.take_stt(direction)
     }
 
-    pub fn store_omni_handle(&self, direction: &str, handle: OmniHandle) -> Option<OmniHandle> {
+    pub(crate) fn store_omni_handle(&self, direction: &str, handle: OmniHandle) -> Option<OmniHandle> {
         self.omni_sessions.store_handle(direction, handle)
     }
 
-    pub fn store_omni_sender(&self, direction: &str, sender: Sender<Vec<u8>>) {
+    pub(crate) fn store_omni_sender(&self, direction: &str, sender: Sender<Vec<u8>>) {
         self.omni_sessions.store_sender(direction, sender);
     }
 
-    pub fn has_omni_sender(&self, direction: &str) -> bool {
+    pub(crate) fn has_omni_sender(&self, direction: &str) -> bool {
         self.omni_sessions.has_sender(direction)
     }
 
-    pub fn take_omni_sender(&self, direction: &str) -> Option<Sender<Vec<u8>>> {
+    pub(crate) fn take_omni_sender(&self, direction: &str) -> Option<Sender<Vec<u8>>> {
         self.omni_sessions.take_sender(direction)
     }
 
-    pub fn take_omni_handle(&self, direction: &str) -> Option<OmniHandle> {
+    pub(crate) fn take_omni_handle(&self, direction: &str) -> Option<OmniHandle> {
         self.omni_sessions.take_handle(direction)
     }
 
@@ -388,7 +388,7 @@ impl AudioStateStore {
         self.omni_sessions.is_current(direction, generation)
     }
 
-    pub fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
+    pub(crate) fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
         let route_direction = route_direction_from_cue_id(cue_id).to_string();
         self.subtitles.update(|overlay| {
             let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
@@ -442,7 +442,7 @@ impl AudioStateStore {
         self.note_first_translation_source(cue_id, source_text);
     }
 
-    pub fn commit_stt_cue(&self, cue_id: &str, source_text: &str, direction: &str) {
+    pub(crate) fn commit_stt_cue(&self, cue_id: &str, source_text: &str, direction: &str) {
         self.subtitles.update(|overlay| {
             let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
             if exists {
@@ -485,7 +485,7 @@ impl AudioStateStore {
         inbound.segment_count += 1;
     }
 
-    pub fn replace_devices(
+    pub(crate) fn replace_devices(
         &self,
         render_devices: Vec<AudioDeviceRuntime>,
         capture_devices: Vec<AudioDeviceRuntime>,
@@ -496,7 +496,7 @@ impl AudioStateStore {
         state.capture_devices = capture_devices;
     }
 
-    pub fn mark_route_started(
+    pub(crate) fn mark_route_started(
         &self,
         direction: &str,
         route_id: &str,
@@ -520,7 +520,7 @@ impl AudioStateStore {
         route.pre_buffer_state = "primed".to_string();
     }
 
-    pub fn mark_route_start_requested(
+    pub(crate) fn mark_route_start_requested(
         &self,
         direction: &str,
         route_id: &str,
@@ -539,7 +539,7 @@ impl AudioStateStore {
         route.pre_buffer_state = "cold".to_string();
     }
 
-    pub fn update_route_metrics(
+    pub(crate) fn update_route_metrics(
         &self,
         direction: &str,
         capture_state: &str,
@@ -563,13 +563,13 @@ impl AudioStateStore {
         route.active_segment_id = active_segment_id;
     }
 
-    pub fn increment_segment_count(&self, direction: &str) {
+    pub(crate) fn increment_segment_count(&self, direction: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
         let route = route_mut(&mut state, direction);
         route.segment_count += 1;
     }
 
-    pub fn push_subtitle_cue(&self, mut cue: SubtitleCueRuntime) {
+    pub(crate) fn push_subtitle_cue(&self, mut cue: SubtitleCueRuntime) {
         if cue.committed {
             finalize_cue_display_segments(&mut cue);
         }
@@ -583,7 +583,7 @@ impl AudioStateStore {
         self.note_first_translation_source(&cue_id, &source_text);
     }
 
-    pub fn clear_subtitle_cues(&self) {
+    pub(crate) fn clear_subtitle_cues(&self) {
         self.subtitles.update(|overlay| {
             *overlay = SubtitleOverlayRuntimeSnapshot::empty();
             self.reset_first_translation_latency(overlay);
@@ -594,7 +594,7 @@ impl AudioStateStore {
         state.speech = SpeechRuntimeSnapshot::preview();
     }
 
-    pub fn discard_uncommitted_subtitle_cues(&self) {
+    pub(crate) fn discard_uncommitted_subtitle_cues(&self) {
         // Deferred-translation entries only ever describe uncommitted cues, so
         // they are released together with the cues they gate. Leaving them
         // behind would leak entries for the app lifetime.
@@ -608,7 +608,24 @@ impl AudioStateStore {
         });
     }
 
-    pub fn discard_uncommitted_subtitle_cue(&self, cue_id: &str) {
+    /// Direction-aware variant: discards only uncommitted cues whose
+    /// `route_direction` matches `route_direction`. Other directions (e.g.
+    /// outbound cues during an Omni reconnect) are left intact.
+    pub(crate) fn discard_uncommitted_subtitle_cues_by_direction(&self, route_direction: &str) {
+        self.subtitles.update(|overlay| {
+            overlay.recent_cues.retain(|cue| {
+                cue.committed || cue.route_direction != route_direction
+            });
+            if overlay.active_cue.as_ref().is_some_and(|cue| {
+                !cue.committed && cue.route_direction == route_direction
+            }) {
+                overlay.active_cue = None;
+            }
+            trim_recent_subtitle_cues(overlay);
+        });
+    }
+
+    pub(crate) fn discard_uncommitted_subtitle_cue(&self, cue_id: &str) {
         self.deferred_subtitle_translation_cues.remove(cue_id);
         self.subtitles.update(|overlay| {
             overlay
@@ -654,26 +671,26 @@ impl AudioStateStore {
         expired
     }
 
-    pub fn cache_segment_audio(&self, audio: CapturedSegmentAudio) {
+    pub(crate) fn cache_segment_audio(&self, audio: CapturedSegmentAudio) {
         self.audio_cache.cache_segment(audio);
     }
 
-    pub fn segment_audio(&self, cue_id: &str) -> Option<CapturedSegmentAudio> {
+    pub(crate) fn segment_audio(&self, cue_id: &str) -> Option<CapturedSegmentAudio> {
         self.audio_cache.segment(cue_id)
     }
 
-    pub fn cache_tts_audio(&self, audio: CachedTtsAudio) {
+    pub(crate) fn cache_tts_audio(&self, audio: CachedTtsAudio) {
         let cache_entries = self.audio_cache.cache_tts(audio);
         self.update_speech(|speech| {
             speech.cache_entries = cache_entries;
         });
     }
 
-    pub fn tts_audio(&self, cache_key: &str) -> Option<CachedTtsAudio> {
+    pub(crate) fn tts_audio(&self, cache_key: &str) -> Option<CachedTtsAudio> {
         self.audio_cache.tts(cache_key)
     }
 
-    pub fn update_speech<F>(&self, mutate: F)
+    pub(crate) fn update_speech<F>(&self, mutate: F)
     where
         F: FnOnce(&mut SpeechRuntimeSnapshot),
     {
@@ -688,13 +705,13 @@ impl AudioStateStore {
         };
     }
 
-    pub fn mark_route_stopped(&self, direction: &str) {
+    pub(crate) fn mark_route_stopped(&self, direction: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
         reset_route_to_idle(route_mut(&mut state, direction));
         clear_session_start_if_idle(&mut state);
     }
 
-    pub fn mark_route_stopping(&self, direction: &str) {
+    pub(crate) fn mark_route_stopping(&self, direction: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
         let route = route_mut(&mut state, direction);
         route.capture_state = "stopping".to_string();
@@ -703,7 +720,7 @@ impl AudioStateStore {
         route.active_segment_id = None;
     }
 
-    pub fn mark_route_stopped_if_stopping(&self, direction: &str) -> bool {
+    pub(crate) fn mark_route_stopped_if_stopping(&self, direction: &str) -> bool {
         let mut state = self.inner.lock().expect("audio state poisoned");
         {
             let route = route_mut(&mut state, direction);
@@ -716,7 +733,7 @@ impl AudioStateStore {
         true
     }
 
-    pub fn mark_route_error(
+    pub(crate) fn mark_route_error(
         &self,
         direction: &str,
         message: String,
@@ -736,7 +753,7 @@ impl AudioStateStore {
     /// Surfaces a session-leg failure (e.g. the Omni worker dying) on the
     /// route snapshot without touching the capture state machine: the capture
     /// worker may still be running and owns those fields.
-    pub fn mark_route_last_error(
+    pub(crate) fn mark_route_last_error(
         &self,
         direction: &str,
         message: String,
@@ -751,7 +768,7 @@ impl AudioStateStore {
         route.recommended_action = recommended_action;
     }
 
-    pub fn update_subtitle_cue_translation(
+    pub(crate) fn update_subtitle_cue_translation(
         &self,
         cue_id: &str,
         translated_text: String,
@@ -784,7 +801,7 @@ impl AudioStateStore {
         });
     }
 
-    pub fn update_subtitle_cue_display_segments(
+    pub(crate) fn update_subtitle_cue_display_segments(
         &self,
         cue_id: &str,
         display_source_text: String,
@@ -823,7 +840,7 @@ impl AudioStateStore {
         });
     }
 
-    pub fn commit_subtitle_cue(&self, cue_id: &str) {
+    pub(crate) fn commit_subtitle_cue(&self, cue_id: &str) {
         self.subtitles.update(|overlay| {
         for cue in overlay.recent_cues.iter_mut() {
             if cue.cue_id == cue_id {
@@ -843,22 +860,18 @@ impl AudioStateStore {
         });
     }
 
-    pub fn mark_session_started(&self, timestamp: &str) {
+    pub(crate) fn mark_session_started(&self, timestamp: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
         state.session_started_at = Some(timestamp.to_string());
         drop(state);
         self.subtitles.update(|overlay| self.reset_first_translation_latency(overlay));
     }
 
-    pub fn insert_session(&self, direction: &str, handle: AudioRouteHandle) {
+    pub(crate) fn insert_session(&self, direction: &str, handle: AudioRouteHandle) {
         self.session_registry.insert(direction, handle);
     }
 
-    pub fn has_session(&self, direction: &str) -> bool {
-        self.session_registry.has(direction)
-    }
-
-    pub fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {
+    pub(crate) fn take_session(&self, direction: &str) -> Option<AudioRouteHandle> {
         self.session_registry.take(direction)
     }
 }
@@ -1046,7 +1059,6 @@ mod tests {
         for index in 0..12 {
             store.cache_segment_audio(CapturedSegmentAudio {
                 cue_id: format!("cue-{index}"),
-                route_direction: "inbound".to_string(),
                 sample_rate_hz: 48_000,
                 channel_count: 2,
                 pcm_f32le: vec![index as u8; 16],
@@ -1257,6 +1269,44 @@ mod tests {
         assert_eq!(snapshot.subtitle_overlay.recent_cues[0].cue_id, "finished");
         assert!(snapshot.subtitle_overlay.active_cue.is_none());
         assert_eq!(snapshot.subtitle_overlay.queue_depth, 1);
+    }
+
+    #[test]
+    fn discard_by_direction_keeps_uncommitted_cues_of_other_directions() {
+        let store = AudioStateStore::new();
+        let cue = |id: &str, direction: &str, committed: bool| SubtitleCueRuntime {
+            cue_id: id.to_string(),
+            route_direction: direction.to_string(),
+            source_text: id.to_string(),
+            display_source_text: String::new(),
+            display_segments: Vec::new(),
+            translated_text: String::new(),
+            started_at: "0".to_string(),
+            ended_at: "0".to_string(),
+            committed,
+            translation_committed: false,
+        };
+
+        // inbound uncommitted, inbound committed, outbound uncommitted
+        store.push_subtitle_cue(cue("inbound-pending", "inbound", false));
+        store.push_subtitle_cue(cue("inbound-done", "inbound", true));
+        store.push_subtitle_cue(cue("outbound-pending", "outbound", false));
+
+        store.discard_uncommitted_subtitle_cues_by_direction("inbound");
+
+        let snapshot = store.snapshot();
+        let ids: Vec<&str> = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .map(|c| c.cue_id.as_str())
+            .collect();
+
+        // inbound uncommitted removed; inbound committed and outbound uncommitted kept
+        assert!(!ids.contains(&"inbound-pending"));
+        assert!(ids.contains(&"inbound-done"));
+        assert!(ids.contains(&"outbound-pending"));
+        assert_eq!(snapshot.subtitle_overlay.recent_cues.len(), 2);
     }
 
     #[test]

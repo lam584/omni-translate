@@ -2,7 +2,6 @@ use super::time_utils::now_unix_millis_marker;
 use crate::audio::events::resolve_composite_template_provider;
 
 #[derive(Clone)]
-#[allow(dead_code, reason = "route mix fields are parsed now for forward-compatible mixer policy")]
 struct RouteMixConfig {
     keep_original_audio: bool,
     translated_audio_enabled: bool,
@@ -18,8 +17,6 @@ struct SpeechConfig {
     provider: ProviderDraftInput,
     enabled: bool,
     target_language: String,
-    #[allow(dead_code, reason = "voice preset id is preserved for provider contract compatibility")]
-    voice_preset_id: String,
     voice: String,
     output_target: String,
     local_playback_enabled: bool,
@@ -148,11 +145,6 @@ impl SpeechConfig {
                 .pointer("/speech/targetLanguage")
                 .and_then(Value::as_str)
                 .unwrap_or("zh-CN")
-                .to_string(),
-            voice_preset_id: config
-                .pointer("/speech/voicePresetId")
-                .and_then(Value::as_str)
-                .unwrap_or("voice-cn-neutral")
                 .to_string(),
             voice: config
                 .pointer("/speech/voice")

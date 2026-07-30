@@ -21,7 +21,6 @@ use super::RealtimeAudioMode;
 pub(crate) trait RealtimeSocket {
     fn read_message(&mut self) -> Result<Message, tungstenite::Error>;
     fn send_message(&mut self, message: Message) -> Result<(), tungstenite::Error>;
-    fn close_socket(&mut self) -> Result<(), tungstenite::Error>;
 }
 
 pub(crate) type TungsteniteSocket = tungstenite::WebSocket<MaybeTlsStream<TcpStream>>;
@@ -35,9 +34,6 @@ impl RealtimeSocket for TungsteniteSocket {
         self.send(message)
     }
 
-    fn close_socket(&mut self) -> Result<(), tungstenite::Error> {
-        self.close(None)
-    }
 }
 
 /// Establishes replacement realtime sessions after a disconnect.
@@ -146,9 +142,6 @@ pub(crate) mod scripted {
             Ok(())
         }
 
-        fn close_socket(&mut self) -> Result<(), tungstenite::Error> {
-            Ok(())
-        }
     }
 
     /// Test connector: each reconnect pops the next scripted session.

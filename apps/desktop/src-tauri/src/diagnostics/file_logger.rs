@@ -89,7 +89,7 @@ impl Log for DiagnosticsForwarder {
 /// Route `log::` macros into the diagnostics store. The global max level is
 /// initialized from — and kept in sync with — the store's dynamic level (see
 /// `DiagnosticsStateStore::set_min_log_level`). Calling this twice is a no-op.
-pub fn init(store: DiagnosticsStateStore) {
+pub(crate) fn init(store: DiagnosticsStateStore) {
     log::set_max_level(store.current_level_filter());
     let _ = log::set_boxed_logger(Box::new(DiagnosticsForwarder { store }));
 }

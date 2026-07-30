@@ -28,14 +28,14 @@ use self::persisters::{
 const CONFIG_CONTRACT_VERSION: i64 = 2;
 
 #[derive(Clone)]
-pub struct ConfigRepository {
+pub(crate) struct ConfigRepository {
     db_path: PathBuf,
     export_dir: PathBuf,
     snapshot_dir: PathBuf,
 }
 
 #[derive(Clone, Debug)]
-pub struct RepositoryStats {
+pub(crate) struct RepositoryStats {
     pub schema_version: i64,
     pub has_persisted_config: bool,
     pub snapshot_count: usize,
@@ -45,7 +45,7 @@ pub struct RepositoryStats {
 }
 
 impl ConfigRepository {
-    pub fn new(db_path: PathBuf, export_dir: PathBuf, snapshot_dir: PathBuf) -> Self {
+    pub(crate) fn new(db_path: PathBuf, export_dir: PathBuf, snapshot_dir: PathBuf) -> Self {
         Self {
             db_path,
             export_dir,
@@ -54,21 +54,21 @@ impl ConfigRepository {
     }
 
     #[allow(dead_code, reason = "schema version accessor is used by migration audit tooling")]
-    pub fn current_schema_version() -> i64 {
+    pub(crate) fn current_schema_version() -> i64 {
         CURRENT_SCHEMA_VERSION
     }
 
-    pub fn database_path(&self) -> &Path {
+    pub(crate) fn database_path(&self) -> &Path {
         &self.db_path
     }
 
-    pub fn initialize(&self) -> Result<RepositoryStats, String> {
+    pub(crate) fn initialize(&self) -> Result<RepositoryStats, String> {
         self.ensure_directories()?;
         let connection = self.migrated_connection()?;
         self.read_stats(&connection)
     }
 
-    pub fn load_config(&self) -> Result<Value, String> {
+    pub(crate) fn load_config(&self) -> Result<Value, String> {
         let connection = self.migrated_connection()?;
 
         let defaults = default_config_value()?;
@@ -91,7 +91,7 @@ impl ConfigRepository {
         Ok(root)
     }
 
-    pub fn save_config(&self, config: &Value) -> Result<RepositoryStats, String> {
+    pub(crate) fn save_config(&self, config: &Value) -> Result<RepositoryStats, String> {
         let timestamp = current_timestamp();
         self.save_config_in_transaction(config, &timestamp, None)
     }
@@ -151,7 +151,7 @@ impl ConfigRepository {
     }
 
     #[cfg(test)]
-    pub fn save_config_with_failpoint(
+    pub(crate) fn save_config_with_failpoint(
         &self,
         config: &Value,
         fail_on_step: &str,
@@ -160,13 +160,13 @@ impl ConfigRepository {
         self.save_config_in_transaction(config, &timestamp, Some(fail_on_step))
     }
 
-    pub fn reset_config(&self) -> Result<Value, String> {
+    pub(crate) fn reset_config(&self) -> Result<Value, String> {
         let default_config = default_config_value()?;
         self.save_config(&default_config)?;
         Ok(default_config)
     }
 
-    pub fn export_config(&self) -> Result<ConfigExportArtifact, String> {
+    pub(crate) fn export_config(&self) -> Result<ConfigExportArtifact, String> {
         let config = self.load_config()?;
         let connection = self.migrated_connection()?;
         let stats = self.read_stats(&connection)?;
@@ -197,7 +197,7 @@ impl ConfigRepository {
         })
     }
 
-    pub fn import_config(&self, file_path: &Path) -> Result<Value, String> {
+    pub(crate) fn import_config(&self, file_path: &Path) -> Result<Value, String> {
         let content = fs::read_to_string(file_path).map_err_str()?;
         let document: Value = serde_json::from_str(&content).map_err_str()?;
         let config = extract_imported_config(document)?;
@@ -222,11 +222,11 @@ impl ConfigRepository {
         self.load_config()
     }
 
-    pub fn create_snapshot(&self, reason: &str) -> Result<ConfigSnapshotRecord, String> {
+    pub(crate) fn create_snapshot(&self, reason: &str) -> Result<ConfigSnapshotRecord, String> {
         ConfigSnapshotService::new(self).create(reason)
     }
 
-    pub fn rollback_snapshot(&self, snapshot_id: &str) -> Result<Value, String> {
+    pub(crate) fn rollback_snapshot(&self, snapshot_id: &str) -> Result<Value, String> {
         ConfigSnapshotService::new(self).rollback(snapshot_id)
     }
 

@@ -1,7 +1,7 @@
 /// Compile-time repository root — only exists on the machine that built the
 /// binary. Runtime asset lookups must go through `assets_root` so installed
 /// builds resolve against bundled resources instead.
-pub fn workspace_root() -> PathBuf {
+pub(crate) fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
@@ -13,7 +13,7 @@ pub fn workspace_root() -> PathBuf {
 /// Root that carries `scripts/installer` and the driver package: the dev
 /// checkout when it exists, otherwise the resources bundled next to the
 /// installed executable (declared in tauri.conf.json `bundle.resources`).
-pub fn assets_root() -> PathBuf {
+pub(crate) fn assets_root() -> PathBuf {
     let dev_root = workspace_root();
     if dev_root.join("scripts").join("installer").is_dir() {
         return dev_root;
@@ -42,7 +42,7 @@ pub fn assets_root() -> PathBuf {
 /// Development-build locations for the bridge executable, most preferred first:
 /// the root Cargo workspace target directory, then the legacy per-crate target
 /// directory kept for artifacts built before the workspace existed.
-pub fn bridge_cli_release_candidates() -> [PathBuf; 2] {
+pub(crate) fn bridge_cli_release_candidates() -> [PathBuf; 2] {
     let root = workspace_root();
     [
         root.join("target")
@@ -56,7 +56,7 @@ pub fn bridge_cli_release_candidates() -> [PathBuf; 2] {
     ]
 }
 
-pub fn bridge_cli_path() -> PathBuf {
+pub(crate) fn bridge_cli_path() -> PathBuf {
     let [preferred_path, legacy_path] = bridge_cli_release_candidates();
     if preferred_path.exists() {
         return preferred_path;
@@ -92,11 +92,11 @@ pub fn bridge_cli_path() -> PathBuf {
 }
 
 #[allow(dead_code, reason = "legacy install-state path is retained for upgrade compatibility")]
-pub fn driver_state_path(runtime_root: &str) -> PathBuf {
+pub(crate) fn driver_state_path(runtime_root: &str) -> PathBuf {
     Path::new(runtime_root).join("driver-install-state.json")
 }
 
-pub fn bridge_pid_path(runtime_root: &str) -> PathBuf {
+pub(crate) fn bridge_pid_path(runtime_root: &str) -> PathBuf {
     Path::new(runtime_root).join("bridge-service.pid")
 }
 
@@ -108,7 +108,7 @@ fn normalized_executable_path(path: &Path) -> String {
         .to_ascii_lowercase()
 }
 
-pub fn process_path_matches_expected_bridge(actual: &Path, expected: &Path) -> bool {
+pub(crate) fn process_path_matches_expected_bridge(actual: &Path, expected: &Path) -> bool {
     normalized_executable_path(actual) == normalized_executable_path(expected)
 }
 
@@ -214,7 +214,7 @@ fn terminate_process(pid: u32) -> Result<(), String> {
     }
 }
 
-pub fn terminate_stale_bridge_process(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
+pub(crate) fn terminate_stale_bridge_process(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
     let Some(pid) = read_bridge_pid(&snapshot.runtime_root)? else {
         return Ok(());
     };
@@ -238,7 +238,7 @@ pub fn terminate_stale_bridge_process(snapshot: &BridgeRuntimeSnapshot) -> Resul
     Ok(())
 }
 
-pub fn stop_bridge_process(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
+pub(crate) fn stop_bridge_process(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
     let _ = write_command_once_quiet(&snapshot.pipe_path, &build_shutdown_command(snapshot));
     Ok(())
 }
@@ -254,6 +254,6 @@ fn build_shutdown_command(snapshot: &BridgeRuntimeSnapshot) -> DriverBridgeComma
     })
 }
 
-pub fn ensure_bridge_runtime_root(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
+pub(crate) fn ensure_bridge_runtime_root(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
     std::fs::create_dir_all(&snapshot.runtime_root).map_err(|error| error.to_string())
 }

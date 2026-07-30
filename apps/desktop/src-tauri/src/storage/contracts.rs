@@ -3,7 +3,7 @@ use ts_rs::TS;
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct StorageRuntimeSnapshot {
+pub(crate) struct StorageRuntimeSnapshot {
     #[ts(type = "'preview' | 'ready'")]
     pub status: String,
     pub schema_version: i64,
@@ -17,7 +17,7 @@ pub struct StorageRuntimeSnapshot {
 }
 
 impl StorageRuntimeSnapshot {
-    pub fn preview() -> Self {
+    pub(crate) fn preview() -> Self {
         Self {
             status: "preview".to_string(),
             schema_version: 0,
@@ -34,7 +34,7 @@ impl StorageRuntimeSnapshot {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ConfigExportArtifact {
+pub(crate) struct ConfigExportArtifact {
     pub file_path: String,
     pub output_path: String,
     pub file_count: usize,
@@ -45,7 +45,7 @@ pub struct ConfigExportArtifact {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ConfigSnapshotRecord {
+pub(crate) struct ConfigSnapshotRecord {
     pub snapshot_id: String,
     pub reason: String,
     pub created_at: String,
@@ -53,7 +53,7 @@ pub struct ConfigSnapshotRecord {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct CredentialRefStatus {
+pub(crate) struct CredentialRefStatus {
     pub reference: String,
     pub backend: String,
     pub has_secret: bool,
@@ -61,7 +61,7 @@ pub struct CredentialRefStatus {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct CredentialSecretPayload {
+pub(crate) struct CredentialSecretPayload {
     pub reference: String,
     pub backend: String,
     pub secret: Option<String>,

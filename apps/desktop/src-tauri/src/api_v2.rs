@@ -27,7 +27,7 @@ use crate::storage::StorageStateStore;
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ServiceResult<T> {
+pub(crate) struct ServiceResult<T> {
     pub data: T,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<ServiceWarning>,
@@ -40,14 +40,14 @@ pub struct ServiceResult<T> {
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ServiceWarning {
+pub(crate) struct ServiceWarning {
     pub code: String,
     pub message: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ServiceErrorV2 {
+pub(crate) struct ServiceErrorV2 {
     pub code: String,
     pub message: String,
     pub retriable: bool,
@@ -149,7 +149,7 @@ fn finish_v2<T, R: tauri::Runtime>(
 /// adopt this without changing their domain payload shape.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct RuntimeEventV2 {
+pub(crate) struct RuntimeEventV2 {
     pub topic: String,
     pub sequence: u64,
     pub timestamp_ms: u64,
@@ -158,7 +158,7 @@ pub struct RuntimeEventV2 {
 
 static RUNTIME_EVENT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-pub fn emit_runtime_event_v2<R: tauri::Runtime>(
+pub(crate) fn emit_runtime_event_v2<R: tauri::Runtime>(
     app: &AppHandle<R>,
     topic: impl Into<String>,
     payload: Value,
@@ -179,7 +179,7 @@ pub fn emit_runtime_event_v2<R: tauri::Runtime>(
 
 #[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum ProviderCommandV2 {
+pub(crate) enum ProviderCommandV2 {
     ResolveRealtimeProfile {
         #[ts(type = "unknown")]
         config: Value,
@@ -229,7 +229,7 @@ pub enum ProviderCommandV2 {
 // Runs off the main thread (async) so provider network I/O cannot starve the
 // Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub async fn provider_v2(
+pub(crate) async fn provider_v2(
     app: AppHandle,
     command: ProviderCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
@@ -323,7 +323,7 @@ pub async fn provider_v2(
 
 #[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum SessionCommandV2 {
+pub(crate) enum SessionCommandV2 {
     Snapshot,
     Bootstrap,
     RefreshDevices,
@@ -362,7 +362,7 @@ pub enum SessionCommandV2 {
 }
 
 #[tauri::command]
-pub async fn session_v2(
+pub(crate) async fn session_v2(
     app: AppHandle,
     command: SessionCommandV2,
 ) -> Result<ServiceResult<AudioRuntimeSnapshot>, ServiceErrorV2> {
@@ -423,7 +423,7 @@ pub async fn session_v2(
 
 #[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum BridgeCommandV2 {
+pub(crate) enum BridgeCommandV2 {
     Snapshot,
     Refresh,
     Start {
@@ -446,7 +446,7 @@ pub enum BridgeCommandV2 {
 // Runs off the main thread (async) so blocking driver/process management cannot
 // starve the Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub async fn bridge_v2<R: tauri::Runtime>(
+pub(crate) async fn bridge_v2<R: tauri::Runtime>(
     app: AppHandle<R>,
     command: BridgeCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
@@ -471,7 +471,7 @@ pub async fn bridge_v2<R: tauri::Runtime>(
 
 #[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum DiagnosticsCommandV2 {
+pub(crate) enum DiagnosticsCommandV2 {
     SelfCheck,
     OverlaySelfCheck,
     Export { scope: String },
@@ -484,7 +484,7 @@ pub enum DiagnosticsCommandV2 {
 // Runs off the main thread (async) so bundle/file I/O (e.g. export) cannot
 // freeze the Tauri IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub async fn diagnostics_v2<R: tauri::Runtime>(
+pub(crate) async fn diagnostics_v2<R: tauri::Runtime>(
     app: AppHandle<R>,
     command: DiagnosticsCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {
@@ -543,7 +543,7 @@ pub async fn diagnostics_v2<R: tauri::Runtime>(
 
 #[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
-pub enum ConfigurationCommandV2 {
+pub(crate) enum ConfigurationCommandV2 {
     Load,
     Save {
         #[ts(type = "unknown")]
@@ -567,7 +567,7 @@ pub enum ConfigurationCommandV2 {
 // Runs off the main thread (async) so SQLite/config I/O cannot starve the Tauri
 // IPC event loop — mirrors `session_v2`.
 #[tauri::command]
-pub async fn configuration_v2<R: tauri::Runtime>(
+pub(crate) async fn configuration_v2<R: tauri::Runtime>(
     app: AppHandle<R>,
     command: ConfigurationCommandV2,
 ) -> Result<ServiceResult<Value>, ServiceErrorV2> {

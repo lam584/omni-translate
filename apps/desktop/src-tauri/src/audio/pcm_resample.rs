@@ -10,7 +10,7 @@ use base64::Engine;
 
 /// Downmix 48 kHz stereo f32-le capture bytes to mono i16 at `target_rate`.
 /// Only integer decimation targets of 48 kHz are supported (16 kHz, 24 kHz).
-pub fn resample_capture_to_mono_i16(input: &[u8], target_rate: u32) -> Vec<i16> {
+pub(crate) fn resample_capture_to_mono_i16(input: &[u8], target_rate: u32) -> Vec<i16> {
     debug_assert!(48_000 % target_rate.max(1) == 0, "target must divide 48kHz");
     let ratio = (48_000 / target_rate.max(1)).max(1) as usize;
     let frame_count = input.len() / 8;
@@ -37,7 +37,7 @@ pub fn resample_capture_to_mono_i16(input: &[u8], target_rate: u32) -> Vec<i16> 
 
 /// Linear-interpolation resample of mono i16 PCM between arbitrary rates
 /// (e.g. the benchmark's 16 kHz decode buffer -> OpenAI's 24 kHz input).
-pub fn resample_mono_i16(input: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
+pub(crate) fn resample_mono_i16(input: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16> {
     if input.is_empty() || from_rate == 0 || to_rate == 0 {
         return Vec::new();
     }
@@ -59,7 +59,7 @@ pub fn resample_mono_i16(input: &[i16], from_rate: u32, to_rate: u32) -> Vec<i16
     out
 }
 
-pub fn base64_encode_pcm16(samples: &[i16]) -> String {
+pub(crate) fn base64_encode_pcm16(samples: &[i16]) -> String {
     let bytes: Vec<u8> = samples
         .iter()
         .flat_map(|sample| sample.to_le_bytes())
@@ -67,7 +67,7 @@ pub fn base64_encode_pcm16(samples: &[i16]) -> String {
     base64::engine::general_purpose::STANDARD.encode(&bytes)
 }
 
-pub fn base64_decode_to_i16(encoded: &str) -> Result<Vec<i16>, String> {
+pub(crate) fn base64_decode_to_i16(encoded: &str) -> Result<Vec<i16>, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(encoded)
         .map_err(|e| format!("base64 decode error: {e}"))?;
@@ -81,7 +81,7 @@ pub fn base64_decode_to_i16(encoded: &str) -> Result<Vec<i16>, String> {
 }
 
 /// RMS of an i16 chunk on a 0..1 scale, matching the Omni silence gate metric.
-pub fn pcm16_chunk_rms(samples: &[i16]) -> f32 {
+pub(crate) fn pcm16_chunk_rms(samples: &[i16]) -> f32 {
     if samples.is_empty() {
         return 0.0;
     }
@@ -94,14 +94,14 @@ pub fn pcm16_chunk_rms(samples: &[i16]) -> f32 {
 
 /// RMS silence gate with a trailing grace window, mirroring the Omni pump so
 /// server-side VAD still sees end-of-speech silence before we stop sending.
-pub struct SilenceGate {
+pub(crate) struct SilenceGate {
     min_rms: f32,
     grace_chunks: u32,
     grace_remaining: u32,
 }
 
 impl SilenceGate {
-    pub fn new(min_rms: f32, grace_chunks: u32) -> Self {
+    pub(crate) fn new(min_rms: f32, grace_chunks: u32) -> Self {
         Self {
             min_rms,
             grace_chunks,
@@ -109,7 +109,7 @@ impl SilenceGate {
         }
     }
 
-    pub fn should_send(&mut self, rms: f32) -> bool {
+    pub(crate) fn should_send(&mut self, rms: f32) -> bool {
         if rms >= self.min_rms {
             self.grace_remaining = self.grace_chunks;
             return true;

@@ -87,13 +87,13 @@ fn connect_stt_socket(
     Ok(socket)
 }
 
-pub struct SttHandle {
+pub(crate) struct SttHandle {
     pub stop_tx: mpsc::Sender<()>,
     #[allow(dead_code, reason = "join handle is retained for supervised shutdown on supported runners")]
     pub join_handle: JoinHandle<()>,
 }
 
-pub fn start_stt(
+pub(crate) fn start_stt(
     app: AppHandle,
     store: &AudioStateStore,
     provider: ProviderDraftInput,

@@ -74,7 +74,7 @@ fn summarize_provider_config(config: &Value) -> String {
 }
 
 #[tauri::command(async)]
-pub fn bootstrap_storage<R: tauri::Runtime>(
+pub(crate) fn bootstrap_storage<R: tauri::Runtime>(
     app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
 ) -> Result<StorageRuntimeSnapshot, String> {
@@ -96,7 +96,7 @@ pub fn bootstrap_storage<R: tauri::Runtime>(
 }
 
 #[tauri::command(async)]
-pub fn load_config_draft<R: tauri::Runtime>(
+pub(crate) fn load_config_draft<R: tauri::Runtime>(
     app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
 ) -> Result<Value, String> {
@@ -109,7 +109,7 @@ pub fn load_config_draft<R: tauri::Runtime>(
     )
 }
 
-pub fn save_config_draft<R: tauri::Runtime>(
+pub(crate) fn save_config_draft<R: tauri::Runtime>(
     app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
     config: Value,
@@ -141,7 +141,7 @@ pub fn save_config_draft<R: tauri::Runtime>(
     }
 }
 
-pub fn reset_config_draft<R: tauri::Runtime>(
+pub(crate) fn reset_config_draft<R: tauri::Runtime>(
     app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
 ) -> Result<Value, String> {
@@ -154,7 +154,7 @@ pub fn reset_config_draft<R: tauri::Runtime>(
     )
 }
 
-pub fn export_config_draft<R: tauri::Runtime>(
+pub(crate) fn export_config_draft<R: tauri::Runtime>(
     app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
 ) -> Result<ConfigExportArtifact, String> {
@@ -179,7 +179,7 @@ pub fn export_config_draft<R: tauri::Runtime>(
     }
 }
 
-pub fn import_config_draft<R: tauri::Runtime>(
+pub(crate) fn import_config_draft<R: tauri::Runtime>(
     app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
     file_path: String,
@@ -211,7 +211,7 @@ pub fn import_config_draft<R: tauri::Runtime>(
     }
 }
 
-pub fn create_config_snapshot<R: tauri::Runtime>(
+pub(crate) fn create_config_snapshot<R: tauri::Runtime>(
     app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
     reason: Option<String>,
@@ -247,7 +247,7 @@ pub fn create_config_snapshot<R: tauri::Runtime>(
     }
 }
 
-pub fn rollback_config_snapshot<R: tauri::Runtime>(
+pub(crate) fn rollback_config_snapshot<R: tauri::Runtime>(
     app: AppHandle<R>,
     storage: State<'_, StorageStateStore>,
     snapshot_id: String,
@@ -283,7 +283,7 @@ pub fn rollback_config_snapshot<R: tauri::Runtime>(
     }
 }
 
-pub async fn upsert_secret_ref<R: tauri::Runtime>(
+pub(crate) async fn upsert_secret_ref<R: tauri::Runtime>(
     app: AppHandle<R>,
     reference: String,
     secret: String,
@@ -377,7 +377,7 @@ pub async fn upsert_secret_ref<R: tauri::Runtime>(
     }
 }
 
-pub async fn get_secret_ref_status<R: tauri::Runtime>(
+pub(crate) async fn get_secret_ref_status<R: tauri::Runtime>(
     app: AppHandle<R>,
     reference: String,
 ) -> Result<CredentialRefStatus, String> {
@@ -444,7 +444,7 @@ pub async fn get_secret_ref_status<R: tauri::Runtime>(
     }
 }
 
-pub async fn read_secret_ref<R: tauri::Runtime>(
+pub(crate) async fn read_secret_ref<R: tauri::Runtime>(
     app: AppHandle<R>,
     reference: String,
 ) -> Result<CredentialSecretPayload, String> {

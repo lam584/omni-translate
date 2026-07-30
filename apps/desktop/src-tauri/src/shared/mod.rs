@@ -6,9 +6,9 @@
 //! lives here so the dependency direction is `runtime -> shared` and
 //! `diagnostics -> shared`, never sideways.
 
-pub mod contracts;
-pub mod signals;
-pub mod time;
+pub(crate) mod contracts;
+pub(crate) mod signals;
+pub(crate) mod time;
 
 /// Application-run session id: generated once per process start (UUIDv7, so
 /// lexically time-ordered), appended as the trailing ` sid=<value>` token to
@@ -16,7 +16,7 @@ pub mod time;
 /// handshake and to the renderer through `bootstrap_runtime`. This is the
 /// cross-process log correlation key — never inject it as a line prefix (the
 /// leading-timestamp contract is load-bearing for the testing scripts).
-pub fn session_id() -> &'static str {
+pub(crate) fn session_id() -> &'static str {
     static SESSION_ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     SESSION_ID.get_or_init(|| uuid::Uuid::now_v7().simple().to_string())
 }

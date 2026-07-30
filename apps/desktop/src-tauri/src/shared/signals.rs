@@ -18,14 +18,14 @@ use super::contracts::DiagnosticsRuntimeSnapshot;
 
 /// A diagnostics log line was recorded (native-origin, non-quiet path only —
 /// frontend-forwarded lines never publish, preserving the invoke-channel fix).
-pub struct DiagnosticsLogSignal<'a> {
+pub(crate) struct DiagnosticsLogSignal<'a> {
     pub category: &'a str,
     pub level: &'a str,
 }
 
 /// A runtime notification was pushed and should be mirrored into the
 /// diagnostics log with these exact fields.
-pub struct RuntimeNotificationSignal<'a> {
+pub(crate) struct RuntimeNotificationSignal<'a> {
     pub level: &'a str,
     pub source: &'a str,
     pub message: &'a str,
@@ -40,7 +40,7 @@ type SnapshotProvider = Box<dyn Fn() -> DiagnosticsRuntimeSnapshot + Send + Sync
 /// Instance-scoped bus so tests can build private buses; production uses the
 /// single process-global instance from [`global`].
 #[derive(Default)]
-pub struct SharedSignals {
+pub(crate) struct SharedSignals {
     log_observers: RwLock<Vec<LogObserver>>,
     notification_observers: RwLock<Vec<NotificationObserver>>,
     refresh_observers: RwLock<Vec<RefreshObserver>>,
@@ -48,22 +48,22 @@ pub struct SharedSignals {
 }
 
 impl SharedSignals {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn subscribe_diagnostics_log(&self, observer: impl Fn(&DiagnosticsLogSignal<'_>) + Send + Sync + 'static) {
+    pub(crate) fn subscribe_diagnostics_log(&self, observer: impl Fn(&DiagnosticsLogSignal<'_>) + Send + Sync + 'static) {
         self.log_observers.write().expect("log observers poisoned").push(Box::new(observer));
     }
 
-    pub fn publish_diagnostics_log(&self, category: &str, level: &str) {
+    pub(crate) fn publish_diagnostics_log(&self, category: &str, level: &str) {
         let signal = DiagnosticsLogSignal { category, level };
         for observer in self.log_observers.read().expect("log observers poisoned").iter() {
             observer(&signal);
         }
     }
 
-    pub fn subscribe_runtime_notification(
+    pub(crate) fn subscribe_runtime_notification(
         &self,
         observer: impl Fn(&RuntimeNotificationSignal<'_>) + Send + Sync + 'static,
     ) {
@@ -73,7 +73,7 @@ impl SharedSignals {
             .push(Box::new(observer));
     }
 
-    pub fn publish_runtime_notification(&self, signal: &RuntimeNotificationSignal<'_>) {
+    pub(crate) fn publish_runtime_notification(&self, signal: &RuntimeNotificationSignal<'_>) {
         for observer in self
             .notification_observers
             .read()
@@ -86,14 +86,14 @@ impl SharedSignals {
 
     /// Diagnostics-visible state changed without a log line (e.g. a model
     /// trace update); the runtime subscriber refreshes the snapshot.
-    pub fn subscribe_runtime_snapshot_refresh(&self, observer: impl Fn() + Send + Sync + 'static) {
+    pub(crate) fn subscribe_runtime_snapshot_refresh(&self, observer: impl Fn() + Send + Sync + 'static) {
         self.refresh_observers
             .write()
             .expect("refresh observers poisoned")
             .push(Box::new(observer));
     }
 
-    pub fn request_runtime_snapshot_refresh(&self) {
+    pub(crate) fn request_runtime_snapshot_refresh(&self) {
         for observer in self.refresh_observers.read().expect("refresh observers poisoned").iter() {
             observer();
         }
@@ -101,7 +101,7 @@ impl SharedSignals {
 
     /// Register the diagnostics section provider used when the runtime
     /// aggregate snapshot is built. Last registration wins.
-    pub fn set_diagnostics_snapshot_provider(
+    pub(crate) fn set_diagnostics_snapshot_provider(
         &self,
         provider: impl Fn() -> DiagnosticsRuntimeSnapshot + Send + Sync + 'static,
     ) {
@@ -113,7 +113,7 @@ impl SharedSignals {
 
     /// The current diagnostics section, or the preview baseline when no
     /// provider is registered (mirrors the old `try_state` `None` fallback).
-    pub fn diagnostics_snapshot(&self) -> DiagnosticsRuntimeSnapshot {
+    pub(crate) fn diagnostics_snapshot(&self) -> DiagnosticsRuntimeSnapshot {
         match self
             .diagnostics_snapshot_provider
             .read()
@@ -128,7 +128,7 @@ impl SharedSignals {
 
 /// The process-global bus production code publishes to and `main.rs`
 /// subscribes on.
-pub fn global() -> &'static SharedSignals {
+pub(crate) fn global() -> &'static SharedSignals {
     static GLOBAL: OnceLock<SharedSignals> = OnceLock::new();
     GLOBAL.get_or_init(SharedSignals::new)
 }

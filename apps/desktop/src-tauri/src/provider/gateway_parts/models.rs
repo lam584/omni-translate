@@ -9,7 +9,7 @@ use super::{auth, time, transport};
 /// Owns model-catalog endpoint resolution, HTTP transport, and response
 /// normalization.  Keeping this state-free service separate prevents the
 /// application-facing gateway from accumulating protocol details.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ModelCatalogService;
 
 impl ModelCatalogService {

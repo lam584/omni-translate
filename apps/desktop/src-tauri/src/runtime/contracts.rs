@@ -7,11 +7,11 @@ use crate::storage::contracts::StorageRuntimeSnapshot;
 
 /// Runtime notifications are mirrored into the diagnostics log through the
 /// shared signal seam, so the type itself lives in `crate::shared::contracts`.
-pub use crate::shared::contracts::RuntimeNotification;
+pub(crate) use crate::shared::contracts::RuntimeNotification;
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct RuntimeWindowSnapshot {
+pub(crate) struct RuntimeWindowSnapshot {
     pub label: String,
     pub title: String,
     #[ts(type = "'main' | 'subtitle-overlay'")]
@@ -22,7 +22,7 @@ pub struct RuntimeWindowSnapshot {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct RuntimeSnapshot {
+pub(crate) struct RuntimeSnapshot {
     #[ts(type = "'booting' | 'ready' | 'degraded'")]
     pub core_state: String,
     #[ts(type = "'browser-preview' | 'tauri-shell' | 'runtime-error'")]

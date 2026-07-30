@@ -10,7 +10,7 @@ use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError, Provider
 use super::time::now_unix_seconds_marker;
 use super::transport::{read_json_frame, send_json_frame, WebSocketFrame, WebSocketTransport};
 
-#[derive(Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct RealtimeAudioSynthesizer;
 
 impl RealtimeAudioSynthesizer {

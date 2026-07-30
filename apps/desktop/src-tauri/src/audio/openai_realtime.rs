@@ -40,7 +40,7 @@ const TRANSLATION_CUE_TERMINAL_COMMIT_MS: u64 = 600;
 const SESSION_CLOSE_DRAIN_TIMEOUT_MS: u64 = 3_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum OpenAiRealtimeDialect {
+pub(crate) enum OpenAiRealtimeDialect {
     /// GA conversation session on /v1/realtime (gpt-realtime-2.1 family).
     Conversation,
     /// Dedicated streaming translation endpoint /v1/realtime/translations
@@ -56,7 +56,7 @@ pub enum OpenAiRealtimeDialect {
 }
 
 #[cfg(test)]
-pub fn resolve_dialect(model: &str) -> OpenAiRealtimeDialect {
+pub(crate) fn resolve_dialect(model: &str) -> OpenAiRealtimeDialect {
     let lower = model.to_ascii_lowercase();
     if lower.contains("glm") {
         OpenAiRealtimeDialect::FlatCompat
@@ -123,13 +123,13 @@ fn build_realtime_base_url(base_url: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-pub fn build_openai_realtime_url(base_url: &str, model: &str) -> Result<Url, String> {
+pub(crate) fn build_openai_realtime_url(base_url: &str, model: &str) -> Result<Url, String> {
     let mut url = build_realtime_base_url(base_url)?;
     url.query_pairs_mut().clear().append_pair("model", model);
     Ok(url)
 }
 
-pub fn build_openai_translation_url(base_url: &str, model: &str) -> Result<Url, String> {
+pub(crate) fn build_openai_translation_url(base_url: &str, model: &str) -> Result<Url, String> {
     let mut url = build_realtime_base_url(base_url)?;
     let path = url.path().trim_end_matches('/').to_string();
     if !path.ends_with("/translations") {
@@ -139,7 +139,7 @@ pub fn build_openai_translation_url(base_url: &str, model: &str) -> Result<Url, 
     Ok(url)
 }
 
-pub fn build_openai_transcription_url(base_url: &str) -> Result<Url, String> {
+pub(crate) fn build_openai_transcription_url(base_url: &str) -> Result<Url, String> {
     let mut url = build_realtime_base_url(base_url)?;
     url.query_pairs_mut()
         .clear()
@@ -499,7 +499,7 @@ impl CueState {
     }
 }
 
-pub fn start_openai_realtime(
+pub(crate) fn start_openai_realtime(
     app: AppHandle,
     store: &AudioStateStore,
     provider: ProviderDraftInput,

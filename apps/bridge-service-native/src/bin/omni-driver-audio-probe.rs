@@ -65,7 +65,7 @@ mod probe {
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct ProbeResult {
+    pub(super) struct ProbeResult {
         pub passed: bool,
         pub endpoint_id: String,
         pub endpoint_name: String,
@@ -92,7 +92,7 @@ mod probe {
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct FailureResult {
+    pub(super) struct FailureResult {
         pub passed: bool,
         pub detail: String,
     }
@@ -214,7 +214,7 @@ mod probe {
         }
     }
 
-    pub fn run_probe() -> Result<ProbeResult, String> {
+    pub(super) fn run_probe() -> Result<ProbeResult, String> {
         initialize_mta().ok().map_err(error_text)?;
         let enumerator = DeviceEnumerator::new().map_err(error_text)?;
         let device = find_virtual_speaker(&enumerator)?;

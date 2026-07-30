@@ -48,7 +48,7 @@ mod replay_tests;
 mod session_worker;
 mod socket_event_processor;
 
-pub use self::session_worker::{start_omni, OmniHandle};
+pub(crate) use self::session_worker::{start_omni, OmniHandle};
 use self::session_worker::reconnect_socket;
 use self::socket_event_processor::{
     OmniSocketEventContext, OmniSocketEventProcessor, OmniSocketEventState,
@@ -187,14 +187,14 @@ impl ProviderInputPcmDump {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RealtimeAudioMode {
+pub(crate) enum RealtimeAudioMode {
     Manual,
     ServerVad,
     SemanticVad,
 }
 
 impl RealtimeAudioMode {
-    pub fn from_config_value(value: Option<&str>, model: &str) -> Result<Self, String> {
+    pub(crate) fn from_config_value(value: Option<&str>, model: &str) -> Result<Self, String> {
         match value {
             Some("manual") => Ok(Self::Manual),
             Some("server_vad") => Ok(Self::ServerVad),
@@ -209,7 +209,7 @@ impl RealtimeAudioMode {
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Manual => "manual",
             Self::ServerVad => "server_vad",
@@ -217,11 +217,11 @@ impl RealtimeAudioMode {
         }
     }
 
-    pub fn uses_manual_commit(self) -> bool {
+    pub(crate) fn uses_manual_commit(self) -> bool {
         self == Self::Manual
     }
 
-    pub fn turn_detection(self) -> Value {
+    pub(crate) fn turn_detection(self) -> Value {
         match self {
             Self::Manual => Value::Null,
             Self::ServerVad => json!({
@@ -237,8 +237,8 @@ impl RealtimeAudioMode {
     }
 }
 
-pub fn default_realtime_audio_mode(model: &str) -> RealtimeAudioMode {
-    if model.to_ascii_lowercase().contains("livetranslate") {
+pub(crate) fn default_realtime_audio_mode(model: &str) -> RealtimeAudioMode {
+    if crate::audio::events::model_name_is_livetranslate(model) {
         RealtimeAudioMode::ServerVad
     } else {
         RealtimeAudioMode::Manual

@@ -240,15 +240,23 @@ impl<'a> SpeechMixPlanner<'a> {
     } else {
         &config.inbound_mix
     };
+    let translated_input = if route_mix.translated_audio_enabled {
+        translated_pcm.as_slice()
+    } else {
+        &[]
+    };
     let (mut translated, enhancement_metrics) = enhance_speech_i16(
-        &translated_pcm,
+        translated_input,
         sample_rate_hz,
         channel_count,
         route_mix.translated_audio_gain_db,
         route_mix.translated_audio_auto_gain_enabled,
     );
-    let prompt = generate_prompt_tone(sample_rate_hz, PROMPT_TONE_MS);
-    let mut translated_with_prompt = prompt;
+    let mut translated_with_prompt = if route_mix.translated_audio_enabled {
+        generate_prompt_tone(sample_rate_hz, PROMPT_TONE_MS)
+    } else {
+        Vec::new()
+    };
     translated_with_prompt.append(&mut translated);
 
     let original = if route_mix.keep_original_audio {

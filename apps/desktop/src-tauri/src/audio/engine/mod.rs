@@ -82,7 +82,7 @@ impl<'a> AudioRouteSupervisor<'a> {
     }
 }
 
-pub fn bootstrap_audio_runtime(
+pub(crate) fn bootstrap_audio_runtime(
     app: &AppHandle,
     store: &AudioStateStore,
 ) -> Result<AudioRuntimeSnapshot, String> {
@@ -104,14 +104,14 @@ pub fn bootstrap_audio_runtime(
     Ok(snapshot)
 }
 
-pub fn refresh_devices(
+pub(crate) fn refresh_devices(
     app: &AppHandle,
     store: &AudioStateStore,
 ) -> Result<AudioRuntimeSnapshot, String> {
     bootstrap_audio_runtime(app, store)
 }
 
-pub fn start_route(
+pub(crate) fn start_route(
     app: AppHandle,
     store: &AudioStateStore,
     direction: &str,
@@ -274,7 +274,7 @@ pub fn start_route(
     Ok(store.snapshot())
 }
 
-pub fn stop_route(
+pub(crate) fn stop_route(
     app: AppHandle,
     store: &AudioStateStore,
     direction: &str,
@@ -342,7 +342,7 @@ pub fn stop_route(
     Ok(store.snapshot())
 }
 
-pub fn clear_cues(
+pub(crate) fn clear_cues(
     app: &AppHandle,
     store: &AudioStateStore,
 ) -> Result<AudioRuntimeSnapshot, String> {
@@ -352,7 +352,7 @@ pub fn clear_cues(
     Ok(store.snapshot())
 }
 
-pub fn emit_audio_snapshot<R: tauri::Runtime>(
+pub(crate) fn emit_audio_snapshot<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &AudioStateStore,
 ) -> Result<(), String> {
@@ -768,7 +768,6 @@ impl RouteProcessor {
         Some(FinalizedSegment {
             audio: CapturedSegmentAudio {
                 cue_id: cue.cue_id.clone(),
-                route_direction: cue.route_direction.clone(),
                 sample_rate_hz: SAMPLE_RATE_HZ as u32,
                 channel_count: CHANNEL_COUNT as u16,
                 pcm_f32le: active_segment.audio_bytes,

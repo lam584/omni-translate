@@ -565,7 +565,7 @@ fn resolve_legacy_vad_bypass_for_route(direction: &str, config: &Value) -> bool 
 
 fn default_realtime_audio_mode_name(model: &str) -> &'static str {
     let lower = model.to_ascii_lowercase();
-    if lower.contains("livetranslate") {
+    if model_name_is_livetranslate(&lower) {
         "server_vad"
     } else if lower.contains("omni") && lower.contains("realtime") {
         "manual"
@@ -583,6 +583,10 @@ fn default_realtime_audio_mode_name(model: &str) -> &'static str {
 #[cfg(test)]
 pub(super) fn resolve_realtime_audio_mode_value(provider: &ProviderDraftInput, model: &str) -> String {
     resolve_realtime_profile(provider, model).realtime_audio_mode
+}
+
+pub(crate) fn model_name_is_livetranslate(model: &str) -> bool {
+    model.to_ascii_lowercase().contains("livetranslate")
 }
 
 #[cfg(test)]

@@ -32,7 +32,7 @@ impl SentenceClock for SystemSentenceClock {
     }
 }
 
-pub struct SentenceSplitter {
+pub(crate) struct SentenceSplitter {
     buffer: String,
     committed: String,
     pending_start: Option<Instant>,
@@ -43,7 +43,7 @@ pub struct SentenceSplitter {
 }
 
 #[derive(Debug, Clone)]
-pub struct SentenceResult {
+pub(crate) struct SentenceResult {
     pub sentence: String,
     pub context: Vec<String>,
     pub is_forced: bool,
@@ -52,7 +52,7 @@ pub struct SentenceResult {
 }
 
 #[derive(Debug, Clone)]
-pub struct SentenceFeedResult {
+pub(crate) struct SentenceFeedResult {
     pub sentences: Vec<SentenceResult>,
     pub revision_reset: bool,
     pub previous_committed: String,
@@ -65,7 +65,7 @@ struct ForcedPending {
 }
 
 impl SentenceSplitter {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::with_clock(Arc::new(SystemSentenceClock))
     }
 
@@ -82,11 +82,11 @@ impl SentenceSplitter {
     }
 
     #[allow(dead_code, reason = "compatibility wrapper is retained for callers that do not consume revision metadata")]
-    pub fn feed(&mut self, full_text: &str) -> Vec<SentenceResult> {
+    pub(crate) fn feed(&mut self, full_text: &str) -> Vec<SentenceResult> {
         self.feed_with_revision(full_text).sentences
     }
 
-    pub fn feed_with_revision(&mut self, full_text: &str) -> SentenceFeedResult {
+    pub(crate) fn feed_with_revision(&mut self, full_text: &str) -> SentenceFeedResult {
         let mut results = Vec::new();
         let mut revision_reset = false;
         let mut previous_committed = String::new();
@@ -230,7 +230,7 @@ impl SentenceSplitter {
         }
     }
 
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         self.buffer.clear();
         self.committed.clear();
         self.pending_start = None;
@@ -238,7 +238,7 @@ impl SentenceSplitter {
         self.active_forced_pending = None;
     }
 
-    pub fn diagnostics(&self) -> SentenceSplitterDiagnostics {
+    pub(crate) fn diagnostics(&self) -> SentenceSplitterDiagnostics {
         let pending_ms = self
             .pending_start
             .map(|start| start.elapsed().as_millis() as u64);
@@ -262,7 +262,7 @@ impl SentenceSplitter {
     }
 
     #[cfg(test)]
-    pub fn age_pending_for_test(&mut self, duration: Duration) {
+    pub(crate) fn age_pending_for_test(&mut self, duration: Duration) {
         self.pending_start = Some(self.clock.now() - duration);
     }
 }
@@ -343,10 +343,10 @@ fn is_cjk_caption_character(character: char) -> bool {
 /// translator. Native realtime models already return a complete text payload,
 /// so they use `split_text`. Both paths converge on `split_sentence`, keeping
 /// the on-screen sentence and long-line rules identical.
-pub struct SubtitleDisplaySegmenter;
+pub(crate) struct SubtitleDisplaySegmenter;
 
 impl SubtitleDisplaySegmenter {
-    pub fn split_text(text: &str) -> Vec<String> {
+    pub(crate) fn split_text(text: &str) -> Vec<String> {
         let text = text.trim();
         if text.is_empty() {
             return Vec::new();
@@ -385,7 +385,7 @@ impl SubtitleDisplaySegmenter {
         lines
     }
 
-    pub fn split_sentence(sentence: &str) -> Vec<String> {
+    pub(crate) fn split_sentence(sentence: &str) -> Vec<String> {
         split_subtitle_chunks_with_limits(
             sentence,
             MAX_DISPLAY_CHARS,
@@ -643,7 +643,7 @@ fn should_emit_forced_pending(previous: Option<&str>, pending_text: &str) -> boo
 }
 
 #[derive(Debug, Clone)]
-pub struct SentenceSplitterDiagnostics {
+pub(crate) struct SentenceSplitterDiagnostics {
     pub buffer_len: usize,
     pub committed_len: usize,
     #[allow(dead_code, reason = "diagnostic preview field is serialized only by benchmark builds")]
@@ -657,7 +657,7 @@ pub struct SentenceSplitterDiagnostics {
     pub forced_pending_count: usize,
 }
 
-pub fn detect_language(text: &str) -> Option<whatlang::Lang> {
+pub(crate) fn detect_language(text: &str) -> Option<whatlang::Lang> {
     let info = whatlang::detect(text)?;
     if info.is_reliable() {
         Some(info.lang())
@@ -666,7 +666,7 @@ pub fn detect_language(text: &str) -> Option<whatlang::Lang> {
     }
 }
 
-pub fn is_target_language(detected: whatlang::Lang, target: &str) -> bool {
+pub(crate) fn is_target_language(detected: whatlang::Lang, target: &str) -> bool {
     match target {
         t if t.starts_with("zh") => detected == whatlang::Lang::Cmn,
         t if t.starts_with("en") => detected == whatlang::Lang::Eng,

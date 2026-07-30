@@ -21,7 +21,7 @@ export function scheduleStartupTask(
   // report its product-facing error themselves, so the scheduler consumes the
   // failure and exposes a completion-only promise without an unhandled rejection.
   const run = () => {
-    void Promise.resolve().then(task).then(settle, settle);
+    void Promise.resolve().then(task).then(settle, settle).catch(settle);
   };
   const timer = delayMs <= 0 ? null : setTimeout(run, delayMs);
   if (timer === null) {

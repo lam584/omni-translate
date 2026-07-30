@@ -8,7 +8,7 @@ const MAX_EVENT_ITEMS: usize = 2_000;
 /// A single ASR (speech-to-text) delta event captured during a live session.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LiveSessionAsrDelta {
+pub(crate) struct LiveSessionAsrDelta {
     /// Milliseconds elapsed since the session started.
     pub elapsed_ms: u64,
     /// Intermediate / uncommitted recognition text.
@@ -22,7 +22,7 @@ pub struct LiveSessionAsrDelta {
 /// A single model output delta event captured during a live session.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LiveSessionOutputDelta {
+pub(crate) struct LiveSessionOutputDelta {
     /// Milliseconds elapsed since the session started.
     pub elapsed_ms: u64,
     /// The WebSocket event type (e.g. `response.audio_transcript.delta`, `response.done`).
@@ -37,7 +37,7 @@ pub struct LiveSessionOutputDelta {
 /// All `*_ms` values are milliseconds elapsed since the session started.
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct PipelineMilestones {
+pub(crate) struct PipelineMilestones {
     /// WebSocket connect completed (relative to session start).
     pub preconnect_started_ms: Option<u64>,
     /// `session.created` or `session.updated` received from server.
@@ -64,7 +64,7 @@ pub struct PipelineMilestones {
 /// to the frontend.
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct LiveSessionEvents {
+pub(crate) struct LiveSessionEvents {
     /// ISO-8601 or `unix-ms:` timestamp of when the session started.
     pub session_started_at: String,
     /// Milliseconds elapsed since the session started at the time of the snapshot.
@@ -89,7 +89,7 @@ pub struct LiveSessionEvents {
 ///
 /// Events are bounded to [`MAX_EVENT_ITEMS`] entries (per category); when the
 /// limit is reached the oldest entries are discarded.
-pub struct LiveSessionEventBuffer {
+pub(crate) struct LiveSessionEventBuffer {
     inner: Mutex<LiveSessionEventBufferInner>,
 }
 
@@ -116,7 +116,7 @@ impl LiveSessionEventBufferInner {
 
 impl LiveSessionEventBuffer {
     /// Creates a new, empty event buffer.
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(LiveSessionEventBufferInner::default()),
         }
@@ -124,7 +124,7 @@ impl LiveSessionEventBuffer {
 
     /// Clears all recorded events and marks a new session start point.
     /// Called when a new audio session begins.
-    pub fn clear(&self, model: &str, session_started_at: &str) {
+    pub(crate) fn clear(&self, model: &str, session_started_at: &str) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
         inner.started_at = Some(Instant::now());
         inner.session_started_at = session_started_at.to_string();
@@ -137,7 +137,7 @@ impl LiveSessionEventBuffer {
     }
 
     /// Records a named pipeline milestone timestamp (milliseconds since session start).
-    pub fn record_milestone(&self, name: &str, elapsed_ms: u64) {
+    pub(crate) fn record_milestone(&self, name: &str, elapsed_ms: u64) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
         match name {
             "preconnect_started" => inner.pipeline_milestones.preconnect_started_ms = Some(elapsed_ms),
@@ -151,7 +151,7 @@ impl LiveSessionEventBuffer {
 
     /// Records a named pipeline milestone using the current elapsed time since
     /// the session was cleared.
-    pub fn record_milestone_now(&self, name: &str) {
+    pub(crate) fn record_milestone_now(&self, name: &str) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
         let elapsed_ms = inner.elapsed_ms();
         match name {
@@ -161,14 +161,14 @@ impl LiveSessionEventBuffer {
     }
 
     /// Records the session-ready audio buffer statistics.
-    pub fn record_session_ready(&self, queued_chunks: u64, dropped: u64) {
+    pub(crate) fn record_session_ready(&self, queued_chunks: u64, dropped: u64) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
         inner.pipeline_milestones.queued_audio_chunks = Some(queued_chunks);
         inner.pipeline_milestones.dropped_before_ready = Some(dropped);
     }
 
     /// Records audio silence-filtering diagnostic stats.
-    pub fn record_audio_diagnostic(
+    pub(crate) fn record_audio_diagnostic(
         &self,
         first_audible_chunk_ms: Option<u64>,
         silence_skipped: Option<u64>,
@@ -188,7 +188,7 @@ impl LiveSessionEventBuffer {
 
     /// Records an ASR delta event.  If the buffer exceeds [`MAX_EVENT_ITEMS`],
     /// the oldest entry is removed.
-    pub fn push_asr_delta(&self, event_type: &str, stash: &str, text: &str) {
+    pub(crate) fn push_asr_delta(&self, event_type: &str, stash: &str, text: &str) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
         let elapsed_ms = inner.elapsed_ms();
         inner.asr_deltas.push(LiveSessionAsrDelta {
@@ -207,7 +207,7 @@ impl LiveSessionEventBuffer {
 
     /// Records an output delta event.  If the buffer exceeds [`MAX_EVENT_ITEMS`],
     /// the oldest entry is removed.
-    pub fn push_output_delta(&self, event_type: &str, stash: &str, committed_text: &str) {
+    pub(crate) fn push_output_delta(&self, event_type: &str, stash: &str, committed_text: &str) {
         let mut inner = self.inner.lock().expect("live session events poisoned");
         let elapsed_ms = inner.elapsed_ms();
         inner.output_deltas.push(LiveSessionOutputDelta {
@@ -226,7 +226,7 @@ impl LiveSessionEventBuffer {
 
     /// Returns a point-in-time snapshot of the buffer suitable for JSON
     /// serialization.
-    pub fn snapshot(&self) -> LiveSessionEvents {
+    pub(crate) fn snapshot(&self) -> LiveSessionEvents {
         let inner = self.inner.lock().expect("live session events poisoned");
         let elapsed_ms = inner.elapsed_ms();
         LiveSessionEvents {

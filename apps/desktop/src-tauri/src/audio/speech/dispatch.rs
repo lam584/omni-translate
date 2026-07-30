@@ -85,52 +85,30 @@ impl SpeechDispatchWorker {
                 continue;
             }
 
+            const MAX_CONCURRENT_SYNTHESIS: usize = 2;
+            let (synth_tx, synth_rx) = mpsc::sync_channel::<PipelineSynthesisResult>(MAX_CONCURRENT_SYNTHESIS);
+            let gateway_arc = Arc::new(self.gateway.clone());
+            let mut pending_count: usize = 0;
             let mut blocked_by_ptt = false;
-            for task in pending_tasks {
-                if task.cue.route_direction == "outbound"
-                    && config.outbound_ptt_enabled
-                    && config.outbound_ptt_state != "recording"
-                {
-                    blocked_by_ptt = true;
-                    store.update_speech(|speech| {
-                        speech.dispatch_state = "queued".to_string();
-                        push_event(
-                            speech,
-                            "speech.ptt-blocked",
-                            "Push-to-talk 未打开，出站译音继续排队。".to_string(),
-                            Some(task.cue.cue_id.clone()),
-                            None,
-                        );
-                    });
-                    let _ = append_diagnostics_log(
-                        &self.app,
-                        "audio",
-                        "warning",
-                        "Push-to-talk 未打开，出站译音继续排队。",
-                        Some(format!("cue={}", task.cue.cue_id)),
-                        None,
-                        None,
-                    );
-                    emit_audio_snapshot(&self.app, store)?;
-                    break;
-                }
+            let mut task_iter = pending_tasks.into_iter().peekable();
 
-                let dispatch_key = task.dispatch_key();
-                match SpeechTaskProcessor::new(&self.app, store, &self.gateway, &config).process(&task) {
-                    Ok(()) => {
-                        self.queue.remember(&task, &dispatch_key);
-                    }
-                    Err(error) => {
-                        self.queue.remember(&task, &dispatch_key);
-                        let diagnostics_error = error.clone();
+            while task_iter.peek().is_some() || pending_count > 0 {
+                // Spawn synthesis tasks up to the concurrency limit.
+                while pending_count < MAX_CONCURRENT_SYNTHESIS {
+                    let Some(task) = task_iter.next() else { break };
+
+                    // PTT gate: outbound tasks block until recording is active.
+                    if task.cue.route_direction == "outbound"
+                        && config.outbound_ptt_enabled
+                        && config.outbound_ptt_state != "recording"
+                    {
+                        blocked_by_ptt = true;
                         store.update_speech(|speech| {
-                            speech.status = "degraded".to_string();
-                            speech.dispatch_state = "error".to_string();
-                            speech.last_error = Some(error.clone());
+                            speech.dispatch_state = "queued".to_string();
                             push_event(
                                 speech,
-                                "speech.error",
-                                error,
+                                "speech.ptt-blocked",
+                                "Push-to-talk 未打开，出站译音继续排队。".to_string(),
                                 Some(task.cue.cue_id.clone()),
                                 None,
                             );
@@ -138,21 +116,168 @@ impl SpeechDispatchWorker {
                         let _ = append_diagnostics_log(
                             &self.app,
                             "audio",
-                            "error",
-                            "译音任务失败。",
-                            Some(format!(
-                                "cue={} segmentIndex={} error={}",
-                                task.cue.cue_id, task.segment_index, diagnostics_error
-                            )),
+                            "warning",
+                            "Push-to-talk 未打开，出站译音继续排队。",
+                            Some(format!("cue={}", task.cue.cue_id)),
                             None,
                             None,
                         );
                         emit_audio_snapshot(&self.app, store)?;
+                        break;
                     }
+
+                    let dispatch_key = task.dispatch_key();
+                    let tx = synth_tx.clone();
+                    let app_clone = self.app.clone();
+                    let gateway_clone = Arc::clone(&gateway_arc);
+                    let config_clone = config.clone();
+
+                    thread::spawn(move || {
+                        let store = app_clone.state::<AudioStateStore>();
+                        let result = run_pipeline_synthesis(
+                            &app_clone, &store, &gateway_clone, &config_clone, &task,
+                        );
+                        let _ = tx.send(PipelineSynthesisResult {
+                            task,
+                            dispatch_key,
+                            result,
+                        });
+                    });
+                    pending_count += 1;
+                }
+
+                if blocked_by_ptt {
+                    break;
+                }
+
+                // Block until the next synthesis result arrives, then play serially.
+                match synth_rx.recv() {
+                    Ok(synth_result) => {
+                        pending_count -= 1;
+                        let dispatch_key = synth_result.dispatch_key;
+                        match synth_result.result {
+                            Ok(synthesis_output) => {
+                                let task = &synth_result.task;
+                                match SpeechTaskProcessor::new(
+                                    &self.app,
+                                    store,
+                                    &self.gateway,
+                                    &config,
+                                )
+                                .play_pcm(task, &synthesis_output)
+                                {
+                                    Ok(playback) => {
+                                        let speaker_frames = playback.speaker_frames;
+                                        let virtual_mic_frames = playback.virtual_mic_frames;
+                                        self.queue.remember(task, &dispatch_key);
+                                        store.update_speech(|speech| {
+                                            speech.dispatch_state = "waiting-subtitle".to_string();
+                                            speech.current_cue_id = None;
+                                            speech.current_request_id = None;
+                                            speech.last_completed_at = Some(now_unix_millis_marker());
+                                            speech.speaker_frames_written += speaker_frames;
+                                            speech.virtual_mic_frames_written += virtual_mic_frames;
+                                            speech.last_error = None;
+                                            push_event(
+                                                speech,
+                                                "speech.completed",
+                                                format!(
+                                                    "译音输出完成，speaker={} 帧 / virtual-mic={} 帧。",
+                                                    speaker_frames, virtual_mic_frames
+                                                ),
+                                                Some(task.cue.cue_id.clone()),
+                                                Some(synthesis_output.request_id),
+                                            );
+                                        });
+                                        let _ = append_diagnostics_log(
+                                            &self.app,
+                                            "audio",
+                                            "info",
+                                            format!("译音输出完成，cue={}。", task.cue.cue_id),
+                                            Some(format!(
+                                                "speakerFrames={} virtualMicFrames={}",
+                                                speaker_frames, virtual_mic_frames
+                                            )),
+                                            None,
+                                            None,
+                                        );
+                                        emit_audio_snapshot(&self.app, store)?;
+                                    }
+                                    Err(error) => {
+                                        self.queue.remember(task, &dispatch_key);
+                                        let diagnostics_error = error.clone();
+                                        store.update_speech(|speech| {
+                                            speech.status = "degraded".to_string();
+                                            speech.dispatch_state = "error".to_string();
+                                            speech.last_error = Some(error.clone());
+                                            push_event(
+                                                speech,
+                                                "speech.error",
+                                                error,
+                                                Some(task.cue.cue_id.clone()),
+                                                None,
+                                            );
+                                        });
+                                        let _ = append_diagnostics_log(
+                                            &self.app,
+                                            "audio",
+                                            "error",
+                                            "译音任务播放失败。",
+                                            Some(format!(
+                                                "cue={} segmentIndex={} error={}",
+                                                task.cue.cue_id, task.segment_index, diagnostics_error
+                                            )),
+                                            None,
+                                            None,
+                                        );
+                                        emit_audio_snapshot(&self.app, store)?;
+                                    }
+                                }
+                            }
+                            Err(error) => {
+                                let task = &synth_result.task;
+                                self.queue.remember(task, &dispatch_key);
+                                let diagnostics_error = error.clone();
+                                store.update_speech(|speech| {
+                                    speech.status = "degraded".to_string();
+                                    speech.dispatch_state = "error".to_string();
+                                    speech.last_error = Some(error.clone());
+                                    push_event(
+                                        speech,
+                                        "speech.error",
+                                        error,
+                                        Some(task.cue.cue_id.clone()),
+                                        None,
+                                    );
+                                });
+                                let _ = append_diagnostics_log(
+                                    &self.app,
+                                    "audio",
+                                    "error",
+                                    "译音任务合成失败。",
+                                    Some(format!(
+                                        "cue={} segmentIndex={} error={}",
+                                        task.cue.cue_id, task.segment_index, diagnostics_error
+                                    )),
+                                    None,
+                                    None,
+                                );
+                                emit_audio_snapshot(&self.app, store)?;
+                            }
+                        }
+                    }
+                    Err(_) => break,
                 }
             }
 
+            // Drain any remaining synthesis results when PTT-blocked.
             if blocked_by_ptt {
+                drop(synth_tx);
+                while let Ok(synth_result) = synth_rx.recv() {
+                    if let Ok(synthesis_output) = synth_result.result {
+                        let _ = synthesis_output;
+                    }
+                }
                 thread::sleep(Duration::from_millis(SPEECH_POLL_INTERVAL_MS));
                 continue;
             }
@@ -273,12 +398,16 @@ impl<'a> SpeechTaskProcessor<'a> {
         Self { app, store, gateway, config }
     }
 
-    fn process(&self, task: &SpeechDispatchTask) -> Result<(), String> {
+    /// Synthesis half: runs TTS and builds the mix plan. Safe to call from a
+    /// worker thread because all state mutations go through `AudioStateStore`
+    /// interior locks.
+    fn synthesize_pcm(&self, task: &SpeechDispatchTask) -> Result<SynthesisOutput, String> {
         let app = self.app;
         let store = self.store;
         let gateway = self.gateway;
         let config = self.config;
         let cue = &task.cue;
+
         let delay_ms = config.dispatch_delay_ms(&cue.route_direction);
         if delay_ms > 0 {
             store.update_speech(|speech| {
@@ -293,7 +422,7 @@ impl<'a> SpeechTaskProcessor<'a> {
                     None,
                 );
             });
-            emit_audio_snapshot(app, store)?;
+            let _ = emit_audio_snapshot(app, store);
             thread::sleep(Duration::from_millis(delay_ms));
         }
 
@@ -317,6 +446,16 @@ impl<'a> SpeechTaskProcessor<'a> {
         let cache_key = task.cache_key(config);
         let (request_id, sample_rate_hz, channel_count, translated_pcm, cache_hit) =
             if let Some(cached) = store.tts_audio(&cache_key) {
+                store.update_speech(|speech| {
+                    push_event(
+                        speech,
+                        "speech.cache-hit",
+                        format!("TTS 缓存命中，跳过合成请求。cue={}", cue.cue_id),
+                        Some(cue.cue_id.clone()),
+                        Some(cached.request_id.clone()),
+                    );
+                });
+                let _ = emit_audio_snapshot(app, store);
                 (
                     cached.request_id,
                     cached.sample_rate_hz,
@@ -341,6 +480,19 @@ impl<'a> SpeechTaskProcessor<'a> {
                     None,
                     None,
                 );
+                store.update_speech(|speech| {
+                    push_event(
+                        speech,
+                        "speech.realtime-audio-requested",
+                        format!(
+                            "请求 TTS 合成，provider={} model={}。",
+                            config.provider.provider_id, config.provider.model
+                        ),
+                        Some(cue.cue_id.clone()),
+                        None,
+                    );
+                });
+                let _ = emit_audio_snapshot(app, store);
                 let synthesis = gateway
                     .synthesize_realtime_audio(
                         config.provider.clone(),
@@ -374,74 +526,70 @@ impl<'a> SpeechTaskProcessor<'a> {
             config,
         )
         .build();
-        store.update_speech(|speech| {
+
+        Ok(SynthesisOutput {
+            request_id,
+            mix,
+            cache_hit,
+        })
+    }
+
+    /// Playback half: plays pre-synthesized PCM through the audio output
+    /// pipeline. Must run on the main thread (serial audio device access).
+    fn play_pcm(
+        &self,
+        task: &SpeechDispatchTask,
+        synthesis: &SynthesisOutput,
+    ) -> Result<SpeechPlaybackResult, String> {
+        self.store.update_speech(|speech| {
             speech.dispatch_state = "playing".to_string();
-            speech.current_cue_id = Some(cue.cue_id.clone());
-            speech.current_request_id = Some(request_id.clone());
-            speech.mix_mode = mix.mix_mode.clone();
-            speech.ducking_active = mix.ducking_active;
+            speech.current_cue_id = Some(task.cue.cue_id.clone());
+            speech.current_request_id = Some(synthesis.request_id.clone());
+            speech.mix_mode = synthesis.mix.mix_mode.clone();
+            speech.ducking_active = synthesis.mix.ducking_active;
             speech.last_started_at = Some(now_unix_millis_marker());
             push_event(
                 speech,
-                if cache_hit {
+                if synthesis.cache_hit {
                     "speech.cache-hit"
                 } else {
                     "speech.realtime-audio-requested"
                 },
-                if cache_hit {
+                if synthesis.cache_hit {
                     "命中 Realtime 音频缓存，直接进入混音和输出。".to_string()
                 } else {
                     "已完成 Realtime audio 请求，进入混音和输出。".to_string()
                 },
-                Some(cue.cue_id.clone()),
-                Some(request_id.clone()),
+                Some(task.cue.cue_id.clone()),
+                Some(synthesis.request_id.clone()),
             );
         });
-        emit_audio_snapshot(app, store)?;
-
-        let playback = SpeechPlaybackEngine::new(app, store, config).play(
-            cue,
-            &request_id,
-            &mix,
+        emit_audio_snapshot(self.app, self.store)?;
+        SpeechPlaybackEngine::new(self.app, self.store, self.config).play_pcm(
+            &task.cue,
+            &synthesis.request_id,
+            &synthesis.mix,
             task.segment_mode,
             task.segment_index,
-        )?;
-        let speaker_frames = playback.speaker_frames;
-        let virtual_mic_frames = playback.virtual_mic_frames;
-
-        store.update_speech(|speech| {
-            speech.dispatch_state = "waiting-subtitle".to_string();
-            speech.current_cue_id = None;
-            speech.current_request_id = None;
-            speech.last_completed_at = Some(now_unix_millis_marker());
-            speech.speaker_frames_written += speaker_frames;
-            speech.virtual_mic_frames_written += virtual_mic_frames;
-            speech.last_error = None;
-            push_event(
-                speech,
-                "speech.completed",
-                format!(
-                    "译音输出完成，speaker={} 帧 / virtual-mic={} 帧。",
-                    speaker_frames, virtual_mic_frames
-                ),
-                Some(cue.cue_id.clone()),
-                Some(request_id),
-            );
-        });
-        let _ = append_diagnostics_log(
-            app,
-            "audio",
-            "info",
-            format!("译音输出完成，cue={}。", cue.cue_id),
-            Some(format!(
-                "speakerFrames={} virtualMicFrames={}",
-                speaker_frames, virtual_mic_frames
-            )),
-            None,
-            None,
-        );
-        emit_audio_snapshot(app, store)?;
-
-        Ok(())
+        )
     }
+}
+
+/// Result sent from a synthesis thread back to the playback loop.
+struct PipelineSynthesisResult {
+    task: SpeechDispatchTask,
+    dispatch_key: String,
+    result: Result<SynthesisOutput, String>,
+}
+
+/// Standalone synthesis function for use inside spawned threads. Clones all
+/// inputs so the closure owns everything it needs.
+fn run_pipeline_synthesis(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    gateway: &ProviderGateway,
+    config: &SpeechConfig,
+    task: &SpeechDispatchTask,
+) -> Result<SynthesisOutput, String> {
+    SpeechTaskProcessor::new(app, store, gateway, config).synthesize_pcm(task)
 }

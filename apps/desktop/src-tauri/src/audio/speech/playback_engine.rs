@@ -5,6 +5,13 @@ pub(super) struct SpeechPlaybackResult {
     pub(super) virtual_mic_frames: u64,
 }
 
+/// PCM data and metadata produced by TTS synthesis, ready for playback.
+pub(super) struct SynthesisOutput {
+    pub(super) request_id: String,
+    pub(super) mix: MixPlan,
+    pub(super) cache_hit: bool,
+}
+
 /// Owns output routing and device/Bridge playback for one synthesized speech result.
 pub(super) struct SpeechPlaybackEngine<'a> {
     app: &'a AppHandle,
@@ -131,5 +138,18 @@ impl<'a> SpeechPlaybackEngine<'a> {
             speaker_frames,
             virtual_mic_frames,
         })
+    }
+
+    /// Plays pre-synthesized PCM data through the speech output pipeline.
+    /// This is the playback half of the synthesis/playback pipeline split.
+    pub(super) fn play_pcm(
+        &self,
+        cue: &SubtitleCueRuntime,
+        request_id: &str,
+        mix: &MixPlan,
+        segment_mode: bool,
+        segment_index: usize,
+    ) -> Result<SpeechPlaybackResult, String> {
+        self.play(cue, request_id, mix, segment_mode, segment_index)
     }
 }

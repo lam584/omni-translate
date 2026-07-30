@@ -5,7 +5,7 @@ use super::{routing, time};
 
 /// Maps a transport smoke result into the durable provider probe profile used
 /// by configuration, diagnostics, and scene routing.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(crate) struct ProviderProbeService;
 
 impl ProviderProbeService {

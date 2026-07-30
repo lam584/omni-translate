@@ -3,11 +3,11 @@ use std::sync::Mutex;
 
 use super::contracts::BridgeRuntimeSnapshot;
 
-pub struct BridgeProcessHandle {
+pub(crate) struct BridgeProcessHandle {
     pub child: Child,
 }
 
-pub struct BridgeStateStore {
+pub(crate) struct BridgeStateStore {
     inner: Mutex<BridgeState>,
 }
 
@@ -17,7 +17,7 @@ struct BridgeState {
 }
 
 impl BridgeStateStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             inner: Mutex::new(BridgeState {
                 snapshot: BridgeRuntimeSnapshot::default(),
@@ -26,7 +26,7 @@ impl BridgeStateStore {
         }
     }
 
-    pub fn snapshot(&self) -> BridgeRuntimeSnapshot {
+    pub(crate) fn snapshot(&self) -> BridgeRuntimeSnapshot {
         self.inner
             .lock()
             .expect("bridge state poisoned")
@@ -34,7 +34,7 @@ impl BridgeStateStore {
             .clone()
     }
 
-    pub fn update_snapshot<F>(&self, updater: F) -> BridgeRuntimeSnapshot
+    pub(crate) fn update_snapshot<F>(&self, updater: F) -> BridgeRuntimeSnapshot
     where
         F: FnOnce(&mut BridgeRuntimeSnapshot),
     {
@@ -43,12 +43,12 @@ impl BridgeStateStore {
         state.snapshot.clone()
     }
 
-    pub fn set_process(&self, child: Child) {
+    pub(crate) fn set_process(&self, child: Child) {
         let mut state = self.inner.lock().expect("bridge state poisoned");
         state.process = Some(BridgeProcessHandle { child });
     }
 
-    pub fn take_process(&self) -> Option<BridgeProcessHandle> {
+    pub(crate) fn take_process(&self) -> Option<BridgeProcessHandle> {
         self.inner
             .lock()
             .expect("bridge state poisoned")

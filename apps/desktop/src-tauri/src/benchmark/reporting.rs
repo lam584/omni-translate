@@ -183,6 +183,7 @@ fn build_default_benchmark_url(base_url: &str, model: &str) -> Result<Url, Strin
 
 // Benchmark and the production watch-mode workers must speak the identical
 // protocol, so URL and session construction delegate to the audio adapters.
+#[cfg(test)]
 fn build_openai_benchmark_url(base_url: &str, model: &str) -> Result<Url, String> {
     crate::audio::openai_realtime::build_openai_realtime_url(base_url, model)
 }

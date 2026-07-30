@@ -203,6 +203,15 @@ pub(super) fn is_session_ready_event(event_type: &str) -> bool {
 pub(super) struct OmniEventDiagnostics {
     pub(super) readiness_event: Option<String>,
     pub(super) current_cue_origin: Option<String>,
+    /// Input cue owned by the native response that is currently streaming (or
+    /// most recently completed). Server VAD may open the next input cue before
+    /// the prior response.done arrives, so response output must not use the
+    /// shared `current_cue_id`.
+    pub(super) native_response_cue_id: Option<String>,
+    /// Provider input item associated with `native_response_cue_id`. Retained
+    /// briefly after response.done so a late transcription.completed can still
+    /// repair the correct cue instead of overwriting the next input cue.
+    pub(super) native_response_item_id: Option<String>,
     pub(super) last_asr_delta_text: String,
     pub(super) last_asr_delta_at_ms: Option<u64>,
     pub(super) last_asr_delta_item_id: Option<String>,
@@ -257,10 +266,19 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     event_diagnostics
         .first_response_done_at_ms
         .get_or_insert(response_done_at_ms);
-    let cue_id = current_cue_id
-        .take()
+    let cue_id = event_diagnostics
+        .native_response_cue_id
+        .clone()
+        .or_else(|| current_cue_id.clone())
         .unwrap_or_else(|| format!("omni-cue-{direction}-{}", unix_ms()));
-    let source_len = pending_source_text.len();
+    let response_owns_current_cue = current_cue_id.as_deref() == Some(cue_id.as_str());
+    let response_source_text = resolve_native_response_source_text(
+        store,
+        Some(&cue_id),
+        current_cue_id.as_deref(),
+        pending_source_text,
+    );
+    let source_len = response_source_text.len();
     let translated_len = pending_translated_text.len();
     let st_flag = if subtitle_translate_active {
         " st_active=true"
@@ -271,7 +289,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
         "response.done",
         json!({
           "cueId": cue_id,
-          "sourceText": pending_source_text.clone(),
+          "sourceText": response_source_text.clone(),
           "translatedText": pending_translated_text.clone(),
           "sourceLen": source_len,
           "translatedLen": translated_len,
@@ -313,15 +331,10 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     );
     if subtitle_translate_active {
         if native_translation_reuse_active && !pending_translated_text.trim().is_empty() {
-            let source = if pending_source_text.trim().is_empty() {
-                pending_translated_text.clone()
-            } else {
-                pending_source_text.clone()
-            };
             write_native_translation_to_cue(
                 store,
                 &cue_id,
-                &source,
+                &response_source_text,
                 pending_translated_text,
                 true,
                 false,
@@ -332,17 +345,17 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 "info",
                 format!(
                     "[EVENT] response.done -> ST_NATIVE_TRANSLATION_COMMIT{st_flag} cue_id={cue_id} source_len={} translated_len={translated_len} translated=\"{}\"",
-                    source.len(),
+                    response_source_text.len(),
                     pending_translated_text
                 ),
             );
-        } else if !pending_source_text.is_empty() {
-            let src_preview = if pending_source_text.len() > 200 {
-                format!("{}...", crate::audio::str_utils::truncate_chars(pending_source_text, 200))
+        } else if !response_source_text.is_empty() {
+            let src_preview = if response_source_text.len() > 200 {
+                format!("{}...", crate::audio::str_utils::truncate_chars(&response_source_text, 200))
             } else {
-                pending_source_text.clone()
+                response_source_text.clone()
             };
-            store.update_or_push_stt_cue(&cue_id, pending_source_text, false);
+            store.update_or_push_stt_cue(&cue_id, &response_source_text, false);
             let snapshot = store.snapshot();
             let cue_state = snapshot
                 .subtitle_overlay
@@ -369,7 +382,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
         } else if should_use_native_output_fallback(
             subtitle_translate_active,
             native_translation_reuse_active,
-            pending_source_text,
+            &response_source_text,
             pending_translated_text,
         ) {
             write_native_translation_to_cue(
@@ -398,15 +411,10 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
             );
         }
     } else if !pending_translated_text.trim().is_empty() {
-        let source = if pending_source_text.is_empty() {
-            pending_translated_text.clone()
-        } else {
-            pending_source_text.clone()
-        };
         write_committed_native_translation_to_cue(
             store,
             &cue_id,
-            &source,
+            &response_source_text,
             pending_translated_text,
         );
         let _ = diag_log(
@@ -418,13 +426,13 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 pending_translated_text
             ),
         );
-    } else if !pending_source_text.is_empty() {
-        let src_preview = if pending_source_text.len() > 150 {
-            format!("{}...", crate::audio::str_utils::truncate_chars(pending_source_text, 150))
+    } else if !response_source_text.is_empty() {
+        let src_preview = if response_source_text.len() > 150 {
+            format!("{}...", crate::audio::str_utils::truncate_chars(&response_source_text, 150))
         } else {
-            pending_source_text.clone()
+            response_source_text.clone()
         };
-        store.update_or_push_stt_cue(&cue_id, pending_source_text, true);
+        store.update_or_push_stt_cue(&cue_id, &response_source_text, true);
         let _ = diag_log(
             app,
             "omni",
@@ -447,16 +455,21 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
         app,
         "omni",
         "debug",
-        "[STATE] 重置: current_cue_id=None, pending_source_text cleared, pending_translated_text cleared".to_string(),
+        format!(
+            "[STATE] response reset: cue_id={cue_id} preserved_current_input={}",
+            !response_owns_current_cue
+        ),
     );
-    reset_omni_turn_state(
-        current_cue_id,
-        pending_source_text,
-        pending_translated_text,
-        transcription_completed_flag,
-        transcription_completed_at,
-        event_diagnostics,
-    );
+    pending_translated_text.clear();
+    if response_owns_current_cue {
+        reset_manual_turn_input_state(
+            current_cue_id,
+            pending_source_text,
+            transcription_completed_flag,
+            transcription_completed_at,
+            event_diagnostics,
+        );
+    }
 }
 
 pub(super) fn reset_omni_turn_state(
@@ -475,6 +488,8 @@ pub(super) fn reset_omni_turn_state(
         transcription_completed_at,
         event_diagnostics,
     );
+    event_diagnostics.native_response_cue_id = None;
+    event_diagnostics.native_response_item_id = None;
 }
 
 /// Releases the input-side state of a manual turn without touching the
@@ -629,6 +644,135 @@ pub(super) fn write_live_source_to_cue(
     }
     store.update_or_push_stt_cue(&cue_id, source_text, false);
     cue_id
+}
+
+/// Resolves source text for native response output without borrowing the next
+/// input turn's `pending_source_text`. Once server VAD opens a new cue, the
+/// response-owned cue in the store is the authoritative source snapshot.
+pub(super) fn resolve_native_response_source_text(
+    store: &AudioStateStore,
+    response_cue_id: Option<&str>,
+    current_cue_id: Option<&str>,
+    pending_source_text: &str,
+) -> String {
+    if response_cue_id == current_cue_id && !pending_source_text.trim().is_empty() {
+        return pending_source_text.to_string();
+    }
+    let Some(response_cue_id) = response_cue_id else {
+        return pending_source_text.to_string();
+    };
+    store
+        .snapshot()
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.cue_id == response_cue_id)
+        .map(|cue| cue.source_text.clone())
+        .unwrap_or_default()
+}
+
+/// Applies a late ASR final to a known response cue while preserving any
+/// native translation already streamed or committed for that cue.
+pub(super) fn update_native_response_cue_source(
+    store: &AudioStateStore,
+    cue_id: &str,
+    source_text: &str,
+) {
+    let snapshot = store.snapshot();
+    let existing = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.cue_id == cue_id);
+    let committed = existing.is_some_and(|cue| cue.committed);
+    let translated_text = existing
+        .map(|cue| cue.translated_text.clone())
+        .unwrap_or_default();
+    if translated_text.trim().is_empty() {
+        store.update_or_push_stt_cue(cue_id, source_text, committed);
+    } else if committed {
+        write_committed_native_translation_to_cue(store, cue_id, source_text, &translated_text);
+    } else {
+        write_native_translation_to_cue(
+            store,
+            cue_id,
+            source_text,
+            &translated_text,
+            false,
+            false,
+        );
+    }
+}
+
+pub(super) const LATE_NATIVE_TRANSCRIPTION_RECONCILE_MS: u64 = 5_000;
+
+/// Reconciles the provider ordering where a native `response.done` arrives
+/// before the matching ASR `transcription.completed` event.
+///
+/// With no secondary subtitle worker, the native response can be committed
+/// with its translated output as a temporary source. If the ASR final then
+/// creates another cue, that second cue stays uncommitted forever and the UI
+/// misleadingly renders "calling LLM translation". Reuse the recent native
+/// fallback cue instead and drop the older live source duplicate.
+pub(super) fn reconcile_late_native_transcription(
+    store: &AudioStateStore,
+    direction: &str,
+    source_text: &str,
+) -> Option<String> {
+    let source_text = source_text.trim();
+    if source_text.is_empty() {
+        return None;
+    }
+
+    let now = unix_ms();
+    let snapshot = store.snapshot();
+    let fallback = snapshot.subtitle_overlay.recent_cues.iter().find(|cue| {
+        if !cue.committed
+            || cue.route_direction != direction
+            || cue.translated_text.trim().is_empty()
+            || (!cue.source_text.trim().is_empty()
+                && normalize_transcript_for_match(&cue.source_text)
+                    != normalize_transcript_for_match(&cue.translated_text))
+        {
+            return false;
+        }
+        cue.cue_id
+            .rsplit('-')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_some_and(|created_at| {
+                now.saturating_sub(created_at) <= LATE_NATIVE_TRANSCRIPTION_RECONCILE_MS
+            })
+    })?;
+    let fallback_id = fallback.cue_id.clone();
+    let translated_text = fallback.translated_text.clone();
+    let duplicate_live_ids: Vec<String> = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .filter(|cue| {
+            !cue.committed
+                && cue.route_direction == direction
+                && normalize_transcript_for_match(&cue.source_text)
+                    == normalize_transcript_for_match(source_text)
+        })
+        .map(|cue| cue.cue_id.clone())
+        .collect();
+
+    for cue_id in duplicate_live_ids {
+        store.discard_uncommitted_subtitle_cue(&cue_id);
+    }
+    write_committed_native_translation_to_cue(
+        store,
+        &fallback_id,
+        source_text,
+        &translated_text,
+    );
+    Some(fallback_id)
+}
+
+fn normalize_transcript_for_match(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
 pub(super) fn write_native_output_preview_to_cue(
@@ -950,14 +1094,39 @@ pub(crate) fn build_omni_session_update_for_provider(
     let protocol = crate::audio::events::resolve_realtime_profile(provider, &provider.model)
         .protocol_dialect
         .expect("Omni session builder requires an explicit or compatibility-resolved protocol");
-    build_dashscope_session_update(
+    let mut session_update = build_dashscope_session_update(
         protocol,
         voice,
         instructions,
         audio_mode,
         target_language,
     )
-    .expect("Omni session builder requires a DashScope Omni/LiveTranslate protocol")
+    .expect("Omni session builder requires a DashScope Omni/LiveTranslate protocol");
+    apply_model_specific_turn_detection(&mut session_update, &provider.model, audio_mode);
+    session_update
+}
+
+fn apply_model_specific_turn_detection(
+    session_update: &mut Value,
+    model: &str,
+    audio_mode: RealtimeAudioMode,
+) {
+    if audio_mode != RealtimeAudioMode::ServerVad
+        || !model
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("qwen-audio-3.0-realtime")
+    {
+        return;
+    }
+    // The generic Omni defaults are intentionally sensitive for arbitrary
+    // scene audio. Qwen-Audio is a conversational turn model; with endpoint
+    // loopback, threshold=0.0 also treats tiny residual translated playback as
+    // a fresh user turn. Use Qwen-Audio's documented default sensitivity and
+    // the low end of its recommended 400-800ms silence range so continuous
+    // video narration is split at natural sentence pauses.
+    session_update["session"]["turn_detection"]["threshold"] = json!(0.5);
+    session_update["session"]["turn_detection"]["silence_duration_ms"] = json!(400);
 }
 
 #[cfg(test)]
@@ -968,13 +1137,15 @@ pub(super) fn build_omni_session_update(
     audio_mode: RealtimeAudioMode,
     target_language: &str,
 ) -> Value {
-    build_omni_session_update_with_dialect(
+    let mut session_update = build_omni_session_update_with_dialect(
         is_livetranslate_model(model),
         voice,
         instructions,
         audio_mode,
         target_language,
-    )
+    );
+    apply_model_specific_turn_detection(&mut session_update, model, audio_mode);
+    session_update
 }
 
 pub(super) enum OmniPlaybackCommand {

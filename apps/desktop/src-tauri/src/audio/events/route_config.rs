@@ -225,15 +225,16 @@ impl ResolvedRoutePlan {
         } else {
             "You are a translation engine that outputs translations only. Translate everything you hear (speech, narration, lyrics, vocals in music or video) into concise subtitles. Output only the translation itself; never add confirmations, explanations, or meta commentary about the audio (e.g. 'I only hear music'). If there is truly no translatable speech, output nothing.".to_string()
         };
+        let configured_voice = config
+            .pointer("/speech/voice")
+            .and_then(Value::as_str)
+            .unwrap_or("Ethan");
+        let voice = resolve_realtime_voice(&provider.model, configured_voice);
         Self {
             direction: direction.to_string(),
             requested_voice_model: requested_voice_model.clone(),
             target_language,
-            voice: config
-                .pointer("/speech/voice")
-                .and_then(Value::as_str)
-                .unwrap_or("Ethan")
-                .to_string(),
+            voice,
             instructions: config
                 .pointer("/subtitles/instructions")
                 .and_then(Value::as_str)
@@ -260,6 +261,21 @@ impl ResolvedRoutePlan {
             },
             kind,
         }
+    }
+}
+
+fn resolve_realtime_voice(model: &str, configured_voice: &str) -> String {
+    let model = model.trim().to_ascii_lowercase();
+    let configured_voice = configured_voice.trim();
+    if model.starts_with("qwen-audio-3.0-realtime")
+        && (configured_voice.is_empty() || configured_voice.eq_ignore_ascii_case("Ethan"))
+    {
+        // Ethan is an Omni/OpenAI-style preset and Qwen-Audio rejects it.
+        // Use Qwen-Audio's documented system default so the first session does
+        // not fail and reconnect without a usable voice.
+        "longanqian".to_string()
+    } else {
+        configured_voice.to_string()
     }
 }
 

@@ -51,8 +51,8 @@ impl OmniAsrEventProcessor {
             mut vad_event_count,
             mut current_cue_id,
             mut pending_source_text,
-            mut pending_translated_text,
-            mut pending_audio_buffer,
+            pending_translated_text,
+            pending_audio_buffer,
             mut transcription_completed_flag,
             mut transcription_completed_at,
             mut event_diagnostics,
@@ -95,9 +95,13 @@ impl OmniAsrEventProcessor {
                 current_cue_id = Some(cue_id.clone());
                 event_diagnostics.current_cue_origin =
                     Some("speech_started".to_string());
+                event_diagnostics.last_asr_delta_item_id = None;
                 pending_source_text.clear();
-                pending_translated_text.clear();
-                pending_audio_buffer.clear();
+                // `pending_translated_text` and `pending_audio_buffer` belong
+                // to the prior native response. Server VAD can open the next
+                // input window before that response reaches transcript/audio
+                // done, so clearing output here truncates both subtitles and
+                // spoken translation.
                 transcription_completed_flag = false;
                 transcription_completed_at = None;
                 let _ = diag_log(
@@ -186,6 +190,7 @@ impl OmniAsrEventProcessor {
                 let pending_matches_completed_item = completed_item_id.is_some()
                     && event_diagnostics.last_asr_delta_item_id.as_deref()
                         == completed_item_id;
+                let current_input_text = pending_source_text.clone();
                 let resolved = resolve_completed_transcription(
                     &pending_source_text,
                     source,
@@ -193,7 +198,56 @@ impl OmniAsrEventProcessor {
                 );
                 pending_source_text = resolved.display_text;
                 completed_source_text = Some(resolved.response_gate_text);
-                if !pending_source_text.trim().is_empty() {
+                let routed_native_response_cue = if !subtitle_translate_active
+                    && !pending_source_text.trim().is_empty()
+                    && completed_item_id.is_some()
+                    && event_diagnostics.native_response_item_id.as_deref()
+                        == completed_item_id
+                    && event_diagnostics.native_response_cue_id.as_deref()
+                        != current_cue_id.as_deref()
+                {
+                    event_diagnostics
+                        .native_response_cue_id
+                        .clone()
+                        .inspect(|cue_id| {
+                            update_native_response_cue_source(
+                                store,
+                                cue_id,
+                                &pending_source_text,
+                            );
+                        })
+                } else {
+                    None
+                };
+                let reconciled_native_cue = if routed_native_response_cue.is_none()
+                    && !subtitle_translate_active
+                    && current_cue_id.is_none()
+                    && !pending_source_text.trim().is_empty()
+                {
+                    reconcile_late_native_transcription(
+                        store,
+                        direction,
+                        &pending_source_text,
+                    )
+                } else {
+                    None
+                };
+                let completed_native_cue = routed_native_response_cue
+                    .as_ref()
+                    .or(reconciled_native_cue.as_ref());
+                if let Some(cue_id) = completed_native_cue {
+                    completed_cue_id = Some(cue_id.clone());
+                    let _ = diag_log(
+                        &app,
+                        "omni",
+                        "info",
+                        format!(
+                            "[EVENT] transcription.completed -> NATIVE_RESPONSE_RECONCILE cue_id={cue_id} source=\"{source}\" item_id={} routedByItem={}",
+                            completed_item_id.unwrap_or("(none)"),
+                            routed_native_response_cue.is_some(),
+                        ),
+                    );
+                } else if !pending_source_text.trim().is_empty() {
                     let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
                     if defer_secondary_translation {
                         store.defer_subtitle_cue_translation(&cue_id);
@@ -220,7 +274,16 @@ impl OmniAsrEventProcessor {
                     "",
                     source,
                 );
-                if subtitle_translate_active
+                if routed_native_response_cue.is_some() {
+                    // This completion belongs to the prior native response;
+                    // restore any hypothesis already collected for the new
+                    // current input cue instead of overwriting it.
+                    pending_source_text = current_input_text;
+                } else if reconciled_native_cue.is_some() {
+                    pending_source_text.clear();
+                    transcription_completed_flag = false;
+                    transcription_completed_at = None;
+                } else if subtitle_translate_active
                     && !pending_source_text.trim().is_empty()
                 {
                     let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);

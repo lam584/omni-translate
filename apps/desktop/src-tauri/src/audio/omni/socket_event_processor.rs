@@ -494,6 +494,25 @@ match socket.read_message() {
                     "input_audio_buffer.speech_stopped" => {
                         last_vad_event_time = SystemTime::now();
                         vad_event_count += 1;
+                        if !subtitle_translate_active || native_translation_reuse_active {
+                            if let Some(cue_id) = current_cue_id.clone() {
+                                event_diagnostics.native_response_cue_id = Some(cue_id.clone());
+                                event_diagnostics.native_response_item_id =
+                                    event_diagnostics.last_asr_delta_item_id.clone();
+                                let _ = diag_log(
+                                    &app,
+                                    "omni",
+                                    "debug",
+                                    format!(
+                                        "[VAD] native response ownership captured cue_id={cue_id} item_id={}",
+                                        event_diagnostics
+                                            .native_response_item_id
+                                            .as_deref()
+                                            .unwrap_or("(none)")
+                                    ),
+                                );
+                            }
+                        }
                         let _ = diag_log(
                             &app,
                             "omni",

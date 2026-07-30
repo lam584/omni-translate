@@ -580,17 +580,21 @@ use self::protocol::{
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
     manual_turn_response_stream_active,
     request_omni_playback_stop, reset_manual_turn_input_state, reset_omni_turn_state,
-    resolve_completed_transcription, response_stream_owns_current_cue,
+    resolve_completed_transcription, resolve_native_response_source_text,
+    response_stream_owns_current_cue,
     set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
     try_reconnect, write_live_source_to_cue, write_native_output_final_to_cue,
     write_native_output_preview_to_cue, write_native_translation_to_cue,
+    reconcile_late_native_transcription, update_native_response_cue_source,
     OmniEventDiagnostics, OmniPlaybackCommand,
 };
 #[cfg(test)]
 use protocol::build_omni_session_update;
 #[cfg(test)]
 mod native_translation_tests {
-    use super::protocol::write_committed_native_translation_to_cue;
+    use super::protocol::{
+        write_committed_native_translation_to_cue, LATE_NATIVE_TRANSCRIPTION_RECONCILE_MS,
+    };
     use super::*;
 
     #[test]
@@ -632,6 +636,109 @@ mod native_translation_tests {
         assert_eq!(cue.source_text, "With or without you");
         assert_eq!(cue.translated_text, "translated partial");
         assert!(!cue.committed);
+    }
+
+    #[test]
+    fn qwen_audio_watch_vad_rejects_playback_residual_and_splits_at_short_pauses() {
+        let session = build_omni_session_update(
+            "qwen-audio-3.0-realtime-plus",
+            "longanqian",
+            "translate naturally",
+            RealtimeAudioMode::ServerVad,
+            "zh-CN",
+        );
+
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/threshold")
+                .and_then(Value::as_f64),
+            Some(0.5)
+        );
+        assert_eq!(
+            session
+                .pointer("/session/turn_detection/silence_duration_ms")
+                .and_then(Value::as_u64),
+            Some(400)
+        );
+    }
+
+    #[test]
+    fn late_native_transcription_reuses_recent_translation_and_drops_live_duplicate() {
+        let store = AudioStateStore::new();
+        let source = "This is a one billion dollar rocket ship, a future technology that";
+        let translated = "这是一艘价值十亿美元的火箭。";
+        let live_id = format!("omni-cue-inbound-{}", unix_ms().saturating_sub(10));
+        let fallback_id = format!("omni-cue-inbound-{}", unix_ms());
+
+        store.update_or_push_stt_cue(&live_id, source, false);
+        write_committed_native_translation_to_cue(
+            &store,
+            &fallback_id,
+            translated,
+            translated,
+        );
+
+        assert_eq!(
+            reconcile_late_native_transcription(&store, "inbound", source),
+            Some(fallback_id.clone())
+        );
+
+        let snapshot = store.snapshot();
+        assert!(!snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .any(|cue| cue.cue_id == live_id));
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == fallback_id)
+            .expect("reconciled native cue");
+        assert!(cue.committed);
+        assert_eq!(cue.source_text, source);
+        assert_eq!(cue.translated_text, translated);
+        assert!(cue.display_segments.iter().all(|segment| !segment.pending));
+    }
+
+    #[test]
+    fn late_native_transcription_fills_an_empty_native_source_column() {
+        let store = AudioStateStore::new();
+        let source = "So much more.";
+        let translated = "还有更多精彩内容。";
+        let cue_id = format!("omni-cue-inbound-{}", unix_ms());
+        write_committed_native_translation_to_cue(&store, &cue_id, "", translated);
+
+        assert_eq!(
+            reconcile_late_native_transcription(&store, "inbound", source),
+            Some(cue_id.clone())
+        );
+
+        let snapshot = store.snapshot();
+        let cue = snapshot
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .find(|cue| cue.cue_id == cue_id)
+            .expect("reconciled native cue");
+        assert_eq!(cue.source_text, source);
+        assert_eq!(cue.translated_text, translated);
+        assert!(cue.committed);
+    }
+
+    #[test]
+    fn late_native_transcription_does_not_reuse_an_old_fallback() {
+        let store = AudioStateStore::new();
+        let old_id = format!(
+            "omni-cue-inbound-{}",
+            unix_ms().saturating_sub(LATE_NATIVE_TRANSCRIPTION_RECONCILE_MS + 1)
+        );
+        write_committed_native_translation_to_cue(&store, &old_id, "旧译文", "旧译文");
+
+        assert_eq!(
+            reconcile_late_native_transcription(&store, "inbound", "new source"),
+            None
+        );
     }
 
     #[test]

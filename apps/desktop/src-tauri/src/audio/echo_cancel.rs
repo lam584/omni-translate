@@ -3,14 +3,26 @@ use std::time::Instant;
 
 const TARGET_SAMPLE_RATE_HZ: u32 = 48_000;
 const TARGET_CHANNEL_COUNT: usize = 2;
-const ATTENUATION: f32 = 0.8;
+/// Upper bound for the per-block least-squares gain estimate. WASAPI loopback
+/// normally carries our render stream close to unity, while speaker/mixer
+/// gain can move it in either direction. Bounding the estimate prevents an
+/// unrelated source block from producing an unstable subtraction gain.
+const MAX_ECHO_PATH_GAIN: f32 = 2.0;
 /// RMS above which the playback-aligned reference block counts as active TTS
 /// output rather than silence between segments.
 const REFERENCE_ACTIVE_RMS: f32 = 0.01;
-/// Captured blocks louder than this multiple of the reference RMS count as
-/// double talk; suppression then backs off to plain linear subtraction so the
-/// listener's own speech is not gated away.
-const DOUBLE_TALK_RMS_RATIO: f32 = 2.0;
+/// A block is safe to drop only when adaptive subtraction leaves no audible
+/// non-reference signal. This is deliberately absolute: in Watch mode the
+/// source video is often 10-20 dB quieter than translated playback, so a
+/// captured/reference energy ratio cannot distinguish source audio from echo.
+const PURE_ECHO_RESIDUAL_RMS: f32 = 0.003;
+const PURE_ECHO_CORRELATION: f32 = 0.8;
+/// Acoustic speaker bleed can leave delayed reflections after the direct-path
+/// projection. If the residual is still predictable from a recent render
+/// reference, it remains echo rather than valid double talk.
+const ECHO_TAIL_CORRELATION: f32 = 0.35;
+const ECHO_TAIL_MAX_LAG_MS: usize = 50;
+const ECHO_TAIL_LAG_STEP_MS: usize = 1;
 /// Residual gain applied while TTS is audibly playing and no double talk is
 /// detected: half-duplex energy suppression layered on top of the linear
 /// subtraction, because a fixed 0.8 attenuation alone cannot match the real
@@ -152,7 +164,8 @@ impl EchoReferenceBuffer {
 
         let mut reference_energy = 0.0_f32;
         let mut captured_energy = 0.0_f32;
-        let mut cleaned: Vec<f32> = captured
+        let mut cross_energy = 0.0_f32;
+        let reference: Vec<f32> = captured
             .iter()
             .enumerate()
             .map(|(index, sample)| {
@@ -164,19 +177,81 @@ impl EchoReferenceBuffer {
                 };
                 reference_energy += reference * reference;
                 captured_energy += sample * sample;
-                (sample - reference * ATTENUATION).clamp(-1.0, 1.0)
+                cross_energy += sample * reference;
+                reference
             })
             .collect();
 
-        // Half-duplex energy suppression: while the aligned reference block is
-        // audibly playing and the capture is not clearly louder (double talk),
-        // duck the residual so imperfect linear subtraction cannot leak TTS
-        // audio back into STT.
+        // Estimate the actual render-to-capture gain for this block rather
+        // than subtracting a fixed 0.8. In system-loopback Watch mode the
+        // captured stream is `video + our translated playback`; least-squares
+        // projection removes the latter while retaining the unrelated video.
+        let echo_path_gain = if reference_energy > f32::EPSILON {
+            (cross_energy / reference_energy).clamp(0.0, MAX_ECHO_PATH_GAIN)
+        } else {
+            0.0
+        };
+        let mut cleaned: Vec<f32> = captured
+            .iter()
+            .zip(reference.iter())
+            .map(|(sample, reference)| {
+                (sample - reference * echo_path_gain).clamp(-1.0, 1.0)
+            })
+            .collect();
+
+        // Never use captured/reference loudness as a half-duplex gate: a quiet
+        // movie under louder translated speech is valid double talk. Drop a
+        // block only when it is strongly correlated with our render reference
+        // AND adaptive subtraction leaves an inaudible residual.
         let block_len = captured.len() as f32;
         let reference_rms = (reference_energy / block_len).sqrt();
         let captured_rms = (captured_energy / block_len).sqrt();
+        let residual_rms = (cleaned.iter().map(|sample| sample * sample).sum::<f32>()
+            / block_len)
+            .sqrt();
+        let correlation_denominator = (reference_energy * captured_energy).sqrt();
+        let correlation = if correlation_denominator > f32::EPSILON {
+            (cross_energy.abs() / correlation_denominator).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let residual_energy = residual_rms * residual_rms * block_len;
+        let mut max_tail_correlation = 0.0_f32;
+        if residual_energy > f32::EPSILON {
+            let samples_per_ms = TARGET_SAMPLE_RATE_HZ as usize
+                * TARGET_CHANNEL_COUNT
+                / 1_000;
+            for lag_ms in
+                (ECHO_TAIL_LAG_STEP_MS..=ECHO_TAIL_MAX_LAG_MS)
+                    .step_by(ECHO_TAIL_LAG_STEP_MS)
+            {
+                let lag_samples = lag_ms * samples_per_ms;
+                let mut delayed_energy = 0.0_f32;
+                let mut residual_cross = 0.0_f32;
+                for (index, residual) in cleaned.iter().enumerate() {
+                    let position = block_start + index as i64 - lag_samples as i64;
+                    let delayed_reference = if position >= 0
+                        && (position as usize) < self.buffer.len()
+                    {
+                        self.buffer[position as usize]
+                    } else {
+                        0.0
+                    };
+                    delayed_energy += delayed_reference * delayed_reference;
+                    residual_cross += residual * delayed_reference;
+                }
+                let denominator = (residual_energy * delayed_energy).sqrt();
+                if denominator > f32::EPSILON {
+                    max_tail_correlation = max_tail_correlation
+                        .max((residual_cross.abs() / denominator).clamp(0.0, 1.0));
+                }
+            }
+        }
         let suppress_asr = reference_rms > REFERENCE_ACTIVE_RMS
-            && captured_rms < reference_rms * DOUBLE_TALK_RMS_RATIO;
+            && captured_rms > f32::EPSILON
+            && correlation >= PURE_ECHO_CORRELATION
+            && (residual_rms < PURE_ECHO_RESIDUAL_RMS
+                || max_tail_correlation >= ECHO_TAIL_CORRELATION);
         if suppress_asr {
             for sample in cleaned.iter_mut() {
                 *sample *= PLAYBACK_GATE_GAIN;
@@ -204,7 +279,13 @@ impl EchoReferenceBuffer {
     }
 
     fn push_sample(&mut self, sample: f32) {
-        while self.buffer.len() >= self.capacity {
+        // `capacity` is a retention target, not permission to discard audio
+        // that has not played yet. Native responses are queued as one complete
+        // PCM block and can exceed 30 seconds; dropping the front here made a
+        // 42-second response use the wrong 30-second reference from its first
+        // sample onward. Reclaim only samples already consumed by the playback
+        // clock and allow a long in-flight segment to grow temporarily.
+        while self.buffer.len() >= self.capacity && self.play_cursor >= 1.0 {
             self.buffer.pop_front();
             self.play_cursor = (self.play_cursor - 1.0).max(0.0);
         }
@@ -232,6 +313,7 @@ mod tests {
     const TEST_DELAY_SAMPLES: usize = 9_600;
     /// One 960-frame stereo capture chunk in interleaved samples.
     const TEST_CHUNK_SAMPLES: usize = 1_920;
+    const TEST_ECHO_PATH_GAIN: f32 = 0.8;
 
     fn sine_mono(frames: usize, amplitude: f32) -> Vec<f32> {
         (0..frames)
@@ -294,13 +376,30 @@ mod tests {
     }
 
     #[test]
-    fn drops_old_samples_over_capacity() {
+    fn keeps_unplayed_samples_when_a_segment_exceeds_soft_capacity() {
         let mut buffer = EchoReferenceBuffer::new(1);
         buffer.push_samples(&[0.1, 0.2, 0.3], 48_000, 1);
 
+        assert_eq!(buffer.buffer.len(), 6);
+        assert_eq!(buffer.buffer[0], 0.1);
+        assert_eq!(buffer.buffer[5], 0.3);
+    }
+
+    #[test]
+    fn reclaims_consumed_samples_before_appending_a_new_segment() {
+        let mut buffer = EchoReferenceBuffer::new(1);
+        let started = Instant::now();
+        buffer.push_samples_at(&[0.1, 0.2, 0.3], 48_000, 1, started);
+        buffer.push_samples_at(
+            &[0.7],
+            48_000,
+            1,
+            started + Duration::from_secs(1),
+        );
+
         assert_eq!(buffer.buffer.len(), 2);
-        assert_eq!(buffer.buffer[0], 0.3);
-        assert_eq!(buffer.buffer[1], 0.3);
+        assert_eq!(buffer.buffer[0], 0.7);
+        assert_eq!(buffer.buffer[1], 0.7);
     }
 
     #[test]
@@ -321,7 +420,7 @@ mod tests {
         // Two seconds into playback the capture loop receives the echo of the
         // block played `TEST_DELAY_SAMPLES` earlier, at the exact path gain
         // the canceller compensates for.
-        let captured = echoed_block(&reference, 2, ATTENUATION);
+        let captured = echoed_block(&reference, 2, TEST_ECHO_PATH_GAIN);
         let cancellation = buffer.subtract_from_at(
             &captured,
             TEST_DELAY_SAMPLES,
@@ -331,6 +430,32 @@ mod tests {
         assert!(
             rms(&cancellation.samples) < rms(&captured) * 0.05,
             "residual echo too high: cleaned_rms={} captured_rms={}",
+            rms(&cancellation.samples),
+            rms(&captured)
+        );
+        assert!(cancellation.suppress_asr);
+    }
+
+    #[test]
+    fn long_segment_keeps_early_reference_aligned_past_soft_capacity() {
+        // Model audio arrives as one complete segment before blocking playback
+        // begins. A one-second soft capacity must not evict the first two
+        // seconds of this three-second segment before they have played.
+        let mut buffer = EchoReferenceBuffer::new(48_000);
+        let reference = sine_mono(3 * 48_000, 0.5);
+        let playback_started = Instant::now();
+        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+
+        let captured = echoed_block(&reference, 1, TEST_ECHO_PATH_GAIN);
+        let cancellation = buffer.subtract_from_at(
+            &captured,
+            TEST_DELAY_SAMPLES,
+            playback_started + Duration::from_secs(1),
+        );
+
+        assert!(
+            rms(&cancellation.samples) < rms(&captured) * 0.05,
+            "early reference was evicted or shifted: cleaned_rms={} captured_rms={}",
             rms(&cancellation.samples),
             rms(&captured)
         );
@@ -381,6 +506,38 @@ mod tests {
             "double talk was gated away: cleaned_rms={} captured_rms={}",
             rms(&cancellation.samples),
             rms(&captured)
+        );
+        assert!(!cancellation.suppress_asr);
+    }
+
+    #[test]
+    fn keeps_quiet_program_audio_under_louder_translated_playback() {
+        let (mut buffer, reference, playback_started) = seeded_reference_buffer(3, 0.18);
+        let translated_playback = echoed_block(&reference, 2, TEST_ECHO_PATH_GAIN);
+        let program_audio = cosine_capture_block(0.025);
+        let captured: Vec<f32> = translated_playback
+            .iter()
+            .zip(program_audio.iter())
+            .map(|(translated, program)| translated + program)
+            .collect();
+
+        let cancellation = buffer.subtract_from_at(
+            &captured,
+            TEST_DELAY_SAMPLES,
+            playback_started + Duration::from_secs(2),
+        );
+
+        assert!(
+            rms(&cancellation.samples) > rms(&program_audio) * 0.7,
+            "quiet source was gated: cleaned_rms={} source_rms={}",
+            rms(&cancellation.samples),
+            rms(&program_audio)
+        );
+        assert!(
+            rms(&cancellation.samples) < rms(&program_audio) * 1.3,
+            "translated playback was not removed: cleaned_rms={} source_rms={}",
+            rms(&cancellation.samples),
+            rms(&program_audio)
         );
         assert!(!cancellation.suppress_asr);
     }
@@ -450,7 +607,10 @@ mod tests {
         let cursor = first_segment_samples + 48_000 * TARGET_CHANNEL_COUNT;
         let block_start = cursor - TEST_DELAY_SAMPLES - TEST_CHUNK_SAMPLES;
         let captured: Vec<f32> = (0..TEST_CHUNK_SAMPLES)
-            .map(|index| second_segment[(block_start + index - first_segment_samples) / 2] * ATTENUATION)
+            .map(|index| {
+                second_segment[(block_start + index - first_segment_samples) / 2]
+                    * TEST_ECHO_PATH_GAIN
+            })
             .collect();
         let cancellation = buffer.subtract_from_at(
             &captured,

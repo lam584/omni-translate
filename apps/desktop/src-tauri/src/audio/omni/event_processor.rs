@@ -269,7 +269,7 @@ impl OmniEventProcessor {
         native_translation_reuse_active: bool,
     ) -> OmniSubtitleEventState {
         let OmniSubtitleEventState {
-            mut current_cue_id,
+            current_cue_id,
             pending_source_text,
             mut pending_translated_text,
             mut st_skip_logged,
@@ -288,8 +288,20 @@ impl OmniEventProcessor {
         store
             .live_session_events
             .push_output_delta(event_type, delta, "");
+        if event_diagnostics.native_response_cue_id.is_none() {
+            event_diagnostics.native_response_cue_id = current_cue_id.clone();
+        }
+        let response_source_text = resolve_native_response_source_text(
+            store,
+            event_diagnostics.native_response_cue_id.as_deref(),
+            current_cue_id.as_deref(),
+            &pending_source_text,
+        );
         if native_translation_reuse_active {
-            let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
+            let cue_id = ensure_transcription_cue_id(
+                direction,
+                &mut event_diagnostics.native_response_cue_id,
+            );
             if event_diagnostics.current_cue_origin.is_none() {
                 event_diagnostics.current_cue_origin =
                     Some("native_audio_transcript_delta".to_string());
@@ -297,7 +309,7 @@ impl OmniEventProcessor {
             write_native_translation_to_cue(
                 &store,
                 &cue_id,
-                &pending_source_text,
+                &response_source_text,
                 &pending_translated_text,
                 false,
                 true,
@@ -316,7 +328,10 @@ impl OmniEventProcessor {
         } else if subtitle_translate_active {
             if !st_skip_logged {
                 st_skip_logged = true;
-                let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
+                let cue_id_str = event_diagnostics
+                    .native_response_cue_id
+                    .as_deref()
+                    .unwrap_or("(none)");
                 let _ = diag_log(
                     &app,
                     "omni",
@@ -330,12 +345,15 @@ impl OmniEventProcessor {
             write_native_output_preview_to_cue(
                 store,
                 direction,
-                &mut current_cue_id,
-                &pending_source_text,
+                &mut event_diagnostics.native_response_cue_id,
+                &response_source_text,
                 &pending_translated_text,
             );
         }
-        let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
+        let cue_id_str = event_diagnostics
+            .native_response_cue_id
+            .as_deref()
+            .unwrap_or("(none)");
         let _ = diag_log(
             &app,
             "omni",
@@ -365,7 +383,7 @@ impl OmniEventProcessor {
         native_translation_reuse_active: bool,
     ) -> OmniSubtitleEventState {
         let OmniSubtitleEventState {
-            mut current_cue_id,
+            current_cue_id,
             pending_source_text,
             mut pending_translated_text,
             st_skip_logged,
@@ -384,10 +402,22 @@ impl OmniEventProcessor {
             "",
             &pending_translated_text,
         );
+        if event_diagnostics.native_response_cue_id.is_none() {
+            event_diagnostics.native_response_cue_id = current_cue_id.clone();
+        }
+        let response_source_text = resolve_native_response_source_text(
+            store,
+            event_diagnostics.native_response_cue_id.as_deref(),
+            current_cue_id.as_deref(),
+            &pending_source_text,
+        );
         if native_translation_reuse_active
             && !pending_translated_text.trim().is_empty()
         {
-            let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
+            let cue_id = ensure_transcription_cue_id(
+                direction,
+                &mut event_diagnostics.native_response_cue_id,
+            );
             if event_diagnostics.current_cue_origin.is_none() {
                 event_diagnostics.current_cue_origin =
                     Some("native_audio_transcript_done".to_string());
@@ -395,7 +425,7 @@ impl OmniEventProcessor {
             write_native_translation_to_cue(
                 &store,
                 &cue_id,
-                &pending_source_text,
+                &response_source_text,
                 &pending_translated_text,
                 false,
                 false,
@@ -413,8 +443,8 @@ impl OmniEventProcessor {
             let cue_id = write_native_output_final_to_cue(
                 store,
                 direction,
-                &mut current_cue_id,
-                &pending_source_text,
+                &mut event_diagnostics.native_response_cue_id,
+                &response_source_text,
                 &pending_translated_text,
             );
             if event_diagnostics.current_cue_origin.is_none() {
@@ -431,7 +461,10 @@ impl OmniEventProcessor {
                 ),
             );
         }
-        let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
+        let cue_id_str = event_diagnostics
+            .native_response_cue_id
+            .as_deref()
+            .unwrap_or("(none)");
         let _ = diag_log(
             &app,
             "omni",

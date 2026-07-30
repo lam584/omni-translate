@@ -925,6 +925,7 @@ mod tests {
             "inbound", &config, plain.model.clone(), plain.clone(),
         );
         assert_eq!(plan.kind, ResolvedRouteKind::Omni);
+        assert_eq!(plan.voice, "longanqian");
 
         // Capabilities describe what the model can do; the explicit protocol
         // describes how to communicate with it.
@@ -942,6 +943,7 @@ mod tests {
             "inbound", &config, registered.model.clone(), registered,
         );
         assert_eq!(plan.kind, ResolvedRouteKind::Omni);
+        assert_eq!(plan.voice, "longanqian");
 
         // STT-only registry entries must not be promoted.
         value["localModelCapabilityRegistry"] = json!([{

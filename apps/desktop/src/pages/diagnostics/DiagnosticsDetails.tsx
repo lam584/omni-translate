@@ -106,10 +106,6 @@ export function isTextOutputEvent(eventType: string) {
   return !isBinaryAudioOutputEvent(eventType);
 }
 
-export function shouldUseManualBenchmarkMode(model: string) {
-  return !model.toLowerCase().includes('livetranslate');
-}
-
 export function textLength(value: string) {
   return [...value].length;
 }
@@ -167,7 +163,7 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
   const asrFinal = run.asrFinal;
   const asrEventCount = run.asrDeltas.length;
   const fullTranslation = run.translationFinal || segmentedOutput || textOutputDeltas.map((delta) => delta.committedText || delta.stash || delta.rawText).join('');
-  const isManualMode = (report.realtimeAudioMode ?? (shouldUseManualBenchmarkMode(run.model) ? 'manual' : 'server_vad')) === 'manual';
+  const isManualMode = (report.realtimeAudioMode ?? 'server_vad') === 'manual';
   const vadModeLabel = isManualMode ? i18n.t('diagnostics.benchmark.manualFullAudioMode') : i18n.t('diagnostics.benchmark.serverVadMode');
   const timeRangeEnd = Math.max(run.audioSendMs, run.responseDoneMs ?? 0, run.firstOutputMs ?? 0, run.responseCreatedMs ?? 0, 1);
   const pct = (value: number | null | undefined) => (value == null ? null : Math.max(0, Math.min(100, (value / timeRangeEnd) * 100)));

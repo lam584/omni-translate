@@ -206,7 +206,15 @@ impl OmniEventProcessor {
                 queued_at: Instant::now(),
             }) {
                 Ok(()) => "queued",
-                Err(mpsc::TrySendError::Full(_)) => "dropped_queue_full",
+                Err(mpsc::TrySendError::Full(_)) => {
+                    let _ = diag_log(
+                        &app,
+                        "omni",
+                        "warning",
+                        "[AUDIO] omni playback queue full, dropping oldest audio",
+                    );
+                    "dropped_queue_full"
+                }
                 Err(mpsc::TrySendError::Disconnected(_)) => "dropped_disconnected",
             };
             let log_level = if enqueue_status == "queued" {

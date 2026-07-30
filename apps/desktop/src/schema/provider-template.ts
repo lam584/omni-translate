@@ -1,3 +1,4 @@
+import type { RealtimeProtocol } from './config';
 import type { ProviderAuthScheme, ProviderCapability, ProviderKind, ProviderTransport } from './provider-contract';
 
 export type ProviderTemplateSource = 'official' | 'community' | 'custom';
@@ -69,6 +70,7 @@ export type ProviderTemplate = {
   displayName: string;
   description: string;
   protocolLabel: string;
+  realtimeProtocol?: RealtimeProtocol;
   notes: string;
   supportedTransports: ProviderTransport[];
   defaultDraft: ProviderTemplateDraftDefaults;

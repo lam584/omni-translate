@@ -116,7 +116,7 @@ match socket.read_message() {
     Ok(msg) => match msg {
         Message::Text(text) => {
             if let Ok(evt) = serde_json::from_str::<Value>(&text) {
-                let event_type = evt["type"].as_str().unwrap_or("(unknown)");
+                let event_type = crate::audio::realtime_ws::server_event_type(&evt, "(unknown)");
                 trace_call.record_ws_recv(event_type, evt.clone());
                 match event_type {
                     "session.created" | "session.updated" => {
@@ -297,7 +297,7 @@ match socket.read_message() {
                                 );
                                 match decision {
                                     ManualResponseDecision::Create => {
-                                        let create_msg = json!({ "type": "response.create" });
+                                        let create_msg = super::build_dashscope_response_create();
                                         trace_call.record_ws_send(
                                             "response.create",
                                             create_msg.clone(),

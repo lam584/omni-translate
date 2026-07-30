@@ -926,12 +926,58 @@
       "description": "为未收录模型登记能力和实时音频模式。",
       "addEntry": "添加条目",
       "closeTitle": "关闭能力注册表",
-      "modelIdPlaceholder": "模型 ID",
+      "modelIdPlaceholder": "输入模型 ID，例如 qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "模型 ID",
+      "duplicateModelId": "该模型 ID 已有条目，仅第一条生效",
       "deleteEntry": "删除能力条目",
       "emptyTitle": "还没有自定义能力条目",
       "emptyDescription": "添加条目后可为自定义模型补充能力。"
     },
+    "capabilityLabels": {
+      "speech-to-text": "语音识别",
+      "text-to-speech": "语音合成",
+      "speech-to-speech": "语音互译",
+      "text-generation": "文本生成"
+    },
+    "capabilityHints": {
+      "speech-to-text": "语音识别（STT）：把说话内容转写成文字",
+      "text-to-speech": "语音合成（TTS）：把文字朗读成语音",
+      "speech-to-speech": "语音互译（S2S）：直接把语音翻译成另一种语言的语音",
+      "text-generation": "文本生成：用大模型翻译或改写文字"
+    },
+    "interactionLabels": {
+      "auto_vad": "自动断句",
+      "manual_commit": "手动提交",
+      "client_activity": "客户端活动信号",
+      "streaming": "流式输出",
+      "chunked_http_audio": "分块 HTTP 音频",
+      "push_to_talk": "按键说话",
+      "server_commit_tts": "服务端 TTS 提交",
+      "commit_tts": "TTS 提交",
+      "text_only_backend": "纯文本后端",
+      "pipeline_asr_mt_tts": "识别-翻译-合成流水线"
+    },
+    "interactionHints": {
+      "auto_vad": "服务端自动检测语音开始和结束，无需手动操作",
+      "manual_commit": "由应用判断一句话结束后再提交音频片段",
+      "client_activity": "由应用发送明确的开始/结束活动信号（Gemini Live 方式）",
+      "streaming": "结果逐字流式返回，无需等待完整结果",
+      "chunked_http_audio": "音频按分块通过 HTTP 上传，不依赖实时连接",
+      "push_to_talk": "支持按住说话式采集，边界由用户控制",
+      "server_commit_tts": "每次提交片段后由服务端触发语音合成",
+      "commit_tts": "文本提交后显式请求语音合成",
+      "text_only_backend": "只支持文字输入输出，不支持音频",
+      "pipeline_asr_mt_tts": "识别、翻译、合成三段串联完成翻译"
+    },
+    "interactionGroups": {
+      "segmentation": "断句与提交",
+      "transport": "传输方式",
+      "tts": "语音合成",
+      "backend": "后端形态"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "模型能力说明",
+      "interactionSectionTitle": "交互能力说明",
       "title": "实时音频模式说明",
       "description": "每种模式决定音频如何被分段和发送给服务端，影响延迟、断句准确性以及协议兼容性。",
       "closeTitle": "关闭说明",

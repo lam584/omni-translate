@@ -926,12 +926,58 @@
       "description": "Registre capacidades y modos de audio en tiempo real para modelos no listados.",
       "addEntry": "Agregar entrada",
       "closeTitle": "Cerrar registro de capacidades",
-      "modelIdPlaceholder": "ID del modelo",
+      "modelIdPlaceholder": "Introduce un ID de modelo, p. ej. qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "ID del modelo",
+      "duplicateModelId": "Este ID de modelo ya tiene una entrada; solo la primera tiene efecto",
       "deleteEntry": "Eliminar entrada de capacidad",
       "emptyTitle": "Aún no hay entradas de capacidades personalizadas",
       "emptyDescription": "Agregue entradas para complementar las capacidades de los modelos personalizados."
     },
+    "capabilityLabels": {
+      "speech-to-text": "Reconocimiento de voz",
+      "text-to-speech": "Síntesis de voz",
+      "speech-to-speech": "Traducción de voz",
+      "text-generation": "Generación de texto"
+    },
+    "capabilityHints": {
+      "speech-to-text": "Reconocimiento de voz (STT): transcribe el habla a texto",
+      "text-to-speech": "Síntesis de voz (TTS): lee el texto en voz alta",
+      "speech-to-speech": "Traducción de voz (S2S): traduce el habla directamente a voz en otro idioma",
+      "text-generation": "Generación de texto: traduce o reescribe texto con un modelo de lenguaje grande"
+    },
+    "interactionLabels": {
+      "auto_vad": "Segmentación automática",
+      "manual_commit": "Confirmación manual",
+      "client_activity": "Señales de actividad del cliente",
+      "streaming": "Salida en streaming",
+      "chunked_http_audio": "Audio HTTP por bloques",
+      "push_to_talk": "Pulsar para hablar",
+      "server_commit_tts": "Confirmación TTS del servidor",
+      "commit_tts": "Confirmación TTS",
+      "text_only_backend": "Backend solo texto",
+      "pipeline_asr_mt_tts": "Canalización ASR-MT-TTS"
+    },
+    "interactionHints": {
+      "auto_vad": "El servidor detecta automáticamente el inicio y el fin del habla; sin acciones manuales",
+      "manual_commit": "La aplicación detecta el final de la frase y luego envía el segmento de audio",
+      "client_activity": "La aplicación envía señales explícitas de inicio/fin de actividad (estilo Gemini Live)",
+      "streaming": "Los resultados llegan en streaming en lugar de todos a la vez",
+      "chunked_http_audio": "El audio se sube por bloques mediante HTTP en lugar de una conexión en tiempo real",
+      "push_to_talk": "Admite captura de pulsar para hablar con límites controlados por el usuario",
+      "server_commit_tts": "El servidor activa la síntesis de voz tras cada segmento confirmado",
+      "commit_tts": "La síntesis de voz se solicita explícitamente tras confirmar el texto",
+      "text_only_backend": "Solo texto de entrada y salida; sin audio",
+      "pipeline_asr_mt_tts": "Reconocimiento, traducción y síntesis se encadenan en tres pasos"
+    },
+    "interactionGroups": {
+      "segmentation": "Segmentación y confirmación",
+      "transport": "Transporte",
+      "tts": "Síntesis de voz",
+      "backend": "Tipo de backend"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "Capacidades del modelo",
+      "interactionSectionTitle": "Capacidades de interacción",
       "title": "Modos de audio en tiempo real",
       "description": "Cada modo controla cómo se segmenta el audio y se envía al servidor, lo que afecta la latencia, la precisión de los límites de las oraciones y la compatibilidad del protocolo.",
       "closeTitle": "Cerrar ayuda",

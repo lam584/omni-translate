@@ -8,6 +8,7 @@ import type { ProviderModelRuntime, ProviderProbeProfileRuntime, ProviderSmokeRe
 import type { ProviderTemplateCatalogEntry } from '../../utils/provider-template-catalog';
 import type { ModelCatalogState } from './providersPageHelpers';
 import CustomProviderDialog from './CustomProviderDialog';
+import ProviderCapabilityRegistryDialog from './ProviderCapabilityRegistryDialog';
 import ProviderModelCatalog from './ProviderModelCatalog';
 import ProviderTemplateCatalog from './ProviderTemplateCatalog';
 import ProviderVerificationPanel from './ProviderVerificationPanel';
@@ -363,9 +364,35 @@ describe('provider catalog components', () => {
     await change(select, 'manual');
     const validUpdater = onChange.mock.calls.at(-1)?.[0] as (current: typeof pending | null) => typeof pending | null;
     expect(validUpdater(pending)?.realtimeAudioMode).toBe('manual');
-    expect(container.querySelectorAll('.audio-mode-help-item')).toHaveLength(5);
+    // 5 audio modes + 4 model capabilities + 10 interaction capabilities.
+    expect(container.querySelectorAll('.audio-mode-help-item')).toHaveLength(19);
+    expect(container.querySelectorAll('.audio-mode-help-section-title')).toHaveLength(2);
     await click(container.querySelector('.audio-mode-help-list')?.closest('[role="dialog"]'));
     expect(onHelpClose).not.toHaveBeenCalled();
+  });
+
+  it('renders registry column headers, datalist suggestions, and flags duplicate model ids', async () => {
+    const entries = [
+      { id: 'a', modelId: 'qwen-plus', capabilities: ['speech-to-text' as const] },
+      { id: 'b', modelId: ' Qwen-Plus ', capabilities: [] },
+      { id: 'c', modelId: '', capabilities: [] },
+    ];
+    ({ container, root } = render(<ProviderCapabilityRegistryDialog
+      entries={entries} modelIdSuggestions={['qwen-plus', 'gpt-4o-realtime']}
+      onAdd={vi.fn()} onCapabilityToggle={vi.fn()} onChange={vi.fn()} onClose={vi.fn()}
+      onInteractionToggle={vi.fn()} onOpenHelp={vi.fn()} onRemove={vi.fn()} />));
+
+    expect(container.querySelector('.provider-capability-registry-head')).toBeInstanceOf(HTMLElement);
+    expect(container.querySelectorAll('datalist option')).toHaveLength(2);
+    const rows = Array.from(container.querySelectorAll('.provider-capability-registry-item'));
+    expect(rows).toHaveLength(3);
+    expect(rows[0]?.querySelector<HTMLInputElement>('input')?.getAttribute('list')).toBe('provider-capability-registry-model-ids');
+    // Interaction pills split into 4 semantic groups; 10 pills total per row.
+    expect(rows[0]?.querySelectorAll('.provider-capability-registry-interactions .provider-capability-group')).toHaveLength(4);
+    expect(rows[0]?.querySelectorAll('.provider-capability-registry-interactions .provider-scenario-pill')).toHaveLength(10);
+    // Only the later duplicate is flagged (first entry wins at resolve time); empty ids never are.
+    expect(container.querySelectorAll('.provider-capability-registry-duplicate')).toHaveLength(1);
+    expect(rows[1]?.querySelector('.provider-capability-registry-duplicate')).toBeInstanceOf(HTMLElement);
   });
 
   it('renders verification defaults with no probe error and a successful empty smoke result', async () => {

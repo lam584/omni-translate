@@ -926,12 +926,58 @@
       "description": "Register capabilities and realtime audio modes for unlisted models.",
       "addEntry": "Add entry",
       "closeTitle": "Close capability registry",
-      "modelIdPlaceholder": "Model ID",
+      "modelIdPlaceholder": "Enter a model ID, e.g. qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "Model ID",
+      "duplicateModelId": "This model ID already has an entry; only the first one takes effect",
       "deleteEntry": "Delete capability entry",
       "emptyTitle": "No custom capability entries yet",
       "emptyDescription": "Add entries to supplement capabilities for custom models."
     },
+    "capabilityLabels": {
+      "speech-to-text": "Speech recognition",
+      "text-to-speech": "Speech synthesis",
+      "speech-to-speech": "Speech translation",
+      "text-generation": "Text generation"
+    },
+    "capabilityHints": {
+      "speech-to-text": "Speech recognition (STT): transcribes spoken audio into text",
+      "text-to-speech": "Speech synthesis (TTS): reads text aloud as speech",
+      "speech-to-speech": "Speech translation (S2S): translates spoken audio directly into speech in another language",
+      "text-generation": "Text generation: translates or rewrites text with a large language model"
+    },
+    "interactionLabels": {
+      "auto_vad": "Auto segmentation",
+      "manual_commit": "Manual commit",
+      "client_activity": "Client activity signals",
+      "streaming": "Streaming output",
+      "chunked_http_audio": "Chunked HTTP audio",
+      "push_to_talk": "Push to talk",
+      "server_commit_tts": "Server commit TTS",
+      "commit_tts": "Commit TTS",
+      "text_only_backend": "Text-only backend",
+      "pipeline_asr_mt_tts": "ASR-MT-TTS pipeline"
+    },
+    "interactionHints": {
+      "auto_vad": "The server detects when speech starts and ends automatically; no manual action needed",
+      "manual_commit": "The app decides when a sentence ends and then submits the audio segment",
+      "client_activity": "The app sends explicit start/end activity signals (Gemini Live style)",
+      "streaming": "Results stream back token by token instead of arriving all at once",
+      "chunked_http_audio": "Audio is uploaded in chunks over HTTP instead of a realtime connection",
+      "push_to_talk": "Supports hold-to-speak capture with user-controlled boundaries",
+      "server_commit_tts": "The server triggers speech synthesis after each committed segment",
+      "commit_tts": "Speech synthesis is requested explicitly after a text commit",
+      "text_only_backend": "Text in and text out only; no audio support",
+      "pipeline_asr_mt_tts": "Recognition, translation and synthesis run as three chained steps"
+    },
+    "interactionGroups": {
+      "segmentation": "Segmentation & commit",
+      "transport": "Transport",
+      "tts": "Speech synthesis",
+      "backend": "Backend type"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "Model capabilities",
+      "interactionSectionTitle": "Interaction capabilities",
       "title": "Realtime audio modes",
       "description": "Each mode controls how audio is segmented and sent to the server, affecting latency, sentence boundary accuracy, and protocol compatibility.",
       "closeTitle": "Close help",

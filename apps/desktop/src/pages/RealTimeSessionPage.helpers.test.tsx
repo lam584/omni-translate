@@ -21,6 +21,7 @@ const {
   getSceneLaunchConfigurationProblem,
   getSceneLaunchConfigurationMessage,
   getSessionCueDisplaySegments,
+  isReconnectNoticeCue,
   logSceneLaunchConfig,
   parseRuntimeTimestampMs,
   resolveSceneLabel,
@@ -94,12 +95,16 @@ describe('realTimeSessionPageHelpers', () => {
     );
   });
 
-  it('recognizes realtime omni models with and without provider prefixes', () => {
-    expect(resolveVoiceModelRuntime('provider::realtime-omni').isOmniModel).toBe(true);
-    expect(resolveVoiceModelRuntime('realtime-livetranslate').isOmniModel).toBe(true);
-    expect(resolveVoiceModelRuntime('provider::plain-model')).toEqual({
+  it('uses the resolved registry profile instead of independently parsing model names', () => {
+    const config = structuredClone(appConfigDraftMock);
+    config.providers[0].localModelCapabilityRegistry.unshift({
+      id: 'alias', modelId: 'deployment-blue', capabilities: ['speech-to-speech'],
+      realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'server_vad', interactionCapabilities: ['streaming'],
+    });
+    expect(resolveVoiceModelRuntime('template-dashscope-realtime::deployment-blue', config).realtimeProfile?.routeKind).toBe('omni');
+    expect(resolveVoiceModelRuntime('provider::plain-model', config)).toMatchObject({
       voiceModelRaw: 'plain-model',
-      isOmniModel: false,
+      realtimeProfile: { routeKind: 'local-vad', protocolDialect: null, source: 'none' },
     });
   });
 
@@ -123,22 +128,24 @@ describe('realTimeSessionPageHelpers', () => {
   it('derives speech patches for every scene mode and watch fallback defaults', () => {
     const configDraft = structuredClone(useAppStore.getState().configDraft);
 
-    expect(resolveSceneSpeechPatch('game', configDraft, false)).toMatchObject({
+    const nativeProfile = { speechDispatchPolicy: 'native-audio' as const };
+    const classicProfile = { speechDispatchPolicy: 'subtitle-tts' as const };
+    expect(resolveSceneSpeechPatch('game', configDraft, classicProfile)).toMatchObject({
       enabled: true,
       outputTarget: 'speaker',
       localPlaybackEnabled: true,
       virtualMicOutputEnabled: false,
     });
-    expect(resolveSceneSpeechPatch('voice-room', configDraft, false)).toMatchObject({
+    expect(resolveSceneSpeechPatch('voice-room', configDraft, classicProfile)).toMatchObject({
       enabled: true,
       outputTarget: 'speaker',
       localPlaybackEnabled: true,
       virtualMicOutputEnabled: false,
     });
-    expect(resolveSceneSpeechPatch('watch', configDraft, false).enabled).toBe(false);
+    expect(resolveSceneSpeechPatch('watch', configDraft, classicProfile).enabled).toBe(false);
 
     const missingSpeech = { ...configDraft, speech: undefined } as unknown as AppConfigDraft;
-    expect(resolveSceneSpeechPatch('watch', missingSpeech, true)).toMatchObject({
+    expect(resolveSceneSpeechPatch('watch', missingSpeech, nativeProfile)).toMatchObject({
       enabled: configDraft.devices.outputSpeechEnabled,
       outputTarget: 'speaker',
       localPlaybackEnabled: true,
@@ -151,6 +158,32 @@ describe('realTimeSessionPageHelpers', () => {
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translatedText: '[翻译失败] timeout' }} />)).toContain('失败');
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translatedText: '你好' }} />)).toContain('已翻译');
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true }} />)).toContain('翻译失败');
+  });
+
+  it('renders reconnect cues as notices without a translation failure state', () => {
+    const reconnectCue = {
+      ...baseCue,
+      cueId: 'omni-reconnecting-1',
+      sourceText: '[Omni] 正在重新连接实时翻译服务',
+      committed: true,
+      translationCommitted: true,
+    };
+
+    expect(isReconnectNoticeCue(reconnectCue)).toBe(true);
+    expect(renderToStaticMarkup(<CueStatusBadge cue={reconnectCue} />)).toBe('');
+
+    const notice = renderToStaticMarkup(<CueSegmentRows cue={reconnectCue} />);
+    expect(notice).toContain(reconnectCue.sourceText);
+    expect(notice).not.toContain('翻译失败');
+    expect(notice).not.toContain('正在调用');
+  });
+
+  it('keeps ordinary committed cues with empty translations in the failure state', () => {
+    const ordinaryCue = { ...baseCue, committed: true };
+
+    expect(isReconnectNoticeCue(ordinaryCue)).toBe(false);
+    expect(renderToStaticMarkup(<CueStatusBadge cue={ordinaryCue} />)).toContain('翻译失败');
+    expect(renderToStaticMarkup(<CueSegmentRows cue={ordinaryCue} />)).toContain('翻译失败');
   });
   it('logs scene launch config with populated optional fields', () => {
     const { configDraft, runtimeSnapshot, audioRuntimeSnapshot, consoleSpy } = sceneLaunchLogFixture();
@@ -189,7 +222,7 @@ describe('realTimeSessionPageHelpers', () => {
 
     logSceneLaunchConfig('watch', configDraft, runtimeSnapshot, audioRuntimeSnapshot, {
       speechPatch: { enabled: true },
-      isOmniModel: true,
+      realtimeProfile: { routeKind: 'omni', protocolDialect: 'dashscope-omni' },
       secondarySubtitleTranslationEnabled: true,
     });
 
@@ -235,7 +268,7 @@ describe('realTimeSessionPageHelpers', () => {
 
     logSceneLaunchConfig('watch', configDraft, runtimeSnapshot, audioRuntimeSnapshot, {
       speechPatch: speechPatch as never,
-      isOmniModel: false,
+      realtimeProfile: { routeKind: 'local-vad', protocolDialect: null },
       secondarySubtitleTranslationEnabled: false,
     });
 

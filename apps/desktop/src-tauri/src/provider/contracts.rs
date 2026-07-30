@@ -45,6 +45,7 @@ pub struct ProviderModelCapabilityRegistryEntryInput {
     pub id: String,
     pub model_id: String,
     pub capabilities: Vec<String>,
+    pub realtime_protocol: Option<String>,
     pub realtime_audio_mode: Option<String>,
     #[serde(default)]
     pub interaction_capabilities: Vec<String>,
@@ -82,6 +83,8 @@ pub struct ProviderDraftInput {
     pub template_id: String,
     pub provider_id: String,
     pub kind: String,
+    pub template_realtime_protocol: Option<String>,
+    pub realtime_protocol: Option<String>,
     pub display_name: String,
     pub model: String,
     pub base_url: String,

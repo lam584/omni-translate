@@ -17,6 +17,10 @@ import {
   mapUpstreamCapabilitiesToScenarios,
   normalizeProviderCapabilityList,
   normalizeProviderInteractionCapabilityList,
+  providerInteractionCapabilityGroupLabelKey,
+  providerInteractionCapabilityGroups,
+  providerInteractionCapabilityOrder,
+  realtimeAudioModeHelpKey,
   resolveInteractionCapabilities,
   resolveRealtimeAudioMode,
   resolveProviderModelCapabilities,
@@ -57,6 +61,26 @@ describe('provider model capabilities', () => {
 
     expect(formatProviderInteractionCapabilityLabel('pipeline_asr_mt_tts')).toBe('ASR->MT->TTS pipeline');
     expect(formatProviderInteractionCapabilityShortLabel('server_commit_tts')).toBe('Srv TTS');
+  });
+
+  it('maps every realtime audio mode to its audioModeHelp i18n key', () => {
+    expect(['manual', 'server_vad', 'semantic_vad', 'gemini_auto_activity', 'gemini_manual_activity'].map((mode) =>
+      realtimeAudioModeHelpKey(mode as Parameters<typeof realtimeAudioModeHelpKey>[0]),
+    )).toEqual([
+      'providers.audioModeHelp.manualFullAudio',
+      'providers.audioModeHelp.serverVad',
+      'providers.audioModeHelp.semanticVad',
+      'providers.audioModeHelp.geminiAuto',
+      'providers.audioModeHelp.geminiManual',
+    ]);
+  });
+
+  it('partitions all interaction capabilities into the four display groups without gaps or overlaps', () => {
+    const grouped = providerInteractionCapabilityGroups.flatMap((group) => group.capabilities);
+    expect([...grouped].sort()).toEqual([...providerInteractionCapabilityOrder].sort());
+    expect(new Set(grouped).size).toBe(grouped.length);
+    expect(providerInteractionCapabilityGroups.map((group) => group.id)).toEqual(['segmentation', 'transport', 'tts', 'backend']);
+    expect(providerInteractionCapabilityGroupLabelKey('segmentation')).toBe('providers.interactionGroups.segmentation');
   });
 
   it('maps upstream aliases and infers common audio and text model families', () => {

@@ -10,9 +10,17 @@ pub async fn run_model_benchmark(
     base_url: Option<String>,
     auth_header_name: Option<String>,
     auth_scheme: Option<String>,
+    provider: Option<crate::provider::contracts::ProviderDraftInput>,
 ) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let audio_mode = RealtimeAudioMode::from_frontend(realtime_audio_mode.as_deref(), &model)?;
+        let resolved_profile = provider
+            .as_ref()
+            .map(|provider| crate::audio::events::resolve_realtime_profile(provider, &model));
+        let resolved_mode = resolved_profile
+            .as_ref()
+            .map(|profile| profile.realtime_audio_mode.as_str())
+            .or(realtime_audio_mode.as_deref());
+        let audio_mode = RealtimeAudioMode::from_frontend(resolved_mode, &model)?;
         let config = BenchmarkConfig {
             api_key,
             mp3_path: PathBuf::from(&mp3_path),
@@ -31,7 +39,7 @@ pub async fn run_model_benchmark(
                 .unwrap_or_else(|| "bearer".to_string()),
             voice: "Ethan".to_string(),
             target_language: "zh".to_string(),
-            source_language: "en".to_string(),
+            protocol_dialect: resolved_profile.and_then(|profile| profile.protocol_dialect),
         };
 
         if !config.mp3_path.exists() {
@@ -142,10 +150,24 @@ fn run_single_benchmark(
 ) -> Result<IntermediateResult, String> {
     reject_non_turn_based_benchmark(config)?;
 
-    if config.audio_mode.is_gemini() {
+    if config.protocol_dialect == Some(crate::audio::events::RealtimeProtocol::GeminiLive)
+        || (config.protocol_dialect.is_none() && config.audio_mode.is_gemini())
+    {
         return run_single_gemini_benchmark(config, samples, audio_duration, progress);
     }
-    if config.provider_kind == "openai-compatible" {
+    if config
+        .protocol_dialect
+        .is_some_and(|protocol| {
+            matches!(
+                protocol,
+                crate::audio::events::RealtimeProtocol::OpenAiConversation
+                    | crate::audio::events::RealtimeProtocol::OpenAiTranslation
+                    | crate::audio::events::RealtimeProtocol::OpenAiTranscription
+                    | crate::audio::events::RealtimeProtocol::OpenAiFlat
+            )
+        })
+        || (config.protocol_dialect.is_none() && config.provider_kind == "openai-compatible")
+    {
         return run_single_openai_benchmark(config, samples, audio_duration, progress);
     }
 
@@ -214,10 +236,8 @@ fn run_single_benchmark(
         )?;
 
         // 2. Send the next audio chunk
-        let msg = json!({
-            "type": "input_audio_buffer.append",
-            "audio": base64_encode_i16(chunk),
-        });
+        let encoded = base64_encode_i16(chunk);
+        let msg = crate::audio::omni::build_dashscope_audio_append(&encoded);
         socket
             .send(Message::Text(msg.to_string().into()))
             .map_err(|e| format!("audio send at chunk {i}: {e}"))?;
@@ -248,14 +268,14 @@ fn run_single_benchmark(
     if manual_response {
         socket
             .send(Message::Text(
-                json!({ "type": "input_audio_buffer.commit" })
+                crate::audio::omni::build_dashscope_input_audio_commit()
                     .to_string()
                     .into(),
             ))
             .map_err(|e| format!("audio commit send: {e}"))?;
         socket
             .send(Message::Text(
-                json!({ "type": "response.create", "response": { "modalities": ["text", "audio"] } })
+                crate::audio::omni::build_dashscope_response_create()
                     .to_string()
                     .into(),
             ))
@@ -299,7 +319,16 @@ fn run_single_openai_benchmark(
     let audio_mode_driver = benchmark_audio_mode_driver(config.audio_mode);
     let manual_response = audio_mode_driver.uses_manual_response();
     let connect_start = Instant::now();
-    let ws_url = build_openai_benchmark_url(&config.base_url, &config.model)?;
+    let dialect = config
+        .protocol_dialect
+        .map(crate::audio::openai_realtime::dialect_from_protocol)
+        .transpose()?
+        .unwrap_or(crate::audio::openai_realtime::OpenAiRealtimeDialect::Conversation);
+    let ws_url = crate::audio::openai_realtime::build_ws_url(
+        dialect,
+        &config.base_url,
+        &config.model,
+    )?;
     let mut request = ws_url
         .as_str()
         .into_client_request()
@@ -333,12 +362,12 @@ fn run_single_openai_benchmark(
     );
 
     let mut raw = RawResult::default();
-    // The production OpenAI session declares 24 kHz input; the benchmark
-    // decode buffer is 16 kHz, so upsample and keep 20ms per chunk.
-    const OPENAI_CHUNK_SAMPLES: usize = 480; // 20ms @ 24kHz
-    let samples_24k =
-        crate::audio::pcm_resample::resample_mono_i16(samples, 16_000, 24_000);
-    let chunks: Vec<&[i16]> = samples_24k.chunks(OPENAI_CHUNK_SAMPLES).collect();
+    let input_rate = match dialect {
+        crate::audio::openai_realtime::OpenAiRealtimeDialect::FlatCompat => 16_000,
+        _ => 24_000,
+    };
+    let resampled = crate::audio::pcm_resample::resample_mono_i16(samples, 16_000, input_rate);
+    let chunks: Vec<&[i16]> = resampled.chunks((input_rate / 50) as usize).collect();
     let audio_start = Instant::now();
     let mut last_event = Instant::now();
     let idle_timeout = Duration::from_secs(20);
@@ -351,10 +380,8 @@ fn run_single_openai_benchmark(
     );
 
     for (idx, chunk) in chunks.iter().enumerate() {
-        let msg = json!({
-            "type": "input_audio_buffer.append",
-            "audio": base64_encode_i16(chunk)
-        });
+        let encoded = base64_encode_i16(chunk);
+        let msg = crate::audio::openai_realtime::audio_append_event(dialect, &encoded);
         socket
             .send(Message::Text(msg.to_string().into()))
             .map_err(|e| format!("OpenAI audio append send: {e}"))?;
@@ -372,10 +399,7 @@ fn run_single_openai_benchmark(
 
     let audio_send_ms = finish_audio_send(progress, &audio_start, chunks.len());
     if manual_response {
-        for msg in [
-            json!({ "type": "input_audio_buffer.commit" }),
-            crate::audio::openai_realtime::build_response_create(),
-        ] {
+        for msg in crate::audio::openai_realtime::manual_commit_messages(dialect, false) {
             socket
                 .send(Message::Text(msg.to_string().into()))
                 .map_err(|e| format!("OpenAI manual response send: {e}"))?;

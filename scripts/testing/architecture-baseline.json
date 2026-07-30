@@ -1,7 +1,6 @@
 {
   "comment": "Known architecture boundary violations tolerated by the non-strict audit. Regenerate with: node scripts/testing/audit-architecture-boundaries.mjs --update-baseline",
   "violations": [
-    "Direct invoke: apps/desktop/src/mocks/fake-bridge.ts",
     "React screen >600 lines: apps/desktop/src/pages/AudioRoutingScreen.tsx",
     "React screen >600 lines: apps/desktop/src/pages/DiagnosticsScreen.tsx",
     "React screen >600 lines: apps/desktop/src/pages/RealTimeSessionScreen.tsx",

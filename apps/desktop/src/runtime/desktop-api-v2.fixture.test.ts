@@ -39,6 +39,7 @@ async function collectEmittedCommands(): Promise<FixtureEntry[]> {
   const provider = structuredClone(appConfigDraftMock.providers[0]);
 
   const calls: Array<[string, () => Promise<unknown>]> = [
+    ['provider.resolveRealtimeProfile', () => api.provider.resolveRealtimeProfile(config, config.devices.inboundVoiceModelId)],
     ['provider.fetchModels', () => api.provider.fetchModels(provider)],
     ['provider.probe', () => api.provider.probe(provider)],
     ['provider.smoke', () => api.provider.smoke(provider, 'hello', 'en', 'zh-CN')],
@@ -164,6 +165,7 @@ describe('desktop-api-v2 command fixture (renderer→shell wire pin)', () => {
       'diagnostics_v2:snapshot',
       'provider_v2:fetchModels',
       'provider_v2:probe',
+      'provider_v2:resolveRealtimeProfile',
       'provider_v2:runModelBenchmark',
       'provider_v2:smoke',
       'session_v2:bootstrap',

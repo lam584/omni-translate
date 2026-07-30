@@ -460,6 +460,7 @@ function ProvidersPage() {
       {capabilityRegistryModalOpen ? (
         <ProviderCapabilityRegistryDialog
           entries={localModelCapabilityRegistry}
+          modelIdSuggestions={[...modelLookup.keys()]}
           onClose={() => setCapabilityRegistryModalOpen(false)}
           onOpenHelp={() => setAudioModeHelpOpen(true)}
           onAdd={() => handleCapabilityRegistryEntryAdd()}

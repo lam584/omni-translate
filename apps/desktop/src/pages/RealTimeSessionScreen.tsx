@@ -23,12 +23,18 @@ import { useSceneSessionController } from './session/useSceneSessionController';
 import { logSceneLaunchConfig } from './session/logSceneLaunchConfig';
 import { getCueDisplaySegments } from './overlay/overlayDomain';
 import { appendFrontendDiagnosticsLog, exportDiagnosticsBundleRuntime, openExportDirectoryRuntime } from '../runtime/diagnostics-runtime';
+import { resolveRealtimeProfile, type ResolvedRealtimeProfile } from '../utils/realtime-profile';
+import { resolveRealtimeProfileRuntime } from '../runtime/provider-runtime';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | 'export-diagnostics' | null;
 
 type WatchFallbackResolver = (subtitlesOnly: boolean) => void;
 
 const TRANSLATION_FAILED_PREFIX = '[\u7ffb\u8bd1\u5931\u8d25]';
+
+function isReconnectNoticeCue(cue: SubtitleCueRuntime) {
+  return cue.cueId.startsWith('omni-reconnecting-') || cue.cueId.startsWith('stt-reconnecting-');
+}
 
 function createLaunchAttemptId(mode: SceneMode): string {
   const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
@@ -91,15 +97,15 @@ function formatCueTiming(cue: SubtitleCueRuntime): string {
   return i18n.t('session.cueTimeRange', { started, ended });
 }
 
-function resolveVoiceModelRuntime(inboundVoiceModelId: string) {
+function resolveVoiceModelRuntime(inboundVoiceModelId: string, configDraft?: AppConfigDraft) {
   const voiceModelRaw = inboundVoiceModelId.includes('::')
     ? inboundVoiceModelId.split('::').pop()!
     : inboundVoiceModelId;
-  const modelLower = voiceModelRaw.toLowerCase();
+  const profile = configDraft ? resolveRealtimeProfile(configDraft, inboundVoiceModelId) : null;
 
   return {
     voiceModelRaw,
-    isOmniModel: modelLower.includes('realtime') && (modelLower.includes('omni') || modelLower.includes('livetranslate')),
+    realtimeProfile: profile,
   };
 }
 
@@ -195,7 +201,11 @@ function describeSceneLaunchStage(stage: string | null) {
   }
 }
 
-function resolveSceneSpeechPatch(mode: SceneMode, configDraft: AppConfigDraft, isOmniModel: boolean) {
+function resolveSceneSpeechPatch(
+  mode: SceneMode,
+  configDraft: AppConfigDraft,
+  realtimeProfile: Pick<ResolvedRealtimeProfile, 'speechDispatchPolicy'>,
+) {
   const speechEnabled = Boolean(configDraft.speech?.enabled || configDraft.devices.outputSpeechEnabled);
 
   if (mode === 'game') {
@@ -219,7 +229,7 @@ function resolveSceneSpeechPatch(mode: SceneMode, configDraft: AppConfigDraft, i
   }
 
   return {
-    enabled: isOmniModel ? speechEnabled : false,
+    enabled: realtimeProfile.speechDispatchPolicy === 'native-audio' ? speechEnabled : false,
     outputTarget: configDraft.speech?.outputTarget ?? ('speaker' as const),
     localPlaybackEnabled: configDraft.speech?.localPlaybackEnabled ?? true,
     virtualMicOutputEnabled: configDraft.speech?.virtualMicOutputEnabled ?? false,
@@ -230,6 +240,9 @@ function resolveSceneSpeechPatch(mode: SceneMode, configDraft: AppConfigDraft, i
 function CueStatusBadge({ cue }: { cue: SubtitleCueRuntime }) {
   const { t } = useTranslation();
 
+  if (isReconnectNoticeCue(cue)) {
+    return null;
+  }
   if (!cue.committed) {
     return <span className="audio-level-meter-vad audio-level-meter-vad-speech">{t('session.translating')}</span>;
   }
@@ -265,6 +278,11 @@ function getSessionCueDisplaySegments(cue: SubtitleCueRuntime) {
 
 function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; current?: boolean }) {
   const { t } = useTranslation();
+
+  if (isReconnectNoticeCue(cue)) {
+    return <p className={current ? 'live-text-source' : 'cue-queue-source'}>{cue.sourceText}</p>;
+  }
+
   const segments = getSessionCueDisplaySegments(cue);
   // Native watch-mode commits emit a source block followed by a translation
   // block when the two sides do not line up (e.g. the realtime model only
@@ -302,6 +320,7 @@ function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; cur
 
 export const realTimeSessionPageHelpers = {
   CueSegmentRows,
+  isReconnectNoticeCue,
   createLaunchAttemptId,
   parseRuntimeTimestampMs,
   resolveSceneLabel,
@@ -487,16 +506,17 @@ function RealTimeSessionPage() {
       }));
       return;
     }
-    const { isOmniModel } = resolveVoiceModelRuntime(resolveSceneVoiceModelId(mode, configDraft));
-    const speechPatch = resolveSceneSpeechPatch(mode, configDraft, isOmniModel);
+    const voiceModelReference = resolveSceneVoiceModelId(mode, configDraft);
+    const realtimeProfile = await resolveRealtimeProfileRuntime(configDraft, voiceModelReference);
+    const speechPatch = resolveSceneSpeechPatch(mode, configDraft, realtimeProfile);
     const secondarySubtitleTranslationEnabled =
       configDraft.devices.subtitleTranslationMode === 'secondary' && Boolean(configDraft.devices.subtitleTranslationModelId);
     logSceneLaunchConfig(mode, configDraft, runtimeSnapshot, audioRuntimeSnapshot, {
-      speechPatch, isOmniModel, secondarySubtitleTranslationEnabled,
+      speechPatch, realtimeProfile, secondarySubtitleTranslationEnabled,
     });
     await launchScene({
       launchAttemptId, mode, configDraft, audioSnapshot: audioRuntimeSnapshot, overlayVisible: Boolean(overlayWindow?.visible),
-      isOmniModel, speechPatch, secondarySubtitleTranslationEnabled,
+      realtimeProfile, speechPatch, secondarySubtitleTranslationEnabled,
     });
   };
 

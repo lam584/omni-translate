@@ -75,6 +75,11 @@ pub struct AudioStateStore {
     /// fire-and-forget, so a superseded worker's late shutdown must not be
     /// able to clobber the connection state its successor already published.
     stt_session_epoch: std::sync::atomic::AtomicU64,
+    /// Monotonic counter bumped on every successful Omni WebSocket reconnect.
+    /// The translate worker reads it each loop iteration and clears its
+    /// `processed` map when the value changes so stale entries from before the
+    /// reconnect cannot block re-translation of new cues.
+    reconnect_generation: std::sync::atomic::AtomicU64,
     pub live_session_events: LiveSessionEventBuffer,
 }
 impl AudioStateStore {
@@ -94,6 +99,7 @@ impl AudioStateStore {
             active_omni_speech_config: Mutex::new(None),
             warmer: CaptureRouteWarmer::new(),
             stt_session_epoch: std::sync::atomic::AtomicU64::new(0),
+            reconnect_generation: std::sync::atomic::AtomicU64::new(0),
             live_session_events: LiveSessionEventBuffer::new(),
         }
     }
@@ -217,6 +223,20 @@ impl AudioStateStore {
 
     fn reset_first_translation_latency(&self, overlay: &mut SubtitleOverlayRuntimeSnapshot) {
         self.metrics.reset(overlay);
+    }
+
+    /// Increments the reconnect generation counter. The translate worker
+    /// detects the change on its next loop iteration and clears its
+    /// `processed` map.
+    pub fn bump_reconnect_generation(&self) {
+        self.reconnect_generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Current value of the reconnect generation counter.
+    pub fn reconnect_generation(&self) -> u64 {
+        self.reconnect_generation
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     pub fn set_stt_connected(&self, connected: bool, buffer_size: u64) {

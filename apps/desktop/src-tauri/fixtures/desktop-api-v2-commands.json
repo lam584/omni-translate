@@ -1,5 +1,1558 @@
 [
   {
+    "label": "provider.resolveRealtimeProfile",
+    "command": "provider_v2",
+    "payload": {
+      "command": {
+        "action": "resolveRealtimeProfile",
+        "config": {
+          "activeProviderTemplateId": "template-dashscope-realtime",
+          "providers": [
+            {
+              "templateId": "template-dashscope-realtime",
+              "templateVersion": "2026.05.10",
+              "templateSource": "official",
+              "providerId": "provider-dashscope",
+              "kind": "dashscope",
+              "displayName": "阿里云百炼 API",
+              "mode": "template",
+              "model": "qwen3.5-omni-plus-realtime",
+              "baseUrl": "https://dashscope.aliyuncs.com/api/v1",
+              "transport": "websocket",
+              "authRef": {
+                "kind": "credential-ref",
+                "reference": "credential://provider/dashscope/default",
+                "headerName": "Authorization",
+                "scheme": "bearer"
+              },
+              "region": "cn-beijing",
+              "streamEnabled": true,
+              "timeoutMs": 12000,
+              "systemPromptTemplate": "game-live-translation-cn",
+              "temperature": 0.2,
+              "maxOutputTokens": 256,
+              "responseModalities": [
+                "text"
+              ],
+              "customHeaders": [],
+              "sceneModelAssignments": [
+                {
+                  "scenario": "watch",
+                  "modelIds": [
+                    "qwen3.5-omni-plus-realtime"
+                  ]
+                },
+                {
+                  "scenario": "game",
+                  "modelIds": [
+                    "qwen3.5-omni-plus-realtime"
+                  ]
+                },
+                {
+                  "scenario": "voice-room",
+                  "modelIds": []
+                },
+                {
+                  "scenario": "subtitle-translate",
+                  "modelIds": []
+                }
+              ],
+              "localModelCapabilityRegistry": [
+                {
+                  "id": "seed-openai-gpt-realtime",
+                  "modelId": "gpt-realtime",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "2025-08-28",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-openai-gpt-realtime-2.1",
+                  "modelId": "gpt-realtime-2.1",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-openai-gpt-realtime-2.1-mini",
+                  "modelId": "gpt-realtime-2.1-mini",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-openai-gpt-realtime-2",
+                  "modelId": "gpt-realtime-2",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "apiModes": [
+                    "websocket",
+                    "webrtc",
+                    "sip"
+                  ],
+                  "releasedAt": "2026-05-07",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-openai-gpt-realtime-translate",
+                  "modelId": "gpt-realtime-translate",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "streaming",
+                    "pipeline_asr_mt_tts"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "2026-05-07",
+                  "source": "official",
+                  "notes": "专用实时翻译（源语+译文双字幕）"
+                },
+                {
+                  "id": "seed-openai-gpt-realtime-whisper",
+                  "modelId": "gpt-realtime-whisper",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "manual_commit",
+                    "streaming"
+                  ],
+                  "apiModes": [
+                    "realtime",
+                    "audio"
+                  ],
+                  "releasedAt": "2026-05-07",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-openai-gpt-audio",
+                  "modelId": "gpt-audio",
+                  "capabilities": [
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "chat-audio",
+                    "http-audio"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-openai-gpt-audio-mini",
+                  "modelId": "gpt-audio-mini",
+                  "capabilities": [
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "chat-audio",
+                    "http-audio"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-openai-gpt-4o-transcribe",
+                  "modelId": "gpt-4o-transcribe",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "audio-transcriptions"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-openai-gpt-4o-mini-transcribe",
+                  "modelId": "gpt-4o-mini-transcribe",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "audio-transcriptions"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-openai-whisper-1",
+                  "modelId": "whisper-1",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "audio-transcriptions"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-gemini-2.5-flash-native-audio-preview-09-2025",
+                  "modelId": "gemini-2.5-flash-native-audio-preview-09-2025",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "gemini_auto_activity",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "client_activity",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "2025-09-23",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-gemini-2.5-flash-native-audio-preview-12-2025",
+                  "modelId": "gemini-2.5-flash-native-audio-preview-12-2025",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "gemini_auto_activity",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "client_activity",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "2025-12-12",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-gemini-3.1-flash-live-preview",
+                  "modelId": "gemini-3.1-flash-live-preview",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "gemini_auto_activity",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "client_activity",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-gemini-3.1-flash-tts-preview",
+                  "modelId": "gemini-3.1-flash-tts-preview",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "generate-content",
+                    "batch"
+                  ],
+                  "releasedAt": "2026-04-28",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-glm-realtime-flash",
+                  "modelId": "glm-realtime-flash",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-glm-realtime-air",
+                  "modelId": "glm-realtime-air",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-hunyuan-translation-lite",
+                  "modelId": "hunyuan-translation-lite",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "streaming",
+                    "pipeline_asr_mt_tts"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-hunyuan-translation",
+                  "modelId": "hunyuan-translation",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "streaming",
+                    "pipeline_asr_mt_tts"
+                  ],
+                  "apiModes": [
+                    "live-websocket"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3-asr-flash-realtime",
+                  "modelId": "qwen3-asr-flash-realtime",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "apiModes": [
+                    "websocket"
+                  ],
+                  "releasedAt": "2025-09-07",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3-asr-flash-filetrans",
+                  "modelId": "qwen3-asr-flash-filetrans",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "filetrans",
+                    "async-batch"
+                  ],
+                  "releasedAt": "unknown",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3-asr-flash",
+                  "modelId": "qwen3-asr-flash",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-fun-asr-realtime",
+                  "modelId": "fun-asr-realtime",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
+                  "source": "official"
+                },
+                {
+                  "id": "seed-fun-asr",
+                  "modelId": "fun-asr",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen-tts",
+                  "modelId": "qwen-tts",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "http-audio"
+                  ],
+                  "releasedAt": "2025-06-27",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen-tts-realtime-2025-07-15",
+                  "modelId": "qwen-tts-realtime-2025-07-15",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "server_commit_tts",
+                    "commit_tts"
+                  ],
+                  "apiModes": [
+                    "websocket"
+                  ],
+                  "releasedAt": "2025-07-15",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3-tts-vd-realtime-2025-12-16",
+                  "modelId": "qwen3-tts-vd-realtime-2025-12-16",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "server_commit_tts",
+                    "commit_tts"
+                  ],
+                  "apiModes": [
+                    "websocket"
+                  ],
+                  "releasedAt": "2025-12-16",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3-tts-instruct-flash-realtime-2026-01-22",
+                  "modelId": "qwen3-tts-instruct-flash-realtime-2026-01-22",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "server_commit_tts",
+                    "commit_tts"
+                  ],
+                  "apiModes": [
+                    "websocket"
+                  ],
+                  "releasedAt": "2026-01-22",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3-tts-flash",
+                  "modelId": "qwen3-tts-flash",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-cosyvoice-v3.5-plus",
+                  "modelId": "cosyvoice-v3.5-plus",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-minimax-speech-2.8-hd",
+                  "modelId": "MiniMax/speech-2.8-hd",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "preset",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3.5-livetranslate-flash-realtime",
+                  "modelId": "qwen3.5-livetranslate-flash-realtime",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-livetranslate",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
+                  "apiModes": [
+                    "websocket"
+                  ],
+                  "releasedAt": "2026-05-19",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3-livetranslate-flash-realtime",
+                  "modelId": "qwen3-livetranslate-flash-realtime",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-livetranslate",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
+                  "apiModes": [
+                    "websocket"
+                  ],
+                  "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3-livetranslate-flash-realtime-2025-09-22",
+                  "modelId": "qwen3-livetranslate-flash-realtime-2025-09-22",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-livetranslate",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
+                  "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3-livetranslate-flash",
+                  "modelId": "qwen3-livetranslate-flash",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3-livetranslate-flash-2025-12-01",
+                  "modelId": "qwen3-livetranslate-flash-2025-12-01",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "releasedAt": "2025-12-01",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3.5-omni-plus-realtime",
+                  "modelId": "qwen3.5-omni-plus-realtime",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2026-03-29",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3.5-omni-plus-realtime-2026-03-15",
+                  "modelId": "qwen3.5-omni-plus-realtime-2026-03-15",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2026-03-15",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3.5-omni-plus",
+                  "modelId": "qwen3.5-omni-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "releasedAt": "2026-03-15",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3.5-omni-plus-2026-03-15",
+                  "modelId": "qwen3.5-omni-plus-2026-03-15",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "releasedAt": "2026-03-15",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3.5-omni-flash-realtime",
+                  "modelId": "qwen3.5-omni-flash-realtime",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2026-03-29",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3.5-omni-flash-realtime-2026-03-15",
+                  "modelId": "qwen3.5-omni-flash-realtime-2026-03-15",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2026-03-15",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3.5-omni-flash",
+                  "modelId": "qwen3.5-omni-flash",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "releasedAt": "2026-03-15",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3.5-omni-flash-2026-03-15",
+                  "modelId": "qwen3.5-omni-flash-2026-03-15",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "releasedAt": "2026-03-15",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3-omni-flash-realtime",
+                  "modelId": "qwen3-omni-flash-realtime",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2025-12-01",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3-omni-flash-realtime-2025-12-01",
+                  "modelId": "qwen3-omni-flash-realtime-2025-12-01",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2025-12-01",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3-omni-flash-realtime-2025-09-15",
+                  "modelId": "qwen3-omni-flash-realtime-2025-09-15",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2025-09-15",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen3-omni-flash",
+                  "modelId": "qwen3-omni-flash",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3-omni-flash-2025-12-01",
+                  "modelId": "qwen3-omni-flash-2025-12-01",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "releasedAt": "2025-12-01",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen3-omni-flash-2025-09-15",
+                  "modelId": "qwen3-omni-flash-2025-09-15",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "releasedAt": "2025-09-15",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen2.5-omni-7b",
+                  "modelId": "qwen2.5-omni-7b",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen-omni-turbo-realtime",
+                  "modelId": "qwen-omni-turbo-realtime",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2025-05-08",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-omni-turbo-realtime-latest",
+                  "modelId": "qwen-omni-turbo-realtime-latest",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2025-05-08",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-omni-turbo-realtime-2025-05-08",
+                  "modelId": "qwen-omni-turbo-realtime-2025-05-08",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "manual",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "manual_commit",
+                    "streaming",
+                    "push_to_talk"
+                  ],
+                  "releasedAt": "2025-05-08",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-omni-turbo",
+                  "modelId": "qwen-omni-turbo",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen-omni-turbo-latest",
+                  "modelId": "qwen-omni-turbo-latest",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen-omni-turbo-2025-03-26",
+                  "modelId": "qwen-omni-turbo-2025-03-26",
+                  "capabilities": [
+                    "speech-to-text",
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "releasedAt": "2025-03-26",
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-openrouter-gpt-audio",
+                  "modelId": "openai/gpt-audio",
+                  "capabilities": [
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "openrouter-audio"
+                  ],
+                  "source": "runtime",
+                  "releasedAt": "unknown",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-openrouter-gpt-audio-mini",
+                  "modelId": "openai/gpt-audio-mini",
+                  "capabilities": [
+                    "text-to-speech",
+                    "speech-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "openrouter-audio"
+                  ],
+                  "source": "runtime",
+                  "releasedAt": "unknown",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-openrouter-qwen3-asr-flash-2026-02-10",
+                  "modelId": "qwen/qwen3-asr-flash-2026-02-10",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "openrouter-transcription"
+                  ],
+                  "source": "runtime",
+                  "releasedAt": "2026-02-10",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-openrouter-nvidia-parakeet-tdt-0.6b-v3",
+                  "modelId": "nvidia/parakeet-tdt-0.6b-v3",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "interactionCapabilities": [
+                    "chunked_http_audio"
+                  ],
+                  "apiModes": [
+                    "openrouter-transcription"
+                  ],
+                  "source": "runtime",
+                  "releasedAt": "unknown",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-nvidia-parakeet-tdt-0.6b-v3",
+                  "modelId": "nvidia/parakeet-tdt-0.6b-v3",
+                  "capabilities": [
+                    "speech-to-text"
+                  ],
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming",
+                    "pipeline_asr_mt_tts"
+                  ],
+                  "apiModes": [
+                    "nim-asr",
+                    "riva-asr"
+                  ],
+                  "source": "official",
+                  "releasedAt": "unknown",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-nvidia-magpie-tts-multilingual",
+                  "modelId": "nvidia/magpie-tts-multilingual",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "pipeline_asr_mt_tts"
+                  ],
+                  "apiModes": [
+                    "nim-tts",
+                    "riva-tts"
+                  ],
+                  "source": "official",
+                  "releasedAt": "unknown",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-nvidia-magpie-tts-zeroshot",
+                  "modelId": "nvidia/magpie-tts-zeroshot",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "streaming",
+                    "pipeline_asr_mt_tts"
+                  ],
+                  "apiModes": [
+                    "nim-tts",
+                    "riva-tts"
+                  ],
+                  "source": "official",
+                  "releasedAt": "unknown",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-nvidia-magpie-tts-flow",
+                  "modelId": "nvidia/magpie-tts-flow",
+                  "capabilities": [
+                    "text-to-speech"
+                  ],
+                  "interactionCapabilities": [
+                    "pipeline_asr_mt_tts"
+                  ],
+                  "apiModes": [
+                    "nim-tts-offline"
+                  ],
+                  "source": "official",
+                  "releasedAt": "unknown",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-ollama-text-only",
+                  "modelId": "ollama-local-text",
+                  "capabilities": [
+                    "text-generation"
+                  ],
+                  "interactionCapabilities": [
+                    "text_only_backend"
+                  ],
+                  "apiModes": [
+                    "local-openai-compatible"
+                  ],
+                  "source": "preset",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-lmstudio-text-only",
+                  "modelId": "lmstudio-local-text",
+                  "capabilities": [
+                    "text-generation"
+                  ],
+                  "interactionCapabilities": [
+                    "text_only_backend"
+                  ],
+                  "apiModes": [
+                    "local-openai-compatible"
+                  ],
+                  "source": "preset",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen-plus",
+                  "modelId": "qwen-plus",
+                  "capabilities": [
+                    "text-generation"
+                  ],
+                  "interactionCapabilities": [
+                    "text_only_backend"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen-turbo",
+                  "modelId": "qwen-turbo",
+                  "capabilities": [
+                    "text-generation"
+                  ],
+                  "interactionCapabilities": [
+                    "text_only_backend"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-qwen-max",
+                  "modelId": "qwen-max",
+                  "capabilities": [
+                    "text-generation"
+                  ],
+                  "interactionCapabilities": [
+                    "text_only_backend"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-gpt-4o-mini",
+                  "modelId": "gpt-4o-mini",
+                  "capabilities": [
+                    "text-generation"
+                  ],
+                  "interactionCapabilities": [
+                    "text_only_backend"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-gpt-4o",
+                  "modelId": "gpt-4o",
+                  "capabilities": [
+                    "text-generation"
+                  ],
+                  "interactionCapabilities": [
+                    "text_only_backend"
+                  ],
+                  "source": "official",
+                  "realtimeAudioMode": "server_vad"
+                },
+                {
+                  "id": "seed-deepseek-chat",
+                  "modelId": "deepseek-chat",
+                  "capabilities": [
+                    "text-generation"
+                  ],
+                  "interactionCapabilities": [
+                    "text_only_backend"
+                  ],
+                  "source": "preset",
+                  "realtimeAudioMode": "server_vad"
+                }
+              ],
+              "modelCatalogCache": {
+                "signature": "",
+                "source": "preset",
+                "endpoint": null,
+                "fetchedAt": null,
+                "error": null,
+                "models": []
+              },
+              "probe": {
+                "profileId": "probe-dashscope-baseline",
+                "verdict": "realtime-risk",
+                "checkedAt": "2026-05-10T10:20:00+08:00",
+                "streamSupported": true,
+                "errorShapeStable": true,
+                "responseShapeStable": true
+              },
+              "status": "draft"
+            }
+          ],
+          "devices": {
+            "routeMode": "watch",
+            "inputDeviceId": "microphone-default",
+            "outputDeviceId": "speaker-default",
+            "virtualRenderDeviceId": "omni-virtual-speaker-default",
+            "playbackDeviceId": "system-output-default",
+            "virtualMicState": "pending",
+            "inboundRoute": {
+              "routeId": "audio-route-inbound-watch",
+              "direction": "inbound",
+              "input": {
+                "sourceId": "system-output-default",
+                "kind": "system-output",
+                "deviceId": "system-output-default",
+                "state": "capturing",
+                "muted": false,
+                "bufferAheadMs": 160,
+                "preBufferState": "ready",
+                "processing": {
+                  "inputLevel": 100,
+                  "echoCancellationEnabled": false,
+                  "noiseSuppressionEnabled": false,
+                  "autoGainControlEnabled": false
+                }
+              },
+              "outputs": [
+                {
+                  "targetId": "subtitle-engine-default",
+                  "kind": "subtitle-engine",
+                  "enabled": true
+                },
+                {
+                  "targetId": "speaker-monitor-default",
+                  "kind": "speaker",
+                  "deviceId": "speaker-default",
+                  "enabled": true
+                }
+              ],
+              "mixControl": {
+                "keepOriginalAudio": true,
+                "translatedAudioEnabled": true,
+                "translatedAudioGainDb": 0,
+                "translatedAudioAutoGainEnabled": true,
+                "originalAudioGainDb": -4,
+                "duckingEnabled": true,
+                "duckingDepthPercent": 35,
+                "monitorMode": "original-and-translated"
+              },
+              "latencyControl": {
+                "captureBufferMs": 80,
+                "translationBufferMs": 120,
+                "playbackBufferMs": 40,
+                "compensationMs": 120
+              }
+            },
+            "outboundRoute": {
+              "routeId": "audio-route-outbound-mic",
+              "direction": "outbound",
+              "input": {
+                "sourceId": "microphone-default",
+                "kind": "microphone",
+                "deviceId": "microphone-default",
+                "state": "armed",
+                "muted": false,
+                "bufferAheadMs": 60,
+                "preBufferState": "primed",
+                "processing": {
+                  "inputLevel": 100,
+                  "echoCancellationEnabled": true,
+                  "noiseSuppressionEnabled": true,
+                  "autoGainControlEnabled": true
+                }
+              },
+              "outputs": [
+                {
+                  "targetId": "virtual-mic-default",
+                  "kind": "virtual-mic",
+                  "deviceId": "virtual-mic-default",
+                  "enabled": false
+                },
+                {
+                  "targetId": "speaker-local-monitor",
+                  "kind": "monitor",
+                  "deviceId": "speaker-default",
+                  "enabled": true
+                }
+              ],
+              "mixControl": {
+                "keepOriginalAudio": true,
+                "translatedAudioEnabled": true,
+                "translatedAudioGainDb": -1,
+                "translatedAudioAutoGainEnabled": false,
+                "originalAudioGainDb": -4,
+                "duckingEnabled": true,
+                "duckingDepthPercent": 45,
+                "monitorMode": "original-and-translated"
+              },
+              "latencyControl": {
+                "captureBufferMs": 50,
+                "translationBufferMs": 90,
+                "playbackBufferMs": 50,
+                "compensationMs": 110
+              },
+              "pushToTalk": {
+                "enabled": true,
+                "hotkey": "Alt+V",
+                "state": "armed",
+                "releaseDelayMs": 180
+              }
+            },
+            "supportProfileId": "support-watch-system-audio",
+            "inboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "outboundVoiceModelId": "qwen3.5-omni-plus-realtime",
+            "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
+            "subtitleTranslationMode": "native",
+            "subtitleTranslationModelId": "",
+            "inboundSecondaryAudioModelId": "",
+            "inputLevel": 100,
+            "aecEnabled": true,
+            "ansEnabled": true,
+            "agcEnabled": true,
+            "outputLevel": 100,
+            "outputSpeechEnabled": true,
+            "outputSubtitlesEnabled": false,
+            "virtualMicOutputEnabled": true,
+            "feedbackLoopPrevention": "echo-cancel",
+            "status": "warning"
+          },
+          "subtitles": {
+            "sourceLanguage": "auto",
+            "targetLanguage": "zh-CN",
+            "outboundTargetLanguage": "",
+            "translationLanguagePreference": "zh-CN",
+            "mode": "bilingual",
+            "captionDensity": "balanced",
+            "priority": "subtitle-first",
+            "instructions": "你是一个只输出译文的实时翻译引擎。把听到的所有内容（人声对话、旁白、歌词、视频与音乐中的人声等）直接翻译成中文。只输出译文，禁止任何解释、确认、寒暄或对音频本身的描述（如“我没听到有人说话”“只听到音乐”）。若确实没有可翻译的语言内容，保持静默，不输出任何文字。",
+            "overlayOpacity": 0.88,
+            "overlayLocked": false,
+            "overlayTextColor": "#fff8ef",
+            "overlayTextOpacity": 1,
+            "overlayTextAlign": "center",
+            "overlaySourceTextStyle": {
+              "color": "#fff8ef",
+              "fontWeight": 500,
+              "outlineEnabled": true,
+              "outlineColor": "#000000",
+              "outlineWidth": 1,
+              "shadowEnabled": true,
+              "shadowColor": "#000000",
+              "shadowOpacity": 0.45,
+              "shadowOffsetX": 0,
+              "shadowOffsetY": 2,
+              "shadowBlur": 8
+            },
+            "overlayTranslationTextStyle": {
+              "color": "#fff8ef",
+              "fontWeight": 700,
+              "outlineEnabled": true,
+              "outlineColor": "#000000",
+              "outlineWidth": 1,
+              "shadowEnabled": true,
+              "shadowColor": "#000000",
+              "shadowOpacity": 0.4,
+              "shadowOffsetX": 0,
+              "shadowOffsetY": 2,
+              "shadowBlur": 8
+            },
+            "overlayBackgroundColor": "#111827",
+            "overlayBackgroundOpacity": 0.84,
+            "overlayFontFamily": "\"Segoe UI\", \"Microsoft YaHei UI\", sans-serif",
+            "overlayFontSize": 24,
+            "overlayWidth": 960,
+            "overlayHeight": 220,
+            "overlayX": 50,
+            "overlayY": 78,
+            "status": "ready"
+          },
+          "speech": {
+            "enabled": true,
+            "targetLanguage": "zh-CN",
+            "voicePresetId": "voice-cn-neutral",
+            "textToSpeechModelId": "qwen3.5-omni-plus-realtime",
+            "voice": "Ethan",
+            "outputTarget": "virtual-mic",
+            "localPlaybackEnabled": true,
+            "virtualMicOutputEnabled": true,
+            "translationAudioSource": "auto",
+            "dispatchState": "waiting-subtitle",
+            "status": "warning"
+          },
+          "driver": {
+            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "installChannel": "development",
+            "installPhase": "rollback-required",
+            "targetDeviceId": "virtual-mic-default",
+            "expectedDriverVersion": "0.10.0-dev",
+            "expectedBridgeVersion": "0.1.0",
+            "bridgeState": "degraded",
+            "driverHealth": "version-mismatch",
+            "rollbackSupported": true,
+            "lastErrorCode": "driver.version-mismatch",
+            "recommendedAction": "rollback-driver",
+            "status": "warning"
+          },
+          "glossary": {
+            "templateId": "glossary-template-watch",
+            "scenario": "watch",
+            "injectionStrategy": "scenario-first",
+            "injectionOrder": [
+              "scenario-template",
+              "user-package",
+              "community-package"
+            ],
+            "activePackageIds": [
+              "glossary-video-default"
+            ],
+            "communityPackageIds": [
+              "community-anime-cn-v1"
+            ],
+            "gameDictionaryId": "game-discord-default",
+            "importStrategy": "merge",
+            "exportFormat": "json",
+            "processingMode": "inject-important",
+            "calibrationModelId": "",
+            "libraries": [],
+            "status": "draft"
+          },
+          "diagnostics": {
+            "installStatus": "warning",
+            "driverStatus": "warning",
+            "providerStatus": "warning",
+            "deviceStatus": "warning",
+            "lastExportScope": "summary",
+            "supportTier": "experimental",
+            "status": "warning"
+          },
+          "onboarding": {
+            "activePresetId": "preset-watch-mode",
+            "completedStepIds": [
+              "check-system-audio"
+            ],
+            "unresolvedRiskIds": [
+              "risk-driver-bridge-not-ready",
+              "risk-provider-not-tested"
+            ],
+            "checklistStatus": "warning"
+          }
+        },
+        "modelReference": "qwen3.5-omni-plus-realtime"
+      }
+    }
+  },
+  {
     "label": "provider.fetchModels",
     "command": "provider_v2",
     "payload": {
@@ -595,6 +2148,7 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
@@ -613,6 +2167,7 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
@@ -631,12 +2186,28 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "streaming"
               ],
               "releasedAt": "2025-09-22",
+              "source": "official"
+            },
+            {
+              "id": "seed-qwen-audio-3.0-realtime-plus",
+              "modelId": "qwen-audio-3.0-realtime-plus",
+              "capabilities": [
+                "speech-to-text",
+                "speech-to-speech"
+              ],
+              "realtimeProtocol": "dashscope-omni",
+              "realtimeAudioMode": "server_vad",
+              "interactionCapabilities": [
+                "auto_vad",
+                "streaming"
+              ],
               "source": "official"
             },
             {
@@ -674,6 +2245,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -692,6 +2264,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -740,6 +2313,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -758,6 +2332,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -806,6 +2381,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -824,6 +2400,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -842,6 +2419,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -918,6 +2496,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -936,6 +2515,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -954,6 +2534,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -1866,6 +3447,7 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
@@ -1884,6 +3466,7 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
@@ -1902,12 +3485,28 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "streaming"
               ],
               "releasedAt": "2025-09-22",
+              "source": "official"
+            },
+            {
+              "id": "seed-qwen-audio-3.0-realtime-plus",
+              "modelId": "qwen-audio-3.0-realtime-plus",
+              "capabilities": [
+                "speech-to-text",
+                "speech-to-speech"
+              ],
+              "realtimeProtocol": "dashscope-omni",
+              "realtimeAudioMode": "server_vad",
+              "interactionCapabilities": [
+                "auto_vad",
+                "streaming"
+              ],
               "source": "official"
             },
             {
@@ -1945,6 +3544,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -1963,6 +3563,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -2011,6 +3612,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -2029,6 +3631,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -2077,6 +3680,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -2095,6 +3699,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -2113,6 +3718,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -2189,6 +3795,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -2207,6 +3814,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -2225,6 +3833,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3137,6 +4746,7 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3155,6 +4765,7 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3173,12 +4784,28 @@
                 "speech-to-text",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-livetranslate",
               "realtimeAudioMode": "server_vad",
               "interactionCapabilities": [
                 "auto_vad",
                 "streaming"
               ],
               "releasedAt": "2025-09-22",
+              "source": "official"
+            },
+            {
+              "id": "seed-qwen-audio-3.0-realtime-plus",
+              "modelId": "qwen-audio-3.0-realtime-plus",
+              "capabilities": [
+                "speech-to-text",
+                "speech-to-speech"
+              ],
+              "realtimeProtocol": "dashscope-omni",
+              "realtimeAudioMode": "server_vad",
+              "interactionCapabilities": [
+                "auto_vad",
+                "streaming"
+              ],
               "source": "official"
             },
             {
@@ -3216,6 +4843,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3234,6 +4862,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3282,6 +4911,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3300,6 +4930,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3348,6 +4979,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3366,6 +4998,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3384,6 +5017,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3460,6 +5094,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3478,6 +5113,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -3496,6 +5132,7 @@
                 "text-to-speech",
                 "speech-to-speech"
               ],
+              "realtimeProtocol": "dashscope-omni",
               "realtimeAudioMode": "manual",
               "interactionCapabilities": [
                 "auto_vad",
@@ -4454,6 +6091,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4472,6 +6110,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4490,12 +6129,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -4533,6 +6188,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4551,6 +6207,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4599,6 +6256,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4617,6 +6275,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4665,6 +6324,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4683,6 +6343,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4701,6 +6362,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4777,6 +6439,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4795,6 +6458,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -4813,6 +6477,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -5987,6 +7652,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6005,6 +7671,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6023,12 +7690,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -6066,6 +7749,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6084,6 +7768,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6132,6 +7817,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6150,6 +7836,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6198,6 +7885,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6216,6 +7904,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6234,6 +7923,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6310,6 +8000,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6328,6 +8019,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -6346,6 +8038,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7512,6 +9205,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7530,6 +9224,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7548,12 +9243,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -7591,6 +9302,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7609,6 +9321,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7657,6 +9370,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7675,6 +9389,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7723,6 +9438,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7741,6 +9457,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7759,6 +9476,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7835,6 +9553,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7853,6 +9572,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -7871,6 +9591,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9055,6 +10776,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9073,6 +10795,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9091,12 +10814,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -9134,6 +10873,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9152,6 +10892,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9200,6 +10941,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9218,6 +10960,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9266,6 +11009,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9284,6 +11028,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9302,6 +11047,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9378,6 +11124,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9396,6 +11143,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -9414,6 +11162,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10588,6 +12337,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10606,6 +12356,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10624,12 +12375,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -10667,6 +12434,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10685,6 +12453,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10733,6 +12502,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10751,6 +12521,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10799,6 +12570,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10817,6 +12589,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10835,6 +12608,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10911,6 +12685,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10929,6 +12704,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -10947,6 +12723,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12170,6 +13947,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12188,6 +13966,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12206,12 +13985,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -12249,6 +14044,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12267,6 +14063,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12315,6 +14112,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12333,6 +14131,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12381,6 +14180,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12399,6 +14199,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12417,6 +14218,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12493,6 +14295,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12511,6 +14314,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -12529,6 +14333,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13703,6 +15508,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13721,6 +15527,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13739,12 +15546,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -13782,6 +15605,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13800,6 +15624,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13848,6 +15673,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13866,6 +15692,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13914,6 +15741,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13932,6 +15760,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -13950,6 +15779,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -14026,6 +15856,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -14044,6 +15875,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -14062,6 +15894,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15237,6 +17070,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15255,6 +17089,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15273,12 +17108,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -15316,6 +17167,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15334,6 +17186,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15382,6 +17235,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15400,6 +17254,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15448,6 +17303,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15466,6 +17322,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15484,6 +17341,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15560,6 +17418,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15578,6 +17437,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -15596,6 +17456,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -16816,6 +18677,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -16834,6 +18696,7 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -16852,12 +18715,28 @@
                     "speech-to-text",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-livetranslate",
                   "realtimeAudioMode": "server_vad",
                   "interactionCapabilities": [
                     "auto_vad",
                     "streaming"
                   ],
                   "releasedAt": "2025-09-22",
+                  "source": "official"
+                },
+                {
+                  "id": "seed-qwen-audio-3.0-realtime-plus",
+                  "modelId": "qwen-audio-3.0-realtime-plus",
+                  "capabilities": [
+                    "speech-to-text",
+                    "speech-to-speech"
+                  ],
+                  "realtimeProtocol": "dashscope-omni",
+                  "realtimeAudioMode": "server_vad",
+                  "interactionCapabilities": [
+                    "auto_vad",
+                    "streaming"
+                  ],
                   "source": "official"
                 },
                 {
@@ -16895,6 +18774,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -16913,6 +18793,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -16961,6 +18842,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -16979,6 +18861,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -17027,6 +18910,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -17045,6 +18929,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -17063,6 +18948,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -17139,6 +19025,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -17157,6 +19044,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",
@@ -17175,6 +19063,7 @@
                     "text-to-speech",
                     "speech-to-speech"
                   ],
+                  "realtimeProtocol": "dashscope-omni",
                   "realtimeAudioMode": "manual",
                   "interactionCapabilities": [
                     "auto_vad",

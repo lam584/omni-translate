@@ -145,9 +145,15 @@ pub(crate) fn report_realtime_worker_failure(
 /// so all provider-error classification shares one module.
 pub(crate) fn is_unsupported_voice_error(code: &str, message: &str) -> bool {
     let lower_message = message.to_ascii_lowercase();
+    let mentions_voice = lower_message.contains("voice");
     code == "InternalError.Algo.InvalidParameter"
-        || (lower_message.contains("voice") && lower_message.contains("not supported"))
-        || (message.contains("InvalidParameter") && lower_message.contains("voice"))
+        || (mentions_voice && lower_message.contains("not supported"))
+        || (message.contains("InvalidParameter") && mentions_voice)
+        // DashScope realtime reports voice incompatibility with
+        // code=invalid_value and an "Unsupported voice" message.
+        || (mentions_voice
+            && (lower_message.contains("unsupported voice")
+                || lower_message.contains("supported voices")))
 }
 
 /// Appends the `| code:` and `| recommended:` markers to a worker error
@@ -223,6 +229,17 @@ mod tests {
         assert_eq!(
             classify_provider_error("InternalError.Algo.InvalidParameter", "bad request"),
             SessionErrorCode::VoiceUnsupported
+        );
+        assert_eq!(
+            classify_provider_error(
+                "invalid_value",
+                "Unsupported voice: 'Ethan'. Supported voices: longanqian, longanlingxin"
+            ),
+            SessionErrorCode::VoiceUnsupported
+        );
+        assert_eq!(
+            classify_provider_error("invalid_value", "invalid sample_rate"),
+            SessionErrorCode::ProviderInternal
         );
         // The old substring check misfiled rate limits as generic errors;
         // they now classify as quota instead of voice.

@@ -926,12 +926,58 @@
       "description": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
       "addEntry": "เพิ่ม รายการ",
       "closeTitle": "ปิด ความสามารถ รีจิสทรี",
-      "modelIdPlaceholder": "โมเดล ID",
+      "modelIdPlaceholder": "ป้อน ID โมเดล เช่น qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "ID โมเดล",
+      "duplicateModelId": "ID โมเดลนี้มีรายการอยู่แล้ว จะมีผลเฉพาะรายการแรกเท่านั้น",
       "deleteEntry": "ลบ ความสามารถ รายการ",
       "emptyTitle": "ยังไม่มีรายการความสามารถแบบกำหนดเอง",
       "emptyDescription": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ"
     },
+    "capabilityLabels": {
+      "speech-to-text": "การรู้จำเสียงพูด",
+      "text-to-speech": "การสังเคราะห์เสียง",
+      "speech-to-speech": "การแปลเสียงพูด",
+      "text-generation": "การสร้างข้อความ"
+    },
+    "capabilityHints": {
+      "speech-to-text": "การรู้จำเสียงพูด (STT): ถอดเสียงพูดเป็นข้อความ",
+      "text-to-speech": "การสังเคราะห์เสียง (TTS): อ่านข้อความเป็นเสียงพูด",
+      "speech-to-speech": "การแปลเสียงพูด (S2S): แปลเสียงพูดเป็นเสียงพูดอีกภาษาโดยตรง",
+      "text-generation": "การสร้างข้อความ: แปลหรือเขียนข้อความใหม่ด้วยโมเดลภาษาขนาดใหญ่"
+    },
+    "interactionLabels": {
+      "auto_vad": "ตัดประโยคอัตโนมัติ",
+      "manual_commit": "ส่งด้วยตนเอง",
+      "client_activity": "สัญญาณกิจกรรมฝั่งไคลเอ็นต์",
+      "streaming": "เอาต์พุตแบบสตรีม",
+      "chunked_http_audio": "เสียง HTTP แบบแบ่งส่วน",
+      "push_to_talk": "กดเพื่อพูด",
+      "server_commit_tts": "ส่ง TTS ฝั่งเซิร์ฟเวอร์",
+      "commit_tts": "ส่ง TTS",
+      "text_only_backend": "แบ็กเอนด์ข้อความล้วน",
+      "pipeline_asr_mt_tts": "ไปป์ไลน์ ASR-MT-TTS"
+    },
+    "interactionHints": {
+      "auto_vad": "เซิร์ฟเวอร์ตรวจจับจุดเริ่มและจุดจบของเสียงพูดโดยอัตโนมัติ ไม่ต้องทำเอง",
+      "manual_commit": "แอปตัดสินว่าประโยคจบแล้วจึงส่งส่วนของเสียง",
+      "client_activity": "แอปส่งสัญญาณเริ่ม/จบกิจกรรมอย่างชัดเจน (แบบ Gemini Live)",
+      "streaming": "ผลลัพธ์ทยอยส่งกลับแบบสตรีมแทนที่จะมาครั้งเดียว",
+      "chunked_http_audio": "อัปโหลดเสียงเป็นส่วน ๆ ผ่าน HTTP แทนการเชื่อมต่อเรียลไทม์",
+      "push_to_talk": "รองรับการกดค้างเพื่อพูด ผู้ใช้ควบคุมขอบเขตเอง",
+      "server_commit_tts": "เซิร์ฟเวอร์เรียกการสังเคราะห์เสียงหลังส่งแต่ละส่วน",
+      "commit_tts": "ขอการสังเคราะห์เสียงอย่างชัดเจนหลังส่งข้อความ",
+      "text_only_backend": "รองรับเฉพาะข้อความเข้า-ออก ไม่รองรับเสียง",
+      "pipeline_asr_mt_tts": "รู้จำ แปล และสังเคราะห์ต่อกันสามขั้นตอน"
+    },
+    "interactionGroups": {
+      "segmentation": "การตัดประโยคและการส่ง",
+      "transport": "วิธีการส่งข้อมูล",
+      "tts": "การสังเคราะห์เสียง",
+      "backend": "ประเภทแบ็กเอนด์"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "คำอธิบายความสามารถของโมเดล",
+      "interactionSectionTitle": "คำอธิบายความสามารถการโต้ตอบ",
       "title": "ผู้ให้บริการ - ชื่อเรื่อง",
       "description": "ตรวจสอบการตั้งค่าและสถานะของผู้ให้บริการ",
       "closeTitle": "ปิดความช่วยเหลือ",

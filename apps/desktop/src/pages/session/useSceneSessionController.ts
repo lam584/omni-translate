@@ -25,6 +25,7 @@ import {
 } from '../../runtime/bridge-runtime';
 import { appendFrontendDiagnosticsLog, getRecentDiagnosticsLogsRuntime } from '../../runtime/diagnostics-runtime';
 import type { SceneMode } from '../../utils/scene-readiness';
+import type { ResolvedRealtimeProfile } from '../../utils/realtime-profile';
 import { watchModeNeedsBridge } from '../../utils/scene-readiness';
 import { stringifyRedacted } from '../../utils/redact-sensitive-data';
 import { extractSessionErrorCode } from '../../utils/session-error-presentation';
@@ -55,7 +56,7 @@ type SceneLaunchOptions = {
   configDraft: AppConfigDraft;
   audioSnapshot: AudioRuntimeSnapshot;
   overlayVisible: boolean;
-  isOmniModel: boolean;
+  realtimeProfile: Pick<ResolvedRealtimeProfile, 'nativeTranslation' | 'speechDispatchPolicy'>;
   speechPatch: Partial<AppConfigDraft['speech']> & { enabled: boolean };
   secondarySubtitleTranslationEnabled: boolean;
 };
@@ -338,7 +339,7 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     }
     const plan = buildSceneLaunchPlan(options);
     const nextConfig = plan.config;
-    const launchTimeoutMs = sceneLaunchTimeoutMs(mode, options.isOmniModel);
+    const launchTimeoutMs = sceneLaunchTimeoutMs(mode);
     const launchTimeoutMessage = controller.sceneLaunchTimeoutMessage(launchTimeoutMs / 1_000);
     let launchStage: SceneLaunchStage | null = null;
     let preconnectWarning: string | null = null;

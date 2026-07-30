@@ -35,7 +35,7 @@ struct BenchmarkConfig {
     auth_scheme: String,
     voice: String,
     target_language: String,
-    source_language: String,
+    protocol_dialect: Option<crate::audio::events::RealtimeProtocol>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,7 +49,6 @@ enum RealtimeAudioMode {
 
 trait BenchmarkAudioModeDriver {
     fn uses_manual_response(&self) -> bool;
-    fn turn_detection(&self) -> Value;
 }
 
 struct ManualBenchmarkDriver;
@@ -61,9 +60,6 @@ impl BenchmarkAudioModeDriver for ManualBenchmarkDriver {
         true
     }
 
-    fn turn_detection(&self) -> Value {
-        Value::Null
-    }
 }
 
 impl BenchmarkAudioModeDriver for ServerVadBenchmarkDriver {
@@ -71,13 +67,6 @@ impl BenchmarkAudioModeDriver for ServerVadBenchmarkDriver {
         false
     }
 
-    fn turn_detection(&self) -> Value {
-        json!({
-            "type": "server_vad",
-            "threshold": 0.0,
-            "silence_duration_ms": 800
-        })
-    }
 }
 
 impl BenchmarkAudioModeDriver for SemanticVadBenchmarkDriver {
@@ -85,16 +74,10 @@ impl BenchmarkAudioModeDriver for SemanticVadBenchmarkDriver {
         false
     }
 
-    fn turn_detection(&self) -> Value {
-        json!({
-            "type": "semantic_vad",
-            "eagerness": "auto"
-        })
-    }
 }
 
 impl RealtimeAudioMode {
-    fn from_frontend(value: Option<&str>, model: &str) -> Result<Self, String> {
+    fn from_frontend(value: Option<&str>, _model: &str) -> Result<Self, String> {
         match value {
             Some("manual") => Ok(Self::Manual),
             Some("server_vad") => Ok(Self::ServerVad),
@@ -102,7 +85,7 @@ impl RealtimeAudioMode {
             Some("gemini_auto_activity") => Ok(Self::GeminiAutoActivity),
             Some("gemini_manual_activity") => Ok(Self::GeminiManualActivity),
             Some(other) => Err(format!("unsupported realtime audio mode: {other}")),
-            None => Ok(default_realtime_audio_mode(model)),
+            None => Ok(Self::ServerVad),
         }
     }
 
@@ -121,14 +104,6 @@ impl RealtimeAudioMode {
     }
 }
 
-fn default_realtime_audio_mode(model: &str) -> RealtimeAudioMode {
-    let normalized = model.to_ascii_lowercase();
-    if normalized.contains("livetranslate") {
-        RealtimeAudioMode::ServerVad
-    } else {
-        RealtimeAudioMode::Manual
-    }
-}
 
 fn benchmark_audio_mode_driver(mode: RealtimeAudioMode) -> Box<dyn BenchmarkAudioModeDriver> {
     match mode {
@@ -383,7 +358,7 @@ mod tests {
             "wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model=qwen3.5-omni-plus-realtime"
         );
 
-        // Non-DashScope host should keep original path.
+        // Custom DashScope gateways use the same fixed protocol path as production.
         let custom = build_default_benchmark_url(
             "wss://custom.example.com/ws/v1",
             "my-model",
@@ -391,7 +366,7 @@ mod tests {
         .expect("custom URL should build");
         assert_eq!(
             custom.as_str(),
-            "wss://custom.example.com/ws/v1?model=my-model"
+            "wss://custom.example.com/api-ws/v1/realtime?model=my-model"
         );
     }
 
@@ -409,7 +384,7 @@ mod tests {
             auth_scheme: "bearer".to_string(),
             voice: "Ethan".to_string(),
             target_language: "zh".to_string(),
-            source_language: "en".to_string(),
+            protocol_dialect: Some(crate::audio::events::RealtimeProtocol::OpenAiConversation),
         };
         let openai = build_openai_session_update(&config);
         assert_eq!(
@@ -431,6 +406,7 @@ mod tests {
 
         config.model = "gemini-2.5-flash-live".to_string();
         config.audio_mode = RealtimeAudioMode::GeminiManualActivity;
+        config.protocol_dialect = Some(crate::audio::events::RealtimeProtocol::GeminiLive);
         let gemini = build_gemini_setup(&config);
         assert_eq!(
             gemini
@@ -550,13 +526,9 @@ mod tests {
     }
 
     #[test]
-    fn uses_manual_response_for_non_livetranslate_models() {
+    fn missing_frontend_mode_has_a_name_independent_server_vad_default() {
         assert_eq!(
-            default_realtime_audio_mode("qwen3.5-omni-plus-realtime"),
-            RealtimeAudioMode::Manual
-        );
-        assert_eq!(
-            default_realtime_audio_mode("qwen3.5-livetranslate-flash-realtime"),
+            RealtimeAudioMode::from_frontend(None, "deployment-without-hints").unwrap(),
             RealtimeAudioMode::ServerVad
         );
     }
@@ -575,12 +547,13 @@ mod tests {
             auth_scheme: "bearer".to_string(),
             voice: "Ethan".to_string(),
             target_language: "zh".to_string(),
-            source_language: "en".to_string(),
+            protocol_dialect: Some(crate::audio::events::RealtimeProtocol::DashscopeOmni),
         };
         assert!(build_session_update(&config)["session"]["turn_detection"].is_null());
 
         config.model = "qwen3.5-livetranslate-flash-realtime".to_string();
         config.audio_mode = RealtimeAudioMode::ServerVad;
+        config.protocol_dialect = Some(crate::audio::events::RealtimeProtocol::DashscopeLivetranslate);
         assert_eq!(
             build_session_update(&config)["session"]["turn_detection"]["type"],
             "server_vad"

@@ -31,9 +31,19 @@ impl SpeechDispatchWorker {
 
     fn run(mut self, store: &AudioStateStore) -> Result<(), String> {
         let storage = self.app.state::<StorageStateStore>();
+        let mut reconnect_gen = store.reconnect_generation();
         loop {
             if self.stop_rx.try_recv().is_ok() {
                 break;
+            }
+
+            // A reconnect bumped the generation: clear committed_played so new
+            // cues that reuse old cue ids are not mistaken for already-played.
+            let current_gen = store.reconnect_generation();
+            if current_gen != reconnect_gen {
+                reconnect_gen = current_gen;
+                self.queue.committed_played.clear();
+                self.queue.committed_played_order.clear();
             }
 
             let config_value = if self.use_initial_config {
@@ -50,7 +60,7 @@ impl SpeechDispatchWorker {
                 .recent_cues
                 .iter()
                 .rev()
-                .flat_map(|cue| speech_dispatch_tasks_for_cue(cue, &config))
+                .flat_map(|cue| speech_dispatch_tasks_for_cue(cue, &config, &self.queue.committed_played))
                 .filter(|task| !self.queue.contains(task))
                 .collect();
             let ptt_gate_open =
@@ -160,10 +170,17 @@ struct SpeechDispatchQueue {
     processed_order: VecDeque<String>,
     processed_segment_slots: HashSet<String>,
     processed_segment_slot_order: VecDeque<String>,
+    committed_played: HashSet<String>,
+    committed_played_order: VecDeque<String>,
 }
 
 impl SpeechDispatchQueue {
     fn contains(&self, task: &SpeechDispatchTask) -> bool {
+        if task.cue.committed
+            && is_committed_cue_already_played(&task.cue.cue_id, &self.committed_played)
+        {
+            return true;
+        }
         is_processed_task(task, &self.processed, &self.processed_segment_slots)
     }
 
@@ -174,6 +191,13 @@ impl SpeechDispatchQueue {
             &mut self.processed_segment_slots,
             &mut self.processed_segment_slot_order,
         );
+        if task.cue.committed {
+            remember_committed_cue_played(
+                &task.cue.cue_id,
+                &mut self.committed_played,
+                &mut self.committed_played_order,
+            );
+        }
     }
 }
 

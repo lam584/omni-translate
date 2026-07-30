@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use serde_json::{to_value, Value};
+use serde_json::{json, to_value, Value};
 use tauri::{AppHandle, Emitter, Manager};
 
 use crate::audio::contracts::AudioRuntimeSnapshot;
@@ -180,6 +180,11 @@ pub fn emit_runtime_event_v2<R: tauri::Runtime>(
 #[derive(Debug, Deserialize, ts_rs::TS)]
 #[serde(tag = "action", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub enum ProviderCommandV2 {
+    ResolveRealtimeProfile {
+        #[ts(type = "unknown")]
+        config: Value,
+        model_reference: String,
+    },
     FetchModels {
         #[ts(type = "unknown")]
         provider: ProviderDraftInput,
@@ -215,6 +220,9 @@ pub enum ProviderCommandV2 {
         auth_header_name: Option<String>,
         #[ts(optional)]
         auth_scheme: Option<String>,
+        #[ts(optional)]
+        #[ts(type = "unknown")]
+        provider: Option<ProviderDraftInput>,
     },
 }
 
@@ -230,6 +238,30 @@ pub async fn provider_v2(
     log_v2_entry(&app, "provider_v2", &request_id);
     let outcome = async {
         match command {
+            ProviderCommandV2::ResolveRealtimeProfile { config, model_reference } => {
+                let provider = audio_events::resolve_model_provider_from_config_value(&config, &model_reference)
+                    .ok_or_else(|| ServiceErrorV2::from(format!("realtime model reference cannot be resolved: {model_reference}")))?;
+                let profile = audio_events::resolve_realtime_profile(&provider, &provider.model);
+                Ok(json!({
+                    "providerId": profile.provider_id,
+                    "modelId": profile.model_id,
+                    "routeKind": profile.route_kind.as_str(),
+                    "protocolDialect": profile.protocol_dialect.map(|protocol| protocol.as_str()),
+                    "realtimeAudioMode": profile.realtime_audio_mode,
+                    "inputFormat": profile.input_format,
+                    "outputFormat": profile.output_format,
+                    "sampleRate": profile.sample_rate,
+                    "serverSegmentation": profile.server_segmentation,
+                    "nativeTranslation": profile.native_translation,
+                    "nativeAudioOutput": profile.native_audio_output,
+                    "secondaryTranslationPolicy": profile.secondary_translation_policy,
+                    "speechDispatchPolicy": profile.speech_dispatch_policy,
+                    "preconnectPolicy": profile.preconnect_policy,
+                    "timeoutBudgetMs": profile.timeout_budget_ms,
+                    "source": profile.source.as_str(),
+                    "diagnostics": profile.diagnostics,
+                }))
+            }
             ProviderCommandV2::FetchModels { provider } => {
                 to_value(provider_events::fetch_provider_models(app.clone(), provider).await)
             }
@@ -262,6 +294,7 @@ pub async fn provider_v2(
                 base_url,
                 auth_header_name,
                 auth_scheme,
+                provider,
             } => {
                 return serialize_result(
                     crate::benchmark::run_model_benchmark(
@@ -276,6 +309,7 @@ pub async fn provider_v2(
                         base_url,
                         auth_header_name,
                         auth_scheme,
+                        provider,
                     )
                     .await,
                 );

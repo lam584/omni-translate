@@ -926,12 +926,58 @@
       "description": "Registrieren Sie Funktionen und Echtzeit-Audiomodi für nicht aufgeführte Modelle.",
       "addEntry": "Eintrag hinzufügen",
       "closeTitle": "Schließen Sie das Fähigkeitsregister",
-      "modelIdPlaceholder": "Modell-ID",
+      "modelIdPlaceholder": "Modell-ID eingeben, z. B. qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "Modell-ID",
+      "duplicateModelId": "Für diese Modell-ID existiert bereits ein Eintrag; nur der erste ist wirksam",
       "deleteEntry": "Fähigkeitseintrag löschen",
       "emptyTitle": "Noch keine benutzerdefinierten Funktionseinträge",
       "emptyDescription": "Fügen Sie Einträge hinzu, um die Funktionen für benutzerdefinierte Modelle zu ergänzen."
     },
+    "capabilityLabels": {
+      "speech-to-text": "Spracherkennung",
+      "text-to-speech": "Sprachsynthese",
+      "speech-to-speech": "Sprachübersetzung",
+      "text-generation": "Textgenerierung"
+    },
+    "capabilityHints": {
+      "speech-to-text": "Spracherkennung (STT): wandelt Gesprochenes in Text um",
+      "text-to-speech": "Sprachsynthese (TTS): liest Text als Sprache vor",
+      "speech-to-speech": "Sprachübersetzung (S2S): übersetzt Sprache direkt in Sprache einer anderen Sprache",
+      "text-generation": "Textgenerierung: übersetzt oder überarbeitet Text mit einem großen Sprachmodell"
+    },
+    "interactionLabels": {
+      "auto_vad": "Automatische Segmentierung",
+      "manual_commit": "Manuelles Commit",
+      "client_activity": "Client-Aktivitätssignale",
+      "streaming": "Streaming-Ausgabe",
+      "chunked_http_audio": "HTTP-Audio in Blöcken",
+      "push_to_talk": "Push-to-Talk",
+      "server_commit_tts": "Server-TTS-Commit",
+      "commit_tts": "TTS-Commit",
+      "text_only_backend": "Nur-Text-Backend",
+      "pipeline_asr_mt_tts": "ASR-MT-TTS-Pipeline"
+    },
+    "interactionHints": {
+      "auto_vad": "Der Server erkennt Sprachbeginn und -ende automatisch; keine manuelle Aktion nötig",
+      "manual_commit": "Die App erkennt das Satzende und sendet dann das Audiosegment",
+      "client_activity": "Die App sendet explizite Start-/Ende-Aktivitätssignale (Gemini-Live-Stil)",
+      "streaming": "Ergebnisse kommen als Stream statt auf einmal",
+      "chunked_http_audio": "Audio wird in Blöcken per HTTP hochgeladen statt über eine Echtzeitverbindung",
+      "push_to_talk": "Unterstützt Drücken-zum-Sprechen mit vom Nutzer gesteuerten Grenzen",
+      "server_commit_tts": "Der Server löst nach jedem übermittelten Segment die Sprachsynthese aus",
+      "commit_tts": "Sprachsynthese wird nach einem Text-Commit explizit angefordert",
+      "text_only_backend": "Nur Text ein und aus; keine Audiounterstützung",
+      "pipeline_asr_mt_tts": "Erkennung, Übersetzung und Synthese laufen als drei verkettete Schritte"
+    },
+    "interactionGroups": {
+      "segmentation": "Segmentierung & Commit",
+      "transport": "Übertragung",
+      "tts": "Sprachsynthese",
+      "backend": "Backend-Typ"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "Modellfähigkeiten",
+      "interactionSectionTitle": "Interaktionsfähigkeiten",
       "title": "Echtzeit-Audiomodi",
       "description": "Jeder Modus steuert, wie Audio segmentiert und an den Server gesendet wird, was sich auf die Latenz, die Genauigkeit der Satzgrenzen und die Protokollkompatibilität auswirkt.",
       "closeTitle": "Enge Hilfe",

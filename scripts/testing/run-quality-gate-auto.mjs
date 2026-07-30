@@ -11,27 +11,12 @@ import {
   sortableTimestamp,
   writeJson,
 } from '../lib/testing-common.mjs';
+import { selectAutomatedGateSteps } from './test-manifest.mjs';
 
 const defaultOutputRoot = 'artifacts/logs/testing/quality-gate-auto';
 
 export const buildAutoSteps = ({ skipDesktopShell = false, skipBridgeService = false } = {}) => {
-  const steps = [
-    { name: 'audit-architecture', command: 'npm run audit:architecture' },
-    { name: 'audit-error-handling', command: 'npm run audit:error-handling' },
-    { name: 'verify-desktop', command: 'npm run verify:desktop' },
-    { name: 'contracts', command: 'npm run test:contracts' },
-    { name: 'integration-bridge-contract', command: 'npm run test:integration:bridge-contract' },
-    { name: 'coverage-all', command: 'npm run coverage:gate' },
-  ];
-  if (!skipDesktopShell) {
-    steps.push({ name: 'check-desktop-shell', command: 'npm run check:desktop-shell' });
-    steps.push({ name: 'test-desktop-shell', command: 'npm run test:desktop-shell' });
-  }
-  if (!skipBridgeService) {
-    steps.push({ name: 'check-bridge-service-native', command: 'npm run check:bridge-service-native' });
-    steps.push({ name: 'test-bridge-service-native', command: 'npm run test:bridge-service-native' });
-  }
-  return steps;
+  return selectAutomatedGateSteps({ skipDesktopShell, skipBridgeService });
 };
 
 export const runQualityGateAuto = ({

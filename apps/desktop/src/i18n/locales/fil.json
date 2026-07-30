@@ -926,12 +926,58 @@
       "description": "Magrehistro ng mga kakayahan at realtime na audio mode para sa mga hindi nakalistang modelo.",
       "addEntry": "Magdagdag ng entry",
       "closeTitle": "Isara ang pagpapatala ng kakayahan",
-      "modelIdPlaceholder": "ID ng model",
+      "modelIdPlaceholder": "Maglagay ng model ID, hal. qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "ID ng model",
+      "duplicateModelId": "May entry na ang model ID na ito; ang una lang ang may bisa",
       "deleteEntry": "Tanggalin ang entry ng kakayahan",
       "emptyTitle": "Wala pang custom na capability entry",
       "emptyDescription": "Magdagdag ng mga entry upang madagdagan ang mga kakayahan para sa mga custom na modelo."
     },
+    "capabilityLabels": {
+      "speech-to-text": "Pagkilala ng boses",
+      "text-to-speech": "Pag-synthesize ng boses",
+      "speech-to-speech": "Pagsasalin ng boses",
+      "text-generation": "Paggawa ng teksto"
+    },
+    "capabilityHints": {
+      "speech-to-text": "Pagkilala ng boses (STT): ginagawang teksto ang sinasabi",
+      "text-to-speech": "Pag-synthesize ng boses (TTS): binabasa nang malakas ang teksto",
+      "speech-to-speech": "Pagsasalin ng boses (S2S): direktang isinasalin ang boses sa boses ng ibang wika",
+      "text-generation": "Paggawa ng teksto: nagsasalin o muling nagsusulat ng teksto gamit ang malaking language model"
+    },
+    "interactionLabels": {
+      "auto_vad": "Awtomatikong paghahati",
+      "manual_commit": "Manu-manong pagpasa",
+      "client_activity": "Mga signal ng aktibidad ng client",
+      "streaming": "Streaming na output",
+      "chunked_http_audio": "Pira-pirasong HTTP audio",
+      "push_to_talk": "Pindutin para magsalita",
+      "server_commit_tts": "TTS commit ng server",
+      "commit_tts": "Pagpasa ng TTS",
+      "text_only_backend": "Backend na teksto lang",
+      "pipeline_asr_mt_tts": "Pipeline na ASR-MT-TTS"
+    },
+    "interactionHints": {
+      "auto_vad": "Awtomatikong dinedetect ng server ang simula at katapusan ng pagsasalita; walang manu-manong aksyon",
+      "manual_commit": "Tinutukoy ng app ang katapusan ng pangungusap bago ipasa ang audio segment",
+      "client_activity": "Nagpapadala ang app ng malinaw na start/end na signal ng aktibidad (estilong Gemini Live)",
+      "streaming": "Dumarating ang resulta nang streaming sa halip na sabay-sabay",
+      "chunked_http_audio": "Ina-upload ang audio nang pira-piraso sa HTTP sa halip na realtime na koneksyon",
+      "push_to_talk": "Sinusuportahan ang pindot-para-magsalita na pagkuha na kontrolado ng user ang hangganan",
+      "server_commit_tts": "Tini-trigger ng server ang pag-synthesize ng boses pagkatapos ng bawat ipinasang segment",
+      "commit_tts": "Hinihiling nang malinaw ang pag-synthesize ng boses pagkatapos ipasa ang teksto",
+      "text_only_backend": "Teksto lang ang pasok at labas; walang audio",
+      "pipeline_asr_mt_tts": "Magkakasunod na tatlong hakbang ang pagkilala, pagsasalin, at pag-synthesize"
+    },
+    "interactionGroups": {
+      "segmentation": "Paghahati at pagpasa",
+      "transport": "Paraan ng pagpapadala",
+      "tts": "Pag-synthesize ng boses",
+      "backend": "Uri ng backend"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "Mga kakayahan ng model",
+      "interactionSectionTitle": "Mga kakayahan sa interaksyon",
       "title": "Mga realtime na audio mode",
       "description": "Kinokontrol ng bawat mode kung paano nase-segment at ipinapadala ang audio sa server, na nakakaapekto sa latency, katumpakan ng hangganan ng pangungusap, at pagiging tugma sa protocol.",
       "closeTitle": "Isara ang tulong",

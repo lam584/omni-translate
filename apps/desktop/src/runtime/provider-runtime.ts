@@ -1,6 +1,6 @@
 import i18n from '../i18n/config';
 import type { ModelPreset } from '../schema/provider-template';
-import type { ProviderDraft } from '../schema/config';
+import type { AppConfigDraft, ProviderDraft } from '../schema/config';
 import type {
   CredentialSecretPayload,
   CredentialRefStatus,
@@ -221,6 +221,10 @@ export async function runProviderProbe(provider: ProviderDraft): Promise<Provide
     'provider-probe',
     i18n.t('runtime.provider.guidanceProbe'),
   );
+}
+
+export async function resolveRealtimeProfileRuntime(config: AppConfigDraft, modelReference: string) {
+  return activeDesktopApi().provider.resolveRealtimeProfile(config, modelReference);
 }
 
 export async function fetchProviderModels(

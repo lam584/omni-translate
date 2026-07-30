@@ -163,6 +163,8 @@ $runRecords = @()
 $runnerError = $null
 $startedAt = [DateTimeOffset]::UtcNow.ToString('o')
 $previousLogLevel = $env:OMNI_LOG_LEVEL
+$lastEnvironmentFailure = $null
+$consecutiveEnvironmentFailures = 0
 
 try {
   $env:OMNI_LOG_LEVEL = [string]$plan.environment.OMNI_LOG_LEVEL
@@ -198,6 +200,9 @@ try {
           $latencyMs = [int]$stopwatch.ElapsedMilliseconds
           break
         }
+        if ($process.HasExited) {
+          break
+        }
         Start-Sleep -Milliseconds $plan.pollIntervalMs
       }
     }
@@ -227,6 +232,27 @@ try {
 
     $latencyText = if ($null -ne $latencyMs) { "$latencyMs" } else { '-' }
     Write-Host ("run {0}/{1}: connected={2} latencyMs={3} waitedMs={4}" -f $index, $plan.runs, $connected, $latencyText, $waitedMs)
+    $environmentFailure = if (-not $launched) {
+      "launch-error:$launchError"
+    } elseif ($null -ne $process -and $process.HasExited -and -not $connected) {
+      "process-exited:$($process.ExitCode)"
+    } else {
+      $null
+    }
+    if ($environmentFailure -and $environmentFailure -eq $lastEnvironmentFailure) {
+      $consecutiveEnvironmentFailures += 1
+    } elseif ($environmentFailure) {
+      $lastEnvironmentFailure = $environmentFailure
+      $consecutiveEnvironmentFailures = 1
+    } else {
+      $lastEnvironmentFailure = $null
+      $consecutiveEnvironmentFailures = 0
+    }
+    if ($consecutiveEnvironmentFailures -ge [int]$plan.maxConsecutiveEnvironmentFailures) {
+      $runnerError = "startup IPC stress circuit breaker: repeated environment failure '$environmentFailure'"
+      Write-Host $runnerError -ForegroundColor Yellow
+      break
+    }
     Start-Sleep -Milliseconds $BetweenRunsSettleMs
   }
 } catch {

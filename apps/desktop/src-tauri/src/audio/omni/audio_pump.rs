@@ -234,10 +234,7 @@ impl OmniAudioPump {
                 dump.append(&app, &asr_chunk);
             }
             let b64 = base64_encode_i16(&asr_chunk);
-            let append = json!({
-              "type": "input_audio_buffer.append",
-              "audio": b64
-            });
+            let append = super::build_dashscope_audio_append(&b64);
             trace_call.record_ws_send(
                 "input_audio_buffer.append",
                 json!({

@@ -106,6 +106,7 @@ export function buildProviderDraftPatchFromTemplate(
     providerId: template.defaultDraft.providerId,
     displayName: template.defaultDraft.displayName,
     kind: template.defaultDraft.kind,
+    templateRealtimeProtocol: template.realtimeProtocol,
     model: template.defaultDraft.model,
     baseUrl: template.defaultDraft.baseUrl,
     transport: template.defaultDraft.transport,

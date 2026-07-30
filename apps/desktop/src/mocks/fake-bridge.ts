@@ -19,6 +19,7 @@ import {
   type RuntimeNotification,
 } from '../schema/runtime-core';
 import type { SpeechEventKind } from '../schema/speech-event-kinds';
+import { resolveRealtimeProfile } from '../utils/realtime-profile';
 
 /**
  * Injectable contract double for the desktop-runtime ↔ bridge boundary.
@@ -920,6 +921,11 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
   function handleProviderAction(action: string | null, args: Record<string, unknown> | undefined) {
     const command = (args?.command ?? {}) as Record<string, unknown>;
     switch (action) {
+      case 'resolveRealtimeProfile':
+        return envelope(resolveRealtimeProfile(
+          command.config as AppConfigDraft,
+          String(command.modelReference ?? ''),
+        ));
       case 'runModelBenchmark':
         return runProgrammedBenchmark(command);
       default:

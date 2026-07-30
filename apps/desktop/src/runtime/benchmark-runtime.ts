@@ -2,7 +2,7 @@
 // capability surface covers native commands only, not event listeners.
 import { listen } from '@tauri-apps/api/event';
 import i18n from '../i18n/config';
-import type { RealtimeAudioMode } from '../schema/config';
+import type { ProviderDraft, RealtimeAudioMode } from '../schema/config';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
 import { activeDesktopApi } from './desktop-api';
 import { invokeWithTimeoutCore } from './invoke-with-timeout';
@@ -95,6 +95,7 @@ export type BenchmarkRunOptions = {
   baseUrl?: string;
   authHeaderName?: string;
   authScheme?: string;
+  provider?: ProviderDraft;
   onProgress?: (event: BenchmarkProgressEvent) => void;
 };
 
@@ -134,6 +135,7 @@ export async function runModelBenchmark(
         baseUrl: options.baseUrl,
         authHeaderName: options.authHeaderName,
         authScheme: options.authScheme,
+        provider: options.provider,
       });
       try {
         return JSON.parse(jsonString) as BenchmarkReport;

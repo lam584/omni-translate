@@ -18,6 +18,7 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 
 import { isMain, sortableTimestamp } from '../lib/testing-common.mjs';
 import {
@@ -38,7 +39,13 @@ import {
 export { IPC_NEVER_CONNECTED_MARKER, RELEASE_EXECUTABLE_NAME };
 
 export const DEFAULT_OUTPUT_ROOT = 'artifacts/testing/startup-ipc-stress';
-export const DEFAULT_APP_LOG_PATH = 'artifacts/diagnostics/logs/app.log';
+export const DEFAULT_APP_LOG_PATH = path.join(
+  process.env.LOCALAPPDATA || process.env.TEMP || '.',
+  'OmniTranslate',
+  'diagnostics',
+  'logs',
+  'app.log',
+);
 export const DEFAULT_RUN_COUNT = 10;
 /**
  * Must stay above the native IPC watchdog grace (IPC_WATCHDOG_GRACE = 65s in
@@ -49,6 +56,7 @@ export const DEFAULT_RUN_COUNT = 10;
 export const DEFAULT_PING_TIMEOUT_MS = 90_000;
 export const IPC_WATCHDOG_GRACE_MS = 65_000;
 export const DEFAULT_POLL_INTERVAL_MS = 250;
+export const MAX_CONSECUTIVE_ENVIRONMENT_FAILURES = 2;
 
 /** Native log line written by the `debug_ipc_ping` command handler itself. */
 export const IPC_PING_LOG_MARKER = 'debug_ipc_ping';
@@ -137,6 +145,7 @@ export function buildStartupIpcStressPlan({
     pingTimeoutMs: resolvedTimeout,
     pollIntervalMs: asPositiveInteger(pollIntervalMs, DEFAULT_POLL_INTERVAL_MS),
     watchdogGraceMs: IPC_WATCHDOG_GRACE_MS,
+    maxConsecutiveEnvironmentFailures: MAX_CONSECUTIVE_ENVIRONMENT_FAILURES,
     /**
      * A run that never pings must outlive the native watchdog grace, otherwise
      * `startup.ipc_never_connected` can never be observed.

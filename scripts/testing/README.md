@@ -8,15 +8,22 @@ Install the pinned Rust coverage toolchain once:
 npm run coverage:tooling
 ```
 
-Run the repository coverage gate from an administrator PowerShell:
+Run the non-administrator base coverage gate:
+
+```powershell
+npm run coverage:gate:base
+```
+
+Run the complete desktop-shell coverage gate from an administrator PowerShell:
 
 ```powershell
 npm run coverage:gate
 ```
 
-The gate enforces the configured desktop frontend coverage thresholds and
-100% line, function, and branch coverage for the desktop-shell Rust crate
-and native Bridge Rust crate. Rust branch coverage uses the pinned
+The base gate enforces the configured desktop frontend thresholds and a
+non-decreasing baseline for the native Bridge and shared Rust crates. The
+administrator layer additionally enforces the desktop-shell Rust thresholds.
+Rust branch coverage uses the pinned
 `nightly-2026-06-01` toolchain with `cargo-llvm-cov 0.8.6`. Entrypoints,
 router, overlay, schema/contract files, generated assets, vendored SYSVAD
 sources, and thin platform adapters are explicitly governed by each local

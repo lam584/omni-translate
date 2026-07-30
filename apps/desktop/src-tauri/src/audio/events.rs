@@ -33,13 +33,15 @@ use realtime_session::should_wait_for_omni_session_readiness;
 pub(crate) use route_config::resolve_model_provider_from_config_value;
 pub(crate) use route_config::resolve_composite_template_provider;
 pub(crate) use route_config::subtitle_source_language_or_english;
-use route_config::is_omni_model;
+pub(crate) use route_config::{resolve_realtime_profile, RealtimeProtocol};
+pub(crate) use route_config::is_livetranslate_route_model;
+use route_config::infer_legacy_omni_model;
 #[cfg(test)]
 use route_config::{
     is_openai_realtime_provider, resolve_realtime_audio_mode_for_route,
     resolve_realtime_audio_mode_value, resolve_route_target_language,
-    should_start_secondary_speech_dispatch, ResolvedRoutePlan, ResolvedVadPolicy,
-    SpeechDispatchPolicy, SubtitleFallbackPolicy,
+    should_start_secondary_speech_dispatch, ResolvedRouteKind, ResolvedRoutePlan,
+    ResolvedVadPolicy, SpeechDispatchPolicy, SubtitleFallbackPolicy,
 };
 
 pub use route_orchestrator::{start_audio_route, stop_audio_route, stop_speech_dispatch};
@@ -73,16 +75,19 @@ fn should_show_subtitle_overlay_for_route(direction: &str, config: &Value) -> bo
 }
 
 fn route_command_timeout(direction: &str, config: &Value) -> Duration {
-    if direction == "inbound"
-        && configured_route_mode(config) == "watch"
-        && config
+    if direction == "inbound" && configured_route_mode(config) == "watch" {
+        // Registry-promoted omni models need the same generous budget as
+        // name-inferred ones, so resolve the provider first and only fall
+        // back to name inference when no provider matches.
+        let timeout_budget = config
             .pointer("/devices/inboundVoiceModelId")
             .and_then(Value::as_str)
-            .map(resolve_voice_model_runtime_id)
-            .map(|model| is_omni_model(&model))
-            .unwrap_or(false)
-    {
-        return OMNI_ROUTE_COMMAND_TIMEOUT;
+            .map(|requested| match resolve_model_provider_from_config_value(config, requested) {
+                Some(provider) => Duration::from_millis(resolve_realtime_profile(&provider, &provider.model).timeout_budget_ms),
+                None if infer_legacy_omni_model(&resolve_voice_model_runtime_id(requested)) => OMNI_ROUTE_COMMAND_TIMEOUT,
+                None => DEFAULT_ROUTE_COMMAND_TIMEOUT,
+            });
+        if let Some(timeout) = timeout_budget { return timeout; }
     }
 
     DEFAULT_ROUTE_COMMAND_TIMEOUT
@@ -489,6 +494,7 @@ mod tests {
                     "id": "registry-gemini-live",
                     "modelId": "gemini-2.5-flash-live",
                     "capabilities": ["speech-to-speech"],
+                    "realtimeProtocol": "gemini-live",
                     "realtimeAudioMode": "gemini_manual_activity"
                 }
             ]
@@ -498,7 +504,7 @@ mod tests {
         let mode_value = resolve_realtime_audio_mode_value(&provider, &provider.model);
         assert_eq!(mode_value, "gemini_manual_activity");
         assert!(gemini_live::is_gemini_activity_mode(&mode_value));
-        assert!(is_openai_realtime_provider(&provider));
+        assert!(!is_openai_realtime_provider(&provider));
     }
 
     fn provider_value(
@@ -892,6 +898,180 @@ mod tests {
             assert_eq!(plan.target_language, "ja");
             assert_eq!(plan.session_reuse_key.model, provider.model);
         }
+    }
+
+    #[test]
+    fn resolved_route_plan_requires_explicit_protocol_instead_of_s2s_capability_inference() {
+        let mut value = provider_value(
+            "template-dashscope-realtime",
+            "dashscope",
+            "dashscope",
+            "qwen-audio-3.0-realtime-plus",
+            "https://dashscope.aliyuncs.com/api/v1",
+            "websocket",
+            "dashscope",
+        );
+        let config = json!({
+            "devices": { "routeMode": "watch" },
+            "subtitles": { "targetLanguage": "zh-CN" }
+        });
+
+        // No registry entry: the model name contains "qwen-audio" + "realtime",
+        // so infer_realtime_protocol classifies it as DashscopeOmni.
+        let plain: ProviderDraftInput =
+            serde_json::from_value(value.clone()).expect("provider should parse");
+        let plan = ResolvedRoutePlan::from_resolved_provider(
+            "inbound", &config, plain.model.clone(), plain.clone(),
+        );
+        assert_eq!(plan.kind, ResolvedRouteKind::Omni);
+
+        // Capabilities describe what the model can do; the explicit protocol
+        // describes how to communicate with it.
+        value["localModelCapabilityRegistry"] = json!([{
+            "id": "registry-audio-realtime",
+            "modelId": "qwen-audio-3.0-realtime-plus",
+            "capabilities": ["speech-to-speech"],
+            "realtimeProtocol": "dashscope-omni",
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": ["auto_vad", "streaming", "chunked_http_audio", "server_commit_tts"]
+        }]);
+        let registered: ProviderDraftInput =
+            serde_json::from_value(value.clone()).expect("provider should parse");
+        let plan = ResolvedRoutePlan::from_resolved_provider(
+            "inbound", &config, registered.model.clone(), registered,
+        );
+        assert_eq!(plan.kind, ResolvedRouteKind::Omni);
+
+        // STT-only registry entries must not be promoted.
+        value["localModelCapabilityRegistry"] = json!([{
+            "id": "registry-audio-realtime",
+            "modelId": "qwen-audio-3.0-realtime-plus",
+            "capabilities": ["speech-to-text"],
+            "realtimeProtocol": "dashscope-asr",
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": ["auto_vad", "streaming"]
+        }]);
+        let stt_only: ProviderDraftInput =
+            serde_json::from_value(value).expect("provider should parse");
+        let plan = ResolvedRoutePlan::from_resolved_provider(
+            "inbound", &config, stt_only.model.clone(), stt_only,
+        );
+        assert_eq!(plan.kind, ResolvedRouteKind::DashscopeStt);
+    }
+
+    #[test]
+    fn resolved_profile_honors_explicit_protocol_denial_and_first_duplicate() {
+        let mut value = provider_value(
+            "template-dashscope-realtime", "dashscope", "dashscope",
+            "named-omni-realtime", "https://dashscope.aliyuncs.com/api/v1",
+            "websocket", "dashscope",
+        );
+        value["localModelCapabilityRegistry"] = json!([
+            {
+                "id": "first-deny", "modelId": "named-omni-realtime",
+                "capabilities": ["speech-to-text"],
+                "realtimeProtocol": "dashscope-asr",
+                "realtimeAudioMode": "server_vad",
+                "interactionCapabilities": ["streaming"]
+            },
+            {
+                "id": "second-omni", "modelId": "named-omni-realtime",
+                "capabilities": ["speech-to-speech"],
+                "realtimeProtocol": "dashscope-omni",
+                "realtimeAudioMode": "manual",
+                "interactionCapabilities": ["streaming"]
+            }
+        ]);
+        let provider: ProviderDraftInput = serde_json::from_value(value).expect("provider");
+        let profile = resolve_realtime_profile(&provider, &provider.model);
+        assert_eq!(profile.route_kind, ResolvedRouteKind::DashscopeStt);
+        assert_eq!(profile.realtime_audio_mode, "server_vad");
+        assert_eq!(profile.diagnostics.len(), 1);
+        assert!(profile.diagnostics[0].contains("first-deny"));
+    }
+
+    #[test]
+    fn explicit_unhinted_protocol_gets_omni_timeout_and_preconnect_policy() {
+        let mut value = provider_value(
+            "template-dashscope-realtime", "dashscope", "dashscope",
+            "deployment-blue", "https://dashscope.aliyuncs.com/api/v1",
+            "websocket", "dashscope",
+        );
+        value["localModelCapabilityRegistry"] = json!([{
+            "id": "blue", "modelId": "deployment-blue",
+            "capabilities": ["speech-to-speech"],
+            "realtimeProtocol": "dashscope-livetranslate",
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": ["streaming"]
+        }]);
+        let provider: ProviderDraftInput = serde_json::from_value(value.clone()).expect("provider");
+        let profile = resolve_realtime_profile(&provider, &provider.model);
+        assert_eq!(profile.route_kind, ResolvedRouteKind::Omni);
+        assert!(profile.preconnect_allowed);
+        assert_eq!(Duration::from_millis(profile.timeout_budget_ms), OMNI_ROUTE_COMMAND_TIMEOUT);
+
+        let config = json!({
+            "providers": [value],
+            "devices": { "routeMode": "watch", "inboundVoiceModelId": "deployment-blue" }
+        });
+        assert_eq!(route_command_timeout("inbound", &config), OMNI_ROUTE_COMMAND_TIMEOUT);
+    }
+
+    #[test]
+    fn explicit_protocol_matrix_is_alias_invariant() {
+        let matrix = [
+            ("dashscope-omni", "dashscope", ResolvedRouteKind::Omni, "pcm16", 16_000),
+            ("dashscope-livetranslate", "dashscope", ResolvedRouteKind::Omni, "pcm", 16_000),
+            ("dashscope-asr", "dashscope", ResolvedRouteKind::DashscopeStt, "pcm", 16_000),
+            ("openai-conversation", "openai-compatible", ResolvedRouteKind::OpenAiRealtime, "pcm16", 24_000),
+            ("openai-translation", "openai-compatible", ResolvedRouteKind::OpenAiRealtime, "pcm16", 24_000),
+            ("openai-transcription", "openai-compatible", ResolvedRouteKind::OpenAiRealtime, "pcm16", 24_000),
+            ("openai-flat", "openai-compatible", ResolvedRouteKind::OpenAiRealtime, "pcm16", 16_000),
+            ("gemini-live", "openai-compatible", ResolvedRouteKind::GeminiLive, "pcm16", 16_000),
+        ];
+        for (index, (protocol, kind, route_kind, input_format, sample_rate)) in
+            matrix.into_iter().enumerate()
+        {
+            for model in [format!("standard-{protocol}"), format!("deployment-{index}")] {
+                let mut value = provider_value(
+                    "template-explicit", "explicit", kind, &model,
+                    "https://example.invalid/v1", "websocket", "explicit",
+                );
+                value["localModelCapabilityRegistry"] = json!([{
+                    "id": format!("entry-{index}"),
+                    "modelId": model,
+                    "capabilities": [],
+                    "interactionCapabilities": [],
+                    "realtimeProtocol": protocol
+                }]);
+                let provider: ProviderDraftInput = serde_json::from_value(value).expect("provider");
+                let profile = resolve_realtime_profile(&provider, &provider.model);
+                assert_eq!(profile.protocol_dialect.map(|value| value.as_str()), Some(protocol));
+                assert_eq!(profile.route_kind, route_kind);
+                assert_eq!(profile.input_format, input_format);
+                assert_eq!(profile.sample_rate, sample_rate);
+                assert_eq!(profile.source, route_config::RealtimeProfileSource::Registry);
+            }
+        }
+    }
+
+    #[test]
+    fn non_dashscope_s2s_capabilities_do_not_select_dashscope_omni() {
+        let mut value = provider_value(
+            "template-custom", "custom", "openai-compatible",
+            "deployment-green", "https://example.invalid/v1", "websocket", "custom",
+        );
+        value["localModelCapabilityRegistry"] = json!([{
+            "id": "green", "modelId": "deployment-green",
+            "capabilities": ["speech-to-speech"],
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": ["streaming"]
+        }]);
+        let provider: ProviderDraftInput = serde_json::from_value(value).expect("provider");
+        assert_eq!(
+            resolve_realtime_profile(&provider, &provider.model).route_kind,
+            ResolvedRouteKind::LocalVad
+        );
     }
 
     #[test]

@@ -71,6 +71,8 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
         ) {
             Ok(socket) => {
                 *reconnect_count = 0;
+                store.discard_uncommitted_subtitle_cues();
+                store.bump_reconnect_generation();
                 store.set_stt_connected(true, buffer_size);
                 let _ = emit_audio_snapshot(app, store);
                 return Ok(socket);
@@ -598,6 +600,7 @@ mod manual_turn_state_tests {
     }
 }
 
+#[cfg(test)]
 pub(super) fn is_livetranslate_model(model: &str) -> bool {
     model.to_ascii_lowercase().contains("livetranslate")
 }
@@ -855,14 +858,13 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
     }
 }
 
-pub(super) fn build_omni_session_update(
-    model: &str,
+fn build_omni_session_update_with_dialect(
+    is_livetranslate: bool,
     voice: &str,
     instructions: &str,
     audio_mode: RealtimeAudioMode,
     target_language: &str,
 ) -> Value {
-    let is_livetranslate = is_livetranslate_model(model);
     let input_audio_format = if is_livetranslate { "pcm" } else { "pcm16" };
     let turn_detection = audio_mode.turn_detection();
     let mut session_cfg = json!({
@@ -892,6 +894,87 @@ pub(super) fn build_omni_session_update(
         });
     }
     session_cfg
+}
+
+pub(crate) fn build_dashscope_session_update(
+    protocol: crate::audio::events::RealtimeProtocol,
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    target_language: &str,
+) -> Result<Value, String> {
+    let is_livetranslate = match protocol {
+        crate::audio::events::RealtimeProtocol::DashscopeOmni => false,
+        crate::audio::events::RealtimeProtocol::DashscopeLivetranslate => true,
+        other => return Err(format!("unsupported DashScope session protocol: {other:?}")),
+    };
+    Ok(build_omni_session_update_with_dialect(
+        is_livetranslate,
+        voice,
+        instructions,
+        audio_mode,
+        target_language,
+    ))
+}
+
+pub(crate) fn build_dashscope_audio_append(audio: &str) -> Value {
+    json!({ "type": "input_audio_buffer.append", "audio": audio })
+}
+
+pub(crate) fn build_dashscope_input_audio_commit() -> Value {
+    json!({ "type": "input_audio_buffer.commit" })
+}
+
+pub(crate) fn build_dashscope_response_create() -> Value {
+    json!({ "type": "response.create" })
+}
+
+pub(crate) fn build_dashscope_text_item(text: &str) -> Value {
+    json!({
+      "type": "conversation.item.create",
+      "item": {
+        "type": "message",
+        "role": "user",
+        "content": [{ "type": "input_text", "text": text }]
+      }
+    })
+}
+
+pub(crate) fn build_omni_session_update_for_provider(
+    provider: &ProviderDraftInput,
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    target_language: &str,
+) -> Value {
+    let protocol = crate::audio::events::resolve_realtime_profile(provider, &provider.model)
+        .protocol_dialect
+        .expect("Omni session builder requires an explicit or compatibility-resolved protocol");
+    build_dashscope_session_update(
+        protocol,
+        voice,
+        instructions,
+        audio_mode,
+        target_language,
+    )
+    .expect("Omni session builder requires a DashScope Omni/LiveTranslate protocol")
+}
+
+#[cfg(test)]
+pub(super) fn build_omni_session_update(
+    model: &str,
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    target_language: &str,
+) -> Value {
+    build_omni_session_update_with_dialect(
+        is_livetranslate_model(model),
+        voice,
+        instructions,
+        audio_mode,
+        target_language,
+    )
 }
 
 pub(super) enum OmniPlaybackCommand {
@@ -1354,14 +1437,18 @@ mod omni_playback_tests {
     fn bounded_queue_and_out_of_band_stop_prevent_post_stop_backlog_growth() {
         let (tx, rx) = mpsc::sync_channel(OMNI_PLAYBACK_QUEUE_CAPACITY);
         assert!(tx.try_send(queued_play("first")).is_ok());
+        assert!(tx.try_send(queued_play("second")).is_ok());
+        assert!(tx.try_send(queued_play("third")).is_ok());
         assert!(matches!(
-            tx.try_send(queued_play("second")),
+            tx.try_send(queued_play("fourth")),
             Err(mpsc::TrySendError::Full(_))
         ));
 
         let stop_requested = AtomicBool::new(false);
         request_omni_playback_stop(&stop_requested, &tx);
         assert!(stop_requested.load(Ordering::Acquire));
+        assert!(matches!(rx.try_recv(), Ok(OmniPlaybackCommand::Play { .. })));
+        assert!(matches!(rx.try_recv(), Ok(OmniPlaybackCommand::Play { .. })));
         assert!(matches!(rx.try_recv(), Ok(OmniPlaybackCommand::Play { .. })));
         assert!(matches!(rx.try_recv(), Err(mpsc::TryRecvError::Empty)));
         assert!(!omni_playback_queue_age_expired(

@@ -26,6 +26,7 @@ import type {
   FrontendDiagnosticsBatchEntry,
   ModelBenchmarkRunPayload,
 } from './desktop-api-v2';
+import { resolveRealtimeProfile } from '../utils/realtime-profile';
 
 /** Capability flags a desktop-api implementation advertises to callers. */
 export type DesktopCapabilities = {
@@ -115,6 +116,8 @@ export class PreviewDesktopApi {
   }
 
   readonly provider = {
+    resolveRealtimeProfile: async (config: AppConfigDraft, modelReference: string) =>
+      resolveRealtimeProfile(config, modelReference),
     fetchModels: async (provider: ProviderDraft, presetModels: readonly ModelPreset[] = []): Promise<ProviderModelCatalogRuntime> => ({
       providerId: provider.providerId,
       endpoint: `${provider.baseUrl.replace(/\/$/, '')}/models`,

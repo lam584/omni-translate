@@ -926,12 +926,58 @@
       "description": "سجّل القدرات وأوضاع الصوت الفوري للنماذج غير المدرجة.",
       "addEntry": "إضافة إدخال",
       "closeTitle": "إغلاق سجل القدرات",
-      "modelIdPlaceholder": "معرّف Model ID",
+      "modelIdPlaceholder": "أدخل معرّف النموذج، مثل qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "معرّف النموذج",
+      "duplicateModelId": "يوجد إدخال لهذا المعرّف بالفعل؛ الأول فقط هو الساري",
       "deleteEntry": "حذف إدخال القدرة",
       "emptyTitle": "لا توجد إدخالات قدرات مخصصة بعد",
       "emptyDescription": "أضف إدخالات لاستكمال قدرات النماذج المخصصة."
     },
+    "capabilityLabels": {
+      "speech-to-text": "التعرف على الكلام",
+      "text-to-speech": "تحويل النص إلى كلام",
+      "speech-to-speech": "ترجمة الكلام",
+      "text-generation": "توليد النص"
+    },
+    "capabilityHints": {
+      "speech-to-text": "التعرف على الكلام (STT): يحوّل الكلام إلى نص",
+      "text-to-speech": "تحويل النص إلى كلام (TTS): يقرأ النص بصوت مسموع",
+      "speech-to-speech": "ترجمة الكلام (S2S): يترجم الكلام مباشرة إلى كلام بلغة أخرى",
+      "text-generation": "توليد النص: يترجم أو يعيد صياغة النص بنموذج لغوي كبير"
+    },
+    "interactionLabels": {
+      "auto_vad": "تقسيم تلقائي",
+      "manual_commit": "إرسال يدوي",
+      "client_activity": "إشارات نشاط العميل",
+      "streaming": "إخراج متدفق",
+      "chunked_http_audio": "صوت HTTP مجزأ",
+      "push_to_talk": "اضغط للتحدث",
+      "server_commit_tts": "إرسال TTS من الخادم",
+      "commit_tts": "إرسال TTS",
+      "text_only_backend": "خلفية نصية فقط",
+      "pipeline_asr_mt_tts": "خط ASR-MT-TTS"
+    },
+    "interactionHints": {
+      "auto_vad": "يكتشف الخادم بداية الكلام ونهايته تلقائيًا؛ لا حاجة لإجراء يدوي",
+      "manual_commit": "يحدد التطبيق نهاية الجملة ثم يرسل مقطع الصوت",
+      "client_activity": "يرسل التطبيق إشارات بداية/نهاية نشاط صريحة (بأسلوب Gemini Live)",
+      "streaming": "تصل النتائج تدفقًا بدلًا من دفعة واحدة",
+      "chunked_http_audio": "يُرفع الصوت على شكل أجزاء عبر HTTP بدلًا من اتصال فوري",
+      "push_to_talk": "يدعم الالتقاط بأسلوب الضغط للتحدث مع حدود يتحكم بها المستخدم",
+      "server_commit_tts": "يشغّل الخادم تحويل النص إلى كلام بعد كل مقطع مُرسل",
+      "commit_tts": "يُطلب تحويل النص إلى كلام صراحة بعد إرسال النص",
+      "text_only_backend": "نص فقط للإدخال والإخراج؛ بدون صوت",
+      "pipeline_asr_mt_tts": "التعرف والترجمة والتوليف تعمل في ثلاث خطوات متسلسلة"
+    },
+    "interactionGroups": {
+      "segmentation": "التقسيم والإرسال",
+      "transport": "طريقة النقل",
+      "tts": "توليف الكلام",
+      "backend": "نوع الخلفية"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "شرح قدرات النموذج",
+      "interactionSectionTitle": "شرح قدرات التفاعل",
       "title": "أوضاع الصوت الفوري",
       "description": "يتحكم كل وضع في كيفية تقسيم الصوت وإرساله إلى الخادم، ما يؤثر على زمن الاستجابة ودقة حدود الجمل وتوافق البروتوكول.",
       "closeTitle": "إغلاق المساعدة",

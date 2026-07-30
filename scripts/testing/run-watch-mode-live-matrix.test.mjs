@@ -123,6 +123,15 @@ test('runner passthrough args are appended verbatim after the splat', () => {
   assert.deepEqual(argv.slice(-5), ['-AllowElevatedDesktopLaunch', '-DryRun', '-Fixture', 'pass', 'value with spaces']);
 });
 
+test('keyword-free live aliases carry an explicit protocol into config preparation', () => {
+  const argv = buildRunnerArgv({
+    model: 'deployment-blue',
+    feedbackMode: SAMPLE_FEEDBACK_MODE,
+    watchRealtimeProtocol: 'dashscope-omni',
+  });
+  assert.deepEqual(argv.slice(-2), ['-WatchRealtimeProtocol', 'dashscope-omni']);
+});
+
 test('splitRunnerArgs forwards everything after the first literal -- separator', () => {
   assert.deepEqual(splitRunnerArgs(['--warmup-seconds', '30']), {
     matrixArgv: ['--warmup-seconds', '30'],
@@ -137,6 +146,7 @@ test('splitRunnerArgs forwards everything after the first literal -- separator',
 test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects runner args', () => {
   const defaults = parseMatrixCliArgs([]);
   assert.equal(defaults.models, DEFAULT_MODELS.join(','));
+  assert.equal(defaults.aliasProtocol, 'dashscope-omni');
   assert.equal(defaults.feedbackLoopPreventionModes, DEFAULT_FEEDBACK_MODES.join(','));
   assert.equal(defaults.outputRoot, MATRIX_DEFAULTS.outputRoot);
   assert.equal(defaults.warmupSeconds, 12);

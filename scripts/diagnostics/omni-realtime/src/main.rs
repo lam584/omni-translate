@@ -21,6 +21,13 @@ struct Config {
     input_audio_format: String,
     readiness: ReadinessMode,
     limit_seconds: Option<f32>,
+    protocol: DashscopeProtocol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashscopeProtocol {
+    Omni,
+    LiveTranslate,
 }
 
 #[derive(Debug)]
@@ -92,6 +99,7 @@ fn parse_args() -> Result<Config, String> {
     let mut input_audio_format: Option<String> = None;
     let mut readiness = ReadinessMode::UpdatedOnly;
     let mut limit_seconds = None;
+    let mut protocol = DashscopeProtocol::Omni;
 
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -107,6 +115,7 @@ fn parse_args() -> Result<Config, String> {
                 )?)))
             }
             "--model" => model = next_value(&mut args, "--model")?,
+            "--protocol" => protocol = parse_protocol(&next_value(&mut args, "--protocol")?)?,
             "--mode" => {
                 let raw = next_value(&mut args, "--mode")?;
                 mode = parse_realtime_mode(&raw)?;
@@ -146,7 +155,7 @@ fn parse_args() -> Result<Config, String> {
     let audio_input =
         audio_input.ok_or_else(|| "--pcm <path> or --mp3 <path> is required".to_string())?;
     let input_audio_format = input_audio_format.unwrap_or_else(|| {
-        if is_livetranslate_model(&model) {
+        if protocol == DashscopeProtocol::LiveTranslate {
             "pcm"
         } else {
             "pcm16"
@@ -161,7 +170,18 @@ fn parse_args() -> Result<Config, String> {
         input_audio_format,
         readiness,
         limit_seconds,
+        protocol,
     })
+}
+
+fn parse_protocol(value: &str) -> Result<DashscopeProtocol, String> {
+    match value {
+        "dashscope-omni" => Ok(DashscopeProtocol::Omni),
+        "dashscope-livetranslate" => Ok(DashscopeProtocol::LiveTranslate),
+        other => Err(format!(
+            "invalid --protocol '{other}'; expected dashscope-omni or dashscope-livetranslate"
+        )),
+    }
 }
 
 fn parse_realtime_mode(value: &str) -> Result<RealtimeMode, String> {
@@ -192,7 +212,7 @@ fn next_value(args: &mut impl Iterator<Item = String>, name: &str) -> Result<Str
 }
 
 fn print_usage() {
-    eprintln!("Usage: omni-realtime-diagnostic (--pcm <16k_mono_pcm> | --mp3 <path>) [--manual | --mode manual|server_vad|semantic_vad] [--input-audio-format pcm|pcm16] [--readiness updated_only|created_or_updated] [--model <model>] [--limit-seconds <seconds>]");
+    eprintln!("Usage: omni-realtime-diagnostic (--pcm <16k_mono_pcm> | --mp3 <path>) [--protocol dashscope-omni|dashscope-livetranslate] [--manual | --mode manual|server_vad|semantic_vad] [--input-audio-format pcm|pcm16] [--readiness updated_only|created_or_updated] [--model <model>] [--limit-seconds <seconds>]");
 }
 
 fn run(config: Config) -> Result<(), String> {
@@ -231,7 +251,7 @@ fn run(config: Config) -> Result<(), String> {
     let (mut socket, _) = connect(request).map_err(|error| format!("connect failed: {error}"))?;
     set_read_timeout(&mut socket);
 
-    let session_cfg = session_update(&config.model, config.mode, &config.input_audio_format);
+    let session_cfg = session_update(config.protocol, config.mode, &config.input_audio_format);
     socket
         .send(Message::Text(session_cfg.to_string().into()))
         .map_err(|error| format!("failed to send session.update: {error}"))?;
@@ -358,11 +378,7 @@ fn resample_mono_to_16k_i16(samples: &[f32], source_rate: u32) -> Vec<i16> {
     resampled
 }
 
-fn is_livetranslate_model(model: &str) -> bool {
-    model.to_ascii_lowercase().contains("livetranslate")
-}
-
-fn session_update(model: &str, mode: RealtimeMode, input_audio_format: &str) -> Value {
+fn session_update(protocol: DashscopeProtocol, mode: RealtimeMode, input_audio_format: &str) -> Value {
     let turn_detection = match mode {
         RealtimeMode::Manual => Value::Null,
         RealtimeMode::ServerVad => json!({
@@ -389,7 +405,7 @@ fn session_update(model: &str, mode: RealtimeMode, input_audio_format: &str) -> 
         }
     });
 
-    if is_livetranslate_model(model) {
+    if protocol == DashscopeProtocol::LiveTranslate {
         session["session"]["input_audio_transcription"] = json!({
             "model": "qwen3-asr-flash-realtime",
             "language": "en"

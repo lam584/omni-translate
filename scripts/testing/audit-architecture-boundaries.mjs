@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { basename, dirname, extname, join, relative } from 'node:path';
+import ts from 'typescript';
 
 const root = process.cwd();
 const strict = process.argv.includes('--strict');
@@ -80,6 +81,69 @@ function sourceLines(path) {
   return readFileSync(path, 'utf8').split(/\r?\n/).length;
 }
 
+function rustProductionText(path) {
+  const lines = readFileSync(path, 'utf8').split(/\r?\n/);
+  const kept = [];
+  let skipTests = false;
+  let braceDepth = 0;
+  for (const line of lines) {
+    if (!skipTests && line.trim() === '#[cfg(test)]') {
+      skipTests = true;
+      continue;
+    }
+    if (skipTests) {
+      braceDepth += (line.match(/{/g) ?? []).length - (line.match(/}/g) ?? []).length;
+      if (braceDepth <= 0 && line.includes('}')) {
+        skipTests = false;
+        braceDepth = 0;
+      }
+      continue;
+    }
+    kept.push(line);
+  }
+  return kept.join('\n');
+}
+
+function typescriptSyntaxFacts(path, text) {
+  const source = ts.createSourceFile(
+    path,
+    text,
+    ts.ScriptTarget.Latest,
+    true,
+    path.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
+  );
+  const imports = [];
+  let invokeCalls = 0;
+  let tauriProbeCalls = 0;
+  let modelKeywordChecks = 0;
+  const modelKeywords = /^(?:omni|livetranslate|realtime|live|gemini|whisper|translat(?:e|ion)|transcrib(?:e|tion)|asr)$/i;
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      imports.push(node.moduleSpecifier.text);
+    } else if (ts.isCallExpression(node)) {
+      if (node.expression.kind === ts.SyntaxKind.ImportKeyword && ts.isStringLiteralLike(node.arguments[0])) {
+        imports.push(node.arguments[0].text);
+      } else if (ts.isIdentifier(node.expression) && node.expression.text === 'require' && ts.isStringLiteralLike(node.arguments[0])) {
+        imports.push(node.arguments[0].text);
+      }
+      if (ts.isIdentifier(node.expression) && node.expression.text === 'invoke') invokeCalls += 1;
+      if (ts.isIdentifier(node.expression) && node.expression.text === 'isTauriRuntime') tauriProbeCalls += 1;
+      if (
+        ts.isPropertyAccessExpression(node.expression)
+        && node.expression.name.text === 'includes'
+        && ts.isStringLiteralLike(node.arguments[0])
+        && modelKeywords.test(node.arguments[0].text)
+        && /(?:model|haystack|normalized|lower|value)/i.test(node.expression.expression.getText(source))
+      ) {
+        modelKeywordChecks += 1;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(source);
+  return { imports, invokeCalls, tauriProbeCalls, modelKeywordChecks };
+}
+
 function rustOwnerCandidates(path) {
   const directory = dirname(path);
   if (basename(path) === 'mod.rs') {
@@ -155,6 +219,16 @@ for (const directory of rustRoots) {
     if (path.endsWith('.rs') && !rustSourceIsWired(path)) {
       violations.push(`Unwired Rust source: ${relative(root, path)}`);
     }
+    const rel = relative(root, path).replace(/\\/g, '/');
+    const modelInferenceAllowlist = new Set([
+      'apps/desktop/src-tauri/src/audio/events/route_config.rs',
+      'apps/desktop/src-tauri/src/provider/gateway_parts/models.rs',
+    ]);
+    if (!modelInferenceAllowlist.has(rel)) {
+      const code = rustProductionText(path);
+      const checks = code.match(/(?:model|lower|normalized|haystack)[A-Za-z0-9_().]*\.contains\(\s*"(?:omni|livetranslate|realtime|live|gemini|whisper|translate|translation|transcribe|transcription|asr)"/gi) ?? [];
+      if (checks.length > 0) violations.push(`Realtime model-name inference outside resolver: ${rel}`);
+    }
   }
 }
 
@@ -187,36 +261,44 @@ for (const path of frontend) {
   // Test files and ambient declarations are exempt from the import rules below.
   if (/\.(test|spec)\.[jt]sx?$/.test(rel) || rel.endsWith('.d.ts')) continue;
   const text = readFileSync(path, 'utf8');
+  const syntax = typescriptSyntaxFacts(path, text);
   const inRuntime = rel.startsWith(`${frontendRoot}/runtime/`);
   // Test support code (the mocks themselves and shared test helpers) may
   // import mocks; production code may not.
   const inTestSupport =
     rel.startsWith(`${frontendRoot}/mocks/`) || rel.startsWith(`${frontendRoot}/test-utils/`);
+  const modelInferenceAllowlist = new Set([
+    `${frontendRoot}/utils/realtime-profile.ts`,
+    `${frontendRoot}/utils/provider-model-capabilities.ts`,
+  ]);
+  if (!modelInferenceAllowlist.has(rel) && syntax.modelKeywordChecks > 0) {
+    violations.push(`Realtime model-name inference outside resolver: ${rel}`);
+  }
 
   if (!inTestSupport && rel !== `${frontendRoot}/runtime/tauri-runtime.ts`) {
-    probeCallSites += (text.match(/\bisTauriRuntime\s*\(/g) ?? []).length;
+    probeCallSites += syntax.tauriProbeCalls;
   }
 
   // Tauri APIs are only reachable through the runtime adapter layer.
-  if (!inRuntime && /@tauri-apps\/api/.test(text)) {
+  if (!inRuntime && syntax.imports.some((specifier) => specifier.startsWith('@tauri-apps/api'))) {
     violations.push(`Tauri import outside runtime: ${rel}`);
   }
 
   // Production code must not depend on test doubles in src/mocks; shared
   // preset/default data lives in src/defaults.
-  if (!inTestSupport && /(?:\bfrom\s+|\bimport\s*\(\s*|\brequire\s*\(\s*)['"][^'"]*\bmocks\//.test(text)) {
+  if (!inTestSupport && syntax.imports.some((specifier) => /(?:^|\/)mocks\//.test(specifier))) {
     violations.push(`Mocks import in production code: ${rel}`);
   }
 
   // Reverse layering: the runtime layer must not reach up into UI layers.
-  if (inRuntime && /(?:\bfrom\s+|\bimport\s*\(\s*)['"](?:\.\.\/)+(?:pages|components)\//.test(text)) {
+  if (inRuntime && syntax.imports.some((specifier) => /^(?:\.\.\/)+(?:pages|components)\//.test(specifier))) {
     violations.push(`Runtime imports UI layer: ${rel}`);
   }
 
   // All Tauri command calls funnel through the single runtime API adapter.
   // The pattern also matches generic calls such as invoke<T>(...).
   if (rel === 'apps/desktop/src/runtime/desktop-api-v2.ts') continue;
-  if (/(?<![.\w])invoke\s*[<(]/.test(text)) violations.push(`Direct invoke: ${rel}`);
+  if (syntax.invokeCalls > 0) violations.push(`Direct invoke: ${rel}`);
 }
 
 if (probeCallSites > PROBE_CALL_SITE_CAP) {

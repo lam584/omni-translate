@@ -33,6 +33,9 @@ const defaultConfigPath = path.join('apps', 'desktop', 'src-tauri', 'defaults', 
 const WIRE_PARSER_FILES = [
   'src-tauri/src/audio/openai_realtime.rs',
   'src-tauri/src/audio/gemini_live.rs',
+  // Shared realtime event envelope parser used by production, benchmarks,
+  // and provider smoke paths.
+  'src-tauri/src/audio/realtime_ws.rs',
   'src-tauri/src/audio/omni/',
   'src-tauri/src/provider/gateway_parts/',
   'src-tauri/src/benchmark/',

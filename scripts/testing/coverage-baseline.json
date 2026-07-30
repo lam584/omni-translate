@@ -1,0 +1,12 @@
+{
+  "native-bridge-rust": {
+    "lines": 20.97,
+    "functions": 29.49,
+    "branches": 15.17
+  },
+  "shared-crates-rust": {
+    "lines": 86.19,
+    "functions": 88.65,
+    "branches": 60
+  }
+}

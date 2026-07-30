@@ -22,7 +22,7 @@ import {
   BenchmarkProgressBanner, BenchmarkReportDetail, DiagnosticsReportExporter, ExportButton,
   LiveSessionEventDetail, buildOutputSegments, fmtMs, formatBenchmarkTxt,
   formatLiveEventsTxt, isBinaryAudioOutputEvent, isTextOutputEvent,
-  shouldUseCandidate, shouldUseManualBenchmarkMode, textLength,
+  shouldUseCandidate, textLength,
 } from './diagnostics/DiagnosticsDetails';
 import {
   buildOverviewIssues, buildOverviewSignals, buildServiceMonitorItems,
@@ -44,7 +44,7 @@ export const diagnosticsPageHelpers = {
   hasSameIds, resolveStatusTone, formatStatusLabel, formatBridgeStateLabel, formatCaptureStateLabel,
   formatDriverHealthLabel, getIssueToneRank, isOverlayVisible, getRuntimeEnvironmentSummary,
   buildOverviewIssues, buildOverviewSignals, buildServiceMonitorItems, createEmptyBenchmarkReport,
-  isBinaryAudioOutputEvent, isTextOutputEvent, shouldUseManualBenchmarkMode, textLength,
+  isBinaryAudioOutputEvent, isTextOutputEvent, textLength,
   shouldUseCandidate, buildOutputSegments, fmtMs, formatLiveEventsTxt, formatBenchmarkTxt,
   BenchmarkProgressBanner, BenchmarkReportDetail, LiveSessionEventDetail,
 };
@@ -91,6 +91,7 @@ function DiagnosticsPage() {
           baseUrl: provider.baseUrl,
           authHeaderName: provider.authRef?.headerName ?? 'Authorization',
           authScheme: provider.authRef?.scheme ?? 'bearer',
+          provider,
         };
       },
     }),

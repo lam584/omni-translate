@@ -32,6 +32,13 @@ struct Config {
     json_output: bool,
     limit_seconds: Option<f32>,
     manual: bool,
+    protocol: DashscopeProtocol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DashscopeProtocol {
+    Omni,
+    LiveTranslate,
 }
 
 // ──────────────────────────────── Timing Records ────────────────────────────
@@ -153,6 +160,7 @@ Required:
 
 Options:
   --model <model>            Model name (default: {DEFAULT_MODEL})
+  --protocol <dialect>       dashscope-omni or dashscope-livetranslate (default)
   --base-url <url>           WebSocket base URL (default: {DEFAULT_WS_BASE_URL})
   --runs <N>                 Number of runs (default: 1)
   --voice <voice>            Voice name (default: Ethan)
@@ -180,6 +188,7 @@ fn parse_args() -> Result<Config, String> {
     let mut json_output = false;
     let mut limit_seconds: Option<f32> = None;
     let mut manual = false;
+    let mut protocol = DashscopeProtocol::LiveTranslate;
     let mut cli_api_key: Option<String> = None;
 
     let mut args = std::env::args().skip(1);
@@ -188,6 +197,7 @@ fn parse_args() -> Result<Config, String> {
             "--audio" => audio_path = Some(PathBuf::from(next_val(&mut args, "--audio")?)),
             "--mp3" => audio_path = Some(PathBuf::from(next_val(&mut args, "--mp3")?)),
             "--model" => model = next_val(&mut args, "--model")?,
+            "--protocol" => protocol = parse_protocol(&next_val(&mut args, "--protocol")?)?,
             "--base-url" => base_url = next_val(&mut args, "--base-url")?,
             "--runs" => {
                 runs = next_val(&mut args, "--runs")?
@@ -239,7 +249,18 @@ fn parse_args() -> Result<Config, String> {
         json_output,
         limit_seconds,
         manual,
+        protocol,
     })
+}
+
+fn parse_protocol(value: &str) -> Result<DashscopeProtocol, String> {
+    match value {
+        "dashscope-omni" => Ok(DashscopeProtocol::Omni),
+        "dashscope-livetranslate" => Ok(DashscopeProtocol::LiveTranslate),
+        other => Err(format!(
+            "invalid --protocol '{other}'; expected dashscope-omni or dashscope-livetranslate"
+        )),
+    }
 }
 
 fn next_val(args: &mut impl Iterator<Item = String>, name: &str) -> Result<String, String> {
@@ -339,7 +360,7 @@ fn run_single_benchmark(
     audio_duration: f64,
 ) -> Result<RunResult, String> {
     let total_start = Instant::now();
-    let manual_response = config.manual || should_use_manual_response(&config.model);
+    let manual_response = config.manual || config.protocol == DashscopeProtocol::Omni;
 
     // ── Phase 1: Connect ──
     let connect_start = Instant::now();
@@ -661,8 +682,8 @@ fn receive_events(
 // ──────────────────────────────── Session Setup ─────────────────────────────
 
 fn build_session_update(config: &Config) -> Value {
-    let is_livetranslate = config.model.to_ascii_lowercase().contains("livetranslate");
-    let manual_response = config.manual || should_use_manual_response(&config.model);
+    let is_livetranslate = config.protocol == DashscopeProtocol::LiveTranslate;
+    let manual_response = config.manual || config.protocol == DashscopeProtocol::Omni;
 
     let turn_detection = if manual_response {
         Value::Null
@@ -917,10 +938,6 @@ fn resample_to_16k(samples: &[f32], source_rate: u32) -> Vec<i16> {
 
 fn should_replace_final_text(current: &str, candidate: &str) -> bool {
     !candidate.is_empty() && candidate.chars().count() >= current.chars().count()
-}
-
-fn should_use_manual_response(model: &str) -> bool {
-    !model.to_ascii_lowercase().contains("livetranslate")
 }
 
 // ──────────────────────────────── Statistics ────────────────────────────────

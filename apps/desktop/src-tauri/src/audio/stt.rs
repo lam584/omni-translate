@@ -42,7 +42,9 @@ fn stt_session_update() -> Value {
       "type": "session.update",
       "session": {
         "modalities": ["text"],
-        "input_audio_format": "pcm16",
+        // The qwen3-asr realtime endpoint only accepts "pcm" (raw 16-bit PCM);
+        // it rejects the omni-style "pcm16" spelling with an audio format error.
+        "input_audio_format": "pcm",
         "sample_rate": 16000,
         "input_audio_transcription": {
           "model": ASR_MODEL
@@ -540,5 +542,31 @@ mod tests {
         let encoded = base64_encode_pcm16(&samples);
 
         assert!(!encoded.is_empty());
+    }
+
+    #[test]
+    fn stt_session_update_matches_the_asr_realtime_contract() {
+        let session = stt_session_update();
+
+        // The ASR endpoint validates the format strictly: "pcm" is the only
+        // accepted value; "pcm16" is rejected with an Internal service error.
+        assert_eq!(
+            session.pointer("/session/input_audio_format").and_then(Value::as_str),
+            Some("pcm")
+        );
+        assert_eq!(
+            session.pointer("/session/sample_rate").and_then(Value::as_u64),
+            Some(16000)
+        );
+        assert_eq!(
+            session.pointer("/session/turn_detection/type").and_then(Value::as_str),
+            Some("server_vad")
+        );
+        assert_eq!(
+            session
+                .pointer("/session/input_audio_transcription/model")
+                .and_then(Value::as_str),
+            Some(ASR_MODEL)
+        );
     }
 }

@@ -274,8 +274,6 @@ describe('diagnostics page helpers', () => {
     expect(diagnosticsPageHelpers.isTextOutputEvent('response.text.delta')).toBe(true);
     expect(diagnosticsPageHelpers.isTextOutputEvent('response.audio.done')).toBe(false);
 
-    expect(diagnosticsPageHelpers.shouldUseManualBenchmarkMode('qwen3.5-omni-plus-realtime')).toBe(true);
-    expect(diagnosticsPageHelpers.shouldUseManualBenchmarkMode('qwen-livetranslate-realtime')).toBe(false);
     expect(diagnosticsPageHelpers.textLength('a好')).toBe(2);
     expect(diagnosticsPageHelpers.shouldUseCandidate('', '')).toBe(false);
     expect(diagnosticsPageHelpers.shouldUseCandidate('abc', 'ab')).toBe(false);
@@ -283,7 +281,7 @@ describe('diagnostics page helpers', () => {
 
     expect(diagnosticsPageHelpers.createEmptyBenchmarkReport('plain-model', 'sample.mp3')).toMatchObject({
       model: 'plain-model',
-      realtimeAudioMode: 'manual',
+      realtimeAudioMode: 'server_vad',
       interactionCapabilities: [],
       audioFile: 'sample.mp3',
       audioDurationSecs: 0,

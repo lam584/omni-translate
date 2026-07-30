@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import i18n from '../../i18n/config';
 import { runModelBenchmark, type BenchmarkProgressEvent, type BenchmarkReport } from '../../runtime/benchmark-runtime';
 import { readProviderSecret } from '../../runtime/provider-runtime';
-import type { RealtimeAudioMode } from '../../schema/config';
+import type { ProviderDraft, RealtimeAudioMode } from '../../schema/config';
 import type { ProviderInteractionCapability } from '../../schema/provider-contract';
 import { describeUnknownError } from '../../utils/describe-unknown-error';
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
@@ -18,6 +18,7 @@ export type BenchmarkVoiceModel = {
   baseUrl: string;
   authHeaderName: string;
   authScheme: string;
+  provider?: ProviderDraft;
 };
 
 type BenchmarkProgressView = Pick<BenchmarkProgressEvent, 'status' | 'phase' | 'message' | 'audioChunksSent' | 'totalAudioChunks' | 'error'>;
@@ -64,7 +65,12 @@ export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[])
     try {
       const secretPayload = await readProviderSecret(selected.authReference);
       if (!secretPayload.secret) throw new Error(i18n.t('diagnostics.benchmark.missingApiKey', { model: selected.displayName }));
-      setReport(createEmptyBenchmarkReport(selected.apiModelId, mp3Path, selected.interactionCapabilities));
+      setReport(createEmptyBenchmarkReport(
+        selected.apiModelId,
+        mp3Path,
+        selected.interactionCapabilities,
+        selected.realtimeAudioMode,
+      ));
       setModalOpen(true);
       const nextReport = await runModelBenchmark(selected.apiModelId, secretPayload.secret, mp3Path, {
         realtimeAudioMode: selected.realtimeAudioMode,
@@ -73,6 +79,7 @@ export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[])
         baseUrl: selected.baseUrl,
         authHeaderName: selected.authHeaderName,
         authScheme: selected.authScheme,
+        provider: selected.provider,
         onProgress: (event) => {
           setReport(event.report);
           setProgress({ status: event.status, phase: event.phase, message: event.message, audioChunksSent: event.audioChunksSent, totalAudioChunks: event.totalAudioChunks, error: event.error });

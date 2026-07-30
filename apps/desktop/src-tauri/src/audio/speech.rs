@@ -23,7 +23,7 @@ use super::state::{AudioRouteHandle, AudioStateStore, CachedTtsAudio, CapturedSe
 
 const SPEECH_POLL_INTERVAL_MS: u64 = 120;
 const SPEECH_DISPATCH_IDLE_INTERVAL_MS: u64 = 40;
-const MAX_PROCESSED_CUES: usize = 32;
+const MAX_PROCESSED_CUES: usize = 128;
 const PROMPT_TONE_MS: u32 = 90;
 
 mod playback_engine;
@@ -311,6 +311,8 @@ mod tests {
             template_id: "template".to_string(),
             provider_id: "provider".to_string(),
             kind: "openai-compatible".to_string(),
+            template_realtime_protocol: None,
+            realtime_protocol: None,
             display_name: "Provider".to_string(),
             model: "tts-model".to_string(),
             base_url: "http://127.0.0.1:1".to_string(),
@@ -583,7 +585,7 @@ mod tests {
             true,
         );
 
-        let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new());
 
         assert_eq!(tasks.len(), 1);
         assert!(!tasks[0].segment_mode);
@@ -615,14 +617,15 @@ mod tests {
             "hello\nthen wait",
             vec![
                 subtitle_segment("hello", "你好。", false),
-                subtitle_segment("then wait", "然后等等", true),
+                subtitle_segment("then wait", "然后等等", false),
+                subtitle_segment("", "", true),
             ],
             "你好。\n然后等等",
             false,
-            false,
+            true,
         );
 
-        let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new());
 
         assert_eq!(tasks.len(), 1);
         assert!(tasks[0].segment_mode);
@@ -643,14 +646,15 @@ mod tests {
                     "现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星",
                     false,
                 ),
-                subtitle_segment("then pending", "还在等待", true),
+                subtitle_segment("then pending", "还在等待", false),
+                subtitle_segment("", "", true),
             ],
             "现在你看到的这艘火箭造价十亿美元\n这项未来科技有朝一日将会带你远赴火星\n还在等待",
             false,
-            false,
+            true,
         );
 
-        let tasks = speech_dispatch_tasks_for_cue(&cue, &config);
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new());
 
         assert_eq!(tasks.len(), 2);
         assert_eq!(tasks[0].segment_index, 0);
@@ -946,5 +950,85 @@ mod tests {
         let requested = normalized_device_name("ibasso-dc-series");
 
         assert!(resolved.contains(&requested));
+    }
+
+    // ── planner tests ──────────────────────────────────────────────
+
+    fn planner_test_cue(
+        cue_id: &str,
+        translated_text: &str,
+        committed: bool,
+        translation_committed: bool,
+    ) -> SubtitleCueRuntime {
+        SubtitleCueRuntime {
+            cue_id: cue_id.to_string(),
+            route_direction: "inbound".to_string(),
+            source_text: "hello".to_string(),
+            display_source_text: "hello".to_string(),
+            display_segments: vec![],
+            translated_text: translated_text.to_string(),
+            started_at: "unix-ms:1".to_string(),
+            ended_at: "unix-ms:2".to_string(),
+            committed,
+            translation_committed,
+        }
+    }
+
+    fn planner_test_config() -> SpeechConfig {
+        SpeechConfig::from_value(&json!({
+            "speech": {
+                "enabled": true,
+                "translationAudioSource": "auto"
+            },
+            "devices": {
+                "subtitleTranslationMode": "native",
+                "outputSpeechEnabled": false
+            }
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn committed_cue_already_played_returns_empty_tasks() {
+        let config = planner_test_config();
+        let cue = planner_test_cue("cue-played", "hello translated", true, true);
+        let mut committed_played = HashSet::new();
+        committed_played.insert("cue-played".to_string());
+
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config, &committed_played);
+
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn stale_uncommitted_cue_returns_empty_tasks() {
+        let config = planner_test_config();
+        let cue = planner_test_cue("cue-stale", "hello translated", false, false);
+
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new());
+
+        assert!(tasks.is_empty());
+    }
+
+    #[test]
+    fn remember_committed_cue_played_evicts_oldest() {
+        let mut committed_played = HashSet::new();
+        let mut order = VecDeque::new();
+
+        // Fill beyond MAX_PROCESSED_CUES to trigger eviction.
+        for i in 0..=MAX_PROCESSED_CUES {
+            remember_committed_cue_played(
+                &format!("cue-{i}"),
+                &mut committed_played,
+                &mut order,
+            );
+        }
+
+        // The oldest entry (cue-0) must have been evicted.
+        assert!(!committed_played.contains("cue-0"));
+        // The newest entry must still be present.
+        assert!(committed_played.contains(&format!("cue-{}", MAX_PROCESSED_CUES)));
+        // The deque never exceeds the cap.
+        assert!(order.len() <= MAX_PROCESSED_CUES);
     }
 }

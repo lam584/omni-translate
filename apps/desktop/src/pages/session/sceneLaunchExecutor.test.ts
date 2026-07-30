@@ -20,9 +20,9 @@ function dependencies(calls: string[]) {
 
 describe('executeSceneLaunchPlan', () => {
   it('limits scene startup to less than one second', () => {
-    expect(sceneLaunchTimeoutMs('watch', true)).toBe(900);
-    expect(sceneLaunchTimeoutMs('voice-room', true)).toBe(900);
-    expect(sceneLaunchTimeoutMs('watch', false)).toBe(900);
+    expect(sceneLaunchTimeoutMs('watch')).toBe(900);
+    expect(sceneLaunchTimeoutMs('voice-room')).toBe(900);
+    expect(sceneLaunchTimeoutMs('game')).toBe(900);
   });
 
   it('returns fully-started after a sequential launch', async () => {

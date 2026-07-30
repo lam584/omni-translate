@@ -4,6 +4,8 @@ use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde_json::{json, Value};
 
+use crate::audio::omni::{build_dashscope_session_update, RealtimeAudioMode};
+
 use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError, ProviderStreamEventRecord, TtsAudioChunk, TtsSynthesisResult};
 use super::time::now_unix_seconds_marker;
 use super::transport::{read_json_frame, send_json_frame, WebSocketFrame, WebSocketTransport};
@@ -33,54 +35,38 @@ pub(crate) fn synthesize(
 
     let request_id = format!("realtime-audio-{}", now_unix_seconds_marker());
     let safe_id = request_id.replace([':', '-'], "_");
-    let mut session = json!({
-      "event_id": format!("evt_{}_session", safe_id),
-      "type": "session.update",
-      "session": {
-        "modalities": ["text", "audio"],
-        "instructions": format!(
-          "You are a speech synthesizer. Read the user-provided {} text aloud exactly. Do not translate, explain, summarize, or add words.",
-          target_language
-        ),
-        "input_audio_format": "pcm16",
-        "output_audio_format": "pcm",
-        "sample_rate": 24000,
-        "turn_detection": null
-      }
-    });
-    let trimmed_voice = voice.trim();
-    if !trimmed_voice.is_empty() {
-        session["session"]["voice"] = json!(trimmed_voice);
-    }
+    let profile = crate::audio::events::resolve_realtime_profile(&provider, &provider.model);
+    let protocol = profile.protocol_dialect.ok_or_else(|| {
+        ProviderRuntimeError::new(
+            "request.invalid",
+            "Realtime audio synthesis requires a resolved realtime protocol.",
+        )
+    })?;
+    let instructions = format!(
+        "You are a speech synthesizer. Read the user-provided {} text aloud exactly. Do not translate, explain, summarize, or add words.",
+        target_language
+    );
+    let mut session = build_dashscope_session_update(
+        protocol,
+        &voice,
+        &instructions,
+        RealtimeAudioMode::Manual,
+        &target_language,
+    )
+    .map_err(|message| ProviderRuntimeError::new("request.invalid", message))?;
+    session["event_id"] = json!(format!("evt_{}_session", safe_id));
     send_json_frame(&mut socket, &session, "realtime audio session.update failed")?;
 
-    let item_create = json!({
-      "event_id": format!("evt_{}_item", safe_id),
-      "type": "conversation.item.create",
-      "item": {
-        "type": "message",
-        "role": "user",
-        "content": [
-          {
-            "type": "input_text",
-            "text": text
-          }
-        ]
-      }
-    });
+    let mut item_create = crate::audio::omni::build_dashscope_text_item(&text);
+    item_create["event_id"] = json!(format!("evt_{}_item", safe_id));
     send_json_frame(
         &mut socket,
         &item_create,
         "realtime audio conversation.item.create failed",
     )?;
 
-    let response_create = json!({
-      "event_id": format!("evt_{}_resp", safe_id),
-      "type": "response.create",
-      "response": {
-        "modalities": ["audio", "text"]
-      }
-    });
+    let mut response_create = crate::audio::omni::build_dashscope_response_create();
+    response_create["event_id"] = json!(format!("evt_{}_resp", safe_id));
     send_json_frame(&mut socket, &response_create, "realtime audio response.create failed")?;
 
     let started_at = Instant::now();
@@ -98,7 +84,7 @@ pub(crate) fn synthesize(
             "failed to parse realtime audio websocket frame",
         )? {
             WebSocketFrame::Json(value) => {
-                let event_type = value.pointer("/type").and_then(Value::as_str).unwrap_or("");
+                let event_type = crate::audio::realtime_ws::server_event_type(&value, "");
                 match event_type {
                     "response.audio.delta" => {
                         if let Some(delta) = value.pointer("/delta").and_then(Value::as_str) {

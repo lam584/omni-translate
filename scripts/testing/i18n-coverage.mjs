@@ -13,6 +13,9 @@ const sourceFile = `${sourceLocale}.json`;
 const args = new Set(process.argv.slice(2));
 const failOnWarnings = args.has('--fail-on-warnings');
 const jsonOutput = args.has('--json');
+const ratchet = args.has('--ratchet');
+const updateRatchetBaseline = args.has('--update-ratchet-baseline');
+const ratchetBaselinePath = path.join(__dirname, 'i18n-coverage-baseline.json');
 const minTranslationCoverageArg = process.argv
   .slice(2)
   .find((arg) => arg.startsWith('--min-translation-coverage='));
@@ -217,7 +220,7 @@ if (jsonOutput) {
       result.placeholderMismatch.length > 0,
   );
 
-  if (issueResults.length > 0) {
+  if (issueResults.length > 0 && !ratchet) {
     console.log('');
     console.log('Top samples:');
     for (const result of issueResults) {
@@ -256,6 +259,44 @@ const thresholdFailures =
     ? []
     : results.filter((result) => result.translationCoverage < minTranslationCoverage);
 
-if (blockingFailures.length > 0 || thresholdFailures.length > 0 || (failOnWarnings && warningFailures.length > 0)) {
+let ratchetFailures = [];
+if (updateRatchetBaseline) {
+  const baseline = {
+    comment: 'Translation coverage ratchet. New English keys must be translated in every locale.',
+    sourceKeys,
+    translationCoverage: Object.fromEntries(
+      results.filter(({ locale }) => locale !== sourceLocale).map(({ locale, translationCoverage }) => [locale, translationCoverage]),
+    ),
+  };
+  fs.writeFileSync(ratchetBaselinePath, `${JSON.stringify(baseline, null, 2)}\n`, 'utf8');
+  console.log(`i18n ratchet baseline updated: ${path.relative(workspaceRoot, ratchetBaselinePath)}`);
+} else if (ratchet) {
+  const baseline = readJson(ratchetBaselinePath);
+  const previousKeys = new Set(baseline.sourceKeys ?? []);
+  const newKeys = sourceKeys.filter((key) => !previousKeys.has(key));
+  for (const result of results.filter(({ locale }) => locale !== sourceLocale)) {
+    const minimum = baseline.translationCoverage?.[result.locale];
+    if (typeof minimum !== 'number') {
+      ratchetFailures.push(`${result.locale}: missing coverage baseline`);
+    } else if (result.translationCoverage + Number.EPSILON < minimum) {
+      ratchetFailures.push(`${result.locale}: coverage ${result.translationCoverage.toFixed(4)}% < baseline ${minimum.toFixed(4)}%`);
+    }
+    const untranslatedNew = newKeys.filter((key) =>
+      result.missing.includes(key)
+      || result.empty.includes(key)
+      || result.sameAsSource.includes(key)
+      || result.rejected.includes(key));
+    if (untranslatedNew.length > 0) {
+      ratchetFailures.push(`${result.locale}: untranslated new keys: ${untranslatedNew.join(', ')}`);
+    }
+  }
+  if (ratchetFailures.length > 0) {
+    console.error(`i18n ratchet failed:\n${ratchetFailures.map((failure) => `- ${failure}`).join('\n')}`);
+  } else {
+    console.log(`i18n ratchet passed (${newKeys.length} new source key(s)).`);
+  }
+}
+
+if (blockingFailures.length > 0 || thresholdFailures.length > 0 || ratchetFailures.length > 0 || (failOnWarnings && warningFailures.length > 0)) {
   process.exitCode = 1;
 }

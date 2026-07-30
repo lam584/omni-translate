@@ -163,6 +163,7 @@ fn run_translate_worker(
     // forced-slot budget is zero. The concurrency cap follows the config knob
     // live via set_max_concurrent on each reload.
     let mut scheduler = TranslationScheduler::new(config.max_concurrent_requests, 0);
+    let mut reconnect_gen = store.reconnect_generation();
 
     loop {
         if stop_rx.try_recv().is_ok() {
@@ -170,6 +171,31 @@ fn run_translate_worker(
         }
 
         loop_count += 1;
+
+        // A reconnect bumped the generation: the stale `processed` entries
+        // from the previous session would prevent re-translation of new cues
+        // that happen to reuse the same cue id pattern, so clear them.
+        let current_gen = store.reconnect_generation();
+        if current_gen != reconnect_gen {
+            reconnect_gen = current_gen;
+            let stale_count = processed.len();
+            processed.clear();
+            processed_order.clear();
+            attempt_counts.clear();
+            let _ = append_diagnostics_log(
+                &app,
+                "translate",
+                "info",
+                format!(
+                    "reconnect detected: cleared {} stale processed cue(s), generation={}",
+                    stale_count, current_gen,
+                ),
+                None,
+                None,
+                None,
+            );
+        }
+
         if config_refreshed_at.elapsed() >= Duration::from_millis(TRANSLATE_POLL_INTERVAL_MS) {
             config = TranslateConfig::from_value(
                 &storage.load_config().unwrap_or_else(|_| initial_config.clone()),

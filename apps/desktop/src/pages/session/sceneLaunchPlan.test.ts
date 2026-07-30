@@ -4,6 +4,8 @@ import { audioRuntimeSnapshotMock } from '../../mocks/audio-runtime';
 import { buildSceneLaunchPlan, buildWatchFallbackPlan } from './sceneLaunchPlan';
 
 describe('buildSceneLaunchPlan', () => {
+  const nativeProfile = { nativeTranslation: true, speechDispatchPolicy: 'native-audio' as const };
+  const classicProfile = { nativeTranslation: false, speechDispatchPolicy: 'subtitle-tts' as const };
   const cases = [
     { name: 'watch omni', mode: 'watch' as const, omni: true, secondary: false,
       stages: ['inbound-route'] },
@@ -24,7 +26,7 @@ describe('buildSceneLaunchPlan', () => {
           speech: { ...structuredClone(audioRuntimeSnapshotMock.speech), dispatchState: 'idle' },
         },
         overlayVisible: false,
-        isOmniModel: testCase.omni,
+        realtimeProfile: testCase.omni ? nativeProfile : classicProfile,
         speechPatch: { enabled: true },
         secondarySubtitleTranslationEnabled: testCase.secondary,
       });
@@ -48,9 +50,9 @@ describe('buildSceneLaunchPlan', () => {
       overlayVisible: false,
       secondarySubtitleTranslationEnabled: false,
     };
-    expect(buildWatchFallbackPlan({ ...base, isOmniModel: false, speechPatch: { enabled: false } }).stages)
+    expect(buildWatchFallbackPlan({ ...base, realtimeProfile: classicProfile, speechPatch: { enabled: false } }).stages)
       .toEqual(['inbound-route', 'translate-worker']);
-    expect(buildWatchFallbackPlan({ ...base, isOmniModel: true, speechPatch: { enabled: true } }).stages)
+    expect(buildWatchFallbackPlan({ ...base, realtimeProfile: nativeProfile, speechPatch: { enabled: true } }).stages)
       .toEqual(['inbound-route', 'speech-dispatch']);
   });
 
@@ -64,7 +66,7 @@ describe('buildSceneLaunchPlan', () => {
       configDraft,
       audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
       overlayVisible: false,
-      isOmniModel: true,
+      realtimeProfile: nativeProfile,
       speechPatch: { enabled: true },
       secondarySubtitleTranslationEnabled: false,
     });
@@ -80,7 +82,7 @@ describe('buildSceneLaunchPlan', () => {
       configDraft: structuredClone(appConfigDraftMock),
       audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
       overlayVisible: false,
-      isOmniModel: true,
+      realtimeProfile: nativeProfile,
       speechPatch: { enabled: true },
       secondarySubtitleTranslationEnabled: false,
     });

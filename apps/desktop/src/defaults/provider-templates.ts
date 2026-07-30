@@ -328,6 +328,7 @@ export const providerTemplates: ProviderTemplate[] = [
     displayName: '阿里云百炼 API',
     description: '阿里云百炼官方 API，支持翻译、实时翻译与语音合成。',
     protocolLabel: 'HTTP / 实时长连接',
+    realtimeProtocol: 'dashscope-omni',
     notes: '支持 Qwen-Omni、Qwen-Plus 等模型，只需填入 API Key 即可使用。',
     supportedTransports: ['http', 'websocket'],
     defaultDraft: {

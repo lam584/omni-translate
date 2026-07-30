@@ -15,7 +15,7 @@ export function logSceneLaunchConfig(
   configDraft: AppConfigDraft,
   runtimeSnapshot: RuntimeSnapshot,
   audioRuntimeSnapshot: AudioRuntimeSnapshot,
-  extra?: { speechPatch?: Record<string, unknown>; isOmniModel?: boolean; secondarySubtitleTranslationEnabled?: boolean },
+  extra?: { speechPatch?: Record<string, unknown>; realtimeProfile?: { routeKind: string; protocolDialect: string | null }; secondarySubtitleTranslationEnabled?: boolean },
 ) {
   const label = resolveSceneLabel(mode);
   const timestamp = new Date().toISOString();
@@ -50,7 +50,7 @@ export function logSceneLaunchConfig(
   section('Scene information');
   log('scene mode (mode)', mode);
   log('scene label', label);
-  log('is Omni model', extra?.isOmniModel ?? false);
+  log('realtime profile', extra?.realtimeProfile ?? null);
   log('secondary subtitle translation enabled', extra?.secondarySubtitleTranslationEnabled ?? false);
   log('launch time', timestamp);
 

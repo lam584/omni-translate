@@ -1379,7 +1379,7 @@ describe('ProvidersPage', () => {
     await click(manualModelAddButton(container));
 
     const dialog = pendingRegistrationDialog(container, 'manual-game-model')!;
-    const interactionButtons = Array.from(dialog.querySelectorAll<HTMLElement>('.provider-capability-registry-pills')).at(1)!.querySelectorAll<HTMLButtonElement>('button');
+    const interactionButtons = dialog.querySelector<HTMLElement>('.provider-capability-registry-interactions')!.querySelectorAll<HTMLButtonElement>('button');
     const activeInteraction = Array.from(interactionButtons).find((button) => button.classList.contains('provider-scenario-pill-active'))!;
     await click(activeInteraction);
     await confirmPendingModelRegistration(container);
@@ -1727,7 +1727,8 @@ describe('ProvidersPage', () => {
     const entry = dialog.querySelector<HTMLElement>('.provider-capability-registry-item')!;
     const pillGroups = Array.from(entry.querySelectorAll<HTMLElement>('.provider-capability-registry-pills'));
     const activeCapability = pillGroups[0].querySelector<HTMLButtonElement>('.provider-scenario-pill-active')!;
-    const activeInteraction = pillGroups[1].querySelector<HTMLButtonElement>('.provider-scenario-pill-active')!;
+    const activeInteraction = entry.querySelector<HTMLElement>('.provider-capability-registry-interactions')!
+      .querySelector<HTMLButtonElement>('.provider-scenario-pill-active')!;
 
     await click(activeCapability);
     await click(activeInteraction);

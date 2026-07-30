@@ -215,7 +215,16 @@ pub(crate) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool)
         },
         "dashscope" => match provider.transport.as_str() {
             "websocket" => {
-                if provider.stream_enabled && is_dashscope_realtime_websocket_model(&provider.model)
+                let profile = crate::audio::events::resolve_realtime_profile(provider, &provider.model);
+                if provider.stream_enabled
+                    && matches!(
+                        profile.protocol_dialect,
+                        Some(
+                            crate::audio::events::RealtimeProtocol::DashscopeOmni
+                                | crate::audio::events::RealtimeProtocol::DashscopeLivetranslate
+                                | crate::audio::events::RealtimeProtocol::DashscopeAsr
+                        )
+                    )
                 {
                     ("websocket".to_string(), false)
                 } else {
@@ -228,11 +237,6 @@ pub(crate) fn resolve_transport(provider: &ProviderDraftInput) -> (String, bool)
         },
         _ => ("http".to_string(), true),
     }
-}
-
-pub(super) fn is_dashscope_realtime_websocket_model(model: &str) -> bool {
-    let normalized = model.to_ascii_lowercase();
-    normalized.contains("realtime") || normalized.contains("live")
 }
 
 pub(crate) fn is_openai_compatible_kind(kind: &str) -> bool {

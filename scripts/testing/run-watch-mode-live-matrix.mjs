@@ -45,6 +45,8 @@ const USAGE = `Usage: node scripts/testing/run-watch-mode-live-matrix.mjs [optio
 Options:
   --models <a,b>                                   comma-separated Watch Mode model ids
                                                    (default: ${DEFAULT_MODELS.join(',')})
+  --alias-model <id>                               optional keyword-free deployed alias to append
+  --alias-protocol <dialect>                       explicit protocol for --alias-model
   --feedback-loop-prevention-modes <a,b>           comma-separated modes among: ${SUPPORTED_FEEDBACK_MODES.join(', ')}
                                                    (default: ${DEFAULT_FEEDBACK_MODES.join(',')})
   --output-root <dir>                              default: ${MATRIX_DEFAULTS.outputRoot}
@@ -89,12 +91,16 @@ export const parseMatrixCliArgs = (argv) => {
     booleans: BOOLEAN_FLAGS,
     defaults: {
       models: DEFAULT_MODELS.join(','),
+      aliasModel: process.env.OMNI_WATCH_MODE_LIVE_ALIAS_MODEL_ID ?? '',
+      aliasProtocol: process.env.OMNI_WATCH_MODE_LIVE_ALIAS_PROTOCOL ?? 'dashscope-omni',
       feedbackLoopPreventionModes: DEFAULT_FEEDBACK_MODES.join(','),
       ...MATRIX_DEFAULTS,
     },
   });
   const knownKeys = new Set([
     'models',
+    'aliasModel',
+    'aliasProtocol',
     'feedbackLoopPreventionModes',
     ...Object.keys(MATRIX_DEFAULTS),
     ...BOOLEAN_FLAGS.map(toCamelCase),
@@ -140,6 +146,7 @@ export const resolveMatrixLists = ({ models, feedbackLoopPreventionModes }) => {
 // rejects the '-Switch:$true' literal form with a SwitchParameter binding error.
 export const buildRunnerArgv = ({
   model,
+  watchRealtimeProtocol = '',
   feedbackMode,
   outputRoot = MATRIX_DEFAULTS.outputRoot,
   mediaPath = MATRIX_DEFAULTS.mediaPath,
@@ -170,6 +177,7 @@ export const buildRunnerArgv = ({
     '-FeedbackLoopPrevention', feedbackMode,
     '-ExpectedPhysicalPlaybackDeviceName', expectedPhysicalPlaybackDeviceName,
   ];
+  if (watchRealtimeProtocol) argv.push('-WatchRealtimeProtocol', watchRealtimeProtocol);
   if (skipDesktopLaunch) argv.push('-SkipDesktopLaunch');
   if (skipDriverRepair) argv.push('-SkipDriverRepair');
   if (allowDriverRepair) argv.push('-AllowDriverRepair');
@@ -228,12 +236,20 @@ const runLiveRunner = (runnerArgv) => new Promise((resolve, reject) => {
 });
 
 export const runMatrix = async (options) => {
-  const { modelList, feedbackModeList } = resolveMatrixLists(options);
+  const { modelList: configuredModels, feedbackModeList } = resolveMatrixLists(options);
+  const modelList = [...configuredModels];
+  const aliasModel = String(options.aliasModel ?? '').trim();
+  const aliasProtocol = String(options.aliasProtocol ?? '').trim();
+  if (aliasModel && !modelList.includes(aliasModel)) modelList.push(aliasModel);
+  if (aliasModel && !['dashscope-omni', 'dashscope-livetranslate', 'dashscope-asr', 'openai-conversation', 'openai-translation', 'openai-transcription', 'openai-flat', 'gemini-live'].includes(aliasProtocol)) {
+    throw new Error(`Unsupported alias realtime protocol: ${aliasProtocol}`);
+  }
   const runDirectories = [];
   for (const model of modelList) {
     for (const feedbackMode of feedbackModeList) {
       console.error(`==> Running Watch Mode live strict matrix model: ${model} feedbackLoopPrevention: ${feedbackMode}`);
-      const { exitCode, stdout } = await runLiveRunner(buildRunnerArgv({ ...options, model, feedbackMode }));
+      const watchRealtimeProtocol = model === aliasModel ? aliasProtocol : '';
+      const { exitCode, stdout } = await runLiveRunner(buildRunnerArgv({ ...options, model, feedbackMode, watchRealtimeProtocol }));
       if (exitCode !== 0) {
         throw new Error(`Watch Mode live run failed for model ${model} feedbackLoopPrevention ${feedbackMode} with exit code ${exitCode}`);
       }

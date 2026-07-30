@@ -333,6 +333,8 @@ mod tests {
             template_id: template_id.to_string(),
             provider_id: provider_id.to_string(),
             kind: kind.to_string(),
+            template_realtime_protocol: None,
+            realtime_protocol: None,
             display_name: display_name.to_string(),
             model: model.to_string(),
             base_url,
@@ -372,7 +374,7 @@ mod tests {
     }
 
     fn dashscope_provider(base_url: String) -> ProviderDraftInput {
-        provider_draft(
+        let mut provider = provider_draft(
             "template-dashscope-realtime",
             "provider-dashscope",
             "dashscope",
@@ -382,11 +384,13 @@ mod tests {
             "websocket",
             Some("cn-beijing".to_string()),
             "game-live-translation-cn",
-        )
+        );
+        provider.realtime_protocol = Some("dashscope-omni".to_string());
+        provider
     }
 
     fn realtime_provider(base_url: String) -> ProviderDraftInput {
-        provider_draft(
+        let mut provider = provider_draft(
             "template-dashscope-realtime",
             "provider-dashscope-realtime",
             "dashscope",
@@ -396,7 +400,9 @@ mod tests {
             "websocket",
             Some("cn-beijing".to_string()),
             "game-live-translation-cn",
-        )
+        );
+        provider.realtime_protocol = Some("dashscope-omni".to_string());
+        provider
     }
 
     #[test]
@@ -620,21 +626,27 @@ mod tests {
     #[test]
     fn dashscope_websocket_smoke_reads_text_frames() {
         let (ws_url, _server) = spawn_ws_server(|websocket| {
-            let _ = websocket.read().expect("request payload should arrive");
+            for _ in 0..3 {
+                let _ = websocket.read().expect("realtime request payload should arrive");
+            }
             websocket
                 .send(Message::Text(
-                    "{\"event\":{\"textDelta\":\"Realtime \"}}"
+                    "{\"type\":\"response.text.delta\",\"delta\":\"Realtime \"}"
                         .to_string()
                         .into(),
                 ))
                 .expect("delta frame should send");
             websocket
         .send(Message::Text(
-          "{\"event\":{\"textDelta\":\"translation\",\"type\":\"response.completed\"},\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}"
+          "{\"type\":\"response.text.delta\",\"delta\":\"translation\"}"
             .to_string()
             .into(),
         ))
         .expect("completion frame should send");
+        websocket.send(Message::Text(
+          "{\"type\":\"response.done\",\"response\":{\"usage\":{\"input_tokens\":10,\"output_tokens\":2}}}"
+            .to_string().into(),
+        )).expect("done frame should send");
         });
 
         let gateway = ProviderGateway::new();
@@ -656,10 +668,12 @@ mod tests {
     fn dashscope_translation_forwards_delta_before_stream_completion() {
         let (release_tx, release_rx) = mpsc::channel();
         let (ws_url, server) = spawn_ws_server(move |websocket| {
-            let _ = websocket.read().expect("request payload should arrive");
+            for _ in 0..3 {
+                let _ = websocket.read().expect("realtime request payload should arrive");
+            }
             websocket
                 .send(Message::Text(
-                    "{\"event\":{\"textDelta\":\"Realtime \"}}"
+                    "{\"type\":\"response.text.delta\",\"delta\":\"Realtime \"}"
                         .to_string()
                         .into(),
                 ))
@@ -669,11 +683,18 @@ mod tests {
                 .expect("test should release the completion frame");
             websocket
                 .send(Message::Text(
-                    "{\"event\":{\"textDelta\":\"translation\",\"type\":\"response.completed\"}}"
+                    "{\"type\":\"response.text.delta\",\"delta\":\"translation\"}"
                         .to_string()
                         .into(),
                 ))
                 .expect("completion frame should send");
+            websocket
+                .send(Message::Text(
+                    "{\"type\":\"response.done\",\"response\":{}}"
+                        .to_string()
+                        .into(),
+                ))
+                .expect("done frame should send");
         });
 
         let (delta_rx, client) = spawn_delta_forwarding_client(
@@ -1209,6 +1230,8 @@ mod tests {
             template_id: config.template_id.clone(),
             provider_id: config.provider_id.clone(),
             kind: config.kind.clone(),
+            template_realtime_protocol: None,
+            realtime_protocol: None,
             display_name: config.name.clone(),
             model: config.model.clone(),
             base_url: config.base_url.clone(),

@@ -55,6 +55,7 @@ pub enum OpenAiRealtimeDialect {
     FlatCompat,
 }
 
+#[cfg(test)]
 pub fn resolve_dialect(model: &str) -> OpenAiRealtimeDialect {
     let lower = model.to_ascii_lowercase();
     if lower.contains("glm") {
@@ -68,16 +69,32 @@ pub fn resolve_dialect(model: &str) -> OpenAiRealtimeDialect {
     }
 }
 
+fn resolve_provider_dialect(provider: &ProviderDraftInput) -> Result<OpenAiRealtimeDialect, String> {
+    let protocol = super::events::resolve_realtime_profile(provider, &provider.model)
+        .protocol_dialect
+        .ok_or_else(|| format!("provider '{}' has no realtime protocol", provider.provider_id))?;
+    dialect_from_protocol(protocol)
+}
+
+pub(crate) fn dialect_from_protocol(
+    protocol: super::events::RealtimeProtocol,
+) -> Result<OpenAiRealtimeDialect, String> {
+    use super::events::RealtimeProtocol;
+
+    match protocol {
+        RealtimeProtocol::OpenAiConversation => Ok(OpenAiRealtimeDialect::Conversation),
+        RealtimeProtocol::OpenAiTranslation => Ok(OpenAiRealtimeDialect::Translation),
+        RealtimeProtocol::OpenAiTranscription => Ok(OpenAiRealtimeDialect::Transcription),
+        RealtimeProtocol::OpenAiFlat => Ok(OpenAiRealtimeDialect::FlatCompat),
+        protocol => Err(format!("not an OpenAI realtime protocol: {protocol:?}")),
+    }
+}
+
 fn dialect_input_rate(dialect: OpenAiRealtimeDialect) -> u32 {
     match dialect {
         OpenAiRealtimeDialect::FlatCompat => 16_000,
         _ => OPENAI_INPUT_SAMPLE_RATE_HZ,
     }
-}
-
-fn is_realtime_whisper_model(model: &str) -> bool {
-    let lower = model.to_ascii_lowercase();
-    lower.contains("realtime") && lower.contains("whisper")
 }
 
 fn build_realtime_base_url(base_url: &str) -> Result<Url, String> {
@@ -130,7 +147,7 @@ pub fn build_openai_transcription_url(base_url: &str) -> Result<Url, String> {
     Ok(url)
 }
 
-fn build_ws_url(dialect: OpenAiRealtimeDialect, base_url: &str, model: &str) -> Result<Url, String> {
+pub(crate) fn build_ws_url(dialect: OpenAiRealtimeDialect, base_url: &str, model: &str) -> Result<Url, String> {
     match dialect {
         OpenAiRealtimeDialect::Conversation | OpenAiRealtimeDialect::FlatCompat => {
             build_openai_realtime_url(base_url, model)
@@ -221,9 +238,10 @@ fn build_translation_session_update(target_language: &str) -> Value {
 
 fn build_transcription_session_update(model: &str, mode: RealtimeAudioMode) -> Value {
     let mut transcription = json!({ "model": model });
-    // gpt-realtime-whisper streams natively; OpenAI recommends null turn
-    // detection with manual commits and a delay tier for caption latency.
-    let turn_detection = if is_realtime_whisper_model(model) {
+    // Manual transcription profiles stream with explicit commits and use the
+    // low-delay caption tier. This is profile-driven so deployment aliases do
+    // not change the wire schema.
+    let turn_detection = if mode == RealtimeAudioMode::Manual {
         transcription["delay"] = Value::String("low".to_string());
         Value::Null
     } else {
@@ -286,7 +304,7 @@ fn build_flat_session_update(
     })
 }
 
-fn build_session_update(
+pub(crate) fn build_session_update(
     dialect: OpenAiRealtimeDialect,
     model: &str,
     instructions: &str,
@@ -332,7 +350,7 @@ fn build_response_create_flat() -> Value {
     })
 }
 
-fn audio_append_event(dialect: OpenAiRealtimeDialect, audio_b64: &str) -> Value {
+pub(crate) fn audio_append_event(dialect: OpenAiRealtimeDialect, audio_b64: &str) -> Value {
     // The translation endpoint namespaces its client events under `session.`.
     let event_type = match dialect {
         OpenAiRealtimeDialect::Translation => "session.input_audio_buffer.append",
@@ -350,13 +368,11 @@ fn dialect_has_ready_handshake(dialect: OpenAiRealtimeDialect) -> bool {
 fn uses_timed_manual_commit(
     dialect: OpenAiRealtimeDialect,
     mode: RealtimeAudioMode,
-    model: &str,
+    _model: &str,
 ) -> bool {
     match dialect {
         OpenAiRealtimeDialect::Translation => false,
-        OpenAiRealtimeDialect::Transcription => {
-            is_realtime_whisper_model(model) || mode.uses_manual_commit()
-        }
+        OpenAiRealtimeDialect::Transcription => mode.uses_manual_commit(),
         OpenAiRealtimeDialect::Conversation | OpenAiRealtimeDialect::FlatCompat => {
             mode.uses_manual_commit()
         }
@@ -365,7 +381,7 @@ fn uses_timed_manual_commit(
 
 /// Manual-commit follow-up: conversation sessions also ask for a response
 /// unless an external translator owns the output.
-fn manual_commit_messages(
+pub(crate) fn manual_commit_messages(
     dialect: OpenAiRealtimeDialect,
     subtitle_translate_active: bool,
 ) -> Vec<Value> {
@@ -395,10 +411,7 @@ fn should_commit_translation_cue(idle_ms: u64, source_text: &str) -> bool {
 }
 
 fn extract_text_delta(evt: &Value) -> Option<&str> {
-    evt.pointer("/delta")
-        .and_then(Value::as_str)
-        .or_else(|| evt.pointer("/text").and_then(Value::as_str))
-        .or_else(|| evt.pointer("/transcript").and_then(Value::as_str))
+    super::realtime_ws::server_text_delta(evt)
 }
 
 /// Response payloads carry text under both "text" and "transcript" keys.
@@ -592,7 +605,7 @@ fn run_openai_worker(
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
-    let dialect = resolve_dialect(&provider.model);
+    let dialect = resolve_provider_dialect(&provider)?;
     let session_update = build_session_update(
         dialect,
         &provider.model,
@@ -770,7 +783,7 @@ fn run_openai_worker(
                 let Ok(evt) = serde_json::from_str::<Value>(&text) else {
                     continue;
                 };
-                let event_type = evt["type"].as_str().unwrap_or("(unknown)");
+                let event_type = super::realtime_ws::server_event_type(&evt, "(unknown)");
                 trace_call.record_ws_recv(event_type, evt.clone());
                 handle_server_event(
                     &app,
@@ -1062,7 +1075,7 @@ fn shutdown_session(
                         let Ok(evt) = serde_json::from_str::<Value>(&text) else {
                             continue;
                         };
-                        let event_type = evt["type"].as_str().unwrap_or("(unknown)");
+                        let event_type = super::realtime_ws::server_event_type(&evt, "(unknown)");
                         trace_call.record_ws_recv(event_type, evt.clone());
                         match event_type {
                             "session.closed" => break,
@@ -1397,10 +1410,15 @@ mod tests {
             RealtimeAudioMode::Manual,
             "gpt-realtime-translate"
         ));
-        assert!(uses_timed_manual_commit(
+        assert!(!uses_timed_manual_commit(
             OpenAiRealtimeDialect::Transcription,
             RealtimeAudioMode::ServerVad,
             "gpt-realtime-whisper"
+        ));
+        assert!(uses_timed_manual_commit(
+            OpenAiRealtimeDialect::Transcription,
+            RealtimeAudioMode::Manual,
+            "deployment-blue"
         ));
         assert!(uses_timed_manual_commit(
             OpenAiRealtimeDialect::Conversation,

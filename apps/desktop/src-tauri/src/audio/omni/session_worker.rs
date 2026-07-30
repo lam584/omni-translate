@@ -828,8 +828,8 @@ pub(super) fn reconnect_socket<R: tauri::Runtime>(
     set_socket_write_timeout(&mut socket);
     set_socket_read_timeout(&mut socket);
 
-    let session_cfg = build_omni_session_update(
-        &provider.model,
+    let session_cfg = build_omni_session_update_for_provider(
+        provider,
         voice,
         instructions,
         audio_mode,

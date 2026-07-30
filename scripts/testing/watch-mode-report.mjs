@@ -13,6 +13,10 @@ export function currentGitCommit() {
 }
 
 const DEFAULT_SUSPECT_FILES = {
+  environment: [
+    'scripts/testing/run-watch-mode-live.ps1',
+    'scripts/testing/watch-mode-report.mjs',
+  ],
   driver: [
     'drivers/windows-virtual-mic/sysvad/omni_bridge_ring.cpp',
     'drivers/windows-virtual-mic/sysvad/EndpointsCommon/minwavertstream.cpp',
@@ -932,7 +936,7 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
       details: summarizeStepDetails(step),
     }));
   const failedLayers = Object.entries(layers)
-    .filter(([, layer]) => layer.status === 'failed' || layer.status === 'inconclusive')
+    .filter(([, layer]) => ['failed', 'blocked', 'inconclusive'].includes(layer.status))
     .map(([layer, details]) => ({
       layer,
       status: details.status,
@@ -996,6 +1000,19 @@ function normalizeFeedbackLoopPrevention(value) {
   return value === 'echo-cancel' ? 'echo-cancel' : 'virtual-driver';
 }
 
+function environmentPrecheckFailed(input) {
+  const precheck = normalizeSteps(input.steps).find((step) => (
+    !step.ok
+    && /^(?:build bridge service native|driver probe|driver probe after repair|bridge source frame probe|physical output loopback probe|start desktop shell|start physical output content recording)$/i.test(step.name)
+  ));
+  if (precheck) return `${precheck.name}: ${precheck.error ?? 'environment prerequisite failed'}`;
+  const message = String(input.failure?.message ?? '');
+  if (/requires elevation|executable not found|api key is required|environment prerequisite|missing required/i.test(message)) {
+    return message;
+  }
+  return null;
+}
+
 export function classifyWatchModeRun(input) {
   const feedbackLoopPrevention = normalizeFeedbackLoopPrevention(
     input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
@@ -1011,6 +1028,7 @@ export function classifyWatchModeRun(input) {
     speechSegmentation,
   });
   const layers = {
+    environment: createLayer('environment', input.steps),
     driver: createLayer('driver', input.driver),
     wasapi: createLayer('wasapi', input.wasapi),
     bridge: createLayer('bridge', input.bridge, {
@@ -1041,6 +1059,7 @@ export function classifyWatchModeRun(input) {
   }
 
   const runnerFailureReason = input.failure?.message ?? null;
+  const environmentReason = environmentPrecheckFailed(input);
   const hardProviderReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent, { hardOnly: true });
   const providerReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent);
   const providerBeforeAppReason = omniAudibleNoVadReason(appLog);
@@ -1048,10 +1067,11 @@ export function classifyWatchModeRun(input) {
   const secondaryPreconnectReason = secondaryPreconnectLayerFailed(appLog, translationRoute);
   const checks = runnerFailureReason
     ? [
-        ['app', runnerFailureReason],
         ['driver', driverLayerFailed(input.driver)],
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
         ['bridge', bridgeLayerFailed(input.bridge, bridgeLog)],
+        ['environment', environmentReason],
+        ['app', environmentReason ? null : runnerFailureReason],
         ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput)],
         ...(subtitleConfigReason ? [['app', subtitleConfigReason]] : []),
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
@@ -1085,10 +1105,19 @@ export function classifyWatchModeRun(input) {
     addLayerFailure(layers, layer, reason, input.mode ?? 'live');
   }
 
+  if (environmentReason && layers.environment.reason) {
+    layers.environment.status = 'blocked';
+    if (layers.driver.reason) layers.driver.status = 'blocked';
+    if (layers.wasapi.reason) layers.wasapi.status = 'blocked';
+  }
+
   const failed = activeChecks.find(([layer]) => layers[layer].status === 'failed');
   const inconclusive = activeChecks.find(([layer]) => layers[layer].status === 'inconclusive');
-  const failureLayer = failed?.[0] ?? inconclusive?.[0] ?? null;
-  const verdict = failed ? 'failed' : inconclusive ? 'inconclusive' : 'passed';
+  const blocked = environmentReason
+    ? (layers.driver.reason ? ['driver', layers.driver.reason] : ['environment', environmentReason])
+    : null;
+  const failureLayer = blocked?.[0] ?? failed?.[0] ?? inconclusive?.[0] ?? null;
+  const verdict = blocked ? 'blocked' : failed ? 'failed' : inconclusive ? 'inconclusive' : 'passed';
   const diagnostics = buildReportDiagnostics(input, layers, activeChecks, appLog, bridgeLog);
   return {
     schemaVersion: 1,

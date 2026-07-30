@@ -49,7 +49,7 @@ fn handle_realtime_event(
     ms: f64,
     event: &Value,
 ) -> Result<(), String> {
-    let etype = event["type"].as_str().unwrap_or("?");
+    let etype = crate::audio::realtime_ws::server_event_type(event, "?");
 
     match etype {
         "input_audio_buffer.speech_started" => {

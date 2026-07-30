@@ -2,11 +2,10 @@ import type { StatusTone } from '../../components/page/StatusBadge';
 import i18n from '../../i18n/config';
 import type { BenchmarkReport } from '../../runtime/benchmark-runtime';
 import { resolveRuntimeBridgeStatus } from '../../runtime/runtime-status';
-import type { AppConfigDraft } from '../../schema/config';
+import type { AppConfigDraft, RealtimeAudioMode } from '../../schema/config';
 import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import type { ProviderInteractionCapability } from '../../schema/provider-contract';
-import { shouldUseManualBenchmarkMode } from './DiagnosticsDetails';
 
 export type RuntimeEnvironmentSummary = {
   mode: 'browser-preview' | 'runtime-error' | 'live-action-needed' | 'live-ready';
@@ -18,10 +17,11 @@ export function createEmptyBenchmarkReport(
   model: string,
   audioFile: string,
   interactionCapabilities: ProviderInteractionCapability[] = [],
+  realtimeAudioMode: RealtimeAudioMode = 'server_vad',
 ): BenchmarkReport {
   return {
     model,
-    realtimeAudioMode: shouldUseManualBenchmarkMode(model) ? 'manual' : 'server_vad',
+    realtimeAudioMode,
     interactionCapabilities,
     audioFile,
     audioDurationSecs: 0,

@@ -177,26 +177,8 @@ fn apply_benchmark_auth(
 }
 
 fn build_default_benchmark_url(base_url: &str, model: &str) -> Result<Url, String> {
-    let mut url =
-        Url::parse(base_url.trim()).map_err(|e| format!("invalid base URL: {e}"))?;
-    let scheme = match url.scheme() {
-        "https" => "wss",
-        "http" => "ws",
-        "wss" | "ws" => url.scheme(),
-        other => return Err(format!("unsupported URL scheme: {other}")),
-    }
-    .to_string();
-    url.set_scheme(&scheme)
-        .map_err(|_| format!("unsupported URL scheme: {scheme}"))?;
-    // DashScope uses a fixed WebSocket endpoint path, distinct from the REST API path.
-    if url
-        .host_str()
-        .is_some_and(|h| h.contains("dashscope.aliyuncs.com"))
-    {
-        url.set_path("/api-ws/v1/realtime");
-    }
-    url.query_pairs_mut().clear().append_pair("model", model);
-    Ok(url)
+    crate::provider::gateway_parts::transport::to_websocket_url(base_url, model)
+        .map_err(|error| error.message)
 }
 
 // Benchmark and the production watch-mode workers must speak the identical
@@ -210,36 +192,17 @@ fn build_gemini_benchmark_url(base_url: &str) -> Result<Url, String> {
 }
 
 fn build_session_update(config: &BenchmarkConfig) -> Value {
-    let is_livetranslate = config.model.to_ascii_lowercase().contains("livetranslate");
-    let audio_mode_driver = benchmark_audio_mode_driver(config.audio_mode);
-    let turn_detection = audio_mode_driver.turn_detection();
-
-    let input_audio_format = if is_livetranslate { "pcm" } else { "pcm16" };
-
-    let mut session = json!({
-        "type": "session.update",
-        "session": {
-            "modalities": ["text", "audio"],
-            "voice": config.voice,
-            "instructions": "Transcribe the input audio and translate it to Chinese. Keep the response concise.",
-            "input_audio_format": input_audio_format,
-            "sample_rate": 16000,
-            "output_audio_format": "pcm",
-            "turn_detection": turn_detection,
-        }
-    });
-
-    if is_livetranslate {
-        session["session"]["input_audio_transcription"] = json!({
-            "model": "qwen3-asr-flash-realtime",
-            "language": config.source_language
-        });
-        session["session"]["translation"] = json!({
-            "language": normalize_language(&config.target_language)
-        });
-    }
-
-    session
+    let protocol = config
+        .protocol_dialect
+        .unwrap_or(crate::audio::events::RealtimeProtocol::DashscopeOmni);
+    crate::audio::omni::build_dashscope_session_update(
+        protocol,
+        &config.voice,
+        BENCHMARK_INSTRUCTIONS,
+        to_production_audio_mode(config.audio_mode),
+        &config.target_language,
+    )
+    .expect("DashScope benchmark must use an Omni or LiveTranslate protocol")
 }
 
 const BENCHMARK_INSTRUCTIONS: &str =
@@ -254,7 +217,15 @@ fn to_production_audio_mode(mode: RealtimeAudioMode) -> crate::audio::omni::Real
 }
 
 fn build_openai_session_update(config: &BenchmarkConfig) -> Value {
-    crate::audio::openai_realtime::build_conversation_session_update(
+    let dialect = config
+        .protocol_dialect
+        .map(crate::audio::openai_realtime::dialect_from_protocol)
+        .transpose()
+        .expect("benchmark protocol must resolve")
+        .unwrap_or(crate::audio::openai_realtime::OpenAiRealtimeDialect::Conversation);
+    crate::audio::openai_realtime::build_session_update(
+        dialect,
+        &config.model,
         BENCHMARK_INSTRUCTIONS,
         to_production_audio_mode(config.audio_mode),
         &config.target_language,
@@ -535,14 +506,4 @@ fn is_timeout(msg: &str) -> bool {
 fn base64_encode_i16(samples: &[i16]) -> String {
     let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
     base64::engine::general_purpose::STANDARD.encode(bytes)
-}
-
-fn normalize_language(lang: &str) -> &str {
-    match lang {
-        l if l.starts_with("zh") => "zh",
-        l if l.starts_with("en") => "en",
-        l if l.starts_with("ja") => "ja",
-        l if l.starts_with("ko") => "ko",
-        other => other,
-    }
 }

@@ -6,7 +6,7 @@ use tauri::{AppHandle, Manager};
 use super::super::contracts::AudioRuntimeSnapshot;
 use super::super::state::AudioStateStore;
 use super::super::{gemini_live, omni, openai_realtime, tencent_speech_translate};
-use super::route_config::{is_omni_model, resolve_model_provider_from_config, ResolvedRoutePlan};
+use super::route_config::{resolve_model_provider_from_config, resolve_realtime_profile, ResolvedRoutePlan};
 use super::{OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT};
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::ProviderDraftInput;
@@ -379,7 +379,7 @@ pub(crate) fn preconnect_omni_realtime_inner(
     else {
         return Ok(state.snapshot());
     };
-    if !is_omni_model(&voice_provider.model) {
+    if !resolve_realtime_profile(&voice_provider, &voice_provider.model).preconnect_allowed {
         return Ok(state.snapshot());
     }
     let plan = ResolvedRoutePlan::from_resolved_provider(

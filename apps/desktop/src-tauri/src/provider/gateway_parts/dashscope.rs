@@ -80,7 +80,15 @@ fn execute_websocket(
     on_delta: DeltaCallback<'_>,
 ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
     let provider = context.provider;
-    if provider.model.to_ascii_lowercase().contains("realtime") {
+    let profile = crate::audio::events::resolve_realtime_profile(provider, &provider.model);
+    if matches!(
+        profile.protocol_dialect,
+        Some(
+            crate::audio::events::RealtimeProtocol::DashscopeOmni
+                | crate::audio::events::RealtimeProtocol::DashscopeLivetranslate
+                | crate::audio::events::RealtimeProtocol::DashscopeAsr
+        )
+    ) {
         return execute_realtime_websocket(context, on_delta);
     }
 
@@ -149,45 +157,35 @@ fn execute_realtime_websocket(
     let instructions =
         build_translation_system_prompt(provider, context.source_language, context.target_language);
 
-    let session_update = json!({
-      "event_id": format!("evt_{}_session", safe_id),
-      "type": "session.update",
-      "session": {
-        "modalities": provider.response_modalities,
-        "instructions": instructions,
-        "turn_detection": null
-      }
-    });
+    let audio_mode = crate::audio::omni::RealtimeAudioMode::from_config_value(
+        Some(&crate::audio::events::resolve_realtime_profile(provider, &provider.model).realtime_audio_mode),
+        &provider.model,
+    )
+    .map_err(|error| ProviderRuntimeError::new("request.invalid", error))?;
+    let mut session_update = crate::audio::omni::build_omni_session_update_for_provider(
+        provider,
+        "",
+        &instructions,
+        audio_mode,
+        context.target_language,
+    );
+    session_update["event_id"] = json!(format!("evt_{}_session", safe_id));
     send_json_frame(
         &mut socket,
         &session_update,
         "DashScope Realtime session.update 发送失败",
     )?;
 
-    let item_create = json!({
-      "event_id": format!("evt_{}_item", safe_id),
-      "type": "conversation.item.create",
-      "item": {
-        "type": "message",
-        "role": "user",
-        "content": [
-          {
-            "type": "input_text",
-            "text": context.source_text
-          }
-        ]
-      }
-    });
+    let mut item_create = crate::audio::omni::build_dashscope_text_item(context.source_text);
+    item_create["event_id"] = json!(format!("evt_{}_item", safe_id));
     send_json_frame(
         &mut socket,
         &item_create,
         "DashScope Realtime conversation.item.create 发送失败",
     )?;
 
-    let response_create = json!({
-      "event_id": format!("evt_{}_resp", safe_id),
-      "type": "response.create"
-    });
+    let mut response_create = crate::audio::omni::build_dashscope_response_create();
+    response_create["event_id"] = json!(format!("evt_{}_resp", safe_id));
     send_json_frame(
         &mut socket,
         &response_create,
@@ -208,10 +206,10 @@ fn execute_realtime_websocket(
             "无法解析 DashScope Realtime WebSocket 响应",
         )? {
             WebSocketFrame::Json(value) => {
-                let event_type = value.pointer("/type").and_then(Value::as_str).unwrap_or("");
+                let event_type = crate::audio::realtime_ws::server_event_type(&value, "");
 
                 if event_type == "response.text.delta" {
-                    if let Some(delta) = value.pointer("/delta").and_then(Value::as_str) {
+                    if let Some(delta) = crate::audio::realtime_ws::server_text_delta(&value) {
                         record_translation_delta(
                             &mut result,
                             &started,

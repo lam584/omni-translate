@@ -926,12 +926,58 @@
       "description": "Listelenmemiş modeller için yetenekleri ve gerçek zamanlı ses modlarını kaydedin.",
       "addEntry": "Giriş ekle",
       "closeTitle": "Yetenek kaydını kapat",
-      "modelIdPlaceholder": "Model Kimliği",
+      "modelIdPlaceholder": "Model kimliği girin, örn. qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "Model kimliği",
+      "duplicateModelId": "Bu model kimliği için zaten bir giriş var; yalnızca ilki geçerlidir",
       "deleteEntry": "Yetenek girişini sil",
       "emptyTitle": "Henüz özel yetenek girişi yok",
       "emptyDescription": "Özel modellerin özelliklerini desteklemek için girişler ekleyin."
     },
+    "capabilityLabels": {
+      "speech-to-text": "Konuşma tanıma",
+      "text-to-speech": "Konuşma sentezi",
+      "speech-to-speech": "Konuşma çevirisi",
+      "text-generation": "Metin üretimi"
+    },
+    "capabilityHints": {
+      "speech-to-text": "Konuşma tanıma (STT): konuşmayı metne dönüştürür",
+      "text-to-speech": "Konuşma sentezi (TTS): metni sesli okur",
+      "speech-to-speech": "Konuşma çevirisi (S2S): konuşmayı doğrudan başka bir dilde konuşmaya çevirir",
+      "text-generation": "Metin üretimi: büyük dil modeliyle metni çevirir veya yeniden yazar"
+    },
+    "interactionLabels": {
+      "auto_vad": "Otomatik bölütleme",
+      "manual_commit": "Elle gönderim",
+      "client_activity": "İstemci etkinlik sinyalleri",
+      "streaming": "Akış çıkışı",
+      "chunked_http_audio": "Parçalı HTTP sesi",
+      "push_to_talk": "Bas konuş",
+      "server_commit_tts": "Sunucu TTS gönderimi",
+      "commit_tts": "TTS gönderimi",
+      "text_only_backend": "Yalnızca metin arka ucu",
+      "pipeline_asr_mt_tts": "ASR-MT-TTS hattı"
+    },
+    "interactionHints": {
+      "auto_vad": "Sunucu konuşmanın başlangıcını ve bitişini otomatik algılar; elle işlem gerekmez",
+      "manual_commit": "Uygulama cümlenin bittiğine karar verip ses parçasını gönderir",
+      "client_activity": "Uygulama açık başlangıç/bitiş etkinlik sinyalleri gönderir (Gemini Live tarzı)",
+      "streaming": "Sonuçlar tek seferde değil akış halinde gelir",
+      "chunked_http_audio": "Ses gerçek zamanlı bağlantı yerine HTTP ile parçalar halinde yüklenir",
+      "push_to_talk": "Bas-konuş tarzı kaydı destekler; sınırları kullanıcı kontrol eder",
+      "server_commit_tts": "Her gönderilen parçadan sonra sunucu ses sentezini tetikler",
+      "commit_tts": "Metin gönderiminden sonra ses sentezi açıkça istenir",
+      "text_only_backend": "Yalnızca metin girişi ve çıkışı; ses desteği yok",
+      "pipeline_asr_mt_tts": "Tanıma, çeviri ve sentez üç zincirli adım olarak çalışır"
+    },
+    "interactionGroups": {
+      "segmentation": "Bölütleme ve gönderim",
+      "transport": "Aktarım yöntemi",
+      "tts": "Ses sentezi",
+      "backend": "Arka uç türü"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "Model yetenekleri",
+      "interactionSectionTitle": "Etkileşim yetenekleri",
       "title": "Gerçek zamanlı ses modları",
       "description": "Her mod, gecikmeyi, cümle sınırı doğruluğunu ve protokol uyumluluğunu etkileyerek sesin nasıl bölümlere ayrıldığını ve sunucuya gönderildiğini kontrol eder.",
       "closeTitle": "Yardımı kapat",

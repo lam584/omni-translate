@@ -5,6 +5,11 @@ import { audioRuntimeSnapshotMock } from '../../mocks/audio-runtime';
 import { runtimeSnapshotMock } from '../../mocks/runtime-shell';
 import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
+import type { ResolvedRealtimeProfile } from '../../utils/realtime-profile';
+
+type LaunchRealtimeProfile = Pick<ResolvedRealtimeProfile, 'nativeTranslation' | 'speechDispatchPolicy'>;
+const nativeRealtimeProfile: LaunchRealtimeProfile = { nativeTranslation: true, speechDispatchPolicy: 'native-audio' };
+const classicRealtimeProfile: LaunchRealtimeProfile = { nativeTranslation: false, speechDispatchPolicy: 'subtitle-tts' };
 
 const mocks = vi.hoisted(() => ({
   appendLog: vi.fn(),
@@ -146,7 +151,7 @@ function makeLaunchOptions(mode: 'watch' | 'voice-room' = 'watch') {
     configDraft,
     audioSnapshot,
     overlayVisible: mode === 'watch',
-    isOmniModel: true,
+    realtimeProfile: nativeRealtimeProfile,
     speechPatch: { enabled: false },
     secondarySubtitleTranslationEnabled: false,
   };
@@ -334,7 +339,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     // Real voice-room plan with speech + overlay: [bridge-ready, inbound-route,
     // outbound-route, translate-worker, speech-dispatch, subtitle-overlay].
     const options = makeLaunchOptions('voice-room');
-    options.isOmniModel = false;
+    options.realtimeProfile = classicRealtimeProfile;
     options.speechPatch = { enabled: true };
     options.overlayVisible = false;
     mocks.showOverlay.mockRejectedValueOnce('overlay string');
@@ -448,7 +453,7 @@ describe('useSceneSessionController IPC orchestration', () => {
 
   it('executes every conversation IPC stage and opens the subtitle overlay', async () => {
     const options = makeLaunchOptions('voice-room');
-    options.isOmniModel = false;
+    options.realtimeProfile = classicRealtimeProfile;
     options.overlayVisible = false;
     options.speechPatch = { enabled: true };
     const { api, controller } = makeHarness();
@@ -492,7 +497,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     // Real voice-room non-Omni plan reaches translate-worker after both
     // routes; a failing stopRoute during rollback yields rollback-failed.
     const options = makeLaunchOptions('voice-room');
-    options.isOmniModel = false;
+    options.realtimeProfile = classicRealtimeProfile;
     mocks.startTranslation.mockRejectedValue(new Error('translation failed'));
     mocks.stopRoute.mockRejectedValue(new Error('rollback failed'));
     const { api } = makeHarness();
@@ -619,7 +624,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     // overlay. The overlay fails, so speech + translate + both routes roll
     // back in reverse order.
     const options = makeLaunchOptions('voice-room');
-    options.isOmniModel = false;
+    options.realtimeProfile = classicRealtimeProfile;
     options.speechPatch = { enabled: true };
     options.overlayVisible = false;
     mocks.showOverlay.mockRejectedValueOnce(new Error('overlay failed late'));
@@ -663,7 +668,7 @@ describe('useSceneSessionController IPC orchestration', () => {
 
   it('rolls speech and translation IPC back when overlay opening fails late', async () => {
     const options = makeLaunchOptions('voice-room');
-    options.isOmniModel = false;
+    options.realtimeProfile = classicRealtimeProfile;
     options.speechPatch = { enabled: true };
     options.overlayVisible = false;
     mocks.showOverlay.mockRejectedValue(new Error('overlay failed after speech'));
@@ -718,7 +723,9 @@ describe('useSceneSessionController IPC orchestration', () => {
   ] as const)('stops a late %s IPC result after the outer timeout and suppresses its stale snapshot', async (lateStage, kind) => {
     vi.useFakeTimers();
     const options = makeLaunchOptions('voice-room');
-    options.isOmniModel = lateStage === 'translate-worker' || lateStage === 'speech-dispatch' ? false : true;
+    options.realtimeProfile = lateStage === 'translate-worker' || lateStage === 'speech-dispatch'
+      ? classicRealtimeProfile
+      : nativeRealtimeProfile;
     options.speechPatch = { enabled: lateStage === 'speech-dispatch' };
     options.overlayVisible = true;
     const lateSnapshot = cloneAudio();
@@ -761,7 +768,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     // no session behind it.
     vi.useFakeTimers();
     const options = makeLaunchOptions('voice-room');
-    options.isOmniModel = true;
+    options.realtimeProfile = nativeRealtimeProfile;
     options.speechPatch = { enabled: false };
     options.overlayVisible = false;
     const lateRuntime = cloneRuntime();

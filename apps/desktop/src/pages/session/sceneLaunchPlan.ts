@@ -1,6 +1,7 @@
 import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
 import type { AppConfigDraft } from '../../schema/config';
 import type { SceneMode } from '../../utils/scene-readiness';
+import type { ResolvedRealtimeProfile } from '../../utils/realtime-profile';
 
 export type SceneLaunchStage =
   | 'bridge-ready'
@@ -24,7 +25,7 @@ type Input = {
   configDraft: AppConfigDraft;
   audioSnapshot: AudioRuntimeSnapshot;
   overlayVisible: boolean;
-  isOmniModel: boolean;
+  realtimeProfile: Pick<ResolvedRealtimeProfile, 'nativeTranslation' | 'speechDispatchPolicy'>;
   speechPatch: Partial<AppConfigDraft['speech']> & { enabled: boolean };
   secondarySubtitleTranslationEnabled: boolean;
 };
@@ -79,9 +80,9 @@ export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
   const parallelOmniPreconnect = false;
   stages.push('inbound-route');
   if (input.mode !== 'watch') stages.push('outbound-route');
-  if (!input.isOmniModel) stages.push('translate-worker');
+  if (!input.realtimeProfile.nativeTranslation) stages.push('translate-worker');
   if (input.speechPatch.enabled
-    && (!input.isOmniModel || input.secondarySubtitleTranslationEnabled)
+    && (!input.realtimeProfile.nativeTranslation || input.secondarySubtitleTranslationEnabled)
     && input.audioSnapshot.speech.dispatchState === 'idle') stages.push('speech-dispatch');
   // Watch routes create the native overlay together with capture. Starting it
   // again from the renderer is both duplicate work and outside route rollback.

@@ -157,6 +157,24 @@ test('classifies healthy watch-mode evidence as passed', () => {
   assert.equal(report.suspectFiles.length, 0);
 });
 
+test('marks environment precheck failures blocked before downstream recording failures', () => {
+  const report = classify({
+    driver: null,
+    wasapi: null,
+    physicalOutputContent: { passed: false, error: 'physical output recording did not run' },
+    failure: { message: 'start physical output content recording failed: recorder executable not found' },
+    steps: [
+      { name: 'driver probe', ok: false, error: 'virtual endpoint unavailable' },
+      { name: 'start physical output content recording', ok: false, error: 'recorder executable not found' },
+    ],
+  });
+
+  assert.equal(report.verdict, 'blocked');
+  assert.equal(report.failureLayer, 'driver');
+  assert.match(report.failureReason, /driver probe did not run|virtual endpoint unavailable/);
+  assert.equal(report.layers.environment.status, 'blocked');
+});
+
 test('surfaces bridge source probe diagnostics before generic bridge counters', () => {
   const report = classify({
     bridge: {

@@ -629,6 +629,8 @@ mod tests {
                 template_id: "test".to_string(),
                 provider_id: "provider-test".to_string(),
                 kind: "openai-compatible".to_string(),
+                template_realtime_protocol: None,
+                realtime_protocol: None,
                 display_name: "Test".to_string(),
                 model: "test-model".to_string(),
                 base_url: "http://localhost".to_string(),

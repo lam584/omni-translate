@@ -1,0 +1,7 @@
+{
+  "comment": "Warning-count ratchet. Counts may only stay equal or decrease.",
+  "warnings": {
+    "desktop-shell": 552,
+    "bridge-service-native": 10
+  }
+}

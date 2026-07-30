@@ -95,6 +95,7 @@ export type ProviderModelCapabilityRegistryEntry = {
   id: string;
   modelId: string;
   capabilities: ProviderCapability[];
+  realtimeProtocol?: RealtimeProtocol;
   realtimeAudioMode?: RealtimeAudioMode;
   interactionCapabilities?: ProviderInteractionCapability[];
   apiModes?: string[];
@@ -104,6 +105,16 @@ export type ProviderModelCapabilityRegistryEntry = {
 };
 
 export type RealtimeAudioMode = 'manual' | 'server_vad' | 'semantic_vad' | 'gemini_auto_activity' | 'gemini_manual_activity';
+
+export type RealtimeProtocol =
+  | 'dashscope-omni'
+  | 'dashscope-livetranslate'
+  | 'dashscope-asr'
+  | 'openai-conversation'
+  | 'openai-translation'
+  | 'openai-transcription'
+  | 'openai-flat'
+  | 'gemini-live';
 
 export type ProviderCustomHeaderDraft = {
   id: string;
@@ -125,6 +136,10 @@ export type ProviderDraft = {
   templateSource: ProviderTemplateSource;
   providerId: string;
   kind: ProviderKind;
+  /** Protocol declared by the selected template. */
+  templateRealtimeProtocol?: RealtimeProtocol;
+  /** Provider-level default used when a model has no exact registry entry. */
+  realtimeProtocol?: RealtimeProtocol;
   displayName: string;
   mode: ProviderMode;
   model: string;

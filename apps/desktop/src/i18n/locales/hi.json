@@ -926,12 +926,58 @@
       "description": "असूचीबद्ध मॉडलों के लिए क्षमताएँ और रीयलटाइम ऑडियो मोड पंजीकृत करें।",
       "addEntry": "प्रविष्टि जोड़ें",
       "closeTitle": "क्षमता रजिस्ट्री बंद करें",
-      "modelIdPlaceholder": "Model ID पहचान",
+      "modelIdPlaceholder": "मॉडल ID दर्ज करें, जैसे qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "मॉडल ID",
+      "duplicateModelId": "इस मॉडल ID की प्रविष्टि पहले से है; केवल पहली प्रभावी होगी",
       "deleteEntry": "क्षमता प्रविष्टि हटाएँ",
       "emptyTitle": "अभी कोई कस्टम क्षमता प्रविष्टि नहीं",
       "emptyDescription": "कस्टम मॉडलों की क्षमताओं की पूर्ति के लिए प्रविष्टियाँ जोड़ें।"
     },
+    "capabilityLabels": {
+      "speech-to-text": "वाक् पहचान",
+      "text-to-speech": "वाक् संश्लेषण",
+      "speech-to-speech": "वाक् अनुवाद",
+      "text-generation": "पाठ जनरेशन"
+    },
+    "capabilityHints": {
+      "speech-to-text": "वाक् पहचान (STT): बोले गए शब्दों को पाठ में बदलती है",
+      "text-to-speech": "वाक् संश्लेषण (TTS): पाठ को आवाज़ में पढ़ती है",
+      "speech-to-speech": "वाक् अनुवाद (S2S): आवाज़ को सीधे दूसरी भाषा की आवाज़ में अनुवाद करती है",
+      "text-generation": "पाठ जनरेशन: बड़े भाषा मॉडल से पाठ का अनुवाद या पुनर्लेखन"
+    },
+    "interactionLabels": {
+      "auto_vad": "स्वचालित विभाजन",
+      "manual_commit": "मैनुअल सबमिट",
+      "client_activity": "क्लाइंट गतिविधि संकेत",
+      "streaming": "स्ट्रीमिंग आउटपुट",
+      "chunked_http_audio": "खंडित HTTP ऑडियो",
+      "push_to_talk": "दबाकर बोलें",
+      "server_commit_tts": "सर्वर TTS सबमिट",
+      "commit_tts": "TTS सबमिट",
+      "text_only_backend": "केवल-पाठ बैकएंड",
+      "pipeline_asr_mt_tts": "ASR-MT-TTS पाइपलाइन"
+    },
+    "interactionHints": {
+      "auto_vad": "सर्वर बोलने की शुरुआत और अंत अपने आप पहचानता है; मैनुअल कार्रवाई की ज़रूरत नहीं",
+      "manual_commit": "ऐप वाक्य समाप्त होने का निर्णय लेकर ऑडियो खंड भेजता है",
+      "client_activity": "ऐप स्पष्ट प्रारंभ/समाप्ति गतिविधि संकेत भेजता है (Gemini Live शैली)",
+      "streaming": "परिणाम एक साथ नहीं बल्कि स्ट्रीम होकर आते हैं",
+      "chunked_http_audio": "ऑडियो रीयलटाइम कनेक्शन के बजाय HTTP से खंडों में अपलोड होता है",
+      "push_to_talk": "दबाकर बोलने की शैली समर्थित है, सीमाएँ उपयोगकर्ता तय करता है",
+      "server_commit_tts": "हर भेजे गए खंड के बाद सर्वर वाक् संश्लेषण चलाता है",
+      "commit_tts": "पाठ भेजने के बाद वाक् संश्लेषण स्पष्ट रूप से माँगा जाता है",
+      "text_only_backend": "केवल पाठ इनपुट-आउटपुट; ऑडियो समर्थित नहीं",
+      "pipeline_asr_mt_tts": "पहचान, अनुवाद और संश्लेषण तीन जुड़े चरणों में चलते हैं"
+    },
+    "interactionGroups": {
+      "segmentation": "विभाजन और सबमिट",
+      "transport": "ट्रांसमिशन विधि",
+      "tts": "वाक् संश्लेषण",
+      "backend": "बैकएंड प्रकार"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "मॉडल क्षमताओं की जानकारी",
+      "interactionSectionTitle": "इंटरैक्शन क्षमताओं की जानकारी",
       "title": "रीयलटाइम ऑडियो मोड",
       "description": "प्रत्येक मोड यह नियंत्रित करता है कि ऑडियो कैसे खंडित होकर सर्वर को भेजा जाता है, जिससे विलंबता, वाक्य सीमा सटीकता और प्रोटोकॉल संगतता प्रभावित होती है।",
       "closeTitle": "सहायता बंद करें",

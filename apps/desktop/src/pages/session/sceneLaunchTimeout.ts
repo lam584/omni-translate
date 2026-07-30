@@ -6,6 +6,6 @@ const SCENE_LAUNCH_TIMEOUT_MS = 900;
  * Returns the scene launch timeout in milliseconds.
  * Parameters are reserved for future per-mode/per-model tuning.
  */
-export function sceneLaunchTimeoutMs(_mode: SceneMode, _isOmniModel: boolean): number {
+export function sceneLaunchTimeoutMs(_mode: SceneMode): number {
   return SCENE_LAUNCH_TIMEOUT_MS;
 }

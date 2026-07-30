@@ -926,12 +926,58 @@
       "description": "제공자 설정과 상태를 확인하세요.",
       "addEntry": "추가 항목",
       "closeTitle": "닫기 기능 레지스트리",
-      "modelIdPlaceholder": "모델 ID",
+      "modelIdPlaceholder": "모델 ID 입력(예: qwen3-livetranslate-flash-realtime)",
+      "modelIdLabel": "모델 ID",
+      "duplicateModelId": "이 모델 ID의 항목이 이미 있습니다. 첫 번째 항목만 적용됩니다",
       "deleteEntry": "삭제 기능 항목",
       "emptyTitle": "아직 사용자 지정 기능 항목이 없습니다",
       "emptyDescription": "제공자 설정과 상태를 확인하세요."
     },
+    "capabilityLabels": {
+      "speech-to-text": "음성 인식",
+      "text-to-speech": "음성 합성",
+      "speech-to-speech": "음성 간 번역",
+      "text-generation": "텍스트 생성"
+    },
+    "capabilityHints": {
+      "speech-to-text": "음성 인식(STT): 말한 내용을 텍스트로 변환합니다",
+      "text-to-speech": "음성 합성(TTS): 텍스트를 음성으로 읽어 줍니다",
+      "speech-to-speech": "음성 간 번역(S2S): 음성을 다른 언어의 음성으로 바로 번역합니다",
+      "text-generation": "텍스트 생성: 대규모 언어 모델로 텍스트를 번역하거나 다시 작성합니다"
+    },
+    "interactionLabels": {
+      "auto_vad": "자동 문장 분할",
+      "manual_commit": "수동 커밋",
+      "client_activity": "클라이언트 활동 신호",
+      "streaming": "스트리밍 출력",
+      "chunked_http_audio": "청크 HTTP 오디오",
+      "push_to_talk": "눌러서 말하기",
+      "server_commit_tts": "서버 TTS 커밋",
+      "commit_tts": "TTS 커밋",
+      "text_only_backend": "텍스트 전용 백엔드",
+      "pipeline_asr_mt_tts": "인식-번역-합성 파이프라인"
+    },
+    "interactionHints": {
+      "auto_vad": "서버가 음성 시작과 끝을 자동으로 감지하므로 수동 조작이 필요 없습니다",
+      "manual_commit": "앱이 문장이 끝났다고 판단한 후 오디오 세그먼트를 제출합니다",
+      "client_activity": "앱이 명시적인 시작/종료 활동 신호를 보냅니다(Gemini Live 방식)",
+      "streaming": "결과가 한꺼번이 아니라 스트리밍으로 반환됩니다",
+      "chunked_http_audio": "오디오를 실시간 연결 대신 HTTP로 청크 업로드합니다",
+      "push_to_talk": "누르고 말하기 방식 수집을 지원하며 경계를 사용자가 제어합니다",
+      "server_commit_tts": "세그먼트 제출 시마다 서버에서 음성 합성을 실행합니다",
+      "commit_tts": "텍스트 제출 후 명시적으로 음성 합성을 요청합니다",
+      "text_only_backend": "텍스트 입출력만 지원하며 오디오는 지원하지 않습니다",
+      "pipeline_asr_mt_tts": "인식·번역·합성 3단계를 연결해 번역합니다"
+    },
+    "interactionGroups": {
+      "segmentation": "문장 분할과 제출",
+      "transport": "전송 방식",
+      "tts": "음성 합성",
+      "backend": "백엔드 유형"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "모델 능력 설명",
+      "interactionSectionTitle": "상호작용 능력 설명",
       "title": "제공자 - 제목",
       "description": "제공자 설정과 상태를 확인하세요.",
       "closeTitle": "도움말 닫기",

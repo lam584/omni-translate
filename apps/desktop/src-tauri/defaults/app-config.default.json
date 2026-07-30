@@ -51,49 +51,168 @@
         "modelId": "qwen3-asr-flash-realtime",
         "capabilities": [
           "speech-to-text"
-        ]
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "apiModes": [
+          "websocket"
+        ],
+        "releasedAt": "2025-09-07",
+        "source": "official"
+      },
+      {
+        "id": "seed-qwen3-asr-flash-filetrans",
+        "modelId": "qwen3-asr-flash-filetrans",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "filetrans",
+          "async-batch"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-qwen3-asr-flash",
         "modelId": "qwen3-asr-flash",
         "capabilities": [
           "speech-to-text"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-fun-asr-realtime",
         "modelId": "fun-asr-realtime",
         "capabilities": [
           "speech-to-text"
-        ]
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "streaming"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-fun-asr",
         "modelId": "fun-asr",
         "capabilities": [
           "speech-to-text"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-qwen-tts",
+        "modelId": "qwen-tts",
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "http-audio"
+        ],
+        "releasedAt": "2025-06-27",
+        "source": "official"
+      },
+      {
+        "id": "seed-qwen-tts-realtime-2025-07-15",
+        "modelId": "qwen-tts-realtime-2025-07-15",
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "server_commit_tts",
+          "commit_tts",
+          "streaming"
+        ],
+        "apiModes": [
+          "websocket"
+        ],
+        "releasedAt": "2025-07-15",
+        "source": "official"
+      },
+      {
+        "id": "seed-qwen3-tts-vd-realtime-2025-12-16",
+        "modelId": "qwen3-tts-vd-realtime-2025-12-16",
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "server_commit_tts",
+          "commit_tts",
+          "streaming"
+        ],
+        "apiModes": [
+          "websocket"
+        ],
+        "releasedAt": "2025-12-16",
+        "source": "official"
+      },
+      {
+        "id": "seed-qwen3-tts-instruct-flash-realtime-2026-01-22",
+        "modelId": "qwen3-tts-instruct-flash-realtime-2026-01-22",
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "server_commit_tts",
+          "commit_tts",
+          "streaming"
+        ],
+        "apiModes": [
+          "websocket"
+        ],
+        "releasedAt": "2026-01-22",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-tts-flash",
         "modelId": "qwen3-tts-flash",
         "capabilities": [
           "text-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-cosyvoice-v3.5-plus",
         "modelId": "cosyvoice-v3.5-plus",
         "capabilities": [
           "text-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-minimax-speech-2.8-hd",
         "modelId": "MiniMax/speech-2.8-hd",
         "capabilities": [
           "text-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "preset"
       },
       {
         "id": "seed-qwen3.5-livetranslate-flash-realtime",
@@ -101,7 +220,18 @@
         "capabilities": [
           "speech-to-text",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-livetranslate",
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "streaming"
+        ],
+        "apiModes": [
+          "websocket"
+        ],
+        "releasedAt": "2026-05-19",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-livetranslate-flash-realtime",
@@ -109,7 +239,18 @@
         "capabilities": [
           "speech-to-text",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-livetranslate",
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "streaming"
+        ],
+        "apiModes": [
+          "websocket"
+        ],
+        "releasedAt": "2025-09-22",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-livetranslate-flash-realtime-2025-09-22",
@@ -117,7 +258,18 @@
         "capabilities": [
           "speech-to-text",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-livetranslate",
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "streaming"
+        ],
+        "apiModes": [
+          "websocket"
+        ],
+        "releasedAt": "2025-09-22",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-livetranslate-flash",
@@ -125,7 +277,11 @@
         "capabilities": [
           "speech-to-text",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-qwen3-livetranslate-flash-2025-12-01",
@@ -133,7 +289,27 @@
         "capabilities": [
           "speech-to-text",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "releasedAt": "2025-12-01",
+        "source": "official"
+      },
+      {
+        "id": "seed-qwen-audio-3.0-realtime-plus",
+        "modelId": "qwen-audio-3.0-realtime-plus",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "streaming"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-qwen3.5-omni-plus-realtime",
@@ -142,7 +318,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2026-03-29",
+        "source": "official"
       },
       {
         "id": "seed-qwen3.5-omni-plus-realtime-2026-03-15",
@@ -151,7 +337,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2026-03-15",
+        "source": "official"
       },
       {
         "id": "seed-qwen3.5-omni-plus",
@@ -160,7 +356,12 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "releasedAt": "2026-03-15",
+        "source": "official"
       },
       {
         "id": "seed-qwen3.5-omni-plus-2026-03-15",
@@ -169,7 +370,12 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "releasedAt": "2026-03-15",
+        "source": "official"
       },
       {
         "id": "seed-qwen3.5-omni-flash-realtime",
@@ -178,7 +384,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2026-03-29",
+        "source": "official"
       },
       {
         "id": "seed-qwen3.5-omni-flash-realtime-2026-03-15",
@@ -187,7 +403,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2026-03-15",
+        "source": "official"
       },
       {
         "id": "seed-qwen3.5-omni-flash",
@@ -196,7 +422,12 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "releasedAt": "2026-03-15",
+        "source": "official"
       },
       {
         "id": "seed-qwen3.5-omni-flash-2026-03-15",
@@ -205,7 +436,12 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "releasedAt": "2026-03-15",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-omni-flash-realtime",
@@ -214,7 +450,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2025-12-01",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-omni-flash-realtime-2025-12-01",
@@ -223,7 +469,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2025-12-01",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-omni-flash-realtime-2025-09-15",
@@ -232,7 +488,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2025-09-15",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-omni-flash",
@@ -241,7 +507,11 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-qwen3-omni-flash-2025-12-01",
@@ -250,7 +520,12 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "releasedAt": "2025-12-01",
+        "source": "official"
       },
       {
         "id": "seed-qwen3-omni-flash-2025-09-15",
@@ -259,7 +534,12 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "releasedAt": "2025-09-15",
+        "source": "official"
       },
       {
         "id": "seed-qwen2.5-omni-7b",
@@ -268,7 +548,11 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-qwen-omni-turbo-realtime",
@@ -277,7 +561,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2025-05-08",
+        "source": "official"
       },
       {
         "id": "seed-qwen-omni-turbo-realtime-latest",
@@ -286,7 +580,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2025-05-08",
+        "source": "official"
       },
       {
         "id": "seed-qwen-omni-turbo-realtime-2025-05-08",
@@ -295,7 +599,17 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "realtimeProtocol": "dashscope-omni",
+        "realtimeAudioMode": "manual",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "releasedAt": "2025-05-08",
+        "source": "official"
       },
       {
         "id": "seed-qwen-omni-turbo",
@@ -304,7 +618,11 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-qwen-omni-turbo-latest",
@@ -313,7 +631,11 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "source": "official"
       },
       {
         "id": "seed-qwen-omni-turbo-2025-03-26",
@@ -322,7 +644,12 @@
           "speech-to-text",
           "text-to-speech",
           "speech-to-speech"
-        ]
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "releasedAt": "2025-03-26",
+        "source": "official"
       },
       {
         "id": "seed-gpt-realtime-2.1",
@@ -340,6 +667,7 @@
         "apiModes": [
           "live-websocket"
         ],
+        "releasedAt": "unknown",
         "source": "official"
       },
       {
@@ -358,6 +686,7 @@
         "apiModes": [
           "live-websocket"
         ],
+        "releasedAt": "unknown",
         "source": "official"
       },
       {
@@ -376,6 +705,7 @@
         "apiModes": [
           "live-websocket"
         ],
+        "releasedAt": "2025-08-28",
         "source": "official"
       },
       {
@@ -393,7 +723,9 @@
         "apiModes": [
           "live-websocket"
         ],
-        "source": "official"
+        "releasedAt": "2026-05-07",
+        "source": "official",
+        "notes": "专用实时翻译（源语+译文双字幕）"
       },
       {
         "id": "seed-gpt-realtime-whisper",
@@ -410,6 +742,7 @@
           "realtime",
           "audio"
         ],
+        "releasedAt": "2026-05-07",
         "source": "official"
       },
       {
@@ -425,6 +758,7 @@
         "apiModes": [
           "audio-transcriptions"
         ],
+        "releasedAt": "unknown",
         "source": "official"
       },
       {
@@ -440,6 +774,7 @@
         "apiModes": [
           "audio-transcriptions"
         ],
+        "releasedAt": "unknown",
         "source": "official"
       },
       {
@@ -458,6 +793,7 @@
         "apiModes": [
           "live-websocket"
         ],
+        "releasedAt": "unknown",
         "source": "official"
       },
       {
@@ -476,6 +812,7 @@
         "apiModes": [
           "live-websocket"
         ],
+        "releasedAt": "unknown",
         "source": "official"
       },
       {
@@ -492,6 +829,7 @@
         "apiModes": [
           "live-websocket"
         ],
+        "releasedAt": "unknown",
         "source": "official"
       },
       {
@@ -508,7 +846,376 @@
         "apiModes": [
           "live-websocket"
         ],
+        "releasedAt": "unknown",
         "source": "official"
+      },
+      {
+        "id": "seed-gpt-realtime-2",
+        "modelId": "gpt-realtime-2",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "server_vad",
+        "interactionCapabilities": [
+          "auto_vad",
+          "manual_commit",
+          "streaming",
+          "push_to_talk"
+        ],
+        "apiModes": [
+          "websocket",
+          "webrtc",
+          "sip"
+        ],
+        "releasedAt": "2026-05-07",
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-audio",
+        "modelId": "gpt-audio",
+        "capabilities": [
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "streaming",
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "chat-audio",
+          "http-audio"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-audio-mini",
+        "modelId": "gpt-audio-mini",
+        "capabilities": [
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "streaming",
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "chat-audio",
+          "http-audio"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-whisper-1",
+        "modelId": "whisper-1",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "audio-transcriptions"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gemini-2.5-flash-native-audio-preview-09-2025",
+        "modelId": "gemini-2.5-flash-native-audio-preview-09-2025",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "gemini_auto_activity",
+        "interactionCapabilities": [
+          "auto_vad",
+          "client_activity",
+          "streaming",
+          "push_to_talk"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "2025-09-23",
+        "source": "official"
+      },
+      {
+        "id": "seed-gemini-2.5-flash-native-audio-preview-12-2025",
+        "modelId": "gemini-2.5-flash-native-audio-preview-12-2025",
+        "capabilities": [
+          "speech-to-text",
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "gemini_auto_activity",
+        "interactionCapabilities": [
+          "auto_vad",
+          "client_activity",
+          "streaming",
+          "push_to_talk"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "releasedAt": "2025-12-12",
+        "source": "official"
+      },
+      {
+        "id": "seed-gemini-3.1-flash-live-preview",
+        "modelId": "gemini-3.1-flash-live-preview",
+        "capabilities": [
+          "speech-to-text",
+          "speech-to-speech"
+        ],
+        "realtimeAudioMode": "gemini_auto_activity",
+        "interactionCapabilities": [
+          "auto_vad",
+          "client_activity",
+          "streaming",
+          "push_to_talk"
+        ],
+        "apiModes": [
+          "live-websocket"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gemini-3.1-flash-tts-preview",
+        "modelId": "gemini-3.1-flash-tts-preview",
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "generate-content",
+          "batch"
+        ],
+        "releasedAt": "2026-04-28",
+        "source": "official"
+      },
+      {
+        "id": "seed-openrouter-gpt-audio",
+        "modelId": "openai/gpt-audio",
+        "capabilities": [
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio",
+          "streaming"
+        ],
+        "apiModes": [
+          "openrouter-audio"
+        ],
+        "releasedAt": "unknown",
+        "source": "runtime"
+      },
+      {
+        "id": "seed-openrouter-gpt-audio-mini",
+        "modelId": "openai/gpt-audio-mini",
+        "capabilities": [
+          "text-to-speech",
+          "speech-to-speech"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio",
+          "streaming"
+        ],
+        "apiModes": [
+          "openrouter-audio"
+        ],
+        "releasedAt": "unknown",
+        "source": "runtime"
+      },
+      {
+        "id": "seed-openrouter-qwen3-asr-flash-2026-02-10",
+        "modelId": "qwen/qwen3-asr-flash-2026-02-10",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "openrouter-transcription"
+        ],
+        "releasedAt": "2026-02-10",
+        "source": "runtime"
+      },
+      {
+        "id": "seed-openrouter-nvidia-parakeet-tdt-0.6b-v3",
+        "modelId": "nvidia/parakeet-tdt-0.6b-v3",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "interactionCapabilities": [
+          "chunked_http_audio"
+        ],
+        "apiModes": [
+          "openrouter-transcription"
+        ],
+        "source": "runtime"
+      },
+      {
+        "id": "seed-nvidia-parakeet-tdt-0.6b-v3",
+        "modelId": "nvidia/parakeet-tdt-0.6b-v3",
+        "capabilities": [
+          "speech-to-text"
+        ],
+        "interactionCapabilities": [
+          "streaming",
+          "auto_vad",
+          "pipeline_asr_mt_tts"
+        ],
+        "apiModes": [
+          "nim-asr",
+          "riva-asr"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-nvidia-magpie-tts-multilingual",
+        "modelId": "nvidia/magpie-tts-multilingual",
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "streaming",
+          "pipeline_asr_mt_tts"
+        ],
+        "apiModes": [
+          "nim-tts",
+          "riva-tts"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-nvidia-magpie-tts-zeroshot",
+        "modelId": "nvidia/magpie-tts-zeroshot",
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "streaming",
+          "pipeline_asr_mt_tts"
+        ],
+        "apiModes": [
+          "nim-tts",
+          "riva-tts"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-nvidia-magpie-tts-flow",
+        "modelId": "nvidia/magpie-tts-flow",
+        "capabilities": [
+          "text-to-speech"
+        ],
+        "interactionCapabilities": [
+          "pipeline_asr_mt_tts"
+        ],
+        "apiModes": [
+          "nim-tts-offline"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-ollama-text-only",
+        "modelId": "ollama-local-text",
+        "capabilities": [
+          "text-generation"
+        ],
+        "interactionCapabilities": [
+          "text_only_backend"
+        ],
+        "apiModes": [
+          "local-openai-compatible"
+        ],
+        "source": "preset"
+      },
+      {
+        "id": "seed-lmstudio-text-only",
+        "modelId": "lmstudio-local-text",
+        "capabilities": [
+          "text-generation"
+        ],
+        "interactionCapabilities": [
+          "text_only_backend"
+        ],
+        "apiModes": [
+          "local-openai-compatible"
+        ],
+        "source": "preset"
+      },
+      {
+        "id": "seed-qwen-plus",
+        "modelId": "qwen-plus",
+        "capabilities": [
+          "text-generation"
+        ],
+        "interactionCapabilities": [
+          "text_only_backend"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-qwen-turbo",
+        "modelId": "qwen-turbo",
+        "capabilities": [
+          "text-generation"
+        ],
+        "interactionCapabilities": [
+          "text_only_backend"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-qwen-max",
+        "modelId": "qwen-max",
+        "capabilities": [
+          "text-generation"
+        ],
+        "interactionCapabilities": [
+          "text_only_backend"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-4o-mini",
+        "modelId": "gpt-4o-mini",
+        "capabilities": [
+          "text-generation"
+        ],
+        "interactionCapabilities": [
+          "text_only_backend"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-gpt-4o",
+        "modelId": "gpt-4o",
+        "capabilities": [
+          "text-generation"
+        ],
+        "interactionCapabilities": [
+          "text_only_backend"
+        ],
+        "source": "official"
+      },
+      {
+        "id": "seed-deepseek-chat",
+        "modelId": "deepseek-chat",
+        "capabilities": [
+          "text-generation"
+        ],
+        "interactionCapabilities": [
+          "text_only_backend"
+        ],
+        "source": "preset"
       }
     ],
     "modelCatalogCache": {

@@ -8,6 +8,7 @@ import { readJson } from '../lib/testing-common.mjs';
 import { prepareInstallRegressionReport } from './prepare-install-regression-report.mjs';
 import { prepareManualE2eReport } from './prepare-manual-e2e-report.mjs';
 import { preparePerformanceBaselineReport } from './prepare-performance-baseline.mjs';
+import { buildSteps } from './run-all-tests.mjs';
 import { buildAutoSteps } from './run-quality-gate-auto.mjs';
 import {
   buildQualityGateSummary,
@@ -321,10 +322,18 @@ test('buildAutoSteps honors the skip switches', () => {
   assert.deepEqual(buildAutoSteps().map((step) => step.name), [
     'audit-architecture',
     'audit-error-handling',
+    'audit-rust-warnings',
+    'i18n-ratchet',
     'verify-desktop',
     'contracts',
+    'config-paths',
     'integration-bridge-contract',
-    'coverage-all',
+    'driver-boundaries',
+    'watch-mode-tooling',
+    'release-tooling',
+    'quality-gate-tooling',
+    'startup-tooling',
+    'coverage-base',
     'check-desktop-shell',
     'test-desktop-shell',
     'check-bridge-service-native',
@@ -332,6 +341,27 @@ test('buildAutoSteps honors the skip switches', () => {
   ]);
   assert.deepEqual(
     buildAutoSteps({ skipDesktopShell: true, skipBridgeService: true }).map((step) => step.name),
-    ['audit-architecture', 'audit-error-handling', 'verify-desktop', 'contracts', 'integration-bridge-contract', 'coverage-all'],
+    [
+      'audit-architecture', 'audit-error-handling', 'audit-rust-warnings', 'i18n-ratchet',
+      'verify-desktop', 'contracts', 'config-paths', 'integration-bridge-contract',
+      'driver-boundaries', 'watch-mode-tooling', 'release-tooling', 'quality-gate-tooling',
+      'startup-tooling', 'coverage-base',
+    ],
   );
+});
+
+test('test:all includes every deterministic cross-layer gate', () => {
+  assert.deepEqual(buildSteps({ skipIntegration: true }).map((step) => step.name), [
+    'workspace-tests',
+    'desktop-shell-tests',
+    'bridge-service-native-tests',
+    'contracts',
+    'config-paths',
+    'integration-bridge-contract',
+    'driver-boundaries',
+    'watch-mode-tooling',
+    'release-tooling',
+    'quality-gate-tooling',
+    'startup-tooling',
+  ]);
 });

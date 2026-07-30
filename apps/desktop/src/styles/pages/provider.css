@@ -1054,6 +1054,12 @@
   padding-top:2px
 }
 
+.audio-mode-help-section-title {
+  margin:14px 0 8px;
+  font-size:.86rem;
+  color:var(--color-text-secondary)
+}
+
 .provider-custom-header-item {
   padding:10px;
   align-items:center;
@@ -1063,13 +1069,83 @@
   1fr) 120px auto
 }
 
+.provider-capability-registry-list {
+  grid-template-columns:minmax(180px, 1fr) auto minmax(100px, auto) auto auto;
+}
+
+/* Wider than the shared advanced modal: grouped interaction pills need the
+   extra room to stay on a readable number of lines. */
+.provider-capability-registry-modal {
+  width:min(1180px,
+  100%)
+}
+
+/* Rows and the header share the list's column tracks via subgrid so the
+   column labels stay aligned with the content-sized pill groups. Browsers
+   without subgrid fall back to the per-row template below. */
+.provider-capability-registry-list > .provider-capability-registry-item,
+.provider-capability-registry-list > .provider-capability-registry-head {
+  grid-column:1 / -1;
+}
+
+.provider-capability-registry-list > .provider-directory-empty {
+  grid-column:1 / -1;
+}
+
+.provider-capability-registry-head {
+  display:grid;
+  grid-template-columns:minmax(180px, 1fr) auto minmax(100px, auto) auto auto;
+  grid-template-columns:subgrid;
+  gap:8px;
+  align-items:end;
+  padding:0 10px;
+  font-size:.72rem;
+  color:var(--color-text-muted, rgba(141,170,197,.7));
+}
+
 .provider-capability-registry-item {
   padding:8px 10px;
   align-items:center;
   display:grid;
-  grid-template-columns:minmax(180px, 1fr) auto minmax(100px, auto) auto;
+  grid-template-columns:minmax(180px, 1fr) auto minmax(100px, auto) auto auto;
+  grid-template-columns:subgrid;
   gap:8px;
   transition:border-color .2s ease, box-shadow .2s ease;
+}
+
+.provider-capability-registry-model-cell {
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+  min-width:0;
+}
+
+.provider-capability-registry-interactions {
+  display:flex;
+  flex-direction:column;
+  gap:6px;
+  min-width:0;
+}
+
+.provider-capability-group {
+  display:flex;
+  flex-wrap:wrap;
+  align-items:center;
+  gap:6px;
+}
+
+.provider-capability-group-label {
+  font-size:.7rem;
+  color:var(--color-text-muted, rgba(141,170,197,.7));
+  white-space:nowrap;
+  min-width:64px;
+}
+
+.provider-capability-registry-duplicate {
+  margin:0;
+  font-size:.72rem;
+  line-height:1.35;
+  color:var(--color-danger, #e5484d);
 }
 
 .provider-capability-registry-item:hover {
@@ -1078,7 +1154,8 @@
 }
 
 .provider-capability-registry-pills {
-  gap:4px
+  gap:4px;
+  flex-wrap:wrap
 }
 
 .provider-capability-registry-pills .provider-scenario-pill {

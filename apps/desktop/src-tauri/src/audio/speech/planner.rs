@@ -36,6 +36,29 @@ fn remember_segment_slot_processed(
     }
 }
 
+fn is_committed_cue_already_played(
+    cue_id: &str,
+    committed_played: &HashSet<String>,
+) -> bool {
+    committed_played.contains(cue_id)
+}
+
+fn remember_committed_cue_played(
+    cue_id: &str,
+    committed_played: &mut HashSet<String>,
+    order: &mut VecDeque<String>,
+) {
+    if !committed_played.insert(cue_id.to_string()) {
+        return; // already present, no duplicate insertion
+    }
+    order.push_back(cue_id.to_string());
+    while order.len() > MAX_PROCESSED_CUES {
+        if let Some(expired) = order.pop_front() {
+            committed_played.remove(&expired);
+        }
+    }
+}
+
 fn is_speech_ready_cue(cue: &SubtitleCueRuntime) -> bool {
     if cue.translated_text.trim().is_empty() {
         return false;
@@ -57,10 +80,15 @@ fn split_tts_clauses(text: &str) -> Vec<String> {
     for ch in text.chars() {
         match ch {
             '\r' => {}
-            '\n' | '。' | '！' | '？' | '!' | '?' | '；' | ';' => {
-                if !matches!(ch, '\n' | '\r' | '；' | ';') {
-                    current.push(ch);
+            '\n' | '；' | ';' => {
+                let value = current.trim();
+                if !value.is_empty() {
+                    clauses.push(value.to_string());
                 }
+                current.clear();
+            }
+            '。' | '！' | '？' | '!' | '?' => {
+                current.push(ch);
                 let value = current.trim();
                 if !value.is_empty() {
                     clauses.push(value.to_string());
@@ -99,24 +127,32 @@ fn secondary_tts_segment_index(display_index: usize, part_index: usize) -> usize
 fn speech_dispatch_tasks_for_cue(
     cue: &SubtitleCueRuntime,
     config: &SpeechConfig,
+    committed_played: &HashSet<String>,
 ) -> Vec<SpeechDispatchTask> {
+    if cue.committed && is_committed_cue_already_played(&cue.cue_id, committed_played) {
+        return Vec::new();
+    }
+    if !cue.committed && !cue.translation_committed {
+        return Vec::new();
+    }
     if config.secondary_segment_tts_enabled {
-        return cue
+        let first_segment = cue
             .display_segments
             .iter()
             .enumerate()
-            .filter(|(_, segment)| !segment.pending && !segment.translated_text.trim().is_empty())
-            .flat_map(|(index, segment)| {
-                split_secondary_tts_segments(&segment.source_text, &segment.translated_text)
-                    .into_iter()
-                    .enumerate()
-                    .map(move |(part_index, (source_text, translated_text))| SpeechDispatchTask {
-                        cue: cue.clone(),
-                        segment_index: secondary_tts_segment_index(index, part_index),
-                        source_text,
-                        translated_text,
-                        segment_mode: true,
-                    })
+            .find(|(_, segment)| !segment.pending && !segment.translated_text.trim().is_empty());
+        let Some((index, segment)) = first_segment else {
+            return Vec::new();
+        };
+        return split_secondary_tts_segments(&segment.source_text, &segment.translated_text)
+            .into_iter()
+            .enumerate()
+            .map(|(part_index, (source_text, translated_text))| SpeechDispatchTask {
+                cue: cue.clone(),
+                segment_index: secondary_tts_segment_index(index, part_index),
+                source_text,
+                translated_text,
+                segment_mode: true,
             })
             .collect();
     }

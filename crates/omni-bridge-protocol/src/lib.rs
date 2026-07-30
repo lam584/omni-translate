@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn rejected_ack_carries_error_code_and_message() {
         let ack = rejected_audio_frame_ack(
-            &translation_header(),
+            &translation_header_fixture(),
             "bridge.session-mismatch",
             "translation frame session does not match the active bridge session",
         );

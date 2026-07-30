@@ -926,12 +926,58 @@
       "description": "Đăng ký khả năng và chế độ âm thanh thời gian thực cho các kiểu máy chưa được liệt kê.",
       "addEntry": "Thêm mục",
       "closeTitle": "Đóng sổ đăng ký khả năng",
-      "modelIdPlaceholder": "Mã mẫu",
+      "modelIdPlaceholder": "Nhập ID mô hình, ví dụ qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "ID mô hình",
+      "duplicateModelId": "ID mô hình này đã có mục; chỉ mục đầu tiên có hiệu lực",
       "deleteEntry": "Xóa mục nhập khả năng",
       "emptyTitle": "Chưa có mục nhập khả năng tùy chỉnh nào",
       "emptyDescription": "Thêm các mục để bổ sung khả năng cho các mô hình tùy chỉnh."
     },
+    "capabilityLabels": {
+      "speech-to-text": "Nhận dạng giọng nói",
+      "text-to-speech": "Tổng hợp giọng nói",
+      "speech-to-speech": "Dịch giọng nói",
+      "text-generation": "Tạo văn bản"
+    },
+    "capabilityHints": {
+      "speech-to-text": "Nhận dạng giọng nói (STT): chuyển lời nói thành văn bản",
+      "text-to-speech": "Tổng hợp giọng nói (TTS): đọc văn bản thành giọng nói",
+      "speech-to-speech": "Dịch giọng nói (S2S): dịch trực tiếp giọng nói sang giọng nói ngôn ngữ khác",
+      "text-generation": "Tạo văn bản: dịch hoặc viết lại văn bản bằng mô hình ngôn ngữ lớn"
+    },
+    "interactionLabels": {
+      "auto_vad": "Tự động ngắt câu",
+      "manual_commit": "Gửi thủ công",
+      "client_activity": "Tín hiệu hoạt động phía máy khách",
+      "streaming": "Xuất theo luồng",
+      "chunked_http_audio": "Âm thanh HTTP theo khối",
+      "push_to_talk": "Nhấn để nói",
+      "server_commit_tts": "Gửi TTS phía máy chủ",
+      "commit_tts": "Gửi TTS",
+      "text_only_backend": "Backend chỉ văn bản",
+      "pipeline_asr_mt_tts": "Chuỗi ASR-MT-TTS"
+    },
+    "interactionHints": {
+      "auto_vad": "Máy chủ tự phát hiện lúc bắt đầu và kết thúc lời nói; không cần thao tác thủ công",
+      "manual_commit": "Ứng dụng xác định câu kết thúc rồi mới gửi đoạn âm thanh",
+      "client_activity": "Ứng dụng gửi tín hiệu bắt đầu/kết thúc hoạt động rõ ràng (kiểu Gemini Live)",
+      "streaming": "Kết quả trả về theo luồng thay vì một lần",
+      "chunked_http_audio": "Âm thanh được tải lên theo khối qua HTTP thay vì kết nối thời gian thực",
+      "push_to_talk": "Hỗ trợ thu kiểu nhấn giữ để nói, ranh giới do người dùng kiểm soát",
+      "server_commit_tts": "Máy chủ kích hoạt tổng hợp giọng nói sau mỗi đoạn được gửi",
+      "commit_tts": "Tổng hợp giọng nói được yêu cầu rõ ràng sau khi gửi văn bản",
+      "text_only_backend": "Chỉ hỗ trợ văn bản vào/ra; không hỗ trợ âm thanh",
+      "pipeline_asr_mt_tts": "Nhận dạng, dịch và tổng hợp chạy nối tiếp ba bước"
+    },
+    "interactionGroups": {
+      "segmentation": "Ngắt câu và gửi",
+      "transport": "Phương thức truyền",
+      "tts": "Tổng hợp giọng nói",
+      "backend": "Loại backend"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "Giải thích khả năng mô hình",
+      "interactionSectionTitle": "Giải thích khả năng tương tác",
       "title": "Chế độ âm thanh thời gian thực",
       "description": "Mỗi chế độ kiểm soát cách âm thanh được phân đoạn và gửi đến máy chủ, ảnh hưởng đến độ trễ, độ chính xác của ranh giới câu và khả năng tương thích giao thức.",
       "closeTitle": "Đóng trợ giúp",

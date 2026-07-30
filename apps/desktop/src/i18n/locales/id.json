@@ -926,12 +926,58 @@
       "description": "Register capabilities and realtime Audio Mode for unlisted Model.",
       "addEntry": "Tambah Entri",
       "closeTitle": "Tutup Kapabilitas Registri",
-      "modelIdPlaceholder": "Penyedia - Model Placeholder",
+      "modelIdPlaceholder": "Masukkan ID model, mis. qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "ID model",
+      "duplicateModelId": "ID model ini sudah punya entri; hanya entri pertama yang berlaku",
       "deleteEntry": "Hapus Kapabilitas Entri",
       "emptyTitle": "No Kustom Kapabilitas entries yet",
       "emptyDescription": "Tambah entries to supplement capabilities for Kustom Model."
     },
+    "capabilityLabels": {
+      "speech-to-text": "Pengenalan suara",
+      "text-to-speech": "Sintesis suara",
+      "speech-to-speech": "Terjemahan suara",
+      "text-generation": "Pembuatan teks"
+    },
+    "capabilityHints": {
+      "speech-to-text": "Pengenalan suara (STT): mengubah ucapan menjadi teks",
+      "text-to-speech": "Sintesis suara (TTS): membacakan teks menjadi suara",
+      "speech-to-speech": "Terjemahan suara (S2S): menerjemahkan ucapan langsung menjadi suara bahasa lain",
+      "text-generation": "Pembuatan teks: menerjemahkan atau menulis ulang teks dengan model bahasa besar"
+    },
+    "interactionLabels": {
+      "auto_vad": "Segmentasi otomatis",
+      "manual_commit": "Kirim manual",
+      "client_activity": "Sinyal aktivitas klien",
+      "streaming": "Keluaran streaming",
+      "chunked_http_audio": "Audio HTTP per potongan",
+      "push_to_talk": "Tekan untuk bicara",
+      "server_commit_tts": "Kirim TTS server",
+      "commit_tts": "Kirim TTS",
+      "text_only_backend": "Backend hanya teks",
+      "pipeline_asr_mt_tts": "Alur ASR-MT-TTS"
+    },
+    "interactionHints": {
+      "auto_vad": "Server otomatis mendeteksi awal dan akhir ucapan; tanpa tindakan manual",
+      "manual_commit": "Aplikasi menentukan akhir kalimat lalu mengirim potongan audio",
+      "client_activity": "Aplikasi mengirim sinyal mulai/berhenti aktivitas secara eksplisit (gaya Gemini Live)",
+      "streaming": "Hasil dikirim secara streaming, bukan sekaligus",
+      "chunked_http_audio": "Audio diunggah per potongan lewat HTTP alih-alih koneksi realtime",
+      "push_to_talk": "Mendukung rekam gaya tekan-untuk-bicara dengan batas dikontrol pengguna",
+      "server_commit_tts": "Server memicu sintesis suara setelah setiap potongan dikirim",
+      "commit_tts": "Sintesis suara diminta secara eksplisit setelah teks dikirim",
+      "text_only_backend": "Hanya teks masuk dan keluar; tanpa audio",
+      "pipeline_asr_mt_tts": "Pengenalan, terjemahan, dan sintesis berjalan tiga tahap berantai"
+    },
+    "interactionGroups": {
+      "segmentation": "Segmentasi dan pengiriman",
+      "transport": "Metode transmisi",
+      "tts": "Sintesis suara",
+      "backend": "Jenis backend"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "Kemampuan model",
+      "interactionSectionTitle": "Kemampuan interaksi",
       "title": "Realtime Audio Mode",
       "description": "Each Mode controls how Audio is segmented and sent to the server, affecting Latensi, sentence boundary accuracy, and protocol compatibility.",
       "closeTitle": "Tutup help",

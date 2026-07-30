@@ -48,6 +48,7 @@ import type {
   SessionCommandV2,
 } from '../schema/generated/api-v2-commands';
 import type { DiagnosticLogEntryRuntime, RuntimeSnapshot } from '../schema/runtime-core';
+import type { ResolvedRealtimeProfile } from '../utils/realtime-profile';
 
 // Compile-time drift gate for the renderer→shell command direction: every v2
 // envelope literal below is `satisfies`-checked against the GENERATED command
@@ -80,6 +81,7 @@ export type ModelBenchmarkRunPayload = {
   baseUrl?: string;
   authHeaderName?: string;
   authScheme?: string;
+  provider?: ProviderDraft;
 };
 
 export type InvokeFn = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -100,6 +102,10 @@ export class DesktopApiV2 {
   constructor(private readonly invokeFn: InvokeFn = invoke) {}
 
   readonly provider = {
+    resolveRealtimeProfile: async (config: AppConfigDraft, modelReference: string) =>
+      unwrap(await this.invokeFn<ServiceResult<ResolvedRealtimeProfile>>('provider_v2', {
+        command: { action: 'resolveRealtimeProfile', config, modelReference } satisfies ProviderCommandV2,
+      })),
     // `presetModels` is a preview-implementation hint (the browser preview
     // builds its catalog from the preset list); the native provider service
     // resolves the catalog itself and ignores it.

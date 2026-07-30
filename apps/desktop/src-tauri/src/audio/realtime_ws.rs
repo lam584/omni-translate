@@ -17,6 +17,16 @@ use super::time_utils::{ms_marker, unix_ms};
 
 pub(crate) type WsSocket = WebSocket<MaybeTlsStream<TcpStream>>;
 
+pub(crate) fn server_event_type<'a>(event: &'a Value, fallback: &'a str) -> &'a str {
+    event.pointer("/type").and_then(Value::as_str).unwrap_or(fallback)
+}
+
+pub(crate) fn server_text_delta(event: &Value) -> Option<&str> {
+    event.pointer("/delta").and_then(Value::as_str)
+        .or_else(|| event.pointer("/text").and_then(Value::as_str))
+        .or_else(|| event.pointer("/transcript").and_then(Value::as_str))
+}
+
 /// Apply blocking read/write timeouts to the TCP stream under the TLS
 /// wrapper. `None` leaves that direction untouched.
 pub(crate) fn set_socket_timeouts(

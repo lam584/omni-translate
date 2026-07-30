@@ -43,7 +43,7 @@ cargo run --manifest-path scripts/diagnostics/omni-realtime/Cargo.toml -- --pcm 
 Optional arguments:
 
 ```powershell
-cargo run --manifest-path scripts/diagnostics/omni-realtime/Cargo.toml -- --pcm c:\path\sample_16k_mono.pcm --manual --model qwen3.5-omni-plus-realtime-2026-03-15
+cargo run --manifest-path scripts/diagnostics/omni-realtime/Cargo.toml -- --pcm c:\path\sample_16k_mono.pcm --protocol dashscope-omni --manual --model qwen3.5-omni-plus-realtime-2026-03-15
 ```
 
 The tool accepts raw little-endian signed 16-bit PCM at 16 kHz mono via
@@ -55,7 +55,7 @@ Runs repeatable DashScope Omni realtime timing benchmarks.
 
 ```powershell
 $env:DASHSCOPE_API_KEY = "<your key>"
-cargo run --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml -- --audio c:\path\sample.wav --model qwen3.5-omni-plus-realtime --manual --json
+cargo run --manifest-path scripts/diagnostics/omni-benchmark/Cargo.toml -- --audio c:\path\sample.wav --protocol dashscope-omni --model qwen3.5-omni-plus-realtime --manual --json
 ```
 
 Use `--audio` for format-agnostic input. Supported extensions are `.mp3`,

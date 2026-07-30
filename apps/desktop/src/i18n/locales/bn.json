@@ -926,12 +926,58 @@
       "description": "তালিকাভুক্ত নয় এমন মডেলের জন্য সক্ষমতা ও রিয়েলটাইম অডিও মোড নিবন্ধন করুন।",
       "addEntry": "এন্ট্রি যোগ করুন",
       "closeTitle": "সক্ষমতা রেজিস্ট্রি বন্ধ করুন",
-      "modelIdPlaceholder": "Model ID পরিচয়",
+      "modelIdPlaceholder": "মডেল ID লিখুন, যেমন qwen3-livetranslate-flash-realtime",
+      "modelIdLabel": "মডেল ID",
+      "duplicateModelId": "এই মডেল ID-এর এন্ট্রি আগে থেকেই আছে; শুধু প্রথমটি কার্যকর হবে",
       "deleteEntry": "সক্ষমতা এন্ট্রি মুছুন",
       "emptyTitle": "এখনও কোনো কাস্টাম সক্ষমতা এন্ট্রি নেই",
       "emptyDescription": "কাস্টাম মডেলের সক্ষমতা পরিপূরক করতে এন্ট্রি যোগ করুন।"
     },
+    "capabilityLabels": {
+      "speech-to-text": "কথা শনাক্তকরণ",
+      "text-to-speech": "কণ্ঠ সংশ্লেষণ",
+      "speech-to-speech": "কথার অনুবাদ",
+      "text-generation": "টেক্সট তৈরি"
+    },
+    "capabilityHints": {
+      "speech-to-text": "কথা শনাক্তকরণ (STT): কথাকে টেক্সটে রূপান্তর করে",
+      "text-to-speech": "কণ্ঠ সংশ্লেষণ (TTS): টেক্সটকে কণ্ঠে পড়ে শোনায়",
+      "speech-to-speech": "কথার অনুবাদ (S2S): কথাকে সরাসরি অন্য ভাষার কথায় অনুবাদ করে",
+      "text-generation": "টেক্সট তৈরি: বড় ভাষা মডেল দিয়ে টেক্সট অনুবাদ বা পুনর্লিখন"
+    },
+    "interactionLabels": {
+      "auto_vad": "স্বয়ংক্রিয় ভাগ",
+      "manual_commit": "ম্যানুয়াল জমা",
+      "client_activity": "ক্লায়েন্ট কার্যকলাপ সংকেত",
+      "streaming": "স্ট্রিমিং আউটপুট",
+      "chunked_http_audio": "খণ্ডিত HTTP অডিও",
+      "push_to_talk": "চেপে কথা বলুন",
+      "server_commit_tts": "সার্ভার TTS জমা",
+      "commit_tts": "TTS জমা",
+      "text_only_backend": "শুধু-টেক্সট ব্যাকএন্ড",
+      "pipeline_asr_mt_tts": "ASR-MT-TTS পাইপলাইন"
+    },
+    "interactionHints": {
+      "auto_vad": "সার্ভার নিজে থেকেই কথার শুরু ও শেষ শনাক্ত করে; ম্যানুয়াল কিছু করতে হয় না",
+      "manual_commit": "অ্যাপ বাক্য শেষ হয়েছে বুঝে তারপর অডিও অংশ পাঠায়",
+      "client_activity": "অ্যাপ স্পষ্ট শুরু/শেষ কার্যকলাপ সংকেত পাঠায় (Gemini Live ধরনে)",
+      "streaming": "ফলাফল একসাথে না এসে স্ট্রিম আকারে আসে",
+      "chunked_http_audio": "রিয়েলটাইম সংযোগের বদলে HTTP দিয়ে খণ্ডে অডিও আপলোড হয়",
+      "push_to_talk": "চেপে-ধরে-কথা-বলা ধরন সমর্থিত, সীমানা ব্যবহারকারী নিয়ন্ত্রণ করেন",
+      "server_commit_tts": "প্রতিটি জমা অংশের পরে সার্ভার কণ্ঠ সংশ্লেষণ চালায়",
+      "commit_tts": "টেক্সট জমার পরে স্পষ্টভাবে কণ্ঠ সংশ্লেষণ চাওয়া হয়",
+      "text_only_backend": "শুধু টেক্সট ইনপুট-আউটপুট; অডিও সমর্থিত নয়",
+      "pipeline_asr_mt_tts": "শনাক্তকরণ, অনুবাদ ও সংশ্লেষণ তিন ধাপে পরপর চলে"
+    },
+    "interactionGroups": {
+      "segmentation": "ভাগ ও জমা",
+      "transport": "প্রেরণ পদ্ধতি",
+      "tts": "কণ্ঠ সংশ্লেষণ",
+      "backend": "ব্যাকএন্ডের ধরন"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "মডেল সক্ষমতার ব্যাখ্যা",
+      "interactionSectionTitle": "মিথস্ক্রিয়া সক্ষমতার ব্যাখ্যা",
       "title": "রিয়েলটাইম অডিও মোড",
       "description": "প্রতিটি মোড নিয়ন্ত্রণ করে কীভাবে অডিও ভাগ করে সার্ভারে পাঠানো হয়, যা লেটেন্সি, বাক্য সীমানার নির্ভুলতা ও প্রোটোকল সামঞ্জস্যকে প্রভাবিত করে।",
       "closeTitle": "সহায়তা বন্ধ করুন",

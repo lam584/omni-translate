@@ -642,7 +642,7 @@ impl OmniConnectionCoordinator {
                     && elapsed.as_secs() >= MANUAL_COMMIT_INTERVAL_SECS
                     && sent_audio_since_commit
                 {
-                    let commit_msg = json!({ "type": "input_audio_buffer.commit" });
+                    let commit_msg = super::build_dashscope_input_audio_commit();
                     trace_call.record_ws_send("input_audio_buffer.commit", commit_msg.clone());
                     if let Err(error) = socket.send_message(Message::Text(commit_msg.to_string().into())) {
                         let _ = diag_log(
@@ -783,8 +783,8 @@ impl OmniConnectionCoordinator {
 
         let active_voice = voice.to_string();
         let voice_fallback_applied = false;
-        let session_cfg = build_omni_session_update(
-            &provider.model,
+        let session_cfg = build_omni_session_update_for_provider(
+            provider,
             &active_voice,
             &instructions,
             audio_mode,
@@ -808,7 +808,7 @@ impl OmniConnectionCoordinator {
                 provider.model,
                 audio_mode.as_str(),
                 input_audio_format,
-                is_livetranslate_model(&provider.model),
+                crate::audio::events::is_livetranslate_route_model(provider, &provider.model),
                 subtitle_translate_active,
                 turn_detection_summary,
             ),
@@ -845,7 +845,8 @@ impl OmniConnectionCoordinator {
         }
 
         let native_translation_reuse_active =
-            subtitle_translate_active && is_livetranslate_model(&provider.model);
+            subtitle_translate_active
+                && crate::audio::events::is_livetranslate_route_model(provider, &provider.model);
         // Register the speech config as the live shared instance: config saves
         // during the session update it in place, and the playback thread
         // re-reads it for every Play command.

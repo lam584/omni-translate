@@ -1,10 +1,8 @@
 import { isMain, parseCliArgs, repoRoot, runCommand } from '../lib/testing-common.mjs';
+import { coreTestSteps } from './test-manifest.mjs';
 
 export const buildSteps = ({ skipIntegration = false } = {}) => {
-  const steps = [
-    { name: 'workspace-tests', command: 'npm test --workspaces --if-present' },
-    { name: 'desktop-shell-tests', command: 'npm run test:desktop-shell' },
-  ];
+  const steps = [...coreTestSteps];
   if (!skipIntegration) {
     steps.push({ name: 'llm-audio-integration', command: 'npm run test:llm-integration' });
   }

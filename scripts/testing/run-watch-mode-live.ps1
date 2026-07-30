@@ -17,6 +17,8 @@ param(
   [switch]$SkipPhysicalOutputContentStt,
   [string]$MediaPath = "scripts/testing/fixtures/watch-mode-en-original.wav",
   [string]$WatchModelId = "",
+  [ValidateSet("", "dashscope-omni", "dashscope-livetranslate", "dashscope-asr", "openai-conversation", "openai-translation", "openai-transcription", "openai-flat", "gemini-live")]
+  [string]$WatchRealtimeProtocol = "",
   [string]$SubtitleTranslationModelId = "template-dashscope-realtime::qwen3.6-flash-2026-04-16",
   [string]$InboundSecondaryAudioModelId = "template-dashscope-realtime::qwen3.5-omni-plus-realtime",
   [string]$PhysicalPlaybackDeviceId = "default",
@@ -394,7 +396,7 @@ function Ensure-ValueProperty {
 }
 
 function Set-WatchModelOnConfig {
-  param($Config, [string]$ModelId)
+  param($Config, [string]$ModelId, [string]$RealtimeProtocol = "")
   if (-not $ModelId) {
     return
   }
@@ -408,6 +410,38 @@ function Set-WatchModelOnConfig {
     $Config | Add-Member -NotePropertyName speech -NotePropertyValue ([pscustomobject]@{})
   }
   $Config.speech.textToSpeechModelId = $ModelId
+  if ($RealtimeProtocol) {
+    $separator = $ModelId.IndexOf("::")
+    $templateId = if ($separator -ge 0) { $ModelId.Substring(0, $separator) } else { "" }
+    $resolvedModelId = if ($separator -ge 0) { $ModelId.Substring($separator + 2) } else { $ModelId }
+    $provider = @($Config.providers | Where-Object {
+      ($templateId -and $_.templateId -eq $templateId) -or
+      (-not $templateId -and (
+        ($RealtimeProtocol -like "dashscope-*" -and $_.kind -eq "dashscope") -or
+        ($RealtimeProtocol -like "openai-*" -and $_.kind -eq "openai-compatible") -or
+        ($RealtimeProtocol -eq "gemini-live" -and $_.templateId -like "*gemini*")
+      ))
+    } | Select-Object -First 1)
+    if (-not $provider) {
+      throw "No provider can host explicit Watch realtime protocol '$RealtimeProtocol'."
+    }
+    $provider.model = $resolvedModelId
+    $capabilities = if ($RealtimeProtocol -in @("dashscope-asr", "openai-transcription")) {
+      @("speech-to-text")
+    } else {
+      @("speech-to-text", "speech-to-speech")
+    }
+    $entry = [pscustomobject]@{
+      id = "watch-live-explicit-alias"
+      modelId = $resolvedModelId
+      capabilities = $capabilities
+      realtimeProtocol = $RealtimeProtocol
+      realtimeAudioMode = if ($RealtimeProtocol -eq "dashscope-omni") { "manual" } else { "server_vad" }
+      interactionCapabilities = @("streaming", "auto_vad")
+    }
+    $existing = @($provider.localModelCapabilityRegistry | Where-Object { $_.modelId -ne $resolvedModelId })
+    $provider.localModelCapabilityRegistry = @($entry) + $existing
+  }
 }
 
 function Set-WatchModeSecondaryConfig {
@@ -882,7 +916,7 @@ function Invoke-StartWatchModeViaTauriCli {
     $config | Add-Member -NotePropertyName speech -NotePropertyValue ([pscustomobject]@{})
   }
   $config.speech.translationAudioSource = "subtitle-tts"
-  Set-WatchModelOnConfig $config $WatchModelId
+  Set-WatchModelOnConfig $config $WatchModelId $WatchRealtimeProtocol
   Set-WatchModeSecondaryConfig $config $SubtitleTranslationModelId $InboundSecondaryAudioModelId
   if ($PhysicalDeviceId) {
     $config.devices.outputDeviceId = $PhysicalDeviceId
@@ -2505,7 +2539,7 @@ if ($DryRun) {
   $defaultConfigPath = Join-Path $workspaceRoot "apps/desktop/src-tauri/defaults/app-config.default.json"
   foreach ($mode in @("virtual-driver", "echo-cancel")) {
     $probeConfig = Get-Content -LiteralPath $defaultConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Set-WatchModelOnConfig $probeConfig $WatchModelId
+    Set-WatchModelOnConfig $probeConfig $WatchModelId $WatchRealtimeProtocol
     Set-WatchModeSecondaryConfig $probeConfig $SubtitleTranslationModelId $InboundSecondaryAudioModelId $mode
     $injected = $probeConfig.devices.feedbackLoopPrevention
     if ($injected -ne $mode) {

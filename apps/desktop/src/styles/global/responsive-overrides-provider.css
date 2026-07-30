@@ -1,4 +1,12 @@
 @media (max-width:1024px) {
+  .provider-capability-registry-list {
+    grid-template-columns:1fr;
+  }
+
+  .provider-capability-registry-head {
+    display:none;
+  }
+
   .provider-capability-registry-item {
     grid-template-columns:1fr;
     gap:6px;

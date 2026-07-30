@@ -104,7 +104,7 @@ impl SpeechConfig {
         let selected_tts_model = tts_model_candidates
             .into_iter()
             .flatten()
-            .filter(|model| !is_livetranslate_model_id(model))
+            .filter(|model| !is_livetranslate_model_reference(config, model))
             .next();
         let mut provider = match selected_tts_model {
             Some(model) => resolve_model_provider_from_config_value(config, model).ok_or_else(|| {
@@ -118,9 +118,24 @@ impl SpeechConfig {
                 == TranslationAudioSource::SubtitleTts;
         if secondary_segment_tts_enabled
             && provider.kind == "dashscope"
-            && is_livetranslate_model_id(&provider.model)
+            && crate::audio::events::resolve_realtime_profile(&provider, &provider.model)
+                .protocol_dialect
+                == Some(crate::audio::events::RealtimeProtocol::DashscopeLivetranslate)
         {
-            provider.model = "qwen3.5-omni-plus-realtime".to_string();
+            provider.model = provider
+                .local_model_capability_registry
+                .iter()
+                .find(|entry| {
+                    entry.realtime_protocol.as_deref() == Some("dashscope-omni")
+                        && entry.capabilities.iter().any(|capability| {
+                            capability == "text-to-speech" || capability == "speech-to-speech"
+                        })
+                })
+                .map(|entry| entry.model_id.clone())
+                .ok_or_else(|| {
+                    "Configured LiveTranslate provider has no explicit dashscope-omni TTS model"
+                        .to_string()
+                })?;
         }
         Ok(Self {
             provider,
@@ -254,9 +269,14 @@ fn resolve_model_provider_from_config_value(
         })
 }
 
-fn is_livetranslate_model_id(model_id: &str) -> bool {
-    let lower = model_id.to_ascii_lowercase();
-    lower.contains("livetranslate")
+fn is_livetranslate_model_reference(config: &Value, model_id: &str) -> bool {
+    resolve_model_provider_from_config_value(config, model_id)
+        .map(|provider| {
+            crate::audio::events::resolve_realtime_profile(&provider, &provider.model)
+                .protocol_dialect
+                == Some(crate::audio::events::RealtimeProtocol::DashscopeLivetranslate)
+        })
+        .unwrap_or(false)
 }
 
 fn parse_mix(config: &Value, prefix: &str) -> RouteMixConfig {

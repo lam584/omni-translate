@@ -86,7 +86,7 @@ const OMNI_READ_TIMEOUT_MS: u64 = 200;
 const OMNI_VAD_WARNING_INTERVAL_SECS: u64 = 30;
 const TRANSCRIPTION_COMPLETED_TIMEOUT_MS: u64 = 30_000;
 const OMNI_OUTPUT_SAMPLE_RATE_HZ: u32 = 24_000;
-const OMNI_PLAYBACK_QUEUE_CAPACITY: usize = 1;
+const OMNI_PLAYBACK_QUEUE_CAPACITY: usize = 3;
 const OMNI_PLAYBACK_MAX_QUEUE_AGE: Duration = Duration::from_secs(5);
 const OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 500;
 const OMNI_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;
@@ -238,12 +238,13 @@ impl RealtimeAudioMode {
 }
 
 pub fn default_realtime_audio_mode(model: &str) -> RealtimeAudioMode {
-    if is_livetranslate_model(model) {
+    if model.to_ascii_lowercase().contains("livetranslate") {
         RealtimeAudioMode::ServerVad
     } else {
         RealtimeAudioMode::Manual
     }
 }
+
 
 /// 48 kHz stereo f32 capture -> 16 kHz mono i16, as the DashScope wire
 /// format expects. Thin fixed-rate front for the shared capture resampler.
@@ -569,11 +570,15 @@ mod unit_tests {
 
 mod protocol;
 
-pub(crate) use self::protocol::OmniSpeechConfig;
+pub(crate) use self::protocol::{
+    build_dashscope_audio_append, build_dashscope_input_audio_commit,
+    build_dashscope_response_create, build_dashscope_session_update, build_dashscope_text_item,
+    build_omni_session_update_for_provider, OmniSpeechConfig,
+};
 use self::protocol::{
-    build_omni_session_update, check_vad_warning, elapsed_ms_since,
+    check_vad_warning, elapsed_ms_since,
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
-    is_livetranslate_model, manual_turn_response_stream_active,
+    manual_turn_response_stream_active,
     request_omni_playback_stop, reset_manual_turn_input_state, reset_omni_turn_state,
     resolve_completed_transcription, response_stream_owns_current_cue,
     set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
@@ -581,6 +586,8 @@ use self::protocol::{
     write_native_output_preview_to_cue, write_native_translation_to_cue,
     OmniEventDiagnostics, OmniPlaybackCommand,
 };
+#[cfg(test)]
+use protocol::build_omni_session_update;
 #[cfg(test)]
 mod native_translation_tests {
     use super::protocol::write_committed_native_translation_to_cue;

@@ -25,6 +25,24 @@ export const providerInteractionCapabilityOrder: ProviderInteractionCapability[]
   'pipeline_asr_mt_tts',
 ];
 
+// Semantic grouping for the interaction pills: purely presentational, the
+// stored interactionCapabilities array stays flat and keeps the order above.
+export type ProviderInteractionCapabilityGroupId = 'segmentation' | 'transport' | 'tts' | 'backend';
+
+export const providerInteractionCapabilityGroups: ReadonlyArray<{
+  id: ProviderInteractionCapabilityGroupId;
+  capabilities: ProviderInteractionCapability[];
+}> = [
+  { id: 'segmentation', capabilities: ['auto_vad', 'manual_commit', 'client_activity', 'push_to_talk'] },
+  { id: 'transport', capabilities: ['streaming', 'chunked_http_audio'] },
+  { id: 'tts', capabilities: ['server_commit_tts', 'commit_tts'] },
+  { id: 'backend', capabilities: ['text_only_backend', 'pipeline_asr_mt_tts'] },
+];
+
+export function providerInteractionCapabilityGroupLabelKey(id: ProviderInteractionCapabilityGroupId) {
+  return `providers.interactionGroups.${id}`;
+}
+
 type SeedRegistryEntry = ProviderModelCapabilityRegistryEntry & {
   id: string;
   modelId: string;
@@ -285,6 +303,7 @@ const seedRegistryEntries: SeedRegistryEntry[] = [
     id: 'seed-qwen3.5-livetranslate-flash-realtime',
     modelId: 'qwen3.5-livetranslate-flash-realtime',
     capabilities: ['speech-to-text', 'speech-to-speech'],
+    realtimeProtocol: 'dashscope-livetranslate',
     realtimeAudioMode: 'server_vad',
     interactionCapabilities: ['auto_vad', 'streaming'],
     apiModes: ['websocket'],
@@ -295,33 +314,35 @@ const seedRegistryEntries: SeedRegistryEntry[] = [
     id: 'seed-qwen3-livetranslate-flash-realtime',
     modelId: 'qwen3-livetranslate-flash-realtime',
     capabilities: ['speech-to-text', 'speech-to-speech'],
+    realtimeProtocol: 'dashscope-livetranslate',
     realtimeAudioMode: 'server_vad',
     interactionCapabilities: ['auto_vad', 'streaming'],
     apiModes: ['websocket'],
     releasedAt: '2025-09-22',
     source: 'official',
   },
-  { id: 'seed-qwen3-livetranslate-flash-realtime-2025-09-22', modelId: 'qwen3-livetranslate-flash-realtime-2025-09-22', capabilities: ['speech-to-text', 'speech-to-speech'], realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], releasedAt: '2025-09-22', source: 'official' },
+  { id: 'seed-qwen3-livetranslate-flash-realtime-2025-09-22', modelId: 'qwen3-livetranslate-flash-realtime-2025-09-22', capabilities: ['speech-to-text', 'speech-to-speech'], realtimeProtocol: 'dashscope-livetranslate', realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], releasedAt: '2025-09-22', source: 'official' },
+  { id: 'seed-qwen-audio-3.0-realtime-plus', modelId: 'qwen-audio-3.0-realtime-plus', capabilities: ['speech-to-text', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'server_vad', interactionCapabilities: ['auto_vad', 'streaming'], source: 'official' },
   { id: 'seed-qwen3-livetranslate-flash', modelId: 'qwen3-livetranslate-flash', capabilities: ['speech-to-text', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'official' },
   { id: 'seed-qwen3-livetranslate-flash-2025-12-01', modelId: 'qwen3-livetranslate-flash-2025-12-01', capabilities: ['speech-to-text', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2025-12-01', source: 'official' },
-  { id: 'seed-qwen3.5-omni-plus-realtime', modelId: 'qwen3.5-omni-plus-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-29', source: 'official' },
-  { id: 'seed-qwen3.5-omni-plus-realtime-2026-03-15', modelId: 'qwen3.5-omni-plus-realtime-2026-03-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-15', source: 'official' },
+  { id: 'seed-qwen3.5-omni-plus-realtime', modelId: 'qwen3.5-omni-plus-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-29', source: 'official' },
+  { id: 'seed-qwen3.5-omni-plus-realtime-2026-03-15', modelId: 'qwen3.5-omni-plus-realtime-2026-03-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-15', source: 'official' },
   { id: 'seed-qwen3.5-omni-plus', modelId: 'qwen3.5-omni-plus', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2026-03-15', source: 'official' },
   { id: 'seed-qwen3.5-omni-plus-2026-03-15', modelId: 'qwen3.5-omni-plus-2026-03-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2026-03-15', source: 'official' },
-  { id: 'seed-qwen3.5-omni-flash-realtime', modelId: 'qwen3.5-omni-flash-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-29', source: 'official' },
-  { id: 'seed-qwen3.5-omni-flash-realtime-2026-03-15', modelId: 'qwen3.5-omni-flash-realtime-2026-03-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-15', source: 'official' },
+  { id: 'seed-qwen3.5-omni-flash-realtime', modelId: 'qwen3.5-omni-flash-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-29', source: 'official' },
+  { id: 'seed-qwen3.5-omni-flash-realtime-2026-03-15', modelId: 'qwen3.5-omni-flash-realtime-2026-03-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2026-03-15', source: 'official' },
   { id: 'seed-qwen3.5-omni-flash', modelId: 'qwen3.5-omni-flash', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2026-03-15', source: 'official' },
   { id: 'seed-qwen3.5-omni-flash-2026-03-15', modelId: 'qwen3.5-omni-flash-2026-03-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2026-03-15', source: 'official' },
-  { id: 'seed-qwen3-omni-flash-realtime', modelId: 'qwen3-omni-flash-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-12-01', source: 'official' },
-  { id: 'seed-qwen3-omni-flash-realtime-2025-12-01', modelId: 'qwen3-omni-flash-realtime-2025-12-01', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-12-01', source: 'official' },
-  { id: 'seed-qwen3-omni-flash-realtime-2025-09-15', modelId: 'qwen3-omni-flash-realtime-2025-09-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-09-15', source: 'official' },
+  { id: 'seed-qwen3-omni-flash-realtime', modelId: 'qwen3-omni-flash-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-12-01', source: 'official' },
+  { id: 'seed-qwen3-omni-flash-realtime-2025-12-01', modelId: 'qwen3-omni-flash-realtime-2025-12-01', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-12-01', source: 'official' },
+  { id: 'seed-qwen3-omni-flash-realtime-2025-09-15', modelId: 'qwen3-omni-flash-realtime-2025-09-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-09-15', source: 'official' },
   { id: 'seed-qwen3-omni-flash', modelId: 'qwen3-omni-flash', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'official' },
   { id: 'seed-qwen3-omni-flash-2025-12-01', modelId: 'qwen3-omni-flash-2025-12-01', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2025-12-01', source: 'official' },
   { id: 'seed-qwen3-omni-flash-2025-09-15', modelId: 'qwen3-omni-flash-2025-09-15', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2025-09-15', source: 'official' },
   { id: 'seed-qwen2.5-omni-7b', modelId: 'qwen2.5-omni-7b', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'official' },
-  { id: 'seed-qwen-omni-turbo-realtime', modelId: 'qwen-omni-turbo-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-05-08', source: 'official' },
-  { id: 'seed-qwen-omni-turbo-realtime-latest', modelId: 'qwen-omni-turbo-realtime-latest', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-05-08', source: 'official' },
-  { id: 'seed-qwen-omni-turbo-realtime-2025-05-08', modelId: 'qwen-omni-turbo-realtime-2025-05-08', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-05-08', source: 'official' },
+  { id: 'seed-qwen-omni-turbo-realtime', modelId: 'qwen-omni-turbo-realtime', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-05-08', source: 'official' },
+  { id: 'seed-qwen-omni-turbo-realtime-latest', modelId: 'qwen-omni-turbo-realtime-latest', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-05-08', source: 'official' },
+  { id: 'seed-qwen-omni-turbo-realtime-2025-05-08', modelId: 'qwen-omni-turbo-realtime-2025-05-08', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], realtimeProtocol: 'dashscope-omni', realtimeAudioMode: 'manual', interactionCapabilities: ['auto_vad', 'manual_commit', 'streaming', 'push_to_talk'], releasedAt: '2025-05-08', source: 'official' },
   { id: 'seed-qwen-omni-turbo', modelId: 'qwen-omni-turbo', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'official' },
   { id: 'seed-qwen-omni-turbo-latest', modelId: 'qwen-omni-turbo-latest', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], source: 'official' },
   { id: 'seed-qwen-omni-turbo-2025-03-26', modelId: 'qwen-omni-turbo-2025-03-26', capabilities: ['speech-to-text', 'text-to-speech', 'speech-to-speech'], interactionCapabilities: ['chunked_http_audio'], releasedAt: '2025-03-26', source: 'official' },
@@ -395,6 +416,33 @@ export function isRealtimeAudioMode(value: string): value is RealtimeAudioMode {
 
 export function isProviderInteractionCapability(value: string): value is ProviderInteractionCapability {
   return providerInteractionCapabilityOrder.includes(value as ProviderInteractionCapability);
+}
+
+// i18n key routing for the registry/pending-model dialogs: pill and select
+// copy lives in the locale files so novices see localized terminology, while
+// the format* helpers below stay as stable English fallbacks for logs/tests.
+export function realtimeAudioModeHelpKey(mode: RealtimeAudioMode) {
+  if (mode === 'manual') return 'providers.audioModeHelp.manualFullAudio';
+  if (mode === 'server_vad') return 'providers.audioModeHelp.serverVad';
+  if (mode === 'semantic_vad') return 'providers.audioModeHelp.semanticVad';
+  if (mode === 'gemini_auto_activity') return 'providers.audioModeHelp.geminiAuto';
+  return 'providers.audioModeHelp.geminiManual';
+}
+
+export function providerCapabilityLabelKey(capability: ProviderCapability) {
+  return `providers.capabilityLabels.${capability}`;
+}
+
+export function providerCapabilityHintKey(capability: ProviderCapability) {
+  return `providers.capabilityHints.${capability}`;
+}
+
+export function providerInteractionCapabilityLabelKey(capability: ProviderInteractionCapability) {
+  return `providers.interactionLabels.${capability}`;
+}
+
+export function providerInteractionCapabilityHintKey(capability: ProviderInteractionCapability) {
+  return `providers.interactionHints.${capability}`;
 }
 
 export function formatRealtimeAudioModeLabel(mode: RealtimeAudioMode) {

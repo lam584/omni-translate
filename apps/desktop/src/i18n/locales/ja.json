@@ -926,12 +926,58 @@
       "description": "プロバイダーの設定と状態を確認してください。",
       "addEntry": "追加 項目",
       "closeTitle": "閉じる 機能 レジストリ",
-      "modelIdPlaceholder": "モデル ID",
+      "modelIdPlaceholder": "モデル ID を入力（例: qwen3-livetranslate-flash-realtime）",
+      "modelIdLabel": "モデル ID",
+      "duplicateModelId": "このモデル ID のエントリは既に存在します。最初の 1 件のみ有効です",
       "deleteEntry": "削除 機能 項目",
       "emptyTitle": "プロバイダー - 空・タイトル",
       "emptyDescription": "プロバイダーの設定と状態を確認してください。"
     },
+    "capabilityLabels": {
+      "speech-to-text": "音声認識",
+      "text-to-speech": "音声合成",
+      "speech-to-speech": "音声間翻訳",
+      "text-generation": "テキスト生成"
+    },
+    "capabilityHints": {
+      "speech-to-text": "音声認識（STT）：話した内容を文字に書き起こします",
+      "text-to-speech": "音声合成（TTS）：テキストを音声で読み上げます",
+      "speech-to-speech": "音声間翻訳（S2S）：音声を別言語の音声に直接翻訳します",
+      "text-generation": "テキスト生成：大規模言語モデルでテキストを翻訳・書き換えます"
+    },
+    "interactionLabels": {
+      "auto_vad": "自動区切り",
+      "manual_commit": "手動コミット",
+      "client_activity": "クライアント活動シグナル",
+      "streaming": "ストリーミング出力",
+      "chunked_http_audio": "分割 HTTP 音声",
+      "push_to_talk": "プッシュトゥトーク",
+      "server_commit_tts": "サーバー TTS コミット",
+      "commit_tts": "TTS コミット",
+      "text_only_backend": "テキスト専用バックエンド",
+      "pipeline_asr_mt_tts": "認識-翻訳-合成パイプライン"
+    },
+    "interactionHints": {
+      "auto_vad": "サーバーが音声の開始と終了を自動検出します。手動操作は不要です",
+      "manual_commit": "アプリが文の終わりを判断してから音声セグメントを送信します",
+      "client_activity": "アプリが明示的な開始/終了シグナルを送信します（Gemini Live 方式）",
+      "streaming": "結果が一括ではなく逐次ストリーミングで返ります",
+      "chunked_http_audio": "音声をリアルタイム接続ではなく HTTP で分割アップロードします",
+      "push_to_talk": "押している間だけ話す収音に対応し、境界はユーザーが制御します",
+      "server_commit_tts": "セグメント送信のたびにサーバー側で音声合成を実行します",
+      "commit_tts": "テキスト送信後に明示的に音声合成を要求します",
+      "text_only_backend": "テキストの入出力のみ対応し、音声は扱えません",
+      "pipeline_asr_mt_tts": "認識・翻訳・合成の 3 段階を連結して翻訳します"
+    },
+    "interactionGroups": {
+      "segmentation": "区切りと送信",
+      "transport": "伝送方式",
+      "tts": "音声合成",
+      "backend": "バックエンド形態"
+    },
     "audioModeHelp": {
+      "capabilitiesSectionTitle": "モデル能力の説明",
+      "interactionSectionTitle": "対話能力の説明",
       "title": "プロバイダー - タイトル",
       "description": "プロバイダーの設定と状態を確認してください。",
       "closeTitle": "プロバイダー - 閉じる・タイトル",

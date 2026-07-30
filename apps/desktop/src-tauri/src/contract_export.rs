@@ -51,12 +51,11 @@ fn render(header_source: &str, imports: &[&str], decls: &[String]) -> String {
 }
 
 fn decl<T: TS>() -> String {
-    T::decl()
+    T::decl(&ts_rs::Config::default())
 }
 
 struct GeneratedFile {
     name: &'static str,
-    source: &'static str,
     content: String,
 }
 
@@ -72,7 +71,6 @@ fn generated_files() -> Vec<GeneratedFile> {
     vec![
         GeneratedFile {
             name: "runtime-core.ts",
-            source: "apps/desktop/src-tauri/src/{shared,runtime,storage,bridge}/contracts.rs",
             content: render(
                 "apps/desktop/src-tauri/src/{shared,runtime,storage,bridge}/contracts.rs",
                 &["import type { MixControl } from './driver-bridge-contract';"],
@@ -97,7 +95,6 @@ fn generated_files() -> Vec<GeneratedFile> {
         },
         GeneratedFile {
             name: "driver-bridge-contract.ts",
-            source: "crates/omni-bridge-protocol/src/lib.rs",
             content: render(
                 "crates/omni-bridge-protocol/src/lib.rs",
                 &[],
@@ -110,7 +107,6 @@ fn generated_files() -> Vec<GeneratedFile> {
         },
         GeneratedFile {
             name: "bridge-ipc.ts",
-            source: "apps/desktop/src-tauri/src/bridge/contracts.rs",
             content: render(
                 "apps/desktop/src-tauri/src/bridge/contracts.rs",
                 &["import type { MixControl } from './driver-bridge-contract';"],
@@ -129,7 +125,6 @@ fn generated_files() -> Vec<GeneratedFile> {
         },
         GeneratedFile {
             name: "provider-runtime.ts",
-            source: "apps/desktop/src-tauri/src/{provider,storage}/contracts.rs + main.rs",
             content: render(
                 "apps/desktop/src-tauri/src/{provider,storage}/contracts.rs + main.rs",
                 &[
@@ -153,7 +148,6 @@ fn generated_files() -> Vec<GeneratedFile> {
         },
         GeneratedFile {
             name: "api-v2-commands.ts",
-            source: "apps/desktop/src-tauri/src/api_v2.rs",
             content: render(
                 "apps/desktop/src-tauri/src/api_v2.rs",
                 &[],
@@ -168,7 +162,6 @@ fn generated_files() -> Vec<GeneratedFile> {
         },
         GeneratedFile {
             name: "audio-runtime.ts",
-            source: "apps/desktop/src-tauri/src/audio/contracts.rs",
             content: render(
                 "apps/desktop/src-tauri/src/audio/contracts.rs",
                 &[],

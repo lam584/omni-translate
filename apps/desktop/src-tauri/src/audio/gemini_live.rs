@@ -36,13 +36,13 @@ const GEMINI_LIVE_SERVICE: &str =
     "google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GeminiActivityMode {
+pub(crate) enum GeminiActivityMode {
     Auto,
     Manual,
 }
 
 impl GeminiActivityMode {
-    pub fn from_config_value(value: &str) -> Result<Self, String> {
+    pub(crate) fn from_config_value(value: &str) -> Result<Self, String> {
         match value {
             "gemini_auto_activity" => Ok(Self::Auto),
             "gemini_manual_activity" => Ok(Self::Manual),
@@ -50,7 +50,7 @@ impl GeminiActivityMode {
         }
     }
 
-    pub fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Auto => "gemini_auto_activity",
             Self::Manual => "gemini_manual_activity",
@@ -58,11 +58,12 @@ impl GeminiActivityMode {
     }
 }
 
-pub fn is_gemini_activity_mode(value: &str) -> bool {
+#[cfg(test)]
+pub(crate) fn is_gemini_activity_mode(value: &str) -> bool {
     matches!(value, "gemini_auto_activity" | "gemini_manual_activity")
 }
 
-pub fn build_gemini_live_url(base_url: &str) -> Result<Url, String> {
+pub(crate) fn build_gemini_live_url(base_url: &str) -> Result<Url, String> {
     let mut url =
         Url::parse(base_url.trim()).map_err(|error| format!("invalid Gemini base URL: {error}"))?;
     let scheme = match url.scheme() {
@@ -189,7 +190,7 @@ fn is_go_away_message(evt: &Value) -> bool {
     evt.get("goAway").is_some()
 }
 
-pub fn start_gemini_live(
+pub(crate) fn start_gemini_live(
     app: AppHandle,
     store: &AudioStateStore,
     provider: ProviderDraftInput,

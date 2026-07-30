@@ -25,7 +25,7 @@ mod realtime_session;
 
 mod route_orchestrator;
 
-pub use realtime_session::{cancel_omni_preconnect, preconnect_omni_realtime};
+pub(crate) use realtime_session::{cancel_omni_preconnect, preconnect_omni_realtime};
 pub(crate) use realtime_session::preconnect_omni_realtime_inner;
 #[cfg(test)]
 use realtime_session::should_wait_for_omni_session_readiness;
@@ -35,6 +35,7 @@ pub(crate) use route_config::resolve_composite_template_provider;
 pub(crate) use route_config::subtitle_source_language_or_english;
 pub(crate) use route_config::{resolve_realtime_profile, RealtimeProtocol};
 pub(crate) use route_config::is_livetranslate_route_model;
+pub(crate) use route_config::model_name_is_livetranslate;
 use route_config::infer_legacy_omni_model;
 #[cfg(test)]
 use route_config::{
@@ -44,14 +45,14 @@ use route_config::{
     ResolvedVadPolicy, SpeechDispatchPolicy, SubtitleFallbackPolicy,
 };
 
-pub use route_orchestrator::{start_audio_route, stop_audio_route, stop_speech_dispatch};
+pub(crate) use route_orchestrator::{start_audio_route, stop_audio_route, stop_speech_dispatch};
 pub(crate) use route_orchestrator::start_audio_route_inner;
 #[cfg(test)]
 use route_orchestrator::{
     execute_fast_watch_start, run_fast_watch_start_body, FastWatchStartOutcome,
 };
 
-pub const AUDIO_RUNTIME_SNAPSHOT_EVENT: &str = "audio://snapshot";
+pub(crate) const AUDIO_RUNTIME_SNAPSHOT_EVENT: &str = "audio://snapshot";
 const AUDIO_BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(6);
 const OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(45);
 const OMNI_ROUTE_SESSION_READINESS_TIMEOUT: Duration = Duration::from_secs(90);
@@ -205,7 +206,7 @@ fn start_route_with_overlay(
     Ok(snapshot)
 }
 
-pub async fn bootstrap_audio(
+pub(crate) async fn bootstrap_audio(
     app: AppHandle,
 ) -> Result<AudioRuntimeSnapshot, String> {
     let task = tauri::async_runtime::spawn_blocking(move || {
@@ -222,7 +223,7 @@ pub async fn bootstrap_audio(
         .map_err(|error| format!("音频初始化线程意外退出: {error}"))?
 }
 
-pub fn refresh_audio_devices(
+pub(crate) fn refresh_audio_devices(
     app: AppHandle,
     state: State<'_, AudioStateStore>,
 ) -> Result<AudioRuntimeSnapshot, String> {
@@ -234,7 +235,7 @@ pub fn refresh_audio_devices(
 /// (inbound) and conversation mode (inbound + outbound) share the same warmer;
 /// virtual-driver inbound is skipped by the warmer since it flows through the
 /// Bridge pipe. Never blocks the caller and never surfaces failures.
-pub fn prewarm_capture_routes(
+pub(crate) fn prewarm_capture_routes(
     app: AppHandle,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
@@ -245,14 +246,14 @@ pub fn prewarm_capture_routes(
     Ok(state.snapshot())
 }
 
-pub fn clear_subtitle_cues(
+pub(crate) fn clear_subtitle_cues(
     app: AppHandle,
     state: State<'_, AudioStateStore>,
 ) -> Result<AudioRuntimeSnapshot, String> {
     AudioSessionSupervisor::new(app, &state).clear_cues()
 }
 
-pub fn start_speech_dispatch(
+pub(crate) fn start_speech_dispatch(
     app: AppHandle,
     state: State<'_, AudioStateStore>,
     config: Value,
@@ -260,7 +261,7 @@ pub fn start_speech_dispatch(
     AudioSessionSupervisor::new(app, &state).start_speech(config)
 }
 
-pub fn start_translate_worker(
+pub(crate) fn start_translate_worker(
     app: AppHandle,
     state: State<'_, AudioStateStore>,
     config: Value,
@@ -268,7 +269,7 @@ pub fn start_translate_worker(
     AudioSessionSupervisor::new(app, &state).start_translation(config)
 }
 
-pub async fn stop_translate_worker(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
+pub(crate) async fn stop_translate_worker(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let app2 = app.clone();

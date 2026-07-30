@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub use omni_bridge_protocol::{
+pub(crate) use omni_bridge_protocol::{
     AudioFrameAck as BridgeTranslationFrameAck, AudioFrameHeader as BridgeTranslationFrameHeader,
     MixControl as BridgeMixControl,
 };
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeRuntimeSnapshot {
+pub(crate) struct BridgeRuntimeSnapshot {
     #[ts(type = "'stopped' | 'starting' | 'running' | 'error'")]
     pub process_status: String,
     #[ts(type = "'development' | 'release'")]
@@ -186,7 +186,7 @@ impl Default for BridgeRuntimeSnapshot {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct DriverProbeResult {
+pub(crate) struct DriverProbeResult {
     pub schema_version: u32,
     pub driver_health: String,
     pub error_code: Option<String>,
@@ -206,7 +206,7 @@ pub struct DriverProbeResult {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct DriverOperationResult {
+pub(crate) struct DriverOperationResult {
     pub schema_version: u32,
     pub operation_id: String,
     pub action: String,
@@ -222,7 +222,7 @@ pub struct DriverOperationResult {
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "legacy driver install-state schema is retained for upgrade compatibility")]
-pub struct DriverInstallStateFile {
+pub(crate) struct DriverInstallStateFile {
     pub protocol_version: String,
     pub install_channel: String,
     pub driver_version: String,
@@ -238,7 +238,7 @@ pub struct DriverInstallStateFile {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type")]
-pub enum DriverBridgeCommand {
+pub(crate) enum DriverBridgeCommand {
     #[serde(rename = "bridge.init")]
     Init(BridgeInitRequest),
     #[serde(rename = "bridge.state.query")]
@@ -253,7 +253,7 @@ pub enum DriverBridgeCommand {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(tag = "type")]
-pub enum DriverBridgeEvent {
+pub(crate) enum DriverBridgeEvent {
     #[serde(rename = "bridge.init.ack")]
     InitAck(BridgeInitResponse),
     #[serde(rename = "bridge.state.snapshot")]
@@ -266,7 +266,7 @@ pub enum DriverBridgeEvent {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeInitRequest {
+pub(crate) struct BridgeInitRequest {
     pub request_id: String,
     #[ts(type = "'2026-07-27-smart-gain-v3'")]
     pub protocol_version: String,
@@ -285,7 +285,7 @@ pub struct BridgeInitRequest {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeInitResponse {
+pub(crate) struct BridgeInitResponse {
     pub request_id: String,
     #[ts(type = "'2026-07-27-smart-gain-v3'")]
     pub protocol_version: String,
@@ -299,19 +299,19 @@ pub struct BridgeInitResponse {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeStateQuery {
+pub(crate) struct BridgeStateQuery {
     pub request_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeSourceFlushRequest {
+pub(crate) struct BridgeSourceFlushRequest {
     pub request_id: String,
 }
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeStateResponse {
+pub(crate) struct BridgeStateResponse {
     pub request_id: String,
     #[ts(type = "'2026-07-27-smart-gain-v3'")]
     pub protocol_version: String,
@@ -403,7 +403,7 @@ pub struct BridgeStateResponse {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeAudioFrame {
+pub(crate) struct BridgeAudioFrame {
     pub frame_id: String,
     pub stream_id: String,
     #[ts(type = "'pcm16le'")]
@@ -421,7 +421,7 @@ pub struct BridgeAudioFrame {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeWriteFrameRequest {
+pub(crate) struct BridgeWriteFrameRequest {
     pub request_id: String,
     pub session_id: String,
     pub frame: BridgeAudioFrame,
@@ -429,7 +429,7 @@ pub struct BridgeWriteFrameRequest {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeWriteFrameAck {
+pub(crate) struct BridgeWriteFrameAck {
     pub request_id: String,
     pub frame_id: String,
     pub accepted_at: String,
@@ -438,7 +438,7 @@ pub struct BridgeWriteFrameAck {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct BridgeShutdownRequest {
+pub(crate) struct BridgeShutdownRequest {
     pub request_id: String,
     pub session_id: String,
     #[ts(type = "'session-ended' | 'installer-rollback' | 'manual-stop'")]
@@ -447,7 +447,7 @@ pub struct BridgeShutdownRequest {
 
 #[derive(Clone, Serialize, Deserialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct DriverBridgeErrorEvent {
+pub(crate) struct DriverBridgeErrorEvent {
     #[ts(optional)]
     pub request_id: Option<String>,
     #[ts(type = "'driver.not-installed' | 'driver.version-mismatch' | 'driver.write-failed' | 'driver.testsigning-disabled' | 'driver.secure-boot-enabled' | 'driver.memory-integrity-enabled' | 'driver.reboot-required' | 'driver.audio-probe-failed' | 'driver.duplicate-root-devices' | 'driver.endpoint-missing' | 'driver.ioctl-unavailable' | 'driver.abi-mismatch' | 'driver.elevation-cancelled' | 'driver.probe-failed' | 'driver.operation-failed' | 'bridge.not-ready' | 'bridge.queue-overflow' | 'bridge.permission-denied' | 'bridge.timeout' | 'bridge.session-mismatch' | 'bridge.singleton-already-running' | 'monitor.virtual-playback-loop' | 'installer.rollback-triggered'")]
@@ -466,7 +466,7 @@ pub struct DriverBridgeErrorEvent {
 /// Bridge runtime state (pid files, elevated operation results) lives under
 /// the diagnostics root, so installed builds write to `%LOCALAPPDATA%` while
 /// dev builds keep using the workspace `artifacts/diagnostics/logs` tree.
-pub fn default_runtime_root() -> String {
+pub(crate) fn default_runtime_root() -> String {
     std::path::Path::new(&crate::diagnostics::state::default_diagnostics_root())
         .join("logs")
         .to_string_lossy()
@@ -480,7 +480,7 @@ fn has_installed_driver_evidence(snapshot: &BridgeRuntimeSnapshot) -> bool {
         || snapshot.ioctl_available
 }
 
-pub fn reconcile_bridge_snapshot(snapshot: &mut BridgeRuntimeSnapshot) {
+pub(crate) fn reconcile_bridge_snapshot(snapshot: &mut BridgeRuntimeSnapshot) {
     let bridge_ok = snapshot.bridge_state == "running";
     let driver_ok = snapshot.driver_health == "running";
     let driver_present = driver_ok || has_installed_driver_evidence(snapshot);

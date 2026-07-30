@@ -6,27 +6,27 @@
 use std::sync::Mutex;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ProviderProbeSummary {
+pub(crate) struct ProviderProbeSummary {
     pub verdict: String,
     pub checked_at: String,
     pub transport_effective: String,
 }
 
 #[derive(Default)]
-pub struct ProviderStateStore {
+pub(crate) struct ProviderStateStore {
     last_probe: Mutex<Option<ProviderProbeSummary>>,
 }
 
 impl ProviderStateStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub fn record_probe(&self, summary: ProviderProbeSummary) {
+    pub(crate) fn record_probe(&self, summary: ProviderProbeSummary) {
         *self.last_probe.lock().expect("provider state poisoned") = Some(summary);
     }
 
-    pub fn last_probe(&self) -> Option<ProviderProbeSummary> {
+    pub(crate) fn last_probe(&self) -> Option<ProviderProbeSummary> {
         self.last_probe.lock().expect("provider state poisoned").clone()
     }
 }

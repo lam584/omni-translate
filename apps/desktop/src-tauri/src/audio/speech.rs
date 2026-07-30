@@ -2,6 +2,7 @@ use std::collections::{hash_map::DefaultHasher, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
@@ -28,7 +29,7 @@ const PROMPT_TONE_MS: u32 = 90;
 
 mod playback_engine;
 
-use self::playback_engine::SpeechPlaybackEngine;
+use self::playback_engine::{SpeechPlaybackEngine, SpeechPlaybackResult, SynthesisOutput};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TranslationAudioSource {
@@ -54,7 +55,7 @@ pub(crate) fn resolve_translation_audio_source(
     }
 }
 
-pub fn start_dispatch(
+pub(crate) fn start_dispatch(
     app: AppHandle,
     store: &AudioStateStore,
     config: Value,
@@ -148,7 +149,7 @@ pub fn start_dispatch(
     Ok(store.snapshot())
 }
 
-pub fn stop_dispatch(
+pub(crate) fn stop_dispatch(
     app: AppHandle,
     store: &AudioStateStore,
 ) -> Result<AudioRuntimeSnapshot, String> {
@@ -355,7 +356,6 @@ mod tests {
             provider: provider_input(),
             enabled: true,
             target_language: "zh-CN".to_string(),
-            voice_preset_id: "voice-cn-neutral".to_string(),
             voice: "Ethan".to_string(),
             output_target: "both".to_string(),
             local_playback_enabled: true,
@@ -389,7 +389,6 @@ mod tests {
         };
         let captured = CapturedSegmentAudio {
             cue_id: cue.cue_id.clone(),
-            route_direction: cue.route_direction.clone(),
             sample_rate_hz: 48_000,
             channel_count: 2,
             pcm_f32le: vec![0, 0, 64, 63, 0, 0, 64, 63, 0, 0, 64, 63, 0, 0, 64, 63],
@@ -507,7 +506,6 @@ mod tests {
     fn convert_captured_audio_downsamples_stereo_float_to_mono_24k() {
         let audio = CapturedSegmentAudio {
             cue_id: "cue-inbound-1".to_string(),
-            route_direction: "inbound".to_string(),
             sample_rate_hz: 48_000,
             channel_count: 2,
             pcm_f32le: [

@@ -1,9 +1,9 @@
-pub mod contracts;
+pub(crate) mod contracts;
 mod clients;
-pub mod events;
-pub mod installer;
-pub mod ipc;
-pub mod state;
+pub(crate) mod events;
+pub(crate) mod installer;
+pub(crate) mod ipc;
+pub(crate) mod state;
 
 /// Bridge session ids embed the app-level session id (so the trailing ` sid=`
 /// tokens in bridge-service.log align with app.log by substring) while

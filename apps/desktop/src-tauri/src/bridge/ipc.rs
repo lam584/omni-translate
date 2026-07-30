@@ -29,14 +29,14 @@ const BRIDGE_CONNECT_RETRIES: usize = 40;
 const BRIDGE_CONNECT_DELAY_MS: u64 = 100;
 const IPC_READ_TIMEOUT_SECS: u64 = 5;
 
-pub use super::clients::BridgeIpcClient;
+pub(crate) use super::clients::BridgeIpcClient;
 pub(crate) use super::clients::{BridgeAudioWriter, BridgeProcessSupervisor};
 
 include!("ipc/process.rs");
 
 include!("ipc/transport.rs");
 
-pub fn initialize_bridge(
+pub(crate) fn initialize_bridge(
     snapshot: &BridgeRuntimeSnapshot,
 ) -> Result<BridgeRuntimeSnapshot, String> {
     let session_id = snapshot
@@ -99,7 +99,7 @@ pub fn initialize_bridge(
     }
 }
 
-pub fn apply_query(snapshot: &mut BridgeRuntimeSnapshot, query: BridgeStateResponse) {
+pub(crate) fn apply_query(snapshot: &mut BridgeRuntimeSnapshot, query: BridgeStateResponse) {
     snapshot.bridge_state = query.bridge_state;
     snapshot.lifecycle_state = query.lifecycle_state;
     snapshot.driver_health = query.driver_health;
@@ -159,7 +159,7 @@ pub fn apply_query(snapshot: &mut BridgeRuntimeSnapshot, query: BridgeStateRespo
 }
 
 #[allow(dead_code, reason = "legacy driver install-state loader is retained for upgrade compatibility")]
-pub fn load_install_state(snapshot: &mut BridgeRuntimeSnapshot) -> Result<(), String> {
+pub(crate) fn load_install_state(snapshot: &mut BridgeRuntimeSnapshot) -> Result<(), String> {
     let path = driver_state_path(&snapshot.runtime_root);
     let contents = match fs::read_to_string(&path) {
         Ok(contents) => contents,

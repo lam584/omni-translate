@@ -15,7 +15,7 @@ fn default_provider_response_modalities() -> Vec<String> {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderAuthRefInput {
+pub(crate) struct ProviderAuthRefInput {
     pub kind: String,
     pub reference: String,
     pub header_name: String,
@@ -24,7 +24,7 @@ pub struct ProviderAuthRefInput {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderCustomHeaderInput {
+pub(crate) struct ProviderCustomHeaderInput {
     pub name: String,
     pub value: String,
     pub enabled: bool,
@@ -32,7 +32,7 @@ pub struct ProviderCustomHeaderInput {
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderSceneModelAssignmentInput {
+pub(crate) struct ProviderSceneModelAssignmentInput {
     #[allow(dead_code, reason = "scenario is preserved for renderer contract deserialization and diagnostics")]
     pub scenario: String,
     pub model_ids: Vec<String>,
@@ -41,7 +41,7 @@ pub struct ProviderSceneModelAssignmentInput {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "capability registry fields are deserialized for route planning and forward compatibility")]
-pub struct ProviderModelCapabilityRegistryEntryInput {
+pub(crate) struct ProviderModelCapabilityRegistryEntryInput {
     pub id: String,
     pub model_id: String,
     pub capabilities: Vec<String>,
@@ -59,7 +59,7 @@ pub struct ProviderModelCapabilityRegistryEntryInput {
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "catalog cache item schema is preserved for persisted renderer contracts")]
-pub struct ProviderModelCatalogCacheItemInput {
+pub(crate) struct ProviderModelCatalogCacheItemInput {
     pub id: String,
     pub display_name: String,
     pub owned_by: Option<String>,
@@ -72,14 +72,14 @@ pub struct ProviderModelCatalogCacheItemInput {
 #[derive(Clone, Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 #[allow(dead_code, reason = "catalog cache schema is preserved for persisted renderer contracts")]
-pub struct ProviderModelCatalogCacheInput {
+pub(crate) struct ProviderModelCatalogCacheInput {
     #[serde(default)]
     pub models: Vec<ProviderModelCatalogCacheItemInput>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderDraftInput {
+pub(crate) struct ProviderDraftInput {
     pub template_id: String,
     pub provider_id: String,
     pub kind: String,
@@ -114,7 +114,7 @@ pub struct ProviderDraftInput {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderRuntimeError {
+pub(crate) struct ProviderRuntimeError {
     pub code: String,
     pub message: String,
     pub retriable: bool,
@@ -124,7 +124,7 @@ pub struct ProviderRuntimeError {
 }
 
 impl ProviderRuntimeError {
-    pub fn new(code: &str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &str, message: impl Into<String>) -> Self {
         Self {
             code: code.to_string(),
             message: message.into(),
@@ -135,22 +135,22 @@ impl ProviderRuntimeError {
         }
     }
 
-    pub fn with_http_status(mut self, http_status: u16) -> Self {
+    pub(crate) fn with_http_status(mut self, http_status: u16) -> Self {
         self.http_status = Some(http_status);
         self
     }
 
-    pub fn with_provider_code(mut self, provider_code: impl Into<String>) -> Self {
+    pub(crate) fn with_provider_code(mut self, provider_code: impl Into<String>) -> Self {
         self.provider_code = Some(provider_code.into());
         self
     }
 
-    pub fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
+    pub(crate) fn with_suggestion(mut self, suggestion: impl Into<String>) -> Self {
         self.suggestion = Some(suggestion.into());
         self
     }
 
-    pub fn retriable(mut self, retriable: bool) -> Self {
+    pub(crate) fn retriable(mut self, retriable: bool) -> Self {
         self.retriable = retriable;
         self
     }
@@ -158,7 +158,7 @@ impl ProviderRuntimeError {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderRoutingDecision {
+pub(crate) struct ProviderRoutingDecision {
     #[ts(type = "'balanced' | 'subtitle-first'")]
     pub subtitle_priority: String,
     #[ts(type = "'ready' | 'deferred' | 'queued'")]
@@ -167,7 +167,7 @@ pub struct ProviderRoutingDecision {
 }
 
 impl ProviderRoutingDecision {
-    pub fn for_verdict(verdict: &str, latency_ms: u64, fallback_applied: bool) -> Self {
+    pub(crate) fn for_verdict(verdict: &str, latency_ms: u64, fallback_applied: bool) -> Self {
         match verdict {
             "available" => Self {
                 subtitle_priority: "balanced".to_string(),
@@ -197,7 +197,7 @@ impl ProviderRoutingDecision {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderProbeCheckRuntime {
+pub(crate) struct ProviderProbeCheckRuntime {
     pub id: String,
     #[ts(type = "'streaming' | 'latency' | 'error-shape' | 'response-shape'")]
     pub key: String,
@@ -209,7 +209,7 @@ pub struct ProviderProbeCheckRuntime {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderProbeProfileRuntime {
+pub(crate) struct ProviderProbeProfileRuntime {
     pub id: String,
     pub template_id: String,
     pub provider_id: String,
@@ -232,7 +232,7 @@ pub struct ProviderProbeProfileRuntime {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderStreamEventRecord {
+pub(crate) struct ProviderStreamEventRecord {
     pub event_type: String,
     pub summary: String,
     pub segment_id: Option<String>,
@@ -242,7 +242,7 @@ pub struct ProviderStreamEventRecord {
 }
 
 impl ProviderStreamEventRecord {
-    pub fn new(event_type: &str, summary: &str) -> Self {
+    pub(crate) fn new(event_type: &str, summary: &str) -> Self {
         Self {
             event_type: event_type.to_string(),
             summary: summary.to_string(),
@@ -253,7 +253,7 @@ impl ProviderStreamEventRecord {
         }
     }
 
-    pub fn with_audio(
+    pub(crate) fn with_audio(
         event_type: &str,
         summary: &str,
         segment_id: Option<&str>,
@@ -272,7 +272,7 @@ impl ProviderStreamEventRecord {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderSmokeResult {
+pub(crate) struct ProviderSmokeResult {
     pub request_id: String,
     pub provider_id: String,
     #[ts(type = "'completed' | 'failed'")]
@@ -296,7 +296,7 @@ pub struct ProviderSmokeResult {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderModelRuntime {
+pub(crate) struct ProviderModelRuntime {
     pub id: String,
     pub display_name: String,
     pub owned_by: Option<String>,
@@ -307,7 +307,7 @@ pub struct ProviderModelRuntime {
 
 #[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ProviderModelCatalogRuntime {
+pub(crate) struct ProviderModelCatalogRuntime {
     pub provider_id: String,
     pub endpoint: String,
     pub fetched_at: String,
@@ -316,7 +316,7 @@ pub struct ProviderModelCatalogRuntime {
 }
 
 #[derive(Clone, Debug)]
-pub struct TtsAudioChunk {
+pub(crate) struct TtsAudioChunk {
     pub sample_rate_hz: u32,
     pub channel_count: u16,
     pub pcm_i16: Vec<i16>,
@@ -324,7 +324,7 @@ pub struct TtsAudioChunk {
 
 #[derive(Clone, Debug)]
 #[allow(dead_code, reason = "TTS result remains part of the provider gateway contract while HTTP TTS is disabled")]
-pub struct TtsSynthesisResult {
+pub(crate) struct TtsSynthesisResult {
     pub request_id: String,
     pub provider_id: String,
     pub model: String,

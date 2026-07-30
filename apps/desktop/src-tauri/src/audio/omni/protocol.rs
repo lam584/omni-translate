@@ -71,7 +71,7 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
         ) {
             Ok(socket) => {
                 *reconnect_count = 0;
-                store.discard_uncommitted_subtitle_cues();
+                store.discard_uncommitted_subtitle_cues_by_direction("inbound");
                 store.bump_reconnect_generation();
                 store.set_stt_connected(true, buffer_size);
                 let _ = emit_audio_snapshot(app, store);

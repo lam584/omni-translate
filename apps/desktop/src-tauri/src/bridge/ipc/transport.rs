@@ -165,7 +165,7 @@ fn write_command_once_quiet(
     serde_json::from_str(response.trim()).map_err(|error| error.to_string())
 }
 
-pub fn now_unix_ms() -> u64 {
+pub(crate) fn now_unix_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_millis() as u64)
@@ -185,7 +185,7 @@ fn interpret_state_response(
     }
 }
 
-pub fn query_state(pipe_path: &str) -> Result<BridgeStateResponse, String> {
+pub(crate) fn query_state(pipe_path: &str) -> Result<BridgeStateResponse, String> {
     interpret_state_response(write_command(
         pipe_path,
         &DriverBridgeCommand::StateQuery(BridgeStateQuery {
@@ -194,7 +194,7 @@ pub fn query_state(pipe_path: &str) -> Result<BridgeStateResponse, String> {
     )?)
 }
 
-pub fn query_state_fast(pipe_path: &str) -> Result<BridgeStateResponse, String> {
+pub(crate) fn query_state_fast(pipe_path: &str) -> Result<BridgeStateResponse, String> {
     interpret_state_response(write_command_with_retry(
         pipe_path,
         &DriverBridgeCommand::StateQuery(BridgeStateQuery {

@@ -15,7 +15,7 @@ const AUDIO_APPEND_EVENT_LABEL: &str = "ws.send.input_audio_buffer.append";
 const AUDIO_APPEND_SUMMARY_EVENT_LABEL: &str = "ws.send.input_audio_buffer.append.summary";
 
 #[derive(Clone, Debug)]
-pub struct ModelTraceContext {
+pub(crate) struct ModelTraceContext {
     pub trace_id: String,
     pub session_id: Option<String>,
     pub route_mode: Option<String>,
@@ -26,7 +26,7 @@ pub struct ModelTraceContext {
 }
 
 impl ModelTraceContext {
-    pub fn new(
+    pub(crate) fn new(
         provider_id: impl Into<String>,
         model: impl Into<String>,
         category: impl Into<String>,
@@ -42,18 +42,18 @@ impl ModelTraceContext {
         }
     }
 
-    pub fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
+    pub(crate) fn with_session_id(mut self, session_id: impl Into<String>) -> Self {
         self.session_id = Some(session_id.into());
         self
     }
 
-    pub fn with_route_mode(mut self, route_mode: impl Into<String>) -> Self {
+    pub(crate) fn with_route_mode(mut self, route_mode: impl Into<String>) -> Self {
         self.route_mode = Some(route_mode.into());
         self
     }
 }
 
-pub struct ModelTraceRecorder<R: tauri::Runtime = tauri::Wry> {
+pub(crate) struct ModelTraceRecorder<R: tauri::Runtime = tauri::Wry> {
     app: AppHandle<R>,
     context: ModelTraceContext,
 }
@@ -70,17 +70,17 @@ impl<R: tauri::Runtime> Clone for ModelTraceRecorder<R> {
 }
 
 impl<R: tauri::Runtime> ModelTraceRecorder<R> {
-    pub fn new(app: AppHandle<R>, context: ModelTraceContext) -> Self {
+    pub(crate) fn new(app: AppHandle<R>, context: ModelTraceContext) -> Self {
         Self { app, context }
     }
 
-    pub fn with_cue_id(&self, cue_id: impl Into<String>) -> Self {
+    pub(crate) fn with_cue_id(&self, cue_id: impl Into<String>) -> Self {
         let mut context = self.context.clone();
         context.cue_id = Some(cue_id.into());
         Self::new(self.app.clone(), context)
     }
 
-    pub fn call(&self, name: impl Into<String>) -> ModelTraceCall<R> {
+    pub(crate) fn call(&self, name: impl Into<String>) -> ModelTraceCall<R> {
         let name = name.into();
         let call_id = format!("call-{}", Uuid::new_v4());
         let started_at = now_unix_seconds_marker();
@@ -117,7 +117,7 @@ impl<R: tauri::Runtime> ModelTraceRecorder<R> {
     }
 }
 
-pub struct ModelTraceCall<R: tauri::Runtime = tauri::Wry> {
+pub(crate) struct ModelTraceCall<R: tauri::Runtime = tauri::Wry> {
     app: AppHandle<R>,
     context: ModelTraceContext,
     call_id: String,
@@ -128,15 +128,15 @@ pub struct ModelTraceCall<R: tauri::Runtime = tauri::Wry> {
 }
 
 impl<R: tauri::Runtime> ModelTraceCall<R> {
-    pub fn input(&self, label: &str, value: Value) {
+    pub(crate) fn input(&self, label: &str, value: Value) {
         self.event(&format!("input.{label}"), value);
     }
 
-    pub fn output(&self, label: &str, value: Value) {
+    pub(crate) fn output(&self, label: &str, value: Value) {
         self.event(&format!("output.{label}"), value);
     }
 
-    pub fn record_ws_send(&mut self, label: &str, value: Value) {
+    pub(crate) fn record_ws_send(&mut self, label: &str, value: Value) {
         let event_label = format!("ws.send.{label}");
         if is_audio_append_event(&event_label, &value) {
             let elapsed_ms = self.started.elapsed().as_millis();
@@ -150,29 +150,29 @@ impl<R: tauri::Runtime> ModelTraceCall<R> {
         self.event(&event_label, value);
     }
 
-    pub fn record_ws_recv(&self, label: &str, value: Value) {
+    pub(crate) fn record_ws_recv(&self, label: &str, value: Value) {
         self.event(&format!("ws.recv.{label}"), value);
     }
 
     #[allow(dead_code, reason = "HTTP trace hook is part of the provider instrumentation contract")]
-    pub fn record_http_request(&self, label: &str, value: Value) {
+    pub(crate) fn record_http_request(&self, label: &str, value: Value) {
         self.event(&format!("http.request.{label}"), value);
     }
 
     #[allow(dead_code, reason = "HTTP trace hook is part of the provider instrumentation contract")]
-    pub fn record_http_response(&self, label: &str, value: Value) {
+    pub(crate) fn record_http_response(&self, label: &str, value: Value) {
         self.event(&format!("http.response.{label}"), value);
     }
 
-    pub fn error(&mut self, error: impl Into<String>) {
+    pub(crate) fn error(&mut self, error: impl Into<String>) {
         self.finish("failed", Some(error.into()));
     }
 
-    pub fn end(&mut self) {
+    pub(crate) fn end(&mut self) {
         self.finish("succeeded", None);
     }
 
-    pub fn event(&self, label: &str, value: Value) {
+    pub(crate) fn event(&self, label: &str, value: Value) {
         self.write_event(label, value);
     }
 
@@ -387,7 +387,7 @@ fn model_trace_detail(
     })
 }
 
-pub fn sanitize_value(value: Value) -> Value {
+pub(crate) fn sanitize_value(value: Value) -> Value {
     match value {
         Value::Object(map) => {
             let mut sanitized = Map::new();

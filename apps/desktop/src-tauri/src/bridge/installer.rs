@@ -26,7 +26,7 @@ fn parse_driver_probe_output(output: &[u8]) -> Result<DriverProbeResult, String>
     serde_json::from_str(contents).map_err(|error| format!("driver.probe-invalid-json: {error}"))
 }
 
-pub fn apply_driver_probe(snapshot: &mut BridgeRuntimeSnapshot, probe: DriverProbeResult) {
+pub(crate) fn apply_driver_probe(snapshot: &mut BridgeRuntimeSnapshot, probe: DriverProbeResult) {
     let preserved_bridge_error = if probe.error_code.is_none() {
         snapshot
             .last_error_code
@@ -53,7 +53,7 @@ pub fn apply_driver_probe(snapshot: &mut BridgeRuntimeSnapshot, probe: DriverPro
     snapshot.driver_detail = probe.detail;
 }
 
-pub fn probe_driver(
+pub(crate) fn probe_driver(
     snapshot: &BridgeRuntimeSnapshot,
     probe_secure_boot_elevated: bool,
 ) -> Result<DriverProbeResult, String> {
@@ -85,7 +85,7 @@ fn operation_result_path(snapshot: &BridgeRuntimeSnapshot, operation_id: &str) -
         .join(format!("{operation_id}.json"))
 }
 
-pub fn run_elevated_driver_operation(
+pub(crate) fn run_elevated_driver_operation(
     snapshot: &BridgeRuntimeSnapshot,
     action: &str,
 ) -> Result<DriverOperationResult, String> {

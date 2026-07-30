@@ -108,14 +108,34 @@ describe('RealTimeSessionPage one-click launch', () => {
    * Lets the fake backend's queued worker transitions land — they arrive on the
    * push channel, never in a command return — and gives React a chance to
    * render the resulting store updates.
+   *
+   * `fake.settle()` deterministically flushes the fake bridge's queued
+   * convergence steps (they otherwise land on a setTimeout(0)), so most loops
+   * finish without any real waiting. A short real sleep remains only because
+   * the launch flow's watch-route readiness check in audio-runtime.ts polls on
+   * a real 40ms window.setTimeout that no flush hook can advance; failing to
+   * settle now throws with the issued-command trail instead of silently
+   * falling through after the old 2s cap.
    */
   async function settleSession() {
-    await sleepInAct(30);
-    const deadline = Date.now() + 2_000;
-    while (isBusy() && Date.now() < deadline) {
-      await sleepInAct(20);
+    const deadline = Date.now() + 5_000;
+    for (;;) {
+      await runInAct(() => {
+        void fake.settle();
+      });
+      if (!isBusy()) {
+        break;
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(`settleSession timed out after 5000ms: page still busy; issued commands: ${issued.join(', ')}`);
+      }
+      // Real sleep: let the renderer's 40ms watch-route readiness poll fire.
+      await sleepInAct(10);
     }
-    await sleepInAct(20);
+    // One more flush so late pushes (e.g. speech frame counters) land too.
+    await runInAct(() => {
+      void fake.settle();
+    });
   }
 
   /** Clicks a control, then lets the launch/stop flow it started settle. */

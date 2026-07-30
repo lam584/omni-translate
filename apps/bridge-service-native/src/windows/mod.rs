@@ -337,7 +337,7 @@ impl NamedPipeControlServer {
     }
 }
 
-pub fn run() -> Result<(), String> {
+pub(super) fn run() -> Result<(), String> {
     let args: Vec<String> = std::env::args().collect();
     BridgeHost::from_args(&args).run()
 }

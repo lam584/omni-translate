@@ -230,7 +230,7 @@ fn build_support_matrix<R: tauri::Runtime>(
     ]
 }
 
-pub fn build_diagnostics_snapshot<R: tauri::Runtime>(
+pub(crate) fn build_diagnostics_snapshot<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> DiagnosticsRuntimeSnapshot {
     let diagnostics = app
@@ -292,7 +292,7 @@ pub fn build_diagnostics_snapshot<R: tauri::Runtime>(
     }
 }
 
-pub fn append_diagnostics_log<R: tauri::Runtime>(
+pub(crate) fn append_diagnostics_log<R: tauri::Runtime>(
     app: &AppHandle<R>,
     category: &str,
     level: &str,
@@ -311,7 +311,7 @@ pub fn append_diagnostics_log<R: tauri::Runtime>(
     Ok(())
 }
 
-pub fn append_diagnostics_log_quiet<R: tauri::Runtime>(
+pub(crate) fn append_diagnostics_log_quiet<R: tauri::Runtime>(
     app: &AppHandle<R>,
     category: &str,
     level: &str,
@@ -337,7 +337,7 @@ pub fn append_diagnostics_log_quiet<R: tauri::Runtime>(
 }
 
 #[tauri::command]
-pub fn set_diagnostics_log_level(
+pub(crate) fn set_diagnostics_log_level(
     diagnostics: State<'_, DiagnosticsStateStore>,
     level: String,
 ) -> Result<(), String> {
@@ -345,13 +345,13 @@ pub fn set_diagnostics_log_level(
     Ok(())
 }
 
-pub fn get_diagnostics_snapshot<R: tauri::Runtime>(app: AppHandle<R>) -> DiagnosticsRuntimeSnapshot {
+pub(crate) fn get_diagnostics_snapshot<R: tauri::Runtime>(app: AppHandle<R>) -> DiagnosticsRuntimeSnapshot {
     build_diagnostics_snapshot(&app)
 }
 
 #[derive(serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct FrontendDiagnosticsBatchEntry {
+pub(crate) struct FrontendDiagnosticsBatchEntry {
     pub category: String,
     pub level: String,
     pub summary: String,
@@ -365,7 +365,7 @@ pub struct FrontendDiagnosticsBatchEntry {
 /// per call instead of one IPC round trip per line). `async` + quiet appends
 /// for the same reasons as `append_frontend_diagnostics_logs` below.
 #[tauri::command]
-pub async fn append_frontend_diagnostics_logs(
+pub(crate) async fn append_frontend_diagnostics_logs(
     app: AppHandle,
     entries: Vec<FrontendDiagnosticsBatchEntry>,
     dropped_count: Option<u64>,
@@ -406,7 +406,7 @@ pub async fn append_frontend_diagnostics_logs(
 /// snapshot state and record the outcome. The runtime-snapshot emission and
 /// aggregate return value are orchestrated by the `diagnostics_v2` dispatch
 /// (the composition layer), so this module no longer calls into `runtime`.
-pub fn run_diagnostics_self_check<R: tauri::Runtime>(
+pub(crate) fn run_diagnostics_self_check<R: tauri::Runtime>(
     app: AppHandle<R>,
     diagnostics: State<'_, DiagnosticsStateStore>,
 ) -> Result<(), String> {
@@ -434,7 +434,7 @@ pub fn run_diagnostics_self_check<R: tauri::Runtime>(
 /// overlay window handling and snapshot emission live in the `diagnostics_v2`
 /// dispatch so the ordering (cue -> show window -> audio emit -> log) is
 /// composed in one place without a diagnostics -> runtime call.
-pub fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
+pub(crate) fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
     let emitted_at = now_unix_seconds_marker();
     audio_state.push_subtitle_cue(SubtitleCueRuntime {
         cue_id: format!("overlay-self-check-{emitted_at}"),
@@ -451,7 +451,7 @@ pub fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
 }
 
 /// The log line the overlay self check records after the cue became visible.
-pub fn log_overlay_self_check_cue<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+pub(crate) fn log_overlay_self_check_cue<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
     append_diagnostics_log(
         app,
         "runtime",
@@ -469,7 +469,7 @@ pub fn log_overlay_self_check_cue<R: tauri::Runtime>(app: &AppHandle<R>) -> Resu
 // thread, freezing the message pump (and therefore all IPC + the tray) until
 // the export finishes -- exactly the "导出中" stall users hit. Moving it off
 // the main thread keeps the UI/IPC responsive while the bundle is written.
-pub async fn export_diagnostics_bundle<R: tauri::Runtime>(
+pub(crate) async fn export_diagnostics_bundle<R: tauri::Runtime>(
     app: AppHandle<R>,
     diagnostics: State<'_, DiagnosticsStateStore>,
     scope: String,
@@ -525,7 +525,7 @@ pub async fn export_diagnostics_bundle<R: tauri::Runtime>(
     })
 }
 
-pub fn get_live_session_events(
+pub(crate) fn get_live_session_events(
     audio_state: State<'_, AudioStateStore>,
 ) -> Result<String, String> {
     let snapshot = audio_state.live_session_events.snapshot();

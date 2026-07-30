@@ -22,7 +22,8 @@ use super::gateway_parts::{
 
 const LATENCY_BUDGET_MS: u64 = 1200;
 
-pub struct ProviderGateway {
+#[derive(Clone)]
+pub(crate) struct ProviderGateway {
     model_catalog: ModelCatalogService,
     probe_service: ProviderProbeService,
     openai_adapter: OpenAiProviderAdapter,
@@ -31,7 +32,7 @@ pub struct ProviderGateway {
 }
 
 impl ProviderGateway {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             model_catalog: ModelCatalogService,
             probe_service: ProviderProbeService,
@@ -134,11 +135,11 @@ impl ProviderGateway {
         }
     }
 
-    pub fn fetch_models(&self, provider: ProviderDraftInput) -> ProviderModelCatalogRuntime {
+    pub(crate) fn fetch_models(&self, provider: ProviderDraftInput) -> ProviderModelCatalogRuntime {
         self.model_catalog.fetch(provider)
     }
 
-    pub fn probe(&self, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
+    pub(crate) fn probe(&self, provider: ProviderDraftInput) -> ProviderProbeProfileRuntime {
         let smoke = self.execute_smoke(
             provider.clone(),
             "请把这句中文翻译成英文，并保留语气自然。".to_string(),
@@ -148,7 +149,7 @@ impl ProviderGateway {
         self.probe_service.evaluate(provider, smoke)
     }
 
-    pub fn execute_smoke(
+    pub(crate) fn execute_smoke(
         &self,
         provider: ProviderDraftInput,
         source_text: String,
@@ -258,7 +259,7 @@ impl ProviderGateway {
     }
 
     #[allow(dead_code, reason = "direct TTS gateway remains part of the provider contract while HTTP TTS is disabled")]
-    pub fn synthesize_tts(
+    pub(crate) fn synthesize_tts(
         &self,
         provider: ProviderDraftInput,
         _text: String,
@@ -274,7 +275,7 @@ impl ProviderGateway {
         ))
     }
 
-    pub fn synthesize_realtime_audio(
+    pub(crate) fn synthesize_realtime_audio(
         &self,
         provider: ProviderDraftInput,
         text: String,

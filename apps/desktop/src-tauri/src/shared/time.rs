@@ -14,7 +14,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// `unix:<seconds>` — second-precision marker.
-pub fn now_unix_seconds_marker() -> String {
+pub(crate) fn now_unix_seconds_marker() -> String {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => format!("unix:{}", duration.as_secs()),
         Err(_) => "unix:0".to_string(),
@@ -22,17 +22,17 @@ pub fn now_unix_seconds_marker() -> String {
 }
 
 /// `unix-ms:<milliseconds>` — millisecond-precision marker.
-pub fn now_unix_millis_marker() -> String {
+pub(crate) fn now_unix_millis_marker() -> String {
     unix_millis_marker(now_unix_millis())
 }
 
 /// Format an explicit millisecond value as a `unix-ms:` marker.
-pub fn unix_millis_marker(value: u64) -> String {
+pub(crate) fn unix_millis_marker(value: u64) -> String {
     format!("unix-ms:{}", value)
 }
 
 /// Current unix time in milliseconds (0 if the clock is before the epoch).
-pub fn now_unix_millis() -> u64 {
+pub(crate) fn now_unix_millis() -> u64 {
     match SystemTime::now().duration_since(UNIX_EPOCH) {
         Ok(duration) => duration.as_millis() as u64,
         Err(_) => 0,

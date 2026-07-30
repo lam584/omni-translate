@@ -239,7 +239,7 @@ fn suppress_subtitle_overlay_dwm_frame(hwnd: isize) {
     }
 }
 
-pub fn apply_subtitle_overlay_window_chrome<R: tauri::Runtime>(
+pub(crate) fn apply_subtitle_overlay_window_chrome<R: tauri::Runtime>(
     window: &WebviewWindow<R>,
 ) -> Result<(), String> {
     #[cfg(target_os = "windows")]
@@ -336,7 +336,7 @@ fn for_each_child_window(mut hwnd: isize, visit: &mut impl FnMut(isize)) {
     }
 }
 
-pub fn apply_subtitle_overlay_click_through<R: tauri::Runtime>(
+pub(crate) fn apply_subtitle_overlay_click_through<R: tauri::Runtime>(
     window: &WebviewWindow<R>,
     enabled: bool,
 ) -> Result<(), String> {
@@ -363,7 +363,7 @@ pub fn apply_subtitle_overlay_click_through<R: tauri::Runtime>(
     Ok(())
 }
 
-pub fn apply_subtitle_overlay_region<R: tauri::Runtime>(
+pub(crate) fn apply_subtitle_overlay_region<R: tauri::Runtime>(
     window: &WebviewWindow<R>,
     rounded: bool,
 ) -> Result<(), String> {
@@ -419,7 +419,7 @@ pub fn apply_subtitle_overlay_region<R: tauri::Runtime>(
     Ok(())
 }
 
-pub fn sync_subtitle_overlay_input_state<R: tauri::Runtime>(
+pub(crate) fn sync_subtitle_overlay_input_state<R: tauri::Runtime>(
     window: &WebviewWindow<R>,
     locked: bool,
 ) -> Result<(), String> {
@@ -455,7 +455,7 @@ pub fn sync_subtitle_overlay_input_state<R: tauri::Runtime>(
     Ok(())
 }
 
-pub fn apply_subtitle_overlay_background<R: tauri::Runtime>(
+pub(crate) fn apply_subtitle_overlay_background<R: tauri::Runtime>(
     window: &WebviewWindow<R>,
 ) -> Result<(), String> {
     window
@@ -463,7 +463,7 @@ pub fn apply_subtitle_overlay_background<R: tauri::Runtime>(
         .map_err(|error| error.to_string())
 }
 
-pub fn ensure_subtitle_overlay_window<R: tauri::Runtime>(
+pub(crate) fn ensure_subtitle_overlay_window<R: tauri::Runtime>(
     app: &AppHandle<R>,
 ) -> tauri::Result<WebviewWindow<R>> {
     // Single lookup to avoid TOCTOU race between is_some() and expect()
@@ -515,7 +515,7 @@ pub fn ensure_subtitle_overlay_window<R: tauri::Runtime>(
 // state the UI actually consumes -- subtitle-overlay visibility -- is read from
 // the authoritative cache in `RuntimeStateStore`, which is updated at the exact
 // points we show/hide the overlay.
-pub fn collect_window_snapshots<R: tauri::Runtime>(
+pub(crate) fn collect_window_snapshots<R: tauri::Runtime>(
     app: &AppHandle<R>,
     overlay_visible: bool,
 ) -> Vec<RuntimeWindowSnapshot> {

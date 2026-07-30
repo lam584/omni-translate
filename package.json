@@ -50,6 +50,7 @@
     "audit:architecture:strict": "node ./scripts/testing/audit-architecture-boundaries.mjs --strict",
     "audit:dead-code": "node ./scripts/testing/audit-rust-dead-code.mjs",
     "audit:rust-warnings": "node ./scripts/testing/audit-rust-warnings.mjs",
+    "test:rust-warning-audit": "node --test ./scripts/testing/audit-rust-warnings.test.mjs",
     "audit:repository-hygiene": "node ./scripts/testing/audit-repository-hygiene.mjs",
     "audit:error-handling": "node ./scripts/testing/audit-error-handling.mjs",
     "i18n:coverage": "node ./scripts/testing/i18n-coverage.mjs",

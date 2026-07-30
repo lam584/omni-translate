@@ -1,6 +1,6 @@
 use super::*;
 
-pub struct OmniHandle {
+pub(crate) struct OmniHandle {
     pub stop_tx: mpsc::Sender<()>,
     #[allow(dead_code, reason = "join handle is retained for supervised shutdown on supported runners")]
     pub join_handle: JoinHandle<()>,
@@ -111,7 +111,7 @@ impl OmniSessionWorker {
     }
 }
 
-pub fn start_omni(
+pub(crate) fn start_omni(
     app: AppHandle,
     store: &AudioStateStore,
     direction: String,

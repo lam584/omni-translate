@@ -1,5 +1,5 @@
-pub mod contracts;
-pub mod events;
-pub mod gateway;
+pub(crate) mod contracts;
+pub(crate) mod events;
+pub(crate) mod gateway;
 pub(crate) mod gateway_parts;
-pub mod state;
+pub(crate) mod state;

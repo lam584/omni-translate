@@ -38,7 +38,7 @@ mod injector {
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct InjectorResult {
+    pub(super) struct InjectorResult {
         pub passed: bool,
         pub media_path: String,
         pub endpoint_id: String,
@@ -51,7 +51,7 @@ mod injector {
     }
 
     impl InjectorResult {
-        pub fn failed(detail: String) -> Self {
+        pub(super) fn failed(detail: String) -> Self {
             Self {
                 passed: false,
                 media_path: String::new(),
@@ -121,7 +121,7 @@ mod injector {
         }
     }
 
-    pub fn run() -> Result<InjectorResult, String> {
+    pub(super) fn run() -> Result<InjectorResult, String> {
         let args = parse_args()?;
         let decoded = decode_mp3(&args.media_path)?;
         if decoded.samples.is_empty() {

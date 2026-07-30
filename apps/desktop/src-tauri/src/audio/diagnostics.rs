@@ -3,7 +3,7 @@ use tauri::{AppHandle, Runtime};
 use crate::diagnostics::events::append_diagnostics_log;
 
 /// Simplified diagnostics log with no detail, source, or elapsed_ms.
-pub fn diag_log<R: Runtime>(
+pub(crate) fn diag_log<R: Runtime>(
     app: &AppHandle<R>,
     category: &str,
     level: &str,
@@ -13,7 +13,7 @@ pub fn diag_log<R: Runtime>(
 }
 
 /// Simplified diagnostics log with detail but no source or elapsed_ms.
-pub fn diag_log_detail<R: Runtime>(
+pub(crate) fn diag_log_detail<R: Runtime>(
     app: &AppHandle<R>,
     category: &str,
     level: &str,

@@ -319,16 +319,24 @@ describe('realTimeSessionPageHelpers', () => {
   });
 
   it('provides localized messages for every configuration problem', () => {
-    for (const problem of ['model', 'input-device', 'playback-device'] as const) {
-      expect(getSceneLaunchConfigurationMessage(problem, true)).toEqual(expect.any(String));
-      expect(getSceneLaunchConfigurationMessage(problem, false)).toEqual(expect.any(String));
-    }
+    expect(getSceneLaunchConfigurationMessage('model', true)).toBe('请先在“音频路由”中选择适用于当前场景的语音模型。');
+    expect(getSceneLaunchConfigurationMessage('model', false)).toBe('Select a compatible voice model in Audio Routing before starting.');
+    expect(getSceneLaunchConfigurationMessage('input-device', true)).toBe('当前麦克风不可用，请在“音频路由”中重新选择输入设备。');
+    expect(getSceneLaunchConfigurationMessage('input-device', false)).toBe('The selected microphone is unavailable. Choose an input device in Audio Routing.');
+    expect(getSceneLaunchConfigurationMessage('playback-device', true)).toBe('当前系统播放设备不可用，请在“音频路由”中重新选择输出设备。');
+    expect(getSceneLaunchConfigurationMessage('playback-device', false)).toBe('The selected playback device is unavailable. Choose an output device in Audio Routing.');
   });
 
   it('labels every launch stage and the unknown fallback', () => {
-    for (const stage of ['omni-preconnect', 'bridge-ready', 'inbound-route', 'outbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay', 'fallback-route', null] as const) {
-      expect(describeSceneLaunchStage(stage)).toEqual(expect.any(String));
-    }
+    expect(describeSceneLaunchStage('omni-preconnect')).toBe('Omni 预连接');
+    expect(describeSceneLaunchStage('bridge-ready')).toBe('Bridge/驱动准备');
+    expect(describeSceneLaunchStage('inbound-route')).toBe('系统音频采集');
+    expect(describeSceneLaunchStage('outbound-route')).toBe('麦克风采集');
+    expect(describeSceneLaunchStage('translate-worker')).toBe('翻译引擎');
+    expect(describeSceneLaunchStage('speech-dispatch')).toBe('语音播报');
+    expect(describeSceneLaunchStage('subtitle-overlay')).toBe('字幕浮窗');
+    expect(describeSceneLaunchStage('fallback-route')).toBe('看片降级采集');
+    expect(describeSceneLaunchStage(null)).toBe('启动流程');
   });
 
   it('uses authoritative matching segments and rebuilds stale segments', () => {

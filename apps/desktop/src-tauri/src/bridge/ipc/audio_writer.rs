@@ -1,4 +1,4 @@
-pub fn write_virtual_mic_frame<R: tauri::Runtime>(
+pub(crate) fn write_virtual_mic_frame<R: tauri::Runtime>(
     app: &AppHandle<R>,
     cue_id: &str,
     request_id: &str,
@@ -165,7 +165,7 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
 }
 
 
-pub fn flush_bridge_source(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
+pub(crate) fn flush_bridge_source(snapshot: &BridgeRuntimeSnapshot) -> Result<(), String> {
     let _ = write_command_once_quiet(
         &snapshot.pipe_path,
         &DriverBridgeCommand::SourceFlush(BridgeSourceFlushRequest {

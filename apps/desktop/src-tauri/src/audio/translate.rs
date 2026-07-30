@@ -48,7 +48,7 @@ const DEFAULT_TRANSLATE_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const MIN_TRANSLATE_REQUEST_TIMEOUT_MS: u64 = 1_000;
 const MAX_PROCESSED_CUES: usize = 64;
 
-pub fn start_translate(
+pub(crate) fn start_translate(
     app: AppHandle,
     store: &AudioStateStore,
     config: Value,
@@ -105,7 +105,7 @@ pub fn start_translate(
     Ok(store.snapshot())
 }
 
-pub fn stop_translate(
+pub(crate) fn stop_translate(
     app: AppHandle,
     store: &AudioStateStore,
 ) -> Result<AudioRuntimeSnapshot, String> {
@@ -205,36 +205,7 @@ fn run_translate_worker(
         }
 
         if loop_count == 1 {
-            let _ = append_diagnostics_log(
-                &app,
-                "translate",
-                "info",
-                format!(
-                    "翻译 Worker 首轮配置: kind={} base_url={} model={} src_lang={} tgt_lang={} max_concurrent={} timeout_ms={}",
-                    config.provider.kind,
-                    config.provider.base_url,
-                    config.provider.model,
-                    config.source_language,
-                    config.target_language,
-                    config.max_concurrent_requests,
-                    config.request_timeout_ms,
-                ),
-                None,
-                None,
-                None,
-            );
-
-            if config.provider.kind.is_empty() || config.provider.base_url.is_empty() {
-                let _ = append_diagnostics_log(
-                    &app,
-                    "translate",
-                    "warning",
-                    "翻译 Worker 配置不完整：provider kind 或 base_url 为空，LLM 调用将失败。请检查 Provider 设置。",
-                    None,
-                    None,
-                    None,
-                );
-            }
+            log_initial_translate_config(&app, &config);
         }
 
         if loop_count.is_multiple_of(TRANSLATE_HEARTBEAT_INTERVAL_LOOPS) {
@@ -441,6 +412,39 @@ fn run_translate_worker(
     }
 
     Ok(())
+}
+
+fn log_initial_translate_config(app: &AppHandle, config: &TranslateConfig) {
+    let _ = append_diagnostics_log(
+        app,
+        "translate",
+        "info",
+        format!(
+            "翻译 Worker 首轮配置: kind={} base_url={} model={} src_lang={} tgt_lang={} max_concurrent={} timeout_ms={}",
+            config.provider.kind,
+            config.provider.base_url,
+            config.provider.model,
+            config.source_language,
+            config.target_language,
+            config.max_concurrent_requests,
+            config.request_timeout_ms,
+        ),
+        None,
+        None,
+        None,
+    );
+
+    if config.provider.kind.is_empty() || config.provider.base_url.is_empty() {
+        let _ = append_diagnostics_log(
+            app,
+            "translate",
+            "warning",
+            "翻译 Worker 配置不完整：provider kind 或 base_url 为空，LLM 调用将失败。请检查 Provider 设置。",
+            None,
+            None,
+            None,
+        );
+    }
 }
 
 /// Whether a committed transcription cue still needs (re)translation.

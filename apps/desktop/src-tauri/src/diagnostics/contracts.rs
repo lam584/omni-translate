@@ -3,7 +3,7 @@
 //! re-exports keep every existing `crate::diagnostics::contracts::*` path
 //! compiling unchanged.
 
-pub use crate::shared::contracts::{
+pub(crate) use crate::shared::contracts::{
     DiagnosticLogCategoryRuntime, DiagnosticLogEntryRuntime, DiagnosticSupportSignalRuntime,
     DiagnosticsExportArtifact, DiagnosticsRuntimeSnapshot, ModelTraceCallRuntime,
     ModelTraceSummaryRuntime,

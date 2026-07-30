@@ -55,7 +55,7 @@ mod probe {
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
-    pub struct ProbeResult {
+    pub(super) struct ProbeResult {
         pub passed: bool,
         pub physical_playback_device_id: String,
         pub resolved_physical_playback_device_id: String,
@@ -75,7 +75,7 @@ mod probe {
     }
 
     impl ProbeResult {
-        pub fn failed(detail: String) -> Self {
+        pub(super) fn failed(detail: String) -> Self {
             Self {
                 passed: false,
                 physical_playback_device_id: String::new(),
@@ -174,7 +174,7 @@ mod probe {
         }
     }
 
-    pub fn run() -> Result<ProbeResult, String> {
+    pub(super) fn run() -> Result<ProbeResult, String> {
         let args = parse_args()?;
         fs::create_dir_all(&args.runtime_root).map_err(error_text)?;
         write_install_state(&args.runtime_root)?;

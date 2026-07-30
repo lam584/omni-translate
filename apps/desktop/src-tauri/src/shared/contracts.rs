@@ -9,7 +9,7 @@ use ts_rs::TS;
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelTraceCallRuntime {
+pub(crate) struct ModelTraceCallRuntime {
     pub trace_id: String,
     pub call_id: String,
     pub name: String,
@@ -28,7 +28,7 @@ pub struct ModelTraceCallRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct ModelTraceSummaryRuntime {
+pub(crate) struct ModelTraceSummaryRuntime {
     pub active_trace_id: Option<String>,
     pub total_calls: u64,
     pub succeeded_calls: u64,
@@ -39,7 +39,7 @@ pub struct ModelTraceSummaryRuntime {
 }
 
 impl ModelTraceSummaryRuntime {
-    pub fn preview() -> Self {
+    pub(crate) fn preview() -> Self {
         Self {
             active_trace_id: None,
             total_calls: 0,
@@ -54,7 +54,7 @@ impl ModelTraceSummaryRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct DiagnosticLogEntryRuntime {
+pub(crate) struct DiagnosticLogEntryRuntime {
     pub id: String,
     pub category: String,
     #[ts(type = "'info' | 'warning' | 'error'")]
@@ -69,7 +69,7 @@ pub struct DiagnosticLogEntryRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct DiagnosticLogCategoryRuntime {
+pub(crate) struct DiagnosticLogCategoryRuntime {
     pub category: String,
     pub file_path: String,
     pub entry_count: usize,
@@ -78,7 +78,7 @@ pub struct DiagnosticLogCategoryRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct DiagnosticSupportSignalRuntime {
+pub(crate) struct DiagnosticSupportSignalRuntime {
     pub id: String,
     pub label: String,
     #[ts(type = "'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown'")]
@@ -89,7 +89,7 @@ pub struct DiagnosticSupportSignalRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct DiagnosticsRuntimeSnapshot {
+pub(crate) struct DiagnosticsRuntimeSnapshot {
     #[ts(type = "('draft' | 'ready' | 'warning' | 'unsupported' | 'unknown') | 'preview'")]
     pub status: String,
     #[ts(type = "'stable' | 'experimental'")]
@@ -119,7 +119,7 @@ pub struct DiagnosticsRuntimeSnapshot {
 }
 
 impl DiagnosticsRuntimeSnapshot {
-    pub fn preview() -> Self {
+    pub(crate) fn preview() -> Self {
         Self {
             status: "preview".to_string(),
             support_tier: "experimental".to_string(),
@@ -144,7 +144,7 @@ impl DiagnosticsRuntimeSnapshot {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct DiagnosticsExportArtifact {
+pub(crate) struct DiagnosticsExportArtifact {
     #[ts(type = "'summary' | 'quick' | 'full'")]
     pub scope: String,
     pub output_path: String,
@@ -154,7 +154,7 @@ pub struct DiagnosticsExportArtifact {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
-pub struct RuntimeNotification {
+pub(crate) struct RuntimeNotification {
     pub id: String,
     #[ts(type = "'info' | 'warning' | 'error'")]
     pub level: String,
@@ -164,7 +164,7 @@ pub struct RuntimeNotification {
 }
 
 impl RuntimeNotification {
-    pub fn info(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
+    pub(crate) fn info(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
         Self {
             id: id.to_string(),
             level: "info".to_string(),
@@ -174,7 +174,7 @@ impl RuntimeNotification {
         }
     }
 
-    pub fn warning(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
+    pub(crate) fn warning(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
         Self {
             id: id.to_string(),
             level: "warning".to_string(),
@@ -184,7 +184,7 @@ impl RuntimeNotification {
         }
     }
 
-    pub fn error(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
+    pub(crate) fn error(id: &str, source: &str, message: &str, emitted_at: String) -> Self {
         Self {
             id: id.to_string(),
             level: "error".to_string(),

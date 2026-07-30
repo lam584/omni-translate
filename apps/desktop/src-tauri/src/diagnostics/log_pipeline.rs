@@ -8,12 +8,12 @@
 
 use std::path::PathBuf;
 
-pub use omni_logging::pipeline::LogPipeline;
+pub(crate) use omni_logging::pipeline::LogPipeline;
 
 /// Install the global panic hook: one single-line, timestamped record in
 /// `app.log` (multi-line backtraces would break the leading-timestamp
 /// contract), the full backtrace in `panic.log` in the same directory.
-pub fn install_panic_hook(logs_dir: PathBuf) {
+pub(crate) fn install_panic_hook(logs_dir: PathBuf) {
     omni_logging::panic_hook::install(
         logs_dir.join("app.log"),
         logs_dir.join("panic.log"),

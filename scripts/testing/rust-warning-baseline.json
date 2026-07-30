@@ -1,7 +1,8 @@
 {
-  "comment": "Warning-count ratchet. Counts may only stay equal or decrease.",
+  "comment": "Deterministic workspace/all-target warning gate. Counts may only decrease.",
   "warnings": {
-    "desktop-shell": 552,
-    "bridge-service-native": 10
+    "packages": {},
+    "lints": {},
+    "procMacroDiagnostics": 0
   }
 }

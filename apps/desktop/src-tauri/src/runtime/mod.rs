@@ -1,5 +1,5 @@
-pub mod contracts;
-pub mod events;
-pub mod state;
-pub mod tray;
-pub mod windows;
+pub(crate) mod contracts;
+pub(crate) mod events;
+pub(crate) mod state;
+pub(crate) mod tray;
+pub(crate) mod windows;

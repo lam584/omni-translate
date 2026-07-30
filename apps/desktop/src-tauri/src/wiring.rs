@@ -27,7 +27,7 @@ fn mirror_notification_into_log(store: &DiagnosticsStateStore, signal: &RuntimeN
     );
 }
 
-pub fn install_diagnostics_runtime_seams(
+pub(crate) fn install_diagnostics_runtime_seams(
     app_handle: &AppHandle,
     notification_log_store: DiagnosticsStateStore,
 ) {

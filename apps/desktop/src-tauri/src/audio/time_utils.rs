@@ -4,13 +4,13 @@
 //! explicit at the single definition site.
 
 /// Current unix time in milliseconds.
-pub use crate::shared::time::now_unix_millis as unix_ms;
+pub(crate) use crate::shared::time::now_unix_millis as unix_ms;
 
 /// `unix-ms:` marker for an explicit millisecond value.
-pub use crate::shared::time::unix_millis_marker as ms_marker;
+pub(crate) use crate::shared::time::unix_millis_marker as ms_marker;
 
 /// `unix-ms:` marker for the current instant.
-pub use crate::shared::time::now_unix_millis_marker;
+pub(crate) use crate::shared::time::now_unix_millis_marker;
 
 #[cfg(test)]
 mod tests {

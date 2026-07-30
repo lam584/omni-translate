@@ -12,7 +12,7 @@ fn load_tray_icon() -> tauri::Result<Image<'static>> {
     Image::from_bytes(include_bytes!("../../icons/tray-icon.png")).map(Image::to_owned)
 }
 
-pub fn initialize_tray(app: &AppHandle, state: &RuntimeStateStore) -> tauri::Result<()> {
+pub(crate) fn initialize_tray(app: &AppHandle, state: &RuntimeStateStore) -> tauri::Result<()> {
     let show_main = MenuItemBuilder::with_id("show-main", "显示主窗口").build(app)?;
     let toggle_overlay = MenuItemBuilder::with_id("toggle-overlay", "切换字幕浮窗").build(app)?;
     let quit = MenuItemBuilder::with_id("quit", "退出").build(app)?;

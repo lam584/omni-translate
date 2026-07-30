@@ -580,7 +580,14 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
 
-    expect(fetchProviderModelsMock).toHaveBeenCalled();
+    expect(fetchProviderModelsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: configDraft.providers[0].providerId,
+        templateId: configDraft.providers[0].templateId,
+        model: 'qwen-extra-live',
+      }),
+      [],
+    );
     expect(modelCatalogDialog(container)).not.toBeNull();
     await waitForExpectation(() => expect(container.textContent).toContain('qwen-extra-live'));
 
@@ -616,9 +623,23 @@ describe('ProvidersPage', () => {
 
     await click(buttonContainingText(container, '验证接入'));
 
-    expect(runProviderProbeMock).toHaveBeenCalled();
-    expect(runProviderSmokeMock).toHaveBeenCalled();
+    expect(runProviderProbeMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: appConfigDraftMock.providers[0].providerId,
+        templateId: appConfigDraftMock.providers[0].templateId,
+        model: appConfigDraftMock.providers[0].model,
+      }),
+    );
+    // 冒烟样例文本如实断言当前生产默认值：20 个问号占位（useProviderWorkspaceController 的
+    // sampleText 初始值，疑似历史乱码遗留，本任务禁止改生产代码，见任务汇报）。
+    expect(runProviderSmokeMock).toHaveBeenCalledWith(
+      expect.objectContaining({ providerId: appConfigDraftMock.providers[0].providerId }),
+      '????????????????????',
+      appConfigDraftMock.subtitles.sourceLanguage,
+      appConfigDraftMock.subtitles.targetLanguage,
+    );
     expect(verificationDialog(container)).not.toBeNull();
+    expect(verificationDialog(container)?.textContent).toContain('test completed');
   });
 
   it('deletes the active custom provider and returns to a built-in template', async () => {
@@ -739,8 +760,9 @@ describe('ProvidersPage', () => {
     expect(useAppStore.getState().configDraft.providers[0].baseUrl).toBe(appConfigDraftMock.providers[0].baseUrl);
 
     await click(revealSecretButton(container));
-    expect(readProviderSecretMock).toHaveBeenCalled();
+    expect(readProviderSecretMock).toHaveBeenCalledWith(configDraft.providers[0].authRef.reference);
     expect(secretInput(container)?.type).toBe('text');
+    expect(secretInput(container)?.value).toBe('stored-secret');
     await click(revealSecretButton(container));
     expect(secretInput(container)?.type).toBe('password');
   });
@@ -1082,7 +1104,15 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(sceneAddButtons(container)[0]);
 
-    await waitForExpectation(() => expect(fetchProviderModelsMock).toHaveBeenCalled());
+    await waitForExpectation(() =>
+      expect(fetchProviderModelsMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          providerId: appConfigDraftMock.providers[0].providerId,
+          templateId: appConfigDraftMock.providers[0].templateId,
+        }),
+        [],
+      ));
+    await waitForExpectation(() => expect(modelCatalogDialog(container)?.textContent).toContain('上游未返回模型目录'));
     await click(container.querySelector<HTMLElement>('.modal-backdrop--provider'));
     expect(modelCatalogDialog(container)).toBeNull();
   });
@@ -1246,7 +1276,13 @@ describe('ProvidersPage', () => {
     await renderPage();
     await click(Array.from(container.querySelectorAll<HTMLButtonElement>('.provider-action-row button')).at(-2));
 
-    expect(fetchProviderModelsMock).toHaveBeenCalled();
+    expect(fetchProviderModelsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: appConfigDraftMock.providers[0].providerId,
+        templateId: appConfigDraftMock.providers[0].templateId,
+      }),
+      [],
+    );
     expect(container.textContent).toContain('Rust Core');
   });
 
@@ -1296,8 +1332,15 @@ describe('ProvidersPage', () => {
     await click(container.querySelector<HTMLButtonElement>('.provider-auth-entry-actions .action-button'));
 
     expect(saveProviderSecretMock).not.toHaveBeenCalled();
-    expect(fetchProviderModelsMock).toHaveBeenCalled();
+    expect(fetchProviderModelsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        providerId: appConfigDraftMock.providers[0].providerId,
+        baseUrl: 'https://endpoint-only.example/v1',
+      }),
+      [],
+    );
     expect(useAppStore.getState().configDraft.providers[0].baseUrl).toBe('https://endpoint-only.example/v1');
+    await waitForExpectation(() => expect(container.textContent).toContain('已保存密钥并刷新 API 配置'));
   });
 
   it('adds and removes a manual scene model from the Enter keyboard path', async () => {

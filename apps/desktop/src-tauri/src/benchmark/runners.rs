@@ -1,4 +1,4 @@
-pub async fn run_model_benchmark(
+pub(crate) async fn run_model_benchmark(
     app: AppHandle,
     model: String,
     api_key: String,

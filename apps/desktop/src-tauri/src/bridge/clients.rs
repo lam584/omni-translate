@@ -8,28 +8,28 @@ use super::ipc::{
 };
 
 /// Typed client for all named-pipe operations bound to one Bridge runtime.
-pub struct BridgeIpcClient<'a> {
+pub(crate) struct BridgeIpcClient<'a> {
     snapshot: &'a BridgeRuntimeSnapshot,
 }
 
 impl<'a> BridgeIpcClient<'a> {
-    pub fn new(snapshot: &'a BridgeRuntimeSnapshot) -> Self {
+    pub(crate) fn new(snapshot: &'a BridgeRuntimeSnapshot) -> Self {
         Self { snapshot }
     }
 
-    pub fn query_state(&self, fast: bool) -> Result<BridgeStateResponse, String> {
+    pub(crate) fn query_state(&self, fast: bool) -> Result<BridgeStateResponse, String> {
         BridgeCommandClient::new(&self.snapshot.pipe_path).query_state(fast)
     }
 
-    pub fn initialize(&self) -> Result<BridgeRuntimeSnapshot, String> {
+    pub(crate) fn initialize(&self) -> Result<BridgeRuntimeSnapshot, String> {
         initialize_bridge(self.snapshot)
     }
 
-    pub fn stop(&self) -> Result<(), String> {
+    pub(crate) fn stop(&self) -> Result<(), String> {
         BridgeProcessSupervisor::new(self.snapshot).stop()
     }
 
-    pub fn flush_source(&self) -> Result<(), String> {
+    pub(crate) fn flush_source(&self) -> Result<(), String> {
         flush_bridge_source(self.snapshot)
     }
 }

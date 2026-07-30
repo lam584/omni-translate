@@ -1,4 +1,4 @@
-import { act } from 'react';
+import { act, type SetStateAction } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../../mocks/app-config';
@@ -6,6 +6,7 @@ import { providerTemplates } from '../../mocks/provider-templates';
 import type { ProviderDraft } from '../../schema/config';
 import type { ProviderModelRuntime, ProviderProbeProfileRuntime, ProviderSmokeResult } from '../../schema/provider-runtime';
 import type { ProviderTemplateCatalogEntry } from '../../utils/provider-template-catalog';
+import type { CustomProviderTemplateDraft } from '../../utils/custom-provider-templates';
 import type { ModelCatalogState } from './providersPageHelpers';
 import CustomProviderDialog from './CustomProviderDialog';
 import ProviderCapabilityRegistryDialog from './ProviderCapabilityRegistryDialog';
@@ -196,11 +197,13 @@ describe('provider catalog components', () => {
     await act(async () => {
       manualInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     });
-    expect(onManualAdd).toHaveBeenCalled();
+    // onManualAdd 是无参回调：断言“恰好被 Enter 触发一次且不带参数”。
+    expect(onManualAdd).toHaveBeenCalledTimes(1);
+    expect(onManualAdd).toHaveBeenCalledWith();
   });
 
   it('renders custom provider dialog dashscope fields and updates the draft', async () => {
-    const draft = {
+    const draft: CustomProviderTemplateDraft = {
       displayName: 'Custom DashScope',
       kind: 'dashscope' as const,
       baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
@@ -214,7 +217,8 @@ describe('provider catalog components', () => {
       timeoutMs: 15000,
       systemPromptTemplate: 'video-realtime-cn',
     };
-    const setDraft = vi.fn();
+    const setDraft = vi.fn((value: SetStateAction<CustomProviderTemplateDraft>) =>
+      typeof value === 'function' ? value(draft) : value);
     const onKindChange = vi.fn();
     const onSave = vi.fn();
     ({ container, root } = render(
@@ -232,9 +236,11 @@ describe('provider catalog components', () => {
     await change(container.querySelectorAll<HTMLSelectElement>('select')[0], 'openrouter');
     expect(onKindChange).toHaveBeenCalledWith('openrouter');
     await change(container.querySelector<HTMLInputElement>('input[placeholder="cn-beijing"]')!, 'us-east-1');
-    expect(setDraft).toHaveBeenCalled();
+    // 区域输入的更新器在变更事件内执行（setDraft 桩同步调用），产出仅替换 region 的草稿。
+    expect(setDraft).toHaveBeenCalledTimes(1);
+    expect(setDraft.mock.results[0]?.value).toStrictEqual({ ...draft, region: 'us-east-1' });
     await click(container.querySelector('.action-button'));
-    expect(onSave).toHaveBeenCalled();
+    expect(onSave).toHaveBeenCalledTimes(1);
   });
 
   it('renders verification details with probe error and smoke event log', async () => {
@@ -311,22 +317,25 @@ describe('provider catalog components', () => {
     expect(container.textContent).toContain('smoke failed');
     expect(container.textContent).toContain('failed');
     await click(container.querySelector('.provider-header-icon'));
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('covers custom timeout fallback and closes the custom dialog from its backdrop', async () => {
-    const draft = {
+    const draft: CustomProviderTemplateDraft = {
       displayName: 'Custom', kind: 'openai-compatible' as const, baseUrl: 'https://example.test', model: 'm',
       transport: 'http' as const, authReference: 'credential://custom', authHeaderName: 'Authorization',
       authScheme: 'none' as const, region: '', streamEnabled: false, timeoutMs: 1000, systemPromptTemplate: '',
     };
-    const setDraft = vi.fn((updater) => updater(draft));
+    const setDraft = vi.fn((value: SetStateAction<CustomProviderTemplateDraft>) =>
+      typeof value === 'function' ? value(draft) : value);
     const onClose = vi.fn();
     ({ container, root } = render(<CustomProviderDialog draft={draft} error={null} onClose={onClose} onKindChange={vi.fn()} onSave={vi.fn()} setDraft={setDraft} />));
     await change(container.querySelector<HTMLInputElement>('input[type="number"]')!, '');
-    expect(setDraft).toHaveBeenCalled();
+    // 空输入经 Number('') || 0 回退：更新器应产出 timeoutMs 0，其余字段不变。
+    expect(setDraft).toHaveBeenCalledTimes(1);
+    expect(setDraft.mock.results[0]?.value).toStrictEqual({ ...draft, timeoutMs: 0 });
     await click(container.querySelector('.modal-backdrop--provider'));
-    expect(onClose).toHaveBeenCalled();
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it('renders model equality, preset catalog state, and ignores non-Enter manual keys', async () => {

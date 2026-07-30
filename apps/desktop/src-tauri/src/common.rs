@@ -1,4 +1,4 @@
-pub trait MapErrToString<T> {
+pub(crate) trait MapErrToString<T> {
     fn map_err_str(self) -> Result<T, String>;
 }
 

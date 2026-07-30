@@ -1,10 +1,11 @@
 import React, { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { RouterProvider } from 'react-router-dom';
-import { describe, expect, it, vi } from 'vitest';
+import { Outlet, RouterProvider } from 'react-router-dom';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { router } from './router';
+import { isPrefetched, preloadDefaultRoute, resetRouteReady, whenRouteReady } from './router-startup';
 
-vi.mock('./components/layout/AppLayout', () => ({ default: () => React.createElement('div') }));
+vi.mock('./components/layout/AppLayout', () => ({ default: () => React.createElement(Outlet) }));
 vi.mock('./pages/AudioRoutingPage', () => ({ default: () => React.createElement('div') }));
 vi.mock('./pages/DiagnosticsPage', () => ({ default: () => React.createElement('div') }));
 vi.mock('./pages/GlossaryPage', () => ({ default: () => React.createElement('div') }));
@@ -14,6 +15,10 @@ vi.mock('./pages/SettingsPage', () => ({ default: () => React.createElement('div
 vi.mock('./pages/SubtitleOverlaySettingsPage', () => ({ default: () => React.createElement('div') }));
 
 describe('router', () => {
+  beforeEach(() => {
+    resetRouteReady();
+  });
+
   it('keeps the primary routes and compatibility redirects registered', () => {
     const rootRoute = router.routes.find((route) => route.path === '/');
     expect(rootRoute?.path).toBe('/');
@@ -62,6 +67,24 @@ describe('router', () => {
       });
     }
 
+    await act(async () => root.unmount());
+  });
+
+  it('prefetches the lazy session chunk and signals route readiness after rendering', async () => {
+    expect(isPrefetched()).toBe(false);
+    preloadDefaultRoute();
+    expect(isPrefetched()).toBe(true);
+    const ready = whenRouteReady();
+
+    const container = document.createElement('div');
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(React.createElement(RouterProvider, { router }));
+      await router.navigate('/audio-routing');
+      await router.navigate('/session');
+    });
+
+    await expect(ready).resolves.toBeUndefined();
     await act(async () => root.unmount());
   });
 });

@@ -374,7 +374,7 @@ impl TencentCueState {
 // Worker
 // ---------------------------------------------------------------------------
 
-pub fn start_tencent_speech_translate(
+pub(crate) fn start_tencent_speech_translate(
     app: AppHandle,
     store: &AudioStateStore,
     provider: ProviderDraftInput,

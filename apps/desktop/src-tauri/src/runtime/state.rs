@@ -7,11 +7,11 @@ use crate::storage::contracts::StorageRuntimeSnapshot;
 
 use super::contracts::{RuntimeNotification, RuntimeSnapshot};
 
-pub struct RuntimeStateStore {
+pub(crate) struct RuntimeStateStore {
     inner: Mutex<RuntimeState>,
 }
 
-pub struct RuntimeState {
+pub(crate) struct RuntimeState {
     pub core_state: String,
     pub bridge_status: String,
     pub active_profile_id: String,
@@ -22,7 +22,7 @@ pub struct RuntimeState {
 }
 
 impl RuntimeStateStore {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let now = now_unix_seconds_marker();
 
         Self {
@@ -43,30 +43,30 @@ impl RuntimeStateStore {
         }
     }
 
-    pub fn mark_ready(&self) {
+    pub(crate) fn mark_ready(&self) {
         let mut state = self.inner.lock().expect("runtime state poisoned");
         state.core_state = "ready".to_string();
         state.last_sync_at = now_unix_seconds_marker();
     }
 
-    pub fn set_tray_ready(&self, tray_ready: bool) {
+    pub(crate) fn set_tray_ready(&self, tray_ready: bool) {
         let mut state = self.inner.lock().expect("runtime state poisoned");
         state.tray_ready = tray_ready;
         state.last_sync_at = now_unix_seconds_marker();
     }
 
-    pub fn overlay_window_visible(&self) -> bool {
+    pub(crate) fn overlay_window_visible(&self) -> bool {
         let state = self.inner.lock().expect("runtime state poisoned");
         state.overlay_window_visible
     }
 
-    pub fn set_overlay_window_visible(&self, visible: bool) {
+    pub(crate) fn set_overlay_window_visible(&self, visible: bool) {
         let mut state = self.inner.lock().expect("runtime state poisoned");
         state.overlay_window_visible = visible;
         state.last_sync_at = now_unix_seconds_marker();
     }
 
-    pub fn push_notification(&self, notification: RuntimeNotification) {
+    pub(crate) fn push_notification(&self, notification: RuntimeNotification) {
         let mut state = self.inner.lock().expect("runtime state poisoned");
         state
             .notifications
@@ -76,7 +76,7 @@ impl RuntimeStateStore {
         state.last_sync_at = notification.emitted_at;
     }
 
-    pub fn snapshot_base(&self) -> RuntimeSnapshot {
+    pub(crate) fn snapshot_base(&self) -> RuntimeSnapshot {
         let state = self.inner.lock().expect("runtime state poisoned");
 
         RuntimeSnapshot {

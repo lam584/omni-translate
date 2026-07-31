@@ -334,6 +334,9 @@ describe('DiagnosticsPage monitoring boundary', () => {
   it('runs diagnostics, overlay self-check, export and refresh actions', async () => {
     await renderPage();
 
+    const exportScope = container.querySelector<HTMLSelectElement>('.diagnostics-export-scope select');
+    expect(exportScope?.value).toBe('summary');
+
     for (const label of ['重新诊断', '测试字幕浮窗', '导出诊断包', '刷新运行态']) {
       await clickAndSettle(findButtonByText(container, label));
     }
@@ -350,6 +353,61 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(state.configDraft.diagnostics.lastExportScope).toBe('summary');
     expect(state.runtimeSnapshot.diagnostics.lastExportScope).toBe('summary');
     expect(state.runtimeSnapshot.diagnostics.lastExportPath).toContain('summary');
+  });
+
+  it('exports the explicitly selected full diagnostics scope', async () => {
+    await renderPage();
+
+    const exportScope = container.querySelector<HTMLSelectElement>('.diagnostics-export-scope select');
+    expect(exportScope).not.toBeNull();
+    await changeValue(exportScope!, 'full');
+    await clickAndSettle(findButtonByText(container, '导出诊断包'));
+
+    const exportCall = fake.commandCalls('diagnostics_v2').find((call) => call.action === 'export');
+    expect(exportCall?.args).toMatchObject({ command: { scope: 'full' } });
+    expect(useAppStore.getState().configDraft.diagnostics.lastExportScope).toBe('full');
+  });
+
+  it('tracks a bootstrapped scope until the user explicitly overrides it', async () => {
+    await renderPage();
+
+    const exportScope = container.querySelector<HTMLSelectElement>('.diagnostics-export-scope select');
+    expect(exportScope?.value).toBe('summary');
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        runtimeSnapshot: {
+          ...state.runtimeSnapshot,
+          diagnostics: { ...state.runtimeSnapshot.diagnostics, lastExportScope: 'quick' },
+        },
+      }));
+    });
+    expect(exportScope?.value).toBe('quick');
+
+    await changeValue(exportScope!, 'full');
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        runtimeSnapshot: {
+          ...state.runtimeSnapshot,
+          diagnostics: { ...state.runtimeSnapshot.diagnostics, lastExportScope: 'summary' },
+        },
+      }));
+    });
+    expect(exportScope?.value).toBe('full');
+  });
+
+  it('shows open-directory failures on the diagnostics page', async () => {
+    await renderPage();
+    await clickAndSettle(findButtonByText(container, '导出诊断包'));
+    fake.rejectNextAction('openExportDirectory', { message: 'shell unavailable' });
+
+    await clickAndSettle(findButtonByText(container, '打开所在目录'));
+
+    const alert = container.querySelector<HTMLElement>('[role="alert"]');
+    expect(alert?.textContent).toContain('shell unavailable');
+    await clickAndSettle(alert?.querySelector<HTMLButtonElement>('button'));
+    expect(container.querySelector('[role="alert"]')).toBeNull();
   });
 
   it('records automatic repair failures for damaged bridge state', async () => {

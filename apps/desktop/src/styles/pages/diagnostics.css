@@ -169,6 +169,39 @@
   gap:8px
 }
 
+.diagnostics-export-scope {
+  display:inline-flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:8px;
+  min-height:38px;
+  padding:0 8px 0 10px;
+  border:1px solid rgba(141, 170, 197, .28);
+  border-radius:10px;
+  background:#fff;
+  color:#475569;
+  font-size:.72rem;
+  font-weight:700
+}
+
+.diagnostics-export-scope select {
+  border:0;
+  background:transparent;
+  color:#0f172a;
+  cursor:pointer;
+  font:inherit
+}
+
+.diagnostics-export-scope select:focus-visible {
+  border-radius:4px;
+  outline:2px solid #0f766e;
+  outline-offset:2px
+}
+
+.diagnostics-export-scope:has(select:disabled) {
+  opacity:.55
+}
+
 .diagnostics-action-strip .icon-button,
 .diagnostics-empty-actions .icon-button {
   min-height:38px;
@@ -227,6 +260,7 @@
 }
 
 .diagnostics-action-feedback {
+  grid-column:1 / -1;
   display:flex;
   align-items:flex-start;
   justify-content:space-between;

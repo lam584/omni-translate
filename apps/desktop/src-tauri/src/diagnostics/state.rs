@@ -534,19 +534,14 @@ fn copy_directory_files(source_dir: &Path, target_dir: &Path) -> Result<usize, S
     Ok(copied)
 }
 
-pub(crate) fn copy_logs_into(target_dir: &str, logs_dir: &str) -> Result<usize, String> {
-    copy_directory_files(Path::new(logs_dir), Path::new(target_dir))
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
     use std::path::PathBuf;
 
     use super::{
-        canonical_log_level, copy_logs_into, format_app_log_line, global_log_state_lock,
-        level_filter_for_priority, log_level_priority, migrate_diagnostics_tree,
-        DiagnosticsStateStore,
+        canonical_log_level, format_app_log_line, global_log_state_lock,
+        level_filter_for_priority, log_level_priority, migrate_diagnostics_tree, DiagnosticsStateStore,
     };
     use crate::diagnostics::contracts::{DiagnosticLogEntryRuntime, ModelTraceCallRuntime};
 
@@ -555,7 +550,7 @@ mod tests {
     }
 
     #[test]
-    fn append_log_updates_snapshot_and_copies_single_app_log() {
+    fn append_log_updates_snapshot_and_writes_single_app_log() {
         let root_dir = temp_dir("store");
         let export_dir = temp_dir("export");
         let store = DiagnosticsStateStore::new_with_root(root_dir.to_string_lossy().to_string());
@@ -620,11 +615,6 @@ mod tests {
                 .count(),
             1
         );
-
-        let copied = copy_logs_into(&export_dir.to_string_lossy(), &store.logs_dir())
-            .expect("copy logs into export dir");
-        assert_eq!(copied, 1);
-        assert!(export_dir.join("app.log").exists());
 
         let _ = fs::remove_dir_all(root_dir);
         let _ = fs::remove_dir_all(export_dir);

@@ -1,0 +1,11 @@
+Buenos días. Esta prueba de referencia evalúa cómo maneja un sistema de voz en tiempo real el inglés cotidiano, los nombres, los números, las fechas y los cambios en la longitud de las oraciones.
+
+A las 8:45 a. m. del martes 17 de septiembre, Maya Chen abrió una reunión de planificación para el Proyecto Aurora. El programa cuenta con un fondo de fiabilidad de mil millones de dólares, mientras que su primera estación de investigación en Marte tiene un presupuesto de construcción de quinientos millones de dólares. Dentro de la estación, una biosfera artificial mantendrá el equilibrio entre el aire, el agua y las plantas. Los científicos también estudiarán formas prácticas de proteger especies en peligro de extinción en la Tierra.
+
+La actualización de ingeniería presentó tres prototipos inusuales: autos voladores para viajar con seguridad entre lugares remotos, una batería solar con una capacidad de 72,5 kilovatios-hora, y una bombilla de un dólar utilizada para verificar que los precios bajos se mantengan precisos. Durante la prueba, la temperatura exterior bajó de 21 grados Celsius a menos 4, pero todos los sensores permanecieron en línea.
+
+A continuación, Maya leyó en voz alta un mensaje de un cliente: “¿Podemos entregar 1.250 unidades a San Luis antes del 3 de octubre, o debemos enviar la mitad a Nueva York primero?”. Daniel respondió que el envío A-17 saldría a las 6:30 p. m., recorrería 842 millas y llegaría en cuarenta y ocho horas. Les solicitó al equipo que enviara un correo electrónico a soporte en example punto com si el horario cambiaba.
+
+El último tema fue el software. La versión 3.6.2 redujo el tiempo promedio de respuesta de 920 milisegundos a 315 milisegundos. El uso de la CPU bajó un 18 por ciento, y la API reconoció correctamente las abreviaturas NASA, USB y Wi-Fi. ¿Es preciso el sistema cuando un hablante hace una pregunta? ¿Conserva una respuesta citada? ¿Puede distinguir quince de cincuenta, o trece de treinta?
+
+Por favor, grabe cada oración con claridad, incluyendo pausas, puntuación, nombres propios, medidas y moneda. La primera prueba de referencia general ha concluido.

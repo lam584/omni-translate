@@ -1,0 +1,11 @@
+Selamat pagi. Benchmark ini menguji seberapa baik sistem ucapan langsung menangani bahasa Inggris sehari-hari, nama, angka, tanggal, dan perubahan panjang kalimat.
+
+Pada pukul 8:45 pagi hari Selasa, 17 September, Maya Chen membuka rapat perencanaan untuk Proyek Aurora. Program ini memiliki dana keandalan satu miliar dolar, sedangkan stasiun penelitian pertamanya di Mars memiliki anggaran konstruksi lima ratus juta dolar. Di dalam stasiun, sebuah biosfer buatan akan menjaga keseimbangan udara, air, dan tanaman. Para ilmuwan juga akan mempelajari cara praktis untuk melindungi spesies yang terancam punah di Bumi.
+
+Pembaruan teknik mencakup tiga prototipe unik: mobil terbang untuk perjalanan aman antar lokasi terpencil, baterai surya berkapasitas 72.5 kilowatt-jam, dan bola lampu seharga satu dolar yang digunakan untuk memverifikasi bahwa harga kecil tetap akurat. Selama pengujian, suhu luar turun dari 21 derajat Celcius menjadi minus 4, namun setiap sensor tetap online.
+
+Selanjutnya, Maya membacakan pesan pelanggan secara lisan: “Bisakah kita mengirimkan 1,250 unit ke St. Louis pada 3 Oktober, atau sebaiknya kita kirim setengahnya ke New York terlebih dahulu?” Daniel menjawab bahwa pengiriman A-17 akan berangkat pada pukul 6:30 sore, menempuh jarak 842 mil, dan tiba dalam waktu empat puluh delapan jam. Ia meminta tim untuk mengirim email ke dukungan di contoh titik com jika jadwal berubah.
+
+Topik terakhir adalah perangkat lunak. Versi 3.6.2 mengurangi waktu respons rata-rata dari 920 milidetik menjadi 315 milidetik. Penggunaan CPU turun sebesar 18 persen, dan API secara benar mengenali singkatan NASA, USB, dan Wi-Fi. Apakah sistem akurat ketika pembicara mengajukan pertanyaan? Apakah sistem mempertahankan jawaban yang dikutip? Bisakah sistem membedakan lima belas dari lima puluh, atau tiga belas dari tiga puluh?
+
+Harap rekam setiap kalimat dengan jelas, termasuk jeda, tanda baca, nama diri, pengukuran, dan mata uang. Benchmark umum pertama kini telah selesai.

@@ -1,0 +1,11 @@
+Welcome to the second benchmark. This sample uses conversational English, short interruptions, practical instructions, addresses, times, and several kinds of numbers.
+
+“Are you still coming to the clinic tomorrow?” Priya asked. “Yes,” Marcus said, “but my train reaches platform nine at 10:12 a.m., so I may be five minutes late.” Priya told him not to rush. The appointment was scheduled for Wednesday, February 26, at 10:30, in Room B-204 at 58 King Street.
+
+Before leaving home, Marcus checked the weather. The forecast called for light rain, a temperature of 16 degrees Celsius, and wind from the northwest at 22 kilometers per hour. He packed a blue umbrella, two sandwiches, and a 750-milliliter bottle of water. Then his sister called and asked, “Did you remember the keys?” He paused, laughed, and answered, “Almost. Thank you for saving my morning.”
+
+At the station, an announcement said the 10:02 service had been delayed by twelve minutes. Passengers for Oxford, Reading, and Bristol were asked to remain on platform nine. A child counted seven red signs near the ticket office, while a tourist spelled the surname Kowalski: K, O, W, A, L, S, K, I.
+
+During the appointment, the nurse recorded a pulse of 68 beats per minute and a temperature of 98.4 degrees Fahrenheit. She explained that the figures were normal, but advised Marcus to call again if he felt dizzy, short of breath, or unusually tired. The bill came to 47 dollars and 35 cents after a 15 percent discount.
+
+On the way home, Marcus left a voice message: “Please move Friday’s video call from 2 p.m. to 2:30. Send the revised PDF to team@example.com, copy Dr. Rivera, and label the subject Q3 review.” Was every instruction captured? Were the names and numbers preserved? The conversational benchmark is now complete.

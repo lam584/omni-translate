@@ -14,4 +14,5 @@ exclude = [
   "scripts/diagnostics/credential-write",
   "scripts/diagnostics/omni-benchmark",
   "scripts/diagnostics/omni-realtime",
+  ".claude/worktrees/benchmark-2026-07/scripts/diagnostics/omni-benchmark",
 ]

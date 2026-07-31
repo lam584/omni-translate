@@ -7,6 +7,11 @@ export const DEFAULT_MODELS = [
   'qwen3.5-omni-flash-realtime',
   'qwen3.5-livetranslate-flash-realtime',
 ];
+export const WATCH_MODEL_PROTOCOLS = Object.freeze({
+  'qwen3.5-omni-plus-realtime': 'dashscope-omni',
+  'qwen3.5-omni-flash-realtime': 'dashscope-omni',
+  'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
+});
 export const DEFAULT_FEEDBACK_MODES = ['virtual-driver', 'echo-cancel'];
 export const SUPPORTED_FEEDBACK_MODES = ['virtual-driver', 'echo-cancel'];
 
@@ -17,17 +22,24 @@ export const MATRIX_DEFAULTS = {
   playbackSeconds: 0,
   postPlaybackWaitSeconds: 120,
   sessionReadyTimeoutSeconds: 90,
+  watchAutoStopAfterSeconds: 60,
   physicalPlaybackDeviceId: 'default',
   expectedPhysicalPlaybackDeviceName: '',
 };
 
 const RUNNER_SCRIPT = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1');
+// Keep the complete per-model runner below the user-facing two-minute ceiling.
+// The extra termination grace is included in that ceiling because taskkill can
+// block while it tears down the PowerShell process tree on Windows.
+export const LIVE_RUNNER_TIMEOUT_MS = 110_000;
+export const LIVE_RUNNER_TERMINATION_GRACE_MS = 5_000;
 
 const INTEGER_OPTION_FLAGS = {
   warmupSeconds: 'warmup-seconds',
   playbackSeconds: 'playback-seconds',
   postPlaybackWaitSeconds: 'post-playback-wait-seconds',
   sessionReadyTimeoutSeconds: 'session-ready-timeout-seconds',
+  watchAutoStopAfterSeconds: 'watch-auto-stop-after-seconds',
 };
 
 const BOOLEAN_FLAGS = [
@@ -55,6 +67,8 @@ Options:
   --playback-seconds <n>                           default: ${MATRIX_DEFAULTS.playbackSeconds}
   --post-playback-wait-seconds <n>                 default: ${MATRIX_DEFAULTS.postPlaybackWaitSeconds}
   --session-ready-timeout-seconds <n>              default: ${MATRIX_DEFAULTS.sessionReadyTimeoutSeconds}
+  --watch-auto-stop-after-seconds <n>              hard Watch capture limit, 1-100
+                                                   (default: ${MATRIX_DEFAULTS.watchAutoStopAfterSeconds})
   --physical-playback-device-id <id>               default: ${MATRIX_DEFAULTS.physicalPlaybackDeviceId}
   --expected-physical-playback-device-name <name>  default: empty
   --skip-desktop-launch
@@ -117,6 +131,9 @@ export const parseMatrixCliArgs = (argv) => {
     }
     options[key] = value;
   }
+  if (options.watchAutoStopAfterSeconds < 1 || options.watchAutoStopAfterSeconds > 100) {
+    throw new Error('--watch-auto-stop-after-seconds must be between 1 and 100');
+  }
   return { ...options, runnerArgs };
 };
 
@@ -142,6 +159,11 @@ export const resolveMatrixLists = ({ models, feedbackLoopPreventionModes }) => {
   return { modelList, feedbackModeList };
 };
 
+export const resolveWatchRealtimeProtocol = (model, aliasModel = '', aliasProtocol = '') => {
+  if (model === aliasModel && aliasModel) return aliasProtocol;
+  return WATCH_MODEL_PROTOCOLS[model] ?? '';
+};
+
 // Enabled switches are emitted bare because Windows PowerShell 5.1 -File
 // rejects the '-Switch:$true' literal form with a SwitchParameter binding error.
 export const buildRunnerArgv = ({
@@ -154,6 +176,7 @@ export const buildRunnerArgv = ({
   playbackSeconds = MATRIX_DEFAULTS.playbackSeconds,
   postPlaybackWaitSeconds = MATRIX_DEFAULTS.postPlaybackWaitSeconds,
   sessionReadyTimeoutSeconds = MATRIX_DEFAULTS.sessionReadyTimeoutSeconds,
+  watchAutoStopAfterSeconds = MATRIX_DEFAULTS.watchAutoStopAfterSeconds,
   physicalPlaybackDeviceId = MATRIX_DEFAULTS.physicalPlaybackDeviceId,
   expectedPhysicalPlaybackDeviceName = MATRIX_DEFAULTS.expectedPhysicalPlaybackDeviceName,
   skipDesktopLaunch = false,
@@ -173,6 +196,7 @@ export const buildRunnerArgv = ({
     '-PlaybackSeconds', String(playbackSeconds),
     '-PostPlaybackWaitSeconds', String(postPlaybackWaitSeconds),
     '-SessionReadyTimeoutSeconds', String(sessionReadyTimeoutSeconds),
+    '-WatchAutoStopAfterSeconds', String(watchAutoStopAfterSeconds),
     '-PhysicalPlaybackDeviceId', physicalPlaybackDeviceId,
     '-FeedbackLoopPrevention', feedbackMode,
     '-ExpectedPhysicalPlaybackDeviceName', expectedPhysicalPlaybackDeviceName,
@@ -231,8 +255,32 @@ const runLiveRunner = (runnerArgv) => new Promise((resolve, reject) => {
     stdout += chunk;
     process.stderr.write(chunk);
   });
-  child.once('error', reject);
-  child.once('close', (exitCode) => resolve({ exitCode: exitCode ?? 1, stdout }));
+  const timeout = setTimeout(() => {
+    if (isWindows && child.pid) {
+      spawnSync('taskkill.exe', ['/PID', String(child.pid), '/F', '/T'], {
+        cwd: repoRoot,
+        stdio: 'ignore',
+        timeout: LIVE_RUNNER_TERMINATION_GRACE_MS,
+      });
+    } else {
+      child.kill('SIGKILL');
+    }
+    child.stdout.destroy();
+    resolve({ exitCode: 124, stdout });
+  }, LIVE_RUNNER_TIMEOUT_MS);
+  child.once('error', (error) => {
+    clearTimeout(timeout);
+    reject(error);
+  });
+  // Resolve on the PowerShell process exit instead of `close`: a degraded
+  // bridge descendant can inherit stdout and keep the pipe open after the
+  // runner itself has already exited. Destroying our read side prevents that
+  // unrelated process from hanging the matrix indefinitely.
+  child.once('exit', (exitCode) => {
+    clearTimeout(timeout);
+    child.stdout.destroy();
+    resolve({ exitCode: exitCode ?? 1, stdout });
+  });
 });
 
 export const runMatrix = async (options) => {
@@ -248,7 +296,7 @@ export const runMatrix = async (options) => {
   for (const model of modelList) {
     for (const feedbackMode of feedbackModeList) {
       console.error(`==> Running Watch Mode live strict matrix model: ${model} feedbackLoopPrevention: ${feedbackMode}`);
-      const watchRealtimeProtocol = model === aliasModel ? aliasProtocol : '';
+      const watchRealtimeProtocol = resolveWatchRealtimeProtocol(model, aliasModel, aliasProtocol);
       const { exitCode, stdout } = await runLiveRunner(buildRunnerArgv({ ...options, model, feedbackMode, watchRealtimeProtocol }));
       if (exitCode !== 0) {
         throw new Error(`Watch Mode live run failed for model ${model} feedbackLoopPrevention ${feedbackMode} with exit code ${exitCode}`);

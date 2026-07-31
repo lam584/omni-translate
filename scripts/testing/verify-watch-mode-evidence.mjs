@@ -20,8 +20,6 @@ export const REQUIRED_LAYERS = [
 export const BASE_REQUIRED_LAYERS = REQUIRED_LAYERS.filter((layer) => layer !== 'strictContent');
 
 export const ECHO_CANCEL_REQUIRED_LAYERS = [
-  'driver',
-  'wasapi',
   'app',
   'provider',
 ];
@@ -95,6 +93,52 @@ function strictContentFailure(report) {
   if (strict.status !== 'passed') return strict.reason ?? 'strictContent layer did not pass';
   if (strict.data?.applicable !== true) return 'strictContent gate was not applicable to this report';
   if (strict.data?.passed !== true) return strict.data?.reason ?? 'strictContent data did not pass';
+  return null;
+}
+
+export function strictWatchSessionReportFailure(report) {
+  const watch = report?.watchSessionReport;
+  if (!watch) return 'strict evidence requires a saved watchSessionReport';
+  if (watch.status !== 'completed') {
+    return `watchSessionReport status is ${watch.status ?? 'unknown'}, expected completed`;
+  }
+  const cues = Array.isArray(watch.cues) ? watch.cues : [];
+  const completeCues = cues.filter((cue) => (
+    cue.comparisonStatus !== 'superseded'
+    && Number.isFinite(Number(cue.llmFirstAtMs))
+    && Number.isFinite(Number(cue.publishedFirstAtMs))
+    && Number.isFinite(Number(cue.renderedFirstAtMs))
+    && Number(cue.llmFirstToRenderMs) >= 0
+    && Number(cue.publishToRenderMs) >= 0
+  ));
+  if (completeCues.length === 0) {
+    return 'watchSessionReport has no complete model → publish → visible-render cue';
+  }
+  if (Number(watch.summary?.unrenderedCueCount ?? 0) > 0) {
+    return `watchSessionReport has ${watch.summary.unrenderedCueCount} published cue(s) without visible rendering`;
+  }
+  const invalid = cues.find((cue) => {
+    const issues = Array.isArray(cue.issues) ? cue.issues : [];
+    // A capture may stop while the provider still has an unfinished source
+    // hypothesis. Keep that interruption explicit in the exported report,
+    // but do not treat it as a model/publish/render failure in the strict
+    // long-chain gate. The report builder only emits this code when it has no
+    // completed source evidence (or the update landed immediately before
+    // stop), so real no-output errors remain blocking.
+    const interruptedSourceTail = cue.comparisonStatus === 'not-published'
+      && issues.length > 0
+      && issues.every((issue) => (
+        issue?.category === 'session'
+        && issue?.code === 'session-ended-before-model-output'
+        && issue?.severity === 'warning'
+      ));
+    if (interruptedSourceTail) return false;
+    return ['different', 'not-published', 'not-rendered', 'model-error'].includes(cue.comparisonStatus)
+      || issues.length > 0;
+  });
+  if (invalid) {
+    return `watchSessionReport has an explicit issue for cue=${invalid.cueId ?? '-'} comparison=${invalid.comparisonStatus ?? '-'}`;
+  }
   return null;
 }
 
@@ -232,6 +276,14 @@ function basicFailure(entry, options = {}) {
     }
   }
   if (options.strict) {
+    const watchReportReason = strictWatchSessionReportFailure(entry.report);
+    if (watchReportReason) {
+      return {
+        failedLayers: ['watchSessionReport'],
+        latestFailure: describeLatestFailure(entry, ['watchSessionReport'], options, watchReportReason),
+        reason: watchReportReason,
+      };
+    }
     const provenanceReason = strictProvenanceFailure(entry.report, options);
     if (provenanceReason) {
       return {

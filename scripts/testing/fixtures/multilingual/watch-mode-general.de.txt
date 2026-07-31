@@ -1,0 +1,11 @@
+Guten Morgen. Dieser Benchmark überprüft, wie gut ein Live-Sprachsystem mit alltäglichem Englisch, Namen, Zahlen, Daten und Änderungen der Satzlänge umgeht.
+
+Um 8:45 Uhr am Dienstag, den 17. September, eröffnete Maya Chen eine Planungsbesprechung für das Projekt Aurora. Das Programm verfügt über einen Zuverlässigkeitsfonds in Höhe von einer Milliarde Dollar, während die erste Forschungsstation auf dem Mars ein Bauvolumen von fünfhundert Millionen Dollar hat. Innerhalb der Station wird eine künstliche Biosphäre Luft, Wasser und Pflanzen im Gleichgewicht halten. Wissenschaftler werden außerdem praktische Methoden untersuchen, um gefährdete Arten auf der Erde zu schützen.
+
+Das Ingenieur-Update behandelte drei ungewöhnliche Prototypen: fliegende Autos für sichere Reisen zwischen abgelegenen Standorten, eine Solarbatterie mit 72,5 Kilowattstunden und eine ein-Dollar-Glühbirne, die dazu dient, sicherzustellen, dass geringe Preise korrekt bleiben. Während des Tests fiel die Außentemperatur von 21 Grad Celsius auf minus 4, aber jeder Sensor blieb online.
+
+Als Nächstes las Maya eine Kundenbotschaft vor: „Können wir 1,250 Einheiten bis zum 3. Oktober nach St. Louis liefern, oder sollen wir zuerst die Hälfte nach New York schicken?“ Daniel antwortete, dass Sendung A-17 um 18:30 Uhr abgehen, 842 Meilen zurücklegen und innerhalb von achtundvierzig Stunden eintreffen würde. Er bat das Team, bei einem Zeitplanwechsel eine E-Mail an Support at example dot com zu senden.
+
+Das letzte Thema war Software. Version 3.6.2 reduzierte die durchschnittliche Antwortzeit von 920 Millisekunden auf 315 Millisekunden. Die CPU-Auslastung sank um 18 Prozent, und die API erkannte die Abkürzungen NASA, USB und Wi-Fi korrekt. Ist das System genau, wenn ein Sprecher eine Frage stellt? Bewahrt es eine zitierte Antwort auf? Kann es fünfzehn von fünfzig oder dreizehn von dreißig unterscheiden?
+
+Bitte nehmen Sie jeden Satz klar auf, einschließlich Pausen, Zeichensetzung, Eigennamen, Messwerten und Währungen. Der erste allgemeine Benchmark ist nun abgeschlossen.

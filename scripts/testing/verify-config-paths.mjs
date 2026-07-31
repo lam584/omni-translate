@@ -68,7 +68,10 @@ const KNOWN_DEAD_READS = [];
 const LEGACY_COMPAT_POINTERS = [
   {
     pointer: '/vad/bypass',
-    files: ['src-tauri/src/audio/events/route_config.rs', 'src-tauri/src/main.rs'],
+    files: [
+      'src-tauri/src/audio/events/route_config.rs',
+      'src-tauri/src/watch_mode_diagnostic/config.rs',
+    ],
     reason: 'legacy VAD toggle: the watch-mode CLI writes it, resolve_legacy_vad_bypass_for_route reads it for configs written before VAD moved under devices.*.',
   },
 ];
@@ -110,7 +113,7 @@ function productionSlice(text) {
   return lines.join('\n');
 }
 
-/** All pointer-literal reads plus main.rs set_json_pointer_* write paths. */
+/** All pointer-literal reads plus set_json_pointer_* write paths. */
 function collectPointerSites() {
   const sites = [];
   for (const file of collectRustFiles(path.join(rootDir, rustRoot))) {
@@ -120,7 +123,7 @@ function collectPointerSites() {
       const line = text.slice(0, match.index).split('\n').length;
       sites.push({ pointer: match[1], file: rel, line, kind: 'read', tail: text.slice(match.index, match.index + 260) });
     }
-    for (const match of text.matchAll(/set_json_pointer_\w+\s*\(\s*&mut\s+\w+\s*,\s*&\[([^\]]*)\]/g)) {
+    for (const match of text.matchAll(/set_json_pointer_\w+\s*\(\s*(?:&mut\s+)?\w+\s*,\s*&\[([^\]]*)\]/g)) {
       const segments = [...match[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
       if (!segments.length) continue;
       const line = text.slice(0, match.index).split('\n').length;

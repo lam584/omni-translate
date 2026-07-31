@@ -1,0 +1,11 @@
+Bonjour. Ce test vérifie comment un système de reconnaissance vocale en direct gère l’anglais courant, les noms, les chiffres, les dates et les variations de longueur des phrases.
+
+À 8 h 45, mardi 17 septembre, Maya Chen a ouvert une réunion de planification pour le projet Aurora. Le programme dispose d’un fonds de fiabilité d’un milliard de dollars, tandis que sa première station de recherche sur Mars bénéficie d’un budget de construction de cinq cents millions de dollars. À l’intérieur de la station, une biosphère artificielle maintiendra l’équilibre entre l’air, l’eau et les plantes. Les scientifiques étudieront également des méthodes pratiques pour protéger les espèces menacées sur Terre.
+
+La mise à jour technique a présenté trois prototypes insolites : des voitures volantes pour des déplacements sûrs entre des sites isolés, une batterie solaire d’une capacité de 72,5 kilowattheures, et une ampoule d’un dollar utilisée pour vérifier que les petits prix restent précis. Pendant le test, la température extérieure est passée de 21 degrés Celsius à moins 4, mais chaque capteur est resté en ligne.
+
+Ensuite, Maya a lu un message client à voix haute : "Peut-on livrer 1 250 unités à Saint-Louis avant le 3 octobre, ou devons-nous envoyer la moitié à New York en premier ?" Daniel a répondu que l’expédition A-17 partirait à 18 h 30, parcourrait 842 miles et arriverait dans un délai de quarante-huit heures. Il a demandé à l’équipe d’envoyer un e-mail au support à example point com si le planning changeait.
+
+Le dernier sujet portait sur les logiciels. La version 3.6.2 a réduit le temps de réponse moyen de 920 millisecondes à 315 millisecondes. L’utilisation du processeur a diminué de 18 %, et l’API a correctement reconnu les abréviations NASA, USB et Wi-Fi. Le système est-il précis lorsqu’un locuteur pose une question ? Préserve-t-il une réponse citée ? Peut-il distinguer quinze de cinquante, ou treize de trente ?
+
+Veuillez enregistrer chaque phrase clairement, y compris les pauses, la ponctuation, les noms propres, les mesures et les devises. Le premier benchmark général est désormais terminé.

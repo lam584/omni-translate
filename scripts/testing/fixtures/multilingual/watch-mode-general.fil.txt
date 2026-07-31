@@ -1,0 +1,11 @@
+Magandang umaga. Ang benchmark na ito ay sinusubok kung gaano kakaya ng isang live speech system na hawakan ang pang-araw-araw na Ingles, mga pangalan, numero, petsa, at pagbabago sa haba ng pangungusap.
+
+Sa 8:45 a.m. ng Martes, Setyembre 17, binuksan ni Maya Chen ang planning meeting para sa Project Aurora. May isang bilyong dolyar na reliability fund ang programa, habang ang unang research station nito sa Mars ay may construction budget na limang daang milyon na dolyar. Sa loob ng istasyon, magpapanatili ng balanse sa hangin, tubig, at halaman ang isang artificial biosphere. Aaralin din ng mga siyentipiko ang praktikal na paraan upang protektahan ang mga endangered species sa Daigdig.
+
+Ang engineering update ay tinatalakay ang tatlong hindi karaniwang prototype: mga flying car para sa ligtas na paglalakbay sa pagitan ng malalayong site, isang solar battery na may rating na 72.5 kilowatt-hours, at isang one-dollar light bulb na ginagamit upang patunayan na nananatiling tumpak ang maliit na presyo. Sa panahon ng pagsusulit, bumaba ang temperatura sa labas mula sa 21 degrees Celsius hanggang minus 4, pero nanatiling online ang bawat sensor.
+
+Susunod, binasa ni Maya nang malakas ang mensahe ng customer: “Pwede ba nating i-deliver ang 1,250 units sa St. Louis hanggang Oktubre 3, o dapat nating ipadala muna ang kalahati sa New York?” Sumagot si Daniel na aalis ang shipment A-17 sa 6:30 p.m., pupunta ng 842 miles, at darating sa loob ng apatnapung walong oras. Hiniling niya sa team na mag-email sa support sa example dot com kung magbago ang schedule.
+
+Ang huling paksa ay software. Binawasan ng Version 3.6.2 ang average response time mula sa 920 milliseconds hanggang 315 milliseconds. Bumaba ang CPU usage ng 18 percent, at tamang nakilala ng API ang mga abbreviation na NASA, USB, at Wi-Fi. Tumpak ba ang system kapag nagtatanong ang speaker? Nananatili ba ang quoted answer? Natutukoy nito ba ang fifteen mula sa fifty, o ang thirteen mula sa thirty?
+
+Pakirekord ang bawat pangungusap nang malinaw, kasama ang mga pause, punctuation, proper names, measurements, at currency. Natapos na ngayon ang unang general benchmark.

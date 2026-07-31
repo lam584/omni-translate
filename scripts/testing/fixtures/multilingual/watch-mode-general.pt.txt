@@ -1,0 +1,11 @@
+Bom dia. Este benchmark verifica o quão bem um sistema de fala em tempo real lida com o inglês do cotidiano, nomes, números, datas e mudanças no tamanho das frases.
+
+Às 8:45 da manhã de terça-feira, 17 de setembro, Maya Chen abriu uma reunião de planejamento para o Projeto Aurora. O programa possui um fundo de confiabilidade de um bilhão de dólares, enquanto sua primeira estação de pesquisa em Marte tem um orçamento de construção de quinhentos milhões de dólares. Dentro da estação, uma biosfera artificial manterá o ar, a água e as plantas em equilíbrio. Os cientistas também estudarão maneiras práticas de proteger espécies ameaçadas na Terra.
+
+A atualização de engenharia cobriu três protótipos incomuns: carros voadores para viagens seguras entre locais remotos, uma bateria solar com capacidade de 72,5 quilowatts-hora e uma lâmpada de um dólar usada para verificar se preços pequenos permanecem precisos. Durante o teste, a temperatura externa caiu de 21 graus Celsius para menos 4, mas todos os sensores permaneceram online.
+
+Em seguida, Maya leu uma mensagem de cliente em voz alta: “Podemos entregar 1,250 unidades em St. Louis até 3 de outubro, ou devemos enviar metade para Nova York primeiro?” Daniel respondeu que o carregamento A-17 sairia às 6:30 da tarde, percorreria 842 milhas e chegaria dentro de quarenta e oito horas. Ele pediu à equipe para enviar um e-mail para o suporte em example dot com caso o cronograma mudasse.
+
+O tópico final foi o software. A versão 3.6.2 reduziu o tempo médio de resposta de 920 milissegundos para 315 milissegundos. O uso da CPU caiu 18 por cento, e a API reconheceu corretamente as abreviações NASA, USB e Wi-Fi. O sistema é preciso quando um falante faz uma pergunta? Ele preserva uma resposta citada? Consegue distinguir quinze de cinquenta, ou treze de trinta?
+
+Por favor, grave cada frase claramente, incluindo pausas, pontuação, nomes próprios, medidas e moeda. O primeiro benchmark geral está agora completo.

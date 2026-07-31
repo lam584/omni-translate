@@ -1,0 +1,11 @@
+Chào buổi sáng. Bản đánh giá chuẩn này kiểm tra xem hệ thống nhận diện giọng nói trực tiếp xử lý tiếng Anh thông thường, tên riêng, số liệu, ngày tháng và sự thay đổi độ dài câu như thế nào.
+
+Lúc 8 giờ 45 phút sáng thứ Ba, ngày 17 tháng 9, Maya Chen đã khai mạc cuộc họp lập kế hoạch cho Dự án Aurora. Chương trình này có quỹ đảm bảo độ tin cậy trị giá một tỷ đô la, trong khi trạm nghiên cứu đầu tiên của nó trên Sao Hỏa có ngân sách xây dựng năm trăm triệu đô la. Bên trong trạm, một sinh quyển nhân tạo sẽ duy trì sự cân bằng giữa không khí, nước và thực vật. Các nhà khoa học cũng sẽ nghiên cứu các phương pháp thiết thực để bảo vệ các loài có nguy cơ tuyệt chủng trên Trái Đất.
+
+Bản cập nhật kỹ thuật bao gồm ba nguyên mẫu độc đáo: xe bay để di chuyển an toàn giữa các địa điểm hẻo lánh, pin năng lượng mặt trời dung lượng 72,5 kilôoát-giờ, và bóng đèn giá một đô la dùng để xác minh rằng các mức giá nhỏ vẫn chính xác. Trong quá trình thử nghiệm, nhiệt độ bên ngoài giảm từ 21 độ C xuống âm 4 độ, nhưng mọi cảm biến đều vẫn hoạt động bình thường.
+
+Tiếp theo, Maya đọc to một tin nhắn từ khách hàng: “Chúng ta có thể giao 1.250 đơn vị đến St. Louis trước ngày 3 tháng 10 không, hay nên gửi nửa số đó sang New York trước?” Daniel trả lời rằng lô hàng A-17 sẽ khởi hành lúc 6 giờ 30 phút tối, di chuyển 842 dặm, và đến nơi trong vòng bốn mươi tám giờ. Anh ấy yêu cầu nhóm gửi email cho bộ phận hỗ trợ tại địa chỉ example dot com nếu lịch trình có thay đổi.
+
+Chủ đề cuối cùng là phần mềm. Phiên bản 3.6.2 đã giảm thời gian phản hồi trung bình từ 920 mili giây xuống còn 315 mili giây. Mức sử dụng CPU giảm 18 phần trăm, và API đã nhận diện chính xác các viết tắt NASA, USB và Wi-Fi. Hệ thống có chính xác khi người nói đặt câu hỏi không? Nó có giữ nguyên câu trả lời được trích dẫn không? Nó có phân biệt được mười lăm với năm mươi, hay mười ba với ba mươi không?
+
+Vui lòng ghi lại từng câu rõ ràng, bao gồm cả khoảng dừng, dấu câu, tên riêng, số đo và tiền tệ. Bản đánh giá chuẩn tổng quát đầu tiên hiện đã hoàn tất.

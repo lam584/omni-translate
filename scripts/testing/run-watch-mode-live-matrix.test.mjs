@@ -7,6 +7,8 @@ import { repoRoot } from '../lib/testing-common.mjs';
 import {
   DEFAULT_FEEDBACK_MODES,
   DEFAULT_MODELS,
+  LIVE_RUNNER_TERMINATION_GRACE_MS,
+  LIVE_RUNNER_TIMEOUT_MS,
   MATRIX_DEFAULTS,
   buildRunnerArgv,
   buildVerifyArgv,
@@ -14,6 +16,7 @@ import {
   lastRunDirectoryLine,
   parseMatrixCliArgs,
   resolveMatrixLists,
+  resolveWatchRealtimeProtocol,
   splitRunnerArgs,
 } from './run-watch-mode-live-matrix.mjs';
 
@@ -41,9 +44,20 @@ test('matrix defaults freeze the strict-evidence contract', () => {
     playbackSeconds: 0,
     postPlaybackWaitSeconds: 120,
     sessionReadyTimeoutSeconds: 90,
+    watchAutoStopAfterSeconds: 60,
     physicalPlaybackDeviceId: 'default',
     expectedPhysicalPlaybackDeviceName: '',
   });
+});
+
+test('each live runner has an absolute budget below two minutes', () => {
+  assert.equal(LIVE_RUNNER_TIMEOUT_MS, 110_000);
+  assert.equal(LIVE_RUNNER_TERMINATION_GRACE_MS, 5_000);
+  assert.ok(
+    LIVE_RUNNER_TIMEOUT_MS + LIVE_RUNNER_TERMINATION_GRACE_MS < 120_000,
+    'runner timeout plus forced-termination grace must remain below two minutes',
+  );
+  assert.ok(MATRIX_DEFAULTS.watchAutoStopAfterSeconds <= 60);
 });
 
 test('sample pair argv binds every always-forwarded runner parameter', () => {
@@ -57,6 +71,7 @@ test('sample pair argv binds every always-forwarded runner parameter', () => {
     '-PlaybackSeconds', '0',
     '-PostPlaybackWaitSeconds', '120',
     '-SessionReadyTimeoutSeconds', '90',
+    '-WatchAutoStopAfterSeconds', '60',
     '-PhysicalPlaybackDeviceId', 'default',
     '-FeedbackLoopPrevention', 'echo-cancel',
     '-ExpectedPhysicalPlaybackDeviceName', '',
@@ -105,7 +120,7 @@ test('switch parameters are appended bare, only when enabled, in guard order', (
     allowElevatedDesktopLaunch: true,
     skipPhysicalOutputContentStt: true,
   });
-  assert.deepEqual(allOn.slice(20), RUNNER_SWITCHES.map((name) => `-${name}`));
+  assert.deepEqual(allOn.slice(22), RUNNER_SWITCHES.map((name) => `-${name}`));
 
   const allOff = buildRunnerArgv({ model: SAMPLE_MODEL, feedbackMode: SAMPLE_FEEDBACK_MODE });
   for (const name of RUNNER_SWITCHES) {
@@ -132,6 +147,17 @@ test('keyword-free live aliases carry an explicit protocol into config preparati
   assert.deepEqual(argv.slice(-2), ['-WatchRealtimeProtocol', 'dashscope-omni']);
 });
 
+test('known Watch models always bind their provider protocol instead of relying on provider order', () => {
+  assert.equal(resolveWatchRealtimeProtocol('qwen3.5-omni-plus-realtime'), 'dashscope-omni');
+  assert.equal(resolveWatchRealtimeProtocol('qwen3.5-omni-flash-realtime'), 'dashscope-omni');
+  assert.equal(
+    resolveWatchRealtimeProtocol('qwen3.5-livetranslate-flash-realtime'),
+    'dashscope-livetranslate',
+  );
+  assert.equal(resolveWatchRealtimeProtocol('deployment-blue', 'deployment-blue', 'gemini-live'), 'gemini-live');
+  assert.equal(resolveWatchRealtimeProtocol('unknown-model'), '');
+});
+
 test('splitRunnerArgs forwards everything after the first literal -- separator', () => {
   assert.deepEqual(splitRunnerArgs(['--warmup-seconds', '30']), {
     matrixArgv: ['--warmup-seconds', '30'],
@@ -150,6 +176,7 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
   assert.equal(defaults.feedbackLoopPreventionModes, DEFAULT_FEEDBACK_MODES.join(','));
   assert.equal(defaults.outputRoot, MATRIX_DEFAULTS.outputRoot);
   assert.equal(defaults.warmupSeconds, 12);
+  assert.equal(defaults.watchAutoStopAfterSeconds, 60);
   assert.deepEqual(defaults.runnerArgs, []);
 
   const parsed = parseMatrixCliArgs([
@@ -170,6 +197,10 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
   assert.deepEqual(parsed.runnerArgs, ['-DryRun', '-Fixture', 'pass']);
 
   assert.throws(() => parseMatrixCliArgs(['--warmup-seconds', 'soon']), /--warmup-seconds must be an integer/);
+  assert.throws(
+    () => parseMatrixCliArgs(['--watch-auto-stop-after-seconds', '101']),
+    /must be between 1 and 100/,
+  );
   assert.throws(() => parseMatrixCliArgs(['--unknown-flag', 'x']), /Unknown flag --unknown-flag/);
 });
 

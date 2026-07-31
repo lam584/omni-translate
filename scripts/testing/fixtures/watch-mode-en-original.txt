@@ -1,10 +1,11 @@
-This is an original audio fixture for the Omni Translate project.
-Project Aurora has a one billion dollar reliability fund.
-The first research station is planned for Mars.
-Its construction budget is five hundred million dollars.
-Inside the station, an artificial biosphere keeps air, water, and plants in balance.
-The research team also studies ways to protect endangered species.
-Engineers are testing flying cars for safe travel between remote sites.
-A one-dollar light bulb is used to verify that small prices remain accurate.
-Each sentence is separated clearly so translation timing can be measured.
-The original audio fixture test is now complete.
+Good morning. This benchmark checks how well a live speech system handles everyday English, names, numbers, dates, and changes in sentence length.
+
+At 8:45 a.m. on Tuesday, September 17, Maya Chen opened a planning meeting for Project Aurora. The program has a one billion dollar reliability fund, while its first research station on Mars has a construction budget of five hundred million dollars. Inside the station, an artificial biosphere will keep air, water, and plants in balance. Scientists will also study practical ways to protect endangered species on Earth.
+
+The engineering update covered three unusual prototypes: flying cars for safe travel between remote sites, a solar battery rated at 72.5 kilowatt-hours, and a one-dollar light bulb used to verify that small prices remain accurate. During the test, the outside temperature fell from 21 degrees Celsius to minus 4, but every sensor stayed online.
+
+Next, Maya read a customer message aloud: “Can we deliver 1,250 units to St. Louis by October 3, or should we send half to New York first?” Daniel replied that shipment A-17 would leave at 6:30 p.m., travel 842 miles, and arrive within forty-eight hours. He asked the team to email support at example dot com if the schedule changed.
+
+The final topic was software. Version 3.6.2 reduced average response time from 920 milliseconds to 315 milliseconds. CPU usage dropped by 18 percent, and the API correctly recognized the abbreviations NASA, USB, and Wi-Fi. Is the system accurate when a speaker asks a question? Does it preserve a quoted answer? Can it distinguish fifteen from fifty, or thirteen from thirty?
+
+Please record each sentence clearly, including pauses, punctuation, proper names, measurements, and currency. The first general benchmark is now complete.

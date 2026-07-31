@@ -21,6 +21,8 @@
     "test:desktop-shell": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml",
     "test:desktop-coverage": "npm run test:coverage --workspace @omni/desktop",
     "test:llm-integration": "node ./scripts/testing/run-llm-integration.mjs",
+    "test:audio-model-integration": "node ./scripts/testing/run-llm-integration.mjs --audio-only",
+    "test:audio-model-integration:tooling": "node --test ./scripts/testing/run-llm-integration.test.mjs",
     "test:all": "node ./scripts/testing/run-all-tests.mjs",
     "verify:desktop": "npm run verify --workspace @omni/desktop",
     "check:bridge-service-native": "cargo check --manifest-path apps/bridge-service-native/Cargo.toml",

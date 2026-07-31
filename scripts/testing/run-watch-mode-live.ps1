@@ -7,7 +7,12 @@ param(
   [int]$WarmupSeconds = 12,
   [int]$PlaybackSeconds = 0,
   [int]$PostPlaybackWaitSeconds = 120,
-  [int]$SessionReadyTimeoutSeconds = 180,
+  [ValidateRange(1, 100)]
+  [int]$SessionReadyTimeoutSeconds = 90,
+  # The committed benchmark fixtures are roughly two minutes long. Leave time
+  # for full playback plus route teardown and the atomic report write.
+  [ValidateRange(1, 300)]
+  [int]$WatchAutoStopAfterSeconds = 180,
   [switch]$SkipDesktopLaunch,
   [switch]$SkipDriverRepair,
   [switch]$AllowDriverRepair,
@@ -28,6 +33,15 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Production Tauri builds always write diagnostics under LocalAppData; the
+# workspace diagnostics root is a debug-only convention. The live runner now
+# launches the production shell so its default must follow the same location,
+# otherwise readiness watches a marker-only file while the real session logs
+# somewhere else.
+if (-not $DryRun -and -not $PSBoundParameters.ContainsKey("RuntimeRoot")) {
+  $RuntimeRoot = Join-Path $env:LOCALAPPDATA "OmniTranslate\diagnostics\logs"
+}
 
 # npm 11 swallows PowerShell-style single-dash options after "npm run ... --"
 # and forwards only their values, so "-FixtureRoot X:\fixtures" or
@@ -126,6 +140,50 @@ function Copy-IfExists {
     return $Destination
   }
   return $null
+}
+
+function Assert-WatchSessionReportFile {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    throw "required Watch session report was not generated: $Path"
+  }
+  try {
+    $report = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch {
+    throw "required Watch session report is invalid JSON at '$Path': $($_.Exception.Message)"
+  }
+  if ($null -eq $report -or -not $report.sessionId) {
+    throw "required Watch session report is empty or missing sessionId: $Path"
+  }
+  if ($report.status -ne "completed") {
+    throw "required Watch session report is not completed at '$Path': status=$($report.status)"
+  }
+  return $report
+}
+
+function Wait-WatchSessionReportAndDesktopExit {
+  param(
+    [Parameter(Mandatory = $true)][string]$Path,
+    [Parameter(Mandatory = $true)][int]$ProcessId,
+    [Parameter(Mandatory = $true)][DateTime]$DeadlineUtc
+  )
+  do {
+    $reportReady = Test-Path -LiteralPath $Path -PathType Leaf
+    $desktopRunning = $null -ne (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)
+    if ($reportReady -and -not $desktopRunning) {
+      Assert-WatchSessionReportFile $Path | Out-Null
+      return [pscustomobject]@{
+        reportPath = $Path
+        desktopExited = $true
+      }
+    }
+    if (-not $desktopRunning -and -not $reportReady) {
+      throw "Watch desktop exited before writing the required session report: $Path"
+    }
+    Start-Sleep -Milliseconds 250
+  } while ([DateTime]::UtcNow -lt $DeadlineUtc)
+
+  throw "timed out waiting for same-process Watch report and desktop exit. ProcessId=$ProcessId ReportReady=$reportReady DeadlineUtc=$($DeadlineUtc.ToString('o')) Path=$Path"
 }
 
 function Set-Utf8NoBomContent {
@@ -357,9 +415,15 @@ function Stop-StaleBridgeService {
 }
 
 function Stop-ElevatedWatchModeProcesses {
+  $runnerProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+  $runnerStartTimeUtcTicks = [long]$runnerProcess.StartTime.ToUniversalTime().Ticks
   $command = "Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue"
+  $encodedCommand = New-ParentGuardedPowerShellCommand `
+    -ParentProcessId $PID `
+    -ParentStartTimeUtcTicks $runnerStartTimeUtcTicks `
+    -CommandBody $command
   $process = Start-Process -FilePath "powershell.exe" `
-    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", $command) `
+    -ArgumentList @("-NoProfile", "-ExecutionPolicy", "Bypass", "-EncodedCommand", $encodedCommand) `
     -Verb RunAs `
     -WindowStyle Hidden `
     -Wait `
@@ -437,7 +501,11 @@ function Set-WatchModelOnConfig {
       capabilities = $capabilities
       realtimeProtocol = $RealtimeProtocol
       realtimeAudioMode = if ($RealtimeProtocol -eq "dashscope-omni") { "manual" } else { "server_vad" }
-      interactionCapabilities = @("streaming", "auto_vad")
+      interactionCapabilities = if ($RealtimeProtocol -eq "dashscope-omni") {
+        @("manual_commit", "streaming")
+      } else {
+        @("streaming", "auto_vad")
+      }
     }
     $existing = @($provider.localModelCapabilityRegistry | Where-Object { $_.modelId -ne $resolvedModelId })
     $provider.localModelCapabilityRegistry = @($entry) + $existing
@@ -591,14 +659,240 @@ function Invoke-NativeProcessToLog {
   return $process.ExitCode
 }
 
-function Set-UserEnvironmentVariable {
-  param([string]$Name, [string]$Value)
-  [System.Environment]::SetEnvironmentVariable($Name, $Value, [System.EnvironmentVariableTarget]::User)
+function New-ParentGuardedPowerShellCommand {
+  param(
+    [Parameter(Mandatory = $true)][int]$ParentProcessId,
+    [Parameter(Mandatory = $true)][long]$ParentStartTimeUtcTicks,
+    [Parameter(Mandatory = $true)][string]$CommandBody
+  )
+  $guardedCommand = @"
+`$parentAlive = `$false
+try {
+  `$parentProcess = Get-Process -Id $ParentProcessId -ErrorAction Stop
+  `$parentProcess.Refresh()
+  `$parentAlive = ([long]`$parentProcess.StartTime.ToUniversalTime().Ticks -eq $ParentStartTimeUtcTicks)
+} catch {
+  `$parentAlive = `$false
+}
+if (-not `$parentAlive) {
+  exit 125
+}
+$CommandBody
+"@
+  return [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($guardedCommand))
 }
 
-function Get-UserEnvironmentVariable {
-  param([string]$Name)
-  return [System.Environment]::GetEnvironmentVariable($Name, [System.EnvironmentVariableTarget]::User)
+function ConvertTo-PowerShellSingleQuotedLiteral {
+  param([AllowEmptyString()][string]$Value)
+  return "'" + $Value.Replace("'", "''") + "'"
+}
+
+function New-ElevatedDesktopGuardianCommand {
+  param(
+    [Parameter(Mandatory = $true)][int]$ParentProcessId,
+    [Parameter(Mandatory = $true)][long]$ParentStartTimeUtcTicks,
+    [Parameter(Mandatory = $true)][string]$LeasePath,
+    [Parameter(Mandatory = $true)][string]$EnvironmentPath,
+    [Parameter(Mandatory = $true)][string]$ReceiptPath,
+    [Parameter(Mandatory = $true)][string]$ExecutablePath,
+    [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+    [Parameter(Mandatory = $true)][string]$StdoutPath,
+    [Parameter(Mandatory = $true)][string]$StderrPath
+  )
+  $leaseLiteral = ConvertTo-PowerShellSingleQuotedLiteral $LeasePath
+  $environmentLiteral = ConvertTo-PowerShellSingleQuotedLiteral $EnvironmentPath
+  $receiptLiteral = ConvertTo-PowerShellSingleQuotedLiteral $ReceiptPath
+  $executableLiteral = ConvertTo-PowerShellSingleQuotedLiteral $ExecutablePath
+  $workingDirectoryLiteral = ConvertTo-PowerShellSingleQuotedLiteral $WorkingDirectory
+  $stdoutLiteral = ConvertTo-PowerShellSingleQuotedLiteral $StdoutPath
+  $stderrLiteral = ConvertTo-PowerShellSingleQuotedLiteral $StderrPath
+  $guardianCommand = @"
+`$ErrorActionPreference = 'Stop'
+`$expectedParentId = $ParentProcessId
+`$expectedParentStartTicks = [long]$ParentStartTimeUtcTicks
+`$leasePath = $leaseLiteral
+`$environmentPath = $environmentLiteral
+`$receiptPath = $receiptLiteral
+`$desktopProcess = `$null
+
+function Test-RunnerLease {
+  if (-not (Test-Path -LiteralPath `$leasePath -PathType Leaf)) {
+    return `$false
+  }
+  try {
+    `$parentProcess = Get-Process -Id `$expectedParentId -ErrorAction Stop
+    `$parentProcess.Refresh()
+    return ([long]`$parentProcess.StartTime.ToUniversalTime().Ticks -eq `$expectedParentStartTicks)
+  } catch {
+    return `$false
+  }
+}
+
+function Write-LaunchReceipt {
+  param([bool]`$Ok, [string]`$ErrorMessage = '')
+  `$payload = if (`$Ok) {
+    [ordered]@{
+      ok = `$true
+      pid = `$desktopProcess.Id
+      guardianPid = `$PID
+      launchedAtUtc = [DateTime]::UtcNow.ToString('o')
+    }
+  } else {
+    [ordered]@{
+      ok = `$false
+      guardianPid = `$PID
+      error = `$ErrorMessage
+    }
+  }
+  `$temporaryReceiptPath = "`$receiptPath.`$PID.tmp"
+  `$utf8 = [System.Text.UTF8Encoding]::new(`$false)
+  [System.IO.File]::WriteAllText(`$temporaryReceiptPath, (`$payload | ConvertTo-Json -Compress), `$utf8)
+  Move-Item -LiteralPath `$temporaryReceiptPath -Destination `$receiptPath -Force
+}
+
+try {
+  # ShellExecute can finish long after its requesting runner was terminated.
+  # Validate both PID and start time before doing anything irreversible so a
+  # recycled PID cannot revive an expired Watch run.
+  if (-not (Test-RunnerLease)) {
+    exit 125
+  }
+  `$launchEnvironment = Get-Content -LiteralPath $environmentLiteral -Raw -Encoding UTF8 | ConvertFrom-Json
+  foreach (`$property in `$launchEnvironment.PSObject.Properties) {
+    `$value = if (`$null -eq `$property.Value) { `$null } else { [string]`$property.Value }
+    [System.Environment]::SetEnvironmentVariable(`$property.Name, `$value, [System.EnvironmentVariableTarget]::Process)
+  }
+  if (-not (Test-RunnerLease)) {
+    exit 125
+  }
+  `$desktopProcess = Start-Process -FilePath $executableLiteral `
+    -WorkingDirectory $workingDirectoryLiteral `
+    -RedirectStandardOutput $stdoutLiteral `
+    -RedirectStandardError $stderrLiteral `
+    -WindowStyle Hidden `
+    -PassThru
+  Write-LaunchReceipt -Ok `$true
+
+  while (-not `$desktopProcess.HasExited) {
+    if (-not (Test-RunnerLease)) {
+      Start-Process -FilePath 'taskkill.exe' `
+        -ArgumentList @('/PID', "`$(`$desktopProcess.Id)", '/F', '/T') `
+        -WindowStyle Hidden `
+        -Wait `
+        -ErrorAction SilentlyContinue | Out-Null
+      exit 125
+    }
+    Start-Sleep -Milliseconds 200
+    `$desktopProcess.Refresh()
+  }
+  exit `$desktopProcess.ExitCode
+} catch {
+  try {
+    Write-LaunchReceipt -Ok `$false -ErrorMessage `$_.Exception.Message
+  } catch {
+  }
+  if (`$desktopProcess -and -not `$desktopProcess.HasExited) {
+    Start-Process -FilePath 'taskkill.exe' `
+      -ArgumentList @('/PID', "`$(`$desktopProcess.Id)", '/F', '/T') `
+      -WindowStyle Hidden `
+      -Wait `
+      -ErrorAction SilentlyContinue | Out-Null
+  }
+  exit 1
+}
+"@
+  return [Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($guardianCommand))
+}
+
+function Start-ElevatedWatchModeDesktopShell {
+  param(
+    [Parameter(Mandatory = $true)][string]$ExecutablePath,
+    [Parameter(Mandatory = $true)][string]$WorkingDirectory,
+    [Parameter(Mandatory = $true)][string]$OutputDirectory,
+    [Parameter(Mandatory = $true)][hashtable]$LaunchEnvironment,
+    [Parameter(Mandatory = $true)][string]$StdoutPath,
+    [Parameter(Mandatory = $true)][string]$StderrPath
+  )
+  $environmentPath = Join-Path $OutputDirectory 'desktop-shell.elevated-environment.json'
+  $receiptPath = Join-Path $OutputDirectory 'desktop-shell.elevated-launch.json'
+  $leasePath = Join-Path $OutputDirectory 'desktop-shell.elevated-launch.lease'
+  Remove-Item -LiteralPath $receiptPath, $leasePath -Force -ErrorAction SilentlyContinue
+  Set-Utf8NoBomContent -Path $environmentPath -Value ($LaunchEnvironment | ConvertTo-Json -Compress)
+  Set-Utf8NoBomContent -Path $leasePath -Value ([guid]::NewGuid().ToString('N'))
+
+  $runnerProcess = [System.Diagnostics.Process]::GetCurrentProcess()
+  $runnerStartTimeUtcTicks = [long]$runnerProcess.StartTime.ToUniversalTime().Ticks
+  $encodedCommand = New-ElevatedDesktopGuardianCommand `
+    -ParentProcessId $PID `
+    -ParentStartTimeUtcTicks $runnerStartTimeUtcTicks `
+    -LeasePath $leasePath `
+    -EnvironmentPath $environmentPath `
+    -ReceiptPath $receiptPath `
+    -ExecutablePath $ExecutablePath `
+    -WorkingDirectory $WorkingDirectory `
+    -StdoutPath $StdoutPath `
+    -StderrPath $StderrPath
+  try {
+    # UAC/ShellExecute is not part of this process tree. The elevated helper
+    # therefore owns the desktop and continuously enforces the runner lease.
+    $guardianProcess = Start-Process -FilePath 'powershell.exe' `
+      -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', $encodedCommand) `
+      -Verb RunAs `
+      -WindowStyle Hidden `
+      -PassThru
+  } catch {
+    Remove-Item -LiteralPath $leasePath -Force -ErrorAction SilentlyContinue
+    throw
+  }
+
+  $receiptDeadline = [DateTime]::UtcNow.AddSeconds(15)
+  do {
+    if (Test-Path -LiteralPath $receiptPath -PathType Leaf) {
+      $receipt = Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+      if (-not $receipt.ok) {
+        Remove-Item -LiteralPath $leasePath -Force -ErrorAction SilentlyContinue
+        throw "elevated desktop guardian failed: $($receipt.error)"
+      }
+      return [pscustomobject]@{
+        pid = [int]$receipt.pid
+        guardianPid = [int]$receipt.guardianPid
+        guardianLeasePath = $leasePath
+        guardianEnvironmentPath = $environmentPath
+        guardianReceiptPath = $receiptPath
+        launchedAtUtc = [DateTime]::Parse([string]$receipt.launchedAtUtc).ToUniversalTime()
+      }
+    }
+    $guardianProcess.Refresh()
+    if ($guardianProcess.HasExited) {
+      Remove-Item -LiteralPath $leasePath -Force -ErrorAction SilentlyContinue
+      throw "elevated desktop guardian exited before launching the desktop shell. ExitCode=$($guardianProcess.ExitCode)"
+    }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt $receiptDeadline)
+
+  Remove-Item -LiteralPath $leasePath -Force -ErrorAction SilentlyContinue
+  throw "timed out waiting for elevated desktop guardian launch receipt: $receiptPath"
+}
+
+function Stop-ElevatedWatchModeDesktopLaunch {
+  param($Launch)
+  if (-not $Launch) {
+    return [pscustomobject]@{ stopped = $false; reason = 'no tracked elevated desktop launch' }
+  }
+  if ($Launch.guardianLeasePath) {
+    Remove-Item -LiteralPath $Launch.guardianLeasePath -Force -ErrorAction SilentlyContinue
+  }
+  $guardianPid = if ($Launch.guardianPid) { [int]$Launch.guardianPid } else { 0 }
+  $deadline = [DateTime]::UtcNow.AddSeconds(3)
+  while ($guardianPid -gt 0 -and (Get-Process -Id $guardianPid -ErrorAction SilentlyContinue) -and [DateTime]::UtcNow -lt $deadline) {
+    Start-Sleep -Milliseconds 100
+  }
+  return [pscustomobject]@{
+    stopped = $true
+    pid = $Launch.pid
+    guardianPid = $guardianPid
+    guardianExited = ($guardianPid -le 0 -or -not (Get-Process -Id $guardianPid -ErrorAction SilentlyContinue))
+  }
 }
 
 function Start-DesktopFrontendServer {
@@ -669,24 +963,25 @@ function Start-WatchModeDesktopShell {
   }
   $stdout = Join-Path $OutputDirectory "desktop-shell.stdout.log"
   $stderr = Join-Path $OutputDirectory "desktop-shell.stderr.log"
-  $buildLog = Join-Path $OutputDirectory "desktop-shell.build.log"
-  $buildErrLog = Join-Path $OutputDirectory "desktop-shell.build.stderr.log"
-  $buildExit = Invoke-NativeProcessToLog "npm.cmd" @("run", "build", "--workspace", "@omni/desktop") (Resolve-Path ".").Path $buildLog $buildErrLog
-  if ($buildExit -ne 0) {
-    throw "desktop frontend build failed with exit code $buildExit; see $buildLog and $buildErrLog"
-  }
-  $cargoLog = Join-Path $OutputDirectory "desktop-shell.cargo-build.log"
-  $cargoErrLog = Join-Path $OutputDirectory "desktop-shell.cargo-build.stderr.log"
-  $cargoExit = Invoke-NativeProcessToLog "cargo.exe" @("build", "--manifest-path", "apps/desktop/src-tauri/Cargo.toml") (Resolve-Path ".").Path $cargoLog $cargoErrLog
-  if ($cargoExit -ne 0) {
-    throw "desktop shell build failed with exit code $cargoExit; see $cargoLog and $cargoErrLog"
-  }
-  $frontendServer = Start-DesktopFrontendServer $OutputDirectory
-  $exe = Resolve-OmniBuiltExecutable -BuildProfile "debug" -ExecutableName "omni-desktop-shell.exe"
+  # A debug cargo build resolves Tauri's devUrl and the old harness paired it
+  # with a placeholder HTML server. That path cannot exercise the real React
+  # overlay or generate render receipts. Live evidence must use the production
+  # binary whose frontendDist contains the actual main and overlay pages. Build
+  # it once before the model matrix with `npm run build:tauri --workspace
+  # @omni/desktop`; model timing begins only when this executable launches.
+  $buildLog = $null
+  $buildErrLog = $null
+  $cargoLog = $null
+  $cargoErrLog = $null
+  $frontendServer = $null
+  $exe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-desktop-shell.exe"
   if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-    throw "desktop shell executable was not built: $exe"
+    throw "production desktop shell was not built: $exe. Run 'npm run build:tauri --workspace @omni/desktop' first."
   }
   $providerInputPcmPath = Join-Path $OutputDirectory "provider-input-16k-mono.pcm"
+  $watchSessionReportPath = Join-Path $OutputDirectory "watch-session-report.json"
+  $watchReportAutoStopAfterMs = $WatchAutoStopAfterSeconds * 1000
+  Remove-Item -LiteralPath $watchSessionReportPath -Force -ErrorAction SilentlyContinue
   $previousAutostart = $env:OMNI_WATCH_MODE_AUTOSTART
   $previousRunMarker = $env:OMNI_WATCH_MODE_RUN_MARKER
   $previousOutputDevice = $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID
@@ -694,19 +989,14 @@ function Start-WatchModeDesktopShell {
   $previousTranslationAudioSource = $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE
   $previousProviderInputPcmPath = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH
   $previousWatchModelId = $env:OMNI_WATCH_MODE_MODEL_ID
+  $previousWatchRealtimeProtocol = $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL
   $previousSubtitleTranslationModelId = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID
   $previousInboundSecondaryAudioModelId = $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID
   $previousFeedbackLoopPrevention = $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION
-  $previousUserAutostart = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART"
-  $previousUserRunMarker = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER"
-  $previousUserOutputDevice = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID"
-  $previousUserOutputLevel = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_LEVEL"
-  $previousUserTranslationAudioSource = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE"
-  $previousUserProviderInputPcmPath = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH"
-  $previousUserWatchModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_MODEL_ID"
-  $previousUserSubtitleTranslationModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID"
-  $previousUserInboundSecondaryAudioModelId = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID"
-  $previousUserFeedbackLoopPrevention = Get-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION"
+  $previousAutoStopAfterMs = $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS
+  $previousReportPath = $env:OMNI_WATCH_MODE_REPORT_PATH
+  $previousExitAfterReport = $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT
+  $elevatedLaunch = $null
   try {
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
@@ -719,6 +1009,9 @@ function Start-WatchModeDesktopShell {
     if ($WatchModelId) {
       $env:OMNI_WATCH_MODE_MODEL_ID = $WatchModelId
     }
+    if ($WatchRealtimeProtocol) {
+      $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL = $WatchRealtimeProtocol
+    }
     if ($SubtitleTranslationModelId) {
       $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $SubtitleTranslationModelId
     }
@@ -726,26 +1019,43 @@ function Start-WatchModeDesktopShell {
       $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $InboundSecondaryAudioModelId
     }
     $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $FeedbackLoopPrevention
+    $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = "$watchReportAutoStopAfterMs"
+    $env:OMNI_WATCH_MODE_REPORT_PATH = $watchSessionReportPath
+    $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = "1"
     if ($AllowElevatedDesktopLaunch) {
-      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART" "1"
-      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER" $RunMarker
-      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID" $PhysicalDeviceId
-      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_LEVEL" "50"
-      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE" "subtitle-tts"
-      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH" $providerInputPcmPath
-      if ($WatchModelId) {
-        Set-UserEnvironmentVariable "OMNI_WATCH_MODE_MODEL_ID" $WatchModelId
+      $watchEnvironmentNames = @(
+        "OMNI_WATCH_MODE_AUTOSTART",
+        "OMNI_WATCH_MODE_RUN_MARKER",
+        "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID",
+        "OMNI_WATCH_MODE_OUTPUT_LEVEL",
+        "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE",
+        "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH",
+        "OMNI_WATCH_MODE_MODEL_ID",
+        "OMNI_WATCH_MODE_REALTIME_PROTOCOL",
+        "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID",
+        "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID",
+        "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION",
+        "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS",
+        "OMNI_WATCH_MODE_REPORT_PATH",
+        "OMNI_WATCH_MODE_EXIT_AFTER_REPORT"
+      )
+      $launchEnvironment = @{}
+      foreach ($name in $watchEnvironmentNames) {
+        $launchEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name, [System.EnvironmentVariableTarget]::Process)
       }
-      if ($SubtitleTranslationModelId) {
-        Set-UserEnvironmentVariable "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID" $SubtitleTranslationModelId
-      }
-      if ($InboundSecondaryAudioModelId) {
-        Set-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID" $InboundSecondaryAudioModelId
-      }
-      Set-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION" $FeedbackLoopPrevention
-      $process = Start-Process -FilePath $exe -WorkingDirectory (Join-Path $workspaceRoot "apps/desktop/src-tauri") -Verb RunAs -PassThru
+      $elevatedLaunch = Start-ElevatedWatchModeDesktopShell `
+        -ExecutablePath $exe `
+        -WorkingDirectory (Join-Path $workspaceRoot "apps/desktop/src-tauri") `
+        -OutputDirectory $OutputDirectory `
+        -LaunchEnvironment $launchEnvironment `
+        -StdoutPath $stdout `
+        -StderrPath $stderr
+      $script:elevatedDesktopLaunch = $elevatedLaunch
+      $desktopLaunchedAtUtc = $elevatedLaunch.launchedAtUtc
+      $process = [pscustomobject]@{ Id = $elevatedLaunch.pid }
     } else {
       try {
+        $desktopLaunchedAtUtc = [DateTime]::UtcNow
         $process = Start-Process -FilePath $exe -WorkingDirectory (Join-Path $workspaceRoot "apps/desktop/src-tauri") -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
       } catch {
         if ($_.Exception.Message -match "requires elevation|requires elevated|740") {
@@ -762,19 +1072,13 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = $previousTranslationAudioSource
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $previousProviderInputPcmPath
     $env:OMNI_WATCH_MODE_MODEL_ID = $previousWatchModelId
+    $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL = $previousWatchRealtimeProtocol
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $previousSubtitleTranslationModelId
     $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $previousInboundSecondaryAudioModelId
     $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $previousFeedbackLoopPrevention
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_AUTOSTART" $previousUserAutostart
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_RUN_MARKER" $previousUserRunMarker
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID" $previousUserOutputDevice
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_OUTPUT_LEVEL" $previousUserOutputLevel
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE" $previousUserTranslationAudioSource
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH" $previousUserProviderInputPcmPath
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_MODEL_ID" $previousUserWatchModelId
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID" $previousUserSubtitleTranslationModelId
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID" $previousUserInboundSecondaryAudioModelId
-    Set-UserEnvironmentVariable "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION" $previousUserFeedbackLoopPrevention
+    $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $previousAutoStopAfterMs
+    $env:OMNI_WATCH_MODE_REPORT_PATH = $previousReportPath
+    $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = $previousExitAfterReport
   }
   Start-Sleep -Seconds $WarmupSeconds
   return [pscustomobject]@{
@@ -786,6 +1090,13 @@ function Start-WatchModeDesktopShell {
     buildErrorLog = $buildErrLog
     cargoBuildErrorLog = $cargoErrLog
     frontendServer = $frontendServer
+    watchSessionReportPath = $watchSessionReportPath
+    watchReportAutoStopAfterMs = $watchReportAutoStopAfterMs
+    launchedAtUtc = $desktopLaunchedAtUtc
+    guardianPid = if ($elevatedLaunch) { $elevatedLaunch.guardianPid } else { $null }
+    guardianLeasePath = if ($elevatedLaunch) { $elevatedLaunch.guardianLeasePath } else { $null }
+    guardianEnvironmentPath = if ($elevatedLaunch) { $elevatedLaunch.guardianEnvironmentPath } else { $null }
+    guardianReceiptPath = if ($elevatedLaunch) { $elevatedLaunch.guardianReceiptPath } else { $null }
   }
 }
 
@@ -798,7 +1109,20 @@ function Stop-WatchModeDesktopShell {
     return Invoke-StopWatchRouteViaTauriCli
   }
   if ($AllowElevatedDesktopLaunch) {
-    return Stop-ElevatedWatchModeProcesses
+    $trackedLaunch = if ($DesktopProcessStep -and $DesktopProcessStep.ok -and $DesktopProcessStep.result -and $DesktopProcessStep.result.guardianLeasePath) {
+      $DesktopProcessStep.result
+    } elseif ($script:elevatedDesktopLaunch) {
+      $script:elevatedDesktopLaunch
+    } else {
+      $null
+    }
+    if ($trackedLaunch) {
+      return Stop-ElevatedWatchModeDesktopLaunch $trackedLaunch
+    }
+    return [pscustomobject]@{
+      stopped = $false
+      reason = 'elevated desktop launch never produced a tracked guardian receipt'
+    }
   }
   if ($DesktopProcessStep -and $DesktopProcessStep.ok -and $DesktopProcessStep.result -and $DesktopProcessStep.result.pid) {
     Stop-Process -Id $DesktopProcessStep.result.pid -ErrorAction SilentlyContinue
@@ -953,20 +1277,22 @@ function Stop-StaleWatchModeDesktopShell {
       elevatedCleanup = Stop-ElevatedWatchModeProcesses
     }
   }
-  $routeStop = Invoke-StopWatchRouteViaTauriCli
-  Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
-  Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue | ForEach-Object {
+  # There is no cross-process Tauri CLI transport: launching the executable
+  # with `tauri invoke` starts a second shell and waits on an IPC channel it can
+  # never share with the stale process. Kill only the explicitly discovered
+  # desktop process trees; the live session itself uses same-process auto-stop.
+  $staleProcesses = @(Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue)
+  $staleProcesses | ForEach-Object {
     Start-Process -FilePath "taskkill.exe" -ArgumentList @("/PID", "$($_.Id)", "/F", "/T") -WindowStyle Hidden -Wait -ErrorAction SilentlyContinue | Out-Null
   }
   Start-Sleep -Milliseconds 500
   $remaining = @(Get-Process -Name "omni-desktop-shell" -ErrorAction SilentlyContinue)
   if ($remaining.Count -gt 0) {
     $ids = ($remaining | ForEach-Object { "$($_.Id)" }) -join ","
-    $routeStopJson = ($routeStop | ConvertTo-Json -Depth 6 -Compress)
-    throw "stale omni-desktop-shell could not be stopped; pid=$ids; routeStop=$routeStopJson"
+    throw "stale omni-desktop-shell could not be stopped; pid=$ids"
   }
   return [pscustomobject]@{
-    routeStop = $routeStop
+    stoppedProcessCount = $staleProcesses.Count
   }
 }
 
@@ -1034,6 +1360,12 @@ function Wait-AppLogPattern {
   $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
   do {
     $text = Get-LogTextAfterMarker $Path $RunMarker
+    $infrastructureFailureLines = Get-DiagnosticLogLines $text @(
+      "watch_mode\.diagnostic_autostart_infrastructure_failed"
+    ) 1
+    if ($infrastructureFailureLines.Count -gt 0) {
+      throw "watch-mode infrastructure failure while waiting for app readiness: $(Format-DiagnosticLogLines $infrastructureFailureLines)"
+    }
     if ($text -match $Pattern) {
       return [pscustomobject]@{
         matched = $true
@@ -1070,6 +1402,134 @@ function Wait-AppLogPattern {
   ) 12
   $tailLines = Get-DiagnosticLogLines $scopedText @(".+") 16
   throw "timed out waiting for app log pattern. Pattern=$Pattern TimeoutSeconds=$TimeoutSeconds Path=$Path MarkerFound=$markerFound RunMarker=$RunMarker ReadinessLines=$(Format-DiagnosticLogLines $readinessLines) ProviderLines=$(Format-DiagnosticLogLines $providerLines) Tail=$(Format-DiagnosticLogLines $tailLines)"
+}
+
+function Get-WatchModeRunSessionId {
+  param(
+    [string]$Text,
+    [string]$RunMarker
+  )
+  if (-not $Text -or -not $RunMarker) {
+    return $null
+  }
+  $sessionId = $null
+  foreach ($line in ($Text -split "`r?`n")) {
+    if (
+      $line -match 'watch_mode\.diagnostic_autostart_requested' -and
+      $line.Contains($RunMarker) -and
+      $line -match '\bsid=([A-Za-z0-9_-]+)(?:\s|$)'
+    ) {
+      $sessionId = $Matches[1]
+    }
+  }
+  return $sessionId
+}
+
+function Get-OptionalDiagnosticFileTail {
+  param(
+    [string]$Path,
+    [int]$Limit = 8
+  )
+  if (-not $Path -or -not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+    return @()
+  }
+  $text = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 -ErrorAction SilentlyContinue
+  return @(Get-DiagnosticLogLines $text @('.+') $Limit)
+}
+
+function Wait-WatchModeAppReadiness {
+  param(
+    [string]$Path,
+    [string]$RunMarker,
+    [int]$ProcessId,
+    [DateTime]$DeadlineUtc,
+    [string]$DesktopStdoutPath = '',
+    [string]$DesktopStderrPath = ''
+  )
+  $startedAtUtc = [DateTime]::UtcNow
+  $sessionId = $null
+  $providerReady = $false
+  $frontendIpcReady = $false
+  do {
+    $text = Get-LogTextAfterMarker $Path $RunMarker
+    $infrastructureFailureLines = @(
+      (Get-DiagnosticLogLines $text @('watch_mode\.diagnostic_autostart_infrastructure_failed') 8) |
+        Where-Object { ([string]$_).Contains($RunMarker) } |
+        Select-Object -Last 1
+    )
+    if ($infrastructureFailureLines.Count -gt 0) {
+      throw (
+        "infrastructure/frontend not ready before playback: native startup watchdog reported frontend-ipc-not-ready. " +
+        "Pid=$ProcessId Path=$Path Evidence=$(Format-DiagnosticLogLines $infrastructureFailureLines) " +
+        "DesktopStdout=$DesktopStdoutPath DesktopStderr=$DesktopStderrPath"
+      )
+    }
+    if (-not (Get-Process -Id $ProcessId -ErrorAction SilentlyContinue)) {
+      $sessionIdLabel = if ($sessionId) { $sessionId } else { '-' }
+      throw (
+        "infrastructure/frontend not ready before playback: desktop process exited before the same-process frontend IPC handshake completed. " +
+        "Pid=$ProcessId SessionId=$sessionIdLabel Path=$Path " +
+        "DesktopStdout=$DesktopStdoutPath DesktopStderr=$DesktopStderrPath"
+      )
+    }
+    $nextSessionId = Get-WatchModeRunSessionId $text $RunMarker
+    if ($nextSessionId) {
+      $sessionId = $nextSessionId
+      $escapedSessionId = [regex]::Escape($sessionId)
+      $escapedRunMarker = [regex]::Escape($RunMarker)
+      $providerReady = $text -match "(?m)^.*(?:watch_mode\.omni_session_ready|ws\.recv\.session\.(?:created|updated)).*\bsid=$escapedSessionId(?:\s|$)"
+      $frontendIpcReady = $text -match "(?m)^.*(?:startup\.step check-ipc=done|watch_mode\.diagnostic_autostart_ipc_ready.*$escapedRunMarker).*\bsid=$escapedSessionId(?:\s|$)"
+      $frontendIpcFailed = $text -match "(?m)^.*(?:startup\.step check-ipc=error|startup\.bootstrap_failed).*\bsid=$escapedSessionId(?:\s|$)"
+      if ($frontendIpcFailed) {
+        $frontendFailureLines = Get-DiagnosticLogLines $text @(
+          'startup\.step check-ipc=error',
+          'startup\.bootstrap_failed',
+          'startup\.bootstrap_settled_forced_overlay_close'
+        ) 8
+        throw (
+          "infrastructure/frontend not ready before playback: same-process frontend IPC bootstrap failed. " +
+          "Pid=$ProcessId SessionId=$sessionId FrontendFailureLines=$(Format-DiagnosticLogLines $frontendFailureLines) " +
+          "DesktopStdout=$DesktopStdoutPath DesktopStderr=$DesktopStderrPath"
+        )
+      }
+      if ($providerReady -and $frontendIpcReady) {
+        return [pscustomobject]@{
+          matched = $true
+          path = $Path
+          pid = $ProcessId
+          sessionId = $sessionId
+          providerReady = $true
+          frontendIpcReady = $true
+          elapsedMs = [Math]::Max(0, [int](([DateTime]::UtcNow - $startedAtUtc).TotalMilliseconds))
+        }
+      }
+    }
+    Start-Sleep -Milliseconds 200
+  } while ([DateTime]::UtcNow -lt $DeadlineUtc.ToUniversalTime())
+
+  $scopedText = Get-LogTextAfterMarker $Path $RunMarker
+  $readinessLines = Get-DiagnosticLogLines $scopedText @(
+    'watch_mode\.diagnostic_autostart_requested',
+    'watch_mode\.omni_session_ready',
+    'ws\.recv\.session\.(?:created|updated)',
+    'startup\.step check-ipc',
+    'startup\.bootstrap',
+    'watch_mode\.diagnostic_autostart_ipc_ready',
+    'watch_mode\.diagnostic_autostart_infrastructure_failed',
+    'watch_mode\.diagnostic_autostart'
+  ) 16
+  $stdoutLines = Get-OptionalDiagnosticFileTail $DesktopStdoutPath 8
+  $stderrLines = Get-OptionalDiagnosticFileTail $DesktopStderrPath 8
+  $elapsedMs = [Math]::Max(0, [int](([DateTime]::UtcNow - $startedAtUtc).TotalMilliseconds))
+  $sessionIdLabel = if ($sessionId) { $sessionId } else { '-' }
+  throw (
+    "infrastructure/frontend not ready before playback: timed out waiting for provider readiness and same-process frontend IPC evidence " +
+    "('startup.step check-ipc=done' or 'watch_mode.diagnostic_autostart_ipc_ready'). Pid=$ProcessId SessionId=$sessionIdLabel " +
+    "ProviderReady=$providerReady FrontendIpcReady=$frontendIpcReady ElapsedMs=$elapsedMs Path=$Path RunMarker=$RunMarker " +
+    "ReadinessLines=$(Format-DiagnosticLogLines $readinessLines) " +
+    "DesktopStdoutPath=$DesktopStdoutPath DesktopStdoutTail=$(Format-DiagnosticLogLines $stdoutLines) " +
+    "DesktopStderrPath=$DesktopStderrPath DesktopStderrTail=$(Format-DiagnosticLogLines $stderrLines)"
+  )
 }
 
 function Start-TestMediaPlayback {
@@ -1152,6 +1612,7 @@ namespace OmniTranslate {
   $alias = "omni_watch_test_$PID"
   $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
   $durationSeconds = $null
+  $volumeWarning = $null
   try {
     [void][OmniTranslate.WinmmMci]::Send("open `"$resolvedMediaPath`" alias $alias", 0)
     $lengthMsText = [OmniTranslate.WinmmMci]::Send("status $alias length", 64)
@@ -1159,7 +1620,13 @@ namespace OmniTranslate {
     if ([int]::TryParse($lengthMsText.Trim(), [ref]$lengthMs) -and $lengthMs -gt 0) {
       $durationSeconds = [Math]::Round($lengthMs / 1000.0, 3)
     }
-    [void][OmniTranslate.WinmmMci]::Send("setaudio $alias volume to 600", 0)
+    try {
+      [void][OmniTranslate.WinmmMci]::Send("setaudio $alias volume to 600", 0)
+    } catch {
+      # Some WinMM waveaudio devices reject setaudio even though play works.
+      # Preserve this diagnostic but do not suppress the real media playback.
+      $volumeWarning = $_.Exception.Message
+    }
     [void][OmniTranslate.WinmmMci]::Send("play $alias from 0", 0)
     $sleepSeconds = if ($PlaybackSeconds -gt 0) {
       $PlaybackSeconds
@@ -1187,6 +1654,7 @@ namespace OmniTranslate {
     mediaPath = $resolvedMediaPath
     playedSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { $durationSeconds }
     naturalDurationSeconds = $durationSeconds
+    volumeWarning = $volumeWarning
     defaultEndpointSwitched = $defaultEndpointSwitched
   }
 }
@@ -1436,7 +1904,7 @@ function Start-PhysicalOutputContentRecorder {
   if (-not $PhysicalDeviceId) {
     throw "Physical output recorder requires a resolved physical playback endpoint id"
   }
-  $mediaBudgetSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { 90 }
+  $mediaBudgetSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { 180 }
   $recordSeconds = [Math]::Max(8, $mediaBudgetSeconds + $PostPlaybackWaitSeconds + 8)
   $recordingPath = Join-Path $OutputDirectory "physical-output-recording.wav"
   $transcriptionPcmPath = Join-Path $OutputDirectory "physical-output-recording-16k-mono.pcm"
@@ -2338,9 +2806,14 @@ function Read-RecentProviderSummary {
   $raw = Get-LogTextAfterMarker $AppLog $RunMarker
   $lines = $raw -split "`r?`n"
   $providerLines = @($lines | Where-Object { $_ -match 'model_trace|provider|dashscope|openai|omni' })
-  $providerFailurePattern = '\b(?:status|httpStatus|code)=(?:401|403|429)\b|\bHTTP\s+(?:401|403|429)\b|"status"\s*:\s*"failed"|"error"\s*:\s*(?!"?null\b|null\b)[{\["0-9tfa-zA-Z_-]|unauthori[sz]ed|forbidden|invalid api key|credential|auth|rate limit|quota|insufficient|billing|timeout|timed out|ECONNRESET|ENOTFOUND|network error|websocket.*(?:failed|closed)|model_trace failed|provider.*failed'
+  # Keep this aligned with watch-mode-report.mjs providerErrorLines and
+  # hardProviderError semantics. A credential lifecycle line is evidence only
+  # when it is paired with a failure marker; successful vault reads such as
+  # `outcome=ok` and `CredReadW succeeded` are normal provider setup traffic.
+  $providerSuccessPattern = '\boutcome=ok\b|\bstatus[=:]succeeded\b|\bsuccess(?:ful(?:ly)?)?\b'
+  $providerFailurePattern = '\b(?:status|httpStatus|code)=(?:401|403|429)\b|\bHTTP\s+(?:401|403|429)\b|"status"\s*:\s*"failed"|"error"\s*:\s*(?!"?null\b|null\b)[{\["0-9tfa-zA-Z_-]|unauthori[sz]ed|forbidden|invalid api key|(?:credential|\bauth(?:orization|entication)?\b).{0,80}(?:failed|error|missing|invalid|denied)|(?:failed|error|missing|invalid|denied).{0,80}(?:credential|\bauth(?:orization|entication)?\b)|rate limit|quota|insufficient|billing|\btimeout\b|timed out|ECONNRESET|ENOTFOUND|network error|websocket.*(?:failed|closed)|model_trace failed|provider.*failed'
   $failedLines = @($providerLines | Where-Object {
-    $_ -match $providerFailurePattern
+    $_ -notmatch $providerSuccessPattern -and $_ -match $providerFailurePattern
   })
   return [pscustomobject]@{
     totalCalls = $providerLines.Count
@@ -2458,6 +2931,12 @@ function Build-SnapshotsFile {
   } else {
     $null
   }
+  $watchSessionReportPath = Join-Path $OutputDirectory "watch-session-report.json"
+  $watchSessionReport = if (Test-Path -LiteralPath $watchSessionReportPath -PathType Leaf) {
+    Get-Content -LiteralPath $watchSessionReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } else {
+    $null
+  }
   $app = [pscustomobject]@{
     routeState = $null
     overlayVisible = $null
@@ -2482,6 +2961,7 @@ function Build-SnapshotsFile {
     physicalOutput = $physicalOutput
     physicalOutputContent = $physicalOutputContent
     speechSegmentation = $speechSegmentation
+    watchSessionReport = $watchSessionReport
     playback = $Playback
     diagnosticsBundle = $null
   }
@@ -2600,6 +3080,7 @@ if ($DryRun) {
 
 $steps = @()
 $desktopProcess = $null
+$script:elevatedDesktopLaunch = $null
 $desktopEnvState = $null
 $driverProbe = $null
 $playbackStep = $null
@@ -2646,9 +3127,21 @@ try {
   $steps += $driverProbe
   Convert-DriverProbeToJsonFile $driverProbe (Join-Path $outputDir "driver.json")
 
-  $bridgeSourceProbe = Invoke-Step "bridge source frame probe" {
-    Invoke-BridgeSourceProbe $outputDir
-  } -ContinueOnError
+  $bridgeSourceProbe = if ($FeedbackLoopPrevention -eq "echo-cancel") {
+    [pscustomobject]@{
+      name = "bridge source frame probe"
+      ok = $true
+      result = [pscustomobject]@{
+        skipped = $true
+        reason = "echo-cancel Watch capture does not require the virtual-driver source endpoint"
+      }
+      error = $null
+    }
+  } else {
+    Invoke-Step "bridge source frame probe" {
+      Invoke-BridgeSourceProbe $outputDir
+    } -ContinueOnError
+  }
   $steps += $bridgeSourceProbe
   if ($bridgeSourceProbe.ok) {
     $bridgeSourceProbe.result | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "bridge-source-probe.json") -Encoding UTF8
@@ -2661,9 +3154,21 @@ try {
     }
   }
 
-  $physicalOutputProbe = Invoke-Step "physical output loopback probe" {
-    Invoke-PhysicalOutputProbe $outputDir
-  } -ContinueOnError
+  $physicalOutputProbe = if ($FeedbackLoopPrevention -eq "echo-cancel") {
+    [pscustomobject]@{
+      name = "physical output loopback probe"
+      ok = $true
+      result = [pscustomobject]@{
+        skipped = $true
+        reason = "echo-cancel Watch capture uses the configured/default physical endpoint directly"
+      }
+      error = $null
+    }
+  } else {
+    Invoke-Step "physical output loopback probe" {
+      Invoke-PhysicalOutputProbe $outputDir
+    } -ContinueOnError
+  }
   $steps += $physicalOutputProbe
   if ($physicalOutputProbe.ok) {
     $physicalOutputProbe.result | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "physical-output-probe.json") -Encoding UTF8
@@ -2672,7 +3177,11 @@ try {
     [pscustomobject]@{ error = $physicalOutputProbe.error } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "physical-output-probe.json") -Encoding UTF8
   }
 
-  $resolvedPhysicalDeviceId = Get-PhysicalOutputResolvedDeviceId $physicalOutputProbe
+  $resolvedPhysicalDeviceId = if ($FeedbackLoopPrevention -eq "echo-cancel") {
+    if ($PhysicalPlaybackDeviceId -and $PhysicalPlaybackDeviceId -ne "default") { $PhysicalPlaybackDeviceId } else { $null }
+  } else {
+    Get-PhysicalOutputResolvedDeviceId $physicalOutputProbe
+  }
   $desktopProcess = Invoke-Step "start desktop shell" { Start-WatchModeDesktopShell $outputDir $runMarker $resolvedPhysicalDeviceId } -ContinueOnError
   $steps += $desktopProcess
 
@@ -2684,30 +3193,55 @@ try {
       $steps += $startViaCliStep
       if (-not $startViaCliStep.ok) {
         $criticalFailureMessage = "start watch mode via existing desktop shell failed: $($startViaCliStep.error)"
+      } else {
+        $criticalFailureMessage = "-SkipDesktopLaunch cannot inject the same-process Watch report capture environment; launch the desktop through this runner"
       }
     }
     if (-not $criticalFailureMessage) {
       $watchPlaybackEndpointId = if ($driverProbe.ok) { $driverProbe.result.WasapiEndpointId } else { $null }
       $runtimePathBeforePlayback = Resolve-Path -LiteralPath $RuntimeRoot -ErrorAction SilentlyContinue
       $appLogBeforePlayback = if ($runtimePathBeforePlayback) { Join-Path $runtimePathBeforePlayback.Path "app.log" } else { Join-Path $RuntimeRoot "app.log" }
-      $readinessStep = Invoke-Step "wait for watch-mode app readiness" {
-        Wait-AppLogPattern $appLogBeforePlayback $runMarker "watch_mode\.omni_session_ready|ws\.recv\.session\.(?:created|updated)" $SessionReadyTimeoutSeconds
+      # Count the readiness budget from the desktop launch, not from this wait.
+      # Warm-up therefore cannot silently extend a failed single-model run past
+      # the configured limit. SessionReadyTimeoutSeconds is capped at 100 by
+      # parameter validation, leaving cleanup grace below the two-minute gate.
+      $readinessDeadlineUtc = ([DateTime]$desktopProcess.result.launchedAtUtc).AddSeconds($SessionReadyTimeoutSeconds)
+      $readinessStep = Invoke-Step "wait for same-process provider and frontend IPC readiness" {
+        Wait-WatchModeAppReadiness `
+          -Path $appLogBeforePlayback `
+          -RunMarker $runMarker `
+          -ProcessId ([int]$desktopProcess.result.pid) `
+          -DeadlineUtc $readinessDeadlineUtc `
+          -DesktopStdoutPath ([string]$desktopProcess.result.stdout) `
+          -DesktopStderrPath ([string]$desktopProcess.result.stderr)
       } -ContinueOnError
       $steps += $readinessStep
       if (-not $readinessStep.ok) {
-        $criticalFailureMessage = "wait for watch-mode app readiness failed: $($readinessStep.error)"
+        $criticalFailureMessage = "same-process Watch frontend readiness infrastructure check failed: $($readinessStep.error)"
       }
     }
     if (-not $criticalFailureMessage) {
-      $physicalOutputRecorderStep = Invoke-Step "start physical output content recording" {
-        $script:physicalOutputRecorder = Start-PhysicalOutputContentRecorder $outputDir $resolvedPhysicalDeviceId
+      $physicalOutputRecorderStep = if ($SkipPhysicalOutputContentStt) {
         [pscustomobject]@{
-          pid = $script:physicalOutputRecorder.pid
-          recordSeconds = $script:physicalOutputRecorder.recordSeconds
-          recordingPath = $script:physicalOutputRecorder.recordingPath
-          transcriptionPcmPath = $script:physicalOutputRecorder.transcriptionPcmPath
+          name = "start physical output content recording"
+          ok = $true
+          result = [pscustomobject]@{
+            skipped = $true
+            reason = "SkipPhysicalOutputContentStt was provided"
+          }
+          error = $null
         }
-      } -ContinueOnError
+      } else {
+        Invoke-Step "start physical output content recording" {
+          $script:physicalOutputRecorder = Start-PhysicalOutputContentRecorder $outputDir $resolvedPhysicalDeviceId
+          [pscustomobject]@{
+            pid = $script:physicalOutputRecorder.pid
+            recordSeconds = $script:physicalOutputRecorder.recordSeconds
+            recordingPath = $script:physicalOutputRecorder.recordingPath
+            transcriptionPcmPath = $script:physicalOutputRecorder.transcriptionPcmPath
+          }
+        } -ContinueOnError
+      }
       $steps += $physicalOutputRecorderStep
 
       if (-not $physicalOutputRecorderStep.ok) {
@@ -2723,20 +3257,51 @@ try {
           $playbackStep = Invoke-Step "play watch-mode media" { Start-TestMediaPlayback $MediaPath $watchPlaybackEndpointId $outputDir } -ContinueOnError
         }
         $steps += $playbackStep
+        $requiredWatchReportPath = Join-Path $outputDir "watch-session-report.json"
+        $reportDeadlineUtc = ([DateTime]$desktopProcess.result.launchedAtUtc).AddSeconds(420)
+        $reportWaitStep = Invoke-Step "wait for same-process Watch report and desktop exit" {
+          Wait-WatchSessionReportAndDesktopExit `
+            -Path $requiredWatchReportPath `
+            -ProcessId ([int]$desktopProcess.result.pid) `
+            -DeadlineUtc $reportDeadlineUtc
+        } -ContinueOnError
+        $steps += $reportWaitStep
+        if (-not $reportWaitStep.ok -and -not $criticalFailureMessage) {
+          $criticalFailureMessage = "same-process Watch report capture failed: $($reportWaitStep.error)"
+        }
         if ($StopDesktopAfterPlayback) {
           $steps += Invoke-Step "stop watch-mode desktop shell after playback" {
             Stop-WatchModeDesktopShell $desktopProcess
           } -ContinueOnError
-        } elseif ($PostPlaybackWaitSeconds -gt 0) {
-          $steps += Invoke-Step "observe watch-mode output after media playback" { Start-Sleep -Seconds $PostPlaybackWaitSeconds } -ContinueOnError
         }
-        $sourceMediaTranscriptStep = Invoke-Step "transcribe source media reference" {
-          Get-SourceMediaReferenceTranscript $outputDir $MediaPath
-        } -ContinueOnError
+        $sourceMediaTranscriptStep = if ($SkipPhysicalOutputContentStt) {
+          [pscustomobject]@{
+            name = "transcribe source media reference"
+            ok = $true
+            result = [pscustomobject]@{
+              skipped = $true
+              reason = "SkipPhysicalOutputContentStt was provided"
+            }
+            error = $null
+          }
+        } else {
+          Invoke-Step "transcribe source media reference" {
+            Get-SourceMediaReferenceTranscript $outputDir $MediaPath
+          } -ContinueOnError
+        }
         $steps += $sourceMediaTranscriptStep
-        $physicalOutputRecordingStep = Invoke-Step "complete physical output content recording" {
-          Complete-PhysicalOutputContentRecorder $script:physicalOutputRecorder
-        } -ContinueOnError
+        $physicalOutputRecordingStep = if ($SkipPhysicalOutputContentStt) {
+          [pscustomobject]@{
+            name = "complete physical output content recording"
+            ok = $true
+            result = [pscustomobject]@{ skipped = $true }
+            error = $null
+          }
+        } else {
+          Invoke-Step "complete physical output content recording" {
+            Complete-PhysicalOutputContentRecorder $script:physicalOutputRecorder
+          } -ContinueOnError
+        }
         $steps += $physicalOutputRecordingStep
         $physicalOutputContentStep = Invoke-Step "transcribe and compare physical output content" {
           Invoke-PhysicalOutputContentStt $outputDir $physicalOutputRecordingStep.result $appLogBeforePlayback $runMarker $sourceMediaTranscriptStep.result
@@ -2755,15 +3320,30 @@ try {
     $criticalFailureMessage = "desktop shell did not start: $($desktopProcess.error)"
   }
 
+  $requiredWatchReportPath = Join-Path $outputDir "watch-session-report.json"
   $steps += Invoke-Step "stop bridge service after live run" {
     if ($AllowElevatedDesktopLaunch) {
-      Stop-ElevatedWatchModeProcesses
+      [pscustomobject]@{
+        desktopStop = Stop-WatchModeDesktopShell $desktopProcess
+        bridgeStop = Stop-StaleBridgeService $RuntimeRoot
+      }
     } elseif ($SkipDesktopLaunch) {
       Invoke-StopWatchRouteViaTauriCli
     } else {
-      Stop-StaleBridgeService $RuntimeRoot
+      [pscustomobject]@{
+        reportSavedByDesktopProcess = Test-Path -LiteralPath $requiredWatchReportPath -PathType Leaf
+        bridgeStop = Stop-StaleBridgeService $RuntimeRoot
+      }
     }
   } -ContinueOnError
+
+  if ($criticalFailureMessage) {
+    throw $criticalFailureMessage
+  }
+  Assert-WatchSessionReportFile $requiredWatchReportPath | Out-Null
+  if ($reportWaitStep -and -not $reportWaitStep.ok) {
+    throw "same-process Watch report did not complete within the desktop launch deadline: $($reportWaitStep.error)"
+  }
 
   Save-WatchModeRunArtifacts $outputDir $driverProbe $playbackStep $steps $runMarker $startedAtLocal $criticalFailureMessage
   $artifactsSaved = $true
@@ -2787,11 +3367,7 @@ try {
 } finally {
   Stop-WatchModeDesktopShell $desktopProcess | Out-Null
   try {
-    if ($AllowElevatedDesktopLaunch) {
-      Stop-ElevatedWatchModeProcesses | Out-Null
-    } else {
-      Stop-StaleBridgeService $RuntimeRoot | Out-Null
-    }
+    Stop-StaleBridgeService $RuntimeRoot | Out-Null
   } catch {
     Write-Warning "failed to stop bridge service during cleanup: $($_.Exception.Message)"
   }

@@ -83,6 +83,12 @@ Copy `llm-integration.config.example.json` to
 npm run test:llm-integration
 ```
 
+To exercise only the configured realtime speech model (without text smoke,
+catalog, or probe requests), run `npm run test:audio-model-integration`. That
+entry has a 300-second process-tree timeout so the roughly two-minute fixture
+can be streamed in realtime and finalized; `--timeout-seconds` may lower it or
+raise it to at most 600 seconds.
+
 The local config file is ignored by Git. The live suite also runs as part of
 `npm run test:desktop-shell`, or can be invoked alone with the command above.
 It calls configured text
@@ -90,6 +96,9 @@ models through their base URLs and sends the original `watch-mode-en-original.wa
 DashScope realtime audio model. Optional `catalog`, `probe`, and `speech`
 blocks enable model-directory, provider-probe, and realtime speech-synthesis
 checks. The suite validates response shape and configured minimum lengths.
+Two alternative English fixtures and one fixture for every other supported
+project language are documented in `scripts/testing/fixtures/README.md`; use
+the existing `--media-path` option to select one for Watch Mode testing.
 
 ## Feature inventory
 

@@ -38,6 +38,91 @@ function runPowerShell(args, { env } = {}) {
   });
 }
 
+function quotePowerShell(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
+
+function extractedReportWaitFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @('Assert-WatchSessionReportFile','Wait-WatchSessionReportAndDesktopExit') ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedProviderSummaryFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @('Get-LogTextAfterMarker','Read-RecentProviderSummary') ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedAppReadinessFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @(` +
+        `'Get-LogTextAfterMarker',` +
+        `'Get-DiagnosticLogLines',` +
+        `'Format-DiagnosticLogLines',` +
+        `'Get-WatchModeRunSessionId',` +
+        `'Get-OptionalDiagnosticFileTail',` +
+        `'Wait-WatchModeAppReadiness'` +
+      `) ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedAppLogWaitFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @(` +
+        `'Get-LogTextAfterMarker',` +
+        `'Get-DiagnosticLogLines',` +
+        `'Format-DiagnosticLogLines',` +
+        `'Wait-AppLogPattern'` +
+      `) ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedElevationGuardFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @(` +
+        `'New-ParentGuardedPowerShellCommand',` +
+        `'ConvertTo-PowerShellSingleQuotedLiteral',` +
+        `'New-ElevatedDesktopGuardianCommand'` +
+      `) ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
 test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
@@ -47,6 +132,311 @@ test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: 
     `exit $errors.Count`,
   ]);
   assert.equal(probe.status, 0, `runner has PowerShell syntax errors:\n${probe.stderr}`);
+});
+
+test('app readiness wait fails immediately on diagnostic IPC infrastructure error', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-ipc-infrastructure-failure-'));
+  const logPath = path.join(directory, 'app.log');
+  const runMarker = 'watch-ipc-gate-test-marker';
+  fs.writeFileSync(
+    logPath,
+    [
+      'old unrelated log line',
+      runMarker,
+      'ERROR watch_mode.diagnostic_autostart_infrastructure_failed category=infrastructure code=frontend-ipc-not-ready',
+    ].join('\n'),
+    'utf8',
+  );
+  try {
+    const probe = runPowerShell([
+      '-Command',
+      extractedAppLogWaitFunctions() +
+        `$stopwatch = [System.Diagnostics.Stopwatch]::StartNew(); ` +
+        `try { ` +
+          `Wait-AppLogPattern ` +
+            `-Path ${quotePowerShell(logPath)} ` +
+            `-RunMarker ${quotePowerShell(runMarker)} ` +
+            `-Pattern 'watch_mode\.omni_session_ready' ` +
+            `-TimeoutSeconds 30 | Out-Null; ` +
+          `throw 'expected infrastructure failure' ` +
+        `} catch { ` +
+          `if ($_.Exception.Message -notmatch 'watch-mode infrastructure failure.*frontend-ipc-not-ready') { throw }; ` +
+          `if ($stopwatch.ElapsedMilliseconds -gt 5000) { throw "infrastructure failure was not surfaced promptly: $($stopwatch.ElapsedMilliseconds)ms" } ` +
+        `}; ` +
+        `exit 0`,
+    ]);
+    assert.equal(
+      probe.status,
+      0,
+      `IPC infrastructure failure probe failed:\nstdout=${probe.stdout}\nstderr=${probe.stderr}\nerror=${probe.error?.message ?? '-'}`,
+    );
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('elevated command guard refuses a delayed launch after its runner identity is gone', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-elevation-stale-parent-'));
+  const markerPath = path.join(directory, 'must-not-launch.txt');
+  try {
+    const body = `Set-Content -LiteralPath ${quotePowerShell(markerPath)} -Value 'launched' -Encoding UTF8`;
+    const probe = runPowerShell([
+      '-Command',
+      extractedElevationGuardFunctions() +
+        `$encoded = New-ParentGuardedPowerShellCommand ` +
+          `-ParentProcessId 2147483647 -ParentStartTimeUtcTicks 1 ` +
+          `-CommandBody ${quotePowerShell(body)}; ` +
+        `$child = Start-Process -FilePath 'powershell.exe' ` +
+          `-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded) ` +
+          `-WindowStyle Hidden -Wait -PassThru; ` +
+        `if ($child.ExitCode -ne 125) { throw "expected stale-parent exit 125; got $($child.ExitCode)" }`,
+    ]);
+    assert.equal(probe.status, 0, `stale-parent guard probe failed:\n${probe.stderr}`);
+    assert.equal(fs.existsSync(markerPath), false, 'a delayed elevated command must not execute after its runner is gone');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('elevated desktop guardian command is syntactically valid for quoted Windows paths', { skip: !isWindows }, () => {
+  const directory = path.join(os.tmpdir(), "watch guardian's quoted path");
+  const probe = runPowerShell([
+    '-Command',
+    extractedElevationGuardFunctions() +
+      `$encoded = New-ElevatedDesktopGuardianCommand ` +
+        `-ParentProcessId $PID ` +
+        `-ParentStartTimeUtcTicks ([System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks) ` +
+        `-LeasePath ${quotePowerShell(path.join(directory, 'launch.lease'))} ` +
+        `-EnvironmentPath ${quotePowerShell(path.join(directory, 'environment.json'))} ` +
+        `-ReceiptPath ${quotePowerShell(path.join(directory, 'receipt.json'))} ` +
+        `-ExecutablePath ${quotePowerShell(path.join(directory, 'desktop shell.exe'))} ` +
+        `-WorkingDirectory ${quotePowerShell(directory)} ` +
+        `-StdoutPath ${quotePowerShell(path.join(directory, 'stdout.log'))} ` +
+        `-StderrPath ${quotePowerShell(path.join(directory, 'stderr.log'))}; ` +
+      `$generated = [System.Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded)); ` +
+      `$generatedErrors = $null; ` +
+      `[void][System.Management.Automation.Language.Parser]::ParseInput($generated, [ref]$null, [ref]$generatedErrors); ` +
+      `foreach ($error in $generatedErrors) { Write-Error $error.Message }; ` +
+      `if ($generatedErrors.Count -gt 0) { exit $generatedErrors.Count }`,
+  ]);
+  assert.equal(probe.status, 0, `generated elevated guardian has syntax errors:\n${probe.stderr}`);
+});
+
+test('elevated desktop guardian refuses to launch when its lease was cancelled', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-elevation-cancelled-lease-'));
+  const environmentPath = path.join(directory, 'environment.json');
+  const receiptPath = path.join(directory, 'receipt.json');
+  const leasePath = path.join(directory, 'cancelled.lease');
+  fs.writeFileSync(environmentPath, '{}');
+  try {
+    const probe = runPowerShell([
+      '-Command',
+      extractedElevationGuardFunctions() +
+        `$encoded = New-ElevatedDesktopGuardianCommand ` +
+          `-ParentProcessId $PID ` +
+          `-ParentStartTimeUtcTicks ([System.Diagnostics.Process]::GetCurrentProcess().StartTime.ToUniversalTime().Ticks) ` +
+          `-LeasePath ${quotePowerShell(leasePath)} ` +
+          `-EnvironmentPath ${quotePowerShell(environmentPath)} ` +
+          `-ReceiptPath ${quotePowerShell(receiptPath)} ` +
+          `-ExecutablePath ${quotePowerShell(path.join(directory, 'must-not-launch.exe'))} ` +
+          `-WorkingDirectory ${quotePowerShell(directory)} ` +
+          `-StdoutPath ${quotePowerShell(path.join(directory, 'stdout.log'))} ` +
+          `-StderrPath ${quotePowerShell(path.join(directory, 'stderr.log'))}; ` +
+        `$guardian = Start-Process -FilePath 'powershell.exe' ` +
+          `-ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded) ` +
+          `-WindowStyle Hidden -Wait -PassThru; ` +
+        `if ($guardian.ExitCode -ne 125) { throw "expected cancelled-lease exit 125; got $($guardian.ExitCode)" }`,
+    ]);
+    assert.equal(probe.status, 0, `cancelled-lease guardian probe failed:\n${probe.stderr}`);
+    assert.equal(fs.existsSync(receiptPath), false, 'a cancelled guardian must exit before launching or writing a receipt');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('provider summary ignores successful credential lifecycle lines after the run marker', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-provider-summary-success-'));
+  const appLogPath = path.join(directory, 'app.log');
+  const marker = 'watch-summary-marker';
+  fs.writeFileSync(appLogPath, [
+    'provider HTTP 401 invalid api key from a stale run',
+    marker,
+    '[storage] [omni][credential] start action=读取 API Key timeoutMs=5000',
+    '[storage] [omni][credential] finish action=读取 API Key outcome=ok',
+    '[storage] [omni][credential] CredReadW succeeded target=provider-dashscope',
+    '[provider-dashscope] realtime profile timeoutBudgetMs=95000',
+    '[provider-dashscope] realtime session ready',
+  ].join('\n'));
+  try {
+    const probe = runPowerShell([
+      '-Command',
+      extractedProviderSummaryFunctions() +
+        `Read-RecentProviderSummary -AppLog ${quotePowerShell(appLogPath)} ` +
+        `-RunMarker ${quotePowerShell(marker)} | ConvertTo-Json -Compress`,
+    ]);
+    assert.equal(probe.status, 0, `provider summary probe failed:\n${probe.stderr}`);
+    const summary = JSON.parse(probe.stdout.trim());
+    assert.equal(summary.totalCalls, 5);
+    assert.equal(summary.failedCalls, 0);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('provider summary still counts credential failures and rate-limit responses', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-provider-summary-failure-'));
+  const appLogPath = path.join(directory, 'app.log');
+  const marker = 'watch-failure-marker';
+  fs.writeFileSync(appLogPath, [
+    marker,
+    '[storage] [omni][credential] CredReadW failed: credential access denied',
+    '[provider-dashscope] HTTP 429 rate limit exceeded',
+    '[provider-dashscope] request timeout: upstream timed out',
+    '[storage] [omni][credential] finish action=读取 API Key outcome=ok',
+  ].join('\n'));
+  try {
+    const probe = runPowerShell([
+      '-Command',
+      extractedProviderSummaryFunctions() +
+        `Read-RecentProviderSummary -AppLog ${quotePowerShell(appLogPath)} ` +
+        `-RunMarker ${quotePowerShell(marker)} | ConvertTo-Json -Compress`,
+    ]);
+    assert.equal(probe.status, 0, `provider summary probe failed:\n${probe.stderr}`);
+    const summary = JSON.parse(probe.stdout.trim());
+    assert.equal(summary.totalCalls, 4);
+    assert.equal(summary.failedCalls, 3);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('app readiness requires provider and frontend IPC evidence from the run-marker session', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-app-readiness-pass-'));
+  const appLogPath = path.join(directory, 'app.log');
+  const nativeIpcLogPath = path.join(directory, 'app-native-ipc.log');
+  const marker = 'watch_mode_diagnostic.run_id=readiness-pass';
+  const sessionId = '019fb-ready-pass';
+  fs.writeFileSync(appLogPath, [
+    marker,
+    `[runtime] watch_mode.diagnostic_autostart_requested | runMarker=${marker} sid=${sessionId}`,
+    `[omni] watch_mode.omni_session_ready | event=session.created sid=${sessionId}`,
+    `[runtime] startup.step check-ipc=done | 31ms sid=${sessionId}`,
+  ].join('\n'));
+  fs.writeFileSync(nativeIpcLogPath, [
+    marker,
+    `[runtime] watch_mode.diagnostic_autostart_requested | runMarker=${marker} sid=${sessionId}`,
+    `[runtime] watch_mode.diagnostic_autostart_ipc_ready | runMarker=${marker} waitedMs=41 sid=${sessionId}`,
+    `[omni] watch_mode.omni_session_ready | event=session.created sid=${sessionId}`,
+  ].join('\n'));
+  try {
+    const probe = runPowerShell([
+      '-Command',
+      extractedAppReadinessFunctions() +
+        `$startupStepResult = Wait-WatchModeAppReadiness ` +
+          `-Path ${quotePowerShell(appLogPath)} ` +
+          `-RunMarker ${quotePowerShell(marker)} ` +
+          `-ProcessId $PID ` +
+          `-DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)); ` +
+        `$nativeIpcResult = Wait-WatchModeAppReadiness ` +
+          `-Path ${quotePowerShell(nativeIpcLogPath)} ` +
+          `-RunMarker ${quotePowerShell(marker)} ` +
+          `-ProcessId $PID ` +
+          `-DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)); ` +
+        `[pscustomobject]@{ startupStep = $startupStepResult; nativeIpc = $nativeIpcResult } | ConvertTo-Json -Depth 4 -Compress`,
+    ]);
+    assert.equal(probe.status, 0, `same-session readiness should pass:\n${probe.stderr}`);
+    const result = JSON.parse(probe.stdout.trim());
+    for (const evidence of [result.startupStep, result.nativeIpc]) {
+      assert.equal(evidence.sessionId, sessionId);
+      assert.equal(evidence.providerReady, true);
+      assert.equal(evidence.frontendIpcReady, true);
+      assert.equal(evidence.pid > 0, true);
+    }
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('provider readiness alone cannot start playback and reports actionable frontend diagnostics', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-app-readiness-no-ipc-'));
+  const appLogPath = path.join(directory, 'app.log');
+  const stdoutPath = path.join(directory, 'desktop.stdout.log');
+  const stderrPath = path.join(directory, 'desktop.stderr.log');
+  const marker = 'watch_mode_diagnostic.run_id=readiness-no-ipc';
+  const sessionId = '019fb-ready-no-ipc';
+  fs.writeFileSync(appLogPath, [
+    marker,
+    `[runtime] watch_mode.diagnostic_autostart_requested | runMarker=${marker} sid=${sessionId}`,
+    `[omni] watch_mode.omni_session_ready | event=session.created sid=${sessionId}`,
+    '[runtime] startup.step check-ipc=done | stale renderer from another process sid=wrong-session',
+  ].join('\n'));
+  fs.writeFileSync(stdoutPath, 'desktop stdout: renderer navigation started');
+  fs.writeFileSync(stderrPath, 'desktop stderr: frontend resource unavailable');
+  try {
+    const startedAt = Date.now();
+    const probe = runPowerShell([
+      '-Command',
+      extractedAppReadinessFunctions() +
+        `Wait-WatchModeAppReadiness ` +
+          `-Path ${quotePowerShell(appLogPath)} ` +
+          `-RunMarker ${quotePowerShell(marker)} ` +
+          `-ProcessId $PID ` +
+          `-DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(300)) ` +
+          `-DesktopStdoutPath ${quotePowerShell(stdoutPath)} ` +
+          `-DesktopStderrPath ${quotePowerShell(stderrPath)} | Out-Null`,
+    ]);
+    assert.notEqual(probe.status, 0, 'provider-only readiness must fail before playback');
+    assert.match(probe.stderr, /infrastructure\/frontend not ready before playback/i);
+    assert.match(probe.stderr, /ProviderReady=True/i);
+    assert.match(probe.stderr, /FrontendIpcReady=False/i);
+    assert.match(probe.stderr, /startup\.step check-ipc=done/i);
+    assert.match(probe.stderr, /frontend resource unavailable/i);
+    assert.ok(Date.now() - startedAt < 10_000, 'frontend readiness failure must honor its absolute deadline');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
+});
+
+test('same-process report wait accepts only completed JSON and has an absolute deadline', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-report-wait-'));
+  const completedPath = path.join(directory, 'completed.json');
+  const activePath = path.join(directory, 'active.json');
+  const missingPath = path.join(directory, 'missing.json');
+  fs.writeFileSync(completedPath, JSON.stringify({ sessionId: 'watch-complete', status: 'completed' }));
+  fs.writeFileSync(activePath, JSON.stringify({ sessionId: 'watch-active', status: 'active' }));
+  try {
+    const completed = runPowerShell([
+      '-Command',
+      extractedReportWaitFunctions() +
+        `Wait-WatchSessionReportAndDesktopExit -Path ${quotePowerShell(completedPath)} ` +
+        `-ProcessId 2147483647 -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null`,
+    ]);
+    assert.equal(completed.status, 0, `completed report should pass:\n${completed.stderr}`);
+
+    const active = runPowerShell([
+      '-Command',
+      extractedReportWaitFunctions() +
+        `Wait-WatchSessionReportAndDesktopExit -Path ${quotePowerShell(activePath)} ` +
+        `-ProcessId 2147483647 -DeadlineUtc ([DateTime]::UtcNow.AddSeconds(1)) | Out-Null`,
+    ]);
+    assert.notEqual(active.status, 0, 'an active report must fail the completed-report contract');
+    assert.match(active.stderr, /report is not completed/i);
+
+    const startedAt = Date.now();
+    const missing = runPowerShell([
+      '-Command',
+      extractedReportWaitFunctions() +
+        `Wait-WatchSessionReportAndDesktopExit -Path ${quotePowerShell(missingPath)} ` +
+        `-ProcessId $PID -DeadlineUtc ([DateTime]::UtcNow.AddMilliseconds(300)) | Out-Null`,
+    ]);
+    assert.notEqual(missing.status, 0, 'a missing report must fail at the absolute deadline');
+    assert.match(missing.stderr, /timed out waiting for same-process Watch report/i);
+    // powershell.exe process startup can take several seconds on a busy Windows
+    // CI/dev host; the function-level deadline above remains 300 ms.
+    assert.ok(Date.now() - startedAt < 10_000, 'absolute-deadline wait should remain bounded');
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('dry-run executes end to end and produces passing, content-checked artifacts', { skip: !isWindows }, () => {

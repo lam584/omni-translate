@@ -311,7 +311,7 @@ test('strict reference-media content fails short 12 second evidence', () => {
     physicalOutputContent: strictTestMediaContent({
       sourceReference: {
         passed: true,
-        mediaSha256: '7fd64ecd6cf0762cac5ac0ab16eba37cc733765c55cc8264f87a94cb46962131',
+        mediaSha256: 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f',
         mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
         playbackSeconds: 12,
         fullMedia: false,

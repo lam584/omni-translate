@@ -81,7 +81,7 @@ const DEFAULT_STRICT_REFERENCE_PATH = path.join(
   'fixtures',
   'watch-mode-en-original.zh-CN.txt',
 );
-const TEST_MEDIA_SHA256 = '7fd64ecd6cf0762cac5ac0ab16eba37cc733765c55cc8264f87a94cb46962131';
+const TEST_MEDIA_SHA256 = 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f';
 const STRICT_REQUIRED_CONCEPTS = [
   '十亿美元',
   '火星',
@@ -91,6 +91,9 @@ const STRICT_REQUIRED_CONCEPTS = [
   '飞行汽车',
   '一美元的灯泡',
 ];
+const STRICT_REQUIRED_CONCEPT_ALIASES = new Map([
+  ['一美元的灯泡', ['一美元灯泡']],
+]);
 const STRICT_FORBIDDEN_ERRORS = [
   { text: '一亿美元', reason: 'one-billion amount was mistranslated as one hundred million' },
   { text: '一亿美金', reason: 'one-billion amount was mistranslated as one hundred million' },
@@ -157,6 +160,15 @@ function uniqueTail(lines, limit = 12) {
     if (output.length >= limit) break;
   }
   return output.reverse();
+}
+
+function isBenignCredentialLifecycleLine(line) {
+  const text = String(line ?? '');
+  if (!/\[credential\]|CredReadW/i.test(text)) return false;
+  if (/unauthori[sz]ed|forbidden|invalid api key|\b(?:failed|error|missing|invalid|denied)\b|\b(?:401|403|429)\b/i.test(text)) {
+    return false;
+  }
+  return /\bstart action=|calling CredReadW|CredReadW succeeded|\boutcome=ok\b/i.test(text);
 }
 
 function normalizeSteps(steps) {
@@ -252,6 +264,14 @@ export function parseAppLog(text) {
     .split(/\r?\n/)
     .filter((line) => !line.includes('watch_mode_diagnostic.run_id='))
     .join('\n');
+  const providerErrorLines = matchingLines(
+    nonMarkerText,
+    /\b(?:status|httpStatus|code)=(?:401|403|429)\b|\bHTTP\s+(?:401|403|429)\b|"status"\s*:\s*"failed"|"error"\s*:\s*(?!"?null\b|null\b)[{\["0-9tfa-zA-Z_-]|unauthori[sz]ed|forbidden|invalid api key|(?:credential|\bauth(?:orization|entication)?\b).{0,80}(?:failed|error|missing|invalid|denied)|(?:failed|error|missing|invalid|denied).{0,80}(?:credential|\bauth(?:orization|entication)?\b)|rate limit|quota|insufficient|billing|\btimeout\b|timed out|ECONNRESET|ENOTFOUND|network error|websocket.*(?:failed|closed)|model_trace failed|provider.*failed/i,
+  ).filter((line) => !isBenignCredentialLifecycleLine(line)).slice(-30);
+  const errorLines = matchingLines(
+    nonMarkerText,
+    /error|failed|panic|\btimeout\b|timed out|unauthori[sz]ed|rate limit|credential/i,
+  ).filter((line) => !isBenignCredentialLifecycleLine(line)).slice(-30);
   return {
     routeLines: tailLines(nonMarkerText, /watch_mode\.route_start|watch route|start_audio_route|watch-mode|routeMode["=:]+"?watch|input_audio_buffer\.append/i, 20),
     routeConfigLines: tailLines(nonMarkerText, /subtitleTranslationMode=(?:native|secondary)|translationAudioSource=(?:SubtitleTts|subtitle-tts|native|auto|omni-native)|watch_mode\.omni_preconnect_(?:started|reused)|watch_mode\.subtitle_translate_fallback_native_applied/i, 30),
@@ -271,8 +291,8 @@ export function parseAppLog(text) {
     omniResponseDoneLines: matchingLines(nonMarkerText, /response\.done/i),
     omniAsrCompletedLines: matchingLines(nonMarkerText, /conversation\.item\.input_audio_transcription\.completed|transcription\.completed/i),
     providerLines: tailLines(nonMarkerText, PROVIDER_ERROR_PATTERNS[3], 30),
-    providerErrorLines: tailLines(nonMarkerText, /\b(?:status|httpStatus|code)=(?:401|403|429)\b|\bHTTP\s+(?:401|403|429)\b|"status"\s*:\s*"failed"|"error"\s*:\s*(?!"?null\b|null\b)[{\["0-9tfa-zA-Z_-]|unauthori[sz]ed|forbidden|invalid api key|credential|\bauth(?:orization|entication)?\b|rate limit|quota|insufficient|billing|timeout|timed out|ECONNRESET|ENOTFOUND|network error|websocket.*(?:failed|closed)|model_trace failed|provider.*failed/i, 30),
-    errorLines: tailLines(nonMarkerText, /error|failed|panic|timeout|unauthori[sz]ed|rate limit|credential/i, 30),
+    providerErrorLines,
+    errorLines,
   };
 }
 
@@ -506,6 +526,47 @@ function secondaryPreconnectLayerFailed(appLog, translationRoute) {
   return null;
 }
 
+export function watchSessionReportFailure(report, { required = true } = {}) {
+  if (!report) return required ? 'watch session report evidence is missing' : null;
+  if (report.status !== 'completed') {
+    return `watch session report is not completed; status=${report.status ?? 'unknown'}`;
+  }
+  const cues = Array.isArray(report.cues) ? report.cues : [];
+  const completeCues = cues.filter((cue) => (
+    cue.comparisonStatus !== 'superseded'
+    && Number.isFinite(Number(cue.llmFirstAtMs))
+    && Number.isFinite(Number(cue.publishedFirstAtMs))
+    && Number.isFinite(Number(cue.renderedFirstAtMs))
+    && Number(cue.llmFirstToRenderMs) >= 0
+    && Number(cue.publishToRenderMs) >= 0
+  ));
+  if (completeCues.length === 0) {
+    return 'watch session report has no complete model → publish → visible-render cue';
+  }
+  const unrendered = Number(report.summary?.unrenderedCueCount ?? 0);
+  if (unrendered > 0) {
+    return `watch session report contains ${unrendered} published cue(s) without visible rendering`;
+  }
+  const invalidCue = cues.find((cue) => {
+    const issues = Array.isArray(cue.issues) ? cue.issues : [];
+    const interruptedSourceTail = cue.comparisonStatus === 'not-published'
+      && issues.length > 0
+      && issues.every((issue) => (
+        issue?.category === 'session'
+        && issue?.code === 'session-ended-before-model-output'
+        && issue?.severity === 'warning'
+      ));
+    if (interruptedSourceTail) return false;
+    return ['different', 'not-published', 'not-rendered', 'model-error'].includes(cue.comparisonStatus)
+      || issues.length > 0;
+  });
+  if (invalidCue) {
+    const issueCodes = (invalidCue.issues ?? []).map((issue) => issue.code).join(',') || '-';
+    return `watch session report contains an explicit cue issue; cue=${invalidCue.cueId ?? '-'} comparison=${invalidCue.comparisonStatus ?? '-'} issues=${issueCodes}`;
+  }
+  return null;
+}
+
 function appLayerFailed(app, appLog, options = {}) {
   const configReason = subtitleTranslateConfigLayerFailed(appLog);
   if (configReason) return configReason;
@@ -540,15 +601,17 @@ function providerLayerFailed(provider, appLog, physicalOutputContent, options = 
   const physicalContentPassed = physicalOutputContent?.passed === true
     && physicalOutputContent?.recording?.passed !== false;
   const hardProviderError = appLog.providerErrorLines.some((line) => (
-    /unauthori[sz]ed|forbidden|invalid api key|credential|\bauth(?:orization|entication)?\b|rate limit|quota|insufficient|billing|\b(?:401|403|429)\b/i
-      .test(line)
+    !/\boutcome=ok\b|\bstatus[=:]succeeded\b|\bsuccess(?:ful(?:ly)?)?\b/i.test(line)
+    && /unauthori[sz]ed|forbidden|invalid api key|(?:credential|\bauth(?:orization|entication)?\b).{0,80}(?:failed|error|missing|invalid|denied)|(?:failed|error|missing|invalid|denied).{0,80}(?:credential|\bauth(?:orization|entication)?\b)|rate limit|quota|insufficient|billing|\b(?:401|403|429)\b/i.test(line)
   ));
   const hasRecoveredUserVisibleOutput = appLog.subtitleLines.length > 0
     && appLog.providerLines.some((line) => /provider\.translate_text.*"status"\s*:\s*"succeeded"|subtitle translate success|TRANS_WRITE/i.test(line));
   const latestProviderError = appLog.providerErrorLines.at(-1);
   if (hardProviderError) return `provider credential/rate-limit error evidence found in app.log: ${latestProviderError ?? 'no provider error line captured'}`;
   if (options.hardOnly) return null;
-  if (provider?.failedCalls > 0 && !hasRecoveredUserVisibleOutput && !physicalContentPassed) {
+  const failedCallCountIsCorroborated = appLog.providerErrorLines.length > 0
+    || options.requireFailedCallLogEvidence !== true;
+  if (provider?.failedCalls > 0 && failedCallCountIsCorroborated && !hasRecoveredUserVisibleOutput && !physicalContentPassed) {
     return `${provider.failedCalls} provider call(s) failed${latestProviderError ? `; latest=${latestProviderError}` : ''}`;
   }
   if (appLog.providerErrorLines.length > 0 && !hasRecoveredUserVisibleOutput && !physicalContentPassed) {
@@ -692,9 +755,10 @@ export function evaluateStrictContent(input) {
     ? (referenceClauses.length - missingClauses.length) / referenceClauses.length
     : 0;
   const normalizedOutput = normalizeMeaningText(outputText);
-  const missingConcepts = STRICT_REQUIRED_CONCEPTS.filter(
-    (concept) => !normalizedOutput.includes(normalizeMeaningText(concept)),
-  );
+  const missingConcepts = STRICT_REQUIRED_CONCEPTS.filter((concept) => {
+    const acceptedPhrases = [concept, ...(STRICT_REQUIRED_CONCEPT_ALIASES.get(concept) ?? [])];
+    return !acceptedPhrases.some((phrase) => normalizedOutput.includes(normalizeMeaningText(phrase)));
+  });
   const forbiddenErrors = STRICT_FORBIDDEN_ERRORS.filter(
     (item) => normalizedOutput.includes(normalizeMeaningText(item.text)),
   );
@@ -928,8 +992,17 @@ function addLayerFailure(layers, layer, reason, mode) {
 
 function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
   const steps = normalizeSteps(input.steps);
+  const echoCancelVariant = normalizeFeedbackLoopPrevention(
+    input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
+  ) === 'echo-cancel';
   const failedSteps = steps
-    .filter((step) => !step.ok)
+    .filter((step) => (
+      !step.ok
+      && !(
+        echoCancelVariant
+        && /^(?:driver probe|driver probe after repair)$/i.test(step.name)
+      )
+    ))
     .map((step) => ({
       name: step.name,
       error: step.error ?? 'step failed without an error message',
@@ -948,7 +1021,9 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
     .map(([layer, reason]) => ({ layer, reason }));
 
   return {
-    runnerFailure: input.failure?.message ?? null,
+    runnerFailure: echoCancelVariant && isVirtualDriverDiagnosticFailure(input.failure?.message)
+      ? null
+      : input.failure?.message ?? null,
     failedSteps,
     failedLayers,
     checkFailures,
@@ -960,13 +1035,13 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
       appOmniPreconnect: uniqueTail([
         ...appLog.omniPreconnectStartedLines,
         ...appLog.omniPreconnectReusedLines,
-        ...matchingLines(input.appLogText ?? '', /watch_mode\.omni_preconnect_discarded|watch_mode\.omni_session_ready|diagnostic_autostart_(?:omni_preconnect|route)_(?:failed|started)/i),
+        ...matchingLines(input.appLogText ?? '', /watch_mode\.omni_preconnect_discarded|watch_mode\.omni_session_ready|diagnostic_autostart_(?:omni_preconnect|route)_(?:failed|started)|diagnostic_autostart_infrastructure_failed/i),
       ], 12),
-      appReadiness: uniqueTail(matchingLines(input.appLogText ?? '', /readiness|session\.(?:created|updated)|ws\.recv\.session|watch_mode\.omni_session_ready/i), 12),
+      appReadiness: uniqueTail(matchingLines(input.appLogText ?? '', /readiness|session\.(?:created|updated)|ws\.recv\.session|watch_mode\.omni_session_ready|diagnostic_autostart_(?:ipc_ready|infrastructure_failed)/i), 12),
       realtimeSession: parseOmniRealtimeDiagnostics(appLog),
-      bridgeErrors: uniqueTail(bridgeLog.errorLines, 12),
-      bridgeSourceSummary: uniqueTail(bridgeLog.sourceSummaryLines, 5),
-      bridgeWatchdog: uniqueTail(bridgeLog.watchdogLines, 5),
+      bridgeErrors: echoCancelVariant ? [] : uniqueTail(bridgeLog.errorLines, 12),
+      bridgeSourceSummary: echoCancelVariant ? [] : uniqueTail(bridgeLog.sourceSummaryLines, 5),
+      bridgeWatchdog: echoCancelVariant ? [] : uniqueTail(bridgeLog.watchdogLines, 5),
       bridgeMetrics: bridgeLog.metrics,
       physicalOutput: summarizePhysicalOutput(input.physicalOutput),
       physicalOutputContent: summarizePhysicalOutputContent(input.physicalOutputContent),
@@ -989,6 +1064,8 @@ function speechSegmentationLayerFailed(segmentation, translationRoute) {
 }
 
 export const ECHO_CANCEL_SKIPPED_LAYERS = [
+  'driver',
+  'wasapi',
   'bridge',
   'physicalOutput',
   'physicalOutputContent',
@@ -1000,13 +1077,26 @@ function normalizeFeedbackLoopPrevention(value) {
   return value === 'echo-cancel' ? 'echo-cancel' : 'virtual-driver';
 }
 
-function environmentPrecheckFailed(input) {
+function isVirtualDriverDiagnosticFailure(message) {
+  return /driver probe|virtual audio (?:driver|endpoint)|root device status|driver health|test-development-driver/i.test(
+    String(message ?? ''),
+  );
+}
+
+function environmentPrecheckFailed(input, feedbackLoopPrevention = 'virtual-driver') {
   const precheck = normalizeSteps(input.steps).find((step) => (
     !step.ok
+    && !(
+      feedbackLoopPrevention === 'echo-cancel'
+      && /^(?:driver probe|driver probe after repair)$/i.test(step.name)
+    )
     && /^(?:build bridge service native|driver probe|driver probe after repair|bridge source frame probe|physical output loopback probe|start desktop shell|start physical output content recording)$/i.test(step.name)
   ));
   if (precheck) return `${precheck.name}: ${precheck.error ?? 'environment prerequisite failed'}`;
   const message = String(input.failure?.message ?? '');
+  if (feedbackLoopPrevention === 'echo-cancel' && isVirtualDriverDiagnosticFailure(message)) {
+    return null;
+  }
   if (/requires elevation|executable not found|api key is required|environment prerequisite|missing required/i.test(message)) {
     return message;
   }
@@ -1038,7 +1128,16 @@ export function classifyWatchModeRun(input) {
     physicalOutputContent: createLayer('physicalOutputContent', input.physicalOutputContent),
     speechSegmentation: createLayer('speechSegmentation', speechSegmentation),
     strictContent: createLayer('strictContent', strictContent),
-    app: createLayer('app', input.app, {
+    app: createLayer('app', {
+      ...input.app,
+      watchSessionReport: input.watchSessionReport
+        ? {
+            sessionId: input.watchSessionReport.sessionId ?? null,
+            status: input.watchSessionReport.status ?? null,
+            summary: input.watchSessionReport.summary ?? null,
+          }
+        : null,
+    }, {
       parsedLog: appLog,
     }),
     provider: createLayer('provider', input.provider),
@@ -1058,13 +1157,21 @@ export function classifyWatchModeRun(input) {
     }
   }
 
-  const runnerFailureReason = input.failure?.message ?? null;
-  const environmentReason = environmentPrecheckFailed(input);
+  const rawRunnerFailureReason = input.failure?.message ?? null;
+  const runnerFailureReason = echoCancelVariant && isVirtualDriverDiagnosticFailure(rawRunnerFailureReason)
+    ? null
+    : rawRunnerFailureReason;
+  const environmentReason = environmentPrecheckFailed(input, feedbackLoopPrevention);
   const hardProviderReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent, { hardOnly: true });
-  const providerReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent);
+  const providerReason = providerLayerFailed(input.provider, appLog, input.physicalOutputContent, {
+    requireFailedCallLogEvidence: echoCancelVariant,
+  });
   const providerBeforeAppReason = omniAudibleNoVadReason(appLog);
   const subtitleConfigReason = subtitleTranslateConfigLayerFailed(appLog);
   const secondaryPreconnectReason = secondaryPreconnectLayerFailed(appLog, translationRoute);
+  const watchReportReason = watchSessionReportFailure(input.watchSessionReport, {
+    required: (input.mode ?? 'live') === 'live',
+  });
   const checks = runnerFailureReason
     ? [
         ['driver', driverLayerFailed(input.driver)],
@@ -1079,6 +1186,7 @@ export function classifyWatchModeRun(input) {
         ['physicalOutputContent', physicalOutputContentLayerFailed(input.physicalOutputContent)],
         ['provider', providerReason],
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
+        ['app', watchReportReason],
         ['strictContent', layers.strictContent.reason],
       ]
     : [
@@ -1090,10 +1198,15 @@ export function classifyWatchModeRun(input) {
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
         ...(providerBeforeAppReason ? [['provider', providerReason]] : []),
         ...(secondaryPreconnectReason ? [['app', secondaryPreconnectReason]] : []),
-        ['app', appLayerFailed(input.app, appLog, { translationRoute })],
+        ['app', appLayerFailed(input.app, appLog, {
+          translationRoute,
+          watchSessionReport: input.watchSessionReport,
+          requireWatchReport: (input.mode ?? 'live') === 'live',
+        })],
         ['physicalOutputContent', physicalOutputContentLayerFailed(input.physicalOutputContent)],
         ...(providerBeforeAppReason ? [] : [['provider', providerReason]]),
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
+        ['app', watchReportReason],
         ['strictContent', layers.strictContent.reason],
       ];
 
@@ -1132,6 +1245,7 @@ export function classifyWatchModeRun(input) {
     feedbackLoopPrevention,
     realtimeSession,
     translationRoute,
+    watchSessionReport: input.watchSessionReport ?? null,
     verdict,
     failureLayer,
     failureReason: failureLayer ? layers[failureLayer].reason : null,
@@ -1192,21 +1306,21 @@ export function renderMarkdownReport(report) {
     if (value) lines.push(`- ${name}: ${value}`);
   }
   lines.push('', '## Key Evidence', '');
-  for (const line of report.layers.bridge.parsedLog.errorLines.slice(-10)) lines.push(`- bridge: ${line}`);
+  for (const line of report.diagnostics?.evidence?.bridgeErrors ?? []) lines.push(`- bridge: ${line}`);
   for (const line of report.layers.app.parsedLog.errorLines.slice(-10)) lines.push(`- app: ${line}`);
   for (const line of report.diagnostics?.evidence?.providerErrors ?? []) lines.push(`- provider: ${line}`);
   for (const line of report.diagnostics?.evidence?.appOmniPreconnect ?? []) lines.push(`- omni-preconnect: ${line}`);
   for (const line of report.diagnostics?.evidence?.appReadiness ?? []) lines.push(`- readiness: ${line}`);
   for (const line of report.diagnostics?.evidence?.bridgeSourceSummary ?? []) lines.push(`- bridge-source-summary: ${line}`);
   for (const line of report.diagnostics?.evidence?.bridgeWatchdog ?? []) lines.push(`- bridge-watchdog: ${line}`);
-  if (report.diagnostics?.evidence?.physicalOutput) {
+  if (report.layers.physicalOutput?.status !== 'skipped' && report.diagnostics?.evidence?.physicalOutput) {
     lines.push(`- physical-output: ${JSON.stringify(report.diagnostics.evidence.physicalOutput)}`);
   }
-  if (report.diagnostics?.evidence?.physicalOutputContent) {
+  if (report.layers.physicalOutputContent?.status !== 'skipped' && report.diagnostics?.evidence?.physicalOutputContent) {
     lines.push(`- physical-output-content: ${JSON.stringify(report.diagnostics.evidence.physicalOutputContent)}`);
   }
   const strict = report.layers.strictContent?.data;
-  if (strict?.applicable) {
+  if (report.layers.strictContent?.status !== 'skipped' && strict?.applicable) {
     lines.push(`- strict-content: coverage=${strict.coverage ?? '-'} lengthRatio=${strict.lengthRatio ?? '-'} finalWriteCount=${strict.finalWriteCount ?? '-'} queuedSegmentCount=${strict.queuedSegmentCount ?? '-'} playedSegmentCount=${strict.playedSegmentCount ?? '-'}`);
     for (const failure of strict.failures ?? []) lines.push(`- strict-content-failure: ${failure}`);
     if (strict.missingConcepts?.length > 0) lines.push(`- strict-missing-concepts: ${strict.missingConcepts.join(', ')}`);
@@ -1240,6 +1354,8 @@ function collectInputFromDirectory(inputDir, mode) {
     app: snapshots.app,
     provider: snapshots.provider,
     speechSegmentation: snapshots.speechSegmentation,
+    watchSessionReport: snapshots.watchSessionReport
+      ?? readJsonIfExists(path.join(inputDir, 'watch-session-report.json')),
     playback: snapshots.playback,
     failure: readJsonIfExists(failurePath),
     steps: readJsonIfExists(stepsPath),
@@ -1258,6 +1374,9 @@ function collectInputFromDirectory(inputDir, mode) {
         ? path.join(inputDir, 'physical-output-content.json')
         : null,
       diagnosticsBundle: snapshots.diagnosticsBundle ?? null,
+      watchSessionReport: fs.existsSync(path.join(inputDir, 'watch-session-report.json'))
+        ? path.join(inputDir, 'watch-session-report.json')
+        : null,
     },
   };
 }

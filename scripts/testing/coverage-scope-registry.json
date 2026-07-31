@@ -1,0 +1,49 @@
+{
+  "$schema": "./coverage-scope-registry.schema.json",
+  "description": "Explicit coverage scope registry for the Omni Translate driver layer. Each entry declares whether a production unit is exempt (vendored) or requires native smoke coverage.",
+  "entries": [
+    {
+      "glob": "drivers/windows-virtual-mic/sysvad/**",
+      "scope": "exempt",
+      "reason": "Vendored Microsoft SYSVAD sample (UPSTREAM-COMMIT.txt, UPSTREAM-LICENSE.txt). Not Omni-authored; upstream owns correctness.",
+      "upstreamSource": "https://github.com/microsoft/Windows-driver-samples/tree/main/audio/sysvad",
+      "exemptionReviewDate": "2027-01-01"
+    },
+    {
+      "glob": "drivers/windows-virtual-mic/sysvad/omni_bridge_ring.cpp",
+      "scope": "native-smoke-required",
+      "reason": "Omni-authored production ring buffer (~360 lines) compiled into the driver binary. Core logic extracted to include/omni_ring_core.h for user-mode smoke.",
+      "testTarget": "drivers/windows-virtual-mic/tests/omni_ring_core_test.cpp"
+    },
+    {
+      "glob": "drivers/windows-virtual-mic/sysvad/omni_bridge_ring.h",
+      "scope": "native-smoke-required",
+      "reason": "Omni-authored header declaring the bridge ring kernel API surface.",
+      "testTarget": "drivers/windows-virtual-mic/tests/omni_ring_core_test.cpp"
+    },
+    {
+      "glob": "drivers/windows-virtual-mic/include/omni_ring_core.h",
+      "scope": "native-smoke-required",
+      "reason": "Portable ring-buffer core extracted for user-mode testability. Directly exercised by the native smoke test.",
+      "testTarget": "drivers/windows-virtual-mic/tests/omni_ring_core_test.cpp"
+    },
+    {
+      "glob": "drivers/windows-virtual-mic/include/omni_bridge_ioctl.h",
+      "scope": "native-smoke-required",
+      "reason": "Omni-authored IOCTL ABI contract shared between driver and bridge service.",
+      "testTarget": "drivers/windows-virtual-mic/tests/bridge-frame-writes.test.mjs"
+    },
+    {
+      "glob": "drivers/windows-virtual-mic/src/**",
+      "scope": "native-smoke-required",
+      "reason": "Omni-authored driver manifest and stub sources. Must have coverage once they exceed stub status.",
+      "testTarget": "drivers/windows-virtual-mic/tests/omni_ring_core_test.cpp"
+    }
+  ],
+  "policies": {
+    "newOmniProductionFile": "Any new non-vendored C/C++ production file under drivers/ MUST be registered here with scope=native-smoke-required and a valid testTarget before merge.",
+    "newWdkCompilationUnit": "WDK project additions of Omni compilation units require a corresponding native test target entry.",
+    "missingTestTarget": "If a testTarget file does not exist, the coverage gate MUST fail.",
+    "exemptionInheritance": "New files MUST NOT silently inherit exempt status from a parent glob. Each Omni-authored file requires explicit registration."
+  }
+}

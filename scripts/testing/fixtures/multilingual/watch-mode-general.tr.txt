@@ -1,0 +1,11 @@
+Günaydın. Bu ölçüt, canlı bir konuşma sisteminin günlük İngilizceyi, isimleri, sayıları, tarihleri ve cümle uzunluğundaki değişimleri ne kadar iyi işlediğini kontrol eder.
+
+Salı günü, 17 Eylül sabahı saat 8:45'te Maya Chen, Proje Aurora için bir planlama toplantısını açtı. Programda bir milyar dolarlık güvenilirlik fonu bulunurken, Mars'taki ilk araştırma istasyonunun inşaat bütçesi beş yüz milyon dolara denk geliyor. İstasyonun içinde yapay bir biyosfer, hava, su ve bitkileri denge halinde tutacak. Bilim insanları ayrıca Dünya'da nesli tükenmekte olan türleri korumanın pratik yollarını da inceleyecek.
+
+Mühendislik güncellemesi üç sıra dışı prototipi kapsadı: uzak bölgeler arasında güvenli seyahat için uçan arabalar, 72,5 kilovat-saat kapasiteli bir güneş enerjili batarya ve küçük fiyatların doğruluğunu doğrulamak için kullanılan bir dolarlık ampul. Test sırasında dış sıcaklık 21 santigrat dereceden eksi 4'e düştü ancak her sensör çevrimiçi kaldı.
+
+Ardından Maya, bir müşteri mesajını yüksek sesle okudu: “1.250 üniteyi 3 Ekim’e kadar St. Louis’e teslim edebilir miyiz, yoksa yarısını önce New York’a mı göndermeliyiz?” Daniel, A-17 sevkiyatının öğleden sonra saat 6:30'da kalkacağını, 842 mil mesafe kat edeceğini ve kırk sekiz saat içinde varacağını belirtti. Takvimde bir değişiklik olması durumunda ekibin destek için example nokta com adresine e-posta atmasını istedi.
+
+Son konu yazılımdı. 3.6.2 sürümü ortalama yanıt süresini 920 milisaniyeden 315 milisaniyeye düşürdü. İşlemci kullanımı yüzde 18 oranında azaldı ve API, NASA, USB ve Wi-Fi kısaltmalarını doğru şekilde tanıdı. Sistem, bir konuşmacı soru sorduğunda doğru çalışıyor mu? Alıntılanan bir yanıtı koruyor mu? On beşi elli'den, ya da on üçü otuzdan ayırt edebiliyor mu?
+
+Lütfen duraklamaları, noktalama işaretlerini, özel isimleri, ölçümleri ve para birimlerini dahil ederek her cümleyi net bir şekilde kaydedin. İlk genel ölçüt şimdi tamamlanmıştır.

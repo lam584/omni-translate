@@ -12,8 +12,8 @@
     "apiKeyEnv": "OMNI_TEST_DASHSCOPE_API_KEY",
     "authHeaderName": "Authorization",
     "authScheme": "bearer",
-    "expectedSourceChars": 490,
-    "expectedTranslationChars": 150,
+    "expectedSourceChars": 1300,
+    "expectedTranslationChars": 450,
     "speech": {
       "enabled": true,
       "text": "Realtime speech integration test.",

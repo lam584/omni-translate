@@ -1,0 +1,58 @@
+{
+  "generatedAt": "2026-07-31T15:02:22.417Z",
+  "generator": "Alibaba Cloud Model Studio",
+  "model": "qwen-audio-3.0-tts-plus",
+  "fixtures": [
+    {
+      "id": "general",
+      "label": "General news and project briefing",
+      "source": "watch-mode-en-original.txt",
+      "reference": "watch-mode-en-original.zh-CN.txt",
+      "audio": "watch-mode-en-original.wav",
+      "checksum": "watch-mode-en-original.sha256",
+      "voice": "longanlingxin",
+      "seed": 4101,
+      "instruction": "Natural neutral American English, normal conversational pace, clear but not exaggerated.",
+      "model": "qwen-audio-3.0-tts-plus",
+      "sha256": "cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f",
+      "durationSeconds": 125.815,
+      "sampleRate": 24000,
+      "channels": 1,
+      "bitsPerSample": 16
+    },
+    {
+      "id": "conversation",
+      "label": "Everyday conversation and instructions",
+      "source": "watch-mode-en-conversation.txt",
+      "reference": "watch-mode-en-conversation.zh-CN.txt",
+      "audio": "watch-mode-en-conversation.wav",
+      "checksum": "watch-mode-en-conversation.sha256",
+      "voice": "longanlufeng",
+      "seed": 4102,
+      "instruction": "Natural friendly American English, normal conversational pace, varied questions and quotations.",
+      "model": "qwen-audio-3.0-tts-plus",
+      "sha256": "3494aff1ff5df130551a5886769ac7cc02a8b695592d2326e50b770ddda788ab",
+      "durationSeconds": 144.393,
+      "sampleRate": 24000,
+      "channels": 1,
+      "bitsPerSample": 16
+    },
+    {
+      "id": "technical",
+      "label": "Technical and public-information briefing",
+      "source": "watch-mode-en-technical.txt",
+      "reference": "watch-mode-en-technical.zh-CN.txt",
+      "audio": "watch-mode-en-technical.wav",
+      "checksum": "watch-mode-en-technical.sha256",
+      "voice": "longanlingxin",
+      "seed": 4103,
+      "instruction": "Natural professional American English, normal speaking pace, precise units and abbreviations.",
+      "model": "qwen-audio-3.0-tts-plus",
+      "sha256": "5991bbb60684562549dcbb4bbd5f52013d4747e04badec5a23f62226f47c022f",
+      "durationSeconds": 149.075,
+      "sampleRate": 24000,
+      "channels": 1,
+      "bitsPerSample": 16
+    }
+  ]
+}

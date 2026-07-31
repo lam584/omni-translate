@@ -5,6 +5,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { renderMarkdownReport } from './watch-mode-report.mjs';
 import {
   classify,
   healthyApp,
@@ -14,6 +15,7 @@ import {
   healthyPhysicalOutput,
   healthyPhysicalOutputContent,
   healthyProvider,
+  healthyWatchSessionReport,
   healthyWasapi,
 } from './watch-mode-report-test-helpers.mjs';
 
@@ -23,6 +25,76 @@ test('classifies healthy watch-mode evidence as passed', () => {
   assert.equal(report.verdict, 'passed');
   assert.equal(report.failureLayer, null);
   assert.equal(report.suspectFiles.length, 0);
+});
+
+test('requires a saved Watch report with a complete visible three-stage cue', () => {
+  const missing = classify({ watchSessionReport: null });
+  assert.equal(missing.failureLayer, 'app');
+  assert.match(missing.failureReason, /watch session report evidence is missing/);
+
+  const unrendered = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      summary: {
+        ...healthyWatchSessionReport.summary,
+        unrenderedCueCount: 1,
+      },
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        comparisonStatus: 'not-rendered',
+        renderedFirstAtMs: null,
+        issues: [{ code: 'publish-without-render' }],
+      }],
+    },
+  });
+  assert.equal(unrendered.failureLayer, 'app');
+  assert.match(unrendered.failureReason, /without visible rendering/);
+});
+
+test('treats an explicit interrupted source tail as a session warning, not an app failure', () => {
+  const interruptedTail = {
+    cueId: 'cue-interrupted-tail',
+    revision: 1,
+    comparisonStatus: 'not-published',
+    llmFirstAtMs: null,
+    publishedFirstAtMs: null,
+    renderedFirstAtMs: null,
+    llmFirstToRenderMs: null,
+    publishToRenderMs: null,
+    issues: [{
+      category: 'session',
+      code: 'session-ended-before-model-output',
+      severity: 'warning',
+    }],
+  };
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [...healthyWatchSessionReport.cues, interruptedTail],
+    },
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
+
+  const realError = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [
+        ...healthyWatchSessionReport.cues,
+        {
+          ...interruptedTail,
+          issues: [{
+            category: 'model',
+            code: 'model-no-output',
+            severity: 'error',
+          }],
+        },
+      ],
+    },
+  });
+  assert.equal(realError.failureLayer, 'app');
+  assert.match(realError.failureReason, /explicit cue issue/);
 });
 
 test('native route does not require secondary segment TTS evidence', () => {
@@ -151,12 +223,67 @@ test('echo-cancel variant skips virtual-driver evidence layers and passes on hea
   assert.equal(report.verdict, 'passed');
   assert.equal(report.failureLayer, null);
   assert.equal(report.feedbackLoopPrevention, 'echo-cancel');
-  for (const layer of ['bridge', 'physicalOutput', 'physicalOutputContent', 'speechSegmentation', 'strictContent']) {
+  for (const layer of ['driver', 'wasapi', 'bridge', 'physicalOutput', 'physicalOutputContent', 'speechSegmentation', 'strictContent']) {
     assert.equal(report.layers[layer].status, 'skipped');
   }
-  assert.equal(report.layers.driver.status, 'passed');
   assert.equal(report.layers.app.status, 'passed');
   assert.equal(report.layers.provider.status, 'passed');
+});
+
+test('echo-cancel keeps a failed virtual-driver probe as non-blocking diagnostics', () => {
+  const driverFailure = { error: 'virtual audio endpoint was not found' };
+  const bridgeNoise = [
+    '2026-01-01 00:00:00.000 [NORMAL] [bridge] - - driver open failed: error=file not found',
+    '2026-01-01 00:00:05.000 [NORMAL] [bridge] - - event=source_watchdog workerPhase=driver-open-failed sourceSubscriberActive=false',
+  ].join('\n');
+  const echoCancel = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    driver: driverFailure,
+    wasapi: driverFailure,
+    bridgeLogText: bridgeNoise,
+    physicalOutputContent: null,
+    provider: { totalCalls: 197, failedCalls: 13 },
+    appLogText: [
+      healthyAppLog,
+      '[storage] [omni][credential] start action=读取 API Key timeoutMs=5000',
+      '[storage] [omni][credential] calling CredReadW target=provider-dashscope',
+      '[storage] [omni][credential] CredReadW succeeded target=provider-dashscope',
+      '[storage] [omni][credential] finish action=读取 API Key outcome=ok',
+      '[ERROR] [subtitle-translate] real application error: response.empty',
+    ].join('\n'),
+    steps: [{
+      name: 'driver probe',
+      ok: false,
+      result: null,
+      error: driverFailure.error,
+    }],
+    failure: { message: `driver probe failed: ${driverFailure.error}` },
+  });
+
+  assert.equal(echoCancel.verdict, 'passed');
+  assert.equal(echoCancel.failureLayer, null);
+  assert.equal(echoCancel.layers.driver.status, 'skipped');
+  assert.equal(echoCancel.layers.wasapi.status, 'skipped');
+  assert.deepEqual(echoCancel.layers.driver.data, driverFailure);
+  assert.deepEqual(echoCancel.layers.wasapi.data, driverFailure);
+  assert.equal(echoCancel.layers.provider.status, 'passed');
+  assert.deepEqual(echoCancel.diagnostics.failedSteps, []);
+  assert.equal(echoCancel.diagnostics.runnerFailure, null);
+  assert.deepEqual(echoCancel.diagnostics.evidence.bridgeErrors, []);
+  assert.deepEqual(echoCancel.diagnostics.evidence.bridgeWatchdog, []);
+  assert.deepEqual(echoCancel.layers.app.parsedLog.providerErrorLines, []);
+  const markdown = renderMarkdownReport(echoCancel);
+  assert.doesNotMatch(markdown, /FailedStep:|driver open failed|source_watchdog|timeoutMs=5000/);
+  assert.match(markdown, /real application error: response\.empty/);
+
+  const virtualDriver = classify({
+    feedbackLoopPrevention: 'virtual-driver',
+    driver: driverFailure,
+    wasapi: driverFailure,
+  });
+  assert.equal(virtualDriver.verdict, 'failed');
+  assert.equal(virtualDriver.failureLayer, 'driver');
+  assert.match(virtualDriver.failureReason, /virtual audio endpoint/i);
 });
 
 test('echo-cancel variant keeps the duplicate final translation detector as a failing gate', () => {
@@ -249,6 +376,25 @@ test('keeps runner failure as primary app reason while preserving secondary symp
   assert(report.layers.app.reasons.some((reason) => /did not start Omni preconnect/.test(reason)));
   assert.equal(report.diagnostics.runnerFailure, report.failureReason);
   assert(report.diagnostics.evidence.appOmniPreconnect.some((line) => /omni_preconnect_discarded/.test(line)));
+});
+
+test('preserves diagnostic IPC gate failure as infrastructure readiness evidence', () => {
+  const infrastructureLine = [
+    'watch_mode.diagnostic_autostart_infrastructure_failed',
+    'category=infrastructure code=frontend-ipc-not-ready runMarker=abc123 waitedMs=30001',
+  ].join(' | ');
+  const report = classify({
+    failure: {
+      message: `wait for watch-mode app readiness failed: watch-mode infrastructure failure: ${infrastructureLine}`,
+    },
+    appLogText: infrastructureLine,
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'app');
+  assert.match(report.failureReason, /frontend-ipc-not-ready/);
+  assert(report.diagnostics.evidence.appOmniPreconnect.includes(infrastructureLine));
+  assert(report.diagnostics.evidence.appReadiness.includes(infrastructureLine));
 });
 
 test('does not count diagnostic run markers as watch route evidence', () => {

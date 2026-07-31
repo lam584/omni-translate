@@ -4,12 +4,35 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { ECHO_CANCEL_REQUIRED_LAYERS, REQUIRED_LAYERS, findWatchModeEvidence, normalizeLatencyThresholds, strictLatencyFailure, strictProvenanceFailure } from './verify-watch-mode-evidence.mjs';
+import {
+  ECHO_CANCEL_REQUIRED_LAYERS,
+  REQUIRED_LAYERS,
+  findWatchModeEvidence,
+  normalizeLatencyThresholds,
+  strictLatencyFailure,
+  strictProvenanceFailure,
+  strictWatchSessionReportFailure,
+} from './verify-watch-mode-evidence.mjs';
 
 // Frozen "now" + always-ancestor stub so the strict provenance gate can be
 // exercised deterministically against the fixture timestamps.
 const FIXTURE_NOW = Date.parse('2026-06-06T00:00:00.000Z');
 const provenanceOk = { now: FIXTURE_NOW, isAncestorOfHead: () => true };
+const healthyWatchSessionReport = {
+  sessionId: 'watch-fixture',
+  status: 'completed',
+  summary: { unrenderedCueCount: 0 },
+  cues: [{
+    cueId: 'cue-1',
+    comparisonStatus: 'exact',
+    llmFirstAtMs: 100,
+    publishedFirstAtMs: 150,
+    renderedFirstAtMs: 166,
+    llmFirstToRenderMs: 66,
+    publishToRenderMs: 16,
+    issues: [],
+  }],
+};
 
 function echoCancelLayers() {
   return Object.fromEntries(REQUIRED_LAYERS.map((layer) => [
@@ -37,11 +60,111 @@ function writeReport(root, directoryName, overrides = {}) {
     verdict: 'passed',
     failureLayer: null,
     layers,
+    watchSessionReport: healthyWatchSessionReport,
     ...overrides,
   };
   fs.writeFileSync(path.join(directory, 'report.json'), `${JSON.stringify(report, null, 2)}\n`);
   return report;
 }
+
+test('strict Watch report validation requires a complete visible three-stage cue', () => {
+  assert.equal(strictWatchSessionReportFailure({ watchSessionReport: healthyWatchSessionReport }), null);
+  assert.match(strictWatchSessionReportFailure({}), /requires a saved/);
+  assert.match(strictWatchSessionReportFailure({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      summary: { unrenderedCueCount: 1 },
+    },
+  }), /published cue\(s\) without visible rendering/);
+  assert.match(strictWatchSessionReportFailure({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      summary: { unrenderedCueCount: 0 },
+      cues: [
+        healthyWatchSessionReport.cues[0],
+        {
+          ...healthyWatchSessionReport.cues[0],
+          cueId: 'cue-not-published',
+          comparisonStatus: 'not-published',
+          publishedFirstAtMs: null,
+          renderedFirstAtMs: null,
+          issues: [{ code: 'model-output-not-published' }],
+        },
+      ],
+    },
+  }), /explicit issue.*not-published/);
+  assert.equal(strictWatchSessionReportFailure({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [
+        healthyWatchSessionReport.cues[0],
+        {
+          ...healthyWatchSessionReport.cues[0],
+          cueId: 'cue-interrupted-tail',
+          comparisonStatus: 'not-published',
+          llmFirstAtMs: null,
+          publishedFirstAtMs: null,
+          renderedFirstAtMs: null,
+          issues: [{
+            category: 'session',
+            code: 'session-ended-before-model-output',
+            severity: 'warning',
+          }],
+        },
+      ],
+    },
+  }), null);
+  assert.match(strictWatchSessionReportFailure({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        comparisonStatus: 'superseded',
+      }, {
+        cueId: 'cue-interrupted-tail',
+        comparisonStatus: 'not-published',
+        llmFirstAtMs: null,
+        publishedFirstAtMs: null,
+        renderedFirstAtMs: null,
+        issues: [{
+          category: 'session',
+          code: 'session-ended-before-model-output',
+          severity: 'warning',
+        }],
+      }],
+    },
+  }), /no complete model/);
+  assert.match(strictWatchSessionReportFailure({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [
+        healthyWatchSessionReport.cues[0],
+        {
+          cueId: 'cue-failed-tail',
+          comparisonStatus: 'not-published',
+          llmFirstAtMs: null,
+          publishedFirstAtMs: null,
+          renderedFirstAtMs: null,
+          issues: [{
+            category: 'session',
+            code: 'session-ended-before-model-output',
+            severity: 'error',
+          }],
+        },
+      ],
+    },
+  }), /explicit issue/);
+  assert.match(strictWatchSessionReportFailure({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        comparisonStatus: 'different',
+        issues: [{ code: 'content-different' }],
+      }],
+    },
+  }), /explicit issue/);
+});
 
 // The strict-gate tests only vary the strictContent layer's data payload.
 function strictContentLayers(strictContentData = { applicable: true, passed: true, coverage: 1 }) {

@@ -24,6 +24,7 @@ import {
   healthyPhysicalOutput,
   healthyPhysicalOutputContent,
   healthyProvider,
+  healthyWatchSessionReport,
   healthyWasapi,
 } from './watch-mode-report-test-helpers.mjs';
 
@@ -47,6 +48,7 @@ test('preserves physical output mixed-output detail in markdown', () => {
     physicalOutput: healthyPhysicalOutput,
     physicalOutputContent,
     app: healthyApp,
+    watchSessionReport: healthyWatchSessionReport,
     provider: healthyProvider,
   }));
   fs.writeFileSync(path.join(tempDir, 'app.log'), healthyAppLog);
@@ -108,6 +110,47 @@ test('keeps hard provider auth and quota failures ahead of physical output conte
   assert.equal(report.verdict, 'failed');
   assert.equal(report.failureLayer, 'provider');
   assert.match(report.failureReason, /credential|rate-limit/);
+});
+
+test('does not classify a successful credential-vault read as a provider failure', () => {
+  const report = classify({
+    appLogText: [
+      healthyAppLog,
+      '[storage] [omni][credential] start action=读取 API Key timeoutMs=5000',
+      '[storage] [omni][credential] calling CredReadW target=provider-dashscope',
+      '[storage] [omni][credential] CredReadW succeeded target=provider-dashscope',
+      '[storage] [omni][credential] finish action=读取 API Key outcome=ok',
+      'realtime profile: {"providerId":"provider-dashscope","timeoutBudgetMs":95000}',
+    ].join('\n'),
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.notEqual(report.failureLayer, 'provider');
+  assert.deepEqual(report.layers.app.parsedLog.providerErrorLines, []);
+  assert.deepEqual(report.diagnostics.evidence.appErrors, []);
+});
+
+test('echo-cancel suppresses virtual-driver evidence but preserves a real provider failure', () => {
+  const providerError = 'provider.translate_text end_call | {"payload":{"error":"HTTP 429 rate limit exceeded","status":"failed"}}';
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    bridgeLogText: [
+      'driver open failed: error=file not found',
+      'event=source_watchdog workerPhase=driver-open-failed sourceSubscriberActive=false',
+    ].join('\n'),
+    physicalOutputContent: null,
+    provider: { totalCalls: 2, failedCalls: 1 },
+    appLogText: [healthyAppLog, providerError].join('\n'),
+  });
+  const markdown = renderMarkdownReport(report);
+
+  assert.equal(report.failureLayer, 'provider');
+  assert.match(report.failureReason, /credential|rate-limit/);
+  assert.deepEqual(report.diagnostics.evidence.bridgeErrors, []);
+  assert.deepEqual(report.diagnostics.evidence.bridgeWatchdog, []);
+  assert(report.diagnostics.evidence.providerErrors.includes(providerError));
+  assert.match(markdown, /HTTP 429 rate limit exceeded/);
+  assert.doesNotMatch(markdown, /driver open failed|source_watchdog/);
 });
 
 test('writeReport prioritizes failure artifact over stale healthy app log', () => {
@@ -344,6 +387,7 @@ test('records Omni realtime diagnostics and classifies response.done before ASR 
     speechSegmentation: { passed: true, queuedSegments: 1, playedSegments: 1 },
     strictContent: { passed: true, applicable: true, coverage: 1 },
     app: { routeState: 'capturing', overlayVisible: true, subtitleCueCount: 1 },
+    watchSessionReport: healthyWatchSessionReport,
     provider: { totalCalls: 1, failedCalls: 0 },
     appLogText: [
       'watch_mode.route_start | direction=inbound routeMode=watch',

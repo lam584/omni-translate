@@ -3,6 +3,10 @@
 // package.json entry watch-mode-report.test.mjs); every file builds its
 // evidence from the same healthy baseline so a single failing layer is the
 // only difference under test.
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { classifyWatchModeRun } from './watch-mode-report.mjs';
 
 export const healthyDriver = {
@@ -33,6 +37,32 @@ export const healthyApp = {
   routeState: 'capturing',
   overlayVisible: true,
   subtitleCueCount: 2,
+};
+
+export const healthyWatchSessionReport = {
+  sessionId: 'watch-test-session',
+  status: 'completed',
+  routeMode: 'watch',
+  providerId: 'test-provider',
+  model: 'test-model',
+  summary: {
+    cueCount: 1,
+    completeCueCount: 1,
+    visibleRenderCueCount: 1,
+    unrenderedCueCount: 0,
+    issueCount: 0,
+  },
+  cues: [{
+    cueId: 'cue-1',
+    comparisonStatus: 'exact',
+    llmFirstAtMs: 100,
+    publishedFirstAtMs: 140,
+    renderedFirstAtMs: 156,
+    llmFirstToRenderMs: 56,
+    publishToRenderMs: 16,
+    issues: [],
+  }],
+  issues: [],
 };
 
 export const healthyProvider = {
@@ -67,25 +97,17 @@ export const healthyPhysicalOutputContent = {
   },
 };
 
-export const testMediaReferenceTranslation = [
-  '这是 Omni Translate 项目的原创音频测试素材',
-  '极光项目拥有十亿美元的可靠性基金',
-  '第一个研究站计划建在火星上',
-  '它的建设预算是五亿美元',
-  '研究站内的人工生物圈维持空气、水和植物的平衡',
-  '研究团队还研究保护濒危物种的方法',
-  '工程师正在测试用于偏远地点之间安全出行的飞行汽车',
-  '一个一美元的灯泡用于验证较小的价格仍能准确翻译',
-  '每个句子都清晰分隔，以便测量翻译时间',
-  '原创音频测试素材现已播放完毕',
-].join('\n');
+export const testMediaReferenceTranslation = fs.readFileSync(
+  path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'watch-mode-en-original.zh-CN.txt'),
+  'utf8',
+).trim();
 
 export function strictTestMediaContent(overrides = {}) {
   return {
     ...healthyPhysicalOutputContent,
     sourceReference: {
       passed: true,
-      mediaSha256: '7fd64ecd6cf0762cac5ac0ab16eba37cc733765c55cc8264f87a94cb46962131',
+      mediaSha256: 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f',
       mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
       playbackSeconds: null,
       fullMedia: true,
@@ -135,6 +157,7 @@ export function classify(overrides = {}) {
     physicalOutput: healthyPhysicalOutput,
     physicalOutputContent: healthyPhysicalOutputContent,
     app: healthyApp,
+    watchSessionReport: healthyWatchSessionReport,
     provider: healthyProvider,
     bridgeLogText: healthyBridgeLog,
     appLogText: healthyAppLog,

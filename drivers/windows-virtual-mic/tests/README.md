@@ -1,7 +1,12 @@
 # Windows Virtual Audio Tests
 
-Driver validation should cover install state creation, bridge frame writes, and
-endpoint isolation from the default WASAPI loopback device.
+Driver validation covers three distinct signal layers:
+
+| Signal | Toolchain | Privileges | What it proves |
+| --- | --- | --- | --- |
+| User-mode Node contract tests | Node.js (`node --test`) | None | IOCTL ABI shape, install-state health, endpoint isolation |
+| Native C++ smoke tests | MSVC `cl.exe` / `clang++` (no WDK) | None | Ring buffer state transitions, overwrite semantics, counters |
+| WDK mechanical build | EWDK / WDK 10.0.26100 | None (build only) | Driver binary compiles without errors |
 
 ## User-mode boundary tests
 
@@ -21,6 +26,34 @@ Run all three from the repository root:
 ```powershell
 npm run test:driver-boundaries
 ```
+
+## Native C++ smoke tests
+
+The Omni ring buffer core (`include/omni_ring_core.h`) is a portable extraction
+of the production ring logic in `sysvad/omni_bridge_ring.cpp`. It compiles with
+any standard C++17 toolchain — no WDK, no kernel headers, no administrator.
+
+| Coverage area | Test file |
+| --- | --- |
+| Empty read, reset, write/read order, wrap-around | `omni_ring_core_test.cpp` |
+| Overwrite-oldest semantics, counter correctness | `omni_ring_core_test.cpp` |
+| Loopback/bridge ring state isolation | `omni_ring_core_test.cpp` |
+
+Build and run:
+
+```powershell
+cd drivers/windows-virtual-mic/tests
+cl /std:c++17 /EHsc /I..\include omni_ring_core_test.cpp /Fe:omni_ring_core_test.exe
+.\omni_ring_core_test.exe
+```
+
+## Coverage scope registry
+
+The driver layer is registered in `scripts/testing/coverage-scope-registry.json`:
+
+- **Vendored SYSVAD** (`sysvad/**`): `exempt` — upstream Microsoft sample.
+- **Omni production units** (`omni_bridge_ring.*`, `omni_ring_core.h`, `omni_bridge_ioctl.h`): `native-smoke-required`.
+- New non-vendored C/C++ files MUST be registered before merge; missing test targets fail the gate.
 
 ## Shared fixtures
 

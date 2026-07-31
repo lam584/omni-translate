@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use serde_json::{json, Map, Value};
+use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
@@ -405,138 +405,16 @@ fn model_trace_detail(
     })
 }
 
-pub(crate) fn sanitize_value(value: Value) -> Value {
-    match value {
-        Value::Object(map) => {
-            let mut sanitized = Map::new();
-            for (key, value) in map {
-                let key_lower = key.to_ascii_lowercase();
-                if is_secret_key(&key_lower) {
-                    sanitized.insert(key, Value::String("[REDACTED]".to_string()));
-                } else if key_lower == "customheaders" || key_lower == "custom_headers" {
-                    sanitized.insert(key, sanitize_custom_headers(value));
-                } else if key_lower == "audio" {
-                    sanitized.insert(key, summarize_string_field(value, "base64-audio"));
-                } else if key_lower == "delta" {
-                    sanitized.insert(key, summarize_string_field(value, "text-delta"));
-                } else {
-                    sanitized.insert(key, sanitize_value(value));
-                }
-            }
-            Value::Object(sanitized)
-        }
-        Value::Array(items) => Value::Array(items.into_iter().map(sanitize_value).collect()),
-        Value::String(text) => sanitize_string(text),
-        other => other,
-    }
-}
-
-fn is_secret_key(key: &str) -> bool {
-    key.contains("authorization")
-        || key.contains("api_key")
-        || key.contains("apikey")
-        || key.contains("api-key")
-        || key == "key"
-        || key.contains("secret")
-        || key.contains("token")
-        || key.contains("cookie")
-        || key.contains("password")
-        || key.contains("credential")
-}
-
-fn sanitize_custom_headers(value: Value) -> Value {
-    match value {
-        Value::Array(items) => Value::Array(items.into_iter().map(|item| match item {
-            Value::Object(mut header) => {
-                if header.contains_key("value") {
-                    header.insert("value".to_string(), Value::String("[REDACTED]".to_string()));
-                }
-                Value::Object(header)
-            }
-            _ => Value::String("[REDACTED]".to_string()),
-        }).collect()),
-        _ => Value::String("[REDACTED]".to_string()),
-    }
-}
-
-fn summarize_string_field(value: Value, kind: &str) -> Value {
-    match value {
-        Value::String(text) => json!({
-            "redacted": true,
-            "kind": kind,
-            "length": text.len(),
-        }),
-        other => sanitize_value(other),
-    }
-}
-
-fn sanitize_string(text: String) -> Value {
-    if text.to_ascii_lowercase().contains("bearer ") {
-        return Value::String(redact_bearer(&text));
-    }
-    Value::String(redact_sensitive_query(&text))
-}
-
-fn redact_sensitive_query(text: &str) -> String {
-    let Some((base, query)) = text.split_once('?') else { return text.to_string(); };
-    let redacted = query.split('&').map(|part| {
-        let Some((key, _value)) = part.split_once('=') else { return part.to_string(); };
-        if is_secret_key(&key.to_ascii_lowercase()) {
-            format!("{key}=[REDACTED]")
-        } else {
-            part.to_string()
-        }
-    }).collect::<Vec<_>>().join("&");
-    format!("{base}?{redacted}")
-}
-
-fn redact_bearer(text: &str) -> String {
-    let mut output = Vec::new();
-    for part in text.split_whitespace() {
-        if output
-            .last()
-            .map(|prev: &&str| prev.eq_ignore_ascii_case("bearer"))
-            .unwrap_or(false)
-        {
-            output.push("[REDACTED]");
-        } else {
-            output.push(part);
-        }
-    }
-    output.join(" ")
-}
+use super::redaction::sanitize_value;
 
 #[cfg(test)]
 mod tests {
     use serde_json::json;
 
     use super::{
-        is_audio_append_event, model_trace_detail, sanitize_value, AudioAppendTraceSummary,
-        ModelTraceContext, AUDIO_APPEND_SUMMARY_CHUNK_INTERVAL,
+        is_audio_append_event, model_trace_detail, AudioAppendTraceSummary, ModelTraceContext,
+        AUDIO_APPEND_SUMMARY_CHUNK_INTERVAL,
     };
-
-    #[test]
-    fn sanitize_value_redacts_auth_and_audio_payloads() {
-        let sanitized = sanitize_value(json!({
-            "Authorization": "Bearer sk-test",
-            "api_key": "sk-test",
-            "type": "input_audio_buffer.append",
-            "audio": "abcdef",
-            "delta": "large unreadable model stream chunk",
-            "nested": { "token": "secret", "message": "Bearer abc" }
-        }));
-
-        assert_eq!(sanitized["Authorization"], "[REDACTED]");
-        assert_eq!(sanitized["api_key"], "[REDACTED]");
-        assert_eq!(sanitized["audio"]["kind"], "base64-audio");
-        assert_eq!(sanitized["audio"]["length"], 6);
-        assert_eq!(sanitized["delta"]["redacted"], true);
-        assert_eq!(sanitized["delta"]["kind"], "text-delta");
-        assert_eq!(sanitized["delta"]["length"], 35);
-        assert!(!sanitized["delta"].to_string().contains("large unreadable"));
-        assert_eq!(sanitized["nested"]["token"], "[REDACTED]");
-        assert_eq!(sanitized["nested"]["message"], "Bearer [REDACTED]");
-    }
 
     #[test]
     fn model_trace_detail_omits_started_at_from_log_payload() {

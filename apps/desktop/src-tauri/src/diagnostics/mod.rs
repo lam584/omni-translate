@@ -1,10 +1,12 @@
 pub(crate) mod contracts;
 pub(crate) mod events;
 pub(crate) mod export_artifacts;
+pub(crate) mod export_bundle;
 pub(crate) mod file_logger;
 pub(crate) mod log_pipeline;
 pub(crate) mod macros;
 pub(crate) mod model_trace;
+pub(crate) mod redaction;
 pub(crate) mod state;
 
 /// Moved to the shared foundation (`crate::shared::session_id`) so the

@@ -72,10 +72,11 @@ impl Log for DiagnosticsForwarder {
             })
             .unwrap_or_else(|| "-".to_string());
 
+        let summary = super::redaction::sanitize_text(&record.args().to_string());
         let _ = self.store.append_log(
             category_for_module_path(record.module_path().unwrap_or_else(|| record.target())),
             diagnostics_level(record.level()),
-            record.args().to_string(),
+            summary,
             None,
             crate::shared::time::now_unix_seconds_marker(),
             Some(source),
@@ -157,6 +158,7 @@ mod tests {
         init(store.clone());
 
         log::info!("facade info line reaches the store");
+        log::error!("Authorization: Bearer source-log-secret");
 
         store.set_min_log_level("error");
         log::info!("facade info line filtered out");
@@ -177,6 +179,8 @@ mod tests {
             "facade info record must map to level marker NORMAL and category runtime: {line}"
         );
         assert!(!app_log.contains("facade info line filtered out"));
+        assert!(!app_log.contains("source-log-secret"));
+        assert!(app_log.contains("Authorization: [REDACTED]"));
 
         let _ = fs::remove_dir_all(root_dir);
     }

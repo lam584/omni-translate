@@ -1,82 +1,45 @@
+use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::PathBuf;
 
+use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager, State};
+use uuid::Uuid;
 
 use crate::audio::contracts::SubtitleCueRuntime;
 use crate::audio::state::AudioStateStore;
 use crate::bridge::contracts::BridgeRuntimeSnapshot;
 use crate::bridge::state::BridgeStateStore;
+use crate::runtime::events::build_runtime_snapshot;
+use crate::runtime::state::RuntimeStateStore;
 use crate::shared::time::now_unix_seconds_marker;
-use crate::storage::contracts::StorageRuntimeSnapshot;
 use crate::storage::StorageStateStore;
 
 use super::contracts::{
     DiagnosticSupportSignalRuntime, DiagnosticsExportArtifact, DiagnosticsRuntimeSnapshot,
 };
-use super::state::{copy_logs_into, DiagnosticsStateStore};
+use super::export_bundle::{
+    write_diagnostics_bundle, BundleInput, DiagnosticsExportScope,
+};
+use super::state::DiagnosticsStateStore;
 
-fn write_diagnostics_bundle(
-    export_dir: &Path,
-    generated_at: &str,
-    scope: &str,
-    diagnostics_snapshot: &DiagnosticsRuntimeSnapshot,
-    audio_snapshot: &crate::audio::contracts::AudioRuntimeSnapshot,
-    bridge_snapshot: &BridgeRuntimeSnapshot,
-    storage_snapshot: &StorageRuntimeSnapshot,
-    config_value: &Value,
-    logs_dir: &str,
-    bridge_runtime_root: &str,
-) -> Result<usize, String> {
-    let diagnostics_json =
-        serde_json::to_string_pretty(diagnostics_snapshot).map_err(|error| error.to_string())?;
-    let audio_json =
-        serde_json::to_string_pretty(audio_snapshot).map_err(|error| error.to_string())?;
-    let bridge_json =
-        serde_json::to_string_pretty(bridge_snapshot).map_err(|error| error.to_string())?;
-    let storage_json =
-        serde_json::to_string_pretty(storage_snapshot).map_err(|error| error.to_string())?;
-    let sanitized_config = super::model_trace::sanitize_value(config_value.clone());
-    let config_json =
-        serde_json::to_string_pretty(&sanitized_config).map_err(|error| error.to_string())?;
-    let env_json = serde_json::to_string_pretty(&json!({
-      "generatedAt": generated_at,
-      "scope": scope,
-      "platform": std::env::consts::OS,
-      "arch": std::env::consts::ARCH,
-      "appVersion": env!("CARGO_PKG_VERSION"),
-      "cwd": std::env::current_dir().ok().map(|path| path.to_string_lossy().to_string()),
-    }))
-    .map_err(|error| error.to_string())?;
+fn serialize_export_value<T: Serialize>(label: &str, value: &T) -> Result<Value, String> {
+    serde_json::to_value(value)
+        .map_err(|error| format!("failed to serialize {label} for diagnostics export: {error}"))
+}
 
-    fs::write(
-        export_dir.join("diagnostics-summary.json"),
-        diagnostics_json,
-    )
-    .map_err(|error| error.to_string())?;
-    fs::write(export_dir.join("audio-runtime.json"), audio_json)
-        .map_err(|error| error.to_string())?;
-    fs::write(export_dir.join("bridge-runtime.json"), bridge_json)
-        .map_err(|error| error.to_string())?;
-    fs::write(export_dir.join("storage-runtime.json"), storage_json)
-        .map_err(|error| error.to_string())?;
-    fs::write(export_dir.join("config-draft.json"), config_json)
-        .map_err(|error| error.to_string())?;
-    fs::write(export_dir.join("environment.json"), env_json).map_err(|error| error.to_string())?;
-    let export_logs_dir = export_dir.join("logs");
-    let mut copied_logs = copy_logs_into(&export_logs_dir.to_string_lossy(), logs_dir)?;
-    let bridge_service_log = Path::new(bridge_runtime_root).join("bridge-service.log");
-    if bridge_service_log.exists() {
-        fs::create_dir_all(&export_logs_dir).map_err(|error| error.to_string())?;
-        fs::copy(
-            &bridge_service_log,
-            export_logs_dir.join("bridge-service.log"),
-        )
-        .map_err(|error| error.to_string())?;
-        copied_logs += 1;
-    }
-    Ok(copied_logs + 6)
+fn safe_export_component(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| {
+            if character.is_ascii_alphanumeric() || matches!(character, '-' | '_') {
+                character
+            } else {
+                '-'
+            }
+        })
+        .collect()
 }
 
 fn status_from_probe_verdict(verdict: Option<&str>) -> String {
@@ -324,6 +287,8 @@ pub(crate) fn append_diagnostics_log_quiet<R: tauri::Runtime>(
         return Ok(());
     };
 
+    let summary = super::redaction::sanitize_text(&summary.into());
+    let detail = detail.map(|value| super::redaction::sanitize_text(&value));
     store.append_log(
         category,
         level,
@@ -375,11 +340,16 @@ pub(crate) async fn append_frontend_diagnostics_logs(
     };
 
     for entry in entries {
+        let summary = super::redaction::sanitize_text(&entry.summary);
+        let detail = entry
+            .detail
+            .as_deref()
+            .map(super::redaction::sanitize_text);
         let _ = store.append_log(
             &entry.category,
             &entry.level,
-            entry.summary,
-            entry.detail,
+            summary,
+            detail,
             entry.emitted_at.unwrap_or_else(now_unix_seconds_marker),
             None,
             None,
@@ -472,57 +442,200 @@ pub(crate) fn log_overlay_self_check_cue<R: tauri::Runtime>(app: &AppHandle<R>) 
 pub(crate) async fn export_diagnostics_bundle<R: tauri::Runtime>(
     app: AppHandle<R>,
     diagnostics: State<'_, DiagnosticsStateStore>,
-    scope: String,
+    requested_scope: String,
 ) -> Result<DiagnosticsExportArtifact, String> {
+    let scope = DiagnosticsExportScope::parse(&requested_scope)?;
+    let scope_name = scope.as_str().to_string();
     diagnostics.ensure_directories()?;
     let generated_at = now_unix_seconds_marker();
-    let export_dir = format!(
-        r"{}\{}-{}",
-        diagnostics.exports_dir(),
-        generated_at.replace(':', "-"),
-        scope
-    );
-    fs::create_dir_all(&export_dir).map_err(|error| error.to_string())?;
+    let export_id = Uuid::now_v7().simple().to_string();
+    let exports_root = PathBuf::from(diagnostics.exports_dir());
+    let final_dir = exports_root.join(format!(
+        "{}-{}-{}",
+        safe_export_component(&generated_at),
+        scope.as_str(),
+        &export_id[..8]
+    ));
+    let staging_dir = exports_root.join(format!(".partial-{export_id}"));
 
-    let diagnostics_snapshot = build_diagnostics_snapshot(&app);
-    let audio_snapshot = audio_snapshot_or_preview(&app);
-    let bridge_snapshot = bridge_snapshot_or_default(&app);
-    let storage_snapshot = app
-        .try_state::<StorageStateStore>()
-        .map(|state| state.snapshot())
-        .unwrap_or_else(crate::storage::contracts::StorageRuntimeSnapshot::preview);
-    let config_value = config_value_or_null(&app);
-
-    let file_count = write_diagnostics_bundle(
-        Path::new(&export_dir),
-        &generated_at,
-        &scope,
-        &diagnostics_snapshot,
-        &audio_snapshot,
-        &bridge_snapshot,
-        &storage_snapshot,
-        &config_value,
-        &diagnostics.logs_dir(),
-        &bridge_snapshot.runtime_root,
-    )?;
-
-    diagnostics.mark_export(scope.clone(), export_dir.clone(), now_unix_seconds_marker());
-    append_diagnostics_log(
+    let mut collection_warnings = Vec::new();
+    if let Err(error) = append_diagnostics_log(
         &app,
         "runtime",
         "info",
-        format!("已生成 diagnostics 导出包，scope={}。", scope),
-        Some(export_dir.clone()),
+        format!("正在收集 diagnostics 导出包，scope={}。", scope.as_str()),
+        None,
         Some(format!("{}:{}", file!(), line!())),
         None,
-    )?;
+    ) {
+        collection_warnings.push(format!(
+            "the diagnostics export start event could not be recorded: {error}"
+        ));
+    }
+
+    if !diagnostics.flush_logs() {
+        collection_warnings.push(
+            "diagnostics log writer did not acknowledge the pre-export flush".to_string(),
+        );
+    }
+
+    let mut diagnostics_snapshot = build_diagnostics_snapshot(&app);
+    let final_output_path = final_dir.to_string_lossy().to_string();
+    diagnostics_snapshot.last_export_scope = Some(scope_name.clone());
+    diagnostics_snapshot.last_export_path = Some(final_output_path.clone());
+    diagnostics_snapshot.last_exported_at = Some(generated_at.clone());
+
+    if app.try_state::<AudioStateStore>().is_none() {
+        collection_warnings.push(
+            "audio runtime state was unavailable; preview values were exported".to_string(),
+        );
+    }
+    let audio_snapshot = audio_snapshot_or_preview(&app);
+    if app.try_state::<BridgeStateStore>().is_none() {
+        collection_warnings.push(
+            "bridge runtime state was unavailable; default values were exported".to_string(),
+        );
+    }
+    let bridge_snapshot = bridge_snapshot_or_default(&app);
+    let storage_state = app.try_state::<StorageStateStore>();
+    if storage_state.is_none() {
+        collection_warnings.push(
+            "storage runtime state was unavailable; preview values were exported".to_string(),
+        );
+    }
+    let storage_snapshot = storage_state
+        .as_ref()
+        .map(|state| state.snapshot())
+        .unwrap_or_else(crate::storage::contracts::StorageRuntimeSnapshot::preview);
+    let config_value = match storage_state.as_ref() {
+        Some(storage) => match storage.load_config() {
+            Ok(config) => config,
+            Err(error) => {
+                collection_warnings.push(format!(
+                    "persisted configuration could not be read and was exported as null: {error}"
+                ));
+                Value::Null
+            }
+        },
+        None => Value::Null,
+    };
+
+    let runtime_snapshot = match app.try_state::<RuntimeStateStore>() {
+        Some(runtime_state) => {
+            let mut snapshot = build_runtime_snapshot(&app, &runtime_state);
+            snapshot.diagnostics = diagnostics_snapshot.clone();
+            Some(serialize_export_value("runtime snapshot", &snapshot)?)
+        }
+        None => {
+            collection_warnings.push("runtime state was unavailable".to_string());
+            None
+        }
+    };
+
+    let mut extra_json = BTreeMap::new();
+    if let Some(probe) = app
+        .try_state::<crate::provider::state::ProviderStateStore>()
+        .and_then(|store| store.last_probe())
+    {
+        extra_json.insert(
+            "provider-probe-summary.json".to_string(),
+            json!({
+                "checkedAt": probe.checked_at,
+                "transportEffective": probe.transport_effective,
+                "verdict": probe.verdict,
+            }),
+        );
+    } else {
+        collection_warnings.push("no provider probe result was available".to_string());
+    }
+
+    let logs_dir = PathBuf::from(diagnostics.logs_dir());
+    let bridge_runtime_root = PathBuf::from(&bridge_snapshot.runtime_root);
+    let input = BundleInput {
+        generated_at: &generated_at,
+        scope,
+        diagnostics: serialize_export_value("diagnostics snapshot", &diagnostics_snapshot)?,
+        runtime: runtime_snapshot,
+        audio: serialize_export_value("audio snapshot", &audio_snapshot)?,
+        bridge: serialize_export_value("bridge snapshot", &bridge_snapshot)?,
+        storage: serialize_export_value("storage snapshot", &storage_snapshot)?,
+        config: config_value,
+        logs_dir: &logs_dir,
+        bridge_runtime_root: &bridge_runtime_root,
+        extra_json,
+        collection_warnings,
+    };
+
+    let bundle = match write_diagnostics_bundle(&staging_dir, input) {
+        Ok(bundle) => bundle,
+        Err(error) => {
+            let error = cleanup_failed_staging(&staging_dir, error);
+            let _ = append_diagnostics_log(
+                &app,
+                "runtime",
+                "error",
+                format!("diagnostics 导出失败，scope={scope_name}。"),
+                Some(error.clone()),
+                Some(format!("{}:{}", file!(), line!())),
+                None,
+            );
+            return Err(error);
+        }
+    };
+
+    if let Err(error) = fs::rename(&staging_dir, &final_dir) {
+        return Err(cleanup_failed_staging(
+            &staging_dir,
+            format!("failed to finalize diagnostics export directory: {error}"),
+        ));
+    }
+
+    diagnostics.mark_export(
+        scope_name.clone(),
+        final_output_path.clone(),
+        generated_at.clone(),
+    );
+    // Publishing the bundle is the success boundary. A best-effort audit log
+    // failure after the atomic rename must not make the UI report that an
+    // already available export failed.
+    let _ = append_diagnostics_log(
+        &app,
+        "runtime",
+        "info",
+        format!(
+            "已生成 diagnostics 导出包，scope={} files={} bytes={} redactions={} truncatedLogs={} logBytes={}->{} logLines={} warnings={}。",
+            scope_name,
+            bundle.file_count,
+            bundle.total_bytes,
+            bundle.redaction_count,
+            bundle.logs_truncated,
+            bundle.original_log_bytes,
+            bundle.exported_log_bytes,
+            bundle.exported_log_lines,
+            bundle.warnings.len(),
+        ),
+        Some(final_output_path.clone()),
+        Some(format!("{}:{}", file!(), line!())),
+        None,
+    );
 
     Ok(DiagnosticsExportArtifact {
-        scope,
-        output_path: export_dir,
+        scope: scope_name,
+        output_path: final_output_path,
         generated_at,
-        file_count,
+        file_count: bundle.file_count,
     })
+}
+
+fn cleanup_failed_staging(staging_dir: &std::path::Path, primary_error: String) -> String {
+    match fs::remove_dir_all(staging_dir) {
+        Ok(()) => primary_error,
+        Err(cleanup_error) if cleanup_error.kind() == std::io::ErrorKind::NotFound => primary_error,
+        Err(cleanup_error) => format!(
+            "{primary_error}; additionally failed to remove partial diagnostics export `{}`: {cleanup_error}",
+            staging_dir.display()
+        ),
+    }
 }
 
 pub(crate) fn get_live_session_events(
@@ -530,134 +643,4 @@ pub(crate) fn get_live_session_events(
 ) -> Result<String, String> {
     let snapshot = audio_state.live_session_events.snapshot();
     serde_json::to_string(&snapshot).map_err(|error| error.to_string())
-}
-
-#[cfg(test)]
-mod tests {
-    use std::fs;
-    use std::path::{Path, PathBuf};
-
-    use serde_json::json;
-
-    use crate::audio::contracts::AudioRuntimeSnapshot;
-    use crate::bridge::contracts::BridgeRuntimeSnapshot;
-    use crate::storage::contracts::StorageRuntimeSnapshot;
-
-    use super::{write_diagnostics_bundle, DiagnosticsRuntimeSnapshot};
-
-    fn temp_dir(name: &str) -> PathBuf {
-        crate::diagnostics::test_support::temp_dir("diagnostics-export", name)
-    }
-
-    /// Create the standard `root/logs` + `root/bundle` layout shared by the
-    /// bundle tests and return the three paths.
-    fn make_bundle_dirs(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-        let root_dir = temp_dir(name);
-        let logs_dir = root_dir.join("logs");
-        let export_dir = root_dir.join("bundle");
-        fs::create_dir_all(&logs_dir).expect("create logs dir");
-        fs::create_dir_all(&export_dir).expect("create export dir");
-        (root_dir, logs_dir, export_dir)
-    }
-
-    /// Invoke `write_diagnostics_bundle` with the fixed preview snapshots the
-    /// tests share, leaving only the config value and bridge runtime root to
-    /// vary per case.
-    fn write_bundle_with(
-        export_dir: &Path,
-        logs_dir: &str,
-        bridge_runtime_root: &str,
-        config: serde_json::Value,
-    ) -> Result<usize, String> {
-        write_diagnostics_bundle(
-            export_dir,
-            "2025-01-01T00:00:00Z",
-            "full",
-            &DiagnosticsRuntimeSnapshot::preview(),
-            &AudioRuntimeSnapshot::preview(),
-            &BridgeRuntimeSnapshot::default(),
-            &StorageRuntimeSnapshot::preview(),
-            &config,
-            logs_dir,
-            bridge_runtime_root,
-        )
-    }
-
-    #[test]
-    fn write_diagnostics_bundle_outputs_expected_files() {
-        let (root_dir, logs_dir, export_dir) = make_bundle_dirs("root");
-        fs::write(
-            logs_dir.join("app.log"),
-            "2025-01-01 00:00:00.000 [NORMAL] [runtime] test.rs:1 - ready\n",
-        )
-        .expect("write log file");
-
-        let file_count = write_bundle_with(
-            &export_dir,
-            &logs_dir.to_string_lossy(),
-            &root_dir.join("bridge-runtime").to_string_lossy(),
-            json!({"provider": {"transport": "http"}}),
-        )
-        .expect("write diagnostics bundle");
-
-        assert_eq!(file_count, 7);
-        assert!(export_dir.join("diagnostics-summary.json").exists());
-        assert!(export_dir.join("audio-runtime.json").exists());
-        assert!(export_dir.join("bridge-runtime.json").exists());
-        assert!(export_dir.join("storage-runtime.json").exists());
-        assert!(export_dir.join("config-draft.json").exists());
-        assert!(export_dir.join("environment.json").exists());
-        assert!(export_dir.join("logs").join("app.log").exists());
-
-        let _ = fs::remove_dir_all(root_dir);
-    }
-
-    #[test]
-    fn write_diagnostics_bundle_never_exports_config_credentials() {
-        let (root_dir, logs_dir, export_dir) = make_bundle_dirs("redacted");
-        fs::write(logs_dir.join("app.log"), "safe log\n").expect("write log file");
-        let secret = "diagnostics-test-secret-7f3a";
-
-        write_bundle_with(
-            &export_dir,
-            &logs_dir.to_string_lossy(),
-            &root_dir.join("bridge-runtime").to_string_lossy(),
-            json!({
-                "providers": [{
-                    "apiKey": secret,
-                    "customHeaders": [{"name": "Authorization", "value": secret}],
-                    "baseUrl": format!("https://example.test/v1?token={secret}")
-                }]
-            }),
-        )
-        .expect("write diagnostics bundle");
-
-        let exported = fs::read_to_string(export_dir.join("config-draft.json"))
-            .expect("read exported config");
-        assert!(!exported.contains(secret));
-        assert!(exported.contains("[REDACTED]"));
-        let _ = fs::remove_dir_all(root_dir);
-    }
-
-    #[test]
-    fn write_diagnostics_bundle_copies_optional_bridge_service_log() {
-        let (root_dir, logs_dir, export_dir) = make_bundle_dirs("bridge-log");
-        let bridge_runtime_root = root_dir.join("bridge-runtime");
-        fs::create_dir_all(&bridge_runtime_root).expect("create bridge runtime dir");
-        fs::write(logs_dir.join("app.log"), "app\n").expect("write app log");
-        fs::write(bridge_runtime_root.join("bridge-service.log"), "bridge\n")
-            .expect("write bridge log");
-
-        let file_count = write_bundle_with(
-            &export_dir,
-            &logs_dir.to_string_lossy(),
-            &bridge_runtime_root.to_string_lossy(),
-            json!({}),
-        )
-        .expect("write diagnostics bundle");
-
-        assert_eq!(file_count, 8);
-        assert!(export_dir.join("logs").join("bridge-service.log").exists());
-        let _ = fs::remove_dir_all(root_dir);
-    }
 }

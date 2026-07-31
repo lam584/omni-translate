@@ -9,9 +9,11 @@ import { installDriverRuntime, repairDriverRuntime, startBridgeServiceRuntime } 
 import { useDesktopApiV2 } from '../runtime/desktop-api-context';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
 import { hasInvokeBridge } from '../runtime/tauri-runtime';
+import type { DiagnosticsExportScope } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import { useAppStore } from '../stores/app-store';
 import { useRuntimeSessionStoreSlices } from '../stores/app-store-slices';
+import { describeUnknownError } from '../utils/describe-unknown-error';
 import { resolveRecommendedDriverAction } from '../utils/driver-management';
 import { resolveInteractionCapabilities, resolveRealtimeAudioMode } from '../utils/provider-model-capabilities';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
@@ -73,7 +75,8 @@ function DiagnosticsPage() {
   const desktopApi = useDesktopApiV2();
   const { configDraft, runtimeSnapshot, audioRuntimeSnapshot, setRuntimeSnapshot } = useRuntimeSessionStoreSlices();
   const diagnostics = runtimeSnapshot.diagnostics;
-  const exportScope = diagnostics.lastExportScope ?? configDraft.diagnostics.lastExportScope;
+  const [exportScopeOverride, setExportScopeOverride] = useState<DiagnosticsExportScope | null>(null);
+  const exportScope = exportScopeOverride ?? diagnostics.lastExportScope ?? configDraft.diagnostics.lastExportScope;
   const voiceModelOptions = useMemo(
     () => collectProviderModelOptions(configDraft.providers, {
       scenarios: ['watch', 'game', 'voice-room'],
@@ -172,6 +175,7 @@ function DiagnosticsPage() {
   const [selectedRepairIds, setSelectedRepairIds] = useState<string[]>([]);
   const [repairSelectionInitialized, setRepairSelectionInitialized] = useState(false);
   const [reportExportFeedback, setReportExportFeedback] = useState<{ tone: 'ready' | 'error'; message: string; outputPath?: string } | null>(null);
+  const [exportDirectoryError, setExportDirectoryError] = useState<string | null>(null);
 
   const runReportExport = async (filename: string, exporter: () => Promise<{ outputPath: string; fileCount: number }>) => {
     try {
@@ -237,6 +241,15 @@ function DiagnosticsPage() {
     runOverlaySelfCheck,
     runSelfCheck,
   } = useDiagnosticsWorkbenchController(repairOptions, selectedRepairIds);
+
+  const openDiagnosticsExportDirectory = async (outputPath: string) => {
+    setExportDirectoryError(null);
+    try {
+      await openExportDirectory(outputPath);
+    } catch (error) {
+      setExportDirectoryError(describeUnknownError(error));
+    }
+  };
 
   const reportExportFeedbackBanner = reportExportFeedback ? (
     <div className={`diagnostics-action-feedback diagnostics-action-feedback-${reportExportFeedback.tone}`} role={reportExportFeedback.tone === 'error' ? 'alert' : 'status'}>
@@ -304,7 +317,23 @@ function DiagnosticsPage() {
               <AppIcon name="subtitles" size={14} />
               {busyAction === 'overlay-self-check' ? i18n.t('diagnostics.actions.testing') : i18n.t('diagnostics.actions.testOverlay')}
             </button>
-          <button className="icon-button" disabled={busyAction !== null} onClick={() => void runExportAction(exportScope)} type="button">
+          <label className="diagnostics-export-scope">
+            <span>{i18n.t('diagnostics.export.title')}</span>
+            <select
+              aria-label={i18n.t('diagnostics.export.title')}
+              disabled={busyAction !== null}
+              onChange={(event) => setExportScopeOverride(event.target.value as DiagnosticsExportScope)}
+              value={exportScope}
+            >
+              <option value="summary">SUMMARY</option>
+              <option value="quick">QUICK</option>
+              <option value="full">FULL</option>
+            </select>
+          </label>
+          <button className="icon-button" disabled={busyAction !== null} onClick={() => {
+            setExportDirectoryError(null);
+            void runExportAction(exportScope);
+          }} type="button">
               <AppIcon name="layers" size={14} />
               {busyAction === 'export' ? i18n.t('diagnostics.actions.exporting') : i18n.t('diagnostics.actions.exportBundle')}
             </button>
@@ -319,9 +348,24 @@ function DiagnosticsPage() {
             <div>
               <strong>{actionFeedback.title}</strong>
               {actionFeedback.detail ? <p>{actionFeedback.detail}</p> : null}
-              {actionFeedback.outputPath ? <button className="text-button" onClick={() => void openExportDirectory(actionFeedback.outputPath!).catch((error) => setReportExportFeedback({ tone: 'error', message: String(error) }))} type="button">{i18n.t('diagnostics.actions.openExportDirectory')}</button> : null}
+              {actionFeedback.outputPath ? <button className="text-button" onClick={() => void openDiagnosticsExportDirectory(actionFeedback.outputPath!)} type="button">{i18n.t('diagnostics.actions.openExportDirectory')}</button> : null}
             </div>
-            <button aria-label={i18n.t('common.close')} className="icon-button" onClick={clearActionFeedback} type="button">
+            <button aria-label={i18n.t('common.close')} className="icon-button" onClick={() => {
+              clearActionFeedback();
+              setExportDirectoryError(null);
+            }} type="button">
+              <AppIcon name="close" size={14} />
+            </button>
+          </div>
+        ) : null}
+
+        {exportDirectoryError ? (
+          <div className="diagnostics-action-feedback diagnostics-action-feedback-error" role="alert">
+            <div>
+              <strong>{i18n.t('diagnostics.actions.openExportDirectory')} · {i18n.t('diagnostics.status.failed')}</strong>
+              <p>{exportDirectoryError}</p>
+            </div>
+            <button aria-label={i18n.t('common.close')} className="icon-button" onClick={() => setExportDirectoryError(null)} type="button">
               <AppIcon name="close" size={14} />
             </button>
           </div>

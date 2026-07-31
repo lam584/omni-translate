@@ -4,6 +4,32 @@ This directory contains manual diagnostics for local support, driver
 verification, provider debugging, and release triage. These scripts are not
 part of the normal build pipeline unless an npm script explicitly calls them.
 
+## Desktop diagnostics export bundles
+
+The desktop Diagnostics page exports a schema-versioned directory through the
+`diagnostics_v2` command. Select the smallest scope that contains the evidence
+needed for the investigation:
+
+| Scope | Contents |
+| --- | --- |
+| `summary` | Core runtime/diagnostics health, environment metadata, log statistics, and up to 32 KiB from the end of each available log. |
+| `quick` | The same structured health data with up to 512 KiB from the end of each log. |
+| `full` | Complete sanitized logs, full runtime/audio/bridge/storage/config snapshots, and any optional session evidence available to the running build. |
+
+Every scope includes `bundle-manifest.json`, `diagnostics-report.txt`,
+`diagnostics-summary.json`, `environment.json`, and `log-summary.json`. The
+manifest records the actual payload file list, byte totals, truncation and
+redaction counts, and collection warnings. Exports are assembled in a staging
+directory and renamed into place only after the manifest and file count have
+been verified.
+
+Credential-like values routed through the desktop diagnostics logger are
+redacted before they are written, and every collected log is sanitized again
+when a bundle is exported. This is a safety boundary, not a guarantee that a
+bundle is anonymous: log text and full snapshots can still contain conversation
+text, model output, device identifiers, session ids, and local paths. Review a
+bundle before sharing it outside the support context.
+
 ## Existing PowerShell checks
 
 - `omni_diagnosis.ps1`: broad local environment and Omni runtime inspection.

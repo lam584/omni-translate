@@ -212,6 +212,14 @@ pub(super) struct OmniEventDiagnostics {
     /// briefly after response.done so a late transcription.completed can still
     /// repair the correct cue instead of overwriting the next input cue.
     pub(super) native_response_item_id: Option<String>,
+    /// Server VAD can finish several input turns before the first native
+    /// response reaches `response.done`. Keep those owners in FIFO order;
+    /// otherwise a later `speech_stopped` overwrites the single active owner
+    /// and attaches the prior translation to the newer source cue.
+    pending_native_response_owners: VecDeque<NativeResponseOwner>,
+    /// Recently completed owners remain addressable by input item id because
+    /// `transcription.completed` is allowed to arrive after `response.done`.
+    completed_native_response_owners: VecDeque<NativeResponseOwner>,
     pub(super) last_asr_delta_text: String,
     pub(super) last_asr_delta_at_ms: Option<u64>,
     pub(super) last_asr_delta_item_id: Option<String>,
@@ -223,6 +231,105 @@ pub(super) struct OmniEventDiagnostics {
     pub(super) last_output_done_at_ms: Option<u64>,
     pub(super) first_response_done_at_ms: Option<u64>,
     pub(super) response_done_count: u64,
+}
+
+const MAX_NATIVE_RESPONSE_OWNERS: usize = 32;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeResponseOwner {
+    cue_id: String,
+    input_item_id: Option<String>,
+}
+
+impl OmniEventDiagnostics {
+    pub(super) fn capture_native_response_owner(
+        &mut self,
+        cue_id: String,
+        input_item_id: Option<String>,
+    ) {
+        if self.native_response_cue_id.as_deref() == Some(cue_id.as_str()) {
+            if self.native_response_item_id.is_none() {
+                self.native_response_item_id = input_item_id;
+            }
+            return;
+        }
+        if let Some(owner) = self
+            .pending_native_response_owners
+            .iter_mut()
+            .find(|owner| owner.cue_id == cue_id)
+        {
+            if owner.input_item_id.is_none() {
+                owner.input_item_id = input_item_id;
+            }
+            return;
+        }
+        self.pending_native_response_owners
+            .push_back(NativeResponseOwner {
+                cue_id,
+                input_item_id,
+            });
+        if self.pending_native_response_owners.len() > MAX_NATIVE_RESPONSE_OWNERS {
+            self.pending_native_response_owners.pop_back();
+        }
+    }
+
+    pub(super) fn claim_next_native_response_owner(&mut self, fallback_cue_id: Option<&str>) {
+        if self.native_response_cue_id.is_some() {
+            return;
+        }
+        let owner = self.pending_native_response_owners.pop_front().or_else(|| {
+            fallback_cue_id.map(|cue_id| NativeResponseOwner {
+                cue_id: cue_id.to_string(),
+                input_item_id: None,
+            })
+        });
+        if let Some(owner) = owner {
+            self.native_response_cue_id = Some(owner.cue_id);
+            self.native_response_item_id = owner.input_item_id;
+        }
+    }
+
+    pub(super) fn native_response_cue_for_input_item(&self, item_id: &str) -> Option<String> {
+        if self.native_response_item_id.as_deref() == Some(item_id) {
+            return self.native_response_cue_id.clone();
+        }
+        self.pending_native_response_owners
+            .iter()
+            .find(|owner| owner.input_item_id.as_deref() == Some(item_id))
+            .or_else(|| {
+                self.completed_native_response_owners
+                    .iter()
+                    .rev()
+                    .find(|owner| owner.input_item_id.as_deref() == Some(item_id))
+            })
+            .map(|owner| owner.cue_id.clone())
+    }
+
+    pub(super) fn complete_native_response_owner(&mut self) {
+        let Some(cue_id) = self.native_response_cue_id.take() else {
+            self.native_response_item_id = None;
+            return;
+        };
+        self.completed_native_response_owners
+            .push_back(NativeResponseOwner {
+                cue_id,
+                input_item_id: self.native_response_item_id.take(),
+            });
+        while self.completed_native_response_owners.len() > MAX_NATIVE_RESPONSE_OWNERS {
+            self.completed_native_response_owners.pop_front();
+        }
+    }
+
+    pub(super) fn clear_native_response_owners(&mut self) {
+        self.native_response_cue_id = None;
+        self.native_response_item_id = None;
+        self.pending_native_response_owners.clear();
+        self.completed_native_response_owners.clear();
+    }
+
+    pub(super) fn pending_native_response_owner_count(&self) -> usize {
+        self.pending_native_response_owners.len()
+    }
 }
 
 pub(super) fn elapsed_ms_since(start: &SystemTime) -> u64 {
@@ -261,6 +368,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
     event_diagnostics: &mut OmniEventDiagnostics,
     session_started_at: &SystemTime,
 ) {
+    event_diagnostics.claim_next_native_response_owner(current_cue_id.as_deref());
     let response_done_at_ms = elapsed_ms_since(session_started_at);
     event_diagnostics.response_done_count = event_diagnostics.response_done_count.saturating_add(1);
     event_diagnostics
@@ -470,6 +578,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
             event_diagnostics,
         );
     }
+    event_diagnostics.complete_native_response_owner();
 }
 
 pub(super) fn reset_omni_turn_state(
@@ -488,8 +597,7 @@ pub(super) fn reset_omni_turn_state(
         transcription_completed_at,
         event_diagnostics,
     );
-    event_diagnostics.native_response_cue_id = None;
-    event_diagnostics.native_response_item_id = None;
+    event_diagnostics.clear_native_response_owners();
 }
 
 /// Releases the input-side state of a manual turn without touching the

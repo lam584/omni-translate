@@ -288,9 +288,7 @@ impl OmniEventProcessor {
         store
             .live_session_events
             .push_output_delta(event_type, delta, "");
-        if event_diagnostics.native_response_cue_id.is_none() {
-            event_diagnostics.native_response_cue_id = current_cue_id.clone();
-        }
+        event_diagnostics.claim_next_native_response_owner(current_cue_id.as_deref());
         let response_source_text = resolve_native_response_source_text(
             store,
             event_diagnostics.native_response_cue_id.as_deref(),
@@ -402,9 +400,7 @@ impl OmniEventProcessor {
             "",
             &pending_translated_text,
         );
-        if event_diagnostics.native_response_cue_id.is_none() {
-            event_diagnostics.native_response_cue_id = current_cue_id.clone();
-        }
+        event_diagnostics.claim_next_native_response_owner(current_cue_id.as_deref());
         let response_source_text = resolve_native_response_source_text(
             store,
             event_diagnostics.native_response_cue_id.as_deref(),

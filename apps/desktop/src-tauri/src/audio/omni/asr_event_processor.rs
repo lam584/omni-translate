@@ -198,17 +198,15 @@ impl OmniAsrEventProcessor {
                 );
                 pending_source_text = resolved.display_text;
                 completed_source_text = Some(resolved.response_gate_text);
+                let correlated_native_response_cue = completed_item_id.and_then(|item_id| {
+                    event_diagnostics.native_response_cue_for_input_item(item_id)
+                });
                 let routed_native_response_cue = if !subtitle_translate_active
                     && !pending_source_text.trim().is_empty()
-                    && completed_item_id.is_some()
-                    && event_diagnostics.native_response_item_id.as_deref()
-                        == completed_item_id
-                    && event_diagnostics.native_response_cue_id.as_deref()
+                    && correlated_native_response_cue.as_deref()
                         != current_cue_id.as_deref()
                 {
-                    event_diagnostics
-                        .native_response_cue_id
-                        .clone()
+                    correlated_native_response_cue
                         .inspect(|cue_id| {
                             update_native_response_cue_source(
                                 store,

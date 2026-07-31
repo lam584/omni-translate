@@ -115,6 +115,24 @@ impl<R: tauri::Runtime> ModelTraceRecorder<R> {
         trace_call.emit_snapshot();
         trace_call
     }
+
+    /// Writes one trace event without adding a synthetic call to the runtime
+    /// call summary. This is used for pipeline observations that happen after
+    /// a provider call has completed, such as comparing the provider's exact
+    /// text with the subtitle cue that was ultimately published.
+    pub(crate) fn record_event(&self, name: &str, label: &str, value: Value) {
+        let event_id = format!("event-{}", Uuid::new_v4());
+        let detail = model_trace_detail(&self.context, &event_id, name, label, value);
+        let _ = append_diagnostics_log_quiet(
+            &self.app,
+            "model-trace",
+            "debug",
+            format!("{name} {label}"),
+            Some(detail.to_string()),
+            Some(format!("{}:{}", file!(), line!())),
+            None,
+        );
+    }
 }
 
 pub(crate) struct ModelTraceCall<R: tauri::Runtime = tauri::Wry> {

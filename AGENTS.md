@@ -37,3 +37,74 @@
   - desktop（前端 + Tauri 壳）：[apps/desktop/AGENTS.md](apps/desktop/AGENTS.md)
   - bridge（Rust 桥接服务）：[apps/bridge-service-native/README.md](apps/bridge-service-native/README.md)
   - driver（虚拟麦克风驱动）：[drivers/windows-virtual-mic/AGENTS.md](drivers/windows-virtual-mic/AGENTS.md)
+
+# 核心代码边界规则
+
+以下路径为核心代码边界。变更这些路径下的文件时，必须运行对应的 required validation 命令并通过，方可合并。
+
+```yaml
+coreCodeRules:
+  - id: cross-process-contracts
+    boundaryKind: explicit-core-boundary
+    paths:
+      - "contracts/error-codes.json"
+      - "contracts/**"
+    requiredReview: true
+    requiredValidation:
+      - command: "npm run test:contracts"
+        description: "Node 契约校验（含配置路径守卫）"
+
+  - id: bridge-protocol
+    boundaryKind: explicit-core-boundary
+    paths:
+      - "crates/omni-bridge-protocol/**"
+      - "apps/bridge-service-native/src/protocol/**"
+      - "apps/desktop/src-tauri/src/bridge/**"
+    requiredReview: true
+    requiredValidation:
+      - command: "npm run test:contracts"
+        description: "跨进程契约一致性"
+      - command: "npm run test:integration:bridge-contract"
+        description: "桥接契约集成测试"
+      - command: "npm run test:bridge-service-native"
+        description: "Rust bridge crate 完整测试"
+
+  - id: driver-interface
+    boundaryKind: explicit-core-boundary
+    paths:
+      - "drivers/windows-virtual-mic/include/**"
+      - "drivers/windows-virtual-mic/sysvad/omni_bridge_ring.*"
+      - "drivers/windows-virtual-mic/sysvad/TabletAudioSample/**"
+    requiredReview: true
+    requiredValidation:
+      - command: "npm run test:driver-boundaries"
+        description: "用户态 Node 契约测试"
+      - command: "cl /std:c++17 /EHsc /I..\\include omni_ring_core_test.cpp && omni_ring_core_test.exe"
+        description: "原生 C++ 冒烟测试（drivers/windows-virtual-mic/tests 目录）"
+      - command: "npm run driver:build-sysvad"
+        description: "WDK 机械构建信号（需 WDK 环境）"
+
+  - id: tauri-command-schema
+    boundaryKind: explicit-core-boundary
+    paths:
+      - "apps/desktop/src-tauri/src/commands/**"
+      - "apps/desktop/src-tauri/src/events/**"
+      - "apps/desktop/src-tauri/fixtures/desktop-api-v2-commands.json"
+      - "apps/desktop/src/runtime/desktop-api-v2.ts"
+    requiredReview: true
+    requiredValidation:
+      - command: "npm run test:desktop-shell"
+        description: "Rust 桌面壳 cargo test（含 fixture 反序列化）"
+      - command: "npm run verify:desktop"
+        description: "前端 lint + tsc + vitest + 构建"
+      - command: "npm run test:contracts"
+        description: "生成物一致性检查"
+```
+
+## 规则说明
+
+- `boundaryKind: explicit-core-boundary` 表示该边界由仓库显式声明，而非推断。
+- `requiredReview: true` 表示变更需要人工审查（不可仅凭 CI 合并）。
+- `requiredValidation` 中的每条命令必须在变更后成功运行。
+- 新增核心路径时，在此章节追加条目并保持 YAML 结构不变。
+- 覆盖豁免登记见 `scripts/testing/coverage-scope-registry.json`。

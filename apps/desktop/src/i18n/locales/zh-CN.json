@@ -902,6 +902,7 @@
       "apiUrl": "API 地址",
       "resetApiUrl": "重置 API 地址",
       "apiKey": "API 密钥",
+      "getApiKey": "获取 API 密钥",
       "credentialsHeader": "API 地址 / API 密钥",
       "secretPlaceholder": "密钥",
       "hideSecret": "隐藏密钥",
@@ -1437,5 +1438,95 @@
       "importReadFailed": "文件读取失败，请重试。"
     },
     "searchPlaceholder": "搜索术语…"
+  },
+  "watchReport": {
+    "currentTitle": "本次看片报告",
+    "latestTitle": "最近一次看片报告",
+    "description": "对比模型原始输出、字幕发布文本和悬浮窗实际渲染。",
+    "completed": "已结束",
+    "active": "进行中",
+    "modelFallback": "看片模式",
+    "meta": "{{provider}} · {{seconds}} 秒 · {{count}} 个 cue",
+    "revision": "修订 {{revision}}",
+    "unknownPath": "未知路径",
+    "loading": "正在读取看片报告…",
+    "empty": "尚无看片报告。看片结束后会在这里保留最近一份内存报告。",
+    "refresh": "刷新",
+    "clear": "清除此报告",
+    "accepted": "已采用",
+    "rejected": "未采用",
+    "visible": "可见",
+    "hidden": "隐藏",
+    "technicalDetails": "技术明细（模型增量、重试、发布、渲染与错误，共 {{count}} 条）",
+    "sessionTechnicalDetails": "会话级技术明细（连接、重试与未关联 cue 的错误，共 {{count}} 条）",
+    "exportWarning": "导出文件包含字幕原文、LLM 输出、错误和时间线。是否继续？",
+    "fullBundleWarning": "完整诊断包可能包含最近一次看片报告中的字幕和模型输出。是否继续？",
+    "exported": "看片报告已导出：{{path}}",
+    "exportLocation": "报告已保存，可在以下位置找到：",
+    "exportPath": "完整文件路径",
+    "copyPath": "复制路径",
+    "pathCopied": "路径已复制",
+    "issueOccurrences": "共 {{count}} 次",
+    "affectedCues": "影响 {{count}} 个 cue",
+    "issueOverview": "异常分类",
+    "issueSummary": "{{groups}} 个问题类型 · 共 {{occurrences}} 次",
+    "issueCategorySummary": "{{groups}} 类 · 共 {{occurrences}} 次",
+    "status": {
+      "exact": "完全一致",
+      "formattingOnly": "仅格式不同",
+      "different": "内容不同",
+      "notPublished": "未发布",
+      "notRendered": "未显示",
+      "modelError": "模型错误",
+      "pending": "等待完成",
+      "superseded": "已被替换"
+    },
+    "issueCategories": {
+      "all": "全部类别",
+      "model": "模型与服务",
+      "output": "音频输出",
+      "publish": "字幕发布",
+      "render": "浮窗渲染",
+      "content": "内容一致性",
+      "timing": "时间与延迟",
+      "session": "会话生命周期",
+      "data": "报告完整性"
+    },
+    "labels": {
+      "source": "原文",
+      "llm": "LLM 采用文本",
+      "published": "字幕发布文本",
+      "rendered": "浮窗实际文本"
+    },
+    "timing": {
+      "sourceToLlm": "源文 → LLM 首字",
+      "sourceToRender": "源文 → 浮窗",
+      "llmToPublish": "LLM 首字 → 发布",
+      "publishToRender": "发布 → 可见",
+      "llmToRender": "LLM 首字 → 可见",
+      "finalToPublish": "LLM 终稿 → 发布",
+      "finalPublishToRender": "终稿发布 → 可见"
+    },
+    "metrics": {
+      "firstToken": "应用内首字延迟",
+      "endToEnd": "端到端首译延迟",
+      "p95Max": "P95 / 最大值",
+      "complete": "完整三阶段",
+      "notRendered": "发布后未显示",
+      "issues": "问题类型 / 次数",
+      "llmToRender": "LLM 首字 → 浮窗"
+    },
+    "controls": {
+      "display": "显示",
+      "sort": "排序",
+      "issueFirst": "异常优先",
+      "differences": "内容差异",
+      "all": "全部 cue",
+      "issueCount": "异常数",
+      "latency": "延迟",
+      "sequence": "时间顺序",
+      "noCues": "当前筛选条件下没有 cue。",
+      "category": "类别"
+    }
   }
 }

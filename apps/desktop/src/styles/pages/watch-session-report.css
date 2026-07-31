@@ -1,0 +1,503 @@
+.benchmark-modal.watch-report-modal,
+.watch-report {
+  /*
+   * The application still exposes dark legacy --color-* tokens at :root while
+   * the desktop shell paints a light surface in a later compatibility layer.
+   * Keep this report self-contained so a white dialog can never inherit the
+   * legacy near-white text again.  These aliases also cover report panels
+   * opened from either the light application shell or a dark host surface.
+   */
+  --watch-report-bg: #ffffff;
+  --watch-report-surface: #f5f7f9;
+  --watch-report-surface-raised: #ffffff;
+  --watch-report-ink: #17212b;
+  --watch-report-muted: #4b5b68;
+  --watch-report-border: #c5d0da;
+  --watch-report-border-strong: #8796a5;
+  --watch-report-success: #11643d;
+  --watch-report-success-bg: #e9f7ef;
+  --watch-report-warning: #814509;
+  --watch-report-warning-bg: #fff4e5;
+  --watch-report-danger: #9f2f2f;
+  --watch-report-danger-bg: #fff0f0;
+  --color-text-primary: var(--watch-report-ink);
+  --color-text-muted: var(--watch-report-muted);
+  --color-select-menu-surface: var(--watch-report-bg);
+  --color-success: var(--watch-report-success);
+  --color-warning: var(--watch-report-warning);
+  --color-danger: var(--watch-report-danger);
+}
+
+.benchmark-modal.watch-report-modal {
+  width: min(1360px, calc(100vw - 32px));
+  height: calc(100vh - 32px);
+  max-height: calc(100vh - 32px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  color: var(--watch-report-ink);
+  background: var(--watch-report-bg);
+  color-scheme: light;
+}
+
+.watch-report-modal-head {
+  flex: 0 0 auto;
+}
+
+.watch-report-modal > .watch-report {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 6px;
+  scrollbar-color: var(--watch-report-border-strong) var(--watch-report-surface);
+}
+
+.watch-report {
+  display: grid;
+  gap: 14px;
+  color: var(--watch-report-ink, #17212b);
+  background: var(--watch-report-bg, #ffffff);
+  color-scheme: light;
+}
+
+.watch-report-head,
+.watch-report-cue-head,
+.watch-report-actions,
+.watch-report-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.watch-report-head h3,
+.watch-report-head p {
+  margin: 3px 0 0;
+}
+
+.watch-report-head > div:first-child > span,
+.watch-report-cue-head span,
+.watch-report-source span,
+.watch-report-comparison-grid span,
+.watch-report-summary span {
+  color: var(--color-text-muted);
+  font-size: .76rem;
+}
+
+.watch-report-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.watch-report-actions button,
+.watch-report-controls select {
+  border: 1px solid var(--watch-report-border-strong, #8796a5);
+  border-radius: 7px;
+  background: var(--watch-report-surface-raised, #ffffff);
+  color: var(--watch-report-ink, #17212b);
+  padding: 6px 9px;
+}
+
+.watch-report-controls option,
+.watch-report-controls optgroup {
+  background: var(--watch-report-bg, #ffffff);
+  color: var(--watch-report-ink, #17212b);
+}
+
+.watch-report-actions button:hover:not(:disabled),
+.watch-report-controls select:hover {
+  border-color: var(--watch-report-success, #11643d);
+  background: var(--watch-report-surface, #f5f7f9);
+}
+
+.watch-report-actions button:focus-visible,
+.watch-report-controls select:focus-visible {
+  outline: 2px solid var(--watch-report-success, #11643d);
+  outline-offset: 2px;
+}
+
+.watch-report-actions button:disabled {
+  color: var(--watch-report-muted, #4b5b68);
+  background: var(--watch-report-surface, #f5f7f9);
+  opacity: 1;
+}
+
+.watch-report-actions .watch-report-clear {
+  color: var(--color-danger, #ff8585);
+}
+
+.watch-report-export-result {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 12px;
+  align-items: end;
+  border: 1px solid #83b79a;
+  border-radius: 9px;
+  background: var(--watch-report-success-bg, #e9f7ef);
+  padding: 10px 12px;
+}
+
+.watch-report-export-result > strong {
+  grid-column: 1 / -1;
+  color: var(--watch-report-success, #11643d);
+}
+
+.watch-report-export-result label {
+  display: grid;
+  min-width: 0;
+  gap: 5px;
+  color: var(--watch-report-muted, #4b5b68);
+  font-size: .76rem;
+}
+
+.watch-report-export-path {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--watch-report-border-strong, #8796a5);
+  border-radius: 7px;
+  background: var(--watch-report-surface-raised, #ffffff);
+  color: var(--watch-report-ink, #17212b);
+  padding: 7px 9px;
+  font: inherit;
+}
+
+.watch-report-export-path:focus-visible {
+  outline: 2px solid var(--watch-report-success, #11643d);
+  outline-offset: 2px;
+}
+
+.watch-report-export-result-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.watch-report-export-result-actions button {
+  border: 1px solid var(--watch-report-border-strong, #8796a5);
+  border-radius: 7px;
+  background: var(--watch-report-surface-raised, #ffffff);
+  color: var(--watch-report-ink, #17212b);
+  padding: 7px 10px;
+}
+
+.watch-report-export-result-actions button:hover {
+  border-color: var(--watch-report-success, #11643d);
+  background: var(--watch-report-surface, #f5f7f9);
+}
+
+.watch-report-export-result-actions button:focus-visible {
+  outline: 2px solid var(--watch-report-success, #11643d);
+  outline-offset: 2px;
+}
+
+.watch-report-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.watch-report-summary > div {
+  display: grid;
+  gap: 5px;
+  border: 1px solid var(--watch-report-border, #c5d0da);
+  border-radius: 9px;
+  background: var(--watch-report-surface, #f5f7f9);
+  padding: 10px;
+}
+
+.watch-report-summary strong {
+  font-size: 1rem;
+}
+
+.watch-report-session-issues,
+.watch-report-issues,
+.watch-report-action-error {
+  border: 1px solid #d79a55;
+  border-radius: 8px;
+  background: var(--watch-report-warning-bg, #fff4e5);
+  padding: 8px 10px;
+}
+
+.watch-report-issues {
+  display: grid;
+  gap: 7px;
+  margin-top: 9px;
+}
+
+.watch-report-issue-overview {
+  display: grid;
+  gap: 9px;
+  border: 1px solid var(--watch-report-border, #c5d0da);
+  border-radius: 10px;
+  background: var(--watch-report-surface, #f5f7f9);
+  padding: 11px;
+}
+
+.watch-report-issue-overview-head,
+.watch-report-issue-category summary,
+.watch-report-issue > div,
+.watch-report-issue-group header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.watch-report-issue-overview-head {
+  justify-content: space-between;
+}
+
+.watch-report-issue-overview-head h4 {
+  margin: 0;
+}
+
+.watch-report-issue-overview-head > span,
+.watch-report-issue-category summary span,
+.watch-report-issue small,
+.watch-report-issue-group header span {
+  color: var(--color-text-muted);
+  font-size: .76rem;
+}
+
+.watch-report-issue-categories {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 8px;
+}
+
+.watch-report-issue-category {
+  min-width: 0;
+  border: 1px solid var(--watch-report-border, #c5d0da);
+  border-radius: 8px;
+  background: var(--watch-report-surface-raised, #ffffff);
+  padding: 8px 9px;
+}
+
+.watch-report-issue-category summary {
+  justify-content: space-between;
+  cursor: pointer;
+}
+
+.watch-report-issue-category > div {
+  display: grid;
+  gap: 7px;
+  margin-top: 8px;
+}
+
+.watch-report-issue,
+.watch-report-issue-group {
+  border-left: 3px solid var(--watch-report-warning, #814509);
+  border-radius: 5px;
+  background: var(--watch-report-warning-bg, #fff4e5);
+  padding: 7px 9px;
+}
+
+.watch-report-issue-error {
+  border-left-color: var(--watch-report-danger, #9f2f2f);
+  background: var(--watch-report-danger-bg, #fff0f0);
+}
+
+.watch-report-issue > div,
+.watch-report-issue-group header {
+  flex-wrap: wrap;
+}
+
+.watch-report-issue > div > span:first-child {
+  border-radius: 999px;
+  background: #e5ebf0;
+  padding: 2px 7px;
+  color: var(--color-text-muted);
+  font-size: .72rem;
+}
+
+.watch-report-issue p,
+.watch-report-issue-group p {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.watch-report-session-issues p,
+.watch-report-issues p {
+  margin: 3px 0;
+}
+
+.watch-report-session-issues strong,
+.watch-report-issues strong {
+  margin-right: 8px;
+}
+
+.watch-report-controls {
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+
+.watch-report-controls label {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--color-text-muted);
+  font-size: .8rem;
+}
+
+.watch-report-cues {
+  display: grid;
+  gap: 10px;
+}
+
+.watch-report-cue {
+  border: 1px solid var(--watch-report-border, #c5d0da);
+  border-radius: 10px;
+  background: var(--watch-report-surface-raised, #ffffff);
+  padding: 11px;
+}
+
+.watch-report-cue-warning {
+  border-color: #d79a55;
+}
+
+.watch-report-cue-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.watch-report-status {
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: .74rem;
+  color: var(--watch-report-muted, #4b5b68);
+  background: #e5ebf0;
+}
+
+.watch-report-status-ready {
+  color: var(--watch-report-success, #11643d);
+  background: var(--watch-report-success-bg, #e9f7ef);
+}
+
+.watch-report-status-warning {
+  color: var(--watch-report-warning, #814509);
+  background: var(--watch-report-warning-bg, #fff4e5);
+}
+
+.watch-report-source {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+}
+
+.watch-report-comparison-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.watch-report-comparison-grid > div {
+  min-width: 0;
+  border: 1px solid var(--watch-report-border, #c5d0da);
+  border-radius: 8px;
+  background: var(--watch-report-surface, #f5f7f9);
+  padding: 8px;
+}
+
+.watch-report-comparison-grid pre,
+.watch-report-event pre {
+  margin: 5px 0 0;
+  color: inherit;
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.watch-report-timing-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 5px 10px;
+  margin-top: 9px;
+  font-size: .78rem;
+  color: var(--color-text-muted);
+}
+
+.watch-report-timing-grid strong {
+  color: var(--color-text-primary);
+}
+
+.watch-report-events {
+  margin-top: 9px;
+}
+
+.watch-report-session-events {
+  margin-top: 0;
+  border: 1px solid var(--watch-report-border, #c5d0da);
+  border-radius: 10px;
+  background: var(--watch-report-surface, #f5f7f9);
+  padding: 10px 11px;
+}
+
+.watch-report-events summary {
+  cursor: pointer;
+  color: var(--color-text-muted);
+  font-size: .8rem;
+}
+
+.watch-report-event-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.watch-report-event {
+  display: grid;
+  grid-template-columns: 72px minmax(130px, auto) auto auto 1fr;
+  gap: 6px;
+  align-items: start;
+  border-left: 2px solid var(--watch-report-border-strong, #8796a5);
+  background: var(--watch-report-surface, #f5f7f9);
+  padding: 5px 7px;
+  font-size: .76rem;
+}
+
+.watch-report-event-error {
+  border-left-color: var(--watch-report-danger, #9f2f2f);
+}
+
+.watch-report-event pre,
+.watch-report-event p {
+  grid-column: 1 / -1;
+}
+
+.watch-report-event p {
+  margin: 2px 0 0;
+  color: var(--color-text-muted);
+}
+
+.watch-report-empty {
+  padding: 18px;
+  color: var(--color-text-muted);
+  text-align: center;
+}
+
+.watch-report-error,
+.watch-report-action-error {
+  color: var(--color-danger, #ff8585);
+}
+
+@media (max-width: 1000px) {
+  .watch-report-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  .watch-report-summary,
+  .watch-report-comparison-grid,
+  .watch-report-timing-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .watch-report-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .watch-report-export-result {
+    grid-template-columns: 1fr;
+  }
+}

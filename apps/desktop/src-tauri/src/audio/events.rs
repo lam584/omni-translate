@@ -666,6 +666,38 @@ mod tests {
     }
 
     #[test]
+    fn named_dashscope_realtime_model_ignores_earlier_openai_exact_match() {
+        let model = "qwen3.5-omni-plus-realtime";
+        let config = config_with_providers(vec![
+            provider_value(
+                "template-openai-compatible",
+                "provider-openai-compatible",
+                "openai-compatible",
+                model,
+                "https://openai-compatible.test/v1",
+                "websocket",
+                "credential://provider/openai-compatible/default",
+            ),
+            provider_value(
+                "template-dashscope-realtime",
+                "provider-dashscope",
+                "dashscope",
+                "qwen-plus",
+                "https://dashscope.aliyuncs.com/api/v1",
+                "websocket",
+                "credential://provider/dashscope/default",
+            ),
+        ]);
+
+        let provider = resolve_model_provider_from_config_value(&config, model)
+            .expect("named DashScope realtime model should resolve");
+
+        assert_eq!(provider.kind, "dashscope");
+        assert_eq!(provider.provider_id, "provider-dashscope");
+        assert_eq!(provider.model, model);
+    }
+
+    #[test]
     fn missing_composite_template_returns_none() {
         let config = config_with_providers(vec![provider_value(
             "template-custom-deepseek",

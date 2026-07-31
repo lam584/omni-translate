@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { registerDomHarness } from '../../test-utils/component-test-harness';
 import ChainFlow from './ChainFlow';
 import ScenarioCard, { resolveChineseFallback } from './ScenarioCard';
-import type { RoutingModelOption } from './routingModelCatalog';
+import { detectScenarioCapabilities, supportsRoutingScenario, type RoutingModelOption, type ScenarioId } from './routingModelCatalog';
 
 const options: RoutingModelOption[] = [
   { id: 'first', model: 'first/model', displayName: 'First', description: 'One', capabilities: [], providerTemplateId: 'p', rawModelId: 'first/model' },
@@ -71,5 +71,20 @@ describe('audio-routing components', () => {
     expect(view.container.querySelector('[role="listbox"]')).toBeInstanceOf(HTMLElement);
     await act(async () => document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })));
     expect(view.container.querySelector('[role="listbox"]')).toBeNull();
+  });
+
+  describe('routing model catalog exhaustiveness', () => {
+    it('returns safe defaults for a future scenario id', () => {
+      const model = { capabilities: ['speech-to-text'] } as never;
+      expect(supportsRoutingScenario(model, 'future' as ScenarioId)).toBe(false);
+      expect(detectScenarioCapabilities(model as never, 'future' as ScenarioId)).toEqual([]);
+    });
+
+    it('keeps outbound speech capability absent for STT-only models', () => {
+      expect(detectScenarioCapabilities({ capabilities: ['speech-to-text'] } as never, 'outbound')).toEqual([
+        'stt',
+        'translation',
+      ]);
+    });
   });
 });

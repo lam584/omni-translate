@@ -533,6 +533,21 @@ pub(crate) async fn export_diagnostics_bundle<R: tauri::Runtime>(
     };
 
     let mut extra_json = BTreeMap::new();
+    if scope == DiagnosticsExportScope::Full {
+        if let Some(report) = app
+            .try_state::<AudioStateStore>()
+            .and_then(|state| state.watch_session_report.snapshot())
+        {
+            extra_json.insert(
+                "watch-session-report.json".to_string(),
+                serialize_export_value("watch session report", &report)?,
+            );
+        } else {
+            collection_warnings.push(
+                "no completed watch session report was available for the full export".to_string(),
+            );
+        }
+    }
     if let Some(probe) = app
         .try_state::<crate::provider::state::ProviderStateStore>()
         .and_then(|store| store.last_probe())
@@ -636,11 +651,4 @@ fn cleanup_failed_staging(staging_dir: &std::path::Path, primary_error: String) 
             staging_dir.display()
         ),
     }
-}
-
-pub(crate) fn get_live_session_events(
-    audio_state: State<'_, AudioStateStore>,
-) -> Result<String, String> {
-    let snapshot = audio_state.live_session_events.snapshot();
-    serde_json::to_string(&snapshot).map_err(|error| error.to_string())
 }

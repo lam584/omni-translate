@@ -198,6 +198,9 @@ fn process_translation_cues(
 
             if !result.is_forced {
                 if let Some(cached) = cue_state.cached_final_translation(&result.sentence) {
+                    record_adopted_segment(
+                        store, &cue.cue_id, "secondary-cache-reuse", display_index, &cached,
+                    );
                     TranslationResultWriter::write_ranked(
                         &app,
                         store,
@@ -215,6 +218,10 @@ fn process_translation_cues(
             let detected_lang = detect_language(&result.sentence);
             if let Some(lang) = detected_lang {
                 if is_target_language(lang, &target_language) {
+                    record_adopted_segment(
+                        store, &cue.cue_id, "same-language-bypass", display_index,
+                        result.sentence.trim(),
+                    );
                     TranslationResultWriter::write_ranked(
                         &app,
                         store,
@@ -310,6 +317,26 @@ fn process_translation_cues(
         }
     }
 
+}
+
+fn record_adopted_segment(
+    store: &AudioStateStore,
+    cue_id: &str,
+    translation_path: &str,
+    display_index: usize,
+    text: &str,
+) {
+    store
+        .watch_session_report
+        .record_model_segment_final_for_cue(
+            cue_id,
+            translation_path,
+            display_index,
+            text,
+            true,
+            None,
+            None,
+        );
 }
 
 impl SubtitleTranslationWorker {

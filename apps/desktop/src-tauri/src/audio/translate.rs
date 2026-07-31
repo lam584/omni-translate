@@ -26,6 +26,7 @@ use super::translation_scheduler::{
 enum TranslateUpdate {
     Delta {
         cue_id: String,
+        raw_delta: String,
         partial_text: String,
     },
     Done {
@@ -234,8 +235,10 @@ fn run_translate_worker(
             match update {
                 TranslateUpdate::Delta {
                     cue_id,
+                    raw_delta,
                     partial_text,
                 } => {
+                    report_translation_delta(store, &cue_id, &raw_delta);
                     store.update_subtitle_cue_translation(&cue_id, partial_text, false);
                     emit_audio_snapshot(&app, store)?;
                 }
@@ -248,6 +251,9 @@ fn run_translate_worker(
                     let elapsed_ms = started_at.elapsed().as_millis();
                     match result {
                         Ok(translated_text) => {
+                            report_translation_final(
+                                store, &job, &translated_text, &attempt_counts,
+                            );
                             attempt_counts.remove(&job.key);
                             store.update_subtitle_cue_translation(
                                 &job.cue_id,
@@ -268,6 +274,7 @@ fn run_translate_worker(
                         Err(error) => {
                             let attempts = attempt_counts.get(&job.key).copied().unwrap_or(1);
                             if error.retriable && attempts < MAX_RETRIABLE_SENTENCE_ATTEMPTS {
+                                report_translation_retry(store, &job, attempts, &error);
                                 attempt_counts.insert(job.key.clone(), attempts + 1);
                                 let _ = append_diagnostics_log(
                                     &app,
@@ -287,6 +294,7 @@ fn run_translate_worker(
                                 );
                                 scheduler.enqueue(job);
                             } else {
+                                report_translation_error(store, &job, attempts, &error);
                                 attempt_counts.remove(&job.key);
                                 store.update_subtitle_cue_translation(
                                     &job.cue_id,
@@ -342,6 +350,7 @@ fn run_translate_worker(
                 .map(|l| is_target_language(l, &target_language))
                 .unwrap_or(false);
             if same_lang {
+                report_same_language_translation(store, cue);
                 store.update_subtitle_cue_translation(&cue.cue_id, cue.source_text.clone(), true);
                 let _ = append_diagnostics_log(
                     &app,
@@ -414,6 +423,76 @@ fn run_translate_worker(
     Ok(())
 }
 
+fn report_translation_delta(store: &AudioStateStore, cue_id: &str, delta: &str) {
+    store.watch_session_report.record_model_delta_for_cue(
+        cue_id,
+        "classic-stt-translate",
+        delta,
+        true,
+        None,
+        None,
+    );
+}
+
+fn report_translation_final(
+    store: &AudioStateStore,
+    job: &TranslationJob,
+    translated_text: &str,
+    attempt_counts: &HashMap<String, u32>,
+) {
+    let attempts = attempt_counts.get(&job.key).copied().unwrap_or(1);
+    let attempt_id = format!("{}-attempt-{attempts}", job.key);
+    store.watch_session_report.record_model_final_for_cue(
+        &job.cue_id,
+        "classic-stt-translate",
+        translated_text,
+        true,
+        Some(&job.key),
+        Some(&attempt_id),
+    );
+}
+
+fn report_translation_retry(
+    store: &AudioStateStore,
+    job: &TranslationJob,
+    attempts: u32,
+    error: &ProviderRuntimeError,
+) {
+    store.watch_session_report.record_retry_for_cue(
+        &job.cue_id,
+        "classic-stt-translate",
+        &format!("{}-attempt-{}", job.key, attempts + 1),
+        &error.message,
+    );
+}
+
+fn report_translation_error(
+    store: &AudioStateStore,
+    job: &TranslationJob,
+    attempts: u32,
+    error: &ProviderRuntimeError,
+) {
+    store.watch_session_report.record_model_error_for_cue(
+        &job.cue_id,
+        "classic-stt-translate",
+        &error.code,
+        &error.message,
+        true,
+        Some(&format!("{}-attempt-{attempts}", job.key)),
+    );
+}
+
+fn report_same_language_translation(store: &AudioStateStore, cue: &SubtitleCueRuntime) {
+    store.watch_session_report.record_model_final_for_cue(
+        &cue.cue_id,
+        "same-language-bypass",
+        &cue.source_text,
+        true,
+        None,
+        None,
+    );
+}
+
 fn log_initial_translate_config(app: &AppHandle, config: &TranslateConfig) {
     let _ = append_diagnostics_log(
         app,
@@ -484,6 +563,7 @@ fn spawn_cue_translation(tx: mpsc::Sender<TranslateUpdate>, job: TranslationJob)
                     partial_translation.push_str(delta);
                     let _ = delta_tx.send(TranslateUpdate::Delta {
                         cue_id: delta_cue_id.clone(),
+                        raw_delta: delta.to_string(),
                         partial_text: partial_translation.clone(),
                     });
                     Ok(())

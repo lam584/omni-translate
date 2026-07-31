@@ -31,9 +31,10 @@
  */
 import { invoke } from '@tauri-apps/api/core';
 import { LogicalPosition, LogicalSize } from '@tauri-apps/api/dpi';
+import { emit } from '@tauri-apps/api/event';
 import { Menu } from '@tauri-apps/api/menu';
 import { currentMonitor, cursorPosition, getCurrentWindow, PhysicalPosition } from '@tauri-apps/api/window';
-import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
+import type { AudioRuntimeSnapshot, OverlayRenderReceiptRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft, DiagnosticsExportScope, ProviderDraft, RealtimeAudioMode } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
@@ -167,7 +168,8 @@ export class DesktopApiV2 {
     selfCheck: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('diagnostics_v2', { command: { action: 'selfCheck' } satisfies DiagnosticsCommandV2 })),
     overlaySelfCheck: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('diagnostics_v2', { command: { action: 'overlaySelfCheck' } satisfies DiagnosticsCommandV2 })),
     export: async (scope: DiagnosticsExportScope) => unwrap(await this.invokeFn<ServiceResult<{ scope: string; outputPath: string; generatedAt: string; fileCount: number }>>('diagnostics_v2', { command: { action: 'export', scope } satisfies DiagnosticsCommandV2 })),
-    liveSessionEvents: async <T>() => unwrap(await this.invokeFn<ServiceResult<T>>('diagnostics_v2', { command: { action: 'liveSessionEvents' } satisfies DiagnosticsCommandV2 })),
+    watchSessionReport: async <T>() => unwrap(await this.invokeFn<ServiceResult<T>>('diagnostics_v2', { command: { action: 'watchSessionReport' } satisfies DiagnosticsCommandV2 })),
+    clearWatchSessionReport: async () => unwrap(await this.invokeFn<ServiceResult<null>>('diagnostics_v2', { command: { action: 'clearWatchSessionReport' } satisfies DiagnosticsCommandV2 })),
     // Batched frontend log forwarding + dynamic level control stay direct
     // commands (not v2 envelopes): they are fire-and-forget plumbing used by
     // the logger itself and must not depend on snapshot rebuilds.
@@ -221,6 +223,8 @@ export class DesktopApiV2 {
     unlock: () => this.invokeFn<void>('unlock_subtitle_overlay'),
     toggle: () => this.invokeFn<RuntimeSnapshot>('toggle_subtitle_overlay'),
     show: () => this.invokeFn<RuntimeSnapshot>('show_subtitle_overlay'),
+    rendered: (receipt: OverlayRenderReceiptRuntime) =>
+      emit('subtitle-overlay://rendered', receipt),
   };
 
   readonly benchmark = {
@@ -248,6 +252,7 @@ export class DesktopApiV2 {
     outerPosition: async (): Promise<DesktopPoint> => getCurrentWindow().outerPosition(),
     outerSize: async (): Promise<DesktopSize> => getCurrentWindow().outerSize(),
     scaleFactor: async (): Promise<number> => getCurrentWindow().scaleFactor(),
+    isVisible: async (): Promise<boolean> => getCurrentWindow().isVisible(),
     setPosition: async (position: DesktopPoint) => getCurrentWindow().setPosition(new PhysicalPosition(position.x, position.y)),
     setLogicalSize: async (size: DesktopSize) => getCurrentWindow().setSize(new LogicalSize(size.width, size.height)),
     popupMenu: async (items: DesktopMenuItem[], position: DesktopPoint) => {

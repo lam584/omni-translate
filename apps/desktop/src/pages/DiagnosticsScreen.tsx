@@ -32,6 +32,8 @@ import {
   formatDriverHealthLabel, formatStatusLabel, getIssueToneRank,
   getRuntimeEnvironmentSummary, hasSameIds, isOverlayVisible, resolveStatusTone,
 } from './diagnostics/diagnosticsOverview';
+import WatchSessionReportPanel from './watch-report/WatchSessionReportPanel';
+import type { ExportArtifactReceipt } from '../runtime/export-artifact-runtime';
 
 type RepairOption = {
   id: string;
@@ -176,6 +178,10 @@ function DiagnosticsPage() {
   const [repairSelectionInitialized, setRepairSelectionInitialized] = useState(false);
   const [reportExportFeedback, setReportExportFeedback] = useState<{ tone: 'ready' | 'error'; message: string; outputPath?: string } | null>(null);
   const [exportDirectoryError, setExportDirectoryError] = useState<string | null>(null);
+  const [watchReportExport, setWatchReportExport] = useState<{
+    sessionId: string;
+    receipt: ExportArtifactReceipt;
+  } | null>(null);
 
   const runReportExport = async (filename: string, exporter: () => Promise<{ outputPath: string; fileCount: number }>) => {
     try {
@@ -227,14 +233,15 @@ function DiagnosticsPage() {
     actionFeedback,
     busyAction,
     clearActionFeedback,
-    closeLiveEventsModal,
-    liveEvents,
-    liveEventsError,
-    liveEventsLoading,
-    liveEventsModalOpen,
-    openLiveEventsModal,
+    clearWatchReport,
+    closeWatchReportModal,
+    watchReport,
+    watchReportError,
+    watchReportLoading,
+    watchReportModalOpen,
+    openWatchReportModal,
     openExportDirectory,
-    refreshLiveEvents,
+    refreshWatchReport,
     runAutomaticRepair,
     runBridgeRefresh,
     runExportAction,
@@ -288,13 +295,6 @@ function DiagnosticsPage() {
       speechVirtualMic: Boolean(configDraft.speech?.virtualMicOutputEnabled ?? false),
     };
   }, [desktopApi, runtimeSnapshot, configDraft]);
-
-  const sessionActive = audioRuntimeSnapshot.sessionStartedAt !== null && (
-    audioRuntimeSnapshot.inbound.streamBound ||
-    audioRuntimeSnapshot.outbound.streamBound ||
-    audioRuntimeSnapshot.sttConnected ||
-    audioRuntimeSnapshot.speech.dispatchState !== 'idle'
-  );
 
   return (
     <div className="control-dashboard diagnostics-dashboard">
@@ -371,14 +371,12 @@ function DiagnosticsPage() {
           </div>
         ) : null}
 
-        {sessionActive ? (
-          <div className="diagnostics-live-events-strip">
-            <button className="icon-button diagnostics-live-events-button" onClick={() => void openLiveEventsModal()} type="button">
-              <AppIcon name="activity" size={14} />
-              {i18n.t('diagnostics.liveEvents.button')}
-            </button>
-          </div>
-        ) : null}
+        <div className="diagnostics-live-events-strip">
+          <button className="icon-button diagnostics-live-events-button" onClick={() => void openWatchReportModal()} type="button">
+            <AppIcon name="activity" size={14} />
+            {i18n.t('watchReport.latestTitle')}
+          </button>
+        </div>
 
         {primaryIssue ? (
           <div className={`diagnostics-primary-issue diagnostics-primary-issue-${primaryIssue.tone}`}>
@@ -649,33 +647,47 @@ function DiagnosticsPage() {
         </ModalDialog>
       ) : null}
 
-      {liveEventsModalOpen ? (
-        <ModalDialog aria-label={i18n.t('diagnostics.liveEvents.title')} className="benchmark-modal" onClose={closeLiveEventsModal} variant="benchmark">
-            <div className="benchmark-modal-head">
+      {watchReportModalOpen ? (
+        <ModalDialog aria-label={i18n.t('watchReport.latestTitle')} className="benchmark-modal watch-report-modal" closeOnEscape onClose={closeWatchReportModal} variant="benchmark">
+            <div className="benchmark-modal-head watch-report-modal-head">
               <div>
-                <span className="diagnostics-kicker">{i18n.t('diagnostics.liveEvents.title')}</span>
-                <h3>{liveEvents?.model || '—'}</h3>
-                <p>{i18n.t('diagnostics.liveEvents.summary', {
-                  asrCount: liveEvents?.asrDeltas.length ?? 0,
-                  outputCount: liveEvents?.outputDeltas.length ?? 0,
-                  duration: liveEvents ? (liveEvents.elapsedMs / 1000).toFixed(1) : '0.0',
-                })}</p>
+                <span className="diagnostics-kicker">Watch Mode</span>
+                <h3>{i18n.t('watchReport.latestTitle')}</h3>
+                <p>{i18n.t('watchReport.description')}</p>
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <ExportButton onExport={(format) => {
-                  if (!liveEvents) return;
-                  exportReportWithFeedback(`live-events-${liveEvents.model || 'unknown'}`, format, (base) => DiagnosticsReportExporter.exportLiveEvents(liveEvents, base, format));
-                }} />
-                <button className="icon-button" onClick={() => void refreshLiveEvents()} disabled={liveEventsLoading} type="button" title={i18n.t('diagnostics.liveEvents.refresh')}>
+                <button className="icon-button" onClick={() => void refreshWatchReport()} disabled={watchReportLoading} type="button" title={i18n.t('watchReport.refresh')}>
                   <AppIcon name="refresh" size={14} />
                 </button>
-                <button className="icon-button" onClick={closeLiveEventsModal} type="button">
+                <button className="icon-button" onClick={closeWatchReportModal} type="button">
                   <AppIcon name="close" size={16} />
                 </button>
               </div>
             </div>
             {reportExportFeedbackBanner}
-            <LiveSessionEventDetail error={liveEventsError} events={liveEvents} loading={liveEventsLoading} />
+            <WatchSessionReportPanel
+              error={watchReportError}
+              lastExportReceipt={watchReportExport && watchReport && watchReportExport.sessionId === watchReport.sessionId
+                ? watchReportExport.receipt
+                : null}
+              loading={watchReportLoading}
+              onClear={async () => {
+                await clearWatchReport();
+                setWatchReportExport(null);
+              }}
+              onExported={(artifact) => {
+                if (watchReport) {
+                  setWatchReportExport({ sessionId: watchReport.sessionId, receipt: artifact });
+                }
+                setReportExportFeedback({
+                  tone: 'ready',
+                  message: `${i18n.t('diagnostics.status.completed')}：${artifact.outputPath}`,
+                  outputPath: artifact.outputPath,
+                });
+              }}
+              onRefresh={refreshWatchReport}
+              report={watchReport}
+            />
         </ModalDialog>
       ) : null}
     </div>

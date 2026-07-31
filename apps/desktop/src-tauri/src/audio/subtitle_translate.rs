@@ -255,11 +255,21 @@ fn handle_translation_delta(
     let cue_state = cue_states
         .entry(job.cue_id.clone())
         .or_insert_with(CueTranslationLedger::new);
-    if is_stale_translation_job(&job, cue_state) {
+    let stale = is_stale_translation_job(&job, cue_state);
+    let exists = cue_exists(store, &job.cue_id);
+    store.watch_session_report.record_model_delta_for_cue(
+        &job.cue_id,
+        "secondary-text-translation",
+        &delta.raw_delta,
+        !stale && exists,
+        Some(&job.key),
+        Some(&format!("sequence-{}", job.sequence)),
+    );
+    if stale {
         log_translation_skip(app, &job.cue_id, "stale_partial_revision");
         return;
     }
-    if !cue_exists(store, &job.cue_id) {
+    if !exists {
         log_translation_skip(app, &job.cue_id, "partial_cue_missing");
         return;
     }
@@ -301,6 +311,17 @@ fn handle_translation_outcome(
         .or_insert_with(CueTranslationLedger::new);
     let stale_display_index = stale_job_reusable_display_index(&job, cue_state);
     if is_stale_translation_job(&job, cue_state) && stale_display_index.is_none() {
+        if let Ok(text) = &outcome.translated {
+            store.watch_session_report.record_model_segment_final_for_cue(
+                &job.cue_id,
+                "secondary-text-translation",
+                job.display_index,
+                text,
+                false,
+                Some(&job.key),
+                Some(&format!("sequence-{}", job.sequence)),
+            );
+        }
         log_translation_skip(app, &job.cue_id, "stale_revision");
         return;
     }
@@ -309,11 +330,29 @@ fn handle_translation_outcome(
             cue_state.sentence_attempt_count.remove(&attempt_key);
 
             if !cue_exists(store, &job.cue_id) {
+                store.watch_session_report.record_model_segment_final_for_cue(
+                    &job.cue_id,
+                    "secondary-text-translation",
+                    job.display_index,
+                    &translated_text,
+                    false,
+                    Some(&job.key),
+                    Some(&format!("sequence-{}", job.sequence)),
+                );
                 log_translation_skip(app, &job.cue_id, "cue_missing");
                 return;
             }
 
             let Some(translated) = normalized_nonempty_translation(&translated_text) else {
+                store.watch_session_report.record_model_segment_final_for_cue(
+                    &job.cue_id,
+                    "secondary-text-translation",
+                    job.display_index,
+                    &translated_text,
+                    false,
+                    Some(&job.key),
+                    Some(&format!("sequence-{}", job.sequence)),
+                );
                 log_translation_skip(app, &job.cue_id, "empty_translation");
                 return;
             };
@@ -339,6 +378,15 @@ fn handle_translation_outcome(
             };
             if let Some(key) = &worker_dedupe_key {
                 if written_final_keys.contains(key) {
+                    store.watch_session_report.record_model_segment_final_for_cue(
+                        &job.cue_id,
+                        "secondary-text-translation",
+                        job.display_index,
+                        &translated,
+                        false,
+                        Some(&job.key),
+                        Some(&format!("sequence-{}", job.sequence)),
+                    );
                     log_translation_skip(app, &job.cue_id, "worker_duplicate_final_translation");
                     return;
                 }
@@ -359,6 +407,15 @@ fn handle_translation_outcome(
                     }
                     cue_state.pending_display_by_id.remove(pid);
                 }
+                store.watch_session_report.record_model_segment_final_for_cue(
+                    &target_cue_id,
+                    "secondary-text-translation",
+                    display_index,
+                    &translated,
+                    true,
+                    Some(&job.key),
+                    Some(&format!("sequence-{}", job.sequence)),
+                );
                 TranslationResultWriter::write(
                     app,
                     store,
@@ -373,6 +430,15 @@ fn handle_translation_outcome(
             } else if job.result.is_forced {
                 if let Some(pid) = &job.result.pending_id {
                     if !cue_state.completed_replacements.contains(pid) {
+                        store.watch_session_report.record_model_segment_final_for_cue(
+                            &job.cue_id,
+                            "secondary-text-translation",
+                            display_index,
+                            &translated,
+                            true,
+                            Some(&job.key),
+                            Some(&format!("sequence-{}", job.sequence)),
+                        );
                         cue_state
                             .forced_pending
                             .insert(pid.clone(), (job.cue_id.clone(), translated.clone()));
@@ -386,14 +452,42 @@ fn handle_translation_outcome(
                             write_state,
                         );
                     } else {
+                        store.watch_session_report.record_model_segment_final_for_cue(
+                            &job.cue_id,
+                            "secondary-text-translation",
+                            display_index,
+                            &translated,
+                            false,
+                            Some(&job.key),
+                            Some(&format!("sequence-{}", job.sequence)),
+                        );
                         log_translation_skip(app, &job.cue_id, "replacement_already_completed");
                     }
+                } else {
+                    store.watch_session_report.record_model_segment_final_for_cue(
+                        &job.cue_id,
+                        "secondary-text-translation",
+                        display_index,
+                        &translated,
+                        false,
+                        Some(&job.key),
+                        Some(&format!("sequence-{}", job.sequence)),
+                    );
                 }
             } else {
                 cue_state
                     .forced_pending
                     .retain(|_, (pending_cue_id, _)| pending_cue_id != &job.cue_id);
                 cue_state.pending_display_index = None;
+                store.watch_session_report.record_model_segment_final_for_cue(
+                    &job.cue_id,
+                    "secondary-text-translation",
+                    display_index,
+                    &translated,
+                    true,
+                    Some(&job.key),
+                    Some(&format!("sequence-{}", job.sequence)),
+                );
                 TranslationResultWriter::write(
                     app,
                     store,
@@ -417,6 +511,17 @@ fn handle_translation_outcome(
                 .copied()
                 .unwrap_or(MAX_RETRIABLE_SENTENCE_ATTEMPTS);
             let fatal_error = is_fatal_translate_error(&error);
+            let exhausted =
+                fatal_error || !error.retriable || attempts >= MAX_RETRIABLE_SENTENCE_ATTEMPTS;
+            let attempt_id = format!("{}-attempt-{attempts}", job.key);
+            store.watch_session_report.record_model_error_for_cue(
+                &job.cue_id,
+                "secondary-text-translation",
+                &error.code,
+                &error.message,
+                exhausted,
+                Some(&attempt_id),
+            );
             let level =
                 if fatal_error || !error.retriable || attempts >= MAX_RETRIABLE_SENTENCE_ATTEMPTS {
                     "error"
@@ -445,6 +550,13 @@ fn handle_translation_outcome(
                 store.commit_subtitle_cue(&job.cue_id);
                 let _ = emit_audio_snapshot(app, store);
             } else if error.retriable && attempts < MAX_RETRIABLE_SENTENCE_ATTEMPTS {
+                let retry_attempt_id = format!("{}-attempt-{}", job.key, attempts + 1);
+                store.watch_session_report.record_retry_for_cue(
+                    &job.cue_id,
+                    "secondary-text-translation",
+                    &retry_attempt_id,
+                    &error.message,
+                );
                 cue_state
                     .sentence_attempt_count
                     .insert(attempt_key, attempts + 1);

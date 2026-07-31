@@ -3,6 +3,12 @@ import { act } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import App, { buildWatchModeDiagnosticAutostartConfig, isWatchModeDiagnosticAutostartAllowed } from './App';
 import i18n, { WELCOME_DONE_STORAGE_KEY } from './i18n/config';
+import AudioRoutingPage from './pages/AudioRoutingPage';
+import DiagnosticsPage from './pages/DiagnosticsPage';
+import GlossaryPage from './pages/GlossaryPage';
+import ProvidersPage from './pages/ProvidersPage';
+import RealTimeSessionPage from './pages/RealTimeSessionPage';
+import SubtitleOverlayPage from './pages/SubtitleOverlayPage';
 import { registerDomHarness } from './test-utils/component-test-harness';
 import { startAudioRouteRuntime } from './runtime/audio-runtime';
 import { startBridgeServiceRuntime } from './runtime/bridge-runtime';
@@ -332,5 +338,16 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
     const config = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, env);
     expect(config.devices.inboundVoiceModelId).toBe('qwen3.5-omni-flash-realtime');
     expect(config.devices.outboundVoiceModelId).toBe('qwen3.5-omni-flash-realtime');
+  });
+});
+
+describe('thin page entrypoints', () => {
+  it('retain callable default exports after screen extraction', () => {
+    for (const page of [
+      AudioRoutingPage, DiagnosticsPage, GlossaryPage, ProvidersPage,
+      RealTimeSessionPage, SubtitleOverlayPage,
+    ]) {
+      expect(page).toBeTypeOf('function');
+    }
   });
 });

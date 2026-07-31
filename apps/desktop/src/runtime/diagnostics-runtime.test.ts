@@ -30,7 +30,7 @@ describe('diagnostics runtime', () => {
     expect((await runSubtitleOverlaySelfCheckRuntime()).bridgeStatus).toBe('browser-preview');
 
     const full = await exportDiagnosticsBundleRuntime('full');
-    expect(full.artifact).toMatchObject({ fileCount: 6, outputPath: 'browser-preview/diagnostics-full.zip' });
+    expect(full.artifact).toMatchObject({ fileCount: 7, outputPath: 'browser-preview/diagnostics-full.zip' });
     expect(full.snapshot.diagnostics).toMatchObject({ lastExportScope: 'full', lastExportPath: 'browser-preview/diagnostics-full.zip' });
 
     const quick = await exportDiagnosticsBundleRuntime('quick');

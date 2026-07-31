@@ -15,6 +15,7 @@ import { useOverlayGeometrySync } from './overlay/useOverlayGeometrySync';
 import { useOverlayLockReveal } from './overlay/useOverlayLockReveal';
 import { useOverlayNativeEventSync } from './overlay/useOverlayNativeEventSync';
 import { useOverlayPointerInteractions } from './overlay/useOverlayPointerInteractions';
+import { useOverlayRenderReceipt } from './overlay/useOverlayRenderReceipt';
 import { useOverlayStyleController } from './overlay/useOverlayStyleController';
 import { useOverlayWindowController } from './overlay/useOverlayWindowController';
 import { buildSubtitleOverlayCssVariables } from './overlay/overlayTypography';
@@ -39,8 +40,13 @@ function SubtitleOverlayPage() {
   const resizeStateRef = useRef<OverlayResizeState | null>(null);
   const resizeDebounceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [hovered, setHovered] = useState(false);
-  const { recentCues } = audioRuntimeSnapshot.subtitleOverlay;
+  const { recentCues, reportSessionId } = audioRuntimeSnapshot.subtitleOverlay;
   const displayCues = useMemo(() => [...recentCues].filter((cue) => getCueDisplaySegments(cue).length > 0).reverse(), [recentCues]);
+  useOverlayRenderReceipt({
+    desktopApi,
+    displayCues,
+    reportSessionId,
+  });
   const { overlayBackgroundColor, overlayBackgroundOpacity, overlayFontFamily, overlayFontSize, overlayHeight,
     overlayLocked, overlayOpacity, overlaySourceTextStyle, overlayTextColor, overlayTextOpacity,
     overlayTranslationTextStyle, overlayWidth, overlayX, overlayY } = configDraft.subtitles;

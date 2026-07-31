@@ -7,7 +7,11 @@ import {
   runDiagnosticsSelfCheckRuntime,
   runSubtitleOverlaySelfCheckRuntime,
 } from '../../runtime/diagnostics-runtime';
-import { getLiveSessionEventsRuntime, type LiveSessionEvents } from '../../runtime/live-session-events-runtime';
+import {
+  clearWatchSessionReportRuntime,
+  getWatchSessionReportRuntime,
+} from '../../runtime/watch-session-report-runtime';
+import type { WatchSessionReportRuntime } from '../../schema/audio-runtime';
 import { useDesktopCapabilities } from '../../runtime/desktop-api-context';
 import type { DiagnosticsExportScope } from '../../schema/config';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
@@ -34,10 +38,10 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
   const pushRuntimeNotification = useAppStore((state) => state.pushRuntimeNotification);
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [actionFeedback, setActionFeedback] = useState<DiagnosticsActionFeedback | null>(null);
-  const [liveEventsModalOpen, setLiveEventsModalOpen] = useState(false);
-  const [liveEvents, setLiveEvents] = useState<LiveSessionEvents | null>(null);
-  const [liveEventsError, setLiveEventsError] = useState<string | null>(null);
-  const [liveEventsLoading, setLiveEventsLoading] = useState(false);
+  const [watchReportModalOpen, setWatchReportModalOpen] = useState(false);
+  const [watchReport, setWatchReport] = useState<WatchSessionReportRuntime | null>(null);
+  const [watchReportError, setWatchReportError] = useState<string | null>(null);
+  const [watchReportLoading, setWatchReportLoading] = useState(false);
 
   const runBusyAction = async (actionId: string, actionLabel: string, runner: () => Promise<RuntimeSnapshot>) => {
     setBusyAction(actionId);
@@ -115,6 +119,9 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
   };
 
   const runExportAction = async (scope: DiagnosticsExportScope) => {
+    if (scope === 'full' && !window.confirm(i18n.t('watchReport.fullBundleWarning'))) {
+      return;
+    }
     setBusyAction('export');
     setActionFeedback(null);
     try {
@@ -138,28 +145,34 @@ export function useDiagnosticsWorkbenchController(repairOptions: DiagnosticsRepa
     }
   };
 
-  const refreshLiveEvents = async () => {
-    setLiveEventsLoading(true);
-    setLiveEventsError(null);
+  const refreshWatchReport = async () => {
+    setWatchReportLoading(true);
+    setWatchReportError(null);
     try {
-      setLiveEvents(await getLiveSessionEventsRuntime());
+      setWatchReport(await getWatchSessionReportRuntime());
     } catch (error) {
-      setLiveEventsError(errorDetail(error));
+      setWatchReportError(errorDetail(error));
     } finally {
-      setLiveEventsLoading(false);
+      setWatchReportLoading(false);
     }
   };
 
-  const openLiveEventsModal = async () => {
-    setLiveEventsModalOpen(true);
-    await refreshLiveEvents();
+  const openWatchReportModal = async () => {
+    setWatchReportModalOpen(true);
+    await refreshWatchReport();
+  };
+
+  const clearWatchReport = async () => {
+    await clearWatchSessionReportRuntime();
+    setWatchReport(null);
   };
 
   return {
-    actionFeedback, busyAction, liveEvents, liveEventsError, liveEventsLoading, liveEventsModalOpen,
+    actionFeedback, busyAction, watchReport, watchReportError, watchReportLoading, watchReportModalOpen,
     clearActionFeedback: () => setActionFeedback(null),
-    closeLiveEventsModal: () => setLiveEventsModalOpen(false),
-    openLiveEventsModal, refreshLiveEvents, runAutomaticRepair, runBusyAction, runExportAction,
+    clearWatchReport,
+    closeWatchReportModal: () => setWatchReportModalOpen(false),
+    openWatchReportModal, refreshWatchReport, runAutomaticRepair, runBusyAction, runExportAction,
     openExportDirectory: openExportDirectoryRuntime,
     runSelfCheck: () => runBusyAction('self-check', i18n.t('diagnostics.actions.rerunDiagnostics'), runDiagnosticsSelfCheckRuntime),
     runOverlaySelfCheck: () => runBusyAction('overlay-self-check', i18n.t('diagnostics.actions.testOverlay'), runSubtitleOverlaySelfCheckRuntime),

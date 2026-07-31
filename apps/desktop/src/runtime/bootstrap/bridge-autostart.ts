@@ -6,7 +6,7 @@ import { activeDesktopApi } from '../desktop-api';
 import { invokeWithTimeout } from './invoke';
 import { pushDesktopRuntimeNotification } from './notifications';
 import { scheduleStartupTask } from './schedule';
-import { isWatchModeDiagnosticAutostartAllowed } from './watch-mode';
+import { shouldSuppressGenericStartupAutostart } from './watch-mode';
 
 export const BRIDGE_AUTOSTART_AFTER_READY_DELAY_MS = 0;
 const BRIDGE_STARTUP_REFRESH_TIMEOUT_MS = 3000;
@@ -31,7 +31,7 @@ async function refreshAndAutostartBridgeStartup(config: AppConfigDraft) {
     );
     useAppStore.getState().setRuntimeSnapshot(driverSnapshot);
 
-    if (isWatchModeDiagnosticAutostartAllowed(import.meta.env) || !shouldAutostartBridge(driverSnapshot)) {
+    if (shouldSuppressGenericStartupAutostart(import.meta.env) || !shouldAutostartBridge(driverSnapshot)) {
       return;
     }
 

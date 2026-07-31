@@ -18052,11 +18052,20 @@
     }
   },
   {
-    "label": "diagnostics.liveSessionEvents",
+    "label": "diagnostics.watchSessionReport",
     "command": "diagnostics_v2",
     "payload": {
       "command": {
-        "action": "liveSessionEvents"
+        "action": "watchSessionReport"
+      }
+    }
+  },
+  {
+    "label": "diagnostics.clearWatchSessionReport",
+    "command": "diagnostics_v2",
+    "payload": {
+      "command": {
+        "action": "clearWatchSessionReport"
       }
     }
   },

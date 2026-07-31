@@ -23,6 +23,19 @@ const PURE_ECHO_CORRELATION: f32 = 0.8;
 const ECHO_TAIL_CORRELATION: f32 = 0.35;
 const ECHO_TAIL_MAX_LAG_MS: usize = 50;
 const ECHO_TAIL_LAG_STEP_MS: usize = 1;
+/// WASAPI render startup and loopback delivery latency varies by endpoint and
+/// can change when a Bluetooth/USB device wakes up. Search a bounded window
+/// instead of assuming every device matches the nominal 100 ms route delay.
+const ADAPTIVE_DELAY_MAX_MS: usize = 300;
+const ADAPTIVE_DELAY_COARSE_STEP_MS: usize = 5;
+const ADAPTIVE_DELAY_FINE_RADIUS_MS: usize = 6;
+const ADAPTIVE_DELAY_FINE_STEP_MS: usize = 1;
+/// Correlation scoring samples one channel every four frames. The selected
+/// alignment is still subtracted at full resolution.
+const ALIGNMENT_SCORE_FRAME_STRIDE: usize = 4;
+/// Below this correlation, projection is more likely to carve unrelated
+/// program audio than to remove translated playback.
+const MIN_ECHO_ALIGNMENT_CORRELATION: f32 = 0.2;
 /// Residual gain applied while TTS is audibly playing and no double talk is
 /// detected: half-duplex energy suppression layered on top of the linear
 /// subtraction, because a fixed 0.8 attenuation alone cannot match the real
@@ -37,6 +50,13 @@ pub(crate) struct EchoCancellationResult {
     /// silence tail, so merely reducing the samples would still feed the
     /// translated speaker output back to the model.
     pub(crate) suppress_asr: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct EchoAlignment {
+    delay_samples: usize,
+    block_start: usize,
+    correlation: f32,
 }
 
 /// Time-aligned reference of what the speaker is actually playing.
@@ -155,12 +175,17 @@ impl EchoReferenceBuffer {
         }
 
         // Align the playback position to a frame boundary so stereo channels
-        // stay paired, then map the captured chunk onto the reference block
-        // that ended `delay_samples` behind the playback cursor: the capture
-        // path hears the speaker output that many samples late.
+        // stay paired, then find the reference block that best matches this
+        // capture. `delay_samples` remains the preferred/nominal route delay,
+        // but real endpoint latency is allowed to move within a bounded window.
         let cursor = (self.play_cursor as usize / TARGET_CHANNEL_COUNT) * TARGET_CHANNEL_COUNT;
-        let block_end = cursor as i64 - delay_samples as i64;
-        let block_start = block_end - captured.len() as i64;
+        let Some(alignment) = self.best_echo_alignment(captured, cursor, delay_samples) else {
+            return EchoCancellationResult {
+                samples: captured.to_vec(),
+                suppress_asr: false,
+            };
+        };
+        let block_start = alignment.block_start as i64;
 
         let mut reference_energy = 0.0_f32;
         let mut captured_energy = 0.0_f32;
@@ -186,7 +211,9 @@ impl EchoReferenceBuffer {
         // than subtracting a fixed 0.8. In system-loopback Watch mode the
         // captured stream is `video + our translated playback`; least-squares
         // projection removes the latter while retaining the unrelated video.
-        let echo_path_gain = if reference_energy > f32::EPSILON {
+        let echo_path_gain = if reference_energy > f32::EPSILON
+            && alignment.correlation >= MIN_ECHO_ALIGNMENT_CORRELATION
+        {
             (cross_energy / reference_energy).clamp(0.0, MAX_ECHO_PATH_GAIN)
         } else {
             0.0
@@ -263,6 +290,107 @@ impl EchoReferenceBuffer {
         }
     }
 
+    fn best_echo_alignment(
+        &self,
+        captured: &[f32],
+        cursor: usize,
+        preferred_delay_samples: usize,
+    ) -> Option<EchoAlignment> {
+        let samples_per_ms =
+            TARGET_SAMPLE_RATE_HZ as usize * TARGET_CHANNEL_COUNT / 1_000;
+        let coarse_step =
+            (ADAPTIVE_DELAY_COARSE_STEP_MS * samples_per_ms).max(TARGET_CHANNEL_COUNT);
+        let max_delay = (ADAPTIVE_DELAY_MAX_MS * samples_per_ms)
+            .max(preferred_delay_samples.saturating_add(coarse_step));
+        let mut best = None;
+
+        for delay in (0..=max_delay).step_by(coarse_step) {
+            self.consider_echo_alignment(captured, cursor, delay, preferred_delay_samples, &mut best);
+        }
+        self.consider_echo_alignment(
+            captured,
+            cursor,
+            preferred_delay_samples,
+            preferred_delay_samples,
+            &mut best,
+        );
+
+        let coarse = best?;
+        let fine_radius = ADAPTIVE_DELAY_FINE_RADIUS_MS * samples_per_ms;
+        let fine_step =
+            (ADAPTIVE_DELAY_FINE_STEP_MS * samples_per_ms).max(TARGET_CHANNEL_COUNT);
+        let fine_start = coarse.delay_samples.saturating_sub(fine_radius);
+        let fine_end = coarse
+            .delay_samples
+            .saturating_add(fine_radius)
+            .min(max_delay);
+        for delay in (fine_start..=fine_end).step_by(fine_step) {
+            self.consider_echo_alignment(captured, cursor, delay, preferred_delay_samples, &mut best);
+        }
+        best
+    }
+
+    fn consider_echo_alignment(
+        &self,
+        captured: &[f32],
+        cursor: usize,
+        delay_samples: usize,
+        preferred_delay_samples: usize,
+        best: &mut Option<EchoAlignment>,
+    ) {
+        let delay_samples =
+            (delay_samples / TARGET_CHANNEL_COUNT) * TARGET_CHANNEL_COUNT;
+        let Some(block_end) = cursor.checked_sub(delay_samples) else {
+            return;
+        };
+        let Some(block_start) = block_end.checked_sub(captured.len()) else {
+            return;
+        };
+        if block_end > self.buffer.len() {
+            return;
+        }
+
+        let stride = TARGET_CHANNEL_COUNT * ALIGNMENT_SCORE_FRAME_STRIDE;
+        let mut reference_energy = 0.0_f32;
+        let mut captured_energy = 0.0_f32;
+        let mut cross_energy = 0.0_f32;
+        let mut sample_count = 0usize;
+        for index in (0..captured.len()).step_by(stride) {
+            let reference = self.buffer[block_start + index];
+            let sample = captured[index];
+            reference_energy += reference * reference;
+            captured_energy += sample * sample;
+            cross_energy += sample * reference;
+            sample_count += 1;
+        }
+        if sample_count == 0 || captured_energy <= f32::EPSILON {
+            return;
+        }
+        let reference_rms = (reference_energy / sample_count as f32).sqrt();
+        if reference_rms <= REFERENCE_ACTIVE_RMS {
+            return;
+        }
+        let denominator = (reference_energy * captured_energy).sqrt();
+        if denominator <= f32::EPSILON {
+            return;
+        }
+        let correlation = (cross_energy.abs() / denominator).clamp(0.0, 1.0);
+        let candidate = EchoAlignment {
+            delay_samples,
+            block_start,
+            correlation,
+        };
+        let replace = best.is_none_or(|current| {
+            correlation > current.correlation + f32::EPSILON
+                || ((correlation - current.correlation).abs() <= f32::EPSILON
+                    && delay_samples.abs_diff(preferred_delay_samples)
+                        < current.delay_samples.abs_diff(preferred_delay_samples))
+        });
+        if replace {
+            *best = Some(candidate);
+        }
+    }
+
     /// Moves the playback clock forward by the wall time elapsed since the
     /// previous call. The cursor may run past the buffered audio into the
     /// silence after playback finished (bounded so it cannot grow without
@@ -325,11 +453,35 @@ mod tests {
     /// into playback: the reference block that ended `TEST_DELAY_SAMPLES`
     /// behind the playback position, scaled by the acoustic echo path gain.
     fn echoed_block(reference_mono: &[f32], seconds_played: u64, gain: f32) -> Vec<f32> {
+        echoed_block_with_delay(reference_mono, seconds_played, TEST_DELAY_SAMPLES, gain)
+    }
+
+    fn echoed_block_with_delay(
+        reference_mono: &[f32],
+        seconds_played: u64,
+        delay_samples: usize,
+        gain: f32,
+    ) -> Vec<f32> {
         let cursor =
             seconds_played as usize * TARGET_SAMPLE_RATE_HZ as usize * TARGET_CHANNEL_COUNT;
-        let block_start = cursor - TEST_DELAY_SAMPLES - TEST_CHUNK_SAMPLES;
+        let block_start = cursor - delay_samples - TEST_CHUNK_SAMPLES;
         (0..TEST_CHUNK_SAMPLES)
             .map(|index| reference_mono[(block_start + index) / 2] * gain)
+            .collect()
+    }
+
+    fn broadband_mono(frames: usize, amplitude: f32) -> Vec<f32> {
+        let mut state = 0x1234_5678_u32;
+        let mut smoothed = 0.0_f32;
+        (0..frames)
+            .map(|_| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let white = (state as f32 / u32::MAX as f32).mul_add(2.0, -1.0);
+                smoothed = smoothed.mul_add(0.82, white * 0.18);
+                smoothed * amplitude
+            })
             .collect()
     }
 
@@ -434,6 +586,42 @@ mod tests {
             rms(&captured)
         );
         assert!(cancellation.suppress_asr);
+    }
+
+    #[test]
+    fn adapts_to_endpoint_latency_instead_of_leaking_translated_playback() {
+        let playback_started = Instant::now();
+        let reference = broadband_mono(3 * 48_000, 0.5);
+
+        for actual_delay_ms in [35_usize, 220] {
+            let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
+            buffer.push_samples_at(&reference, 48_000, 1, playback_started);
+            let actual_delay_samples =
+                actual_delay_ms * TARGET_SAMPLE_RATE_HZ as usize * TARGET_CHANNEL_COUNT / 1_000;
+            let captured = echoed_block_with_delay(
+                &reference,
+                2,
+                actual_delay_samples,
+                TEST_ECHO_PATH_GAIN,
+            );
+
+            let cancellation = buffer.subtract_from_at(
+                &captured,
+                TEST_DELAY_SAMPLES,
+                playback_started + Duration::from_secs(2),
+            );
+
+            assert!(
+                rms(&cancellation.samples) < rms(&captured) * 0.05,
+                "latency {actual_delay_ms}ms leaked translated playback: cleaned_rms={} captured_rms={}",
+                rms(&cancellation.samples),
+                rms(&captured)
+            );
+            assert!(
+                cancellation.suppress_asr,
+                "latency {actual_delay_ms}ms must be suppressed before realtime ASR"
+            );
+        }
     }
 
     #[test]

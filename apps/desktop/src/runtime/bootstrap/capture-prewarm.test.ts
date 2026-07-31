@@ -3,6 +3,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../../mocks/app-config';
 import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../desktop-api';
 import { captureWarmSignature, scheduleCapturePrewarmAfterStartup } from './capture-prewarm';
+import {
+  resetNativeWatchDiagnosticGateForTests,
+  updateNativeWatchDiagnosticGateFromIpcPing,
+} from './watch-mode';
 
 const invokeMock = vi.fn();
 
@@ -16,12 +20,14 @@ describe('capture pre-warm scheduling', () => {
     invokeMock.mockReset();
     invokeMock.mockResolvedValue({ data: { ok: true }, warnings: [] });
     resetDesktopApiForTests();
+    resetNativeWatchDiagnosticGateForTests();
     installDesktopApi(new TauriDesktopApi());
   });
 
   afterEach(() => {
     vi.useRealTimers();
     resetDesktopApiForTests();
+    resetNativeWatchDiagnosticGateForTests();
   });
 
   it('fires the warm + preconnect pair immediately for a zero delay', async () => {
@@ -46,6 +52,20 @@ describe('capture pre-warm scheduling', () => {
     await expect(
       scheduleCapturePrewarmAfterStartup(structuredClone(appConfigDraftMock), 0).promise,
     ).resolves.toBeUndefined();
+  });
+
+  it('keeps device prewarm but skips persisted-config websocket preconnect for a native diagnostic', async () => {
+    updateNativeWatchDiagnosticGateFromIpcPing(
+      'pong storage_status=ready watchDiagnostic=true backendAutostartAuthoritative=true',
+    );
+
+    await scheduleCapturePrewarmAfterStartup(structuredClone(appConfigDraftMock), 0).promise;
+
+    const actions = invokeMock.mock.calls.map(
+      ([, args]) => (args as { command?: { action?: string } } | undefined)?.command?.action,
+    );
+    expect(actions).toContain('prewarmRoutes');
+    expect(actions).not.toContain('preconnect');
   });
 
   it('waits for a positive delay and can be cancelled before it fires', () => {

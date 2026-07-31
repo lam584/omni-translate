@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import AppIcon from '../components/icons/AppIcon';
 import { Link } from 'react-router-dom';
 import { useTranslation } from 'react-i18next';
@@ -13,6 +13,7 @@ import {
 import { useAppStore } from '../stores/app-store';
 import { useRuntimeSessionStoreSlices } from '../stores/app-store-slices';
 import type { AudioRuntimeSnapshot, SubtitleCueRuntime } from '../schema/audio-runtime';
+import type { WatchSessionReportRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
 import type { SceneMode } from '../utils/scene-readiness';
 import i18n from '../i18n/config';
@@ -23,8 +24,14 @@ import { useSceneSessionController } from './session/useSceneSessionController';
 import { logSceneLaunchConfig } from './session/logSceneLaunchConfig';
 import { getCueDisplaySegments } from './overlay/overlayDomain';
 import { appendFrontendDiagnosticsLog, exportDiagnosticsBundleRuntime, openExportDirectoryRuntime } from '../runtime/diagnostics-runtime';
+import type { ExportArtifactReceipt } from '../runtime/export-artifact-runtime';
 import { resolveRealtimeProfile, type ResolvedRealtimeProfile } from '../utils/realtime-profile';
 import { resolveRealtimeProfileRuntime } from '../runtime/provider-runtime';
+import {
+  clearWatchSessionReportRuntime,
+  getWatchSessionReportRuntime,
+} from '../runtime/watch-session-report-runtime';
+import WatchSessionReportPanel from './watch-report/WatchSessionReportPanel';
 
 type BusyAction = 'watch-start' | 'conversation-start' | 'overlay' | 'clear-cues' | 'stop' | 'export-diagnostics' | null;
 
@@ -363,6 +370,15 @@ function RealTimeSessionPage() {
   const [sessionLaunchProblem, setSessionLaunchProblem] = useState<string | null>(null);
   const [sessionActionProblem, setSessionActionProblem] = useState<string | null>(null);
   const [watchFallbackResolver, setWatchFallbackResolver] = useState<WatchFallbackResolver | null>(null);
+  const [watchReport, setWatchReport] = useState<WatchSessionReportRuntime | null>(null);
+  const [watchReportError, setWatchReportError] = useState<string | null>(null);
+  const [watchReportLoading, setWatchReportLoading] = useState(false);
+  const [watchReportExpanded, setWatchReportExpanded] = useState(false);
+  const [watchReportExport, setWatchReportExport] = useState<{
+    sessionId: string;
+    receipt: ExportArtifactReceipt;
+  } | null>(null);
+  const watchReportRequestIdRef = useRef(0);
 
   const hasSpeechActivity = audioRuntimeSnapshot.speech.dispatchState !== 'idle';
   const isSessionRunning = audioRuntimeSnapshot.inbound.streamBound || audioRuntimeSnapshot.outbound.streamBound;
@@ -376,6 +392,40 @@ function RealTimeSessionPage() {
   const firstTranslationSampleCount = audioRuntimeSnapshot.subtitleOverlay.firstTranslationSampleCount;
 
   const sessionElapsed = useSessionElapsed(audioRuntimeSnapshot.sessionStartedAt, isSessionRunning);
+  const previousSessionRunningRef = useRef(isSessionRunning);
+  const lastRunningModeRef = useRef<SceneMode | null>(null);
+
+  const refreshWatchReport = useCallback(async (expand = false) => {
+    const requestId = watchReportRequestIdRef.current + 1;
+    watchReportRequestIdRef.current = requestId;
+    setWatchReportLoading(true);
+    setWatchReportError(null);
+    try {
+      const nextReport = await getWatchSessionReportRuntime();
+      if (requestId !== watchReportRequestIdRef.current) return;
+      setWatchReport(nextReport);
+      if (expand && nextReport?.status === 'completed') setWatchReportExpanded(true);
+    } catch (error) {
+      if (requestId !== watchReportRequestIdRef.current) return;
+      setWatchReportError(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (requestId === watchReportRequestIdRef.current) setWatchReportLoading(false);
+    }
+  }, [setWatchReportExpanded]);
+
+  useEffect(() => {
+    if (isSessionRunning) {
+      lastRunningModeRef.current = configDraft.devices.routeMode;
+    }
+    if (
+      previousSessionRunningRef.current
+      && !isSessionRunning
+      && lastRunningModeRef.current === 'watch'
+    ) {
+      void refreshWatchReport(true);
+    }
+    previousSessionRunningRef.current = isSessionRunning;
+  }, [configDraft.devices.routeMode, isSessionRunning, refreshWatchReport]);
 
   // Omni WebSocket connection lifecycle: surface reconnect progress, a short
   // "restored" notice after recovery, and a restart advice banner once the
@@ -487,6 +537,13 @@ function RealTimeSessionPage() {
   const handleSceneLaunch = async (mode: SceneMode) => {
     const launchAttemptId = createLaunchAttemptId(mode);
     setSessionLaunchProblem(null);
+    if (mode === 'watch') {
+      watchReportRequestIdRef.current += 1;
+      setWatchReport(null);
+      setWatchReportError(null);
+      setWatchReportExpanded(false);
+      setWatchReportExport(null);
+    }
     appendFrontendDiagnosticsLog('runtime', 'info', '[SceneLaunch] click accepted', JSON.stringify({
       launchAttemptId,
       mode,
@@ -540,7 +597,8 @@ function RealTimeSessionPage() {
     });
   };
 
-  const handleStopAll = async () => {
+  const handleStopAll = async (showWatchReport = true) => {
+    const stoppedWatchSession = runningMode === 'watch' || lastRunningModeRef.current === 'watch';
     await stopAll({
       audioSnapshot: audioRuntimeSnapshot,
       hasSpeechActivity,
@@ -548,12 +606,23 @@ function RealTimeSessionPage() {
       pushNotification: pushRuntimeNotification,
       runBusyAction,
     });
+    if (showWatchReport && stoppedWatchSession) {
+      await refreshWatchReport(true);
+    }
+  };
+
+  const clearWatchReport = async () => {
+    watchReportRequestIdRef.current += 1;
+    await clearWatchSessionReportRuntime();
+    setWatchReport(null);
+    setWatchReportExpanded(false);
+    setWatchReportExport(null);
   };
 
   const handleSessionRestartClick = () => {
     void (async () => {
       if (hasActiveChain) {
-        await handleStopAll();
+        await handleStopAll(false);
       }
       handleSceneLaunchClick(configDraft.devices.routeMode);
     })().catch((error) => {
@@ -652,6 +721,12 @@ function RealTimeSessionPage() {
               <AppIcon name="stop" size={14} />
               {isSessionRunning ? t('session.stopWithElapsed', { elapsed: formatElapsed(sessionElapsed) }) : t('session.stopAll')}
             </button>
+            {watchReport ? (
+              <button className="icon-button" onClick={() => setWatchReportExpanded(true)} type="button">
+                <AppIcon name="layers" size={14} />
+                {t('watchReport.currentTitle')}
+              </button>
+            ) : null}
             <button
               className="icon-button"
               disabled={busyAction !== null}
@@ -903,7 +978,51 @@ function RealTimeSessionPage() {
             </div>
           )}
         </article>
+
       </section>
+
+      {watchReportExpanded ? (
+        <ModalDialog
+          aria-label={t('watchReport.currentTitle')}
+          className="benchmark-modal watch-report-modal"
+          closeOnEscape
+          onClose={() => setWatchReportExpanded(false)}
+          variant="benchmark"
+        >
+          <div className="benchmark-modal-head watch-report-modal-head">
+            <div>
+              <span className="diagnostics-kicker">Watch Mode</span>
+              <h3>{t('watchReport.currentTitle')}</h3>
+              <p>{t('watchReport.description')}</p>
+            </div>
+            <button className="icon-button" onClick={() => setWatchReportExpanded(false)} type="button">
+              <AppIcon name="close" size={16} />
+            </button>
+          </div>
+          <WatchSessionReportPanel
+            error={watchReportError}
+            lastExportReceipt={watchReportExport && watchReport && watchReportExport.sessionId === watchReport.sessionId
+              ? watchReportExport.receipt
+              : null}
+            loading={watchReportLoading}
+            onClear={clearWatchReport}
+            onExported={(artifact) => {
+              if (watchReport) {
+                setWatchReportExport({ sessionId: watchReport.sessionId, receipt: artifact });
+              }
+              pushRuntimeNotification({
+                id: `watch-report-exported-${Date.now()}`,
+                level: 'info',
+                source: 'session',
+                message: t('watchReport.exported', { path: artifact.outputPath }),
+                emittedAt: new Date().toISOString(),
+              });
+            }}
+            onRefresh={() => refreshWatchReport(false)}
+            report={watchReport}
+          />
+        </ModalDialog>
+      ) : null}
 
       {watchFallbackResolver && <WatchFallbackDialog onResolve={resolveWatchFallback} />}
     </div>

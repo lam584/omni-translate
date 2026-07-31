@@ -5,6 +5,10 @@ import { runtimeSnapshotMock } from '../../mocks/runtime-shell';
 import { useAppStore } from '../../stores/app-store';
 import { installDesktopApi, resetDesktopApiForTests, TauriDesktopApi } from '../desktop-api';
 import { scheduleBridgeAutostartAfterStartup } from './bridge-autostart';
+import {
+  resetNativeWatchDiagnosticGateForTests,
+  updateNativeWatchDiagnosticGateFromIpcPing,
+} from './watch-mode';
 
 const invokeMock = vi.fn();
 
@@ -25,6 +29,7 @@ describe('scheduleBridgeAutostartAfterStartup', () => {
   beforeEach(() => {
     invokeMock.mockReset();
     resetDesktopApiForTests();
+    resetNativeWatchDiagnosticGateForTests();
     installDesktopApi(new TauriDesktopApi());
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: structuredClone(runtimeSnapshotMock) }));
   });
@@ -32,6 +37,7 @@ describe('scheduleBridgeAutostartAfterStartup', () => {
   afterEach(() => {
     vi.useRealTimers();
     resetDesktopApiForTests();
+    resetNativeWatchDiagnosticGateForTests();
   });
 
   it('starts the bridge service when the refreshed snapshot reports a stopped autostartable bridge', async () => {
@@ -68,6 +74,22 @@ describe('scheduleBridgeAutostartAfterStartup', () => {
 
     await scheduleBridgeAutostartAfterStartup(structuredClone(appConfigDraftMock), 0).promise;
 
+    expect(invokeMock).not.toHaveBeenCalledWith('start_bridge_service', expect.anything());
+  });
+
+  it('skips generic bridge autostart when the native IPC ping owns Watch diagnostic startup', async () => {
+    const refreshed = autostartableSnapshot();
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'bridge_v2') return { data: refreshed, warnings: [] };
+      throw new Error(`unexpected command ${command}`);
+    });
+    updateNativeWatchDiagnosticGateFromIpcPing(
+      'pong storage_status=ready watchDiagnostic=true backendAutostartAuthoritative=true',
+    );
+
+    await scheduleBridgeAutostartAfterStartup(structuredClone(appConfigDraftMock), 0).promise;
+
+    expect(invokeMock).toHaveBeenCalledWith('bridge_v2', { command: { action: 'refresh' } });
     expect(invokeMock).not.toHaveBeenCalledWith('start_bridge_service', expect.anything());
   });
 

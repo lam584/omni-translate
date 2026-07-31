@@ -49,13 +49,12 @@ impl OmniEventProcessor {
         );
         if !was_ready_for_audio && state.session_ready_for_audio {
             state.event_diagnostics.readiness_event = Some(event_type.to_string());
-            store.live_session_events.record_milestone(
-                "session_ready",
+            store.watch_session_report.record_session_ready(
+                event_type,
                 elapsed_ms_since(session_started_at),
+                queued_audio_chunks as u64,
+                dropped_audio_chunks,
             );
-            store
-                .live_session_events
-                .record_session_ready(queued_audio_chunks as u64, dropped_audio_chunks);
             if !store.mark_omni_session_ready(direction, session_generation) {
                 let _ = diag_log_detail(
                     app,
@@ -275,7 +274,10 @@ impl OmniEventProcessor {
             mut st_skip_logged,
             mut event_diagnostics,
         } = state;
-        let delta = if event_type == "response.audio_transcript.text" {
+        let delta = if matches!(
+            event_type,
+            "response.audio_transcript.text" | "response.text.text"
+        ) {
             let text = evt["text"].as_str().unwrap_or("");
             let stash = evt["stash"].as_str().unwrap_or("");
             pending_translated_text = format!("{text}{stash}");
@@ -286,7 +288,7 @@ impl OmniEventProcessor {
             delta
         };
         store
-            .live_session_events
+            .watch_session_report
             .push_output_delta(event_type, delta, "");
         event_diagnostics.claim_next_native_response_owner(current_cue_id.as_deref());
         let response_source_text = resolve_native_response_source_text(
@@ -357,7 +359,7 @@ impl OmniEventProcessor {
             "omni",
             "trace",
             format!(
-                "[EVENT] audio_transcript.delta → cue_id={cue_id_str} delta=\"{delta}\" total_len={}",
+                "[EVENT] {event_type} → cue_id={cue_id_str} delta=\"{delta}\" total_len={}",
                 pending_translated_text.len()
             ),
         );
@@ -376,6 +378,7 @@ impl OmniEventProcessor {
         store: &AudioStateStore,
         direction: &str,
         evt: &Value,
+        event_type: &str,
         session_started_at: &SystemTime,
         subtitle_translate_active: bool,
         native_translation_reuse_active: bool,
@@ -387,7 +390,11 @@ impl OmniEventProcessor {
             st_skip_logged,
             mut event_diagnostics,
         } = state;
-        let transcript = evt["transcript"].as_str().unwrap_or("");
+        let transcript = if event_type == "response.text.done" {
+            evt["text"].as_str().unwrap_or("")
+        } else {
+            evt["transcript"].as_str().unwrap_or("")
+        };
         if !transcript.is_empty() {
             pending_translated_text = transcript.to_string();
         }
@@ -395,8 +402,8 @@ impl OmniEventProcessor {
             pending_translated_text.clone();
         event_diagnostics.last_output_done_at_ms =
             Some(elapsed_ms_since(&session_started_at));
-        store.live_session_events.push_output_delta(
-            "response.audio_transcript.done",
+        store.watch_session_report.push_output_delta(
+            event_type,
             "",
             &pending_translated_text,
         );
@@ -466,7 +473,7 @@ impl OmniEventProcessor {
             "omni",
             "debug",
             format!(
-                "[EVENT] audio_transcript.done → cue_id={cue_id_str} transcript=\"{}\"",
+                "[EVENT] {event_type} → cue_id={cue_id_str} transcript=\"{}\"",
                 pending_translated_text
             ),
         );

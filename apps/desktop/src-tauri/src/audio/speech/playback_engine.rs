@@ -64,17 +64,19 @@ impl<'a> SpeechPlaybackEngine<'a> {
         );
         let speaker_frames = if output_route.play_to_speaker {
             let echo_reference = i16_to_f32(&mix.speaker_samples);
-            self.store.push_echo_reference(
-                &echo_reference,
-                mix.sample_rate_hz,
-                mix.channel_count,
-            );
             let frames = play_to_speaker(
                 &mix.speaker_samples,
                 mix.sample_rate_hz,
                 mix.channel_count,
                 self.config.speaker_device_id.as_deref(),
                 self.config.speaker_output_level,
+                || {
+                    self.store.push_echo_reference(
+                        &echo_reference,
+                        mix.sample_rate_hz,
+                        mix.channel_count,
+                    );
+                },
             )?;
             let _ = append_diagnostics_log(
                 self.app,

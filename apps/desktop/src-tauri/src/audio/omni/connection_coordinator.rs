@@ -1,17 +1,60 @@
 use super::*;
 use std::collections::HashSet;
 
-pub(super) const MANUAL_COMMIT_INTERVAL_SECS: u64 = 10;
+// Continuous media often has no clean silence boundary. One second is both the
+// observed safe provider buffer size and the earliest existing silence path,
+// so use it as the hard ceiling instead of holding first translation for 2 s.
+pub(super) const MANUAL_COMMIT_INTERVAL_SECS: u64 = 1;
+pub(super) const MANUAL_SILENCE_COMMIT_MIN_MS: u64 = 1_000;
+// DashScope rejects an input_audio_buffer.commit when the new buffer contains
+// only a short tail. A production Flash run rejected 4,800 samples (300 ms),
+// so require one second of actual 16 kHz PCM accepted by the current socket.
+// This does not delay the normal silence path: it already waits at least 1 s.
+pub(super) const MANUAL_COMMIT_MIN_AUDIO_SAMPLES: u64 = 16_000;
 pub(super) const MANUAL_RESPONSE_TIMEOUT_SECS: u64 = 30;
 pub(super) const RECENT_OUTPUT_ECHO_WINDOW_MS: u64 = 30_000;
-// One manual turn is ten seconds. The extra two seconds cover provider ASR
+// One manual turn is at most one second. The extra five seconds cover provider ASR
 // completion latency while retaining only the capture evidence for this turn.
-pub(super) const MANUAL_ECHO_ACTIVITY_WINDOW: Duration = Duration::from_secs(12);
+pub(super) const MANUAL_ECHO_ACTIVITY_WINDOW: Duration = Duration::from_secs(6);
 // Normal media plus translated playback is preserved by the AEC double-talk
 // path. A paused source recapturing only local playback produces a sustained,
 // much higher suppressed-chunk share; require both duration and ratio evidence.
 const MIN_ECHO_ACTIVITY_CHUNKS: u64 = 120;
 const ECHO_DOMINATED_PERCENT: u64 = 35;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ManualCommitReason {
+    SilenceBoundary,
+    MaxInterval,
+}
+
+impl ManualCommitReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::SilenceBoundary => "silence_boundary",
+            Self::MaxInterval => "max_interval",
+        }
+    }
+}
+
+fn manual_commit_reason(
+    elapsed: Duration,
+    silence_boundary_reached: bool,
+    audio_samples_since_commit: u64,
+) -> Option<ManualCommitReason> {
+    if audio_samples_since_commit < MANUAL_COMMIT_MIN_AUDIO_SAMPLES {
+        return None;
+    }
+    if silence_boundary_reached
+        && elapsed >= Duration::from_millis(MANUAL_SILENCE_COMMIT_MIN_MS)
+    {
+        Some(ManualCommitReason::SilenceBoundary)
+    } else if elapsed >= Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS) {
+        Some(ManualCommitReason::MaxInterval)
+    } else {
+        None
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ManualResponseDecision {
@@ -161,6 +204,25 @@ pub(super) struct OmniReconnectState<S: RealtimeSocket> {
 
 pub(super) struct OmniConnectionCoordinator;
 
+pub(super) fn provider_error_code(evt: &Value) -> &str {
+    evt.pointer("/error/code")
+        .and_then(Value::as_str)
+        .filter(|code| !code.trim().is_empty())
+        .or_else(|| {
+            evt.pointer("/error/type")
+                .and_then(Value::as_str)
+                .filter(|code| !code.trim().is_empty())
+        })
+        .unwrap_or("provider.error")
+}
+
+pub(super) fn provider_error_message(evt: &Value) -> &str {
+    evt.pointer("/error/message")
+        .and_then(Value::as_str)
+        .filter(|message| !message.trim().is_empty())
+        .unwrap_or("DashScope realtime model error")
+}
+
 impl OmniConnectionCoordinator {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_provider_error<C: RealtimeSocketConnector, R: tauri::Runtime>(
@@ -171,14 +233,15 @@ impl OmniConnectionCoordinator {
         provider: &ProviderDraftInput,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
+        output_mode: OmniOutputMode,
         target_language: &str,
         buffer_size: u64,
         trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         evt: &Value,
         raw_text: &str,
     ) -> Result<OmniReconnectState<C::Socket>, String> {
-        let err_code = evt["error"]["code"].as_str().unwrap_or("?");
-        let err_msg = evt["error"]["message"].as_str().unwrap_or("链路错误");
+        let err_code = provider_error_code(evt);
+        let err_msg = provider_error_message(evt);
         let _ = diag_log(
             app,
             "omni",
@@ -211,6 +274,7 @@ impl OmniConnectionCoordinator {
                 provider,
                 instructions,
                 audio_mode,
+                output_mode,
                 target_language,
                 buffer_size,
                 &format!("provider rejected voice: {err_msg}"),
@@ -275,6 +339,7 @@ impl OmniConnectionCoordinator {
         provider: &ProviderDraftInput,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
+        output_mode: OmniOutputMode,
         target_language: &str,
         buffer_size: u64,
     ) -> Result<OmniReconnectState<C::Socket>, String> {
@@ -287,6 +352,7 @@ impl OmniConnectionCoordinator {
             provider,
             instructions,
             audio_mode,
+            output_mode,
             target_language,
             buffer_size,
             "provider closed the WebSocket",
@@ -304,6 +370,7 @@ impl OmniConnectionCoordinator {
         provider: &ProviderDraftInput,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
+        output_mode: OmniOutputMode,
         target_language: &str,
         buffer_size: u64,
         error: tungstenite::Error,
@@ -315,6 +382,12 @@ impl OmniConnectionCoordinator {
         {
             return Ok(state);
         }
+        store.watch_session_report.record_session_issue(
+            "model",
+            "provider-websocket-read-failed",
+            "warning",
+            &err_str,
+        );
         let _ = diag_log(
             app,
             "omni",
@@ -335,6 +408,7 @@ impl OmniConnectionCoordinator {
             provider,
             instructions,
             audio_mode,
+            output_mode,
             target_language,
             buffer_size,
             &format!("WebSocket read failed: {error}"),
@@ -356,6 +430,7 @@ impl OmniConnectionCoordinator {
         provider: &ProviderDraftInput,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
+        output_mode: OmniOutputMode,
         target_language: &str,
         buffer_size: u64,
         reason: &str,
@@ -370,6 +445,7 @@ impl OmniConnectionCoordinator {
             &state.active_voice,
             instructions,
             audio_mode,
+            output_mode,
             target_language,
             buffer_size,
             reason,
@@ -378,8 +454,14 @@ impl OmniConnectionCoordinator {
 }
 
 pub(super) struct OmniCommitState {
+    /// Timestamp of the commit that opened the response gate. This clock is
+    /// intentionally independent from the next input turn's first audio.
     pub(super) last_commit_time: SystemTime,
+    /// First successfully appended audible input of the next manual turn.
+    /// A long idle period after the prior commit must not age this timer.
+    pub(super) manual_turn_started_at: Option<SystemTime>,
     pub(super) sent_audio_since_commit: bool,
+    pub(super) audio_samples_since_commit: u64,
     pub(super) manual_response_pending: bool,
     pub(super) manual_response_item_id: Option<String>,
     pub(super) manual_turn_timed_out: bool,
@@ -388,6 +470,108 @@ pub(super) struct OmniCommitState {
 #[cfg(test)]
 mod manual_response_gate_tests {
     use super::*;
+
+    #[test]
+    fn provider_error_code_falls_back_to_error_type() {
+        let coded = json!({
+            "type": "error",
+            "error": {
+                "code": "InternalError",
+                "type": "server_error",
+                "message": "Internal service error: null"
+            }
+        });
+        assert_eq!(provider_error_code(&coded), "InternalError");
+        assert_eq!(
+            provider_error_message(&coded),
+            "Internal service error: null"
+        );
+
+        let typed = json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Error committing input audio buffer: buffer too small, or have no audio."
+            }
+        });
+        assert_eq!(provider_error_code(&typed), "invalid_request_error");
+        assert_eq!(provider_error_code(&json!({"type": "error"})), "provider.error");
+    }
+
+    #[test]
+    fn manual_commit_prefers_a_speech_boundary_without_cutting_tiny_fragments() {
+        assert_eq!(
+            manual_commit_reason(
+                Duration::from_millis(MANUAL_SILENCE_COMMIT_MIN_MS - 1),
+                true,
+                MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
+            ),
+            None
+        );
+        assert_eq!(
+            manual_commit_reason(
+                Duration::from_millis(MANUAL_SILENCE_COMMIT_MIN_MS),
+                true,
+                MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
+            ),
+            Some(ManualCommitReason::SilenceBoundary)
+        );
+        assert_eq!(
+            manual_commit_reason(
+                Duration::from_millis(MANUAL_SILENCE_COMMIT_MIN_MS - 1),
+                false,
+                MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
+            ),
+            None
+        );
+        assert_eq!(
+            manual_commit_reason(
+                Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS),
+                false,
+                MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
+            ),
+            Some(ManualCommitReason::MaxInterval)
+        );
+    }
+
+    #[test]
+    fn manual_commit_waits_for_enough_new_audio_after_the_previous_commit() {
+        let elapsed = Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS + 1);
+        assert_eq!(manual_commit_reason(elapsed, false, 0), None);
+        assert_eq!(manual_commit_reason(elapsed, false, 640), None);
+        assert_eq!(manual_commit_reason(elapsed, false, 1_280), None);
+        assert_eq!(
+            manual_commit_reason(elapsed, false, 4_800),
+            None,
+            "the 300 ms tail rejected by Flash must never be committed",
+        );
+        assert_eq!(
+            manual_commit_reason(elapsed, false, MANUAL_COMMIT_MIN_AUDIO_SAMPLES),
+            Some(ManualCommitReason::MaxInterval)
+        );
+    }
+
+    #[test]
+    fn new_manual_turn_does_not_inherit_the_previous_commits_idle_time() {
+        let stale_commit_time = SystemTime::now()
+            .checked_sub(Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS + 10))
+            .expect("stale commit timestamp");
+        let new_turn_started_at = SystemTime::now();
+
+        assert!(
+            stale_commit_time.elapsed().unwrap_or_default()
+                > Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS)
+        );
+        assert_eq!(
+            manual_commit_reason(
+                new_turn_started_at.elapsed().unwrap_or_default(),
+                false,
+                MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
+            ),
+            None,
+            "one second newly appended after a long idle must still wait for this turn's timer",
+        );
+    }
 
     #[test]
     fn rejects_empty_transcriptions() {
@@ -614,10 +798,13 @@ impl OmniConnectionCoordinator {
         trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         audio_mode: RealtimeAudioMode,
         chunk_count: u64,
+        silence_boundary_reached: bool,
     ) -> OmniCommitState {
         let OmniCommitState {
             mut last_commit_time,
+            mut manual_turn_started_at,
             mut sent_audio_since_commit,
+            mut audio_samples_since_commit,
             mut manual_response_pending,
             mut manual_response_item_id,
             manual_turn_timed_out: _,
@@ -638,9 +825,21 @@ impl OmniConnectionCoordinator {
                         "warning",
                         "event=manual_response_gate_timeout action=drop_pending_response",
                     );
-                } else if !manual_response_pending
-                    && elapsed.as_secs() >= MANUAL_COMMIT_INTERVAL_SECS
-                    && sent_audio_since_commit
+                } else if let Some((turn_elapsed, commit_reason)) = (!manual_response_pending
+                    && sent_audio_since_commit)
+                    .then(|| {
+                        manual_turn_started_at
+                            .and_then(|started_at| started_at.elapsed().ok())
+                            .and_then(|turn_elapsed| {
+                                manual_commit_reason(
+                                    turn_elapsed,
+                                    silence_boundary_reached,
+                                    audio_samples_since_commit,
+                                )
+                                .map(|reason| (turn_elapsed, reason))
+                            })
+                    })
+                    .flatten()
                 {
                     let commit_msg = super::build_dashscope_input_audio_commit();
                     trace_call.record_ws_send("input_audio_buffer.commit", commit_msg.clone());
@@ -657,13 +856,17 @@ impl OmniConnectionCoordinator {
                             "omni",
                             "info",
                             format!(
-                                "[VAD] bypass: 已发送 commit（距上次 {:.0}s，已发送 {} 块音频）",
-                                elapsed.as_secs_f64(),
+                                "[VAD] bypass: 已发送 commit（原因={}，距上次 {:.2}s，本轮样本={}，已发送 {} 块音频）",
+                                commit_reason.as_str(),
+                                turn_elapsed.as_secs_f64(),
+                                audio_samples_since_commit,
                                 chunk_count
                             ),
                         );
                         last_commit_time = SystemTime::now();
+                        manual_turn_started_at = None;
                         sent_audio_since_commit = false;
+                        audio_samples_since_commit = 0;
                         manual_response_pending = true;
                         manual_response_item_id = None;
                         let _ = diag_log(
@@ -678,7 +881,9 @@ impl OmniConnectionCoordinator {
         }
         OmniCommitState {
             last_commit_time,
+            manual_turn_started_at,
             sent_audio_since_commit,
+            audio_samples_since_commit,
             manual_response_pending,
             manual_response_item_id,
             manual_turn_timed_out,
@@ -703,10 +908,12 @@ impl OmniConnectionCoordinator {
     pub(super) fn connect_initial(
         app: &AppHandle,
         store: &AudioStateStore,
+        direction: &str,
         provider: &ProviderDraftInput,
         voice: &str,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
+        output_mode: OmniOutputMode,
         target_language: &str,
         subtitle_translate_active: bool,
         speech_config: OmniSpeechConfig,
@@ -723,6 +930,7 @@ impl OmniConnectionCoordinator {
               "voice": voice,
               "instructions": instructions,
               "realtimeAudioMode": audio_mode.as_str(),
+              "outputMode": output_mode.as_str(),
               "targetLanguage": target_language,
               "subtitleTranslateActive": subtitle_translate_active,
             }),
@@ -735,6 +943,9 @@ impl OmniConnectionCoordinator {
         }
         let request = build_dashscope_ws_request(provider)?;
 
+        store
+            .watch_session_report
+            .record_milestone_now("preconnect_started");
         let initial_connect_started = SystemTime::now();
         let mut initial_attempt = 0usize;
         let (socket, _) = loop {
@@ -773,7 +984,12 @@ impl OmniConnectionCoordinator {
         let (mut socket, ws_connect_ms) = connection.into_parts();
         let session_started_at = SystemTime::now();
         store.set_stt_connected(true, 0);
-        store.live_session_events.record_milestone("preconnect_started", ws_connect_ms);
+        store.watch_session_report.record_milestone_with_detail(
+            "preconnect-connected",
+            Some(format!(
+                "wsConnectMs={ws_connect_ms} attempts={initial_attempt}"
+            )),
+        );
         let _ = diag_log(
             &app,
             "omni",
@@ -783,12 +999,13 @@ impl OmniConnectionCoordinator {
 
         let active_voice = voice.to_string();
         let voice_fallback_applied = false;
-        let session_cfg = build_omni_session_update_for_provider(
+        let session_cfg = build_omni_session_update_for_provider_with_output_mode(
             provider,
             &active_voice,
             &instructions,
             audio_mode,
             &target_language,
+            output_mode,
         );
         let input_audio_format = session_cfg
             .pointer("/session/input_audio_format")
@@ -804,9 +1021,10 @@ impl OmniConnectionCoordinator {
             "info",
             "watch_mode.omni_session_config",
             format!(
-                "model={} realtimeAudioMode={} inputAudioFormat={} isLivetranslate={} subtitleTranslateActive={} turnDetection={}",
+                "model={} realtimeAudioMode={} outputMode={} inputAudioFormat={} isLivetranslate={} subtitleTranslateActive={} turnDetection={}",
                 provider.model,
                 audio_mode.as_str(),
+                output_mode.as_str(),
                 input_audio_format,
                 crate::audio::events::is_livetranslate_route_model(provider, &provider.model),
                 subtitle_translate_active,
@@ -823,7 +1041,8 @@ impl OmniConnectionCoordinator {
             "omni",
             "debug",
             format!(
-                "[SESSION] 已发送 session.update: modalities=[text,audio] voice={voice} instructions_len={}",
+                "[SESSION] 已发送 session.update: output_mode={} voice={voice} instructions_len={}",
+                output_mode.as_str(),
                 instructions.len()
             ),
         );
@@ -833,7 +1052,10 @@ impl OmniConnectionCoordinator {
                 &app,
                 "omni",
                 "info",
-                "[VAD] 当前模式: manual（VAD bypass 已启用，每 10 秒自动 commit）",
+                format!(
+                    "[VAD] 当前模式: manual（静音边界最快 {}ms、最长 {}s 自动 commit）",
+                    MANUAL_SILENCE_COMMIT_MIN_MS, MANUAL_COMMIT_INTERVAL_SECS
+                ),
             );
         } else {
             let _ = diag_log(
@@ -852,7 +1074,7 @@ impl OmniConnectionCoordinator {
         // re-reads it for every Play command.
         let shared_speech_config = store.register_omni_speech_config(speech_config);
         let (playback_tx, playback_stop_requested, playback_join) =
-            start_omni_playback(app.clone(), shared_speech_config);
+            start_omni_playback(app.clone(), shared_speech_config, direction.to_string());
         Ok(OmniConnectedSession {
             socket,
             trace_call,

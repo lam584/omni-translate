@@ -24,11 +24,13 @@ struct OmniSessionRuntime {
     reconnect_count: usize,
     chunk_count: u64,
     sent_audio_since_commit: bool,
+    audio_samples_since_commit: u64,
     manual_response_pending: bool,
     manual_response_item_id: Option<String>,
     last_vad_event_time: SystemTime,
     vad_event_count: u64,
     last_commit_time: SystemTime,
+    manual_turn_started_at: Option<SystemTime>,
     st_skip_logged: bool,
     transcription_completed_flag: bool,
     transcription_completed_at: Option<SystemTime>,
@@ -60,11 +62,13 @@ impl OmniSessionRuntime {
             reconnect_count: 0,
             chunk_count: 0,
             sent_audio_since_commit: false,
+            audio_samples_since_commit: 0,
             manual_response_pending: false,
             manual_response_item_id: None,
             last_vad_event_time: SystemTime::now(),
             vad_event_count: 0,
             last_commit_time: SystemTime::now(),
+            manual_turn_started_at: None,
             st_skip_logged: false,
             transcription_completed_flag: false,
             transcription_completed_at: None,
@@ -101,6 +105,7 @@ impl OmniSessionWorker {
             self.config.voice,
             self.config.instructions,
             self.config.audio_mode,
+            self.config.output_mode,
             self.config.target_language,
             self.config.subtitle_translate_active,
             self.config.speech_config,
@@ -131,15 +136,13 @@ pub(crate) fn start_omni(
     ),
     String,
 > {
+    let output_mode = OmniOutputMode::from_speech_config(&speech_config);
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
     let (readiness_tx, readiness_rx) = mpsc::channel::<Result<u64, String>>();
     let readiness_sent = Arc::new(AtomicBool::new(false));
 
     store.set_stt_connected(false, 0);
-    store
-        .live_session_events
-        .clear(&provider.model, &ms_marker(unix_ms()));
     let _ = diag_log_detail(
         &app,
         "omni",
@@ -177,6 +180,7 @@ pub(crate) fn start_omni(
                     voice,
                     instructions,
                     audio_mode,
+                    output_mode,
                     target_language,
                     subtitle_translate_active,
                     speech_config,
@@ -274,6 +278,7 @@ fn run_omni_worker(
     voice: String,
     instructions: String,
     audio_mode: RealtimeAudioMode,
+    output_mode: OmniOutputMode,
     target_language: String,
     subtitle_translate_active: bool,
     speech_config: OmniSpeechConfig,
@@ -295,10 +300,12 @@ fn run_omni_worker(
     } = OmniConnectionCoordinator::connect_initial(
         &app,
         store,
+        &direction,
         &provider,
         &voice,
         &instructions,
         audio_mode,
+        output_mode,
         &target_language,
         subtitle_translate_active,
         speech_config,
@@ -312,11 +319,13 @@ fn run_omni_worker(
         mut reconnect_count,
         mut chunk_count,
         mut sent_audio_since_commit,
+        mut audio_samples_since_commit,
         mut manual_response_pending,
         mut manual_response_item_id,
         mut last_vad_event_time,
         mut vad_event_count,
         mut last_commit_time,
+        mut manual_turn_started_at,
         mut st_skip_logged,
         mut transcription_completed_flag,
         mut transcription_completed_at,
@@ -355,6 +364,7 @@ fn run_omni_worker(
             );
             check_vad_warning(
                 &app,
+                audio_mode,
                 &last_vad_event_time,
                 chunk_count,
                 vad_event_count,
@@ -384,6 +394,8 @@ fn run_omni_worker(
             reconnect_count,
             chunk_count,
             sent_audio_since_commit,
+            audio_samples_since_commit,
+            manual_turn_started_at,
             session_ready_for_audio,
             pre_session_audio_queue,
             pre_session_audio_dropped,
@@ -410,6 +422,7 @@ fn run_omni_worker(
             &active_voice,
             &instructions,
             audio_mode,
+            output_mode,
             &target_language,
             &session_started_at,
         )?;
@@ -417,6 +430,8 @@ fn run_omni_worker(
         reconnect_count = pump_state.reconnect_count;
         chunk_count = pump_state.chunk_count;
         sent_audio_since_commit = pump_state.sent_audio_since_commit;
+        audio_samples_since_commit = pump_state.audio_samples_since_commit;
+        manual_turn_started_at = pump_state.manual_turn_started_at;
         session_ready_for_audio = pump_state.session_ready_for_audio;
         pre_session_audio_queue = pump_state.pre_session_audio_queue;
         pre_session_audio_dropped = pump_state.pre_session_audio_dropped;
@@ -444,7 +459,9 @@ fn run_omni_worker(
                     &mut manual_response_pending,
                     &mut manual_response_item_id,
                     &mut sent_audio_since_commit,
+                    &mut audio_samples_since_commit,
                     &mut last_commit_time,
+                    &mut manual_turn_started_at,
                     &mut current_cue_id,
                     &mut pending_source_text,
                     &mut pending_translated_text,
@@ -473,7 +490,9 @@ fn run_omni_worker(
         let commit_state = OmniConnectionCoordinator::maintain_manual_commit(
             OmniCommitState {
                 last_commit_time,
+                manual_turn_started_at,
                 sent_audio_since_commit,
+                audio_samples_since_commit,
                 manual_response_pending,
                 manual_response_item_id,
                 manual_turn_timed_out: false,
@@ -483,9 +502,12 @@ fn run_omni_worker(
             &mut trace_call,
             audio_mode,
             chunk_count,
+            silence_grace_chunks_sent >= OMNI_ASR_SILENCE_GRACE_CHUNKS,
         );
         last_commit_time = commit_state.last_commit_time;
+        manual_turn_started_at = commit_state.manual_turn_started_at;
         sent_audio_since_commit = commit_state.sent_audio_since_commit;
+        audio_samples_since_commit = commit_state.audio_samples_since_commit;
         manual_response_pending = commit_state.manual_response_pending;
         manual_response_item_id = commit_state.manual_response_item_id;
         if commit_state.manual_turn_timed_out {
@@ -583,6 +605,7 @@ fn run_omni_worker(
                 provider: &provider,
                 instructions: &instructions,
                 audio_mode,
+                output_mode,
                 target_language: &target_language,
                 buffer_size,
                 pre_session_audio_queue_len: pre_session_audio_queue.len(),
@@ -620,6 +643,7 @@ fn run_omni_worker(
         }
         if check_vad_warning(
             &app,
+            audio_mode,
             &last_vad_event_time,
             chunk_count,
             vad_event_count,
@@ -638,9 +662,8 @@ fn run_omni_worker(
 /// gone: an awaited `input_audio_buffer.committed` ack or
 /// `transcription.completed` will never arrive, and a streaming response
 /// cannot resume. Drop the manual response gate and the stale turn/output
-/// state, backdate the commit timer so the next audible chunk on the new
-/// session commits immediately instead of waiting out another full interval,
-/// and mark the session not ready for audio: the new socket has not confirmed
+/// state, restart the commit timer so the next audible chunk cannot create a
+/// tiny empty turn, and mark the session not ready for audio: the new socket has not confirmed
 /// its `session.update` yet, so audio must buffer in the pre-session queue
 /// until the new `session.created`/`session.updated` arrives.
 #[allow(clippy::too_many_arguments)]
@@ -651,7 +674,9 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
     manual_response_pending: &mut bool,
     manual_response_item_id: &mut Option<String>,
     sent_audio_since_commit: &mut bool,
+    audio_samples_since_commit: &mut u64,
     last_commit_time: &mut SystemTime,
+    manual_turn_started_at: &mut Option<SystemTime>,
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     pending_translated_text: &mut String,
@@ -677,7 +702,9 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
         manual_response_pending,
         manual_response_item_id,
         sent_audio_since_commit,
+        audio_samples_since_commit,
         last_commit_time,
+        manual_turn_started_at,
         current_cue_id,
         pending_source_text,
         pending_translated_text,
@@ -700,7 +727,9 @@ pub(super) fn reset_session_state_after_reconnect(
     manual_response_pending: &mut bool,
     manual_response_item_id: &mut Option<String>,
     sent_audio_since_commit: &mut bool,
+    audio_samples_since_commit: &mut u64,
     last_commit_time: &mut SystemTime,
+    manual_turn_started_at: &mut Option<SystemTime>,
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     pending_translated_text: &mut String,
@@ -716,9 +745,9 @@ pub(super) fn reset_session_state_after_reconnect(
     *manual_response_pending = false;
     *manual_response_item_id = None;
     *sent_audio_since_commit = false;
-    *last_commit_time = SystemTime::now()
-        .checked_sub(Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS))
-        .unwrap_or_else(SystemTime::now);
+    *audio_samples_since_commit = 0;
+    *last_commit_time = SystemTime::now();
+    *manual_turn_started_at = None;
     if let Some(cue_id) = current_cue_id.as_deref() {
         store.discard_uncommitted_subtitle_cue(cue_id);
     }
@@ -745,6 +774,25 @@ pub(super) fn reset_session_state_after_reconnect(
 mod reconnect_reset_tests {
     use super::*;
 
+    #[test]
+    fn every_manual_turn_anchors_on_its_first_successful_audible_append() {
+        assert!(should_anchor_manual_turn_to_first_audible_append(
+            RealtimeAudioMode::Manual,
+            false,
+            true,
+        ));
+        assert!(!should_anchor_manual_turn_to_first_audible_append(
+            RealtimeAudioMode::Manual,
+            true,
+            true,
+        ));
+        assert!(!should_anchor_manual_turn_to_first_audible_append(
+            RealtimeAudioMode::ServerVad,
+            false,
+            true,
+        ));
+    }
+
     /// Field bug: after a mid-session reconnect, `session_ready_for_audio`
     /// stayed true, so captured audio was pumped into the new socket before
     /// the provider confirmed the new session.
@@ -754,7 +802,9 @@ mod reconnect_reset_tests {
         let mut manual_response_pending = true;
         let mut manual_response_item_id = Some("item-old".to_string());
         let mut sent_audio_since_commit = true;
+        let mut audio_samples_since_commit = 32_000_u64;
         let mut last_commit_time = SystemTime::now();
+        let mut manual_turn_started_at = Some(SystemTime::now());
         let mut current_cue_id = Some("cue-old".to_string());
         let mut pending_source_text = "half a sentence".to_string();
         let mut pending_translated_text = "半句译文".to_string();
@@ -772,7 +822,9 @@ mod reconnect_reset_tests {
             &mut manual_response_pending,
             &mut manual_response_item_id,
             &mut sent_audio_since_commit,
+            &mut audio_samples_since_commit,
             &mut last_commit_time,
+            &mut manual_turn_started_at,
             &mut current_cue_id,
             &mut pending_source_text,
             &mut pending_translated_text,
@@ -793,15 +845,17 @@ mod reconnect_reset_tests {
         assert!(!manual_response_pending);
         assert!(manual_response_item_id.is_none());
         assert!(!sent_audio_since_commit);
+        assert_eq!(audio_samples_since_commit, 0);
+        assert!(manual_turn_started_at.is_none());
         assert!(current_cue_id.is_none());
         assert!(pending_audio_buffer.is_empty());
         assert_eq!(pending_audio_delta_count, 0);
         assert!(pending_audio_response_id.is_none());
-        // The commit timer is backdated so the next audible chunk commits
-        // immediately on the new session.
+        // A reconnect must not inherit a stale timer and immediately commit a
+        // tiny fragment before enough new-session audio has accumulated.
         assert!(
             last_commit_time.elapsed().unwrap_or_default()
-                >= Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS)
+                < Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS)
         );
     }
 }
@@ -812,6 +866,7 @@ pub(super) fn reconnect_socket<R: tauri::Runtime>(
     voice: &str,
     instructions: &str,
     audio_mode: RealtimeAudioMode,
+    output_mode: OmniOutputMode,
     target_language: &str,
 ) -> Result<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>, String>
 {
@@ -828,12 +883,13 @@ pub(super) fn reconnect_socket<R: tauri::Runtime>(
     set_socket_write_timeout(&mut socket);
     set_socket_read_timeout(&mut socket);
 
-    let session_cfg = build_omni_session_update_for_provider(
+    let session_cfg = build_omni_session_update_for_provider_with_output_mode(
         provider,
         voice,
         instructions,
         audio_mode,
         target_language,
+        output_mode,
     );
     socket
         .send(Message::Text(session_cfg.to_string().into()))

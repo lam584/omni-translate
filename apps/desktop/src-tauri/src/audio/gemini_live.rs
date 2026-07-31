@@ -342,6 +342,18 @@ impl GeminiCueState {
     }
 
     fn commit(&mut self, app: &AppHandle, store: &AudioStateStore) {
+        if let Some(cue_id) = self.cue_id.as_deref() {
+            if !self.output_text.trim().is_empty() {
+                store.watch_session_report.record_model_final_for_cue(
+                    cue_id,
+                    "gemini-live",
+                    &self.output_text,
+                    true,
+                    None,
+                    None,
+                );
+            }
+        }
         commit_realtime_cue(
             app,
             store,
@@ -404,12 +416,21 @@ fn run_gemini_worker(
                          reconnect_retries: &mut usize,
                          trace_call: &mut ModelTraceCall|
      -> bool {
+        let retry_cue_id = cue.cue_id.clone();
         cue.commit(&app, store);
         *manual_activity_started = false;
         let _ = store.set_stt_connected_if_current(stt_epoch, false, 0);
         let _ = emit_audio_snapshot(&app, store);
         while *reconnect_retries < GEMINI_RECONNECT_MAX_RETRIES {
             *reconnect_retries += 1;
+            if let Some(cue_id) = retry_cue_id.as_deref() {
+                store.watch_session_report.record_retry_for_cue(
+                    cue_id,
+                    "gemini-live",
+                    &format!("reconnect-{}", reconnect_retries),
+                    "Gemini Live transport reconnect",
+                );
+            }
             let delay = attempt_backoff_delay(*reconnect_retries);
             let _ = diag_log(
                 &app,
@@ -438,6 +459,16 @@ fn run_gemini_worker(
                     return true;
                 }
                 Err(error) => {
+                    if let Some(cue_id) = retry_cue_id.as_deref() {
+                        store.watch_session_report.record_model_error_for_cue(
+                            cue_id,
+                            "gemini-live",
+                            "transport.reconnect",
+                            &error,
+                            *reconnect_retries >= GEMINI_RECONNECT_MAX_RETRIES,
+                            Some(&format!("reconnect-{}", reconnect_retries)),
+                        );
+                    }
                     let _ = diag_log(
                         &app,
                         "gemini-live",
@@ -644,6 +675,14 @@ fn run_gemini_worker(
                 if let Some(output) = transcription_text(&evt, "/serverContent/outputTranscription")
                 {
                     let id = cue.ensure_cue_id();
+                    store.watch_session_report.record_model_delta_for_cue(
+                        &id,
+                        "gemini-live",
+                        output,
+                        true,
+                        None,
+                        None,
+                    );
                     cue.output_text.push_str(output);
                     store.update_subtitle_cue_translation(&id, cue.output_text.clone(), false);
                     let _ = emit_audio_snapshot(&app, store);
@@ -655,6 +694,14 @@ fn run_gemini_worker(
                 );
                 if !model_text.trim().is_empty() {
                     let id = cue.ensure_cue_id();
+                    store.watch_session_report.record_model_delta_for_cue(
+                        &id,
+                        "gemini-live",
+                        &model_text,
+                        true,
+                        None,
+                        None,
+                    );
                     cue.output_text.push_str(&model_text);
                     if cue.source_text.trim().is_empty() {
                         store.update_or_push_stt_cue(&id, &cue.output_text, false);

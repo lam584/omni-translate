@@ -18,6 +18,7 @@ import { invokeWithTimeout, pingDesktopRuntime, IPC_PING_TIMEOUT_MS } from './in
 import { pushDesktopRuntimeNotification } from './notifications';
 import { DESKTOP_RUNTIME_RETRY_EVENT } from './retry-events';
 import { enableNativeLogForwarding, markStep, type OnBootstrapStep } from './steps';
+import { updateNativeWatchDiagnosticGateFromIpcPing } from './watch-mode';
 
 const runtimeLogger = createLogger('runtime');
 
@@ -150,7 +151,12 @@ export async function runBootstrapDesktopRuntimeBridge(onStep?: OnBootstrapStep)
       if (disposed || recoveryInFlight || Date.now() - recoveryStartedAt >= IPC_RECOVERY_TIMEOUT_MS) return;
       recoveryInFlight = true;
       try {
-        await invokeWithTimeout(() => activeDesktopApi().runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+        const response = await invokeWithTimeout(
+          () => activeDesktopApi().runtime.debugIpcPing(),
+          'debug_ipc_ping',
+          IPC_PING_TIMEOUT_MS,
+        );
+        updateNativeWatchDiagnosticGateFromIpcPing(response);
         const nextCleanup = await connectDesktopRuntimeBridge();
         if (disposed) {
           nextCleanup();

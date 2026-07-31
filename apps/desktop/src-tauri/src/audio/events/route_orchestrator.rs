@@ -89,6 +89,10 @@ where
 {
     let outcome = run_fast_watch_start_body(run_inner);
     if let FastWatchStartOutcome::Failed(reason) = &outcome {
+        state
+            .watch_session_report
+            .record_session_error("route-start-failed", reason);
+        state.watch_session_report.complete();
         let (message, error_code, recommended_action) = split_error_markers(reason);
         state.mark_route_error(
             "inbound",
@@ -135,6 +139,13 @@ pub(crate) async fn start_audio_route(
     let fast_watch_start = direction == "inbound" && super::configured_route_mode(&config) == "watch";
     if fast_watch_start {
         let state = app.state::<AudioStateStore>();
+        let requested_model = config
+            .pointer("/devices/inboundVoiceModelId")
+            .and_then(Value::as_str)
+            .unwrap_or("");
+        state
+            .watch_session_report
+            .begin_or_reuse("", requested_model);
         let route_id = config
             .pointer("/devices/inboundRoute/routeId")
             .and_then(Value::as_str)
@@ -433,7 +444,7 @@ fn start_omni_inbound_route(
         plan.omni_speech_config.clone(),
         OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
     )?;
-    state.live_session_events.record_milestone_now("route_started");
+    state.watch_session_report.record_milestone_now("route_started");
 
     if should_start_speech_dispatch {
         match speech::start_dispatch(app.clone(), &state, omni_route_config.clone()) {
@@ -551,7 +562,7 @@ fn start_openai_inbound_route(
         plan.instructions.clone(),
         st_active,
     )?;
-    state.live_session_events.record_milestone_now("route_started");
+    state.watch_session_report.record_milestone_now("route_started");
     if should_start_speech_dispatch {
         if let Err(error) = speech::start_dispatch(app.clone(), &state, config.clone()) {
             let _ = append_diagnostics_log(
@@ -658,6 +669,12 @@ fn start_recognized_route_locked(
                 requested_voice_model.clone(),
                 voice_provider,
             );
+            if super::configured_route_mode(&config) == "watch" {
+                state.watch_session_report.begin_or_reuse(
+                    &plan.provider.provider_id,
+                    &plan.provider.model,
+                );
+            }
             if let Some(error) = plan.configuration_error.clone() {
                 return Err(error);
             }
@@ -731,7 +748,7 @@ fn start_recognized_route_locked(
                     &source_language,
                     &plan.target_language,
                 )?;
-                state.live_session_events.record_milestone_now("route_started");
+                state.watch_session_report.record_milestone_now("route_started");
                 start_route_with_overlay(app, &state, &direction, config, Some(tencent_sender))
             }
             ResolvedRouteKind::OpenAiRealtime => {
@@ -871,6 +888,10 @@ pub(crate) async fn stop_audio_route(
                 None,
                 None,
             );
+            let snapshot = state.snapshot();
+            if !snapshot.inbound.stream_bound && !snapshot.outbound.stream_bound {
+                state.watch_session_report.complete();
+            }
             Ok(state.snapshot())
         })();
         let _ = tx.send(result);

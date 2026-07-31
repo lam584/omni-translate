@@ -61,56 +61,24 @@ impl OmniAsrEventProcessor {
         let mut completed_cue_id = None;
         match event_type {
             "input_audio_buffer.speech_started" => {
-                last_vad_event_time = SystemTime::now();
-                vad_event_count += 1;
-                if vad_event_count == 1 {
-                    let speech_ms = elapsed_ms_since(&session_started_at);
-                    store.live_session_events.record_milestone(
-                        "first_speech_started",
-                        speech_ms,
-                    );
-                    store.live_session_events.record_audio_diagnostic(
-                        None,
-                        None,
-                        Some(total_input_chunks),
-                    );
-                    let _ = diag_log(
-                        &app,
-                        "omni",
-                        "info",
-                        format!(
-                            "[VAD] first_speech_started: elapsed_ms={} first_audio_sent_ms={:?} first_audible_chunk_ms={:?} total_input_chunks={} chunks_sent_to_server={} silence_skipped_before_audible={} subtitle_translate_active={}",
-                            speech_ms,
-                            first_audio_sent_ms,
-                            first_audible_chunk_ms,
-                            total_input_chunks,
-                            chunk_count,
-                            total_silence_skipped_before_first_audible,
-                            subtitle_translate_active,
-                        ),
-                    );
-                }
-                let cue_id = format!("omni-cue-{direction}-{}", unix_ms());
-                store.update_or_push_stt_cue(&cue_id, "", false);
-                current_cue_id = Some(cue_id.clone());
-                event_diagnostics.current_cue_origin =
-                    Some("speech_started".to_string());
-                event_diagnostics.last_asr_delta_item_id = None;
-                pending_source_text.clear();
-                // `pending_translated_text` and `pending_audio_buffer` belong
-                // to the prior native response. Server VAD can open the next
-                // input window before that response reaches transcript/audio
-                // done, so clearing output here truncates both subtitles and
-                // spoken translation.
-                transcription_completed_flag = false;
-                transcription_completed_at = None;
-                let _ = diag_log(
-                    &app,
-                    "omni",
-                    "info",
-                    format!(
-                        "[VAD] speech_started received event_count={vad_event_count} cue_id={cue_id}"
-                    ),
+                Self::process_speech_started(
+                    app,
+                    store,
+                    direction,
+                    session_started_at,
+                    subtitle_translate_active,
+                    total_input_chunks,
+                    first_audio_sent_ms,
+                    first_audible_chunk_ms,
+                    chunk_count,
+                    total_silence_skipped_before_first_audible,
+                    &mut last_vad_event_time,
+                    &mut vad_event_count,
+                    &mut current_cue_id,
+                    &mut pending_source_text,
+                    &mut transcription_completed_flag,
+                    &mut transcription_completed_at,
+                    &mut event_diagnostics,
                 );
             }
             "conversation.item.input_audio_transcription.delta"
@@ -168,7 +136,7 @@ impl OmniAsrEventProcessor {
                 event_diagnostics.last_asr_delta_item_id =
                     evt["item_id"].as_str().map(str::to_string);
                 let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
-                store.live_session_events.push_asr_delta(
+                store.watch_session_report.push_asr_delta(
                     event_type,
                     stash,
                     &pending_source_text,
@@ -267,7 +235,7 @@ impl OmniAsrEventProcessor {
                             elapsed_ms_since(&session_started_at)
                         });
                 }
-                store.live_session_events.push_asr_delta(
+                store.watch_session_report.push_asr_delta(
                     "conversation.item.input_audio_transcription.completed",
                     "",
                     source,
@@ -350,5 +318,73 @@ impl OmniAsrEventProcessor {
             completed_source_text,
             completed_cue_id,
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn process_speech_started<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+        store: &AudioStateStore,
+        direction: &str,
+        session_started_at: &SystemTime,
+        subtitle_translate_active: bool,
+        total_input_chunks: u64,
+        first_audio_sent_ms: Option<u64>,
+        first_audible_chunk_ms: Option<u64>,
+        chunk_count: u64,
+        total_silence_skipped_before_first_audible: u64,
+        last_vad_event_time: &mut SystemTime,
+        vad_event_count: &mut u64,
+        current_cue_id: &mut Option<String>,
+        pending_source_text: &mut String,
+        transcription_completed_flag: &mut bool,
+        transcription_completed_at: &mut Option<SystemTime>,
+        event_diagnostics: &mut OmniEventDiagnostics,
+    ) {
+        *last_vad_event_time = SystemTime::now();
+        *vad_event_count += 1;
+        if *vad_event_count == 1 {
+            let speech_ms = elapsed_ms_since(session_started_at);
+            store.watch_session_report.record_milestone_with_detail(
+                "first_speech_started",
+                Some(format!("providerSessionElapsedMs={speech_ms}")),
+            );
+            store.watch_session_report.record_audio_diagnostic(
+                None,
+                None,
+                Some(total_input_chunks),
+            );
+            let _ = diag_log(
+                app,
+                "omni",
+                "info",
+                format!(
+                    "[VAD] first_speech_started: elapsed_ms={} first_audio_sent_ms={:?} first_audible_chunk_ms={:?} total_input_chunks={} chunks_sent_to_server={} silence_skipped_before_audible={} subtitle_translate_active={}",
+                    speech_ms,
+                    first_audio_sent_ms,
+                    first_audible_chunk_ms,
+                    total_input_chunks,
+                    chunk_count,
+                    total_silence_skipped_before_first_audible,
+                    subtitle_translate_active,
+                ),
+            );
+        }
+        let cue_id = format!("omni-cue-{direction}-{}", unix_ms());
+        store.update_or_push_stt_cue(&cue_id, "", false);
+        *current_cue_id = Some(cue_id.clone());
+        event_diagnostics.current_cue_origin = Some("speech_started".to_string());
+        event_diagnostics.last_asr_delta_item_id = None;
+        pending_source_text.clear();
+        // Output state belongs to the prior native response and must survive.
+        *transcription_completed_flag = false;
+        *transcription_completed_at = None;
+        let _ = diag_log(
+            app,
+            "omni",
+            "info",
+            format!(
+                "[VAD] speech_started received event_count={vad_event_count} cue_id={cue_id}"
+            ),
+        );
     }
 }

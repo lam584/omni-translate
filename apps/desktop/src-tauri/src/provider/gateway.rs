@@ -1274,8 +1274,12 @@ mod tests {
     }
 
     fn decode_audio_file_to_mono_16k(path: &str) -> Vec<i16> {
-        if path.to_ascii_lowercase().ends_with(".mp3") {
+        let lower_path = path.to_ascii_lowercase();
+        if lower_path.ends_with(".mp3") {
             return decode_mp3_file_to_mono_16k(path);
+        }
+        if lower_path.ends_with(".wav") {
+            return decode_wav_file_to_mono_16k(path);
         }
 
         let file = fs::File::open(path).unwrap_or_else(|error| {
@@ -1293,6 +1297,49 @@ mod tests {
             .collect();
 
         resample_mono_to_16k_i16(&mono, sample_rate)
+    }
+
+    fn decode_wav_file_to_mono_16k(path: &str) -> Vec<i16> {
+        let mut reader = hound::WavReader::open(path)
+            .unwrap_or_else(|error| panic!("failed to open integration WAV file {path}: {error}"));
+        let spec = reader.spec();
+        let channels = spec.channels.max(1) as usize;
+        let interleaved = match spec.sample_format {
+            hound::SampleFormat::Float => reader
+                .samples::<f32>()
+                .map(|sample| {
+                    sample.unwrap_or_else(|error| {
+                        panic!("failed to decode integration WAV file {path}: {error}")
+                    })
+                })
+                .collect::<Vec<_>>(),
+            hound::SampleFormat::Int if spec.bits_per_sample <= 16 => reader
+                .samples::<i16>()
+                .map(|sample| {
+                    sample.unwrap_or_else(|error| {
+                        panic!("failed to decode integration WAV file {path}: {error}")
+                    }) as f32
+                        / i16::MAX as f32
+                })
+                .collect::<Vec<_>>(),
+            hound::SampleFormat::Int => {
+                let peak = ((1_i64 << spec.bits_per_sample.saturating_sub(1)) - 1).max(1) as f32;
+                reader
+                    .samples::<i32>()
+                    .map(|sample| {
+                        sample.unwrap_or_else(|error| {
+                            panic!("failed to decode integration WAV file {path}: {error}")
+                        }) as f32
+                            / peak
+                    })
+                    .collect::<Vec<_>>()
+            }
+        };
+        let mono = interleaved
+            .chunks(channels)
+            .map(|frame| frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32)
+            .collect::<Vec<_>>();
+        resample_mono_to_16k_i16(&mono, spec.sample_rate.max(1))
     }
 
     fn decode_mp3_file_to_mono_16k(path: &str) -> Vec<i16> {
@@ -1346,6 +1393,15 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn tracked_watch_wav_fixture_decodes_to_mono_16k() {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../scripts/testing/fixtures/watch-mode-en-original.wav");
+        let decoded = decode_audio_file_to_mono_16k(&fixture.to_string_lossy());
+
+        assert!(decoded.len() > 16_000, "fixture should contain more than one second");
+    }
+
     fn encode_pcm_i16_base64(samples: &[i16]) -> String {
         let bytes: Vec<u8> = samples
             .iter()
@@ -1354,10 +1410,22 @@ mod tests {
         BASE64_STANDARD.encode(bytes)
     }
 
+    struct RealtimeAudioIntegrationResult {
+        source: String,
+        translation: String,
+        response_count: u32,
+        commit_to_first_asr_ms: Option<u64>,
+        commit_to_asr_completed_ms: Option<u64>,
+        commit_to_first_translation_delta_ms: Option<u64>,
+        commit_to_response_done_ms: Option<u64>,
+        total_ms: u64,
+    }
+
     fn run_realtime_audio_file_integration(
         provider: ProviderDraftInput,
         audio_path: &str,
-    ) -> Result<(String, String, u32), ProviderRuntimeError> {
+    ) -> Result<RealtimeAudioIntegrationResult, ProviderRuntimeError> {
+        let overall_started = Instant::now();
         let samples = decode_audio_file_to_mono_16k(audio_path);
         if samples.is_empty() {
             return Err(ProviderRuntimeError::new(
@@ -1450,6 +1518,7 @@ mod tests {
             thread::sleep(Duration::from_millis(18));
         }
 
+        let commit_started = Instant::now();
         socket
             .send(Message::Text(
                 json!({
@@ -1486,6 +1555,10 @@ mod tests {
         let mut source = String::new();
         let mut translation = String::new();
         let mut response_count = 0_u32;
+        let mut commit_to_first_asr_ms = None;
+        let mut commit_to_asr_completed_ms = None;
+        let mut commit_to_first_translation_delta_ms = None;
+        let mut commit_to_response_done_ms = None;
         while started.elapsed() < Duration::from_secs(90) {
             match socket.read() {
                 Ok(Message::Text(text)) => {
@@ -1496,11 +1569,27 @@ mod tests {
                         )
                     })?;
                     match value["type"].as_str() {
+                        Some("conversation.item.input_audio_transcription.delta") => {
+                            commit_to_first_asr_ms.get_or_insert_with(|| {
+                                commit_started.elapsed().as_millis().min(u64::MAX as u128) as u64
+                            });
+                        }
                         Some("conversation.item.input_audio_transcription.completed") => {
+                            let elapsed =
+                                commit_started.elapsed().as_millis().min(u64::MAX as u128) as u64;
+                            commit_to_first_asr_ms.get_or_insert(elapsed);
+                            commit_to_asr_completed_ms = Some(elapsed);
                             source = value["transcript"].as_str().unwrap_or("").to_string();
                         }
                         Some("response.audio_transcript.delta") => {
-                            translation.push_str(value["delta"].as_str().unwrap_or(""));
+                            let delta = value["delta"].as_str().unwrap_or("");
+                            if !delta.is_empty() {
+                                commit_to_first_translation_delta_ms.get_or_insert_with(|| {
+                                    commit_started.elapsed().as_millis().min(u64::MAX as u128)
+                                        as u64
+                                });
+                            }
+                            translation.push_str(delta);
                         }
                         Some("response.audio_transcript.done") => {
                             if let Some(transcript) = value["transcript"].as_str() {
@@ -1511,6 +1600,9 @@ mod tests {
                         }
                         Some("response.done") => {
                             response_count += 1;
+                            commit_to_response_done_ms = Some(
+                                commit_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                            );
                             break;
                         }
                         Some("error") => {
@@ -1529,20 +1621,187 @@ mod tests {
         }
 
         let _ = socket.close(None);
-        Ok((source, translation, response_count))
+        Ok(RealtimeAudioIntegrationResult {
+            source,
+            translation,
+            response_count,
+            commit_to_first_asr_ms,
+            commit_to_asr_completed_ms,
+            commit_to_first_translation_delta_ms,
+            commit_to_response_done_ms,
+            total_ms: overall_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+        })
+    }
+
+    fn llm_integration_audio_only() -> bool {
+        std::env::var("OMNI_LLM_TEST_AUDIO_ONLY")
+            .ok()
+            .map(|value| matches!(value.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+            .unwrap_or(false)
+    }
+
+    fn run_llm_integration_audio_scenario(
+        gateway: &ProviderGateway,
+        audio_config: &LlmIntegrationProviderConfig,
+        fallback_audio_test_file: Option<&str>,
+    ) {
+        assert!(
+            std::env::var(&audio_config.api_key_env).is_ok(),
+            "missing API key env var {} for {}",
+            audio_config.api_key_env,
+            audio_config.name
+        );
+        let audio_path = audio_config
+            .test_file
+            .as_deref()
+            .or(fallback_audio_test_file)
+            .expect("audio integration config must set audio.testFile or audioTestFile");
+        assert!(
+            PathBuf::from(audio_path).exists(),
+            "audio integration test file does not exist: {}",
+            audio_path
+        );
+        let result = run_realtime_audio_file_integration(
+            realtime_audio_provider_from_integration_config(audio_config),
+            audio_path,
+        )
+        .unwrap_or_else(|error| {
+            panic!(
+                "provider {} failed realtime audio integration test with {}: {:?}",
+                audio_config.name, audio_path, error
+            )
+        });
+
+        println!();
+        println!("=== AUDIO REALTIME RESULT for {} ===", audio_config.name);
+        println!("  source:         {:?}", result.source);
+        println!("  source_chars:   {}", result.source.chars().count());
+        println!("  translation:    {:?}", result.translation);
+        println!(
+            "  translation_chars: {}",
+            result.translation.chars().count()
+        );
+        println!("  response_count: {}", result.response_count);
+        println!(
+            "  commit_to_first_asr_ms: {:?}",
+            result.commit_to_first_asr_ms
+        );
+        println!(
+            "  commit_to_asr_completed_ms: {:?}",
+            result.commit_to_asr_completed_ms
+        );
+        println!(
+            "  commit_to_first_translation_delta_ms: {:?}",
+            result.commit_to_first_translation_delta_ms
+        );
+        println!(
+            "  commit_to_response_done_ms: {:?}",
+            result.commit_to_response_done_ms
+        );
+        println!("  total_ms: {}", result.total_ms);
+        println!("=== END AUDIO REALTIME ===");
+        println!();
+
+        let source_len = result.source.chars().count();
+        let translation_len = result.translation.chars().count();
+        assert!(
+            result.response_count >= 1,
+            "provider {} did not receive response.done for {}",
+            audio_config.name,
+            audio_path
+        );
+
+        if let Some(expected) = audio_config.expected_source_chars {
+            let lower = (expected as f64 * 0.7).ceil() as usize;
+            let upper = (expected as f64 * 1.3).floor() as usize;
+            assert!(
+                source_len >= lower && source_len <= upper,
+                "provider {} audio transcription chars {} outside ±30% of expected {} (range {}-{})",
+                audio_config.name, source_len, expected, lower, upper
+            );
+        } else {
+            assert!(
+                source_len >= 50,
+                "provider {} returned too few chars in audio transcription: {} (need >= 50)",
+                audio_config.name,
+                source_len
+            );
+        }
+
+        if let Some(expected) = audio_config.expected_translation_chars {
+            let lower = (expected as f64 * 0.7).ceil() as usize;
+            let upper = (expected as f64 * 1.3).floor() as usize;
+            assert!(
+                translation_len >= lower && translation_len <= upper,
+                "provider {} audio translation chars {} outside ±30% of expected {} (range {}-{})",
+                audio_config.name, translation_len, expected, lower, upper
+            );
+        } else {
+            assert!(
+                translation_len >= 20,
+                "provider {} returned too few chars in audio translation: {} (need >= 20)",
+                audio_config.name,
+                translation_len
+            );
+        }
+
+        if audio_config
+            .speech
+            .as_ref()
+            .map(|item| item.enabled)
+            .unwrap_or(false)
+        {
+            let speech_config = audio_config.speech.as_ref().unwrap();
+            let speech = gateway
+                .synthesize_realtime_audio(
+                    realtime_audio_provider_from_integration_config(audio_config),
+                    speech_config
+                        .text
+                        .clone()
+                        .unwrap_or_else(|| "Realtime speech integration test.".to_string()),
+                    speech_config
+                        .target_language
+                        .clone()
+                        .unwrap_or_else(|| "en-US".to_string()),
+                    speech_config
+                        .voice
+                        .clone()
+                        .unwrap_or_else(|| "Ethan".to_string()),
+                )
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "provider {} failed realtime speech synthesis integration: {:?}",
+                        audio_config.name, error
+                    )
+                });
+            println!("=== AUDIO SYNTHESIS RESULT for {} ===", audio_config.name);
+            println!("  pcm_samples: {}", speech.audio.pcm_i16.len());
+            println!("  audio_seconds: {}", speech.audio_seconds);
+            println!("=== END AUDIO SYNTHESIS ===");
+            assert!(
+                speech.audio.pcm_i16.len() >= speech_config.minimum_pcm_samples.unwrap_or(1_600),
+                "provider {} returned too few realtime speech PCM samples: {}",
+                audio_config.name,
+                speech.audio.pcm_i16.len()
+            );
+            assert!(speech.audio_seconds > 0.0);
+        }
     }
 
     #[test]
     #[ignore = "live provider smoke; needs scripts/testing/llm-integration.config.json and API keys (npm run test:llm-integration)"]
     fn llm_integration_provider_smoke_calls_configured_models() {
         let config = load_llm_integration_config();
-        assert!(
-            !config.providers.is_empty(),
-            "LLM integration config must contain at least one provider"
-        );
+        let audio_only = llm_integration_audio_only();
 
         let gateway = ProviderGateway::new();
-        for provider_config in config.providers {
+        if !audio_only {
+            assert!(
+                !config.providers.is_empty(),
+                "LLM integration config must contain at least one provider"
+            );
+        }
+        for provider_config in config.providers.into_iter().filter(|_| !audio_only) {
             assert!(
                 std::env::var(&provider_config.api_key_env).is_ok(),
                 "missing API key env var {} for {}",
@@ -1692,129 +1951,16 @@ mod tests {
             }
         }
 
-        if let Some(audio_config) = config.audio {
-            assert!(
-                std::env::var(&audio_config.api_key_env).is_ok(),
-                "missing API key env var {} for {}",
-                audio_config.api_key_env,
-                audio_config.name
+        assert!(
+            !audio_only || config.audio.is_some(),
+            "audio-only integration config must contain an audio provider"
+        );
+        if let Some(audio_config) = config.audio.as_ref() {
+            run_llm_integration_audio_scenario(
+                &gateway,
+                audio_config,
+                config.audio_test_file.as_deref(),
             );
-            let audio_path = audio_config
-                .test_file
-                .as_deref()
-                .or(config.audio_test_file.as_deref())
-                .expect("audio integration config must set audio.testFile or audioTestFile");
-            assert!(
-                PathBuf::from(audio_path).exists(),
-                "audio integration test file does not exist: {}",
-                audio_path
-            );
-            let (source, translation, response_count) = run_realtime_audio_file_integration(
-                realtime_audio_provider_from_integration_config(&audio_config),
-                audio_path,
-            )
-            .unwrap_or_else(|error| {
-                panic!(
-                    "provider {} failed realtime audio integration test with {}: {:?}",
-                    audio_config.name, audio_path, error
-                )
-            });
-
-            println!();
-            println!("=== AUDIO REALTIME RESULT for {} ===", audio_config.name);
-            println!("  source:         {:?}", source);
-            println!("  source_chars:   {}", source.chars().count());
-            println!("  translation:    {:?}", translation);
-            println!("  translation_chars: {}", translation.chars().count());
-            println!("  response_count: {}", response_count);
-            println!("=== END AUDIO REALTIME ===");
-            println!();
-
-            let source_len = source.chars().count();
-            let translation_len = translation.chars().count();
-            assert!(
-                response_count >= 1,
-                "provider {} did not receive response.done for {}",
-                audio_config.name,
-                audio_path
-            );
-
-            if let Some(expected) = audio_config.expected_source_chars {
-                let lower = (expected as f64 * 0.7).ceil() as usize;
-                let upper = (expected as f64 * 1.3).floor() as usize;
-                assert!(
-                    source_len >= lower && source_len <= upper,
-                    "provider {} audio transcription chars {} outside ±30% of expected {} (range {}-{})",
-                    audio_config.name, source_len, expected, lower, upper
-                );
-            } else {
-                assert!(
-                    source_len >= 50,
-                    "provider {} returned too few chars in audio transcription: {} (need >= 50)",
-                    audio_config.name,
-                    source_len
-                );
-            }
-
-            if let Some(expected) = audio_config.expected_translation_chars {
-                let lower = (expected as f64 * 0.7).ceil() as usize;
-                let upper = (expected as f64 * 1.3).floor() as usize;
-                assert!(
-                    translation_len >= lower && translation_len <= upper,
-                    "provider {} audio translation chars {} outside ±30% of expected {} (range {}-{})",
-                    audio_config.name, translation_len, expected, lower, upper
-                );
-            } else {
-                assert!(
-                    translation_len >= 20,
-                    "provider {} returned too few chars in audio translation: {} (need >= 20)",
-                    audio_config.name,
-                    translation_len
-                );
-            }
-
-            if audio_config
-                .speech
-                .as_ref()
-                .map(|item| item.enabled)
-                .unwrap_or(false)
-            {
-                let speech_config = audio_config.speech.as_ref().unwrap();
-                let speech = gateway
-                    .synthesize_realtime_audio(
-                        realtime_audio_provider_from_integration_config(&audio_config),
-                        speech_config
-                            .text
-                            .clone()
-                            .unwrap_or_else(|| "Realtime speech integration test.".to_string()),
-                        speech_config
-                            .target_language
-                            .clone()
-                            .unwrap_or_else(|| "en-US".to_string()),
-                        speech_config
-                            .voice
-                            .clone()
-                            .unwrap_or_else(|| "Ethan".to_string()),
-                    )
-                    .unwrap_or_else(|error| {
-                        panic!(
-                            "provider {} failed realtime speech synthesis integration: {:?}",
-                            audio_config.name, error
-                        )
-                    });
-                println!("=== AUDIO SYNTHESIS RESULT for {} ===", audio_config.name);
-                println!("  pcm_samples: {}", speech.audio.pcm_i16.len());
-                println!("  audio_seconds: {}", speech.audio_seconds);
-                println!("=== END AUDIO SYNTHESIS ===");
-                assert!(
-                    speech.audio.pcm_i16.len()
-                        >= speech_config.minimum_pcm_samples.unwrap_or(1_600),
-                    "provider {} returned too few realtime speech PCM samples: {}",
-                    audio_config.name,
-                    speech.audio.pcm_i16.len()
-                );
-                assert!(speech.audio_seconds > 0.0);
-            }
         }
     }
 

@@ -3,8 +3,13 @@
 // ["vite/client"]); pulling in @types/node wholesale would let node globals
 // leak into renderer code, so only what the fixture writer needs is declared.
 declare module 'node:fs' {
+  export function readFileSync(path: string | URL, encoding: 'utf8'): string;
   export function writeFileSync(path: string | URL, data: string): void;
 }
 
+declare module 'node:path' {
+  export function resolve(...paths: string[]): string;
+}
+
 /** Test-runner process env (vitest runs on Node even in the jsdom environment). */
-declare const process: { env: Record<string, string | undefined> } | undefined;
+declare const process: { cwd(): string; env: Record<string, string | undefined> } | undefined;

@@ -16,7 +16,7 @@ use tungstenite::Message;
 use crate::provider::contracts::ProviderDraftInput;
 
 use super::reconnect_socket;
-use super::RealtimeAudioMode;
+use super::{OmniOutputMode, RealtimeAudioMode};
 
 pub(crate) trait RealtimeSocket {
     fn read_message(&mut self) -> Result<Message, tungstenite::Error>;
@@ -48,6 +48,7 @@ pub(crate) trait RealtimeSocketConnector {
         voice: &str,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
+        output_mode: OmniOutputMode,
         target_language: &str,
     ) -> Result<Self::Socket, String>;
 }
@@ -65,9 +66,18 @@ impl RealtimeSocketConnector for TungsteniteConnector {
         voice: &str,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
+        output_mode: OmniOutputMode,
         target_language: &str,
     ) -> Result<Self::Socket, String> {
-        reconnect_socket(app, provider, voice, instructions, audio_mode, target_language)
+        reconnect_socket(
+            app,
+            provider,
+            voice,
+            instructions,
+            audio_mode,
+            output_mode,
+            target_language,
+        )
     }
 }
 
@@ -159,6 +169,7 @@ pub(crate) mod scripted {
             _voice: &str,
             _instructions: &str,
             _audio_mode: RealtimeAudioMode,
+            _output_mode: OmniOutputMode,
             _target_language: &str,
         ) -> Result<Self::Socket, String> {
             let mut shared = self.shared.lock().expect("scripted state");

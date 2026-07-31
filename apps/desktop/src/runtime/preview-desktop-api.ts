@@ -3,7 +3,7 @@ import { appConfigDraftMock } from '../defaults/app-config';
 import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
 import { defaultProviderProbeProfile } from '../defaults/provider-probes';
 import { runtimeSnapshotMock } from '../defaults/runtime-shell';
-import type { AudioRuntimeSnapshot } from '../schema/audio-runtime';
+import type { AudioRuntimeSnapshot, OverlayRenderReceiptRuntime } from '../schema/audio-runtime';
 import type { AppConfigDraft, DiagnosticsExportScope, ProviderDraft } from '../schema/config';
 import type { DriverRepairAction } from '../schema/driver-bridge-contract';
 import type { ModelPreset } from '../schema/provider-template';
@@ -215,6 +215,7 @@ export class PreviewDesktopApi {
         firstTranslationAverageMs: null,
         firstTranslationLastMs: null,
         firstTranslationSampleCount: 0,
+        reportSessionId: null,
         activeCue: null,
         recentCues: [],
       };
@@ -329,9 +330,10 @@ export class PreviewDesktopApi {
         lastExportPath: outputPath,
         lastExportedAt: generatedAt,
       });
-      return { scope: scope as string, outputPath, generatedAt, fileCount: scope === 'full' ? 6 : 3 };
+      return { scope: scope as string, outputPath, generatedAt, fileCount: scope === 'full' ? 7 : 3 };
     },
-    liveSessionEvents: async <T,>() => ({}) as T,
+    watchSessionReport: async <T,>() => null as T,
+    clearWatchSessionReport: async () => null,
     appendLogs: async (_entries: readonly FrontendDiagnosticsBatchEntry[], _droppedCount: number) => undefined,
     setLogLevel: async (_level: DiagnosticsLogLevel) => undefined,
     snapshot: async (): Promise<{ recentLogs?: DiagnosticLogEntryRuntime[] }> => ({ recentLogs: [] }),
@@ -385,6 +387,7 @@ export class PreviewDesktopApi {
       };
       return this.shellSnapshot();
     },
+    rendered: async (_receipt: OverlayRenderReceiptRuntime) => undefined,
   };
 
   readonly benchmark = {
@@ -416,6 +419,7 @@ export class PreviewDesktopApi {
     outerPosition: async (): Promise<DesktopPoint> => Promise.reject(previewUnavailable('window.outerPosition')),
     outerSize: async (): Promise<DesktopSize> => Promise.reject(previewUnavailable('window.outerSize')),
     scaleFactor: async (): Promise<number> => Promise.reject(previewUnavailable('window.scaleFactor')),
+    isVisible: async (): Promise<boolean> => true,
     setPosition: async (_position: DesktopPoint) => undefined,
     setLogicalSize: async (_size: DesktopSize) => undefined,
     popupMenu: async (_items: DesktopMenuItem[], _position: DesktopPoint) => undefined,

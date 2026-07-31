@@ -18,6 +18,8 @@ use super::session_worker::reset_manual_gate_after_reconnect;
 use super::*;
 use crate::audio::state::AudioStateStore;
 
+mod text_only_reconnect;
+
 type MockHandle = tauri::AppHandle<tauri::test::MockRuntime>;
 
 /// Collects the source text of every recent overlay cue in a snapshot.
@@ -60,11 +62,13 @@ struct WorkerSlice {
     pending_translated_text: String,
     reconnect_count: usize,
     sent_audio_since_commit: bool,
+    audio_samples_since_commit: u64,
     manual_response_pending: bool,
     manual_response_item_id: Option<String>,
     last_vad_event_time: SystemTime,
     vad_event_count: u64,
     last_commit_time: SystemTime,
+    manual_turn_started_at: Option<SystemTime>,
     st_skip_logged: bool,
     transcription_completed_flag: bool,
     transcription_completed_at: Option<SystemTime>,
@@ -86,11 +90,13 @@ impl WorkerSlice {
             pending_translated_text: String::new(),
             reconnect_count: 0,
             sent_audio_since_commit: false,
+            audio_samples_since_commit: 0,
             manual_response_pending: false,
             manual_response_item_id: None,
             last_vad_event_time: SystemTime::now(),
             vad_event_count: 0,
             last_commit_time: SystemTime::now(),
+            manual_turn_started_at: None,
             st_skip_logged: false,
             transcription_completed_flag: false,
             transcription_completed_at: None,
@@ -112,6 +118,7 @@ struct ReplayHarness {
     connector: ScriptedConnector,
     provider: ProviderDraftInput,
     audio_mode: RealtimeAudioMode,
+    output_mode: OmniOutputMode,
     subtitle_translate_active: bool,
     session_started_at: SystemTime,
     playback_tx: mpsc::SyncSender<OmniPlaybackCommand>,
@@ -142,6 +149,7 @@ impl ReplayHarness {
             shared,
             provider: fixture_provider(),
             audio_mode,
+            output_mode: OmniOutputMode::TextAndAudio,
             subtitle_translate_active: false,
             session_started_at: SystemTime::now(),
             playback_tx,
@@ -187,7 +195,9 @@ impl ReplayHarness {
         let commit_state = OmniConnectionCoordinator::maintain_manual_commit(
             OmniCommitState {
                 last_commit_time: slice.last_commit_time,
+                manual_turn_started_at: slice.manual_turn_started_at,
                 sent_audio_since_commit: slice.sent_audio_since_commit,
+                audio_samples_since_commit: slice.audio_samples_since_commit,
                 manual_response_pending: slice.manual_response_pending,
                 manual_response_item_id: slice.manual_response_item_id.clone(),
                 manual_turn_timed_out: false,
@@ -197,9 +207,12 @@ impl ReplayHarness {
             &mut trace_call,
             self.audio_mode,
             0,
+            false,
         );
         slice.last_commit_time = commit_state.last_commit_time;
+        slice.manual_turn_started_at = commit_state.manual_turn_started_at;
         slice.sent_audio_since_commit = commit_state.sent_audio_since_commit;
+        slice.audio_samples_since_commit = commit_state.audio_samples_since_commit;
         slice.manual_response_pending = commit_state.manual_response_pending;
         slice.manual_response_item_id = commit_state.manual_response_item_id;
         if commit_state.manual_turn_timed_out {
@@ -276,6 +289,7 @@ impl ReplayHarness {
                 provider: &self.provider,
                 instructions: "",
                 audio_mode: self.audio_mode,
+                output_mode: self.output_mode,
                 target_language: "zh-CN",
                 buffer_size: 0,
                 pre_session_audio_queue_len: 0,
@@ -316,7 +330,9 @@ impl ReplayHarness {
                 &mut slice.manual_response_pending,
                 &mut slice.manual_response_item_id,
                 &mut slice.sent_audio_since_commit,
+                &mut slice.audio_samples_since_commit,
                 &mut slice.last_commit_time,
+                &mut slice.manual_turn_started_at,
                 &mut slice.current_cue_id,
                 &mut slice.pending_source_text,
                 &mut slice.pending_translated_text,
@@ -341,126 +357,224 @@ fn backdated(seconds: u64) -> SystemTime {
         .expect("backdated timestamp")
 }
 
-/// Replay 1 — commit → reconnect → the OLD item's transcription.completed.
-/// The reconnect voids the awaited item; the late completed event must still
-/// complete a display cue while the gate never arms response.create for it.
+/// Production regression: a long idle after the previous commit must not make
+/// the first short fragment of a new turn immediately satisfy the turn ceiling.
 #[test]
-fn replay_commit_then_reconnect_then_old_item_completed() {
-    let harness = ReplayHarness::new(
-        RealtimeAudioMode::Manual,
-        vec![vec![
-            ScriptStep::Event(json!({ "type": "session.updated", "session": { "id": "s2" } })),
-            ScriptStep::Event(json!({
-                "type": "conversation.item.input_audio_transcription.completed",
-                "item_id": "item-old",
-                "transcript": "the tail of the pre-reconnect turn"
-            })),
-        ]],
-    );
+fn replay_long_idle_then_new_audio_starts_a_fresh_commit_timer() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
     let mut slice = WorkerSlice::new();
-    // Post-commit state: the gate awaits item-old on the OLD session.
-    slice.manual_response_pending = true;
-    slice.manual_response_item_id = Some("item-old".to_string());
+    slice.last_commit_time = backdated(MANUAL_COMMIT_INTERVAL_SECS + 10);
+    slice.manual_turn_started_at = Some(SystemTime::now());
+    slice.sent_audio_since_commit = true;
+    slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
 
-    // Tick 1: the provider closes the socket → reconnect + gate reset.
-    let socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Close], harness.shared.clone());
-    let socket = harness.tick(socket, &mut slice);
-    assert_eq!(harness.shared.lock().unwrap().reconnect_count, 1);
-    assert!(!slice.manual_response_pending, "reconnect must drop the manual gate");
-    assert!(slice.manual_response_item_id.is_none());
-    assert!(
-        !slice.session_ready_for_audio,
-        "audio must wait for the new session to confirm"
-    );
-
-    // Tick 2: the new session confirms.
-    let socket = harness.tick(socket, &mut slice);
-    assert!(slice.session_ready_for_audio, "session.updated re-arms audio");
-
-    // Tick 3: the OLD item's transcription arrives on the NEW session.
+    let socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Idle], harness.shared.clone());
     let _socket = harness.tick(socket, &mut slice);
 
-    let snapshot = harness.store().snapshot();
-    let cue_texts = cue_source_texts(&snapshot);
     assert!(
-        cue_texts.iter().any(|text| text.contains("the tail of the pre-reconnect turn")),
-        "late completed transcription must reach the overlay; cues: {cue_texts:?}"
+        !harness
+            .sent_types()
+            .iter()
+            .any(|kind| kind == "input_audio_buffer.commit"),
+        "the next turn must age from its own first successful audible append",
     );
-    assert!(
-        !harness.sent_types().iter().any(|kind| kind == "response.create"),
-        "a stale item must never arm response.create; sent: {:?}",
-        harness.sent_types()
-    );
-    assert!(!slice.manual_response_pending, "gate stays closed at end of replay");
 }
 
-/// Replay 2 — speech_started → delta → disconnect → reconnect → delta.
-/// The pre-reconnect uncommitted cue must not absorb the post-reconnect turn:
-/// the new delta opens a NEW cue and the stale uncommitted cue is discarded.
+/// Exact Flash failure family: after a completed turn only a short tail was
+/// appended, then the timer fired and the provider rejected the tiny buffer.
 #[test]
-fn replay_streaming_turn_across_a_reconnect() {
-    let harness = ReplayHarness::new(
-        RealtimeAudioMode::ServerVad,
-        vec![vec![
-            ScriptStep::Event(json!({ "type": "session.updated", "session": { "id": "s2" } })),
-            ScriptStep::Event(json!({
-                "type": "conversation.item.input_audio_transcription.delta",
-                "item_id": "item-new",
-                "delta": "the new turn after reconnect"
-            })),
-        ]],
-    );
+fn replay_short_tail_never_arms_an_empty_manual_commit() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
     let mut slice = WorkerSlice::new();
+    slice.last_commit_time = backdated(MANUAL_COMMIT_INTERVAL_SECS + 1);
+    slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS + 1));
+    slice.sent_audio_since_commit = true;
+    // A real Flash run rejected this 300 ms tail as "buffer too small".
+    slice.audio_samples_since_commit = 4_800;
+
+    let socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Idle], harness.shared.clone());
+    let socket = harness.tick(socket, &mut slice);
+    assert!(
+        !harness
+            .sent_types()
+            .iter()
+            .any(|kind| kind == "input_audio_buffer.commit"),
+        "a 300 ms tail is below the observed provider commit minimum",
+    );
+
+    slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
+    let _socket = harness.tick(socket, &mut slice);
+    assert_eq!(
+        harness
+            .sent_types()
+            .iter()
+            .filter(|kind| kind.as_str() == "input_audio_buffer.commit")
+            .count(),
+        1,
+        "enough audio still commits without extending the one-second ceiling",
+    );
+}
+
+/// Provider errors can arrive after `response.done` has released the active
+/// cue. Replaying that production ordering must still preserve both errors in
+/// the Watch report, including the `error.type` fallback used by DashScope's
+/// buffer-too-small event.
+#[test]
+fn replay_provider_errors_without_current_cue_are_kept_in_the_watch_report() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
+    harness
+        .store()
+        .watch_session_report
+        .begin_or_reuse("provider-dashscope", "qwen3.5-omni-flash-realtime");
+    let mut slice = WorkerSlice::new();
+    assert!(slice.current_cue_id.is_none());
+    let steps = vec![
+        ScriptStep::Event(json!({
+            "event_id": "event-internal",
+            "type": "error",
+            "error": {
+                "code": "InternalError",
+                "message": "Internal service error: null"
+            }
+        })),
+        ScriptStep::Event(json!({
+            "event_id": "event-small-buffer",
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": "Error committing input audio buffer: buffer too small, or have no audio."
+            }
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    for _ in 0..2 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let report = harness
+        .store()
+        .watch_session_report
+        .snapshot()
+        .expect("watch report");
+    assert!(report.cues.is_empty(), "session errors must not invent a cue");
+    for expected_code in ["InternalError", "invalid_request_error"] {
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.code == expected_code)
+            .expect("provider error must survive without cue correlation");
+        assert_eq!(issue.category, "model");
+        assert_eq!(issue.cue_id, None);
+    }
+    let details = report
+        .events
+        .iter()
+        .filter(|event| event.kind == "provider-error")
+        .filter_map(|event| event.detail.as_deref())
+        .collect::<Vec<_>>();
+    assert_eq!(details.len(), 2);
+    assert!(details
+        .iter()
+        .any(|detail| detail.contains("Internal service error: null")));
+    assert!(details
+        .iter()
+        .any(|detail| detail.contains("buffer too small")));
+}
+
+/// A completed transcription starts the model response but must not release
+/// the next manual commit until response.done. The production Flash ordering
+/// previously overlapped response.create calls and ended in InternalError.
+#[test]
+fn replay_manual_gate_serializes_response_create_until_response_done() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
+    let mut slice = WorkerSlice::new();
+    slice.manual_response_pending = true;
+    slice.manual_response_item_id = Some("item-current".to_string());
+    slice.sent_audio_since_commit = true;
+    slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
+    slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS + 1));
 
     let socket = ScriptedRealtimeSocket::new(
         vec![
-            ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
             ScriptStep::Event(json!({
-                "type": "conversation.item.input_audio_transcription.delta",
-                "item_id": "item-pre",
-                "delta": "half a pre-reconnect sent"
+                "type": "conversation.item.input_audio_transcription.completed",
+                "item_id": "item-current",
+                "transcript": "the current translated turn"
             })),
-            ScriptStep::Close,
+            ScriptStep::Event(json!({
+                "type": "response.text.delta",
+                "delta": "当前"
+            })),
+            ScriptStep::Event(json!({
+                "type": "response.text.done",
+                "text": "当前译文"
+            })),
+            ScriptStep::Event(json!({ "type": "response.done" })),
+            ScriptStep::Idle,
         ],
         harness.shared.clone(),
     );
 
-    let socket = harness.tick(socket, &mut slice); // speech_started → new cue
-    let first_cue_id = slice.current_cue_id.clone().expect("speech_started opens a cue");
-    let socket = harness.tick(socket, &mut slice); // delta streams into the cue
-    assert_eq!(slice.pending_source_text, "half a pre-reconnect sent");
-
-    let socket = harness.tick(socket, &mut slice); // disconnect → reconnect + reset
-    assert_eq!(harness.shared.lock().unwrap().reconnect_count, 1);
-    assert!(slice.current_cue_id.is_none(), "reconnect releases the streaming cue");
-    assert!(!slice.session_ready_for_audio);
-    let after_reset = harness.store().snapshot();
+    let socket = harness.tick(socket, &mut slice);
     assert!(
-        !after_reset
-            .subtitle_overlay
-            .recent_cues
+        slice.manual_response_pending,
+        "response.create keeps the manual gate closed until response.done"
+    );
+    assert_eq!(
+        harness
+            .sent_types()
             .iter()
-            .any(|cue| cue.cue_id == first_cue_id && !cue.committed),
-        "the stale uncommitted cue must be discarded on reconnect"
+            .filter(|kind| kind.as_str() == "response.create")
+            .count(),
+        1,
+    );
+    assert!(
+        !harness
+            .sent_types()
+            .iter()
+            .any(|kind| kind == "input_audio_buffer.commit"),
+        "the buffered next turn must not overlap the active response",
     );
 
-    let socket = harness.tick(socket, &mut slice); // session.updated on the new socket
-    assert!(slice.session_ready_for_audio);
-    let _socket = harness.tick(socket, &mut slice); // post-reconnect delta
-
-    let second_cue_id = slice.current_cue_id.clone().expect("new delta opens a new cue");
-    assert_ne!(first_cue_id, second_cue_id, "turns must not merge across a reconnect");
-    assert_eq!(slice.pending_source_text, "the new turn after reconnect");
-    let snapshot = harness.store().snapshot();
+    let socket = harness.tick(socket, &mut slice);
     assert!(
-        snapshot
-            .subtitle_overlay
-            .recent_cues
+        slice.manual_response_pending,
+        "a text delta must not release the manual response gate"
+    );
+    assert!(!harness
+        .sent_types()
+        .iter()
+        .any(|kind| kind == "input_audio_buffer.commit"));
+
+    let socket = harness.tick(socket, &mut slice);
+    assert!(
+        slice.manual_response_pending,
+        "response.text.done must still wait for response.done"
+    );
+    assert_eq!(slice.pending_translated_text, "当前译文");
+    assert!(!harness
+        .sent_types()
+        .iter()
+        .any(|kind| kind == "input_audio_buffer.commit"));
+
+    let socket = harness.tick(socket, &mut slice);
+    assert!(
+        !slice.manual_response_pending,
+        "response.done releases the next manual turn"
+    );
+
+    let _socket = harness.tick(socket, &mut slice);
+    assert_eq!(
+        harness
+            .sent_types()
             .iter()
-            .any(|cue| cue.cue_id == second_cue_id && cue.source_text.contains("the new turn")),
-        "the post-reconnect turn must stream into its own cue"
+            .filter(|kind| kind.as_str() == "input_audio_buffer.commit")
+            .count(),
+        1,
+        "the accumulated turn commits on the first tick after response.done",
     );
 }
+
 
 /// Replay 3 — manual-gate timeout → the awaited item's completed arrives late.
 /// The timed-out turn released the gate and its input state; the late

@@ -19,6 +19,12 @@ pub(super) fn set_socket_read_timeout(socket: &mut tungstenite::WebSocket<MaybeT
 }
 
 fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
+    store.watch_session_report.record_milestone_with_detail(
+        "provider-reconnecting",
+        Some(format!(
+            "provider=dashscope attempt={attempt} maxAttempts={OMNI_RECONNECT_MAX_RETRIES}"
+        )),
+    );
     realtime_ws::push_reconnecting_cue(
         store,
         "omni-reconnecting",
@@ -39,6 +45,7 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
     active_voice: &str,
     instructions: &str,
     audio_mode: RealtimeAudioMode,
+    output_mode: OmniOutputMode,
     target_language: &str,
     buffer_size: u64,
     disconnect_reason: &str,
@@ -67,6 +74,7 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
             active_voice,
             instructions,
             audio_mode,
+            output_mode,
             target_language,
         ) {
             Ok(socket) => {
@@ -106,11 +114,17 @@ pub(super) fn try_reconnect<C: RealtimeSocketConnector, R: tauri::Runtime>(
 
 pub(super) fn check_vad_warning<R: tauri::Runtime>(
     app: &AppHandle<R>,
+    audio_mode: RealtimeAudioMode,
     last_vad_event_time: &SystemTime,
     chunk_count: u64,
     vad_event_count: u64,
     buffer_size: u64,
 ) -> bool {
+    // Manual routes deliberately set turn_detection=null, so an absence of
+    // provider VAD events is expected and must not be reported as a warning.
+    if audio_mode.uses_manual_commit() {
+        return false;
+    }
     if let Ok(elapsed) = last_vad_event_time.elapsed() {
         if elapsed.as_secs() >= OMNI_VAD_WARNING_INTERVAL_SECS && chunk_count > 0 {
             let _ = diag_log(
@@ -1074,6 +1088,25 @@ fn write_native_translation_payload_to_cue(
             })
             .collect()
     };
+    if committed {
+        store.watch_session_report.record_model_final_for_cue(
+            cue_id,
+            "dashscope-native-realtime",
+            translated_text,
+            true,
+            None,
+            None,
+        );
+    } else {
+        store.watch_session_report.record_model_snapshot_for_cue(
+            cue_id,
+            "dashscope-native-realtime",
+            translated_text,
+            true,
+            None,
+            None,
+        );
+    }
     store.update_or_push_stt_cue(cue_id, &display_source_text, false);
     store.update_subtitle_cue_display_segments(
         cue_id,
@@ -1110,29 +1143,66 @@ fn normalize_livetranslate_language(language: &str, fallback: &str) -> String {
     }
 }
 
+/// Provider output requested for the lifetime of one realtime session.
+///
+/// DashScope keeps response generation serialized until `response.done`. When
+/// the application has no active native-audio sink, requesting audio makes the
+/// provider generate PCM that is immediately discarded and unnecessarily holds
+/// that response gate. Keep the mode immutable for a session so reconnects and
+/// preconnected-session reuse cannot silently change the provider contract.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OmniOutputMode {
+    TextOnly,
+    TextAndAudio,
+}
+
+impl OmniOutputMode {
+    pub(crate) fn from_speech_config(config: &OmniSpeechConfig) -> Self {
+        if config.any_output() {
+            Self::TextAndAudio
+        } else {
+            Self::TextOnly
+        }
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::TextOnly => "text-only",
+            Self::TextAndAudio => "text-and-audio",
+        }
+    }
+}
+
 fn build_omni_session_update_with_dialect(
     is_livetranslate: bool,
     voice: &str,
     instructions: &str,
     audio_mode: RealtimeAudioMode,
     target_language: &str,
+    output_mode: OmniOutputMode,
 ) -> Value {
     let input_audio_format = if is_livetranslate { "pcm" } else { "pcm16" };
     let turn_detection = audio_mode.turn_detection();
+    let modalities = match output_mode {
+        OmniOutputMode::TextOnly => json!(["text"]),
+        OmniOutputMode::TextAndAudio => json!(["text", "audio"]),
+    };
     let mut session_cfg = json!({
       "type": "session.update",
       "session": {
-        "modalities": ["text", "audio"],
+        "modalities": modalities,
         "instructions": instructions,
         "input_audio_format": input_audio_format,
         "sample_rate": 16000,
-        "output_audio_format": "pcm",
         "turn_detection": turn_detection
       }
     });
-    let trimmed_voice = voice.trim();
-    if !trimmed_voice.is_empty() {
-        session_cfg["session"]["voice"] = json!(trimmed_voice);
+    if output_mode == OmniOutputMode::TextAndAudio {
+        session_cfg["session"]["output_audio_format"] = json!("pcm");
+        let trimmed_voice = voice.trim();
+        if !trimmed_voice.is_empty() {
+            session_cfg["session"]["voice"] = json!(trimmed_voice);
+        }
     }
     if is_livetranslate {
         let source_language = "en";
@@ -1155,6 +1225,24 @@ pub(crate) fn build_dashscope_session_update(
     audio_mode: RealtimeAudioMode,
     target_language: &str,
 ) -> Result<Value, String> {
+    build_dashscope_session_update_with_output_mode(
+        protocol,
+        voice,
+        instructions,
+        audio_mode,
+        target_language,
+        OmniOutputMode::TextAndAudio,
+    )
+}
+
+pub(crate) fn build_dashscope_session_update_with_output_mode(
+    protocol: crate::audio::events::RealtimeProtocol,
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    target_language: &str,
+    output_mode: OmniOutputMode,
+) -> Result<Value, String> {
     let is_livetranslate = match protocol {
         crate::audio::events::RealtimeProtocol::DashscopeOmni => false,
         crate::audio::events::RealtimeProtocol::DashscopeLivetranslate => true,
@@ -1166,6 +1254,7 @@ pub(crate) fn build_dashscope_session_update(
         instructions,
         audio_mode,
         target_language,
+        output_mode,
     ))
 }
 
@@ -1199,15 +1288,34 @@ pub(crate) fn build_omni_session_update_for_provider(
     audio_mode: RealtimeAudioMode,
     target_language: &str,
 ) -> Value {
+    build_omni_session_update_for_provider_with_output_mode(
+        provider,
+        voice,
+        instructions,
+        audio_mode,
+        target_language,
+        OmniOutputMode::TextAndAudio,
+    )
+}
+
+pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
+    provider: &ProviderDraftInput,
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    target_language: &str,
+    output_mode: OmniOutputMode,
+) -> Value {
     let protocol = crate::audio::events::resolve_realtime_profile(provider, &provider.model)
         .protocol_dialect
         .expect("Omni session builder requires an explicit or compatibility-resolved protocol");
-    let mut session_update = build_dashscope_session_update(
+    let mut session_update = build_dashscope_session_update_with_output_mode(
         protocol,
         voice,
         instructions,
         audio_mode,
         target_language,
+        output_mode,
     )
     .expect("Omni session builder requires a DashScope Omni/LiveTranslate protocol");
     apply_model_specific_turn_detection(&mut session_update, &provider.model, audio_mode);
@@ -1245,12 +1353,32 @@ pub(super) fn build_omni_session_update(
     audio_mode: RealtimeAudioMode,
     target_language: &str,
 ) -> Value {
+    build_omni_session_update_with_output_mode(
+        model,
+        voice,
+        instructions,
+        audio_mode,
+        target_language,
+        OmniOutputMode::TextAndAudio,
+    )
+}
+
+#[cfg(test)]
+pub(super) fn build_omni_session_update_with_output_mode(
+    model: &str,
+    voice: &str,
+    instructions: &str,
+    audio_mode: RealtimeAudioMode,
+    target_language: &str,
+    output_mode: OmniOutputMode,
+) -> Value {
     let mut session_update = build_omni_session_update_with_dialect(
         is_livetranslate_model(model),
         voice,
         instructions,
         audio_mode,
         target_language,
+        output_mode,
     );
     apply_model_specific_turn_detection(&mut session_update, model, audio_mode);
     session_update
@@ -1363,7 +1491,7 @@ impl OmniSpeechConfig {
         }
     }
 
-    pub(super) fn any_output(&self) -> bool {
+    pub(crate) fn any_output(&self) -> bool {
         self.enabled && (self.local_playback_enabled || self.virtual_mic_output_enabled)
     }
 
@@ -1376,6 +1504,7 @@ impl OmniSpeechConfig {
 pub(super) fn start_omni_playback<R: tauri::Runtime>(
     app: AppHandle<R>,
     speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
+    route_direction: String,
 ) -> (
     mpsc::SyncSender<OmniPlaybackCommand>,
     Arc<AtomicBool>,
@@ -1410,6 +1539,15 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                         }
                         let queued_for = queued_at.elapsed();
                         if omni_playback_queue_age_expired(queued_for) {
+                            audio_state.watch_session_report.record_session_issue(
+                                "output",
+                                "native-playback-queue-expired",
+                                "warning",
+                                &format!(
+                                    "原生翻译语音排队 {} ms 后过期，已丢弃。",
+                                    queued_for.as_millis()
+                                ),
+                            );
                             let _ = diag_log(
                                 &app,
                                 "omni",
@@ -1430,6 +1568,11 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                             Err(poisoned) => poisoned.into_inner().clone(),
                         };
                         let cfg = &current_config;
+                        let output_route = crate::audio::speech::SpeechOutputRoutePlan::for_route(
+                            &route_direction,
+                            cfg.local_playback_enabled,
+                            cfg.virtual_mic_output_enabled,
+                        );
                         let duration_ms =
                             ((samples.len() as u64) * 1000).saturating_div(sample_rate_hz as u64);
                         let _ = diag_log(&app, "omni", "info",
@@ -1440,11 +1583,19 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                                 cfg.local_playback_enabled,
                                 cfg.virtual_mic_output_enabled
                             ));
-                        if !cfg.any_output() {
-                            let _ = diag_log(&app, "omni", "warning",
+                        if !cfg.any_output()
+                            || (!output_route.play_to_speaker
+                                && !output_route.write_to_virtual_mic)
+                        {
+                            // No speech sink is an intentional route configuration (for
+                            // example Watch diagnostics that only inspect subtitles). Keep
+                            // the trace for provider/output correlation without presenting
+                            // it as an actionable warning.
+                            let _ = diag_log(&app, "omni", "info",
                                 format!(
-                                    "[AUDIO] speech output disabled, skipping {} samples for cue_id={cue_id}; enabled={} local_playback={} virtual_mic={}",
+                                    "[AUDIO] speech output disabled for route, skipping {} samples for cue_id={cue_id}; direction={} enabled={} local_playback={} virtual_mic={}",
                                     samples.len(),
+                                    route_direction,
                                     cfg.enabled,
                                     cfg.local_playback_enabled,
                                     cfg.virtual_mic_output_enabled
@@ -1454,7 +1605,10 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                         audio_state.update_speech(|s| {
                             s.dispatch_state = "playing".to_string();
                             s.output_target =
-                                match (cfg.local_playback_enabled, cfg.virtual_mic_output_enabled) {
+                                match (
+                                    output_route.play_to_speaker,
+                                    output_route.write_to_virtual_mic,
+                                ) {
                                     (true, true) => "both".to_string(),
                                     (false, true) => "virtual-mic".to_string(),
                                     _ => "speaker".to_string(),
@@ -1463,10 +1617,6 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                         });
                         let _ = emit_audio_snapshot(&app, &audio_state);
 
-                        let output_route = crate::audio::speech::SpeechOutputRoutePlan::new(
-                            cfg.local_playback_enabled,
-                            cfg.virtual_mic_output_enabled,
-                        );
                         let (output_samples, enhancement) = render_omni_output_samples(
                             &samples,
                             sample_rate_hz,
@@ -1494,13 +1644,19 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                             // speaker. Output level and translated-audio gain are already
                             // baked in, so speaker playback stays at unity volume.
                             let echo_reference = crate::audio::speech::i16_to_f32(&output_samples);
-                            audio_state.push_echo_reference(&echo_reference, sample_rate_hz, 1);
                             let result = crate::audio::speech::play_to_speaker(
                                 &output_samples,
                                 sample_rate_hz,
                                 1,
                                 cfg.speaker_device_id.as_deref(),
                                 100,
+                                || {
+                                    audio_state.push_echo_reference(
+                                        &echo_reference,
+                                        sample_rate_hz,
+                                        1,
+                                    );
+                                },
                             );
                             match result {
                                 Ok(frames) => {
@@ -1511,6 +1667,12 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                                     frames
                                 }
                                 Err(error) => {
+                                    audio_state.watch_session_report.record_session_issue(
+                                        "output",
+                                        "speaker-playback-failed",
+                                        "error",
+                                        &error,
+                                    );
                                     let _ = diag_log(&app, "omni", "error",
                                         format!(
                                             "[AUDIO] speaker playback failed: cue_id={cue_id} error={error}"
@@ -1540,6 +1702,12 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                                     frames
                                 }
                                 Err(error) => {
+                                    audio_state.watch_session_report.record_session_issue(
+                                        "output",
+                                        "virtual-mic-write-failed",
+                                        "error",
+                                        &error,
+                                    );
                                     let _ = diag_log(&app, "omni", "error",
                                         format!(
                                             "[AUDIO] virtual mic write failed: cue_id={cue_id} request_id={req_id} error={error}"
@@ -1560,7 +1728,7 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                         let _ = emit_audio_snapshot(&app, &audio_state);
                         let _ = diag_log(&app, "omni", "info",
                             format!(
-                                "[AUDIO] 鎾斁瀹屾垚: cue_id={cue_id} speaker={speaker_frames} frames, vmic={vmic_frames} frames"
+                                "[AUDIO] 播放完成: cue_id={cue_id} speaker={speaker_frames} frames, vmic={vmic_frames} frames"
                             ));
                     }
                 }
@@ -1669,7 +1837,8 @@ mod omni_playback_tests {
         let shared = audio_state
             .register_omni_speech_config(OmniSpeechConfig::from_config(&speaker_config));
         assert!(shared.read().expect("shared config readable").any_output());
-        let (tx, stop_requested, join) = start_omni_playback(handle.clone(), shared);
+        let (tx, stop_requested, join) =
+            start_omni_playback(handle.clone(), shared, "diagnostics".to_string());
 
         let wait_for = |description: &str,
                         predicate: &dyn Fn(&crate::audio::contracts::SpeechRuntimeSnapshot) -> bool| {
@@ -1710,6 +1879,103 @@ mod omni_playback_tests {
 
         request_omni_playback_stop(&stop_requested, &tx);
         let _ = join.join();
+    }
+
+    #[test]
+    fn inbound_playback_suppresses_virtual_mic_even_when_it_is_configured() {
+        use tauri::Manager;
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        app.manage(crate::bridge::state::BridgeStateStore::new());
+        let handle = app.handle().clone();
+        let audio_state = handle.state::<AudioStateStore>();
+        audio_state
+            .watch_session_report
+            .begin_or_reuse("test", "omni-playback");
+
+        let shared = audio_state.register_omni_speech_config(
+            OmniSpeechConfig::from_config(&json!({
+                "devices": {
+                    "outputSpeechEnabled": true,
+                    "virtualMicOutputEnabled": true
+                },
+                "speech": {
+                    "enabled": true,
+                    "localPlaybackEnabled": true
+                }
+            })),
+        );
+        let (tx, stop_requested, join) =
+            start_omni_playback(handle.clone(), shared, "inbound".to_string());
+        tx.send(OmniPlaybackCommand::Play {
+            // An empty buffer exercises routing without opening a physical
+            // speaker in the unit test. The playback worker still reaches its
+            // completion state and would attempt the bridge path if inbound
+            // routing accidentally retained the virtual-mic target.
+            samples: Vec::new(),
+            cue_id: "omni-audio-route-test".to_string(),
+            sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+            queued_at: Instant::now(),
+        })
+        .expect("queue inbound playback");
+
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let speech = audio_state.snapshot().speech;
+            if speech.dispatch_state == "waiting-subtitle" {
+                assert_eq!(speech.output_target, "speaker");
+                assert_eq!(speech.virtual_mic_frames_written, 0);
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for inbound playback routing; state={}",
+                speech.dispatch_state,
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
+
+        let report = audio_state
+            .watch_session_report
+            .snapshot()
+            .expect("watch report");
+        assert!(!report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "virtual-mic-write-failed"));
+
+        request_omni_playback_stop(&stop_requested, &tx);
+        let _ = join.join();
+    }
+
+    #[test]
+    fn reused_preconnect_receives_the_winning_route_speech_config() {
+        use tauri::Manager;
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        let handle = app.handle().clone();
+        let audio_state = handle.state::<AudioStateStore>();
+        let shared = audio_state.register_omni_speech_config(OmniSpeechConfig::from_config(&json!({
+            "devices": { "outputSpeechEnabled": true, "virtualMicOutputEnabled": true },
+            "speech": { "enabled": true, "localPlaybackEnabled": false }
+        })));
+
+        audio_state.replace_omni_speech_config(OmniSpeechConfig::from_config(&json!({
+            "devices": {
+                "outputSpeechEnabled": true,
+                "virtualMicOutputEnabled": false,
+                "feedbackLoopPrevention": "echo-cancel"
+            },
+            "speech": { "enabled": true, "localPlaybackEnabled": true }
+        })));
+
+        let updated = shared.read().expect("shared config readable");
+        assert!(updated.local_playback_enabled);
+        assert!(!updated.virtual_mic_output_enabled);
     }
 
     #[test]

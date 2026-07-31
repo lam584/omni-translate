@@ -7,6 +7,10 @@ pub(super) struct OmniAudioPumpState {
     /// At least one above-threshold input chunk was sent in the current manual
     /// turn. Silence-grace frames must not create another turn by themselves.
     pub(super) sent_audio_since_commit: bool,
+    /// Number of 16 kHz mono PCM samples appended after the latest successful
+    /// manual commit. This prevents a lone tail frame from being committed.
+    pub(super) audio_samples_since_commit: u64,
+    pub(super) manual_turn_started_at: Option<SystemTime>,
     pub(super) session_ready_for_audio: bool,
     pub(super) pre_session_audio_queue: VecDeque<Vec<u8>>,
     pub(super) pre_session_audio_dropped: u64,
@@ -68,6 +72,7 @@ impl OmniAudioPump {
         active_voice: &str,
         instructions: &str,
         audio_mode: RealtimeAudioMode,
+        output_mode: OmniOutputMode,
         target_language: &str,
         session_started_at: &SystemTime,
     ) -> Result<OmniAudioPumpState, String> {
@@ -76,6 +81,8 @@ impl OmniAudioPump {
             mut reconnect_count,
             mut chunk_count,
             mut sent_audio_since_commit,
+            mut audio_samples_since_commit,
+            mut manual_turn_started_at,
             mut session_ready_for_audio,
             mut pre_session_audio_queue,
             mut pre_session_audio_dropped,
@@ -171,7 +178,7 @@ impl OmniAudioPump {
                 if !has_sent_audible_audio {
                     first_audible_chunk_ms = Some(elapsed_ms_since(&session_started_at));
                     total_silence_skipped_before_first_audible = silence_chunks_skipped;
-                    store.live_session_events.record_audio_diagnostic(
+                    store.watch_session_report.record_audio_diagnostic(
                         first_audible_chunk_ms,
                         Some(silence_chunks_skipped),
                         None,
@@ -196,18 +203,14 @@ impl OmniAudioPump {
             }
             buffer_size = buffer_size.wrapping_add(raw_chunk.len() as u64);
             chunk_count += 1;
-            sent_audio_since_commit = manual_turn_has_audible_input(
-                sent_audio_since_commit,
-                chunk_rms,
-            );
             chunks_sent_this_tick += 1;
 
             if chunk_count == 1 {
                 let elapsed = elapsed_ms_since(&session_started_at);
                 first_audio_sent_ms = Some(elapsed);
-                store.live_session_events.record_milestone(
+                store.watch_session_report.record_milestone_with_detail(
                     "first_audio_sent",
-                    elapsed,
+                    Some(format!("providerSessionElapsedMs={elapsed}")),
                 );
                 let _ = diag_log(
                     &app,
@@ -263,6 +266,7 @@ impl OmniAudioPump {
                     &active_voice,
                     &instructions,
                     audio_mode,
+                    output_mode,
                     &target_language,
                     buffer_size,
                     &format!("audio send failed: {error}"),
@@ -291,6 +295,29 @@ impl OmniAudioPump {
                     }
                 }
             }
+            // Only audio accepted by the current socket belongs to the
+            // provider's current input buffer. A failed append that triggers
+            // reconnect must not arm or grow the next manual commit.
+            let had_audible_since_commit = sent_audio_since_commit;
+            sent_audio_since_commit = manual_turn_has_audible_input(
+                sent_audio_since_commit,
+                chunk_rms,
+            );
+            if should_anchor_manual_turn_to_first_audible_append(
+                audio_mode,
+                had_audible_since_commit,
+                sent_audio_since_commit,
+            ) {
+                manual_turn_started_at = Some(SystemTime::now());
+                let _ = diag_log(
+                    app,
+                    "omni",
+                    "debug",
+                    "event=manual_commit_timer action=anchor_turn_first_audible_append",
+                );
+            }
+            audio_samples_since_commit = audio_samples_since_commit
+                .saturating_add(asr_chunk.len() as u64);
             store.set_stt_connected(true, buffer_size);
 
             if chunks_sent_this_tick > 1 {
@@ -302,6 +329,8 @@ impl OmniAudioPump {
             reconnect_count,
             chunk_count,
             sent_audio_since_commit,
+            audio_samples_since_commit,
+            manual_turn_started_at,
             session_ready_for_audio,
             pre_session_audio_queue,
             pre_session_audio_dropped,
@@ -325,4 +354,14 @@ pub(super) fn manual_turn_has_audible_input(
     chunk_rms: f32,
 ) -> bool {
     already_audible || chunk_rms >= OMNI_ASR_MIN_CHUNK_RMS
+}
+
+pub(super) fn should_anchor_manual_turn_to_first_audible_append(
+    audio_mode: RealtimeAudioMode,
+    had_audible_since_commit: bool,
+    has_audible_since_commit: bool,
+) -> bool {
+    audio_mode.uses_manual_commit()
+        && !had_audible_since_commit
+        && has_audible_since_commit
 }

@@ -60,6 +60,8 @@ use crate::audio::pcm_resample::{
 };
 use crate::audio::realtime_ws::backoff_delay;
 use self::audio_pump::{OmniAudioPump, OmniAudioPumpState};
+#[cfg(test)]
+use self::audio_pump::should_anchor_manual_turn_to_first_audible_append;
 use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
 use self::connection_coordinator::{
@@ -67,8 +69,11 @@ use self::connection_coordinator::{
     recent_echo_input_is_dominated, should_route_uncorrelated_completed_transcription,
     ManualResponseDecision, OmniCommitState,
     OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
-    MANUAL_COMMIT_INTERVAL_SECS, MANUAL_ECHO_ACTIVITY_WINDOW,
-    MANUAL_RESPONSE_TIMEOUT_SECS,
+    MANUAL_ECHO_ACTIVITY_WINDOW, MANUAL_RESPONSE_TIMEOUT_SECS,
+};
+#[cfg(test)]
+use self::connection_coordinator::{
+    MANUAL_COMMIT_INTERVAL_SECS, MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
 };
 use self::event_processor::{
     OmniAudioOutputState, OmniEventProcessor, OmniReadinessState, OmniSubtitleEventState,
@@ -91,7 +96,9 @@ const OMNI_PLAYBACK_MAX_QUEUE_AGE: Duration = Duration::from_secs(5);
 const OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 500;
 const OMNI_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;
 const OMNI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
-const OMNI_ASR_SILENCE_GRACE_CHUNKS: u32 = 60;
+// Forty 20 ms frames keep 800 ms of trailing silence, matching the server-VAD
+// boundary while allowing manual routes to commit natural pauses promptly.
+const OMNI_ASR_SILENCE_GRACE_CHUNKS: u32 = 40;
 const OMNI_INTER_CHUNK_THROTTLE_MS: u64 = 18;
 const PROVIDER_INPUT_PCM_DUMP_MAX_SAMPLES: usize = 16_000 * 90;
 
@@ -325,6 +332,56 @@ mod unit_tests {
     }
 
     #[test]
+    fn text_only_omni_session_omits_audio_output_fields() {
+        let session = build_omni_session_update_with_output_mode(
+            "qwen3.5-omni-plus-realtime",
+            "Tina",
+            "translate naturally",
+            RealtimeAudioMode::Manual,
+            "zh-CN",
+            OmniOutputMode::TextOnly,
+        );
+
+        assert_eq!(session.pointer("/session/modalities"), Some(&json!(["text"])));
+        assert!(session.pointer("/session/voice").is_none());
+        assert!(session.pointer("/session/output_audio_format").is_none());
+        assert_eq!(
+            session
+                .pointer("/session/input_audio_format")
+                .and_then(Value::as_str),
+            Some("pcm16")
+        );
+    }
+
+    #[test]
+    fn text_only_livetranslate_session_keeps_translation_input_contract() {
+        let session = build_omni_session_update_with_output_mode(
+            "qwen3.5-livetranslate-flash-realtime",
+            "Cherry",
+            "translate naturally",
+            RealtimeAudioMode::ServerVad,
+            "zh-CN",
+            OmniOutputMode::TextOnly,
+        );
+
+        assert_eq!(session.pointer("/session/modalities"), Some(&json!(["text"])));
+        assert!(session.pointer("/session/voice").is_none());
+        assert!(session.pointer("/session/output_audio_format").is_none());
+        assert_eq!(
+            session
+                .pointer("/session/input_audio_format")
+                .and_then(Value::as_str),
+            Some("pcm")
+        );
+        assert_eq!(
+            session
+                .pointer("/session/translation/language")
+                .and_then(Value::as_str),
+            Some("zh")
+        );
+    }
+
+    #[test]
     fn initial_connect_backoff_is_short_and_bounded() {
         assert_eq!(initial_connect_backoff(1), Duration::from_millis(250));
         assert_eq!(initial_connect_backoff(2), Duration::from_millis(500));
@@ -474,6 +531,28 @@ mod unit_tests {
         assert!(speech.enabled);
         assert!(speech.local_playback_enabled);
         assert!(!speech.virtual_mic_output_enabled);
+        assert_eq!(
+            OmniOutputMode::from_speech_config(&speech),
+            OmniOutputMode::TextAndAudio
+        );
+    }
+
+    #[test]
+    fn omni_output_mode_is_text_only_without_an_active_native_sink() {
+        let speech = OmniSpeechConfig::from_config(&json!({
+            "speech": {
+                "enabled": true,
+                "localPlaybackEnabled": false,
+                "virtualMicOutputEnabled": false
+            }
+        }));
+
+        assert!(speech.enabled);
+        assert!(!speech.any_output());
+        assert_eq!(
+            OmniOutputMode::from_speech_config(&speech),
+            OmniOutputMode::TextOnly
+        );
     }
 
     #[test]
@@ -573,9 +652,10 @@ mod protocol;
 pub(crate) use self::protocol::{
     build_dashscope_audio_append, build_dashscope_input_audio_commit,
     build_dashscope_response_create, build_dashscope_session_update, build_dashscope_text_item,
-    build_omni_session_update_for_provider, OmniSpeechConfig,
+    build_omni_session_update_for_provider, OmniOutputMode, OmniSpeechConfig,
 };
 use self::protocol::{
+    build_omni_session_update_for_provider_with_output_mode,
     check_vad_warning, elapsed_ms_since,
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
     manual_turn_response_stream_active,
@@ -589,7 +669,7 @@ use self::protocol::{
     OmniEventDiagnostics, OmniPlaybackCommand,
 };
 #[cfg(test)]
-use protocol::build_omni_session_update;
+use protocol::{build_omni_session_update, build_omni_session_update_with_output_mode};
 #[cfg(test)]
 mod native_translation_tests {
     use super::protocol::{

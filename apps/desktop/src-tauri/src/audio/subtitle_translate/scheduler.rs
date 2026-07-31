@@ -188,6 +188,7 @@ fn spawn_translation_job(tx: mpsc::Sender<TranslationUpdate>, job: TranslationJo
                     partial_translation.push_str(delta);
                     let _ = delta_tx.send(TranslationUpdate::Delta(TranslationDelta {
                         job: delta_job.clone(),
+                        raw_delta: delta.to_string(),
                         translated: partial_translation.clone(),
                     }));
                     Ok(())

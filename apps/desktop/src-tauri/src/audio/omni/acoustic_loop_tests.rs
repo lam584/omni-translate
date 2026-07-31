@@ -82,9 +82,18 @@ struct LoopOutcome {
 /// does) while the microphone hears the room-convolved echo, chunk by chunk,
 /// through the real canceller.
 fn simulate_room_loop(speaker_wave: &[f32], room: &RoomImpulse) -> LoopOutcome {
+    simulate_room_loop_with_delay(speaker_wave, room, DELAY_SAMPLES)
+}
+
+fn simulate_room_loop_with_delay(
+    speaker_wave: &[f32],
+    room: &RoomImpulse,
+    actual_delay_samples: usize,
+) -> LoopOutcome {
     // Microphone signal: sparse convolution of the speaker wave with the room
-    // impulse, arriving DELAY_SAMPLES (interleaved) after playback.
-    let mono_delay_frames = DELAY_SAMPLES / CHANNELS;
+    // impulse, arriving after the endpoint's real (and device-dependent)
+    // playback-to-loopback delay.
+    let mono_delay_frames = actual_delay_samples / CHANNELS;
     let mic_len = speaker_wave.len();
     let mut mic = vec![0.0_f32; mic_len];
     for (tap_delay, gain) in &room.taps {
@@ -200,4 +209,27 @@ fn paused_source_pure_echo_keeps_the_gate_shut() {
         outcome.total_chunks
     );
     assert_no_second_turn(&outcome, "paused-source");
+}
+
+/// Field incident: the output sink took a device-dependent time to start, but
+/// the old canceller assumed every endpoint delivered loopback exactly 100ms
+/// after reference registration. Both a low-latency endpoint and a buffered
+/// USB/Bluetooth-style endpoint must be suppressed before server-side VAD can
+/// turn translated playback into another model response.
+#[test]
+fn variable_endpoint_latency_does_not_reenter_realtime_asr() {
+    let tts = synthetic_tts(4);
+    for actual_delay_ms in [35_usize, 220] {
+        let actual_delay_samples =
+            actual_delay_ms * SAMPLE_RATE_HZ * CHANNELS / 1_000;
+        let outcome = simulate_room_loop_with_delay(
+            &tts,
+            &RoomImpulse::small_room(0.7),
+            actual_delay_samples,
+        );
+        assert_no_second_turn(
+            &outcome,
+            &format!("variable-endpoint-latency-{actual_delay_ms}ms"),
+        );
+    }
 }

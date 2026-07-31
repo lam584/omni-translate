@@ -1,4 +1,4 @@
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
 #[derive(Clone, Serialize, TS)]
@@ -63,7 +63,7 @@ impl AudioRouteRuntimeSnapshot {
     }
 }
 
-#[derive(Clone, Serialize, TS)]
+#[derive(Clone, Debug, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SubtitleDisplaySegmentRuntime {
     pub source_text: String,
@@ -117,6 +117,9 @@ pub(crate) struct SubtitleOverlayRuntimeSnapshot {
     pub first_translation_average_ms: Option<u64>,
     pub first_translation_last_ms: Option<u64>,
     pub first_translation_sample_count: u64,
+    /// Stable in-memory Watch report id. The overlay echoes this value in its
+    /// post-render receipt so stale windows cannot mutate a newer session.
+    pub report_session_id: Option<String>,
     pub active_cue: Option<SubtitleCueRuntime>,
     pub recent_cues: Vec<SubtitleCueRuntime>,
 }
@@ -129,10 +132,141 @@ impl SubtitleOverlayRuntimeSnapshot {
             first_translation_average_ms: None,
             first_translation_last_ms: None,
             first_translation_sample_count: 0,
+            report_session_id: None,
             active_cue: None,
             recent_cues: Vec::new(),
         }
     }
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WatchTimelineEventRuntime {
+    pub event_id: String,
+    #[ts(type = "'source' | 'model' | 'publish' | 'render' | 'error' | 'session'")]
+    pub stage: String,
+    pub kind: String,
+    pub elapsed_ms: u64,
+    pub text: String,
+    pub detail: Option<String>,
+    pub final_event: bool,
+    pub accepted: bool,
+    pub visible: Option<bool>,
+    pub call_id: Option<String>,
+    pub attempt_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WatchIssueRuntime {
+    #[ts(type = "'model' | 'publish' | 'render' | 'content' | 'timing' | 'output' | 'data' | 'session'")]
+    pub category: String,
+    pub code: String,
+    #[ts(type = "'warning' | 'error'")]
+    pub severity: String,
+    pub message: String,
+    pub cue_id: Option<String>,
+    pub elapsed_ms: Option<u64>,
+    pub occurrence_count: u64,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WatchCueComparisonRuntime {
+    pub cue_id: String,
+    pub revision: u64,
+    #[ts(type = "'inbound' | 'outbound'")]
+    pub route_direction: String,
+    pub translation_path: String,
+    pub source_text: String,
+    pub llm_text: String,
+    pub published_text: String,
+    pub published_segments: Vec<SubtitleDisplaySegmentRuntime>,
+    pub rendered_source_text: String,
+    pub rendered_text: String,
+    #[ts(type = "'exact' | 'formatting-only' | 'different' | 'not-published' | 'not-rendered' | 'model-error' | 'pending' | 'superseded'")]
+    pub comparison_status: String,
+    pub source_at_ms: Option<u64>,
+    pub llm_first_at_ms: Option<u64>,
+    pub llm_final_at_ms: Option<u64>,
+    pub published_first_at_ms: Option<u64>,
+    pub published_final_at_ms: Option<u64>,
+    pub rendered_first_at_ms: Option<u64>,
+    pub rendered_final_at_ms: Option<u64>,
+    pub source_to_llm_first_ms: Option<u64>,
+    pub source_to_render_ms: Option<u64>,
+    pub llm_first_to_publish_ms: Option<u64>,
+    pub publish_to_render_ms: Option<u64>,
+    pub llm_first_to_render_ms: Option<u64>,
+    pub llm_final_to_publish_ms: Option<u64>,
+    pub published_final_to_render_ms: Option<u64>,
+    pub llm_final_to_render_ms: Option<u64>,
+    pub events: Vec<WatchTimelineEventRuntime>,
+    pub issues: Vec<WatchIssueRuntime>,
+    pub dropped_event_count: u64,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WatchSessionReportSummaryRuntime {
+    pub duration_ms: u64,
+    pub cue_count: usize,
+    pub complete_cue_count: usize,
+    pub visible_render_cue_count: usize,
+    pub unrendered_cue_count: usize,
+    pub issue_count: usize,
+    pub issue_occurrence_count: u64,
+    pub average_source_to_llm_first_ms: Option<u64>,
+    pub p95_source_to_llm_first_ms: Option<u64>,
+    pub max_source_to_llm_first_ms: Option<u64>,
+    pub average_source_to_render_ms: Option<u64>,
+    pub p95_source_to_render_ms: Option<u64>,
+    pub max_source_to_render_ms: Option<u64>,
+    pub average_llm_first_to_render_ms: Option<u64>,
+    pub p95_llm_first_to_render_ms: Option<u64>,
+    pub max_llm_first_to_render_ms: Option<u64>,
+    pub average_llm_final_to_render_ms: Option<u64>,
+    pub p95_llm_final_to_render_ms: Option<u64>,
+    pub max_llm_final_to_render_ms: Option<u64>,
+    pub slowest_cue_id: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct WatchSessionReportRuntime {
+    pub session_id: String,
+    #[ts(type = "'active' | 'completed'")]
+    pub status: String,
+    pub route_mode: String,
+    pub provider_id: String,
+    pub model: String,
+    pub started_at: String,
+    pub ended_at: Option<String>,
+    pub elapsed_ms: u64,
+    pub summary: WatchSessionReportSummaryRuntime,
+    pub cues: Vec<WatchCueComparisonRuntime>,
+    pub events: Vec<WatchTimelineEventRuntime>,
+    pub issues: Vec<WatchIssueRuntime>,
+    pub dropped_cue_count: u64,
+    pub dropped_event_count: u64,
+}
+
+/// Lightweight renderer-to-shell receipt emitted only after React committed
+/// the subtitle content and the overlay crossed a browser render frame.
+#[derive(Clone, Debug, Deserialize, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct OverlayRenderReceiptRuntime {
+    pub session_id: String,
+    pub cue_id: String,
+    #[serde(default)]
+    pub revision: u64,
+    pub source_text: String,
+    pub translated_text: String,
+    pub committed: bool,
+    pub visible: bool,
+    /// Renderer wall-clock timestamp (`performance.timeOrigin + now`) in
+    /// milliseconds. The report store validates it before using it.
+    pub rendered_at_ms: u64,
 }
 
 #[derive(Clone, Serialize, TS)]

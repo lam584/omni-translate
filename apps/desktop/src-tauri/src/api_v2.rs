@@ -475,7 +475,8 @@ pub(crate) enum DiagnosticsCommandV2 {
     SelfCheck,
     OverlaySelfCheck,
     Export { scope: String },
-    LiveSessionEvents,
+    WatchSessionReport,
+    ClearWatchSessionReport,
     Snapshot,
     OpenExportDirectory { output_path: String },
     WriteExportArtifact { filename: String, content: String },
@@ -526,9 +527,14 @@ pub(crate) async fn diagnostics_v2<R: tauri::Runtime>(
                     Err(error) => Err(error),
                 },
             ),
-            DiagnosticsCommandV2::LiveSessionEvents => diagnostics_events::get_live_session_events(app.state::<AudioStateStore>())
-                .and_then(|json| serde_json::from_str(&json).map_err(|error| error.to_string()))
-                .map_err(ServiceErrorV2::from),
+            DiagnosticsCommandV2::WatchSessionReport => to_value(
+                app.state::<AudioStateStore>().watch_session_report.snapshot(),
+            )
+            .map_err(|error| ServiceErrorV2::from(error.to_string())),
+            DiagnosticsCommandV2::ClearWatchSessionReport => {
+                app.state::<AudioStateStore>().watch_session_report.clear();
+                Ok(Value::Null)
+            }
             DiagnosticsCommandV2::Snapshot => to_value(diagnostics_events::get_diagnostics_snapshot(app.clone()))
                 .map_err(|error| ServiceErrorV2::from(error.to_string())),
             DiagnosticsCommandV2::OpenExportDirectory { output_path } =>

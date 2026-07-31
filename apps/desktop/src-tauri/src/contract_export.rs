@@ -44,7 +44,12 @@ fn render(header_source: &str, imports: &[&str], decls: &[String]) -> String {
         // the explicitly-annotated u128 fields alike), so the TypeScript
         // side has always typed them as `number`; fold ts-rs's `bigint`
         // mapping accordingly.
-        let decl = decl.replace("bigint", "number");
+        let decl = decl
+            .replace("bigint", "number")
+            .lines()
+            .map(str::trim_end)
+            .collect::<Vec<_>>()
+            .join("\n");
         let _ = write!(out, "export {}\n\n", decl.trim_end());
     }
     out
@@ -171,6 +176,12 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<audio::SubtitleDisplaySegmentRuntime>(),
                     decl::<audio::SubtitleCueRuntime>(),
                     decl::<audio::SubtitleOverlayRuntimeSnapshot>(),
+                    decl::<audio::WatchTimelineEventRuntime>(),
+                    decl::<audio::WatchIssueRuntime>(),
+                    decl::<audio::WatchCueComparisonRuntime>(),
+                    decl::<audio::WatchSessionReportSummaryRuntime>(),
+                    decl::<audio::WatchSessionReportRuntime>(),
+                    decl::<audio::OverlayRenderReceiptRuntime>(),
                     decl::<audio::SpeechDispatchEventRuntime>(),
                     decl::<audio::SpeechRuntimeSnapshot>(),
                     decl::<audio::SttConnectionRuntime>(),

@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import type { ProviderScenario } from '../../schema/config';
 import type { ProviderCapability } from '../../schema/provider-contract';
 import type { ProviderModelRuntime } from '../../schema/provider-runtime';
-import { formatProviderCapabilityLabel } from '../../utils/provider-model-capabilities';
+import { providerCapabilityLabelKey } from '../../utils/provider-model-capabilities';
 import { providersPageHelpers, type ModelCatalogScenarioFilter, type ModelCatalogState } from './providersPageHelpers';
 
 type CatalogSection = {
@@ -70,7 +70,7 @@ function ProviderModelCatalogItem({
             {model.capabilities.map((capability) => (
               <span className={`provider-meta-chip provider-capability-chip provider-capability-chip-${capability}`} key={`${model.id}-${capability}`}>
                 <AppIcon name={resolveCapabilityIconName(capability)} size={12} />
-                {formatProviderCapabilityLabel(capability)}
+                {t(providerCapabilityLabelKey(capability))}
               </span>
             ))}
           </div>
@@ -163,7 +163,7 @@ export default function ProviderModelCatalog({
                   <AppIcon name={resolveCapabilityIconName(section.capability)} size={14} />
                 </div>
                 <div>
-                  <strong>{formatProviderCapabilityLabel(section.capability)}</strong>
+                  <strong>{t(providerCapabilityLabelKey(section.capability))}</strong>
                   <p>{t('providers.modelCatalog.modelCount', { count: section.models.length })}</p>
                 </div>
               </div>

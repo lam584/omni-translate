@@ -19,6 +19,7 @@ import {
 } from './audio-runtime';
 import { refreshBridgeRuntime, startBridgeServiceRuntime, stopBridgeServiceRuntime } from './bridge-runtime';
 import { getRecentDiagnosticsLogsRuntime, runSubtitleOverlaySelfCheckRuntime } from './diagnostics-runtime';
+import { getWatchSessionReportRuntime } from './watch-session-report-runtime';
 
 // Contract integration layer for the desktop-runtime ↔ bridge boundary. The
 // real renderer runtime modules run against an injectable fake bridge / fake
@@ -425,6 +426,72 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
       'snapshot',
       'overlaySelfCheck',
     ]);
+  });
+
+  it('reports the complete model delta → subtitle publish → visible overlay chain', async () => {
+    fake.startLiveSession({
+      model: 'fake-watch-model',
+      sessionStartedAt: 'unix-ms:1000',
+    });
+    fake.pushLiveAsrDelta({
+      elapsedMs: 100,
+      stash: '你',
+      text: '',
+      eventType: 'asr.delta',
+    });
+    fake.pushLiveAsrDelta({
+      elapsedMs: 180,
+      stash: '',
+      text: '你好',
+      eventType: 'asr.completed',
+    });
+    fake.pushLiveOutputDelta({
+      elapsedMs: 260,
+      eventType: 'response.text.delta',
+      stash: 'Hel',
+      committedText: '',
+    });
+    fake.pushLiveOutputDelta({
+      elapsedMs: 420,
+      eventType: 'response.done',
+      stash: '',
+      committedText: 'Hello',
+    });
+
+    const report = await getWatchSessionReportRuntime();
+    const cue = report?.cues[0];
+    expect(report).toMatchObject({
+      sessionId: 'fake-watch-session',
+      status: 'completed',
+      model: 'fake-watch-model',
+      summary: { completeCueCount: 1, unrenderedCueCount: 0 },
+    });
+    expect(cue).toMatchObject({
+      sourceText: '你好',
+      llmText: 'Hello',
+      publishedText: 'Hello',
+      renderedText: 'Hello',
+      comparisonStatus: 'exact',
+    });
+    expect(cue?.events.map((event) => event.stage)).toEqual([
+      'source',
+      'source',
+      'model',
+      'model',
+      'publish',
+      'render',
+    ]);
+    for (const latency of [
+      cue?.sourceToLlmFirstMs,
+      cue?.llmFirstToPublishMs,
+      cue?.publishToRenderMs,
+      cue?.llmFirstToRenderMs,
+      cue?.llmFinalToPublishMs,
+      cue?.publishedFinalToRenderMs,
+    ]) {
+      expect(latency).not.toBeNull();
+      expect(latency).toBeGreaterThanOrEqual(0);
+    }
   });
 
   it('folds a missing speaker device into speech.lastError and degraded status', async () => {

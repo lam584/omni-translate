@@ -50,7 +50,7 @@ function baseSnapshot(overrides: Partial<AudioRuntimeSnapshot> = {}): AudioRunti
     outbound: makeRoute('out', 'outbound', 'r1'),
     subtitleOverlay: {
       queueDepth: 0, droppedCueCount: 0,
-      firstTranslationAverageMs: null, firstTranslationLastMs: null, firstTranslationSampleCount: 0,
+      firstTranslationAverageMs: null, firstTranslationLastMs: null, firstTranslationSampleCount: 0, reportSessionId: null,
       activeCue: null, recentCues: [],
     },
     speech: {

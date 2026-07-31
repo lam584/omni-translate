@@ -11,6 +11,14 @@ import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
 import { cloneStoreState as cloneBaseStoreState } from '../test-utils/store-state';
 
+const renderReceiptMocks = vi.hoisted(() => ({
+  useOverlayRenderReceiptMock: vi.fn(),
+}));
+
+vi.mock('./overlay/useOverlayRenderReceipt', () => ({
+  useOverlayRenderReceipt: renderReceiptMocks.useOverlayRenderReceiptMock,
+}));
+
 const tauriMocks = vi.hoisted(() => {
   let pointerPosition = { x: 0, y: 0 };
 
@@ -155,6 +163,7 @@ describe('SubtitleOverlayPage locked interaction', () => {
 
   beforeEach(() => {
     vi.useFakeTimers();
+    renderReceiptMocks.useOverlayRenderReceiptMock.mockReset();
     resetDesktopApiForTests();
     installDesktopApi(new TauriDesktopApi());
 
@@ -240,6 +249,27 @@ describe('SubtitleOverlayPage locked interaction', () => {
       'sync_subtitle_overlay_window_state',
       expect.objectContaining({ locked: true, hotspotInteractive: false }),
     );
+  });
+
+  it('wires displayed cues and the report session into DOM render receipts', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      audioRuntimeSnapshot: {
+        ...state.audioRuntimeSnapshot,
+        subtitleOverlay: {
+          ...state.audioRuntimeSnapshot.subtitleOverlay,
+          reportSessionId: 'watch-session-live-translate',
+        },
+      },
+    }));
+
+    await view.render(<SubtitleOverlayPage />);
+
+    expect(renderReceiptMocks.useOverlayRenderReceiptMock).toHaveBeenLastCalledWith({
+      desktopApi: expect.any(TauriDesktopApi),
+      displayCues: [...audioRuntimeSnapshotMock.subtitleOverlay.recentCues].reverse(),
+      reportSessionId: 'watch-session-live-translate',
+    });
   });
 
   it('reveals the unlock button when the cursor enters the overlay bounds but keeps cursor passthrough outside the button hotspot', async () => {

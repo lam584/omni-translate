@@ -3,6 +3,19 @@ body:not(:has(.subtitle-overlay-root)) .driver-management-status {
   background:var(--app-soft) !important
 }
 
+body:not(:has(.subtitle-overlay-root)) .welcome-language-card .driver-management-card-onboarding .driver-management-status {
+  border-color:rgba(237, 197, 106, .34) !important;
+  background:rgba(237, 197, 106, .08) !important
+}
+
+body:not(:has(.subtitle-overlay-root)) .welcome-language-card .driver-management-card-onboarding .driver-management-status h3 {
+  color:#f5f7ff
+}
+
+body:not(:has(.subtitle-overlay-root)) .welcome-language-card .driver-management-card-onboarding .driver-management-status p {
+  color:#cbd5f0
+}
+
 body:not(:has(.subtitle-overlay-root)) .driver-management-details {
   border-color:var(--app-line) !important;
   background:var(--app-line) !important

@@ -7,7 +7,7 @@ import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { useDiagnosticsWorkbenchController, type DiagnosticsRepairTask } from './useDiagnosticsActions';
 
 const runtime = vi.hoisted(() => ({
-  exportBundle: vi.fn(), getEvents: vi.fn(), isTauri: vi.fn(), refreshBridge: vi.fn(),
+  clearReport: vi.fn(), exportBundle: vi.fn(), getReport: vi.fn(), isTauri: vi.fn(), refreshBridge: vi.fn(),
   selfCheck: vi.fn(), overlaySelfCheck: vi.fn(), openExportDirectory: vi.fn(),
 }));
 
@@ -17,7 +17,10 @@ vi.mock('../../runtime/diagnostics-runtime', () => ({
   runDiagnosticsSelfCheckRuntime: runtime.selfCheck,
   runSubtitleOverlaySelfCheckRuntime: runtime.overlaySelfCheck,
 }));
-vi.mock('../../runtime/live-session-events-runtime', () => ({ getLiveSessionEventsRuntime: runtime.getEvents }));
+vi.mock('../../runtime/watch-session-report-runtime', () => ({
+  clearWatchSessionReportRuntime: runtime.clearReport,
+  getWatchSessionReportRuntime: runtime.getReport,
+}));
 vi.mock('../../runtime/desktop-api-context', () => ({
   useDesktopCapabilities: () => ({ hasNativeShell: Boolean(runtime.isTauri()) }),
 }));
@@ -48,7 +51,12 @@ describe('useDiagnosticsWorkbenchController', () => {
         artifact: { scope: 'full', outputPath: 'C:\\diagnostics.zip', generatedAt: '2026-07-27T00:00:00.000Z', fileCount: 3 },
         snapshot,
       });
-      runtime.getEvents.mockResolvedValue({ events: [], truncated: false });
+      runtime.clearReport.mockResolvedValue(undefined);
+      runtime.getReport.mockResolvedValue(null);
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+    },
+    beforeUnmount: () => {
+      vi.restoreAllMocks();
     },
   });
 
@@ -133,27 +141,39 @@ describe('useDiagnosticsWorkbenchController', () => {
     expect(notification?.message).toContain('repair failed (bridge.failed)');
   });
 
-  it('runs every workbench action and live-event transition', async () => {
+  it('does not create a full diagnostics bundle when the sensitive-content warning is declined', async () => {
+    vi.mocked(window.confirm).mockReturnValue(false);
+    await mount();
+
+    await act(async () => controller.runExportAction('full'));
+
+    expect(runtime.exportBundle).not.toHaveBeenCalled();
+    expect(controller.busyAction).toBeNull();
+  });
+
+  it('runs every workbench action and watch-report transition', async () => {
     await mount();
     await act(async () => controller.runSelfCheck());
     await act(async () => controller.runOverlaySelfCheck());
     await act(async () => controller.runBridgeRefresh());
     await act(async () => controller.runExportAction('full'));
-    await act(async () => controller.openLiveEventsModal());
-    expect(controller.liveEventsModalOpen).toBe(true);
-    expect(controller.liveEvents).toEqual({ events: [], truncated: false });
-    await act(async () => controller.refreshLiveEvents());
-    await act(async () => controller.closeLiveEventsModal());
-    expect(controller.liveEventsModalOpen).toBe(false);
+    await act(async () => controller.openWatchReportModal());
+    expect(controller.watchReportModalOpen).toBe(true);
+    expect(controller.watchReport).toBeNull();
+    await act(async () => controller.refreshWatchReport());
+    await act(async () => controller.clearWatchReport());
+    expect(runtime.clearReport).toHaveBeenCalledOnce();
+    await act(async () => controller.closeWatchReportModal());
+    expect(controller.watchReportModalOpen).toBe(false);
   });
 
-  it('distinguishes a live-event read failure from an empty event list', async () => {
-    runtime.getEvents.mockRejectedValue(new Error('event store unavailable'));
+  it('distinguishes a watch-report read failure from an empty report', async () => {
+    runtime.getReport.mockRejectedValue(new Error('report store unavailable'));
     await mount();
-    await act(async () => controller.openLiveEventsModal());
-    expect(controller.liveEventsModalOpen).toBe(true);
-    expect(controller.liveEvents).toBeNull();
-    expect(controller.liveEventsError).toBe('event store unavailable');
-    expect(controller.liveEventsLoading).toBe(false);
+    await act(async () => controller.openWatchReportModal());
+    expect(controller.watchReportModalOpen).toBe(true);
+    expect(controller.watchReport).toBeNull();
+    expect(controller.watchReportError).toBe('report store unavailable');
+    expect(controller.watchReportLoading).toBe(false);
   });
 });

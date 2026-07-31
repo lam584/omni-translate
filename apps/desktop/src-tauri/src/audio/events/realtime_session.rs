@@ -11,6 +11,63 @@ use super::{OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_T
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::ProviderDraftInput;
 
+/// A preconnect is only safe while the inbound route is fully idle.
+///
+/// The route-owned realtime sender is removed from the preconnect slot once
+/// capture starts, while its session metadata/handle deliberately remain
+/// registered for route lifetime management. Without this route-state guard,
+/// a later background prewarm sees "metadata but no parked sender" and treats
+/// the active worker as a stale preconnect, stopping it under
+/// `preconnect_config_changed`.
+fn inbound_route_blocks_preconnect(snapshot: &AudioRuntimeSnapshot) -> bool {
+    snapshot.inbound.stream_bound || snapshot.inbound.capture_state != "idle"
+}
+
+fn diagnostic_autostart_enabled() -> bool {
+    std::env::var("OMNI_WATCH_MODE_AUTOSTART")
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "on"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn diagnostic_model_id(value: &str) -> &str {
+    value
+        .trim()
+        .split_once("::")
+        .map(|(_, model_id)| model_id.trim())
+        .unwrap_or_else(|| value.trim())
+}
+
+/// Native Watch diagnostics build an in-memory route config from process env,
+/// while the renderer's ordinary idle prewarm still holds the persisted user
+/// config. Both calls share this command and can race during bootstrap. The
+/// persisted prewarm must not replace the authoritative diagnostic websocket:
+/// doing so pays three provider handshakes and briefly switches model/output
+/// contracts before the real route repairs it.
+///
+/// This guard is deliberately process-env scoped. Normal user sessions retain
+/// the existing config-change replacement behavior.
+fn should_skip_diagnostic_preconnect_override(
+    autostart_enabled: bool,
+    authoritative_model: &str,
+    requested_model: &str,
+    requested_output_mode: omni::OmniOutputMode,
+) -> bool {
+    if !autostart_enabled {
+        return false;
+    }
+    let authoritative_model = diagnostic_model_id(authoritative_model);
+    if authoritative_model.is_empty() {
+        return false;
+    }
+    requested_model != authoritative_model
+        || requested_output_mode != omni::OmniOutputMode::TextOnly
+}
+
 pub(super) fn should_wait_for_omni_session_readiness(phase: &str) -> bool {
     phase == "preconnect"
 }
@@ -30,6 +87,7 @@ pub(super) fn start_or_reuse_omni_session(
     readiness_timeout: Duration,
 ) -> Result<(std::sync::mpsc::Sender<Vec<u8>>, u64), String> {
     let voice_model = voice_provider.model.clone();
+    let output_mode = omni::OmniOutputMode::from_speech_config(&speech_config);
     let log_readiness_failure = |reason: &str, detail: String| {
         let _ = append_diagnostics_log(
             app,
@@ -45,9 +103,15 @@ pub(super) fn start_or_reuse_omni_session(
             None,
         );
     };
-    if let Some(sender) = state.take_matching_omni_sender(direction, &voice_model, st_active) {
+    if let Some(sender) = state.take_matching_omni_sender(
+        direction,
+        &voice_model,
+        st_active,
+        output_mode,
+    ) {
+        state.replace_omni_speech_config(speech_config);
         let generation = state
-            .matching_ready_omni_session(direction, &voice_model, st_active)
+            .matching_ready_omni_session(direction, &voice_model, st_active, output_mode)
             .unwrap_or_default();
         let _ = append_diagnostics_log(
             app,
@@ -55,8 +119,9 @@ pub(super) fn start_or_reuse_omni_session(
             "info",
             "watch_mode.omni_preconnect_reused",
             Some(format!(
-                "direction={direction} generation={generation} model={} subtitleTranslateActive={st_active}",
-                voice_model
+                "direction={direction} generation={generation} model={} subtitleTranslateActive={st_active} outputMode={}",
+                voice_model,
+                output_mode.as_str(),
             )),
             None,
             None,
@@ -72,7 +137,12 @@ pub(super) fn start_or_reuse_omni_session(
         Some(realtime_audio_mode),
         &voice_provider.model,
     )?;
-    let session_generation = state.begin_omni_session(direction, &voice_provider.model, st_active);
+    let session_generation = state.begin_omni_session(
+        direction,
+        &voice_provider.model,
+        st_active,
+        output_mode,
+    );
     let (omni_sender, handle, readiness_rx) = match omni::start_omni(
         app.clone(),
         state,
@@ -369,6 +439,26 @@ pub(crate) fn preconnect_omni_realtime_inner(
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
     let _pipeline_guard = state.lock_inbound_pipeline();
+    // The pipeline lock makes this check atomic against inbound start/stop.
+    // Preconnect is an idle-time optimization and must never replace a worker
+    // already owned by an accepted, converging, or active route.
+    let current_snapshot = state.snapshot();
+    if inbound_route_blocks_preconnect(&current_snapshot) {
+        let _ = append_diagnostics_log(
+            &app,
+            "audio",
+            "info",
+            "watch_mode.omni_preconnect_skipped_active_route",
+            Some(format!(
+                "direction=inbound captureState={} streamBound={}",
+                current_snapshot.inbound.capture_state,
+                current_snapshot.inbound.stream_bound,
+            )),
+            None,
+            None,
+        );
+        return Ok(current_snapshot);
+    }
     let requested_voice_model = config
         .pointer("/devices/inboundVoiceModelId")
         .and_then(Value::as_str)
@@ -391,12 +481,42 @@ pub(crate) fn preconnect_omni_realtime_inner(
     if let Some(error) = plan.configuration_error.clone() {
         return Err(error);
     }
+    let diagnostic_model = std::env::var("OMNI_WATCH_MODE_MODEL_ID").unwrap_or_default();
+    if should_skip_diagnostic_preconnect_override(
+        diagnostic_autostart_enabled(),
+        &diagnostic_model,
+        &plan.session_reuse_key.model,
+        plan.session_reuse_key.output_mode,
+    ) {
+        let _ = append_diagnostics_log(
+            &app,
+            "audio",
+            "info",
+            "watch_mode.omni_preconnect_skipped_diagnostic_override",
+            Some(format!(
+                "direction=inbound authoritativeModel={} requestedModel={} requestedOutputMode={}",
+                diagnostic_model_id(&diagnostic_model),
+                plan.session_reuse_key.model,
+                plan.session_reuse_key.output_mode.as_str(),
+            )),
+            None,
+            None,
+        );
+        return Ok(state.snapshot());
+    }
+    if super::configured_route_mode(&config) == "watch" {
+        state.watch_session_report.begin_or_reuse(
+            &plan.provider.provider_id,
+            &plan.provider.model,
+        );
+    }
     let st_active = plan.session_reuse_key.subtitle_translate_active;
     if state
         .matching_ready_omni_session(
             &plan.session_reuse_key.direction,
             &plan.session_reuse_key.model,
             st_active,
+            plan.session_reuse_key.output_mode,
         )
         .is_some()
         && state.has_omni_sender("inbound")
@@ -434,4 +554,89 @@ pub(crate) fn preconnect_omni_realtime_inner(
         None,
     );
     Ok(state.snapshot())
+}
+
+#[cfg(test)]
+mod active_route_preconnect_tests {
+    use super::*;
+
+    #[test]
+    fn fully_idle_inbound_route_allows_background_preconnect() {
+        let snapshot = AudioRuntimeSnapshot::preview();
+        assert_eq!(snapshot.inbound.capture_state, "idle");
+        assert!(!snapshot.inbound.stream_bound);
+        assert!(!inbound_route_blocks_preconnect(&snapshot));
+    }
+
+    #[test]
+    fn accepted_route_blocks_preconnect_before_stream_binding() {
+        let mut snapshot = AudioRuntimeSnapshot::preview();
+        snapshot.inbound.capture_state = "armed".to_string();
+        snapshot.inbound.stream_bound = false;
+        assert!(inbound_route_blocks_preconnect(&snapshot));
+    }
+
+    #[test]
+    fn active_route_blocks_preconnect_during_speech_and_silence() {
+        for capture_state in ["capturing", "buffering"] {
+            let mut snapshot = AudioRuntimeSnapshot::preview();
+            snapshot.inbound.capture_state = capture_state.to_string();
+            snapshot.inbound.stream_bound = true;
+            assert!(
+                inbound_route_blocks_preconnect(&snapshot),
+                "captureState={capture_state}"
+            );
+        }
+    }
+
+    #[test]
+    fn stopping_or_muted_route_blocks_preconnect_until_explicit_teardown() {
+        for capture_state in ["stopping", "muted"] {
+            let mut snapshot = AudioRuntimeSnapshot::preview();
+            snapshot.inbound.capture_state = capture_state.to_string();
+            snapshot.inbound.stream_bound = false;
+            assert!(
+                inbound_route_blocks_preconnect(&snapshot),
+                "captureState={capture_state}"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostic_preconnect_accepts_only_the_authoritative_text_only_contract() {
+        assert!(!should_skip_diagnostic_preconnect_override(
+            true,
+            "template-dashscope-realtime::qwen3.5-livetranslate-flash-realtime",
+            "qwen3.5-livetranslate-flash-realtime",
+            omni::OmniOutputMode::TextOnly,
+        ));
+        assert!(should_skip_diagnostic_preconnect_override(
+            true,
+            "qwen3.5-livetranslate-flash-realtime",
+            "qwen3.5-omni-plus-realtime",
+            omni::OmniOutputMode::TextOnly,
+        ));
+        assert!(should_skip_diagnostic_preconnect_override(
+            true,
+            "qwen3.5-livetranslate-flash-realtime",
+            "qwen3.5-livetranslate-flash-realtime",
+            omni::OmniOutputMode::TextAndAudio,
+        ));
+    }
+
+    #[test]
+    fn ordinary_and_unpinned_preconnects_keep_config_change_replacement() {
+        assert!(!should_skip_diagnostic_preconnect_override(
+            false,
+            "qwen3.5-livetranslate-flash-realtime",
+            "qwen3.5-omni-plus-realtime",
+            omni::OmniOutputMode::TextAndAudio,
+        ));
+        assert!(!should_skip_diagnostic_preconnect_override(
+            true,
+            "",
+            "qwen3.5-omni-plus-realtime",
+            omni::OmniOutputMode::TextAndAudio,
+        ));
+    }
 }

@@ -103,10 +103,6 @@ pub(crate) fn start_stt(
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
 
     store.set_stt_connected(false, 0);
-    store
-        .live_session_events
-        .clear(ASR_MODEL, &crate::audio::time_utils::ms_marker(crate::audio::time_utils::unix_ms()));
-
     let _ = append_diagnostics_log(
         &app,
         "stt",
@@ -199,7 +195,7 @@ fn handle_stt_text_event(
             if let Some(id) = current_cue_id.as_ref() {
                 store.update_or_push_stt_cue(id, pending_source_text, false);
             }
-            store.live_session_events.push_asr_delta(
+            store.watch_session_report.push_asr_delta(
                 "conversation.item.input_audio_transcription.text",
                 stash,
                 pending_source_text,
@@ -211,7 +207,7 @@ fn handle_stt_text_event(
                 .take()
                 .unwrap_or_else(|| format!("stt-cue-{direction}-{}", unix_ms()));
             store.commit_stt_cue(&cue_id, transcript, direction);
-            store.live_session_events.push_asr_delta(
+            store.watch_session_report.push_asr_delta(
                 "conversation.item.input_audio_transcription.completed",
                 "",
                 transcript,

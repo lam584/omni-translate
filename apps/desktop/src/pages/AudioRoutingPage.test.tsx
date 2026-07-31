@@ -1,11 +1,14 @@
 import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
+import i18n from '../i18n/config';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
 import type { ProviderCapability } from '../schema/provider-contract';
+import type { ModelPreset } from '../schema/provider-template';
 import AudioRoutingPage, { audioRoutingPageHelpers } from './AudioRoutingPage';
 
 const { ChainFlow, ScenarioCard, tWithDefault } = audioRoutingPageHelpers;
@@ -1192,6 +1195,212 @@ describe('AudioRoutingPage', () => {
       radios[0].dispatchEvent(new MouseEvent('click', { bubbles: true }));
     });
     expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('echo-cancel');
+  });
+});
+
+describe('AudioRoutingPage helpers', () => {
+  const {
+    detectScenarioCapabilities,
+    isVoiceModel,
+    resolveSelectedModel,
+    supportsRoutingScenario,
+  } = audioRoutingPageHelpers;
+
+  function model(capabilities: ModelPreset['capabilities']): ModelPreset {
+    return {
+      id: `preset-${capabilities.join('-') || 'none'}`,
+      model: `model-${capabilities.join('-') || 'none'}`,
+      displayName: 'Model',
+      description: '',
+      capabilities,
+    };
+  }
+
+  const stt = model(['speech-to-text']);
+  const tts = model(['text-to-speech']);
+  const s2s = model(['speech-to-speech']);
+  const text = model(['text-generation']);
+  const all = model(['speech-to-text', 'text-to-speech', 'speech-to-speech', 'text-generation']);
+
+  it('detects voice models and selected options', () => {
+    expect([stt, tts, s2s, text].map(isVoiceModel)).toEqual([true, true, true, false]);
+    expect(isVoiceModel(model(['text-generation', 'speech-to-text']))).toBe(true);
+    const options = [
+      { ...stt, providerTemplateId: 'template-a', rawModelId: 'stt' },
+      { ...text, providerTemplateId: 'template-a', rawModelId: 'text' },
+    ];
+    expect(resolveSelectedModel(options, text.model)).toBe(options[1]);
+    expect(resolveSelectedModel(options, 'missing')).toBeUndefined();
+    expect(resolveSelectedModel([], 'missing')).toBeUndefined();
+  });
+
+  it('maps scenario capabilities for empty and single-purpose models', () => {
+    expect(detectScenarioCapabilities(undefined, 'inbound')).toEqual([]);
+    expect(detectScenarioCapabilities(stt, 'inbound')).toEqual(['stt', 'translation', 'subtitle']);
+    expect(detectScenarioCapabilities(tts, 'inbound')).toEqual([]);
+    expect(detectScenarioCapabilities(stt, 'inboundSecondary')).toEqual(['stt']);
+    expect(detectScenarioCapabilities(tts, 'inboundSecondary')).toEqual([]);
+    expect(detectScenarioCapabilities(text, 'subtitle')).toEqual(['translation']);
+    expect(detectScenarioCapabilities(tts, 'subtitle')).toEqual([]);
+    expect(detectScenarioCapabilities(tts, 'tts')).toEqual(['tts']);
+    expect(detectScenarioCapabilities(stt, 'tts')).toEqual([]);
+  });
+
+  it('maps scenario capabilities for speech-to-speech and default branches', () => {
+    expect(detectScenarioCapabilities(s2s, 'inbound')).toEqual(['translation', 'subtitle']);
+    expect(detectScenarioCapabilities(s2s, 'subtitle')).toEqual(['translation']);
+    expect(detectScenarioCapabilities(s2s, 'outbound')).toEqual(['translation', 'speech']);
+    expect(detectScenarioCapabilities(tts, 'outbound')).toEqual(['speech']);
+    expect(detectScenarioCapabilities(all, 'outbound')).toEqual(['stt', 'translation', 'speech']);
+    expect(detectScenarioCapabilities(s2s, 'tts')).toEqual(['tts']);
+    expect(detectScenarioCapabilities(all, 'unknown' as never)).toEqual([]);
+  });
+
+  it('filters routing candidates by the capability each card actually requires', () => {
+    expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'inbound'))).toEqual([true, false, true]);
+    expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'outbound'))).toEqual([false, false, true]);
+    expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'inboundSecondary'))).toEqual([true, false, false]);
+    expect([stt, tts, s2s].map((candidate) => supportsRoutingScenario(candidate, 'tts'))).toEqual([false, true, true]);
+    expect([text, stt].map((candidate) => supportsRoutingScenario(candidate, 'subtitle'))).toEqual([true, false]);
+  });
+});
+
+describe('AudioRoutingPage v9 layout snapshot', () => {
+  let host: { container: HTMLElement; root: Root; cleanup: () => void };
+
+  function bootstrapSnapshot() {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    return { container, root, cleanup: () => { root.unmount(); container.remove(); } };
+  }
+
+  beforeEach(() => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          outputSubtitlesEnabled: true,
+          outputSpeechEnabled: true,
+          virtualMicOutputEnabled: true,
+          subtitleTranslationMode: 'secondary',
+        },
+        speech: {
+          ...state.configDraft.speech,
+          enabled: true,
+        },
+      },
+    }));
+    host = bootstrapSnapshot();
+  });
+
+  afterEach(() => {
+    host.cleanup();
+  });
+
+  it('renders the v9 workspace with top-grid and models-grid in order', async () => {
+    await act(async () => {
+      host.root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const workspace = host.container.querySelector('.routing-workspace-v9');
+    expect(workspace).toBeInstanceOf(HTMLElement);
+    const orderedSections = Array.from(workspace?.querySelectorAll(':scope > section, :scope > article, :scope > div') ?? []).map((node) => node.className.split(' ').filter(Boolean)).flat();
+    expect(orderedSections).toEqual(expect.arrayContaining(['routing-top-grid', 'routing-models-grid']));
+    expect(orderedSections.indexOf('routing-top-grid')).toBeLessThan(orderedSections.indexOf('routing-models-grid'));
+  });
+
+  it('exposes feature toggles inside their owning scenario cards', async () => {
+    await act(async () => {
+      host.root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const toggleLabels = Array.from(host.container.querySelectorAll('.scenario-card-head .scenario-card-toggle'));
+    expect(toggleLabels.map((node) => node.textContent?.trim())).toEqual(expect.arrayContaining([
+      i18n.t('audioRouting.subtitleTranslationCardToggle'),
+      i18n.t('audioRouting.secondaryAudioCardToggle'),
+      i18n.t('audioRouting.sendVoiceToVirtualMic'),
+      i18n.t('audioRouting.scenarioTtsRole'),
+    ]));
+
+    const switches = toggleLabels.map((label) => label.querySelector('input[type="checkbox"]'));
+    expect(switches).toHaveLength(4);
+    for (const node of switches) {
+      expect(node?.getAttribute('role')).toBe('switch');
+      expect(node?.getAttribute('aria-checked')).toBe('true');
+    }
+  });
+
+  it('shows a Bridge autostart blocker beside the virtual microphone option', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      runtimeNotifications: [{
+        id: 'bridge-autostart-failed-test', level: 'warning', source: 'desktop-runtime',
+        message: 'Bridge Service 自动启动失败：命名管道超时', emittedAt: '2026-07-27T00:00:00Z',
+      }],
+    }));
+    await act(async () => {
+      host.root.render(<MemoryRouter><AudioRoutingPage /></MemoryRouter>);
+    });
+
+    const virtualMicToggle = Array.from(host.container.querySelectorAll('.scenario-card'))
+      .find((card) => card.textContent?.includes(i18n.t('audioRouting.sendVoiceToVirtualMic')));
+    expect(virtualMicToggle?.querySelector('.scenario-card-error-hint')?.textContent).toContain('命名管道超时');
+  });
+
+  it('does not render the auto-save indicator', async () => {
+    await act(async () => {
+      host.root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(host.container.querySelector('.routing-saved-indicator')).toBeNull();
+  });
+
+  it('has 2 panels in the top grid and 2 panels in the models grid', async () => {
+    await act(async () => {
+      host.root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    expect(host.container.querySelectorAll('.routing-top-grid > .routing-panel')).toHaveLength(2);
+    expect(host.container.querySelectorAll('.routing-models-grid > .routing-panel')).toHaveLength(2);
+  });
+
+  it('groups secondary translation cards under card-level switches', async () => {
+    await act(async () => {
+      host.root.render(
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>,
+      );
+    });
+
+    const secondaryGroup = host.container.querySelector('.routing-secondary-group') as HTMLElement | null;
+    expect(secondaryGroup).toBeInstanceOf(HTMLElement);
+    expect(secondaryGroup?.textContent).toContain(i18n.t('audioRouting.scenarioSubtitleTitle'));
+    expect(secondaryGroup?.textContent).toContain(i18n.t('audioRouting.scenarioInboundSecondaryTitle'));
+    const switches = secondaryGroup?.querySelectorAll('input[role="switch"]') ?? [];
+    expect(switches).toHaveLength(2);
+    for (const node of Array.from(switches) as HTMLInputElement[]) {
+      expect(node.checked).toBe(true);
+    }
   });
 });
 

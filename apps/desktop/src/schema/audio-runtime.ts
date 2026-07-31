@@ -11,12 +11,18 @@ export type {
   AudioDeviceRuntime,
   AudioRouteRuntimeSnapshot,
   AudioRuntimeSnapshot,
+  OverlayRenderReceiptRuntime,
   SpeechDispatchEventRuntime,
   SpeechRuntimeSnapshot,
   SttConnectionRuntime,
   SubtitleCueRuntime,
   SubtitleDisplaySegmentRuntime,
   SubtitleOverlayRuntimeSnapshot,
+  WatchCueComparisonRuntime,
+  WatchIssueRuntime,
+  WatchSessionReportRuntime,
+  WatchSessionReportSummaryRuntime,
+  WatchTimelineEventRuntime,
 } from './generated/audio-runtime';
 
 export type AudioVadState = AudioRouteRuntimeSnapshot['vadState'];

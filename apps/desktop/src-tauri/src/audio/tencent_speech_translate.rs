@@ -22,10 +22,7 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use base64::Engine;
-use hmac::{Hmac, Mac};
 use serde_json::{json, Value};
-use sha1::Sha1;
 use tauri::{AppHandle, Manager};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{connect, Message};
@@ -59,6 +56,14 @@ const TENCENT_DEFAULT_TRANS_MODEL: &str = "hunyuan-translation";
 
 type TencentSocket = realtime_ws::WsSocket;
 
+mod auth;
+use auth::{
+    build_query_params, build_signed_ws_url, fresh_nonce, normalize_language_code,
+    parse_combined_credential, resolve_trans_model,
+};
+#[cfg(test)]
+use auth::{build_signing_base, hmac_sha1_base64, url_encode_component};
+
 // ---------------------------------------------------------------------------
 // Credentials
 // ---------------------------------------------------------------------------
@@ -67,119 +72,6 @@ struct TencentCredentials {
     appid: String,
     secret_id: String,
     secret_key: String,
-}
-
-/// The vault stores one combined string: `appid|SecretId|SecretKey`.
-fn parse_combined_credential(secret: &str) -> Result<TencentCredentials, String> {
-    let parts: Vec<&str> = secret.split('|').map(str::trim).collect();
-    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
-        return Err("腾讯凭据格式应为 appid|SecretId|SecretKey".to_string());
-    }
-    Ok(TencentCredentials {
-        appid: parts[0].to_string(),
-        secret_id: parts[1].to_string(),
-        secret_key: parts[2].to_string(),
-    })
-}
-
-// ---------------------------------------------------------------------------
-// URL signing
-// ---------------------------------------------------------------------------
-
-/// Session query parameters (unsigned, values not URL-encoded). Every value
-/// here is URL-safe by construction, so the same literal string doubles as
-/// both signing base and request query.
-fn build_query_params(
-    secret_id: &str,
-    source: &str,
-    target: &str,
-    trans_model: &str,
-    voice_id: &str,
-    timestamp: u64,
-    nonce: u64,
-) -> Vec<(String, String)> {
-    vec![
-        ("secretid".to_string(), secret_id.to_string()),
-        ("timestamp".to_string(), timestamp.to_string()),
-        (
-            "expired".to_string(),
-            (timestamp + TENCENT_SIGNATURE_TTL_SECS).to_string(),
-        ),
-        ("nonce".to_string(), nonce.to_string()),
-        ("source".to_string(), source.to_string()),
-        ("target".to_string(), target.to_string()),
-        ("trans_model".to_string(), trans_model.to_string()),
-        ("voice_format".to_string(), "1".to_string()),
-        ("voice_id".to_string(), voice_id.to_string()),
-    ]
-}
-
-/// Signing base: `host/path?k1=v1&k2=v2...` with keys in ascending
-/// lexicographic order, no `wss://` prefix, no `signature`, values as-is.
-fn build_signing_base(appid: &str, params: &[(String, String)]) -> String {
-    let mut sorted: Vec<&(String, String)> = params.iter().collect();
-    sorted.sort_by(|left, right| left.0.cmp(&right.0));
-    let query = sorted
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join("&");
-    format!("{TENCENT_HOST}/asr/speech_translate/{appid}?{query}")
-}
-
-fn hmac_sha1_base64(secret_key: &str, payload: &str) -> String {
-    let mut mac = Hmac::<Sha1>::new_from_slice(secret_key.as_bytes())
-        .expect("HMAC-SHA1 accepts keys of any length");
-    mac.update(payload.as_bytes());
-    base64::engine::general_purpose::STANDARD.encode(mac.finalize().into_bytes())
-}
-
-fn url_encode_component(value: &str) -> String {
-    url::form_urlencoded::byte_serialize(value.as_bytes()).collect()
-}
-
-/// Full connect URL: `wss://` + signing base + URL-encoded signature last.
-fn build_signed_ws_url(credentials: &TencentCredentials, params: &[(String, String)]) -> String {
-    let signing_base = build_signing_base(&credentials.appid, params);
-    let signature = hmac_sha1_base64(&credentials.secret_key, &signing_base);
-    format!(
-        "wss://{signing_base}&signature={}",
-        url_encode_component(&signature)
-    )
-}
-
-fn fresh_nonce() -> u64 {
-    ((Uuid::new_v4().as_u128() % 999_999_999) as u64) + 1
-}
-
-// ---------------------------------------------------------------------------
-// Language / model mapping
-// ---------------------------------------------------------------------------
-
-/// Tencent expects bare ISO 639-1 codes (`zh-CN` -> `zh`).
-fn normalize_language_code(lang: &str, fallback: &str) -> String {
-    let base = lang
-        .trim()
-        .split(['-', '_'])
-        .next()
-        .unwrap_or("")
-        .to_ascii_lowercase();
-    if base.is_empty() {
-        fallback.to_string()
-    } else {
-        base
-    }
-}
-
-/// `provider.model` maps straight to `trans_model` (hunyuan-translation /
-/// hunyuan-translation-lite; anything else passes through as-is).
-fn resolve_trans_model(model: &str) -> String {
-    let trimmed = model.trim();
-    if trimmed.is_empty() {
-        TENCENT_DEFAULT_TRANS_MODEL.to_string()
-    } else {
-        trimmed.to_string()
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -347,6 +239,25 @@ impl TencentCueState {
         self.target_text = result.target_text.clone();
         store.update_or_push_stt_cue(&id, self.display_source(), false);
         if !self.target_text.trim().is_empty() {
+            if result.sentence_end {
+                store.watch_session_report.record_model_final_for_cue(
+                    &id,
+                    "tencent-speech-translate",
+                    &self.target_text,
+                    true,
+                    None,
+                    None,
+                );
+            } else {
+                store.watch_session_report.record_model_snapshot_for_cue(
+                    &id,
+                    "tencent-speech-translate",
+                    &self.target_text,
+                    true,
+                    None,
+                    None,
+                );
+            }
             store.update_subtitle_cue_translation(&id, self.target_text.clone(), false);
         }
         let _ = emit_audio_snapshot(app, store);
@@ -580,11 +491,13 @@ fn run_tencent_worker(
      -> bool {
         // The interrupted sentence cannot resume under a fresh voice_id;
         // keep the partial subtitle on screen as committed.
+        let retry_cue_id = cue.cue_id.clone();
         cue.commit(&app, store);
         let _ = store.set_stt_connected_if_current(stt_epoch, false, 0);
         let _ = emit_audio_snapshot(&app, store);
         while *reconnect_retries < TENCENT_RECONNECT_MAX_RETRIES {
             *reconnect_retries += 1;
+            record_tencent_retry(store, retry_cue_id.as_deref(), *reconnect_retries);
             let delay = attempt_backoff_delay(*reconnect_retries);
             diag_log(
                 &app,
@@ -613,6 +526,9 @@ fn run_tencent_worker(
                     return true;
                 }
                 Err(error) => {
+                    record_tencent_reconnect_error(
+                        store, retry_cue_id.as_deref(), *reconnect_retries, &error,
+                    );
                     diag_log(
                         &app,
                         TENCENT_DIAG_CATEGORY,
@@ -724,6 +640,9 @@ fn run_tencent_worker(
                     let summary =
                         format!("Tencent speech translate server error code={code}: {message}");
                     trace_call.error(summary.clone());
+                    record_tencent_provider_error(
+                        store, cue.cue_id.as_deref(), code, &message,
+                    );
                     diag_log(&app, TENCENT_DIAG_CATEGORY, "error", summary.clone());
                     if is_auth_error(code, &message) {
                         // Retrying with a fresh signature cannot fix bad
@@ -813,6 +732,53 @@ fn run_tencent_worker(
                 }
             }
         }
+    }
+}
+
+fn record_tencent_retry(store: &AudioStateStore, cue_id: Option<&str>, retry: usize) {
+    if let Some(cue_id) = cue_id {
+        store.watch_session_report.record_retry_for_cue(
+            cue_id,
+            "tencent-speech-translate",
+            &format!("reconnect-{retry}"),
+            "Tencent speech_translate transport reconnect",
+        );
+    }
+}
+
+fn record_tencent_reconnect_error(
+    store: &AudioStateStore,
+    cue_id: Option<&str>,
+    retry: usize,
+    error: &str,
+) {
+    if let Some(cue_id) = cue_id {
+        store.watch_session_report.record_model_error_for_cue(
+            cue_id,
+            "tencent-speech-translate",
+            "transport.reconnect",
+            error,
+            retry >= TENCENT_RECONNECT_MAX_RETRIES,
+            Some(&format!("reconnect-{retry}")),
+        );
+    }
+}
+
+fn record_tencent_provider_error(
+    store: &AudioStateStore,
+    cue_id: Option<&str>,
+    code: i64,
+    message: &str,
+) {
+    if let Some(cue_id) = cue_id {
+        store.watch_session_report.record_model_error_for_cue(
+            cue_id,
+            "tencent-speech-translate",
+            &format!("provider.{code}"),
+            message,
+            is_auth_error(code, message),
+            None,
+        );
     }
 }
 

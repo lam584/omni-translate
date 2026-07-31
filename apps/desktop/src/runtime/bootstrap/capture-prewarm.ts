@@ -2,6 +2,7 @@ import type { AppConfigDraft } from '../../schema/config';
 import { useAppStore } from '../../stores/app-store';
 import { prewarmCaptureRoutesRuntime, preconnectOmniRealtimeRuntime } from '../audio-runtime';
 import { scheduleStartupTask } from './schedule';
+import { shouldSuppressGenericStartupAutostart } from './watch-mode';
 
 // Capture-device pre-warming runs on the same idle window as bridge autostart:
 // pre-open WASAPI devices so a later watch/conversation click only pays
@@ -41,7 +42,9 @@ export function scheduleCapturePrewarmAfterStartup(
     // native command no-ops for non-Omni voice models and never blocks startup;
     // a config/model mismatch at click time simply falls back to connect-on-
     // demand, so there is no regression when the preconnect does not apply.
-    void preconnectOmniRealtimeRuntime(config).catch(() => undefined);
+    if (!shouldSuppressGenericStartupAutostart(import.meta.env)) {
+      void preconnectOmniRealtimeRuntime(config).catch(() => undefined);
+    }
     return prewarm;
   }, delayMs);
 }

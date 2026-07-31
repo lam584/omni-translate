@@ -1,3 +1,4 @@
+use super::connection_coordinator::{provider_error_code, provider_error_message};
 use super::*;
 
 pub(super) struct OmniSocketEventState<S: RealtimeSocket, R: tauri::Runtime = tauri::Wry> {
@@ -43,6 +44,7 @@ pub(super) struct OmniSocketEventContext<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) provider: &'a ProviderDraftInput,
     pub(super) instructions: &'a str,
     pub(super) audio_mode: RealtimeAudioMode,
+    pub(super) output_mode: OmniOutputMode,
     pub(super) target_language: &'a str,
     pub(super) buffer_size: u64,
     pub(super) pre_session_audio_queue_len: usize,
@@ -74,7 +76,7 @@ impl OmniSocketEventProcessor {
             total_input_chunks, first_audio_sent_ms, first_audible_chunk_ms,
             chunk_count, total_silence_skipped_before_first_audible, playback_tx,
             readiness_sent, readiness_tx, provider, instructions, audio_mode,
-            target_language, buffer_size, pre_session_audio_queue_len,
+            output_mode, target_language, buffer_size, pre_session_audio_queue_len,
             pre_session_audio_dropped, echo_guard_enabled,
         } = context;
 let mut socket_reconnected = false;
@@ -338,6 +340,16 @@ match socket.read_message() {
                                         );
                                     }
                                     ManualResponseDecision::SkipRecentOutputEcho => {
+                                        if let Some(cue_id) = manual_turn_cue_to_discard(
+                                            completed_cue_id,
+                                            current_cue_id.as_deref(),
+                                        ) {
+                                            store.watch_session_report.record_source_suppressed(
+                                                cue_id,
+                                                &direction,
+                                                "recent-output-echo",
+                                            );
+                                        }
                                         let _ = diag_log(
                                             app,
                                             "omni",
@@ -350,6 +362,16 @@ match socket.read_message() {
                                         );
                                     }
                                     ManualResponseDecision::SkipEchoDominatedPlayback => {
+                                        if let Some(cue_id) = manual_turn_cue_to_discard(
+                                            completed_cue_id,
+                                            current_cue_id.as_deref(),
+                                        ) {
+                                            store.watch_session_report.record_source_suppressed(
+                                                cue_id,
+                                                &direction,
+                                                "echo-dominated-playback",
+                                            );
+                                        }
                                         let _ = diag_log(
                                             app,
                                             "omni",
@@ -403,9 +425,23 @@ match socket.read_message() {
                                             &mut event_diagnostics,
                                         );
                                     }
+                                    manual_response_pending = false;
+                                    manual_response_item_id = None;
+                                } else {
+                                    // Keep one manual response in flight until
+                                    // response.done. Releasing the gate as soon
+                                    // as ASR completes lets the next commit and
+                                    // response.create overlap the current model
+                                    // response; Flash has returned InternalError
+                                    // for that production ordering, and response
+                                    // ownership can then drift between cues.
+                                    let _ = diag_log(
+                                        app,
+                                        "omni",
+                                        "debug",
+                                        "event=manual_response_gate state=awaiting_response_done",
+                                    );
                                 }
-                                manual_response_pending = false;
-                                manual_response_item_id = None;
                             }
                         }
                         if output.skip_tick {
@@ -413,7 +449,9 @@ match socket.read_message() {
                         }
                     }
                     "response.audio_transcript.delta"
-                    | "response.audio_transcript.text" => {
+                    | "response.audio_transcript.text"
+                    | "response.text.delta"
+                    | "response.text.text" => {
                         let output = OmniEventProcessor::process_transcript_delta(
                             OmniSubtitleEventState {
                                 current_cue_id,
@@ -436,7 +474,7 @@ match socket.read_message() {
                         st_skip_logged = output.st_skip_logged;
                         event_diagnostics = output.event_diagnostics;
                     }
-                    "response.audio_transcript.done" => {
+                    "response.audio_transcript.done" | "response.text.done" => {
                         let output = OmniEventProcessor::process_transcript_done(
                             OmniSubtitleEventState {
                                 current_cue_id,
@@ -449,6 +487,7 @@ match socket.read_message() {
                             store,
                             &direction,
                             &evt,
+                            event_type,
                             &session_started_at,
                             subtitle_translate_active,
                             native_translation_reuse_active,
@@ -544,13 +583,31 @@ match socket.read_message() {
                             &mut event_diagnostics,
                             &session_started_at,
                         );
-                        store.live_session_events.push_output_delta(
+                        store.watch_session_report.push_output_delta(
                             "response.done",
                             "",
                             "",
                         );
+                        if audio_mode.uses_manual_commit() && manual_response_pending {
+                            manual_response_pending = false;
+                            manual_response_item_id = None;
+                            let _ = diag_log(
+                                app,
+                                "omni",
+                                "debug",
+                                "event=manual_response_gate state=response_done_released",
+                            );
+                        }
                     }
                     "error" => {
+                        store.watch_session_report.record_provider_error(
+                            current_cue_id.as_deref(),
+                            &direction,
+                            "dashscope-native-realtime",
+                            provider_error_code(&evt),
+                            provider_error_message(&evt),
+                            &text,
+                        );
                         let reconnect_state = OmniConnectionCoordinator::handle_provider_error(
                             OmniReconnectState {
                                 socket,
@@ -566,6 +623,7 @@ match socket.read_message() {
                             &provider,
                             &instructions,
                             audio_mode,
+                            output_mode,
                             &target_language,
                             buffer_size,
                             &mut trace_call,
@@ -608,6 +666,7 @@ match socket.read_message() {
                 &provider,
                 &instructions,
                 audio_mode,
+                output_mode,
                 &target_language,
                 buffer_size,
             )?;
@@ -637,6 +696,7 @@ match socket.read_message() {
             &provider,
             &instructions,
             audio_mode,
+            output_mode,
             &target_language,
             buffer_size,
             error,

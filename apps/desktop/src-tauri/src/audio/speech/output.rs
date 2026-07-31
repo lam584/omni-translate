@@ -55,13 +55,17 @@ pub(crate) fn desktop_direct_playback_enabled_for_config(config: &Value) -> bool
     local_playback_enabled && (!virtual_driver_isolation || explicit_physical_output)
 }
 
-pub(crate) fn play_to_speaker(
+pub(crate) fn play_to_speaker<F>(
     samples: &[i16],
     sample_rate_hz: u32,
     channel_count: u16,
     device_id: Option<&str>,
     output_level: u64,
-) -> Result<u64, String> {
+    on_playback_start: F,
+) -> Result<u64, String>
+where
+    F: FnOnce(),
+{
     if samples.is_empty() {
         return Ok(0);
     }
@@ -92,6 +96,11 @@ pub(crate) fn play_to_speaker(
             .map(|sample| *sample as f32 / i16::MAX as f32)
             .collect::<Vec<_>>(),
     );
+    // Opening a WASAPI/CPAL sink can take a device-dependent amount of time.
+    // Start the echo-reference clock only after that work is complete and
+    // immediately before the PCM is submitted; otherwise the reference runs
+    // ahead of physical playback and translated speech leaks back into ASR.
+    on_playback_start();
     player.append(source);
     player.sleep_until_end();
     Ok((samples.len() / channel_count as usize) as u64)

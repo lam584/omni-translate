@@ -28,11 +28,11 @@ export type ModelTraceCallRuntime = { traceId: string, callId: string, name: str
 
 export type ModelTraceSummaryRuntime = { activeTraceId: string | null, totalCalls: number, succeededCalls: number, failedCalls: number, lastError: string | null, lastCallAt: string | null, recentCalls: Array<ModelTraceCallRuntime>, };
 
-export type DiagnosticsRuntimeSnapshot = { status: ('draft' | 'ready' | 'warning' | 'unsupported' | 'unknown') | 'preview', supportTier: 'stable' | 'experimental', installStatus: 'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown', providerStatus: 'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown', driverStatus: 'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown', deviceStatus: 'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown', lastSelfCheckAt: string | null, lastExportScope: ('summary' | 'quick' | 'full') | null, lastExportPath: string | null, lastExportedAt: string | null, categories: Array<DiagnosticLogCategoryRuntime>, supportMatrix: Array<DiagnosticSupportSignalRuntime>, modelTraceSummary: ModelTraceSummaryRuntime, recentLogs: Array<DiagnosticLogEntryRuntime>, recentErrors: Array<DiagnosticLogEntryRuntime>, 
+export type DiagnosticsRuntimeSnapshot = { status: ('draft' | 'ready' | 'warning' | 'unsupported' | 'unknown') | 'preview', supportTier: 'stable' | 'experimental', installStatus: 'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown', providerStatus: 'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown', driverStatus: 'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown', deviceStatus: 'draft' | 'ready' | 'warning' | 'unsupported' | 'unknown', lastSelfCheckAt: string | null, lastExportScope: ('summary' | 'quick' | 'full') | null, lastExportPath: string | null, lastExportedAt: string | null, categories: Array<DiagnosticLogCategoryRuntime>, supportMatrix: Array<DiagnosticSupportSignalRuntime>, modelTraceSummary: ModelTraceSummaryRuntime, recentLogs: Array<DiagnosticLogEntryRuntime>, recentErrors: Array<DiagnosticLogEntryRuntime>,
 /**
  * Lines discarded because the bounded log channel was full.
  */
-logDroppedCount: number, 
+logDroppedCount: number,
 /**
  * Failed writes observed by the log writer thread.
  */
@@ -40,7 +40,7 @@ logWriteErrorCount: number, };
 
 export type DiagnosticsExportArtifact = { scope: 'summary' | 'quick' | 'full', outputPath: string, generatedAt: string, fileCount: number, };
 
-export type RuntimeSnapshot = { coreState: 'booting' | 'ready' | 'degraded', bridgeStatus: 'browser-preview' | 'tauri-shell' | 'runtime-error', activeProfileId: string, trayReady: boolean, lastSyncAt: string, 
+export type RuntimeSnapshot = { coreState: 'booting' | 'ready' | 'degraded', bridgeStatus: 'browser-preview' | 'tauri-shell' | 'runtime-error', activeProfileId: string, trayReady: boolean, lastSyncAt: string,
 /**
  * Application-run session id (the trailing ` sid=` token in the logs),
  * handed to the renderer so frontend records correlate across processes.

@@ -15,7 +15,7 @@ vi.mock('../../runtime/diagnostics-runtime', () => ({
 
 import { exportDiagnosticsBundleRuntime, openExportDirectoryRuntime } from '../../runtime/diagnostics-runtime';
 import RuntimeToastHost from './RuntimeToastHost';
-import { isSessionToastNotification, toastDisplayText } from './runtime-toast-helpers';
+import { isSessionToastNotification, runtimeErrorPresentation, toastDisplayText } from './runtime-toast-helpers';
 
 function notification(patch: Partial<RuntimeNotification>): RuntimeNotification {
   return {
@@ -172,5 +172,26 @@ describe('RuntimeToastHost rendering', () => {
     expect(feedback).toContain('diagnostics.status.completed：C:/exports/quick.zip');
     expect(feedback).toContain('diagnostics.actions.openExportDirectory diagnostics.status.failed');
     expect(feedback).toContain('shell unavailable');
+  });
+});
+
+describe('runtimeErrorPresentation', () => {
+  it('normalizes a tagged native failure into the unified error shape', () => {
+    const notification: RuntimeNotification = {
+      id: 'worker-1',
+      level: 'error',
+      source: 'session',
+      message: 'socket refused | code: session.network-unreachable | recommended: restart-session',
+      emittedAt: '2026-07-27T00:00:00.000Z',
+    };
+
+    expect(runtimeErrorPresentation(notification, (key) => `translated:${key}`)).toEqual({
+      code: 'session.network-unreachable',
+      title: 'session',
+      summary: 'translated:session.errorCode.networkUnreachable [session.network-unreachable]',
+      technicalDetail: 'socket refused',
+      recoveryActions: ['restart-session'],
+      source: 'session',
+    });
   });
 });

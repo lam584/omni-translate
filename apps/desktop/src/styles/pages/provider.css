@@ -471,6 +471,24 @@
   display:grid
 }
 
+.provider-auth-label-row {
+  display:flex;
+  align-items:center;
+  justify-content:space-between
+}
+
+.provider-auth-help-link {
+  font-size:.75rem;
+  color:var(--color-primary,#4a9eff);
+  text-decoration:none;
+  white-space:nowrap
+}
+
+.provider-auth-help-link:hover,.provider-auth-help-link:focus-visible {
+  text-decoration:underline;
+  filter:brightness(1.15)
+}
+
 .provider-secret-input-inline {
   grid-template-columns:minmax(0,
   1fr) auto

@@ -98,6 +98,7 @@ export const audioRuntimeSnapshotMock: AudioRuntimeSnapshot = {
     firstTranslationAverageMs: null,
     firstTranslationLastMs: null,
     firstTranslationSampleCount: 0,
+    reportSessionId: null,
     activeCue: makeBrowserPreviewCue(),
     recentCues: [makeBrowserPreviewCue()],
   },

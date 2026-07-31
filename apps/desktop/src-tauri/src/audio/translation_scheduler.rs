@@ -116,6 +116,7 @@ pub(crate) struct TranslationOutcome {
 
 pub(crate) struct TranslationDelta {
     pub(crate) job: TranslationJob,
+    pub(crate) raw_delta: String,
     pub(crate) translated: String,
 }
 

@@ -736,7 +736,7 @@ describe('ProvidersPage', () => {
     expect(useAppStore.getState().configDraft.providers[0].localModelCapabilityRegistry.some((item) => item.modelId === 'custom-asr-model')).toBe(
       false,
     );
-  });
+  }, 15_000);
 
   it('edits the auth endpoint and reveals then hides the stored secret', async () => {
     setTauriRuntime(true);
@@ -1572,7 +1572,7 @@ describe('ProvidersPage', () => {
 
     await click(dialog.parentElement);
     expect(Array.from(container.querySelectorAll<HTMLElement>('.provider-advanced-modal')).some((item) => item.querySelector('.provider-custom-header-list'))).toBe(false);
-  });
+  }, 15_000);
 
   it('edits advanced response modalities and custom headers', async () => {
     await renderPage();

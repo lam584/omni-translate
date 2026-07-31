@@ -123,6 +123,7 @@ pub(super) struct SessionReuseKey {
     pub(super) direction: String,
     pub(super) model: String,
     pub(super) subtitle_translate_active: bool,
+    pub(super) output_mode: omni::OmniOutputMode,
 }
 
 #[derive(Debug, Clone)]
@@ -211,6 +212,8 @@ impl ResolvedRoutePlan {
         };
         let legacy_vad_bypass = resolve_legacy_vad_bypass_for_route(direction, config);
         let reuse_model = provider.model.clone();
+        let omni_speech_config = omni::OmniSpeechConfig::from_config(config);
+        let omni_output_mode = omni::OmniOutputMode::from_speech_config(&omni_speech_config);
         let default_instructions = if kind == ResolvedRouteKind::Omni {
             if direction == "outbound" {
                 // The microphone route translates the local speaker's voice for
@@ -242,7 +245,7 @@ impl ResolvedRoutePlan {
                 .filter(|text| !text.is_empty() && !is_legacy_default_instructions(text))
                 .map(str::to_string)
                 .unwrap_or(default_instructions),
-            omni_speech_config: omni::OmniSpeechConfig::from_config(config),
+            omni_speech_config,
             provider,
             secondary_subtitle_provider,
             configuration_error,
@@ -258,6 +261,7 @@ impl ResolvedRoutePlan {
                 direction: direction.to_string(),
                 model: reuse_model,
                 subtitle_translate_active,
+                output_mode: omni_output_mode,
             },
             kind,
         }
@@ -341,6 +345,16 @@ fn subtitle_translate_mode_and_model(config: &Value) -> (&str, &str) {
 pub(super) fn infer_legacy_omni_model(model: &str) -> bool {
     let lower = model.to_lowercase();
     lower.contains("realtime") && (lower.contains("omni") || lower.contains("livetranslate"))
+}
+
+fn is_named_dashscope_realtime_model(model: &str) -> bool {
+    let lower = model.trim().to_ascii_lowercase();
+    lower.starts_with("qwen")
+        && lower.contains("realtime")
+        && (lower.contains("omni")
+            || lower.contains("livetranslate")
+            || lower.contains("audio")
+            || lower.contains("asr"))
 }
 
 fn parse_realtime_protocol(value: &str) -> Option<RealtimeProtocol> {
@@ -755,6 +769,23 @@ pub(crate) fn resolve_model_provider_from_config_value(
 
     if let Some((template_id, model_id)) = composite_model_id.split_once("::") {
         return resolve_composite_template_provider(&providers, template_id, model_id);
+    }
+
+    // Qwen realtime speech model names belong to the DashScope websocket
+    // family. Resolve that provider class before exact model equality so an
+    // earlier OpenAI-compatible text provider with a stale/copied model value
+    // cannot hijack the Watch route merely because of array order.
+    if is_named_dashscope_realtime_model(composite_model_id) {
+        for provider_value in &providers {
+            let parsed: Option<ProviderDraftInput> =
+                serde_json::from_value(provider_value.clone()).ok();
+            if let Some(mut provider) = parsed {
+                if is_dashscope_provider(&provider) {
+                    provider.model = composite_model_id.to_string();
+                    return Some(provider);
+                }
+            }
+        }
     }
 
     // Bare model name: search all providers equally.

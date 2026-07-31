@@ -116,7 +116,15 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
 
     // Session 1: the real client connects and replays its session config.
     let mut socket = connector
-        .reconnect(&handle, &provider, "Ethan", "", RealtimeAudioMode::Manual, "zh-CN")
+        .reconnect(
+            &handle,
+            &provider,
+            "Ethan",
+            "",
+            RealtimeAudioMode::Manual,
+            OmniOutputMode::TextOnly,
+            "zh-CN",
+        )
         .expect("first session establishes");
     let created = read_text_with_retries(&mut socket);
     assert!(created.contains("session.created"));
@@ -160,6 +168,7 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
         "Ethan",
         "",
         RealtimeAudioMode::Manual,
+        OmniOutputMode::TextOnly,
         "zh-CN",
         0,
         "scripted provider disconnect",
@@ -178,7 +187,9 @@ fn real_client_survives_a_scripted_disconnect_and_replays_session_config() {
     assert_eq!(received.len(), 2, "both sessions must see the config replay");
     for update in received.iter() {
         assert_eq!(update["type"], "session.update");
-        assert_eq!(update["session"]["voice"], "Ethan");
+        assert_eq!(update["session"]["modalities"], json!(["text"]));
+        assert!(update["session"].get("voice").is_none());
+        assert!(update["session"].get("output_audio_format").is_none());
         assert!(update["session"]["turn_detection"].is_null());
     }
 

@@ -162,6 +162,8 @@ describe('DiagnosticsPage monitoring boundary', () => {
   let view: TestRootHandle;
   let container: HTMLDivElement;
   let fake: FakeBridge;
+  let clipboardWrite: ReturnType<typeof vi.fn>;
+  let originalClipboardDescriptor: PropertyDescriptor | undefined;
 
   async function renderPage() {
     await view.render(
@@ -218,6 +220,12 @@ describe('DiagnosticsPage monitoring boundary', () => {
   }
 
   beforeEach(() => {
+    originalClipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    clipboardWrite = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText: clipboardWrite },
+    });
     fake = createFakeBridge();
     harness.invoke = fake.invoke;
     harness.listen = fake.listen;
@@ -288,6 +296,11 @@ describe('DiagnosticsPage monitoring boundary', () => {
     harness.listen = null;
     installInvokeBridge(false);
     resetDesktopApiForTests();
+    if (originalClipboardDescriptor) {
+      Object.defineProperty(navigator, 'clipboard', originalClipboardDescriptor);
+    } else {
+      Reflect.deleteProperty(navigator, 'clipboard');
+    }
   });
 
   it('treats idle bridge and capture as neutral monitoring state', async () => {
@@ -356,6 +369,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
   });
 
   it('exports the explicitly selected full diagnostics scope', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     await renderPage();
 
     const exportScope = container.querySelector<HTMLSelectElement>('.diagnostics-export-scope select');
@@ -757,13 +771,13 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.querySelector('.diagnostics-health-summary')?.textContent).not.toContain('Rust Core 启动桥接失败');
   });
 
-  it('hides live events button when no session is active', async () => {
+  it('keeps the latest Watch report entry available when no session is active', async () => {
     await renderPage();
 
-    expect(findButtonByText(container, '查看实时事件')).toBeUndefined();
+    expect(findButtonByText(container, '最近一次看片报告')).toBeInstanceOf(HTMLButtonElement);
   });
 
-  it('shows live events for an outbound-only conversation session', async () => {
+  it('keeps the Watch report entry available for an outbound-only conversation session', async () => {
     const audio = structuredClone(audioRuntimeSnapshotMock);
     audio.sessionStartedAt = 'unix-ms:1000';
     audio.inbound.streamBound = false;
@@ -772,10 +786,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     await renderPage();
 
-    expect(findButtonByText(container, '查看实时事件')).toBeInstanceOf(HTMLButtonElement);
+    expect(findButtonByText(container, '最近一次看片报告')).toBeInstanceOf(HTMLButtonElement);
   });
 
-  it('shows live events button when session is active and opens modal on click', async () => {
+  it('opens the latest Watch report and shows the three-stage comparison', async () => {
     const audio = structuredClone(audioRuntimeSnapshotMock);
     audio.sessionStartedAt = 'unix-ms:1000';
     audio.inbound.streamBound = true;
@@ -789,23 +803,26 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     await renderPage();
 
-    const liveButton = findButtonByText(container, '查看实时事件');
-    expect(liveButton).toBeInstanceOf(HTMLButtonElement);
+    const reportButton = findButtonByText(container, '最近一次看片报告');
+    expect(reportButton).toBeInstanceOf(HTMLButtonElement);
 
-    await clickAndSettle(liveButton);
+    await clickAndSettle(reportButton);
 
-    expect(fake.commandCalls('diagnostics_v2').map((call) => call.action)).toEqual(['liveSessionEvents']);
-    expect(container.querySelector('.benchmark-modal')).not.toBeNull();
-    expect(container.textContent).toContain('实时事件明细');
+    expect(fake.commandCalls('diagnostics_v2').map((call) => call.action)).toEqual(['watchSessionReport']);
+    expect(container.querySelector('[role="dialog"].watch-report-modal')).not.toBeNull();
+    expect(container.textContent).toContain('最近一次看片报告');
     expect(container.textContent).toContain('qwen3.5-omni-plus-realtime');
-    expect(container.textContent).toContain('ASR 事件明细');
-    expect(container.textContent).toContain('输出事件明细');
-    // The finals are derived by the native buffer from the committed deltas.
+    await changeValue(container.querySelector<HTMLSelectElement>('.watch-report-controls select')!, 'all');
+    await settleUi();
+    expect(container.textContent).toContain('LLM 采用文本');
+    expect(container.textContent).toContain('字幕发布文本');
+    expect(container.textContent).toContain('浮窗实际文本');
     expect(container.textContent).toContain('你好世界');
     expect(container.textContent).toContain('Hello world');
+    expect(container.textContent).toContain('完全一致');
   });
 
-  it('closes live events modal from close button and backdrop', async () => {
+  it('closes the Watch report modal from close button and backdrop', async () => {
     const audio = structuredClone(audioRuntimeSnapshotMock);
     audio.sessionStartedAt = 'unix-ms:2000';
     audio.inbound.streamBound = true;
@@ -814,7 +831,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     await renderPage();
 
-    await clickAndSettle(findButtonByText(container, '查看实时事件'));
+    await clickAndSettle(findButtonByText(container, '最近一次看片报告'));
 
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
 
@@ -827,7 +844,7 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.querySelector('.benchmark-modal')).toBeNull();
 
     // Reopen and close via backdrop
-    await clickAndSettle(findButtonByText(container, '查看实时事件'));
+    await clickAndSettle(findButtonByText(container, '最近一次看片报告'));
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     await act(async () => {
       container.querySelector<HTMLElement>('.modal-backdrop--benchmark')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -835,23 +852,16 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.querySelector('.benchmark-modal')).toBeNull();
   });
 
-  it('shows empty state when live events have no data', async () => {
-    const audio = structuredClone(audioRuntimeSnapshotMock);
-    audio.sessionStartedAt = 'unix-ms:3000';
-    audio.inbound.streamBound = true;
-    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: audio }));
-
-    fake.startLiveSession({ model: 'test-model', sessionStartedAt: 'unix-ms:3000' });
-
+  it('shows an empty state when there is no retained Watch report', async () => {
     await renderPage();
 
-    await clickAndSettle(findButtonByText(container, '查看实时事件'));
+    await clickAndSettle(findButtonByText(container, '最近一次看片报告'));
 
-    expect(container.querySelector('.benchmark-modal')).not.toBeNull();
-    expect(container.textContent).toContain('暂无事件数据');
+    expect(container.querySelector('[role="dialog"].watch-report-modal')).not.toBeNull();
+    expect(container.textContent).toContain('尚无看片报告');
   });
 
-  it('refreshes live events when refresh button is clicked', async () => {
+  it('refreshes the Watch report when refresh is clicked', async () => {
     const audio = structuredClone(audioRuntimeSnapshotMock);
     audio.sessionStartedAt = 'unix-ms:4000';
     audio.inbound.streamBound = true;
@@ -862,17 +872,18 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     await renderPage();
 
-    await clickAndSettle(findButtonByText(container, '查看实时事件'));
+    await clickAndSettle(findButtonByText(container, '最近一次看片报告'));
 
     expect(fake.commandCalls('diagnostics_v2')).toHaveLength(1);
+    await changeValue(container.querySelector<HTMLSelectElement>('.watch-report-controls select')!, 'all');
+    await settleUi();
     expect(container.textContent).toContain('first');
 
     // The native buffer keeps recording while the modal is open.
     fake.pushLiveAsrDelta({ elapsedMs: 300, stash: '', text: 'second', eventType: 'asr' });
 
     // Click refresh button (the refresh icon-button in the modal head)
-    const modalHead = container.querySelector('.benchmark-modal-head')!;
-    const refreshButton = modalHead.querySelectorAll<HTMLButtonElement>('.icon-button')[1];
+    const refreshButton = container.querySelector<HTMLButtonElement>('.benchmark-modal button[title="刷新"]');
     await clickAndSettle(refreshButton);
 
     expect(fake.commandCalls('diagnostics_v2')).toHaveLength(2);
@@ -941,11 +952,11 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(useAppStore.getState().runtimeSnapshot.bridge.driverHealth).toBe('running');
   });
 
-  it('exports benchmark and live-event reports through both formats', async () => {
+  it('exports benchmark and Watch reports through both formats', async () => {
     // The exporter is a browser download facade (Blob + anchor click), the one
     // leaf externality of the export path.
     const benchmarkExport = vi.spyOn(DiagnosticsReportExporter, 'exportBenchmark').mockResolvedValue({ outputPath: 'benchmark.json', fileCount: 1 });
-    const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockResolvedValue({ outputPath: 'events.json', fileCount: 1 });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     fake.programBenchmarkRun({ report: benchmarkReport('export result') });
     const audio = structuredClone(audioRuntimeSnapshotMock);
     audio.sessionStartedAt = 'unix-ms:5000';
@@ -965,14 +976,51 @@ describe('DiagnosticsPage monitoring boundary', () => {
     await act(async () => container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head .icon-button')[1]?.click());
     await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button'));
     for (const format of ['JSON', 'TXT']) {
-      await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
-      await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button'))
-        .find((button) => button.textContent === format)?.click());
+      await clickAndSettle(Array.from(container.querySelectorAll<HTMLButtonElement>('.watch-report-actions button'))
+        .find((button) => button.textContent === format));
+      const exportedPath = container.querySelector<HTMLInputElement>('.watch-report-export-path');
+      expect(exportedPath).not.toBeNull();
+      expect(exportedPath?.readOnly).toBe(true);
+      expect(exportedPath?.value).toMatch(new RegExp(`\\.${format.toLowerCase()}$`));
+      const copyPathButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.watch-report-export-result-actions button'))
+        .find((button) => button.textContent === '复制路径');
+      await clickAndSettle(copyPathButton);
+      expect(clipboardWrite).toHaveBeenLastCalledWith(exportedPath?.value);
+      expect(container.querySelector('.watch-report-export-result-actions')?.textContent).toContain('路径已复制');
+      const openFolderButton = Array.from(container.querySelectorAll<HTMLButtonElement>('.watch-report-export-result-actions button'))
+        .find((button) => button.textContent === '打开所在目录');
+      await clickAndSettle(openFolderButton);
+      const openDirectoryCalls = fake.commandCalls('diagnostics_v2')
+        .filter((call) => call.action === 'openExportDirectory');
+      expect(openDirectoryCalls.at(-1)?.args).toMatchObject({
+        command: { outputPath: expect.stringMatching(new RegExp(`\\.${format.toLowerCase()}$`)) },
+      });
     }
-    expect(liveExport).toHaveBeenCalledTimes(2);
+    const reportExports = fake.commandCalls('diagnostics_v2')
+      .filter((call) => call.action === 'writeExportArtifact');
+    expect(reportExports).toHaveLength(2);
+    expect(reportExports[0]?.args).toMatchObject({
+      command: {
+        filename: expect.stringMatching(/^watch-session-report-live-model-.+\.json$/),
+        content: expect.stringContaining('"sessionId": "fake-watch-session"'),
+      },
+    });
+    expect(reportExports[1]?.args).toMatchObject({
+      command: {
+        filename: expect.stringMatching(/^watch-session-report-live-model-.+\.txt$/),
+        content: expect.stringContaining('=== Watch Session Report ==='),
+      },
+    });
+    const openDirectoryCalls = fake.commandCalls('diagnostics_v2')
+      .filter((call) => call.action === 'openExportDirectory');
+    expect(openDirectoryCalls).toHaveLength(2);
+    expect(openDirectoryCalls[0]?.args)
+      .toMatchObject({ command: { outputPath: expect.stringMatching(/\.json$/) } });
+    expect(openDirectoryCalls[1]?.args)
+      .toMatchObject({ command: { outputPath: expect.stringMatching(/\.txt$/) } });
   });
 
-  it('renders recent diagnostic issues without routes and safely ignores export before live events arrive', async () => {
+  it('renders recent diagnostic issues without routes and safely ignores export before the Watch report arrives', async () => {
     const runtime = structuredClone(useAppStore.getState().runtimeSnapshot);
     runtime.diagnostics.recentErrors = [{
       id: 'local-warning', category: 'runtime', level: 'warning', summary: 'local warning', detail: null, emittedAt: 'test', source: null, elapsedMs: null,
@@ -981,18 +1029,17 @@ describe('DiagnosticsPage monitoring boundary', () => {
     audio.sessionStartedAt = 'unix-ms:5000';
     audio.sttConnected = true;
     useAppStore.setState((state) => ({ ...state, runtimeSnapshot: runtime, audioRuntimeSnapshot: audio }));
-    // Never released: the live-events read stays in flight for the whole case.
-    holdCommand('diagnostics_v2', 'liveSessionEvents');
+    // Never released: the Watch report read stays in flight for the whole case.
+    holdCommand('diagnostics_v2', 'watchSessionReport');
 
     await renderPage();
     expect(Array.from(container.querySelectorAll('.compact-alert-item')).some((item) =>
       item.tagName === 'DIV' && item.textContent?.includes('local warning'))).toBe(true);
 
     await act(async () => container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button')?.click());
-    expect(container.querySelector('.benchmark-modal')).not.toBeNull();
-    await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
-    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button'))
-      .find((button) => button.textContent === 'JSON')?.click());
+    expect(container.querySelector('[role="dialog"].watch-report-modal')).not.toBeNull();
+    expect(container.querySelector('.watch-report-actions')).toBeNull();
+    expect(fake.commandCalls('diagnostics_v2').some((call) => call.action === 'writeExportArtifact')).toBe(false);
   });
 
   it('normalizes sparse provider metadata, draft diagnostics, speech defaults, and speech-only live sessions', async () => {
@@ -1020,12 +1067,12 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.querySelector('.diagnostics-live-events-button')).not.toBeNull();
   });
 
-  it('renders sparse benchmark summaries and exports unknown-model live events', async () => {
+  it('renders sparse benchmark summaries and exports an unknown-model Watch report', async () => {
     const report = benchmarkReport('sparse');
     report.audioDurationSecs = undefined as never;
     report.runs = [];
     fake.programBenchmarkRun({ report });
-    const liveExport = vi.spyOn(DiagnosticsReportExporter, 'exportLiveEvents').mockResolvedValue({ outputPath: 'events.json', fileCount: 1 });
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
     const audio = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
     audio.sessionStartedAt = 'unix-ms:5000';
     audio.inbound.streamBound = true;
@@ -1036,9 +1083,10 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.querySelector('.benchmark-modal')).not.toBeNull();
     await act(async () => container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head .icon-button')[1]?.click());
     await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-live-events-button'));
-    await act(async () => container.querySelector<HTMLButtonElement>('.benchmark-modal-head .icon-button')?.click());
-    await act(async () => Array.from(container.querySelectorAll<HTMLButtonElement>('.benchmark-modal-head button')).find((button) => button.textContent === 'JSON')?.click());
-    expect(liveExport).toHaveBeenCalledWith(expect.anything(), expect.stringContaining('live-events-unknown-'), 'json');
+    await clickAndSettle(Array.from(container.querySelectorAll<HTMLButtonElement>('.watch-report-actions button'))
+      .find((button) => button.textContent === 'JSON'));
+    expect(fake.commandCalls('diagnostics_v2').find((call) => call.action === 'writeExportArtifact')?.args)
+      .toMatchObject({ command: { filename: expect.stringContaining('watch-session-report-unknown-') } });
   });
 
   it('PREVIEW path: repairs through the browser-preview boundary without touching the native bridge', async () => {

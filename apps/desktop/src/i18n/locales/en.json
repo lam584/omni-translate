@@ -902,6 +902,7 @@
       "apiUrl": "API URL",
       "resetApiUrl": "Reset API URL",
       "apiKey": "API key",
+      "getApiKey": "Get API Key",
       "credentialsHeader": "API URL / API Key",
       "secretPlaceholder": "Secret",
       "hideSecret": "Hide secret",
@@ -1437,5 +1438,95 @@
       "importReadFailed": "Failed to read the file. Try again."
     },
     "searchPlaceholder": "Search terms..."
+  },
+  "watchReport": {
+    "currentTitle": "This Watch report",
+    "latestTitle": "Latest Watch report",
+    "description": "Compare raw model output, published subtitle text, and what the overlay actually rendered.",
+    "completed": "Ended",
+    "active": "In progress",
+    "modelFallback": "Watch Mode",
+    "meta": "{{provider}} · {{seconds}} s · {{count}} cues",
+    "revision": "rev {{revision}}",
+    "unknownPath": "unknown path",
+    "loading": "Loading the Watch report…",
+    "empty": "No Watch report yet. The latest in-memory report is retained after a Watch session ends.",
+    "refresh": "Refresh",
+    "clear": "Clear this report",
+    "accepted": "Adopted",
+    "rejected": "Not adopted",
+    "visible": "Visible",
+    "hidden": "Hidden",
+    "technicalDetails": "Technical details (model deltas, retries, publishing, rendering, and errors; {{count}} events)",
+    "sessionTechnicalDetails": "Session-level technical details (connections, retries, and errors not linked to a cue; {{count}} events)",
+    "exportWarning": "The export contains subtitle source text, LLM output, errors, and the timeline. Continue?",
+    "fullBundleWarning": "The full diagnostics bundle may contain subtitle text and model output from the latest Watch report. Continue?",
+    "exported": "Watch report exported: {{path}}",
+    "exportLocation": "Report saved. You can find it at this location:",
+    "exportPath": "Full file path",
+    "copyPath": "Copy path",
+    "pathCopied": "Path copied",
+    "issueOccurrences": "{{count}} occurrences",
+    "affectedCues": "{{count}} affected cues",
+    "issueOverview": "Issue overview",
+    "issueSummary": "{{groups}} issue types · {{occurrences}} occurrences",
+    "issueCategorySummary": "{{groups}} types · {{occurrences}} occurrences",
+    "status": {
+      "exact": "Exact match",
+      "formattingOnly": "Formatting only",
+      "different": "Content differs",
+      "notPublished": "Not published",
+      "notRendered": "Not displayed",
+      "modelError": "Model error",
+      "pending": "Waiting",
+      "superseded": "Superseded"
+    },
+    "issueCategories": {
+      "all": "All categories",
+      "model": "Model and provider",
+      "output": "Audio output",
+      "publish": "Subtitle publishing",
+      "render": "Overlay rendering",
+      "content": "Content consistency",
+      "timing": "Timing and latency",
+      "session": "Session lifecycle",
+      "data": "Report integrity"
+    },
+    "labels": {
+      "source": "Source",
+      "llm": "Adopted LLM text",
+      "published": "Published subtitle text",
+      "rendered": "Actual overlay text"
+    },
+    "timing": {
+      "sourceToLlm": "Source → LLM first token",
+      "sourceToRender": "Source → overlay",
+      "llmToPublish": "LLM first token → publish",
+      "publishToRender": "Publish → visible",
+      "llmToRender": "LLM first token → visible",
+      "finalToPublish": "LLM final → publish",
+      "finalPublishToRender": "Final publish → visible"
+    },
+    "metrics": {
+      "firstToken": "In-app first-token latency",
+      "endToEnd": "End-to-end first-translation latency",
+      "p95Max": "P95 / maximum",
+      "complete": "Complete three-stage cues",
+      "notRendered": "Published but not displayed",
+      "issues": "Issue types / occurrences",
+      "llmToRender": "LLM first token → overlay"
+    },
+    "controls": {
+      "display": "Show",
+      "sort": "Sort",
+      "issueFirst": "Issues first",
+      "differences": "Content differences",
+      "all": "All cues",
+      "issueCount": "Issue count",
+      "latency": "Latency",
+      "sequence": "Timeline order",
+      "noCues": "No cues match the current filter.",
+      "category": "Category"
+    }
   }
 }

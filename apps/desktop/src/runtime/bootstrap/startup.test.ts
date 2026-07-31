@@ -28,6 +28,10 @@ import { CONFIG_DRAFT_FALLBACK_STORAGE_KEY } from './config-fallback';
 import { runBootstrapDesktopRuntimeBridge } from './startup';
 import { resetNativeLogForwardingForTests } from './steps';
 import { invokeMock } from '../../test-utils/tauri-invoke-mock';
+import {
+  isNativeWatchDiagnosticAutostartAuthoritative,
+  resetNativeWatchDiagnosticGateForTests,
+} from './watch-mode';
 
 /** Resets timers, IPC/runtime mocks and bootstrap singletons for one describe run. */
 function resetStartupHarness({ isTauri = false } = {}) {
@@ -39,6 +43,7 @@ function resetStartupHarness({ isTauri = false } = {}) {
   window.localStorage.clear();
   loggerTestHelpers.reset();
   resetNativeLogForwardingForTests();
+  resetNativeWatchDiagnosticGateForTests();
   resetDesktopApiForTests();
 }
 
@@ -50,6 +55,7 @@ function registerStartupHooks(options: { isTauri?: boolean } = {}) {
   afterEach(() => {
     vi.useRealTimers();
     resetNativeLogForwardingForTests();
+    resetNativeWatchDiagnosticGateForTests();
     resetDesktopApiForTests();
   });
 }
@@ -250,8 +256,46 @@ describe('runBootstrapDesktopRuntimeBridge non-Error failures', () => {
   });
 });
 
+describe('runBootstrapDesktopRuntimeBridge native diagnostic gate', () => {
+  registerStartupHooks({ isTauri: true });
+
+  it('caches backend startup authority from the successful IPC ping before connecting', async () => {
+    invokeMock.mockResolvedValue(
+      'pong storage_status=ready watchDiagnostic=true backendAutostartAuthoritative=true',
+    );
+
+    const cleanup = await runBootstrapDesktopRuntimeBridge();
+
+    expect(isNativeWatchDiagnosticAutostartAuthoritative()).toBe(true);
+    expect(mocks.connect).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
+});
+
 describe('runBootstrapDesktopRuntimeBridge remaining recovery arms', () => {
   registerStartupHooks();
+
+  it('caches native diagnostic authority when IPC succeeds through background recovery', async () => {
+    mocks.isTauri.mockReturnValue(true);
+    let pings = 0;
+    invokeMock.mockImplementation(() => {
+      pings += 1;
+      if (pings <= 11) return Promise.reject(new Error('startup window down'));
+      return Promise.resolve(
+        'pong storage_status=ready watchDiagnostic=true backendAutostartAuthoritative=true',
+      );
+    });
+
+    const cleanupPromise = runBootstrapDesktopRuntimeBridge();
+    await vi.advanceTimersByTimeAsync(30_000);
+    const cleanup = await cleanupPromise;
+    await Promise.resolve();
+
+    expect(pings).toBeGreaterThan(11);
+    expect(isNativeWatchDiagnosticAutostartAuthoritative()).toBe(true);
+    expect(mocks.connect).toHaveBeenCalledTimes(1);
+    cleanup();
+  });
 
   it('stringifies a non-Error heal connect rejection', async () => {
     mocks.waitForTauri.mockResolvedValueOnce(false).mockResolvedValueOnce(true);

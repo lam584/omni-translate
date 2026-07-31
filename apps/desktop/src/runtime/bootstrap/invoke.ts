@@ -1,6 +1,7 @@
 import i18n from '../../i18n/config';
 import { activeDesktopApi } from '../desktop-api';
 import { invokeWithTimeoutCore } from '../invoke-with-timeout';
+import { updateNativeWatchDiagnosticGateFromIpcPing } from './watch-mode';
 
 export const IPC_PING_TIMEOUT_MS = 750;
 export const BRIDGE_INVOKE_TIMEOUT_MS = 8000;
@@ -28,7 +29,12 @@ export async function pingDesktopRuntime(): Promise<number> {
 
   for (let attempt = 0; attempt <= IPC_PING_RETRY_DELAYS_MS.length; attempt += 1) {
     try {
-      await invokeWithTimeout(() => activeDesktopApi().runtime.debugIpcPing(), 'debug_ipc_ping', IPC_PING_TIMEOUT_MS);
+      const response = await invokeWithTimeout(
+        () => activeDesktopApi().runtime.debugIpcPing(),
+        'debug_ipc_ping',
+        IPC_PING_TIMEOUT_MS,
+      );
+      updateNativeWatchDiagnosticGateFromIpcPing(response);
       return Math.round(performance.now() - startedAt);
     } catch (error) {
       lastError = error;

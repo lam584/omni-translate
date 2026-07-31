@@ -488,6 +488,18 @@ impl CueState {
     }
 
     fn commit(&mut self, app: &AppHandle, store: &AudioStateStore) {
+        if let Some(cue_id) = self.cue_id.as_deref() {
+            if !self.output_text.trim().is_empty() {
+                store.watch_session_report.record_model_final_for_cue(
+                    cue_id,
+                    "openai-realtime",
+                    &self.output_text,
+                    true,
+                    None,
+                    None,
+                );
+            }
+        }
         commit_realtime_cue(
             app,
             store,
@@ -938,6 +950,14 @@ fn handle_server_event(
         | "response.text.delta" => {
             if let Some(delta) = extract_text_delta(evt) {
                 let id = cue.ensure_cue_id();
+                store.watch_session_report.record_model_delta_for_cue(
+                    &id,
+                    "openai-realtime",
+                    delta,
+                    true,
+                    None,
+                    None,
+                );
                 cue.output_text.push_str(delta);
                 publish_output_translation(app, store, cue, &id);
             }
@@ -951,6 +971,14 @@ fn handle_server_event(
                     cue.output_text = text.to_string();
                 }
                 let id = cue.ensure_cue_id();
+                store.watch_session_report.record_model_final_for_cue(
+                    &id,
+                    "openai-realtime",
+                    &cue.output_text,
+                    true,
+                    None,
+                    None,
+                );
                 publish_output_translation(app, store, cue, &id);
             }
         }
@@ -970,6 +998,14 @@ fn handle_server_event(
         "session.output_transcript.delta" => {
             if let Some(delta) = extract_text_delta(evt) {
                 let id = cue.ensure_cue_id();
+                store.watch_session_report.record_model_delta_for_cue(
+                    &id,
+                    "openai-translation",
+                    delta,
+                    true,
+                    None,
+                    None,
+                );
                 cue.output_text.push_str(delta);
                 cue.last_delta_at = Instant::now();
                 publish_output_translation(app, store, cue, &id);
@@ -985,6 +1021,16 @@ fn handle_server_event(
                 .and_then(Value::as_str)
                 .unwrap_or("unknown OpenAI realtime error");
             trace_call.error(message);
+            if let Some(cue_id) = cue.cue_id.as_deref() {
+                store.watch_session_report.record_model_error_for_cue(
+                    cue_id,
+                    "openai-realtime",
+                    "provider.error",
+                    message,
+                    false,
+                    None,
+                );
+            }
             let _ = diag_log(app, "openai-realtime", "error", message.to_string());
         }
         _ => {}
@@ -1006,12 +1052,21 @@ fn try_reconnect(
 ) -> bool {
     // The interrupted turn cannot be resumed on a fresh session; flush what
     // we have so the overlay keeps the partial subtitle.
+    let retry_cue_id = cue.cue_id.clone();
     cue.commit(app, store);
     let _ = store.set_stt_connected_if_current(stt_epoch, false, 0);
     let _ = emit_audio_snapshot(app, store);
 
     while *reconnect_retries < OPENAI_RECONNECT_MAX_RETRIES {
         *reconnect_retries += 1;
+        if let Some(cue_id) = retry_cue_id.as_deref() {
+            store.watch_session_report.record_retry_for_cue(
+                cue_id,
+                "openai-realtime",
+                &format!("reconnect-{}", *reconnect_retries),
+                "OpenAI realtime transport reconnect",
+            );
+        }
         let delay = attempt_backoff_delay(*reconnect_retries);
         let _ = diag_log(
             app,
@@ -1035,6 +1090,16 @@ fn try_reconnect(
                 return true;
             }
             Err(error) => {
+                if let Some(cue_id) = retry_cue_id.as_deref() {
+                    store.watch_session_report.record_model_error_for_cue(
+                        cue_id,
+                        "openai-realtime",
+                        "transport.reconnect",
+                        &error,
+                        *reconnect_retries >= OPENAI_RECONNECT_MAX_RETRIES,
+                        Some(&format!("reconnect-{}", *reconnect_retries)),
+                    );
+                }
                 let _ = diag_log(
                     app,
                     "openai-realtime",
@@ -1087,6 +1152,14 @@ fn shutdown_session(
                                         cue.source_text.push_str(delta);
                                         store.update_or_push_stt_cue(&id, &cue.source_text, false);
                                     } else {
+                                        store.watch_session_report.record_model_delta_for_cue(
+                                            &id,
+                                            "openai-translation",
+                                            delta,
+                                            true,
+                                            None,
+                                            None,
+                                        );
                                         cue.output_text.push_str(delta);
                                         store.update_subtitle_cue_translation(
                                             &id,

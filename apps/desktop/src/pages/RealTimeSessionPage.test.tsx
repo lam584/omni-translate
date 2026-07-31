@@ -527,6 +527,108 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(useAppStore.getState().audioRuntimeSnapshot.inbound.captureState).toBe('capturing');
   });
 
+  it('automatically expands the retained Watch report when the Watch route stops', async () => {
+    fake.startLiveSession({
+      model: 'watch-report-model',
+      sessionStartedAt: 'unix-ms:1000',
+    });
+    fake.pushLiveAsrDelta({
+      elapsedMs: 100,
+      stash: '',
+      text: '你好世界',
+      eventType: 'asr.completed',
+    });
+    fake.pushLiveOutputDelta({
+      elapsedMs: 280,
+      eventType: 'response.done',
+      stash: '',
+      committedText: 'Hello world',
+    });
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, routeMode: 'watch' },
+      },
+    }));
+    await renderPage();
+
+    await runInAct(() => {
+      const active = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+      active.inbound.streamBound = true;
+      useAppStore.getState().setAudioRuntimeSnapshot(active);
+    });
+    await runInAct(() => {
+      const stopped = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+      stopped.inbound.streamBound = false;
+      useAppStore.getState().setAudioRuntimeSnapshot(stopped);
+    });
+
+    expect(fake.commandCalls('diagnostics_v2').map((call) => call.action)).toContain('watchSessionReport');
+    const reportDialog = container.querySelector<HTMLElement>('[role="dialog"].watch-report-modal');
+    expect(reportDialog).not.toBeNull();
+    expect(container.querySelector('.watch-report-card')).toBeNull();
+    expect(container.textContent).toContain('本次看片报告');
+    expect(container.textContent).toContain('watch-report-model');
+  });
+
+  it('does not automatically open an active Watch report during a transient route stop', async () => {
+    fake.startLiveSession({
+      model: 'still-active-watch-report',
+      reportStatus: 'active',
+      sessionStartedAt: 'unix-ms:1000',
+    });
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, routeMode: 'watch' },
+      },
+    }));
+    await renderPage();
+
+    await runInAct(() => {
+      const active = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+      active.inbound.streamBound = true;
+      useAppStore.getState().setAudioRuntimeSnapshot(active);
+    });
+    await runInAct(() => {
+      const transientlyStopped = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+      transientlyStopped.inbound.streamBound = false;
+      useAppStore.getState().setAudioRuntimeSnapshot(transientlyStopped);
+    });
+
+    expect(fake.commandCalls('diagnostics_v2').map((call) => call.action)).toContain('watchSessionReport');
+    expect(container.querySelector('[role="dialog"].watch-report-modal')).toBeNull();
+    expect(container.textContent).toContain('本次看片报告');
+  });
+
+  it('does not open a Watch report when a voice-room route stops', async () => {
+    fake.startLiveSession({ model: 'must-not-open', sessionStartedAt: 'unix-ms:1000' });
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, routeMode: 'voice-room' },
+      },
+    }));
+    await renderPage();
+
+    await runInAct(() => {
+      const active = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+      active.outbound.streamBound = true;
+      useAppStore.getState().setAudioRuntimeSnapshot(active);
+    });
+    await runInAct(() => {
+      const stopped = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+      stopped.outbound.streamBound = false;
+      useAppStore.getState().setAudioRuntimeSnapshot(stopped);
+    });
+
+    expect(fake.commandCalls('diagnostics_v2').some((call) => call.action === 'watchSessionReport')).toBe(false);
+    expect(container.querySelector('[role="dialog"].watch-report-modal')).toBeNull();
+  });
+
 
   it('does not block watch launch on the legacy Omni preconnect command', async () => {
     // Armed so a preconnect attempt would fail loudly if the launch ever made one.

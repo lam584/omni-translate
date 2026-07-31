@@ -3,6 +3,7 @@
 
 /* Feature styles and their first compatibility layer. */
 @import './pages/diagnostics.css';
+@import './pages/watch-session-report.css';
 @import './global/layout-overrides.css';
 @import './global/forms.css';
 @import './pages/subtitle-overlay.css';

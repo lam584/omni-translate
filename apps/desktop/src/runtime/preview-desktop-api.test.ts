@@ -117,14 +117,15 @@ describe('PreviewDesktopApi', () => {
     expect(artifact.outputPath).toBe('browser-preview/diagnostics-summary.zip');
     expect(artifact.fileCount).toBe(3);
     const full = await api.diagnostics.export('full');
-    expect(full.fileCount).toBe(6);
+    expect(full.fileCount).toBe(7);
 
     const snapshot = await api.configuration.runtimeSnapshot();
     expect(snapshot.diagnostics.lastExportScope).toBe('full');
     expect(snapshot.diagnostics.lastExportPath).toBe('browser-preview/diagnostics-full.zip');
 
     expect(await api.diagnostics.snapshot()).toEqual({ recentLogs: [] });
-    expect(await api.diagnostics.liveSessionEvents()).toEqual({});
+    expect(await api.diagnostics.watchSessionReport()).toBeNull();
+    expect(await api.diagnostics.clearWatchSessionReport()).toBeNull();
     await expect(api.diagnostics.appendLogs([], 0)).resolves.toBeUndefined();
     await expect(api.diagnostics.setLogLevel('info')).resolves.toBeUndefined();
     await expect(api.diagnostics.openExportDirectory('report.zip')).rejects.toThrow('browser-preview');

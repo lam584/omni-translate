@@ -8,7 +8,13 @@ import type {
   LiveSessionEvents,
   LiveSessionOutputDelta,
 } from '../runtime/live-session-events-runtime';
-import { AUDIO_RUNTIME_SNAPSHOT_EVENT, type AudioRuntimeSnapshot, type SubtitleCueRuntime } from '../schema/audio-runtime';
+import {
+  AUDIO_RUNTIME_SNAPSHOT_EVENT,
+  type AudioRuntimeSnapshot,
+  type SubtitleCueRuntime,
+  type WatchSessionReportRuntime,
+  type WatchTimelineEventRuntime,
+} from '../schema/audio-runtime';
 import type { AppConfigDraft, DiagnosticsExportScope } from '../schema/config';
 import type { CredentialRefStatus, CredentialSecretPayload } from '../schema/provider-runtime';
 import {
@@ -89,7 +95,11 @@ export type FakeBenchmarkRun = {
   failure?: Partial<FakeServiceErrorV2> & { message: string };
 };
 
-export type FakeLiveSessionOptions = { model?: string; sessionStartedAt?: string };
+export type FakeLiveSessionOptions = {
+  model?: string;
+  sessionStartedAt?: string;
+  reportStatus?: WatchSessionReportRuntime['status'];
+};
 
 /** The five milestone names `LiveSessionEventBuffer::record_milestone` accepts. */
 export type FakeLiveSessionMilestone =
@@ -165,6 +175,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     firstTranslationAverageMs: null,
     firstTranslationLastMs: null,
     firstTranslationSampleCount: 0,
+    reportSessionId: null,
     activeCue: null,
     recentCues: [],
   };
@@ -777,12 +788,15 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
   }
 
   let liveSession = createEmptyLiveSession();
+  let watchReportStatus: WatchSessionReportRuntime['status'] = 'completed';
 
   /** Mirrors `LiveSessionEventBuffer::clear`: a new session drops everything. */
   function startLiveSession(options: FakeLiveSessionOptions = {}) {
     liveSession = createEmptyLiveSession();
+    watchReportStatus = options.reportStatus ?? 'completed';
     liveSession.model = options.model ?? '';
     liveSession.sessionStartedAt = options.sessionStartedAt ?? new Date().toISOString();
+    audio.subtitleOverlay.reportSessionId = 'fake-watch-session';
   }
 
   function pushLiveAsrDelta(delta: LiveSessionAsrDelta) {
@@ -806,6 +820,144 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     liveSession.elapsedMs = Math.max(liveSession.elapsedMs, elapsedMs);
   }
 
+  function liveSessionAsWatchReport(): WatchSessionReportRuntime | null {
+    if (!liveSession.sessionStartedAt) return null;
+    const sourceEvents: WatchTimelineEventRuntime[] = liveSession.asrDeltas.map((delta, index) => ({
+      eventId: `fake-source-${index}`,
+      stage: 'source',
+      kind: delta.eventType,
+      elapsedMs: delta.elapsedMs,
+      text: delta.text || delta.stash,
+      detail: null,
+      finalEvent: Boolean(delta.text),
+      accepted: true,
+      visible: null,
+      callId: null,
+      attemptId: null,
+    }));
+    const modelEvents: WatchTimelineEventRuntime[] = liveSession.outputDeltas.map((delta, index) => ({
+      eventId: `fake-model-${index}`,
+      stage: 'model',
+      kind: delta.eventType,
+      elapsedMs: delta.elapsedMs,
+      text: delta.committedText || delta.stash,
+      detail: null,
+      finalEvent: Boolean(delta.committedText),
+      accepted: true,
+      visible: null,
+      callId: 'fake-call-1',
+      attemptId: 'fake-attempt-1',
+    }));
+    const sourceAtMs = liveSession.asrDeltas[0]?.elapsedMs ?? null;
+    const llmFirstAtMs = liveSession.outputDeltas[0]?.elapsedMs ?? null;
+    const llmFinalAtMs = [...liveSession.outputDeltas].reverse().find((event) => event.committedText)?.elapsedMs ?? null;
+    const hasTranslation = Boolean(liveSession.translationFinal);
+    const publishedAtMs = hasTranslation ? llmFinalAtMs : null;
+    const renderedAtMs = hasTranslation && publishedAtMs != null ? publishedAtMs + 16 : null;
+    const publishEvents: WatchTimelineEventRuntime[] = publishedAtMs == null ? [] : [{
+      eventId: 'fake-publish-1',
+      stage: 'publish',
+      kind: 'subtitle-state-published',
+      elapsedMs: publishedAtMs,
+      text: liveSession.translationFinal,
+      detail: null,
+      finalEvent: true,
+      accepted: true,
+      visible: null,
+      callId: 'fake-call-1',
+      attemptId: 'fake-attempt-1',
+    }];
+    const renderEvents: WatchTimelineEventRuntime[] = renderedAtMs == null ? [] : [{
+      eventId: 'fake-render-1',
+      stage: 'render',
+      kind: 'overlay-rendered',
+      elapsedMs: renderedAtMs,
+      text: liveSession.translationFinal,
+      detail: null,
+      finalEvent: true,
+      accepted: true,
+      visible: true,
+      callId: null,
+      attemptId: null,
+    }];
+    const timelineEvents = [...sourceEvents, ...modelEvents, ...publishEvents, ...renderEvents]
+      .sort((left, right) => left.elapsedMs - right.elapsedMs);
+    const between = (start: number | null, end: number | null) =>
+      start != null && end != null && end >= start ? end - start : null;
+    const cue = {
+      cueId: 'fake-watch-cue-1',
+      revision: 1,
+      routeDirection: 'inbound' as const,
+      translationPath: 'fake-provider',
+      sourceText: liveSession.asrFinal,
+      llmText: liveSession.translationFinal,
+      publishedText: liveSession.translationFinal,
+      publishedSegments: [],
+      renderedSourceText: liveSession.asrFinal,
+      renderedText: liveSession.translationFinal,
+      comparisonStatus: hasTranslation ? 'exact' as const : 'pending' as const,
+      sourceAtMs,
+      llmFirstAtMs,
+      llmFinalAtMs,
+      publishedFirstAtMs: publishedAtMs,
+      publishedFinalAtMs: publishedAtMs,
+      renderedFirstAtMs: renderedAtMs,
+      renderedFinalAtMs: renderedAtMs,
+      sourceToLlmFirstMs: between(sourceAtMs, llmFirstAtMs),
+      sourceToRenderMs: between(sourceAtMs, renderedAtMs),
+      llmFirstToPublishMs: between(llmFirstAtMs, publishedAtMs),
+      publishToRenderMs: between(publishedAtMs, renderedAtMs),
+      llmFirstToRenderMs: between(llmFirstAtMs, renderedAtMs),
+      llmFinalToPublishMs: between(llmFinalAtMs, publishedAtMs),
+      publishedFinalToRenderMs: between(publishedAtMs, renderedAtMs),
+      llmFinalToRenderMs: between(llmFinalAtMs, renderedAtMs),
+      events: timelineEvents,
+      issues: [],
+      droppedEventCount: 0,
+    };
+    const sourceLatency = cue.sourceToLlmFirstMs;
+    const endToEndLatency = cue.sourceToRenderMs;
+    const renderLatency = cue.llmFirstToRenderMs;
+    const finalLatency = cue.llmFinalToRenderMs;
+    return {
+      sessionId: 'fake-watch-session',
+      status: watchReportStatus,
+      routeMode: 'watch',
+      providerId: 'fake-provider',
+      model: liveSession.model,
+      startedAt: liveSession.sessionStartedAt,
+      endedAt: liveSession.sessionStartedAt,
+      elapsedMs: liveSession.elapsedMs,
+      summary: {
+        durationMs: liveSession.elapsedMs,
+        cueCount: 1,
+        completeCueCount: hasTranslation ? 1 : 0,
+        visibleRenderCueCount: hasTranslation ? 1 : 0,
+        unrenderedCueCount: hasTranslation ? 0 : 1,
+        issueCount: 0,
+        issueOccurrenceCount: 0,
+        averageSourceToLlmFirstMs: sourceLatency,
+        p95SourceToLlmFirstMs: sourceLatency,
+        maxSourceToLlmFirstMs: sourceLatency,
+        averageSourceToRenderMs: endToEndLatency,
+        p95SourceToRenderMs: endToEndLatency,
+        maxSourceToRenderMs: endToEndLatency,
+        averageLlmFirstToRenderMs: renderLatency,
+        p95LlmFirstToRenderMs: renderLatency,
+        maxLlmFirstToRenderMs: renderLatency,
+        averageLlmFinalToRenderMs: finalLatency,
+        p95LlmFinalToRenderMs: finalLatency,
+        maxLlmFinalToRenderMs: finalLatency,
+        slowestCueId: hasTranslation ? cue.cueId : null,
+      },
+      cues: [cue],
+      events: timelineEvents,
+      issues: [],
+      droppedCueCount: 0,
+      droppedEventCount: 0,
+    };
+  }
+
   function handleDiagnosticsAction(action: string | null, args: Record<string, unknown> | undefined) {
     const command = (args?.command ?? {}) as Record<string, unknown>;
     switch (action) {
@@ -816,8 +968,19 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
         return envelope(structuredClone(runtime));
       case 'export':
         return envelope(exportDiagnosticsBundle(String(command.scope ?? 'summary') as DiagnosticsExportScope));
-      case 'liveSessionEvents':
-        return envelope(structuredClone(liveSession));
+      case 'watchSessionReport':
+        return envelope(structuredClone(liveSessionAsWatchReport()));
+      case 'clearWatchSessionReport':
+        liveSession = createEmptyLiveSession();
+        audio.subtitleOverlay.reportSessionId = null;
+        return envelope(null);
+      case 'openExportDirectory':
+        return envelope(null);
+      case 'writeExportArtifact':
+        return envelope({
+          outputPath: `C:\\Users\\fake\\Downloads\\${String(command.filename ?? 'watch-session-report.json')}`,
+          fileCount: 1,
+        });
       default:
         throw new Error(`fake bridge: unsupported diagnostics_v2 action ${String(action)}`);
     }
@@ -845,7 +1008,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       detail: outputPath,
     });
     pushRuntimeSnapshot();
-    return { scope, outputPath, generatedAt, fileCount: scope === 'full' ? 7 : 5 };
+    return { scope, outputPath, generatedAt, fileCount: scope === 'full' ? 8 : 5 };
   }
 
   // ── Provider benchmark runs (provider_v2 runModelBenchmark) ──
@@ -1016,6 +1179,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     getAudioSnapshot: () => structuredClone(audio),
     getRuntimeSnapshot: () => structuredClone(runtime),
     getLiveSessionEvents: () => structuredClone(liveSession),
+    getWatchSessionReport: () => structuredClone(liveSessionAsWatchReport()),
     getOverlayWindowState: () => (overlayWindowState ? { ...overlayWindowState } : null),
     /**
      * Installs the machine state the native runtime reports (damaged driver,

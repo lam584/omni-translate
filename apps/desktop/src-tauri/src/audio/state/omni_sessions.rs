@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::{mpsc::Sender, Mutex};
 
-use crate::audio::omni::OmniHandle;
+use crate::audio::omni::{OmniHandle, OmniOutputMode};
 use super::{OmniSessionLifecycle, OmniSessionMetadata};
 
 pub(super) struct OmniSessionStore {
@@ -18,11 +18,21 @@ mod tests {
     #[test]
     fn stopping_generation_rejects_late_registration() {
         let store = OmniSessionStore::new();
-        let generation = store.begin("inbound", "omni", false);
+        let generation = store.begin(
+            "inbound",
+            "omni",
+            false,
+            OmniOutputMode::TextAndAudio,
+        );
         assert!(store.is_current("inbound", generation));
         assert!(store.mark_stopping("inbound", generation, "cancelled".to_string()));
         assert!(!store.is_current("inbound", generation));
-        let replacement = store.begin("inbound", "omni-new", false);
+        let replacement = store.begin(
+            "inbound",
+            "omni-new",
+            false,
+            OmniOutputMode::TextAndAudio,
+        );
         assert!(!store.is_current("inbound", generation));
         assert!(store.is_current("inbound", replacement));
     }
@@ -51,14 +61,20 @@ impl OmniSessionStore {
         self.sessions.lock().expect("omni sessions poisoned").remove(direction);
         self.handles.lock().expect("omni handles poisoned").remove(direction)
     }
-    pub(super) fn begin(&self, direction: &str, model_id: &str, subtitle_translate_active: bool) -> u64 {
+    pub(super) fn begin(
+        &self,
+        direction: &str,
+        model_id: &str,
+        subtitle_translate_active: bool,
+        output_mode: OmniOutputMode,
+    ) -> u64 {
         let generation = {
             let mut values = self.generations.lock().expect("omni generations poisoned");
             *values.entry(direction.to_string()).and_modify(|value| *value = value.saturating_add(1)).or_insert(1)
         };
         self.sessions.lock().expect("omni sessions poisoned").insert(direction.to_string(), OmniSessionMetadata {
             direction: direction.to_string(), session_generation: generation, model_id: model_id.to_string(),
-            subtitle_translate_active, state: OmniSessionLifecycle::Starting, last_error: None,
+            subtitle_translate_active, output_mode, state: OmniSessionLifecycle::Starting, last_error: None,
         });
         generation
     }
@@ -84,14 +100,28 @@ impl OmniSessionStore {
             self.handles.lock().expect("omni handles poisoned").remove(direction); }
         should_clear
     }
-    pub(super) fn matching_ready(&self, direction: &str, model_id: &str, subtitle_translate_active: bool) -> Option<u64> {
+    pub(super) fn matching_ready(
+        &self,
+        direction: &str,
+        model_id: &str,
+        subtitle_translate_active: bool,
+        output_mode: OmniOutputMode,
+    ) -> Option<u64> {
         self.sessions.lock().expect("omni sessions poisoned").get(direction)
             .filter(|session| session.state == OmniSessionLifecycle::Ready && session.model_id == model_id
-                && session.subtitle_translate_active == subtitle_translate_active)
+                && session.subtitle_translate_active == subtitle_translate_active
+                && session.output_mode == output_mode)
             .map(|session| session.session_generation)
     }
-    pub(super) fn take_matching_sender(&self, direction: &str, model_id: &str, subtitle_translate_active: bool) -> Option<Sender<Vec<u8>>> {
-        self.matching_ready(direction, model_id, subtitle_translate_active)?; self.take_sender(direction)
+    pub(super) fn take_matching_sender(
+        &self,
+        direction: &str,
+        model_id: &str,
+        subtitle_translate_active: bool,
+        output_mode: OmniOutputMode,
+    ) -> Option<Sender<Vec<u8>>> {
+        self.matching_ready(direction, model_id, subtitle_translate_active, output_mode)?;
+        self.take_sender(direction)
     }
     pub(super) fn metadata(&self, direction: &str) -> Option<OmniSessionMetadata> {
         self.sessions.lock().expect("omni sessions poisoned").get(direction).cloned()

@@ -13,7 +13,7 @@ use crate::bridge::contracts::BridgeRuntimeSnapshot;
 use crate::bridge::state::BridgeStateStore;
 use crate::runtime::events::build_runtime_snapshot;
 use crate::runtime::state::RuntimeStateStore;
-use crate::shared::time::now_unix_seconds_marker;
+use crate::shared::time::{now_unix_millis_marker, now_unix_seconds_marker};
 use crate::storage::StorageStateStore;
 
 use super::contracts::{
@@ -405,9 +405,11 @@ pub(crate) fn run_diagnostics_self_check<R: tauri::Runtime>(
 /// dispatch so the ordering (cue -> show window -> audio emit -> log) is
 /// composed in one place without a diagnostics -> runtime call.
 pub(crate) fn push_overlay_self_check_cue(audio_state: &AudioStateStore) {
-    let emitted_at = now_unix_seconds_marker();
+    static SELF_CHECK_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SELF_CHECK_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let emitted_at = now_unix_millis_marker();
     audio_state.push_subtitle_cue(SubtitleCueRuntime {
-        cue_id: format!("overlay-self-check-{emitted_at}"),
+        cue_id: format!("overlay-self-check-{emitted_at}-{seq}"),
         route_direction: "diagnostics".to_string(),
         source_text: "Subtitle overlay self-check".to_string(),
         display_source_text: "Subtitle overlay self-check".to_string(),

@@ -693,6 +693,10 @@
       "voiceModel": "การวินิจฉัย - โมเดล",
       "noVoiceModels": "การวินิจฉัย - โมเดล",
       "mp3Path": "MP3 เส้นทาง",
+      "audioSource": "Test audio",
+      "presetEnglish": "English presets",
+      "presetMultilingual": "Multilingual presets",
+      "customAudio": "Custom path...",
       "start": "เริ่ม เบนช์มาร์ก",
       "viewResults": "การวินิจฉัย",
       "streamingProgress": "ตรวจสอบการตั้งค่าและสถานะของการวินิจฉัย",
@@ -761,7 +765,17 @@
       "sessionReady": "Session Ready",
       "responseCreated": "Response Created",
       "responseDone": "Response Done",
-      "responseLegend": "Response"
+      "responseLegend": "Response",
+      "audioFileInfo": "Audio File Info",
+      "audioFileName": "File Name",
+      "audioFormat": "Format",
+      "audioFileSize": "File Size",
+      "audioSampleRate": "Original Sample Rate",
+      "audioChannels": "Channels",
+      "audioDecodedSamples": "Decoded Samples",
+      "audioDecodedDuration": "Decoded Duration",
+      "audioMono": "Mono",
+      "audioStereo": "Stereo"
     },
     "export": {
       "title": "Export"

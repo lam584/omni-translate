@@ -480,6 +480,7 @@ pub(crate) enum DiagnosticsCommandV2 {
     Snapshot,
     OpenExportDirectory { output_path: String },
     WriteExportArtifact { filename: String, content: String },
+    OpenExternalUrl { url: String },
 }
 
 // Runs off the main thread (async) so bundle/file I/O (e.g. export) cannot
@@ -541,6 +542,8 @@ pub(crate) async fn diagnostics_v2<R: tauri::Runtime>(
                 serialize_result(crate::diagnostics::export_artifacts::open_export_directory(&output_path)),
             DiagnosticsCommandV2::WriteExportArtifact { filename, content } =>
                 serialize_result(crate::diagnostics::export_artifacts::write_export_artifact(&app, &filename, &content)),
+            DiagnosticsCommandV2::OpenExternalUrl { url } =>
+                serialize_result(crate::diagnostics::export_artifacts::open_external_url(&url)),
         }
     }
     .await;

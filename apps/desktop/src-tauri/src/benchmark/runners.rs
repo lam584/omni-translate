@@ -46,9 +46,29 @@ pub(crate) async fn run_model_benchmark(
             return Err(format!("MP3 file not found: {}", config.mp3_path.display()));
         }
 
-        let samples = read_mp3_samples(&config.mp3_path)?;
+        let decode_result = read_mp3_samples_with_info(&config.mp3_path)?;
+        let samples = decode_result.samples;
         let audio_duration = samples.len() as f64 / 16_000.0;
         let total_audio_chunks = samples.chunks(CHUNK_SAMPLES).count();
+
+        let file_name = config.mp3_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| config.mp3_path.display().to_string());
+        let format = config.mp3_path
+            .extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("unknown")
+            .to_ascii_lowercase();
+        let audio_info = AudioFileInfo {
+            file_name,
+            format,
+            file_size_bytes: decode_result.file_size_bytes,
+            original_sample_rate: decode_result.original_sample_rate,
+            channels: decode_result.channels,
+            decoded_samples: samples.len(),
+            duration_secs: audio_duration,
+        };
 
         let mut progress = BenchmarkProgressState::new(
             app.clone(),
@@ -60,6 +80,7 @@ pub(crate) async fn run_model_benchmark(
             audio_duration,
             total_audio_chunks,
         );
+        progress.audio_info = Some(audio_info.clone());
         progress.emit(
             "running",
             "mp3-decoded",
@@ -118,6 +139,7 @@ pub(crate) async fn run_model_benchmark(
             interaction_capabilities: config.interaction_capabilities.clone(),
             audio_file: mp3_path,
             audio_duration_secs: audio_duration,
+            audio_info: Some(audio_info),
             runs: vec![run_result],
             summary,
         };

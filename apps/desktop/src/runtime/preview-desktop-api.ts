@@ -338,6 +338,7 @@ export class PreviewDesktopApi {
     setLogLevel: async (_level: DiagnosticsLogLevel) => undefined,
     snapshot: async (): Promise<{ recentLogs?: DiagnosticLogEntryRuntime[] }> => ({ recentLogs: [] }),
     openExportDirectory: async (_outputPath: string) => Promise.reject(previewUnavailable('diagnostics.openExportDirectory')),
+    openExternalUrl: async (url: string) => { window.open(url, '_blank', 'noopener,noreferrer'); return null; },
     writeExportArtifact: async (_filename: string, _content: string) => Promise.reject(previewUnavailable('diagnostics.writeExportArtifact')),
   };
 

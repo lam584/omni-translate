@@ -697,6 +697,10 @@
       "voiceModel": "语音模型",
       "noVoiceModels": "未配置语音模型",
       "mp3Path": "MP3 路径",
+      "audioSource": "测试音频",
+      "presetEnglish": "英语预设",
+      "presetMultilingual": "多语言预设",
+      "customAudio": "自定义路径...",
       "start": "开始基准测试",
       "viewResults": "查看结果",
       "streamingProgress": "正在流式发送音频并接收模型输出，结果弹窗会实时刷新。",
@@ -764,7 +768,17 @@
       "sessionReady": "会话就绪",
       "responseCreated": "响应创建",
       "responseDone": "响应完成",
-      "responseLegend": "响应"
+      "responseLegend": "响应",
+      "audioFileInfo": "音频文件信息",
+      "audioFileName": "文件名",
+      "audioFormat": "格式",
+      "audioFileSize": "文件大小",
+      "audioSampleRate": "原始采样率",
+      "audioChannels": "声道数",
+      "audioDecodedSamples": "解码样本数",
+      "audioDecodedDuration": "解码时长",
+      "audioMono": "单声道",
+      "audioStereo": "立体声"
     }
   },
   "providers": {

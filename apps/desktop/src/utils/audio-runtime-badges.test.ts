@@ -38,6 +38,7 @@ function makeRoute(routeId: string, direction: 'inbound' | 'outbound', deviceId:
 
 function baseSnapshot(overrides: Partial<AudioRuntimeSnapshot> = {}): AudioRuntimeSnapshot {
   return {
+    snapshotSeq: 0,
     status: 'ready',
     host: 'test',
     renderDevices: [

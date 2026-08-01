@@ -693,6 +693,10 @@
       "voiceModel": "Modelo de voz",
       "noVoiceModels": "Nenhum modelo de voz configurado",
       "mp3Path": "Caminho MP3",
+      "audioSource": "Test audio",
+      "presetEnglish": "English presets",
+      "presetMultilingual": "Multilingual presets",
+      "customAudio": "Custom path...",
       "start": "Iniciar referência",
       "viewResults": "Ver resultados",
       "streamingProgress": "Streaming de áudio e recebimento de saída do modelo. A caixa de diálogo de resultados é atualizada em tempo real.",
@@ -761,7 +765,17 @@
       "sessionReady": "Session Ready",
       "responseCreated": "Response Created",
       "responseDone": "Response Done",
-      "responseLegend": "Response"
+      "responseLegend": "Response",
+      "audioFileInfo": "Audio File Info",
+      "audioFileName": "File Name",
+      "audioFormat": "Format",
+      "audioFileSize": "File Size",
+      "audioSampleRate": "Original Sample Rate",
+      "audioChannels": "Channels",
+      "audioDecodedSamples": "Decoded Samples",
+      "audioDecodedDuration": "Decoded Duration",
+      "audioMono": "Mono",
+      "audioStereo": "Stereo"
     },
     "export": {
       "title": "Export"

@@ -18079,6 +18079,16 @@
     }
   },
   {
+    "label": "diagnostics.openExternalUrl",
+    "command": "diagnostics_v2",
+    "payload": {
+      "command": {
+        "action": "openExternalUrl",
+        "url": "https://platform.openai.com/api-keys"
+      }
+    }
+  },
+  {
     "label": "configuration.load",
     "command": "configuration_v2",
     "payload": {

@@ -116,6 +116,7 @@ describe('DesktopApiV2 configuration client', () => {
     await api.diagnostics.appendLogs([], 2);
     await api.diagnostics.setLogLevel('warning');
     await api.diagnostics.openExportDirectory('C:/exports/report.json');
+    await api.diagnostics.openExternalUrl('https://platform.openai.com/api-keys');
     await api.diagnostics.writeExportArtifact('report.json', '{}');
     await api.configuration.load();
     await api.configuration.save(config);
@@ -184,7 +185,7 @@ describe('DesktopApiV2 configuration client', () => {
       'provider_v2',
       { command: { action: 'runModelBenchmark', ...benchmarkPayload } },
     ]);
-    expect(calls).toHaveLength(53);
+    expect(calls).toHaveLength(54);
   });
 
   it('adapts native window coordinates, sizing and popup menus', async () => {
@@ -324,6 +325,7 @@ async function collectEmittedCommands(): Promise<FixtureEntry[]> {
     ['diagnostics.watchSessionReport', () => api.diagnostics.watchSessionReport()],
     ['diagnostics.clearWatchSessionReport', () => api.diagnostics.clearWatchSessionReport()],
     ['diagnostics.snapshot', () => api.diagnostics.snapshot()],
+    ['diagnostics.openExternalUrl', () => api.diagnostics.openExternalUrl('https://platform.openai.com/api-keys')],
     ['configuration.load', () => api.configuration.load()],
     ['configuration.save', () => api.configuration.save(config)],
     ['configuration.reset', () => api.configuration.reset()],
@@ -402,6 +404,7 @@ describe('desktop-api-v2 command fixture (renderer→shell wire pin)', () => {
       'configuration_v2:secretUpsert',
       'diagnostics_v2:clearWatchSessionReport',
       'diagnostics_v2:export',
+      'diagnostics_v2:openExternalUrl',
       'diagnostics_v2:overlaySelfCheck',
       'diagnostics_v2:selfCheck',
       'diagnostics_v2:snapshot',

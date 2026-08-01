@@ -356,6 +356,11 @@ impl SttConnectionRuntime {
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AudioRuntimeSnapshot {
+    /// Monotonically increasing sequence number. Each call to
+    /// `AudioStateStore::snapshot()` increments a global counter so the
+    /// frontend can discard stale out-of-order push events (e.g. a pre-clear
+    /// snapshot arriving after the clear invoke reply).
+    pub snapshot_seq: u64,
     #[ts(type = "'preview' | 'ready' | 'degraded'")]
     pub status: String,
     pub host: String,
@@ -374,6 +379,7 @@ pub(crate) struct AudioRuntimeSnapshot {
 impl AudioRuntimeSnapshot {
     pub(crate) fn preview() -> Self {
         Self {
+            snapshot_seq: 0,
             status: "preview".to_string(),
             host: "wasapi".to_string(),
             render_devices: Vec::new(),

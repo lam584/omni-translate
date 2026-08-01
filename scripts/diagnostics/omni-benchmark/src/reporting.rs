@@ -65,10 +65,22 @@ pub struct RunResult {
 }
 
 #[derive(Debug, Clone, Serialize)]
+pub struct AudioFileInfo {
+    pub file_name: String,
+    pub format: String,
+    pub file_size_bytes: u64,
+    pub original_sample_rate: u32,
+    pub channels: u16,
+    pub decoded_samples: usize,
+    pub duration_secs: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
 pub struct BenchmarkReport {
     pub model: String,
     pub audio_file: String,
     pub audio_duration_secs: f64,
+    pub audio_info: Option<AudioFileInfo>,
     pub runs: Vec<RunResult>,
     pub summary: Summary,
 }

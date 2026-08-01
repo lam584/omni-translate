@@ -168,12 +168,32 @@ struct RunResult {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+struct AudioFileInfo {
+    /// Original file name (e.g. "sample.mp3")
+    file_name: String,
+    /// File format derived from extension (e.g. "mp3", "wav", "pcm")
+    format: String,
+    /// File size in bytes
+    file_size_bytes: u64,
+    /// Original sample rate before resampling (Hz)
+    original_sample_rate: u32,
+    /// Number of channels in the source file
+    channels: u16,
+    /// Decoded mono sample count at 16kHz
+    decoded_samples: usize,
+    /// Duration in seconds after decoding
+    duration_secs: f64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 struct BenchmarkReport {
     model: String,
     realtime_audio_mode: String,
     interaction_capabilities: Vec<String>,
     audio_file: String,
     audio_duration_secs: f64,
+    audio_info: Option<AudioFileInfo>,
     runs: Vec<RunResult>,
     summary: Summary,
 }
@@ -218,6 +238,7 @@ struct BenchmarkProgressState {
     realtime_audio_mode: RealtimeAudioMode,
     interaction_capabilities: Vec<String>,
     audio_duration_secs: f64,
+    audio_info: Option<AudioFileInfo>,
     total_audio_chunks: usize,
     run: RunResult,
     last_audio_progress_emit: Instant,
@@ -242,6 +263,7 @@ impl BenchmarkProgressState {
             realtime_audio_mode,
             interaction_capabilities,
             audio_duration_secs,
+            audio_info: None,
             total_audio_chunks,
             run: empty_run_result(0, model, audio_duration_secs),
             last_audio_progress_emit: Instant::now() - Duration::from_secs(1),
@@ -256,6 +278,7 @@ impl BenchmarkProgressState {
             interaction_capabilities: self.interaction_capabilities.clone(),
             audio_file: self.audio_file.clone(),
             audio_duration_secs: self.audio_duration_secs,
+            audio_info: self.audio_info.clone(),
             summary: compute_summary(&[run.clone()], self.audio_duration_secs),
             runs: vec![run],
         }
@@ -309,6 +332,15 @@ mod tests {
             interaction_capabilities: vec!["manual_commit".to_string()],
             audio_file: "sample.mp3".to_string(),
             audio_duration_secs: 12.5,
+            audio_info: Some(AudioFileInfo {
+                file_name: "sample.mp3".to_string(),
+                format: "mp3".to_string(),
+                file_size_bytes: 204800,
+                original_sample_rate: 44100,
+                channels: 2,
+                decoded_samples: 200000,
+                duration_secs: 12.5,
+            }),
             summary: compute_summary(&[run.clone()], 12.5),
             runs: vec![run],
         };
@@ -320,6 +352,12 @@ mod tests {
         assert!(json["runs"][0]["responseDoneAudioChunksSent"].is_null());
         assert!(json["runs"][0]["responseDoneAudioSentSecs"].is_null());
         assert_eq!(json["summary"]["successfulRuns"], 0);
+        assert_eq!(json["audioInfo"]["fileName"], "sample.mp3");
+        assert_eq!(json["audioInfo"]["format"], "mp3");
+        assert_eq!(json["audioInfo"]["fileSizeBytes"], 204800);
+        assert_eq!(json["audioInfo"]["originalSampleRate"], 44100);
+        assert_eq!(json["audioInfo"]["channels"], 2);
+        assert_eq!(json["audioInfo"]["decodedSamples"], 200000);
     }
 
     #[test]

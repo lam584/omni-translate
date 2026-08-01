@@ -57,5 +57,12 @@ export type SttConnectionRuntime = {
  */
 state: 'idle' | 'connected' | 'reconnecting' | 'disconnected', reconnectAttempt: number, maxReconnectAttempts: number, lastDisconnectReason: string | null, };
 
-export type AudioRuntimeSnapshot = { status: 'preview' | 'ready' | 'degraded', host: string, renderDevices: Array<AudioDeviceRuntime>, captureDevices: Array<AudioDeviceRuntime>, inbound: AudioRouteRuntimeSnapshot, outbound: AudioRouteRuntimeSnapshot, subtitleOverlay: SubtitleOverlayRuntimeSnapshot, speech: SpeechRuntimeSnapshot, sessionStartedAt: string | null, sttConnected: boolean, sttBufferSize: number, sttConnection: SttConnectionRuntime, };
+export type AudioRuntimeSnapshot = {
+/**
+ * Monotonically increasing sequence number. Each call to
+ * `AudioStateStore::snapshot()` increments a global counter so the
+ * frontend can discard stale out-of-order push events (e.g. a pre-clear
+ * snapshot arriving after the clear invoke reply).
+ */
+snapshotSeq: number, status: 'preview' | 'ready' | 'degraded', host: string, renderDevices: Array<AudioDeviceRuntime>, captureDevices: Array<AudioDeviceRuntime>, inbound: AudioRouteRuntimeSnapshot, outbound: AudioRouteRuntimeSnapshot, subtitleOverlay: SubtitleOverlayRuntimeSnapshot, speech: SpeechRuntimeSnapshot, sessionStartedAt: string | null, sttConnected: boolean, sttBufferSize: number, sttConnection: SttConnectionRuntime, };
 

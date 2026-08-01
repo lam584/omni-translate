@@ -32,12 +32,11 @@ describe('default provider template', () => {
     );
   });
 
-  it('enables only OpenAI, Aliyun Bailian and DeepSeek by default', () => {
+  it('enables only Aliyun Bailian and DeepSeek by default', () => {
     const entries = buildProviderTemplateCatalogEntries(providerTemplates, []);
     const enabledTemplateIds = entries.filter((entry) => entry.enabled).map((entry) => entry.template.id);
 
     expect(enabledTemplateIds).toEqual([
-      'template-openai-compatible-realtime',
       'template-dashscope-realtime',
       'template-deepseek',
     ]);

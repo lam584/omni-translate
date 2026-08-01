@@ -2,7 +2,7 @@ use std::thread;
 use std::time::Duration;
 
 use crate::config::Config;
-use crate::audio::read_audio_samples;
+use crate::audio::read_audio_with_info;
 use crate::dashscope;
 use crate::gemini;
 use crate::openai;
@@ -14,7 +14,9 @@ use crate::reporting::{
 // ──────────────────────────────── Benchmark Runner ──────────────────────────
 
 pub fn run_benchmark(config: Config) -> Result<(), String> {
-    let mut samples = read_audio_samples(&config.audio_path)?;
+    let decode_result = read_audio_with_info(&config.audio_path)?;
+    let mut samples = decode_result.samples;
+    let audio_info = decode_result.info;
     if let Some(limit) = config.limit_seconds {
         let max = (limit * 16_000.0).ceil() as usize;
         if samples.len() > max {
@@ -76,6 +78,7 @@ pub fn run_benchmark(config: Config) -> Result<(), String> {
         model: config.model.clone(),
         audio_file: config.audio_path.display().to_string(),
         audio_duration_secs: audio_duration,
+        audio_info: Some(audio_info),
         runs: results,
         summary,
     };

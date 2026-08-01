@@ -183,6 +183,8 @@ export class DesktopApiV2 {
       unwrap(await this.invokeFn<ServiceResult<{ recentLogs?: DiagnosticLogEntryRuntime[] }>>('diagnostics_v2', { command: { action: 'snapshot' } satisfies DiagnosticsCommandV2 })),
     openExportDirectory: async (outputPath: string) =>
       unwrap(await this.invokeFn<ServiceResult<null>>('diagnostics_v2', { command: { action: 'openExportDirectory', outputPath } satisfies DiagnosticsCommandV2 })),
+    openExternalUrl: async (url: string) =>
+      unwrap(await this.invokeFn<ServiceResult<null>>('diagnostics_v2', { command: { action: 'openExternalUrl', url } satisfies DiagnosticsCommandV2 })),
     writeExportArtifact: async (filename: string, content: string) =>
       unwrap(await this.invokeFn<ServiceResult<{ outputPath: string; fileCount: number }>>('diagnostics_v2', { command: { action: 'writeExportArtifact', filename, content } satisfies DiagnosticsCommandV2 })),
   };

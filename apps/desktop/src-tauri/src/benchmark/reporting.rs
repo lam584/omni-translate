@@ -315,24 +315,39 @@ fn wait_gemini_setup_ready(
 
 // ──────────────────────────────── Audio I/O ─────────────────────────────────
 
-fn read_mp3_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
+struct AudioDecodeResult {
+    samples: Vec<i16>,
+    original_sample_rate: u32,
+    channels: u16,
+    file_size_bytes: u64,
+}
+
+fn read_mp3_samples_with_info(path: &PathBuf) -> Result<AudioDecodeResult, String> {
+    let file_size_bytes = std::fs::metadata(path)
+        .map(|m| m.len())
+        .unwrap_or(0);
     let file =
         std::fs::File::open(path).map_err(|e| format!("open MP3 '{}': {e}", path.display()))?;
     let mut decoder = minimp3::Decoder::new(file);
     let mut mono = Vec::new();
     let mut sample_rate: Option<u32> = None;
+    let mut channels: u16 = 1;
 
     loop {
         match decoder.next_frame() {
             Ok(frame) => {
                 sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
-                let channels = frame.channels.max(1);
-                mono.extend(frame.data.chunks(channels).map(|ch| {
-                    ch.iter()
+                let ch = frame.channels.max(1);
+                if ch > 1 {
+                    channels = ch as u16;
+                }
+                mono.extend(frame.data.chunks(ch).map(|ch_slice| {
+                    ch_slice
+                        .iter()
                         .copied()
                         .map(|s| s as f32 / i16::MAX as f32)
                         .sum::<f32>()
-                        / ch.len().max(1) as f32
+                        / ch_slice.len().max(1) as f32
                 }));
             }
             Err(minimp3::Error::Eof) => break,
@@ -340,7 +355,14 @@ fn read_mp3_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
         }
     }
 
-    Ok(resample_to_16k(&mono, sample_rate.unwrap_or(16_000)))
+    let original_sample_rate = sample_rate.unwrap_or(16_000);
+    let samples = resample_to_16k(&mono, original_sample_rate);
+    Ok(AudioDecodeResult {
+        samples,
+        original_sample_rate,
+        channels,
+        file_size_bytes,
+    })
 }
 
 fn resample_to_16k(samples: &[f32], source_rate: u32) -> Vec<i16> {

@@ -1,10 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import i18n from '../../i18n/config';
 import { runModelBenchmark, type BenchmarkProgressEvent, type BenchmarkReport } from '../../runtime/benchmark-runtime';
 import { readProviderSecret } from '../../runtime/provider-runtime';
 import type { ProviderDraft, RealtimeAudioMode } from '../../schema/config';
 import type { ProviderInteractionCapability } from '../../schema/provider-contract';
 import { describeUnknownError } from '../../utils/describe-unknown-error';
+import { ALL_BENCHMARK_AUDIO_PRESETS, CUSTOM_AUDIO_VALUE, DEFAULT_BENCHMARK_AUDIO_PATH } from './benchmark-audio-fixtures';
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
 
 export type BenchmarkVoiceModel = {
@@ -44,12 +45,27 @@ export function classifyBenchmarkError(error: unknown) {
 
 export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[]) {
   const [modelId, setModelId] = useState('');
-  const [mp3Path, setMp3Path] = useState('scripts/testing/fixtures/watch-mode-en-original.wav');
+  const [audioSource, setAudioSource] = useState<string>(DEFAULT_BENCHMARK_AUDIO_PATH);
+  const [customPath, setCustomPath] = useState('');
   const [running, setRunning] = useState(false);
   const [report, setReport] = useState<BenchmarkReport | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [progress, setProgress] = useState<BenchmarkProgressView | null>(null);
+
+  const audioPresets = useMemo(() => ALL_BENCHMARK_AUDIO_PRESETS, []);
+
+  /** Resolved audio path: preset path or custom input depending on selection. */
+  const mp3Path = audioSource === CUSTOM_AUDIO_VALUE ? customPath : audioSource;
+  const setMp3Path = (value: string) => {
+    const preset = audioPresets.find((p) => p.path === value);
+    if (preset) {
+      setAudioSource(preset.path);
+    } else {
+      setAudioSource(CUSTOM_AUDIO_VALUE);
+      setCustomPath(value);
+    }
+  };
 
   useEffect(() => {
     if (!modelId && voiceModelOptions.length) queueMicrotask(() => setModelId(voiceModelOptions[0]!.modelId));
@@ -96,5 +112,5 @@ export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[])
     }
   };
 
-  return { modelId, setModelId, mp3Path, setMp3Path, running, report, error, modalOpen, setModalOpen, progress, run };
+  return { modelId, setModelId, audioSource, setAudioSource, customPath, setCustomPath, mp3Path, setMp3Path, audioPresets, running, report, error, modalOpen, setModalOpen, progress, run };
 }

@@ -82,6 +82,9 @@ pub(crate) struct AudioStateStore {
     /// `processed` map when the value changes so stale entries from before the
     /// reconnect cannot block re-translation of new cues.
     reconnect_generation: std::sync::atomic::AtomicU64,
+    /// Monotonically increasing snapshot sequence number. Incremented on every
+    /// `snapshot()` call so the frontend can discard stale out-of-order events.
+    snapshot_seq: std::sync::atomic::AtomicU64,
     pub watch_session_report: WatchSessionReportStore,
 }
 impl AudioStateStore {
@@ -102,6 +105,7 @@ impl AudioStateStore {
             warmer: CaptureRouteWarmer::new(),
             stt_session_epoch: std::sync::atomic::AtomicU64::new(0),
             reconnect_generation: std::sync::atomic::AtomicU64::new(0),
+            snapshot_seq: std::sync::atomic::AtomicU64::new(0),
             watch_session_report: WatchSessionReportStore::new(),
         }
     }
@@ -115,6 +119,10 @@ impl AudioStateStore {
         let mut snapshot = self.inner.lock().expect("audio state poisoned").clone();
         snapshot.subtitle_overlay = self.subtitles.snapshot();
         snapshot.subtitle_overlay.report_session_id = self.watch_session_report.session_id();
+        snapshot.snapshot_seq = self
+            .snapshot_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .wrapping_add(1);
         snapshot
     }
 

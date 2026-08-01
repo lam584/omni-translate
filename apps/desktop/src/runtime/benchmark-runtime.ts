@@ -66,12 +66,23 @@ export type BenchmarkSummary = {
   maxDeltaIntervalMs: number | null;
 };
 
+export type BenchmarkAudioFileInfo = {
+  fileName: string;
+  format: string;
+  fileSizeBytes: number;
+  originalSampleRate: number;
+  channels: number;
+  decodedSamples: number;
+  durationSecs: number;
+};
+
 export type BenchmarkReport = {
   model: string;
   realtimeAudioMode?: RealtimeAudioMode;
   interactionCapabilities?: ProviderInteractionCapability[];
   audioFile: string;
   audioDurationSecs: number;
+  audioInfo?: BenchmarkAudioFileInfo | null;
   runs: BenchmarkRunResult[];
   summary: BenchmarkSummary;
 };

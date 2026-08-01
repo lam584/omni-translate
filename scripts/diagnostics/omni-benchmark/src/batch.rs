@@ -299,6 +299,7 @@ fn run_single_model(
         audio_duration_secs: audio_duration,
         runs: vec![run_result],
         summary,
+        audio_info: None,
     };
 
     Ok(ModelResult {

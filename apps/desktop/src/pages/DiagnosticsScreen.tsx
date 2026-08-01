@@ -19,6 +19,7 @@ import { resolveInteractionCapabilities, resolveRealtimeAudioMode } from '../uti
 import { collectProviderModelOptions } from '../utils/provider-model-options';
 import { LogLevelControl } from './diagnostics/LogLevelControl';
 import { useDiagnosticsWorkbenchController } from './diagnostics/useDiagnosticsActions';
+import { CUSTOM_AUDIO_VALUE } from './diagnostics/benchmark-audio-fixtures';
 import { useBenchmarkController, type BenchmarkVoiceModel } from './diagnostics/useBenchmarkController';
 import {
   BenchmarkProgressBanner, BenchmarkReportDetail, DiagnosticsReportExporter, ExportButton,
@@ -82,13 +83,13 @@ function DiagnosticsPage() {
   const voiceModelOptions = useMemo(
     () => collectProviderModelOptions(configDraft.providers, {
       scenarios: ['watch', 'game', 'voice-room'],
-      dedupeKey: 'model',
-      project: ({ modelId, provider }): BenchmarkVoiceModel => {
+      dedupeKey: 'provider-model',
+      project: ({ templateId, modelId, provider }): BenchmarkVoiceModel => {
         const apiModelId = modelId.includes('::') ? modelId.split('::')[1] || modelId : modelId;
         return {
-          modelId,
+          modelId: `${templateId}::${modelId}`,
           apiModelId,
-          displayName: modelId,
+          displayName: `${provider.displayName ?? templateId}: ${modelId}`,
           authReference: provider.authRef?.reference ?? '',
           realtimeAudioMode: resolveRealtimeAudioMode(apiModelId, provider.localModelCapabilityRegistry ?? [], apiModelId),
           interactionCapabilities: resolveInteractionCapabilities(apiModelId, provider.localModelCapabilityRegistry ?? [], apiModelId),
@@ -106,8 +107,11 @@ function DiagnosticsPage() {
   const {
     modelId: benchmarkModelId,
     setModelId: setBenchmarkModelId,
-    mp3Path: benchmarkMp3Path,
-    setMp3Path: setBenchmarkMp3Path,
+    audioSource: benchmarkAudioSource,
+    setAudioSource: setBenchmarkAudioSource,
+    customPath: benchmarkCustomPath,
+    setCustomPath: setBenchmarkCustomPath,
+    audioPresets: benchmarkAudioPresets,
     running: benchmarkRunning,
     report: benchmarkReport,
     error: benchmarkError,
@@ -452,16 +456,41 @@ function DiagnosticsPage() {
             </select>
           </div>
           <div className="diagnostics-benchmark-row">
-            <label className="diagnostics-benchmark-label">{i18n.t('diagnostics.benchmark.mp3Path')}</label>
-            <input
-              className="diagnostics-benchmark-input"
+            <label className="diagnostics-benchmark-label">{i18n.t('diagnostics.benchmark.audioSource')}</label>
+            <select
+              className="diagnostics-benchmark-select"
               disabled={benchmarkRunning}
-              onChange={(event) => setBenchmarkMp3Path(event.target.value)}
-              placeholder="E:\\path\\sample.mp3"
-              type="text"
-              value={benchmarkMp3Path}
-            />
+              onChange={(event) => setBenchmarkAudioSource(event.target.value)}
+              value={benchmarkAudioSource}
+            >
+              <optgroup label={i18n.t('diagnostics.benchmark.presetEnglish')}>
+                {benchmarkAudioPresets.filter((p) => p.languageCode === 'en').map((preset) => (
+                  <option key={preset.path} value={preset.path}>{preset.label}</option>
+                ))}
+              </optgroup>
+              <optgroup label={i18n.t('diagnostics.benchmark.presetMultilingual')}>
+                {benchmarkAudioPresets.filter((p) => p.languageCode !== 'en').map((preset) => (
+                  <option key={preset.path} value={preset.path}>
+                    {preset.label}{preset.durationSeconds ? ` (~${Math.round(preset.durationSeconds)}s)` : ''}
+                  </option>
+                ))}
+              </optgroup>
+              <option value={CUSTOM_AUDIO_VALUE}>{i18n.t('diagnostics.benchmark.customAudio')}</option>
+            </select>
           </div>
+          {benchmarkAudioSource === CUSTOM_AUDIO_VALUE ? (
+            <div className="diagnostics-benchmark-row">
+              <label className="diagnostics-benchmark-label">{i18n.t('diagnostics.benchmark.mp3Path')}</label>
+              <input
+                className="diagnostics-benchmark-input"
+                disabled={benchmarkRunning}
+                onChange={(event) => setBenchmarkCustomPath(event.target.value)}
+                placeholder="E:\\path\\sample.mp3"
+                type="text"
+                value={benchmarkCustomPath}
+              />
+            </div>
+          ) : null}
           <div className="diagnostics-benchmark-row">
             <button className="icon-button diagnostics-primary-action" disabled={benchmarkRunning || voiceModelOptions.length === 0} onClick={() => void runBenchmarkTest()} type="button">
               <AppIcon name="activity" size={14} />

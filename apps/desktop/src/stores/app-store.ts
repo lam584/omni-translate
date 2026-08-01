@@ -182,6 +182,17 @@ export const useAppStore = create<AppStoreState>((set) => ({
     }),
   setAudioRuntimeSnapshot: (snapshot) =>
     set((state) => {
+      // Discard stale out-of-order push events: the backend assigns a
+      // monotonically increasing seq to every snapshot. A snapshot whose seq
+      // is not newer than the one already in the store is stale (e.g. a
+      // pre-clear event arriving after the clear invoke reply) and must be
+      // dropped to prevent resurrecting cleared cues.
+      const incomingSeq = snapshot.snapshotSeq ?? 0;
+      const currentSeq = state.audioRuntimeSnapshot.snapshotSeq ?? 0;
+      if (incomingSeq > 0 && incomingSeq <= currentSeq) {
+        return state;
+      }
+
       const sessionRunning = snapshot.inbound.streamBound || snapshot.outbound.streamBound;
       const previousSessionRunning =
         state.audioRuntimeSnapshot.inbound.streamBound || state.audioRuntimeSnapshot.outbound.streamBound;

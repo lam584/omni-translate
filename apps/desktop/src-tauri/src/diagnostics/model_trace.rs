@@ -120,6 +120,7 @@ impl<R: tauri::Runtime> ModelTraceRecorder<R> {
     /// call summary. This is used for pipeline observations that happen after
     /// a provider call has completed, such as comparing the provider's exact
     /// text with the subtitle cue that was ultimately published.
+    #[allow(dead_code, reason = "pipeline observation hook is part of the provider instrumentation contract")]
     pub(crate) fn record_event(&self, name: &str, label: &str, value: Value) {
         let event_id = format!("event-{}", Uuid::new_v4());
         let detail = model_trace_detail(&self.context, &event_id, name, label, value);

@@ -629,6 +629,8 @@ describe('DiagnosticsPage monitoring boundary', () => {
     });
     await renderPageAndFlush();
 
+    const audioSelect = container.querySelectorAll<HTMLSelectElement>('.diagnostics-benchmark-select')[1]!;
+    await changeValue(audioSelect, '__custom__');
     await changeValue(container.querySelector<HTMLInputElement>('.diagnostics-benchmark-input')!, '   ');
     await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action'));
 
@@ -662,13 +664,15 @@ describe('DiagnosticsPage monitoring boundary', () => {
 
     const select = container.querySelector<HTMLSelectElement>('.diagnostics-benchmark-select')!;
     expect(select.options.length).toBe(2);
-    await changeValue(select, 'second-live');
+    await changeValue(select, 'template-dashscope-realtime::second-live');
+    const audioSelect = container.querySelectorAll<HTMLSelectElement>('.diagnostics-benchmark-select')[1]!;
+    await changeValue(audioSelect, '__custom__');
     await changeValue(container.querySelector<HTMLInputElement>('.diagnostics-benchmark-input')!, 'E:\\audio\\sample.mp3');
     await clickAndSettle(container.querySelector<HTMLButtonElement>('.diagnostics-benchmark-panel .diagnostics-primary-action'));
 
     expect(fake.commandCalls('configuration_v2').map((call) => call.action)).toEqual(['secretRead']);
     expect(fake.commandCalls('provider_v2')).toHaveLength(0);
-    expect(container.textContent).toContain('未找到模型 second-live 的 API Key');
+    expect(container.textContent).toContain('未找到模型 阿里云百炼 API: second-live 的 API Key');
   });
 
   it('closes benchmark result modal from the close button and backdrop', async () => {

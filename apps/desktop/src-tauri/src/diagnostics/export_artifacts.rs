@@ -24,6 +24,17 @@ pub(crate) fn open_export_directory(output_path: &str) -> Result<(), String> {
     Ok(())
 }
 
+pub(crate) fn open_external_url(url: &str) -> Result<(), String> {
+    if !url.starts_with("https://") && !url.starts_with("http://") {
+        return Err(format!("refusing to open non-http url: {url}"));
+    }
+    Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .spawn()
+        .map_err(|error| format!("failed to open external url: {error}"))?;
+    Ok(())
+}
+
 pub(crate) fn write_export_artifact<R: tauri::Runtime>(
     app: &AppHandle<R>,
     filename: &str,

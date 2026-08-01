@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use base64::Engine;
 
+use crate::reporting::AudioFileInfo;
+
 // ──────────────────────────────── Constants ────────────────────────────────
 
 pub const CHUNK_SAMPLES: usize = 320; // 20ms @ 16kHz
@@ -9,22 +11,96 @@ pub const CHUNK_SEND_INTERVAL_MS: u64 = 18;
 
 // ──────────────────────────────── Audio I/O ─────────────────────────────────
 
+pub struct AudioDecodeResult {
+    pub samples: Vec<i16>,
+    pub info: AudioFileInfo,
+}
+
 pub fn read_audio_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
-    match path
+    read_audio_with_info(path).map(|r| r.samples)
+}
+
+pub fn read_audio_with_info(path: &PathBuf) -> Result<AudioDecodeResult, String> {
+    let file_size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let file_name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| path.display().to_string());
+    let format = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .unwrap_or("")
-        .to_ascii_lowercase()
-        .as_str()
-    {
-        "mp3" => read_mp3_samples(path),
-        "wav" | "wave" => read_wav_samples(path),
-        "pcm" | "s16le" | "raw" => read_pcm16_mono_samples(path),
-        other => Err(format!(
-            "unsupported audio extension '{}'; expected .mp3, .wav, .pcm, .s16le, or .raw",
-            if other.is_empty() { "(none)" } else { other }
-        )),
+        .unwrap_or("unknown")
+        .to_ascii_lowercase();
+
+    let (samples, original_sample_rate, channels) = match format.as_str() {
+        "mp3" => read_mp3_with_metadata(path)?,
+        "wav" | "wave" => read_wav_with_metadata(path)?,
+        "pcm" | "s16le" | "raw" => {
+            let s = read_pcm16_mono_samples(path)?;
+            (s, 16_000u32, 1u16)
+        }
+        other => {
+            return Err(format!(
+                "unsupported audio extension '{}'; expected .mp3, .wav, .pcm, .s16le, or .raw",
+                if other.is_empty() { "(none)" } else { other }
+            ))
+        }
+    };
+
+    let duration_secs = samples.len() as f64 / 16_000.0;
+    let info = AudioFileInfo {
+        file_name,
+        format,
+        file_size_bytes,
+        original_sample_rate,
+        channels,
+        decoded_samples: samples.len(),
+        duration_secs,
+    };
+
+    Ok(AudioDecodeResult { samples, info })
+}
+
+fn read_mp3_with_metadata(path: &PathBuf) -> Result<(Vec<i16>, u32, u16), String> {
+    let file =
+        std::fs::File::open(path).map_err(|e| format!("open MP3 '{}': {e}", path.display()))?;
+    let mut decoder = minimp3::Decoder::new(file);
+    let mut mono = Vec::new();
+    let mut sample_rate: Option<u32> = None;
+    let mut channels: u16 = 1;
+
+    loop {
+        match decoder.next_frame() {
+            Ok(frame) => {
+                sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
+                let ch = frame.channels.max(1);
+                if ch > 1 {
+                    channels = ch as u16;
+                }
+                mono.extend(frame.data.chunks(ch).map(|ch_slice| {
+                    ch_slice
+                        .iter()
+                        .copied()
+                        .map(|s| s as f32 / i16::MAX as f32)
+                        .sum::<f32>()
+                        / ch_slice.len().max(1) as f32
+                }));
+            }
+            Err(minimp3::Error::Eof) => break,
+            Err(e) => return Err(format!("MP3 decode '{}': {e}", path.display())),
+        }
     }
+
+    let original_rate = sample_rate.unwrap_or(16_000);
+    Ok((resample_to_16k(&mono, original_rate), original_rate, channels))
+}
+
+fn read_wav_with_metadata(path: &PathBuf) -> Result<(Vec<i16>, u32, u16), String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("read WAV '{}': {e}", path.display()))?;
+    let wav = parse_wav(&bytes).map_err(|e| format!("WAV decode '{}': {e}", path.display()))?;
+    let channels = wav.channels;
+    let rate = wav.sample_rate;
+    Ok((resample_to_16k(&wav.samples, rate), rate, channels))
 }
 
 fn read_pcm16_mono_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
@@ -42,15 +118,10 @@ fn read_pcm16_mono_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
         .collect())
 }
 
-fn read_wav_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("read WAV '{}': {e}", path.display()))?;
-    let wav = parse_wav(&bytes).map_err(|e| format!("WAV decode '{}': {e}", path.display()))?;
-    Ok(resample_to_16k(&wav.samples, wav.sample_rate))
-}
-
 struct WavAudio {
     samples: Vec<f32>,
     sample_rate: u32,
+    channels: u16,
 }
 
 fn parse_wav(bytes: &[u8]) -> Result<WavAudio, String> {
@@ -144,35 +215,8 @@ fn parse_wav(bytes: &[u8]) -> Result<WavAudio, String> {
     Ok(WavAudio {
         samples: mono,
         sample_rate,
+        channels: channels as u16,
     })
-}
-
-fn read_mp3_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
-    let file =
-        std::fs::File::open(path).map_err(|e| format!("open MP3 '{}': {e}", path.display()))?;
-    let mut decoder = minimp3::Decoder::new(file);
-    let mut mono = Vec::new();
-    let mut sample_rate: Option<u32> = None;
-
-    loop {
-        match decoder.next_frame() {
-            Ok(frame) => {
-                sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
-                let channels = frame.channels.max(1);
-                mono.extend(frame.data.chunks(channels).map(|ch| {
-                    ch.iter()
-                        .copied()
-                        .map(|s| s as f32 / i16::MAX as f32)
-                        .sum::<f32>()
-                        / ch.len().max(1) as f32
-                }));
-            }
-            Err(minimp3::Error::Eof) => break,
-            Err(e) => return Err(format!("MP3 decode '{}': {e}", path.display())),
-        }
-    }
-
-    Ok(resample_to_16k(&mono, sample_rate.unwrap_or(16_000)))
 }
 
 pub fn resample_to_16k(samples: &[f32], source_rate: u32) -> Vec<i16> {

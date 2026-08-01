@@ -23,6 +23,7 @@ function makeBrowserPreviewCue(): NonNullable<AudioRuntimeSnapshot['subtitleOver
 }
 
 export const audioRuntimeSnapshotMock: AudioRuntimeSnapshot = {
+  snapshotSeq: 0,
   status: 'preview',
   host: 'wasapi',
   sessionStartedAt: null,

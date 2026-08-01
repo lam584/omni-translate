@@ -1,7 +1,7 @@
 import { type ReactNode, useState } from 'react';
 import AppIcon from '../../components/icons/AppIcon';
 import i18n from '../../i18n/config';
-import type { BenchmarkProgressEvent, BenchmarkReport } from '../../runtime/benchmark-runtime';
+import type { BenchmarkProgressEvent, BenchmarkReport, BenchmarkAudioFileInfo } from '../../runtime/benchmark-runtime';
 import type { LiveSessionEvents } from '../../runtime/live-session-events-runtime';
 import { writeExportArtifactRuntime, type ExportArtifactReceipt } from '../../runtime/export-artifact-runtime';
 
@@ -150,6 +150,34 @@ export function buildOutputSegments(deltas: BenchmarkReport['runs'][number]['out
   return segments;
 }
 
+function formatFileSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+export function AudioFileInfoSection({ info }: { info: BenchmarkAudioFileInfo }) {
+  const channelLabel = info.channels === 1
+    ? i18n.t('diagnostics.benchmark.audioMono')
+    : info.channels === 2
+      ? i18n.t('diagnostics.benchmark.audioStereo')
+      : `${info.channels}`;
+  return (
+    <div className="benchmark-section">
+      <h4>{i18n.t('diagnostics.benchmark.audioFileInfo')}</h4>
+      <div className="benchmark-metrics-grid">
+        <BenchmarkMetric label={i18n.t('diagnostics.benchmark.audioFileName')} value={info.fileName} />
+        <BenchmarkMetric label={i18n.t('diagnostics.benchmark.audioFormat')} value={info.format.toUpperCase()} />
+        <BenchmarkMetric label={i18n.t('diagnostics.benchmark.audioFileSize')} value={formatFileSize(info.fileSizeBytes)} />
+        <BenchmarkMetric label={i18n.t('diagnostics.benchmark.audioSampleRate')} value={`${info.originalSampleRate} Hz`} />
+        <BenchmarkMetric label={i18n.t('diagnostics.benchmark.audioChannels')} value={channelLabel} />
+        <BenchmarkMetric label={i18n.t('diagnostics.benchmark.audioDecodedSamples')} value={`${info.decodedSamples.toLocaleString()} @ 16kHz`} />
+        <BenchmarkMetric label={i18n.t('diagnostics.benchmark.audioDecodedDuration')} value={`${info.durationSecs.toFixed(2)}s`} />
+      </div>
+    </div>
+  );
+}
+
 export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
   const run = report.runs[0];
   if (!run) {
@@ -213,6 +241,8 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
           <span>{i18n.t('diagnostics.benchmark.transcriptOnlyHint')}</span>
         </div>
       ) : null}
+
+      {report.audioInfo ? <AudioFileInfoSection info={report.audioInfo} /> : null}
 
       <div className="benchmark-section">
         <h4>{i18n.t('diagnostics.benchmark.timeline')}</h4>
@@ -419,6 +449,18 @@ export function formatBenchmarkTxt(report: BenchmarkReport): string {
   lines.push(`Model: ${report.model}`);
   lines.push(`Audio File: ${report.audioFile}`);
   lines.push(`Audio Duration: ${report.audioDurationSecs.toFixed(1)}s`);
+  if (report.audioInfo) {
+    const ai = report.audioInfo;
+    lines.push('');
+    lines.push('--- Audio File Info ---');
+    lines.push(`  File Name: ${ai.fileName}`);
+    lines.push(`  Format: ${ai.format.toUpperCase()}`);
+    lines.push(`  File Size: ${formatFileSize(ai.fileSizeBytes)}`);
+    lines.push(`  Original Sample Rate: ${ai.originalSampleRate} Hz`);
+    lines.push(`  Channels: ${ai.channels}`);
+    lines.push(`  Decoded Samples: ${ai.decodedSamples} @ 16kHz`);
+    lines.push(`  Decoded Duration: ${ai.durationSecs.toFixed(2)}s`);
+  }
   lines.push('');
   const s = report.summary;
   lines.push('--- Summary ---');

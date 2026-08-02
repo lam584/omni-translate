@@ -1,5 +1,9 @@
-use super::connection_coordinator::{provider_error_code, provider_error_message};
+use super::connection_coordinator::{
+    is_idle_preconnect_session, provider_error_code, provider_error_message,
+};
+use super::session_errors::is_provider_idle_timeout_error;
 use super::*;
+use crate::audio::glossary::GlossaryContext;
 
 pub(super) struct OmniSocketEventState<S: RealtimeSocket, R: tauri::Runtime = tauri::Wry> {
     pub(super) socket: S,
@@ -43,6 +47,7 @@ pub(super) struct OmniSocketEventContext<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) readiness_tx: &'a mpsc::Sender<Result<u64, String>>,
     pub(super) provider: &'a ProviderDraftInput,
     pub(super) instructions: &'a str,
+    pub(super) glossary: &'a GlossaryContext,
     pub(super) audio_mode: RealtimeAudioMode,
     pub(super) output_mode: OmniOutputMode,
     pub(super) target_language: &'a str,
@@ -59,6 +64,10 @@ pub(super) struct OmniSocketPollResult<S: RealtimeSocket, R: tauri::Runtime = ta
     /// session and its input buffer are gone, so the worker must reset the
     /// manual response gate and the commit timer.
     pub(super) socket_reconnected: bool,
+    /// The provider ended a parked background preconnect because it stayed
+    /// idle. This is a normal lifecycle outcome, so the worker should stop
+    /// cleanly instead of entering the active-session error/reconnect path.
+    pub(super) stop_worker: bool,
 }
 
 pub(super) struct OmniSocketEventProcessor;
@@ -75,11 +84,12 @@ impl OmniSocketEventProcessor {
             subtitle_translate_active, native_translation_reuse_active,
             total_input_chunks, first_audio_sent_ms, first_audible_chunk_ms,
             chunk_count, total_silence_skipped_before_first_audible, playback_tx,
-            readiness_sent, readiness_tx, provider, instructions, audio_mode,
+            readiness_sent, readiness_tx, provider, instructions, glossary, audio_mode,
             output_mode, target_language, buffer_size, pre_session_audio_queue_len,
             pre_session_audio_dropped, echo_guard_enabled,
         } = context;
 let mut socket_reconnected = false;
+let mut stop_worker = false;
         // Every poll exit repackages the same 21 worker-state fields into an
         // OmniSocketPollResult; a local macro keeps that field list in one place.
         // Only skip_tick varies: reconnect exits pass true, the per-tick return false.
@@ -111,6 +121,7 @@ let mut socket_reconnected = false;
                     },
                     skip_tick: $skip,
                     socket_reconnected,
+                    stop_worker,
                 })
             };
         }
@@ -450,6 +461,12 @@ match socket.read_message() {
                     }
                     "response.audio_transcript.delta"
                     | "response.audio_transcript.text"
+                    | "response.output_audio_transcript.delta"
+                    | "response.output_audio_transcript.text"
+                    | "response.output_text.delta"
+                    | "response.output_text.text"
+                    | "response.transcript.delta"
+                    | "response.transcript.text"
                     | "response.text.delta"
                     | "response.text.text" => {
                         let output = OmniEventProcessor::process_transcript_delta(
@@ -474,7 +491,13 @@ match socket.read_message() {
                         st_skip_logged = output.st_skip_logged;
                         event_diagnostics = output.event_diagnostics;
                     }
-                    "response.audio_transcript.done" | "response.text.done" => {
+                    "response.audio_transcript.done"
+                    | "response.output_audio_transcript.done"
+                    | "response.output_item.done"
+                    | "response.output_text.done"
+                    | "response.content_part.done"
+                    | "response.transcript.done"
+                    | "response.text.done" => {
                         let output = OmniEventProcessor::process_transcript_done(
                             OmniSubtitleEventState {
                                 current_cue_id,
@@ -582,6 +605,8 @@ match socket.read_message() {
                             &mut transcription_completed_at,
                             &mut event_diagnostics,
                             &session_started_at,
+                            &evt,
+                            glossary,
                         );
                         store.watch_session_report.push_output_delta(
                             "response.done",
@@ -600,6 +625,24 @@ match socket.read_message() {
                         }
                     }
                     "error" => {
+                        if is_idle_preconnect_session(
+                            store,
+                            direction,
+                            session_ready_for_audio,
+                            total_input_chunks,
+                        ) && is_provider_idle_timeout_error(
+                            provider_error_code(&evt),
+                            provider_error_message(&evt),
+                        ) {
+                            let _ = diag_log(
+                                app,
+                                "omni",
+                                "info",
+                                "[PRECONNECT] provider idle timeout; closing parked session without reconnect",
+                            );
+                            stop_worker = true;
+                            return poll_result!(true);
+                        }
                         store.watch_session_report.record_provider_error(
                             current_cue_id.as_deref(),
                             &direction,

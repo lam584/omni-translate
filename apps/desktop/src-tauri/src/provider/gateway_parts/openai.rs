@@ -41,7 +41,7 @@ pub(super) fn execute(
         context.source_text,
         context.source_language,
         context.target_language,
-        &[],
+        context.glossary_prompt,
     );
     let payload = json!({
       "model": provider.model,

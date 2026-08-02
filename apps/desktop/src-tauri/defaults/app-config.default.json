@@ -1357,7 +1357,7 @@
     "targetLanguage": "zh-CN",
     "outboundTargetLanguage": "",
     "translationLanguagePreference": "",
-    "translateWorkerMaxConcurrentRequests": 3,
+    "translateWorkerMaxConcurrentRequests": 8,
     "translateWorkerRequestTimeoutMs": 30000,
     "mode": "bilingual",
     "captionDensity": "balanced",
@@ -1449,6 +1449,9 @@
     "gameDictionaryId": "game-discord-default",
     "importStrategy": "merge",
     "exportFormat": "json",
+    "processingMode": "inject-important",
+    "calibrationModelId": "",
+    "libraries": [],
     "status": "draft"
   },
   "diagnostics": {

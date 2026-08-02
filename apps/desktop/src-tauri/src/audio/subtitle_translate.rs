@@ -12,22 +12,25 @@ use crate::provider::gateway::ProviderGateway;
 
 use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime, SubtitleDisplaySegmentRuntime};
 use super::engine::emit_audio_snapshot;
+use super::glossary::GlossaryCatalog;
 use super::sentence::{detect_language, is_target_language, SentenceResult, SentenceSplitter};
 use super::state::{AudioRouteHandle, AudioStateStore};
 use super::translation_scheduler::{
-    normalize_sentence_key, should_accept_translation, should_dedupe_written_translation,
+    max_translation_attempts, normalize_sentence_key, rate_limit_retry_delay,
+    should_accept_translation, should_dedupe_written_translation, should_retry_translation,
     translation_attempt_key, translation_job_key, translation_rank, TranslationDelta,
     TranslationJob, TranslationOutcome, TranslationRank, TranslationScheduler, TranslationUpdate,
-    TranslationWriteState, MAX_RETRIABLE_SENTENCE_ATTEMPTS,
+    TranslationWriteState, MAX_RATE_LIMIT_ATTEMPTS, MAX_RETRIABLE_SENTENCE_ATTEMPTS,
 };
 
 const POLL_INTERVAL_MS: u64 = 50;
-// Increased from 3 to 8: LLM calls take 10-12s each, so 3 slots gave only ~0.3 tx/s.
-// With 8 slots all sentences from a speech turn can be dispatched simultaneously.
+// A speech turn can produce several sentences at once. Eight slots keep the
+// queue responsive while the scheduler still prevents an unbounded request
+// burst.
 const MAX_CONCURRENT_TRANSLATIONS: usize = 8;
-// Increased from 1 to 2: allows two forced (partial) previews in-flight while still
-// reserving the majority of slots for final/replacement sentences.
-const MAX_CONCURRENT_FORCED_TRANSLATIONS: usize = 2;
+// Forced previews are speculative partial-ASR translations. Keep only one of
+// these in flight so final/replacement sentences retain the other slots.
+const MAX_CONCURRENT_FORCED_TRANSLATIONS: usize = 1;
 const SOURCE_ONLY_STABLE_TIMEOUT: Duration = Duration::from_secs(20);
 const TRANSLATED_COMMIT_QUIET: Duration = Duration::from_millis(1200);
 
@@ -293,6 +296,110 @@ fn handle_translation_delta(
     );
 }
 
+#[allow(clippy::too_many_arguments)]
+fn handle_translation_error(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    job: TranslationJob,
+    error: ProviderRuntimeError,
+    attempt_key: String,
+    scheduler: &mut TranslationScheduler,
+    cue_state: &mut CueTranslationLedger,
+    fatal_provider_error: &mut Option<ProviderRuntimeError>,
+    translate_error_count: &mut u64,
+) {
+    *translate_error_count += 1;
+    if rate_limit_retry_delay(&error).is_some() {
+        cue_state.rate_limit_attempt_keys.insert(attempt_key.clone());
+    } else {
+        cue_state.rate_limit_attempt_keys.remove(&attempt_key);
+    }
+    let attempts = cue_state
+        .sentence_attempt_count
+        .get(&attempt_key)
+        .copied()
+        .unwrap_or_else(|| max_translation_attempts(&error));
+    let fatal_error = is_fatal_translate_error(&error);
+    let max_attempts = max_translation_attempts(&error);
+    let should_retry = !fatal_error && should_retry_translation(&error, attempts);
+    let exhausted = !should_retry;
+    let attempt_id = format!("{}-attempt-{attempts}", job.key);
+    store.watch_session_report.record_model_error_for_cue(
+        &job.cue_id,
+        "secondary-text-translation",
+        &error.code,
+        &error.message,
+        exhausted,
+        Some(&attempt_id),
+    );
+    let level = if should_retry { "warning" } else { "error" };
+    let _ = diag_log_detail(
+        app,
+        "subtitle-translate",
+        level,
+        format!(
+            "subtitle translate LLM call failed: cue_id={} code={} retriable={} attempt={}/{}",
+            job.cue_id,
+            error.code,
+            error.retriable,
+            attempts,
+            max_attempts
+        ),
+        error
+            .suggestion
+            .clone()
+            .unwrap_or_else(|| error.message.clone()),
+    );
+    if fatal_error {
+        *fatal_provider_error = Some(error);
+        store.commit_subtitle_cue(&job.cue_id);
+        let _ = emit_audio_snapshot(app, store);
+    } else if should_retry {
+        let retry_attempt_id = format!("{}-attempt-{}", job.key, attempts + 1);
+        store.watch_session_report.record_retry_for_cue(
+            &job.cue_id,
+            "secondary-text-translation",
+            &retry_attempt_id,
+            &error.message,
+        );
+        cue_state
+            .sentence_attempt_count
+            .insert(attempt_key, attempts + 1);
+        let _ = diag_log(
+            app,
+            "subtitle-translate",
+            "debug",
+            format!(
+                "[RETRY_ENQUEUE] cue_id={} attempt={}/{} forced={} replacement={}",
+                job.cue_id,
+                attempts + 1,
+                max_attempts,
+                job.result.is_forced,
+                job.result.is_replacement
+            ),
+        );
+        let retry_delay = rate_limit_retry_delay(&error);
+        let retry_cue_id = job.cue_id.clone();
+        let retry_error_code = error.code.clone();
+        if scheduler.enqueue(job) {
+            if let Some(delay) = retry_delay {
+                scheduler.defer_dispatch_for(delay);
+                let _ = diag_log(
+                    app,
+                    "subtitle-translate",
+                    "debug",
+                    format!(
+                        "[RETRY_BACKOFF] cue_id={} code={} delay_ms={}",
+                        retry_cue_id,
+                        retry_error_code,
+                        delay.as_millis()
+                    ),
+                );
+            }
+        }
+    }
+}
+
 fn handle_translation_outcome(
     app: &AppHandle,
     store: &AudioStateStore,
@@ -304,14 +411,15 @@ fn handle_translation_outcome(
     translate_success_count: &mut u64,
     translate_error_count: &mut u64,
 ) {
-    let job = outcome.job;
+    let TranslationOutcome { job, translated } = outcome;
+    let translated = translated.map(|text| job.glossary.calibrate(&job.result.sentence, &text));
     let attempt_key = translation_attempt_key(&job.cue_id, &job.result.sentence);
     let cue_state = cue_states
         .entry(job.cue_id.clone())
         .or_insert_with(CueTranslationLedger::new);
     let stale_display_index = stale_job_reusable_display_index(&job, cue_state);
     if is_stale_translation_job(&job, cue_state) && stale_display_index.is_none() {
-        if let Ok(text) = &outcome.translated {
+        if let Ok(text) = &translated {
             store.watch_session_report.record_model_segment_final_for_cue(
                 &job.cue_id,
                 "secondary-text-translation",
@@ -325,9 +433,10 @@ fn handle_translation_outcome(
         log_translation_skip(app, &job.cue_id, "stale_revision");
         return;
     }
-    match outcome.translated {
+    match translated {
         Ok(translated_text) => {
             cue_state.sentence_attempt_count.remove(&attempt_key);
+            cue_state.rate_limit_attempt_keys.remove(&attempt_key);
 
             if !cue_exists(store, &job.cue_id) {
                 store.watch_session_report.record_model_segment_final_for_cue(
@@ -503,79 +612,17 @@ fn handle_translation_outcome(
                 written_final_keys.insert(key);
             }
         }
-        Err(error) => {
-            *translate_error_count += 1;
-            let attempts = cue_state
-                .sentence_attempt_count
-                .get(&attempt_key)
-                .copied()
-                .unwrap_or(MAX_RETRIABLE_SENTENCE_ATTEMPTS);
-            let fatal_error = is_fatal_translate_error(&error);
-            let exhausted =
-                fatal_error || !error.retriable || attempts >= MAX_RETRIABLE_SENTENCE_ATTEMPTS;
-            let attempt_id = format!("{}-attempt-{attempts}", job.key);
-            store.watch_session_report.record_model_error_for_cue(
-                &job.cue_id,
-                "secondary-text-translation",
-                &error.code,
-                &error.message,
-                exhausted,
-                Some(&attempt_id),
-            );
-            let level =
-                if fatal_error || !error.retriable || attempts >= MAX_RETRIABLE_SENTENCE_ATTEMPTS {
-                    "error"
-                } else {
-                    "warning"
-                };
-            let _ = diag_log_detail(
-                app,
-                "subtitle-translate",
-                level,
-                format!(
-                    "subtitle translate LLM call failed: cue_id={} code={} retriable={} attempt={}/{}",
-                    job.cue_id,
-                    error.code,
-                    error.retriable,
-                    attempts,
-                    MAX_RETRIABLE_SENTENCE_ATTEMPTS
-                ),
-                error
-                    .suggestion
-                    .clone()
-                    .unwrap_or_else(|| error.message.clone()),
-            );
-            if fatal_error {
-                *fatal_provider_error = Some(error);
-                store.commit_subtitle_cue(&job.cue_id);
-                let _ = emit_audio_snapshot(app, store);
-            } else if error.retriable && attempts < MAX_RETRIABLE_SENTENCE_ATTEMPTS {
-                let retry_attempt_id = format!("{}-attempt-{}", job.key, attempts + 1);
-                store.watch_session_report.record_retry_for_cue(
-                    &job.cue_id,
-                    "secondary-text-translation",
-                    &retry_attempt_id,
-                    &error.message,
-                );
-                cue_state
-                    .sentence_attempt_count
-                    .insert(attempt_key, attempts + 1);
-                let _ = diag_log(
-                    app,
-                    "subtitle-translate",
-                    "debug",
-                    format!(
-                        "[RETRY_ENQUEUE] cue_id={} attempt={}/{} forced={} replacement={}",
-                        job.cue_id,
-                        attempts + 1,
-                        MAX_RETRIABLE_SENTENCE_ATTEMPTS,
-                        job.result.is_forced,
-                        job.result.is_replacement
-                    ),
-                );
-                scheduler.enqueue(job);
-            }
-        }
+        Err(error) => handle_translation_error(
+            app,
+            store,
+            job,
+            error,
+            attempt_key,
+            scheduler,
+            cue_state,
+            fatal_provider_error,
+            translate_error_count,
+        ),
     }
 }
 
@@ -585,6 +632,7 @@ pub(crate) fn start_subtitle_translate(
     text_model_provider: ProviderDraftInput,
     target_language: String,
     outbound_target_language: String,
+    glossary_catalog: GlossaryCatalog,
 ) -> Result<AudioRuntimeSnapshot, String> {
     stop_subtitle_translate(app.clone(), store)?;
 
@@ -627,6 +675,7 @@ pub(crate) fn start_subtitle_translate(
     let provider = text_model_provider;
     let lang = target_language;
     let outbound_lang = outbound_target_language;
+    let glossary_catalog_for_worker = glossary_catalog;
     let worker_trace = trace.clone();
 
     let join_handle = thread::Builder::new()
@@ -638,6 +687,7 @@ pub(crate) fn start_subtitle_translate(
                 provider,
                 lang,
                 outbound_lang,
+                glossary_catalog_for_worker,
                 worker_trace,
                 stop_rx,
             );
@@ -765,6 +815,7 @@ mod tests {
                 local_model_capability_registry: Vec::new(),
                 model_catalog_cache: Default::default(),
             },
+            glossary: Default::default(),
             trace: None,
         }
     }
@@ -791,6 +842,102 @@ mod tests {
         let error = ProviderRuntimeError::new("timeout", "slow").retriable(true);
 
         assert!(!is_fatal_translate_error(&error));
+    }
+
+    #[test]
+    fn rate_limited_retries_use_fixed_250ms_delay_and_extended_budget() {
+        let error = ProviderRuntimeError::new("rate-limited", "quota exceeded")
+            .with_http_status(429)
+            .retriable(true);
+
+        assert_eq!(
+            rate_limit_retry_delay(&error),
+            Some(Duration::from_millis(250))
+        );
+        assert_eq!(
+            max_translation_attempts(&error),
+            12
+        );
+        assert_eq!(
+            should_retry_translation(&error, 11),
+            true
+        );
+        assert_eq!(
+            should_retry_translation(&error, 12),
+            false
+        );
+        assert_eq!(
+            rate_limit_retry_delay(&ProviderRuntimeError::new("timeout", "slow").retriable(true)),
+            None
+        );
+    }
+
+    #[test]
+    fn scheduler_holds_queued_retries_during_rate_limit_backoff() {
+        let mut scheduler = scheduler_for_test();
+        scheduler.defer_dispatch_for(Duration::from_secs(60));
+        assert!(scheduler.enqueue(job_for_test(
+            "cue-1",
+            1,
+            sentence_result("retry me", false, false),
+        )));
+
+        let mut spawned = 0;
+        scheduler.dispatch_ready(|_| spawned += 1);
+
+        assert_eq!(spawned, 0);
+        assert_eq!(scheduler.queued_len(), 1);
+        assert_eq!(scheduler.in_flight_len(), 0);
+    }
+
+    #[test]
+    fn scheduler_limits_secondary_translation_burst() {
+        let mut scheduler = scheduler_for_test();
+        for sequence in 0..=(MAX_CONCURRENT_TRANSLATIONS as u64) {
+            assert!(scheduler.enqueue(job_for_test(
+                "cue-1",
+                sequence,
+                sentence_result(&format!("sentence {sequence}"), false, false),
+            )));
+        }
+
+        let mut spawned = 0;
+        scheduler.dispatch_ready(|_| spawned += 1);
+
+        assert_eq!(spawned, MAX_CONCURRENT_TRANSLATIONS);
+        assert_eq!(scheduler.in_flight_len(), MAX_CONCURRENT_TRANSLATIONS);
+        assert_eq!(scheduler.queued_len(), 1);
+    }
+
+    #[test]
+    fn forced_preview_waits_in_queue_when_all_translation_slots_are_busy() {
+        let mut scheduler = scheduler_for_test();
+        for index in 0..MAX_CONCURRENT_TRANSLATIONS {
+            scheduler.in_flight.insert(
+                format!("final-{index}"),
+                InFlightJob {
+                    cue_id: format!("cue-{index}"),
+                    is_forced: false,
+                    sentence_work_key: format!("cue-{index}:2:final"),
+                },
+            );
+        }
+
+        assert!(scheduler.enqueue(job_for_test(
+            "cue-forced",
+            1,
+            sentence_result("partial preview", true, false),
+        )));
+        assert_eq!(scheduler.queued_len(), 1);
+        assert!(scheduler.next_dispatch_index().is_none());
+
+        scheduler.finish("final-0");
+        let mut dispatched = Vec::new();
+        scheduler.dispatch_ready(|job| dispatched.push(job.key));
+
+        assert_eq!(dispatched.len(), 1);
+        assert_eq!(scheduler.queued_len(), 0);
+        assert_eq!(scheduler.in_flight_len(), MAX_CONCURRENT_TRANSLATIONS);
     }
 
     #[test]
@@ -976,7 +1123,7 @@ mod tests {
     #[test]
     fn scheduler_limits_forced_in_flight() {
         let mut scheduler = scheduler_for_test();
-        // Saturate the forced in-flight limit (MAX_CONCURRENT_FORCED_TRANSLATIONS = 2)
+        // Saturate the forced in-flight limit (MAX_CONCURRENT_FORCED_TRANSLATIONS = 1)
         scheduler.in_flight.insert(
             "forced-1".to_string(),
             InFlightJob {
@@ -985,19 +1132,10 @@ mod tests {
                 sentence_work_key: "cue-1:1:forced1".to_string(),
             },
         );
-        scheduler.in_flight.insert(
-            "forced-2".to_string(),
-            InFlightJob {
-                cue_id: "cue-1".to_string(),
-                is_forced: true,
-                sentence_work_key: "cue-1:1:forced2".to_string(),
-            },
-        );
-
-        // A third forced job should not be dispatchable when both forced slots are taken
+        // A second forced job should not be dispatchable while the forced slot is taken.
         assert!(scheduler.enqueue(job_for_test(
             "cue-1",
-            3,
+            2,
             sentence_result("yet another partial", true, false),
         )));
 

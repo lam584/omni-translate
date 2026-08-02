@@ -315,6 +315,7 @@ fn wait_gemini_setup_ready(
 
 // ──────────────────────────────── Audio I/O ─────────────────────────────────
 
+#[derive(Debug)]
 struct AudioDecodeResult {
     samples: Vec<i16>,
     original_sample_rate: u32,
@@ -322,10 +323,38 @@ struct AudioDecodeResult {
     file_size_bytes: u64,
 }
 
-fn read_mp3_samples_with_info(path: &PathBuf) -> Result<AudioDecodeResult, String> {
+fn read_audio_samples_with_info(path: &PathBuf) -> Result<AudioDecodeResult, String> {
     let file_size_bytes = std::fs::metadata(path)
         .map(|m| m.len())
         .unwrap_or(0);
+    let format = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let (samples, original_sample_rate, channels) = match format.as_str() {
+        "mp3" => read_mp3_samples(path)?,
+        "wav" | "wave" => read_wav_samples(path)?,
+        "pcm" | "s16le" | "raw" => (read_pcm16_samples(path)?, 16_000, 1),
+        _ => {
+            return Err(format!(
+                "unsupported audio extension '{}'; expected .mp3, .wav, .pcm, .s16le, or .raw",
+                if format.is_empty() { "(none)" } else { &format }
+            ))
+        }
+    };
+    if samples.is_empty() {
+        return Err(format!("decoded audio '{}' is empty", path.display()));
+    }
+    Ok(AudioDecodeResult {
+        samples,
+        original_sample_rate,
+        channels,
+        file_size_bytes,
+    })
+}
+
+fn read_mp3_samples(path: &PathBuf) -> Result<(Vec<i16>, u32, u16), String> {
     let file =
         std::fs::File::open(path).map_err(|e| format!("open MP3 '{}': {e}", path.display()))?;
     let mut decoder = minimp3::Decoder::new(file);
@@ -357,12 +386,71 @@ fn read_mp3_samples_with_info(path: &PathBuf) -> Result<AudioDecodeResult, Strin
 
     let original_sample_rate = sample_rate.unwrap_or(16_000);
     let samples = resample_to_16k(&mono, original_sample_rate);
-    Ok(AudioDecodeResult {
-        samples,
-        original_sample_rate,
+    Ok((samples, original_sample_rate, channels))
+}
+
+fn read_wav_samples(path: &PathBuf) -> Result<(Vec<i16>, u32, u16), String> {
+    let mut reader = hound::WavReader::open(path)
+        .map_err(|e| format!("open WAV '{}': {e}", path.display()))?;
+    let spec = reader.spec();
+    let channels = spec.channels.max(1);
+    let interleaved = match (spec.sample_format, spec.bits_per_sample) {
+        (hound::SampleFormat::Float, 32) => reader
+            .samples::<f32>()
+            .map(|sample| sample.map(|value| value.clamp(-1.0, 1.0)))
+            .collect::<Result<Vec<_>, _>>(),
+        (hound::SampleFormat::Int, bits @ 1..=8) => {
+            let scale = ((1_i32 << (bits - 1)) - 1).max(1) as f32;
+            reader
+                .samples::<i8>()
+                .map(|sample| sample.map(|value| value as f32 / scale))
+                .collect::<Result<Vec<_>, _>>()
+        }
+        (hound::SampleFormat::Int, bits @ 9..=16) => {
+            let scale = ((1_i32 << (bits - 1)) - 1) as f32;
+            reader
+                .samples::<i16>()
+                .map(|sample| sample.map(|value| value as f32 / scale))
+                .collect::<Result<Vec<_>, _>>()
+        }
+        (hound::SampleFormat::Int, bits @ 17..=32) => {
+            let scale = ((1_i64 << (bits - 1)) - 1) as f32;
+            reader
+                .samples::<i32>()
+                .map(|sample| sample.map(|value| value as f32 / scale))
+                .collect::<Result<Vec<_>, _>>()
+        }
+        _ => return Err(format!(
+            "unsupported WAV encoding in '{}': {:?}, {} bits",
+            path.display(), spec.sample_format, spec.bits_per_sample
+        )),
+    }
+    .map_err(|e| format!("decode WAV '{}': {e}", path.display()))?;
+
+    let mono = interleaved
+        .chunks(channels as usize)
+        .map(|frame| frame.iter().sum::<f32>() / frame.len().max(1) as f32)
+        .collect::<Vec<_>>();
+    Ok((
+        resample_to_16k(&mono, spec.sample_rate),
+        spec.sample_rate,
         channels,
-        file_size_bytes,
-    })
+    ))
+}
+
+fn read_pcm16_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
+    let bytes = std::fs::read(path)
+        .map_err(|e| format!("read PCM '{}': {e}", path.display()))?;
+    if bytes.len() % 2 != 0 {
+        return Err(format!(
+            "PCM file '{}' has odd byte length {}; expected signed 16-bit little-endian mono",
+            path.display(), bytes.len()
+        ));
+    }
+    Ok(bytes
+        .chunks_exact(2)
+        .map(|pair| i16::from_le_bytes([pair[0], pair[1]]))
+        .collect())
 }
 
 fn resample_to_16k(samples: &[f32], source_rate: u32) -> Vec<i16> {

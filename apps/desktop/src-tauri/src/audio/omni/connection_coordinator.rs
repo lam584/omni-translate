@@ -223,6 +223,24 @@ pub(super) fn provider_error_message(evt: &Value) -> &str {
         .unwrap_or("DashScope realtime model error")
 }
 
+/// A parked preconnect is still represented by the normal Omni worker. Use
+/// the route snapshot, rather than worker lifetime alone, to distinguish it
+/// from a session that has already been handed to an active capture route.
+/// This matters because the same worker is reused after the user starts a
+/// route.
+pub(super) fn is_idle_preconnect_session(
+    store: &AudioStateStore,
+    direction: &str,
+    session_ready_for_audio: bool,
+    total_input_chunks: u64,
+) -> bool {
+    if direction != "inbound" || !session_ready_for_audio || total_input_chunks != 0 {
+        return false;
+    }
+    let snapshot = store.snapshot();
+    snapshot.inbound.capture_state == "idle" && !snapshot.inbound.stream_bound
+}
+
 impl OmniConnectionCoordinator {
     #[allow(clippy::too_many_arguments)]
     pub(super) fn handle_provider_error<C: RealtimeSocketConnector, R: tauri::Runtime>(
@@ -496,6 +514,17 @@ mod manual_response_gate_tests {
         });
         assert_eq!(provider_error_code(&typed), "invalid_request_error");
         assert_eq!(provider_error_code(&json!({"type": "error"})), "provider.error");
+    }
+
+    #[test]
+    fn idle_preconnect_detection_stops_when_the_route_is_owned_by_capture() {
+        let store = AudioStateStore::new();
+        assert!(is_idle_preconnect_session(&store, "inbound", true, 0));
+        assert!(!is_idle_preconnect_session(&store, "inbound", false, 0));
+        assert!(!is_idle_preconnect_session(&store, "inbound", true, 1));
+
+        store.mark_route_start_requested("inbound", "watch-attempt", "loopback");
+        assert!(!is_idle_preconnect_session(&store, "inbound", true, 0));
     }
 
     #[test]
@@ -1062,7 +1091,7 @@ impl OmniConnectionCoordinator {
                 &app,
                 "omni",
                 "info",
-                "[VAD] turn_detection 配置: type=server_vad threshold=0.0 silence_duration_ms=800",
+                format!("[VAD] turn_detection 配置: {turn_detection_summary}"),
             );
         }
 

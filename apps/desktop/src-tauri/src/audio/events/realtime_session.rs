@@ -9,6 +9,7 @@ use super::super::{gemini_live, omni, openai_realtime, tencent_speech_translate}
 use super::route_config::{resolve_model_provider_from_config, resolve_realtime_profile, ResolvedRoutePlan};
 use super::{OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT};
 use crate::diagnostics::events::append_diagnostics_log;
+use crate::audio::glossary::GlossaryContext;
 use crate::provider::contracts::ProviderDraftInput;
 
 /// A preconnect is only safe while the inbound route is fully idle.
@@ -83,6 +84,8 @@ pub(super) fn start_or_reuse_omni_session(
     realtime_audio_mode: &str,
     voice: String,
     instructions: String,
+    glossary: GlossaryContext,
+    glossary_signature: u64,
     speech_config: omni::OmniSpeechConfig,
     readiness_timeout: Duration,
 ) -> Result<(std::sync::mpsc::Sender<Vec<u8>>, u64), String> {
@@ -103,15 +106,28 @@ pub(super) fn start_or_reuse_omni_session(
             None,
         );
     };
+    let audio_mode = omni::RealtimeAudioMode::from_config_value(
+        Some(realtime_audio_mode),
+        &voice_provider.model,
+    )?;
     if let Some(sender) = state.take_matching_omni_sender(
         direction,
         &voice_model,
+        realtime_audio_mode,
         st_active,
         output_mode,
+        glossary_signature,
     ) {
         state.replace_omni_speech_config(speech_config);
         let generation = state
-            .matching_ready_omni_session(direction, &voice_model, st_active, output_mode)
+            .matching_ready_omni_session(
+                direction,
+                &voice_model,
+                realtime_audio_mode,
+                st_active,
+                output_mode,
+                glossary_signature,
+            )
             .unwrap_or_default();
         let _ = append_diagnostics_log(
             app,
@@ -119,7 +135,7 @@ pub(super) fn start_or_reuse_omni_session(
             "info",
             "watch_mode.omni_preconnect_reused",
             Some(format!(
-                "direction={direction} generation={generation} model={} subtitleTranslateActive={st_active} outputMode={}",
+                "direction={direction} generation={generation} model={} realtimeAudioMode={realtime_audio_mode} subtitleTranslateActive={st_active} outputMode={}",
                 voice_model,
                 output_mode.as_str(),
             )),
@@ -133,15 +149,13 @@ pub(super) fn start_or_reuse_omni_session(
         stop_preconnected_omni_session(app, state, direction, "preconnect_not_reusable");
     }
 
-    let audio_mode = omni::RealtimeAudioMode::from_config_value(
-        Some(realtime_audio_mode),
-        &voice_provider.model,
-    )?;
     let session_generation = state.begin_omni_session(
         direction,
         &voice_provider.model,
+        realtime_audio_mode,
         st_active,
         output_mode,
+        glossary_signature,
     );
     let (omni_sender, handle, readiness_rx) = match omni::start_omni(
         app.clone(),
@@ -151,6 +165,7 @@ pub(super) fn start_or_reuse_omni_session(
         voice_provider,
         voice,
         instructions,
+        glossary,
         audio_mode,
         target_lang.to_string(),
         st_active,
@@ -309,6 +324,7 @@ pub(super) fn start_or_reuse_openai_realtime_session(
     realtime_audio_mode: &str,
     instructions: String,
     subtitle_translate_active: bool,
+    glossary: GlossaryContext,
 ) -> Result<std::sync::mpsc::Sender<Vec<u8>>, String> {
     if let Some(sender) = state.take_omni_sender(direction) {
         return Ok(sender);
@@ -327,6 +343,7 @@ pub(super) fn start_or_reuse_openai_realtime_session(
         audio_mode,
         target_lang.to_string(),
         subtitle_translate_active,
+        glossary,
     )?;
     if let Some(previous) = state.store_omni_handle(direction, handle) {
         let _ = previous.stop_tx.send(());
@@ -342,6 +359,7 @@ pub(super) fn start_or_reuse_gemini_live_session(
     target_lang: &str,
     mode_value: &str,
     instructions: String,
+    glossary: GlossaryContext,
 ) -> Result<std::sync::mpsc::Sender<Vec<u8>>, String> {
     if let Some(sender) = state.take_omni_sender(direction) {
         return Ok(sender);
@@ -356,6 +374,7 @@ pub(super) fn start_or_reuse_gemini_live_session(
         instructions,
         mode,
         target_lang.to_string(),
+        glossary,
     )?;
     if let Some(previous) = state.store_omni_handle(direction, handle) {
         let _ = previous.stop_tx.send(());
@@ -370,6 +389,7 @@ pub(super) fn start_or_reuse_tencent_speech_translate_session(
     direction: &str,
     source_lang: &str,
     target_lang: &str,
+    glossary: GlossaryContext,
 ) -> Result<std::sync::mpsc::Sender<Vec<u8>>, String> {
     if let Some(sender) = state.take_omni_sender(direction) {
         return Ok(sender);
@@ -382,6 +402,7 @@ pub(super) fn start_or_reuse_tencent_speech_translate_session(
         direction.to_string(),
         source_lang.to_string(),
         target_lang.to_string(),
+        glossary,
     )?;
     if let Some(previous) = state.store_omni_handle(direction, handle) {
         let _ = previous.stop_tx.send(());
@@ -515,8 +536,10 @@ pub(crate) fn preconnect_omni_realtime_inner(
         .matching_ready_omni_session(
             &plan.session_reuse_key.direction,
             &plan.session_reuse_key.model,
+            &plan.session_reuse_key.realtime_audio_mode,
             st_active,
             plan.session_reuse_key.output_mode,
+            plan.session_reuse_key.glossary_signature,
         )
         .is_some()
         && state.has_omni_sender("inbound")
@@ -537,6 +560,8 @@ pub(crate) fn preconnect_omni_realtime_inner(
         &plan.realtime_audio_mode,
         plan.voice,
         plan.instructions,
+        plan.glossary,
+        plan.session_reuse_key.glossary_signature,
         plan.omni_speech_config,
         OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT,
     )?;

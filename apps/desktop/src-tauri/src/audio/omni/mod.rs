@@ -662,6 +662,7 @@ use self::protocol::{
     request_omni_playback_stop, reset_manual_turn_input_state, reset_omni_turn_state,
     resolve_completed_transcription, resolve_native_response_source_text,
     response_stream_owns_current_cue,
+    extract_response_done_text,
     set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
     try_reconnect, write_live_source_to_cue, write_native_output_final_to_cue,
     write_native_output_preview_to_cue, write_native_translation_to_cue,

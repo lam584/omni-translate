@@ -324,6 +324,52 @@ mod tests {
     use super::*;
 
     #[test]
+    fn benchmark_decodes_wav_by_its_actual_format() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let path = directory.path().join("benchmark.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 24_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&path, spec).expect("WAV should be created");
+        for index in 0..2_400 {
+            let sample = if index % 2 == 0 { 8_000_i16 } else { -8_000_i16 };
+            writer.write_sample(sample).expect("left sample should write");
+            writer.write_sample(sample).expect("right sample should write");
+        }
+        writer.finalize().expect("WAV should finalize");
+
+        let decoded = read_audio_samples_with_info(&path).expect("WAV should decode");
+        assert_eq!(decoded.original_sample_rate, 24_000);
+        assert_eq!(decoded.channels, 2);
+        assert_eq!(decoded.samples.len(), 1_600);
+    }
+
+    #[test]
+    fn benchmark_decodes_watch_mode_regression_fixture_at_full_duration() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../../scripts/testing/fixtures/watch-mode-en-original.wav");
+
+        let decoded = read_audio_samples_with_info(&path).expect("fixture WAV should decode");
+        assert_eq!(decoded.original_sample_rate, 24_000);
+        assert_eq!(decoded.channels, 1);
+        assert_eq!(decoded.samples.len(), 2_013_045);
+        assert!((decoded.samples.len() as f64 / 16_000.0 - 125.815_312_5).abs() < 0.000_001);
+    }
+
+    #[test]
+    fn benchmark_rejects_unknown_audio_extensions() {
+        let directory = tempfile::tempdir().expect("temporary directory should be created");
+        let path = directory.path().join("benchmark.bin");
+        std::fs::write(&path, [0_u8; 4]).expect("fixture should write");
+
+        let error = read_audio_samples_with_info(&path).expect_err("format should be rejected");
+        assert!(error.contains("unsupported audio extension 'bin'"));
+    }
+
+    #[test]
     fn partial_report_serializes_with_empty_run_defaults() {
         let run = empty_run_result(0, "qwen-test-realtime".to_string(), 12.5);
         let report = BenchmarkReport {

@@ -4,6 +4,7 @@ use serde_json::Value;
 use tauri::{AppHandle, Manager, State};
 
 use super::contracts::AudioRuntimeSnapshot;
+use super::diagnostics::diag_log_detail;
 use super::engine::AudioRouteSupervisor;
 #[cfg(test)]
 use super::gemini_live;
@@ -240,10 +241,30 @@ pub(crate) fn prewarm_capture_routes(
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
     let state = app.state::<AudioStateStore>();
-    for direction in ["inbound", "outbound"] {
-        state.warmer().prewarm(&app, direction, &config);
+    let snapshot = state.snapshot();
+    state.warmer().prewarm(&app, "inbound", &config);
+    if should_prewarm_outbound(snapshot.capture_devices.len()) {
+        state.warmer().prewarm(&app, "outbound", &config);
+    } else {
+        // Audio bootstrap has already established that Windows exposes no
+        // capture endpoint. Calling WASAPI's default-capture lookup here can
+        // only return ERROR_NOT_FOUND (0x80070490), and describing that as a
+        // transient prewarm failure with a cold-start fallback is misleading.
+        // Keep the explicit start path intact so conversation mode still
+        // reports the actionable missing-microphone error when requested.
+        diag_log_detail(
+            &app,
+            "audio",
+            "debug",
+            "预热跳过：Windows 当前没有可用的麦克风采集设备。",
+            "direction=outbound reason=no-capture-device",
+        );
     }
     Ok(state.snapshot())
+}
+
+fn should_prewarm_outbound(capture_device_count: usize) -> bool {
+    capture_device_count > 0
 }
 
 pub(crate) fn clear_subtitle_cues(
@@ -284,6 +305,12 @@ pub(crate) async fn stop_translate_worker(app: AppHandle) -> Result<AudioRuntime
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn outbound_prewarm_requires_an_enumerated_capture_device() {
+        assert!(!should_prewarm_outbound(0));
+        assert!(should_prewarm_outbound(1));
+    }
 
     #[test]
     fn watch_inbound_route_ensures_subtitle_overlay_visibility() {
@@ -411,6 +438,53 @@ mod tests {
                 .as_str(),
             "manual"
         );
+    }
+
+    #[test]
+    fn qwen_audio_watch_serializes_turns_even_with_persisted_server_vad_registry() {
+        let mut value = provider_value(
+            "template-dashscope-realtime",
+            "dashscope",
+            "dashscope",
+            "qwen-audio-3.0-realtime-plus",
+            "https://dashscope.aliyuncs.com/api/v1",
+            "websocket",
+            "dashscope",
+        );
+        value["localModelCapabilityRegistry"] = json!([{
+            "id": "seed-qwen-audio-3.0-realtime-plus",
+            "modelId": "qwen-audio-3.0-realtime-plus",
+            "capabilities": ["speech-to-text", "speech-to-speech"],
+            "realtimeProtocol": "dashscope-omni",
+            "realtimeAudioMode": "server_vad",
+            "interactionCapabilities": ["auto_vad", "streaming"]
+        }]);
+        let provider: ProviderDraftInput =
+            serde_json::from_value(value).expect("provider should parse");
+        assert_eq!(
+            resolve_realtime_profile(&provider, &provider.model).realtime_audio_mode,
+            "server_vad",
+            "the persisted capability remains visible outside the route policy"
+        );
+
+        let watch_plan = ResolvedRoutePlan::from_resolved_provider(
+            "inbound",
+            &json!({ "devices": { "routeMode": "watch" } }),
+            provider.model.clone(),
+            provider.clone(),
+        );
+        assert_eq!(watch_plan.realtime_audio_mode, "manual");
+        assert_eq!(watch_plan.vad_policy, ResolvedVadPolicy::ManualCommit);
+        assert_eq!(watch_plan.session_reuse_key.realtime_audio_mode, "manual");
+
+        let game_plan = ResolvedRoutePlan::from_resolved_provider(
+            "inbound",
+            &json!({ "devices": { "routeMode": "game" } }),
+            provider.model.clone(),
+            provider,
+        );
+        assert_eq!(game_plan.realtime_audio_mode, "server_vad");
+        assert_eq!(game_plan.vad_policy, ResolvedVadPolicy::ServerVad);
     }
 
     #[test]
@@ -1139,6 +1213,36 @@ mod tests {
         assert_eq!(plan.speech_dispatch_policy, SpeechDispatchPolicy::SubtitleTtsWhenIdle);
         assert_eq!(plan.secondary_subtitle_provider.as_ref().map(|provider| provider.model.as_str()), Some("deepseek-chat"));
         assert!(plan.session_reuse_key.subtitle_translate_active);
+    }
+
+    #[test]
+    fn missing_secondary_mode_defaults_to_native_even_with_a_saved_text_model() {
+        let voice_value = provider_value(
+            "template-dashscope-realtime", "dashscope", "dashscope",
+            "qwen3.5-omni-plus-realtime", "https://dashscope.aliyuncs.com/api/v1",
+            "websocket", "dashscope",
+        );
+        let text_value = provider_value(
+            "template-deepseek", "deepseek", "openai-compatible", "deepseek-chat",
+            "https://api.deepseek.com/v1", "streaming-http", "deepseek",
+        );
+        let voice_provider: ProviderDraftInput = serde_json::from_value(voice_value.clone())
+            .expect("voice provider should parse");
+        let config = json!({
+            "providers": [voice_value, text_value],
+            "devices": {
+                "routeMode": "watch",
+                "subtitleTranslationModelId": "template-deepseek::deepseek-chat"
+            }
+        });
+
+        let plan = ResolvedRoutePlan::from_resolved_provider(
+            "inbound", &config, voice_provider.model.clone(), voice_provider,
+        );
+
+        assert_eq!(plan.subtitle_fallback_policy, SubtitleFallbackPolicy::Native);
+        assert!(plan.secondary_subtitle_provider.is_none());
+        assert!(!plan.session_reuse_key.subtitle_translate_active);
     }
 
     #[test]

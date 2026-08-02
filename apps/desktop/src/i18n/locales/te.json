@@ -1450,7 +1450,17 @@
     "benchmark": {
       "desktopOnly": "Benchmark is only available in the desktop runtime.",
       "timeout": "Benchmark timed out ({{seconds}}s). Check the network connection or model configuration.",
-      "parseFailed": "Benchmark result parsing failed: {{error}}"
+      "parseFailed": "Benchmark result parsing failed: {{error}}",
+      "semanticJudgeModel": "Semantic judge model",
+      "semanticJudgeChooseModel": "Choose a text-generation model",
+      "semanticJudgeRun": "Score semantics",
+      "semanticJudgeRunning": "Scoring…",
+      "semanticJudgeResult": "{{model}} semantic score: {{score}}/100",
+      "semanticJudgeInvalidResponse": "The judge returned an invalid JSON score.",
+      "semanticJudgeReferenceUnavailable": "No reference text is available for this audio fixture.",
+      "semanticJudgeTranslationUnavailable": "The benchmark has no final translation to score.",
+      "semanticJudgeMissingApiKey": "No API key is configured for {{model}}.",
+      "semanticJudgeFailed": "Semantic judging failed:"
     }
   },
   "watchReport": {
@@ -1485,6 +1495,17 @@
     "issueOverview": "సమస్యల అవలోకనం",
     "issueSummary": "{{groups}} సమస్య రకాలు · {{occurrences}} ఘటనలు",
     "issueCategorySummary": "{{groups}} రకాలు · {{occurrences}} ఘటనలు",
+    "score": {
+      "title": "Benchmark score",
+      "provisional": "Provisional while running",
+      "semantic": "Semantic quality",
+      "latency": "Latency",
+      "completeness": "Completeness",
+      "reliability": "Reliability",
+      "llmEnabled": "Semantic quality includes an LLM judge score; other dimensions remain deterministic.",
+      "semanticProxy": "Semantic quality currently uses content-consistency evidence. LLM judging is not enabled; other dimensions are deterministic.",
+      "semanticUnavailable": "This report has no reference translation or LLM judge evidence, so semantic quality is unscored and the total is normalized over available objective dimensions."
+    },
     "status": {
       "exact": "పూర్తిగా సరిపోలింది",
       "formattingOnly": "ఆకృతి మాత్రమే భిన్నం",

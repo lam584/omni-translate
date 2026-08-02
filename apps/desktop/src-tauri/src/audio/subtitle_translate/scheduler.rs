@@ -18,6 +18,7 @@ struct CueTranslationLedger {
     stable_retry_count: u32,
     source_stable_since: Instant,
     sentence_attempt_count: HashMap<String, u32>,
+    rate_limit_attempt_keys: HashSet<String>,
     final_translation_cache: HashMap<String, String>,
     written_final_translation_keys: HashSet<String>,
     display_slots: Vec<DisplaySlot>,
@@ -37,6 +38,7 @@ impl CueTranslationLedger {
             stable_retry_count: 0,
             source_stable_since: Instant::now(),
             sentence_attempt_count: HashMap::new(),
+            rate_limit_attempt_keys: HashSet::new(),
             final_translation_cache: HashMap::new(),
             written_final_translation_keys: HashSet::new(),
             display_slots: Vec::new(),
@@ -124,6 +126,7 @@ impl CueTranslationLedger {
         self.pending_display_index = None;
         self.pending_display_by_id.clear();
         self.translation_written_at = None;
+        self.rate_limit_attempt_keys.clear();
         self.display_slots.clear();
     }
 
@@ -178,11 +181,12 @@ fn spawn_translation_job(tx: mpsc::Sender<TranslationUpdate>, job: TranslationJo
             let delta_tx = tx.clone();
             let delta_job = job.clone();
             let mut partial_translation = String::new();
-            let translated = gateway.translate_text_streaming_traced(
+            let translated = gateway.translate_text_streaming_traced_with_glossary(
                 job.provider.clone(),
                 job.full_prompt.clone(),
                 job.source_language.clone(),
                 job.target_language.clone(),
+                job.glossary.prompt(),
                 Some(&cue_trace),
                 |delta| {
                     partial_translation.push_str(delta);

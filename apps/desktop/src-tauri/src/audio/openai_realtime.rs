@@ -11,6 +11,7 @@ use url::Url;
 
 use super::diagnostics::diag_log;
 use super::engine::emit_audio_snapshot;
+use super::glossary::GlossaryContext;
 use super::omni::{OmniHandle, RealtimeAudioMode};
 use super::realtime_cue::commit_realtime_cue;
 use super::pcm_resample::{
@@ -452,6 +453,7 @@ fn connect_openai_socket(
 /// Per-turn subtitle cue accumulation shared by the three dialects.
 struct CueState {
     direction: String,
+    glossary: GlossaryContext,
     cue_id: Option<String>,
     source_text: String,
     output_text: String,
@@ -459,9 +461,10 @@ struct CueState {
 }
 
 impl CueState {
-    fn new(direction: String) -> Self {
+    fn new(direction: String, glossary: GlossaryContext) -> Self {
         Self {
             direction,
+            glossary,
             cue_id: None,
             source_text: String::new(),
             output_text: String::new(),
@@ -488,12 +491,14 @@ impl CueState {
     }
 
     fn commit(&mut self, app: &AppHandle, store: &AudioStateStore) {
+        let calibrated_output =
+            self.glossary.calibrate(&self.source_text, &self.output_text);
         if let Some(cue_id) = self.cue_id.as_deref() {
-            if !self.output_text.trim().is_empty() {
+            if !calibrated_output.trim().is_empty() {
                 store.watch_session_report.record_model_final_for_cue(
                     cue_id,
                     "openai-realtime",
-                    &self.output_text,
+                    &calibrated_output,
                     true,
                     None,
                     None,
@@ -505,7 +510,7 @@ impl CueState {
             store,
             self.cue_id.as_deref(),
             &self.source_text,
-            &self.output_text,
+            &calibrated_output,
         );
         self.reset();
     }
@@ -520,6 +525,7 @@ pub(crate) fn start_openai_realtime(
     audio_mode: RealtimeAudioMode,
     target_language: String,
     subtitle_translate_active: bool,
+    glossary: GlossaryContext,
 ) -> Result<(mpsc::Sender<Vec<u8>>, OmniHandle), String> {
     let (audio_tx, audio_rx) = mpsc::channel::<Vec<u8>>();
     let (stop_tx, stop_rx) = mpsc::channel::<()>();
@@ -542,6 +548,7 @@ pub(crate) fn start_openai_realtime(
                 audio_mode,
                 target_language,
                 subtitle_translate_active,
+                glossary,
                 audio_rx,
                 stop_rx,
             ) {
@@ -614,6 +621,7 @@ fn run_openai_worker(
     audio_mode: RealtimeAudioMode,
     target_language: String,
     subtitle_translate_active: bool,
+    glossary: GlossaryContext,
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
@@ -646,7 +654,7 @@ fn run_openai_worker(
 
     let timed_manual_commit = uses_timed_manual_commit(dialect, audio_mode, &provider.model);
     let input_rate = dialect_input_rate(dialect);
-    let mut cue = CueState::new(direction);
+    let mut cue = CueState::new(direction, glossary);
     let mut gate = SilenceGate::new(OPENAI_ASR_MIN_CHUNK_RMS, OPENAI_ASR_SILENCE_GRACE_CHUNKS);
     let mut pre_session_queue: VecDeque<String> = VecDeque::new();
     let mut buffer_size = 0u64;

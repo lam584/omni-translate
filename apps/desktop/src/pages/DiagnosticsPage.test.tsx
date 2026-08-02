@@ -494,6 +494,9 @@ describe('DiagnosticsPage monitoring boundary', () => {
       },
     });
     expect(container.textContent).toContain('基准测试结果');
+    expect(container.querySelector('.benchmark-result-score')).not.toBeNull();
+    expect(container.textContent).toContain('基准评分');
+    expect(container.textContent).toContain('语义质量');
     expect(container.textContent).toContain('收到模型输出 delta');
     expect(container.textContent).toContain('实时结果');
   });

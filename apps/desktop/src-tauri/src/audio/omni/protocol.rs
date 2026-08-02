@@ -1,5 +1,6 @@
 use super::*;
 
+use crate::audio::glossary::GlossaryContext;
 use crate::audio::realtime_ws;
 
 pub(super) fn set_socket_write_timeout(socket: &mut tungstenite::WebSocket<MaybeTlsStream<TcpStream>>) {
@@ -248,6 +249,67 @@ pub(super) struct OmniEventDiagnostics {
 }
 
 const MAX_NATIVE_RESPONSE_OWNERS: usize = 32;
+const NATIVE_EMPTY_TRANSLATION_FAILURE: &str =
+    "[翻译失败] 实时模型已结束本轮响应，但没有返回可用译文。";
+const NATIVE_CANCELLED_TRANSLATION_FAILURE: &str =
+    "[翻译失败] 实时响应被后续语音打断。";
+const NATIVE_FAILED_TRANSLATION_FAILURE: &str = "[翻译失败] 实时模型未能完成本轮响应。";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResponseDoneMetadata {
+    response_id: String,
+    status: String,
+    reason: String,
+}
+
+impl ResponseDoneMetadata {
+    fn from_event(event: &Value) -> Self {
+        let response_id = event
+            .pointer("/response/id")
+            .or_else(|| event.get("response_id"))
+            .and_then(Value::as_str)
+            .unwrap_or("(none)")
+            .trim()
+            .to_string();
+        let status = event
+            .pointer("/response/status")
+            .or_else(|| event.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or("unknown")
+            .trim()
+            .to_ascii_lowercase();
+        let reason = [
+            "/response/status_details/reason",
+            "/response/status_details/error/code",
+            "/response/status_details/error/message",
+            "/error/code",
+            "/error/message",
+        ]
+        .into_iter()
+        .find_map(|path| event.pointer(path).and_then(Value::as_str))
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("(none)")
+        .trim()
+        .to_string();
+        Self {
+            response_id,
+            status,
+            reason,
+        }
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.status == "cancelled" || self.status == "canceled"
+    }
+
+    fn is_failed(&self) -> bool {
+        self.status == "failed"
+    }
+
+    fn allows_final_output(&self) -> bool {
+        self.status == "completed" || self.status == "unknown" || self.status.is_empty()
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct NativeResponseOwner {
@@ -366,56 +428,95 @@ pub(super) fn should_use_native_output_fallback(
         && !translated_text.trim().is_empty()
 }
 
+/// Extract text from the provider's completed response envelope. DashScope
+/// normally emits `response.text.done` or `response.audio_transcript.done`,
+/// but OpenAI-compatible realtime servers may put the only final text inside
+/// `response.content_part.done`, `response.output_item.done`, or the nested
+/// `response.done.response.output` payload.
+pub(super) fn extract_response_done_text(event: &Value) -> String {
+    let mut text = String::new();
+    for key in ["text", "transcript", "output_text"] {
+        if let Some(value) = event
+            .get(key)
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+        {
+            text.push_str(value);
+            return text;
+        }
+    }
+    for key in ["part", "item", "response"] {
+        if let Some(value) = event.get(key) {
+            append_nested_response_text(value, &mut text);
+            if !text.is_empty() {
+                break;
+            }
+        }
+    }
+    text
+}
+
+fn append_nested_response_text(value: &Value, output: &mut String) {
+    match value {
+        Value::Array(values) => {
+            for value in values {
+                append_nested_response_text(value, output);
+            }
+        }
+        Value::Object(object) => {
+            for key in ["text", "transcript", "output_text", "audio_transcript"] {
+                if let Some(text) = object
+                    .get(key)
+                    .and_then(Value::as_str)
+                    .filter(|text| !text.trim().is_empty())
+                {
+                    output.push_str(text);
+                    return;
+                }
+            }
+            for key in ["part", "item", "content", "output"] {
+                if let Some(value) = object.get(key) {
+                    append_nested_response_text(value, output);
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-pub(super) fn handle_response_done<R: tauri::Runtime>(
+fn record_response_done_diagnostics<R: tauri::Runtime>(
     app: &AppHandle<R>,
-    store: &AudioStateStore,
     trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
-    direction: &str,
-    current_cue_id: &mut Option<String>,
-    pending_source_text: &mut String,
-    pending_translated_text: &mut String,
+    cue_id: &str,
+    response_source_text: &str,
+    translated_text: &str,
+    candidate_translated_text: &str,
     subtitle_translate_active: bool,
     native_translation_reuse_active: bool,
-    transcription_completed_flag: &mut bool,
-    transcription_completed_at: &mut Option<SystemTime>,
-    event_diagnostics: &mut OmniEventDiagnostics,
-    session_started_at: &SystemTime,
+    response_metadata: &ResponseDoneMetadata,
+    event_diagnostics: &OmniEventDiagnostics,
+    response_done_at_ms: u64,
 ) {
-    event_diagnostics.claim_next_native_response_owner(current_cue_id.as_deref());
-    let response_done_at_ms = elapsed_ms_since(session_started_at);
-    event_diagnostics.response_done_count = event_diagnostics.response_done_count.saturating_add(1);
-    event_diagnostics
-        .first_response_done_at_ms
-        .get_or_insert(response_done_at_ms);
-    let cue_id = event_diagnostics
-        .native_response_cue_id
-        .clone()
-        .or_else(|| current_cue_id.clone())
-        .unwrap_or_else(|| format!("omni-cue-{direction}-{}", unix_ms()));
-    let response_owns_current_cue = current_cue_id.as_deref() == Some(cue_id.as_str());
-    let response_source_text = resolve_native_response_source_text(
-        store,
-        Some(&cue_id),
-        current_cue_id.as_deref(),
-        pending_source_text,
-    );
     let source_len = response_source_text.len();
-    let translated_len = pending_translated_text.len();
-    let st_flag = if subtitle_translate_active {
-        " st_active=true"
-    } else {
-        ""
-    };
+    let translated_len = translated_text.len();
     trace_call.output(
         "response.done",
         json!({
           "cueId": cue_id,
-          "sourceText": response_source_text.clone(),
-          "translatedText": pending_translated_text.clone(),
+          "sourceText": response_source_text,
+          "translatedText": translated_text,
           "sourceLen": source_len,
           "translatedLen": translated_len,
           "subtitleTranslateActive": subtitle_translate_active,
+          "responseId": response_metadata.response_id,
+          "responseStatus": response_metadata.status,
+          "responseReason": response_metadata.reason,
+          "discardedPartialText": if response_metadata.allows_final_output() {
+              String::new()
+          } else {
+              candidate_translated_text.to_string()
+          },
         }),
     );
     let readiness_event = event_diagnostics
@@ -431,7 +532,10 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
         "omni",
         "info",
         format!(
-            "[EVENT_CONTEXT] response.done cue_id={cue_id} responseDoneCount={} responseDoneAtMs={} firstResponseDoneAtMs={} readinessEvent={} cueOrigin={} sourceLen={} translatedLen={} lastAsrDeltaAtMs={} lastAsrDelta=\"{}\" lastAsrCompletedAtMs={} lastAsrCompleted=\"{}\" firstNonEmptyAsrCompletedAtMs={} emptyAsrCompletedCount={} lastOutputDoneAtMs={} lastOutputDone=\"{}\" st_active={} nativeTranslationReuse={}",
+            "[EVENT_CONTEXT] response.done cue_id={cue_id} responseId={} responseStatus={} responseReason={} responseDoneCount={} responseDoneAtMs={} firstResponseDoneAtMs={} readinessEvent={} cueOrigin={} sourceLen={} translatedLen={} lastAsrDeltaAtMs={} lastAsrDelta=\"{}\" lastAsrCompletedAtMs={} lastAsrCompleted=\"{}\" firstNonEmptyAsrCompletedAtMs={} emptyAsrCompletedCount={} lastOutputDoneAtMs={} lastOutputDone=\"{}\" st_active={} nativeTranslationReuse={}",
+            response_metadata.response_id,
+            response_metadata.status,
+            response_metadata.reason,
             event_diagnostics.response_done_count,
             response_done_at_ms,
             event_diagnostics.first_response_done_at_ms.map_or_else(|| "-".to_string(), |v| v.to_string()),
@@ -451,13 +555,198 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
             native_translation_reuse_active,
         ),
     );
+}
+
+#[allow(clippy::too_many_arguments)]
+fn terminalize_native_response_without_output<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+    cue_id: &str,
+    response_source_text: &str,
+    translated_text: &str,
+    response_cue_exists: bool,
+    response_metadata: &ResponseDoneMetadata,
+    st_flag: &str,
+) {
+    if response_source_text.is_empty() && !response_cue_exists {
+        let _ = diag_log(
+            app,
+            "omni",
+            "warning",
+            format!(
+                "[EVENT] response.done → SKIP{st_flag} cue_id={cue_id} 源文本和翻译文本均为空"
+            ),
+        );
+        return;
+    }
+
+    let source_len = response_source_text.len();
+    let translated_len = translated_text.len();
+    let src_preview = if response_source_text.is_empty() {
+        "(empty; awaiting late ASR final)".to_string()
+    } else if response_source_text.len() > 150 {
+        format!(
+            "{}...",
+            crate::audio::str_utils::truncate_chars(response_source_text, 150)
+        )
+    } else {
+        response_source_text.to_string()
+    };
+    // response.done is the terminal event for this response owner. Once it
+    // arrives, a later response is assigned to the next queued cue and can
+    // no longer complete this one. Publish an explicit failure terminal so
+    // the cue cannot remain labelled as "translating" forever.
+    let (failure_text, event_name, error_code, error_message) =
+        if response_metadata.is_cancelled() {
+            (
+                NATIVE_CANCELLED_TRANSLATION_FAILURE,
+                "NATIVE_TRANSLATION_CANCELLED",
+                "native-response-cancelled",
+                format!(
+                    "实时响应被取消：status={} reason={} responseId={}",
+                    response_metadata.status,
+                    response_metadata.reason,
+                    response_metadata.response_id
+                ),
+            )
+        } else if response_metadata.is_failed() {
+            (
+                NATIVE_FAILED_TRANSLATION_FAILURE,
+                "NATIVE_TRANSLATION_FAILED",
+                "native-response-failed",
+                format!(
+                    "实时模型响应失败：status={} reason={} responseId={}",
+                    response_metadata.status,
+                    response_metadata.reason,
+                    response_metadata.response_id
+                ),
+            )
+        } else {
+            (
+                NATIVE_EMPTY_TRANSLATION_FAILURE,
+                "NATIVE_EMPTY_TRANSLATION_FAILED",
+                "native-empty-response",
+                "实时模型已结束本轮响应，但没有返回可用译文。".to_string(),
+            )
+        };
+    store.update_or_push_stt_cue(cue_id, response_source_text, true);
+    store.update_subtitle_cue_translation(cue_id, failure_text.to_string(), true);
+    if response_metadata.is_cancelled() {
+        store.watch_session_report.record_session_issue(
+            "model",
+            error_code,
+            "warning",
+            &error_message,
+        );
+    } else {
+        store.watch_session_report.record_model_error_for_cue(
+            cue_id,
+            "dashscope-native-realtime",
+            error_code,
+            &error_message,
+            false,
+            None,
+        );
+    }
+    let _ = diag_log(
+        app,
+        "omni",
+        "warning",
+        format!(
+            "[EVENT] response.done → {event_name}{st_flag} cue_id={cue_id} responseId={} responseStatus={} responseReason={} src=\"{src_preview}\" src_len={source_len} translated_len={translated_len}",
+            response_metadata.response_id,
+            response_metadata.status,
+            response_metadata.reason,
+        ),
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn handle_response_done<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+    trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
+    direction: &str,
+    current_cue_id: &mut Option<String>,
+    pending_source_text: &mut String,
+    pending_translated_text: &mut String,
+    subtitle_translate_active: bool,
+    native_translation_reuse_active: bool,
+    transcription_completed_flag: &mut bool,
+    transcription_completed_at: &mut Option<SystemTime>,
+    event_diagnostics: &mut OmniEventDiagnostics,
+    session_started_at: &SystemTime,
+    response_event: &Value,
+    glossary: &GlossaryContext,
+) {
+    let response_metadata = ResponseDoneMetadata::from_event(response_event);
+    if response_metadata.allows_final_output() && pending_translated_text.trim().is_empty() {
+        let response_text = extract_response_done_text(response_event);
+        if !response_text.trim().is_empty() {
+            *pending_translated_text = response_text;
+        }
+    }
+    event_diagnostics.claim_next_native_response_owner(current_cue_id.as_deref());
+    let response_done_at_ms = elapsed_ms_since(session_started_at);
+    event_diagnostics.response_done_count = event_diagnostics.response_done_count.saturating_add(1);
+    event_diagnostics
+        .first_response_done_at_ms
+        .get_or_insert(response_done_at_ms);
+    let cue_id = event_diagnostics
+        .native_response_cue_id
+        .clone()
+        .or_else(|| current_cue_id.clone())
+        .unwrap_or_else(|| format!("omni-cue-{direction}-{}", unix_ms()));
+    let response_owns_current_cue = current_cue_id.as_deref() == Some(cue_id.as_str());
+    let response_source_text = resolve_native_response_source_text(
+        store,
+        Some(&cue_id),
+        current_cue_id.as_deref(),
+        pending_source_text,
+    );
+    let response_cue_exists = store
+        .snapshot()
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .any(|cue| cue.cue_id == cue_id);
+    let candidate_translated_text =
+        glossary.calibrate(&response_source_text, pending_translated_text);
+    // A cancelled/failed response may retain partial output in its response
+    // envelope. That text is useful for diagnostics but is not a final model
+    // answer and must never be committed as the cue's translation.
+    let translated_text = if response_metadata.allows_final_output() {
+        candidate_translated_text.clone()
+    } else {
+        String::new()
+    };
+    let source_len = response_source_text.len();
+    let translated_len = translated_text.len();
+    let st_flag = if subtitle_translate_active {
+        " st_active=true"
+    } else {
+        ""
+    };
+    record_response_done_diagnostics(
+        app,
+        trace_call,
+        &cue_id,
+        &response_source_text,
+        &translated_text,
+        &candidate_translated_text,
+        subtitle_translate_active,
+        native_translation_reuse_active,
+        &response_metadata,
+        event_diagnostics,
+        response_done_at_ms,
+    );
     if subtitle_translate_active {
-        if native_translation_reuse_active && !pending_translated_text.trim().is_empty() {
+        if native_translation_reuse_active && !translated_text.trim().is_empty() {
             write_native_translation_to_cue(
                 store,
                 &cue_id,
                 &response_source_text,
-                pending_translated_text,
+                &translated_text,
                 true,
                 false,
             );
@@ -468,7 +757,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 format!(
                     "[EVENT] response.done -> ST_NATIVE_TRANSLATION_COMMIT{st_flag} cue_id={cue_id} source_len={} translated_len={translated_len} translated=\"{}\"",
                     response_source_text.len(),
-                    pending_translated_text
+                    translated_text
                 ),
             );
         } else if !response_source_text.is_empty() {
@@ -505,13 +794,13 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
             subtitle_translate_active,
             native_translation_reuse_active,
             &response_source_text,
-            pending_translated_text,
+            &translated_text,
         ) {
             write_native_translation_to_cue(
                 store,
                 &cue_id,
-                pending_translated_text,
-                pending_translated_text,
+                &translated_text,
+                &translated_text,
                 true,
                 false,
             );
@@ -521,7 +810,7 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 "warning",
                 format!(
                     "[EVENT] response.done -> ST_NATIVE_OUTPUT_FALLBACK{st_flag} cue_id={cue_id} source_len=0 translated_len={translated_len} translated=\"{}\" reason=empty_source_text",
-                    pending_translated_text
+                    translated_text
                 ),
             );
         } else {
@@ -532,12 +821,12 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
                 format!("[EVENT] response.done → SKIP{st_flag} cue_id={cue_id} 源文本为空！"),
             );
         }
-    } else if !pending_translated_text.trim().is_empty() {
+    } else if !translated_text.trim().is_empty() {
         write_committed_native_translation_to_cue(
             store,
             &cue_id,
             &response_source_text,
-            pending_translated_text,
+            &translated_text,
         );
         let _ = diag_log(
             app,
@@ -545,32 +834,19 @@ pub(super) fn handle_response_done<R: tauri::Runtime>(
             "info",
             format!(
                     "[EVENT] response.done → COMMIT{st_flag} cue_id={cue_id} source_len={source_len} translated_len={translated_len} translated=\"{}\"",
-                pending_translated_text
-            ),
-        );
-    } else if !response_source_text.is_empty() {
-        let src_preview = if response_source_text.len() > 150 {
-            format!("{}...", crate::audio::str_utils::truncate_chars(&response_source_text, 150))
-        } else {
-            response_source_text.clone()
-        };
-        store.update_or_push_stt_cue(&cue_id, &response_source_text, true);
-        let _ = diag_log(
-            app,
-            "omni",
-            "info",
-            format!(
-                    "[EVENT] response.done → COMMIT(仅源文本, 无翻译){st_flag} cue_id={cue_id} src=\"{src_preview}\" src_len={source_len} translated_len={translated_len}"
+                translated_text
             ),
         );
     } else {
-        let _ = diag_log(
+        terminalize_native_response_without_output(
             app,
-            "omni",
-            "warning",
-            format!(
-                "[EVENT] response.done → SKIP{st_flag} cue_id={cue_id} 源文本和翻译文本均为空"
-            ),
+            store,
+            &cue_id,
+            &response_source_text,
+            &translated_text,
+            response_cue_exists,
+            &response_metadata,
+            st_flag,
         );
     }
     let _ = diag_log(
@@ -659,6 +935,80 @@ pub(super) fn response_stream_owns_current_cue(
 ) -> bool {
     response_stream_active
         && (native_translation_reuse_active || !subtitle_translate_active)
+}
+
+#[cfg(test)]
+mod response_text_tests {
+    use super::*;
+
+    #[test]
+    fn response_done_text_accepts_nested_output_content() {
+        let event = json!({
+            "type": "response.done",
+            "response": {
+                "output": [{
+                    "content": [{ "type": "audio", "text": "nested translation" }]
+                }]
+            }
+        });
+
+        assert_eq!(extract_response_done_text(&event), "nested translation");
+    }
+
+    #[test]
+    fn response_done_text_accepts_content_part_and_output_item_events() {
+        let content_part = json!({
+            "type": "response.content_part.done",
+            "part": { "type": "text", "text": "part translation" }
+        });
+        let output_item = json!({
+            "type": "response.output_item.done",
+            "item": { "content": [{ "transcript": "item translation" }] }
+        });
+
+        assert_eq!(extract_response_done_text(&content_part), "part translation");
+        assert_eq!(extract_response_done_text(&output_item), "item translation");
+    }
+
+    #[test]
+    fn response_done_metadata_distinguishes_turn_detected_cancellation() {
+        let event = json!({
+            "type": "response.done",
+            "response": {
+                "id": "resp-cancelled",
+                "status": "cancelled",
+                "status_details": { "reason": "turn_detected" }
+            }
+        });
+
+        let metadata = ResponseDoneMetadata::from_event(&event);
+        assert_eq!(metadata.response_id, "resp-cancelled");
+        assert_eq!(metadata.status, "cancelled");
+        assert_eq!(metadata.reason, "turn_detected");
+        assert!(metadata.is_cancelled());
+        assert!(!metadata.is_failed());
+        assert!(!metadata.allows_final_output());
+    }
+
+    #[test]
+    fn response_done_metadata_reads_failed_error_details() {
+        let event = json!({
+            "type": "response.done",
+            "response": {
+                "status": "failed",
+                "status_details": {
+                    "error": { "code": "server_error", "message": "provider failed" }
+                }
+            }
+        });
+
+        let metadata = ResponseDoneMetadata::from_event(&event);
+        assert_eq!(metadata.status, "failed");
+        assert_eq!(metadata.reason, "server_error");
+        assert!(metadata.is_failed());
+        assert!(!metadata.is_cancelled());
+        assert!(!metadata.allows_final_output());
+    }
 }
 
 #[cfg(test)]
@@ -812,6 +1162,13 @@ pub(super) fn update_native_response_cue_source(
         .unwrap_or_default();
     if translated_text.trim().is_empty() {
         store.update_or_push_stt_cue(cue_id, source_text, committed);
+    } else if translated_text.starts_with("[翻译失败]") {
+        // A late ASR final may arrive just after an empty response.done. Keep
+        // the explicit failure terminal while replacing its provisional source
+        // with the authoritative transcript; do not record the marker as model
+        // output through the native-translation writer.
+        store.update_or_push_stt_cue(cue_id, source_text, true);
+        store.update_subtitle_cue_translation(cue_id, translated_text, true);
     } else if committed {
         write_committed_native_translation_to_cue(store, cue_id, source_text, &translated_text);
     } else {

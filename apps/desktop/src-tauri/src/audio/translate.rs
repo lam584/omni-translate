@@ -13,10 +13,12 @@ use crate::storage::StorageStateStore;
 
 use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
 use super::engine::emit_audio_snapshot;
+use super::glossary::GlossaryCatalog;
 use super::sentence::{detect_language, is_target_language, SentenceResult};
 use super::state::{AudioRouteHandle, AudioStateStore};
 use super::translation_scheduler::{
-    translation_job_key, TranslationJob, TranslationScheduler, MAX_RETRIABLE_SENTENCE_ATTEMPTS,
+    max_translation_attempts, rate_limit_retry_delay, should_retry_translation,
+    translation_job_key, TranslationJob, TranslationScheduler,
 };
 
 /// Message sent from a per-cue translation thread back to the worker loop.
@@ -43,7 +45,7 @@ const TRANSLATE_HEARTBEAT_INTERVAL_LOOPS: u64 = 160;
 // Fallbacks and clamp bounds for the config-driven scheduling knobs; the live
 // values come from /subtitles/translateWorkerMaxConcurrentRequests and
 // /subtitles/translateWorkerRequestTimeoutMs (seeded in app-config.default.json).
-const DEFAULT_MAX_CONCURRENT_TRANSLATIONS: u64 = 3;
+const DEFAULT_MAX_CONCURRENT_TRANSLATIONS: u64 = 8;
 const MAX_CONCURRENT_TRANSLATIONS_CEILING: u64 = 16;
 const DEFAULT_TRANSLATE_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const MIN_TRANSLATE_REQUEST_TIMEOUT_MS: u64 = 1_000;
@@ -69,7 +71,11 @@ pub(crate) fn start_translate(
     });
     store.mark_session_started(&session_started_at);
 
-    crate::audio::worker_notify::announce_worker_started(&app, store, "已启动 translation worker。")?;
+    crate::audio::worker_notify::announce_worker_started(
+        &app,
+        store,
+        "已启动 translation worker。",
+    )?;
 
     let (stop_tx, stop_rx) = mpsc::channel();
     let app_handle = app.clone();
@@ -134,6 +140,54 @@ pub(crate) fn stop_translate(
     Ok(store.snapshot())
 }
 
+struct TranslateWorkerChannels {
+    stop_rx: mpsc::Receiver<()>,
+    result_tx: mpsc::Sender<TranslateUpdate>,
+    result_rx: mpsc::Receiver<TranslateUpdate>,
+}
+
+struct TranslateWorkerState {
+    // cue_id -> source text last handed to the LLM. Distinct from
+    // `translation_committed`: it lets a re-committed transcript with a changed
+    // source reopen translation while an in-flight job for the same source is
+    // not dispatched twice.
+    processed: HashMap<String, String>,
+    processed_order: VecDeque<String>,
+    // LLM attempts per scheduler job key; shares the retry cap with the
+    // subtitle-translate path.
+    attempt_counts: HashMap<String, u32>,
+    loop_count: u64,
+    next_sequence: u64,
+    wake_update: Option<TranslateUpdate>,
+    // Streamed deltas wake the loop far more often than the old batch loop
+    // polled, so cap SQLite config reloads at the poll interval.
+    config: TranslateConfig,
+    config_refreshed_at: Instant,
+    // The classic path never emits forced (partial-preview) jobs, so the
+    // forced-slot budget is zero. The concurrency cap follows the config knob
+    // live via set_max_concurrent on each reload.
+    scheduler: TranslationScheduler,
+    reconnect_gen: u64,
+}
+
+impl TranslateWorkerState {
+    fn new(config: TranslateConfig, reconnect_gen: u64) -> Self {
+        let scheduler = TranslationScheduler::new(config.max_concurrent_requests, 0);
+        Self {
+            processed: HashMap::new(),
+            processed_order: VecDeque::new(),
+            attempt_counts: HashMap::new(),
+            loop_count: 0,
+            next_sequence: 1,
+            wake_update: None,
+            config,
+            config_refreshed_at: Instant::now(),
+            scheduler,
+            reconnect_gen,
+        }
+    }
+}
+
 fn run_translate_worker(
     app: AppHandle,
     store: &AudioStateStore,
@@ -141,264 +195,242 @@ fn run_translate_worker(
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
     let storage = app.state::<StorageStateStore>();
-    // cue_id -> source text last handed to the LLM. Distinct from
-    // `translation_committed`: it lets a re-committed transcript with a changed
-    // source reopen translation while an in-flight job for the same source is
-    // not dispatched twice.
-    let mut processed: HashMap<String, String> = HashMap::new();
-    let mut processed_order: VecDeque<String> = VecDeque::new();
-    // LLM attempts per scheduler job key; shares the retry cap with the
-    // subtitle-translate path.
-    let mut attempt_counts: HashMap<String, u32> = HashMap::new();
-    let mut loop_count: u64 = 0;
-    let mut next_sequence: u64 = 1;
     let (result_tx, result_rx) = mpsc::channel::<TranslateUpdate>();
-    let mut wake_update: Option<TranslateUpdate> = None;
-    // Streamed deltas wake the loop far more often than the old batch loop
-    // polled, so cap SQLite config reloads at the poll interval.
-    let mut config = TranslateConfig::from_value(
-        &storage.load_config().unwrap_or_else(|_| initial_config.clone()),
-    );
-    let mut config_refreshed_at = Instant::now();
-    // The classic path never emits forced (partial-preview) jobs, so the
-    // forced-slot budget is zero. The concurrency cap follows the config knob
-    // live via set_max_concurrent on each reload.
-    let mut scheduler = TranslationScheduler::new(config.max_concurrent_requests, 0);
-    let mut reconnect_gen = store.reconnect_generation();
+    let channels = TranslateWorkerChannels {
+        stop_rx,
+        result_tx,
+        result_rx,
+    };
+    let config = load_translate_config(&storage, &initial_config);
+    let mut state = TranslateWorkerState::new(config, store.reconnect_generation());
+    run_translate_loop(&app, store, &storage, &initial_config, channels, &mut state)
+}
 
+fn run_translate_loop(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    storage: &StorageStateStore,
+    initial_config: &Value,
+    channels: TranslateWorkerChannels,
+    state: &mut TranslateWorkerState,
+) -> Result<(), String> {
     loop {
-        if stop_rx.try_recv().is_ok() {
+        if channels.stop_rx.try_recv().is_ok() {
             break;
         }
 
-        loop_count += 1;
+        prepare_translate_iteration(app, store, storage, initial_config, state);
+        handle_translate_updates(app, store, &channels.result_rx, state)?;
+        enqueue_pending_cues(app, store, state)?;
+        state
+            .scheduler
+            .dispatch_ready(|job| spawn_cue_translation(channels.result_tx.clone(), job));
 
-        // A reconnect bumped the generation: the stale `processed` entries
-        // from the previous session would prevent re-translation of new cues
-        // that happen to reuse the same cue id pattern, so clear them.
-        let current_gen = store.reconnect_generation();
-        if current_gen != reconnect_gen {
-            reconnect_gen = current_gen;
-            let stale_count = processed.len();
-            processed.clear();
-            processed_order.clear();
-            attempt_counts.clear();
-            let _ = append_diagnostics_log(
-                &app,
-                "translate",
-                "info",
-                format!(
-                    "reconnect detected: cleared {} stale processed cue(s), generation={}",
-                    stale_count, current_gen,
-                ),
-                None,
-                None,
-                None,
-            );
+        // Sleep until the next update or poll tick; streamed deltas and
+        // finished jobs wake the loop immediately.
+        state.wake_update = match channels
+            .result_rx
+            .recv_timeout(Duration::from_millis(TRANSLATE_POLL_INTERVAL_MS))
+        {
+            Ok(update) => Some(update),
+            Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => None,
+        };
+    }
+
+    Ok(())
+}
+
+fn load_translate_config(storage: &StorageStateStore, initial_config: &Value) -> TranslateConfig {
+    TranslateConfig::from_value(
+        &storage
+            .load_config()
+            .unwrap_or_else(|_| initial_config.clone()),
+    )
+}
+
+fn prepare_translate_iteration(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    storage: &StorageStateStore,
+    initial_config: &Value,
+    state: &mut TranslateWorkerState,
+) {
+    state.loop_count += 1;
+
+    // A reconnect bumped the generation: the stale `processed` entries
+    // from the previous session would prevent re-translation of new cues
+    // that happen to reuse the same cue id pattern, so clear them.
+    let current_gen = store.reconnect_generation();
+    if current_gen != state.reconnect_gen {
+        state.reconnect_gen = current_gen;
+        let stale_count = state.processed.len();
+        state.processed.clear();
+        state.processed_order.clear();
+        state.attempt_counts.clear();
+        let _ = append_diagnostics_log(
+            app,
+            "translate",
+            "info",
+            format!(
+                "reconnect detected: cleared {} stale processed cue(s), generation={}",
+                stale_count, current_gen,
+            ),
+            None,
+            None,
+            None,
+        );
+    }
+
+    if state.config_refreshed_at.elapsed() >= Duration::from_millis(TRANSLATE_POLL_INTERVAL_MS) {
+        state.config = load_translate_config(storage, initial_config);
+        state
+            .scheduler
+            .set_max_concurrent(state.config.max_concurrent_requests);
+        state.config_refreshed_at = Instant::now();
+    }
+
+    if state.loop_count == 1 {
+        log_initial_translate_config(app, &state.config);
+    }
+
+    if state
+        .loop_count
+        .is_multiple_of(TRANSLATE_HEARTBEAT_INTERVAL_LOOPS)
+    {
+        let _ = append_diagnostics_log(
+            app,
+            "translate",
+            "info",
+            format!(
+                "翻译 Worker 心跳 (第{}轮): 已处理{}个cue, 队列深度={}, 调度排队={}, 进行中={}",
+                state.loop_count,
+                state.processed.len(),
+                store.snapshot().subtitle_overlay.queue_depth,
+                state.scheduler.queued.len(),
+                state.scheduler.in_flight.len(),
+            ),
+            None,
+            None,
+            None,
+        );
+    }
+}
+
+fn handle_translate_updates(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    result_rx: &mpsc::Receiver<TranslateUpdate>,
+    state: &mut TranslateWorkerState,
+) -> Result<(), String> {
+    // Drain streamed deltas and finished jobs first so freed scheduler
+    // slots are backfilled in the same loop instead of waiting for a
+    // whole batch to complete.
+    for update in state
+        .wake_update
+        .take()
+        .into_iter()
+        .chain(result_rx.try_iter())
+    {
+        handle_translate_update(app, store, update, state)?;
+    }
+    Ok(())
+}
+
+fn handle_translate_update(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    update: TranslateUpdate,
+    state: &mut TranslateWorkerState,
+) -> Result<(), String> {
+    match update {
+        TranslateUpdate::Delta {
+            cue_id,
+            raw_delta,
+            partial_text,
+        } => {
+            report_translation_delta(store, &cue_id, &raw_delta);
+            store.update_subtitle_cue_translation(&cue_id, partial_text, false);
+            emit_audio_snapshot(app, store)?;
         }
-
-        if config_refreshed_at.elapsed() >= Duration::from_millis(TRANSLATE_POLL_INTERVAL_MS) {
-            config = TranslateConfig::from_value(
-                &storage.load_config().unwrap_or_else(|_| initial_config.clone()),
-            );
-            scheduler.set_max_concurrent(config.max_concurrent_requests);
-            config_refreshed_at = Instant::now();
-        }
-
-        if loop_count == 1 {
-            log_initial_translate_config(&app, &config);
-        }
-
-        if loop_count.is_multiple_of(TRANSLATE_HEARTBEAT_INTERVAL_LOOPS) {
-            let _ = append_diagnostics_log(
-                &app,
-                "translate",
-                "info",
-                format!(
-                    "翻译 Worker 心跳 (第{}轮): 已处理{}个cue, 队列深度={}, 调度排队={}, 进行中={}",
-                    loop_count,
-                    processed.len(),
-                    store.snapshot().subtitle_overlay.queue_depth,
-                    scheduler.queued.len(),
-                    scheduler.in_flight.len(),
-                ),
-                None,
-                None,
-                None,
-            );
-        }
-
-        // Drain streamed deltas and finished jobs first so freed scheduler
-        // slots are backfilled in the same loop instead of waiting for a
-        // whole batch to complete.
-        for update in wake_update.take().into_iter().chain(result_rx.try_iter()) {
-            match update {
-                TranslateUpdate::Delta {
-                    cue_id,
-                    raw_delta,
-                    partial_text,
-                } => {
-                    report_translation_delta(store, &cue_id, &raw_delta);
-                    store.update_subtitle_cue_translation(&cue_id, partial_text, false);
-                    emit_audio_snapshot(&app, store)?;
+        TranslateUpdate::Done {
+            job,
+            started_at,
+            result,
+        } => {
+            state.scheduler.finish(&job.key);
+            let elapsed_ms = started_at.elapsed().as_millis();
+            match result {
+                Ok(translated_text) => {
+                    let translated_text = job
+                        .glossary
+                        .calibrate(&job.result.sentence, &translated_text);
+                    report_translation_final(store, &job, &translated_text, &state.attempt_counts);
+                    state.attempt_counts.remove(&job.key);
+                    store.update_subtitle_cue_translation(&job.cue_id, translated_text, true);
+                    let _ = append_diagnostics_log(
+                        app,
+                        "audio",
+                        "info",
+                        format!("翻译完成，cue={}，耗时={}ms。", job.cue_id, elapsed_ms),
+                        None,
+                        None,
+                        None,
+                    );
+                    emit_audio_snapshot(app, store)?;
                 }
-                TranslateUpdate::Done {
-                    job,
-                    started_at,
-                    result,
-                } => {
-                    scheduler.finish(&job.key);
-                    let elapsed_ms = started_at.elapsed().as_millis();
-                    match result {
-                        Ok(translated_text) => {
-                            report_translation_final(
-                                store, &job, &translated_text, &attempt_counts,
-                            );
-                            attempt_counts.remove(&job.key);
-                            store.update_subtitle_cue_translation(
-                                &job.cue_id,
-                                translated_text,
-                                true,
-                            );
-                            let _ = append_diagnostics_log(
-                                &app,
-                                "audio",
-                                "info",
-                                format!("翻译完成，cue={}，耗时={}ms。", job.cue_id, elapsed_ms),
-                                None,
-                                None,
-                                None,
-                            );
-                            emit_audio_snapshot(&app, store)?;
-                        }
-                        Err(error) => {
-                            let attempts = attempt_counts.get(&job.key).copied().unwrap_or(1);
-                            if error.retriable && attempts < MAX_RETRIABLE_SENTENCE_ATTEMPTS {
-                                report_translation_retry(store, &job, attempts, &error);
-                                attempt_counts.insert(job.key.clone(), attempts + 1);
-                                let _ = append_diagnostics_log(
-                                    &app,
-                                    "translate",
-                                    "warning",
-                                    format!(
-                                        "[RETRY_ENQUEUE] cue={} attempt={}/{} code={} 耗时={}ms。",
-                                        job.cue_id,
-                                        attempts + 1,
-                                        MAX_RETRIABLE_SENTENCE_ATTEMPTS,
-                                        error.code,
-                                        elapsed_ms,
-                                    ),
-                                    Some(error.message.clone()),
-                                    None,
-                                    None,
-                                );
-                                scheduler.enqueue(job);
-                            } else {
-                                report_translation_error(store, &job, attempts, &error);
-                                attempt_counts.remove(&job.key);
-                                store.update_subtitle_cue_translation(
-                                    &job.cue_id,
-                                    format!("[翻译失败] {}", error.message),
-                                    true,
-                                );
-                                let _ = append_diagnostics_log(
-                                    &app,
-                                    "audio",
-                                    "error",
-                                    format!(
-                                        "翻译失败，cue={}，耗时={}ms，尝试={}次。",
-                                        job.cue_id, elapsed_ms, attempts
-                                    ),
-                                    Some(error.message.clone()),
-                                    None,
-                                    None,
-                                );
-                                emit_audio_snapshot(&app, store)?;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // Enqueue every new uncommitted cue; the shared scheduler owns the
-        // concurrency cap, so no fixed-size batches here.
-        let snapshot = store.snapshot();
-        let pending_cues: Vec<SubtitleCueRuntime> = snapshot
-            .subtitle_overlay
-            .recent_cues
-            .iter()
-            .filter(|cue| {
-                cue_needs_translation(cue, processed.get(&cue.cue_id).map(String::as_str))
-            })
-            .cloned()
-            .collect();
-
-        for cue in &pending_cues {
-            processed.insert(cue.cue_id.clone(), cue.source_text.clone());
-            processed_order.push_back(cue.cue_id.clone());
-            while processed_order.len() > MAX_PROCESSED_CUES {
-                if let Some(expired) = processed_order.pop_front() {
-                    processed.remove(&expired);
+                Err(error) => {
+                    handle_translate_error(app, store, state, job, error, elapsed_ms)?;
                 }
             }
+        }
+    }
+    Ok(())
+}
 
-            let (source_language, target_language) =
-                config.languages_for_direction(&cue.route_direction);
-
-            let same_lang = detect_language(&cue.source_text)
-                .map(|l| is_target_language(l, &target_language))
-                .unwrap_or(false);
-            if same_lang {
-                report_same_language_translation(store, cue);
-                store.update_subtitle_cue_translation(&cue.cue_id, cue.source_text.clone(), true);
+fn handle_translate_error(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    state: &mut TranslateWorkerState,
+    job: TranslationJob,
+    error: ProviderRuntimeError,
+    elapsed_ms: u128,
+) -> Result<(), String> {
+    let attempts = state.attempt_counts.get(&job.key).copied().unwrap_or(1);
+    let max_attempts = max_translation_attempts(&error);
+    if should_retry_translation(&error, attempts) {
+        report_translation_retry(store, &job, attempts, &error);
+        state.attempt_counts.insert(job.key.clone(), attempts + 1);
+        let _ = append_diagnostics_log(
+            app,
+            "translate",
+            "warning",
+            format!(
+                "[RETRY_ENQUEUE] cue={} attempt={}/{} code={} 耗时={}ms。",
+                job.cue_id,
+                attempts + 1,
+                max_attempts,
+                error.code,
+                elapsed_ms,
+            ),
+            Some(error.message.clone()),
+            None,
+            None,
+        );
+        let retry_delay = rate_limit_retry_delay(&error);
+        let retry_cue_id = job.cue_id.clone();
+        let retry_error_code = error.code.clone();
+        if state.scheduler.enqueue(job) {
+            if let Some(delay) = retry_delay {
+                state.scheduler.defer_dispatch_for(delay);
                 let _ = append_diagnostics_log(
-                    &app,
-                    "audio",
-                    "info",
-                    format!("翻译完成，cue={}，耗时=0ms。", cue.cue_id),
-                    Some("源文本已是目标语言，直接提交。".to_string()),
-                    None,
-                    None,
-                );
-                emit_audio_snapshot(&app, store)?;
-                continue;
-            }
-
-            let result = SentenceResult {
-                sentence: cue.source_text.clone(),
-                context: Vec::new(),
-                is_forced: false,
-                is_replacement: false,
-                pending_id: None,
-            };
-            let job_key = translation_job_key(&cue.cue_id, 0, &result);
-            let job = TranslationJob {
-                key: job_key.clone(),
-                sequence: next_sequence,
-                cue_revision: 0,
-                display_index: 0,
-                cue_id: cue.cue_id.clone(),
-                result,
-                full_prompt: String::new(),
-                source_language,
-                target_language,
-                provider: config.provider.clone(),
-                trace: None,
-            };
-            next_sequence = next_sequence.saturating_add(1);
-            if scheduler.enqueue(job) {
-                attempt_counts.insert(job_key, 1);
-                let _ = append_diagnostics_log(
-                    &app,
+                    app,
                     "translate",
                     "debug",
                     format!(
-                        "[CUE_ENQUEUE] cue={} direction={} queued={} in_flight={}",
-                        cue.cue_id,
-                        cue.route_direction,
-                        scheduler.queued.len(),
-                        scheduler.in_flight.len(),
+                        "[RETRY_BACKOFF] cue={} code={} delay_ms={}",
+                        retry_cue_id,
+                        retry_error_code,
+                        delay.as_millis()
                     ),
                     None,
                     None,
@@ -406,20 +438,128 @@ fn run_translate_worker(
                 );
             }
         }
-
-        scheduler.dispatch_ready(|job| spawn_cue_translation(result_tx.clone(), job));
-
-        // Sleep until the next update or poll tick; streamed deltas and
-        // finished jobs wake the loop immediately.
-        wake_update =
-            match result_rx.recv_timeout(Duration::from_millis(TRANSLATE_POLL_INTERVAL_MS)) {
-                Ok(update) => Some(update),
-                Err(mpsc::RecvTimeoutError::Timeout | mpsc::RecvTimeoutError::Disconnected) => {
-                    None
-                }
-            };
+    } else {
+        report_translation_error(store, &job, attempts, &error);
+        state.attempt_counts.remove(&job.key);
+        store.update_subtitle_cue_translation(
+            &job.cue_id,
+            format!("[翻译失败] {}", error.message),
+            true,
+        );
+        let _ = append_diagnostics_log(
+            app,
+            "audio",
+            "error",
+            format!(
+                "翻译失败，cue={}，耗时={}ms，尝试={}次。",
+                job.cue_id, elapsed_ms, attempts
+            ),
+            Some(error.message.clone()),
+            None,
+            None,
+        );
+        emit_audio_snapshot(app, store)?;
     }
+    Ok(())
+}
 
+fn enqueue_pending_cues(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    state: &mut TranslateWorkerState,
+) -> Result<(), String> {
+    // Enqueue every new uncommitted cue; the shared scheduler owns the
+    // concurrency cap, so no fixed-size batches here.
+    let snapshot = store.snapshot();
+    let pending_cues: Vec<SubtitleCueRuntime> = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .filter(|cue| {
+            cue_needs_translation(cue, state.processed.get(&cue.cue_id).map(String::as_str))
+        })
+        .cloned()
+        .collect();
+
+    for cue in &pending_cues {
+        state
+            .processed
+            .insert(cue.cue_id.clone(), cue.source_text.clone());
+        state.processed_order.push_back(cue.cue_id.clone());
+        while state.processed_order.len() > MAX_PROCESSED_CUES {
+            if let Some(expired) = state.processed_order.pop_front() {
+                state.processed.remove(&expired);
+            }
+        }
+
+        let (source_language, target_language) =
+            state.config.languages_for_direction(&cue.route_direction);
+
+        let same_lang = detect_language(&cue.source_text)
+            .map(|language| is_target_language(language, &target_language))
+            .unwrap_or(false);
+        if same_lang {
+            report_same_language_translation(store, cue);
+            store.update_subtitle_cue_translation(&cue.cue_id, cue.source_text.clone(), true);
+            let _ = append_diagnostics_log(
+                app,
+                "audio",
+                "info",
+                format!("翻译完成，cue={}，耗时=0ms。", cue.cue_id),
+                Some("源文本已是目标语言，直接提交。".to_string()),
+                None,
+                None,
+            );
+            emit_audio_snapshot(app, store)?;
+            continue;
+        }
+
+        let result = SentenceResult {
+            sentence: cue.source_text.clone(),
+            context: Vec::new(),
+            is_forced: false,
+            is_replacement: false,
+            pending_id: None,
+        };
+        let job_key = translation_job_key(&cue.cue_id, 0, &result);
+        let glossary = state
+            .config
+            .glossary_catalog
+            .for_languages(&source_language, &target_language);
+        let job = TranslationJob {
+            key: job_key.clone(),
+            sequence: state.next_sequence,
+            cue_revision: 0,
+            display_index: 0,
+            cue_id: cue.cue_id.clone(),
+            result,
+            full_prompt: String::new(),
+            source_language,
+            target_language,
+            provider: state.config.provider.clone(),
+            glossary,
+            trace: None,
+        };
+        state.next_sequence = state.next_sequence.saturating_add(1);
+        if state.scheduler.enqueue(job) {
+            state.attempt_counts.insert(job_key, 1);
+            let _ = append_diagnostics_log(
+                app,
+                "translate",
+                "debug",
+                format!(
+                    "[CUE_ENQUEUE] cue={} direction={} queued={} in_flight={}",
+                    cue.cue_id,
+                    cue.route_direction,
+                    state.scheduler.queued.len(),
+                    state.scheduler.in_flight.len(),
+                ),
+                None,
+                None,
+                None,
+            );
+        }
+    }
     Ok(())
 }
 
@@ -553,11 +693,12 @@ fn spawn_cue_translation(tx: mpsc::Sender<TranslateUpdate>, job: TranslationJob)
             let delta_tx = tx.clone();
             let delta_cue_id = job.cue_id.clone();
             let mut partial_translation = String::new();
-            let result = gateway.translate_text_streaming_traced(
+            let result = gateway.translate_text_streaming_traced_with_glossary(
                 job.provider.clone(),
                 job.result.sentence.clone(),
                 job.source_language.clone(),
                 job.target_language.clone(),
+                job.glossary.prompt(),
                 None,
                 |delta| {
                     partial_translation.push_str(delta);
@@ -580,6 +721,7 @@ fn spawn_cue_translation(tx: mpsc::Sender<TranslateUpdate>, job: TranslationJob)
 
 struct TranslateConfig {
     provider: ProviderDraftInput,
+    glossary_catalog: GlossaryCatalog,
     source_language: String,
     target_language: String,
     /// Outbound (microphone) reverses the pair: the user's own language is the
@@ -683,7 +825,8 @@ impl TranslateConfig {
             .and_then(Value::as_u64)
             .filter(|&limit| limit >= 1)
             .unwrap_or(DEFAULT_MAX_CONCURRENT_TRANSLATIONS)
-            .min(MAX_CONCURRENT_TRANSLATIONS_CEILING) as usize;
+            .min(MAX_CONCURRENT_TRANSLATIONS_CEILING)
+            as usize;
         let request_timeout_ms = config
             .pointer("/subtitles/translateWorkerRequestTimeoutMs")
             .and_then(Value::as_u64)
@@ -695,6 +838,7 @@ impl TranslateConfig {
         provider.timeout_ms = request_timeout_ms;
         Self {
             provider,
+            glossary_catalog: GlossaryCatalog::from_config(config),
             source_language,
             target_language,
             outbound_source_language,
@@ -773,7 +917,10 @@ mod tests {
         assert!(cue_needs_translation(&cue(true, false, "hello"), None));
 
         // Same source already dispatched (job in flight) -> not dispatched twice.
-        assert!(!cue_needs_translation(&cue(true, false, "hello"), Some("hello")));
+        assert!(!cue_needs_translation(
+            &cue(true, false, "hello"),
+            Some("hello")
+        ));
 
         // Finalized translation exists -> skip even if the processed entry aged
         // out of the ring.
@@ -862,6 +1009,7 @@ mod tests {
             source_language: "en".to_string(),
             target_language: "zh-CN".to_string(),
             provider,
+            glossary: Default::default(),
             trace: None,
         }
     }

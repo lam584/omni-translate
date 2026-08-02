@@ -439,6 +439,10 @@ function Invoke-ReportGenerator {
   if ($LASTEXITCODE -ne 0) {
     throw "watch-mode report generator failed with exit code $LASTEXITCODE"
   }
+  node ./scripts/testing/watch-mode-score.mjs --input $InputDirectory
+  if ($LASTEXITCODE -ne 0) {
+    throw "watch-mode benchmark scorer failed with exit code $LASTEXITCODE"
+  }
   if ($Mode -eq "live") {
     Write-LatestWatchModeSummary $InputDirectory
   }
@@ -765,12 +769,18 @@ try {
   if (-not (Test-RunnerLease)) {
     exit 125
   }
-  `$desktopProcess = Start-Process -FilePath $executableLiteral `
-    -WorkingDirectory $workingDirectoryLiteral `
-    -RedirectStandardOutput $stdoutLiteral `
-    -RedirectStandardError $stderrLiteral `
-    -WindowStyle Hidden `
-    -PassThru
+  # Do not use backtick continuations inside this expandable here-string. The
+  # outer parser consumes them while constructing the guardian script, which
+  # leaves parameters such as -WorkingDirectory as standalone commands.
+  `$desktopStartArguments = @{
+    FilePath = $executableLiteral
+    WorkingDirectory = $workingDirectoryLiteral
+    RedirectStandardOutput = $stdoutLiteral
+    RedirectStandardError = $stderrLiteral
+    WindowStyle = 'Hidden'
+    PassThru = `$true
+  }
+  `$desktopProcess = Start-Process @desktopStartArguments
   Write-LaunchReceipt -Ok `$true
 
   while (-not `$desktopProcess.HasExited) {

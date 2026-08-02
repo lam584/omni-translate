@@ -42,12 +42,37 @@ impl ProviderGateway {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn translate_text_streaming_traced<F>(
         &self,
         provider: ProviderDraftInput,
         source_text: String,
         source_language: String,
         target_language: String,
+        trace: Option<&ModelTraceRecorder>,
+        on_delta: F,
+    ) -> Result<String, ProviderRuntimeError>
+    where
+        F: FnMut(&str) -> Result<(), ProviderRuntimeError>,
+    {
+        self.translate_text_streaming_traced_with_glossary(
+            provider,
+            source_text,
+            source_language,
+            target_language,
+            None,
+            trace,
+            on_delta,
+        )
+    }
+
+    pub(crate) fn translate_text_streaming_traced_with_glossary<F>(
+        &self,
+        provider: ProviderDraftInput,
+        source_text: String,
+        source_language: String,
+        target_language: String,
+        glossary_prompt: Option<&str>,
         trace: Option<&ModelTraceRecorder>,
         mut on_delta: F,
     ) -> Result<String, ProviderRuntimeError>
@@ -86,6 +111,7 @@ impl ProviderGateway {
                 source_text,
                 source_language,
                 target_language,
+                glossary_prompt,
                 &mut forward_delta,
             )
         };
@@ -162,6 +188,7 @@ impl ProviderGateway {
             source_text,
             source_language,
             target_language,
+            None,
             &mut discard_delta,
         )
     }
@@ -172,6 +199,7 @@ impl ProviderGateway {
         source_text: String,
         source_language: String,
         target_language: String,
+        glossary_prompt: Option<&str>,
         on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
     ) -> ProviderSmokeResult {
         let request_id = format!("req-{}", now_unix_seconds_marker());
@@ -187,6 +215,7 @@ impl ProviderGateway {
                 &source_text,
                 &source_language,
                 &target_language,
+                glossary_prompt,
                 on_delta,
             ),
             "dashscope" => self.dashscope_adapter.execute(
@@ -196,6 +225,7 @@ impl ProviderGateway {
                 &source_text,
                 &source_language,
                 &target_language,
+                glossary_prompt,
                 on_delta,
             ),
             other => Err(ProviderRuntimeError::new(
@@ -306,7 +336,7 @@ mod tests {
     use serde_json::{json, Value};
     use std::collections::HashMap;
     use std::fs;
-    use std::io::{BufRead, BufReader, Write};
+    use std::io::{BufRead, BufReader, Read, Write};
     use std::net::{TcpListener, TcpStream};
     use std::path::PathBuf;
     use std::sync::mpsc;
@@ -535,6 +565,64 @@ mod tests {
 
         assert_eq!(result, "Complete answer");
         assert_eq!(deltas, vec!["Complete answer"]);
+        server.join().expect("server thread should finish");
+    }
+
+    #[test]
+    fn openai_translation_sends_configured_glossary_in_system_prompt() {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("client should connect");
+            let request_body = read_http_request_body(&mut stream);
+            let request: Value =
+                serde_json::from_str(&request_body).expect("request body should be JSON");
+            let system_prompt = request
+                .pointer("/messages/0/content")
+                .and_then(Value::as_str)
+                .expect("translation request should contain a system prompt");
+            assert!(system_prompt.contains("\"GG\""));
+            assert!(system_prompt.contains("\"好局\""));
+            write_http_response(
+                &mut stream,
+                "application/json",
+                "{\"choices\":[{\"message\":{\"content\":\"好局\"}}]}",
+            );
+        });
+
+        let mut provider = openai_provider(format!("http://{}", addr));
+        provider.stream_enabled = false;
+        provider.transport = "http".to_string();
+        let glossary = crate::audio::glossary::GlossaryCatalog::from_config(&json!({
+            "glossary": {
+                "processingMode": "inject-important",
+                "libraries": [{
+                    "enabled": true,
+                    "entries": [{
+                        "sourceLang": "en-US",
+                        "targetLang": "zh-CN",
+                        "sourceTerm": "GG",
+                        "targetTerm": "好局",
+                        "strategy": "force",
+                        "important": true
+                    }]
+                }]
+            }
+        }))
+        .for_languages("en-US", "zh-CN");
+        let translated = ProviderGateway::new()
+            .translate_text_streaming_traced_with_glossary(
+                provider,
+                "GG".to_string(),
+                "en-US".to_string(),
+                "zh-CN".to_string(),
+                glossary.prompt(),
+                None,
+                |_| Ok(()),
+            )
+            .expect("translation should succeed");
+
+        assert_eq!(translated, "好局");
         server.join().expect("server thread should finish");
     }
 
@@ -1007,6 +1095,38 @@ mod tests {
                 break;
             }
         }
+    }
+
+    fn read_http_request_body(stream: &mut TcpStream) -> String {
+        let mut reader = BufReader::new(&mut *stream);
+        let mut content_length = 0usize;
+        loop {
+            let mut line = String::new();
+            reader
+                .read_line(&mut line)
+                .expect("http request header should be readable");
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if line
+                .split_once(':')
+                .is_some_and(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            {
+                let value = line
+                    .split_once(':')
+                    .map(|(_, value)| value)
+                    .expect("content length header should contain a value");
+                content_length = value
+                    .trim()
+                    .parse()
+                    .expect("content length should be numeric");
+            }
+        }
+        let mut body = vec![0u8; content_length];
+        reader
+            .read_exact(&mut body)
+            .expect("http request body should be readable");
+        String::from_utf8(body).expect("http request body should be UTF-8")
     }
 
     /// Spawn a client thread that runs a streaming translation and forwards each

@@ -21,6 +21,7 @@ import { LogLevelControl } from './diagnostics/LogLevelControl';
 import { useDiagnosticsWorkbenchController } from './diagnostics/useDiagnosticsActions';
 import { CUSTOM_AUDIO_VALUE } from './diagnostics/benchmark-audio-fixtures';
 import { useBenchmarkController, type BenchmarkVoiceModel } from './diagnostics/useBenchmarkController';
+import { formatSemanticJudgeError, runBenchmarkSemanticJudge, type BenchmarkJudgeModel, type BenchmarkSemanticJudgeResult } from './diagnostics/benchmarkSemanticJudge';
 import {
   BenchmarkProgressBanner, BenchmarkReportDetail, DiagnosticsReportExporter, ExportButton,
   LiveSessionEventDetail, buildOutputSegments, fmtMs, formatBenchmarkTxt,
@@ -103,6 +104,22 @@ function DiagnosticsPage() {
     }),
     [configDraft.providers],
   );
+  const semanticJudgeModels = useMemo(
+    () => collectProviderModelOptions(configDraft.providers, {
+      scenarios: ['subtitle-translate'],
+      dedupeKey: 'provider-model',
+      project: ({ templateId, modelId, provider }): BenchmarkJudgeModel => {
+        const apiModelId = modelId.includes('::') ? modelId.split('::')[1] || modelId : modelId;
+        return {
+          modelId: `${templateId}::${modelId}`,
+          displayName: `${provider.displayName ?? templateId}: ${modelId}`,
+          authReference: provider.authRef?.reference ?? '',
+          provider: { ...provider, model: apiModelId },
+        };
+      },
+    }),
+    [configDraft.providers],
+  );
 
   const {
     modelId: benchmarkModelId,
@@ -120,6 +137,27 @@ function DiagnosticsPage() {
     progress: benchmarkProgress,
     run: runBenchmarkTest,
   } = useBenchmarkController(voiceModelOptions);
+  const [semanticJudgeModelId, setSemanticJudgeModelId] = useState('');
+  const [semanticJudgeRunning, setSemanticJudgeRunning] = useState(false);
+  const [semanticJudgeError, setSemanticJudgeError] = useState<string | null>(null);
+  const [semanticJudgeResult, setSemanticJudgeResult] = useState<BenchmarkSemanticJudgeResult | null>(null);
+  const effectiveSemanticJudgeModelId = semanticJudgeModels.some((model) => model.modelId === semanticJudgeModelId)
+    ? semanticJudgeModelId
+    : semanticJudgeModels[0]?.modelId ?? '';
+  const runSemanticJudge = async () => {
+    if (!benchmarkReport) return;
+    const selected = semanticJudgeModels.find((model) => model.modelId === effectiveSemanticJudgeModelId);
+    if (!selected) return;
+    setSemanticJudgeRunning(true);
+    setSemanticJudgeError(null);
+    try {
+      setSemanticJudgeResult(await runBenchmarkSemanticJudge(benchmarkReport, selected));
+    } catch (error) {
+      setSemanticJudgeError(formatSemanticJudgeError(error));
+    } finally {
+      setSemanticJudgeRunning(false);
+    }
+  };
   const runtimeEnvironmentSummary = useMemo(
     () => getRuntimeEnvironmentSummary(runtimeSnapshot, audioRuntimeSnapshot, configDraft),
     [runtimeSnapshot, audioRuntimeSnapshot, configDraft],
@@ -352,7 +390,7 @@ function DiagnosticsPage() {
             <div>
               <strong>{actionFeedback.title}</strong>
               {actionFeedback.detail ? <p>{actionFeedback.detail}</p> : null}
-              {actionFeedback.outputPath ? <button className="text-button" onClick={() => void openDiagnosticsExportDirectory(actionFeedback.outputPath!)} type="button">{i18n.t('diagnostics.actions.openExportDirectory')}</button> : null}
+              {actionFeedback.outputPath ? <button className="text-button" onClick={() => void openDiagnosticsExportDirectory(actionFeedback.outputPath!).catch(() => undefined)} type="button">{i18n.t('diagnostics.actions.openExportDirectory')}</button> : null}
             </div>
             <button aria-label={i18n.t('common.close')} className="icon-button" onClick={() => {
               clearActionFeedback();
@@ -376,7 +414,7 @@ function DiagnosticsPage() {
         ) : null}
 
         <div className="diagnostics-live-events-strip">
-          <button className="icon-button diagnostics-live-events-button" onClick={() => void openWatchReportModal()} type="button">
+          <button className="icon-button diagnostics-live-events-button" onClick={() => void openWatchReportModal().catch(() => undefined)} type="button">
             <AppIcon name="activity" size={14} />
             {i18n.t('watchReport.latestTitle')}
           </button>
@@ -672,7 +710,16 @@ function DiagnosticsPage() {
             </div>
             {reportExportFeedbackBanner}
             <BenchmarkProgressBanner error={benchmarkError} progress={benchmarkProgress} />
-            <BenchmarkReportDetail report={benchmarkReport} />
+            <BenchmarkReportDetail
+              onRunSemanticJudge={() => void runSemanticJudge().catch(() => undefined)}
+              onSemanticJudgeModelChange={(modelId) => { setSemanticJudgeModelId(modelId); setSemanticJudgeResult(null); setSemanticJudgeError(null); }}
+              report={benchmarkReport}
+              semanticJudgeError={semanticJudgeError}
+              semanticJudgeModelId={effectiveSemanticJudgeModelId}
+              semanticJudgeModels={semanticJudgeModels}
+              semanticJudgeResult={semanticJudgeResult}
+              semanticJudgeRunning={semanticJudgeRunning}
+            />
         </ModalDialog>
       ) : null}
 
@@ -685,7 +732,7 @@ function DiagnosticsPage() {
                 <p>{i18n.t('watchReport.description')}</p>
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                <button className="icon-button" onClick={() => void refreshWatchReport()} disabled={watchReportLoading} type="button" title={i18n.t('watchReport.refresh')}>
+                <button className="icon-button" onClick={() => void refreshWatchReport().catch(() => undefined)} disabled={watchReportLoading} type="button" title={i18n.t('watchReport.refresh')}>
                   <AppIcon name="refresh" size={14} />
                 </button>
                 <button className="icon-button" onClick={closeWatchReportModal} type="button">

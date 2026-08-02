@@ -4,6 +4,7 @@ use tauri::{AppHandle, Manager};
 use super::super::contracts::AudioRuntimeSnapshot;
 use super::super::engine;
 use super::super::engine::AudioRouteSupervisor;
+use super::super::glossary::GlossaryCatalog;
 use super::super::omni::session_errors::{
     split_error_markers, with_error_markers, SessionErrorCode,
 };
@@ -334,6 +335,7 @@ fn start_omni_inbound_route(
             text_provider,
             resolve_route_target_language("inbound", &omni_route_config),
             resolve_route_target_language("outbound", &omni_route_config),
+            GlossaryCatalog::from_config(&omni_route_config),
         ) {
             Ok(snapshot) => {
                 st_active = true;
@@ -441,6 +443,8 @@ fn start_omni_inbound_route(
         &plan.realtime_audio_mode,
         plan.voice.clone(),
         plan.instructions.clone(),
+        plan.glossary.clone(),
+        plan.session_reuse_key.glossary_signature,
         plan.omni_speech_config.clone(),
         OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
     )?;
@@ -527,6 +531,7 @@ fn start_openai_inbound_route(
             text_provider,
             resolve_route_target_language("inbound", &config),
             resolve_route_target_language("outbound", &config),
+            GlossaryCatalog::from_config(&config),
         ) {
             Ok(_) => {
                 st_active = true;
@@ -561,6 +566,7 @@ fn start_openai_inbound_route(
         &plan.realtime_audio_mode,
         plan.instructions.clone(),
         st_active,
+        plan.glossary.clone(),
     )?;
     state.watch_session_report.record_milestone_now("route_started");
     if should_start_speech_dispatch {
@@ -716,6 +722,7 @@ fn start_recognized_route_locked(
                     &plan.target_language,
                     &plan.realtime_audio_mode,
                     plan.instructions,
+                    plan.glossary,
                 )?;
                 start_route_with_overlay(app, &state, &direction, config, Some(gemini_sender))
             }
@@ -747,6 +754,7 @@ fn start_recognized_route_locked(
                     &plan.direction,
                     &source_language,
                     &plan.target_language,
+                    plan.glossary,
                 )?;
                 state.watch_session_report.record_milestone_now("route_started");
                 start_route_with_overlay(app, &state, &direction, config, Some(tencent_sender))

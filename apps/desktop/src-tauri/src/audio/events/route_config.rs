@@ -1,7 +1,7 @@
 use serde_json::Value;
 use tauri::AppHandle;
 
-use super::super::{omni, speech};
+use super::super::{glossary::{GlossaryCatalog, GlossaryContext}, omni, speech};
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::{ProviderDraftInput, ProviderModelCapabilityRegistryEntryInput};
 
@@ -122,8 +122,10 @@ pub(super) enum SpeechDispatchPolicy {
 pub(super) struct SessionReuseKey {
     pub(super) direction: String,
     pub(super) model: String,
+    pub(super) realtime_audio_mode: String,
     pub(super) subtitle_translate_active: bool,
     pub(super) output_mode: omni::OmniOutputMode,
+    pub(super) glossary_signature: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +135,7 @@ pub(super) struct ResolvedRoutePlan {
     pub(super) target_language: String,
     pub(super) voice: String,
     pub(super) instructions: String,
+    pub(super) glossary: GlossaryContext,
     pub(super) omni_speech_config: omni::OmniSpeechConfig,
     pub(super) provider: ProviderDraftInput,
     pub(super) secondary_subtitle_provider: Option<ProviderDraftInput>,
@@ -159,7 +162,10 @@ impl ResolvedRoutePlan {
         let target_language = resolve_route_target_language(direction, config);
         let realtime_profile = resolve_realtime_profile(&provider, &provider.model);
         let realtime_audio_mode = realtime_profile.realtime_audio_mode.clone();
-        let effective_audio_mode = if resolve_legacy_vad_bypass_for_route(direction, config) {
+        let legacy_vad_bypass = resolve_legacy_vad_bypass_for_route(direction, config);
+        let serialize_continuous_media_turns =
+            should_serialize_qwen_audio_watch_turns(direction, config, &realtime_profile, &provider.model);
+        let effective_audio_mode = if legacy_vad_bypass || serialize_continuous_media_turns {
             "manual".to_string()
         } else {
             realtime_audio_mode.clone()
@@ -210,7 +216,6 @@ impl ResolvedRoutePlan {
             "gemini_manual_activity" => ResolvedVadPolicy::GeminiManualActivity,
             _ => ResolvedVadPolicy::ServerVad,
         };
-        let legacy_vad_bypass = resolve_legacy_vad_bypass_for_route(direction, config);
         let reuse_model = provider.model.clone();
         let omni_speech_config = omni::OmniSpeechConfig::from_config(config);
         let omni_output_mode = omni::OmniOutputMode::from_speech_config(&omni_speech_config);
@@ -233,24 +238,29 @@ impl ResolvedRoutePlan {
             .and_then(Value::as_str)
             .unwrap_or("Ethan");
         let voice = resolve_realtime_voice(&provider.model, configured_voice);
+        let glossary = GlossaryCatalog::from_config(config)
+            .for_languages("auto", &target_language);
+        let glossary_signature = glossary.signature();
+        let base_instructions = config
+            .pointer("/subtitles/instructions")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .filter(|text| !text.is_empty() && !is_legacy_default_instructions(text))
+            .map(str::to_string)
+            .unwrap_or(default_instructions);
         Self {
             direction: direction.to_string(),
             requested_voice_model: requested_voice_model.clone(),
             target_language,
             voice,
-            instructions: config
-                .pointer("/subtitles/instructions")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|text| !text.is_empty() && !is_legacy_default_instructions(text))
-                .map(str::to_string)
-                .unwrap_or(default_instructions),
+            instructions: glossary.with_instructions(&base_instructions),
+            glossary,
             omni_speech_config,
             provider,
             secondary_subtitle_provider,
             configuration_error,
             subtitle_translation_model_id: subtitle_model_id.to_string(),
-            realtime_audio_mode: effective_audio_mode,
+            realtime_audio_mode: effective_audio_mode.clone(),
             legacy_vad_bypass,
             vad_policy,
             subtitle_fallback_policy,
@@ -260,12 +270,37 @@ impl ResolvedRoutePlan {
             session_reuse_key: SessionReuseKey {
                 direction: direction.to_string(),
                 model: reuse_model,
+                realtime_audio_mode: effective_audio_mode.clone(),
                 subtitle_translate_active,
                 output_mode: omni_output_mode,
+                glossary_signature,
             },
             kind,
         }
     }
+}
+
+/// Qwen Audio's automatic VAD is designed for duplex conversation: a new
+/// `speech_started` cancels the response currently being generated. Continuous
+/// video narration routinely starts the next phrase within a few dozen
+/// milliseconds, so server-VAD responses are cancelled before their first
+/// translation token and the following response can absorb the prior turn.
+/// The existing manual gate serializes commit -> ASR final -> response.create
+/// -> response.done while continuing to buffer incoming media, which preserves
+/// every source turn without allowing later narration to barge in.
+fn should_serialize_qwen_audio_watch_turns(
+    direction: &str,
+    config: &Value,
+    profile: &ResolvedRealtimeProfile,
+    model: &str,
+) -> bool {
+    direction == "inbound"
+        && super::configured_route_mode(config) == "watch"
+        && profile.protocol_dialect == Some(RealtimeProtocol::DashscopeOmni)
+        && model
+            .trim()
+            .to_ascii_lowercase()
+            .starts_with("qwen-audio-3.0-realtime")
 }
 
 fn resolve_realtime_voice(model: &str, configured_voice: &str) -> String {
@@ -334,7 +369,7 @@ fn subtitle_translate_mode_and_model(config: &Value) -> (&str, &str) {
     let mode = config
         .pointer("/devices/subtitleTranslationMode")
         .and_then(Value::as_str)
-        .unwrap_or("secondary");
+        .unwrap_or("native");
     let model_id = config
         .pointer("/devices/subtitleTranslationModelId")
         .and_then(Value::as_str)

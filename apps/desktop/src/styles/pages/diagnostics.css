@@ -405,6 +405,115 @@
   color:#64748b
 }
 
+.benchmark-result-score {
+  display:grid;
+  grid-template-columns:130px 1fr;
+  gap:10px;
+  margin-bottom:16px;
+  padding:12px;
+  border:1px solid #cbd5e1;
+  border-radius:10px;
+  background:#f8fafc
+}
+
+.benchmark-result-score-total {
+  display:grid;
+  grid-template-columns:1fr auto;
+  align-items:baseline;
+  gap:3px 8px
+}
+
+.benchmark-result-score-total span {
+  grid-column:1 / -1;
+  color:#64748b;
+  font-size:12px
+}
+
+.benchmark-result-score-total strong {
+  font-size:32px;
+  line-height:1
+}
+
+.benchmark-result-score-total b {
+  color:#166534;
+  font-size:20px
+}
+
+.benchmark-result-score-dimensions {
+  display:grid;
+  grid-template-columns:repeat(4, minmax(0, 1fr));
+  gap:7px
+}
+
+.benchmark-result-score-dimensions .benchmark-metric {
+  padding:7px
+}
+
+.benchmark-result-score > p {
+  grid-column:1 / -1;
+  margin:0;
+  color:#64748b;
+  font-size:11px
+}
+
+.benchmark-semantic-judge {
+  display:grid;
+  grid-template-columns:minmax(240px, 1fr) auto;
+  align-items:end;
+  gap:8px;
+  margin-bottom:16px;
+  padding:10px;
+  border:1px solid #dbe3ec;
+  border-radius:8px;
+  background:#fff
+}
+
+.benchmark-semantic-judge label {
+  display:grid;
+  gap:4px;
+  color:#475569;
+  font-size:12px
+}
+
+.benchmark-semantic-judge select,
+.benchmark-semantic-judge button {
+  min-height:32px;
+  border:1px solid #94a3b8;
+  border-radius:6px;
+  padding:0 9px;
+  background:#fff;
+  color:#0f172a
+}
+
+.benchmark-semantic-judge button {
+  cursor:pointer;
+  background:#eff6ff;
+  border-color:#60a5fa
+}
+
+.benchmark-semantic-judge button:disabled,
+.benchmark-semantic-judge select:disabled {
+  cursor:not-allowed;
+  opacity:.6
+}
+
+.benchmark-semantic-judge .benchmark-warning {
+  grid-column:1 / -1;
+  margin:0
+}
+
+.benchmark-semantic-judge-result {
+  grid-column:1 / -1;
+  margin:0;
+  color:#166534;
+  font-size:12px
+}
+
+@media (max-width: 640px) {
+  .benchmark-result-score { grid-template-columns:1fr }
+  .benchmark-result-score-dimensions { grid-template-columns:repeat(2, minmax(0, 1fr)) }
+}
+
 .benchmark-progress-card {
   display:flex;
   flex-direction:column;

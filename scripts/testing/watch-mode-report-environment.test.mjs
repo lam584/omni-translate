@@ -25,6 +25,18 @@ test('marks environment precheck failures blocked before downstream recording fa
   assert.equal(report.layers.environment.status, 'blocked');
 });
 
+test('echo-cancel environment failure is not attributed to its skipped driver layer', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    driver: { error: 'virtual endpoint unavailable' },
+    failure: { message: 'start physical output content recording failed: playback endpoint unresolved' },
+    steps: [{ name: 'start physical output content recording', ok: false, error: 'playback endpoint unresolved' }],
+  });
+  assert.equal(report.verdict, 'blocked');
+  assert.equal(report.failureLayer, 'environment');
+  assert.equal(report.layers.driver.status, 'skipped');
+});
+
 test('surfaces bridge source probe diagnostics before generic bridge counters', () => {
   const report = classify({
     bridge: {

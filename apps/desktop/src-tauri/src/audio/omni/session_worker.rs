@@ -1,4 +1,5 @@
 use super::*;
+use crate::audio::glossary::GlossaryContext;
 
 pub(crate) struct OmniHandle {
     pub stop_tx: mpsc::Sender<()>,
@@ -104,6 +105,7 @@ impl OmniSessionWorker {
             self.config.provider,
             self.config.voice,
             self.config.instructions,
+            self.config.glossary,
             self.config.audio_mode,
             self.config.output_mode,
             self.config.target_language,
@@ -124,6 +126,7 @@ pub(crate) fn start_omni(
     provider: ProviderDraftInput,
     voice: String,
     instructions: String,
+    glossary: GlossaryContext,
     audio_mode: RealtimeAudioMode,
     target_language: String,
     subtitle_translate_active: bool,
@@ -179,6 +182,7 @@ pub(crate) fn start_omni(
                     provider,
                     voice,
                     instructions,
+                    glossary,
                     audio_mode,
                     output_mode,
                     target_language,
@@ -192,6 +196,12 @@ pub(crate) fn start_omni(
                 stop_rx,
             };
             let result = worker.run(&audio_state);
+            // Error exits and early provider shutdowns bypass the normal stop
+            // branch inside run_omni_worker. Apply the same direction-scoped
+            // tail cleanup here as a final lifecycle guard.
+            if audio_state.is_current_omni_session(&worker_direction, session_generation) {
+                audio_state.discard_uncommitted_subtitle_cues_by_direction(&worker_direction);
+            }
             if let Err(error) = result {
                 audio_state.set_stt_connected(false, 0);
                 // Mirror the engine route-worker convention: trailing
@@ -277,6 +287,7 @@ fn run_omni_worker(
     provider: ProviderDraftInput,
     voice: String,
     instructions: String,
+    glossary: GlossaryContext,
     audio_mode: RealtimeAudioMode,
     output_mode: OmniOutputMode,
     target_language: String,
@@ -382,6 +393,12 @@ fn run_omni_worker(
                         "event=manual_response_gate action=discard_deferred_on_stop cueId={cue_id}"
                     ),
                 );
+            }
+            // A stopped realtime session cannot produce another response for
+            // its live tail. Remove only this route's unfinished cues so the
+            // queue does not keep showing a terminal session as translating.
+            if store.is_current_omni_session(&direction, session_generation) {
+                store.discard_uncommitted_subtitle_cues_by_direction(&direction);
             }
             request_omni_playback_stop(&playback_stop_requested, &playback_tx);
             let _ = playback_join.join();
@@ -604,6 +621,7 @@ fn run_omni_worker(
                 readiness_tx: &readiness_tx,
                 provider: &provider,
                 instructions: &instructions,
+                glossary: &glossary,
                 audio_mode,
                 output_mode,
                 target_language: &target_language,
@@ -637,6 +655,22 @@ fn run_omni_worker(
         manual_response_item_id = poll.state.manual_response_item_id;
         if poll.socket_reconnected {
             reset_gate_after_reconnect!();
+        }
+        if poll.stop_worker {
+            let _ = socket.close(None);
+            store.set_stt_connected(false, buffer_size);
+            let _ = diag_log(
+                &app,
+                "omni",
+                "info",
+                format!(
+                    "[PRECONNECT] parked Omni worker stopped after provider idle timeout, sentAudioChunks={chunk_count}"
+                ),
+            );
+            request_omni_playback_stop(&playback_stop_requested, &playback_tx);
+            let _ = playback_join.join();
+            emit_audio_snapshot(&app, store)?;
+            break;
         }
         if poll.skip_tick {
             continue;

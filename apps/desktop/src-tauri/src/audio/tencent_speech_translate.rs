@@ -30,6 +30,7 @@ use uuid::Uuid;
 
 use super::diagnostics::diag_log;
 use super::engine::emit_audio_snapshot;
+use super::glossary::GlossaryContext;
 use super::omni::OmniHandle;
 use super::pcm_resample::{pcm16_chunk_rms, resample_capture_to_mono_i16};
 use super::realtime_ws::{self, attempt_backoff_delay};
@@ -196,15 +197,17 @@ fn push_bounded_frame(queue: &mut VecDeque<Vec<u8>>, frame: Vec<u8>) {
 /// `sentence_end` commits the cue and the next result opens a fresh one.
 struct TencentCueState {
     direction: String,
+    glossary: GlossaryContext,
     cue_id: Option<String>,
     source_text: String,
     target_text: String,
 }
 
 impl TencentCueState {
-    fn new(direction: String) -> Self {
+    fn new(direction: String, glossary: GlossaryContext) -> Self {
         Self {
             direction,
+            glossary,
             cue_id: None,
             source_text: String::new(),
             target_text: String::new(),
@@ -236,7 +239,9 @@ impl TencentCueState {
     fn apply_result(&mut self, app: &AppHandle, store: &AudioStateStore, result: &TencentResult) {
         let id = self.ensure_cue_id();
         self.source_text = result.source_text.clone();
-        self.target_text = result.target_text.clone();
+        self.target_text = self
+            .glossary
+            .calibrate(&self.source_text, &result.target_text);
         store.update_or_push_stt_cue(&id, self.display_source(), false);
         if !self.target_text.trim().is_empty() {
             if result.sentence_end {
@@ -292,6 +297,7 @@ pub(crate) fn start_tencent_speech_translate(
     direction: String,
     source_language: String,
     target_language: String,
+    glossary: GlossaryContext,
 ) -> Result<(mpsc::Sender<Vec<u8>>, OmniHandle), String> {
     // Resolve + parse the combined credential up front so configuration
     // errors surface synchronously to the route layer.
@@ -331,6 +337,7 @@ pub(crate) fn start_tencent_speech_translate(
                 credentials,
                 source_language,
                 target_language,
+                glossary,
                 audio_rx,
                 stop_rx,
             ) {
@@ -445,6 +452,7 @@ fn run_tencent_worker(
     credentials: TencentCredentials,
     source_language: String,
     target_language: String,
+    glossary: GlossaryContext,
     audio_rx: mpsc::Receiver<Vec<u8>>,
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
@@ -476,7 +484,7 @@ fn run_tencent_worker(
     let _ = store.set_stt_connected_if_current(stt_epoch, true, 0);
     let _ = emit_audio_snapshot(&app, store);
 
-    let mut cue = TencentCueState::new(direction);
+    let mut cue = TencentCueState::new(direction, glossary);
     let mut sample_accumulator: Vec<i16> = Vec::new();
     let mut pending_frames: VecDeque<Vec<u8>> = VecDeque::new();
     let mut buffer_size = 0u64;

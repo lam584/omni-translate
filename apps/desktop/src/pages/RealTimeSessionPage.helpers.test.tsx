@@ -24,6 +24,7 @@ const {
   isReconnectNoticeCue,
   logSceneLaunchConfig,
   parseRuntimeTimestampMs,
+  resolveCueTranslationState,
   resolveSceneLabel,
   resolveSceneSpeechPatch,
   resolveSceneVoiceModelId,
@@ -156,8 +157,31 @@ describe('realTimeSessionPageHelpers', () => {
   it('renders each cue status', () => {
     expect(renderToStaticMarkup(<CueStatusBadge cue={baseCue} />)).toContain('翻译中...');
     expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translatedText: '[翻译失败] timeout' }} />)).toContain('失败');
-    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translatedText: '你好' }} />)).toContain('已翻译');
-    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true }} />)).toContain('翻译失败');
+    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translationCommitted: true, translatedText: '你好' }} />)).toContain('已翻译');
+    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true }} />)).toContain('翻译中...');
+    expect(renderToStaticMarkup(<CueStatusBadge cue={{ ...baseCue, committed: true, translationCommitted: true }} />)).toContain('失败');
+  });
+
+  it('resolves source and translation lifecycles independently', () => {
+    expect(resolveCueTranslationState({ ...baseCue, committed: true })).toBe('pending');
+    expect(resolveCueTranslationState({
+      ...baseCue,
+      committed: true,
+      translatedText: '流式部分译文',
+    })).toBe('pending');
+    expect(resolveCueTranslationState({
+      ...baseCue,
+      translationCommitted: true,
+      translatedText: '最终译文',
+    })).toBe('translated');
+    expect(resolveCueTranslationState({
+      ...baseCue,
+      translatedText: '[翻译失败] timeout',
+    })).toBe('failed');
+    expect(resolveCueTranslationState({
+      ...baseCue,
+      translationCommitted: true,
+    })).toBe('failed');
   });
 
   it('renders reconnect cues as notices without a translation failure state', () => {
@@ -178,12 +202,12 @@ describe('realTimeSessionPageHelpers', () => {
     expect(notice).not.toContain('正在调用');
   });
 
-  it('keeps ordinary committed cues with empty translations in the failure state', () => {
+  it('keeps an ASR-committed cue pending until translation reaches a terminal', () => {
     const ordinaryCue = { ...baseCue, committed: true };
 
     expect(isReconnectNoticeCue(ordinaryCue)).toBe(false);
-    expect(renderToStaticMarkup(<CueStatusBadge cue={ordinaryCue} />)).toContain('翻译失败');
-    expect(renderToStaticMarkup(<CueSegmentRows cue={ordinaryCue} />)).toContain('翻译失败');
+    expect(renderToStaticMarkup(<CueStatusBadge cue={ordinaryCue} />)).toContain('翻译中...');
+    expect(renderToStaticMarkup(<CueSegmentRows cue={ordinaryCue} />)).not.toContain('翻译失败');
   });
   it('logs scene launch config with populated optional fields', () => {
     const { configDraft, runtimeSnapshot, audioRuntimeSnapshot, consoleSpy } = sceneLaunchLogFixture();
@@ -354,12 +378,30 @@ describe('realTimeSessionPageHelpers', () => {
   it('renders empty, pending, untranslated and translated cue segment states', () => {
     const emptyCommitted = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, sourceText: '', committed: true }} />);
     const emptyPending = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, sourceText: '', committed: false }} current />);
-    const untranslated = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, committed: true, displaySegments: [{ sourceText: 'source', translatedText: '', pending: false }] }} />);
+    const untranslated = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, committed: true, translationCommitted: true, displaySegments: [{ sourceText: 'source', translatedText: '', pending: false }] }} />);
     const failed = renderToStaticMarkup(<CueSegmentRows cue={{ ...baseCue, translatedText: '[翻译失败] bad', committed: true }} current />);
-    expect(emptyCommitted).toContain('翻译失败');
-    expect(emptyPending).toContain('正在调用');
+    expect(emptyCommitted).toBe('');
+    expect(emptyPending).toBe('');
     expect(untranslated).toContain('翻译失败');
     expect(failed).toContain('cue-queue-error');
+  });
+
+  it('shows one pending status without repeating it for every source segment', () => {
+    const cue = {
+      ...baseCue,
+      sourceText: 'one two three four five',
+      displaySourceText: 'one\ntwo\nthree\nfour\nfive',
+      displaySegments: ['one', 'two', 'three', 'four', 'five'].map((sourceText, index) => ({
+        sourceText,
+        translatedText: '',
+        pending: index === 4,
+      })),
+    };
+    const markup = renderToStaticMarkup(<div><CueStatusBadge cue={cue} /><CueSegmentRows cue={cue} /></div>);
+
+    expect(markup.match(/翻译中\.\.\./gu)).toHaveLength(1);
+    expect(markup.match(/cue-queue-source/gu)).toHaveLength(5);
+    expect(markup).not.toContain('live-caption-segment-pending');
   });
 
   it('does not label source-only rows as failed when the committed cue has a translation', () => {
@@ -369,6 +411,7 @@ describe('realTimeSessionPageHelpers', () => {
     const partialBlock = renderToStaticMarkup(<CueSegmentRows cue={{
       ...baseCue,
       committed: true,
+      translationCommitted: true,
       translatedText: '他的手瘫痪了。',
       displaySourceText: 'His hands are paralyzed. Okay.',
       displaySegments: [

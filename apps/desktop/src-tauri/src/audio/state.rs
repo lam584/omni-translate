@@ -53,8 +53,10 @@ pub(crate) struct OmniSessionMetadata {
     pub direction: String,
     pub session_generation: u64,
     pub model_id: String,
+    pub realtime_audio_mode: String,
     pub subtitle_translate_active: bool,
     pub output_mode: OmniOutputMode,
+    pub glossary_signature: u64,
     pub state: OmniSessionLifecycle,
     pub last_error: Option<String>,
 }
@@ -339,11 +341,20 @@ impl AudioStateStore {
         &self,
         direction: &str,
         model_id: &str,
+        realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
+        glossary_signature: u64,
     ) -> u64 {
         self.omni_sessions
-            .begin(direction, model_id, subtitle_translate_active, output_mode)
+            .begin(
+                direction,
+                model_id,
+                realtime_audio_mode,
+                subtitle_translate_active,
+                output_mode,
+                glossary_signature,
+            )
     }
 
     pub(crate) fn mark_omni_session_ready(&self, direction: &str, generation: u64) -> bool {
@@ -382,22 +393,40 @@ impl AudioStateStore {
         &self,
         direction: &str,
         model_id: &str,
+        realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
+        glossary_signature: u64,
     ) -> Option<u64> {
         self.omni_sessions
-            .matching_ready(direction, model_id, subtitle_translate_active, output_mode)
+            .matching_ready(
+                direction,
+                model_id,
+                realtime_audio_mode,
+                subtitle_translate_active,
+                output_mode,
+                glossary_signature,
+            )
     }
 
     pub(crate) fn take_matching_omni_sender(
         &self,
         direction: &str,
         model_id: &str,
+        realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
+        glossary_signature: u64,
     ) -> Option<Sender<Vec<u8>>> {
         self.omni_sessions
-            .take_matching_sender(direction, model_id, subtitle_translate_active, output_mode)
+            .take_matching_sender(
+                direction,
+                model_id,
+                realtime_audio_mode,
+                subtitle_translate_active,
+                output_mode,
+                glossary_signature,
+            )
     }
 
     pub(crate) fn omni_session_metadata(
@@ -1364,8 +1393,10 @@ mod tests {
         let generation = store.begin_omni_session(
             "inbound",
             "qwen-omni-realtime",
+            "manual",
             true,
             OmniOutputMode::TextOnly,
+            0,
         );
         store.store_omni_sender("inbound", sender);
 
@@ -1373,8 +1404,10 @@ mod tests {
             store.matching_ready_omni_session(
                 "inbound",
                 "qwen-omni-realtime",
+                "manual",
                 true,
                 OmniOutputMode::TextOnly,
+                0,
             ),
             None
         );
@@ -1383,8 +1416,10 @@ mod tests {
             store.matching_ready_omni_session(
                 "inbound",
                 "qwen-omni-realtime",
+                "manual",
                 true,
                 OmniOutputMode::TextOnly,
+                0,
             ),
             Some(generation)
         );
@@ -1392,8 +1427,21 @@ mod tests {
             .take_matching_omni_sender(
                 "inbound",
                 "qwen-omni-realtime",
+                "server_vad",
+                true,
+                OmniOutputMode::TextOnly,
+                0,
+            )
+            .is_none());
+        assert!(store.has_omni_sender("inbound"));
+        assert!(store
+            .take_matching_omni_sender(
+                "inbound",
+                "qwen-omni-realtime",
+                "manual",
                 false,
                 OmniOutputMode::TextOnly,
+                0,
             )
             .is_none());
         assert!(store.has_omni_sender("inbound"));
@@ -1401,8 +1449,10 @@ mod tests {
             .take_matching_omni_sender(
                 "inbound",
                 "qwen-omni-realtime",
+                "manual",
                 true,
                 OmniOutputMode::TextAndAudio,
+                0,
             )
             .is_none());
         assert!(store.has_omni_sender("inbound"));
@@ -1410,8 +1460,10 @@ mod tests {
             .take_matching_omni_sender(
                 "inbound",
                 "qwen-omni-realtime",
+                "manual",
                 true,
                 OmniOutputMode::TextOnly,
+                0,
             )
             .is_some());
         assert!(!store.has_omni_sender("inbound"));
@@ -1424,8 +1476,10 @@ mod tests {
         let old_generation = store.begin_omni_session(
             "inbound",
             "old-model",
+            "manual",
             false,
             OmniOutputMode::TextAndAudio,
+            0,
         );
         store.store_omni_sender("inbound", old_sender);
         assert!(store.mark_omni_session_ready("inbound", old_generation));
@@ -1434,8 +1488,10 @@ mod tests {
         let new_generation = store.begin_omni_session(
             "inbound",
             "new-model",
+            "server_vad",
             true,
             OmniOutputMode::TextOnly,
+            0,
         );
         store.store_omni_sender("inbound", new_sender);
         assert!(store.mark_omni_session_ready("inbound", new_generation));
@@ -1459,8 +1515,10 @@ mod tests {
         let generation = store.begin_omni_session(
             "inbound",
             "qwen-omni-realtime",
+            "manual",
             false,
             OmniOutputMode::TextOnly,
+            0,
         );
 
         assert!(store.mark_omni_session_failed(
@@ -1481,8 +1539,10 @@ mod tests {
             store.matching_ready_omni_session(
                 "inbound",
                 "qwen-omni-realtime",
+                "manual",
                 false,
                 OmniOutputMode::TextOnly,
+                0,
             ),
             None
         );

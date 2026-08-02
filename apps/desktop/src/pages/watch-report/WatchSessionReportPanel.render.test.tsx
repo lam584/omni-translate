@@ -86,6 +86,7 @@ describe('WatchSessionReportPanel rendering', () => {
     expect(view.container.textContent).toContain('2 个问题类型 · 共 3 次');
     expect(view.container.textContent).toContain('模型与服务');
     expect(view.container.textContent).toContain('provider-connect-failed');
+    expect(view.container.textContent).not.toContain('基准评分');
 
     const details = view.container.querySelector<HTMLDetailsElement>('.watch-report-session-events');
     expect(details?.textContent).toContain('会话级技术明细');

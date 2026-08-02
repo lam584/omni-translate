@@ -10,19 +10,52 @@
 //! The scheduler owns concurrent slot backfill (a finished job immediately
 //! frees a slot for the next queued job), duplicate suppression by job and
 //! sentence work key, and replacement/final-before-forced dispatch priority.
-//! Retry accounting shares [`MAX_RETRIABLE_SENTENCE_ATTEMPTS`]; callers decide
-//! how a failed job is re-enqueued and how results are written back.
+//! Retry accounting shares the normal retry cap and the longer fixed-delay
+//! rate-limit retry policy; callers decide how a failed job is re-enqueued and
+//! how results are written back.
 
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::{Duration, Instant};
 
 use crate::diagnostics::model_trace::ModelTraceRecorder;
 use crate::provider::contracts::{ProviderDraftInput, ProviderRuntimeError};
 
+use super::glossary::GlossaryContext;
 use super::sentence::SentenceResult;
 
 /// Upper bound of LLM attempts per sentence/cue before the failure is surfaced
 /// instead of retried.
 pub(crate) const MAX_RETRIABLE_SENTENCE_ATTEMPTS: u32 = 3;
+/// Rate-limited requests get a longer retry budget because the provider quota
+/// is transient and the work remains safe to replay.
+pub(crate) const MAX_RATE_LIMIT_ATTEMPTS: u32 = 12;
+/// Fixed interval between rate-limit retries. Keeping this shared makes the
+/// classic and secondary subtitle workers behave identically.
+pub(crate) const RATE_LIMIT_RETRY_INTERVAL: Duration = Duration::from_millis(250);
+
+pub(crate) fn is_rate_limit_error(error: &ProviderRuntimeError) -> bool {
+    error.code == "rate-limited" || error.http_status == Some(429)
+}
+
+pub(crate) fn max_translation_attempts(error: &ProviderRuntimeError) -> u32 {
+    if is_rate_limit_error(error) {
+        MAX_RATE_LIMIT_ATTEMPTS
+    } else {
+        MAX_RETRIABLE_SENTENCE_ATTEMPTS
+    }
+}
+
+pub(crate) fn should_retry_translation(
+    error: &ProviderRuntimeError,
+    attempts: u32,
+) -> bool {
+    (error.retriable || is_rate_limit_error(error))
+        && attempts < max_translation_attempts(error)
+}
+
+pub(crate) fn rate_limit_retry_delay(error: &ProviderRuntimeError) -> Option<Duration> {
+    is_rate_limit_error(error).then_some(RATE_LIMIT_RETRY_INTERVAL)
+}
 
 pub(crate) fn normalize_sentence_key(sentence: &str) -> String {
     sentence.split_whitespace().collect::<Vec<_>>().join(" ")
@@ -106,6 +139,7 @@ pub(crate) struct TranslationJob {
     pub(crate) source_language: String,
     pub(crate) target_language: String,
     pub(crate) provider: ProviderDraftInput,
+    pub(crate) glossary: GlossaryContext,
     pub(crate) trace: Option<ModelTraceRecorder>,
 }
 
@@ -139,6 +173,7 @@ pub(crate) struct TranslationScheduler {
     pub(crate) in_flight: HashMap<String, InFlightJob>,
     max_concurrent: usize,
     max_concurrent_forced: usize,
+    dispatch_not_before: Option<Instant>,
 }
 
 impl TranslationScheduler {
@@ -150,6 +185,7 @@ impl TranslationScheduler {
             in_flight: HashMap::new(),
             max_concurrent,
             max_concurrent_forced,
+            dispatch_not_before: None,
         }
     }
 
@@ -158,6 +194,20 @@ impl TranslationScheduler {
     /// dispatches respect the new limit.
     pub(crate) fn set_max_concurrent(&mut self, max_concurrent: usize) {
         self.max_concurrent = max_concurrent.max(1);
+    }
+
+    /// Temporarily stop dispatching queued work after a provider rate-limit
+    /// response. Keeping the jobs queued preserves dedupe and slot accounting,
+    /// while preventing an immediate retry burst from hitting the same quota.
+    pub(crate) fn defer_dispatch_for(&mut self, delay: Duration) {
+        if delay.is_zero() {
+            return;
+        }
+        let not_before = Instant::now() + delay;
+        self.dispatch_not_before = Some(match self.dispatch_not_before {
+            Some(current) => current.max(not_before),
+            None => not_before,
+        });
     }
 
     pub(crate) fn enqueue(&mut self, job: TranslationJob) -> bool {
@@ -187,6 +237,13 @@ impl TranslationScheduler {
     /// job through `spawn`. Callers own the actual provider call and result
     /// channel; the scheduler only tracks in-flight bookkeeping.
     pub(crate) fn dispatch_ready(&mut self, mut spawn: impl FnMut(TranslationJob)) {
+        if self
+            .dispatch_not_before
+            .is_some_and(|not_before| Instant::now() < not_before)
+        {
+            return;
+        }
+        self.dispatch_not_before = None;
         while self.in_flight.len() < self.max_concurrent {
             let Some(job_index) = self.next_dispatch_index() else {
                 break;
@@ -211,6 +268,9 @@ impl TranslationScheduler {
     }
 
     pub(crate) fn next_dispatch_index(&self) -> Option<usize> {
+        if self.in_flight.len() >= self.max_concurrent {
+            return None;
+        }
         self.queued
             .iter()
             .position(|job| job.result.is_replacement)

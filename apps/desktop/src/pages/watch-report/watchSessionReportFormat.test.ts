@@ -186,6 +186,7 @@ describe('watch session report export formatting', () => {
     expect(text).toContain('Source->render (end-to-end): 850 ms');
     expect(text).toContain('LLM first->render (application pipeline): 750 ms');
     expect(text).not.toContain('Average LLM first -> visible render (end-to-end)');
+    expect(text).not.toContain('Benchmark score:');
   });
 
   it('distinguishes logical cues from retained revisions and marks superseded detail', () => {
@@ -243,9 +244,10 @@ describe('watch session report export formatting', () => {
       category: 'render',
       occurrenceCount: 478,
     });
+    expect(parsed).not.toHaveProperty('benchmarkScore');
   });
 
-  it('passes the enriched JSON representation to the artifact writer', async () => {
+  it('passes the JSON report representation to the artifact writer', async () => {
     const report = reportFixture();
 
     await exportWatchSessionReport(report, 'json');

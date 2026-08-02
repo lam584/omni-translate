@@ -18,6 +18,7 @@ pub(super) struct ProviderCallContext<'a> {
     pub(super) source_text: &'a str,
     pub(super) source_language: &'a str,
     pub(super) target_language: &'a str,
+    pub(super) glossary_prompt: Option<&'a str>,
 }
 
 /// Streaming delta sink shared by the provider protocol adapters.
@@ -36,6 +37,7 @@ macro_rules! impl_provider_adapter_execute {
                 source_text: &str,
                 source_language: &str,
                 target_language: &str,
+                glossary_prompt: Option<&str>,
                 on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
             ) -> Result<ProviderSmokeResult, ProviderRuntimeError> {
                 let context = ProviderCallContext {
@@ -44,6 +46,7 @@ macro_rules! impl_provider_adapter_execute {
                     source_text,
                     source_language,
                     target_language,
+                    glossary_prompt,
                 };
                 execute(&context, transport_effective, on_delta)
             }

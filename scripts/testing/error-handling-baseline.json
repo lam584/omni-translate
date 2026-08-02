@@ -25,8 +25,6 @@
   "apps/desktop/src/i18n/config.ts:void-call-without-catch:void ensureLocaleResource(initialLanguage).then(() => i18n.changeLanguage(initialLanguage))",
   "apps/desktop/src/i18n/config.ts:void-call-without-catch:void i18n .use(LanguageDetector) .use(initReactI18next) .init({ resources, lng: startupLanguage, fallbackLng: defaultLanguage, supportedLngs: supportedLanguageCodes, interpolation:",
   "apps/desktop/src/pages/AudioRoutingScreen.tsx:void-call-without-catch:void retryDeviceRefresh()",
-  "apps/desktop/src/pages/DiagnosticsScreen.tsx:void-call-without-catch:void openLiveEventsModal()",
-  "apps/desktop/src/pages/DiagnosticsScreen.tsx:void-call-without-catch:void refreshLiveEvents()",
   "apps/desktop/src/pages/DiagnosticsScreen.tsx:void-call-without-catch:void runAutomaticRepair()",
   "apps/desktop/src/pages/DiagnosticsScreen.tsx:void-call-without-catch:void runBenchmarkTest()",
   "apps/desktop/src/pages/DiagnosticsScreen.tsx:void-call-without-catch:void runBridgeRefresh()",

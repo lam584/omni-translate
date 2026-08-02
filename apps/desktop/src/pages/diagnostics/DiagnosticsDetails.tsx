@@ -4,6 +4,9 @@ import i18n from '../../i18n/config';
 import type { BenchmarkProgressEvent, BenchmarkReport, BenchmarkAudioFileInfo } from '../../runtime/benchmark-runtime';
 import type { LiveSessionEvents } from '../../runtime/live-session-events-runtime';
 import { writeExportArtifactRuntime, type ExportArtifactReceipt } from '../../runtime/export-artifact-runtime';
+import { scoreBenchmarkReport } from './benchmarkReportScore';
+import type { BenchmarkJudgeModel, BenchmarkSemanticJudgeResult } from './benchmarkSemanticJudge';
+import { resolveBenchmarkReferenceTranslation } from './benchmarkReferenceText';
 
 type BenchmarkProgressView = Pick<BenchmarkProgressEvent, 'status' | 'phase' | 'message' | 'audioChunksSent' | 'totalAudioChunks' | 'error'>;
 
@@ -178,7 +181,25 @@ export function AudioFileInfoSection({ info }: { info: BenchmarkAudioFileInfo })
   );
 }
 
-export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
+export function BenchmarkReportDetail({
+  report,
+  semanticJudgeModels = [],
+  semanticJudgeModelId = '',
+  semanticJudgeRunning = false,
+  semanticJudgeError = null,
+  semanticJudgeResult = null,
+  onSemanticJudgeModelChange,
+  onRunSemanticJudge,
+}: {
+  report: BenchmarkReport;
+  semanticJudgeModels?: BenchmarkJudgeModel[];
+  semanticJudgeModelId?: string;
+  semanticJudgeRunning?: boolean;
+  semanticJudgeError?: string | null;
+  semanticJudgeResult?: BenchmarkSemanticJudgeResult | null;
+  onSemanticJudgeModelChange?: (modelId: string) => void;
+  onRunSemanticJudge?: () => void;
+}) {
   const run = report.runs[0];
   if (!run) {
     return <div className="benchmark-empty">{i18n.t('diagnostics.benchmark.waitingFirstData')}</div>;
@@ -225,9 +246,47 @@ export function BenchmarkReportDetail({ report }: { report: BenchmarkReport }) {
   const latestAsrDeltas = run.asrDeltas
     .map((delta, index) => ({ delta, index }))
     .reverse();
+  const benchmarkScore = scoreBenchmarkReport(report, {
+    llmSemanticScore: semanticJudgeResult?.score ?? null,
+    referenceTranslation: resolveBenchmarkReferenceTranslation(report.audioFile),
+  });
 
   return (
     <div className="benchmark-detail">
+      <section className="benchmark-result-score" aria-label={i18n.t('watchReport.score.title')}>
+        <div className="benchmark-result-score-total">
+          <span>{i18n.t('watchReport.score.title')}</span>
+          <strong>{benchmarkScore.total}</strong>
+          <b>{benchmarkScore.grade}</b>
+        </div>
+        <div className="benchmark-result-score-dimensions">
+          <BenchmarkMetric label={i18n.t('watchReport.score.semantic')} value={benchmarkScore.dimensions.semantic ?? '—'} />
+          <BenchmarkMetric label={i18n.t('watchReport.score.latency')} value={benchmarkScore.dimensions.latency} />
+          <BenchmarkMetric label={i18n.t('watchReport.score.completeness')} value={benchmarkScore.dimensions.completeness} />
+          <BenchmarkMetric label={i18n.t('watchReport.score.reliability')} value={benchmarkScore.dimensions.reliability} />
+        </div>
+        <p>{benchmarkScore.semanticEvidence === 'llm-judge'
+          ? i18n.t('watchReport.score.llmEnabled')
+          : benchmarkScore.semanticEvidence === 'reference-proxy'
+            ? i18n.t('watchReport.score.semanticProxy')
+            : i18n.t('watchReport.score.semanticUnavailable')}</p>
+      </section>
+      {onSemanticJudgeModelChange && onRunSemanticJudge ? (
+        <section className="benchmark-semantic-judge">
+          <label>
+            <span>{i18n.t('runtime.benchmark.semanticJudgeModel')}</span>
+            <select disabled={semanticJudgeRunning || semanticJudgeModels.length === 0} onChange={(event) => onSemanticJudgeModelChange(event.target.value)} value={semanticJudgeModelId}>
+              <option value="">{i18n.t('runtime.benchmark.semanticJudgeChooseModel')}</option>
+              {semanticJudgeModels.map((model) => <option key={model.modelId} value={model.modelId}>{model.displayName}</option>)}
+            </select>
+          </label>
+          <button disabled={semanticJudgeRunning || !semanticJudgeModelId || !report.runs.length} onClick={onRunSemanticJudge} type="button">
+            {semanticJudgeRunning ? i18n.t('runtime.benchmark.semanticJudgeRunning') : i18n.t('runtime.benchmark.semanticJudgeRun')}
+          </button>
+          {semanticJudgeError ? <p className="benchmark-warning" role="alert">{semanticJudgeError}</p> : null}
+          {semanticJudgeResult ? <p className="benchmark-semantic-judge-result">{i18n.t('runtime.benchmark.semanticJudgeResult', { model: semanticJudgeResult.model, score: semanticJudgeResult.score })}{semanticJudgeResult.rationale ? `：${semanticJudgeResult.rationale}` : ''}</p> : null}
+        </section>
+      ) : null}
       {(isSparse || responseDoneBeforeFullAudio) ? (
         <div className="benchmark-warning">
           <strong>{i18n.t('diagnostics.benchmark.outputDiagnosticHint')}</strong>

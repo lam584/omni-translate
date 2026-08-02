@@ -87,6 +87,19 @@ pub(crate) fn classify_provider_error(code: &str, message: &str) -> SessionError
     SessionErrorCode::ProviderInternal
 }
 
+/// DashScope closes an otherwise healthy realtime session when it has been
+/// connected without producing a response for too long. This is expected for
+/// the parked background preconnect, but remains a real error once a capture
+/// route has started using the session.
+pub(crate) fn is_provider_idle_timeout_error(code: &str, message: &str) -> bool {
+    let lower_code = code.trim().to_ascii_lowercase();
+    let lower_message = message.to_ascii_lowercase();
+    lower_code == "response_idle_timeout"
+        || lower_code.contains("idle_timeout")
+        || lower_message.contains("idle timeout")
+        || (lower_message.contains("no response was generated") && lower_message.contains("idle"))
+}
+
 /// Classifies a WebSocket connect/reconnect failure string. Handshake
 /// rejections carry the HTTP status; everything else at this stage is a
 /// transport problem.
@@ -255,6 +268,22 @@ mod tests {
         assert_eq!(code, SessionErrorCode::ProviderInternal);
         assert!(!code.is_terminal());
         assert_eq!(code.recommended_action(), "restart-session");
+    }
+
+    #[test]
+    fn provider_idle_timeout_is_recognized_without_masking_other_errors() {
+        assert!(is_provider_idle_timeout_error(
+            "response_idle_timeout",
+            "Your session was closed because no response was generated for 180 seconds."
+        ));
+        assert!(is_provider_idle_timeout_error(
+            "invalid_request_error",
+            "The session was closed after an idle timeout."
+        ));
+        assert!(!is_provider_idle_timeout_error(
+            "invalid_request_error",
+            "Cannot create response while another response is in progress."
+        ));
     }
 
     #[test]

@@ -217,9 +217,13 @@ test('elevated desktop guardian command is syntactically valid for quoted Window
       `$generatedErrors = $null; ` +
       `[void][System.Management.Automation.Language.Parser]::ParseInput($generated, [ref]$null, [ref]$generatedErrors); ` +
       `foreach ($error in $generatedErrors) { Write-Error $error.Message }; ` +
-      `if ($generatedErrors.Count -gt 0) { exit $generatedErrors.Count }`,
+      `if ($generatedErrors.Count -gt 0) { exit $generatedErrors.Count }; ` +
+      `if ($generated -match '(?m)^\\s+-WorkingDirectory\\b') { ` +
+        `throw 'generated guardian contains a detached Start-Process parameter' ` +
+      `}`,
   ]);
   assert.equal(probe.status, 0, `generated elevated guardian has syntax errors:\n${probe.stderr}`);
+  assert.match(probe.stdout + probe.stderr, /^$/);
 });
 
 test('elevated desktop guardian refuses to launch when its lease was cancelled', { skip: !isWindows }, () => {

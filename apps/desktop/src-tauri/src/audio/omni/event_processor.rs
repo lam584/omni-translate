@@ -276,7 +276,11 @@ impl OmniEventProcessor {
         } = state;
         let delta = if matches!(
             event_type,
-            "response.audio_transcript.text" | "response.text.text"
+            "response.audio_transcript.text"
+                | "response.output_audio_transcript.text"
+                | "response.output_text.text"
+                | "response.transcript.text"
+                | "response.text.text"
         ) {
             let text = evt["text"].as_str().unwrap_or("");
             let stash = evt["stash"].as_str().unwrap_or("");
@@ -390,13 +394,9 @@ impl OmniEventProcessor {
             st_skip_logged,
             mut event_diagnostics,
         } = state;
-        let transcript = if event_type == "response.text.done" {
-            evt["text"].as_str().unwrap_or("")
-        } else {
-            evt["transcript"].as_str().unwrap_or("")
-        };
+        let transcript = extract_response_done_text(evt);
         if !transcript.is_empty() {
-            pending_translated_text = transcript.to_string();
+            pending_translated_text = transcript;
         }
         event_diagnostics.last_output_done_text =
             pending_translated_text.clone();

@@ -3,6 +3,7 @@ struct SubtitleTranslationWorker {
     text_model_provider: ProviderDraftInput,
     target_language: String,
     outbound_target_language: String,
+    glossary_catalog: GlossaryCatalog,
     trace: ModelTraceRecorder,
     stop_rx: mpsc::Receiver<()>,
 }
@@ -33,6 +34,7 @@ fn process_translation_cues(
     target_language: &str,
     outbound_target_language: &str,
     text_model_provider: &ProviderDraftInput,
+    glossary_catalog: &GlossaryCatalog,
     trace: &ModelTraceRecorder,
     translation_tx: &mpsc::Sender<TranslationUpdate>,
     loop_count: u64,
@@ -259,38 +261,22 @@ fn process_translation_cues(
                 .get(&attempt_key)
                 .copied()
                 .unwrap_or(0);
-            if attempts >= MAX_RETRIABLE_SENTENCE_ATTEMPTS {
+            let attempt_limit = if cue_state.rate_limit_attempt_keys.contains(&attempt_key) {
+                MAX_RATE_LIMIT_ATTEMPTS
+            } else {
+                MAX_RETRIABLE_SENTENCE_ATTEMPTS
+            };
+            if attempts >= attempt_limit {
                 let _ = diag_log(
                     &app,
                     "subtitle-translate",
                     "warning",
                     format!(
-                        "[RETRY_LIMIT] cue_id={} sentence=\"{}\" attempts={}",
-                        cue.cue_id, result.sentence, attempts
+                        "[RETRY_LIMIT] cue_id={} sentence=\"{}\" attempts={}/{}",
+                        cue.cue_id, result.sentence, attempts, attempt_limit
                     ),
                 );
                 continue;
-            }
-
-            // Forced (partial-text preview) translations must not crowd out final
-            // sentences. When the scheduler is already at capacity, skip forced jobs
-            // so that completed sentences always get an immediately-available slot.
-            if result.is_forced {
-                let total_active = scheduler.in_flight.len() + scheduler.queued.len();
-                if total_active >= MAX_CONCURRENT_TRANSLATIONS {
-                    let _ = diag_log(
-                        &app,
-                        "subtitle-translate",
-                        "debug",
-                        format!(
-                            "[FORCED_SKIP] cue_id={} scheduler_full (in_flight={} queued={}), skipping forced partial translation to reserve slots for final sentences",
-                            crate::audio::str_utils::truncate_chars(&cue.cue_id, 16),
-                            scheduler.in_flight.len(),
-                            scheduler.queued.len(),
-                        ),
-                    );
-                    continue;
-                }
             }
 
             let job = TranslationJob {
@@ -304,6 +290,7 @@ fn process_translation_cues(
                 source_language: "auto".to_string(),
                 target_language: target_language.to_string(),
                 provider: text_model_provider.clone(),
+                glossary: glossary_catalog.for_languages("auto", target_language),
                 trace: Some(trace.clone()),
             };
             *next_translation_sequence = next_translation_sequence.saturating_add(1);
@@ -345,6 +332,7 @@ impl SubtitleTranslationWorker {
         text_model_provider: ProviderDraftInput,
         target_language: String,
         outbound_target_language: String,
+        glossary_catalog: GlossaryCatalog,
         trace: ModelTraceRecorder,
         stop_rx: mpsc::Receiver<()>,
     ) -> Self {
@@ -353,6 +341,7 @@ impl SubtitleTranslationWorker {
             text_model_provider,
             target_language,
             outbound_target_language,
+            glossary_catalog,
             trace,
             stop_rx,
         }
@@ -364,6 +353,7 @@ impl SubtitleTranslationWorker {
             text_model_provider,
             target_language,
             outbound_target_language,
+            glossary_catalog,
             trace,
             stop_rx,
         } = self;
@@ -498,6 +488,7 @@ impl SubtitleTranslationWorker {
             &target_language,
             &outbound_target_language,
             &text_model_provider,
+            &glossary_catalog,
             &trace,
             &translation_tx,
             loop_count,

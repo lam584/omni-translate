@@ -83,3 +83,27 @@ Use a comma-separated subset such as `--languages zh-CN,ja,hi` when only a few
 fixtures need refreshing. Generated audio must match its adjacent `.sha256`
 file; normal development and CI consume the committed files directly and do
 not require an API call.
+
+## Automatic benchmark scoring
+
+Every `run-watch-mode-live.ps1` run writes `benchmark-score.json` beside
+`report.json`. The score has four independently reported dimensions:
+semantic quality (40%), latency (30%), completeness (20%), and reliability
+(10%). A failed diagnostic gate caps the total below 60, so a fluent partial
+translation cannot hide a broken runtime path. Known fixture media paths are
+automatically matched to their adjacent source and reference text.
+
+Score or re-score an existing run directory:
+
+```powershell
+npm run score:watch-mode -- --input artifacts/testing/watch-mode-live/<run>
+npm run score:watch-mode -- --input artifacts/testing/watch-mode-live/<run> --source scripts/testing/fixtures/watch-mode-en-original.txt --reference scripts/testing/fixtures/watch-mode-en-original.zh-CN.txt
+```
+
+The deterministic score never needs credentials. To add an LLM judge, set
+`OMNI_BENCHMARK_LLM_JUDGE=1` or pass `--llm-judge`. The judge uses
+`DASHSCOPE_API_KEY`, defaults to `qwen3.5-plus`, and returns separate adequacy,
+fluency, terminology, and omission scores. Override it with `--judge-model`,
+`--endpoint`, `--api-key-env`, and `--target-language`. The LLM score supplies
+60% of the semantic dimension only; all timing and runtime health scores remain
+deterministic and auditable.

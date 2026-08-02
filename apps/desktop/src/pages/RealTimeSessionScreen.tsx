@@ -39,6 +39,8 @@ type WatchFallbackResolver = (subtitlesOnly: boolean) => void;
 
 const TRANSLATION_FAILED_PREFIX = '[\u7ffb\u8bd1\u5931\u8d25]';
 
+type CueTranslationState = 'notice' | 'pending' | 'translated' | 'failed';
+
 function isReconnectNoticeCue(cue: SubtitleCueRuntime) {
   return cue.cueId.startsWith('omni-reconnecting-') || cue.cueId.startsWith('stt-reconnecting-');
 }
@@ -244,22 +246,34 @@ function resolveSceneSpeechPatch(
   };
 }
 
+function hasExplicitTranslationFailure(cue: SubtitleCueRuntime) {
+  return cue.translatedText.startsWith(TRANSLATION_FAILED_PREFIX)
+    || Boolean(cue.displaySegments?.some(
+      (segment) => segment.translatedText.startsWith(TRANSLATION_FAILED_PREFIX),
+    ));
+}
+
+function resolveCueTranslationState(cue: SubtitleCueRuntime): CueTranslationState {
+  if (isReconnectNoticeCue(cue)) return 'notice';
+  if (hasExplicitTranslationFailure(cue)) return 'failed';
+  if (cue.translationCommitted === true) {
+    return cue.translatedText.trim() ? 'translated' : 'failed';
+  }
+  return 'pending';
+}
+
 function CueStatusBadge({ cue }: { cue: SubtitleCueRuntime }) {
   const { t } = useTranslation();
+  const translationState = resolveCueTranslationState(cue);
 
-  if (isReconnectNoticeCue(cue)) {
-    return null;
-  }
-  if (!cue.committed) {
-    return <span className="audio-level-meter-vad audio-level-meter-vad-speech">{t('session.translating')}</span>;
-  }
-  if (cue.translatedText.startsWith(TRANSLATION_FAILED_PREFIX)) {
+  if (translationState === 'notice') return null;
+  if (translationState === 'failed') {
     return <span className="cue-queue-error">{t('session.failed')}</span>;
   }
-  if (cue.translatedText) {
+  if (translationState === 'translated') {
     return <span className="audio-level-meter-vad audio-level-meter-vad-speech">{t('session.translated')}</span>;
   }
-  return <span className="cue-queue-error">{t('session.translationFailed')}</span>;
+  return <span className="audio-level-meter-vad audio-level-meter-vad-speech">{t('session.translating')}</span>;
 }
 
 function getSessionCueDisplaySegments(cue: SubtitleCueRuntime) {
@@ -278,12 +292,20 @@ function getSessionCueDisplaySegments(cue: SubtitleCueRuntime) {
     displaySegments: [{
       sourceText,
       translatedText: cue.translatedText,
-      pending: Boolean(sourceText) && !cue.translatedText && !cue.committed,
+      pending: Boolean(sourceText)
+        && !cue.translatedText
+        && resolveCueTranslationState(cue) === 'pending',
     }],
   });
 }
 
-function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; current?: boolean }) {
+function CueSegmentRows({
+  cue,
+  current = false,
+}: {
+  cue: SubtitleCueRuntime;
+  current?: boolean;
+}) {
   const { t } = useTranslation();
 
   if (isReconnectNoticeCue(cue)) {
@@ -291,34 +313,35 @@ function CueSegmentRows({ cue, current = false }: { cue: SubtitleCueRuntime; cur
   }
 
   const segments = getSessionCueDisplaySegments(cue);
-  // Native watch-mode commits emit a source block followed by a translation
-  // block when the two sides do not line up (e.g. the realtime model only
-  // translated part of the audio window). Source-only rows of such a cue are
-  // not failures — the translation lives on the translation-only rows below.
-  // The secondary-worker path never emits translation-only rows, so its
-  // per-sentence failure markers keep rendering.
-  const blockLayout = segments.some((segment) => !segment.sourceText && segment.translatedText);
+  const translationState = resolveCueTranslationState(cue);
+  const explicitFailure = hasExplicitTranslationFailure(cue);
+  const genericFailureIndex = translationState === 'failed' && !explicitFailure
+    ? segments.reduce(
+      (lastIndex, segment, index) => (
+        segment.sourceText && !segment.translatedText ? index : lastIndex
+      ),
+      -1,
+    )
+    : -1;
 
   if (segments.length === 0) {
-    return <p className="live-text-translation">{cue.committed ? t('session.translationFailed') : t('session.callingLlm')}</p>;
+    return translationState === 'failed'
+      ? <p className="cue-queue-error">{t('session.translationFailed')}</p>
+      : null;
   }
 
   return (
     <div className={current ? 'live-caption-segments live-caption-segments-current' : 'live-caption-segments'}>
-      {segments.map((segment) => (
+      {segments.map((segment, index) => (
         <div className="live-caption-segment" key={segment.id}>
           {segment.sourceText && <p className={current ? 'live-text-source' : 'cue-queue-source'}>{segment.sourceText}</p>}
           {segment.translatedText ? (
             <p className={segment.translatedText.startsWith(TRANSLATION_FAILED_PREFIX) ? 'cue-queue-error' : current ? 'live-text-translation' : 'cue-queue-translation'}>
               {segment.translatedText}
             </p>
-          ) : cue.committed ? (
-            blockLayout ? null : (
-              <p className="cue-queue-error">{t('session.translationFailed')}</p>
-            )
-          ) : (
-            <p className="live-caption-segment-pending">{t('session.callingLlm')}</p>
-          )}
+          ) : index === genericFailureIndex ? (
+            <p className="cue-queue-error">{t('session.translationFailed')}</p>
+          ) : null}
         </div>
       ))}
     </div>
@@ -343,6 +366,7 @@ export const realTimeSessionPageHelpers = {
   resolveSceneSpeechPatch,
   logSceneLaunchConfig,
   CueStatusBadge,
+  resolveCueTranslationState,
   getSessionCueDisplaySegments,
   describeRuntimeError,
 };
@@ -358,6 +382,7 @@ function RealTimeSessionPage() {
 
   const overlayWindow = runtimeSnapshot.windows.find((item) => item.label === 'subtitle-overlay');
   const activeCue = audioRuntimeSnapshot.subtitleOverlay.activeCue;
+  const activeCueTranslationState = activeCue ? resolveCueTranslationState(activeCue) : null;
   const modelTraceSummary = runtimeSnapshot.diagnostics.modelTraceSummary;
   const latestModelTraceCall = modelTraceSummary.recentCalls[0] ?? null;
   const inboundErrorCode = audioRuntimeSnapshot.inbound.lastErrorCode
@@ -390,7 +415,6 @@ function RealTimeSessionPage() {
   const firstTranslationAverageMs = audioRuntimeSnapshot.subtitleOverlay.firstTranslationAverageMs;
   const firstTranslationLastMs = audioRuntimeSnapshot.subtitleOverlay.firstTranslationLastMs;
   const firstTranslationSampleCount = audioRuntimeSnapshot.subtitleOverlay.firstTranslationSampleCount;
-
   const sessionElapsed = useSessionElapsed(audioRuntimeSnapshot.sessionStartedAt, isSessionRunning);
   const previousSessionRunningRef = useRef(isSessionRunning);
   const lastRunningModeRef = useRef<SceneMode | null>(null);
@@ -422,7 +446,7 @@ function RealTimeSessionPage() {
       && !isSessionRunning
       && lastRunningModeRef.current === 'watch'
     ) {
-      void refreshWatchReport(true);
+      void refreshWatchReport(true).catch(() => undefined);
     }
     previousSessionRunningRef.current = isSessionRunning;
   }, [configDraft.devices.routeMode, isSessionRunning, refreshWatchReport]);
@@ -932,7 +956,11 @@ function RealTimeSessionPage() {
           {activeCue ? (
             <div className="console-event-item live-text-card">
               <div className="live-text-head">
-                <strong>{activeCue.committed ? t('session.translated') : t('session.translating')}</strong>
+                <strong>{activeCueTranslationState === 'translated'
+                  ? t('session.translated')
+                  : activeCueTranslationState === 'failed'
+                    ? t('session.failed')
+                    : t('session.translating')}</strong>
                 <StatusBadge label={t('session.queueDepth', { count: audioRuntimeSnapshot.subtitleOverlay.queueDepth })} tone={audioRuntimeSnapshot.subtitleOverlay.queueDepth > 0 ? 'warning' : 'ready'} />
               </div>
               <CueSegmentRows cue={activeCue} current />

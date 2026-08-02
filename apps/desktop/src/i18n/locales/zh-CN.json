@@ -1321,7 +1321,17 @@
     "benchmark": {
       "desktopOnly": "基准测试仅在桌面运行时可用。",
       "timeout": "基准测试超时（{{seconds}}s），请检查网络连接或模型配置。",
-      "parseFailed": "基准测试结果解析失败: {{error}}"
+      "parseFailed": "基准测试结果解析失败: {{error}}",
+      "semanticJudgeModel": "语义评分模型",
+      "semanticJudgeChooseModel": "选择一个文本生成模型",
+      "semanticJudgeRun": "重新评分",
+      "semanticJudgeRunning": "评分中…",
+      "semanticJudgeResult": "{{model}} 语义评分：{{score}}/100",
+      "semanticJudgeInvalidResponse": "评分模型返回了无效的 JSON 分数。",
+      "semanticJudgeReferenceUnavailable": "当前音频没有可用的参考原文。",
+      "semanticJudgeTranslationUnavailable": "当前基准没有可评分的最终译文。",
+      "semanticJudgeMissingApiKey": "没有为 {{model}} 配置 API Key。",
+      "semanticJudgeFailed": "语义评分失败："
     }
   },
   "glossary": {
@@ -1485,6 +1495,17 @@
     "issueOverview": "异常分类",
     "issueSummary": "{{groups}} 个问题类型 · 共 {{occurrences}} 次",
     "issueCategorySummary": "{{groups}} 类 · 共 {{occurrences}} 次",
+    "score": {
+      "title": "基准评分",
+      "provisional": "运行中暂定分",
+      "semantic": "语义质量",
+      "latency": "时延",
+      "completeness": "完整性",
+      "reliability": "稳定性",
+      "llmEnabled": "语义质量包含 LLM 裁判评分；其他维度仍由客观指标计算。",
+      "semanticProxy": "语义质量当前采用内容一致性代理证据；尚未启用 LLM 裁判，其他维度均由客观指标计算。",
+      "semanticUnavailable": "当前报告没有参考译文或 LLM 裁判证据，因此语义质量不计分；总分仅按已有客观维度归一化计算。"
+    },
     "status": {
       "exact": "完全一致",
       "formattingOnly": "仅格式不同",

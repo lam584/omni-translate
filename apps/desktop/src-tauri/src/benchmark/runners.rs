@@ -43,10 +43,10 @@ pub(crate) async fn run_model_benchmark(
         };
 
         if !config.mp3_path.exists() {
-            return Err(format!("MP3 file not found: {}", config.mp3_path.display()));
+            return Err(format!("Audio file not found: {}", config.mp3_path.display()));
         }
 
-        let decode_result = read_mp3_samples_with_info(&config.mp3_path)?;
+        let decode_result = read_audio_samples_with_info(&config.mp3_path)?;
         let samples = decode_result.samples;
         let audio_duration = samples.len() as f64 / 16_000.0;
         let total_audio_chunks = samples.chunks(CHUNK_SAMPLES).count();
@@ -83,8 +83,8 @@ pub(crate) async fn run_model_benchmark(
         progress.audio_info = Some(audio_info.clone());
         progress.emit(
             "running",
-            "mp3-decoded",
-            format!("MP3 已解码，音频时长 {:.1}s", audio_duration),
+            "audio-decoded",
+            format!("音频已解码，音频时长 {:.1}s", audio_duration),
             None,
         );
 

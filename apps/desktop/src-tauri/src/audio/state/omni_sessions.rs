@@ -21,8 +21,10 @@ mod tests {
         let generation = store.begin(
             "inbound",
             "omni",
+            "manual",
             false,
             OmniOutputMode::TextAndAudio,
+            0,
         );
         assert!(store.is_current("inbound", generation));
         assert!(store.mark_stopping("inbound", generation, "cancelled".to_string()));
@@ -30,8 +32,10 @@ mod tests {
         let replacement = store.begin(
             "inbound",
             "omni-new",
+            "manual",
             false,
             OmniOutputMode::TextAndAudio,
+            0,
         );
         assert!(!store.is_current("inbound", generation));
         assert!(store.is_current("inbound", replacement));
@@ -65,8 +69,10 @@ impl OmniSessionStore {
         &self,
         direction: &str,
         model_id: &str,
+        realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
+        glossary_signature: u64,
     ) -> u64 {
         let generation = {
             let mut values = self.generations.lock().expect("omni generations poisoned");
@@ -74,7 +80,8 @@ impl OmniSessionStore {
         };
         self.sessions.lock().expect("omni sessions poisoned").insert(direction.to_string(), OmniSessionMetadata {
             direction: direction.to_string(), session_generation: generation, model_id: model_id.to_string(),
-            subtitle_translate_active, output_mode, state: OmniSessionLifecycle::Starting, last_error: None,
+            realtime_audio_mode: realtime_audio_mode.to_string(), subtitle_translate_active,
+            output_mode, glossary_signature, state: OmniSessionLifecycle::Starting, last_error: None,
         });
         generation
     }
@@ -104,23 +111,36 @@ impl OmniSessionStore {
         &self,
         direction: &str,
         model_id: &str,
+        realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
+        glossary_signature: u64,
     ) -> Option<u64> {
         self.sessions.lock().expect("omni sessions poisoned").get(direction)
             .filter(|session| session.state == OmniSessionLifecycle::Ready && session.model_id == model_id
+                && session.realtime_audio_mode == realtime_audio_mode
                 && session.subtitle_translate_active == subtitle_translate_active
-                && session.output_mode == output_mode)
+                && session.output_mode == output_mode
+                && session.glossary_signature == glossary_signature)
             .map(|session| session.session_generation)
     }
     pub(super) fn take_matching_sender(
         &self,
         direction: &str,
         model_id: &str,
+        realtime_audio_mode: &str,
         subtitle_translate_active: bool,
         output_mode: OmniOutputMode,
+        glossary_signature: u64,
     ) -> Option<Sender<Vec<u8>>> {
-        self.matching_ready(direction, model_id, subtitle_translate_active, output_mode)?;
+        self.matching_ready(
+            direction,
+            model_id,
+            realtime_audio_mode,
+            subtitle_translate_active,
+            output_mode,
+            glossary_signature,
+        )?;
         self.take_sender(direction)
     }
     pub(super) fn metadata(&self, direction: &str) -> Option<OmniSessionMetadata> {

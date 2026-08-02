@@ -1220,14 +1220,14 @@ export function classifyWatchModeRun(input) {
 
   if (environmentReason && layers.environment.reason) {
     layers.environment.status = 'blocked';
-    if (layers.driver.reason) layers.driver.status = 'blocked';
-    if (layers.wasapi.reason) layers.wasapi.status = 'blocked';
+    if (!echoCancelVariant && layers.driver.reason) layers.driver.status = 'blocked';
+    if (!echoCancelVariant && layers.wasapi.reason) layers.wasapi.status = 'blocked';
   }
 
   const failed = activeChecks.find(([layer]) => layers[layer].status === 'failed');
   const inconclusive = activeChecks.find(([layer]) => layers[layer].status === 'inconclusive');
   const blocked = environmentReason
-    ? (layers.driver.reason ? ['driver', layers.driver.reason] : ['environment', environmentReason])
+    ? (layers.driver.status === 'blocked' ? ['driver', layers.driver.reason] : ['environment', environmentReason])
     : null;
   const failureLayer = blocked?.[0] ?? failed?.[0] ?? inconclusive?.[0] ?? null;
   const verdict = blocked ? 'blocked' : failed ? 'failed' : inconclusive ? 'inconclusive' : 'passed';

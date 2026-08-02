@@ -3,7 +3,7 @@ use std::time::Instant;
 use serde_json::{json, Value};
 
 use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError, ProviderSmokeResult};
-use super::routing::{build_messages, build_translation_system_prompt};
+use super::routing::{build_messages, build_translation_system_prompt_with_glossary};
 use super::shared::{
     finish_websocket_result, impl_provider_adapter_execute, new_streaming_smoke_result,
     push_response_completed, push_translation_completed, push_usage_event,
@@ -43,7 +43,7 @@ pub(super) fn execute(
     let client = ProviderHttpClient::new(provider.timeout_ms)?;
     let payload = json!({
       "model": provider.model,
-      "messages": build_messages(provider, context.source_text, context.source_language, context.target_language, &[]),
+      "messages": build_messages(provider, context.source_text, context.source_language, context.target_language, context.glossary_prompt),
       "temperature": provider.temperature,
       "max_tokens": provider.max_output_tokens
     });
@@ -97,7 +97,7 @@ fn execute_websocket(
       "request_id": context.request_id,
       "model": provider.model,
       "input": {
-        "messages": build_messages(provider, context.source_text, context.source_language, context.target_language, &[])
+        "messages": build_messages(provider, context.source_text, context.source_language, context.target_language, context.glossary_prompt)
       },
       "parameters": {
         "stream": true,
@@ -154,8 +154,12 @@ fn execute_realtime_websocket(
     let (mut socket, websocket_timeout) = WebSocketTransport::default().connect_provider(provider)?;
 
     let safe_id = context.request_id.replace(':', "_").replace('-', "_");
-    let instructions =
-        build_translation_system_prompt(provider, context.source_language, context.target_language);
+    let instructions = build_translation_system_prompt_with_glossary(
+        provider,
+        context.source_language,
+        context.target_language,
+        context.glossary_prompt,
+    );
 
     let audio_mode = crate::audio::omni::RealtimeAudioMode::from_config_value(
         Some(&crate::audio::events::resolve_realtime_profile(provider, &provider.model).realtime_audio_mode),

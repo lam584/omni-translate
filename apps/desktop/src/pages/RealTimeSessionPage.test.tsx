@@ -1322,9 +1322,9 @@ describe('RealTimeSessionPage one-click launch', () => {
     audioRuntimeSnapshot.subtitleOverlay.droppedCueCount = 3;
     audioRuntimeSnapshot.subtitleOverlay.recentCues = [
       activeCue,
-      { ...cue, cueId: 'cue-failure', translatedText: '[翻译失败] timeout', committed: true },
-      { ...cue, cueId: 'cue-translated', translatedText: 'translated text', committed: true },
-      { ...cue, cueId: 'cue-empty', translatedText: '', committed: true },
+      { ...cue, cueId: 'cue-failure', translatedText: '[翻译失败] timeout', committed: true, translationCommitted: true },
+      { ...cue, cueId: 'cue-translated', translatedText: 'translated text', committed: true, translationCommitted: true },
+      { ...cue, cueId: 'cue-empty', translatedText: '', committed: true, translationCommitted: true },
     ];
     const runtimeSnapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
     runtimeSnapshot.diagnostics.modelTraceSummary.recentCalls = [
@@ -1351,7 +1351,8 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(container.textContent).toContain('丢弃 3 条');
     expect(container.textContent).toContain('[翻译失败] timeout');
     expect(container.textContent).toContain('translated text');
-    expect(container.textContent).toContain('正在调用 LLM 翻译...');
+    expect(container.textContent).toContain('翻译中...');
+    expect(container.textContent).not.toContain('正在调用 LLM 翻译...');
   });
 
   it('renders ready empty subtitle and model trace states', async () => {
@@ -1373,7 +1374,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(container.textContent).not.toContain('涓㈠純');
   });
 
-  it('renders committed active subtitle failure and ready queue badge', async () => {
+  it('renders translation-terminal empty subtitle failure and ready queue badge', async () => {
     const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
     const cue = audioRuntimeSnapshot.subtitleOverlay.recentCues[0];
     audioRuntimeSnapshot.subtitleOverlay.activeCue = {
@@ -1383,6 +1384,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       sourceText: 'committed source',
       translatedText: '',
       committed: true,
+      translationCommitted: true,
     };
     audioRuntimeSnapshot.subtitleOverlay.queueDepth = 0;
     audioRuntimeSnapshot.subtitleOverlay.droppedCueCount = 0;

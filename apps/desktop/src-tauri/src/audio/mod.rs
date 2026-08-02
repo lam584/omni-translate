@@ -1,6 +1,7 @@
 pub(crate) mod contracts;
 mod diagnostics;
 mod echo_cancel;
+pub(crate) mod glossary;
 pub(crate) mod str_utils;
 pub(crate) mod engine;
 pub(crate) mod events;

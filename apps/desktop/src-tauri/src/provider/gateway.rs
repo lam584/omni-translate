@@ -1,9 +1,10 @@
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 
 use serde_json::json;
 
 use crate::diagnostics::model_trace::ModelTraceRecorder;
-use crate::shared::time::now_unix_seconds_marker;
+use crate::shared::time::now_unix_millis_marker;
 
 use super::contracts::{
     ProviderDraftInput, ProviderModelCatalogRuntime,
@@ -21,6 +22,12 @@ use super::gateway_parts::{
 };
 
 const LATENCY_BUDGET_MS: u64 = 1200;
+static NEXT_TRANSLATION_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_translation_request_id() -> String {
+    let sequence = NEXT_TRANSLATION_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+    format!("req-{}-{}", now_unix_millis_marker(), sequence)
+}
 
 #[derive(Clone)]
 pub(crate) struct ProviderGateway {
@@ -202,7 +209,7 @@ impl ProviderGateway {
         glossary_prompt: Option<&str>,
         on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
     ) -> ProviderSmokeResult {
-        let request_id = format!("req-{}", now_unix_seconds_marker());
+        let request_id = next_translation_request_id();
         let transport_requested = provider.transport.clone();
         let (transport_effective, fallback_applied) = resolve_transport(&provider);
         let started_at = Instant::now();
@@ -328,6 +335,7 @@ mod tests {
     use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
     use base64::Engine;
     use crate::provider::contracts::ProviderAuthRefInput;
+    use crate::shared::time::now_unix_seconds_marker;
     use crate::provider::gateway_parts::transport::{
         normalize_websocket_read_error, to_websocket_url, WebSocketTransport,
     };
@@ -434,6 +442,16 @@ mod tests {
         );
         provider.realtime_protocol = Some("dashscope-omni".to_string());
         provider
+    }
+
+    #[test]
+    fn translation_request_ids_are_unique_for_concurrent_calls() {
+        let first = next_translation_request_id();
+        let second = next_translation_request_id();
+
+        assert_ne!(first, second);
+        assert!(first.starts_with("req-unix-ms:"));
+        assert!(second.starts_with("req-unix-ms:"));
     }
 
     #[test]

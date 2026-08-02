@@ -93,6 +93,25 @@ pub(super) fn new_streaming_smoke_result(
 
 /// Records a streamed translation delta: first-event latency, transcript,
 /// downstream callback and event log entry.
+fn normalize_stream_delta(previous: &str, incoming: &str) -> Option<String> {
+    if incoming.is_empty() {
+        return None;
+    }
+    if previous.is_empty() {
+        return Some(incoming.to_string());
+    }
+    if incoming == previous || previous.starts_with(incoming) {
+        // Some websocket adapters expose cumulative text, and a delayed
+        // frame can therefore repeat the current transcript or be an older
+        // prefix. Neither frame adds visible translation.
+        return None;
+    }
+    if incoming.starts_with(previous) {
+        return Some(incoming[previous.len()..].to_string());
+    }
+    Some(incoming.to_string())
+}
+
 pub(super) fn record_translation_delta(
     result: &mut ProviderSmokeResult,
     started: &Instant,
@@ -100,21 +119,47 @@ pub(super) fn record_translation_delta(
     summary: String,
     on_delta: &mut dyn FnMut(&str) -> Result<(), ProviderRuntimeError>,
 ) -> Result<(), ProviderRuntimeError> {
+    let Some(normalized_delta) = normalize_stream_delta(&result.transcript, delta) else {
+        return Ok(());
+    };
     if result.first_event_latency_ms.is_none() {
         result.first_event_latency_ms = Some(started.elapsed().as_millis() as u64);
     }
     result.stream_observed = true;
-    result.transcript.push_str(delta);
-    on_delta(delta)?;
+    result.transcript.push_str(&normalized_delta);
+    on_delta(&normalized_delta)?;
     result.event_log.push(ProviderStreamEventRecord {
         event_type: "translation.delta".to_string(),
         summary,
         segment_id: Some("segment-1".to_string()),
-        text_delta: Some(delta.to_string()),
+        text_delta: Some(normalized_delta),
         text: None,
         audio_chunk_ref: None,
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_stream_delta;
+
+    #[test]
+    fn cumulative_stream_text_is_reduced_to_the_new_suffix() {
+        assert_eq!(
+            normalize_stream_delta("你好", "你好，世界"),
+            Some("，世界".to_string())
+        );
+        assert_eq!(normalize_stream_delta("你好", "你好"), None);
+        assert_eq!(normalize_stream_delta("你好", "你"), None);
+    }
+
+    #[test]
+    fn ordinary_incremental_stream_text_is_preserved() {
+        assert_eq!(
+            normalize_stream_delta("你好", " 世界"),
+            Some(" 世界".to_string())
+        );
+    }
 }
 
 /// Appends a `usage.updated` event without touching the token counters.

@@ -145,15 +145,22 @@ fn run_capture_loop(
             let (chunk, suppress_asr) = if spec.echo_cancel_enabled() {
                 let f32_chunk = bytes_to_f32_stereo(&chunk);
                 let cancellation = store.subtract_echo(&f32_chunk, ECHO_CANCEL_DELAY_SAMPLES);
-                store.record_echo_asr_chunk(cancellation.suppress_asr);
+                // AEC is intentionally adaptive, but a physical speaker can
+                // still produce a low-correlation room/endpoint echo. During
+                // an active translation playback there is no safe reason to
+                // send that render interval to ASR; otherwise it becomes a
+                // new model turn and the model translates its own output.
+                let playback_gate = store.inbound_speaker_playback_active();
+                let suppress_asr = cancellation.suppress_asr || playback_gate;
+                store.record_echo_asr_chunk(suppress_asr);
                 let cleaned_bytes = f32_stereo_to_bytes(&cancellation.samples);
                 echo_diagnostics.record(
                     calculate_chunk_db(&chunk),
                     calculate_chunk_db(&cleaned_bytes),
-                    cancellation.suppress_asr,
+                    suppress_asr,
                 );
                 echo_diagnostics.maybe_log(&app, store, direction);
-                (cleaned_bytes, cancellation.suppress_asr)
+                (cleaned_bytes, suppress_asr)
             } else {
                 (chunk, false)
             };

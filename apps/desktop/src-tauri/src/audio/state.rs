@@ -782,6 +782,16 @@ impl AudioStateStore {
         };
     }
 
+    /// Returns whether translated audio is currently being rendered to a
+    /// physical speaker. Inbound loopback capture must not forward that
+    /// interval to ASR: the render stream is already represented by the
+    /// translation response and can otherwise become the next input turn.
+    pub(crate) fn inbound_speaker_playback_active(&self) -> bool {
+        let state = self.inner.lock().expect("audio state poisoned");
+        state.speech.dispatch_state == "playing"
+            && matches!(state.speech.output_target.as_str(), "speaker" | "both")
+    }
+
     pub(crate) fn mark_route_stopped(&self, direction: &str) {
         let mut state = self.inner.lock().expect("audio state poisoned");
         reset_route_to_idle(route_mut(&mut state, direction));
@@ -1096,7 +1106,8 @@ mod tests {
             .recent_cues
             .iter()
             .any(|cue| cue.cue_id == "unfinished"));
-        assert_eq!(snapshot.subtitle_overlay.recent_cues.len(), 12);
+        assert_eq!(snapshot.subtitle_overlay.recent_cues.len(), 15);
+        assert_eq!(snapshot.subtitle_overlay.dropped_cue_count, 0);
     }
 
     #[test]
@@ -1334,6 +1345,33 @@ mod tests {
                 suppressed_chunks: 2,
             },
         );
+    }
+
+    #[test]
+    fn inbound_speaker_playback_guard_tracks_the_active_output_sink() {
+        let store = AudioStateStore::new();
+        assert!(!store.inbound_speaker_playback_active());
+
+        store.update_speech(|speech| {
+            speech.dispatch_state = "playing".to_string();
+            speech.output_target = "speaker".to_string();
+        });
+        assert!(store.inbound_speaker_playback_active());
+
+        store.update_speech(|speech| {
+            speech.output_target = "virtual-mic".to_string();
+        });
+        assert!(!store.inbound_speaker_playback_active());
+
+        store.update_speech(|speech| {
+            speech.output_target = "both".to_string();
+        });
+        assert!(store.inbound_speaker_playback_active());
+
+        store.update_speech(|speech| {
+            speech.dispatch_state = "waiting-subtitle".to_string();
+        });
+        assert!(!store.inbound_speaker_playback_active());
     }
 
     #[test]

@@ -127,6 +127,7 @@ impl CueTranslationLedger {
         self.pending_display_by_id.clear();
         self.translation_written_at = None;
         self.rate_limit_attempt_keys.clear();
+        self.written_final_translation_keys.clear();
         self.display_slots.clear();
     }
 
@@ -146,15 +147,16 @@ impl CueTranslationLedger {
             .cloned()
     }
 
-    fn has_written_final_translation(&self, translated: &str) -> bool {
+    fn has_written_final_translation(&self, display_index: usize, translated: &str) -> bool {
         substantive_translation_dedupe_key(translated)
-            .map(|key| self.written_final_translation_keys.contains(&key))
+            .map(|key| self.written_final_translation_keys.contains(&format!("{display_index}:{key}")))
             .unwrap_or(false)
     }
 
-    fn mark_final_translation_written(&mut self, translated: &str) {
+    fn mark_final_translation_written(&mut self, display_index: usize, translated: &str) {
         if let Some(key) = substantive_translation_dedupe_key(translated) {
-            self.written_final_translation_keys.insert(key);
+            self.written_final_translation_keys
+                .insert(format!("{display_index}:{key}"));
         }
     }
 

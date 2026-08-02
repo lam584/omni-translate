@@ -4,8 +4,11 @@
 use crate::audio::contracts::{SubtitleCueRuntime, SubtitleOverlayRuntimeSnapshot};
 use crate::audio::time_utils::{ms_marker, unix_ms};
 
-const MAX_RECENT_SUBTITLE_CUES: usize = 12;
-const HARD_MAX_RECENT_SUBTITLE_CUES: usize = 18;
+// Completed, translated cues are the session's subtitle history and must stay
+// addressable for the queue/report UI. Only unfinished live cues are bounded;
+// otherwise a long session would silently erase the very history the user is
+// trying to inspect.
+const MAX_UNFINISHED_SUBTITLE_CUES: usize = 18;
 
 /// Builds a fresh cue with empty display/translation fields and the current
 /// timestamp for both bounds; shared by the transcript-cue creation paths in
@@ -67,24 +70,28 @@ fn cue_needs_more_time(cue: &SubtitleCueRuntime) -> bool {
 }
 
 pub(super) fn trim_recent_subtitle_cues(overlay: &mut SubtitleOverlayRuntimeSnapshot) {
-    while overlay.recent_cues.len() > MAX_RECENT_SUBTITLE_CUES {
+    let mut unfinished_count = overlay
+        .recent_cues
+        .iter()
+        .filter(|cue| cue_needs_more_time(cue))
+        .count();
+    while unfinished_count > MAX_UNFINISHED_SUBTITLE_CUES {
         if let Some(index) = overlay
             .recent_cues
             .iter()
-            .rposition(|cue| !cue_needs_more_time(cue))
+            .rposition(|cue| cue_needs_more_time(cue))
         {
             overlay.recent_cues.remove(index);
+            unfinished_count -= 1;
             overlay.dropped_cue_count += 1;
         } else {
             break;
         }
     }
 
-    while overlay.recent_cues.len() > HARD_MAX_RECENT_SUBTITLE_CUES {
-        overlay.recent_cues.pop();
-        overlay.dropped_cue_count += 1;
-    }
-
+    // `recent_cues` is also the serialized subtitle history. Do not apply a
+    // total-length cap here: evicting a completed cue makes the queue show a
+    // false "dropped" count and loses historical subtitles.
     overlay.queue_depth = overlay.recent_cues.len();
 }
 

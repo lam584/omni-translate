@@ -1158,7 +1158,7 @@ mod tests {
     }
 
     #[test]
-    fn audio_state_keeps_recent_cues_bounded() {
+    fn audio_state_preserves_completed_subtitle_history() {
         let store = AudioStateStore::new();
         for index in 0..16 {
             store.push_subtitle_cue(SubtitleCueRuntime {
@@ -1176,8 +1176,8 @@ mod tests {
         }
 
         let snapshot = store.snapshot();
-        assert_eq!(snapshot.subtitle_overlay.recent_cues.len(), 12);
-        assert_eq!(snapshot.subtitle_overlay.queue_depth, 12);
-        assert_eq!(snapshot.subtitle_overlay.dropped_cue_count, 4);
+        assert_eq!(snapshot.subtitle_overlay.recent_cues.len(), 16);
+        assert_eq!(snapshot.subtitle_overlay.queue_depth, 16);
+        assert_eq!(snapshot.subtitle_overlay.dropped_cue_count, 0);
     }
 }

@@ -115,15 +115,17 @@ impl OmniAsrEventProcessor {
                     .unwrap_or("");
                 let stash = evt["stash"].as_str().unwrap_or("");
                 pending_source_text = format!("{text_val}{stash}");
-                if !pending_source_text.trim().is_empty() {
-                    write_live_source_to_cue(
+                let delta_cue_id = if !pending_source_text.trim().is_empty() {
+                    Some(write_live_source_to_cue(
                         store,
                         direction,
                         &mut current_cue_id,
                         &pending_source_text,
                         defer_secondary_translation,
-                    );
-                }
+                    ))
+                } else {
+                    current_cue_id.clone()
+                };
                 if event_diagnostics.current_cue_origin.is_none()
                     && current_cue_id.is_some()
                 {
@@ -133,8 +135,15 @@ impl OmniAsrEventProcessor {
                 event_diagnostics.last_asr_delta_text = pending_source_text.clone();
                 event_diagnostics.last_asr_delta_at_ms =
                     Some(elapsed_ms_since(&session_started_at));
-                event_diagnostics.last_asr_delta_item_id =
-                    evt["item_id"].as_str().map(str::to_string);
+                if let (Some(item_id), Some(cue_id)) = (
+                    evt["item_id"].as_str(),
+                    delta_cue_id,
+                ) {
+                    event_diagnostics.last_asr_delta_item_id = Some(item_id.to_string());
+                    event_diagnostics.record_asr_cue_owner(item_id, cue_id);
+                } else {
+                    event_diagnostics.last_asr_delta_item_id = None;
+                }
                 let cue_id_str = current_cue_id.as_deref().unwrap_or("(none)");
                 store.watch_session_report.push_asr_delta(
                     event_type,
@@ -155,22 +164,54 @@ impl OmniAsrEventProcessor {
                 vad_event_count += 1;
                 let source = evt["transcript"].as_str().unwrap_or("");
                 let completed_item_id = evt["item_id"].as_str();
+                let asr_cue_id = completed_item_id
+                    .and_then(|item_id| event_diagnostics.asr_cue_for_input_item(item_id));
                 let pending_matches_completed_item = completed_item_id.is_some()
                     && event_diagnostics.last_asr_delta_item_id.as_deref()
                         == completed_item_id;
                 let current_input_text = pending_source_text.clone();
+                let completion_targets_current_cue = asr_cue_id
+                    .as_deref()
+                    .map(|cue_id| current_cue_id.as_deref() == Some(cue_id))
+                    .unwrap_or(true);
+                let mapped_cue_source = if completion_targets_current_cue {
+                    None
+                } else {
+                    asr_cue_id.as_ref().and_then(|cue_id| {
+                        store
+                            .snapshot()
+                            .subtitle_overlay
+                            .recent_cues
+                            .iter()
+                            .find(|cue| cue.cue_id == *cue_id)
+                            .map(|cue| cue.source_text.clone())
+                    })
+                };
+                let completion_pending_text = if completion_targets_current_cue {
+                    pending_source_text.clone()
+                } else {
+                    mapped_cue_source.unwrap_or_default()
+                };
                 let resolved = resolve_completed_transcription(
-                    &pending_source_text,
+                    &completion_pending_text,
                     source,
-                    pending_matches_completed_item,
+                    completion_targets_current_cue && pending_matches_completed_item,
                 );
-                pending_source_text = resolved.display_text;
-                completed_source_text = Some(resolved.response_gate_text);
+                let completion_source_text = resolved.display_text;
+                let completion_gate_text = resolved.response_gate_text;
+                if completion_targets_current_cue {
+                    pending_source_text = completion_source_text.clone();
+                } else {
+                    // A late final belongs to the mapped historical cue. Do
+                    // not replace the newer cue's live ASR hypothesis.
+                    pending_source_text = current_input_text.clone();
+                }
+                completed_source_text = Some(completion_gate_text);
                 let correlated_native_response_cue = completed_item_id.and_then(|item_id| {
                     event_diagnostics.native_response_cue_for_input_item(item_id)
                 });
                 let routed_native_response_cue = if !subtitle_translate_active
-                    && !pending_source_text.trim().is_empty()
+                    && !completion_source_text.trim().is_empty()
                     && correlated_native_response_cue.as_deref()
                         != current_cue_id.as_deref()
                 {
@@ -179,7 +220,7 @@ impl OmniAsrEventProcessor {
                             update_native_response_cue_source(
                                 store,
                                 cue_id,
-                                &pending_source_text,
+                                &completion_source_text,
                             );
                         })
                 } else {
@@ -188,12 +229,12 @@ impl OmniAsrEventProcessor {
                 let reconciled_native_cue = if routed_native_response_cue.is_none()
                     && !subtitle_translate_active
                     && current_cue_id.is_none()
-                    && !pending_source_text.trim().is_empty()
+                    && !completion_source_text.trim().is_empty()
                 {
                     reconcile_late_native_transcription(
                         store,
                         direction,
-                        &pending_source_text,
+                        &completion_source_text,
                     )
                 } else {
                     None
@@ -213,6 +254,8 @@ impl OmniAsrEventProcessor {
                             routed_native_response_cue.is_some(),
                         ),
                     );
+                } else if let Some(cue_id) = asr_cue_id.as_ref() {
+                    completed_cue_id = Some(cue_id.clone());
                 } else if !pending_source_text.trim().is_empty() {
                     let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
                     if defer_secondary_translation {
@@ -249,17 +292,51 @@ impl OmniAsrEventProcessor {
                     pending_source_text.clear();
                     transcription_completed_flag = false;
                     transcription_completed_at = None;
-                } else if subtitle_translate_active
-                    && !pending_source_text.trim().is_empty()
+                } else if !completion_targets_current_cue
+                    && !completion_source_text.trim().is_empty()
                 {
+                    // The ASR item map is authoritative even when the native
+                    // response-owner map has already expired. Repair the
+                    // mapped cue and leave the newer current cue untouched.
+                    let cue_id = asr_cue_id
+                        .as_ref()
+                        .expect("a non-current completion must have an ASR cue owner");
+                    if subtitle_translate_active {
+                        if defer_secondary_translation {
+                            store.defer_subtitle_cue_translation(cue_id);
+                        }
+                        store.update_or_push_stt_cue(
+                            cue_id,
+                            &completion_source_text,
+                            false,
+                        );
+                    } else {
+                        update_native_response_cue_source(
+                            store,
+                            cue_id,
+                            &completion_source_text,
+                        );
+                    }
+                    let _ = diag_log(
+                        &app,
+                        "omni",
+                        "info",
+                        format!(
+                            "[EVENT] transcription.completed -> LATE_ASR_CUE cue_id={cue_id} source=\"{source}\""
+                        ),
+                    );
+                } else if subtitle_translate_active && !completion_source_text.trim().is_empty() {
                     let cue_id = ensure_transcription_cue_id(direction, &mut current_cue_id);
+                    if defer_secondary_translation {
+                        store.defer_subtitle_cue_translation(&cue_id);
+                    }
                     if event_diagnostics.current_cue_origin.is_none() {
                         event_diagnostics.current_cue_origin =
                             Some("transcription_completed".to_string());
                     }
                     store.update_or_push_stt_cue(
                         &cue_id,
-                        &pending_source_text,
+                        &completion_source_text,
                         false,
                     );
                     let _ = diag_log(
@@ -267,7 +344,7 @@ impl OmniAsrEventProcessor {
                         "omni",
                         "info",
                         format!(
-                            "[EVENT] transcription.completed -> ST_SOURCE_READY cue_id={cue_id} source=\"{source}\""
+                            "[EVENT] transcription.completed -> ST_SOURCE_READY cue_id={cue_id} source=\"{source}\" lateMapped=false"
                         ),
                     );
                     if native_translation_reuse_active {
@@ -286,7 +363,7 @@ impl OmniAsrEventProcessor {
                     if let Some(ref id) = current_cue_id {
                         store.update_or_push_stt_cue(
                             id,
-                            &pending_source_text,
+                            &completion_source_text,
                             false,
                         );
                     }

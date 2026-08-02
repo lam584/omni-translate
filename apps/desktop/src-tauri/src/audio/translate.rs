@@ -28,6 +28,7 @@ use super::translation_scheduler::{
 enum TranslateUpdate {
     Delta {
         cue_id: String,
+        source_text: String,
         raw_delta: String,
         partial_text: String,
     },
@@ -336,6 +337,16 @@ fn handle_translate_updates(
     Ok(())
 }
 
+fn translation_source_is_current(store: &AudioStateStore, cue_id: &str, source_text: &str) -> bool {
+    store
+        .snapshot()
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.cue_id == cue_id)
+        .is_some_and(|cue| cue.source_text == source_text)
+}
+
 fn handle_translate_update(
     app: &AppHandle,
     store: &AudioStateStore,
@@ -345,9 +356,25 @@ fn handle_translate_update(
     match update {
         TranslateUpdate::Delta {
             cue_id,
+            source_text,
             raw_delta,
             partial_text,
         } => {
+            if !translation_source_is_current(store, &cue_id, &source_text) {
+                let _ = append_diagnostics_log(
+                    app,
+                    "translate",
+                    "debug",
+                    format!(
+                        "忽略过期翻译增量，cue={}，原文已发生变化。",
+                        cue_id
+                    ),
+                    None,
+                    None,
+                    None,
+                );
+                return Ok(());
+            }
             report_translation_delta(store, &cue_id, &raw_delta);
             store.update_subtitle_cue_translation(&cue_id, partial_text, false);
             emit_audio_snapshot(app, store)?;
@@ -358,6 +385,22 @@ fn handle_translate_update(
             result,
         } => {
             state.scheduler.finish(&job.key);
+            if !translation_source_is_current(&store, &job.cue_id, &job.result.sentence) {
+                state.attempt_counts.remove(&job.key);
+                let _ = append_diagnostics_log(
+                    app,
+                    "translate",
+                    "debug",
+                    format!(
+                        "忽略过期翻译结果，cue={}，原文已发生变化。",
+                        job.cue_id
+                    ),
+                    None,
+                    None,
+                    None,
+                );
+                return Ok(());
+            }
             let elapsed_ms = started_at.elapsed().as_millis();
             match result {
                 Ok(translated_text) => {
@@ -692,6 +735,7 @@ fn spawn_cue_translation(tx: mpsc::Sender<TranslateUpdate>, job: TranslationJob)
             let gateway = ProviderGateway::new();
             let delta_tx = tx.clone();
             let delta_cue_id = job.cue_id.clone();
+            let delta_source_text = job.result.sentence.clone();
             let mut partial_translation = String::new();
             let result = gateway.translate_text_streaming_traced_with_glossary(
                 job.provider.clone(),
@@ -704,6 +748,7 @@ fn spawn_cue_translation(tx: mpsc::Sender<TranslateUpdate>, job: TranslationJob)
                     partial_translation.push_str(delta);
                     let _ = delta_tx.send(TranslateUpdate::Delta {
                         cue_id: delta_cue_id.clone(),
+                        source_text: delta_source_text.clone(),
                         raw_delta: delta.to_string(),
                         partial_text: partial_translation.clone(),
                     });

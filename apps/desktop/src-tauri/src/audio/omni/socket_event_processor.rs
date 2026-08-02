@@ -154,10 +154,16 @@ match socket.read_message() {
                         event_diagnostics = readiness.event_diagnostics;
                     }
                     "input_audio_buffer.committed" => {
+                        let committed_item_id = evt["item_id"]
+                            .as_str()
+                            .filter(|item_id| !item_id.trim().is_empty());
+                        if let (Some(item_id), Some(cue_id)) = (
+                            committed_item_id,
+                            current_cue_id.clone(),
+                        ) {
+                            event_diagnostics.record_asr_cue_owner(item_id, cue_id);
+                        }
                         if audio_mode.uses_manual_commit() {
-                            let committed_item_id = evt["item_id"]
-                                .as_str()
-                                .filter(|item_id| !item_id.trim().is_empty());
                             if manual_response_pending
                                 && manual_response_item_id.is_none()
                                 && committed_item_id.is_some()
@@ -291,7 +297,7 @@ match socket.read_message() {
                                 echo_activity.total_chunks,
                                 echo_activity.suppressed_chunks,
                             );
-                            if let Some(decision) = classify_completed_manual_response(
+                            if let Some(decision) = classify_completed_manual_response_for_target_language(
                                 manual_response_pending,
                                 manual_response_item_id.as_deref(),
                                 evt["item_id"].as_str(),
@@ -300,6 +306,7 @@ match socket.read_message() {
                                 recent_output_age_ms,
                                 echo_guard_enabled,
                                 echo_dominated_input,
+                                target_language,
                             ) {
                                 let source = completed_source_text.unwrap_or_default();
                                 let mut reset_turn = matches!(

@@ -200,7 +200,9 @@ fn write(
         return;
     }
     let dedupe_final = should_dedupe_written_translation(state.rank);
-    if dedupe_final && cue_state.has_written_final_translation(&translated) {
+    if dedupe_final
+        && cue_state.has_written_final_translation(display_index, &translated)
+    {
         log_translation_skip(app, cue_id, "duplicate_final_translation");
         return;
     }
@@ -209,7 +211,7 @@ fn write(
         return;
     }
     if dedupe_final {
-        cue_state.mark_final_translation_written(&translated);
+        cue_state.mark_final_translation_written(display_index, &translated);
     }
     let _ = diag_log(
         app,
@@ -480,8 +482,11 @@ fn handle_translation_outcome(
 
             let rank = translation_rank(&job.result);
             let worker_dedupe_key = if should_dedupe_written_translation(rank) {
-                substantive_translation_dedupe_key(&translated)
-                    .map(|key| format!("{}:{key}", job.cue_id))
+                // A successful result is already uniquely identified by the
+                // revision-aware job key. Do not dedupe by translated text:
+                // two different subtitle slots may legitimately share the
+                // same translation (for example, repeated short phrases).
+                Some(job.key.clone())
             } else {
                 None
             };
@@ -1021,7 +1026,8 @@ mod tests {
         let old_job = job_for_test_with_revision("cue-1", 1, 0, result.clone());
         let new_job = job_for_test_with_revision("cue-1", 2, 1, result);
 
-        scheduler.mark_in_flight_for_test(&old_job.key);
+        assert!(scheduler.enqueue(old_job));
+        scheduler.dispatch_ready(|_| {});
 
         assert!(scheduler.enqueue(new_job));
         assert_eq!(scheduler.queued_len(), 1);
@@ -1100,7 +1106,7 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_dedupes_same_sentence_across_revisions() {
+    fn scheduler_allows_same_sentence_across_revisions() {
         let mut scheduler = scheduler_for_test();
         let first = job_for_test_with_revision(
             "cue-1",
@@ -1116,8 +1122,8 @@ mod tests {
         );
 
         assert!(scheduler.enqueue(first));
-        assert!(!scheduler.enqueue(revised));
-        assert_eq!(scheduler.queued_len(), 1);
+        assert!(scheduler.enqueue(revised));
+        assert_eq!(scheduler.queued_len(), 2);
     }
 
     #[test]
@@ -1290,25 +1296,41 @@ mod tests {
     }
 
     #[test]
-    fn substantive_final_translation_dedupe_survives_revision_reset() {
+    fn substantive_final_translation_dedupe_is_scoped_to_display_slot() {
         let mut cue_state = CueTranslationState::new();
-        assert!(
-            !cue_state.has_written_final_translation("This is a substantial final translation.")
+        assert!(!cue_state.has_written_final_translation(
+            0,
+            "This is a substantial final translation."
+        ));
+
+        cue_state.mark_final_translation_written(
+            0,
+            "This is a substantial final translation.",
         );
 
-        cue_state.mark_final_translation_written("This is a substantial final translation.");
-        cue_state.reset_for_revision();
+        assert!(cue_state.has_written_final_translation(
+            0,
+            "this is a substantial final translation"
+        ));
+        assert!(!cue_state.has_written_final_translation(
+            1,
+            "this is a substantial final translation"
+        ));
 
-        assert!(cue_state.has_written_final_translation("this is a substantial final translation"));
+        cue_state.reset_for_revision();
+        assert!(!cue_state.has_written_final_translation(
+            0,
+            "this is a substantial final translation"
+        ));
     }
 
     #[test]
     fn short_exclamations_are_not_final_translation_dedupe_keys() {
         let mut cue_state = CueTranslationState::new();
-        cue_state.mark_final_translation_written("Oh!");
+        cue_state.mark_final_translation_written(0, "Oh!");
 
         assert_eq!(substantive_translation_dedupe_key("Oh!"), None);
-        assert!(!cue_state.has_written_final_translation("Oh!"));
+        assert!(!cue_state.has_written_final_translation(0, "Oh!"));
     }
 
     #[test]

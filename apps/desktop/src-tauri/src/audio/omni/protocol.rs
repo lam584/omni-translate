@@ -238,6 +238,11 @@ pub(super) struct OmniEventDiagnostics {
     pub(super) last_asr_delta_text: String,
     pub(super) last_asr_delta_at_ms: Option<u64>,
     pub(super) last_asr_delta_item_id: Option<String>,
+    /// ASR finals can arrive after server VAD has already opened the next
+    /// input cue. Keep the provider item-to-cue association so a late final
+    /// is written back to the cue that produced its deltas, not to the
+    /// mutable `current_cue_id`.
+    asr_cue_owners: VecDeque<AsrCueOwner>,
     pub(super) last_asr_completed_text: String,
     pub(super) last_asr_completed_at_ms: Option<u64>,
     pub(super) empty_asr_completed_count: u64,
@@ -249,6 +254,7 @@ pub(super) struct OmniEventDiagnostics {
 }
 
 const MAX_NATIVE_RESPONSE_OWNERS: usize = 32;
+const MAX_ASR_CUE_OWNERS: usize = 64;
 const NATIVE_EMPTY_TRANSLATION_FAILURE: &str =
     "[翻译失败] 实时模型已结束本轮响应，但没有返回可用译文。";
 const NATIVE_CANCELLED_TRANSLATION_FAILURE: &str =
@@ -317,7 +323,47 @@ struct NativeResponseOwner {
     input_item_id: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AsrCueOwner {
+    input_item_id: String,
+    cue_id: String,
+}
+
 impl OmniEventDiagnostics {
+    pub(super) fn record_asr_cue_owner(&mut self, input_item_id: &str, cue_id: String) {
+        let input_item_id = input_item_id.trim();
+        if input_item_id.is_empty() || cue_id.trim().is_empty() {
+            return;
+        }
+        if let Some(owner) = self
+            .asr_cue_owners
+            .iter_mut()
+            .find(|owner| owner.input_item_id == input_item_id)
+        {
+            owner.cue_id = cue_id;
+            return;
+        }
+        self.asr_cue_owners.push_back(AsrCueOwner {
+            input_item_id: input_item_id.to_string(),
+            cue_id,
+        });
+        while self.asr_cue_owners.len() > MAX_ASR_CUE_OWNERS {
+            self.asr_cue_owners.pop_front();
+        }
+    }
+
+    pub(super) fn asr_cue_for_input_item(&self, input_item_id: &str) -> Option<String> {
+        self.asr_cue_owners
+            .iter()
+            .rev()
+            .find(|owner| owner.input_item_id == input_item_id)
+            .map(|owner| owner.cue_id.clone())
+    }
+
+    pub(super) fn clear_asr_cue_owners(&mut self) {
+        self.asr_cue_owners.clear();
+    }
+
     pub(super) fn capture_native_response_owner(
         &mut self,
         cue_id: String,
@@ -888,6 +934,7 @@ pub(super) fn reset_omni_turn_state(
         event_diagnostics,
     );
     event_diagnostics.clear_native_response_owners();
+    event_diagnostics.clear_asr_cue_owners();
 }
 
 /// Releases the input-side state of a manual turn without touching the

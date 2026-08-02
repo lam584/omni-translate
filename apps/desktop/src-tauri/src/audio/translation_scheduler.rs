@@ -86,8 +86,9 @@ pub(crate) enum TranslationRank {
 
 fn translation_sentence_work_key(job: &TranslationJob) -> String {
     format!(
-        "{}:{}:{}",
+        "{}:{}:{}:{}",
         job.cue_id,
+        job.cue_revision,
         translation_rank(&job.result) as u8,
         normalize_sentence_key(&job.result.sentence)
     )

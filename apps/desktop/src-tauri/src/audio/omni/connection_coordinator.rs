@@ -115,6 +115,53 @@ pub(super) fn classify_completed_manual_response(
     })
 }
 
+/// Applies the normal manual-response checks plus a language-aware fallback
+/// for translated speaker playback. AEC normally removes that playback from
+/// the loopback stream, but ASR can still return a short, corrupted CJK
+/// fragment when the endpoint/room path is not correlated well enough. If the
+/// target language is CJK and the recent model output is also CJK, such a
+/// fragment is much more likely to be our own translated audio than new source
+/// audio. Keep this fallback narrow (short fragments and a short age window) so
+/// it does not suppress ordinary, unrelated source text indefinitely.
+pub(super) fn classify_completed_manual_response_for_target_language(
+    manual_response_pending: bool,
+    committed_item_id: Option<&str>,
+    completed_item_id: Option<&str>,
+    completed_source_text: Option<&str>,
+    recent_output: &str,
+    recent_output_age_ms: Option<u64>,
+    echo_guard_enabled: bool,
+    echo_dominated_input: bool,
+    target_language: &str,
+) -> Option<ManualResponseDecision> {
+    let decision = classify_completed_manual_response(
+        manual_response_pending,
+        committed_item_id,
+        completed_item_id,
+        completed_source_text,
+        recent_output,
+        recent_output_age_ms,
+        echo_guard_enabled,
+        echo_dominated_input,
+    )?;
+    if decision == ManualResponseDecision::Create
+        && recent_output_is_active(
+            recent_output,
+            recent_output_age_ms,
+            echo_guard_enabled,
+        )
+        && texts_are_probable_same_language_echo(
+            completed_source_text.unwrap_or_default(),
+            recent_output,
+            target_language,
+        )
+    {
+        Some(ManualResponseDecision::SkipRecentOutputEcho)
+    } else {
+        Some(decision)
+    }
+}
+
 /// After a manual-gate timeout (or a reconnect reset) the awaited item-id is
 /// gone, so a late `transcription.completed` no longer correlates with the
 /// gate. It still carries the tail of the user's turn: route it to the ASR
@@ -221,6 +268,50 @@ pub(super) fn provider_error_message(evt: &Value) -> &str {
         .and_then(Value::as_str)
         .filter(|message| !message.trim().is_empty())
         .unwrap_or("DashScope realtime model error")
+}
+
+const SAME_LANGUAGE_ECHO_WINDOW_MS: u64 = 4_000;
+const SAME_LANGUAGE_ECHO_MAX_SOURCE_CJK_CHARS: usize = 12;
+
+fn recent_output_is_active(
+    recent_output: &str,
+    recent_output_age_ms: Option<u64>,
+    echo_guard_enabled: bool,
+) -> bool {
+    echo_guard_enabled
+        && !recent_output.trim().is_empty()
+        && recent_output_age_ms.is_some_and(|age| age <= SAME_LANGUAGE_ECHO_WINDOW_MS)
+}
+
+fn texts_are_probable_same_language_echo(
+    source: &str,
+    output: &str,
+    target_language: &str,
+) -> bool {
+    if !target_language_is_cjk(target_language) {
+        return false;
+    }
+    let source_cjk_chars = source.chars().filter(|character| is_cjk(*character)).count();
+    let output_cjk_chars = output.chars().filter(|character| is_cjk(*character)).count();
+    source_cjk_chars >= 2
+        && source_cjk_chars <= SAME_LANGUAGE_ECHO_MAX_SOURCE_CJK_CHARS
+        && output_cjk_chars >= 2
+}
+
+fn target_language_is_cjk(target_language: &str) -> bool {
+    let language = target_language
+        .trim()
+        .split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(language.as_str(), "zh" | "ja" | "ko" | "yue" | "cmn")
+}
+
+fn is_cjk(character: char) -> bool {
+    ('\u{3400}'..='\u{4DBF}').contains(&character)
+        || ('\u{4E00}'..='\u{9FFF}').contains(&character)
+        || ('\u{F900}'..='\u{FAFF}').contains(&character)
 }
 
 /// A parked preconnect is still represented by the normal Omni worker. Use
@@ -733,6 +824,87 @@ mod manual_response_gate_tests {
                 false,
             ),
             ManualResponseDecision::SkipRecentOutputEcho
+        );
+    }
+
+    #[test]
+    fn rejects_short_corrupted_cjk_echoes_for_a_cjk_target() {
+        let source = "\u{7535}\u{6c14}\u{3002}";
+        let previous_translation = "\u{53d1}\u{7535}\u{673a}\u{3002}";
+        assert_eq!(
+            classify_completed_manual_response_for_target_language(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some(source),
+                previous_translation,
+                Some(780),
+                true,
+                false,
+                "zh-CN",
+            ),
+            Some(ManualResponseDecision::SkipRecentOutputEcho),
+        );
+
+        assert_eq!(
+            classify_completed_manual_response_for_target_language(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("\u{7535}\u{7535}\u{673a}\u{3002}"),
+                "\u{7535}\u{673a}\u{ff0c}\u{6765}\u{3002}",
+                Some(1_200),
+                true,
+                false,
+                "zh-CN",
+            ),
+            Some(ManualResponseDecision::SkipRecentOutputEcho),
+        );
+    }
+
+    #[test]
+    fn same_language_echo_fallback_stays_narrow() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("\u{7535}\u{6c14}\u{3002}"),
+                "\u{53d1}\u{7535}\u{673a}\u{3002}",
+                Some(4_001),
+                true,
+                false,
+                "zh-CN",
+            ),
+            Some(ManualResponseDecision::Create),
+        );
+        assert_eq!(
+            classify_completed_manual_response_for_target_language(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("\u{7535}\u{6c14}\u{3002}"),
+                "\u{53d1}\u{7535}\u{673a}\u{3002}",
+                Some(780),
+                true,
+                false,
+                "en-US",
+            ),
+            Some(ManualResponseDecision::Create),
+        );
+        assert_eq!(
+            classify_completed_manual_response_for_target_language(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("This is new source audio."),
+                "\u{53d1}\u{7535}\u{673a}\u{3002}",
+                Some(780),
+                true,
+                false,
+                "zh-CN",
+            ),
+            Some(ManualResponseDecision::Create),
         );
     }
 

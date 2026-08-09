@@ -185,6 +185,7 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<audio::SpeechDispatchEventRuntime>(),
                     decl::<audio::SpeechRuntimeSnapshot>(),
                     decl::<audio::SttConnectionRuntime>(),
+                    decl::<audio::EchoCaptureDiagnosticsRuntime>(),
                     decl::<audio::AudioRuntimeSnapshot>(),
                 ],
             ),

@@ -71,6 +71,7 @@ struct WorkerSlice {
     vad_event_count: u64,
     last_commit_time: SystemTime,
     manual_turn_started_at: Option<SystemTime>,
+    manual_turn_started_during_playback: Option<bool>,
     st_skip_logged: bool,
     transcription_completed_flag: bool,
     transcription_completed_at: Option<SystemTime>,
@@ -99,6 +100,7 @@ impl WorkerSlice {
             vad_event_count: 0,
             last_commit_time: SystemTime::now(),
             manual_turn_started_at: None,
+            manual_turn_started_during_playback: None,
             st_skip_logged: false,
             transcription_completed_flag: false,
             transcription_completed_at: None,
@@ -198,11 +200,13 @@ impl ReplayHarness {
             OmniCommitState {
                 last_commit_time: slice.last_commit_time,
                 manual_turn_started_at: slice.manual_turn_started_at,
+                manual_turn_started_during_playback: slice.manual_turn_started_during_playback,
                 sent_audio_since_commit: slice.sent_audio_since_commit,
                 audio_samples_since_commit: slice.audio_samples_since_commit,
                 manual_response_pending: slice.manual_response_pending,
                 manual_response_item_id: slice.manual_response_item_id.clone(),
                 manual_turn_timed_out: false,
+                committed_source_started_during_playback: None,
             },
             &app,
             &mut socket,
@@ -213,10 +217,19 @@ impl ReplayHarness {
         );
         slice.last_commit_time = commit_state.last_commit_time;
         slice.manual_turn_started_at = commit_state.manual_turn_started_at;
+        slice.manual_turn_started_during_playback = commit_state.manual_turn_started_during_playback;
         slice.sent_audio_since_commit = commit_state.sent_audio_since_commit;
         slice.audio_samples_since_commit = commit_state.audio_samples_since_commit;
         slice.manual_response_pending = commit_state.manual_response_pending;
         slice.manual_response_item_id = commit_state.manual_response_item_id;
+        if let Some(started_during_playback) =
+            commit_state.committed_source_started_during_playback
+        {
+            slice.event_diagnostics.begin_manual_source_segment(
+                elapsed_ms_since(&self.session_started_at),
+                started_during_playback,
+            );
+        }
         if commit_state.manual_turn_timed_out {
             let response_stream_active = manual_turn_response_stream_active(
                 slice.pending_audio_delta_count,
@@ -337,6 +350,7 @@ impl ReplayHarness {
                 &mut slice.audio_samples_since_commit,
                 &mut slice.last_commit_time,
                 &mut slice.manual_turn_started_at,
+                &mut slice.manual_turn_started_during_playback,
                 &mut slice.current_cue_id,
                 &mut slice.pending_source_text,
                 &mut slice.pending_translated_text,

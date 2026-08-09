@@ -10,31 +10,37 @@ const ECHO_ASR_ACTIVITY_RETENTION: Duration = Duration::from_secs(30);
 pub(crate) struct EchoSuppressionSnapshot {
     pub(crate) total_chunks: u64,
     pub(crate) suppressed_chunks: u64,
+    /// Chunks with a correlated, speaker-aligned playback reference. Unlike
+    /// `suppressed_chunks`, these remain available to ASR for double talk.
+    pub(crate) correlated_chunks: u64,
 }
 
 #[derive(Default)]
 pub(super) struct EchoAsrActivity {
-    chunks: VecDeque<(Instant, bool)>,
+    chunks: VecDeque<(Instant, bool, bool)>,
 }
 
 impl EchoAsrActivity {
-    pub(super) fn record(&mut self, suppressed: bool, now: Instant) {
-        self.chunks.push_back((now, suppressed));
+    pub(super) fn record(&mut self, suppressed: bool, correlated: bool, now: Instant) {
+        self.chunks.push_back((now, suppressed, correlated));
         self.prune(now, ECHO_ASR_ACTIVITY_RETENTION);
     }
 
     pub(super) fn snapshot(&mut self, window: Duration, now: Instant) -> EchoSuppressionSnapshot {
         self.prune(now, ECHO_ASR_ACTIVITY_RETENTION);
         let mut snapshot = EchoSuppressionSnapshot::default();
-        for (_, suppressed) in self
+        for (_, suppressed, correlated) in self
             .chunks
             .iter()
-            .filter(|(at, _)| now.saturating_duration_since(*at) <= window)
+            .filter(|(at, _, _)| now.saturating_duration_since(*at) <= window)
         {
             snapshot.total_chunks = snapshot.total_chunks.saturating_add(1);
             if *suppressed {
                 snapshot.suppressed_chunks =
                     snapshot.suppressed_chunks.saturating_add(1);
+            }
+            if *correlated {
+                snapshot.correlated_chunks = snapshot.correlated_chunks.saturating_add(1);
             }
         }
         snapshot
@@ -44,7 +50,7 @@ impl EchoAsrActivity {
         while self
             .chunks
             .front()
-            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > window)
+            .is_some_and(|(at, _, _)| now.saturating_duration_since(*at) > window)
         {
             self.chunks.pop_front();
         }

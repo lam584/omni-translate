@@ -87,6 +87,45 @@ use super::*;
     }
 
     #[test]
+    fn trailing_whitespace_normalization_after_output_keeps_one_revision() {
+        let store = WatchSessionReportStore::new();
+        let session_id = store.begin_or_reuse("test", "model");
+        store.record_source("cue-1", "inbound", "Good morning. ", false);
+        store.record_model_final("cue-1", "inbound", "native", "早上好", true, None, None);
+        store.record_publish(
+            "cue-1",
+            "inbound",
+            "Good morning. ",
+            "早上好",
+            &[],
+            false,
+        );
+
+        // The provider's final ASR result removes only the trailing space
+        // after native output has already started.
+        store.record_source("cue-1", "inbound", "Good morning.", true);
+        store.record_publish("cue-1", "inbound", "Good morning.", "早上好", &[], true);
+        let started = {
+            let guard = store.inner.lock().expect("report");
+            guard.as_ref().expect("session").started_unix_ms
+        };
+        let mut rendered = receipt(&session_id, "cue-1", started.saturating_add(5));
+        rendered.source_text = "Good morning.".to_string();
+        store.record_overlay_receipt(rendered);
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        assert_eq!(report.cues.len(), 1);
+        assert_eq!(report.cues[0].revision, 1);
+        assert_eq!(report.cues[0].source_text, "Good morning.");
+        assert_eq!(report.summary.cue_count, 1);
+        assert!(!report.cues[0]
+            .issues
+            .iter()
+            .any(|issue| issue.code == "invalid-stage-order"));
+    }
+
+    #[test]
     fn livetranslate_cumulative_revisions_attach_final_render_to_latest_content() {
         let store = WatchSessionReportStore::new();
         let session_id =

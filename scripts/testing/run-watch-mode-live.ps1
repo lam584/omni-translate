@@ -323,6 +323,7 @@ function Set-DesktopAutostartEnvFile {
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_OUTPUT_DEVICE_ID=' -and
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_OUTPUT_LEVEL=' -and
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_MODEL_ID=' -and
+      $_ -notmatch '^VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE=' -and
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE=' -and
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID=' -and
       $_ -notmatch '^VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID=' -and
@@ -330,11 +331,14 @@ function Set-DesktopAutostartEnvFile {
     })
   }
   $expiresAtMs = [DateTimeOffset]::UtcNow.AddMinutes(45).ToUnixTimeMilliseconds()
+  $diagnosticSubtitleTranslationMode = if ($FeedbackLoopPrevention -eq "echo-cancel") { "native" } else { "secondary" }
+  $diagnosticTranslationAudioSource = if ($FeedbackLoopPrevention -eq "echo-cancel") { "omni-native" } else { "subtitle-tts" }
   $next = @($lines | Where-Object { $_ -ne "" })
   $next += "VITE_OMNI_WATCH_MODE_AUTOSTART=1"
   $next += "VITE_OMNI_WATCH_MODE_RUN_MARKER=$RunMarker"
   $next += "VITE_OMNI_WATCH_MODE_EXPIRES_AT_MS=$expiresAtMs"
-  $next += "VITE_OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE=subtitle-tts"
+  $next += "VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE=$diagnosticSubtitleTranslationMode"
+  $next += "VITE_OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE=$diagnosticTranslationAudioSource"
   if ($PhysicalPlaybackDeviceId) {
     $next += "VITE_OMNI_WATCH_MODE_OUTPUT_DEVICE_ID=$PhysicalPlaybackDeviceId"
     $next += "VITE_OMNI_WATCH_MODE_OUTPUT_LEVEL=50"
@@ -393,6 +397,20 @@ function Get-PhysicalOutputResolvedDeviceId {
     return $null
   }
   return [string]$PhysicalOutputProbeStep.result.resolvedPhysicalPlaybackDeviceId
+}
+
+function Get-PhysicalOutputContentSkipReason {
+  param(
+    [string]$FeedbackMode,
+    [bool]$SkipContentStt
+  )
+  if ($FeedbackMode -eq "echo-cancel") {
+    return "echo-cancel Watch capture does not require the virtual-driver physical-output content recorder"
+  }
+  if ($SkipContentStt) {
+    return "SkipPhysicalOutputContentStt was provided"
+  }
+  return $null
 }
 
 function Convert-DriverProbeToJsonFile {
@@ -996,6 +1014,7 @@ function Start-WatchModeDesktopShell {
   $previousRunMarker = $env:OMNI_WATCH_MODE_RUN_MARKER
   $previousOutputDevice = $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID
   $previousOutputLevel = $env:OMNI_WATCH_MODE_OUTPUT_LEVEL
+  $previousSubtitleTranslationMode = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE
   $previousTranslationAudioSource = $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE
   $previousProviderInputPcmPath = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH
   $previousWatchModelId = $env:OMNI_WATCH_MODE_MODEL_ID
@@ -1010,11 +1029,15 @@ function Start-WatchModeDesktopShell {
   try {
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
-    if ($PhysicalDeviceId) {
-      $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID = $PhysicalDeviceId
-      $env:OMNI_WATCH_MODE_OUTPUT_LEVEL = "50"
-    }
-    $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = "subtitle-tts"
+    $diagnosticOutputDeviceId = if ($PhysicalDeviceId) { $PhysicalDeviceId } else { "default" }
+    $diagnosticSubtitleTranslationMode = if ($FeedbackLoopPrevention -eq "echo-cancel") { "native" } else { "secondary" }
+    $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID = $diagnosticOutputDeviceId
+    $env:OMNI_WATCH_MODE_OUTPUT_LEVEL = "50"
+    # Echo-cancel evidence replays the realtime model's native output so AEC
+    # observes the exact speaker signal. The virtual-driver route retains the
+    # secondary subtitle-TTS path that it isolates from inbound capture.
+    $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE = $diagnosticSubtitleTranslationMode
+    $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = if ($FeedbackLoopPrevention -eq "echo-cancel") { "omni-native" } else { "subtitle-tts" }
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $providerInputPcmPath
     if ($WatchModelId) {
       $env:OMNI_WATCH_MODE_MODEL_ID = $WatchModelId
@@ -1038,6 +1061,7 @@ function Start-WatchModeDesktopShell {
         "OMNI_WATCH_MODE_RUN_MARKER",
         "OMNI_WATCH_MODE_OUTPUT_DEVICE_ID",
         "OMNI_WATCH_MODE_OUTPUT_LEVEL",
+        "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE",
         "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE",
         "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH",
         "OMNI_WATCH_MODE_MODEL_ID",
@@ -1079,6 +1103,7 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_RUN_MARKER = $previousRunMarker
     $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID = $previousOutputDevice
     $env:OMNI_WATCH_MODE_OUTPUT_LEVEL = $previousOutputLevel
+    $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE = $previousSubtitleTranslationMode
     $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = $previousTranslationAudioSource
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $previousProviderInputPcmPath
     $env:OMNI_WATCH_MODE_MODEL_ID = $previousWatchModelId
@@ -3231,13 +3256,16 @@ try {
       }
     }
     if (-not $criticalFailureMessage) {
-      $physicalOutputRecorderStep = if ($SkipPhysicalOutputContentStt) {
+      $physicalOutputContentSkipReason = Get-PhysicalOutputContentSkipReason `
+        -FeedbackMode $FeedbackLoopPrevention `
+        -SkipContentStt $SkipPhysicalOutputContentStt
+      $physicalOutputRecorderStep = if ($physicalOutputContentSkipReason) {
         [pscustomobject]@{
           name = "start physical output content recording"
           ok = $true
           result = [pscustomobject]@{
             skipped = $true
-            reason = "SkipPhysicalOutputContentStt was provided"
+            reason = $physicalOutputContentSkipReason
           }
           error = $null
         }
@@ -3284,13 +3312,13 @@ try {
             Stop-WatchModeDesktopShell $desktopProcess
           } -ContinueOnError
         }
-        $sourceMediaTranscriptStep = if ($SkipPhysicalOutputContentStt) {
+        $sourceMediaTranscriptStep = if ($physicalOutputContentSkipReason) {
           [pscustomobject]@{
             name = "transcribe source media reference"
             ok = $true
             result = [pscustomobject]@{
               skipped = $true
-              reason = "SkipPhysicalOutputContentStt was provided"
+              reason = $physicalOutputContentSkipReason
             }
             error = $null
           }
@@ -3300,11 +3328,14 @@ try {
           } -ContinueOnError
         }
         $steps += $sourceMediaTranscriptStep
-        $physicalOutputRecordingStep = if ($SkipPhysicalOutputContentStt) {
+        $physicalOutputRecordingStep = if ($physicalOutputContentSkipReason) {
           [pscustomobject]@{
             name = "complete physical output content recording"
             ok = $true
-            result = [pscustomobject]@{ skipped = $true }
+            result = [pscustomobject]@{
+              skipped = $true
+              reason = $physicalOutputContentSkipReason
+            }
             error = $null
           }
         } else {
@@ -3313,9 +3344,21 @@ try {
           } -ContinueOnError
         }
         $steps += $physicalOutputRecordingStep
-        $physicalOutputContentStep = Invoke-Step "transcribe and compare physical output content" {
-          Invoke-PhysicalOutputContentStt $outputDir $physicalOutputRecordingStep.result $appLogBeforePlayback $runMarker $sourceMediaTranscriptStep.result
-        } -ContinueOnError
+        $physicalOutputContentStep = if ($physicalOutputContentSkipReason) {
+          [pscustomobject]@{
+            name = "transcribe and compare physical output content"
+            ok = $true
+            result = [pscustomobject]@{
+              skipped = $true
+              reason = $physicalOutputContentSkipReason
+            }
+            error = $null
+          }
+        } else {
+          Invoke-Step "transcribe and compare physical output content" {
+            Invoke-PhysicalOutputContentStt $outputDir $physicalOutputRecordingStep.result $appLogBeforePlayback $runMarker $sourceMediaTranscriptStep.result
+          } -ContinueOnError
+        }
         $steps += $physicalOutputContentStep
       }
     }

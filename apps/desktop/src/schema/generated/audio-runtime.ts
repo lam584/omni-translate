@@ -57,6 +57,8 @@ export type SttConnectionRuntime = {
  */
 state: 'idle' | 'connected' | 'reconnecting' | 'disconnected', reconnectAttempt: number, maxReconnectAttempts: number, lastDisconnectReason: string | null, };
 
+export type EchoCaptureDiagnosticsRuntime = { aecSuppressedChunks: number, playbackActiveChunks: number, effectiveSuppressedChunks: number, };
+
 export type AudioRuntimeSnapshot = {
 /**
  * Monotonically increasing sequence number. Each call to
@@ -64,5 +66,5 @@ export type AudioRuntimeSnapshot = {
  * frontend can discard stale out-of-order push events (e.g. a pre-clear
  * snapshot arriving after the clear invoke reply).
  */
-snapshotSeq: number, status: 'preview' | 'ready' | 'degraded', host: string, renderDevices: Array<AudioDeviceRuntime>, captureDevices: Array<AudioDeviceRuntime>, inbound: AudioRouteRuntimeSnapshot, outbound: AudioRouteRuntimeSnapshot, subtitleOverlay: SubtitleOverlayRuntimeSnapshot, speech: SpeechRuntimeSnapshot, sessionStartedAt: string | null, sttConnected: boolean, sttBufferSize: number, sttConnection: SttConnectionRuntime, };
+snapshotSeq: number, status: 'preview' | 'ready' | 'degraded', host: string, renderDevices: Array<AudioDeviceRuntime>, captureDevices: Array<AudioDeviceRuntime>, inbound: AudioRouteRuntimeSnapshot, outbound: AudioRouteRuntimeSnapshot, subtitleOverlay: SubtitleOverlayRuntimeSnapshot, speech: SpeechRuntimeSnapshot, echoCaptureDiagnostics: EchoCaptureDiagnosticsRuntime, sessionStartedAt: string | null, sttConnected: boolean, sttBufferSize: number, sttConnection: SttConnectionRuntime, };
 

@@ -104,10 +104,28 @@ export function buildWatchModeDiagnosticAutostartConfig(
     'VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID',
     DEFAULT_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID,
   );
+  const requestedSubtitleTranslationMode = watchModeEnvString(
+    env,
+    'VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE',
+  );
   const feedbackLoopPrevention =
     watchModeEnvString(env, 'VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION') === 'echo-cancel'
       ? 'echo-cancel'
       : 'virtual-driver';
+  // Echo-cancel must obtain a render reference from the exact audio that is
+  // played locally.  A stale renderer `.env.local` must not silently turn the
+  // diagnostic back into the secondary/text-only path.
+  const subtitleTranslationMode = feedbackLoopPrevention === 'echo-cancel'
+    ? 'native'
+    : requestedSubtitleTranslationMode === 'native'
+      ? 'native'
+      : 'secondary';
+  const textToSpeechModelId = subtitleTranslationMode === 'native'
+    ? watchModelId || currentConfig.devices.inboundVoiceModelId
+    : inboundSecondaryAudioModelId;
+  const translationAudioSource = subtitleTranslationMode === 'native'
+    ? 'omni-native'
+    : 'subtitle-tts';
 
   return {
     ...currentConfig,
@@ -118,10 +136,10 @@ export function buildWatchModeDiagnosticAutostartConfig(
       outputLevel: Number.isFinite(outputLevel) ? Math.max(0, Math.min(100, outputLevel)) : currentConfig.devices.outputLevel,
       inboundVoiceModelId: watchModelId || currentConfig.devices.inboundVoiceModelId,
       outboundVoiceModelId: watchModelId || currentConfig.devices.outboundVoiceModelId,
-      textToSpeechModelId: inboundSecondaryAudioModelId,
-      subtitleTranslationMode: 'secondary',
-      subtitleTranslationModelId,
-      inboundSecondaryAudioModelId,
+      textToSpeechModelId,
+      subtitleTranslationMode,
+      subtitleTranslationModelId: subtitleTranslationMode === 'secondary' ? subtitleTranslationModelId : '',
+      inboundSecondaryAudioModelId: subtitleTranslationMode === 'secondary' ? inboundSecondaryAudioModelId : '',
       outputSpeechEnabled: true,
       feedbackLoopPrevention,
       inboundRoute: {
@@ -141,11 +159,11 @@ export function buildWatchModeDiagnosticAutostartConfig(
     speech: {
       ...currentConfig.speech,
       enabled: true,
-      textToSpeechModelId: inboundSecondaryAudioModelId,
+      textToSpeechModelId,
       outputTarget: 'speaker',
       localPlaybackEnabled: true,
       virtualMicOutputEnabled: false,
-      translationAudioSource: 'subtitle-tts',
+      translationAudioSource,
     },
   };
 }

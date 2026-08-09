@@ -21,6 +21,11 @@ pub(super) const MANUAL_ECHO_ACTIVITY_WINDOW: Duration = Duration::from_secs(6);
 // much higher suppressed-chunk share; require both duration and ratio evidence.
 const MIN_ECHO_ACTIVITY_CHUNKS: u64 = 120;
 const ECHO_DOMINATED_PERCENT: u64 = 35;
+// Correlated capture is deliberately weaker than hard AEC suppression. It is
+// used only to adjudicate compact CJK fragments while the application is
+// actually rendering translated audio.
+const MIN_ACOUSTIC_ECHO_ACTIVITY_CHUNKS: u64 = 24;
+const ACOUSTIC_ECHO_PERCENT: u64 = 15;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManualCommitReason {
@@ -61,7 +66,37 @@ pub(super) enum ManualResponseDecision {
     Create,
     SkipEmpty,
     SkipRecentOutputEcho,
+    SkipShortCjkOutputEcho,
+    SkipEchoChainFragment,
     SkipEchoDominatedPlayback,
+}
+
+/// Context captured at the input boundary. Text alone cannot distinguish a
+/// real short utterance from a speaker echo; the playback and continuity bits
+/// keep the short-CJK fallback narrow enough for continuous speech.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ManualResponseEchoContext {
+    pub(super) playback_active: bool,
+    /// Playback may have ended before the provider final arrives. Keep the
+    /// short-CJK guard alive for this bounded tail window.
+    pub(super) playback_recent: bool,
+    /// `Some(false)` means the provider speech segment did not start while
+    /// playback was active. Continuity protection is represented separately
+    /// below because this bit alone also covers a new segment in the playback
+    /// tail. `None` is deliberately conservative for replay/legacy callers.
+    pub(super) source_started_during_playback: Option<bool>,
+    /// True when this provider segment is part of a recently continuous
+    /// source chain. This is stronger than the instantaneous playback bit:
+    /// VAD may open the next real segment while translated audio is playing.
+    pub(super) source_continuity_active: bool,
+    /// A previous high-confidence gate decision was an echo recently. This is
+    /// useful when ASR corrupts subsequent echo fragments into unrelated short
+    /// CJK text and they no longer overlap the latest output text.
+    pub(super) echo_chain_active: bool,
+    /// A recent group of capture chunks matched the speaker render reference,
+    /// but was retained for ASR as potential double talk. This is supporting
+    /// evidence for the compact-CJK gate, never a direct ASR suppression.
+    pub(super) acoustic_echo_evidence: bool,
 }
 
 pub(super) fn classify_manual_response(
@@ -70,6 +105,24 @@ pub(super) fn classify_manual_response(
     recent_output_age_ms: Option<u64>,
     echo_guard_enabled: bool,
     echo_dominated_input: bool,
+) -> ManualResponseDecision {
+    classify_manual_response_with_context(
+        source,
+        recent_output,
+        recent_output_age_ms,
+        echo_guard_enabled,
+        echo_dominated_input,
+        ManualResponseEchoContext::default(),
+    )
+}
+
+pub(super) fn classify_manual_response_with_context(
+    source: &str,
+    recent_output: &str,
+    recent_output_age_ms: Option<u64>,
+    echo_guard_enabled: bool,
+    echo_dominated_input: bool,
+    _echo_context: ManualResponseEchoContext,
 ) -> ManualResponseDecision {
     if source.trim().is_empty() {
         return ManualResponseDecision::SkipEmpty;
@@ -123,6 +176,7 @@ pub(super) fn classify_completed_manual_response(
 /// fragment is much more likely to be our own translated audio than new source
 /// audio. Keep this fallback narrow (short fragments and a short age window) so
 /// it does not suppress ordinary, unrelated source text indefinitely.
+#[cfg(test)]
 pub(super) fn classify_completed_manual_response_for_target_language(
     manual_response_pending: bool,
     committed_item_id: Option<&str>,
@@ -134,6 +188,52 @@ pub(super) fn classify_completed_manual_response_for_target_language(
     echo_dominated_input: bool,
     target_language: &str,
 ) -> Option<ManualResponseDecision> {
+    classify_completed_manual_response_for_target_language_with_context(
+        manual_response_pending,
+        committed_item_id,
+        completed_item_id,
+        completed_source_text,
+        recent_output,
+        recent_output_age_ms,
+        echo_guard_enabled,
+        echo_dominated_input,
+        target_language,
+        // Legacy callers already treat a recent CJK output as sufficient
+        // context for the original two-character fallback. The live socket
+        // path uses the context-aware entry point below.
+        ManualResponseEchoContext {
+            playback_active: true,
+            playback_recent: true,
+            source_started_during_playback: Some(true),
+            source_continuity_active: false,
+            echo_chain_active: false,
+            acoustic_echo_evidence: false,
+        },
+    )
+    .map(|decision| {
+        // Preserve the public reason used by existing callers/tests for the
+        // original two-character same-language fallback. The new reason is
+        // reserved for the context-dependent one-to-three-character guard.
+        if decision == ManualResponseDecision::SkipShortCjkOutputEcho {
+            ManualResponseDecision::SkipRecentOutputEcho
+        } else {
+            decision
+        }
+    })
+}
+
+pub(super) fn classify_completed_manual_response_for_target_language_with_context(
+    manual_response_pending: bool,
+    committed_item_id: Option<&str>,
+    completed_item_id: Option<&str>,
+    completed_source_text: Option<&str>,
+    recent_output: &str,
+    recent_output_age_ms: Option<u64>,
+    echo_guard_enabled: bool,
+    echo_dominated_input: bool,
+    target_language: &str,
+    echo_context: ManualResponseEchoContext,
+) -> Option<ManualResponseDecision> {
     let decision = classify_completed_manual_response(
         manual_response_pending,
         committed_item_id,
@@ -144,22 +244,30 @@ pub(super) fn classify_completed_manual_response_for_target_language(
         echo_guard_enabled,
         echo_dominated_input,
     )?;
-    if decision == ManualResponseDecision::Create
-        && recent_output_is_active(
-            recent_output,
-            recent_output_age_ms,
-            echo_guard_enabled,
-        )
-        && texts_are_probable_same_language_echo(
-            completed_source_text.unwrap_or_default(),
-            recent_output,
-            target_language,
-        )
-    {
-        Some(ManualResponseDecision::SkipRecentOutputEcho)
-    } else {
-        Some(decision)
+    if decision != ManualResponseDecision::Create {
+        return Some(decision);
     }
+    let source = completed_source_text.unwrap_or_default();
+    if should_skip_short_cjk_output_echo(
+        source,
+        recent_output,
+        recent_output_age_ms,
+        echo_guard_enabled,
+        target_language,
+        echo_context,
+    ) {
+        return Some(ManualResponseDecision::SkipShortCjkOutputEcho);
+    }
+    if should_skip_echo_chain_fragment(
+        source,
+        recent_output,
+        recent_output_age_ms,
+        echo_guard_enabled,
+        echo_context,
+    ) {
+        return Some(ManualResponseDecision::SkipEchoChainFragment);
+    }
+    Some(ManualResponseDecision::Create)
 }
 
 /// After a manual-gate timeout (or a reconnect reset) the awaited item-id is
@@ -182,6 +290,16 @@ pub(super) fn recent_echo_input_is_dominated(
         && suppressed_chunks
             .saturating_mul(100)
             >= total_chunks.saturating_mul(ECHO_DOMINATED_PERCENT)
+}
+
+pub(super) fn recent_acoustic_echo_evidence(
+    total_chunks: u64,
+    correlated_chunks: u64,
+) -> bool {
+    total_chunks >= MIN_ACOUSTIC_ECHO_ACTIVITY_CHUNKS
+        && correlated_chunks
+            .saturating_mul(100)
+            >= total_chunks.saturating_mul(ACOUSTIC_ECHO_PERCENT)
 }
 
 pub(super) fn manual_turn_cue_to_discard<'a>(
@@ -272,6 +390,8 @@ pub(super) fn provider_error_message(evt: &Value) -> &str {
 
 const SAME_LANGUAGE_ECHO_WINDOW_MS: u64 = 4_000;
 const SAME_LANGUAGE_ECHO_MAX_SOURCE_CJK_CHARS: usize = 12;
+const SHORT_CJK_ECHO_MAX_SOURCE_CJK_CHARS: usize = 3;
+const ECHO_CHAIN_MAX_SOURCE_CHARS: usize = 24;
 
 fn recent_output_is_active(
     recent_output: &str,
@@ -296,6 +416,88 @@ fn texts_are_probable_same_language_echo(
     source_cjk_chars >= 2
         && source_cjk_chars <= SAME_LANGUAGE_ECHO_MAX_SOURCE_CJK_CHARS
         && output_cjk_chars >= 2
+}
+
+fn should_skip_short_cjk_output_echo(
+    source: &str,
+    output: &str,
+    output_age_ms: Option<u64>,
+    echo_guard_enabled: bool,
+    target_language: &str,
+    context: ManualResponseEchoContext,
+) -> bool {
+    let speaker_context_active = context.playback_active || context.playback_recent;
+    let text_output_is_recent = recent_output_is_active(output, output_age_ms, echo_guard_enabled);
+    if !echo_guard_enabled
+        || !speaker_context_active
+        || output.trim().is_empty()
+        || !target_language_is_cjk(target_language)
+    {
+        return false;
+    }
+
+    // A source segment that belongs to the continuous-input chain may be split
+    // into one-character ASR finals while translated output is playing. Only
+    // corroborated acoustic evidence may override that continuity protection.
+    if context.source_continuity_active && !context.acoustic_echo_evidence {
+        return false;
+    }
+
+    let source_cjk_chars = source.chars().filter(|character| is_cjk(*character)).count();
+    let output_cjk_chars = output.chars().filter(|character| is_cjk(*character)).count();
+    if source_cjk_chars == 0
+        || source_cjk_chars > SAME_LANGUAGE_ECHO_MAX_SOURCE_CJK_CHARS
+        || output_cjk_chars == 0
+    {
+        return false;
+    }
+
+    let same_language_fragment =
+        texts_are_probable_same_language_echo(source, output, target_language);
+    let compact_echo_context = context.echo_chain_active || context.acoustic_echo_evidence;
+
+    if source_cjk_chars <= SHORT_CJK_ECHO_MAX_SOURCE_CJK_CHARS {
+        // Keep the original short-fragment fallback, but let current speaker
+        // playback outlive the model's response-done timestamp. The source
+        // must either begin during that playback or carry an acoustic/chain
+        // signal; a real source that began before playback is protected above.
+        return (same_language_fragment
+            && (text_output_is_recent
+                || context.source_started_during_playback == Some(true)
+                || compact_echo_context))
+            || (source_cjk_chars == 1
+                && (context.source_started_during_playback == Some(true)
+                    || context.playback_recent
+                    || compact_echo_context));
+    }
+
+    // Four-to-twelve CJK characters are long enough to be valid new speech.
+    // Gate them only after a prior echo decision or a sustained correlation to
+    // the speaker reference, which keeps continuous/manual source speech from
+    // being rejected just because translated audio is playing.
+    same_language_fragment && compact_echo_context
+}
+
+fn should_skip_echo_chain_fragment(
+    source: &str,
+    output: &str,
+    output_age_ms: Option<u64>,
+    echo_guard_enabled: bool,
+    context: ManualResponseEchoContext,
+) -> bool {
+    let speaker_context_active = context.playback_active || context.playback_recent;
+    let output_context_active = !output.trim().is_empty()
+        && (speaker_context_active
+            || recent_output_is_active(output, output_age_ms, echo_guard_enabled));
+    if !speaker_context_active
+        || !context.echo_chain_active
+        || !output_context_active
+        || context.source_continuity_active
+    {
+        return false;
+    }
+    let source_len = normalize_echo_text(source).chars().count();
+    source_len > 0 && source_len <= ECHO_CHAIN_MAX_SOURCE_CHARS
 }
 
 fn target_language_is_cjk(target_language: &str) -> bool {
@@ -569,11 +771,15 @@ pub(super) struct OmniCommitState {
     /// First successfully appended audible input of the next manual turn.
     /// A long idle period after the prior commit must not age this timer.
     pub(super) manual_turn_started_at: Option<SystemTime>,
+    /// Actual speaker state captured with the first audible manual input. It
+    /// is transferred to event diagnostics only after a successful commit.
+    pub(super) manual_turn_started_during_playback: Option<bool>,
     pub(super) sent_audio_since_commit: bool,
     pub(super) audio_samples_since_commit: u64,
     pub(super) manual_response_pending: bool,
     pub(super) manual_response_item_id: Option<String>,
     pub(super) manual_turn_timed_out: bool,
+    pub(super) committed_source_started_during_playback: Option<bool>,
 }
 
 #[cfg(test)]
@@ -863,9 +1069,288 @@ mod manual_response_gate_tests {
     }
 
     #[test]
-    fn same_language_echo_fallback_stays_narrow() {
+    fn rejects_one_character_cjk_echo_only_with_playback_overlap_context() {
         assert_eq!(
-            classify_completed_manual_response_for_target_language(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("谁。"),
+                "嘿。",
+                Some(700),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: true,
+                    playback_recent: false,
+                    source_started_during_playback: Some(true),
+                    source_continuity_active: false,
+                    echo_chain_active: false,
+                    acoustic_echo_evidence: false,
+                },
+            ),
+            Some(ManualResponseDecision::SkipShortCjkOutputEcho),
+        );
+    }
+
+    #[test]
+    fn continuous_source_started_before_playback_is_not_short_cjk_suppressed() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("谁。"),
+                "嘿。",
+                Some(700),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: true,
+                    playback_recent: false,
+                    source_started_during_playback: Some(false),
+                    source_continuity_active: true,
+                    echo_chain_active: true,
+                    acoustic_echo_evidence: false,
+                },
+            ),
+            Some(ManualResponseDecision::Create),
+        );
+    }
+
+    #[test]
+    fn extended_cjk_echo_uses_actual_speaker_playback_after_model_output_is_stale() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("\u{6807}\u{70b9}\u{7b26}\u{53f7}\u{3002}"),
+                "\u{57fa}\u{51c6}\u{6d4b}\u{8bd5}\u{73b0}\u{5df2}\u{5b8c}\u{6210}\u{3002}",
+                Some(5_300),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: true,
+                    playback_recent: true,
+                    source_started_during_playback: Some(true),
+                    source_continuity_active: false,
+                    echo_chain_active: false,
+                    acoustic_echo_evidence: true,
+                },
+            ),
+            Some(ManualResponseDecision::SkipShortCjkOutputEcho),
+        );
+    }
+
+    #[test]
+    fn extended_cjk_source_without_acoustic_or_chain_evidence_is_preserved() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("\u{6807}\u{70b9}\u{7b26}\u{53f7}\u{3002}"),
+                "\u{57fa}\u{51c6}\u{6d4b}\u{8bd5}\u{73b0}\u{5df2}\u{5b8c}\u{6210}\u{3002}",
+                Some(5_300),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: true,
+                    playback_recent: true,
+                    source_started_during_playback: Some(true),
+                    source_continuity_active: false,
+                    echo_chain_active: false,
+                    acoustic_echo_evidence: false,
+                },
+            ),
+            Some(ManualResponseDecision::Create),
+        );
+    }
+
+    #[test]
+    fn strong_acoustic_evidence_can_override_continuity_for_compact_cjk_feedback() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("\u{6807}\u{70b9}\u{7b26}\u{53f7}\u{3002}"),
+                "\u{57fa}\u{51c6}\u{6d4b}\u{8bd5}\u{73b0}\u{5df2}\u{5b8c}\u{6210}\u{3002}",
+                Some(5_300),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: true,
+                    playback_recent: true,
+                    source_started_during_playback: Some(false),
+                    source_continuity_active: true,
+                    echo_chain_active: false,
+                    acoustic_echo_evidence: true,
+                },
+            ),
+            Some(ManualResponseDecision::SkipShortCjkOutputEcho),
+        );
+    }
+
+    #[test]
+    fn unrelated_short_cjk_fragment_is_suppressed_after_an_echo_chain_is_confirmed() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("不到。"),
+                "嘿，谁？",
+                Some(1_400),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: true,
+                    playback_recent: false,
+                    source_started_during_playback: Some(true),
+                    source_continuity_active: false,
+                    echo_chain_active: true,
+                    acoustic_echo_evidence: false,
+                },
+            ),
+            Some(ManualResponseDecision::SkipShortCjkOutputEcho),
+        );
+    }
+
+    #[test]
+    fn short_non_cjk_fragment_cannot_continue_a_confirmed_echo_chain() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("The flower."),
+                "嘿，谁？",
+                Some(1_500),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: false,
+                    playback_recent: true,
+                    source_started_during_playback: Some(true),
+                    source_continuity_active: false,
+                    echo_chain_active: true,
+                    acoustic_echo_evidence: false,
+                },
+            ),
+            Some(ManualResponseDecision::SkipEchoChainFragment),
+        );
+    }
+
+    #[test]
+    fn echo_chain_uses_actual_playback_when_the_model_output_timestamp_has_expired() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("A dash seventeen."),
+                "\u{6807}\u{70b9}\u{7b26}\u{53f7}\u{3002}",
+                Some(5_300),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: true,
+                    playback_recent: true,
+                    source_started_during_playback: Some(true),
+                    source_continuity_active: false,
+                    echo_chain_active: true,
+                    acoustic_echo_evidence: false,
+                },
+            ),
+            Some(ManualResponseDecision::SkipEchoChainFragment),
+        );
+    }
+
+    #[test]
+    fn continuous_source_is_not_cut_by_the_echo_chain_fallback() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("The flower."),
+                "嘿，谁？",
+                Some(1_500),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: true,
+                    playback_recent: true,
+                    source_started_during_playback: Some(false),
+                    source_continuity_active: true,
+                    echo_chain_active: true,
+                    acoustic_echo_evidence: false,
+                },
+            ),
+            Some(ManualResponseDecision::Create),
+        );
+    }
+
+    #[test]
+    fn a_new_short_cjk_fragment_in_the_playback_tail_is_still_guarded() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("谁。"),
+                "嘿。",
+                Some(1_000),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext {
+                    playback_active: false,
+                    playback_recent: true,
+                    source_started_during_playback: Some(false),
+                    source_continuity_active: false,
+                    echo_chain_active: false,
+                    acoustic_echo_evidence: false,
+                },
+            ),
+            Some(ManualResponseDecision::SkipShortCjkOutputEcho),
+        );
+    }
+
+    #[test]
+    fn one_character_cjk_source_without_playback_context_is_preserved() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("好。"),
+                "嘿。",
+                Some(700),
+                true,
+                false,
+                "zh-CN",
+                ManualResponseEchoContext::default(),
+            ),
+            Some(ManualResponseDecision::Create),
+        );
+    }
+
+    #[test]
+    fn same_language_echo_fallback_requires_speaker_or_recent_text_context() {
+        assert_eq!(
+            classify_completed_manual_response_for_target_language_with_context(
                 true,
                 Some("item-current"),
                 Some("item-current"),
@@ -875,6 +1360,7 @@ mod manual_response_gate_tests {
                 true,
                 false,
                 "zh-CN",
+                ManualResponseEchoContext::default(),
             ),
             Some(ManualResponseDecision::Create),
         );
@@ -932,6 +1418,9 @@ mod manual_response_gate_tests {
         );
         assert!(recent_echo_input_is_dominated(360, 190));
         assert!(!recent_echo_input_is_dominated(360, 28));
+        assert!(recent_acoustic_echo_evidence(180, 36));
+        assert!(!recent_acoustic_echo_evidence(180, 20));
+        assert!(!recent_acoustic_echo_evidence(20, 20));
     }
 
     #[test]
@@ -979,6 +1468,32 @@ mod manual_response_gate_tests {
     }
 
     #[test]
+    fn report_fixture_source_texts_are_created_when_aec_does_not_suppress_them() {
+        let report_sources = [
+            "Del live in your prayer. ",
+            "A 500",
+            "Cars that can take you anywhere. ",
+            "And so-",
+            "I get to show you guys the most. ",
+            "Inter technology. ",
+        ];
+        assert!(!recent_echo_input_is_dominated(600, 0));
+        for source in report_sources {
+            assert_eq!(
+                classify_manual_response(
+                    source,
+                    "previous translated playback",
+                    Some(4_000),
+                    true,
+                    false,
+                ),
+                ManualResponseDecision::Create,
+                "report source must reach response.create when AEC did not suppress it: {source:?}",
+            );
+        }
+    }
+
+    #[test]
     fn secondary_turn_cleanup_keeps_the_completed_cue_id_after_current_is_released() {
         assert_eq!(
             manual_turn_cue_to_discard(Some("completed-secondary-cue"), None),
@@ -1004,13 +1519,16 @@ impl OmniConnectionCoordinator {
         let OmniCommitState {
             mut last_commit_time,
             mut manual_turn_started_at,
+            mut manual_turn_started_during_playback,
             mut sent_audio_since_commit,
             mut audio_samples_since_commit,
             mut manual_response_pending,
             mut manual_response_item_id,
             manual_turn_timed_out: _,
+            committed_source_started_during_playback: _,
         } = state;
         let mut manual_turn_timed_out = false;
+        let mut committed_source_started_during_playback = None;
         if audio_mode.uses_manual_commit() {
             if let Ok(elapsed) = last_commit_time.elapsed() {
                 if manual_response_pending
@@ -1020,6 +1538,7 @@ impl OmniConnectionCoordinator {
                     manual_response_item_id = None;
                     manual_turn_timed_out = true;
                     last_commit_time = SystemTime::now();
+                    manual_turn_started_during_playback = None;
                     let _ = diag_log(
                         app,
                         "omni",
@@ -1066,6 +1585,8 @@ impl OmniConnectionCoordinator {
                         );
                         last_commit_time = SystemTime::now();
                         manual_turn_started_at = None;
+                        committed_source_started_during_playback =
+                            manual_turn_started_during_playback.take();
                         sent_audio_since_commit = false;
                         audio_samples_since_commit = 0;
                         manual_response_pending = true;
@@ -1083,11 +1604,13 @@ impl OmniConnectionCoordinator {
         OmniCommitState {
             last_commit_time,
             manual_turn_started_at,
+            manual_turn_started_during_playback,
             sent_audio_since_commit,
             audio_samples_since_commit,
             manual_response_pending,
             manual_response_item_id,
             manual_turn_timed_out,
+            committed_source_started_during_playback,
         }
     }
 }

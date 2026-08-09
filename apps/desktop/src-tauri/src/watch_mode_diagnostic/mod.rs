@@ -32,11 +32,20 @@ const DEFAULT_INBOUND_SECONDARY_AUDIO_MODEL_ID: &str =
 // runner's absolute two-minute budget.
 const IPC_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const IPC_READY_POLL: Duration = Duration::from_millis(50);
+const MIN_AUTOSTART_CAPTURE_DURATION_MS: u64 = 1_000;
+const MAX_AUTOSTART_CAPTURE_DURATION_MS: u64 = 300_000;
 
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
         .map(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
         .unwrap_or(false)
+}
+
+fn bounded_autostart_capture_duration_ms(value: u64) -> u64 {
+    value.clamp(
+        MIN_AUTOSTART_CAPTURE_DURATION_MS,
+        MAX_AUTOSTART_CAPTURE_DURATION_MS,
+    )
 }
 
 pub(crate) fn autostart_enabled() -> bool {
@@ -458,9 +467,10 @@ fn schedule_capture(app: &AppHandle, run_marker: &str) {
     let duration_ms = std::env::var("OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
-        // Reserve startup and shutdown time so one live model run stays
-        // strictly below the user's two-minute ceiling.
-        .map(|value| value.clamp(1_000, 100_000));
+        // The live runner's documented maximum is five minutes. This leaves
+        // enough time for the full two-minute benchmark fixture plus delayed
+        // subtitle TTS playback, while remaining bounded and diagnostic-only.
+        .map(bounded_autostart_capture_duration_ms);
     let report_path = std::env::var("OMNI_WATCH_MODE_REPORT_PATH")
         .unwrap_or_default()
         .trim()

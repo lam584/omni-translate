@@ -112,6 +112,12 @@ impl WatchSession {
                 !source.is_empty()
                     && !cue.source_text.is_empty()
                     && source != cue.source_text
+                    // Providers commonly trim the trailing whitespace from a
+                    // live hypothesis when the final transcript arrives. That
+                    // is the same source content, not a new logical cue: a
+                    // revision here would detach the already-published model
+                    // result and fabricate an invalid stage-order warning.
+                    && correlation_text(source) != correlation_text(&cue.source_text)
                     && (!cue.llm_text.is_empty() || !cue.published_text.is_empty())
             });
             if !source_changed_after_output {

@@ -61,6 +61,11 @@ function baseSnapshot(overrides: Partial<AudioRuntimeSnapshot> = {}): AudioRunti
       speakerFramesWritten: 0, virtualMicFramesWritten: 0, mixMode: 'replace', pttGateOpen: false, duckingActive: false,
       recentEvents: [],
     },
+    echoCaptureDiagnostics: {
+      aecSuppressedChunks: 0,
+      playbackActiveChunks: 0,
+      effectiveSuppressedChunks: 0,
+    },
     sessionStartedAt: null,
     sttConnected: true,
     sttBufferSize: 0,

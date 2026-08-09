@@ -97,6 +97,43 @@ test('treats an explicit interrupted source tail as a session warning, not an ap
   assert.match(realError.failureReason, /explicit cue issue/);
 });
 
+test('keeps cue timeline retention warnings non-blocking after a complete render', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        issues: [{
+          category: 'data',
+          code: 'cue-events-truncated',
+          severity: 'warning',
+        }],
+      }],
+    },
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
+});
+
+test('fails the app gate for a session-level speaker playback failure', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      issues: [{
+        category: 'output',
+        code: 'speaker-playback-failed',
+        severity: 'error',
+      }],
+    },
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'app');
+  assert.match(report.failureReason, /session-level error.*speaker-playback-failed/i);
+});
+
 test('native route does not require secondary segment TTS evidence', () => {
   const report = classify({
     translationRoute: 'native',
@@ -228,6 +265,33 @@ test('echo-cancel variant skips virtual-driver evidence layers and passes on hea
   }
   assert.equal(report.layers.app.status, 'passed');
   assert.equal(report.layers.provider.status, 'passed');
+  assert.equal(report.layers.aec.status, 'passed');
+  assert.equal(report.layers.aec.data.outputMode, 'text-and-audio');
+  assert.equal(report.layers.aec.data.maxReferenceBufferDepthSamples, 96000);
+  assert.equal(report.layers.aec.data.speakerPlaybackSeconds, 1);
+  assert.equal(report.layers.aec.data.maxPureEchoRemovedDb, 20);
+});
+
+test('echo-cancel rejects text-only sessions even when virtual-driver evidence is skipped', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('outputMode=text-and-audio', 'outputMode=text-only'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /text-and-audio.*text-only/i);
+});
+
+test('echo-cancel enforces the pure-echo attenuation target independently of average capture removal', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('avgPureEchoRemovedDb=20.0', 'avgPureEchoRemovedDb=9.9'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /below the 10 dB initial target/i);
 });
 
 test('echo-cancel keeps a failed virtual-driver probe as non-blocking diagnostics', () => {

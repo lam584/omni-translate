@@ -143,6 +143,10 @@ export const healthyBridgeLog = '2026-01-01 00:00:00.000 [NORMAL] [bridge] - - s
 export const healthyAppLog = [
   'watch_mode.omni_preconnect_started detail=direction=inbound sid=0198testsid',
   'watch_mode.omni_preconnect_reused detail=direction=inbound sid=0198testsid',
+  'watch_mode.omni_session_config | model=test-model realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=false subtitleTranslateActive=false sid=0198testsid',
+  '[AUDIO] playback request received: cue_id=omni-audio-test samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=0198testsid',
+  '[AUDIO] speaker playback completed: cue_id=omni-audio-test frames=24000 sample_rate_hz=24000 sid=0198testsid',
+  'event=echo_cancel_summary | direction=inbound subtractCount=100 intervalChunks=100 alignedChunks=92 alignmentRatePct=92.0 aecSuppressedChunks=12 intervalAecSuppressedChunks=12 avgPureEchoRemovedDb=20.0 playbackActiveChunks=90 effectiveSuppressedChunks=12 refBufferDepthSamples=96000 refBufferEmpty=false avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 avgCorrelation=0.91 maxCorrelation=0.96 avgDelayMs=125.0 avgResidualDb=-62.0 sid=0198testsid',
   'watch route ensured subtitle overlay visible detail=label=subtitle-overlay visible=true sid=0198testsid',
   'subtitle cue appended id=cue-1 sid=0198testsid',
   'model_trace finished status=ok elapsedMs=1200 sid=0198testsid',

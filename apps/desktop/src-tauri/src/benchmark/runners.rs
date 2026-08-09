@@ -163,6 +163,42 @@ struct IntermediateResult {
     raw: RawResult,
 }
 
+const BENCHMARK_CONNECT_MAX_ATTEMPTS: usize = 4;
+const BENCHMARK_CONNECT_INITIAL_BACKOFF_MS: u64 = 250;
+
+/// A benchmark is an explicit connectivity probe, but a single TCP attempt is
+/// too brittle on Windows when a VPN/TUN adapter has just changed routes. Keep
+/// retries bounded so a genuinely unavailable endpoint still fails quickly.
+fn connect_benchmark_websocket(
+    request: tungstenite::handshake::client::Request,
+    error_context: &str,
+) -> Result<
+    (
+        WebSocket<MaybeTlsStream<TcpStream>>,
+        tungstenite::handshake::client::Response,
+    ),
+    String,
+> {
+    let mut last_error = None;
+    for attempt in 1..=BENCHMARK_CONNECT_MAX_ATTEMPTS {
+        match connect(request.clone()) {
+            Ok(connected) => return Ok(connected),
+            Err(error) => {
+                last_error = Some(error);
+                if attempt < BENCHMARK_CONNECT_MAX_ATTEMPTS {
+                    let delay_ms = BENCHMARK_CONNECT_INITIAL_BACKOFF_MS << (attempt - 1);
+                    thread::sleep(Duration::from_millis(delay_ms));
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "{error_context} after {BENCHMARK_CONNECT_MAX_ATTEMPTS} attempts: {}",
+        last_error.expect("at least one websocket connection attempt")
+    ))
+}
+
 fn run_single_benchmark(
     _run_idx: usize,
     config: &BenchmarkConfig,
@@ -209,7 +245,7 @@ fn run_single_benchmark(
             .map_err(|e| format!("auth header parse: {e}"))?,
     );
 
-    let (mut socket, _) = connect(request).map_err(|e| format!("connect failed: {e}"))?;
+    let (mut socket, _) = connect_benchmark_websocket(request, "connect failed")?;
     let connect_ms = elapsed_ms(&connect_start);
     progress.run.connect_ms = connect_ms;
     progress.emit("running", "connected", "WebSocket 已连接", None);
@@ -357,7 +393,7 @@ fn run_single_openai_benchmark(
         .map_err(|e| format!("OpenAI request build failed: {e}"))?;
     apply_benchmark_auth(request.headers_mut(), config)?;
 
-    let (mut socket, _) = connect(request).map_err(|e| format!("OpenAI connect failed: {e}"))?;
+    let (mut socket, _) = connect_benchmark_websocket(request, "OpenAI connect failed")?;
     let connect_ms = elapsed_ms(&connect_start);
     progress.run.connect_ms = connect_ms;
     progress.emit(
@@ -469,7 +505,7 @@ fn run_single_gemini_benchmark(
         .map_err(|e| format!("Gemini request build failed: {e}"))?;
     apply_benchmark_auth(request.headers_mut(), config)?;
 
-    let (mut socket, _) = connect(request).map_err(|e| format!("Gemini connect failed: {e}"))?;
+    let (mut socket, _) = connect_benchmark_websocket(request, "Gemini connect failed")?;
     let connect_ms = elapsed_ms(&connect_start);
     progress.run.connect_ms = connect_ms;
     progress.emit("running", "connected", "Gemini Live WebSocket 已连接", None);

@@ -32,6 +32,7 @@ struct OmniSessionRuntime {
     vad_event_count: u64,
     last_commit_time: SystemTime,
     manual_turn_started_at: Option<SystemTime>,
+    manual_turn_started_during_playback: Option<bool>,
     st_skip_logged: bool,
     transcription_completed_flag: bool,
     transcription_completed_at: Option<SystemTime>,
@@ -70,6 +71,7 @@ impl OmniSessionRuntime {
             vad_event_count: 0,
             last_commit_time: SystemTime::now(),
             manual_turn_started_at: None,
+            manual_turn_started_during_playback: None,
             st_skip_logged: false,
             transcription_completed_flag: false,
             transcription_completed_at: None,
@@ -337,6 +339,7 @@ fn run_omni_worker(
         mut vad_event_count,
         mut last_commit_time,
         mut manual_turn_started_at,
+        mut manual_turn_started_during_playback,
         mut st_skip_logged,
         mut transcription_completed_flag,
         mut transcription_completed_at,
@@ -413,6 +416,7 @@ fn run_omni_worker(
             sent_audio_since_commit,
             audio_samples_since_commit,
             manual_turn_started_at,
+            manual_turn_started_during_playback,
             session_ready_for_audio,
             pre_session_audio_queue,
             pre_session_audio_dropped,
@@ -449,6 +453,7 @@ fn run_omni_worker(
         sent_audio_since_commit = pump_state.sent_audio_since_commit;
         audio_samples_since_commit = pump_state.audio_samples_since_commit;
         manual_turn_started_at = pump_state.manual_turn_started_at;
+        manual_turn_started_during_playback = pump_state.manual_turn_started_during_playback;
         session_ready_for_audio = pump_state.session_ready_for_audio;
         pre_session_audio_queue = pump_state.pre_session_audio_queue;
         pre_session_audio_dropped = pump_state.pre_session_audio_dropped;
@@ -479,6 +484,7 @@ fn run_omni_worker(
                     &mut audio_samples_since_commit,
                     &mut last_commit_time,
                     &mut manual_turn_started_at,
+                    &mut manual_turn_started_during_playback,
                     &mut current_cue_id,
                     &mut pending_source_text,
                     &mut pending_translated_text,
@@ -508,11 +514,13 @@ fn run_omni_worker(
             OmniCommitState {
                 last_commit_time,
                 manual_turn_started_at,
+                manual_turn_started_during_playback,
                 sent_audio_since_commit,
                 audio_samples_since_commit,
                 manual_response_pending,
                 manual_response_item_id,
                 manual_turn_timed_out: false,
+                committed_source_started_during_playback: None,
             },
             &app,
             &mut socket,
@@ -523,10 +531,30 @@ fn run_omni_worker(
         );
         last_commit_time = commit_state.last_commit_time;
         manual_turn_started_at = commit_state.manual_turn_started_at;
+        manual_turn_started_during_playback = commit_state.manual_turn_started_during_playback;
         sent_audio_since_commit = commit_state.sent_audio_since_commit;
         audio_samples_since_commit = commit_state.audio_samples_since_commit;
         manual_response_pending = commit_state.manual_response_pending;
         manual_response_item_id = commit_state.manual_response_item_id;
+        if let Some(started_during_playback) =
+            commit_state.committed_source_started_during_playback
+        {
+            let source_started_ms = elapsed_ms_since(&session_started_at);
+            event_diagnostics.begin_manual_source_segment(
+                source_started_ms,
+                started_during_playback,
+            );
+            let _ = diag_log(
+                &app,
+                "omni",
+                "debug",
+                format!(
+                    "event=manual_source_segment action=begin sourceStartedDuringPlayback={started_during_playback} sourceContinuityId={} sourceContinuityActive={}",
+                    event_diagnostics.source_continuity_id,
+                    event_diagnostics.source_continuity_active,
+                ),
+            );
+        }
         if commit_state.manual_turn_timed_out {
             // A timed-out turn never issued response.create; buffered output
             // and, in native-reuse/audio-only modes, `current_cue_id` may still
@@ -711,6 +739,7 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
     audio_samples_since_commit: &mut u64,
     last_commit_time: &mut SystemTime,
     manual_turn_started_at: &mut Option<SystemTime>,
+    manual_turn_started_during_playback: &mut Option<bool>,
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     pending_translated_text: &mut String,
@@ -739,6 +768,7 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
         audio_samples_since_commit,
         last_commit_time,
         manual_turn_started_at,
+        manual_turn_started_during_playback,
         current_cue_id,
         pending_source_text,
         pending_translated_text,
@@ -764,6 +794,7 @@ pub(super) fn reset_session_state_after_reconnect(
     audio_samples_since_commit: &mut u64,
     last_commit_time: &mut SystemTime,
     manual_turn_started_at: &mut Option<SystemTime>,
+    manual_turn_started_during_playback: &mut Option<bool>,
     current_cue_id: &mut Option<String>,
     pending_source_text: &mut String,
     pending_translated_text: &mut String,
@@ -782,6 +813,7 @@ pub(super) fn reset_session_state_after_reconnect(
     *audio_samples_since_commit = 0;
     *last_commit_time = SystemTime::now();
     *manual_turn_started_at = None;
+    *manual_turn_started_during_playback = None;
     if let Some(cue_id) = current_cue_id.as_deref() {
         store.discard_uncommitted_subtitle_cue(cue_id);
     }
@@ -839,6 +871,7 @@ mod reconnect_reset_tests {
         let mut audio_samples_since_commit = 32_000_u64;
         let mut last_commit_time = SystemTime::now();
         let mut manual_turn_started_at = Some(SystemTime::now());
+        let mut manual_turn_started_during_playback = Some(true);
         let mut current_cue_id = Some("cue-old".to_string());
         let mut pending_source_text = "half a sentence".to_string();
         let mut pending_translated_text = "半句译文".to_string();
@@ -859,6 +892,7 @@ mod reconnect_reset_tests {
             &mut audio_samples_since_commit,
             &mut last_commit_time,
             &mut manual_turn_started_at,
+            &mut manual_turn_started_during_playback,
             &mut current_cue_id,
             &mut pending_source_text,
             &mut pending_translated_text,
@@ -881,6 +915,7 @@ mod reconnect_reset_tests {
         assert!(!sent_audio_since_commit);
         assert_eq!(audio_samples_since_commit, 0);
         assert!(manual_turn_started_at.is_none());
+        assert!(manual_turn_started_during_playback.is_none());
         assert!(current_cue_id.is_none());
         assert!(pending_audio_buffer.is_empty());
         assert_eq!(pending_audio_delta_count, 0);

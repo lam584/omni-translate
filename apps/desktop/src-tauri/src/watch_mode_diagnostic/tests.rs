@@ -6,7 +6,8 @@ use uuid::Uuid;
 
 use super::config::{configure_watch_mode, configure_watch_realtime_provider};
 use super::{
-    build_debug_ipc_ping_response, should_run_idle_overlay_prewarm,
+    bounded_autostart_capture_duration_ms, build_debug_ipc_ping_response,
+    should_run_idle_overlay_prewarm,
     wait_for_frontend_ipc_ready, write_report_atomic,
 };
 use crate::audio::state::AudioStateStore;
@@ -30,9 +31,17 @@ fn diagnostic_route_is_the_only_overlay_creator_during_autostart() {
 }
 
 #[test]
-fn speech_model_diagnostic_uses_native_translation_without_secondary_text_model() {
+fn diagnostic_capture_duration_keeps_full_benchmark_time_and_a_hard_bound() {
+    assert_eq!(bounded_autostart_capture_duration_ms(500), 1_000);
+    assert_eq!(bounded_autostart_capture_duration_ms(180_000), 180_000);
+    assert_eq!(bounded_autostart_capture_duration_ms(600_000), 300_000);
+}
+
+#[test]
+fn echo_cancel_speech_model_diagnostic_replays_native_audio_on_default_output() {
     let mut config = json!({
         "devices": {
+            "outputDeviceId": "stale-device-id",
             "subtitleTranslationMode": "secondary",
             "subtitleTranslationModelId": "stale-text-model",
             "inboundSecondaryAudioModelId": "stale-audio-model"
@@ -62,15 +71,41 @@ fn speech_model_diagnostic_uses_native_translation_without_secondary_text_model(
         "template-dashscope-realtime::qwen3.5-omni-plus-realtime"
     );
     assert_eq!(config["speech"]["translationAudioSource"], "omni-native");
+    assert_eq!(config["devices"]["outputDeviceId"], "default");
+    assert_eq!(config["devices"]["outputSpeechEnabled"], true);
+    assert_eq!(config["speech"]["localPlaybackEnabled"], true);
+    assert_eq!(
+        config["devices"]["inboundRoute"]["mixControl"]["translatedAudioEnabled"],
+        true
+    );
+    assert_eq!(
+        config["devices"]["inboundRoute"]["mixControl"]["keepOriginalAudio"],
+        true
+    );
+}
+
+#[test]
+fn virtual_driver_speech_model_diagnostic_stays_subtitle_only() {
+    let mut config = json!({});
+
+    configure_watch_mode(
+        &mut config,
+        "",
+        50,
+        "template-dashscope-realtime::qwen3.5-omni-plus-realtime",
+        "native",
+        "",
+        "",
+        "omni-native",
+        "virtual-driver",
+    );
+
+    assert_eq!(config["devices"]["outputDeviceId"], "default");
     assert_eq!(config["devices"]["outputSpeechEnabled"], false);
     assert_eq!(config["speech"]["localPlaybackEnabled"], false);
     assert_eq!(
         config["devices"]["inboundRoute"]["mixControl"]["translatedAudioEnabled"],
         false
-    );
-    assert_eq!(
-        config["devices"]["inboundRoute"]["mixControl"]["keepOriginalAudio"],
-        true
     );
 }
 

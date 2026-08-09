@@ -63,7 +63,15 @@ impl<'a> SpeechPlaybackEngine<'a> {
             None,
         );
         let speaker_frames = if output_route.play_to_speaker {
-            let echo_reference = i16_to_f32(&mix.speaker_samples);
+            // `play_to_speaker` applies this same volume in the rodio sink.
+            // The AEC reference must describe the waveform that reaches the
+            // endpoint, not the pre-volume mix; otherwise the adaptive gain
+            // has to absorb a route-level mismatch on every block.
+            let speaker_volume = self.config.speaker_output_level.min(100) as f32 / 100.0;
+            let echo_reference = i16_to_f32(&mix.speaker_samples)
+                .into_iter()
+                .map(|sample| sample * speaker_volume)
+                .collect::<Vec<_>>();
             let frames = play_to_speaker(
                 &mix.speaker_samples,
                 mix.sample_rate_hz,

@@ -164,21 +164,26 @@ pub(super) fn configure_watch_mode(
     translation_audio_source: &str,
     feedback_loop_prevention: &str,
 ) {
-    // The Watch report measures the subtitle path. During native speech-model
-    // diagnostics, replaying the model's translated audio into the same
-    // loopback endpoint creates a second artificial input turn and corrupts
-    // both content and latency evidence. Keep normal secondary-route playback
-    // available for its dedicated tests, but make speech-model-only report
-    // captures subtitle-only and feedback-free.
-    let translated_playback_enabled = subtitle_translation_mode == "secondary";
+    // Native Watch diagnostics remain subtitle-only when virtual-driver
+    // isolation is selected. The echo-cancel variant is intentionally
+    // different: it must replay native translated audio so the physical
+    // loopback capture has a real AEC reference to cancel.
+    let translated_playback_enabled = subtitle_translation_mode == "secondary"
+        || feedback_loop_prevention == "echo-cancel";
+    // A diagnostic launch with no explicit physical endpoint must not inherit
+    // a stale persisted device id (for example, a removed virtual endpoint).
+    // `default` is understood by both direct playback and WASAPI capture.
+    let output_device_id = if output_device_id.trim().is_empty() {
+        "default"
+    } else {
+        output_device_id
+    };
     set_json_pointer_string(config, &["devices", "routeMode"], "watch".to_string());
-    if !output_device_id.is_empty() {
-        set_json_pointer_string(
-            config,
-            &["devices", "outputDeviceId"],
-            output_device_id.to_string(),
-        );
-    }
+    set_json_pointer_string(
+        config,
+        &["devices", "outputDeviceId"],
+        output_device_id.to_string(),
+    );
     set_json_pointer_number(config, &["devices", "outputLevel"], output_level);
     set_json_pointer_string(
         config,

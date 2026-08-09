@@ -321,11 +321,21 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
     expect(config.devices.inboundSecondaryAudioModelId).toBe('template-dashscope-realtime::qwen3.5-omni-flash-realtime');
   });
 
-  it('applies the echo-cancel feedback variant only for an explicit env opt-in', () => {
+  it('uses native translated playback for the echo-cancel feedback variant', () => {
     const echoCancel = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
       VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION: 'echo-cancel',
+      VITE_OMNI_WATCH_MODE_MODEL_ID: 'qwen-audio-3.0-realtime-plus',
+      // This mimics a stale renderer environment from a secondary run. Echo
+      // cancel must override it so the played PCM becomes the AEC reference.
+      VITE_OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE: 'subtitle-tts',
     });
     expect(echoCancel.devices.feedbackLoopPrevention).toBe('echo-cancel');
+    expect(echoCancel.devices.subtitleTranslationMode).toBe('native');
+    expect(echoCancel.devices.subtitleTranslationModelId).toBe('');
+    expect(echoCancel.devices.inboundSecondaryAudioModelId).toBe('');
+    expect(echoCancel.devices.textToSpeechModelId).toBe('qwen-audio-3.0-realtime-plus');
+    expect(echoCancel.speech.textToSpeechModelId).toBe('qwen-audio-3.0-realtime-plus');
+    expect(echoCancel.speech.translationAudioSource).toBe('omni-native');
 
     const invalidValue = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
       VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION: 'none',

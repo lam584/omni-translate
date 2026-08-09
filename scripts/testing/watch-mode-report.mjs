@@ -45,6 +45,12 @@ const DEFAULT_SUSPECT_FILES = {
     'apps/desktop/src-tauri/src/audio/speech.rs',
     'apps/desktop/src-tauri/src/audio/subtitle_translate.rs',
   ],
+  aec: [
+    'apps/desktop/src-tauri/src/audio/echo_cancel.rs',
+    'apps/desktop/src-tauri/src/audio/engine/workers.rs',
+    'apps/desktop/src-tauri/src/audio/omni/protocol.rs',
+    'apps/desktop/src-tauri/src/audio/speech/output.rs',
+  ],
   app: [
     'scripts/testing/run-watch-mode-live.ps1',
     'apps/desktop/src-tauri/src/audio/events.rs',
@@ -211,7 +217,7 @@ function summarizeStepDetails(step) {
 
 function parseKeyValueLine(line) {
   const output = {};
-  for (const match of line.matchAll(/([A-Za-z][A-Za-z0-9]*)=("[^"]*"|[^ ]+)/g)) {
+  for (const match of line.matchAll(/([A-Za-z][A-Za-z0-9_]*)=("[^"]*"|[^ ]+)/g)) {
     output[match[1]] = match[2].replace(/^"|"$/g, '');
   }
   return output;
@@ -287,6 +293,9 @@ export function parseAppLog(text) {
     omniVadLines: tailLines(nonMarkerText, /speech_started|transcription\.delta|conversation\.item\.input_audio_transcription|response\.audio\.delta/i, 30),
     omniSessionConfigLines: tailLines(nonMarkerText, /watch_mode\.omni_session_config/i, 20),
     omniSessionReadyLines: matchingLines(nonMarkerText, /watch_mode\.omni_session_ready/i),
+    nativePlaybackRequestLines: matchingLines(nonMarkerText, /\[AUDIO\] playback request received:/i),
+    nativeSpeakerPlaybackCompletedLines: matchingLines(nonMarkerText, /\[AUDIO\] speaker playback completed:/i),
+    echoCancelSummaryLines: matchingLines(nonMarkerText, /event=echo_cancel_summary/i),
     omniResponseDoneContextLines: tailLines(nonMarkerText, /\[EVENT_CONTEXT\]\s+response\.done/i, 40),
     omniResponseDoneLines: matchingLines(nonMarkerText, /response\.done/i),
     omniAsrCompletedLines: matchingLines(nonMarkerText, /conversation\.item\.input_audio_transcription\.completed|transcription\.completed/i),
@@ -328,6 +337,7 @@ function parseOmniRealtimeDiagnostics(appLog) {
 
   return {
     realtimeAudioMode: config.realtimeAudioMode ?? null,
+    outputMode: config.outputMode ?? null,
     inputAudioFormat: config.inputAudioFormat ?? null,
     isLivetranslate: config.isLivetranslate === 'true' ? true : config.isLivetranslate === 'false' ? false : null,
     subtitleTranslateActive: stActive,
@@ -339,6 +349,53 @@ function parseOmniRealtimeDiagnostics(appLog) {
     duplicateResponseDoneCount: Math.max(0, (responseDoneCountFromContext ?? appLog.omniResponseDoneLines.length) - 1),
     responseDoneBeforeAsrFinal,
     latestContextLine: appLog.omniResponseDoneContextLines.at(-1) ?? null,
+  };
+}
+
+function parseAecDiagnostics(appLog) {
+  const config = parseKeyValueLine(appLog.omniSessionConfigLines.at(-1) ?? '');
+  const speakerPlayback = appLog.nativeSpeakerPlaybackCompletedLines.map(parseKeyValueLine);
+  const echoSummaries = appLog.echoCancelSummaryLines
+    .map(parseKeyValueLine)
+    .filter((summary) => Object.keys(summary).length > 0);
+  const maxMetric = (key, fallback = 0) => echoSummaries.reduce(
+    (maximum, summary) => Math.max(maximum, asNumber(summary[key], fallback)),
+    fallback,
+  );
+  const playbackFrames = speakerPlayback.reduce(
+    (total, playback) => total + asNumber(playback.frames, 0),
+    0,
+  );
+  const playbackSeconds = speakerPlayback.reduce((total, playback) => {
+    const sampleRateHz = asNumber(playback.sample_rate_hz, 0);
+    return total + (sampleRateHz > 0 ? asNumber(playback.frames, 0) / sampleRateHz : 0);
+  }, 0);
+  const maxAecSuppressedChunks = echoSummaries.reduce(
+    (maximum, summary) => Math.max(
+      maximum,
+      asNumber(summary.aecSuppressedChunks ?? summary.asrSuppressedChunks, 0),
+    ),
+    0,
+  );
+
+  return {
+    outputMode: config.outputMode ?? null,
+    playbackRequestCount: appLog.nativePlaybackRequestLines.length,
+    speakerPlaybackCompletedCount: speakerPlayback.length,
+    speakerPlaybackFrames: playbackFrames,
+    speakerPlaybackSeconds: Number(playbackSeconds.toFixed(3)),
+    aecSummaryCount: echoSummaries.length,
+    nonEmptyReferenceSummaryCount: echoSummaries.filter(
+      (summary) => asNumber(summary.refBufferDepthSamples, 0) > 0 && summary.refBufferEmpty !== 'true',
+    ).length,
+    maxReferenceBufferDepthSamples: maxMetric('refBufferDepthSamples'),
+    maxAlignedChunks: maxMetric('alignedChunks'),
+    maxAlignmentRatePct: maxMetric('alignmentRatePct'),
+    maxCorrelation: maxMetric('maxCorrelation'),
+    maxAecSuppressedChunks,
+    maxIntervalAecSuppressedChunks: maxMetric('intervalAecSuppressedChunks'),
+    maxPureEchoRemovedDb: maxMetric('avgPureEchoRemovedDb'),
+    summaryLines: appLog.echoCancelSummaryLines.slice(-12),
   };
 }
 
@@ -531,6 +588,14 @@ export function watchSessionReportFailure(report, { required = true } = {}) {
   if (report.status !== 'completed') {
     return `watch session report is not completed; status=${report.status ?? 'unknown'}`;
   }
+  const sessionIssue = (Array.isArray(report.issues) ? report.issues : []).find((issue) => {
+    const code = String(issue?.code ?? 'unknown');
+    const severity = String(issue?.severity ?? '').toLowerCase();
+    return code === 'speaker-playback-failed' || severity === 'error';
+  });
+  if (sessionIssue) {
+    return `watch session report contains a session-level error; category=${sessionIssue.category ?? '-'} code=${sessionIssue.code ?? '-'} severity=${sessionIssue.severity ?? '-'}`;
+  }
   const cues = Array.isArray(report.cues) ? report.cues : [];
   const completeCues = cues.filter((cue) => (
     cue.comparisonStatus !== 'superseded'
@@ -549,16 +614,21 @@ export function watchSessionReportFailure(report, { required = true } = {}) {
   }
   const invalidCue = cues.find((cue) => {
     const issues = Array.isArray(cue.issues) ? cue.issues : [];
+    const blockingIssues = issues.filter((issue) => !(
+      issue?.category === 'data'
+      && issue?.code === 'cue-events-truncated'
+      && String(issue?.severity ?? '').toLowerCase() === 'warning'
+    ));
     const interruptedSourceTail = cue.comparisonStatus === 'not-published'
-      && issues.length > 0
-      && issues.every((issue) => (
+      && blockingIssues.length > 0
+      && blockingIssues.every((issue) => (
         issue?.category === 'session'
         && issue?.code === 'session-ended-before-model-output'
         && issue?.severity === 'warning'
       ));
     if (interruptedSourceTail) return false;
     return ['different', 'not-published', 'not-rendered', 'model-error'].includes(cue.comparisonStatus)
-      || issues.length > 0;
+      || blockingIssues.length > 0;
   });
   if (invalidCue) {
     const issueCodes = (invalidCue.issues ?? []).map((issue) => issue.code).join(',') || '-';
@@ -1039,6 +1109,7 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
       ], 12),
       appReadiness: uniqueTail(matchingLines(input.appLogText ?? '', /readiness|session\.(?:created|updated)|ws\.recv\.session|watch_mode\.omni_session_ready|diagnostic_autostart_(?:ipc_ready|infrastructure_failed)/i), 12),
       realtimeSession: parseOmniRealtimeDiagnostics(appLog),
+      aec: layers.aec?.data ?? null,
       bridgeErrors: echoCancelVariant ? [] : uniqueTail(bridgeLog.errorLines, 12),
       bridgeSourceSummary: echoCancelVariant ? [] : uniqueTail(bridgeLog.sourceSummaryLines, 5),
       bridgeWatchdog: echoCancelVariant ? [] : uniqueTail(bridgeLog.watchdogLines, 5),
@@ -1059,6 +1130,28 @@ function speechSegmentationLayerFailed(segmentation, translationRoute) {
   }
   if (asNumber(segmentation.maxTranslatedChars) > 160) {
     return `secondary translated segment is too long: ${segmentation.maxTranslatedChars} chars`;
+  }
+  return null;
+}
+
+function aecLayerFailed(aec) {
+  if (aec.outputMode !== 'text-and-audio') {
+    return `echo-cancel requires native text-and-audio output; outputMode=${aec.outputMode ?? 'missing'}`;
+  }
+  if (aec.speakerPlaybackCompletedCount <= 0 || aec.speakerPlaybackFrames <= 0) {
+    return 'echo-cancel did not complete native speaker playback';
+  }
+  if (aec.maxReferenceBufferDepthSamples <= 0 || aec.nonEmptyReferenceSummaryCount <= 0) {
+    return 'echo-cancel speaker playback did not populate the AEC reference buffer';
+  }
+  if (aec.maxAlignedChunks <= 0) {
+    return 'echo-cancel did not observe an AEC alignment while native playback was active';
+  }
+  if (aec.maxAecSuppressedChunks <= 0 || aec.maxIntervalAecSuppressedChunks <= 0) {
+    return 'echo-cancel did not suppress any pure-echo capture chunk';
+  }
+  if (aec.maxPureEchoRemovedDb < 10) {
+    return `echo-cancel pure-echo attenuation is below the 10 dB initial target; observed=${aec.maxPureEchoRemovedDb.toFixed(1)} dB`;
   }
   return null;
 }
@@ -1113,6 +1206,7 @@ export function classifyWatchModeRun(input) {
   const translationRoute = inferTranslationRoute(input, appLog);
   const speechSegmentation = input.speechSegmentation ?? parseSpeechSegmentation(appLog);
   const realtimeSession = parseOmniRealtimeDiagnostics(appLog);
+  const aec = parseAecDiagnostics(appLog);
   const strictContent = input.strictContent ?? evaluateStrictContent({
     ...input,
     speechSegmentation,
@@ -1126,6 +1220,7 @@ export function classifyWatchModeRun(input) {
     }),
     physicalOutput: createLayer('physicalOutput', input.physicalOutput),
     physicalOutputContent: createLayer('physicalOutputContent', input.physicalOutputContent),
+    aec: createLayer('aec', aec),
     speechSegmentation: createLayer('speechSegmentation', speechSegmentation),
     strictContent: createLayer('strictContent', strictContent),
     app: createLayer('app', {
@@ -1155,6 +1250,10 @@ export function classifyWatchModeRun(input) {
       layers[layer].reason = 'echo-cancel variant does not require this evidence layer';
       layers[layer].reasons = [];
     }
+  } else {
+    layers.aec.status = 'skipped';
+    layers.aec.reason = 'virtual-driver variant does not exercise acoustic echo cancellation';
+    layers.aec.reasons = [];
   }
 
   const rawRunnerFailureReason = input.failure?.message ?? null;
@@ -1169,6 +1268,7 @@ export function classifyWatchModeRun(input) {
   const providerBeforeAppReason = omniAudibleNoVadReason(appLog);
   const subtitleConfigReason = subtitleTranslateConfigLayerFailed(appLog);
   const secondaryPreconnectReason = secondaryPreconnectLayerFailed(appLog, translationRoute);
+  const aecReason = echoCancelVariant ? aecLayerFailed(aec) : null;
   const watchReportReason = watchSessionReportFailure(input.watchSessionReport, {
     required: (input.mode ?? 'live') === 'live',
   });
@@ -1178,6 +1278,7 @@ export function classifyWatchModeRun(input) {
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
         ['bridge', bridgeLayerFailed(input.bridge, bridgeLog)],
         ['environment', environmentReason],
+        ...(aecReason ? [['aec', aecReason]] : []),
         ['app', environmentReason ? null : runnerFailureReason],
         ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput)],
         ...(subtitleConfigReason ? [['app', subtitleConfigReason]] : []),
@@ -1194,6 +1295,7 @@ export function classifyWatchModeRun(input) {
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
         ['bridge', bridgeLayerFailed(input.bridge, bridgeLog)],
         ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput)],
+        ...(aecReason ? [['aec', aecReason]] : []),
         ...(subtitleConfigReason ? [['app', subtitleConfigReason]] : []),
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
         ...(providerBeforeAppReason ? [['provider', providerReason]] : []),
@@ -1313,6 +1415,10 @@ export function renderMarkdownReport(report) {
   for (const line of report.diagnostics?.evidence?.appReadiness ?? []) lines.push(`- readiness: ${line}`);
   for (const line of report.diagnostics?.evidence?.bridgeSourceSummary ?? []) lines.push(`- bridge-source-summary: ${line}`);
   for (const line of report.diagnostics?.evidence?.bridgeWatchdog ?? []) lines.push(`- bridge-watchdog: ${line}`);
+  const aec = report.layers.aec?.data;
+  if (report.layers.aec?.status !== 'skipped' && aec) {
+    lines.push(`- aec: outputMode=${aec.outputMode ?? '-'} speakerPlaybackCompleted=${aec.speakerPlaybackCompletedCount} speakerPlaybackSeconds=${aec.speakerPlaybackSeconds} referenceDepthSamples=${aec.maxReferenceBufferDepthSamples} alignedChunks=${aec.maxAlignedChunks} aecSuppressedChunks=${aec.maxAecSuppressedChunks} pureEchoRemovedDb=${aec.maxPureEchoRemovedDb}`);
+  }
   if (report.layers.physicalOutput?.status !== 'skipped' && report.diagnostics?.evidence?.physicalOutput) {
     lines.push(`- physical-output: ${JSON.stringify(report.diagnostics.evidence.physicalOutput)}`);
   }

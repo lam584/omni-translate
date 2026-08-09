@@ -1,5 +1,14 @@
 use super::*;
 
+const WATCH_REPORT_SOURCE_FIXTURE: [&str; 6] = [
+    "Del live in your prayer. ",
+    "A 500",
+    "Cars that can take you anywhere. ",
+    "And so-",
+    "I get to show you guys the most. ",
+    "Inter technology. ",
+];
+
     #[test]
     fn computes_three_stage_metrics_and_content_status() {
         let store = WatchSessionReportStore::new();
@@ -308,6 +317,80 @@ use super::*;
                 && !event.accepted
                 && event.detail.as_deref() == Some("reason=recent-output-echo")
         }));
+    }
+
+    #[test]
+    fn report_fixture_source_texts_keep_model_and_publish_stages() {
+        let store = WatchSessionReportStore::new();
+        let session_id = store.begin_or_reuse("test", "qwen-audio-3.0-realtime-plus");
+        let started = {
+            let guard = store.inner.lock().expect("report");
+            guard.as_ref().expect("session").started_unix_ms
+        };
+
+        for (index, source) in WATCH_REPORT_SOURCE_FIXTURE.iter().enumerate() {
+            let cue_id = format!("report-fixture-cue-{index}");
+            let translated = format!("translated fixture {index}");
+            store.record_source(&cue_id, "inbound", source, true);
+            store.record_model_final(
+                &cue_id,
+                "inbound",
+                "native-realtime",
+                &translated,
+                true,
+                None,
+                None,
+            );
+            store.record_publish(
+                &cue_id,
+                "inbound",
+                source,
+                &translated,
+                &[],
+                true,
+            );
+            let mut rendered = receipt(
+                &session_id,
+                &cue_id,
+                started.saturating_add(index as u64 + 1),
+            );
+            rendered.source_text = (*source).to_string();
+            rendered.translated_text = translated;
+            store.record_overlay_receipt(rendered);
+        }
+        store.complete();
+
+        let report = store.snapshot().expect("report");
+        assert_eq!(report.summary.cue_count, WATCH_REPORT_SOURCE_FIXTURE.len());
+        assert_eq!(
+            report.summary.complete_cue_count,
+            WATCH_REPORT_SOURCE_FIXTURE.len()
+        );
+        assert_eq!(
+            report.summary.visible_render_cue_count,
+            WATCH_REPORT_SOURCE_FIXTURE.len()
+        );
+        assert_eq!(report.dropped_cue_count, 0);
+        assert_eq!(report.dropped_event_count, 0);
+
+        for source in WATCH_REPORT_SOURCE_FIXTURE {
+            let cue = report
+                .cues
+                .iter()
+                .find(|cue| cue.source_text == source)
+                .expect("report fixture cue");
+            assert!(!cue.events.iter().any(|event| {
+                event.stage == "source" && event.kind == "echo-suppressed"
+            }));
+            assert!(cue
+                .events
+                .iter()
+                .any(|event| event.stage == "model" && event.accepted));
+            assert!(cue
+                .events
+                .iter()
+                .any(|event| event.stage == "publish" && event.accepted));
+        }
     }
 
     #[test]

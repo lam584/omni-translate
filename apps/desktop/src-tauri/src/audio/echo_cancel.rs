@@ -26,7 +26,7 @@ const ECHO_TAIL_LAG_STEP_MS: usize = 1;
 /// WASAPI render startup and loopback delivery latency varies by endpoint and
 /// can change when a Bluetooth/USB device wakes up. Search a bounded window
 /// instead of assuming every device matches the nominal 100 ms route delay.
-const ADAPTIVE_DELAY_MAX_MS: usize = 300;
+const ADAPTIVE_DELAY_MAX_MS: usize = 1_000;
 const ADAPTIVE_DELAY_COARSE_STEP_MS: usize = 5;
 const ADAPTIVE_DELAY_FINE_RADIUS_MS: usize = 6;
 const ADAPTIVE_DELAY_FINE_STEP_MS: usize = 1;
@@ -42,6 +42,38 @@ const MIN_ECHO_ALIGNMENT_CORRELATION: f32 = 0.2;
 /// acoustic path gain.
 const PLAYBACK_GATE_GAIN: f32 = 0.1;
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct EchoCancellationMetrics {
+    pub(crate) alignment_found: bool,
+    pub(crate) correlation: f32,
+    pub(crate) delay_samples: usize,
+    pub(crate) reference_rms: f32,
+    pub(crate) captured_rms: f32,
+    pub(crate) residual_rms: f32,
+    pub(crate) echo_path_gain: f32,
+    pub(crate) tail_correlation: f32,
+}
+
+/// Returns a conservative *diagnostic* indication that the captured block
+/// still contains rendered speaker audio. This is intentionally weaker than
+/// `suppress_asr`: user speech may overlap translated playback, so it is used
+/// only by the late manual-response echo gate, never to drop capture audio.
+pub(crate) fn has_acoustic_echo_evidence(metrics: EchoCancellationMetrics) -> bool {
+    const GATE_MIN_CORRELATION: f32 = 0.35;
+    const GATE_MIN_CAPTURE_SHARE: f32 = 0.15;
+
+    if !metrics.alignment_found
+        || metrics.reference_rms <= REFERENCE_ACTIVE_RMS
+        || metrics.captured_rms <= f32::EPSILON
+        || metrics.correlation < GATE_MIN_CORRELATION
+    {
+        return false;
+    }
+
+    let estimated_echo_rms = metrics.reference_rms * metrics.echo_path_gain;
+    estimated_echo_rms >= metrics.captured_rms * GATE_MIN_CAPTURE_SHARE
+}
+
 pub(crate) struct EchoCancellationResult {
     pub(crate) samples: Vec<f32>,
     /// True when the aligned playback reference is active and the captured
@@ -50,6 +82,7 @@ pub(crate) struct EchoCancellationResult {
     /// silence tail, so merely reducing the samples would still feed the
     /// translated speaker output back to the model.
     pub(crate) suppress_asr: bool,
+    pub(crate) metrics: EchoCancellationMetrics,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -171,6 +204,7 @@ impl EchoReferenceBuffer {
             return EchoCancellationResult {
                 samples: captured.to_vec(),
                 suppress_asr: false,
+                metrics: EchoCancellationMetrics::default(),
             };
         }
 
@@ -183,13 +217,14 @@ impl EchoReferenceBuffer {
             return EchoCancellationResult {
                 samples: captured.to_vec(),
                 suppress_asr: false,
+                metrics: EchoCancellationMetrics::default(),
             };
         };
         let block_start = alignment.block_start as i64;
 
-        let mut reference_energy = 0.0_f32;
-        let mut captured_energy = 0.0_f32;
-        let mut cross_energy = 0.0_f32;
+        let mut reference_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
+        let mut captured_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
+        let mut cross_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
         let reference: Vec<f32> = captured
             .iter()
             .enumerate()
@@ -200,9 +235,10 @@ impl EchoReferenceBuffer {
                 } else {
                     0.0
                 };
-                reference_energy += reference * reference;
-                captured_energy += sample * sample;
-                cross_energy += sample * reference;
+                let channel = index % TARGET_CHANNEL_COUNT;
+                reference_energy[channel] += reference * reference;
+                captured_energy[channel] += sample * sample;
+                cross_energy[channel] += sample * reference;
                 reference
             })
             .collect();
@@ -211,18 +247,23 @@ impl EchoReferenceBuffer {
         // than subtracting a fixed 0.8. In system-loopback Watch mode the
         // captured stream is `video + our translated playback`; least-squares
         // projection removes the latter while retaining the unrelated video.
-        let echo_path_gain = if reference_energy > f32::EPSILON
-            && alignment.correlation >= MIN_ECHO_ALIGNMENT_CORRELATION
-        {
-            (cross_energy / reference_energy).clamp(0.0, MAX_ECHO_PATH_GAIN)
-        } else {
-            0.0
-        };
+        let mut echo_path_gains = [0.0_f32; TARGET_CHANNEL_COUNT];
+        if alignment.correlation >= MIN_ECHO_ALIGNMENT_CORRELATION {
+            for channel in 0..TARGET_CHANNEL_COUNT {
+                if reference_energy[channel] > f32::EPSILON {
+                    echo_path_gains[channel] =
+                        (cross_energy[channel] / reference_energy[channel])
+                            .clamp(0.0, MAX_ECHO_PATH_GAIN);
+                }
+            }
+        }
         let mut cleaned: Vec<f32> = captured
             .iter()
             .zip(reference.iter())
-            .map(|(sample, reference)| {
-                (sample - reference * echo_path_gain).clamp(-1.0, 1.0)
+            .enumerate()
+            .map(|(index, (sample, reference))| {
+                let channel = index % TARGET_CHANNEL_COUNT;
+                (sample - reference * echo_path_gains[channel]).clamp(-1.0, 1.0)
             })
             .collect();
 
@@ -231,17 +272,16 @@ impl EchoReferenceBuffer {
         // block only when it is strongly correlated with our render reference
         // AND adaptive subtraction leaves an inaudible residual.
         let block_len = captured.len() as f32;
-        let reference_rms = (reference_energy / block_len).sqrt();
-        let captured_rms = (captured_energy / block_len).sqrt();
+        let reference_energy_total = reference_energy.iter().sum::<f32>();
+        let captured_energy_total = captured_energy.iter().sum::<f32>();
+        let echo_path_gain = echo_path_gains.iter().sum::<f32>()
+            / TARGET_CHANNEL_COUNT as f32;
+        let reference_rms = (reference_energy_total / block_len).sqrt();
+        let captured_rms = (captured_energy_total / block_len).sqrt();
         let residual_rms = (cleaned.iter().map(|sample| sample * sample).sum::<f32>()
             / block_len)
             .sqrt();
-        let correlation_denominator = (reference_energy * captured_energy).sqrt();
-        let correlation = if correlation_denominator > f32::EPSILON {
-            (cross_energy.abs() / correlation_denominator).clamp(0.0, 1.0)
-        } else {
-            0.0
-        };
+        let correlation = alignment.correlation;
         let residual_energy = residual_rms * residual_rms * block_len;
         let mut max_tail_correlation = 0.0_f32;
         if residual_energy > f32::EPSILON {
@@ -287,6 +327,16 @@ impl EchoReferenceBuffer {
         EchoCancellationResult {
             samples: cleaned,
             suppress_asr,
+            metrics: EchoCancellationMetrics {
+                alignment_found: true,
+                correlation,
+                delay_samples: alignment.delay_samples,
+                reference_rms,
+                captured_rms,
+                residual_rms,
+                echo_path_gain,
+                tail_correlation: max_tail_correlation,
+            },
         }
     }
 
@@ -350,31 +400,45 @@ impl EchoReferenceBuffer {
             return;
         }
 
-        let stride = TARGET_CHANNEL_COUNT * ALIGNMENT_SCORE_FRAME_STRIDE;
-        let mut reference_energy = 0.0_f32;
-        let mut captured_energy = 0.0_f32;
-        let mut cross_energy = 0.0_f32;
+        let mut reference_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
+        let mut captured_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
+        let mut cross_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
         let mut sample_count = 0usize;
-        for index in (0..captured.len()).step_by(stride) {
-            let reference = self.buffer[block_start + index];
-            let sample = captured[index];
-            reference_energy += reference * reference;
-            captured_energy += sample * sample;
-            cross_energy += sample * reference;
+        for frame in (0..captured.len() / TARGET_CHANNEL_COUNT)
+            .step_by(ALIGNMENT_SCORE_FRAME_STRIDE)
+        {
+            let base = frame * TARGET_CHANNEL_COUNT;
+            for channel in 0..TARGET_CHANNEL_COUNT {
+                let index = base + channel;
+                let reference = self.buffer[block_start + index];
+                let sample = captured[index];
+                reference_energy[channel] += reference * reference;
+                captured_energy[channel] += sample * sample;
+                cross_energy[channel] += sample * reference;
+            }
             sample_count += 1;
         }
-        if sample_count == 0 || captured_energy <= f32::EPSILON {
+        if sample_count == 0 || captured_energy.iter().all(|energy| *energy <= f32::EPSILON) {
             return;
         }
-        let reference_rms = (reference_energy / sample_count as f32).sqrt();
-        if reference_rms <= REFERENCE_ACTIVE_RMS {
+        if reference_energy
+            .iter()
+            .all(|energy| (*energy / sample_count as f32).sqrt() <= REFERENCE_ACTIVE_RMS)
+        {
             return;
         }
-        let denominator = (reference_energy * captured_energy).sqrt();
-        if denominator <= f32::EPSILON {
+        let correlation = (0..TARGET_CHANNEL_COUNT)
+            .filter_map(|channel| {
+                let denominator =
+                    (reference_energy[channel] * captured_energy[channel]).sqrt();
+                (denominator > f32::EPSILON).then(|| {
+                    (cross_energy[channel].abs() / denominator).clamp(0.0, 1.0)
+                })
+            })
+            .fold(0.0_f32, f32::max);
+        if correlation <= f32::EPSILON {
             return;
         }
-        let correlation = (cross_energy.abs() / denominator).clamp(0.0, 1.0);
         let candidate = EchoAlignment {
             delay_samples,
             block_start,
@@ -586,6 +650,27 @@ mod tests {
             rms(&captured)
         );
         assert!(cancellation.suppress_asr);
+        assert!(has_acoustic_echo_evidence(cancellation.metrics));
+    }
+
+    #[test]
+    fn weak_alignment_is_not_used_as_late_echo_gate_evidence() {
+        assert!(!has_acoustic_echo_evidence(EchoCancellationMetrics {
+            alignment_found: true,
+            correlation: 0.34,
+            reference_rms: 0.1,
+            captured_rms: 0.02,
+            echo_path_gain: 0.8,
+            ..EchoCancellationMetrics::default()
+        }));
+        assert!(!has_acoustic_echo_evidence(EchoCancellationMetrics {
+            alignment_found: true,
+            correlation: 0.8,
+            reference_rms: 0.1,
+            captured_rms: 0.02,
+            echo_path_gain: 0.01,
+            ..EchoCancellationMetrics::default()
+        }));
     }
 
     #[test]
@@ -593,7 +678,7 @@ mod tests {
         let playback_started = Instant::now();
         let reference = broadband_mono(3 * 48_000, 0.5);
 
-        for actual_delay_ms in [35_usize, 220] {
+        for actual_delay_ms in [35_usize, 220, 650] {
             let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
             buffer.push_samples_at(&reference, 48_000, 1, playback_started);
             let actual_delay_samples =

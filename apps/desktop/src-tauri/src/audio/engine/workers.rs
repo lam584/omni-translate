@@ -2,6 +2,16 @@
 ///
 /// Keeping the channel, route specification and UI handle together prevents
 /// the thread launcher from becoming a second orchestration implementation.
+
+/// Playback state is diagnostic context, not an ASR hard gate. A user may
+/// speak over translated playback; only AEC's pure-echo decision is allowed
+/// to suppress a capture chunk before it reaches ASR.
+fn effective_asr_suppression(aec_suppressed: bool, _playback_active: bool) -> bool {
+    aec_suppressed
+}
+
+use crate::audio::echo_cancel::has_acoustic_echo_evidence;
+
 struct RouteWorker {
     app: AppHandle,
     direction: String,
@@ -145,18 +155,25 @@ fn run_capture_loop(
             let (chunk, suppress_asr) = if spec.echo_cancel_enabled() {
                 let f32_chunk = bytes_to_f32_stereo(&chunk);
                 let cancellation = store.subtract_echo(&f32_chunk, ECHO_CANCEL_DELAY_SAMPLES);
-                // AEC is intentionally adaptive, but a physical speaker can
-                // still produce a low-correlation room/endpoint echo. During
-                // an active translation playback there is no safe reason to
-                // send that render interval to ASR; otherwise it becomes a
-                // new model turn and the model translates its own output.
-                let playback_gate = store.inbound_speaker_playback_active();
-                let suppress_asr = cancellation.suppress_asr || playback_gate;
-                store.record_echo_asr_chunk(suppress_asr);
+                // Playback is sampled for diagnostics only. The AEC result
+                // keeps pure echo out while preserving double-talk during the
+                // same playback interval.
+                let playback_active = store.inbound_speaker_playback_active();
+                let suppress_asr =
+                    effective_asr_suppression(cancellation.suppress_asr, playback_active);
+                store.record_echo_asr_chunk(
+                    cancellation.suppress_asr,
+                    playback_active,
+                    suppress_asr,
+                    playback_active && has_acoustic_echo_evidence(cancellation.metrics),
+                );
                 let cleaned_bytes = f32_stereo_to_bytes(&cancellation.samples);
                 echo_diagnostics.record(
                     calculate_chunk_db(&chunk),
                     calculate_chunk_db(&cleaned_bytes),
+                    cancellation.metrics,
+                    cancellation.suppress_asr,
+                    playback_active,
                     suppress_asr,
                 );
                 echo_diagnostics.maybe_log(&app, store, direction);
@@ -386,6 +403,10 @@ fn run_bridge_source_route_worker(
     }
 }
 
+fn rms_to_db(rms: f32) -> f32 {
+    20.0 * rms.max(1.0e-6).log10()
+}
+
 /// Periodic echo-cancel (AEC) effectiveness probe for one capture session.
 /// Accumulates per-chunk energy before and after `subtract_echo` and reports
 /// interval averages plus the reference-buffer depth through the diagnostics
@@ -395,7 +416,20 @@ struct EchoCancelDiagnostics {
     interval_chunks: u64,
     interval_pre_db_sum: f64,
     interval_post_db_sum: f64,
-    asr_suppressed_chunks: u64,
+    aec_suppressed_chunks: u64,
+    interval_aec_suppressed_chunks: u64,
+    interval_pure_echo_removed_db_sum: f64,
+    playback_active_chunks: u64,
+    effective_suppressed_chunks: u64,
+    aligned_chunks: u64,
+    alignment_correlation_sum: f64,
+    alignment_correlation_max: f32,
+    alignment_delay_ms_sum: f64,
+    reference_db_sum: f64,
+    captured_db_sum: f64,
+    residual_db_sum: f64,
+    echo_path_gain_sum: f64,
+    tail_correlation_sum: f64,
     last_summary_at: Instant,
 }
 
@@ -406,18 +440,60 @@ impl EchoCancelDiagnostics {
             interval_chunks: 0,
             interval_pre_db_sum: 0.0,
             interval_post_db_sum: 0.0,
-            asr_suppressed_chunks: 0,
+            aec_suppressed_chunks: 0,
+            interval_aec_suppressed_chunks: 0,
+            interval_pure_echo_removed_db_sum: 0.0,
+            playback_active_chunks: 0,
+            effective_suppressed_chunks: 0,
+            aligned_chunks: 0,
+            alignment_correlation_sum: 0.0,
+            alignment_correlation_max: 0.0,
+            alignment_delay_ms_sum: 0.0,
+            reference_db_sum: 0.0,
+            captured_db_sum: 0.0,
+            residual_db_sum: 0.0,
+            echo_path_gain_sum: 0.0,
+            tail_correlation_sum: 0.0,
             last_summary_at: Instant::now(),
         }
     }
 
-    fn record(&mut self, pre_db: f32, post_db: f32, suppress_asr: bool) {
+    fn record(
+        &mut self,
+        pre_db: f32,
+        post_db: f32,
+        metrics: crate::audio::echo_cancel::EchoCancellationMetrics,
+        aec_suppressed: bool,
+        playback_active: bool,
+        effective_suppressed: bool,
+    ) {
         self.subtract_count += 1;
         self.interval_chunks += 1;
         self.interval_pre_db_sum += pre_db as f64;
         self.interval_post_db_sum += post_db as f64;
-        if suppress_asr {
-            self.asr_suppressed_chunks += 1;
+        if aec_suppressed {
+            self.aec_suppressed_chunks += 1;
+            self.interval_aec_suppressed_chunks += 1;
+            self.interval_pure_echo_removed_db_sum += (pre_db - post_db) as f64;
+        }
+        if playback_active {
+            self.playback_active_chunks += 1;
+        }
+        if effective_suppressed {
+            self.effective_suppressed_chunks += 1;
+        }
+        if metrics.alignment_found {
+            self.aligned_chunks += 1;
+            self.alignment_correlation_sum += metrics.correlation as f64;
+            self.alignment_correlation_max = self.alignment_correlation_max.max(metrics.correlation);
+            self.alignment_delay_ms_sum += metrics.delay_samples as f64
+                / (48_000.0 * 2.0)
+                * 1_000.0;
+            self.reference_db_sum += rms_to_db(metrics.reference_rms) as f64;
+            self.captured_db_sum += rms_to_db(metrics.captured_rms) as f64;
+            self.residual_db_sum += rms_to_db(metrics.residual_rms) as f64;
+            self.echo_path_gain_sum += metrics.echo_path_gain as f64;
+            self.tail_correlation_sum += metrics.tail_correlation as f64;
         }
     }
 
@@ -429,26 +505,67 @@ impl EchoCancelDiagnostics {
         let chunks = self.interval_chunks.max(1) as f64;
         let avg_pre_db = self.interval_pre_db_sum / chunks;
         let avg_post_db = self.interval_post_db_sum / chunks;
+        let avg_pure_echo_removed_db = if self.interval_aec_suppressed_chunks > 0 {
+            self.interval_pure_echo_removed_db_sum
+                / self.interval_aec_suppressed_chunks as f64
+        } else {
+            0.0
+        };
+        let aligned = self.aligned_chunks.max(1) as f64;
+        let alignment_rate = self.aligned_chunks as f64 / chunks * 100.0;
+        let avg_correlation = self.alignment_correlation_sum / aligned;
+        let avg_delay_ms = self.alignment_delay_ms_sum / aligned;
+        let avg_reference_db = self.reference_db_sum / aligned;
+        let avg_captured_db = self.captured_db_sum / aligned;
+        let avg_residual_db = self.residual_db_sum / aligned;
+        let avg_path_gain = self.echo_path_gain_sum / aligned;
+        let avg_tail_correlation = self.tail_correlation_sum / aligned;
         diag_log_detail(
             app,
             "audio",
             "info",
             "event=echo_cancel_summary",
             format!(
-                "direction={} subtractCount={} asrSuppressedChunks={} refBufferDepthSamples={} refBufferEmpty={} avgPreDb={:.1} avgPostDb={:.1} avgRemovedDb={:.1}",
+                "direction={} subtractCount={} intervalChunks={} alignedChunks={} alignmentRatePct={:.1} aecSuppressedChunks={} intervalAecSuppressedChunks={} avgPureEchoRemovedDb={:.1} playbackActiveChunks={} effectiveSuppressedChunks={} refBufferDepthSamples={} refBufferEmpty={} avgPreDb={:.1} avgPostDb={:.1} avgRemovedDb={:.1} avgReferenceDb={:.1} avgCapturedDb={:.1} avgCorrelation={:.3} maxCorrelation={:.3} avgDelayMs={:.1} avgResidualDb={:.1} avgPathGain={:.3} avgTailCorrelation={:.3}",
                 direction,
                 self.subtract_count,
-                self.asr_suppressed_chunks,
+                self.interval_chunks,
+                self.aligned_chunks,
+                alignment_rate,
+                self.aec_suppressed_chunks,
+                self.interval_aec_suppressed_chunks,
+                avg_pure_echo_removed_db,
+                self.playback_active_chunks,
+                self.effective_suppressed_chunks,
                 reference_depth,
                 reference_empty,
                 avg_pre_db,
                 avg_post_db,
                 avg_pre_db - avg_post_db,
+                avg_reference_db,
+                avg_captured_db,
+                avg_correlation,
+                self.alignment_correlation_max,
+                avg_delay_ms,
+                avg_residual_db,
+                avg_path_gain,
+                avg_tail_correlation,
             ),
         );
         self.interval_chunks = 0;
         self.interval_pre_db_sum = 0.0;
         self.interval_post_db_sum = 0.0;
+        self.interval_aec_suppressed_chunks = 0;
+        self.interval_pure_echo_removed_db_sum = 0.0;
+        self.aligned_chunks = 0;
+        self.alignment_correlation_sum = 0.0;
+        self.alignment_correlation_max = 0.0;
+        self.alignment_delay_ms_sum = 0.0;
+        self.reference_db_sum = 0.0;
+        self.captured_db_sum = 0.0;
+        self.residual_db_sum = 0.0;
+        self.echo_path_gain_sum = 0.0;
+        self.tail_correlation_sum = 0.0;
         self.last_summary_at = Instant::now();
     }
 }
@@ -635,5 +752,51 @@ mod placeholder_cue_tests {
         // Inbound never surfaces placeholders regardless of sender presence.
         assert!(!should_push_placeholder_cue("inbound", false));
         assert!(!should_push_placeholder_cue("inbound", true));
+    }
+}
+
+#[cfg(test)]
+mod echo_suppression_tests {
+    use super::effective_asr_suppression;
+
+    #[test]
+    fn pure_echo_remains_suppressed_during_playback() {
+        assert!(effective_asr_suppression(true, true));
+    }
+
+    #[test]
+    fn double_talk_is_sent_to_asr_during_playback() {
+        assert!(!effective_asr_suppression(false, true));
+    }
+}
+
+#[cfg(test)]
+mod echo_diagnostics_tests {
+    use super::EchoCancelDiagnostics;
+    use crate::audio::echo_cancel::EchoCancellationMetrics;
+
+    fn aligned_metrics() -> EchoCancellationMetrics {
+        EchoCancellationMetrics {
+            alignment_found: true,
+            correlation: 0.9,
+            delay_samples: 9_600,
+            reference_rms: 0.2,
+            captured_rms: 0.1,
+            residual_rms: 0.01,
+            echo_path_gain: 0.5,
+            tail_correlation: 0.4,
+        }
+    }
+
+    #[test]
+    fn tracks_pure_echo_removal_separately_from_all_capture_audio() {
+        let mut diagnostics = EchoCancelDiagnostics::new();
+        diagnostics.record(-20.0, -42.0, aligned_metrics(), true, true, true);
+        diagnostics.record(-30.0, -30.0, aligned_metrics(), false, true, false);
+
+        assert_eq!(diagnostics.aec_suppressed_chunks, 1);
+        assert_eq!(diagnostics.interval_aec_suppressed_chunks, 1);
+        assert!((diagnostics.interval_pure_echo_removed_db_sum - 22.0).abs() < f64::EPSILON);
+        assert_eq!(diagnostics.aligned_chunks, 2);
     }
 }

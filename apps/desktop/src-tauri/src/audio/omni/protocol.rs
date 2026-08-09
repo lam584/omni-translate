@@ -249,8 +249,112 @@ pub(super) struct OmniEventDiagnostics {
     pub(super) first_non_empty_asr_completed_at_ms: Option<u64>,
     pub(super) last_output_done_text: String,
     pub(super) last_output_done_at_ms: Option<u64>,
+    /// Whether the current provider speech segment started while local
+    /// speaker playback was active. `Some(false)` protects continuous source
+    /// speech that began before playback; `Some(true)` is a high-risk overlap
+    /// candidate for the short-CJK echo fallback.
+    pub(super) source_started_during_playback: Option<bool>,
+    /// Whether the current segment belongs to the active source continuity
+    /// chain. This protects a real sentence split by provider VAD while a
+    /// translated segment is already playing.
+    pub(super) source_continuity_active: bool,
+    pub(super) source_continuity_id: u64,
+    /// The previous completed source was rejected as echo. A following VAD
+    /// segment must not inherit continuity from that rejected fragment.
+    pub(super) last_source_gate_was_echo: bool,
+    /// Short-CJK fragments can be corrupted into unrelated characters after
+    /// the first leaked echo. Keep a short-lived chain marker so later
+    /// fragments are still adjudicated against the same playback burst.
+    pub(super) last_echo_gate_suppressed_at_ms: Option<u64>,
+    pub(super) echo_gate_suppression_streak: u32,
     pub(super) first_response_done_at_ms: Option<u64>,
     pub(super) response_done_count: u64,
+}
+
+impl OmniEventDiagnostics {
+    const ECHO_GATE_CHAIN_WINDOW_MS: u64 = 6_000;
+    const SOURCE_CONTINUITY_MAX_GAP_MS: u64 = 1_200;
+
+    pub(super) fn begin_source_segment(
+        &mut self,
+        now_ms: u64,
+        playback_active: bool,
+        playback_recent: bool,
+    ) {
+        self.begin_source_segment_with_context(
+            now_ms,
+            playback_active,
+            !playback_active && !playback_recent,
+        );
+    }
+
+    /// Manual-commit providers do not emit `speech_started`, so use the local
+    /// first-audible capture boundary to establish the same continuity signal.
+    /// A turn that began during the post-playback tail is treated as overlap:
+    /// that is safer than assuming it was uninterrupted source speech.
+    pub(super) fn begin_manual_source_segment(
+        &mut self,
+        now_ms: u64,
+        started_during_playback: bool,
+    ) {
+        self.begin_source_segment_with_context(
+            now_ms,
+            started_during_playback,
+            !started_during_playback,
+        );
+    }
+
+    fn begin_source_segment_with_context(
+        &mut self,
+        now_ms: u64,
+        started_during_playback: bool,
+        starts_outside_playback_context: bool,
+    ) {
+        let continues_previous_source = self
+            .last_asr_completed_at_ms
+            .is_some_and(|completed_at| {
+                now_ms.saturating_sub(completed_at) <= Self::SOURCE_CONTINUITY_MAX_GAP_MS
+            })
+            && !self.last_source_gate_was_echo;
+        if !continues_previous_source {
+            self.source_continuity_id = self.source_continuity_id.saturating_add(1).max(1);
+        }
+        self.source_continuity_active = continues_previous_source
+            || starts_outside_playback_context;
+        self.source_started_during_playback = Some(started_during_playback);
+    }
+
+    pub(super) fn note_source_gate_accepted(&mut self) {
+        self.last_source_gate_was_echo = false;
+    }
+
+    pub(super) fn note_source_gate_suppressed(&mut self) {
+        self.last_source_gate_was_echo = true;
+    }
+
+    pub(super) fn echo_gate_chain_active(&self, now_ms: u64) -> bool {
+        self.echo_gate_suppression_streak > 0
+            && self
+                .last_echo_gate_suppressed_at_ms
+                .is_some_and(|at| now_ms.saturating_sub(at) <= Self::ECHO_GATE_CHAIN_WINDOW_MS)
+    }
+
+    pub(super) fn note_echo_gate_suppressed(&mut self, now_ms: u64) {
+        let within_chain = self
+            .last_echo_gate_suppressed_at_ms
+            .is_some_and(|at| now_ms.saturating_sub(at) <= Self::ECHO_GATE_CHAIN_WINDOW_MS);
+        self.echo_gate_suppression_streak = if within_chain {
+            self.echo_gate_suppression_streak.saturating_add(1)
+        } else {
+            1
+        };
+        self.last_echo_gate_suppressed_at_ms = Some(now_ms);
+    }
+
+    pub(super) fn clear_echo_gate_chain(&mut self) {
+        self.last_echo_gate_suppressed_at_ms = None;
+        self.echo_gate_suppression_streak = 0;
+    }
 }
 
 const MAX_NATIVE_RESPONSE_OWNERS: usize = 32;
@@ -952,6 +1056,8 @@ pub(super) fn reset_manual_turn_input_state(
     *current_cue_id = None;
     event_diagnostics.current_cue_origin = None;
     event_diagnostics.last_asr_delta_item_id = None;
+    event_diagnostics.source_started_during_playback = None;
+    event_diagnostics.source_continuity_active = false;
     *transcription_completed_flag = false;
     *transcription_completed_at = None;
 }
@@ -1131,6 +1237,64 @@ mod manual_turn_state_tests {
         assert!(transcription_completed_at.is_none());
         assert!(event_diagnostics.current_cue_origin.is_none());
         assert!(event_diagnostics.last_asr_delta_item_id.is_none());
+    }
+}
+
+#[cfg(test)]
+mod source_continuity_tests {
+    use super::*;
+
+    #[test]
+    fn keeps_a_recent_accepted_source_chain_across_playback_vad_boundaries() {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        diagnostics.begin_source_segment(1_000, false, false);
+        assert_eq!(diagnostics.source_continuity_id, 1);
+        assert!(diagnostics.source_continuity_active);
+        diagnostics.last_asr_completed_at_ms = Some(1_000);
+        diagnostics.note_source_gate_accepted();
+
+        diagnostics.begin_source_segment(1_800, true, true);
+        assert_eq!(diagnostics.source_continuity_id, 1);
+        assert!(diagnostics.source_continuity_active);
+        assert_eq!(diagnostics.source_started_during_playback, Some(true));
+    }
+
+    #[test]
+    fn rejected_echo_does_not_grant_continuity_to_the_next_playback_fragment() {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        diagnostics.begin_source_segment(1_000, true, true);
+        diagnostics.last_asr_completed_at_ms = Some(1_000);
+        diagnostics.note_source_gate_suppressed();
+
+        diagnostics.begin_source_segment(1_800, true, true);
+        assert_eq!(diagnostics.source_continuity_id, 2);
+        assert!(!diagnostics.source_continuity_active);
+    }
+
+    #[test]
+    fn a_new_source_in_the_playback_tail_is_not_assumed_to_be_continuous() {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        diagnostics.begin_source_segment(1_000, false, true);
+
+        assert!(!diagnostics.source_continuity_active);
+        assert_eq!(diagnostics.source_started_during_playback, Some(false));
+    }
+
+    #[test]
+    fn manual_source_segment_uses_the_local_capture_boundary_for_continuity() {
+        let mut diagnostics = OmniEventDiagnostics::default();
+        diagnostics.begin_manual_source_segment(1_000, false);
+
+        assert_eq!(diagnostics.source_continuity_id, 1);
+        assert!(diagnostics.source_continuity_active);
+        assert_eq!(diagnostics.source_started_during_playback, Some(false));
+
+        let mut overlap = OmniEventDiagnostics::default();
+        overlap.begin_manual_source_segment(1_000, true);
+
+        assert_eq!(overlap.source_continuity_id, 1);
+        assert!(!overlap.source_continuity_active);
+        assert_eq!(overlap.source_started_during_playback, Some(true));
     }
 }
 

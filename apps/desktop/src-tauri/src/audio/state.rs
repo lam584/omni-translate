@@ -2,7 +2,8 @@ use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 use super::contracts::{
-    AudioDeviceRuntime, AudioRuntimeSnapshot, SpeechRuntimeSnapshot,
+    AudioDeviceRuntime, AudioRuntimeSnapshot, EchoCaptureDiagnosticsRuntime,
+    SpeechRuntimeSnapshot,
     SubtitleCueRuntime, SubtitleDisplaySegmentRuntime, SubtitleOverlayRuntimeSnapshot,
 };
 use super::echo_cancel::{EchoCancellationResult, EchoReferenceBuffer};
@@ -69,6 +70,10 @@ pub(crate) struct AudioStateStore {
     audio_cache: AudioCacheStore,
     echo_buffer: Mutex<EchoReferenceBuffer>,
     echo_asr_activity: Mutex<EchoAsrActivity>,
+    /// Monotonic timestamp of the most recent observed speaker playback. The
+    /// ASR completion can arrive just after the playback worker flips back to
+    /// waiting, so the echo gate needs a bounded post-playback tail context.
+    speaker_playback_last_active_at: Mutex<Option<Instant>>,
     deferred_subtitle_translation_cues: DeferredTranslationStore,
     /// Live speech config shared with the active Omni playback thread. The
     /// playback thread re-reads it per Play command; config saves update it
@@ -102,6 +107,7 @@ impl AudioStateStore {
             audio_cache: AudioCacheStore::new(),
             echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
             echo_asr_activity: Mutex::new(EchoAsrActivity::default()),
+            speaker_playback_last_active_at: Mutex::new(None),
             deferred_subtitle_translation_cues: DeferredTranslationStore::new(),
             active_omni_speech_config: Mutex::new(None),
             warmer: CaptureRouteWarmer::new(),
@@ -203,11 +209,29 @@ impl AudioStateStore {
             .subtract_from(captured, delay_samples)
     }
 
-    pub(crate) fn record_echo_asr_chunk(&self, suppressed: bool) {
+    pub(crate) fn record_echo_asr_chunk(
+        &self,
+        aec_suppressed: bool,
+        playback_active: bool,
+        effective_suppressed: bool,
+        acoustic_echo_evidence: bool,
+    ) {
+        {
+            let mut state = self.inner.lock().expect("audio state poisoned");
+            state.echo_capture_diagnostics.record(
+                aec_suppressed,
+                playback_active,
+                effective_suppressed,
+            );
+        }
         self.echo_asr_activity
             .lock()
             .expect("echo ASR activity poisoned")
-            .record(suppressed, Instant::now());
+            .record(
+                effective_suppressed,
+                acoustic_echo_evidence,
+                Instant::now(),
+            );
     }
 
     pub(crate) fn recent_echo_suppression(
@@ -582,7 +606,19 @@ impl AudioStateStore {
         route_id: &str,
         requested_device_id: &str,
     ) {
+        if direction == "inbound" {
+            *self
+                .speaker_playback_last_active_at
+                .lock()
+                .expect("speaker playback timestamp poisoned") = None;
+        }
         let mut state = self.inner.lock().expect("audio state poisoned");
+        if direction == "inbound" {
+            // The exported playback/AEC counters describe one inbound
+            // capture attempt. Do not carry a previous Watch route's mix into
+            // the next attempt.
+            state.echo_capture_diagnostics = EchoCaptureDiagnosticsRuntime::empty();
+        }
         let route = route_mut(&mut state, direction);
         route.route_id = route_id.to_string();
         route.requested_device_id = requested_device_id.to_string();
@@ -783,13 +819,35 @@ impl AudioStateStore {
     }
 
     /// Returns whether translated audio is currently being rendered to a
-    /// physical speaker. Inbound loopback capture must not forward that
-    /// interval to ASR: the render stream is already represented by the
-    /// translation response and can otherwise become the next input turn.
+    /// physical speaker. This is diagnostic context for the capture worker;
+    /// playback alone must not suppress ASR because a user can speak over
+    /// translated audio. AEC remains the hard pure-echo decision.
     pub(crate) fn inbound_speaker_playback_active(&self) -> bool {
-        let state = self.inner.lock().expect("audio state poisoned");
-        state.speech.dispatch_state == "playing"
-            && matches!(state.speech.output_target.as_str(), "speaker" | "both")
+        self.inbound_speaker_playback_context(Duration::ZERO).0
+    }
+
+    pub(crate) fn inbound_speaker_playback_context(
+        &self,
+        recent_window: Duration,
+    ) -> (bool, bool) {
+        let active = {
+            let state = self.inner.lock().expect("audio state poisoned");
+            state.speech.dispatch_state == "playing"
+                && matches!(state.speech.output_target.as_str(), "speaker" | "both")
+        };
+        let now = Instant::now();
+        let mut last_active = self
+            .speaker_playback_last_active_at
+            .lock()
+            .expect("speaker playback timestamp poisoned");
+        if active {
+            *last_active = Some(now);
+        }
+        let recent = active
+            || last_active
+                .as_ref()
+                .is_some_and(|timestamp| now.saturating_duration_since(*timestamp) <= recent_window);
+        (active, recent)
     }
 
     pub(crate) fn mark_route_stopped(&self, direction: &str) {
@@ -1333,18 +1391,35 @@ mod tests {
     #[test]
     fn recent_echo_suppression_tracks_total_and_suppressed_chunks() {
         let store = AudioStateStore::new();
-        store.record_echo_asr_chunk(false);
-        store.record_echo_asr_chunk(true);
-        store.record_echo_asr_chunk(false);
-        store.record_echo_asr_chunk(true);
+        store.record_echo_asr_chunk(false, false, false, false);
+        store.record_echo_asr_chunk(true, true, true, true);
+        store.record_echo_asr_chunk(false, true, false, true);
+        store.record_echo_asr_chunk(true, false, true, false);
 
         assert_eq!(
             store.recent_echo_suppression(Duration::from_secs(12)),
             EchoSuppressionSnapshot {
                 total_chunks: 4,
                 suppressed_chunks: 2,
+                correlated_chunks: 2,
             },
         );
+        let diagnostics = store.snapshot().echo_capture_diagnostics;
+        assert_eq!(diagnostics.aec_suppressed_chunks, 2);
+        assert_eq!(diagnostics.playback_active_chunks, 2);
+        assert_eq!(diagnostics.effective_suppressed_chunks, 2);
+    }
+
+    #[test]
+    fn inbound_route_start_resets_echo_capture_diagnostics() {
+        let store = AudioStateStore::new();
+        store.record_echo_asr_chunk(true, true, true, true);
+        store.mark_route_start_requested("inbound", "watch-attempt", "loopback");
+
+        let diagnostics = store.snapshot().echo_capture_diagnostics;
+        assert_eq!(diagnostics.aec_suppressed_chunks, 0);
+        assert_eq!(diagnostics.playback_active_chunks, 0);
+        assert_eq!(diagnostics.effective_suppressed_chunks, 0);
     }
 
     #[test]
@@ -1372,6 +1447,31 @@ mod tests {
             speech.dispatch_state = "waiting-subtitle".to_string();
         });
         assert!(!store.inbound_speaker_playback_active());
+    }
+
+    #[test]
+    fn inbound_speaker_playback_context_keeps_a_bounded_post_playback_tail() {
+        let store = AudioStateStore::new();
+        store.update_speech(|speech| {
+            speech.dispatch_state = "playing".to_string();
+            speech.output_target = "speaker".to_string();
+        });
+        assert_eq!(
+            store.inbound_speaker_playback_context(Duration::from_secs(1)),
+            (true, true)
+        );
+
+        store.update_speech(|speech| {
+            speech.dispatch_state = "waiting-subtitle".to_string();
+        });
+        assert_eq!(
+            store.inbound_speaker_playback_context(Duration::from_secs(1)),
+            (false, true)
+        );
+        assert_eq!(
+            store.inbound_speaker_playback_context(Duration::ZERO),
+            (false, false)
+        );
     }
 
     #[test]

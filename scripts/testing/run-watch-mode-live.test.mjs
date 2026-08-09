@@ -123,6 +123,19 @@ function extractedElevationGuardFunctions() {
   );
 }
 
+function extractedPhysicalOutputContentPolicyFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -eq 'Get-PhysicalOutputContentSkipReason' ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
 test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
@@ -132,6 +145,19 @@ test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: 
     `exit $errors.Count`,
   ]);
   assert.equal(probe.status, 0, `runner has PowerShell syntax errors:\n${probe.stderr}`);
+});
+
+test('echo-cancel skips virtual-driver physical-output content recording', { skip: !isWindows }, () => {
+  const policy = runPowerShell([
+    '-Command',
+    `${extractedPhysicalOutputContentPolicyFunctions()} ` +
+      `$echo = Get-PhysicalOutputContentSkipReason -FeedbackMode 'echo-cancel' -SkipContentStt $false; ` +
+      `$explicit = Get-PhysicalOutputContentSkipReason -FeedbackMode 'virtual-driver' -SkipContentStt $true; ` +
+      `$normal = Get-PhysicalOutputContentSkipReason -FeedbackMode 'virtual-driver' -SkipContentStt $false; ` +
+      `if ($echo -and $explicit -and -not $normal) { exit 0 }; exit 1`,
+  ]);
+
+  assert.equal(policy.status, 0, policy.stderr || policy.stdout);
 });
 
 test('app readiness wait fails immediately on diagnostic IPC infrastructure error', { skip: !isWindows }, () => {

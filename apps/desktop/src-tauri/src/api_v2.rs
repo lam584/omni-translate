@@ -573,6 +573,15 @@ pub(crate) enum ConfigurationCommandV2 {
     SecretUpsert { reference: String, secret: String },
 }
 
+/// A Watch diagnostic builds an in-memory route configuration from its
+/// environment. The renderer can save the user's persisted draft while it is
+/// still bootstrapping, and that draft may describe a different output route.
+/// Do not let that unrelated save replace the diagnostic's live speaker/AEC
+/// configuration mid-capture.
+fn should_refresh_live_omni_speech_config(watch_diagnostic_autostart: bool) -> bool {
+    !watch_diagnostic_autostart
+}
+
 // Runs off the main thread (async) so SQLite/config I/O cannot starve the Tauri
 // IPC event loop — mirrors `session_v2`.
 #[tauri::command]
@@ -591,9 +600,29 @@ pub(crate) async fn configuration_v2<R: tauri::Runtime>(
                 if result.is_ok() {
                     // Propagate the saved config to the live Omni playback
                     // thread so device/toggle changes apply on the next cue
-                    // instead of waiting for a route restart.
+                    // instead of waiting for a route restart. A diagnostic
+                    // route is an explicit runtime overlay, however: the
+                    // renderer's bootstrap save contains the persisted user
+                    // draft, not the echo-cancel route configuration.
                     if let Some(audio_state) = app.try_state::<crate::audio::state::AudioStateStore>() {
-                        audio_state.refresh_omni_speech_config(&config);
+                        if should_refresh_live_omni_speech_config(
+                            crate::watch_mode_diagnostic::autostart_enabled(),
+                        ) {
+                            audio_state.refresh_omni_speech_config(&config);
+                        } else {
+                            let _ = diagnostics_events::append_diagnostics_log(
+                                &app,
+                                "audio",
+                                "info",
+                                "watch_mode.diagnostic_runtime_speech_config_preserved",
+                                Some(
+                                    "reason=persisted_config_save_must_not_override_diagnostic_route"
+                                        .to_string(),
+                                ),
+                                None,
+                                None,
+                            );
+                        }
                     }
                 }
                 serialize_result(result)
@@ -618,8 +647,14 @@ pub(crate) async fn configuration_v2<R: tauri::Runtime>(
 mod tests {
     use super::{
         attach_request_id, BridgeCommandV2, ConfigurationCommandV2, RuntimeEventV2, ServiceErrorV2,
-        ServiceResult, SessionCommandV2,
+        ServiceResult, SessionCommandV2, should_refresh_live_omni_speech_config,
     };
+
+    #[test]
+    fn persisted_config_save_preserves_a_diagnostic_runtime_speech_config() {
+        assert!(should_refresh_live_omni_speech_config(false));
+        assert!(!should_refresh_live_omni_speech_config(true));
+    }
 
     #[test]
     fn v2_types_use_the_renderer_contract_shape() {

@@ -219,7 +219,7 @@ fn paused_source_pure_echo_keeps_the_gate_shut() {
 #[test]
 fn variable_endpoint_latency_does_not_reenter_realtime_asr() {
     let tts = synthetic_tts(4);
-    for actual_delay_ms in [35_usize, 220] {
+    for actual_delay_ms in [35_usize, 220, 650] {
         let actual_delay_samples =
             actual_delay_ms * SAMPLE_RATE_HZ * CHANNELS / 1_000;
         let outcome = simulate_room_loop_with_delay(

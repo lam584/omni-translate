@@ -419,8 +419,11 @@ impl OmniAsrEventProcessor {
     ) {
         *last_vad_event_time = SystemTime::now();
         *vad_event_count += 1;
+        let (playback_active, playback_recent) =
+            store.inbound_speaker_playback_context(std::time::Duration::from_secs(4));
+        let speech_ms = elapsed_ms_since(session_started_at);
+        event_diagnostics.begin_source_segment(speech_ms, playback_active, playback_recent);
         if *vad_event_count == 1 {
-            let speech_ms = elapsed_ms_since(session_started_at);
             store.watch_session_report.record_milestone_with_detail(
                 "first_speech_started",
                 Some(format!("providerSessionElapsedMs={speech_ms}")),
@@ -435,7 +438,7 @@ impl OmniAsrEventProcessor {
                 "omni",
                 "info",
                 format!(
-                    "[VAD] first_speech_started: elapsed_ms={} first_audio_sent_ms={:?} first_audible_chunk_ms={:?} total_input_chunks={} chunks_sent_to_server={} silence_skipped_before_audible={} subtitle_translate_active={}",
+                    "[VAD] first_speech_started: elapsed_ms={} first_audio_sent_ms={:?} first_audible_chunk_ms={:?} total_input_chunks={} chunks_sent_to_server={} silence_skipped_before_audible={} subtitle_translate_active={} playback_active={} playback_recent={} sourceContinuityId={} sourceContinuityActive={}",
                     speech_ms,
                     first_audio_sent_ms,
                     first_audible_chunk_ms,
@@ -443,6 +446,10 @@ impl OmniAsrEventProcessor {
                     chunk_count,
                     total_silence_skipped_before_first_audible,
                     subtitle_translate_active,
+                    playback_active,
+                    playback_recent,
+                    event_diagnostics.source_continuity_id,
+                    event_diagnostics.source_continuity_active,
                 ),
             );
         }
@@ -460,7 +467,9 @@ impl OmniAsrEventProcessor {
             "omni",
             "info",
             format!(
-                "[VAD] speech_started received event_count={vad_event_count} cue_id={cue_id}"
+                "[VAD] speech_started received event_count={vad_event_count} cue_id={cue_id} playback_active={playback_active} playback_recent={playback_recent} sourceContinuityId={} sourceContinuityActive={}",
+                event_diagnostics.source_continuity_id,
+                event_diagnostics.source_continuity_active,
             ),
         );
     }

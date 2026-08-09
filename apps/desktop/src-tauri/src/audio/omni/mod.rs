@@ -65,9 +65,11 @@ use self::audio_pump::should_anchor_manual_turn_to_first_audible_append;
 use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
 use self::connection_coordinator::{
-    classify_completed_manual_response_for_target_language, manual_turn_cue_to_discard,
-    recent_echo_input_is_dominated, should_route_uncorrelated_completed_transcription,
-    ManualResponseDecision, OmniCommitState,
+    classify_completed_manual_response_for_target_language_with_context,
+    manual_turn_cue_to_discard, recent_acoustic_echo_evidence,
+    recent_echo_input_is_dominated,
+    should_route_uncorrelated_completed_transcription, ManualResponseDecision,
+    ManualResponseEchoContext, OmniCommitState,
     OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
     MANUAL_ECHO_ACTIVITY_WINDOW, MANUAL_RESPONSE_TIMEOUT_SECS,
 };

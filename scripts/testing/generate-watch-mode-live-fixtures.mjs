@@ -101,6 +101,10 @@ export function generateWatchModeLiveFixture({ root, fixture = 'pass' }) {
   // unified logging pipeline; load-bearing markers stay verbatim before it.
   const appLog = [
     'watch_mode.route_start | direction=inbound routeMode=watch sid=0198fixturesid',
+    'watch_mode.omni_session_config | model=synthetic-model realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=false subtitleTranslateActive=false sid=0198fixturesid',
+    '[AUDIO] playback request received: cue_id=synthetic-audio-1 samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=0198fixturesid',
+    '[AUDIO] speaker playback completed: cue_id=synthetic-audio-1 frames=24000 sample_rate_hz=24000 sid=0198fixturesid',
+    'event=echo_cancel_summary | direction=inbound subtractCount=100 intervalChunks=100 alignedChunks=92 alignmentRatePct=92.0 aecSuppressedChunks=12 intervalAecSuppressedChunks=12 avgPureEchoRemovedDb=20.0 playbackActiveChunks=90 effectiveSuppressedChunks=12 refBufferDepthSamples=96000 refBufferEmpty=false avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 avgCorrelation=0.91 maxCorrelation=0.96 avgDelayMs=125.0 avgResidualDb=-62.0 sid=0198fixturesid',
     'watch route ensured subtitle overlay visible detail=label=subtitle-overlay visible=true sid=0198fixturesid',
     'subtitle cue appended id=synthetic-cue-1 sid=0198fixturesid',
     'model_trace finished status=ok elapsedMs=100 sid=0198fixturesid',

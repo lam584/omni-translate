@@ -355,6 +355,41 @@ impl SttConnectionRuntime {
 
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct EchoCaptureDiagnosticsRuntime {
+    pub aec_suppressed_chunks: u64,
+    pub playback_active_chunks: u64,
+    pub effective_suppressed_chunks: u64,
+}
+
+impl EchoCaptureDiagnosticsRuntime {
+    pub(crate) fn empty() -> Self {
+        Self {
+            aec_suppressed_chunks: 0,
+            playback_active_chunks: 0,
+            effective_suppressed_chunks: 0,
+        }
+    }
+
+    pub(crate) fn record(
+        &mut self,
+        aec_suppressed: bool,
+        playback_active: bool,
+        effective_suppressed: bool,
+    ) {
+        if aec_suppressed {
+            self.aec_suppressed_chunks = self.aec_suppressed_chunks.saturating_add(1);
+        }
+        if playback_active {
+            self.playback_active_chunks = self.playback_active_chunks.saturating_add(1);
+        }
+        if effective_suppressed {
+            self.effective_suppressed_chunks = self.effective_suppressed_chunks.saturating_add(1);
+        }
+    }
+}
+
+#[derive(Clone, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct AudioRuntimeSnapshot {
     /// Monotonically increasing sequence number. Each call to
     /// `AudioStateStore::snapshot()` increments a global counter so the
@@ -370,6 +405,7 @@ pub(crate) struct AudioRuntimeSnapshot {
     pub outbound: AudioRouteRuntimeSnapshot,
     pub subtitle_overlay: SubtitleOverlayRuntimeSnapshot,
     pub speech: SpeechRuntimeSnapshot,
+    pub echo_capture_diagnostics: EchoCaptureDiagnosticsRuntime,
     pub session_started_at: Option<String>,
     pub stt_connected: bool,
     pub stt_buffer_size: u64,
@@ -388,6 +424,7 @@ impl AudioRuntimeSnapshot {
             outbound: AudioRouteRuntimeSnapshot::idle("audio-route-outbound-mic", "outbound"),
             subtitle_overlay: SubtitleOverlayRuntimeSnapshot::empty(),
             speech: SpeechRuntimeSnapshot::preview(),
+            echo_capture_diagnostics: EchoCaptureDiagnosticsRuntime::empty(),
             session_started_at: None,
             stt_connected: false,
             stt_buffer_size: 0,

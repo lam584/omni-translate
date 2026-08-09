@@ -11,6 +11,10 @@ pub(super) struct OmniAudioPumpState {
     /// manual commit. This prevents a lone tail frame from being committed.
     pub(super) audio_samples_since_commit: u64,
     pub(super) manual_turn_started_at: Option<SystemTime>,
+    /// Actual speaker state observed when the current manual turn received its
+    /// first audible capture. Manual providers omit server VAD, so this is the
+    /// continuity signal used by the late echo gate.
+    pub(super) manual_turn_started_during_playback: Option<bool>,
     pub(super) session_ready_for_audio: bool,
     pub(super) pre_session_audio_queue: VecDeque<Vec<u8>>,
     pub(super) pre_session_audio_dropped: u64,
@@ -83,6 +87,7 @@ impl OmniAudioPump {
             mut sent_audio_since_commit,
             mut audio_samples_since_commit,
             mut manual_turn_started_at,
+            mut manual_turn_started_during_playback,
             mut session_ready_for_audio,
             mut pre_session_audio_queue,
             mut pre_session_audio_dropped,
@@ -309,11 +314,17 @@ impl OmniAudioPump {
                 sent_audio_since_commit,
             ) {
                 manual_turn_started_at = Some(SystemTime::now());
+                let (playback_active, playback_recent) =
+                    store.inbound_speaker_playback_context(Duration::from_secs(4));
+                manual_turn_started_during_playback =
+                    Some(playback_active || playback_recent);
                 let _ = diag_log(
                     app,
                     "omni",
                     "debug",
-                    "event=manual_commit_timer action=anchor_turn_first_audible_append",
+                    format!(
+                        "event=manual_commit_timer action=anchor_turn_first_audible_append playbackActive={playback_active} playbackRecent={playback_recent}"
+                    ),
                 );
             }
             audio_samples_since_commit = audio_samples_since_commit
@@ -331,6 +342,7 @@ impl OmniAudioPump {
             sent_audio_since_commit,
             audio_samples_since_commit,
             manual_turn_started_at,
+            manual_turn_started_during_playback,
             session_ready_for_audio,
             pre_session_audio_queue,
             pre_session_audio_dropped,

@@ -142,4 +142,9 @@ export const audioRuntimeSnapshotMock: AudioRuntimeSnapshot = {
       },
     ],
   },
+  echoCaptureDiagnostics: {
+    aecSuppressedChunks: 0,
+    playbackActiveChunks: 0,
+    effectiveSuppressedChunks: 0,
+  },
 };

@@ -43,6 +43,11 @@ fn input<'a>(
                 "queueDepth": 1,
                 "recentCues": [{ "sourceText": "private conversation" }],
             },
+            "echoCaptureDiagnostics": {
+                "aecSuppressedChunks": 7,
+                "playbackActiveChunks": 19,
+                "effectiveSuppressedChunks": 7,
+            },
             "speech": { "status": "ready", "dispatchState": "idle" },
             "sttConnected": true,
         }),
@@ -155,6 +160,9 @@ fn scopes_have_distinct_log_limits_and_full_snapshot_content() {
     let full_audio = fs::read_to_string(full_dir.join("snapshots/audio.json"))
         .expect("read full audio snapshot");
     assert!(full_audio.contains("private conversation"));
+    assert!(full_audio.contains("aecSuppressedChunks"));
+    assert!(full_audio.contains("playbackActiveChunks"));
+    assert!(full_audio.contains("effectiveSuppressedChunks"));
 
     let _ = fs::remove_dir_all(root);
 }

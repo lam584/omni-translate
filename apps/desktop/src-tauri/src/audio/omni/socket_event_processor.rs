@@ -297,7 +297,15 @@ match socket.read_message() {
                                 echo_activity.total_chunks,
                                 echo_activity.suppressed_chunks,
                             );
-                            if let Some(decision) = classify_completed_manual_response_for_target_language(
+                            let acoustic_echo_evidence = recent_acoustic_echo_evidence(
+                                echo_activity.total_chunks,
+                                echo_activity.correlated_chunks,
+                            );
+                            let (playback_active, playback_recent) =
+                                store.inbound_speaker_playback_context(Duration::from_secs(4));
+                            let echo_chain_active =
+                                event_diagnostics.echo_gate_chain_active(now_ms);
+                            if let Some(decision) = classify_completed_manual_response_for_target_language_with_context(
                                 manual_response_pending,
                                 manual_response_item_id.as_deref(),
                                 evt["item_id"].as_str(),
@@ -307,16 +315,30 @@ match socket.read_message() {
                                 echo_guard_enabled,
                                 echo_dominated_input,
                                 target_language,
+                                ManualResponseEchoContext {
+                                    playback_active,
+                                    playback_recent,
+                                    source_started_during_playback: event_diagnostics
+                                        .source_started_during_playback,
+                                    source_continuity_active: event_diagnostics
+                                        .source_continuity_active,
+                                    echo_chain_active,
+                                    acoustic_echo_evidence,
+                                },
                             ) {
                                 let source = completed_source_text.unwrap_or_default();
                                 let mut reset_turn = matches!(
                                     decision,
                                     ManualResponseDecision::SkipEmpty
                                         | ManualResponseDecision::SkipRecentOutputEcho
+                                        | ManualResponseDecision::SkipShortCjkOutputEcho
+                                        | ManualResponseDecision::SkipEchoChainFragment
                                         | ManualResponseDecision::SkipEchoDominatedPlayback
                                 );
                                 match decision {
                                     ManualResponseDecision::Create => {
+                                        event_diagnostics.note_source_gate_accepted();
+                                        event_diagnostics.clear_echo_gate_chain();
                                         let create_msg = super::build_dashscope_response_create();
                                         trace_call.record_ws_send(
                                             "response.create",
@@ -343,13 +365,24 @@ match socket.read_message() {
                                                 "omni",
                                                 "info",
                                                 format!(
-                                                    "event=manual_response_gate action=create sourceLen={}",
-                                                    source.chars().count()
+                                                    "event=manual_response_gate action=create sourceLen={} outputAgeMs={} playbackActive={} playbackRecent={} sourceStartedDuringPlayback={:?} sourceContinuityId={} sourceContinuityActive={} echoChainActive={} acousticEchoEvidence={} echoChunks={} correlatedChunks={}",
+                                                    source.chars().count(),
+                                                    recent_output_age_ms.unwrap_or(u64::MAX),
+                                                    playback_active,
+                                                    playback_recent,
+                                                    event_diagnostics.source_started_during_playback,
+                                                    event_diagnostics.source_continuity_id,
+                                                    event_diagnostics.source_continuity_active,
+                                                    echo_chain_active,
+                                                    acoustic_echo_evidence,
+                                                    echo_activity.total_chunks,
+                                                    echo_activity.correlated_chunks,
                                                 ),
                                             );
                                         }
                                     }
                                     ManualResponseDecision::SkipEmpty => {
+                                        event_diagnostics.note_source_gate_accepted();
                                         let _ = diag_log(
                                             app,
                                             "omni",
@@ -358,6 +391,8 @@ match socket.read_message() {
                                         );
                                     }
                                     ManualResponseDecision::SkipRecentOutputEcho => {
+                                        event_diagnostics.note_source_gate_suppressed();
+                                        event_diagnostics.note_echo_gate_suppressed(now_ms);
                                         if let Some(cue_id) = manual_turn_cue_to_discard(
                                             completed_cue_id,
                                             current_cue_id.as_deref(),
@@ -379,7 +414,75 @@ match socket.read_message() {
                                             ),
                                         );
                                     }
+                                    ManualResponseDecision::SkipShortCjkOutputEcho => {
+                                        event_diagnostics.note_source_gate_suppressed();
+                                        event_diagnostics.note_echo_gate_suppressed(now_ms);
+                                        if let Some(cue_id) = manual_turn_cue_to_discard(
+                                            completed_cue_id,
+                                            current_cue_id.as_deref(),
+                                        ) {
+                                            store.watch_session_report.record_source_suppressed(
+                                                cue_id,
+                                                &direction,
+                                                "short-cjk-output-echo",
+                                            );
+                                        }
+                                        let _ = diag_log(
+                                            app,
+                                            "omni",
+                                            "warning",
+                                            format!(
+                                                "event=manual_response_gate action=skip reason=short_cjk_output_echo sourceLen={} outputAgeMs={} playbackActive={} playbackRecent={} sourceStartedDuringPlayback={:?} sourceContinuityId={} sourceContinuityActive={} echoChainActive={} acousticEchoEvidence={} echoChunks={} correlatedChunks={}",
+                                                source.chars().count(),
+                                                recent_output_age_ms.unwrap_or(u64::MAX),
+                                                playback_active,
+                                                playback_recent,
+                                                event_diagnostics.source_started_during_playback,
+                                                event_diagnostics.source_continuity_id,
+                                                event_diagnostics.source_continuity_active,
+                                                echo_chain_active,
+                                                acoustic_echo_evidence,
+                                                echo_activity.total_chunks,
+                                                echo_activity.correlated_chunks,
+                                            ),
+                                        );
+                                    }
+                                    ManualResponseDecision::SkipEchoChainFragment => {
+                                        event_diagnostics.note_source_gate_suppressed();
+                                        event_diagnostics.note_echo_gate_suppressed(now_ms);
+                                        if let Some(cue_id) = manual_turn_cue_to_discard(
+                                            completed_cue_id,
+                                            current_cue_id.as_deref(),
+                                        ) {
+                                            store.watch_session_report.record_source_suppressed(
+                                                cue_id,
+                                                &direction,
+                                                "echo-chain-fragment",
+                                            );
+                                        }
+                                        let _ = diag_log(
+                                            app,
+                                            "omni",
+                                            "warning",
+                                            format!(
+                                                "event=manual_response_gate action=skip reason=echo_chain_fragment sourceLen={} outputAgeMs={} playbackActive={} playbackRecent={} sourceStartedDuringPlayback={:?} sourceContinuityId={} sourceContinuityActive={} echoChainActive={} acousticEchoEvidence={} echoChunks={} correlatedChunks={}",
+                                                source.chars().count(),
+                                                recent_output_age_ms.unwrap_or(u64::MAX),
+                                                playback_active,
+                                                playback_recent,
+                                                event_diagnostics.source_started_during_playback,
+                                                event_diagnostics.source_continuity_id,
+                                                event_diagnostics.source_continuity_active,
+                                                echo_chain_active,
+                                                acoustic_echo_evidence,
+                                                echo_activity.total_chunks,
+                                                echo_activity.correlated_chunks,
+                                            ),
+                                        );
+                                    }
                                     ManualResponseDecision::SkipEchoDominatedPlayback => {
+                                        event_diagnostics.note_source_gate_suppressed();
+                                        event_diagnostics.note_echo_gate_suppressed(now_ms);
                                         if let Some(cue_id) = manual_turn_cue_to_discard(
                                             completed_cue_id,
                                             current_cue_id.as_deref(),
@@ -395,11 +498,12 @@ match socket.read_message() {
                                             "omni",
                                             "warning",
                                             format!(
-                                                "event=manual_response_gate action=skip reason=echo_dominated_playback sourceLen={} outputAgeMs={} echoChunks={} suppressedChunks={}",
+                                                "event=manual_response_gate action=skip reason=echo_dominated_playback sourceLen={} outputAgeMs={} echoChunks={} suppressedChunks={} correlatedChunks={}",
                                                 source.chars().count(),
                                                 recent_output_age_ms.unwrap_or(u64::MAX),
                                                 echo_activity.total_chunks,
                                                 echo_activity.suppressed_chunks,
+                                                echo_activity.correlated_chunks,
                                             ),
                                         );
                                     }

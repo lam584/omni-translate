@@ -1,10 +1,13 @@
-import { existsSync, mkdirSync, readdirSync } from 'node:fs';
+import crypto from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
 
 const BASELINE = 'ea1a7396b05637a53bf23c078647ecc0edee4b80';
 const TRIPLET = 'x64-windows-static-md';
+const VCPKG_TOOL_VERSION = '2026-07-27-98d7cb0cf1f4686a3e43aa5672b6230c1d56bce8';
+const VCPKG_TOOL_SHA256 = '13b8175e99a884c5ad34249218754b45541a1a63f216e92603aee57a285ac741';
 const workspace = resolve(import.meta.dirname, '..', '..');
 const vcpkgRoot = resolve(
   process.env.OMNI_AEC3_VCPKG_ROOT ?? join(workspace, 'target', 'aec3-msvc-vcpkg'),
@@ -65,6 +68,17 @@ function findExecutable(root, fileName) {
   return null;
 }
 
+function assertPinnedVcpkgTool(executable) {
+  if (!existsSync(executable)) return false;
+  const sha256 = crypto.createHash('sha256').update(readFileSync(executable)).digest('hex');
+  if (sha256 !== VCPKG_TOOL_SHA256) return false;
+  const version = output(executable, ['version', '--disable-metrics']);
+  if (!version.includes(`version ${VCPKG_TOOL_VERSION}`)) {
+    throw new Error(`vcpkg tool version mismatch: expected=${VCPKG_TOOL_VERSION} actual=${version}`);
+  }
+  return true;
+}
+
 mkdirSync(resolve(workspace, 'target'), { recursive: true });
 if (!existsSync(join(vcpkgRoot, '.git'))) {
   run('git', ['clone', 'https://github.com/microsoft/vcpkg.git', vcpkgRoot]);
@@ -75,15 +89,21 @@ if (actualBaseline !== BASELINE) {
   throw new Error(`vcpkg baseline mismatch: expected=${BASELINE} actual=${actualBaseline}`);
 }
 
-const bootstrap = join(vcpkgRoot, 'bootstrap-vcpkg.bat');
-run(process.env.ComSpec ?? 'cmd.exe', [
-  '/d',
-  '/c',
-  'call',
-  bootstrap,
-  '-disableMetrics',
-]);
-run(join(vcpkgRoot, 'vcpkg.exe'), [
+const vcpkgExecutable = join(vcpkgRoot, 'vcpkg.exe');
+if (!assertPinnedVcpkgTool(vcpkgExecutable)) {
+  const bootstrap = join(vcpkgRoot, 'bootstrap-vcpkg.bat');
+  run(process.env.ComSpec ?? 'cmd.exe', [
+    '/d',
+    '/c',
+    'call',
+    bootstrap,
+    '-disableMetrics',
+  ]);
+  if (!assertPinnedVcpkgTool(vcpkgExecutable)) {
+    throw new Error(`bootstrapped vcpkg tool does not match pinned SHA-256 ${VCPKG_TOOL_SHA256}`);
+  }
+}
+run(vcpkgExecutable, [
   'install',
   `webrtc:${TRIPLET}`,
   `--x-install-root=${installedRoot}`,

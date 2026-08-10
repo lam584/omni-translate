@@ -340,7 +340,14 @@ function Get-RenderEndpointRegistryIdentity {
   if (-not $resolvedDeviceId) {
     throw "Windows did not resolve a physical render endpoint id for '$RequestedDeviceId'."
   }
-  $registryPath = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\$resolvedDeviceId\Properties"
+  # MMDevices stores the endpoint under the GUID suffix, while the Core Audio
+  # API commonly returns the full {flow}.{guid} device id.
+  $registryDeviceId = if ($resolvedDeviceId -match '^\{[^}]+\}\.\{[^}]+\}$') {
+    $resolvedDeviceId.Substring($resolvedDeviceId.IndexOf('}.') + 2)
+  } else {
+    $resolvedDeviceId
+  }
+  $registryPath = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\$registryDeviceId\Properties"
   if (-not (Test-Path -LiteralPath $registryPath -PathType Container)) {
     throw "physical render endpoint '$resolvedDeviceId' has no Windows MMDevice registry evidence"
   }

@@ -166,12 +166,16 @@ fn execute_realtime_websocket(
         &provider.model,
     )
     .map_err(|error| ProviderRuntimeError::new("request.invalid", error))?;
-    let mut session_update = crate::audio::omni::build_omni_session_update_for_provider(
+    // Provider smoke/probe only needs translated text. Requesting audio causes
+    // DashScope to emit response.audio_transcript.* instead of response.text.*
+    // and spends output-audio capacity that the probe discards.
+    let mut session_update = crate::audio::omni::build_omni_session_update_for_provider_with_output_mode(
         provider,
         "",
         &instructions,
         audio_mode,
         context.target_language,
+        crate::audio::omni::OmniOutputMode::TextOnly,
     );
     session_update["event_id"] = json!(format!("evt_{}_session", safe_id));
     send_json_frame(
@@ -212,7 +216,13 @@ fn execute_realtime_websocket(
             WebSocketFrame::Json(value) => {
                 let event_type = crate::audio::realtime_ws::server_event_type(&value, "");
 
-                if event_type == "response.text.delta" {
+                if matches!(
+                    event_type,
+                    "response.text.delta"
+                        | "response.text.text"
+                        | "response.audio_transcript.delta"
+                        | "response.audio_transcript.text"
+                ) {
                     if let Some(delta) = crate::audio::realtime_ws::server_text_delta(&value) {
                         record_translation_delta(
                             &mut result,
@@ -224,8 +234,11 @@ fn execute_realtime_websocket(
                     }
                 }
 
-                if event_type == "response.text.done" {
-                    if let Some(text) = value.pointer("/text").and_then(Value::as_str) {
+                if matches!(
+                    event_type,
+                    "response.text.done" | "response.audio_transcript.done"
+                ) {
+                    if let Some(text) = crate::audio::realtime_ws::server_text_delta(&value) {
                         result.transcript = text.to_string();
                     }
                 }

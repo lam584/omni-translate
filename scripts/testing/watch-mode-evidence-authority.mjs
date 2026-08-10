@@ -4,9 +4,9 @@ import path from 'node:path';
 
 import { repoRoot } from '../lib/testing-common.mjs';
 
-export const STRICT_MATRIX_SCHEMA_VERSION = 2;
+export const STRICT_MATRIX_SCHEMA_VERSION = 3;
 export const STRICT_MATRIX_ARTIFACT_KIND = 'watch-mode-strict-matrix-authority';
-export const CELL_AUTHORITY_SCHEMA_VERSION = 1;
+export const CELL_AUTHORITY_SCHEMA_VERSION = 2;
 export const CELL_AUTHORITY_ARTIFACT_KIND = 'watch-mode-live-cell-authority';
 export const CELL_AUTHORITY_FILE = 'matrix-cell-authority.json';
 export const MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-matrix.mjs';
@@ -18,6 +18,8 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/watch-mode-report.mjs',
   'scripts/testing/verify-watch-mode-evidence.mjs',
   'scripts/testing/watch-mode-evidence-authority.mjs',
+  'scripts/testing/watch-mode-balanced-release-plan.mjs',
+  'scripts/testing/watch-mode-local-isolation.mjs',
   'scripts/testing/collect-watch-mode-system-metrics.ps1',
   'scripts/development/build-desktop-release.mjs',
   'scripts/installer/build-sysvad-driver.ps1',
@@ -196,6 +198,10 @@ export function writeCellAuthorityReceipt({
     provenance,
     runDirectory: runDirectoryRelative,
     matrixCell: {
+      cellId: matrixCell.cellId,
+      tier: matrixCell.tier,
+      providerMode: matrixCell.providerMode,
+      durationSeconds: matrixCell.durationSeconds,
       modelId: matrixCell.modelId,
       feedbackLoopPrevention: matrixCell.feedbackLoopPrevention,
       deviceClass: matrixCell.deviceClass,

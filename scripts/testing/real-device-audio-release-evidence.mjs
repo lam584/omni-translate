@@ -28,6 +28,10 @@ import {
   strictManifestProvenanceFailure,
   verifyStrictMatrixAuthority,
 } from './verify-watch-mode-evidence.mjs';
+import {
+  LIVE_LLM_CELLS,
+  balancedReleasePlanFailure,
+} from './watch-mode-balanced-release-plan.mjs';
 
 export const REAL_DEVICE_AUDIO_COLLECTOR_ID = 'omni.release.real-device-audio';
 export const REAL_DEVICE_AUDIO_COLLECTOR_VERSION = 1;
@@ -39,6 +43,8 @@ export const REAL_DEVICE_AUDIO_AUTHORITY_COLLECTOR_ID = 'omni.watch-mode-strict-
 export const REAL_DEVICE_AUDIO_AUTHORITY_COLLECTOR_VERSION = 2;
 
 export const REAL_DEVICE_AUDIO_SELECTED_CELL = Object.freeze({
+  cellId: 'pairwise-live::qwen3.5-omni-flash-realtime::process-exclusion::default-speaker',
+  tier: 'pairwise-live',
   modelId: 'qwen3.5-omni-flash-realtime',
   feedbackLoopPrevention: 'process-exclusion',
   deviceClass: 'default-speaker',
@@ -69,7 +75,7 @@ export const REAL_DEVICE_AUDIO_PROFILE = Object.freeze({
   artifacts: REAL_DEVICE_AUDIO_ARTIFACTS,
 });
 
-const MIN_SESSION_DURATION_MS = 1_800_000;
+const MIN_SESSION_DURATION_MS = 180_000;
 const MIN_PHYSICAL_RECORDING_SECONDS = 60;
 const MIN_COMPLETE_CUES = 8;
 const MAX_AGE_DAYS = 14;
@@ -102,16 +108,14 @@ export const canonicalRealDeviceAudioManifestPath = (workspaceRoot = repoRoot) =
 );
 
 const cellKey = (cell) => [
+  cell?.cellId,
+  cell?.tier,
   cell?.modelId,
   cell?.feedbackLoopPrevention,
   cell?.deviceClass,
   cell?.deviceProfileId,
 ].join('::');
-const selectedCellKey = (cell) => [
-  cell?.modelId,
-  cell?.feedbackLoopPrevention,
-  cell?.deviceClass,
-].join('::');
+const selectedCellKey = (cell) => cell?.cellId;
 
 export const exactReleaseGridFailure = (manifest) => {
   if (manifest?.schemaVersion !== STRICT_MATRIX_SCHEMA_VERSION
@@ -119,8 +123,10 @@ export const exactReleaseGridFailure = (manifest) => {
     || manifest?.strict !== true
     || manifest?.evidenceMode !== 'live'
     || manifest?.verification !== 'passed') {
-    return 'real-device audio requires the verified live canonical strict matrix schema-v2 manifest';
+    return `real-device audio requires the verified live canonical strict matrix schema-v${STRICT_MATRIX_SCHEMA_VERSION} manifest`;
   }
+  const validationPlanFailure = balancedReleasePlanFailure(manifest.validationPlan);
+  if (validationPlanFailure) return validationPlanFailure;
   if (!isDeepStrictEqual(manifest.models, DEFAULT_MODELS)
     || !isDeepStrictEqual(manifest.feedbackLoopPreventionModes, DEFAULT_FEEDBACK_MODES)) {
     return 'canonical strict matrix model/route set is not the exact release grid';
@@ -134,12 +140,10 @@ export const exactReleaseGridFailure = (manifest) => {
     ))) {
     return 'canonical strict matrix device profiles are not exactly default-speaker, usb, and bluetooth';
   }
-  const expectedCount = DEFAULT_MODELS.length
-    * DEFAULT_FEEDBACK_MODES.length
-    * SUPPORTED_DEVICE_CLASSES.length;
+  const expectedCount = LIVE_LLM_CELLS.length;
   if (!Array.isArray(manifest.cells) || manifest.cells.length !== expectedCount
     || manifest.runDirectories?.length !== expectedCount) {
-    return `canonical strict matrix must contain the complete ${expectedCount}-cell release grid`;
+    return `canonical strict matrix must contain the complete ${expectedCount}-cell paid balanced release plan`;
   }
   const keys = manifest.cells.map(cellKey);
   if (new Set(keys).size !== expectedCount) return 'canonical strict matrix contains duplicate cells';
@@ -147,16 +151,15 @@ export const exactReleaseGridFailure = (manifest) => {
     profile.deviceClass,
     profile.profileId,
   ]));
-  for (const modelId of DEFAULT_MODELS) {
-    for (const feedbackLoopPrevention of DEFAULT_FEEDBACK_MODES) {
-      for (const deviceClass of SUPPORTED_DEVICE_CLASSES) {
-        if (!manifest.cells.some((cell) => (
-          cell.modelId === modelId
-          && cell.feedbackLoopPrevention === feedbackLoopPrevention
-          && cell.deviceClass === deviceClass
-          && cell.deviceProfileId === profileByClass.get(deviceClass)
-        ))) return `canonical strict matrix is missing ${modelId}/${feedbackLoopPrevention}/${deviceClass}`;
-      }
+  for (const expected of LIVE_LLM_CELLS) {
+    const actual = manifest.cells.find((cell) => cell.cellId === expected.cellId);
+    if (
+      !actual
+      || actual.tier !== expected.tier
+      || actual.durationSeconds !== expected.durationSeconds
+      || actual.deviceProfileId !== profileByClass.get(expected.deviceClass)
+    ) {
+      return `canonical strict matrix is missing balanced release cell ${expected.cellId}`;
     }
   }
   return null;
@@ -164,7 +167,7 @@ export const exactReleaseGridFailure = (manifest) => {
 
 /**
  * Resolve the only production input accepted by this emitter. This runs the
- * complete schema-v2 authority verifier and the full 18-cell strict gate; a
+ * complete strict authority verifier and the budget-balanced release gate; a
  * caller-supplied report directory or summary is intentionally unsupported.
  */
 export function resolveCanonicalRealDeviceAudioAuthority({
@@ -203,6 +206,7 @@ export function resolveCanonicalRealDeviceAudioAuthority({
     models: DEFAULT_MODELS,
     feedbackModes: DEFAULT_FEEDBACK_MODES,
     deviceClasses: SUPPORTED_DEVICE_CLASSES,
+    releaseCells: LIVE_LLM_CELLS,
     runDirectories: authority.runDirectories,
     authorizedReports: authority.authorizedReports,
     currentProvenance,
@@ -217,7 +221,7 @@ export function resolveCanonicalRealDeviceAudioAuthority({
     .map((cell, index) => ({ cell, index }))
     .filter(({ cell }) => selectedCellKey(cell) === selectedCellKey(REAL_DEVICE_AUDIO_SELECTED_CELL));
   if (matches.length !== 1) {
-    throw new Error('canonical strict matrix must contain exactly one fixed process-exclusion/default-speaker real-device cell');
+    throw new Error('canonical strict matrix must contain exactly one fixed pairwise-live process-exclusion/default-speaker real-device cell');
   }
   const { cell, index } = matches[0];
   const runDirectory = authority.runDirectories[index];
@@ -388,7 +392,7 @@ export function inspectAuthorizedRealDeviceCell(resolved) {
   if (watch?.status !== 'completed' || elapsedMs < MIN_SESSION_DURATION_MS
     || summaryDurationMs < MIN_SESSION_DURATION_MS
     || Math.abs(elapsedMs - summaryDurationMs) > 1000) {
-    issues.push('real-device Watch session is not a completed continuous 30-minute session');
+    issues.push('real-device Watch session is not a completed continuous 3-minute pairwise-live session');
   }
   const expectedCues = Array.isArray(watch?.cues)
     ? watch.cues.filter((cue) => cue?.comparisonStatus !== 'superseded')

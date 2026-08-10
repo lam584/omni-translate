@@ -9,11 +9,11 @@ param(
   [int]$PostPlaybackWaitSeconds = 120,
   [ValidateRange(1, 100)]
   [int]$SessionReadyTimeoutSeconds = 90,
-  # Stable-route evidence must exercise every model/route pair for at least
-  # 30 minutes. Keep the direct runner aligned with the matrix contract so a
-  # short run cannot later be mistaken for release evidence.
-  [ValidateRange(1800, 7200)]
-  [int]$WatchAutoStopAfterSeconds = 1800,
+  # The budget-approved release plan assigns 180 seconds to pairwise cells
+  # and 600 seconds to per-model stability cells. The authority manifest binds
+  # the exact duration expected for each cell.
+  [ValidateRange(180, 7200)]
+  [int]$WatchAutoStopAfterSeconds = 180,
   [switch]$SkipDesktopLaunch,
   [switch]$SkipDriverRepair,
   [switch]$AllowDriverRepair,
@@ -1204,7 +1204,7 @@ function Get-WatchModeLiveScenarioEnvironment {
     [ValidateSet('virtual-driver', 'process-exclusion', 'echo-cancel')]
     [string]$FeedbackMode,
     [Parameter(Mandatory = $true)]
-    [ValidateRange(1800000, 7200000)]
+    [ValidateRange(180000, 7200000)]
     [int64]$AutoStopAfterMs
   )
   return [pscustomobject]@{

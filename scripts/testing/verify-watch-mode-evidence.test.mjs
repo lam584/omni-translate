@@ -23,8 +23,24 @@ import {
   strictProcessExclusionRestartFailure,
   strictProvenanceFailure,
   strictWatchSessionReportFailure,
-  verifyStrictMatrixAuthority,
+  verifyStrictMatrixAuthority as verifyProductionStrictMatrixAuthority,
 } from './verify-watch-mode-evidence.mjs';
+
+const verifyStrictMatrixAuthority = (options) => verifyProductionStrictMatrixAuthority({
+  ...options,
+  requireLocalIsolation: false,
+  releaseCells: Array.isArray(options?.manifest?.cells)
+    ? options.manifest.cells.map((cell) => ({
+      cellId: cell.cellId,
+      tier: cell.tier,
+      providerMode: cell.providerMode,
+      durationSeconds: cell.durationSeconds,
+      modelId: cell.modelId,
+      feedbackLoopPrevention: cell.feedbackLoopPrevention,
+      deviceClass: cell.deviceClass,
+    }))
+    : undefined,
+});
 
 // Frozen "now" + exact clean HEAD so strict provenance can be exercised
 // deterministically without depending on the test process worktree.
@@ -457,6 +473,15 @@ function writeAuthorityManifest(root, runDirectory, {
   now = new Date(Date.now() + 1_000),
   runtimeBinaryHashes = TEST_RUNTIME_BINARY_HASHES,
 } = {}) {
+  const releaseCells = [{
+    cellId: `test::${modelId}::${feedbackLoopPrevention}::${deviceClass}`,
+    tier: 'pairwise-live',
+    providerMode: 'live-dashscope',
+    durationSeconds: MIN_STRICT_SESSION_DURATION_MS / 1_000,
+    modelId,
+    feedbackLoopPrevention,
+    deviceClass,
+  }];
   return writeMatrixRunManifest({
     outputRoot: root,
     modelList: [modelId],
@@ -467,6 +492,7 @@ function writeAuthorityManifest(root, runDirectory, {
     now,
     provenance: CLEAN_CURRENT_PROVENANCE,
     authorityRuntimeBinaryHashes: runtimeBinaryHashes,
+    releaseCells,
   });
 }
 
@@ -875,7 +901,7 @@ test('strict verifier refuses to scan outputRoot without an explicit current-run
   const result = findWatchModeEvidence({ root, strict: true, ...provenanceOk });
 
   assert.equal(result.ok, false);
-  assert.match(result.reason, /requires the schema-v2 authority manifest/);
+  assert.match(result.reason, /requires the schema-v3 budget-balanced authority manifest/);
   assert.equal(result.candidates.length, 0, 'historical reports must not be scanned in strict mode');
 });
 
@@ -1055,7 +1081,7 @@ test('strict authority rejects a report-only schema-v1 matrix even when all 18 s
       workspaceRoot: path.resolve('.'),
       currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
     }),
-    /requires watch-mode-strict-matrix-authority schemaVersion=2/,
+    /requires watch-mode-strict-matrix-authority schemaVersion=3/,
   );
 });
 
@@ -1333,7 +1359,7 @@ test('strict AEC evidence requires real three-stage render injection and zero su
   assert.match(strictAecScenarioFailure(dryRun), /live run/i);
 });
 
-test('strict process-exclusion evidence requires a real midpoint restart across the 30-minute timeline', () => {
+test('strict process-exclusion evidence requires a real midpoint restart across the required timeline', () => {
   const healthyReport = {
     mode: 'live',
     layers: {
@@ -1349,7 +1375,7 @@ test('strict process-exclusion evidence requires a real midpoint restart across 
   const evidence = fiveMinuteSimulation.layers.bridge.data.processExclusionRestart;
   evidence.systemMetrics.durationMs = 300_000;
   evidence.systemMetrics.finishedAt = new Date(PROCESS_METRICS_STARTED_AT_MS + 300_000).toISOString();
-  assert.match(strictProcessExclusionRestartFailure(fiveMinuteSimulation), /30-minute real process-tree/i);
+  assert.match(strictProcessExclusionRestartFailure(fiveMinuteSimulation), /required real process-tree/i);
 
   const sameIdentity = structuredClone(healthyReport);
   sameIdentity.layers.bridge.data.processExclusionRestart.newBridgeProcessId = 4242;

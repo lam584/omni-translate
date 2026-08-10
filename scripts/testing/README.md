@@ -178,7 +178,7 @@ IPC readiness, invoke the existing handlers in the same `AppHandle`, validate
 the emitted PID/executable/invocation/bundle authority, require the release
 binary's compile-time Git commit to equal the current exact clean `HEAD`, and then call the
 assembler through its private authority seam. The real-device runner re-verifies the complete
-canonical strict schema-v2 Watch matrix and accepts only its fixed
+canonical strict schema-v3 budget-balanced Watch authority and accepts only its fixed
 `qwen3.5-omni-flash-realtime/process-exclusion/default-speaker` cell; it does not accept a
 manifest path, report directory, dry-run, simulated, or skip override. Each available profile has a fixed
 emitter ID/version, evidence artifact kind, payload role set, raw schema,
@@ -250,8 +250,11 @@ capture evidence.
 Do not type performance measurements into the pending JSON template. First run
 the canonical strict Watch matrix on the required default-speaker, USB, and
 Bluetooth endpoints. Every live matrix cell now writes `system-metrics.json`
-with raw one-second samples for the Desktop process tree. After all 18 cells
-pass, assemble the baseline:
+with raw one-second samples for the Desktop process tree. The budget-balanced
+release plan first runs 9 five-minute local-isolation cells with the Provider
+disabled, then 6 three-minute pairwise live cells and 2 ten-minute model
+stability cells. The paid live budget is therefore 38 minutes. After all
+authorities pass, assemble the baseline:
 
 ```powershell
 node ./scripts/testing/assemble-performance-baseline.mjs --operator "<name>"
@@ -260,14 +263,15 @@ node ./scripts/testing/assemble-performance-baseline.mjs --operator "<name>"
 The assembler accepts only
 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`
 from the same exact clean `HEAD`. Production assembly and validation rerun the
-complete schema-v2 strict authority verifier; the verification receipt is only
+complete schema-v3 balanced strict authority verifier; the verification receipt is only
 an index, not authority by itself. The archive binds the canonical manifest,
 its strict source manifest and verification receipt, every per-cell authority
-receipt, and all 18 `report.json` and `system-metrics.json` files by path, byte
+receipt, the 9-cell zero-LLM local authority, and all 8 paid live
+`report.json` and `system-metrics.json` files by path, byte
 count, and SHA-256. Validation rebuilds every authorized Watch report, derives
 the provider and subtitle p95 values from raw cue timestamps, and independently
 recomputes TTS latency, process-tree CPU p95, peak memory, dropout evidence, and
-the shortest Watch duration. Schema-v1 canonical manifests, self-reported
+the shorter duration of the two 10-minute stability cells. Legacy canonical manifests, self-reported
 canonical PASS, missing receipts/raw files, and rehashed aggregate summaries
 are rejected.
 
@@ -275,8 +279,8 @@ Evidence collection boundaries:
 
 | Artifact | Command or action | Prerequisites | Typical duration | Verifiable output |
 | --- | --- | --- | --- | --- |
-| Manual E2E | Run `collect:release-evidence:desktop` for the three Desktop-backed scenarios, `collect:release-evidence:real-device-audio` after the strict matrix, `collect:release-evidence:overlay` on an interactive Windows desktop, and `collect:release-evidence:virtual-mic` | Clean exact HEAD, release Desktop binary, configured live Provider credential for Provider scenarios, complete current-HEAD strict matrix, native virtual microphone ready, an installed Microsoft Edge WebView2 runtime, network access for the runner to install pinned `tauri-driver` 2.0.6 with `--locked` and fetch the exactly matching Microsoft-signed WebDriver into `artifacts/tooling/overlay-click-through`, and a named overlay operator on an unlocked interactive desktop | Desktop/diagnostics, vmic, and overlay take minutes; the real-device assembler takes seconds after the 18-cell matrix | Six independently validated scenario receipts; stable release requires all six |
-| Canonical performance source | `node ./scripts/testing/run-watch-mode-live-matrix.mjs --device-profiles <json> --skip-driver-repair` | Clean exact HEAD, production binaries, live provider credentials, one verified default/USB/Bluetooth endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | At least 9 hours for 18 x 30-minute cells, normally longer with readiness and post-processing | Canonical strict manifest, 18 passed `report.json`, and 18 raw `system-metrics.json` files |
+| Manual E2E | Run `collect:release-evidence:desktop` for the three Desktop-backed scenarios, `collect:release-evidence:real-device-audio` after the strict matrix, `collect:release-evidence:overlay` on an interactive Windows desktop, and `collect:release-evidence:virtual-mic` | Clean exact HEAD, release Desktop binary, configured live Provider credential for Provider scenarios, complete current-HEAD strict matrix, native virtual microphone ready, an installed Microsoft Edge WebView2 runtime, network access for the runner to install pinned `tauri-driver` 2.0.6 with `--locked` and fetch the exactly matching Microsoft-signed WebDriver into `artifacts/tooling/overlay-click-through`, and a named overlay operator on an unlocked interactive desktop | Desktop/diagnostics, vmic, and overlay take minutes; the real-device assembler takes seconds after the balanced matrix | Six independently validated scenario receipts; stable release requires all six |
+| Canonical performance source | `node ./scripts/testing/run-watch-mode-live-matrix.mjs --device-profiles <json> --skip-driver-repair` | Clean exact HEAD, production binaries, available DashScope credential, one verified default/USB/Bluetooth endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | 83 minutes raw collection (45 zero-LLM + 38 paid live), normally 1.5–2.5 hours with build/readiness/post-processing | Canonical strict manifest, 9 local-isolation authorities, 8 passed live `report.json`, and 8 raw `system-metrics.json` files |
 | Performance assembly | `node ./scripts/testing/assemble-performance-baseline.mjs --operator "<name>"` | The complete canonical matrix above, still on the same clean HEAD | Seconds to about one minute | Receipt-backed `desktop-perf-baseline-*.json`; CPU/memory/latency/dropout/duration are recomputed |
 | Install regression | `npm run test:install-regression`; then run each `collect:release-evidence:install:*` command and archive its returned package directory | Windows x64 UAC test machine, exact current-clean-HEAD canonical signed package, RFC3161 timestamps, and an older canonical signed package for upgrade | 20-40 minutes plus operator review | Five independently recomputed collector packages/receipts; schema-shaped files and prose cannot satisfy a scenario |
 
@@ -380,7 +384,7 @@ npm run test:watch-mode-evidence:strict
 
 The npm command reads
 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`.
-Only a successful scoped verification of the exact 18-cell release matrix may
+Only a successful scoped verification of the exact budget-balanced release plan may
 atomically replace that canonical manifest. A strict matrix must start and
 finish on one clean Git checkout. Every report and matrix manifest records an
 explicit `provenance` object, and strict verification requires its
@@ -389,7 +393,7 @@ explicit `provenance` object, and strict verification requires its
 files cannot satisfy release provenance; clean the checkout and rerun the full
 matrix instead.
 
-The canonical file is a schema-v2 authority manifest, not a directory list.
+The canonical file is a schema-v3 authority manifest, not a directory list.
 Before collection the matrix rebuilds the Desktop/AEC3, Bridge probes/media
 injector, realtime diagnostic, and SYSVAD package from that exact checkout.
 Each cell then records a fixed raw-artifact inventory with byte counts and

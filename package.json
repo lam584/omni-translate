@@ -68,7 +68,7 @@
     "i18n:coverage": "node ./scripts/testing/i18n-coverage.mjs",
     "i18n:coverage:strict": "node ./scripts/testing/i18n-coverage.mjs --min-translation-coverage=100",
     "i18n:coverage:ratchet": "node ./scripts/testing/i18n-coverage.mjs --ratchet",
-    "test:watch-mode-report": "node --test ./scripts/testing/watch-mode-report.test.mjs ./scripts/testing/watch-mode-score.test.mjs ./scripts/testing/run-watch-mode-live.test.mjs ./scripts/testing/run-watch-mode-live-matrix.test.mjs ./scripts/testing/generate-watch-mode-live-fixtures.test.mjs ./scripts/testing/verify-watch-mode-evidence.test.mjs",
+    "test:watch-mode-report": "node --test ./scripts/testing/watch-mode-report.test.mjs ./scripts/testing/watch-mode-score.test.mjs ./scripts/testing/run-watch-mode-live.test.mjs ./scripts/testing/run-watch-mode-live-matrix.test.mjs ./scripts/testing/watch-mode-balanced-release-plan.test.mjs ./scripts/testing/watch-mode-local-isolation.test.mjs ./scripts/testing/generate-watch-mode-live-fixtures.test.mjs ./scripts/testing/verify-watch-mode-evidence.test.mjs",
     "score:watch-mode": "node ./scripts/testing/watch-mode-score.mjs",
     "test:release-lib": "node --test ./scripts/lib/release-common.test.mjs ./scripts/lib/testing-common.test.mjs ./scripts/release/release-source-provenance.test.mjs",
     "test:quality-gate-tooling": "node --test ./scripts/testing/run-quality-gate.test.mjs ./scripts/testing/real-device-audio-release-evidence.test.mjs ./scripts/testing/overlay-click-through-release-evidence.test.mjs ./scripts/testing/run-install-release-evidence.test.mjs ./scripts/testing/virtual-mic-fingerprint-authority.test.mjs",

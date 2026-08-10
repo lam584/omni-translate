@@ -58,7 +58,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-wa
 npm run test:watch-mode-evidence:strict
 ```
 
-该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。只有本次 scoped verifier 已通过、且 manifest 精确包含 2 模型 × 3 路线 × 3 设备共 18 个唯一目录时，matrix 才会原子替换这个 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。matrix 明确拒绝 `-DryRun`，脚本 fixture 自测只能使用 `npm run test:watch-mode-live:dry-run`，其报告保持 `mode=dry-run`，不会进入 strict 验收。
+该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。发布验证采用预算平衡方案：9 个零 LLM 本地隔离格（3 路线 × 3 设备类，每格 5 分钟）、6 个 live 配对格（每格 3 分钟）和 2 个模型稳定格（每格 10 分钟）。只有这 17 个格子的固定 authority 全部通过，本次 scoped verifier 才会原子替换 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。matrix 明确拒绝 `-DryRun`，脚本 fixture 自测只能使用 `npm run test:watch-mode-live:dry-run`，其报告保持 `mode=dry-run`，不会进入 strict 验收。
+
+付费 live 层固定为 38 LLM 分钟，而不是原来的 18 × 30 分钟：
+
+- `pairwise-live`：6 个模型/路线/设备配对格 × 3 分钟，共 18 分钟；保证每个模型、每条路线和每类设备在组合层都出现。
+- `model-stability`：2 个模型 × 10 分钟，共 20 分钟；固定使用 `process-exclusion/default-speaker`。
+- `local-isolation`：9 个格 × 5 分钟，Provider 完全禁用，`providerCalls=0`，不消耗 LLM token。
+
+矩阵在构建完成后、任何本地格或付费格开始前，会先对 `provider-dashscope` 执行 production provider preflight；若凭据、entitlement、streaming 或翻译文本不可用，整次运行立即 fail-closed，避免产生长时设备占用或付费调用。
 
 Strict matrix 启动前要求 Git 工作树完全 clean（包括未跟踪源码），并固定当时的精确 `HEAD`。每份 `report.json`、本次 matrix manifest 和 canonical manifest 都记录 `provenance`（`headCommit`、`worktreeClean`、`dirtyEntryCount`）；matrix 结束、scoped verifier 和 canonical 发布会再次读取当前 checkout。只有生成时与验证时均 clean 且 `headCommit` 与当前 `HEAD` 完全相等才通过；旧 ancestor commit 即使可达也不能作为当前发布证据。运行期间提交、修改或新增未跟踪源码会使整次 strict matrix 失效，必须在 clean checkout 上重跑。
 
@@ -82,7 +90,7 @@ artifacts/testing/watch-mode-live/<timestamp>/
 - `report.json`: agent 优先读取的机器可读报告；包含生成时的精确 Git `provenance`。
 - `report.md`: 人类可读摘要。
 - `../watch-mode-live-matrix-*.json`: 单次 matrix 的精确 run directory 清单和 source provenance。
-- `../latest-successful-watch-mode-strict-matrix.json`: 最近一次成功完成 scoped strict 验证、并与当前 clean `HEAD` 精确绑定的 18 格 canonical manifest。
+- `../latest-successful-watch-mode-strict-matrix.json`: 最近一次成功完成 scoped strict 验证、并与当前 clean `HEAD` 精确绑定的预算平衡 canonical manifest（9 个零 LLM 本地格 + 8 个付费 live 格）。
 - `../latest-watch-mode-live.json`: 最新 live run 的轻量索引，只包含 `timestamp`、`reportPath`、`verdict`、`failureLayer`、`modelId`。
 - `snapshots.json`: driver、wasapi、bridge、physicalOutput、app、provider、playback 快照。
 - `steps.json`: 每个编排步骤的执行结果。
@@ -104,7 +112,7 @@ Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-probe.
 Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-content.json -Raw
 ```
 
-不要把仓库根目录下的 `report.json` 或 `report.md` 当作当前项目状态来源。普通本地诊断用 `npm run test:watch-mode-evidence` 扫描 `artifacts/testing/watch-mode-live/<timestamp>/report.json`；发布前严格证据只认 canonical manifest 列出的本次 18 个目录，禁止从 output root 自动挑选历史报告补格。
+不要把仓库根目录下的 `report.json` 或 `report.md` 当作当前项目状态来源。普通本地诊断用 `npm run test:watch-mode-evidence` 扫描 `artifacts/testing/watch-mode-live/<timestamp>/report.json`；发布前严格证据只认 canonical manifest 绑定的本次 9 个本地 authority 格和 8 个 live 目录，禁止从 output root 自动挑选历史报告补格。
 
 ## 分层判定
 
@@ -139,7 +147,7 @@ npm run test:watch-mode-evidence
 npm run test:watch-mode-evidence:strict
 ```
 
-普通 `npm run test:watch-mode-evidence` 会扫描 `artifacts/testing/watch-mode-live/*/report.json`，并跳过 `cache`、`physical-output-smoke-*`、`reference-pcm-smoke-*` 等非完整 live 目录。严格命令不执行这种扫描，只读取 canonical manifest 中精确列出的 18 份 live report，并继续校验 30 分钟时长、设备身份、唯一 session、report/manifest provenance 与当前 clean `HEAD` 精确相等，以及 `strictContent.passed=true`。ancestor commit、生成时 dirty、验证时 dirty 或未跟踪源码都会失败。普通 `npm run quality:gate` 不会启动真实硬件链路；`release:verify` 会额外执行严格 evidence 门禁。
+普通 `npm run test:watch-mode-evidence` 会扫描 `artifacts/testing/watch-mode-live/*/report.json`，并跳过 `cache`、`physical-output-smoke-*`、`reference-pcm-smoke-*` 等非完整 live 目录。严格命令不执行这种扫描，只读取 canonical manifest 精确绑定的 8 份 live report 和 9 格本地隔离 authority，并按 `cellId/tier` 分别校验 3 分钟配对时长、10 分钟稳定时长、5 分钟零 Provider 本地时长、设备身份、唯一 session、report/manifest provenance 与当前 clean `HEAD` 精确相等，以及 `strictContent.passed=true`。ancestor commit、生成时 dirty、验证时 dirty 或未跟踪源码都会失败。普通 `npm run quality:gate` 不会启动真实硬件链路；`release:verify` 会额外执行严格 evidence 门禁。
 
 失败时重点看：
 

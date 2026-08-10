@@ -164,12 +164,15 @@ pub(super) fn configure_watch_mode(
     translation_audio_source: &str,
     feedback_loop_prevention: &str,
 ) {
-    // Native Watch diagnostics remain subtitle-only when virtual-driver
-    // isolation is selected. The echo-cancel variant is intentionally
-    // different: it must replay native translated audio so the physical
-    // loopback capture has a real AEC reference to cancel.
+    // Native Watch diagnostics remain subtitle-only only when virtual-driver
+    // isolation is selected. Echo-cancel needs physical render reference, and
+    // process-exclusion requires every translated sample to be rendered by the
+    // excluded Bridge process rather than Desktop.
     let translated_playback_enabled = subtitle_translation_mode == "secondary"
-        || feedback_loop_prevention == "echo-cancel";
+        || matches!(
+            feedback_loop_prevention,
+            "echo-cancel" | "process-exclusion"
+        );
     // A diagnostic launch with no explicit physical endpoint must not inherit
     // a stale persisted device id (for example, a removed virtual endpoint).
     // `default` is understood by both direct playback and WASAPI capture.

@@ -18,6 +18,9 @@ Abstract:
 #include "speakertopo.h"
 #include "speakertoptable.h"
 #include "speakerwavtable.h"
+#include "micintopo.h"
+#include "micintoptable.h"
+#include "micinwavtable.h"
 
 NTSTATUS
 CreateMiniportWaveRTSYSVAD
@@ -113,6 +116,37 @@ static ENDPOINT_MINIPAIR SpeakerMiniports =
     &SpeakerModuleNotificationDeviceId,
 };
 
+static PHYSICALCONNECTIONTABLE MicInTopologyPhysicalConnections[] =
+{
+    {
+        KSPIN_TOPO_BRIDGE,
+        KSPIN_WAVE_BRIDGE,
+        CONNECTIONTYPE_TOPOLOGY_OUTPUT
+    }
+};
+
+static ENDPOINT_MINIPAIR MicInMiniports =
+{
+    eMicInDevice,
+    L"TopologyMicIn",
+    NULL,
+    CreateMiniportTopologySYSVAD,
+    &MicInTopoMiniportFilterDescriptor,
+    0, NULL,
+    L"WaveMicIn",
+    NULL,
+    CreateMiniportWaveRTSYSVAD,
+    &MicInWaveMiniportFilterDescriptor,
+    0, NULL,
+    MICIN_DEVICE_MAX_CHANNELS,
+    MicInPinDeviceFormatsAndModes,
+    SIZEOF_ARRAY(MicInPinDeviceFormatsAndModes),
+    MicInTopologyPhysicalConnections,
+    SIZEOF_ARRAY(MicInTopologyPhysicalConnections),
+    ENDPOINT_NO_FLAGS,
+    NULL, 0, NULL,
+};
+
 static PENDPOINT_MINIPAIR g_RenderEndpoints[] =
 {
     &SpeakerMiniports,
@@ -120,8 +154,12 @@ static PENDPOINT_MINIPAIR g_RenderEndpoints[] =
 
 #define g_cRenderEndpoints (SIZEOF_ARRAY(g_RenderEndpoints))
 
-static PENDPOINT_MINIPAIR* g_CaptureEndpoints = nullptr;
-static ULONG g_cCaptureEndpoints = 0;
+static PENDPOINT_MINIPAIR g_CaptureEndpoints[] =
+{
+    &MicInMiniports,
+};
+
+#define g_cCaptureEndpoints (SIZEOF_ARRAY(g_CaptureEndpoints))
 
 #define g_MaxMiniports ((g_cRenderEndpoints + g_cCaptureEndpoints) * 2)
 

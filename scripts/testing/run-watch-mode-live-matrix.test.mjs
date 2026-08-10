@@ -5,23 +5,51 @@ import path from 'node:path';
 import test from 'node:test';
 import { repoRoot } from '../lib/testing-common.mjs';
 import {
+  CANONICAL_STRICT_MATRIX_MANIFEST,
   DEFAULT_FEEDBACK_MODES,
   DEFAULT_MODELS,
+  LIVE_RUNNER_POST_REPORT_GRACE_SECONDS,
   LIVE_RUNNER_TERMINATION_GRACE_MS,
-  LIVE_RUNNER_TIMEOUT_MS,
+  MAX_WATCH_AUTO_STOP_AFTER_SECONDS,
   MATRIX_DEFAULTS,
+  MIN_WATCH_AUTO_STOP_AFTER_SECONDS,
+  SUPPORTED_DEVICE_CLASSES,
+  WATCH_REPORT_COMPLETION_GRACE_SECONDS,
+  STRICT_RUNTIME_BUILD_COMMANDS,
+  assertLiveMatrixRunnerArgs,
+  assertStrictMatrixProvenance,
+  assertStrictEvidenceOptions,
+  assertStrictReleaseMatrixLists,
   buildRunnerArgv,
+  buildStrictRuntimeAuthority,
   buildVerifyArgv,
   lastNonEmptyLine,
   lastRunDirectoryLine,
   parseMatrixCliArgs,
+  publishSuccessfulStrictMatrixManifest,
+  resolveDeviceProfiles,
+  resolveLiveRunnerTimeoutMs,
   resolveMatrixLists,
   resolveWatchRealtimeProtocol,
+  runnerArgsRequestDryRun,
   splitRunnerArgs,
+  strictRuntimeEnvironment,
+  writeMatrixRunManifest,
 } from './run-watch-mode-live-matrix.mjs';
+import { requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
+import { writeStrictMatrixVerificationReceipt } from './verify-watch-mode-evidence.mjs';
 
 const SAMPLE_MODEL = 'qwen3.5-omni-flash-realtime';
 const SAMPLE_FEEDBACK_MODE = 'echo-cancel';
+const CLEAN_PROVENANCE = Object.freeze({
+  schemaVersion: 1,
+  source: 'git',
+  captureStatus: 'captured',
+  headCommit: 'fixture-current-head',
+  worktreeClean: true,
+  dirtyEntryCount: 0,
+});
+const TEST_RUNTIME_BINARY_HASHES = Object.freeze([]);
 
 // Guard order matches the runner switch forwarding the retired matrix .ps1 used.
 const RUNNER_SWITCHES = [
@@ -34,9 +62,17 @@ const RUNNER_SWITCHES = [
   'SkipPhysicalOutputContentStt',
 ];
 
+function writeAuthorityPlaceholderArtifacts(runDirectory, feedbackMode) {
+  for (const relativePath of requiredCellArtifactPaths(feedbackMode)) {
+    const filePath = path.join(runDirectory, ...relativePath.split('/'));
+    fs.mkdirSync(path.dirname(filePath), { recursive: true });
+    fs.writeFileSync(filePath, relativePath.endsWith('.json') ? '{}\n' : 'fixture\n', 'utf8');
+  }
+}
+
 test('matrix defaults freeze the strict-evidence contract', () => {
   assert.deepEqual(DEFAULT_MODELS, ['qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime']);
-  assert.deepEqual(DEFAULT_FEEDBACK_MODES, ['virtual-driver', 'echo-cancel']);
+  assert.deepEqual(DEFAULT_FEEDBACK_MODES, ['process-exclusion', 'virtual-driver', 'echo-cancel']);
   assert.deepEqual(MATRIX_DEFAULTS, {
     outputRoot: 'artifacts/testing/watch-mode-live',
     mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
@@ -44,20 +80,48 @@ test('matrix defaults freeze the strict-evidence contract', () => {
     playbackSeconds: 0,
     postPlaybackWaitSeconds: 120,
     sessionReadyTimeoutSeconds: 90,
-    watchAutoStopAfterSeconds: 60,
+    watchAutoStopAfterSeconds: 1_800,
     physicalPlaybackDeviceId: 'default',
+    physicalPlaybackDeviceClass: 'default-speaker',
+    physicalPlaybackDeviceProfileId: 'default-speaker',
     expectedPhysicalPlaybackDeviceName: '',
   });
+  assert.deepEqual(SUPPORTED_DEVICE_CLASSES, ['default-speaker', 'usb', 'bluetooth']);
+  const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+  assert.match(
+    packageJson.scripts['test:watch-mode-evidence:strict'],
+    /--feedback-modes process-exclusion,virtual-driver,echo-cancel(?:\s|$)/,
+    'the release evidence gate must require the same three feedback modes as the live matrix',
+  );
+  assert.match(
+    packageJson.scripts['test:watch-mode-evidence:strict'],
+    /--run-manifest artifacts\/testing\/watch-mode-live\/latest-successful-watch-mode-strict-matrix\.json/,
+    'the release evidence gate must verify only the canonical successful strict manifest',
+  );
 });
 
-test('each live runner has an absolute budget below two minutes', () => {
-  assert.equal(LIVE_RUNNER_TIMEOUT_MS, 110_000);
+test('each live runner reserves a 30-minute capture and derives its timeout from configured budgets', () => {
+  assert.equal(MIN_WATCH_AUTO_STOP_AFTER_SECONDS, 1_800);
+  assert.equal(MAX_WATCH_AUTO_STOP_AFTER_SECONDS, 7_200);
+  assert.equal(MATRIX_DEFAULTS.watchAutoStopAfterSeconds, MIN_WATCH_AUTO_STOP_AFTER_SECONDS);
+  assert.equal(WATCH_REPORT_COMPLETION_GRACE_SECONDS, 120);
+  assert.equal(LIVE_RUNNER_POST_REPORT_GRACE_SECONDS, 180);
   assert.equal(LIVE_RUNNER_TERMINATION_GRACE_MS, 5_000);
-  assert.ok(
-    LIVE_RUNNER_TIMEOUT_MS + LIVE_RUNNER_TERMINATION_GRACE_MS < 120_000,
-    'runner timeout plus forced-termination grace must remain below two minutes',
+  assert.equal(resolveLiveRunnerTimeoutMs(), 2_190_000);
+  assert.equal(
+    resolveLiveRunnerTimeoutMs({ watchAutoStopAfterSeconds: 3_600 }),
+    3_990_000,
   );
-  assert.ok(MATRIX_DEFAULTS.watchAutoStopAfterSeconds <= 60);
+  assert.equal(
+    resolveLiveRunnerTimeoutMs({
+      playbackSeconds: 5_000,
+      postPlaybackWaitSeconds: 120,
+      sessionReadyTimeoutSeconds: 90,
+      watchAutoStopAfterSeconds: 1_800,
+    }),
+    5_398_000,
+    'long explicit playback plus recorder tail must extend the process timeout',
+  );
 });
 
 test('sample pair argv binds every always-forwarded runner parameter', () => {
@@ -71,8 +135,10 @@ test('sample pair argv binds every always-forwarded runner parameter', () => {
     '-PlaybackSeconds', '0',
     '-PostPlaybackWaitSeconds', '120',
     '-SessionReadyTimeoutSeconds', '90',
-    '-WatchAutoStopAfterSeconds', '60',
+    '-WatchAutoStopAfterSeconds', '1800',
     '-PhysicalPlaybackDeviceId', 'default',
+    '-PhysicalPlaybackDeviceClass', 'default-speaker',
+    '-PhysicalPlaybackDeviceProfileId', 'default-speaker',
     '-FeedbackLoopPrevention', 'echo-cancel',
     '-ExpectedPhysicalPlaybackDeviceName', '',
   ]);
@@ -120,7 +186,7 @@ test('switch parameters are appended bare, only when enabled, in guard order', (
     allowElevatedDesktopLaunch: true,
     skipPhysicalOutputContentStt: true,
   });
-  assert.deepEqual(allOn.slice(22), RUNNER_SWITCHES.map((name) => `-${name}`));
+  assert.deepEqual(allOn.slice(26), RUNNER_SWITCHES.map((name) => `-${name}`));
 
   const allOff = buildRunnerArgv({ model: SAMPLE_MODEL, feedbackMode: SAMPLE_FEEDBACK_MODE });
   for (const name of RUNNER_SWITCHES) {
@@ -175,14 +241,17 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
   assert.equal(defaults.aliasProtocol, 'dashscope-omni');
   assert.equal(defaults.feedbackLoopPreventionModes, DEFAULT_FEEDBACK_MODES.join(','));
   assert.equal(defaults.outputRoot, MATRIX_DEFAULTS.outputRoot);
+  assert.equal(defaults.deviceProfiles, '');
   assert.equal(defaults.warmupSeconds, 12);
-  assert.equal(defaults.watchAutoStopAfterSeconds, 60);
+  assert.equal(defaults.watchAutoStopAfterSeconds, 1_800);
   assert.deepEqual(defaults.runnerArgs, []);
 
   const parsed = parseMatrixCliArgs([
     '--models', 'model-a,model-b',
     '--feedback-loop-prevention-modes', 'virtual-driver',
     '--warmup-seconds', '30',
+    '--watch-auto-stop-after-seconds', '1800',
+    '--diagnostic-single-device',
     '--skip-driver-repair',
     '--allow-elevated-desktop-launch',
     '--expected-physical-playback-device-name', 'Speakers',
@@ -191,6 +260,8 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
   assert.equal(parsed.models, 'model-a,model-b');
   assert.equal(parsed.feedbackLoopPreventionModes, 'virtual-driver');
   assert.equal(parsed.warmupSeconds, 30);
+  assert.equal(parsed.watchAutoStopAfterSeconds, 1_800);
+  assert.equal(parsed.diagnosticSingleDevice, true);
   assert.equal(parsed.skipDriverRepair, true);
   assert.equal(parsed.allowElevatedDesktopLaunch, true);
   assert.equal(parsed.expectedPhysicalPlaybackDeviceName, 'Speakers');
@@ -198,8 +269,12 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
 
   assert.throws(() => parseMatrixCliArgs(['--warmup-seconds', 'soon']), /--warmup-seconds must be an integer/);
   assert.throws(
-    () => parseMatrixCliArgs(['--watch-auto-stop-after-seconds', '101']),
-    /must be between 1 and 100/,
+    () => parseMatrixCliArgs(['--watch-auto-stop-after-seconds', '1799']),
+    /must be between 1800 and 7200/,
+  );
+  assert.throws(
+    () => parseMatrixCliArgs(['--watch-auto-stop-after-seconds', '7201']),
+    /must be between 1800 and 7200/,
   );
   assert.throws(() => parseMatrixCliArgs(['--unknown-flag', 'x']), /Unknown flag --unknown-flag/);
 });
@@ -221,18 +296,339 @@ test('resolveMatrixLists enforces the matrix validation errors', () => {
     () => resolveMatrixLists({ models: 'model-a', feedbackLoopPreventionModes: 'virtual-driver,noise-gate' }),
     /Unsupported feedback loop prevention mode: noise-gate/,
   );
+  assert.doesNotThrow(() => assertStrictReleaseMatrixLists({
+    modelList: DEFAULT_MODELS,
+    feedbackModeList: DEFAULT_FEEDBACK_MODES,
+  }));
+  assert.throws(
+    () => assertStrictReleaseMatrixLists({
+      modelList: DEFAULT_MODELS,
+      feedbackModeList: ['echo-cancel'],
+    }),
+    /strict release matrix must use exactly/,
+  );
+});
+
+test('resolveDeviceProfiles fails closed for strict runs and accepts single-device only as an explicit diagnostic', () => {
+  assert.throws(
+    () => resolveDeviceProfiles({}),
+    /--device-profiles is required for the strict matrix/,
+  );
+  assert.deepEqual(resolveDeviceProfiles({ diagnosticSingleDevice: true }), [{
+    profileId: 'default-speaker',
+    deviceClass: 'default-speaker',
+    physicalPlaybackDeviceId: 'default',
+    expectedPhysicalPlaybackDeviceName: '',
+  }]);
+
+  const profiles = [
+    {
+      profileId: 'speakers',
+      deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: 'default',
+      expectedPhysicalPlaybackDeviceName: 'Speakers',
+    },
+    {
+      profileId: 'usb-dac',
+      deviceClass: 'usb',
+      physicalPlaybackDeviceId: 'usb-endpoint-id',
+      expectedPhysicalPlaybackDeviceName: 'USB Audio',
+    },
+    {
+      profileId: 'bluetooth-headphones',
+      deviceClass: 'bluetooth',
+      physicalPlaybackDeviceId: 'bluetooth-endpoint-id',
+      expectedPhysicalPlaybackDeviceName: 'Bluetooth',
+    },
+  ];
+  assert.deepEqual(resolveDeviceProfiles({ deviceProfiles: JSON.stringify(profiles) }), profiles);
+
+  assert.throws(
+    () => resolveDeviceProfiles({ deviceProfiles: JSON.stringify([profiles[0]]) }),
+    /must contain exactly one profile for each device class/,
+  );
+  assert.throws(
+    () => resolveDeviceProfiles({
+      diagnosticSingleDevice: true,
+      deviceProfiles: JSON.stringify(profiles),
+    }),
+    /requires exactly one device profile/,
+  );
+
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-device-profiles-'));
+  const configPath = path.join(directory, 'profiles.json');
+  fs.writeFileSync(configPath, `${JSON.stringify({ deviceProfiles: profiles })}\n`, 'utf8');
+  assert.deepEqual(resolveDeviceProfiles({ deviceProfiles: configPath }), profiles);
+
+  assert.throws(
+    () => resolveDeviceProfiles({
+      deviceProfiles: JSON.stringify([{
+        profileId: 'usb',
+        deviceClass: 'usb',
+        physicalPlaybackDeviceId: 'default',
+        expectedPhysicalPlaybackDeviceName: 'USB',
+      }]),
+    }),
+    /explicit endpoint id/,
+  );
+  assert.throws(
+    () => resolveDeviceProfiles({
+      deviceProfiles: JSON.stringify([
+        profiles[0],
+        { ...profiles[0], profileId: 'other-speakers' },
+      ]),
+    }),
+    /duplicate deviceClass/,
+  );
 });
 
 test('verify invocation targets the strict evidence checker', () => {
   assert.deepEqual(
-    buildVerifyArgv('artifacts/testing/watch-mode-live', ['model-a', 'model-b'], ['virtual-driver', 'echo-cancel']),
+    buildVerifyArgv(
+      'artifacts/testing/watch-mode-live',
+      ['model-a', 'model-b'],
+      ['virtual-driver', 'echo-cancel'],
+      ['default-speaker', 'usb', 'bluetooth'],
+      'E:\\artifacts\\watch-mode-live-matrix.json',
+    ),
     [
       './scripts/testing/verify-watch-mode-evidence.mjs',
       '--root', 'artifacts/testing/watch-mode-live',
       '--strict',
       '--models', 'model-a,model-b',
       '--feedback-modes', 'virtual-driver,echo-cancel',
+      '--device-classes', 'default-speaker,usb,bluetooth',
+      '--run-manifest', 'E:\\artifacts\\watch-mode-live-matrix.json',
     ],
+  );
+});
+
+test('strict matrix rejects DryRun passthrough before any fixture can be treated as live evidence', () => {
+  assert.equal(runnerArgsRequestDryRun(['-Fixture', 'pass']), false);
+  assert.equal(runnerArgsRequestDryRun(['-dryrun']), true);
+  assert.equal(runnerArgsRequestDryRun(['/DryRun']), true);
+  assert.throws(
+    () => assertLiveMatrixRunnerArgs(['-DryRun', '-Fixture', 'pass']),
+    /fixture reports are mode=dry-run and are not release evidence/,
+  );
+});
+
+test('strict matrix rejects switches that bypass canonical media or raw physical-content evidence', () => {
+  for (const options of [
+    { skipDesktopLaunch: true },
+    { useDefaultEndpointPlayback: true },
+    { skipPhysicalOutputContentStt: true },
+    { playbackSeconds: 120 },
+    { runnerArgs: ['-SkipPhysicalOutputContentStt'] },
+  ]) {
+    assert.throws(() => assertStrictEvidenceOptions(options), /evidence-weakening options/);
+  }
+  assert.doesNotThrow(() => assertStrictEvidenceOptions({
+    playbackSeconds: 0,
+    runnerArgs: ['-SkipDriverRepair'],
+  }));
+});
+
+test('strict matrix requires one exact clean git source state', () => {
+  assert.equal(assertStrictMatrixProvenance(CLEAN_PROVENANCE), CLEAN_PROVENANCE);
+  assert.throws(
+    () => assertStrictMatrixProvenance({
+      ...CLEAN_PROVENANCE,
+      worktreeClean: false,
+      dirtyEntryCount: 1,
+    }),
+    /dirty worktree or untracked source state/,
+  );
+  assert.throws(
+    () => assertStrictMatrixProvenance(CLEAN_PROVENANCE, 'fixture-ancestor-head'),
+    /does not exactly match completion HEAD/,
+  );
+});
+
+test('strict matrix rebuilds every executed release binary before collecting evidence', () => {
+  const calls = [];
+  assert.throws(
+    () => buildStrictRuntimeAuthority({
+      run(executable, args, options) {
+        calls.push({ executable, args, options });
+        return { status: calls.length === STRICT_RUNTIME_BUILD_COMMANDS.length ? 1 : 0 };
+      },
+    }),
+    /strict runtime build failed with exit code 1/,
+  );
+  assert.deepEqual(calls.map((entry) => entry.args), STRICT_RUNTIME_BUILD_COMMANDS);
+  assert.deepEqual(STRICT_RUNTIME_BUILD_COMMANDS, [
+    ['run', 'build:tauri', '--workspace', '@omni/desktop'],
+    ['run', 'build:bridge-service-native'],
+    ['run', 'driver:build-sysvad'],
+  ]);
+});
+
+test('strict runtime build and live runner ignore external Cargo target-directory overrides', () => {
+  const environment = strictRuntimeEnvironment({
+    CARGO_TARGET_DIR: 'C:\\stale-target',
+    CARGO_BUILD_TARGET: 'aarch64-pc-windows-msvc',
+    CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER: 'stale-runner.exe',
+    KEEP_ME: 'yes',
+  });
+
+  assert.equal(environment.CARGO_TARGET_DIR, path.join(repoRoot, 'target'));
+  assert.equal(environment.CARGO_BUILD_TARGET, undefined);
+  assert.equal(environment.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER, undefined);
+  assert.equal(environment.KEEP_ME, 'yes');
+});
+
+test('matrix manifest contains only the current invocation run directories', () => {
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-matrix-manifest-'));
+  const currentRuns = [
+    path.join(outputRoot, 'current-default'),
+    path.join(outputRoot, 'current-usb'),
+    path.join(outputRoot, 'current-bluetooth'),
+  ];
+  for (const runDirectory of currentRuns) {
+    writeAuthorityPlaceholderArtifacts(runDirectory, 'process-exclusion');
+  }
+  const { manifestPath, manifest } = writeMatrixRunManifest({
+    outputRoot,
+    modelList: ['model-a'],
+    feedbackModeList: ['process-exclusion'],
+    deviceProfiles: [
+      { profileId: 'default', deviceClass: 'default-speaker' },
+      { profileId: 'usb', deviceClass: 'usb' },
+      { profileId: 'bluetooth', deviceClass: 'bluetooth' },
+    ],
+    runDirectories: currentRuns,
+    strict: true,
+    now: new Date('2026-08-10T00:00:00.000Z'),
+    provenance: CLEAN_PROVENANCE,
+    authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+  });
+  assert.equal(fs.existsSync(manifestPath), true);
+  assert.deepEqual(manifest.runDirectories, currentRuns.map((directory) => path.basename(directory)));
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.cells.length, 3);
+  assert.equal(manifest.strict, true);
+  assert.equal(manifest.evidenceMode, 'live');
+  assert.deepEqual(manifest.provenance, CLEAN_PROVENANCE);
+  assert.deepEqual(JSON.parse(fs.readFileSync(manifestPath, 'utf8')), manifest);
+});
+
+test('canonical strict manifest requires raw re-verification after the verifier receipt', () => {
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-matrix-canonical-'));
+  const profiles = SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({
+    profileId: deviceClass,
+    deviceClass,
+    physicalPlaybackDeviceId: deviceClass === 'default-speaker' ? 'default' : `${deviceClass}-id`,
+    expectedPhysicalPlaybackDeviceName: deviceClass,
+  }));
+  const runDirectories = [];
+  for (const model of DEFAULT_MODELS) {
+    for (const feedbackMode of DEFAULT_FEEDBACK_MODES) {
+      for (const deviceClass of SUPPORTED_DEVICE_CLASSES) {
+        const runDirectory = path.join(outputRoot, `${model}-${feedbackMode}-${deviceClass}`);
+        writeAuthorityPlaceholderArtifacts(runDirectory, feedbackMode);
+        runDirectories.push(runDirectory);
+      }
+    }
+  }
+  const { manifestPath, manifest } = writeMatrixRunManifest({
+    outputRoot,
+    modelList: DEFAULT_MODELS,
+    feedbackModeList: DEFAULT_FEEDBACK_MODES,
+    deviceProfiles: profiles,
+    runDirectories,
+    strict: true,
+    now: new Date('2026-08-10T00:00:00.000Z'),
+    provenance: CLEAN_PROVENANCE,
+    authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+  });
+  assert.throws(
+    () => publishSuccessfulStrictMatrixManifest({
+      outputRoot,
+      manifestPath,
+      currentProvenance: CLEAN_PROVENANCE,
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /ENOENT|verification receipt/,
+    'canonical publish must require the production verifier receipt',
+  );
+  writeStrictMatrixVerificationReceipt({
+    manifestPath,
+    manifest,
+    authority: {
+      implementationHashes: manifest.authority.implementationHashes,
+      runtimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    },
+    currentProvenance: CLEAN_PROVENANCE,
+    now: new Date('2026-08-10T09:00:00.000Z'),
+  });
+
+  assert.throws(
+    () => publishSuccessfulStrictMatrixManifest({
+      outputRoot,
+      manifestPath,
+      verifiedAt: new Date('2026-08-10T09:00:00.000Z'),
+      currentProvenance: CLEAN_PROVENANCE,
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /steps\.json does not bind the production Desktop launch PID|playback media hash is not the canonical Watch reference WAV/,
+    'a structurally valid, hand-written verifier receipt must not substitute for raw authority',
+  );
+  const canonicalPath = path.join(outputRoot, CANONICAL_STRICT_MATRIX_MANIFEST);
+  assert.equal(fs.existsSync(canonicalPath), false);
+
+  assert.throws(
+    () => publishSuccessfulStrictMatrixManifest({
+      outputRoot,
+      manifestPath,
+      currentProvenance: {
+        ...CLEAN_PROVENANCE,
+        headCommit: 'fixture-newer-head',
+      },
+      currentRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /does not exactly match current HEAD.*ancestor commits are not accepted/,
+  );
+
+  assert.throws(
+    () => writeMatrixRunManifest({
+      outputRoot,
+      modelList: DEFAULT_MODELS,
+      feedbackModeList: DEFAULT_FEEDBACK_MODES,
+      deviceProfiles: profiles,
+      runDirectories: runDirectories.slice(0, -1),
+      strict: true,
+      now: new Date('2026-08-10T09:45:00.000Z'),
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    }),
+    /expected 18/,
+  );
+
+  const diagnostic = writeMatrixRunManifest({
+    outputRoot,
+    modelList: ['diagnostic-model'],
+    feedbackModeList: ['echo-cancel'],
+    deviceProfiles: [profiles[0]],
+    runDirectories: [path.join(outputRoot, 'diagnostic-run')],
+    strict: false,
+    now: new Date('2026-08-10T10:00:00.000Z'),
+    provenance: CLEAN_PROVENANCE,
+  });
+  fs.writeFileSync(canonicalPath, 'last verified matrix\n', 'utf8');
+  const canonicalBeforeRejectedPublish = fs.readFileSync(canonicalPath, 'utf8');
+  assert.throws(
+    () => publishSuccessfulStrictMatrixManifest({
+      outputRoot,
+      manifestPath: diagnostic.manifestPath,
+      currentProvenance: CLEAN_PROVENANCE,
+    }),
+    /not the exact 2-model x 3-route x 3-device release grid/,
+  );
+  assert.equal(
+    fs.readFileSync(canonicalPath, 'utf8'),
+    canonicalBeforeRejectedPublish,
+    'a diagnostic or failed shape must not overwrite the last successful strict manifest',
   );
 });
 
@@ -248,7 +644,7 @@ test('lastRunDirectoryLine survives trailing cleanup warnings on stdout', () => 
   assert.equal(lastRunDirectoryLine(stdout), runDir);
   assert.equal(
     lastRunDirectoryLine('==> only warnings\r\nWARNING: cleanup failed\r\n'),
-    'WARNING: cleanup failed',
+    undefined,
   );
   assert.equal(lastRunDirectoryLine(''), undefined);
 });

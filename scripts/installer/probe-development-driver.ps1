@@ -54,7 +54,7 @@ function Get-SecureBootProbeResult {
     if (-not (Test-Path -LiteralPath $resultPath -PathType Leaf)) {
       return @{ Enabled = $null; Status = 'unavailable' }
     }
-    $result = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+    $result = Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
     return @{ Enabled = $result.secureBootEnabled; Status = $result.status }
   } catch {
     if ($_.Exception.NativeErrorCode -eq 1223) {
@@ -71,7 +71,7 @@ function Get-DriverPackageMetadata([string]$WorkspacePath) {
   if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
     return $null
   }
-  return Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+  return Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
 $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
@@ -79,7 +79,7 @@ $runtimeStatePath = Join-Path $RuntimeRoot 'driver-install-state.json'
 $runtimeState = $null
 if (Test-Path -LiteralPath $runtimeStatePath -PathType Leaf) {
   try {
-    $runtimeState = Get-Content -LiteralPath $runtimeStatePath -Raw | ConvertFrom-Json
+    $runtimeState = Get-Content -LiteralPath $runtimeStatePath -Raw -Encoding UTF8 | ConvertFrom-Json
   } catch {
     $runtimeState = $null
   }
@@ -87,21 +87,32 @@ if (Test-Path -LiteralPath $runtimeStatePath -PathType Leaf) {
 
 $rootDevices = @(Get-OmniVirtualSpeakerRootDevices)
 $endpoint = Get-OmniVirtualSpeakerEndpoint
+$captureEndpoint = Get-OmniVirtualMicrophoneEndpoint
 $metadata = Get-DriverPackageMetadata $workspacePath
 $testSigningEnabled = Get-TestSigningEnabled
 $signatureEnforcementBypassed = Get-SignatureEnforcementBypassed
 $memoryIntegrityEnabled = Get-MemoryIntegrityEnabled
 $secureBootProbe = Get-SecureBootProbeResult
 $secureBootEnabled = $secureBootProbe.Enabled
+$windowsBuildNumber = Get-OmniWindowsBuildNumber
+$virtualDriverWindowsBuildSupported = Test-OmniVirtualDriverWindowsBuild -WindowsBuild $windowsBuildNumber
 $abiVersion = $null
 $ioctlAvailable = $false
 $probeError = $null
+$virtualMicFormatReady = $false
 
-if ($rootDevices.Count -eq 1 -and $rootDevices[0].Status -eq 'OK' -and $endpoint) {
+if ($rootDevices.Count -eq 1 -and $rootDevices[0].Status -eq 'OK' -and $endpoint -and $captureEndpoint) {
   try {
     $probe = Invoke-OmniVirtualAudioProbe
     $abiVersion = ('0x{0:X8}' -f $probe.AbiVersion).ToUpperInvariant()
     $ioctlAvailable = $true
+    $virtualMicFormatReady = (
+      $probe.MicRingCapacityBytes -gt 0 -and
+      $probe.MicMaxBufferedBytes -gt 0 -and
+      $probe.MicSampleRateHz -eq 48000 -and
+      $probe.MicChannelCount -eq 1 -and
+      $probe.MicBitsPerSample -eq 16
+    )
   } catch {
     $probeError = $_.Exception.Message
   }
@@ -116,7 +127,7 @@ if ($rootDevices.Count -gt 1) {
   if ($rootDevices[0].Status -ne 'OK') {
     $driverHealth = 'damaged'
     $errorCode = if ($rootDevices[0].Problem -eq 'CM_PROB_UNSIGNED_DRIVER' -and $memoryIntegrityEnabled) { 'driver.memory-integrity-enabled' } elseif ($rootDevices[0].Problem -eq 'CM_PROB_FAILED_START') { 'driver.reboot-required' } else { 'driver.operation-failed' }
-  } elseif (-not $endpoint) {
+  } elseif (-not $endpoint -or -not $captureEndpoint) {
     $driverHealth = 'damaged'
     $errorCode = 'driver.endpoint-missing'
   } elseif ($runtimeState -and $runtimeState.driverBackend -ne 'sysvad-wave-rt') {
@@ -135,6 +146,11 @@ if ($driverHealth -eq 'not-installed') {
   }
 }
 
+if ($driverHealth -eq 'running' -and $abiVersion -ne '0X20260810') {
+  $driverHealth = 'version-mismatch'
+  $errorCode = 'driver.abi-mismatch'
+}
+
 [ordered]@{
   schemaVersion = 1
   driverHealth = $driverHealth
@@ -147,6 +163,13 @@ if ($driverHealth -eq 'not-installed') {
   rootDeviceCount = $rootDevices.Count
   rootInstanceIds = @($rootDevices | ForEach-Object { $_.InstanceId })
   endpointName = if ($endpoint) { $endpoint.FriendlyName } else { $null }
+  captureEndpointName = if ($captureEndpoint) { $captureEndpoint.FriendlyName } else { $null }
+  windowsBuildNumber = $windowsBuildNumber
+  virtualDriverMinimumWindowsBuild = $script:OmniVirtualDriverMinimumWindowsBuild
+  virtualDriverWindowsBuildSupported = $virtualDriverWindowsBuildSupported
+  virtualMicOutputSupported = [bool]($virtualDriverWindowsBuildSupported -and $captureEndpoint -and $ioctlAvailable -and $abiVersion -eq '0X20260810' -and $virtualMicFormatReady)
+  virtualMicOutputStatus = if (-not $virtualDriverWindowsBuildSupported) { 'unsupported' } elseif ($captureEndpoint -and $ioctlAvailable -and $abiVersion -eq '0X20260810' -and $virtualMicFormatReady) { 'ready' } elseif ($driverHealth -eq 'running') { 'unsupported' } else { 'failed' }
+  virtualMicFormat = if ($virtualMicFormatReady) { '48000Hz/mono/pcm16' } else { $null }
   abiVersion = $abiVersion
   ioctlAvailable = $ioctlAvailable
   installedDriverVersion = if ($runtimeState) { $runtimeState.driverVersion } else { $null }

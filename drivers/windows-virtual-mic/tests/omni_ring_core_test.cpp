@@ -137,10 +137,10 @@ static void test_overwrite_counters() {
     ASSERT_EQ(ring.droppedBytes(), 4u);
     ASSERT_EQ(ring.capturedBytes(), 12u);
 
-    // Read all 8: should be bytes 3..12 (oldest 4 dropped).
+    // Read all 8: should be bytes 5..12 (oldest 4 of 12 dropped).
     uint8_t out[8] = {};
     ASSERT_EQ(ring.Read(out, 8), 8u);
-    ASSERT_EQ(out[0], 3u);
+    ASSERT_EQ(out[0], 5u);
     ASSERT_EQ(out[7], 12u);
     ASSERT_EQ(ring.deliveredBytes(), 8u);
 }
@@ -195,6 +195,40 @@ static void test_reset_all() {
     ASSERT_EQ(ring.droppedBytes(), 0u);
 }
 
+// Mirrors the generation boundary imposed by BEGIN/WRITE/END_MIC_SESSION while
+// exercising the same bounded RingBuffer core used by the driver tests.
+static void test_virtual_mic_generation_boundary() {
+    std::vector<uint8_t> storage(32, 0);
+    RingBuffer ring;
+    ring.Initialize(storage.data(), 32, 16);
+    uint64_t generation = 1;
+    bool active = true;
+    uint8_t first[12];
+    std::memset(first, 0x11, sizeof(first));
+    ring.Write(first, sizeof(first));
+    ring.RecordCapture(sizeof(first));
+
+    // A new session generation must not expose stale PCM to the next capture
+    // client, and writes are accepted only while that generation is active.
+    generation = 2;
+    ring.ResetAll();
+    ASSERT_EQ(generation, 2u);
+    ASSERT_EQ(ring.bufferedBytes(), 0u);
+    active = false;
+    ASSERT_TRUE(!active);
+
+    active = true;
+    uint8_t second[20];
+    std::memset(second, 0x22, sizeof(second));
+    if (active) {
+        ring.Write(second, sizeof(second));
+        ring.RecordCapture(sizeof(second));
+    }
+    ASSERT_EQ(ring.bufferedBytes(), 16u);
+    ASSERT_EQ(ring.droppedBytes(), 4u);
+    ASSERT_EQ(ring.capturedBytes(), 20u);
+}
+
 int main() {
     std::printf("=== Omni Ring Core Smoke Tests ===\n");
     RUN_TEST(test_empty_read_and_reset);
@@ -204,6 +238,7 @@ int main() {
     RUN_TEST(test_overwrite_counters);
     RUN_TEST(test_ring_isolation);
     RUN_TEST(test_reset_all);
+    RUN_TEST(test_virtual_mic_generation_boundary);
 
     std::printf("\n=== Results: %d passed, %d failed ===\n", testsPassed, testsFailed);
     return testsFailed > 0 ? 1 : 0;

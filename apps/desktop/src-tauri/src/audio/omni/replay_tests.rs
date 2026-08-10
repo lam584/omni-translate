@@ -125,8 +125,7 @@ struct ReplayHarness {
     output_mode: OmniOutputMode,
     subtitle_translate_active: bool,
     session_started_at: SystemTime,
-    playback_tx: mpsc::SyncSender<OmniPlaybackCommand>,
-    _playback_rx: mpsc::Receiver<OmniPlaybackCommand>,
+    playback_tx: OmniPlaybackQueue,
     readiness_sent: AtomicBool,
     readiness_tx: mpsc::Sender<Result<u64, String>>,
     _readiness_rx: mpsc::Receiver<Result<u64, String>>,
@@ -144,7 +143,7 @@ impl ReplayHarness {
             .expect("scripted state")
             .reconnect_scripts
             .extend(reconnect_scripts);
-        let (playback_tx, playback_rx) = mpsc::sync_channel::<OmniPlaybackCommand>(64);
+        let playback_tx = OmniPlaybackQueue::new(64);
         let (readiness_tx, readiness_rx) = mpsc::channel::<Result<u64, String>>();
         Self {
             connector: ScriptedConnector {
@@ -157,7 +156,6 @@ impl ReplayHarness {
             subtitle_translate_active: false,
             session_started_at: SystemTime::now(),
             playback_tx,
-            _playback_rx: playback_rx,
             readiness_sent: AtomicBool::new(true),
             readiness_tx,
             _readiness_rx: readiness_rx,
@@ -445,6 +443,162 @@ fn replay_secondary_late_asr_final_stays_with_original_cue() {
         cue.source_text != "first sentence second sentence"
             && cue.source_text != "second sentence first sentence"
     }));
+}
+
+/// A provider item id is the only admissible merge key. Even if the native
+/// cue id looks arbitrarily old, a late ASR cue carrying that same item id is
+/// folded into it and the already committed translation survives unchanged.
+#[test]
+fn replay_same_provider_item_merges_by_lineage_without_a_time_window() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let native_cue_id = format!(
+        "omni-cue-inbound-{}",
+        unix_ms().saturating_sub(24 * 60 * 60 * 1_000)
+    );
+    super::protocol::write_committed_native_translation_to_cue(
+        &harness.store(),
+        &native_cue_id,
+        "provisional output",
+        "保留的最终译文",
+    );
+    slice.event_diagnostics.capture_native_response_owner(
+        native_cue_id.clone(),
+        Some("item-shared".to_string()),
+    );
+    slice
+        .event_diagnostics
+        .claim_native_response_owner_for_response(Some("response-shared"), None);
+    slice.event_diagnostics.complete_native_response_owner();
+
+    let steps = vec![
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-shared",
+            "delta": "authoritative final source"
+        })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-shared",
+            "transcript": "authoritative final source"
+        })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-shared",
+            "transcript": "authoritative final source"
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    for _ in 0..3 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let cues = harness.store().snapshot().subtitle_overlay.recent_cues;
+    assert_eq!(cues.len(), 1, "same-item live cue must be structurally folded");
+    let cue = &cues[0];
+    assert_eq!(cue.cue_id, native_cue_id);
+    assert_eq!(cue.source_text, "authoritative final source");
+    assert_eq!(cue.translated_text, "保留的最终译文");
+    assert!(cue.committed);
+    assert_eq!(
+        slice
+            .event_diagnostics
+            .native_response_id_for_input_item("item-shared")
+            .as_deref(),
+        Some("response-shared"),
+        "response_id -> item_id -> cue lineage must survive late completion",
+    );
+}
+
+/// Identical text is not identity. Two provider items remain two visible cues
+/// even when the older native cue has source and translation strings that are
+/// byte-for-byte equal to the newer ASR final.
+#[test]
+fn replay_same_text_with_different_provider_items_preserves_both_cues() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let native_cue_id = format!(
+        "omni-cue-inbound-{}",
+        unix_ms().saturating_sub(24 * 60 * 60 * 1_000)
+    );
+    super::protocol::write_committed_native_translation_to_cue(
+        &harness.store(),
+        &native_cue_id,
+        "same visible text",
+        "same visible text",
+    );
+    slice.event_diagnostics.capture_native_response_owner(
+        native_cue_id.clone(),
+        Some("item-older".to_string()),
+    );
+    slice
+        .event_diagnostics
+        .claim_native_response_owner_for_response(Some("response-older"), None);
+    slice.event_diagnostics.complete_native_response_owner();
+
+    let steps = vec![
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-newer",
+            "delta": "same visible text"
+        })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-newer",
+            "transcript": "same visible text"
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    for _ in 0..2 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let cues = harness.store().snapshot().subtitle_overlay.recent_cues;
+    assert_eq!(cues.len(), 2, "different item ids must never content-merge");
+    assert!(cues.iter().any(|cue| cue.cue_id == native_cue_id && cue.committed));
+    assert_eq!(
+        cues.iter()
+            .filter(|cue| cue.source_text == "same visible text")
+            .count(),
+        2
+    );
+}
+
+/// Missing provider identity is unresolved, not permission to guess from the
+/// text. The new cue remains alongside the older committed native output.
+#[test]
+fn replay_same_text_without_provider_identity_preserves_both_cues() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let native_cue_id = format!(
+        "omni-cue-inbound-{}",
+        unix_ms().saturating_sub(24 * 60 * 60 * 1_000)
+    );
+    super::protocol::write_committed_native_translation_to_cue(
+        &harness.store(),
+        &native_cue_id,
+        "same visible text",
+        "same visible text",
+    );
+
+    let steps = vec![
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "delta": "same visible text"
+        })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "transcript": "same visible text"
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    for _ in 0..2 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let cues = harness.store().snapshot().subtitle_overlay.recent_cues;
+    assert_eq!(cues.len(), 2, "missing item id must preserve both cue rows");
+    assert!(cues.iter().any(|cue| cue.cue_id == native_cue_id && cue.committed));
 }
 
 /// Production regression: a long idle after the previous commit must not make

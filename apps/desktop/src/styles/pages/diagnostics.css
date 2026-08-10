@@ -429,6 +429,12 @@
   font-size:12px
 }
 
+.benchmark-result-score-total small {
+  grid-column:1 / -1;
+  color:#475569;
+  font-size:11px
+}
+
 .benchmark-result-score-total strong {
   font-size:32px;
   line-height:1
@@ -454,6 +460,99 @@
   margin:0;
   color:#64748b;
   font-size:11px
+}
+
+.benchmark-score-details {
+  grid-column:1 / -1;
+  display:grid;
+  gap:7px
+}
+
+.benchmark-score-details details {
+  border:1px solid #dbe3ec;
+  border-radius:7px;
+  background:#fff;
+  padding:8px
+}
+
+.benchmark-score-details summary {
+  cursor:pointer;
+  color:#0f172a;
+  font-size:12px;
+  font-weight:650
+}
+
+.benchmark-score-formula,
+.benchmark-score-missing,
+.benchmark-score-no-deductions {
+  margin:8px 0 0;
+  color:#475569;
+  font-size:12px;
+  line-height:1.5
+}
+
+.benchmark-score-missing {
+  color:#9a3412
+}
+
+.benchmark-score-evidence-grid {
+  display:grid;
+  grid-template-columns:repeat(4, minmax(0, 1fr));
+  gap:7px;
+  margin-top:8px
+}
+
+.benchmark-score-evidence-grid .benchmark-metric {
+  padding:7px
+}
+
+.benchmark-score-list {
+  display:grid;
+  gap:5px;
+  margin:8px 0 0;
+  padding-left:20px;
+  color:#334155;
+  font-size:12px;
+  line-height:1.45
+}
+
+.benchmark-score-list li {
+  display:grid;
+  gap:2px
+}
+
+.benchmark-score-rationale {
+  color:#475569
+}
+
+.benchmark-score-critical-error {
+  color:#9a3412
+}
+
+.benchmark-score-signal-table-wrap {
+  overflow:auto;
+  margin-top:8px
+}
+
+.benchmark-score-signal-table {
+  width:100%;
+  min-width:560px;
+  border-collapse:collapse;
+  color:#334155;
+  font-size:11px
+}
+
+.benchmark-score-signal-table th,
+.benchmark-score-signal-table td {
+  padding:6px;
+  border-top:1px solid #e2e8f0;
+  text-align:left;
+  vertical-align:top
+}
+
+.benchmark-score-signal-table th {
+  color:#475569;
+  font-weight:650
 }
 
 .benchmark-semantic-judge {
@@ -509,9 +608,127 @@
   font-size:12px
 }
 
+.benchmark-history {
+  display:grid;
+  gap:9px;
+  margin-top:4px;
+  padding-top:12px;
+  border-top:1px solid #e2e8f0
+}
+
+.benchmark-history-head,
+.benchmark-history-actions,
+.benchmark-history-row {
+  display:flex;
+  align-items:center;
+  gap:8px
+}
+
+.benchmark-history-head {
+  justify-content:space-between
+}
+
+.benchmark-history-head h3,
+.benchmark-history-head p {
+  margin:0
+}
+
+.benchmark-history-head h3 {
+  color:#0f172a;
+  font-size:13px
+}
+
+.benchmark-history-head p,
+.benchmark-history-empty {
+  color:#64748b;
+  font-size:11px
+}
+
+.benchmark-history-actions {
+  flex-wrap:wrap;
+  justify-content:flex-end
+}
+
+.benchmark-history-actions button,
+.benchmark-history-more,
+.benchmark-history-row > button:last-child {
+  min-height:28px;
+  border:1px solid #cbd5e1;
+  border-radius:6px;
+  padding:0 8px;
+  background:#fff;
+  color:#334155;
+  cursor:pointer;
+  font-size:11px
+}
+
+.benchmark-history-actions button:disabled,
+.benchmark-history-more:disabled {
+  cursor:not-allowed;
+  opacity:.6
+}
+
+.benchmark-history-list {
+  display:grid;
+  max-height:260px;
+  overflow:auto;
+  border:1px solid #dbe3ec;
+  border-radius:8px
+}
+
+.benchmark-history-row {
+  min-width:0;
+  padding:8px;
+  border-top:1px solid #e2e8f0
+}
+
+.benchmark-history-row:first-child {
+  border-top:0
+}
+
+.benchmark-history-open {
+  display:grid;
+  min-width:0;
+  flex:1;
+  gap:2px;
+  border:0;
+  background:transparent;
+  color:#0f172a;
+  cursor:pointer;
+  text-align:left
+}
+
+.benchmark-history-open strong,
+.benchmark-history-open span,
+.benchmark-history-open small {
+  overflow:hidden;
+  text-overflow:ellipsis;
+  white-space:nowrap
+}
+
+.benchmark-history-open span,
+.benchmark-history-open small {
+  color:#64748b;
+  font-size:11px
+}
+
+.benchmark-history-score {
+  min-width:48px;
+  color:#166534;
+  font-size:12px;
+  text-align:right
+}
+
+.benchmark-history-more {
+  justify-self:start
+}
+
 @media (max-width: 640px) {
   .benchmark-result-score { grid-template-columns:1fr }
   .benchmark-result-score-dimensions { grid-template-columns:repeat(2, minmax(0, 1fr)) }
+  .benchmark-score-evidence-grid { grid-template-columns:repeat(2, minmax(0, 1fr)) }
+  .benchmark-history-head { align-items:flex-start; flex-direction:column }
+  .benchmark-history-actions { justify-content:flex-start }
 }
 
 .benchmark-progress-card {

@@ -7,7 +7,7 @@ use uuid::Uuid;
 use super::config::{configure_watch_mode, configure_watch_realtime_provider};
 use super::{
     bounded_autostart_capture_duration_ms, build_debug_ipc_ping_response,
-    should_run_idle_overlay_prewarm,
+    parse_feedback_loop_prevention, should_run_idle_overlay_prewarm,
     wait_for_frontend_ipc_ready, write_report_atomic,
 };
 use crate::audio::state::AudioStateStore;
@@ -34,7 +34,31 @@ fn diagnostic_route_is_the_only_overlay_creator_during_autostart() {
 fn diagnostic_capture_duration_keeps_full_benchmark_time_and_a_hard_bound() {
     assert_eq!(bounded_autostart_capture_duration_ms(500), 1_000);
     assert_eq!(bounded_autostart_capture_duration_ms(180_000), 180_000);
-    assert_eq!(bounded_autostart_capture_duration_ms(600_000), 300_000);
+    assert_eq!(bounded_autostart_capture_duration_ms(1_800_000), 1_800_000);
+    assert_eq!(bounded_autostart_capture_duration_ms(7_200_001), 7_200_000);
+}
+
+#[test]
+fn diagnostic_feedback_mode_accepts_all_three_routes_and_rejects_typos() {
+    assert_eq!(
+        parse_feedback_loop_prevention(Some("process-exclusion")).unwrap(),
+        "process-exclusion"
+    );
+    assert_eq!(
+        parse_feedback_loop_prevention(Some("VIRTUAL-DRIVER")).unwrap(),
+        "virtual-driver"
+    );
+    assert_eq!(
+        parse_feedback_loop_prevention(Some("echo-cancel")).unwrap(),
+        "echo-cancel"
+    );
+    assert_eq!(
+        parse_feedback_loop_prevention(None).unwrap(),
+        "virtual-driver"
+    );
+    assert!(parse_feedback_loop_prevention(Some("process-loopback"))
+        .unwrap_err()
+        .contains("Unsupported"));
 }
 
 #[test]
@@ -106,6 +130,31 @@ fn virtual_driver_speech_model_diagnostic_stays_subtitle_only() {
     assert_eq!(
         config["devices"]["inboundRoute"]["mixControl"]["translatedAudioEnabled"],
         false
+    );
+}
+
+#[test]
+fn process_exclusion_native_diagnostic_routes_translation_through_bridge() {
+    let mut config = json!({});
+
+    configure_watch_mode(
+        &mut config,
+        "",
+        50,
+        "template-dashscope-realtime::qwen3.5-omni-plus-realtime",
+        "native",
+        "",
+        "",
+        "omni-native",
+        "process-exclusion",
+    );
+
+    assert_eq!(config["devices"]["feedbackLoopPrevention"], "process-exclusion");
+    assert_eq!(config["devices"]["outputSpeechEnabled"], true);
+    assert_eq!(config["speech"]["localPlaybackEnabled"], true);
+    assert_eq!(
+        config["devices"]["inboundRoute"]["mixControl"]["translatedAudioEnabled"],
+        true
     );
 }
 

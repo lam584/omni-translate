@@ -2,7 +2,10 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 import type { OverlayRenderReceiptRuntime, SubtitleCueRuntime } from '../../schema/audio-runtime';
 import type { DesktopApi } from '../../runtime/desktop-api';
+import { createLogger } from '../../runtime/logger';
 import { getCueDisplaySegments } from './overlayDomain';
+
+const overlayLogger = createLogger('runtime');
 
 export const SUBTITLE_OVERLAY_RENDERED_EVENT = 'subtitle-overlay://rendered';
 
@@ -134,8 +137,13 @@ export function useOverlayRenderReceipt({
       }
       lastVisible = visible;
     };
-    void check();
-    const timer = window.setInterval(() => void check(), 500);
+    const checkVisibility = () => {
+      void check().catch((error) => {
+        overlayLogger.warn('overlay visibility poll failed', String(error));
+      });
+    };
+    checkVisibility();
+    const timer = window.setInterval(checkVisibility, 500);
     return () => {
       disposed = true;
       window.clearInterval(timer);

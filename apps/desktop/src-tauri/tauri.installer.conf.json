@@ -8,7 +8,8 @@
       "../../../scripts/installer/": "scripts/installer/",
       "../../../drivers/windows-virtual-mic/package/": "drivers/windows-virtual-mic/package/",
       "../../../target/release/omni-bridge-service.exe": "bridge-service-native/omni-bridge-service.exe",
-      "../../../target/release/omni-driver-audio-probe.exe": "bridge-service-native/omni-driver-audio-probe.exe"
+      "../../../target/release/omni-driver-audio-probe.exe": "bridge-service-native/omni-driver-audio-probe.exe",
+      "../../../target/release/omni-virtual-mic-target-capture.exe": "bridge-service-native/omni-virtual-mic-target-capture.exe"
     }
   }
 }

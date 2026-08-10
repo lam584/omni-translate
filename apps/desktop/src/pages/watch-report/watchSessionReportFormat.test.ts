@@ -268,4 +268,52 @@ describe('watch session report export formatting', () => {
     expect(parsed.cues[0]).toMatchObject({ comparisonStatus: 'superseded' });
     expect(parsed.issues[0]).toMatchObject({ category: 'render', occurrenceCount: 478 });
   });
+
+  it('formats a sparse report with every optional correlation and identity fallback', async () => {
+    const report = reportFixture();
+    report.providerId = '';
+    report.model = '';
+    report.endedAt = null;
+    report.summary.slowestCueId = null;
+    report.issues = [];
+    report.cues = [cue(1, 'exact', {
+      translationPath: '',
+      sourceText: '',
+      llmText: '',
+      publishedText: '',
+      renderedText: '',
+      issues: [],
+      events: [],
+    })];
+    report.events = [{
+      eventId: 'minimal-event',
+      stage: 'session',
+      kind: 'heartbeat',
+      elapsedMs: 1,
+      text: '',
+      detail: null,
+      finalEvent: false,
+      accepted: true,
+      visible: false,
+      callId: null,
+      attemptId: null,
+    }];
+
+    const text = formatWatchSessionReportTxt(report);
+    expect(text).toContain('Provider / model: - / -');
+    expect(text).toContain('Ended: -');
+    expect(text).toContain('Issue categories: none');
+    expect(text).toContain('Slowest logical cue: -');
+    expect(text).toContain('event=minimal-event accepted=true final=false visible=false');
+    expect(text).not.toContain('call=');
+    expect(text).not.toContain('attempt=');
+    expect(text).not.toContain('text=');
+
+    await exportWatchSessionReport(report, 'txt');
+    expect(mocks.writeExportArtifact).toHaveBeenCalledWith(
+      expect.stringMatching(/^watch-session-report-unknown-.*\.txt$/),
+      expect.stringContaining('=== Watch Session Report ==='),
+      'text/plain',
+    );
+  });
 });

@@ -2,6 +2,31 @@ import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMain, isWindows, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
+import {
+  currentGitProvenance,
+  exactGitProvenanceFailure,
+  gitProvenanceShapeFailure,
+} from './git-provenance.mjs';
+import {
+  CELL_AUTHORITY_FILE,
+  LIVE_RUN_COLLECTOR_ID,
+  MATRIX_RUNNER_ID,
+  STRICT_MATRIX_ARTIFACT_KIND,
+  STRICT_MATRIX_SCHEMA_VERSION,
+  currentAuthorityImplementationHashes,
+  currentAuthorityRuntimeBinaryHashes,
+  fileAuthorityEntry,
+  resolveAuthorityPath,
+  sameAuthorityInventory,
+  validateFileAuthorityEntry,
+  writeCellAuthorityReceipt,
+} from './watch-mode-evidence-authority.mjs';
+import {
+  findWatchModeEvidence,
+  strictMatrixVerificationReceiptPath,
+  validateStrictMatrixVerificationReceipt,
+  verifyStrictMatrixAuthority,
+} from './verify-watch-mode-evidence.mjs';
 
 export const DEFAULT_MODELS = [
   'qwen3.5-omni-flash-realtime',
@@ -12,8 +37,20 @@ export const WATCH_MODEL_PROTOCOLS = Object.freeze({
   'qwen3.5-omni-flash-realtime': 'dashscope-omni',
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
-export const DEFAULT_FEEDBACK_MODES = ['virtual-driver', 'echo-cancel'];
-export const SUPPORTED_FEEDBACK_MODES = ['virtual-driver', 'echo-cancel'];
+export const DEFAULT_FEEDBACK_MODES = ['process-exclusion', 'virtual-driver', 'echo-cancel'];
+export const SUPPORTED_FEEDBACK_MODES = ['process-exclusion', 'virtual-driver', 'echo-cancel'];
+export const SUPPORTED_DEVICE_CLASSES = ['default-speaker', 'usb', 'bluetooth'];
+export const MIN_WATCH_AUTO_STOP_AFTER_SECONDS = 1_800;
+export const MAX_WATCH_AUTO_STOP_AFTER_SECONDS = 7_200;
+export const CANONICAL_STRICT_MATRIX_MANIFEST = 'latest-successful-watch-mode-strict-matrix.json';
+export const STRICT_RUNTIME_BUILD_COMMANDS = Object.freeze([
+  Object.freeze(['run', 'build:tauri', '--workspace', '@omni/desktop']),
+  Object.freeze(['run', 'build:bridge-service-native']),
+  Object.freeze(['run', 'driver:build-sysvad']),
+]);
+export const STRICT_RUNTIME_DIAGNOSTIC_BUILD = Object.freeze([
+  'build', '--manifest-path', 'scripts/diagnostics/omni-realtime/Cargo.toml',
+]);
 
 export const MATRIX_DEFAULTS = {
   outputRoot: 'artifacts/testing/watch-mode-live',
@@ -22,17 +59,41 @@ export const MATRIX_DEFAULTS = {
   playbackSeconds: 0,
   postPlaybackWaitSeconds: 120,
   sessionReadyTimeoutSeconds: 90,
-  watchAutoStopAfterSeconds: 60,
+  watchAutoStopAfterSeconds: MIN_WATCH_AUTO_STOP_AFTER_SECONDS,
   physicalPlaybackDeviceId: 'default',
+  physicalPlaybackDeviceClass: 'default-speaker',
+  physicalPlaybackDeviceProfileId: 'default-speaker',
   expectedPhysicalPlaybackDeviceName: '',
 };
 
 const RUNNER_SCRIPT = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1');
-// Keep the complete per-model runner below the user-facing two-minute ceiling.
-// The extra termination grace is included in that ceiling because taskkill can
-// block while it tears down the PowerShell process tree on Windows.
-export const LIVE_RUNNER_TIMEOUT_MS = 110_000;
+// The PowerShell runner starts the auto-stop clock inside the desktop process,
+// so readiness can consume its complete budget before the 30-minute session.
+// Allow the report its own atomic-write grace, then leave the matrix enough time
+// to finish recorder/STT/report post-processing before killing the process tree.
+export const WATCH_REPORT_COMPLETION_GRACE_SECONDS = 120;
+export const LIVE_RUNNER_POST_REPORT_GRACE_SECONDS = 180;
 export const LIVE_RUNNER_TERMINATION_GRACE_MS = 5_000;
+const DEFAULT_MEDIA_BUDGET_SECONDS = 180;
+const PHYSICAL_OUTPUT_RECORDING_TAIL_SECONDS = 8;
+
+export const resolveLiveRunnerTimeoutMs = ({
+  playbackSeconds = MATRIX_DEFAULTS.playbackSeconds,
+  postPlaybackWaitSeconds = MATRIX_DEFAULTS.postPlaybackWaitSeconds,
+  sessionReadyTimeoutSeconds = MATRIX_DEFAULTS.sessionReadyTimeoutSeconds,
+  watchAutoStopAfterSeconds = MATRIX_DEFAULTS.watchAutoStopAfterSeconds,
+} = {}) => {
+  const mediaBudgetSeconds = playbackSeconds > 0 ? playbackSeconds : DEFAULT_MEDIA_BUDGET_SECONDS;
+  const reportBudgetSeconds = watchAutoStopAfterSeconds + WATCH_REPORT_COMPLETION_GRACE_SECONDS;
+  const recorderBudgetSeconds = mediaBudgetSeconds
+    + postPlaybackWaitSeconds
+    + PHYSICAL_OUTPUT_RECORDING_TAIL_SECONDS;
+  return (
+    sessionReadyTimeoutSeconds
+    + Math.max(reportBudgetSeconds, recorderBudgetSeconds)
+    + LIVE_RUNNER_POST_REPORT_GRACE_SECONDS
+  ) * 1_000;
+};
 
 const INTEGER_OPTION_FLAGS = {
   warmupSeconds: 'warmup-seconds',
@@ -43,6 +104,7 @@ const INTEGER_OPTION_FLAGS = {
 };
 
 const BOOLEAN_FLAGS = [
+  'diagnostic-single-device',
   'skip-desktop-launch',
   'skip-driver-repair',
   'allow-driver-repair',
@@ -55,11 +117,13 @@ const BOOLEAN_FLAGS = [
 const USAGE = `Usage: node scripts/testing/run-watch-mode-live-matrix.mjs [options] [-- <runner args>]
 
 Options:
-  --models <a,b>                                   comma-separated Watch Mode model ids
+  --models <a,b>                                   diagnostic override; strict release matrix is fixed to
+                                                   the two default Watch Mode model ids
                                                    (default: ${DEFAULT_MODELS.join(',')})
   --alias-model <id>                               optional keyword-free deployed alias to append
   --alias-protocol <dialect>                       explicit protocol for --alias-model
-  --feedback-loop-prevention-modes <a,b>           comma-separated modes among: ${SUPPORTED_FEEDBACK_MODES.join(', ')}
+  --feedback-loop-prevention-modes <a,b>           diagnostic override among: ${SUPPORTED_FEEDBACK_MODES.join(', ')}
+                                                   strict release matrix is fixed to all three modes
                                                    (default: ${DEFAULT_FEEDBACK_MODES.join(',')})
   --output-root <dir>                              default: ${MATRIX_DEFAULTS.outputRoot}
   --media-path <file>                              default: ${MATRIX_DEFAULTS.mediaPath}
@@ -67,10 +131,16 @@ Options:
   --playback-seconds <n>                           default: ${MATRIX_DEFAULTS.playbackSeconds}
   --post-playback-wait-seconds <n>                 default: ${MATRIX_DEFAULTS.postPlaybackWaitSeconds}
   --session-ready-timeout-seconds <n>              default: ${MATRIX_DEFAULTS.sessionReadyTimeoutSeconds}
-  --watch-auto-stop-after-seconds <n>              hard Watch capture limit, 1-100
+  --watch-auto-stop-after-seconds <n>              hard Watch capture limit, ${MIN_WATCH_AUTO_STOP_AFTER_SECONDS}-${MAX_WATCH_AUTO_STOP_AFTER_SECONDS}
                                                    (default: ${MATRIX_DEFAULTS.watchAutoStopAfterSeconds})
   --physical-playback-device-id <id>               default: ${MATRIX_DEFAULTS.physicalPlaybackDeviceId}
+  --physical-playback-device-class <class>         diagnostic single-device class: ${SUPPORTED_DEVICE_CLASSES.join(', ')}
+  --physical-playback-device-profile-id <id>       diagnostic single-device profile id
   --expected-physical-playback-device-name <name>  default: empty
+  --device-profiles <json-or-file>                  required for strict matrix; must contain exactly one
+                                                   default-speaker, usb, and bluetooth profile
+  --diagnostic-single-device                       explicit non-strict single-device diagnostic; never
+                                                   produces release matrix evidence
   --skip-desktop-launch
   --skip-driver-repair
   --allow-driver-repair
@@ -81,7 +151,9 @@ Options:
 
 Everything after a literal "--" separator is appended verbatim to the
 powershell.exe -File scripts/testing/run-watch-mode-live.ps1 invocation as
-extra single-dash runner parameters (for example: -- -DryRun -Fixture pass).
+extra single-dash runner parameters. -DryRun is rejected here because fixture
+output is non-live and cannot satisfy the strict matrix; use the dedicated
+test:watch-mode-live:dry-run command for runner self-tests.
 The runner also honors the OMNI_WATCH_MODE_LIVE_* environment overrides,
 which this matrix forwards untouched.`;
 
@@ -108,6 +180,7 @@ export const parseMatrixCliArgs = (argv) => {
       aliasModel: process.env.OMNI_WATCH_MODE_LIVE_ALIAS_MODEL_ID ?? '',
       aliasProtocol: process.env.OMNI_WATCH_MODE_LIVE_ALIAS_PROTOCOL ?? 'dashscope-omni',
       feedbackLoopPreventionModes: DEFAULT_FEEDBACK_MODES.join(','),
+      deviceProfiles: process.env.OMNI_WATCH_MODE_LIVE_DEVICE_PROFILES ?? '',
       ...MATRIX_DEFAULTS,
     },
   });
@@ -116,6 +189,7 @@ export const parseMatrixCliArgs = (argv) => {
     'aliasModel',
     'aliasProtocol',
     'feedbackLoopPreventionModes',
+    'deviceProfiles',
     ...Object.keys(MATRIX_DEFAULTS),
     ...BOOLEAN_FLAGS.map(toCamelCase),
   ]);
@@ -131,8 +205,13 @@ export const parseMatrixCliArgs = (argv) => {
     }
     options[key] = value;
   }
-  if (options.watchAutoStopAfterSeconds < 1 || options.watchAutoStopAfterSeconds > 100) {
-    throw new Error('--watch-auto-stop-after-seconds must be between 1 and 100');
+  if (
+    options.watchAutoStopAfterSeconds < MIN_WATCH_AUTO_STOP_AFTER_SECONDS
+    || options.watchAutoStopAfterSeconds > MAX_WATCH_AUTO_STOP_AFTER_SECONDS
+  ) {
+    throw new Error(
+      `--watch-auto-stop-after-seconds must be between ${MIN_WATCH_AUTO_STOP_AFTER_SECONDS} and ${MAX_WATCH_AUTO_STOP_AFTER_SECONDS}`,
+    );
   }
   return { ...options, runnerArgs };
 };
@@ -159,6 +238,106 @@ export const resolveMatrixLists = ({ models, feedbackLoopPreventionModes }) => {
   return { modelList, feedbackModeList };
 };
 
+export const assertStrictReleaseMatrixLists = ({ modelList, feedbackModeList }) => {
+  if (
+    JSON.stringify(modelList) !== JSON.stringify(DEFAULT_MODELS)
+    || JSON.stringify(feedbackModeList) !== JSON.stringify(DEFAULT_FEEDBACK_MODES)
+  ) {
+    throw new Error(
+      `strict release matrix must use exactly models=${DEFAULT_MODELS.join(',')} and feedback modes=${DEFAULT_FEEDBACK_MODES.join(',')}; use --diagnostic-single-device for a non-release diagnostic`,
+    );
+  }
+};
+
+export const resolveDeviceProfiles = (
+  options = {},
+  { strict = !Boolean(options.diagnosticSingleDevice) } = {},
+) => {
+  const configured = String(options.deviceProfiles ?? '').trim();
+  let rawProfiles;
+  if (configured) {
+    const jsonText = configured.startsWith('[') || configured.startsWith('{')
+      ? configured
+      : fs.readFileSync(path.resolve(repoRoot, configured), 'utf8');
+    const parsed = JSON.parse(jsonText.replace(/^\uFEFF/, ''));
+    rawProfiles = Array.isArray(parsed) ? parsed : parsed.deviceProfiles;
+    if (!Array.isArray(rawProfiles)) {
+      throw new Error('--device-profiles must resolve to a JSON array or {"deviceProfiles": [...]}');
+    }
+  } else if (!strict && options.diagnosticSingleDevice) {
+    rawProfiles = [{
+      profileId: options.physicalPlaybackDeviceProfileId
+        ?? MATRIX_DEFAULTS.physicalPlaybackDeviceProfileId,
+      deviceClass: options.physicalPlaybackDeviceClass
+        ?? MATRIX_DEFAULTS.physicalPlaybackDeviceClass,
+      physicalPlaybackDeviceId: options.physicalPlaybackDeviceId
+        ?? MATRIX_DEFAULTS.physicalPlaybackDeviceId,
+      expectedPhysicalPlaybackDeviceName: options.expectedPhysicalPlaybackDeviceName
+        ?? MATRIX_DEFAULTS.expectedPhysicalPlaybackDeviceName,
+    }];
+  } else {
+    throw new Error(
+      `--device-profiles is required for the strict matrix and must explicitly contain exactly: ${SUPPORTED_DEVICE_CLASSES.join(', ')}. Use --diagnostic-single-device only for a non-strict one-device diagnostic.`,
+    );
+  }
+  if (rawProfiles.length === 0) {
+    throw new Error('At least one physical playback device profile must be provided.');
+  }
+
+  const profileIds = new Set();
+  const deviceClasses = new Set();
+  const profiles = rawProfiles.map((profile, index) => {
+    const profileId = String(profile?.profileId ?? '').trim();
+    const deviceClass = String(profile?.deviceClass ?? '').trim();
+    const physicalPlaybackDeviceId = String(profile?.physicalPlaybackDeviceId ?? '').trim();
+    const expectedPhysicalPlaybackDeviceName = String(
+      profile?.expectedPhysicalPlaybackDeviceName ?? '',
+    ).trim();
+    if (!/^[a-z0-9][a-z0-9._-]*$/i.test(profileId)) {
+      throw new Error(`device profile ${index} has an invalid profileId '${profileId}'`);
+    }
+    if (!SUPPORTED_DEVICE_CLASSES.includes(deviceClass)) {
+      throw new Error(`device profile ${profileId} has unsupported deviceClass '${deviceClass}'`);
+    }
+    if (!physicalPlaybackDeviceId) {
+      throw new Error(`device profile ${profileId} is missing physicalPlaybackDeviceId`);
+    }
+    if (deviceClass !== 'default-speaker' && physicalPlaybackDeviceId === 'default') {
+      throw new Error(`device profile ${profileId} must use an explicit endpoint id for ${deviceClass}`);
+    }
+    if (deviceClass !== 'default-speaker' && !expectedPhysicalPlaybackDeviceName) {
+      throw new Error(`device profile ${profileId} must include expectedPhysicalPlaybackDeviceName for ${deviceClass}`);
+    }
+    if (profileIds.has(profileId)) {
+      throw new Error(`duplicate device profileId '${profileId}'`);
+    }
+    if (deviceClasses.has(deviceClass)) {
+      throw new Error(`duplicate deviceClass '${deviceClass}' in --device-profiles`);
+    }
+    profileIds.add(profileId);
+    deviceClasses.add(deviceClass);
+    return {
+      profileId,
+      deviceClass,
+      physicalPlaybackDeviceId,
+      expectedPhysicalPlaybackDeviceName,
+    };
+  });
+  if (strict) {
+    const missingClasses = SUPPORTED_DEVICE_CLASSES.filter(
+      (deviceClass) => !deviceClasses.has(deviceClass),
+    );
+    if (profiles.length !== SUPPORTED_DEVICE_CLASSES.length || missingClasses.length > 0) {
+      throw new Error(
+        `strict --device-profiles must contain exactly one profile for each device class: ${SUPPORTED_DEVICE_CLASSES.join(', ')}; missing=${missingClasses.join(',') || '-'} count=${profiles.length}`,
+      );
+    }
+  } else if (options.diagnosticSingleDevice && profiles.length !== 1) {
+    throw new Error('--diagnostic-single-device requires exactly one device profile.');
+  }
+  return profiles;
+};
+
 export const resolveWatchRealtimeProtocol = (model, aliasModel = '', aliasProtocol = '') => {
   if (model === aliasModel && aliasModel) return aliasProtocol;
   return WATCH_MODEL_PROTOCOLS[model] ?? '';
@@ -178,6 +357,8 @@ export const buildRunnerArgv = ({
   sessionReadyTimeoutSeconds = MATRIX_DEFAULTS.sessionReadyTimeoutSeconds,
   watchAutoStopAfterSeconds = MATRIX_DEFAULTS.watchAutoStopAfterSeconds,
   physicalPlaybackDeviceId = MATRIX_DEFAULTS.physicalPlaybackDeviceId,
+  physicalPlaybackDeviceClass = MATRIX_DEFAULTS.physicalPlaybackDeviceClass,
+  physicalPlaybackDeviceProfileId = MATRIX_DEFAULTS.physicalPlaybackDeviceProfileId,
   expectedPhysicalPlaybackDeviceName = MATRIX_DEFAULTS.expectedPhysicalPlaybackDeviceName,
   skipDesktopLaunch = false,
   skipDriverRepair = false,
@@ -198,6 +379,8 @@ export const buildRunnerArgv = ({
     '-SessionReadyTimeoutSeconds', String(sessionReadyTimeoutSeconds),
     '-WatchAutoStopAfterSeconds', String(watchAutoStopAfterSeconds),
     '-PhysicalPlaybackDeviceId', physicalPlaybackDeviceId,
+    '-PhysicalPlaybackDeviceClass', physicalPlaybackDeviceClass,
+    '-PhysicalPlaybackDeviceProfileId', physicalPlaybackDeviceProfileId,
     '-FeedbackLoopPrevention', feedbackMode,
     '-ExpectedPhysicalPlaybackDeviceName', expectedPhysicalPlaybackDeviceName,
   ];
@@ -212,13 +395,369 @@ export const buildRunnerArgv = ({
   return [...argv, ...runnerArgs];
 };
 
-export const buildVerifyArgv = (outputRoot, modelList, feedbackModeList) => [
-  './scripts/testing/verify-watch-mode-evidence.mjs',
-  '--root', outputRoot,
-  '--strict',
-  '--models', modelList.join(','),
-  '--feedback-modes', feedbackModeList.join(','),
-];
+export const runnerArgsRequestDryRun = (runnerArgs = []) => runnerArgs.some(
+  (argument) => /^[-/]dryrun(?::.*)?$/i.test(String(argument).trim()),
+);
+
+export const assertLiveMatrixRunnerArgs = (runnerArgs = []) => {
+  if (runnerArgsRequestDryRun(runnerArgs)) {
+    throw new Error(
+      'The Watch Mode matrix rejects -DryRun because fixture reports are mode=dry-run and are not release evidence. Use npm run test:watch-mode-live:dry-run for runner self-tests.',
+    );
+  }
+};
+
+export const assertStrictEvidenceOptions = (options = {}) => {
+  const weakened = [];
+  if (options.skipDesktopLaunch) weakened.push('--skip-desktop-launch');
+  if (options.useDefaultEndpointPlayback) weakened.push('--use-default-endpoint-playback');
+  if (options.skipPhysicalOutputContentStt) weakened.push('--skip-physical-output-content-stt');
+  if (Number(options.playbackSeconds ?? MATRIX_DEFAULTS.playbackSeconds) !== 0) {
+    weakened.push('--playback-seconds must remain 0 (complete canonical media)');
+  }
+  const forbiddenRunnerSwitches = new Set([
+    'dryrun',
+    'skipdesktoplaunch',
+    'usedefaultendpointplayback',
+    'skipphysicaloutputcontentstt',
+  ]);
+  for (const argument of options.runnerArgs ?? []) {
+    const normalized = String(argument).trim().replace(/^[-/]+/, '').split(':', 1)[0].toLowerCase();
+    if (forbiddenRunnerSwitches.has(normalized)) weakened.push(`runner switch ${argument}`);
+  }
+  if (weakened.length > 0) {
+    throw new Error(`strict Watch Mode authority rejects evidence-weakening options: ${weakened.join(', ')}`);
+  }
+};
+
+export const assertStrictMatrixProvenance = (provenance, expectedHeadCommit = null) => {
+  const shapeFailure = gitProvenanceShapeFailure(provenance, 'strict matrix source provenance');
+  if (shapeFailure) {
+    throw new Error(`strict Watch Mode matrix requires an exact clean git checkout: ${shapeFailure}`);
+  }
+  if (expectedHeadCommit && provenance.headCommit !== expectedHeadCommit) {
+    throw new Error(
+      `strict Watch Mode matrix source changed during the run: start HEAD ${expectedHeadCommit} does not exactly match completion HEAD ${provenance.headCommit}`,
+    );
+  }
+  return provenance;
+};
+
+export const assertStrictMediaPath = (mediaPath) => {
+  const requested = path.resolve(repoRoot, mediaPath);
+  const canonical = path.resolve(repoRoot, MATRIX_DEFAULTS.mediaPath);
+  const normalize = (value) => (process.platform === 'win32' ? value.toLowerCase() : value);
+  if (normalize(requested) !== normalize(canonical)) {
+    throw new Error(`strict Watch Mode matrix requires the canonical reference media ${MATRIX_DEFAULTS.mediaPath}; got ${mediaPath}`);
+  }
+  return canonical;
+};
+
+export const buildStrictRuntimeAuthority = ({
+  run = spawnSync,
+  environment = strictRuntimeEnvironment(process.env),
+} = {}) => {
+  const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  for (const args of STRICT_RUNTIME_BUILD_COMMANDS) {
+    const result = run(npmExecutable, [...args], {
+      cwd: repoRoot,
+      stdio: 'inherit',
+      windowsHide: true,
+      env: environment,
+    });
+    if (result.error) {
+      throw new Error(`strict runtime build failed to start: npm ${args.join(' ')}: ${result.error.message}`);
+    }
+    if ((result.status ?? 1) !== 0) {
+      throw new Error(`strict runtime build failed with exit code ${result.status ?? 1}: npm ${args.join(' ')}`);
+    }
+  }
+  const diagnosticBuild = run('cargo.exe', [...STRICT_RUNTIME_DIAGNOSTIC_BUILD], {
+    cwd: repoRoot,
+    stdio: 'inherit',
+    windowsHide: true,
+    env: environment,
+  });
+  if (diagnosticBuild.error) {
+    throw new Error(`strict runtime diagnostic build failed to start: ${diagnosticBuild.error.message}`);
+  }
+  if ((diagnosticBuild.status ?? 1) !== 0) {
+    throw new Error(`strict runtime diagnostic build failed with exit code ${diagnosticBuild.status ?? 1}`);
+  }
+  return currentAuthorityRuntimeBinaryHashes();
+};
+
+export function strictRuntimeEnvironment(baseEnvironment = process.env) {
+  const environment = { ...baseEnvironment };
+  environment.CARGO_TARGET_DIR = path.join(repoRoot, 'target');
+  delete environment.CARGO_BUILD_TARGET;
+  delete environment.CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUNNER;
+  return environment;
+}
+
+function assertRuntimeBinaryContinuity(recorded, stage) {
+  const current = currentAuthorityRuntimeBinaryHashes();
+  if (!sameAuthorityInventory(recorded, current)) {
+    throw new Error(`strict Watch Mode runtime binaries changed ${stage}; discard the partial matrix and rebuild from the exact clean HEAD`);
+  }
+}
+
+export const writeMatrixRunManifest = ({
+  outputRoot,
+  modelList,
+  feedbackModeList,
+  deviceProfiles,
+  runDirectories,
+  strict,
+  now = new Date(),
+  provenance = currentGitProvenance({ cwd: repoRoot }),
+  authorityRuntimeBinaryHashes,
+}) => {
+  if (strict) assertStrictMatrixProvenance(provenance);
+  const resolvedOutputRoot = path.resolve(repoRoot, outputRoot);
+  fs.mkdirSync(resolvedOutputRoot, { recursive: true });
+  const timestamp = now.toISOString().replace(/[-:.TZ]/g, '');
+  const manifestPath = path.join(
+    resolvedOutputRoot,
+    `watch-mode-live-matrix-${timestamp}-${process.pid}.json`,
+  );
+  const expectedRunCount = modelList.length * feedbackModeList.length * deviceProfiles.length;
+  if (runDirectories.length !== expectedRunCount) {
+    throw new Error(`matrix manifest has ${runDirectories.length} run directories; expected ${expectedRunCount}`);
+  }
+  const implementationHashes = strict ? currentAuthorityImplementationHashes() : null;
+  const runtimeBinaryHashes = strict
+    ? (authorityRuntimeBinaryHashes ?? currentAuthorityRuntimeBinaryHashes())
+    : null;
+  const cells = [];
+  let runIndex = 0;
+  for (const modelId of modelList) {
+    for (const feedbackLoopPrevention of feedbackModeList) {
+      for (const deviceProfile of deviceProfiles) {
+        if (strict) {
+          cells.push(writeCellAuthorityReceipt({
+            outputRoot: resolvedOutputRoot,
+            runDirectory: runDirectories[runIndex],
+            matrixCell: {
+              modelId,
+              feedbackLoopPrevention,
+              deviceClass: deviceProfile.deviceClass,
+              deviceProfileId: deviceProfile.profileId,
+            },
+            provenance,
+            implementationHashes,
+            runtimeBinaryHashes,
+            now,
+          }));
+        }
+        runIndex += 1;
+      }
+    }
+  }
+  const scopedRunDirectories = strict
+    ? cells.map((cell) => cell.runDirectory)
+    : runDirectories;
+  const manifest = {
+    schemaVersion: strict ? STRICT_MATRIX_SCHEMA_VERSION : 1,
+    ...(strict ? { artifactKind: STRICT_MATRIX_ARTIFACT_KIND } : {}),
+    generatedAt: now.toISOString(),
+    evidenceMode: 'live',
+    strict: Boolean(strict),
+    provenance,
+    models: modelList,
+    feedbackLoopPreventionModes: feedbackModeList,
+    deviceProfiles,
+    runDirectories: scopedRunDirectories,
+    ...(strict
+      ? {
+          authority: {
+            runner: MATRIX_RUNNER_ID,
+            collector: LIVE_RUN_COLLECTOR_ID,
+            implementationHashes,
+            runtimeBinaryHashes,
+          },
+          cells,
+        }
+      : {}),
+  };
+  const temporaryPath = `${manifestPath}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, 'utf8');
+  fs.renameSync(temporaryPath, manifestPath);
+  return { manifestPath, manifest };
+};
+
+export const publishSuccessfulStrictMatrixManifest = ({
+  outputRoot,
+  manifestPath,
+  verifiedAt = new Date(),
+  currentProvenance = currentGitProvenance({ cwd: repoRoot }),
+  currentRuntimeBinaryHashes: providedRuntimeBinaryHashes,
+}) => {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  const provenanceFailure = exactGitProvenanceFailure(
+    manifest.provenance,
+    currentProvenance,
+    {
+      recordedSubject: 'verified matrix manifest provenance',
+      currentSubject: 'canonical publish checkout provenance',
+    },
+  );
+  if (provenanceFailure) {
+    throw new Error(`refusing to publish canonical strict manifest: ${provenanceFailure}`);
+  }
+  const profileClasses = Array.isArray(manifest.deviceProfiles)
+    ? manifest.deviceProfiles.map((profile) => profile.deviceClass)
+    : [];
+  const exactReleaseShape = manifest.strict === true
+    && manifest.schemaVersion === STRICT_MATRIX_SCHEMA_VERSION
+    && manifest.artifactKind === STRICT_MATRIX_ARTIFACT_KIND
+    && manifest.evidenceMode === 'live'
+    && JSON.stringify(manifest.models) === JSON.stringify(DEFAULT_MODELS)
+    && JSON.stringify(manifest.feedbackLoopPreventionModes) === JSON.stringify(DEFAULT_FEEDBACK_MODES)
+    && manifest.runDirectories?.length
+      === DEFAULT_MODELS.length * DEFAULT_FEEDBACK_MODES.length * SUPPORTED_DEVICE_CLASSES.length
+    && manifest.cells?.length === manifest.runDirectories?.length
+    && profileClasses.length === SUPPORTED_DEVICE_CLASSES.length
+    && SUPPORTED_DEVICE_CLASSES.every((deviceClass) => (
+      profileClasses.filter((value) => value === deviceClass).length === 1
+    ));
+  if (!exactReleaseShape) {
+    throw new Error(
+      'refusing to publish canonical strict manifest: verified matrix is not the exact 2-model x 3-route x 3-device release grid',
+    );
+  }
+  const uniqueRunDirectories = new Set(
+    manifest.runDirectories.map((directory) => (
+      process.platform === 'win32' ? String(directory).toLowerCase() : String(directory)
+    )),
+  );
+  if (uniqueRunDirectories.size !== manifest.runDirectories.length) {
+    throw new Error('refusing to publish canonical strict manifest: runDirectories are not unique');
+  }
+  const resolvedOutputRoot = path.resolve(repoRoot, outputRoot);
+  const currentImplementationHashes = currentAuthorityImplementationHashes();
+  const currentRuntimeBinaryHashes = providedRuntimeBinaryHashes
+    ?? currentAuthorityRuntimeBinaryHashes();
+  if (
+    manifest.authority?.runner !== MATRIX_RUNNER_ID
+    || manifest.authority?.collector !== LIVE_RUN_COLLECTOR_ID
+    || !sameAuthorityInventory(
+      manifest.authority?.implementationHashes,
+      currentImplementationHashes,
+    )
+  ) {
+    throw new Error('refusing to publish canonical strict manifest: runner/collector implementation authority does not match the current checkout');
+  }
+  if (!sameAuthorityInventory(manifest.authority?.runtimeBinaryHashes, currentRuntimeBinaryHashes)) {
+    throw new Error('refusing to publish canonical strict manifest: runtime binary authority does not match the current release build');
+  }
+  for (let index = 0; index < manifest.cells.length; index += 1) {
+    const cell = manifest.cells[index];
+    if (cell.runDirectory !== manifest.runDirectories[index]) {
+      throw new Error(`refusing to publish canonical strict manifest: cell ${index} runDirectory does not match runDirectories`);
+    }
+    const expectedReceiptPath = `${cell.runDirectory}/${CELL_AUTHORITY_FILE}`;
+    validateFileAuthorityEntry(
+      resolvedOutputRoot,
+      {
+        path: cell.receiptPath,
+        bytes: cell.receiptBytes,
+        sha256: cell.receiptSha256,
+      },
+      expectedReceiptPath,
+      `strict matrix cell ${index} receipt`,
+    );
+    const receiptPath = resolveAuthorityPath(resolvedOutputRoot, expectedReceiptPath);
+    const receipt = JSON.parse(fs.readFileSync(receiptPath, 'utf8').replace(/^\uFEFF/, ''));
+    if (!sameAuthorityInventory(receipt.implementationHashes, currentImplementationHashes)) {
+      throw new Error(`refusing to publish canonical strict manifest: cell ${index} implementation hashes do not match the current checkout`);
+    }
+    if (!sameAuthorityInventory(receipt.runtimeBinaryHashes, currentRuntimeBinaryHashes)) {
+      throw new Error(`refusing to publish canonical strict manifest: cell ${index} runtime binaries do not match the current release build`);
+    }
+  }
+  const verificationReceiptPath = strictMatrixVerificationReceiptPath(manifestPath);
+  const verification = validateStrictMatrixVerificationReceipt({
+    receiptPath: verificationReceiptPath,
+    manifestPath,
+    manifest,
+    currentProvenance,
+    implementationHashes: currentImplementationHashes,
+    runtimeBinaryHashes: currentRuntimeBinaryHashes,
+  });
+  const verifiedAuthority = verifyStrictMatrixAuthority({
+    manifestPath,
+    manifest,
+    evidenceRoot: resolvedOutputRoot,
+    currentProvenance,
+    workspaceRoot: repoRoot,
+    currentRuntimeBinaryHashes,
+  });
+  const evidence = findWatchModeEvidence({
+    root: resolvedOutputRoot,
+    strict: true,
+    models: DEFAULT_MODELS,
+    feedbackModes: DEFAULT_FEEDBACK_MODES,
+    deviceClasses: SUPPORTED_DEVICE_CLASSES,
+    runDirectories: verifiedAuthority.runDirectories,
+    authorizedReports: verifiedAuthority.authorizedReports,
+    currentProvenance,
+    workspaceRoot: repoRoot,
+  });
+  if (!evidence.ok) {
+    throw new Error(
+      `refusing to publish canonical strict manifest: raw authority re-verification failed: ${evidence.reason ?? 'unknown strict matrix failure'}`,
+    );
+  }
+  const canonicalPath = path.join(resolvedOutputRoot, CANONICAL_STRICT_MATRIX_MANIFEST);
+  const sourceManifestAuthority = fileAuthorityEntry(
+    path.resolve(manifestPath),
+    path.basename(manifestPath),
+  );
+  const canonicalManifest = {
+    ...manifest,
+    verification: 'passed',
+    verifiedAt: verification.receipt.verifiedAt,
+    verificationProvenance: currentProvenance,
+    sourceManifest: path.basename(manifestPath),
+    sourceManifestSha256: sourceManifestAuthority.sha256,
+    sourceManifestBytes: sourceManifestAuthority.bytes,
+    verificationReceiptPath: path.basename(verificationReceiptPath),
+    verificationReceiptSha256: fileAuthorityEntry(
+      verificationReceiptPath,
+      path.basename(verificationReceiptPath),
+    ).sha256,
+    verificationReceiptBytes: fs.statSync(verificationReceiptPath).size,
+  };
+  const temporaryPath = `${canonicalPath}.${process.pid}.tmp`;
+  fs.writeFileSync(temporaryPath, `${JSON.stringify(canonicalManifest, null, 2)}\n`, 'utf8');
+  fs.renameSync(temporaryPath, canonicalPath);
+  return { canonicalPath, manifest: canonicalManifest };
+};
+
+export const buildVerifyArgv = (
+  outputRoot,
+  modelList,
+  feedbackModeList,
+  deviceClassList,
+  runManifest,
+  { strict = true } = {},
+) => {
+  if (typeof runManifest !== 'string' || !runManifest.trim()) {
+    throw new Error('evidence verifier requires the current matrix run manifest');
+  }
+  return [
+    './scripts/testing/verify-watch-mode-evidence.mjs',
+    '--root', outputRoot,
+    ...(strict ? ['--strict'] : []),
+    '--models', modelList.join(','),
+    '--feedback-modes', feedbackModeList.join(','),
+    ...(strict && deviceClassList.length > 0
+      ? ['--device-classes', deviceClassList.join(',')]
+      : []),
+    '--run-manifest', runManifest,
+  ];
+};
 
 export const lastNonEmptyLine = (text) => {
   const lines = text.split(/\r?\n/).filter((line) => line.length > 0);
@@ -240,14 +779,14 @@ export const lastRunDirectoryLine = (text, rootDir = repoRoot) => {
       /* not a path */
     }
   }
-  return lines.length > 0 ? lines[lines.length - 1] : undefined;
+  return undefined;
 };
 
-const runLiveRunner = (runnerArgv) => new Promise((resolve, reject) => {
+const runLiveRunner = (runnerArgv, timeoutMs, environment = process.env) => new Promise((resolve, reject) => {
   const child = spawn(
     'powershell.exe',
     ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', RUNNER_SCRIPT, ...runnerArgv],
-    { cwd: repoRoot, stdio: ['ignore', 'pipe', 'inherit'] },
+    { cwd: repoRoot, stdio: ['ignore', 'pipe', 'inherit'], env: environment },
   );
   let stdout = '';
   child.stdout.setEncoding('utf8');
@@ -267,7 +806,7 @@ const runLiveRunner = (runnerArgv) => new Promise((resolve, reject) => {
     }
     child.stdout.destroy();
     resolve({ exitCode: 124, stdout });
-  }, LIVE_RUNNER_TIMEOUT_MS);
+  }, timeoutMs);
   child.once('error', (error) => {
     clearTimeout(timeout);
     reject(error);
@@ -284,7 +823,10 @@ const runLiveRunner = (runnerArgv) => new Promise((resolve, reject) => {
 });
 
 export const runMatrix = async (options) => {
+  assertLiveMatrixRunnerArgs(options.runnerArgs);
+  const strict = !Boolean(options.diagnosticSingleDevice);
   const { modelList: configuredModels, feedbackModeList } = resolveMatrixLists(options);
+  const deviceProfiles = resolveDeviceProfiles(options, { strict });
   const modelList = [...configuredModels];
   const aliasModel = String(options.aliasModel ?? '').trim();
   const aliasProtocol = String(options.aliasProtocol ?? '').trim();
@@ -292,36 +834,128 @@ export const runMatrix = async (options) => {
   if (aliasModel && !['dashscope-omni', 'dashscope-livetranslate', 'dashscope-asr', 'openai-conversation', 'openai-translation', 'openai-transcription', 'openai-flat', 'gemini-live'].includes(aliasProtocol)) {
     throw new Error(`Unsupported alias realtime protocol: ${aliasProtocol}`);
   }
+  if (strict) {
+    assertStrictReleaseMatrixLists({ modelList, feedbackModeList });
+    assertStrictMediaPath(options.mediaPath ?? MATRIX_DEFAULTS.mediaPath);
+    assertStrictEvidenceOptions(options);
+  }
+  const startProvenance = strict
+    ? assertStrictMatrixProvenance(currentGitProvenance({ cwd: repoRoot }))
+    : null;
+  const runtimeBinaryHashes = strict ? buildStrictRuntimeAuthority() : null;
+  const liveRunnerEnvironment = strict ? strictRuntimeEnvironment(process.env) : process.env;
+  if (strict) {
+    const postBuildProvenance = assertStrictMatrixProvenance(
+      currentGitProvenance({ cwd: repoRoot }),
+      startProvenance.headCommit,
+    );
+    const postBuildFailure = exactGitProvenanceFailure(startProvenance, postBuildProvenance, {
+      recordedSubject: 'strict matrix pre-build provenance',
+      currentSubject: 'strict matrix post-build provenance',
+    });
+    if (postBuildFailure) {
+      throw new Error(`strict Watch Mode release build changed source provenance: ${postBuildFailure}`);
+    }
+  }
   const runDirectories = [];
   for (const model of modelList) {
     for (const feedbackMode of feedbackModeList) {
-      console.error(`==> Running Watch Mode live strict matrix model: ${model} feedbackLoopPrevention: ${feedbackMode}`);
-      const watchRealtimeProtocol = resolveWatchRealtimeProtocol(model, aliasModel, aliasProtocol);
-      const { exitCode, stdout } = await runLiveRunner(buildRunnerArgv({ ...options, model, feedbackMode, watchRealtimeProtocol }));
-      if (exitCode !== 0) {
-        throw new Error(`Watch Mode live run failed for model ${model} feedbackLoopPrevention ${feedbackMode} with exit code ${exitCode}`);
-      }
-      const runDirectory = lastRunDirectoryLine(stdout);
-      if (runDirectory !== undefined) {
-        runDirectories.push(runDirectory);
+      for (const deviceProfile of deviceProfiles) {
+        console.error(`==> Running Watch Mode live ${strict ? 'strict matrix' : 'non-strict single-device diagnostic'} model: ${model} feedbackLoopPrevention: ${feedbackMode} device: ${deviceProfile.profileId}[${deviceProfile.deviceClass}]`);
+        const watchRealtimeProtocol = resolveWatchRealtimeProtocol(model, aliasModel, aliasProtocol);
+        const runnerOptions = {
+          ...options,
+          ...deviceProfile,
+          model,
+          feedbackMode,
+          watchRealtimeProtocol,
+          physicalPlaybackDeviceClass: deviceProfile.deviceClass,
+          physicalPlaybackDeviceProfileId: deviceProfile.profileId,
+        };
+        const { exitCode, stdout } = await runLiveRunner(
+          buildRunnerArgv(runnerOptions),
+          resolveLiveRunnerTimeoutMs(runnerOptions),
+          liveRunnerEnvironment,
+        );
+        if (exitCode !== 0) {
+          throw new Error(`Watch Mode live run failed for model ${model} feedbackLoopPrevention ${feedbackMode} device ${deviceProfile.profileId}[${deviceProfile.deviceClass}] with exit code ${exitCode}`);
+        }
+        const runDirectory = lastRunDirectoryLine(stdout);
+        if (runDirectory === undefined) {
+          throw new Error(`Watch Mode live runner did not return an existing run directory for model ${model} feedbackLoopPrevention ${feedbackMode} device ${deviceProfile.profileId}[${deviceProfile.deviceClass}]`);
+        }
+        const resolvedRunDirectory = path.resolve(repoRoot, runDirectory);
+        if (runDirectories.includes(resolvedRunDirectory)) {
+          throw new Error(`Watch Mode live runner reused run directory ${resolvedRunDirectory}; every matrix cell requires its own artifact directory.`);
+        }
+        runDirectories.push(resolvedRunDirectory);
+        if (strict) assertRuntimeBinaryContinuity(runtimeBinaryHashes, `during matrix cell ${model}/${feedbackMode}/${deviceProfile.profileId}`);
       }
     }
   }
-  console.error('==> Verifying strict Watch Mode evidence matrix');
   const outputRoot = options.outputRoot ?? MATRIX_DEFAULTS.outputRoot;
+  const expectedRunCount = modelList.length * feedbackModeList.length * deviceProfiles.length;
+  if (runDirectories.length !== expectedRunCount) {
+    throw new Error(`Watch Mode matrix produced ${runDirectories.length} run directories; expected ${expectedRunCount}.`);
+  }
+  const completionProvenance = currentGitProvenance({ cwd: repoRoot });
+  if (strict) {
+    assertRuntimeBinaryContinuity(runtimeBinaryHashes, 'before authority manifest emission');
+    assertStrictMatrixProvenance(completionProvenance, startProvenance.headCommit);
+    const continuityFailure = exactGitProvenanceFailure(
+      startProvenance,
+      completionProvenance,
+      {
+        recordedSubject: 'strict matrix start provenance',
+        currentSubject: 'strict matrix completion provenance',
+      },
+    );
+    if (continuityFailure) {
+      throw new Error(`strict Watch Mode matrix source provenance changed: ${continuityFailure}`);
+    }
+  }
+  const { manifestPath } = writeMatrixRunManifest({
+    outputRoot,
+    modelList,
+    feedbackModeList,
+    deviceProfiles,
+    runDirectories,
+    strict,
+    provenance: completionProvenance,
+    authorityRuntimeBinaryHashes: runtimeBinaryHashes,
+  });
+  console.error(
+    strict
+      ? `==> Verifying strict Watch Mode evidence matrix from current-run manifest: ${manifestPath}`
+      : `==> Verifying scoped non-strict single-device diagnostic: ${manifestPath}`,
+  );
   const verifyResult = spawnSync(
     process.execPath,
-    buildVerifyArgv(outputRoot, modelList, feedbackModeList),
+    buildVerifyArgv(
+      outputRoot,
+      modelList,
+      feedbackModeList,
+      deviceProfiles.map((profile) => profile.deviceClass),
+      manifestPath,
+      { strict },
+    ),
     { cwd: repoRoot, stdio: ['ignore', 2, 'inherit'] },
   );
   const verifyExitCode = verifyResult.status ?? 1;
   if (verifyExitCode !== 0) {
-    throw new Error(`strict Watch Mode evidence matrix failed with exit code ${verifyExitCode}`);
+    throw new Error(`${strict ? 'strict Watch Mode evidence matrix' : 'non-strict Watch Mode single-device diagnostic'} failed with exit code ${verifyExitCode}`);
   }
+  const canonicalManifest = strict
+    ? publishSuccessfulStrictMatrixManifest({ outputRoot, manifestPath })
+    : null;
   return {
     models: modelList,
     feedbackLoopPreventionModes: feedbackModeList,
+    deviceProfiles,
     runDirectories,
+    runManifest: manifestPath,
+    canonicalRunManifest: canonicalManifest?.canonicalPath ?? null,
+    strictEvidenceVerified: strict,
   };
 };
 

@@ -25,7 +25,7 @@ mod injector {
     use std::collections::VecDeque;
     use std::path::PathBuf;
     use std::thread;
-    use std::time::{Duration, Instant};
+    use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
         initialize_mta, AudioClient, AudioRenderClient, Device, DeviceEnumerator, Direction,
         SampleType, WaveFormat,
@@ -43,6 +43,9 @@ mod injector {
         pub media_path: String,
         pub endpoint_id: String,
         pub endpoint_name: String,
+        pub process_id: u32,
+        pub started_at_ms: u64,
+        pub finished_at_ms: u64,
         pub source_sample_rate_hz: u32,
         pub source_channels: usize,
         pub rendered_frames: usize,
@@ -57,6 +60,9 @@ mod injector {
                 media_path: String::new(),
                 endpoint_id: String::new(),
                 endpoint_name: String::new(),
+                process_id: std::process::id(),
+                started_at_ms: 0,
+                finished_at_ms: unix_ms(),
                 source_sample_rate_hz: 0,
                 source_channels: 0,
                 rendered_frames: 0,
@@ -122,6 +128,7 @@ mod injector {
     }
 
     pub(super) fn run() -> Result<InjectorResult, String> {
+        let started_at_ms = unix_ms();
         let args = parse_args()?;
         let decoded = decode_mp3(&args.media_path)?;
         if decoded.samples.is_empty() {
@@ -192,6 +199,9 @@ mod injector {
             media_path: args.media_path.display().to_string(),
             endpoint_id,
             endpoint_name,
+            process_id: std::process::id(),
+            started_at_ms,
+            finished_at_ms: unix_ms(),
             source_sample_rate_hz: decoded.source_sample_rate_hz,
             source_channels: decoded.source_channels,
             rendered_frames,
@@ -397,5 +407,12 @@ mod injector {
 
     fn error_text(error: impl std::fmt::Display) -> String {
         error.to_string()
+    }
+
+    fn unix_ms() -> u64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
     }
 }

@@ -559,9 +559,10 @@ fn build_core_summary(
                 "firstTranslationSampleCount": at(audio, "/subtitleOverlay/firstTranslationSampleCount"),
             },
             "echoCaptureDiagnostics": {
-                "aecSuppressedChunks": at(audio, "/echoCaptureDiagnostics/aecSuppressedChunks"),
+                "processedChunks": at(audio, "/echoCaptureDiagnostics/processedChunks"),
                 "playbackActiveChunks": at(audio, "/echoCaptureDiagnostics/playbackActiveChunks"),
-                "effectiveSuppressedChunks": at(audio, "/echoCaptureDiagnostics/effectiveSuppressedChunks"),
+                "forwardedToAsrChunks": at(audio, "/echoCaptureDiagnostics/forwardedToAsrChunks"),
+                "droppedChunks": at(audio, "/echoCaptureDiagnostics/droppedChunks"),
             },
             "speech": {
                 "status": at(audio, "/speech/status"),

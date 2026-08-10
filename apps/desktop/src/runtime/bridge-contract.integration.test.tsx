@@ -5,6 +5,7 @@ import { createFakeBridge, type FakeBridge } from '../mocks/fake-bridge';
 import SubtitleOverlayPage from '../pages/SubtitleOverlayPage';
 import { AUDIO_RUNTIME_SNAPSHOT_EVENT, type AudioRuntimeSnapshot } from '../schema/audio-runtime';
 import type { AppConfigDraft } from '../schema/config';
+import { RUNTIME_SNAPSHOT_EVENT, type RuntimeSnapshot } from '../schema/runtime-core';
 import { useAppStore } from '../stores/app-store';
 import { registerDomHarness } from '../test-utils/component-test-harness';
 import { findButtonByText } from '../test-utils/driver-store-fixtures';
@@ -24,8 +25,12 @@ import { getWatchSessionReportRuntime } from './watch-session-report-runtime';
 // Contract integration layer for the desktop-runtime ↔ bridge boundary. The
 // real renderer runtime modules run against an injectable fake bridge / fake
 // provider (no real credentials, no physical audio devices), converting the
-// former manual E2E checklist rows — subtitle display, locked overlay
-// click-through, TTS counters — into automated cases.
+// former manual E2E checklist rows — subtitle display and locked overlay
+// click-through — into automated cases. Audio routing coverage below is a
+// contract check with explicit backend capability states. A fake success is
+// only possible with the same Windows-build and complete v6 virtual-mic
+// readiness checks used by production; hardware acceptance still requires the
+// real-device matrix.
 
 const harness = vi.hoisted(() => ({
   runtime: true,
@@ -370,9 +375,7 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
     expect(fake.getOverlayWindowState()).toMatchObject({ locked: false });
   });
 
-  // Manual E2E row "TTS outbound": start the dispatch worker, drive one cue
-  // through the worker lifecycle, and confirm the counters advance then.
-  it('keeps counters still at start_speech and advances them through the worker dispatch lifecycle', async () => {
+  it('keeps counters still at start_speech and routes an inbound cue only to the local speaker', async () => {
     const config = createConfig();
     config.speech.outputTarget = 'both';
 
@@ -397,9 +400,10 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
 
     const dispatched = fake.getAudioSnapshot();
     expect(dispatched.speech.speakerFramesWritten).toBeGreaterThan(0);
-    expect(dispatched.speech.virtualMicFramesWritten).toBeGreaterThan(0);
+    expect(dispatched.speech.virtualMicFramesWritten).toBe(0);
     const kinds = dispatched.speech.recentEvents.map((event) => event.kind);
     expect(kinds).toEqual(['speech.completed', 'speech.realtime-audio-requested', 'speech.deferred']);
+    expect(fake.getTranslationDispatches()).toHaveLength(0);
 
     const stopped = await stopSpeechDispatchRuntime();
     expect(stopped.speech.dispatchState).toBe('idle');
@@ -408,6 +412,184 @@ describe('desktop-runtime ↔ bridge contract integration (fake bridge)', () => 
     expect(fake.sessionActionCalls('startSpeech')).toHaveLength(1);
     expect(fake.sessionActionCalls('stopSpeech')).toHaveLength(1);
   });
+
+  it('models inbound Virtual Driver translation as physical-playback/inbound owned by Bridge', async () => {
+    const config = createConfig();
+    config.devices.feedbackLoopPrevention = 'virtual-driver';
+    config.devices.outputDeviceId = 'speaker-default';
+    config.speech.enabled = true;
+    config.speech.localPlaybackEnabled = true;
+    config.speech.outputTarget = 'speaker';
+
+    const runtime = await startBridgeServiceRuntime(config);
+    expect(runtime.bridge).toMatchObject({
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+      translationPlaybackEnabled: true,
+    });
+    const started = await startSpeechDispatchRuntime(config);
+    expect(started.speech.outputTarget).toBe('bridge-playback');
+
+    fake.streamCue('inbound', ['virtual driver speech line']);
+    fake.commitActiveCue();
+    fake.dispatchSpeechCue();
+    await fake.settle();
+
+    const dispatched = fake.getAudioSnapshot().speech;
+    const bridge = fake.getRuntimeSnapshot().bridge;
+    expect(dispatched.outputTarget).toBe('bridge-playback');
+    expect(dispatched.speakerFramesWritten).toBe(0);
+    expect(dispatched.virtualMicFramesWritten).toBe(0);
+    expect(dispatched.recentEvents[0]?.kind).toBe('speech.bridge-playback-queued');
+    expect(bridge.translatedFramesAccepted).toBeGreaterThan(0);
+    expect(bridge.playbackFramesWritten).toBeGreaterThan(0);
+    expect(bridge.virtualMicFramesWritten).toBe(0);
+    expect(fake.getTranslationDispatches()).toEqual([
+      expect.objectContaining({
+        translationSink: 'physical-playback',
+        routeDirection: 'inbound',
+        status: 'completed',
+        acceptedFrames: expect.any(Number),
+        playbackFramesWritten: expect.any(Number),
+        errorCode: null,
+      }),
+    ]);
+  });
+
+  it('writes outbound translation only to a fully ready virtual-mic capability', async () => {
+    const config = createConfig();
+    config.devices.feedbackLoopPrevention = 'virtual-driver';
+    config.speech.enabled = true;
+    config.speech.localPlaybackEnabled = true;
+    config.speech.virtualMicOutputEnabled = true;
+    config.speech.outputTarget = 'virtual-mic';
+
+    const startedBridge = await startBridgeServiceRuntime(config);
+    expect(startedBridge.bridge).toMatchObject({
+      virtualMicOutputRequested: true,
+      virtualMicOutputSupported: true,
+      virtualMicOutputStatus: 'ready',
+      captureEndpointName: expect.any(String),
+      virtualMicFormat: '48000Hz/mono/pcm16',
+    });
+    expect(startedBridge.bridge.windowsBuildNumber).toBeGreaterThanOrEqual(19_041);
+    await startSpeechDispatchRuntime(config);
+    fake.streamCue('outbound', ['outbound speech through the virtual microphone']);
+    fake.commitActiveCue();
+
+    const beforeAudio = fake.getAudioSnapshot().speech;
+    const beforeBridge = fake.getRuntimeSnapshot().bridge;
+
+    fake.dispatchSpeechCue();
+    await fake.settle();
+
+    const completed = fake.getAudioSnapshot().speech;
+    const bridge = fake.getRuntimeSnapshot().bridge;
+    expect(completed.status).toBe('ready');
+    expect(completed.dispatchState).toBe('waiting-subtitle');
+    expect(completed.lastError).toBeNull();
+    expect(completed.recentEvents[0]).toMatchObject({
+      kind: 'speech.completed',
+      cueId: expect.any(String),
+      requestId: expect.any(String),
+    });
+    expect(completed.speakerFramesWritten).toBe(beforeAudio.speakerFramesWritten);
+    expect(completed.virtualMicFramesWritten).toBeGreaterThan(beforeAudio.virtualMicFramesWritten);
+    expect(bridge.playbackFramesWritten).toBe(beforeBridge.playbackFramesWritten);
+    expect(bridge.virtualMicFramesWritten).toBeGreaterThan(beforeBridge.virtualMicFramesWritten);
+    expect(bridge.translatedFramesAccepted).toBeGreaterThan(beforeBridge.translatedFramesAccepted);
+    expect(bridge.lastErrorCode).toBeNull();
+    expect(fake.getTranslationDispatches()).toEqual([
+      expect.objectContaining({
+        translationSink: 'virtual-mic',
+        routeDirection: 'outbound',
+        status: 'completed',
+        acceptedFrames: expect.any(Number),
+        playbackFramesWritten: 0,
+        errorCode: null,
+      }),
+    ]);
+  });
+
+  for (const capability of [
+    {
+      label: 'unsupported',
+      virtualMicOutputSupported: false,
+      virtualMicOutputStatus: 'unsupported' as const,
+      captureEndpointName: null,
+      virtualMicFormat: null,
+    },
+    {
+      label: 'failed',
+      virtualMicOutputSupported: true,
+      virtualMicOutputStatus: 'failed' as const,
+      captureEndpointName: 'Microphone (Omni Translate Virtual Microphone)',
+      virtualMicFormat: '48000Hz/mono/pcm16',
+    },
+  ]) {
+    it(`rejects outbound virtual-mic frames when the capability is ${capability.label}`, async () => {
+      const config = createConfig();
+      config.devices.feedbackLoopPrevention = 'virtual-driver';
+      config.speech.enabled = true;
+      config.speech.localPlaybackEnabled = true;
+      config.speech.virtualMicOutputEnabled = true;
+      config.speech.outputTarget = 'virtual-mic';
+
+      await startBridgeServiceRuntime(config);
+      const seeded = fake.getRuntimeSnapshot();
+      fake.seedRuntimeSnapshot({
+        ...seeded,
+        bridge: {
+          ...seeded.bridge,
+          virtualMicOutputSupported: capability.virtualMicOutputSupported,
+          virtualMicOutputStatus: capability.virtualMicOutputStatus,
+          captureEndpointName: capability.captureEndpointName,
+          virtualMicFormat: capability.virtualMicFormat,
+        },
+      });
+      await startSpeechDispatchRuntime(config);
+      fake.streamCue('outbound', [`outbound speech with ${capability.label} virtual mic backend`]);
+      fake.commitActiveCue();
+
+      const runtimePushes: RuntimeSnapshot[] = [];
+      await fake.listen<RuntimeSnapshot>(RUNTIME_SNAPSHOT_EVENT, (event) => runtimePushes.push(event.payload));
+      const beforeAudio = fake.getAudioSnapshot().speech;
+      const beforeBridge = fake.getRuntimeSnapshot().bridge;
+
+      fake.dispatchSpeechCue();
+      await fake.settle();
+
+      const failed = fake.getAudioSnapshot().speech;
+      const bridge = fake.getRuntimeSnapshot().bridge;
+      expect(failed.status).toBe('degraded');
+      expect(failed.dispatchState).toBe('error');
+      expect(failed.lastError).toContain('bridge.virtual-mic-output-unavailable');
+      expect(failed.recentEvents[0]).toMatchObject({
+        kind: 'speech.error',
+        cueId: expect.any(String),
+        requestId: null,
+      });
+      expect(failed.recentEvents.map((event) => event.kind)).not.toContain('speech.completed');
+      expect(failed.recentEvents.map((event) => event.kind)).not.toContain('speech.bridge-playback-queued');
+      expect(failed.speakerFramesWritten).toBe(beforeAudio.speakerFramesWritten);
+      expect(failed.virtualMicFramesWritten).toBe(beforeAudio.virtualMicFramesWritten);
+      expect(bridge.playbackFramesWritten).toBe(beforeBridge.playbackFramesWritten);
+      expect(bridge.virtualMicFramesWritten).toBe(beforeBridge.virtualMicFramesWritten);
+      expect(bridge.translatedFramesAccepted).toBe(beforeBridge.translatedFramesAccepted);
+      expect(bridge.lastErrorCode).toBe('bridge.virtual-mic-output-unavailable');
+      expect(runtimePushes.at(-1)?.bridge.lastErrorCode).toBe('bridge.virtual-mic-output-unavailable');
+      expect(fake.getTranslationDispatches()).toEqual([
+        expect.objectContaining({
+          translationSink: 'virtual-mic',
+          routeDirection: 'outbound',
+          status: 'route-failed',
+          acceptedFrames: 0,
+          playbackFramesWritten: 0,
+          errorCode: 'bridge.virtual-mic-output-unavailable',
+        }),
+      ]);
+    });
+  }
 
   it('serves diagnostics snapshot and overlay self-check through the same contract double', async () => {
     fake.appendDiagnosticsLog({

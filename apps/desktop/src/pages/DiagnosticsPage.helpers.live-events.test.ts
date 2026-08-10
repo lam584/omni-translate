@@ -126,6 +126,10 @@ describe('LiveSessionEventDetail', () => {
     });
     const benchmarkText = diagnosticsPageHelpers.formatBenchmarkTxt(report);
     expect(benchmarkText).toContain('Benchmark Report');
+    expect(benchmarkText).toContain('Public Benchmark Score');
+    expect(benchmarkText).toContain('benchmark-score/v1');
+    expect(benchmarkText).toContain('Raw Benchmark Report JSON');
+    expect(benchmarkText).toContain('BenchmarkScoreV1 JSON');
     expect(benchmarkText).toContain('ASR Final: recognized');
     expect(benchmarkText).toContain('Translation Final: translated');
     expect(benchmarkText).toContain('response.text.delta');

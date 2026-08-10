@@ -1240,6 +1240,10 @@ NTSTATUS CMiniportWaveRTStream::SetState
             {
                 OmniBridgeResetLoopbackPcm();
             }
+            else if (m_bCapture && m_pMiniport->IsVirtualMicrophoneDevice())
+            {
+                OmniBridgeResetVirtualMicConsumer();
+            }
 
             // Wait until all work items are completed.
             if (!m_bCapture && !g_DoNotCreateDataFiles)
@@ -1344,6 +1348,10 @@ NTSTATUS CMiniportWaveRTStream::SetState
             if (m_KsState != KSSTATE_RUN && m_bCapture && (m_pMiniport->IsLoopbackPin(m_ulPin) || m_pMiniport->IsVirtualSpeakerDevice()))
             {
                 OmniBridgeResetLoopbackPcm();
+            }
+            else if (m_KsState != KSSTATE_RUN && m_bCapture && m_pMiniport->IsVirtualMicrophoneDevice())
+            {
+                OmniBridgeResetVirtualMicConsumer();
             }
 
 #if defined(SYSVAD_BTH_BYPASS) || defined(SYSVAD_USB_SIDEBAND)
@@ -1553,7 +1561,11 @@ ByteDisplacement - # of bytes to process.
     while (ByteDisplacement > 0)
     {
         ULONG runWrite = min(ByteDisplacement, m_ulDmaBufferSize - bufferOffset);
-        if (m_pMiniport->IsLoopbackPin(m_ulPin) || m_pMiniport->IsVirtualSpeakerDevice())
+        if (m_pMiniport->IsVirtualMicrophoneDevice())
+        {
+            OmniBridgeReadVirtualMicPcm(m_pDmaBuffer + bufferOffset, runWrite);
+        }
+        else if (m_pMiniport->IsLoopbackPin(m_ulPin) || m_pMiniport->IsVirtualSpeakerDevice())
         {
             OmniBridgeReadLoopbackPcm(m_pDmaBuffer + bufferOffset, runWrite);
         }

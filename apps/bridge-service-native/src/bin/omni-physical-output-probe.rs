@@ -9,7 +9,7 @@ fn main() {
     match probe::run() {
         Ok(result) => {
             println!("{}", serde_json::to_string(&result).unwrap());
-            if !result.passed {
+            if !result.passed && !result.skipped {
                 std::process::exit(1);
             }
         }
@@ -26,9 +26,16 @@ fn main() {
 #[cfg(windows)]
 mod probe {
     use omni_bridge_service::probe_support::{
-        coarse_dominant_frequency, component_amplitude, for_each_capture_packet, open_capture_stream,
+        coarse_dominant_frequency, component_amplitude, for_each_capture_packet,
+        isolated_component_amplitude, open_capture_stream,
     };
-    use omni_bridge_service::{AudioFrameHeader, BRIDGE_PROTOCOL_VERSION};
+    use omni_bridge_service::{
+        AudioFrameHeader, AudioRouteDirection, AudioSampleFormat, TranslationAudioSink,
+        BRIDGE_PROTOCOL_VERSION,
+    };
+    use omni_bridge_protocol::{
+        TranslationPlaybackStatusAck, TranslationPlaybackStatusEvent,
+    };
     use serde::Serialize;
     use serde_json::{json, Value};
     use std::f32::consts::TAU;
@@ -36,11 +43,25 @@ mod probe {
     use std::io::{BufRead, BufReader, Read, Write};
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
         initialize_mta, AudioCaptureClient, AudioClient, Device, DeviceEnumerator, Direction,
         SampleType, WaveFormat,
+    };
+    use windows_sys::Win32::{
+        Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE},
+        System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W,
+                TH32CS_SNAPPROCESS,
+            },
+            Threading::{CreateMutexW, ReleaseMutex, WaitForSingleObject},
+        },
     };
 
     const SAMPLE_RATE: usize = 48_000;
@@ -52,11 +73,16 @@ mod probe {
     const TONE_SECONDS: f32 = 2.0;
     const MIN_OUTPUT_RMS: f32 = 0.015;
     const MIN_OUTPUT_COMPONENT: f32 = 0.015;
+    include!("omni_physical_output_probe/process_exclusion.rs");
 
     #[derive(Serialize)]
     #[serde(rename_all = "camelCase")]
     pub(super) struct ProbeResult {
         pub passed: bool,
+        pub skipped: bool,
+        pub status: String,
+        pub probe_kind: String,
+        pub skip_code: Option<String>,
         pub physical_playback_device_id: String,
         pub resolved_physical_playback_device_id: String,
         pub resolved_physical_playback_device_name: String,
@@ -71,6 +97,7 @@ mod probe {
         pub tone_component: f32,
         pub silent_packets: usize,
         pub invalid_samples: usize,
+        pub process_exclusion_fingerprint: Option<ProcessExclusionFingerprintEvidence>,
         pub detail: Option<String>,
     }
 
@@ -78,6 +105,10 @@ mod probe {
         pub(super) fn failed(detail: String) -> Self {
             Self {
                 passed: false,
+                skipped: false,
+                status: "failed".to_string(),
+                probe_kind: "unknown".to_string(),
+                skip_code: None,
                 physical_playback_device_id: String::new(),
                 resolved_physical_playback_device_id: String::new(),
                 resolved_physical_playback_device_name: String::new(),
@@ -92,8 +123,42 @@ mod probe {
                 tone_component: 0.0,
                 silent_packets: 0,
                 invalid_samples: 0,
+                process_exclusion_fingerprint: None,
                 detail: Some(detail),
             }
+        }
+
+        fn skipped_process_exclusion(code: &str, detail: String) -> Self {
+            Self {
+                passed: false,
+                skipped: true,
+                status: "skipped".to_string(),
+                probe_kind: "process-exclusion-fingerprint".to_string(),
+                skip_code: Some(code.to_string()),
+                physical_playback_device_id: String::new(),
+                resolved_physical_playback_device_id: String::new(),
+                resolved_physical_playback_device_name: String::new(),
+                recording_path: None,
+                transcription_pcm_path: None,
+                playback_frames_written_before: 0,
+                playback_frames_written_after: 0,
+                captured_frames: 0,
+                peak: 0.0,
+                rms: 0.0,
+                tone_frequency_hz: PROCESS_TRANSLATION_FINGERPRINT_HZ,
+                tone_component: 0.0,
+                silent_packets: 0,
+                invalid_samples: 0,
+                process_exclusion_fingerprint: None,
+                detail: Some(detail),
+            }
+        }
+
+        fn failed_process_exclusion(detail: String) -> Self {
+            let mut result = Self::failed(detail);
+            result.probe_kind = "process-exclusion-fingerprint".to_string();
+            result.tone_frequency_hz = PROCESS_TRANSLATION_FINGERPRINT_HZ;
+            result
         }
     }
 
@@ -106,82 +171,39 @@ mod probe {
         record_path: Option<PathBuf>,
         transcription_pcm_path: Option<PathBuf>,
         record_seconds: f32,
+        process_exclusion_fingerprint: bool,
+        tone_player_exe: Option<PathBuf>,
     }
 
-    struct LoopbackCapture {
-        audio_client: AudioClient,
-        capture_client: AudioCaptureClient,
-    }
-
-    impl LoopbackCapture {
-        fn start(device: &Device) -> Result<Self, String> {
-            let format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE, CHANNELS, None);
-            let (audio_client, capture_client) = open_capture_stream(device, &format)?;
-            Ok(Self {
-                audio_client,
-                capture_client,
-            })
-        }
-
-        fn collect_available(&self, metrics: &mut CaptureMetrics) -> Result<(), String> {
-            for_each_capture_packet(&self.capture_client, BYTES_PER_FRAME, |packet, _silent| {
-                if packet.is_empty() {
-                    metrics.silent_packets += 1;
-                    return;
-                }
-                for chunk in packet.chunks_exact(4) {
-                    let value = f32::from_le_bytes(chunk.try_into().unwrap());
-                    if value.is_finite() {
-                        metrics.samples.push(value);
-                        metrics.peak = metrics.peak.max(value.abs());
-                    } else {
-                        metrics.invalid_samples += 1;
-                    }
-                }
-            })
-        }
-    }
-
-    impl Drop for LoopbackCapture {
-        fn drop(&mut self) {
-            let _ = self.audio_client.stop_stream();
-        }
-    }
-
-    #[derive(Default)]
-    struct CaptureMetrics {
-        samples: Vec<f32>,
-        peak: f32,
-        silent_packets: usize,
-        invalid_samples: usize,
-    }
-
-    impl CaptureMetrics {
-        fn frames(&self) -> usize {
-            self.samples.len() / CHANNELS
-        }
-
-        fn rms(&self) -> f32 {
-            if self.samples.is_empty() {
-                return 0.0;
-            }
-            let sum = self
-                .samples
-                .iter()
-                .map(|sample| (*sample as f64) * (*sample as f64))
-                .sum::<f64>();
-            (sum / self.samples.len() as f64).sqrt() as f32
-        }
-    }
+    include!("omni_physical_output_probe/capture.rs");
 
     pub(super) fn run() -> Result<ProbeResult, String> {
         let args = parse_args()?;
         fs::create_dir_all(&args.runtime_root).map_err(error_text)?;
-        write_install_state(&args.runtime_root)?;
+        if !args.process_exclusion_fingerprint {
+            write_install_state(&args.runtime_root)?;
+        }
         initialize_mta().ok().map_err(error_text)?;
         let enumerator = DeviceEnumerator::new().map_err(error_text)?;
-        let capture_device =
-            find_capture_render_device(&enumerator, &args.physical_playback_device_id)?;
+        let capture_device = match find_capture_render_device(
+            &enumerator,
+            &args.physical_playback_device_id,
+        ) {
+            Ok(device) => device,
+            Err(detail)
+                if args.process_exclusion_fingerprint
+                    && matches!(
+                        args.physical_playback_device_id.trim(),
+                        "" | "default" | "speaker-default" | "system-output-default"
+                    ) =>
+            {
+                return Ok(ProbeResult::skipped_process_exclusion(
+                    "probe.no-physical-render-endpoint",
+                    detail,
+                ));
+            }
+            Err(detail) => return Err(detail),
+        };
         let endpoint_id = capture_device.get_id().map_err(error_text)?;
         let endpoint_name = capture_device.get_friendlyname().map_err(error_text)?;
         if endpoint_name.contains("Omni Translate Virtual Speaker") {
@@ -191,9 +213,17 @@ mod probe {
         if args.record_only {
             return record_physical_output(&args, &capture_device, endpoint_id, endpoint_name);
         }
+        if args.process_exclusion_fingerprint {
+            return probe_process_exclusion_fingerprint(
+                &args,
+                &capture_device,
+                endpoint_id,
+                endpoint_name,
+            );
+        }
 
         let pipe_name = format!("omni-physical-output-probe-{}", std::process::id());
-        let mut bridge = start_bridge(&args.bridge_exe, &pipe_name, &args.runtime_root)?;
+        let mut bridge = start_bridge(&args.bridge_exe, &pipe_name, &args.runtime_root, None)?;
         let session_id = format!("physical-output-probe-session-{}", unix_ms());
         let init = control(
             &pipe_name,
@@ -207,7 +237,9 @@ mod probe {
                 "virtualRenderDeviceId": "virtual-speaker-default",
                 "physicalPlaybackDeviceId": endpoint_id,
                 "physicalPlaybackLevel": args.physical_playback_level.min(100),
+                "sourceCaptureMode": "none",
                 "monitorPlaybackEnabled": true,
+                "translationPlaybackEnabled": true,
                 "expectedDriverVersion": "0.10.0-dev",
                 "expectedBridgeVersion": "0.1.0",
                 "mixControl": {
@@ -222,11 +254,11 @@ mod probe {
                 }
             }),
         )?;
-        if init["driverHealth"].as_str() != Some("running") {
+        if init["bridgeState"].as_str() != Some("running") {
             shutdown_bridge(&pipe_name);
             stop_child(&mut bridge);
             return Err(format!(
-                "bridge init did not report running driverHealth: {init}"
+                "bridge init did not report a running translation route: {init}"
             ));
         }
 
@@ -296,6 +328,10 @@ mod probe {
         let detail = (!failures.is_empty()).then(|| failures.join("; "));
         Ok(ProbeResult {
             passed: detail.is_none(),
+            skipped: false,
+            status: if detail.is_none() { "passed" } else { "failed" }.to_string(),
+            probe_kind: "physical-output".to_string(),
+            skip_code: None,
             physical_playback_device_id: args.physical_playback_device_id,
             resolved_physical_playback_device_id: resolved_id,
             resolved_physical_playback_device_name: endpoint_name,
@@ -310,6 +346,7 @@ mod probe {
             tone_component,
             silent_packets: metrics.silent_packets,
             invalid_samples: metrics.invalid_samples,
+            process_exclusion_fingerprint: None,
             detail,
         })
     }
@@ -323,6 +360,8 @@ mod probe {
         let mut record_path: Option<PathBuf> = None;
         let mut transcription_pcm_path: Option<PathBuf> = None;
         let mut record_seconds = 30.0_f32;
+        let mut process_exclusion_fingerprint = false;
+        let mut tone_player_exe = None;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
             match arg.as_str() {
@@ -356,11 +395,21 @@ mod probe {
                         .parse::<f32>()
                         .map_err(|error| format!("invalid --record-seconds '{raw}': {error}"))?;
                 }
+                "--process-exclusion-fingerprint" => process_exclusion_fingerprint = true,
+                "--tone-player-exe" => {
+                    tone_player_exe = Some(PathBuf::from(next_arg(&mut args, "--tone-player-exe")?))
+                }
                 _ => return Err(format!("unknown argument: {arg}")),
             }
         }
         if record_only && record_seconds <= 0.0 {
             return Err("--record-seconds must be greater than 0".to_string());
+        }
+        if record_only && process_exclusion_fingerprint {
+            return Err(
+                "--record-only and --process-exclusion-fingerprint are mutually exclusive"
+                    .to_string(),
+            );
         }
         Ok(Args {
             bridge_exe,
@@ -371,6 +420,8 @@ mod probe {
             record_path,
             transcription_pcm_path,
             record_seconds,
+            process_exclusion_fingerprint,
+            tone_player_exe,
         })
     }
 
@@ -423,6 +474,10 @@ mod probe {
         let detail = (!failures.is_empty()).then(|| failures.join("; "));
         Ok(ProbeResult {
             passed: detail.is_none(),
+            skipped: false,
+            status: if detail.is_none() { "passed" } else { "failed" }.to_string(),
+            probe_kind: "physical-output-recording".to_string(),
+            skip_code: None,
             physical_playback_device_id: args.physical_playback_device_id.clone(),
             resolved_physical_playback_device_id: endpoint_id,
             resolved_physical_playback_device_name: endpoint_name,
@@ -439,6 +494,7 @@ mod probe {
             tone_component: 0.0,
             silent_packets: metrics.silent_packets,
             invalid_samples: metrics.invalid_samples,
+            process_exclusion_fingerprint: None,
             detail,
         })
     }
@@ -466,8 +522,10 @@ mod probe {
         exe: &PathBuf,
         pipe_name: &str,
         runtime_root: &PathBuf,
+        diagnostic_child_tone: Option<&DiagnosticBridgeChildTone>,
     ) -> Result<Child, String> {
-        let child = Command::new(exe)
+        let mut command = Command::new(exe);
+        command
             .arg("--pipe-name")
             .arg(pipe_name)
             .arg("--runtime-root")
@@ -475,9 +533,27 @@ mod probe {
             .arg("--bridge-version")
             .arg("0.1.0")
             .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(error_text)?;
+            .stderr(Stdio::null());
+        if let Some(config) = diagnostic_child_tone {
+            command
+                .arg("--diagnostic-child-tone-exe")
+                .arg(&config.executable)
+                .arg("--diagnostic-child-tone-trigger-path")
+                .arg(&config.trigger_path)
+                .arg("--diagnostic-child-tone-pid-path")
+                .arg(&config.pid_path)
+                .arg("--diagnostic-child-tone-result-path")
+                .arg(&config.result_path)
+                .arg("--diagnostic-child-tone-endpoint-id")
+                .arg(&config.endpoint_id)
+                .arg("--diagnostic-child-tone-frequency-hz")
+                .arg(PROCESS_CHILD_FINGERPRINT_HZ.to_string())
+                .arg("--diagnostic-child-tone-amplitude")
+                .arg(PROCESS_FINGERPRINT_AMPLITUDE.to_string())
+                .arg("--diagnostic-child-tone-seconds")
+                .arg(PROCESS_FINGERPRINT_SECONDS.to_string());
+        }
+        let child = command.spawn().map_err(error_text)?;
         thread::sleep(Duration::from_millis(700));
         Ok(child)
     }
@@ -498,21 +574,53 @@ mod probe {
     }
 
     fn send_translation_tone(pipe_name: &str, session_id: &str) -> Result<(), String> {
+        send_translation_tone_at(
+            pipe_name,
+            session_id,
+            TONE_FREQUENCY_HZ,
+            TONE_AMPLITUDE,
+            TONE_SECONDS,
+            "physical-output",
+        )
+    }
+
+    fn send_translation_tone_at(
+        pipe_name: &str,
+        session_id: &str,
+        frequency_hz: f32,
+        amplitude: f32,
+        seconds: f32,
+        label: &str,
+    ) -> Result<(), String> {
         let path = format!(r"\\.\pipe\{pipe_name}-audio");
         let mut pipe = open_pipe(&path)?;
-        let payload = tone_pcm16le();
+        let payload = tone_pcm16le_at(frequency_hz, amplitude, seconds);
+        let created_at_ms = unix_ms();
+        let duration_ms = (seconds.max(0.0) * 1_000.0).ceil() as u64;
         let header = AudioFrameHeader {
             event_type: "bridge.translation.frame".to_string(),
-            request_id: format!("physical-output-frame-{}", unix_ms()),
+            request_id: format!("{label}-frame-{created_at_ms}"),
             session_id: session_id.to_string(),
-            frame_id: "physical-output-tone-1".to_string(),
-            stream_id: "physical-output-probe".to_string(),
+            frame_id: format!("{label}-tone-{created_at_ms}"),
+            stream_id: format!("{label}-probe"),
             sample_rate_hz: SAMPLE_RATE as u32,
+            sample_format: AudioSampleFormat::PcmS16le,
             channel_count: CHANNELS as u16,
             frame_count: payload.len() / (CHANNELS * 2),
-            timestamp_ms: unix_ms(),
+            timestamp_ms: created_at_ms,
             payload_bytes: payload.len(),
+            bridge_process_id: None,
+            bridge_instance_id: None,
+            source_generation: None,
+            source_generation_token: None,
+            cue_id: Some(format!("{label}-cue")),
+            created_at_ms: Some(created_at_ms),
+            estimated_duration_ms: Some(duration_ms),
+            chunk_index: None,
+            chunk_count: None,
             translated_audio_enhancement_applied: false,
+            translation_sink: Some(TranslationAudioSink::PhysicalPlayback),
+            route_direction: Some(AudioRouteDirection::Inbound),
         };
         let header_bytes = serde_json::to_vec(&header).map_err(error_text)?;
         pipe.write_all(&(header_bytes.len() as u32).to_le_bytes())
@@ -544,12 +652,12 @@ mod probe {
         }
     }
 
-    fn tone_pcm16le() -> Vec<u8> {
-        let frames = (SAMPLE_RATE as f32 * TONE_SECONDS) as usize;
+    fn tone_pcm16le_at(frequency_hz: f32, amplitude: f32, seconds: f32) -> Vec<u8> {
+        let frames = (SAMPLE_RATE as f32 * seconds.max(0.0)) as usize;
         let mut bytes = Vec::with_capacity(frames * CHANNELS * 2);
         for frame in 0..frames {
-            let sample = (TONE_AMPLITUDE
-                * (TAU * TONE_FREQUENCY_HZ * frame as f32 / SAMPLE_RATE as f32).sin()
+            let sample = (amplitude.clamp(0.0, 1.0)
+                * (TAU * frequency_hz * frame as f32 / SAMPLE_RATE as f32).sin()
                 * i16::MAX as f32) as i16;
             for _ in 0..CHANNELS {
                 bytes.extend_from_slice(&sample.to_le_bytes());

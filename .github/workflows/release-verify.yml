@@ -7,7 +7,7 @@ jobs:
   verify:
     name: Windows release static verification
     runs-on: windows-latest
-    timeout-minutes: 45
+    timeout-minutes: 180
 
     steps:
       - name: Checkout
@@ -38,6 +38,9 @@ jobs:
 
       - name: Test watch-mode report tooling
         run: npm run test:watch-mode-report
+
+      - name: Build, link, and run WebRTC AEC3 release fixtures
+        run: npm run test:aec3-msvc
 
       # Full cargo tests, not just `cargo check`: a release verifier that only
       # type-checks the Rust side gives false confidence.

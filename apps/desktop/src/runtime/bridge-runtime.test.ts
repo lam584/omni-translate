@@ -6,7 +6,9 @@ vi.mock('@tauri-apps/api/core', async () => (await import('../test-utils/tauri-i
 
 import {
   bridgeRuntimeTestHelpers,
+  canProbeProcessLoopbackCapability,
   installDriverRuntime,
+  probeProcessLoopbackCapabilityRuntime,
   refreshBridgeRuntime,
   repairDriverRuntime,
   startBridgeServiceRuntime,
@@ -35,7 +37,13 @@ describe('bridge runtime', () => {
   it('provides complete browser preview lifecycle snapshots', async () => {
     const config = structuredClone(appConfigDraftMock);
     // The preview boundary returns isolated clones, not the module singleton.
+    expect(canProbeProcessLoopbackCapability()).toBe(false);
     expect(await refreshBridgeRuntime()).toStrictEqual(runtimeSnapshotMock);
+    expect((await probeProcessLoopbackCapabilityRuntime()).bridge).toMatchObject({
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      processLoopbackFailureDetail: null,
+    });
     expect((await startBridgeServiceRuntime(config)).bridge).toMatchObject({
       bridgeState: 'running',
       expectedDriverVersion: config.driver.expectedDriverVersion,
@@ -54,7 +62,9 @@ describe('bridge runtime', () => {
     invokeMock.mockResolvedValue({ data: runtimeSnapshotMock });
     const config = structuredClone(appConfigDraftMock);
 
+    expect(canProbeProcessLoopbackCapability()).toBe(true);
     await refreshBridgeRuntime();
+    await probeProcessLoopbackCapabilityRuntime();
     await startBridgeServiceRuntime(config);
     await stopBridgeServiceRuntime();
     await installDriverRuntime(config);
@@ -63,6 +73,7 @@ describe('bridge runtime', () => {
 
     expect(invokeMock.mock.calls).toEqual([
       ['bridge_v2', { command: { action: 'refresh' } }],
+      ['bridge_v2', { command: { action: 'probeProcessLoopback' } }],
       ['bridge_v2', { command: { action: 'start', config } }],
       ['bridge_v2', { command: { action: 'stop' } }],
       ['bridge_v2', { command: { action: 'install', config } }],

@@ -8,6 +8,7 @@ pub(crate) mod events;
 pub(crate) mod gemini_live;
 pub(crate) mod omni;
 pub(crate) mod openai_realtime;
+pub(crate) mod playback_ownership;
 pub(crate) mod pcm_resample;
 pub(crate) mod realtime_cue;
 pub(crate) mod realtime_ws;

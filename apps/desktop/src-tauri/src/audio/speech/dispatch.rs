@@ -169,6 +169,12 @@ impl SpeechDispatchWorker {
                                     Ok(playback) => {
                                         let speaker_frames = playback.speaker_frames;
                                         let virtual_mic_frames = playback.virtual_mic_frames;
+                                        let bridge_playback_frames = playback.bridge_playback_frames;
+                                        let output_event = if playback.bridge_playback_queued {
+                                            "speech.bridge-playback-queued"
+                                        } else {
+                                            "speech.completed"
+                                        };
                                         self.queue.remember(task, &dispatch_key);
                                         store.update_speech(|speech| {
                                             speech.dispatch_state = "waiting-subtitle".to_string();
@@ -180,10 +186,10 @@ impl SpeechDispatchWorker {
                                             speech.last_error = None;
                                             push_event(
                                                 speech,
-                                                "speech.completed",
+                                                output_event,
                                                 format!(
-                                                    "译音输出完成，speaker={} 帧 / virtual-mic={} 帧。",
-                                                    speaker_frames, virtual_mic_frames
+                                                    "译音输出已提交，speaker={} 帧 / bridge={} 帧 / virtual-mic={} 帧。",
+                                                    speaker_frames, bridge_playback_frames, virtual_mic_frames
                                                 ),
                                                 Some(task.cue.cue_id.clone()),
                                                 Some(synthesis_output.request_id),
@@ -193,10 +199,10 @@ impl SpeechDispatchWorker {
                                             &self.app,
                                             "audio",
                                             "info",
-                                            format!("译音输出完成，cue={}。", task.cue.cue_id),
+                                            format!("event={output_event} cue={}", task.cue.cue_id),
                                             Some(format!(
-                                                "speakerFrames={} virtualMicFrames={}",
-                                                speaker_frames, virtual_mic_frames
+                                                "speakerFrames={} bridgePlaybackFrames={} virtualMicFrames={}",
+                                                speaker_frames, bridge_playback_frames, virtual_mic_frames
                                             )),
                                             None,
                                             None,
@@ -531,6 +537,7 @@ impl<'a> SpeechTaskProcessor<'a> {
             request_id,
             mix,
             cache_hit,
+            created_at_ms: crate::shared::time::now_unix_millis(),
         })
     }
 
@@ -571,6 +578,7 @@ impl<'a> SpeechTaskProcessor<'a> {
             &synthesis.mix,
             task.segment_mode,
             task.segment_index,
+            synthesis.created_at_ms,
         )
     }
 }

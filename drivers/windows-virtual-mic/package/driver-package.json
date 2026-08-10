@@ -1,8 +1,13 @@
 {
-    "generatedAt":  "2026-06-04T02:02:16.7840052Z",
-    "protocolVersion":  "2026-07-27-smart-gain-v3",
+    "sourceCommit":  null,
+    "sourceProvenance":  null,
+    "protocolVersion":  "2026-08-10-audio-routing-v6",
     "configuration":  "Release",
     "platform":  "x64",
+    "minimumWindowsBuild":  19041,
+    "kernelImportMinimumWindowsBuild":  19041,
     "signingMode":  "development-test",
-    "signerThumbprint":  "FD13DEB236B7A41BD75486FF0ECF70BCFD50410B"
+    "signerThumbprint":  "8BB047781E11EDFDED20237BE42DFF1B7BC74BE9",
+    "timestampMode":  "none",
+    "timestampUrl":  null
 }

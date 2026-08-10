@@ -1,0 +1,27 @@
+{
+  "candidate": {
+    "DeviceID": "ROOT\\MEDIA\\0000",
+    "DeviceName": "Omni Translate Virtual Speaker",
+    "InfName": "oem9.inf",
+    "DriverVersion": "19.28.55.596",
+    "DriverProviderName": "Omni Translate",
+    "Manufacturer": "Microsoft",
+    "Signer": null,
+    "IsSigned": false
+  },
+  "binding": {
+    "instanceId": "ROOT\\MEDIA\\0000",
+    "matchingDeviceId": "Root\\OmniTranslateVirtualSpeaker",
+    "infName": "oem9.inf",
+    "driverVersion": "19.28.55.596",
+    "driverProvider": "Omni Translate",
+    "service": "omni_translate_virtual_speaker"
+  },
+  "package": {
+    "Driver": "oem9.inf",
+    "OriginalFileName": "omni-virtual-speaker.inf",
+    "ProviderName": "Omni Translate",
+    "ClassName": "MEDIA",
+    "Version": "19.28.55.596"
+  }
+}

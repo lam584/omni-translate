@@ -5,7 +5,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { classify, healthyPhysicalOutput } from './watch-mode-report-test-helpers.mjs';
+import {
+  classify,
+  healthyPhysicalOutput,
+  healthyProcessExclusionFingerprint,
+  healthyProcessExclusionBridge,
+} from './watch-mode-report-test-helpers.mjs';
 
 test('marks environment precheck failures blocked before downstream recording failures', () => {
   const report = classify({
@@ -35,6 +40,126 @@ test('echo-cancel environment failure is not attributed to its skipped driver la
   assert.equal(report.verdict, 'blocked');
   assert.equal(report.failureLayer, 'environment');
   assert.equal(report.layers.driver.status, 'skipped');
+});
+
+test('process-exclusion reports unsupported capability at the bridge layer', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: {
+      ...healthyProcessExclusionBridge,
+      processLoopbackSupported: false,
+      processLoopbackStatus: 'unsupported',
+      windowsBuildNumber: 19045,
+      excludedProcessId: null,
+    },
+    driver: { error: 'virtual endpoint unavailable' },
+    wasapi: null,
+    physicalOutput: null,
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'bridge');
+  assert.match(report.failureReason, /unsupported.*19045.*20348/i);
+  assert.equal(report.layers.driver.status, 'skipped');
+  assert.equal(report.layers.physicalOutput.status, 'failed');
+});
+
+test('process-exclusion rejects capability-only evidence without a real fingerprint probe', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: null,
+    bridgeLogText: '',
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'physicalOutput');
+  assert.match(report.failureReason, /fingerprint probe did not run|physical output probe did not run/i);
+});
+
+test('process-exclusion rejects Bridge and Bridge-child fingerprint leakage', () => {
+  const physicalOutput = structuredClone(healthyProcessExclusionFingerprint);
+  physicalOutput.processExclusionFingerprint.sourceTranslationComponent = 0.02;
+  physicalOutput.processExclusionFingerprint.sourceBridgeChildComponent = 0.03;
+
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput,
+    bridgeLogText: '',
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'physicalOutput');
+  assert.match(report.failureReason, /fingerprint leaked/i);
+});
+
+test('process-exclusion rejects missing external audio and invalid child ancestry', () => {
+  const physicalOutput = structuredClone(healthyProcessExclusionFingerprint);
+  physicalOutput.processExclusionFingerprint.sourceExternalComponent = 0;
+  physicalOutput.processExclusionFingerprint.bridgeChildParentProcessId = 7777;
+
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput,
+    bridgeLogText: '',
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'physicalOutput');
+  assert.match(report.failureReason, /invalid ancestry/i);
+});
+
+test('process-exclusion requires an explicit excluded Bridge process id', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: {
+      ...healthyProcessExclusionBridge,
+      excludedProcessId: null,
+    },
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'bridge');
+  assert.match(report.failureReason, /excludedProcessId.*missing/);
+});
+
+test('process-exclusion cannot weaken the Windows build floor in captured evidence', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: {
+      ...healthyProcessExclusionBridge,
+      windowsBuildNumber: 19045,
+      processLoopbackMinimumWindowsBuild: null,
+    },
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'bridge');
+  assert.match(report.failureReason, /detected=19045 minimum=20348/);
+});
+
+test('process-exclusion live report rejects a route that never performed the controlled Bridge restart', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    appLogText: '',
+    systemMetrics: null,
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'bridge');
+  assert.match(report.failureReason, /controlled live Bridge restart/i);
 });
 
 test('surfaces bridge source probe diagnostics before generic bridge counters', () => {

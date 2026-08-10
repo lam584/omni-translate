@@ -4,7 +4,11 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appConfigDraftMock } from '../mocks/app-config';
 import { audioRuntimeSnapshotMock } from '../mocks/audio-runtime';
+import { runtimeSnapshotMock } from '../mocks/runtime-shell';
 import i18n from '../i18n/config';
+import { installDesktopApi, resetDesktopApiForTests } from '../runtime/desktop-api';
+import { DesktopApiProvider } from '../runtime/desktop-api-context';
+import { DesktopApiV2, type InvokeFn } from '../runtime/desktop-api-v2';
 import { useAppStore } from '../stores/app-store';
 import { mountTestRoot, type TestRootHandle } from '../test-utils/react-root';
 import type { ProviderCapability } from '../schema/provider-contract';
@@ -112,6 +116,7 @@ describe('AudioRoutingPage', () => {
   }
 
   beforeEach(() => {
+    resetDesktopApiForTests();
     providerCatalogPreferencesMock.value = [];
     const configDraft = structuredClone(appConfigDraftMock);
     configDraft.providers[0].templateId = 'template-openai-compatible-realtime';
@@ -224,6 +229,7 @@ describe('AudioRoutingPage', () => {
       ...state,
       audioRuntimeSnapshot: structuredClone(audioRuntimeSnapshotMock),
       configDraft,
+      runtimeSnapshot: structuredClone(runtimeSnapshotMock),
     }));
 
     view = mountTestRoot();
@@ -232,6 +238,7 @@ describe('AudioRoutingPage', () => {
 
   afterEach(async () => {
     await view.cleanup();
+    resetDesktopApiForTests();
   });
 
   it('renders two top panels, two model panels, and five scenario cards', async () => {
@@ -355,6 +362,16 @@ describe('AudioRoutingPage', () => {
   });
 
   it('writes input processing toggles into the outbound route contract', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          feedbackLoopPrevention: 'virtual-driver',
+        },
+      },
+    }));
     await renderPage();
 
     await act(async () => {
@@ -571,10 +588,14 @@ describe('AudioRoutingPage', () => {
     const radioGroup = outputPanel?.querySelector('.routing-feedback-options');
     expect(radioGroup?.getAttribute('role')).toBe('radiogroup');
     const radios = Array.from(outputPanel?.querySelectorAll<HTMLButtonElement>('.routing-feedback-option') ?? []);
-    expect(radios).toHaveLength(2);
+    expect(radios).toHaveLength(3);
     expect(radios[0]?.getAttribute('role')).toBe('radio');
     expect(radios[0]?.getAttribute('aria-checked')).toBe('true');
+    expect(radios[0]?.disabled).toBe(true);
+    expect(radios[0]?.textContent).toContain('不可用');
     expect(radios[1]?.getAttribute('aria-checked')).toBe('false');
+    expect(radios[2]?.disabled).toBe(false);
+    expect(radios[2]?.textContent).toContain('探测中');
 
     await act(async () => {
       radios[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
@@ -582,6 +603,304 @@ describe('AudioRoutingPage', () => {
     expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('virtual-driver');
     expect(radios[1]?.getAttribute('aria-checked')).toBe('true');
     expect(radios[0]?.getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('reenables echo-cancel only when the generated WebRTC AEC3 gate is ready', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      audioRuntimeSnapshot: {
+        ...state.audioRuntimeSnapshot,
+        aecBackend: 'webrtc-aec3',
+        aecStatus: 'ready',
+        aecFailureDetail: null,
+      },
+      configDraft: {
+        ...state.configDraft,
+        devices: {
+          ...state.configDraft.devices,
+          feedbackLoopPrevention: 'virtual-driver',
+          aecEnabled: false,
+        },
+      },
+    }));
+    await renderPage();
+
+    const echoCancel = Array.from(container.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'))[0];
+    expect(echoCancel?.disabled).toBe(false);
+
+    await act(async () => echoCancel?.click());
+
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('echo-cancel');
+    expect(useAppStore.getState().configDraft.devices.aecEnabled).toBe(true);
+    const aecToggle = container.querySelector<HTMLInputElement>('.routing-toggle-pill input[role="switch"]');
+    expect(aecToggle?.checked).toBe(true);
+    expect(aecToggle?.disabled).toBe(true);
+  });
+
+  it('enables and recommends process exclusion only after the runtime capability probe is ready', async () => {
+    useAppStore.setState((state) => {
+      const runtimeSnapshot = structuredClone(state.runtimeSnapshot);
+      Object.assign(runtimeSnapshot.bridge, {
+        processLoopbackSupported: true,
+        processLoopbackStatus: 'ready',
+        windowsBuildNumber: 26100,
+        processLoopbackMinimumWindowsBuild: 20348,
+      });
+      return { ...state, runtimeSnapshot };
+    });
+    await renderPage();
+
+    const processExclusion = Array.from(container.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'))[2];
+    expect(processExclusion?.disabled).toBe(false);
+    expect(processExclusion?.textContent).toContain('推荐');
+
+    await act(async () => processExclusion?.click());
+
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('process-exclusion');
+    expect(processExclusion?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('.routing-feedback-desc')?.textContent).toContain('数字链路');
+  });
+
+  it('actively probes process-loopback on open without refreshing the virtual driver', async () => {
+    let resolveProbe: ((value: unknown) => void) | undefined;
+    const invokeSpy = vi.fn();
+    const invoke: InvokeFn = <T,>(command: string, args?: Record<string, unknown>) => {
+      invokeSpy(command, args);
+      if (command !== 'bridge_v2' || (args?.command as { action?: string })?.action !== 'probeProcessLoopback') {
+        return Promise.reject(new Error(`unexpected command ${command}`));
+      }
+      return new Promise<T>((resolve) => {
+        resolveProbe = (value) => resolve(value as T);
+      });
+    };
+    installDesktopApi(Object.assign(new DesktopApiV2(invoke), {
+      capabilities: { hasNativeShell: true as const },
+    }));
+
+    await renderPage();
+    expect(useAppStore.getState().runtimeSnapshot.bridge.processLoopbackStatus).toBe('probing');
+    expect(invokeSpy).toHaveBeenCalledTimes(1);
+    expect(invokeSpy).toHaveBeenCalledWith('bridge_v2', {
+      command: { action: 'probeProcessLoopback' },
+    });
+
+    const readySnapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
+    Object.assign(readySnapshot.bridge, {
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      windowsBuildNumber: 26100,
+      processLoopbackMinimumWindowsBuild: 20348,
+      processLoopbackFailureDetail: null,
+      sourceCaptureMode: 'none',
+      captureBackend: 'none',
+    });
+    await act(async () => {
+      resolveProbe?.({ data: readySnapshot, warnings: [] });
+      await Promise.resolve();
+    });
+
+    expect(useAppStore.getState().runtimeSnapshot.bridge).toMatchObject({
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      sourceCaptureMode: 'none',
+      captureBackend: 'none',
+    });
+    expect(invokeSpy.mock.calls.some(([, args]) => (
+      (args?.command as { action?: string })?.action === 'refresh'
+    ))).toBe(false);
+  });
+
+  it('starts the capability probe after a late preview-to-native desktop API upgrade', async () => {
+    const invokeSpy = vi.fn();
+    const readySnapshot = structuredClone(useAppStore.getState().runtimeSnapshot);
+    Object.assign(readySnapshot.bridge, {
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      windowsBuildNumber: 26100,
+      processLoopbackMinimumWindowsBuild: 20348,
+      processLoopbackFailureDetail: null,
+      sourceCaptureMode: 'none',
+      captureBackend: 'none',
+    });
+    invokeSpy.mockResolvedValue({ data: readySnapshot, warnings: [] });
+    const invoke: InvokeFn = async <T,>(
+      command: string,
+      args?: Record<string, unknown>,
+    ) =>
+      (await invokeSpy(command, args)) as T;
+
+    await view.render(
+      <DesktopApiProvider>
+        <MemoryRouter>
+          <AudioRoutingPage />
+        </MemoryRouter>
+      </DesktopApiProvider>,
+    );
+    expect(invokeSpy).not.toHaveBeenCalled();
+    expect(useAppStore.getState().runtimeSnapshot.bridge.processLoopbackStatus).toBe('unknown');
+
+    await act(async () => {
+      installDesktopApi(Object.assign(new DesktopApiV2(invoke), {
+        capabilities: { hasNativeShell: true as const },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(invokeSpy).toHaveBeenCalledTimes(1);
+    expect(invokeSpy).toHaveBeenCalledWith('bridge_v2', {
+      command: { action: 'probeProcessLoopback' },
+    });
+    expect(useAppStore.getState().runtimeSnapshot.bridge.processLoopbackStatus).toBe('ready');
+  });
+
+  it('keeps a process-loopback transport failure as an actionable capability snapshot', async () => {
+    const invoke: InvokeFn = async () => {
+      throw new Error('Bridge process-loopback activation pipe failed');
+    };
+    installDesktopApi(Object.assign(new DesktopApiV2(invoke), {
+      capabilities: { hasNativeShell: true as const },
+    }));
+
+    await renderPage();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(useAppStore.getState().runtimeSnapshot.bridge).toMatchObject({
+      processLoopbackStatus: 'failed',
+      processLoopbackFailureDetail: 'Bridge process-loopback activation pipe failed',
+      lastErrorCode: 'bridge.process-loopback-activation-failed',
+      recommendedAction: 'open-diagnostics',
+    });
+  });
+
+  it('allows a supported probing route to be selected so Bridge can finish activation', async () => {
+    useAppStore.setState((state) => {
+      const runtimeSnapshot = structuredClone(state.runtimeSnapshot);
+      Object.assign(runtimeSnapshot.bridge, {
+        processLoopbackSupported: true,
+        processLoopbackStatus: 'probing',
+        windowsBuildNumber: 26100,
+        processLoopbackMinimumWindowsBuild: 20348,
+      });
+      return { ...state, runtimeSnapshot };
+    });
+    await renderPage();
+
+    const processExclusion = Array.from(container.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'))[2];
+    expect(processExclusion?.disabled).toBe(false);
+    expect(processExclusion?.textContent).toContain('探测中');
+    expect(processExclusion?.textContent).not.toContain('推荐');
+    expect(processExclusion?.title).toContain('尚未确认');
+
+    await act(async () => processExclusion?.click());
+
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('process-exclusion');
+  });
+
+  it('allows the cold unknown capability state to be selected and trigger probing', async () => {
+    await renderPage();
+
+    const processExclusion = Array.from(container.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'))[2];
+    expect(processExclusion?.disabled).toBe(false);
+    expect(processExclusion?.textContent).toContain('探测中');
+
+    await act(async () => processExclusion?.click());
+
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('process-exclusion');
+  });
+
+  it('shows legacy none as requiring an explicit route without silently selecting AEC', async () => {
+    useAppStore.setState((state) => ({
+      ...state,
+      configDraft: {
+        ...state.configDraft,
+        devices: { ...state.configDraft.devices, feedbackLoopPrevention: 'none' },
+      },
+    }));
+    await renderPage();
+
+    const routes = Array.from(container.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'));
+    expect(routes.every((route) => route.getAttribute('aria-checked') === 'false')).toBe(true);
+    expect(container.querySelector('#feedback-route-description')?.textContent).toContain('请明确选择');
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('none');
+  });
+
+  it('keeps an imported unsupported process-exclusion draft selected but unavailable', async () => {
+    useAppStore.setState((state) => {
+      const runtimeSnapshot = structuredClone(state.runtimeSnapshot);
+      Object.assign(runtimeSnapshot.bridge, {
+        processLoopbackSupported: false,
+        processLoopbackStatus: 'unsupported',
+        windowsBuildNumber: 19045,
+        processLoopbackMinimumWindowsBuild: 20348,
+      });
+      return {
+        ...state,
+        runtimeSnapshot,
+        configDraft: {
+          ...state.configDraft,
+          devices: { ...state.configDraft.devices, feedbackLoopPrevention: 'process-exclusion' },
+        },
+      };
+    });
+    await renderPage();
+
+    const processExclusion = Array.from(container.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'))[2];
+    expect(processExclusion?.disabled).toBe(true);
+    expect(processExclusion?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('.routing-feedback-desc')?.textContent).toContain('20348');
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('process-exclusion');
+  });
+
+  it('allows Virtual Driver on build 19041 and rejects it below that build', async () => {
+    useAppStore.setState((state) => {
+      const runtimeSnapshot = structuredClone(state.runtimeSnapshot);
+      runtimeSnapshot.bridge.windowsBuildNumber = 19040;
+      return { ...state, runtimeSnapshot };
+    });
+    await renderPage();
+
+    const virtualDriver = Array.from(container.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'))[1];
+    expect(virtualDriver?.disabled).toBe(true);
+    expect(virtualDriver?.title).toContain('19041+');
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).not.toBe('virtual-driver');
+
+    await act(async () => virtualDriver?.click());
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).not.toBe('virtual-driver');
+
+    useAppStore.setState((state) => {
+      const runtimeSnapshot = structuredClone(state.runtimeSnapshot);
+      runtimeSnapshot.bridge.windowsBuildNumber = 19041;
+      return { ...state, runtimeSnapshot };
+    });
+    await act(async () => Promise.resolve());
+
+    expect(virtualDriver?.disabled).toBe(false);
+    await act(async () => virtualDriver?.click());
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('virtual-driver');
+  });
+
+  it('preserves an imported Virtual Driver selection below build 19041 while disabling the option', async () => {
+    useAppStore.setState((state) => {
+      const runtimeSnapshot = structuredClone(state.runtimeSnapshot);
+      runtimeSnapshot.bridge.windowsBuildNumber = 19040;
+      return {
+        ...state,
+        runtimeSnapshot,
+        configDraft: {
+          ...state.configDraft,
+          devices: { ...state.configDraft.devices, feedbackLoopPrevention: 'virtual-driver' },
+        },
+      };
+    });
+    await renderPage();
+
+    const virtualDriver = Array.from(container.querySelectorAll<HTMLButtonElement>('.routing-feedback-option'))[1];
+    expect(virtualDriver?.disabled).toBe(true);
+    expect(virtualDriver?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('#feedback-route-description')?.textContent).toContain('19041+');
+    expect(useAppStore.getState().configDraft.devices.feedbackLoopPrevention).toBe('virtual-driver');
   });
 
   it('hides models from disabled provider templates', async () => {
@@ -1054,6 +1373,7 @@ describe('AudioRoutingPage', () => {
         devices: {
           ...state.configDraft.devices,
           inputLevel: 42,
+          feedbackLoopPrevention: 'virtual-driver',
           aecEnabled: true,
           ansEnabled: false,
           agcEnabled: true,
@@ -1178,6 +1498,12 @@ describe('AudioRoutingPage', () => {
   it('switches feedback loop prevention back to echo cancellation', async () => {
     useAppStore.setState((state) => ({
       ...state,
+      audioRuntimeSnapshot: {
+        ...state.audioRuntimeSnapshot,
+        aecBackend: 'webrtc-aec3',
+        aecStatus: 'ready',
+        aecFailureDetail: null,
+      },
       configDraft: {
         ...state.configDraft,
         devices: {

@@ -7,6 +7,8 @@ import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import { benchmarkReport } from '../test-utils/diagnostics-page-fixtures';
 import { diagnosticsPageHelpers } from './DiagnosticsPage';
+import { AudioFileInfoSection } from './diagnostics/DiagnosticsDetails';
+import { scoreBenchmarkReport } from './diagnostics/benchmarkReportScore';
 
 describe('diagnostics page helpers', () => {
   it('covers benchmark event helpers and default report shape', () => {
@@ -103,7 +105,11 @@ describe('diagnostics page helpers', () => {
     expect(failed).toContain('boom');
 
     const emptyReport = diagnosticsPageHelpers.createEmptyBenchmarkReport('model', 'sample.mp3');
-    expect(renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, { report: emptyReport }))).toContain('benchmark-empty');
+    const emptyDetail = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, { report: emptyReport }));
+    expect(emptyDetail).toContain('benchmark-empty');
+    // A record can fail before a run result exists (for example, an absent
+    // credential). Keep the v1 evidence/status card visible in that case.
+    expect(emptyDetail).toContain('benchmark-result-score-v1');
   });
 
   it('renders benchmark detail warning, timing and table branches', () => {
@@ -139,6 +145,41 @@ describe('diagnostics page helpers', () => {
     expect(html).toContain('benchmark-delta-table');
     expect(html).toContain('hello world');
     expect(html).toContain('asr text');
+  });
+
+  it('puts the main semantic loss reason and auditable chrF2 evidence in the score card', () => {
+    const report = benchmarkReport({
+      run: {
+        firstCommittedMs: 200,
+        responseCount: 1,
+        responseDoneMs: 220,
+        timeToFirstCommittedMs: 80,
+        translationFinal: 'candidate translation',
+      },
+    });
+    const score = scoreBenchmarkReport(report, {
+      benchmarkState: 'completed',
+      sourceText: 'source text',
+      referenceTranslation: 'candidate translation',
+      semanticJudge: {
+        model: 'audit-judge',
+        rubricVersion: 'benchmark-semantic-judge/v1',
+        score: 40,
+        runs: [{
+          runIndex: 0,
+          score: 40,
+          subscores: { adequacy: 40, factsTerminology: 35, omissionsAdditions: 45, fluency: 40 },
+          rationale: 'A numeric qualifier is missing.',
+          criticalErrors: [{ category: 'facts-terminology', description: 'The number 42 is missing.', sourceEvidence: '42', candidateEvidence: '' }],
+        }],
+      },
+    });
+    const html = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, { report, score }));
+
+    expect(html).toContain('The number 42 is missing.');
+    expect(html).toContain('benchmark-semantic-judge/v1');
+    expect(html).toContain('candidate n-grams');
+    expect(html).toContain('matches');
   });
 
   it('renders benchmark detail transcript-only and fallback output branches', () => {
@@ -273,5 +314,137 @@ describe('diagnostics page helpers', () => {
       { elapsedMs: 60, eventType: 'response.custom', stash: '', committedText: '', rawText: 'short' },
       { elapsedMs: 70, eventType: 'response.custom', stash: '', committedText: 'longer-custom', rawText: '' },
     ])).toEqual(['short', 'longer-final', 'longer-custom']);
+  });
+
+  it('renders byte, kilobyte, and megabyte audio metadata with each channel label', () => {
+    const base = {
+      fileName: 'fixture.wav',
+      format: 'wav',
+      originalSampleRate: 48_000,
+      decodedSamples: 32_000,
+      durationSecs: 2,
+    };
+    const mono = renderToStaticMarkup(createElement(AudioFileInfoSection, {
+      info: { ...base, fileSizeBytes: 512, channels: 1 },
+    }));
+    const stereo = renderToStaticMarkup(createElement(AudioFileInfoSection, {
+      info: { ...base, fileSizeBytes: 1536, channels: 2 },
+    }));
+    const surround = renderToStaticMarkup(createElement(AudioFileInfoSection, {
+      info: { ...base, fileSizeBytes: 2 * 1024 * 1024, channels: 6 },
+    }));
+
+    expect(mono).toContain('512 B');
+    expect(mono).toContain('单声道');
+    expect(stereo).toContain('1.5 KB');
+    expect(stereo).toContain('立体声');
+    expect(surround).toContain('2.00 MB');
+    expect(surround).toContain('>6<');
+  });
+
+  it('renders semantic judge controls, pending evidence, alternate reasons, and stability deductions', () => {
+    const report = benchmarkReport({
+      run: {
+        firstCommittedMs: 220,
+        responseDoneMs: 300,
+        timeToFirstCommittedMs: 100,
+        translationFinal: 'candidate',
+        responseCount: 3,
+      },
+    });
+    const score = scoreBenchmarkReport(report, {
+      benchmarkState: 'completed',
+      sourceText: 'source',
+      referenceTranslation: 'reference',
+      semanticJudge: {
+        model: 'judge',
+        rubricVersion: 'rubric/v1',
+        score: 70,
+        runs: [
+          {
+            runIndex: 1,
+            score: 70,
+            subscores: { adequacy: 70, factsTerminology: 70, omissionsAdditions: 70, fluency: 70 },
+            rationale: 'The alternate run is weaker.',
+            criticalErrors: [],
+          },
+          {
+            runIndex: 0,
+            score: 70,
+            subscores: { adequacy: 70, factsTerminology: 70, omissionsAdditions: 70, fluency: 70 },
+            rationale: 'The first run is selected on the tie.',
+            criticalErrors: [{ category: 'fact', description: 'Mismatch', sourceEvidence: null, candidateEvidence: 'candidate' }],
+          },
+        ],
+      },
+    });
+    const html = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, {
+      report,
+      score,
+      semanticJudgeModels: [{ modelId: 'judge', displayName: 'Judge', authReference: 'ref', provider: {} as never }],
+      semanticJudgeModelId: 'judge',
+      semanticJudgeRunning: true,
+      semanticJudgeError: 'Previous judge failure',
+      semanticJudgeResult: { model: 'Judge', rubricVersion: 'rubric/v1', score: 70, runs: [] },
+      onSemanticJudgeModelChange: () => undefined,
+      onRunSemanticJudge: () => undefined,
+    }));
+
+    expect(html).toContain('benchmark-semantic-judge');
+    expect(html).toContain('评分中');
+    expect(html).toContain('Previous judge failure');
+    expect(html).toContain('Mismatch');
+    expect(html).toContain('重复响应扣');
+    expect(html).toContain('→ candidate');
+
+    const pending = structuredClone(score);
+    pending.total = null;
+    pending.grade = null;
+    pending.dimensions.semantic.score = null;
+    pending.dimensions.semantic.missingEvidence = [];
+    pending.dimensions.semantic.evidence.judge.runs = [];
+    pending.dimensions.semantic.evidence.judge.average = null;
+    pending.dimensions.latency.score = null;
+    pending.dimensions.latency.missingEvidence = [];
+    pending.dimensions.latency.evidence.signals = [];
+    const pendingHtml = renderToStaticMarkup(createElement(diagnosticsPageHelpers.BenchmarkReportDetail, { report, score: pending }));
+    expect(pendingHtml).toContain('证据尚不完整');
+    expect(pendingHtml).toContain('>—<');
+  });
+
+  it('exports full judge, deduction, and audio evidence including rubric and rationale fallbacks', () => {
+    const report = benchmarkReport({
+      run: { responseDoneMs: 250, translationFinal: 'candidate', responseCount: 2 },
+    });
+    report.audioInfo = {
+      fileName: 'fixture.wav', format: 'wav', fileSizeBytes: 2048,
+      originalSampleRate: 48_000, channels: 2, decodedSamples: 16_000, durationSecs: 1,
+    };
+    const score = scoreBenchmarkReport(report, {
+      benchmarkState: 'completed',
+      sourceText: 'source',
+      referenceTranslation: 'reference',
+      semanticJudge: {
+        model: 'judge',
+        rubricVersion: '',
+        score: 75,
+        runs: [{
+          runIndex: 0,
+          score: 75,
+          subscores: { adequacy: 75, factsTerminology: 75, omissionsAdditions: 75, fluency: 75 },
+          rationale: 'Clear rationale.',
+          criticalErrors: [{ category: 'term', description: 'Wrong term.' }],
+        }],
+      },
+    });
+    score.judge.rubricVersion = null;
+
+    const text = diagnosticsPageHelpers.formatBenchmarkTxt(report, score);
+    expect(text).toContain('unknown rubric');
+    expect(text).toContain('Rationale: Clear rationale.');
+    expect(text).toContain('Critical error [term]: Wrong term.');
+    expect(text).toContain('Stability deductions:');
+    expect(text).toContain('Audio File Info');
+    expect(text).toContain('2.0 KB');
   });
 });

@@ -22,6 +22,10 @@ describe('diagnostics page helpers', () => {
       .toEqual(['采集中', '缓冲中', '待命', '静音', '空闲']);
     expect(['running', 'version-mismatch', 'damaged', 'not-installed'].map(diagnosticsPageHelpers.formatDriverHealthLabel))
       .toEqual(['运行正常', '版本不匹配', '已损坏', '未安装']);
+    expect(['wasapi-process-exclusion', 'driver-virtual-speaker', 'wasapi-endpoint-loopback', 'none'].map(diagnosticsPageHelpers.formatCaptureBackendLabel))
+      .toEqual(['WASAPI 进程级排除', '虚拟扬声器驱动', '物理端点回环', '未启用采集后端']);
+    expect(['ready', 'probing', 'unsupported', 'failed', 'unknown'].map(diagnosticsPageHelpers.formatProcessLoopbackStatusLabel))
+      .toEqual(['进程级排除已就绪', '进程级排除探测中', '不支持进程级排除', '进程级排除失败', '未知']);
     expect(['risk', 'unsupported', 'warning', 'pending', 'draft', 'unknown', 'ready'].map((tone) => diagnosticsPageHelpers.getIssueToneRank(tone as never)))
       .toEqual([5, 4, 3, 2, 2, 1, 0]);
   });
@@ -97,6 +101,38 @@ describe('diagnostics page helpers', () => {
     const summary = diagnosticsPageHelpers.getRuntimeEnvironmentSummary(runtime, audio, config);
     expect(summary.mode).toBe('live-ready');
     expect(diagnosticsPageHelpers.buildOverviewIssues(runtime, audio, summary, config)).toEqual([]);
+  });
+
+  it('labels process-exclusion failures independently from virtual-driver health', () => {
+    const runtime = structuredClone(runtimeSnapshotMock);
+    const audio = structuredClone(audioRuntimeSnapshotMock);
+    const config = structuredClone(appConfigDraftMock);
+    runtime.bridgeStatus = 'tauri-shell';
+    runtime.bridge.bridgeState = 'running';
+    runtime.bridge.lifecycleState = 'ready';
+    runtime.bridge.driverHealth = 'not-installed';
+    runtime.bridge.lastErrorCode = null;
+    Object.assign(runtime.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: false,
+      processLoopbackStatus: 'unsupported',
+      windowsBuildNumber: 19045,
+      processLoopbackMinimumWindowsBuild: 20348,
+    });
+    config.devices.routeMode = 'watch';
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+
+    const summary = diagnosticsPageHelpers.getRuntimeEnvironmentSummary(runtime, audio, config);
+
+    expect(summary).toMatchObject({
+      mode: 'live-action-needed',
+      details: [expect.stringContaining('进程级排除')],
+    });
+    expect(diagnosticsPageHelpers.buildOverviewIssues(runtime, audio, summary, config)).toContainEqual(expect.objectContaining({
+      id: 'bridge-runtime',
+      detail: expect.stringContaining('WASAPI 进程级排除'),
+    }));
   });
 
   it('builds deduplicated overview issues and signal summaries', () => {

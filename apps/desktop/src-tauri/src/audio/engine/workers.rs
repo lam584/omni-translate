@@ -3,15 +3,6 @@
 /// Keeping the channel, route specification and UI handle together prevents
 /// the thread launcher from becoming a second orchestration implementation.
 
-/// Playback state is diagnostic context, not an ASR hard gate. A user may
-/// speak over translated playback; only AEC's pure-echo decision is allowed
-/// to suppress a capture chunk before it reaches ASR.
-fn effective_asr_suppression(aec_suppressed: bool, _playback_active: bool) -> bool {
-    aec_suppressed
-}
-
-use crate::audio::echo_cancel::has_acoustic_echo_evidence;
-
 struct RouteWorker {
     app: AppHandle,
     direction: String,
@@ -19,6 +10,7 @@ struct RouteWorker {
     stop_rx: mpsc::Receiver<()>,
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
+    bridge_source_context: Option<BridgeSourceWorkerContext>,
 }
 
 impl RouteWorker {
@@ -31,6 +23,7 @@ impl RouteWorker {
             self.stop_rx,
             self.stt_sender,
             self.init_done,
+            self.bridge_source_context,
         )
     }
 }
@@ -43,10 +36,22 @@ fn run_route_worker(
     stop_rx: mpsc::Receiver<()>,
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
+    bridge_source_context: Option<BridgeSourceWorkerContext>,
 ) -> Result<(), String> {
-    if direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver" {
+    spec.ensure_feedback_backend_available()?;
+    if spec.uses_bridge_source() {
         return run_bridge_source_route_worker(
-            app, store, direction, spec, stop_rx, stt_sender, init_done,
+            app,
+            store,
+            direction,
+            spec,
+            stop_rx,
+            stt_sender,
+            init_done,
+            bridge_source_context.ok_or_else(|| {
+                "Bridge source worker started without an authoritative capture generation"
+                    .to_string()
+            })?,
         );
     }
 
@@ -109,6 +114,40 @@ fn run_capture_loop(
     );
     emit_audio_snapshot(&app, store)?;
 
+    if spec.echo_cancel_enabled() {
+        store.reset_echo_canceller()?;
+        diag_log_detail(
+            &app,
+            "audio",
+            "info",
+            "event=echo_cancel_reset",
+            format!(
+                "direction={} reason=route-start device={} captureFormat=48000-f32-stereo resetCovers=device-switch,route-restart,format-change",
+                direction, effective_device_id,
+            ),
+        );
+        let gate = crate::audio::echo_cancel::webrtc_aec3_build_gate();
+        let stats = store.echo_canceller_stats().ok_or_else(|| {
+            "WebRTC AEC3 production engine disappeared before capture startup".to_string()
+        })?;
+        diag_log_detail(
+            &app,
+            "audio",
+            "info",
+            "event=echo_cancel_backend",
+            format!(
+                "backend={} frameMs=10 renderSubmitFormat=48000-f32-stereo renderClock=wasapi-submit-position endpointRenderPadding=same-client-get-current-padding webRtcAec3Ready={} msvcBuildVerified={} linkedBackendPresent={} fixtureVerified={} dependency=\"{}\" reason=\"{}\"",
+                stats.backend,
+                gate.ready,
+                gate.msvc_build_verified,
+                gate.linked_backend_present,
+                gate.fixture_verified,
+                gate.dependency,
+                gate.reason,
+            ),
+        );
+    }
+
     audio_client.start_stream().map_err_str()?;
     // The stream is bound and the route now reports ready. Microphone capture is
     // expected to deliver packets promptly, but system loopback legitimately has
@@ -117,6 +156,9 @@ fn run_capture_loop(
     let capture_started_at = Instant::now();
     let mut inbound_wait_logged = false;
     let mut echo_diagnostics = EchoCancelDiagnostics::new();
+    let mut aec_delay_estimator = AecDelayEstimator::new(SAMPLE_RATE_HZ as u32, CHANNEL_COUNT);
+    let mut current_aec_delay_samples = 0_usize;
+    let mut last_delay_diagnostic_at: Option<Instant> = None;
     loop {
         if stop_rx.try_recv().is_ok() {
             let _ = audio_client.stop_stream();
@@ -146,40 +188,143 @@ fn run_capture_loop(
             }
         }
 
-        capture_client
+        let chunk_len = desired_format.get_blockalign() as usize * CHUNK_FRAMES;
+        let queued_bytes_before_read = sample_queue.len();
+        let buffer_info = capture_client
             .read_from_device_to_deque(&mut sample_queue)
             .map_err_str()?;
-
-        let chunk_len = desired_format.get_blockalign() as usize * CHUNK_FRAMES;
-        for chunk in drain_sample_chunks(&mut sample_queue, chunk_len) {
-            let (chunk, suppress_asr) = if spec.echo_cancel_enabled() {
-                let f32_chunk = bytes_to_f32_stereo(&chunk);
-                let cancellation = store.subtract_echo(&f32_chunk, ECHO_CANCEL_DELAY_SAMPLES);
-                // Playback is sampled for diagnostics only. The AEC result
-                // keeps pure echo out while preserving double-talk during the
-                // same playback interval.
-                let playback_active = store.inbound_speaker_playback_active();
-                let suppress_asr =
-                    effective_asr_suppression(cancellation.suppress_asr, playback_active);
-                store.record_echo_asr_chunk(
-                    cancellation.suppress_asr,
-                    playback_active,
-                    suppress_asr,
-                    playback_active && has_acoustic_echo_evidence(cancellation.metrics),
+        if spec.echo_cancel_enabled()
+            && (sample_queue.len() >= chunk_len
+                || buffer_info.flags.data_discontinuity
+                || buffer_info.flags.timestamp_error)
+        {
+            let block_align = desired_format.get_blockalign() as usize;
+            let (queue_head_device_frame_index, queue_head_qpc_100ns, queued_capture_frames) =
+                capture_queue_head_clock(
+                    buffer_info.index,
+                    buffer_info.timestamp,
+                    queued_bytes_before_read,
+                    block_align,
+                    SAMPLE_RATE_HZ as u32,
                 );
+            let capture_padding_frames = audio_client.get_current_padding().ok();
+            let render_clock = store.echo_render_clock_snapshot();
+            let playback_active = store.inbound_speaker_playback_active();
+            let render_clock_age_ms = playback_active
+                .then(|| {
+                    render_clock
+                        .last_observed_at
+                        .map(|observed| observed.elapsed().as_secs_f64() * 1_000.0)
+                })
+                .flatten();
+            let (render_endpoint_padding_frames, render_reference_lead_frames) =
+                active_render_delay_frames(
+                    playback_active,
+                    render_clock.endpoint_padding_frames,
+                    render_clock.reference_lead_frames,
+                );
+            let estimate = aec_delay_estimator.observe_capture(CaptureClockObservation {
+                device_frame_index: queue_head_device_frame_index,
+                packet_qpc_100ns: queue_head_qpc_100ns,
+                observed_qpc_100ns: qpc_now_100ns(),
+                capture_padding_frames,
+                capture_buffer_frames: buffer_frame_count,
+                render_clock_age_ms,
+                // A completed playback leaves its final endpoint observation
+                // in diagnostics. Never reinterpret that stale padding as a
+                // delay for later near-end-only capture frames.
+                render_endpoint_padding_frames,
+                render_reference_lead_frames,
+                render_submitted_frames: render_clock.submitted_frames,
+                render_discontinuity_count: render_clock.discontinuity_count,
+                data_discontinuity: buffer_info.flags.data_discontinuity,
+                timestamp_error: buffer_info.flags.timestamp_error,
+            });
+            current_aec_delay_samples = estimate.delay_samples;
+            if estimate.reset_required {
+                store.reset_echo_canceller()?;
+                diag_log_detail(
+                    &app,
+                    "audio",
+                    "warn",
+                    "event=echo_cancel_reset",
+                    format!(
+                        "direction={} reason=capture-clock-discontinuity dataDiscontinuity={} timestampError={} capturePaddingInvalid={} packetDeviceFrameIndex={} queueHeadDeviceFrameIndex={} packetTimestamp100ns={} queueHeadTimestamp100ns={} queuedCaptureFrames={} paddingFrames={:?} bufferFrames={} delayMs={:.1} delaySource={} estimatorResetCount={} timestampErrorCount={}",
+                        direction,
+                        buffer_info.flags.data_discontinuity,
+                        buffer_info.flags.timestamp_error,
+                        estimate.capture_padding_invalid,
+                        buffer_info.index,
+                        queue_head_device_frame_index,
+                        buffer_info.timestamp,
+                        queue_head_qpc_100ns,
+                        queued_capture_frames,
+                        estimate.capture_padding_frames,
+                        buffer_frame_count,
+                        estimate.delay_ms,
+                        estimate.source,
+                        aec_delay_estimator.reset_count(),
+                        aec_delay_estimator.timestamp_error_count(),
+                    ),
+                );
+            }
+            if last_delay_diagnostic_at
+                .map(|last| last.elapsed() >= Duration::from_secs(5))
+                .unwrap_or(true)
+            {
+                diag_log_detail(
+                    &app,
+                    "audio",
+                    "info",
+                    "event=echo_cancel_delay",
+                    format!(
+                        "direction={} delayMs={:.1} delaySamples={} packetAgeMs={:?} capturePaddingFrames={:?} renderClock=wasapi-submit-position renderPlayerPositionMs={:?} renderClockAgeMs={:?} renderSubmittedFrames={:?} endpointRenderPaddingFrames={:?} renderReferenceLeadFrames={:?} effectiveRenderReferenceLeadFrames={:?} renderDiscontinuities={} lastRenderDiscontinuity={:?} source={}",
+                        direction,
+                        estimate.delay_ms,
+                        estimate.delay_samples,
+                        estimate.packet_age_ms,
+                        estimate.capture_padding_frames,
+                        render_clock.player_position.map(|position| position.as_millis()),
+                        estimate.render_clock_age_ms,
+                        estimate.render_submitted_frames,
+                        estimate.render_endpoint_padding_frames,
+                        estimate.render_reference_lead_frames,
+                        estimate.effective_render_reference_lead_frames,
+                        render_clock.discontinuity_count,
+                        render_clock.last_discontinuity_reason,
+                        estimate.source,
+                    ),
+                );
+                last_delay_diagnostic_at = Some(Instant::now());
+            }
+        }
+
+        for (chunk_index, chunk) in drain_sample_chunks(&mut sample_queue, chunk_len)
+            .into_iter()
+            .enumerate()
+        {
+            let chunk = if spec.echo_cancel_enabled() {
+                let f32_chunk = bytes_to_f32_stereo(&chunk);
+                let delay_samples = current_aec_delay_samples.saturating_sub(
+                    chunk_index
+                        .saturating_mul(CHUNK_FRAMES)
+                        .saturating_mul(CHANNEL_COUNT),
+                );
+                let cancellation = store.process_echo_capture(&f32_chunk, delay_samples)?;
+                // AEC3 output is the capture stream. Playback state is logged
+                // only as context and cannot delete a capture block.
+                let playback_active = store.inbound_speaker_playback_active();
+                store.record_aec3_capture_chunk(playback_active);
                 let cleaned_bytes = f32_stereo_to_bytes(&cancellation.samples);
                 echo_diagnostics.record(
                     calculate_chunk_db(&chunk),
                     calculate_chunk_db(&cleaned_bytes),
-                    cancellation.metrics,
-                    cancellation.suppress_asr,
                     playback_active,
-                    suppress_asr,
                 );
                 echo_diagnostics.maybe_log(&app, store, direction);
-                (cleaned_bytes, suppress_asr)
+                cleaned_bytes
             } else {
-                (chunk, false)
+                chunk
             };
 
             process_captured_chunk(
@@ -188,7 +333,6 @@ fn run_capture_loop(
                 direction,
                 &mut processor,
                 &stt_sender,
-                suppress_asr,
                 chunk,
                 sample_queue.len(),
             )?;
@@ -200,6 +344,124 @@ fn run_capture_loop(
     Ok(())
 }
 
+pub(crate) fn process_loopback_route_start_error(
+    bridge: &crate::bridge::contracts::BridgeRuntimeSnapshot,
+) -> Option<String> {
+    use crate::bridge::contracts::ProcessLoopbackStatus;
+
+    if !bridge.process_loopback_supported
+        || bridge.process_loopback_status == ProcessLoopbackStatus::Unsupported
+    {
+        return Some(format!(
+            "Windows process audio exclusion is unavailable (build={}, minimumBuild={}): {} | code: bridge.process-loopback-unsupported | recommended: open-diagnostics",
+            bridge
+                .windows_build_number
+                .map(|build| build.to_string())
+                .unwrap_or_else(|| "unknown".to_string()),
+            bridge.process_loopback_minimum_windows_build,
+            bridge
+                .process_loopback_failure_detail
+                .as_deref()
+                .unwrap_or("process-loopback capability probe did not pass")
+        ));
+    }
+    if bridge.process_loopback_status != ProcessLoopbackStatus::Failed {
+        return None;
+    }
+    let code = bridge
+        .last_error_code
+        .as_deref()
+        .filter(|code| code.starts_with("bridge.process-loopback-"))
+        .unwrap_or("bridge.process-loopback-activation-failed");
+    let action = if code == "bridge.process-loopback-capture-failed" {
+        "restart-bridge"
+    } else {
+        "open-diagnostics"
+    };
+    Some(format!(
+        "Process-loopback source route failed: {} | code: {code} | recommended: {action}",
+        bridge
+            .process_loopback_failure_detail
+            .as_deref()
+            .unwrap_or("process-loopback activation failed without diagnostic detail")
+    ))
+}
+
+fn accept_bridge_source_identity(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    worker_context: &BridgeSourceWorkerContext,
+    identity: &BridgeSourceFrameIdentity,
+    is_pcm_frame: bool,
+) -> bool {
+    let bridge_state = app.state::<BridgeStateStore>();
+    let mut disposition = BridgeSourceIdentityDisposition::Reject(
+        "bridge-source-identity-not-evaluated".to_string(),
+    );
+    let authoritative = bridge_state.update_snapshot(|current| {
+        disposition = bridge_source_identity_disposition(current, identity);
+        if disposition == BridgeSourceIdentityDisposition::Rebind {
+            current.source_generation = identity.source_generation;
+            current.source_generation_token = Some(identity.source_generation_token.clone());
+        }
+    });
+    match disposition {
+        BridgeSourceIdentityDisposition::Current => {
+            worker_context.rebind(authoritative);
+            if is_pcm_frame {
+                store.record_bridge_source_frame_accepted(identity.clone());
+            }
+            true
+        }
+        BridgeSourceIdentityDisposition::Rebind => {
+            worker_context.rebind(authoritative);
+            if is_pcm_frame {
+                store.record_bridge_source_frame_accepted(identity.clone());
+            }
+            diag_log_detail(
+                app,
+                "bridge",
+                "info",
+                "event=bridge_source_generation_rebound",
+                format!(
+                    "bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} frameTimestampMs={} readTimestampMs={}",
+                    identity.bridge_process_id,
+                    identity.bridge_instance_id,
+                    identity.session_id,
+                    identity.source_generation,
+                    identity.source_generation_token,
+                    identity.frame_timestamp_ms,
+                    identity.read_timestamp_ms,
+                ),
+            );
+            true
+        }
+        BridgeSourceIdentityDisposition::Reject(reason) => {
+            if is_pcm_frame {
+                store.record_bridge_source_frame_rejected(identity.clone());
+            }
+            diag_log_detail(
+                app,
+                "bridge",
+                "warning",
+                "event=stale_bridge_source_frame_rejected",
+                format!(
+                    "reason={reason} envelopeType={} bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} frameTimestampMs={} readTimestampMs={}",
+                    if is_pcm_frame { "frame" } else { "heartbeat" },
+                    identity.bridge_process_id,
+                    identity.bridge_instance_id,
+                    identity.session_id,
+                    identity.source_generation,
+                    identity.source_generation_token,
+                    identity.frame_timestamp_ms,
+                    identity.read_timestamp_ms,
+                ),
+            );
+            false
+        }
+    }
+}
+
 fn run_bridge_source_route_worker(
     app: AppHandle,
     store: &AudioStateStore,
@@ -208,8 +470,9 @@ fn run_bridge_source_route_worker(
     stop_rx: mpsc::Receiver<()>,
     stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     init_done: Option<Arc<AtomicBool>>,
+    bridge_source_context: BridgeSourceWorkerContext,
 ) -> Result<(), String> {
-    let bridge_snapshot = app.state::<BridgeStateStore>().snapshot();
+    let bridge_snapshot = validate_bridge_source_startup(&spec, &bridge_source_context)?;
     let mut processor = RouteProcessor::new(spec);
     let mut sample_queue = VecDeque::new();
     let mut initialized = false;
@@ -231,6 +494,7 @@ fn run_bridge_source_route_worker(
             }
             match OpenOptions::new()
                 .read(true)
+                .write(true)
                 .open(&bridge_snapshot.source_pipe_path)
             {
                 Ok(pipe) => break pipe,
@@ -301,7 +565,16 @@ fn run_bridge_source_route_worker(
                 return Ok(());
             }
             let payload = match read_bridge_source_payload(&mut source_pipe) {
-                Ok(BridgeSourceEnvelope::Frame(payload)) => {
+                Ok(BridgeSourceEnvelope::Frame { payload, identity }) => {
+                    if !accept_bridge_source_identity(
+                        &app,
+                        store,
+                        &bridge_source_context,
+                        &identity,
+                        true,
+                    ) {
+                        continue;
+                    }
                     pcm_frame_count += 1;
                     pcm_bytes += payload.len() as u64;
                     last_pcm_at = Some(Instant::now());
@@ -321,7 +594,16 @@ fn run_bridge_source_route_worker(
                     }
                     payload
                 }
-                Ok(BridgeSourceEnvelope::Heartbeat) => {
+                Ok(BridgeSourceEnvelope::Heartbeat(identity)) => {
+                    if !accept_bridge_source_identity(
+                        &app,
+                        store,
+                        &bridge_source_context,
+                        &identity,
+                        false,
+                    ) {
+                        continue;
+                    }
                     heartbeat_count += 1;
                     if !first_heartbeat_logged {
                         diag_log_detail(
@@ -342,6 +624,67 @@ fn run_bridge_source_route_worker(
                         ignored_envelope_count,
                         last_pcm_at,
                     );
+                    continue;
+                }
+                Ok(BridgeSourceEnvelope::RouteError { code, message }) => {
+                    return Err(bridge_source_route_error(&code, &message));
+                }
+                Ok(BridgeSourceEnvelope::TranslationStatus {
+                    status_id,
+                    session_id,
+                    cue_id,
+                    status,
+                    reason,
+                    error_code,
+                }) => {
+                    let active_session_id = app
+                        .state::<BridgeStateStore>()
+                        .snapshot()
+                        .session_id;
+                    let disposition = bridge_translation_status_disposition(
+                        store,
+                        active_session_id.as_deref(),
+                        &status_id,
+                        &session_id,
+                    );
+                    if disposition == BridgeTranslationStatusDisposition::Apply {
+                        record_bridge_translation_status(
+                            &app,
+                            store,
+                            &status_id,
+                            &cue_id,
+                            &status,
+                            &reason,
+                            error_code.as_deref(),
+                        );
+                    } else {
+                        diag_log_detail(
+                            &app,
+                            "bridge",
+                            "info",
+                            "event=translation_playback_status_idempotent_skip",
+                            format!(
+                                "statusId={status_id} cueId={cue_id} reason={} eventSessionId={session_id} activeSessionId={}",
+                                disposition.as_str(),
+                                active_session_id.as_deref().unwrap_or("-")
+                            ),
+                        );
+                    }
+                    if let Err(error) = write_bridge_translation_status_ack(
+                        &mut source_pipe,
+                        &status_id,
+                        &session_id,
+                    ) {
+                        sample_queue.clear();
+                        diag_log_detail(
+                            &app,
+                            "audio",
+                            "warning",
+                            "Bridge translation status acknowledgement failed. Reconnecting.",
+                            error,
+                        );
+                        break;
+                    }
                     continue;
                 }
                 Ok(BridgeSourceEnvelope::Ignored(reason)) => {
@@ -394,179 +737,11 @@ fn run_bridge_source_route_worker(
                     direction,
                     &mut processor,
                     &stt_sender,
-                    false,
                     chunk,
                     sample_queue.len(),
                 )?;
             }
         }
-    }
-}
-
-fn rms_to_db(rms: f32) -> f32 {
-    20.0 * rms.max(1.0e-6).log10()
-}
-
-/// Periodic echo-cancel (AEC) effectiveness probe for one capture session.
-/// Accumulates per-chunk energy before and after `subtract_echo` and reports
-/// interval averages plus the reference-buffer depth through the diagnostics
-/// chain so the echo path is observable while a session runs.
-struct EchoCancelDiagnostics {
-    subtract_count: u64,
-    interval_chunks: u64,
-    interval_pre_db_sum: f64,
-    interval_post_db_sum: f64,
-    aec_suppressed_chunks: u64,
-    interval_aec_suppressed_chunks: u64,
-    interval_pure_echo_removed_db_sum: f64,
-    playback_active_chunks: u64,
-    effective_suppressed_chunks: u64,
-    aligned_chunks: u64,
-    alignment_correlation_sum: f64,
-    alignment_correlation_max: f32,
-    alignment_delay_ms_sum: f64,
-    reference_db_sum: f64,
-    captured_db_sum: f64,
-    residual_db_sum: f64,
-    echo_path_gain_sum: f64,
-    tail_correlation_sum: f64,
-    last_summary_at: Instant,
-}
-
-impl EchoCancelDiagnostics {
-    fn new() -> Self {
-        Self {
-            subtract_count: 0,
-            interval_chunks: 0,
-            interval_pre_db_sum: 0.0,
-            interval_post_db_sum: 0.0,
-            aec_suppressed_chunks: 0,
-            interval_aec_suppressed_chunks: 0,
-            interval_pure_echo_removed_db_sum: 0.0,
-            playback_active_chunks: 0,
-            effective_suppressed_chunks: 0,
-            aligned_chunks: 0,
-            alignment_correlation_sum: 0.0,
-            alignment_correlation_max: 0.0,
-            alignment_delay_ms_sum: 0.0,
-            reference_db_sum: 0.0,
-            captured_db_sum: 0.0,
-            residual_db_sum: 0.0,
-            echo_path_gain_sum: 0.0,
-            tail_correlation_sum: 0.0,
-            last_summary_at: Instant::now(),
-        }
-    }
-
-    fn record(
-        &mut self,
-        pre_db: f32,
-        post_db: f32,
-        metrics: crate::audio::echo_cancel::EchoCancellationMetrics,
-        aec_suppressed: bool,
-        playback_active: bool,
-        effective_suppressed: bool,
-    ) {
-        self.subtract_count += 1;
-        self.interval_chunks += 1;
-        self.interval_pre_db_sum += pre_db as f64;
-        self.interval_post_db_sum += post_db as f64;
-        if aec_suppressed {
-            self.aec_suppressed_chunks += 1;
-            self.interval_aec_suppressed_chunks += 1;
-            self.interval_pure_echo_removed_db_sum += (pre_db - post_db) as f64;
-        }
-        if playback_active {
-            self.playback_active_chunks += 1;
-        }
-        if effective_suppressed {
-            self.effective_suppressed_chunks += 1;
-        }
-        if metrics.alignment_found {
-            self.aligned_chunks += 1;
-            self.alignment_correlation_sum += metrics.correlation as f64;
-            self.alignment_correlation_max = self.alignment_correlation_max.max(metrics.correlation);
-            self.alignment_delay_ms_sum += metrics.delay_samples as f64
-                / (48_000.0 * 2.0)
-                * 1_000.0;
-            self.reference_db_sum += rms_to_db(metrics.reference_rms) as f64;
-            self.captured_db_sum += rms_to_db(metrics.captured_rms) as f64;
-            self.residual_db_sum += rms_to_db(metrics.residual_rms) as f64;
-            self.echo_path_gain_sum += metrics.echo_path_gain as f64;
-            self.tail_correlation_sum += metrics.tail_correlation as f64;
-        }
-    }
-
-    fn maybe_log(&mut self, app: &AppHandle, store: &AudioStateStore, direction: &str) {
-        if self.last_summary_at.elapsed() < Duration::from_secs(5) {
-            return;
-        }
-        let (reference_depth, reference_empty) = store.echo_reference_diagnostics();
-        let chunks = self.interval_chunks.max(1) as f64;
-        let avg_pre_db = self.interval_pre_db_sum / chunks;
-        let avg_post_db = self.interval_post_db_sum / chunks;
-        let avg_pure_echo_removed_db = if self.interval_aec_suppressed_chunks > 0 {
-            self.interval_pure_echo_removed_db_sum
-                / self.interval_aec_suppressed_chunks as f64
-        } else {
-            0.0
-        };
-        let aligned = self.aligned_chunks.max(1) as f64;
-        let alignment_rate = self.aligned_chunks as f64 / chunks * 100.0;
-        let avg_correlation = self.alignment_correlation_sum / aligned;
-        let avg_delay_ms = self.alignment_delay_ms_sum / aligned;
-        let avg_reference_db = self.reference_db_sum / aligned;
-        let avg_captured_db = self.captured_db_sum / aligned;
-        let avg_residual_db = self.residual_db_sum / aligned;
-        let avg_path_gain = self.echo_path_gain_sum / aligned;
-        let avg_tail_correlation = self.tail_correlation_sum / aligned;
-        diag_log_detail(
-            app,
-            "audio",
-            "info",
-            "event=echo_cancel_summary",
-            format!(
-                "direction={} subtractCount={} intervalChunks={} alignedChunks={} alignmentRatePct={:.1} aecSuppressedChunks={} intervalAecSuppressedChunks={} avgPureEchoRemovedDb={:.1} playbackActiveChunks={} effectiveSuppressedChunks={} refBufferDepthSamples={} refBufferEmpty={} avgPreDb={:.1} avgPostDb={:.1} avgRemovedDb={:.1} avgReferenceDb={:.1} avgCapturedDb={:.1} avgCorrelation={:.3} maxCorrelation={:.3} avgDelayMs={:.1} avgResidualDb={:.1} avgPathGain={:.3} avgTailCorrelation={:.3}",
-                direction,
-                self.subtract_count,
-                self.interval_chunks,
-                self.aligned_chunks,
-                alignment_rate,
-                self.aec_suppressed_chunks,
-                self.interval_aec_suppressed_chunks,
-                avg_pure_echo_removed_db,
-                self.playback_active_chunks,
-                self.effective_suppressed_chunks,
-                reference_depth,
-                reference_empty,
-                avg_pre_db,
-                avg_post_db,
-                avg_pre_db - avg_post_db,
-                avg_reference_db,
-                avg_captured_db,
-                avg_correlation,
-                self.alignment_correlation_max,
-                avg_delay_ms,
-                avg_residual_db,
-                avg_path_gain,
-                avg_tail_correlation,
-            ),
-        );
-        self.interval_chunks = 0;
-        self.interval_pre_db_sum = 0.0;
-        self.interval_post_db_sum = 0.0;
-        self.interval_aec_suppressed_chunks = 0;
-        self.interval_pure_echo_removed_db_sum = 0.0;
-        self.aligned_chunks = 0;
-        self.alignment_correlation_sum = 0.0;
-        self.alignment_correlation_max = 0.0;
-        self.alignment_delay_ms_sum = 0.0;
-        self.reference_db_sum = 0.0;
-        self.captured_db_sum = 0.0;
-        self.residual_db_sum = 0.0;
-        self.echo_path_gain_sum = 0.0;
-        self.tail_correlation_sum = 0.0;
-        self.last_summary_at = Instant::now();
     }
 }
 
@@ -631,54 +806,37 @@ fn should_fail_on_initial_frame_stall(direction: &str) -> bool {
     direction != "inbound"
 }
 
-#[derive(Debug, PartialEq)]
-enum BridgeSourceEnvelope {
-    Frame(Vec<u8>),
-    Heartbeat,
-    Ignored(String),
+fn active_render_delay_frames(
+    playback_active: bool,
+    endpoint_padding_frames: Option<u32>,
+    reference_lead_frames: Option<u32>,
+) -> (Option<u32>, Option<u32>) {
+    if playback_active {
+        (endpoint_padding_frames, reference_lead_frames)
+    } else {
+        (None, None)
+    }
 }
 
-fn read_bridge_source_payload(source_pipe: &mut impl Read) -> Result<BridgeSourceEnvelope, String> {
-    let mut header_size = [0_u8; 4];
-    source_pipe
-        .read_exact(&mut header_size)
-        .map_err(|error| format!("Bridge source header size read failed: {error}"))?;
-    let header_size = u32::from_le_bytes(header_size) as usize;
-    if header_size == 0 || header_size > 64 * 1024 {
-        return Err("Bridge source header size is invalid.".to_string());
+fn capture_queue_head_clock(
+    packet_device_frame_index: u64,
+    packet_qpc_100ns: u64,
+    queued_bytes_before_read: usize,
+    block_align: usize,
+    sample_rate_hz: u32,
+) -> (u64, u64, u64) {
+    if block_align == 0 || sample_rate_hz == 0 {
+        return (packet_device_frame_index, packet_qpc_100ns, 0);
     }
-    let mut header_bytes = vec![0_u8; header_size];
-    source_pipe
-        .read_exact(&mut header_bytes)
-        .map_err(|error| format!("Bridge source header read failed: {error}"))?;
-    let header: BridgeTranslationFrameHeader =
-        serde_json::from_slice(&header_bytes).map_err_str()?;
-    let mut payload = vec![0_u8; header.payload_bytes];
-    source_pipe
-        .read_exact(&mut payload)
-        .map_err(|error| format!("Bridge source payload read failed: {error}"))?;
-    if header.event_type == "bridge.source.heartbeat" {
-        return Ok(BridgeSourceEnvelope::Heartbeat);
-    }
-    if header.event_type != "bridge.source.frame" {
-        return Ok(BridgeSourceEnvelope::Ignored(format!(
-            "reason=unexpected-event-type eventType={}",
-            header.event_type
-        )));
-    }
-    if header.sample_rate_hz != SAMPLE_RATE_HZ as u32 {
-        return Ok(BridgeSourceEnvelope::Ignored(format!(
-            "reason=sample-rate-mismatch actual={} expected={}",
-            header.sample_rate_hz, SAMPLE_RATE_HZ
-        )));
-    }
-    if header.channel_count != CHANNEL_COUNT as u16 {
-        return Ok(BridgeSourceEnvelope::Ignored(format!(
-            "reason=channel-count-mismatch actual={} expected={}",
-            header.channel_count, CHANNEL_COUNT
-        )));
-    }
-    Ok(BridgeSourceEnvelope::Frame(payload))
+    let queued_frames = (queued_bytes_before_read / block_align) as u64;
+    let queued_duration_100ns = queued_frames
+        .saturating_mul(10_000_000)
+        .saturating_div(u64::from(sample_rate_hz));
+    (
+        packet_device_frame_index.saturating_sub(queued_frames),
+        packet_qpc_100ns.saturating_sub(queued_duration_100ns),
+        queued_frames,
+    )
 }
 
 fn process_captured_chunk(
@@ -687,23 +845,20 @@ fn process_captured_chunk(
     direction: &str,
     processor: &mut RouteProcessor,
     stt_sender: &Option<mpsc::Sender<Vec<u8>>>,
-    suppress_asr: bool,
     chunk: Vec<u8>,
     queued_bytes: usize,
 ) -> Result<(), String> {
-    if !suppress_asr {
-        if let Some(stt_tx) = stt_sender {
-            if let Err(error) = stt_tx.send(chunk.clone()) {
-                let message = format!("audio route sender unavailable for {direction}: {error}");
-                let _ = diag_log_detail(
-                    app,
-                    "audio",
-                    "error",
-                    "watch_mode.omni_sender_unavailable",
-                    format!("direction={direction} error={error}"),
-                );
-                return Err(format!("{message} | recommended: restart-route"));
-            }
+    if let Some(stt_tx) = stt_sender {
+        if let Err(error) = stt_tx.send(chunk.clone()) {
+            let message = format!("audio route sender unavailable for {direction}: {error}");
+            let _ = diag_log_detail(
+                app,
+                "audio",
+                "error",
+                "watch_mode.omni_sender_unavailable",
+                format!("direction={direction} error={error}"),
+            );
+            return Err(format!("{message} | recommended: restart-route"));
         }
     }
     let update = processor.ingest_chunk(&chunk, queued_bytes);
@@ -740,7 +895,9 @@ fn should_push_placeholder_cue(direction: &str, has_recognition_sender: bool) ->
 
 #[cfg(test)]
 mod placeholder_cue_tests {
-    use super::should_push_placeholder_cue;
+    use super::{
+        active_render_delay_frames, capture_queue_head_clock, should_push_placeholder_cue,
+    };
 
     #[test]
     fn outbound_without_sender_shows_placeholder_but_with_sender_does_not() {
@@ -753,50 +910,26 @@ mod placeholder_cue_tests {
         assert!(!should_push_placeholder_cue("inbound", false));
         assert!(!should_push_placeholder_cue("inbound", true));
     }
-}
-
-#[cfg(test)]
-mod echo_suppression_tests {
-    use super::effective_asr_suppression;
 
     #[test]
-    fn pure_echo_remains_suppressed_during_playback() {
-        assert!(effective_asr_suppression(true, true));
+    fn inactive_playback_cannot_reuse_stale_render_padding_as_delay() {
+        assert_eq!(
+            active_render_delay_frames(false, Some(960), Some(480)),
+            (None, None)
+        );
+        assert_eq!(
+            active_render_delay_frames(true, Some(960), Some(480)),
+            (Some(960), Some(480))
+        );
     }
 
     #[test]
-    fn double_talk_is_sent_to_asr_during_playback() {
-        assert!(!effective_asr_suppression(false, true));
-    }
-}
-
-#[cfg(test)]
-mod echo_diagnostics_tests {
-    use super::EchoCancelDiagnostics;
-    use crate::audio::echo_cancel::EchoCancellationMetrics;
-
-    fn aligned_metrics() -> EchoCancellationMetrics {
-        EchoCancellationMetrics {
-            alignment_found: true,
-            correlation: 0.9,
-            delay_samples: 9_600,
-            reference_rms: 0.2,
-            captured_rms: 0.1,
-            residual_rms: 0.01,
-            echo_path_gain: 0.5,
-            tail_correlation: 0.4,
-        }
-    }
-
-    #[test]
-    fn tracks_pure_echo_removal_separately_from_all_capture_audio() {
-        let mut diagnostics = EchoCancelDiagnostics::new();
-        diagnostics.record(-20.0, -42.0, aligned_metrics(), true, true, true);
-        diagnostics.record(-30.0, -30.0, aligned_metrics(), false, true, false);
-
-        assert_eq!(diagnostics.aec_suppressed_chunks, 1);
-        assert_eq!(diagnostics.interval_aec_suppressed_chunks, 1);
-        assert!((diagnostics.interval_pure_echo_removed_db_sum - 22.0).abs() < f64::EPSILON);
-        assert_eq!(diagnostics.aligned_chunks, 2);
+    fn capture_delay_is_anchored_to_the_first_frame_already_in_the_chunk_queue() {
+        // One 10 ms 48 kHz stereo-f32 packet (480 * 8 bytes) is already
+        // waiting when the next packet arrives.
+        assert_eq!(
+            capture_queue_head_clock(9_600, 2_000_000, 480 * 8, 8, 48_000),
+            (9_120, 1_900_000, 480)
+        );
     }
 }

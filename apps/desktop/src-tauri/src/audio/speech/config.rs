@@ -21,6 +21,8 @@ struct SpeechConfig {
     output_target: String,
     local_playback_enabled: bool,
     virtual_mic_output_enabled: bool,
+    bridge_playback_enabled: bool,
+    bridge_capture_mode: Option<crate::bridge::contracts::SourceCaptureMode>,
     speaker_device_id: Option<String>,
     speaker_output_level: u64,
     priority: String,
@@ -134,6 +136,8 @@ impl SpeechConfig {
                         .to_string()
                 })?;
         }
+        let bridge_playback_enabled = bridge_translation_playback_enabled_for_config(config);
+        let bridge_capture_mode = bridge_owned_capture_mode_for_config(config);
         Ok(Self {
             provider,
             enabled: config
@@ -151,16 +155,22 @@ impl SpeechConfig {
                 .and_then(Value::as_str)
                 .unwrap_or("Ethan")
                 .to_string(),
-            output_target: config
-                .pointer("/speech/outputTarget")
-                .and_then(Value::as_str)
-                .unwrap_or("speaker")
-                .to_string(),
+            output_target: if bridge_playback_enabled {
+                "bridge-playback".to_string()
+            } else {
+                config
+                    .pointer("/speech/outputTarget")
+                    .and_then(Value::as_str)
+                    .unwrap_or("speaker")
+                    .to_string()
+            },
             local_playback_enabled: desktop_direct_playback_enabled_for_config(config),
             virtual_mic_output_enabled: config
                 .pointer("/speech/virtualMicOutputEnabled")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
+            bridge_playback_enabled,
+            bridge_capture_mode,
             speaker_device_id: config
                 .pointer("/devices/outputDeviceId")
                 .and_then(Value::as_str)

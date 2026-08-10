@@ -501,6 +501,127 @@ describe('DiagnosticsPage monitoring boundary', () => {
     expect(container.textContent).toContain('实时结果');
   });
 
+  it('persists benchmark history, reuses its report detail, and confirms deletion', async () => {
+    const report = benchmarkReport('history detail output');
+    const run = report.runs[0]!;
+    run.firstCommittedMs = 200;
+    run.responseDoneMs = 220;
+    run.timeToFirstCommittedMs = 80;
+    run.responseCount = 1;
+    report.summary.successfulRuns = 1;
+    fake.programBenchmarkRun({ report });
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+
+    await renderPage();
+    await clickAndSettle(findButtonByText(container, '开始基准测试'));
+
+    const savedHistory = fake.commandCalls('diagnostics_v2').filter((call) => call.action === 'saveBenchmarkHistory');
+    // Start, benchmark completion, then the automatic no-judge-model evidence
+    // update are all durable updates to the same history record.
+    expect(savedHistory).toHaveLength(3);
+    expect(savedHistory[0]?.args).toMatchObject({ command: { runStatus: 'running', scoreStatus: 'pending' } });
+    expect(savedHistory[1]?.args).toMatchObject({ command: { runStatus: 'completed', scoreStatus: 'evidence-insufficient' } });
+
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.benchmark-modal-head > div > .icon-button:last-child'));
+    await clickAndSettle(findButtonByText(container, '历史记录'));
+    expect(container.querySelector('.benchmark-history-row')?.textContent).toContain('qwen3.5-omni-plus-realtime');
+
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('.benchmark-history-open'));
+    expect(fake.commandCalls('diagnostics_v2').some((call) => call.action === 'getBenchmarkHistory')).toBe(true);
+    expect(container.querySelector('[role="dialog"].benchmark-modal .benchmark-translation')?.textContent).toContain('history detail output');
+
+    await clickAndSettle(container.querySelector<HTMLButtonElement>('[role="dialog"].benchmark-modal .benchmark-modal-head > div > .icon-button:last-child'));
+    const deleteButton = container.querySelector<HTMLButtonElement>('.benchmark-history-row > button:last-child');
+    await clickAndSettle(deleteButton);
+    expect(fake.commandCalls('diagnostics_v2').some((call) => call.action === 'deleteBenchmarkHistory')).toBe(false);
+
+    confirm.mockReturnValue(true);
+    await clickAndSettle(deleteButton);
+    expect(fake.commandCalls('diagnostics_v2').filter((call) => call.action === 'deleteBenchmarkHistory')).toHaveLength(1);
+    expect(container.querySelector('.benchmark-history-row')).toBeNull();
+  });
+
+  it('automatically judges a completed reference fixture exactly once and persists the final v1 score', async () => {
+    const state = useAppStore.getState();
+    const provider = structuredClone(state.configDraft.providers[0]!);
+    provider.sceneModelAssignments = provider.sceneModelAssignments.map((assignment) =>
+      assignment.scenario === 'subtitle-translate'
+        ? { ...assignment, modelIds: ['qwen3.5-omni-plus-realtime'] }
+        : assignment,
+    );
+    useAppStore.setState({
+      ...state,
+      configDraft: { ...state.configDraft, providers: [provider] },
+    });
+    const report = benchmarkReport('候选译文');
+    report.audioFile = defaultBenchmarkMp3Path;
+    const run = report.runs[0]!;
+    run.firstCommittedMs = 200;
+    run.responseDoneMs = 220;
+    run.timeToFirstCommittedMs = 80;
+    run.responseCount = 1;
+    report.summary.successfulRuns = 1;
+    fake.programBenchmarkRun({ report });
+
+    await renderPageAndFlush();
+    await clickAndSettle(findButtonByText(container, '开始基准测试'));
+    await settleUi();
+
+    const judgeCalls = fake.commandCalls('provider_v2').filter((call) => call.action === 'smoke');
+    expect(judgeCalls).toHaveLength(1);
+    expect(judgeCalls[0]?.args).toMatchObject({
+      command: { provider: { systemPromptTemplate: 'benchmark-semantic-judge-v1' } },
+    });
+    const judgeRequest = JSON.parse(String((judgeCalls[0]?.args?.command as { sourceText?: string }).sourceText));
+    expect(judgeRequest).toMatchObject({ rubricVersion: 'benchmark-semantic-judge/v1', runIndex: 0, translation: '候选译文' });
+    expect(judgeRequest.source).toEqual(expect.any(String));
+    expect(judgeRequest.reference).toEqual(expect.any(String));
+    expect(container.textContent).toContain('正式评分');
+
+    await settleUi();
+    expect(fake.commandCalls('provider_v2').filter((call) => call.action === 'smoke')).toHaveLength(1);
+    expect(fake.commandCalls('diagnostics_v2').filter((call) => call.action === 'saveBenchmarkHistory')
+      .some((call) => (call.args?.command as { scoreStatus?: string }).scoreStatus === 'final')).toBe(true);
+  });
+
+  it('records missing judge-model evidence without calling a semantic judge', async () => {
+    // The default fixture has no subtitle-translate assignment, while it does
+    // retain the real-time voice benchmark assignment.
+    const report = benchmarkReport('候选译文');
+    report.audioFile = defaultBenchmarkMp3Path;
+    const run = report.runs[0]!;
+    run.firstCommittedMs = 200;
+    run.responseDoneMs = 220;
+    run.timeToFirstCommittedMs = 80;
+    run.responseCount = 1;
+    report.summary.successfulRuns = 1;
+    fake.programBenchmarkRun({ report });
+
+    await renderPageAndFlush();
+    await clickAndSettle(findButtonByText(container, '开始基准测试'));
+    await settleUi();
+
+    expect(fake.commandCalls('provider_v2').filter((call) => call.action === 'smoke')).toHaveLength(0);
+    const persistedMissingModel = fake.commandCalls('diagnostics_v2')
+      .filter((call) => call.action === 'saveBenchmarkHistory')
+      .map((call) => call.args?.command as {
+        scoreStatus?: string;
+        score?: { dimensions?: { semantic?: { missingEvidence?: string[] } } };
+      })
+      .find((command) => command.scoreStatus === 'evidence-insufficient'
+        && command.score?.dimensions?.semantic?.missingEvidence?.includes('judge-model-unavailable'));
+    expect(persistedMissingModel).toEqual(expect.objectContaining({
+      scoreStatus: 'evidence-insufficient',
+      score: expect.objectContaining({
+        dimensions: expect.objectContaining({
+          semantic: expect.objectContaining({
+            missingEvidence: expect.arrayContaining(['judge-model-unavailable']),
+          }),
+        }),
+      }),
+    }));
+  });
+
   it('keeps the latest benchmark stream data visible when the run fails', async () => {
     const partialReport = benchmarkReport('部分输出');
     fake.programBenchmarkRun({

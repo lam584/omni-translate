@@ -213,6 +213,10 @@ export default function WatchSessionReportPanel({
     receipt: ExportArtifactReceipt;
   } | null>(null);
   const [exportPathCopied, setExportPathCopied] = useState(false);
+  const handleUnexpectedActionError = (actionError: unknown) => {
+    setActionError(actionError instanceof Error ? actionError.message : String(actionError));
+    setExporting(false);
+  };
   const cues = useMemo(
     () => report ? sortedCues([...report.cues], filter, sort, categoryFilter) : [],
     [categoryFilter, filter, report, sort],
@@ -285,10 +289,10 @@ export default function WatchSessionReportPanel({
           })}</p>
         </div>
         <div className="watch-report-actions">
-          {onRefresh ? <button onClick={() => void onRefresh()} type="button">{t('watchReport.refresh')}</button> : null}
-          <button disabled={exporting} onClick={() => void runExport('json')} type="button">JSON</button>
-          <button disabled={exporting} onClick={() => void runExport('txt')} type="button">TXT</button>
-          {onClear ? <button className="watch-report-clear" onClick={() => void onClear()} type="button">{t('watchReport.clear')}</button> : null}
+          {onRefresh ? <button onClick={() => void Promise.resolve().then(onRefresh).catch(handleUnexpectedActionError)} type="button">{t('watchReport.refresh')}</button> : null}
+          <button disabled={exporting} onClick={() => void runExport('json').catch(handleUnexpectedActionError)} type="button">JSON</button>
+          <button disabled={exporting} onClick={() => void runExport('txt').catch(handleUnexpectedActionError)} type="button">TXT</button>
+          {onClear ? <button className="watch-report-clear" onClick={() => void Promise.resolve().then(onClear).catch(handleUnexpectedActionError)} type="button">{t('watchReport.clear')}</button> : null}
         </div>
       </div>
 
@@ -308,10 +312,10 @@ export default function WatchSessionReportPanel({
             />
           </label>
           <div className="watch-report-export-result-actions">
-            <button onClick={() => void copyExportPath()} type="button">
+            <button onClick={() => void copyExportPath().catch(handleUnexpectedActionError)} type="button">
               {exportPathCopied ? t('watchReport.pathCopied') : t('watchReport.copyPath')}
             </button>
-            <button onClick={() => void openExportFolder()} type="button">
+            <button onClick={() => void openExportFolder().catch(handleUnexpectedActionError)} type="button">
               {t('diagnostics.actions.openExportDirectory')}
             </button>
           </div>

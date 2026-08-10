@@ -1,15 +1,12 @@
-import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { currentGitProvenance } from './git-provenance.mjs';
+
 /** HEAD commit of the checkout producing this evidence (null outside git). */
 export function currentGitCommit() {
-  try {
-    return execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim() || null;
-  } catch {
-    return null;
-  }
+  return currentGitProvenance().headCommit;
 }
 
 const DEFAULT_SUSPECT_FILES = {
@@ -86,6 +83,11 @@ const DEFAULT_STRICT_REFERENCE_PATH = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
   'fixtures',
   'watch-mode-en-original.zh-CN.txt',
+);
+const DEFAULT_SOURCE_TRANSCRIPT_PATH = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  'fixtures',
+  'watch-mode-en-original.txt',
 );
 const TEST_MEDIA_SHA256 = 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f';
 const STRICT_REQUIRED_CONCEPTS = [
@@ -295,7 +297,13 @@ export function parseAppLog(text) {
     omniSessionReadyLines: matchingLines(nonMarkerText, /watch_mode\.omni_session_ready/i),
     nativePlaybackRequestLines: matchingLines(nonMarkerText, /\[AUDIO\] playback request received:/i),
     nativeSpeakerPlaybackCompletedLines: matchingLines(nonMarkerText, /\[AUDIO\] speaker playback completed:/i),
+    echoCancelBackendLines: matchingLines(nonMarkerText, /event=echo_cancel_backend/i),
     echoCancelSummaryLines: matchingLines(nonMarkerText, /event=echo_cancel_summary/i),
+    // These diagnostic-only events intentionally include the run marker in
+    // some builds. Parse them from the already run-scoped source text rather
+    // than `nonMarkerText`, which drops marker-bearing lifecycle lines.
+    aecLiveScenarioLines: matchingLines(text, /event=aec_live_scenario_stage/i),
+    processExclusionRestartLines: matchingLines(text, /event=process_exclusion_restart_/i),
     omniResponseDoneContextLines: tailLines(nonMarkerText, /\[EVENT_CONTEXT\]\s+response\.done/i, 40),
     omniResponseDoneLines: matchingLines(nonMarkerText, /response\.done/i),
     omniAsrCompletedLines: matchingLines(nonMarkerText, /conversation\.item\.input_audio_transcription\.completed|transcription\.completed/i),
@@ -352,9 +360,198 @@ function parseOmniRealtimeDiagnostics(appLog) {
   };
 }
 
-function parseAecDiagnostics(appLog) {
+function normalizedEnglishTokens(value) {
+  return String(value ?? '')
+    .normalize('NFKC')
+    .toLowerCase()
+    .match(/[a-z0-9]+/g) ?? [];
+}
+
+function tokenRecall(reference, candidate) {
+  const referenceTokens = normalizedEnglishTokens(reference);
+  if (referenceTokens.length === 0) return 0;
+  const available = new Map();
+  for (const token of normalizedEnglishTokens(candidate)) {
+    available.set(token, (available.get(token) ?? 0) + 1);
+  }
+  let matched = 0;
+  for (const token of referenceTokens) {
+    const count = available.get(token) ?? 0;
+    if (count <= 0) continue;
+    matched += 1;
+    available.set(token, count - 1);
+  }
+  return matched / referenceTokens.length;
+}
+
+function acceptedWatchSourceText(watchSessionReport) {
+  const cues = Array.isArray(watchSessionReport?.cues) ? watchSessionReport.cues : [];
+  const acceptedCues = cues.filter((cue) => (
+    ['exact', 'formatting-only'].includes(cue.comparisonStatus)
+    && Number.isFinite(Number(cue.llmFirstAtMs))
+    && Number.isFinite(Number(cue.publishedFirstAtMs))
+    && Number.isFinite(Number(cue.renderedFirstAtMs))
+    && (cue.issues ?? []).every((issue) => (
+      issue?.category === 'data'
+      && issue?.code === 'cue-events-truncated'
+      && String(issue?.severity ?? '').toLowerCase() === 'warning'
+    ))
+  ));
+  return {
+    acceptedCueCount: acceptedCues.length,
+    acceptedCueIds: acceptedCues
+      .map((cue) => String(cue.cueId ?? '').trim())
+      .filter(Boolean),
+    sourceText: acceptedCues.map((cue) => cue.sourceText ?? '').filter(Boolean).join('\n'),
+  };
+}
+
+function parseAecExpectedSegmentEvidence(input) {
+  const playbackSha256 = String(
+    input.playback?.mediaSha256
+      ?? input.physicalOutputContent?.sourceReference?.mediaSha256
+      ?? '',
+  ).toLowerCase();
+  const referenceText = playbackSha256 === TEST_MEDIA_SHA256
+    ? readTextIfExists(DEFAULT_SOURCE_TRANSCRIPT_PATH).trim()
+    : '';
+  const expectedSegments = referenceText
+    ? referenceText.split(/\r?\n\s*\r?\n/).map((segment) => segment.trim()).filter(Boolean)
+    : [];
+  const accepted = acceptedWatchSourceText(input.watchSessionReport);
+  const minimumTokenRecall = 0.65;
+  const segmentResults = expectedSegments.map((segment, index) => {
+    const recall = tokenRecall(segment, accepted.sourceText);
+    return {
+      ordinal: index + 1,
+      expectedTokenCount: normalizedEnglishTokens(segment).length,
+      tokenRecall: Number(recall.toFixed(4)),
+      accepted: recall >= minimumTokenRecall,
+    };
+  });
+  const acceptedSegmentCount = segmentResults.filter((segment) => segment.accepted).length;
+  return {
+    referenceSource: playbackSha256 === TEST_MEDIA_SHA256
+      ? 'watch-mode-en-original-transcript'
+      : null,
+    acceptedSource: 'watch-session-report-cues',
+    watchSessionId: input.watchSessionReport?.sessionId ?? null,
+    referencePath: playbackSha256 === TEST_MEDIA_SHA256 ? DEFAULT_SOURCE_TRANSCRIPT_PATH : null,
+    mediaSha256: playbackSha256 || null,
+    minimumTokenRecall,
+    expectedSegmentCount: segmentResults.length,
+    acceptedSegmentCount,
+    acceptanceRate: segmentResults.length > 0
+      ? Number((acceptedSegmentCount / segmentResults.length).toFixed(4))
+      : 0,
+    acceptedCueCount: accepted.acceptedCueCount,
+    acceptedCueIds: accepted.acceptedCueIds,
+    segments: segmentResults,
+  };
+}
+
+function parseAecLiveScenario(appLog, input) {
+  const rawStages = appLog.aecLiveScenarioLines
+    .map(parseKeyValueLine)
+    .filter((stage) => Object.keys(stage).length > 0);
+  const completedStages = rawStages.filter((stage) => stage.status === 'completed');
+  const namedStage = (name) => completedStages.find((stage) => stage.stage === name) ?? null;
+  const doubleTalk = namedStage('double-talk');
+  const dynamicDelay = namedStage('dynamic-delay');
+  const nonlinear = namedStage('nonlinear');
+  const stageIsRuntimeRender = (stage) => (
+    stage != null
+    && String(stage.cueId ?? '') !== ''
+    && asNumber(stage.referenceFrames) > 0
+    && asNumber(stage.physicalFrames) > 0
+    && asNumber(stage.completedAtMs, NaN) >= asNumber(stage.startedAtMs, NaN)
+    && stage.started === 'true'
+    && stage.completed === 'true'
+    && stage.source === 'runtime-physical-render'
+    && ['native-omni', 'subtitle-tts'].includes(stage.playbackSource)
+  );
+  const stageHasExpectedPhysicalPcm = (stage, delayMs, nonlinearExpected) => {
+    if (!stageIsRuntimeRender(stage)) return false;
+    const referenceFrames = asNumber(stage.referenceFrames, NaN);
+    const physicalFrames = asNumber(stage.physicalFrames, NaN);
+    const expectedPrefixFrames = Math.round(delayMs * 48_000 / 1_000);
+    const changedSamples = asNumber(stage.changedSamples, NaN);
+    const changedRatio = asNumber(stage.changedRatio, NaN);
+    if (physicalFrames - referenceFrames !== expectedPrefixFrames) return false;
+    if (nonlinearExpected) {
+      return changedSamples > 0 && changedRatio > 0 && changedRatio <= 1;
+    }
+    return changedSamples === 0 && changedRatio === 0;
+  };
+  const playback = input.playback ?? {};
+  const playbackStartedAtMs = asNumber(playback.startedAtMs, NaN);
+  const playbackFinishedAtMs = asNumber(playback.finishedAtMs, NaN);
+  const playbackProcessId = asNumber(playback.processId ?? playback.injectorProcessId, NaN);
+  const playbackSha256 = String(playback.mediaSha256 ?? '').toLowerCase();
+  const actualPlayback = (
+    playbackSha256 === TEST_MEDIA_SHA256
+    && Number.isInteger(playbackProcessId)
+    && playbackProcessId > 0
+    && Number.isFinite(playbackStartedAtMs)
+    && Number.isFinite(playbackFinishedAtMs)
+    && playbackFinishedAtMs > playbackStartedAtMs
+  );
+  const baselineDelayMs = asNumber(doubleTalk?.delayMs, NaN);
+  const dynamicDelayMs = asNumber(dynamicDelay?.delayMs, NaN);
+  const nonlinearDelayMs = asNumber(nonlinear?.delayMs, NaN);
+  const nonlinearity = String(nonlinear?.nonlinearity ?? '').toLowerCase();
+  const scenarioStartedAtMs = completedStages
+    .map((stage) => asNumber(stage.startedAtMs, NaN))
+    .filter(Number.isFinite);
+  const scenarioCompletedAtMs = completedStages
+    .map((stage) => asNumber(stage.completedAtMs, NaN))
+    .filter(Number.isFinite);
+  const timelineBoundToPlayback = (
+    actualPlayback
+    && scenarioStartedAtMs.length >= 3
+    && scenarioCompletedAtMs.length >= 3
+    && Math.min(...scenarioStartedAtMs) >= playbackStartedAtMs - 10_000
+    && Math.max(...scenarioCompletedAtMs) <= playbackFinishedAtMs + 120_000
+  );
+  const completed = (
+    stageHasExpectedPhysicalPcm(doubleTalk, 0, false)
+    && stageHasExpectedPhysicalPcm(dynamicDelay, 80, false)
+    && stageHasExpectedPhysicalPcm(nonlinear, 160, true)
+    && baselineDelayMs === 0
+    && dynamicDelayMs > baselineDelayMs
+    && nonlinearDelayMs > dynamicDelayMs
+    && !['', 'none', 'linear', 'false', 'off'].includes(nonlinearity)
+    && timelineBoundToPlayback
+  );
+  return {
+    requested: input.feedbackLoopPrevention === 'echo-cancel' && input.mode === 'live',
+    evidenceMode: completed && actualPlayback && input.mode === 'live' ? 'live' : input.mode ?? 'unknown',
+    fixtureOnly: !(completed && actualPlayback && input.mode === 'live'),
+    completed,
+    completedStageCount: completedStages.length,
+    requiredStages: ['double-talk', 'dynamic-delay', 'nonlinear'],
+    stages: { doubleTalk, dynamicDelay, nonlinear },
+    baselineDelayMs: Number.isFinite(baselineDelayMs) ? baselineDelayMs : null,
+    dynamicDelayMs: Number.isFinite(dynamicDelayMs) ? dynamicDelayMs : null,
+    nonlinearDelayMs: Number.isFinite(nonlinearDelayMs) ? nonlinearDelayMs : null,
+    nonlinearity: nonlinear?.nonlinearity ?? null,
+    timelineBoundToPlayback,
+    playback: {
+      mediaSha256: playbackSha256 || null,
+      processId: Number.isFinite(playbackProcessId) ? playbackProcessId : null,
+      startedAtMs: Number.isFinite(playbackStartedAtMs) ? playbackStartedAtMs : null,
+      finishedAtMs: Number.isFinite(playbackFinishedAtMs) ? playbackFinishedAtMs : null,
+      actualPlayback,
+    },
+    expectedSubtitles: parseAecExpectedSegmentEvidence(input),
+    evidenceLines: appLog.aecLiveScenarioLines.slice(-12),
+  };
+}
+
+function parseAecDiagnostics(appLog, input) {
   const config = parseKeyValueLine(appLog.omniSessionConfigLines.at(-1) ?? '');
   const speakerPlayback = appLog.nativeSpeakerPlaybackCompletedLines.map(parseKeyValueLine);
+  const backendGate = parseKeyValueLine(appLog.echoCancelBackendLines.at(-1) ?? '');
   const echoSummaries = appLog.echoCancelSummaryLines
     .map(parseKeyValueLine)
     .filter((summary) => Object.keys(summary).length > 0);
@@ -362,6 +559,17 @@ function parseAecDiagnostics(appLog) {
     (maximum, summary) => Math.max(maximum, asNumber(summary[key], fallback)),
     fallback,
   );
+  const metricValues = (key) => echoSummaries
+    .map((summary) => Number(summary[key]))
+    .filter(Number.isFinite);
+  const optionalMetricRange = (key) => {
+    const values = metricValues(key);
+    return {
+      count: values.length,
+      minimum: values.length > 0 ? Math.min(...values) : null,
+      maximum: values.length > 0 ? Math.max(...values) : null,
+    };
+  };
   const playbackFrames = speakerPlayback.reduce(
     (total, playback) => total + asNumber(playback.frames, 0),
     0,
@@ -370,13 +578,32 @@ function parseAecDiagnostics(appLog) {
     const sampleRateHz = asNumber(playback.sample_rate_hz, 0);
     return total + (sampleRateHz > 0 ? asNumber(playback.frames, 0) / sampleRateHz : 0);
   }, 0);
-  const maxAecSuppressedChunks = echoSummaries.reduce(
+  const erle = optionalMetricRange('erleDb');
+  const residualEchoLikelihood = optionalMetricRange('residualEchoLikelihood');
+  const reportedDelay = optionalMetricRange('reportedDelayMs');
+  const doubleTalk = optionalMetricRange('doubleTalkFrames');
+  const averageProcessing = optionalMetricRange('avgProcessingUs');
+  const backends = [...new Set(echoSummaries.map((summary) => summary.backend).filter(Boolean))];
+  // Historical reports used two deletion-counter names. Read them so old
+  // evidence cannot disguise dropped ASR chunks, while new writers emit only
+  // the explicit asrDeletedChunks invariant.
+  const maxAsrDeletedChunks = echoSummaries.reduce(
     (maximum, summary) => Math.max(
       maximum,
-      asNumber(summary.aecSuppressedChunks ?? summary.asrSuppressedChunks, 0),
+      asNumber(
+        summary.asrDeletedChunks
+          ?? summary.effectiveSuppressedChunks
+          ?? summary.aecSuppressedChunks,
+        0,
+      ),
     ),
     0,
   );
+  const asrDeletedChunkMetricCount = echoSummaries.filter((summary) => Number.isFinite(Number(
+    summary.asrDeletedChunks
+      ?? summary.effectiveSuppressedChunks
+      ?? summary.aecSuppressedChunks,
+  ))).length;
 
   return {
     outputMode: config.outputMode ?? null,
@@ -385,17 +612,233 @@ function parseAecDiagnostics(appLog) {
     speakerPlaybackFrames: playbackFrames,
     speakerPlaybackSeconds: Number(playbackSeconds.toFixed(3)),
     aecSummaryCount: echoSummaries.length,
-    nonEmptyReferenceSummaryCount: echoSummaries.filter(
-      (summary) => asNumber(summary.refBufferDepthSamples, 0) > 0 && summary.refBufferEmpty !== 'true',
+    backendGateSummaryCount: appLog.echoCancelBackendLines.length,
+    backendGateBackend: backendGate.backend ?? null,
+    webRtcAec3Ready: backendGate.webRtcAec3Ready === 'true',
+    msvcBuildVerified: backendGate.msvcBuildVerified === 'true',
+    linkedBackendPresent: backendGate.linkedBackendPresent === 'true',
+    fixtureVerified: backendGate.fixtureVerified === 'true',
+    renderClock: backendGate.renderClock ?? null,
+    endpointRenderPadding: backendGate.endpointRenderPadding ?? null,
+    backend: echoSummaries.at(-1)?.backend ?? null,
+    backends,
+    nonWebRtcBackendCount: echoSummaries.filter(
+      (summary) => summary.backend !== 'webrtc-aec3',
     ).length,
-    maxReferenceBufferDepthSamples: maxMetric('refBufferDepthSamples'),
-    maxAlignedChunks: maxMetric('alignedChunks'),
-    maxAlignmentRatePct: maxMetric('alignmentRatePct'),
-    maxCorrelation: maxMetric('maxCorrelation'),
-    maxAecSuppressedChunks,
-    maxIntervalAecSuppressedChunks: maxMetric('intervalAecSuppressedChunks'),
-    maxPureEchoRemovedDb: maxMetric('avgPureEchoRemovedDb'),
+    processedFrameSummaryCount: echoSummaries.filter(
+      (summary) => asNumber(
+        summary.processedCapture10msFrames ?? summary.capture10msFrames,
+        0,
+      ) > 0,
+    ).length,
+    maxRender10msFrames: maxMetric('render10msFrames'),
+    maxCapture10msFrames: maxMetric('capture10msFrames'),
+    maxProcessedCapture10msFrames: Math.max(
+      maxMetric('processedCapture10msFrames'),
+      maxMetric('capture10msFrames'),
+    ),
+    maxRejectedFrames: maxMetric('rejectedFrames'),
+    maxStatsReadFailures: maxMetric('statsReadFailures'),
+    maxResetCount: maxMetric('resetCount'),
+    maxRenderUnderruns: maxMetric('renderUnderruns'),
+    maxCaptureUnderruns: maxMetric('captureUnderruns'),
+    erleMetricCount: erle.count,
+    minErleDb: erle.minimum,
+    maxErleDb: erle.maximum,
+    residualEchoLikelihoodMetricCount: residualEchoLikelihood.count,
+    minResidualEchoLikelihood: residualEchoLikelihood.minimum,
+    maxResidualEchoLikelihood: residualEchoLikelihood.maximum,
+    reportedDelayMetricCount: reportedDelay.count,
+    minReportedDelayMs: reportedDelay.minimum,
+    maxReportedDelayMs: reportedDelay.maximum,
+    reportedDelaySpanMs: reportedDelay.count > 0
+      ? Number((reportedDelay.maximum - reportedDelay.minimum).toFixed(3))
+      : null,
+    processingMetricCount: averageProcessing.count,
+    maxAverageProcessingUs: averageProcessing.maximum,
+    maxProcessingUs: maxMetric('maxProcessingUs'),
+    doubleTalkMetricAvailable: echoSummaries.some(
+      (summary) => Number.isFinite(Number(summary.doubleTalkFrames)),
+    ),
+    maxDoubleTalkFrames: doubleTalk.maximum,
+    maxCaptureChunks: maxMetric('captureChunks'),
+    maxAsrForwardedChunks: maxMetric('asrForwardedChunks'),
+    asrDeletedChunkMetricCount,
+    maxAsrDeletedChunks,
+    liveScenario: parseAecLiveScenario(appLog, input),
     summaryLines: appLog.echoCancelSummaryLines.slice(-12),
+  };
+}
+
+function parseProcessExclusionRestart(appLog, input) {
+  const events = appLog.processExclusionRestartLines
+    .map(parseKeyValueLine)
+    .filter((event) => Object.keys(event).length > 0);
+  const summary = [...events].reverse().find((event) => (
+    event.event === 'process_exclusion_restart_summary'
+  )) ?? {};
+  const oldBridgeProcessId = asNumber(summary.oldBridgeProcessId, NaN);
+  const newBridgeProcessId = asNumber(summary.newBridgeProcessId, NaN);
+  const oldSourceGeneration = String(summary.oldSourceGeneration ?? '');
+  const newSourceGeneration = String(summary.newSourceGeneration ?? '');
+  const oldLastFrameTimestampMs = asNumber(summary.oldLastFrameTimestampMs, NaN);
+  const oldLastFrameReadTimestampMs = asNumber(summary.oldLastFrameReadTimestampMs, NaN);
+  const newFirstFrameTimestampMs = asNumber(summary.newFirstFrameTimestampMs, NaN);
+  const newFirstFrameReadTimestampMs = asNumber(summary.newFirstFrameReadTimestampMs, NaN);
+  const startedAtMs = asNumber(summary.startedAtUnixMs ?? summary.startedAtMs, NaN);
+  const restartTriggeredAtMs = asNumber(
+    summary.restartTriggeredAtUnixMs ?? summary.restartTriggeredAtMs,
+    NaN,
+  );
+  const recoveredAtMs = asNumber(summary.recoveredAtUnixMs ?? summary.recoveredAtMs, NaN);
+  const sourceFramesBefore = asNumber(summary.sourceFramesBefore, NaN);
+  const sourceFramesAfter = asNumber(summary.sourceFramesAfter, NaN);
+  const oldFramesAfterRestart = asNumber(summary.oldFramesAfterRestart, NaN);
+  const systemMetrics = input.systemMetrics ?? {};
+  const samples = Array.isArray(systemMetrics.samples) ? systemMetrics.samples : [];
+  const samplesWithOldPid = samples.filter((sample) => (
+    Array.isArray(sample.bridgeProcessIds)
+    && sample.bridgeProcessIds.map(Number).includes(oldBridgeProcessId)
+  ));
+  const samplesWithNewPid = samples.filter((sample) => (
+    Array.isArray(sample.bridgeProcessIds)
+    && sample.bridgeProcessIds.map(Number).includes(newBridgeProcessId)
+  ));
+  const firstNewSampleIndex = samples.findIndex((sample) => (
+    Array.isArray(sample.bridgeProcessIds)
+    && sample.bridgeProcessIds.map(Number).includes(newBridgeProcessId)
+  ));
+  const oldPidAbsentAfterNew = firstNewSampleIndex >= 0
+    && samples.slice(firstNewSampleIndex).every((sample) => (
+      !Array.isArray(sample.bridgeProcessIds)
+      || !sample.bridgeProcessIds.map(Number).includes(oldBridgeProcessId)
+    ));
+  const firstElapsedMs = asNumber(samples.at(0)?.elapsedMs, NaN);
+  const lastElapsedMs = asNumber(samples.at(-1)?.elapsedMs, NaN);
+  const systemMetricsDurationMs = Number.isFinite(firstElapsedMs) && Number.isFinite(lastElapsedMs)
+    ? Math.max(0, lastElapsedMs - firstElapsedMs)
+    : 0;
+  const systemMetricsValid = (
+    systemMetrics.artifactKind === 'watch-mode-system-metrics'
+    && systemMetrics.collector === 'scripts/testing/collect-watch-mode-system-metrics.ps1'
+    && systemMetrics.scope === 'process-tree'
+    && Array.isArray(systemMetrics.collectionErrors)
+    && systemMetrics.collectionErrors.length === 0
+    && asNumber(systemMetrics.sampleCount) === samples.length
+    && samples.length > 0
+  );
+  const identityChanged = (
+    Number.isInteger(oldBridgeProcessId)
+    && Number.isInteger(newBridgeProcessId)
+    && oldBridgeProcessId > 0
+    && newBridgeProcessId > 0
+    && oldBridgeProcessId !== newBridgeProcessId
+    && String(summary.oldBridgeInstanceId ?? '') !== ''
+    && String(summary.newBridgeInstanceId ?? '') !== ''
+    && summary.oldBridgeInstanceId !== summary.newBridgeInstanceId
+    && String(summary.oldSessionId ?? '') !== ''
+    && String(summary.newSessionId ?? '') !== ''
+    && summary.oldSessionId !== summary.newSessionId
+    && oldSourceGeneration !== ''
+    && newSourceGeneration !== ''
+    && oldSourceGeneration !== newSourceGeneration
+    && String(summary.oldSourceGenerationToken ?? '') !== ''
+    && String(summary.newSourceGenerationToken ?? '') !== ''
+    && summary.oldSourceGenerationToken !== summary.newSourceGenerationToken
+  );
+  const frameContinuity = (
+    Number.isFinite(sourceFramesBefore)
+    && Number.isFinite(sourceFramesAfter)
+    && sourceFramesBefore > 0
+    && sourceFramesAfter > 0
+    && Number.isFinite(oldLastFrameTimestampMs)
+    && Number.isFinite(oldLastFrameReadTimestampMs)
+    && Number.isFinite(newFirstFrameTimestampMs)
+    && Number.isFinite(newFirstFrameReadTimestampMs)
+    && newFirstFrameTimestampMs > oldLastFrameTimestampMs
+    && newFirstFrameReadTimestampMs > oldLastFrameReadTimestampMs
+    && oldFramesAfterRestart === 0
+  );
+  const runtimeReady = (
+    summary.status === 'passed'
+    && summary.processLoopbackStatus === 'ready'
+    && summary.captureBackend === 'wasapi-process-exclusion'
+    && summary.sourceSubscriberActive === 'true'
+    && asNumber(summary.excludedProcessId, NaN) === newBridgeProcessId
+  );
+  const timingValid = (
+    Number.isFinite(startedAtMs)
+    && Number.isFinite(restartTriggeredAtMs)
+    && Number.isFinite(recoveredAtMs)
+    && startedAtMs <= oldLastFrameReadTimestampMs
+    && oldLastFrameReadTimestampMs <= restartTriggeredAtMs
+    && restartTriggeredAtMs <= newFirstFrameReadTimestampMs
+    && newFirstFrameReadTimestampMs <= recoveredAtMs
+    && recoveredAtMs >= restartTriggeredAtMs
+    && asNumber(summary.downtimeMs, recoveredAtMs - restartTriggeredAtMs) <= 15_000
+  );
+  const metricsProveTransition = (
+    systemMetricsValid
+    && samplesWithOldPid.length > 0
+    && samplesWithNewPid.length > 0
+    && oldPidAbsentAfterNew
+  );
+  const completed = identityChanged
+    && frameContinuity
+    && runtimeReady
+    && timingValid
+    && metricsProveTransition;
+  return {
+    requested: input.feedbackLoopPrevention === 'process-exclusion' && input.mode === 'live',
+    evidenceMode: completed && input.mode === 'live' ? 'live' : input.mode ?? 'unknown',
+    fixtureOnly: !(completed && input.mode === 'live'),
+    completed,
+    identityChanged,
+    frameContinuity,
+    runtimeReady,
+    timingValid,
+    metricsProveTransition,
+    oldBridgeProcessId: Number.isFinite(oldBridgeProcessId) ? oldBridgeProcessId : null,
+    newBridgeProcessId: Number.isFinite(newBridgeProcessId) ? newBridgeProcessId : null,
+    oldBridgeInstanceId: summary.oldBridgeInstanceId ?? null,
+    newBridgeInstanceId: summary.newBridgeInstanceId ?? null,
+    oldSessionId: summary.oldSessionId ?? null,
+    newSessionId: summary.newSessionId ?? null,
+    oldSourceGeneration: oldSourceGeneration || null,
+    newSourceGeneration: newSourceGeneration || null,
+    oldSourceGenerationToken: summary.oldSourceGenerationToken ?? null,
+    newSourceGenerationToken: summary.newSourceGenerationToken ?? null,
+    oldLastFrameTimestampMs: Number.isFinite(oldLastFrameTimestampMs) ? oldLastFrameTimestampMs : null,
+    oldLastFrameReadTimestampMs: Number.isFinite(oldLastFrameReadTimestampMs)
+      ? oldLastFrameReadTimestampMs
+      : null,
+    newFirstFrameTimestampMs: Number.isFinite(newFirstFrameTimestampMs) ? newFirstFrameTimestampMs : null,
+    newFirstFrameReadTimestampMs: Number.isFinite(newFirstFrameReadTimestampMs)
+      ? newFirstFrameReadTimestampMs
+      : null,
+    startedAtMs: Number.isFinite(startedAtMs) ? startedAtMs : null,
+    restartTriggeredAtMs: Number.isFinite(restartTriggeredAtMs) ? restartTriggeredAtMs : null,
+    recoveredAtMs: Number.isFinite(recoveredAtMs) ? recoveredAtMs : null,
+    downtimeMs: asNumber(summary.downtimeMs, null),
+    sourceFramesBefore: Number.isFinite(sourceFramesBefore) ? sourceFramesBefore : null,
+    sourceFramesAfter: Number.isFinite(sourceFramesAfter) ? sourceFramesAfter : null,
+    oldFramesAfterRestart: Number.isFinite(oldFramesAfterRestart) ? oldFramesAfterRestart : null,
+    oldFrameRejectedCount: asNumber(summary.oldFrameRejectedCount, null),
+    excludedProcessId: asNumber(summary.excludedProcessId, null),
+    processLoopbackStatus: summary.processLoopbackStatus ?? null,
+    captureBackend: summary.captureBackend ?? null,
+    sourceSubscriberActive: summary.sourceSubscriberActive === 'true',
+    systemMetrics: {
+      valid: systemMetricsValid,
+      sampleCount: samples.length,
+      durationMs: Number(systemMetricsDurationMs.toFixed(3)),
+      samplesWithOldPid: samplesWithOldPid.length,
+      samplesWithNewPid: samplesWithNewPid.length,
+      oldPidAbsentAfterNew,
+      startedAt: systemMetrics.startedAt ?? null,
+      finishedAt: systemMetrics.finishedAt ?? null,
+    },
+    evidenceLines: appLog.processExclusionRestartLines.slice(-12),
   };
 }
 
@@ -529,8 +972,9 @@ function wasapiInjectedPlaybackFailed(wasapi, playback, appLog) {
   return null;
 }
 
-function bridgeLayerFailed(bridge, bridgeLog) {
+function bridgeLayerFailed(bridge, bridgeLog, feedbackLoopPrevention = 'virtual-driver') {
   const metrics = bridgeLog.metrics;
+  const processExclusion = feedbackLoopPrevention === 'process-exclusion';
   if (bridge?.probePassed === false) {
     return bridge.error
       ? `bridge source frame probe failed: ${bridge.error}`
@@ -538,8 +982,36 @@ function bridgeLayerFailed(bridge, bridgeLog) {
   }
   if (bridge?.error) return `bridge source probe failed: ${bridge.error}`;
   if (bridge?.lastErrorCode) return bridge.lastErrorCode;
-  if (bridge?.driverHealth && bridge.driverHealth !== 'running') return `bridge driverHealth is ${bridge.driverHealth}`;
+  if (processExclusion) {
+    if (bridge?.sourceCaptureMode !== 'process-exclusion') {
+      return `bridge sourceCaptureMode is ${bridge?.sourceCaptureMode ?? 'missing'}`;
+    }
+    if (bridge?.captureBackend !== 'wasapi-process-exclusion') {
+      return `bridge captureBackend is ${bridge?.captureBackend ?? 'missing'}`;
+    }
+    if (bridge?.processLoopbackSupported !== true) {
+      return `bridge process loopback is unsupported on Windows build ${bridge?.windowsBuildNumber ?? 'unknown'}; minimum=${bridge?.processLoopbackMinimumWindowsBuild ?? 20348}`;
+    }
+    const minimumBuild = Math.max(
+      20348,
+      asNumber(bridge?.processLoopbackMinimumWindowsBuild, 20348),
+    );
+    const windowsBuild = asNumber(bridge?.windowsBuildNumber, NaN);
+    if (!Number.isFinite(windowsBuild) || windowsBuild < minimumBuild) {
+      return `bridge process loopback Windows build evidence is invalid; detected=${bridge?.windowsBuildNumber ?? 'missing'} minimum=${minimumBuild}`;
+    }
+    if (bridge?.processLoopbackStatus !== 'ready') {
+      return bridge?.processLoopbackFailureDetail
+        ?? `bridge processLoopbackStatus is ${bridge?.processLoopbackStatus ?? 'missing'}`;
+    }
+    if (asNumber(bridge?.excludedProcessId) <= 0) {
+      return `bridge excludedProcessId is ${bridge?.excludedProcessId ?? 'missing'}`;
+    }
+  } else if (bridge?.driverHealth && bridge.driverHealth !== 'running') {
+    return `bridge driverHealth is ${bridge.driverHealth}`;
+  }
   if (bridge?.bridgeState && !['running', 'ready'].includes(bridge.bridgeState)) return `bridgeState is ${bridge.bridgeState}`;
+  if (processExclusion) return null;
   if (bridge?.sourceSubscriberActive === false) return 'bridge source subscriber is not active';
   if (
     asNumber(bridge?.sourceReadCalls) === 0
@@ -697,10 +1169,71 @@ function providerLayerFailed(provider, appLog, physicalOutputContent, options = 
   return null;
 }
 
-function physicalOutputLayerFailed(physicalOutput) {
+function physicalOutputLayerFailed(physicalOutput, options = {}) {
   if (!physicalOutput) return 'physical output probe did not run';
   if (physicalOutput.error) return physicalOutput.error;
+  if (physicalOutput.skipped === true) {
+    return `physical output probe was skipped${physicalOutput.skipCode ? `; code=${physicalOutput.skipCode}` : ''}${physicalOutput.detail ? `; detail=${physicalOutput.detail}` : ''}`;
+  }
   if (physicalOutput.passed === false) return physicalOutput.detail ?? 'physical output probe failed';
+  const probeKind = physicalOutput.probeKind ?? physicalOutput.probe_kind;
+  if (options.requireProcessFingerprint === true
+    && probeKind !== 'process-exclusion-fingerprint') {
+    return `process-exclusion requires a real process fingerprint probe; probeKind=${probeKind ?? '-'}`;
+  }
+  if (probeKind === 'process-exclusion-fingerprint') {
+    const evidence = physicalOutput.processExclusionFingerprint
+      ?? physicalOutput.process_exclusion_fingerprint;
+    if (!evidence) return 'process-exclusion fingerprint evidence is missing';
+    const bridgePid = asNumber(evidence.bridgeProcessId, 0);
+    const excludedPid = asNumber(evidence.excludedProcessId, 0);
+    const externalPid = asNumber(evidence.externalPlayerProcessId, 0);
+    const childPid = asNumber(evidence.bridgeChildPlayerProcessId, 0);
+    const childParentPid = asNumber(evidence.bridgeChildParentProcessId, 0);
+    if (evidence.sourceCaptureMode !== 'process-exclusion'
+      || evidence.captureBackend !== 'wasapi-process-exclusion'
+      || evidence.processLoopbackStatus !== 'ready') {
+      return `process-exclusion fingerprint used the wrong capture route; sourceCaptureMode=${evidence.sourceCaptureMode ?? '-'} captureBackend=${evidence.captureBackend ?? '-'} processLoopbackStatus=${evidence.processLoopbackStatus ?? '-'}`;
+    }
+    if (bridgePid <= 0 || excludedPid !== bridgePid) {
+      return `process-exclusion fingerprint targeted the wrong PID; bridgeProcessId=${bridgePid} excludedProcessId=${excludedPid}`;
+    }
+    if (externalPid <= 0 || externalPid === bridgePid) {
+      return `external preservation fingerprint did not originate outside Bridge; bridgeProcessId=${bridgePid} externalPlayerProcessId=${externalPid}`;
+    }
+    if (childPid <= 0 || childPid === bridgePid || childParentPid !== bridgePid) {
+      return `Bridge-child exclusion fingerprint has invalid ancestry; bridgeProcessId=${bridgePid} childProcessId=${childPid} childParentProcessId=${childParentPid}`;
+    }
+    if (asNumber(evidence.bridgeChildExitCode, -1) !== 0) {
+      return `Bridge-child exclusion fingerprint process failed; exitCode=${evidence.bridgeChildExitCode ?? '-'}`;
+    }
+    const minimumComponent = 0.01;
+    const translationLimit = asNumber(evidence.translationComponentLimit, 0.003);
+    const physicalRatioLimit = asNumber(evidence.sourceToPhysicalRatioLimit, 0.05);
+    const externalRatioLimit = asNumber(evidence.sourceToExternalRatioLimit, 0.05);
+    const physicalTranslation = asNumber(evidence.physicalTranslationComponent, 0);
+    const physicalExternal = asNumber(evidence.physicalExternalComponent, 0);
+    const physicalChild = asNumber(evidence.physicalBridgeChildComponent, 0);
+    const sourceTranslation = asNumber(evidence.sourceTranslationComponent, Number.POSITIVE_INFINITY);
+    const sourceExternal = asNumber(evidence.sourceExternalComponent, 0);
+    const sourceChild = asNumber(evidence.sourceBridgeChildComponent, Number.POSITIVE_INFINITY);
+    const translationRatio = asNumber(evidence.sourceToPhysicalTranslationRatio, Number.POSITIVE_INFINITY);
+    const externalRatio = asNumber(evidence.sourceTranslationToExternalRatio, Number.POSITIVE_INFINITY);
+    const childRatio = asNumber(evidence.sourceToPhysicalBridgeChildRatio, Number.POSITIVE_INFINITY);
+    if (physicalTranslation < minimumComponent || physicalExternal < minimumComponent || physicalChild < minimumComponent) {
+      return `process-exclusion physical fingerprint is incomplete; translation=${physicalTranslation} external=${physicalExternal} bridgeChild=${physicalChild}`;
+    }
+    if (sourceExternal < minimumComponent) {
+      return `external-process fingerprint was not preserved in the Bridge source pipe; sourceExternalComponent=${sourceExternal}`;
+    }
+    if (sourceTranslation > translationLimit || translationRatio > physicalRatioLimit || externalRatio > externalRatioLimit) {
+      return `Bridge translation fingerprint leaked into source; component=${sourceTranslation}/${translationLimit} physicalRatio=${translationRatio}/${physicalRatioLimit} externalRatio=${externalRatio}/${externalRatioLimit}`;
+    }
+    if (sourceChild > translationLimit || childRatio > physicalRatioLimit) {
+      return `Bridge-child fingerprint leaked into source; component=${sourceChild}/${translationLimit} physicalRatio=${childRatio}/${physicalRatioLimit}`;
+    }
+    return null;
+  }
   if (!physicalOutput.resolvedPhysicalPlaybackDeviceId && !physicalOutput.resolved_physical_playback_device_id) {
     return 'physical playback device was not resolved';
   }
@@ -1020,6 +1553,10 @@ function summarizePhysicalOutput(physicalOutput) {
   if (!physicalOutput) return null;
   return {
     passed: physicalOutput.passed ?? null,
+    skipped: physicalOutput.skipped ?? false,
+    status: physicalOutput.status ?? null,
+    probeKind: physicalOutput.probeKind ?? physicalOutput.probe_kind ?? null,
+    skipCode: physicalOutput.skipCode ?? physicalOutput.skip_code ?? null,
     error: physicalOutput.error ?? null,
     detail: physicalOutput.detail ?? null,
     physicalPlaybackDeviceId: physicalOutput.physicalPlaybackDeviceId ?? physicalOutput.physical_playback_device_id ?? null,
@@ -1031,6 +1568,9 @@ function summarizePhysicalOutput(physicalOutput) {
     rms: physicalOutput.rms ?? null,
     toneComponent: physicalOutput.toneComponent ?? physicalOutput.tone_component ?? null,
     invalidSamples: physicalOutput.invalidSamples ?? physicalOutput.invalid_samples ?? null,
+    processExclusionFingerprint: physicalOutput.processExclusionFingerprint
+      ?? physicalOutput.process_exclusion_fingerprint
+      ?? null,
   };
 }
 
@@ -1062,14 +1602,16 @@ function addLayerFailure(layers, layer, reason, mode) {
 
 function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
   const steps = normalizeSteps(input.steps);
-  const echoCancelVariant = normalizeFeedbackLoopPrevention(
+  const feedbackLoopPrevention = normalizeFeedbackLoopPrevention(
     input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
-  ) === 'echo-cancel';
+  );
+  const echoCancelVariant = feedbackLoopPrevention === 'echo-cancel';
+  const driverlessVariant = feedbackLoopPrevention !== 'virtual-driver';
   const failedSteps = steps
     .filter((step) => (
       !step.ok
       && !(
-        echoCancelVariant
+        driverlessVariant
         && /^(?:driver probe|driver probe after repair)$/i.test(step.name)
       )
     ))
@@ -1091,7 +1633,7 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
     .map(([layer, reason]) => ({ layer, reason }));
 
   return {
-    runnerFailure: echoCancelVariant && isVirtualDriverDiagnosticFailure(input.failure?.message)
+    runnerFailure: driverlessVariant && isVirtualDriverDiagnosticFailure(input.failure?.message)
       ? null
       : input.failure?.message ?? null,
     failedSteps,
@@ -1114,6 +1656,7 @@ function buildReportDiagnostics(input, layers, checks, appLog, bridgeLog) {
       bridgeSourceSummary: echoCancelVariant ? [] : uniqueTail(bridgeLog.sourceSummaryLines, 5),
       bridgeWatchdog: echoCancelVariant ? [] : uniqueTail(bridgeLog.watchdogLines, 5),
       bridgeMetrics: bridgeLog.metrics,
+      processExclusionRestart: layers.bridge?.data?.processExclusionRestart ?? null,
       physicalOutput: summarizePhysicalOutput(input.physicalOutput),
       physicalOutputContent: summarizePhysicalOutputContent(input.physicalOutputContent),
     },
@@ -1134,24 +1677,111 @@ function speechSegmentationLayerFailed(segmentation, translationRoute) {
   return null;
 }
 
-function aecLayerFailed(aec) {
+function processExclusionRestartLayerFailed(evidence, { required = false } = {}) {
+  if (!required) return null;
+  if (!evidence || evidence.completed !== true) {
+    return 'process-exclusion did not prove a controlled live Bridge restart with new process/session/generation identity, continuous source frames, and zero old frames';
+  }
+  if (evidence.evidenceMode !== 'live' || evidence.fixtureOnly !== false) {
+    return 'process-exclusion Bridge restart evidence was not produced by a live runtime session';
+  }
+  return null;
+}
+
+function aecLayerFailed(aec, { requireLiveScenario = false } = {}) {
   if (aec.outputMode !== 'text-and-audio') {
     return `echo-cancel requires native text-and-audio output; outputMode=${aec.outputMode ?? 'missing'}`;
   }
   if (aec.speakerPlaybackCompletedCount <= 0 || aec.speakerPlaybackFrames <= 0) {
     return 'echo-cancel did not complete native speaker playback';
   }
-  if (aec.maxReferenceBufferDepthSamples <= 0 || aec.nonEmptyReferenceSummaryCount <= 0) {
-    return 'echo-cancel speaker playback did not populate the AEC reference buffer';
+  if (aec.aecSummaryCount <= 0) {
+    return 'echo-cancel did not emit an AEC3 processing summary';
   }
-  if (aec.maxAlignedChunks <= 0) {
-    return 'echo-cancel did not observe an AEC alignment while native playback was active';
+  if (aec.nonWebRtcBackendCount > 0 || aec.backend !== 'webrtc-aec3') {
+    return `echo-cancel was not processed by the linked WebRTC AEC3 backend; backends=${aec.backends.join(',') || 'missing'}`;
   }
-  if (aec.maxAecSuppressedChunks <= 0 || aec.maxIntervalAecSuppressedChunks <= 0) {
-    return 'echo-cancel did not suppress any pure-echo capture chunk';
+  if (
+    aec.backendGateSummaryCount <= 0
+    || aec.backendGateBackend !== 'webrtc-aec3'
+    || !aec.webRtcAec3Ready
+    || !aec.msvcBuildVerified
+    || !aec.linkedBackendPresent
+    || !aec.fixtureVerified
+  ) {
+    return 'echo-cancel runtime did not prove the linked WebRTC AEC3 backend, its MSVC build, and native 15 dB pure-echo fixture gate';
   }
-  if (aec.maxPureEchoRemovedDb < 10) {
-    return `echo-cancel pure-echo attenuation is below the 10 dB initial target; observed=${aec.maxPureEchoRemovedDb.toFixed(1)} dB`;
+  if (
+    aec.renderClock !== 'wasapi-submit-position'
+    || aec.endpointRenderPadding !== 'same-client-get-current-padding'
+  ) {
+    return `echo-cancel did not prove same-client WASAPI render timing; renderClock=${aec.renderClock ?? 'missing'} endpointRenderPadding=${aec.endpointRenderPadding ?? 'missing'}`;
+  }
+  if (
+    aec.processedFrameSummaryCount <= 0
+    || aec.maxRender10msFrames <= 0
+    || aec.maxProcessedCapture10msFrames <= 0
+  ) {
+    return 'echo-cancel did not process both render and capture 10 ms frames';
+  }
+  if (aec.maxRejectedFrames > 0) {
+    return `echo-cancel rejected ${aec.maxRejectedFrames} fixed-size AEC3 frames`;
+  }
+  if (aec.maxStatsReadFailures > 0) {
+    return `echo-cancel failed to read native AEC3 statistics ${aec.maxStatsReadFailures} times`;
+  }
+  if (aec.asrDeletedChunkMetricCount <= 0) {
+    return 'echo-cancel did not report the explicit ASR deletion invariant';
+  }
+  if (aec.maxAsrDeletedChunks > 0) {
+    return 'echo-cancel deleted capture chunks instead of forwarding AEC3 processed PCM';
+  }
+  if (aec.erleMetricCount <= 0) {
+    return 'echo-cancel AEC3 ERLE telemetry is unavailable';
+  }
+  if (
+    aec.residualEchoLikelihoodMetricCount <= 0
+    || aec.minResidualEchoLikelihood < 0
+    || aec.maxResidualEchoLikelihood > 1
+  ) {
+    return 'echo-cancel residual echo likelihood is unavailable or outside [0, 1]';
+  }
+  if (
+    aec.reportedDelayMetricCount <= 0
+    || aec.minReportedDelayMs < 0
+    || aec.maxReportedDelayMs > 1000
+  ) {
+    return 'echo-cancel AEC3 delay is unavailable or outside the supported 0-1000 ms range';
+  }
+  if (!aec.doubleTalkMetricAvailable) {
+    return 'echo-cancel AEC3 double-talk frame telemetry is unavailable';
+  }
+  if (requireLiveScenario && aec.maxDoubleTalkFrames <= 0) {
+    return 'echo-cancel AEC3 double-talk frame telemetry is unavailable or did not produce any frames during live injection';
+  }
+  if (requireLiveScenario && (aec.reportedDelaySpanMs == null || aec.reportedDelaySpanMs < 10)) {
+    return `echo-cancel live dynamic-delay injection did not change AEC3 delay telemetry; spanMs=${aec.reportedDelaySpanMs ?? 'missing'}`;
+  }
+  if (requireLiveScenario && aec.liveScenario?.completed !== true) {
+    return 'echo-cancel did not complete the real double-talk, dynamic-delay, and nonlinear physical-render scenario';
+  }
+  if (
+    requireLiveScenario
+    && (aec.liveScenario?.evidenceMode !== 'live' || aec.liveScenario?.fixtureOnly !== false)
+  ) {
+    return 'echo-cancel scenario evidence was not produced by the live reference-media playback and physical render path';
+  }
+  if (
+    requireLiveScenario
+    && (
+      aec.liveScenario?.expectedSubtitles?.expectedSegmentCount <= 0
+      || aec.liveScenario?.expectedSubtitles?.acceptanceRate !== 1
+    )
+  ) {
+    return `echo-cancel did not accept every expected reference-media subtitle segment; accepted=${aec.liveScenario?.expectedSubtitles?.acceptedSegmentCount ?? 0}/${aec.liveScenario?.expectedSubtitles?.expectedSegmentCount ?? 0}`;
+  }
+  if (aec.processingMetricCount <= 0 || aec.maxAverageProcessingUs <= 0) {
+    return 'echo-cancel did not report AEC3 processing time';
   }
   return null;
 }
@@ -1166,8 +1796,12 @@ export const ECHO_CANCEL_SKIPPED_LAYERS = [
   'strictContent',
 ];
 
+export const PROCESS_EXCLUSION_SKIPPED_LAYERS = ['driver', 'wasapi', 'aec'];
+
 function normalizeFeedbackLoopPrevention(value) {
-  return value === 'echo-cancel' ? 'echo-cancel' : 'virtual-driver';
+  return value === 'echo-cancel' || value === 'process-exclusion'
+    ? value
+    : 'virtual-driver';
 }
 
 function isVirtualDriverDiagnosticFailure(message) {
@@ -1180,14 +1814,14 @@ function environmentPrecheckFailed(input, feedbackLoopPrevention = 'virtual-driv
   const precheck = normalizeSteps(input.steps).find((step) => (
     !step.ok
     && !(
-      feedbackLoopPrevention === 'echo-cancel'
+      feedbackLoopPrevention !== 'virtual-driver'
       && /^(?:driver probe|driver probe after repair)$/i.test(step.name)
     )
     && /^(?:build bridge service native|driver probe|driver probe after repair|bridge source frame probe|physical output loopback probe|start desktop shell|start physical output content recording)$/i.test(step.name)
   ));
   if (precheck) return `${precheck.name}: ${precheck.error ?? 'environment prerequisite failed'}`;
   const message = String(input.failure?.message ?? '');
-  if (feedbackLoopPrevention === 'echo-cancel' && isVirtualDriverDiagnosticFailure(message)) {
+  if (feedbackLoopPrevention !== 'virtual-driver' && isVirtualDriverDiagnosticFailure(message)) {
     return null;
   }
   if (/requires elevation|executable not found|api key is required|environment prerequisite|missing required/i.test(message)) {
@@ -1201,12 +1835,14 @@ export function classifyWatchModeRun(input) {
     input.feedbackLoopPrevention ?? input.snapshots?.feedbackLoopPrevention,
   );
   const echoCancelVariant = feedbackLoopPrevention === 'echo-cancel';
+  const processExclusionVariant = feedbackLoopPrevention === 'process-exclusion';
   const bridgeLog = parseBridgeLog(input.bridgeLogText ?? '');
   const appLog = parseAppLog(input.appLogText ?? '');
   const translationRoute = inferTranslationRoute(input, appLog);
   const speechSegmentation = input.speechSegmentation ?? parseSpeechSegmentation(appLog);
   const realtimeSession = parseOmniRealtimeDiagnostics(appLog);
-  const aec = parseAecDiagnostics(appLog);
+  const aec = parseAecDiagnostics(appLog, input);
+  const processExclusionRestart = parseProcessExclusionRestart(appLog, input);
   const strictContent = input.strictContent ?? evaluateStrictContent({
     ...input,
     speechSegmentation,
@@ -1215,7 +1851,9 @@ export function classifyWatchModeRun(input) {
     environment: createLayer('environment', input.steps),
     driver: createLayer('driver', input.driver),
     wasapi: createLayer('wasapi', input.wasapi),
-    bridge: createLayer('bridge', input.bridge, {
+    bridge: createLayer('bridge', processExclusionVariant
+      ? { ...input.bridge, processExclusionRestart }
+      : input.bridge, {
       parsedLog: bridgeLog,
     }),
     physicalOutput: createLayer('physicalOutput', input.physicalOutput),
@@ -1250,6 +1888,12 @@ export function classifyWatchModeRun(input) {
       layers[layer].reason = 'echo-cancel variant does not require this evidence layer';
       layers[layer].reasons = [];
     }
+  } else if (processExclusionVariant) {
+    for (const layer of PROCESS_EXCLUSION_SKIPPED_LAYERS) {
+      layers[layer].status = 'skipped';
+      layers[layer].reason = 'process-exclusion uses Bridge application loopback and does not require this layer';
+      layers[layer].reasons = [];
+    }
   } else {
     layers.aec.status = 'skipped';
     layers.aec.reason = 'virtual-driver variant does not exercise acoustic echo cancellation';
@@ -1257,7 +1901,8 @@ export function classifyWatchModeRun(input) {
   }
 
   const rawRunnerFailureReason = input.failure?.message ?? null;
-  const runnerFailureReason = echoCancelVariant && isVirtualDriverDiagnosticFailure(rawRunnerFailureReason)
+  const runnerFailureReason = feedbackLoopPrevention !== 'virtual-driver'
+    && isVirtualDriverDiagnosticFailure(rawRunnerFailureReason)
     ? null
     : rawRunnerFailureReason;
   const environmentReason = environmentPrecheckFailed(input, feedbackLoopPrevention);
@@ -1268,7 +1913,14 @@ export function classifyWatchModeRun(input) {
   const providerBeforeAppReason = omniAudibleNoVadReason(appLog);
   const subtitleConfigReason = subtitleTranslateConfigLayerFailed(appLog);
   const secondaryPreconnectReason = secondaryPreconnectLayerFailed(appLog, translationRoute);
-  const aecReason = echoCancelVariant ? aecLayerFailed(aec) : null;
+  const aecReason = echoCancelVariant
+    ? aecLayerFailed(aec, { requireLiveScenario: (input.mode ?? 'live') === 'live' })
+    : null;
+  const processExclusionRestartReason = processExclusionVariant
+    ? processExclusionRestartLayerFailed(processExclusionRestart, {
+        required: (input.mode ?? 'live') === 'live',
+      })
+    : null;
   const watchReportReason = watchSessionReportFailure(input.watchSessionReport, {
     required: (input.mode ?? 'live') === 'live',
   });
@@ -1276,11 +1928,13 @@ export function classifyWatchModeRun(input) {
     ? [
         ['driver', driverLayerFailed(input.driver)],
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
-        ['bridge', bridgeLayerFailed(input.bridge, bridgeLog)],
+        ['bridge', bridgeLayerFailed(input.bridge, bridgeLog, feedbackLoopPrevention) ?? processExclusionRestartReason],
         ['environment', environmentReason],
         ...(aecReason ? [['aec', aecReason]] : []),
         ['app', environmentReason ? null : runnerFailureReason],
-        ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput)],
+        ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput, {
+          requireProcessFingerprint: processExclusionVariant,
+        })],
         ...(subtitleConfigReason ? [['app', subtitleConfigReason]] : []),
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
         ...(secondaryPreconnectReason ? [['app', secondaryPreconnectReason]] : []),
@@ -1293,8 +1947,10 @@ export function classifyWatchModeRun(input) {
     : [
         ['driver', driverLayerFailed(input.driver)],
         ['wasapi', wasapiLayerFailed(input.wasapi) ?? wasapiInjectedPlaybackFailed(input.wasapi, input.playback, appLog)],
-        ['bridge', bridgeLayerFailed(input.bridge, bridgeLog)],
-        ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput)],
+        ['bridge', bridgeLayerFailed(input.bridge, bridgeLog, feedbackLoopPrevention) ?? processExclusionRestartReason],
+        ['physicalOutput', physicalOutputLayerFailed(input.physicalOutput, {
+          requireProcessFingerprint: processExclusionVariant,
+        })],
         ...(aecReason ? [['aec', aecReason]] : []),
         ...(subtitleConfigReason ? [['app', subtitleConfigReason]] : []),
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
@@ -1312,9 +1968,12 @@ export function classifyWatchModeRun(input) {
         ['strictContent', layers.strictContent.reason],
       ];
 
-  const activeChecks = echoCancelVariant
-    ? checks.filter(([layer]) => !ECHO_CANCEL_SKIPPED_LAYERS.includes(layer))
-    : checks;
+  const skippedLayers = echoCancelVariant
+    ? ECHO_CANCEL_SKIPPED_LAYERS
+    : processExclusionVariant
+      ? PROCESS_EXCLUSION_SKIPPED_LAYERS
+      : [];
+  const activeChecks = checks.filter(([layer]) => !skippedLayers.includes(layer));
 
   for (const [layer, reason] of activeChecks) {
     addLayerFailure(layers, layer, reason, input.mode ?? 'live');
@@ -1322,8 +1981,8 @@ export function classifyWatchModeRun(input) {
 
   if (environmentReason && layers.environment.reason) {
     layers.environment.status = 'blocked';
-    if (!echoCancelVariant && layers.driver.reason) layers.driver.status = 'blocked';
-    if (!echoCancelVariant && layers.wasapi.reason) layers.wasapi.status = 'blocked';
+    if (feedbackLoopPrevention === 'virtual-driver' && layers.driver.reason) layers.driver.status = 'blocked';
+    if (feedbackLoopPrevention === 'virtual-driver' && layers.wasapi.reason) layers.wasapi.status = 'blocked';
   }
 
   const failed = activeChecks.find(([layer]) => layers[layer].status === 'failed');
@@ -1334,17 +1993,19 @@ export function classifyWatchModeRun(input) {
   const failureLayer = blocked?.[0] ?? failed?.[0] ?? inconclusive?.[0] ?? null;
   const verdict = blocked ? 'blocked' : failed ? 'failed' : inconclusive ? 'inconclusive' : 'passed';
   const diagnostics = buildReportDiagnostics(input, layers, activeChecks, appLog, bridgeLog);
+  const provenance = input.provenance ?? currentGitProvenance();
   return {
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
-    // Provenance for the strict evidence gate: which source revision produced
-    // this evidence (verify-watch-mode-evidence --strict rejects reports whose
-    // commit is not an ancestor of HEAD or whose age exceeds the budget).
-    commit: input.commit ?? currentGitCommit(),
+    // Keep the legacy top-level commit for report consumers, while strict
+    // verification uses the explicit clean-worktree provenance object below.
+    commit: input.commit ?? provenance.headCommit,
+    provenance,
     buildHash: input.buildHash ?? null,
     mode: input.mode ?? 'live',
     modelId: input.modelId ?? input.snapshots?.modelId ?? null,
     feedbackLoopPrevention,
+    deviceEvidence: input.deviceEvidence ?? input.snapshots?.deviceEvidence ?? null,
     realtimeSession,
     translationRoute,
     watchSessionReport: input.watchSessionReport ?? null,
@@ -1364,7 +2025,10 @@ export function renderMarkdownReport(report) {
     '',
     `- GeneratedAt: ${report.generatedAt}`,
     `- Mode: ${report.mode}`,
+    `- GitHead: ${report.provenance?.headCommit ?? report.commit ?? '-'}`,
+    `- WorktreeClean: ${report.provenance?.worktreeClean === true}`,
     `- FeedbackLoopPrevention: ${report.feedbackLoopPrevention ?? 'virtual-driver'}`,
+    `- Device: class=${report.deviceEvidence?.deviceClass ?? '-'} profile=${report.deviceEvidence?.profileId ?? '-'} id=${report.deviceEvidence?.resolvedDeviceId ?? '-'} name=${report.deviceEvidence?.resolvedDeviceName ?? '-'}`,
     `- Verdict: ${report.verdict}`,
     `- FailureLayer: ${report.failureLayer ?? '-'}`,
     `- FailureReason: ${report.failureReason ?? '-'}`,
@@ -1417,7 +2081,12 @@ export function renderMarkdownReport(report) {
   for (const line of report.diagnostics?.evidence?.bridgeWatchdog ?? []) lines.push(`- bridge-watchdog: ${line}`);
   const aec = report.layers.aec?.data;
   if (report.layers.aec?.status !== 'skipped' && aec) {
-    lines.push(`- aec: outputMode=${aec.outputMode ?? '-'} speakerPlaybackCompleted=${aec.speakerPlaybackCompletedCount} speakerPlaybackSeconds=${aec.speakerPlaybackSeconds} referenceDepthSamples=${aec.maxReferenceBufferDepthSamples} alignedChunks=${aec.maxAlignedChunks} aecSuppressedChunks=${aec.maxAecSuppressedChunks} pureEchoRemovedDb=${aec.maxPureEchoRemovedDb}`);
+    lines.push(`- aec: outputMode=${aec.outputMode ?? '-'} backend=${aec.backend ?? '-'} linkedReady=${aec.webRtcAec3Ready} fixtureVerified=${aec.fixtureVerified} speakerPlaybackCompleted=${aec.speakerPlaybackCompletedCount} speakerPlaybackSeconds=${aec.speakerPlaybackSeconds} render10msFrames=${aec.maxRender10msFrames} processedCapture10msFrames=${aec.maxProcessedCapture10msFrames} erleDb=${aec.maxErleDb ?? '-'} residualEchoLikelihood=${aec.maxResidualEchoLikelihood ?? '-'} reportedDelayMs=${aec.maxReportedDelayMs ?? '-'} resetCount=${aec.maxResetCount} renderUnderruns=${aec.maxRenderUnderruns} captureUnderruns=${aec.maxCaptureUnderruns} maxProcessingUs=${aec.maxProcessingUs} asrForwardedChunks=${aec.maxAsrForwardedChunks} asrDeletedChunks=${aec.maxAsrDeletedChunks}`);
+    lines.push(`- aec-live-scenario: completed=${aec.liveScenario?.completed === true} evidenceMode=${aec.liveScenario?.evidenceMode ?? '-'} doubleTalkFrames=${aec.maxDoubleTalkFrames ?? '-'} delaySpanMs=${aec.reportedDelaySpanMs ?? '-'} nonlinearity=${aec.liveScenario?.nonlinearity ?? '-'} expectedSubtitles=${aec.liveScenario?.expectedSubtitles?.acceptedSegmentCount ?? 0}/${aec.liveScenario?.expectedSubtitles?.expectedSegmentCount ?? 0}`);
+  }
+  const restart = report.layers.bridge?.data?.processExclusionRestart;
+  if (restart?.requested) {
+    lines.push(`- process-exclusion-restart: completed=${restart.completed === true} evidenceMode=${restart.evidenceMode ?? '-'} pid=${restart.oldBridgeProcessId ?? '-'}->${restart.newBridgeProcessId ?? '-'} generation=${restart.oldSourceGeneration ?? '-'}->${restart.newSourceGeneration ?? '-'} frames=${restart.sourceFramesBefore ?? '-'}->${restart.sourceFramesAfter ?? '-'} oldFramesAfterRestart=${restart.oldFramesAfterRestart ?? '-'} metricsSamples=${restart.systemMetrics?.sampleCount ?? 0}`);
   }
   if (report.layers.physicalOutput?.status !== 'skipped' && report.diagnostics?.evidence?.physicalOutput) {
     lines.push(`- physical-output: ${JSON.stringify(report.diagnostics.evidence.physicalOutput)}`);
@@ -1435,13 +2104,54 @@ export function renderMarkdownReport(report) {
   return `${lines.join('\n')}\n`;
 }
 
-function collectInputFromDirectory(inputDir, mode) {
+function bridgeSnapshotFromProbe(probe, feedbackLoopPrevention) {
+  if (!probe || typeof probe !== 'object') return null;
+  const state = probe.state;
+  if (state && (probe.sourceFrame || feedbackLoopPrevention === 'process-exclusion')) {
+    return {
+      probePassed: probe.passed !== false,
+      bridgeState: state.bridgeState,
+      driverHealth: state.driverHealth,
+      sourceCaptureMode: state.sourceCaptureMode,
+      captureBackend: state.captureBackend,
+      processLoopbackSupported: state.processLoopbackSupported,
+      processLoopbackStatus: state.processLoopbackStatus,
+      windowsBuildNumber: state.windowsBuildNumber,
+      processLoopbackMinimumWindowsBuild: state.processLoopbackMinimumWindowsBuild,
+      excludedProcessId: state.excludedProcessId,
+      processLoopbackFailureDetail: state.processLoopbackFailureDetail,
+      sourceSubscriberActive: state.sourceSubscriberActive,
+      sourceReadCalls: state.sourceReadCalls,
+      droppedFrameCount: state.droppedFrameCount,
+      lastErrorCode: state.lastErrorCode,
+      sourceFramePayloadBytes: probe.sourceFrame?.payloadBytes ?? 0,
+      pipeName: probe.pipeName,
+      sourcePipeName: probe.sourcePipeName,
+    };
+  }
+  return {
+    probePassed: false,
+    error: probe.error,
+    phase: probe.phase,
+    stateQueryError: probe.stateQueryError,
+    init: probe.init,
+    state: probe.state,
+    pipeName: probe.pipeName,
+    sourcePipeName: probe.sourcePipeName,
+    stdout: probe.stdout,
+    stderr: probe.stderr,
+  };
+}
+
+export function collectInputFromDirectory(inputDir, mode = 'live', options = {}) {
   const appLogPath = path.join(inputDir, 'app.log');
   const bridgeLogPath = path.join(inputDir, 'bridge-service.log');
   const snapshotsPath = path.join(inputDir, 'snapshots.json');
   const failurePath = path.join(inputDir, 'failure.json');
   const stepsPath = path.join(inputDir, 'steps.json');
   const snapshots = readJsonIfExists(snapshotsPath) ?? {};
+  const feedbackLoopPrevention = snapshots.feedbackLoopPrevention ?? null;
+  const bridgeProbe = readJsonIfExists(path.join(inputDir, 'bridge-source-probe.json'));
   const runMarker = snapshots.runMarker ?? null;
   const startedAtLocal = snapshots.startedAtLocal ?? null;
   const rawAppLogText = readTextIfExists(appLogPath);
@@ -1451,18 +2161,22 @@ function collectInputFromDirectory(inputDir, mode) {
   return {
     mode,
     snapshots,
-    feedbackLoopPrevention: snapshots.feedbackLoopPrevention ?? null,
-    driver: snapshots.driver ?? readJsonIfExists(path.join(inputDir, 'driver.json')),
-    wasapi: snapshots.wasapi ?? snapshots.driver,
-    bridge: snapshots.bridge,
-    physicalOutput: snapshots.physicalOutput ?? readJsonIfExists(path.join(inputDir, 'physical-output-probe.json')),
-    physicalOutputContent: snapshots.physicalOutputContent ?? readJsonIfExists(path.join(inputDir, 'physical-output-content.json')),
+    provenance: options.provenance,
+    feedbackLoopPrevention,
+    driver: readJsonIfExists(path.join(inputDir, 'driver.json')) ?? snapshots.driver,
+    wasapi: readJsonIfExists(path.join(inputDir, 'driver.json')) ?? snapshots.wasapi ?? snapshots.driver,
+    bridge: bridgeSnapshotFromProbe(bridgeProbe, feedbackLoopPrevention) ?? snapshots.bridge,
+    physicalOutput: readJsonIfExists(path.join(inputDir, 'physical-output-probe.json')) ?? snapshots.physicalOutput,
+    physicalOutputContent: readJsonIfExists(path.join(inputDir, 'physical-output-content.json')) ?? snapshots.physicalOutputContent,
     app: snapshots.app,
     provider: snapshots.provider,
     speechSegmentation: snapshots.speechSegmentation,
-    watchSessionReport: snapshots.watchSessionReport
-      ?? readJsonIfExists(path.join(inputDir, 'watch-session-report.json')),
-    playback: snapshots.playback,
+    deviceEvidence: readJsonIfExists(path.join(inputDir, 'physical-playback-device.json'))
+      ?? snapshots.deviceEvidence,
+    watchSessionReport: readJsonIfExists(path.join(inputDir, 'watch-session-report.json'))
+      ?? snapshots.watchSessionReport,
+    playback: readJsonIfExists(path.join(inputDir, 'playback.json')) ?? snapshots.playback,
+    systemMetrics: readJsonIfExists(path.join(inputDir, 'system-metrics.json')),
     failure: readJsonIfExists(failurePath),
     steps: readJsonIfExists(stepsPath),
     appLogText,
@@ -1483,13 +2197,20 @@ function collectInputFromDirectory(inputDir, mode) {
       watchSessionReport: fs.existsSync(path.join(inputDir, 'watch-session-report.json'))
         ? path.join(inputDir, 'watch-session-report.json')
         : null,
+      systemMetrics: fs.existsSync(path.join(inputDir, 'system-metrics.json'))
+        ? path.join(inputDir, 'system-metrics.json')
+        : null,
     },
   };
 }
 
+export function rebuildReportFromDirectory(inputDir, { mode = 'live', provenance } = {}) {
+  return classifyWatchModeRun(collectInputFromDirectory(inputDir, mode, { provenance }));
+}
+
 export function writeReport({ inputDir, outputDir, mode = 'live' }) {
   fs.mkdirSync(outputDir, { recursive: true });
-  const report = classifyWatchModeRun(collectInputFromDirectory(inputDir, mode));
+  const report = rebuildReportFromDirectory(inputDir, { mode });
   const reportJsonPath = path.join(outputDir, 'report.json');
   const reportMarkdownPath = path.join(outputDir, 'report.md');
   fs.writeFileSync(reportJsonPath, `${JSON.stringify(report, null, 2)}\n`);

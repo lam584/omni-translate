@@ -115,12 +115,61 @@ fn unsupported_realtime_model_error(model: &str) -> String {
     )
 }
 
+fn isolated_outbound_capability_error(
+    direction: &str,
+    config: &Value,
+    bridge: &crate::bridge::contracts::BridgeRuntimeSnapshot,
+) -> Option<String> {
+    if direction != "outbound" {
+        return None;
+    }
+    let feedback_mode = config
+        .pointer("/devices/feedbackLoopPrevention")
+        .and_then(Value::as_str)
+        .unwrap_or("none");
+    if !matches!(feedback_mode, "virtual-driver" | "process-exclusion") {
+        return None;
+    }
+    let ready = bridge.virtual_mic_output_supported
+        && bridge.virtual_mic_output_status == "ready"
+        && bridge.capture_endpoint_name.is_some()
+        && bridge.virtual_mic_format.as_deref() == Some("48000Hz/mono/pcm16");
+    if ready {
+        return None;
+    }
+    let code = bridge
+        .last_error_code
+        .as_deref()
+        .filter(|code| code.starts_with("bridge.virtual-mic-"))
+        .unwrap_or("bridge.virtual-mic-driver-unavailable");
+    Some(format!(
+        "{code}: outbound translation cannot start with feedbackLoopPrevention={feedback_mode}; virtual microphone capability is not ready (supported={}, status={}, captureEndpoint={}, format={}). Install or repair the Virtual Driver, then run the driver probe again.",
+        bridge.virtual_mic_output_supported,
+        bridge.virtual_mic_output_status,
+        bridge.capture_endpoint_name.as_deref().unwrap_or("missing"),
+        bridge.virtual_mic_format.as_deref().unwrap_or("missing"),
+    ))
+}
+
 #[tauri::command]
 pub(crate) async fn start_audio_route(
     app: AppHandle,
     direction: String,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    let bridge_snapshot = app.state::<crate::bridge::state::BridgeStateStore>().snapshot();
+    if let Some(error) = isolated_outbound_capability_error(&direction, &config, &bridge_snapshot) {
+        let _ = append_diagnostics_log(
+            &app,
+            "audio",
+            "error",
+            "bridge.virtual-mic-driver-unavailable",
+            Some(error.clone()),
+            None,
+            None,
+        );
+        return Err(error);
+    }
     let requested_device_id = config
         .pointer("/devices/inboundRoute/input/deviceId")
         .and_then(Value::as_str)
@@ -591,7 +640,25 @@ pub(crate) fn start_audio_route_inner(
     direction: String,
     config: Value,
 ) -> Result<AudioRuntimeSnapshot, String> {
+    let bridge_snapshot = app.state::<crate::bridge::state::BridgeStateStore>().snapshot();
+    if let Some(error) = isolated_outbound_capability_error(&direction, &config, &bridge_snapshot) {
+        let _ = append_diagnostics_log(
+            &app,
+            "audio",
+            "error",
+            "bridge.virtual-mic-driver-unavailable",
+            Some(error.clone()),
+            None,
+            None,
+        );
+        return Err(error);
+    }
     if direction == "inbound" {
+        // Non-detached inbound starts must supersede the previous capture
+        // worker too. Fast-watch already claims its generation when the
+        // command is accepted; this synchronous path reaches the same commit
+        // protocol here before taking the pipeline lock.
+        state.bump_inbound_route_generation();
         let _pipeline_guard = state.lock_inbound_pipeline();
         start_recognized_route_locked(app, state, "inbound", config)
     } else {
@@ -788,73 +855,7 @@ fn start_recognized_route_locked(
 }
 
 #[cfg(test)]
-mod fast_watch_supersede_tests {
-    use super::*;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    use std::sync::Arc;
-
-    #[test]
-    fn unsupported_realtime_models_return_a_structured_session_error() {
-        let error = unsupported_realtime_model_error("chat-only-model");
-        let (message, code, action) = split_error_markers(&error);
-        assert!(message.contains("chat-only-model"));
-        assert_eq!(code.as_deref(), Some("session.voice-unsupported"));
-        assert_eq!(action.as_deref(), Some("switch-voice"));
-    }
-
-    /// Field incident: the user pressed stop while a detached fast-watch start
-    /// was still queued behind the pipeline lock. The stop won the lock, tore
-    /// the route down, and the pending start then silently restarted capture.
-    /// The generation token forces the late worker to abort instead.
-    #[test]
-    fn a_stop_that_wins_the_pipeline_lock_revokes_the_pending_fast_watch_start() {
-        let store = Arc::new(AudioStateStore::new());
-        // Fast-watch command accepted: worker will run under this generation.
-        let accepted_generation = store.bump_inbound_route_generation();
-        // Stop command arrives and bumps before its stop work, exactly as
-        // stop_audio_route does.
-        store.bump_inbound_route_generation();
-        let stop_guard = store.lock_inbound_pipeline();
-
-        let worker_store = store.clone();
-        let started = Arc::new(AtomicBool::new(false));
-        let started_flag = started.clone();
-        let worker = std::thread::spawn(move || {
-            // Mirrors the detached worker: lock first, then re-check.
-            let _guard = worker_store.lock_inbound_pipeline();
-            if fast_watch_start_still_current(&worker_store, accepted_generation) {
-                started_flag.store(true, Ordering::SeqCst);
-            }
-        });
-        // The worker blocks on the lock held by the stop; release it once the
-        // stop has finished its teardown.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        drop(stop_guard);
-        worker.join().expect("fast-watch worker thread");
-
-        assert!(
-            !started.load(Ordering::SeqCst),
-            "a fast-watch start superseded by stop must abort instead of restarting the route"
-        );
-    }
-
-    #[test]
-    fn an_undisturbed_fast_watch_start_runs_under_its_accepted_generation() {
-        let store = AudioStateStore::new();
-        let accepted_generation = store.bump_inbound_route_generation();
-        let _guard = store.lock_inbound_pipeline();
-        assert!(fast_watch_start_still_current(&store, accepted_generation));
-    }
-
-    #[test]
-    fn a_second_fast_watch_start_supersedes_the_first_pending_one() {
-        let store = AudioStateStore::new();
-        let first = store.bump_inbound_route_generation();
-        let second = store.bump_inbound_route_generation();
-        assert!(!fast_watch_start_still_current(&store, first));
-        assert!(fast_watch_start_still_current(&store, second));
-    }
-}
+mod fast_watch_supersede_tests;
 
 pub(crate) async fn stop_speech_dispatch(app: AppHandle) -> Result<AudioRuntimeSnapshot, String> {
     let (tx, rx) = std::sync::mpsc::channel();

@@ -6,6 +6,7 @@ members = [
   "crates/omni-audio-dsp",
   "crates/omni-bridge-protocol",
   "crates/omni-logging",
+  "crates/omni-webrtc-aec3",
 ]
 # Standalone diagnostic tools keep their own lockfiles and target directories.
 # Without this exclude, cargo's workspace discovery rejects building them in place

@@ -87,23 +87,51 @@ not require an API call.
 ## Automatic benchmark scoring
 
 Every `run-watch-mode-live.ps1` run writes `benchmark-score.json` beside
-`report.json`. The score has four independently reported dimensions:
-semantic quality (40%), latency (30%), completeness (20%), and reliability
-(10%). A failed diagnostic gate caps the total below 60, so a fluent partial
-translation cannot hide a broken runtime path. Known fixture media paths are
-automatically matched to their adjacent source and reference text.
+`report.json`. Its schema and version are `benchmark-score/v1`; do not compare
+it with an older score file. The four independently reported dimensions are
+semantic quality (40%), latency (30%), completeness (20%), and stability
+(10%). Rules are read from
+[`contracts/benchmark-score-v1-rules.json`](../../../contracts/benchmark-score-v1-rules.json),
+which is also used by the desktop benchmark UI.
+
+There is a formal total only when the benchmark completed and every dimension
+has evidence. In particular, semantic quality needs both a reference
+translation and successful LLM judgment for every completed run. A failed,
+interrupted, incomplete, or insufficiently evidenced benchmark records its
+per-dimension evidence but has `total: null`; it is never turned into a fake
+zero or a capped passing/failing score. `status` is one of `official`,
+`benchmark-running`, `judging`, `evidence-insufficient`, `judge-failed`, or
+`benchmark-failed`.
+
+The score file is intended to answer “why”: it stores the weights and
+thresholds used, chrF2 per-order precision/recall/matches, every run's latency
+signal and threshold zone, incomplete runs, individual extra-response
+deductions, and per-run LLM-judge rationale/errors. chrF2 uses Unicode NFKC,
+removes whitespace, and preserves case and punctuation. It scores character
+1–6 grams with beta=2.
+
+The pre-v1 Watch queue fields named `firstVisibleTranslationLatencySeconds` and
+`firstFinalTranslationLatencySeconds` measure from `cue_started`, not from
+`responseCreated`. They remain in the raw run contribution for diagnosis, but
+do not satisfy v1's formal response-relative latency evidence.
 
 Score or re-score an existing run directory:
 
 ```powershell
-npm run score:watch-mode -- --input artifacts/testing/watch-mode-live/<run>
-npm run score:watch-mode -- --input artifacts/testing/watch-mode-live/<run> --source scripts/testing/fixtures/watch-mode-en-original.txt --reference scripts/testing/fixtures/watch-mode-en-original.zh-CN.txt
+node ./scripts/testing/watch-mode-score.mjs --input artifacts/testing/watch-mode-live/<run>
+node ./scripts/testing/watch-mode-score.mjs --input artifacts/testing/watch-mode-live/<run> --source scripts/testing/fixtures/watch-mode-en-original.txt --reference scripts/testing/fixtures/watch-mode-en-original.zh-CN.txt
 ```
 
-The deterministic score never needs credentials. To add an LLM judge, set
-`OMNI_BENCHMARK_LLM_JUDGE=1` or pass `--llm-judge`. The judge uses
-`DASHSCOPE_API_KEY`, defaults to `qwen3.5-plus`, and returns separate adequacy,
-fluency, terminology, and omission scores. Override it with `--judge-model`,
-`--endpoint`, `--api-key-env`, and `--target-language`. The LLM score supplies
-60% of the semantic dimension only; all timing and runtime health scores remain
-deterministic and auditable.
+Known fixture media paths are automatically matched to adjacent source and
+reference text. For custom audio, pass both `--source` and `--reference`; the
+run still has a history/report if they are unavailable, but cannot have a
+formal semantic or total score.
+
+After a completed run with source/reference evidence, the script automatically
+uses the selected judge model when `DASHSCOPE_API_KEY` is available. It defaults
+to `qwen3.5-plus`; override the model, endpoint, credential environment name,
+or target language with `--judge-model`, `--endpoint`, `--api-key-env`, and
+`--target-language`. `--llm-judge` remains accepted for explicit invocations,
+and `--no-llm-judge` deliberately leaves the record without a formal semantic
+score. No API key, authorization header, or judge HTTP response body is written
+to `benchmark-score.json`.

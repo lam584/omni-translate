@@ -32,13 +32,21 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . .\scripts\test
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
 ```
 
-双模型严格矩阵：
+双模型 × 三路线 × 三设备严格矩阵：
 
 ```powershell
-npm run test:watch-mode-live:matrix -- -SkipDriverRepair -AllowElevatedDesktopLaunch -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90
+node .\scripts\testing\run-watch-mode-live-matrix.mjs --device-profiles .\artifacts\testing\watch-mode-device-profiles.json --skip-driver-repair --allow-elevated-desktop-launch
 ```
 
-matrix 默认对每个模型跑 `virtual-driver` 和 `echo-cancel` 两个 `feedbackLoopPrevention` 变体（`-FeedbackLoopPreventionModes` 可裁剪），并用 `--feedback-modes` 让 verifier 按 模型 × 变体 校验证据。单独跑 echo-cancel 变体：
+PowerShell 下使用 npm 11 转发参数时需要两层 `--`：`npm run test:watch-mode-live:matrix -- -- --device-profiles ...`。上面直接执行 Node 入口可避免 npm 版本对参数转发语义的差异。
+
+严格入口必须显式传入 `--device-profiles`，JSON 中必须恰好各有一个 `default-speaker`、`usb`、`bluetooth` profile；USB/蓝牙还必须写明真实 MMDevice id 和预期端点名称。缺失 profile 时矩阵直接失败，绝不退化成默认扬声器单设备。matrix 默认对每个模型跑 `process-exclusion`、`virtual-driver` 和 `echo-cancel` 三个 `feedbackLoopPrevention` 变体，并把本次 18 个 run directory 写入唯一 manifest；verifier 只读取该 manifest，不扫描 output root 中的历史报告。支持 Windows build 20348 及以上时，`process-exclusion` 是推荐路线；能力探测失败时该变体必须明确失败或跳过为不支持，不能静默改跑其他后端。单设备调试请直接运行 `run-watch-mode-live.ps1`，或显式使用 `--diagnostic-single-device`；其结果属于 non-strict，不能发布 release manifest。单独跑 process-exclusion 变体：
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -FeedbackLoopPrevention process-exclusion -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
+```
+
+单独跑 echo-cancel 变体：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -FeedbackLoopPrevention echo-cancel -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
@@ -49,6 +57,10 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-wa
 ```powershell
 npm run test:watch-mode-evidence:strict
 ```
+
+该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。只有本次 scoped verifier 已通过、且 manifest 精确包含 2 模型 × 3 路线 × 3 设备共 18 个唯一目录时，matrix 才会原子替换这个 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。matrix 明确拒绝 `-DryRun`，脚本 fixture 自测只能使用 `npm run test:watch-mode-live:dry-run`，其报告保持 `mode=dry-run`，不会进入 strict 验收。
+
+Strict matrix 启动前要求 Git 工作树完全 clean（包括未跟踪源码），并固定当时的精确 `HEAD`。每份 `report.json`、本次 matrix manifest 和 canonical manifest 都记录 `provenance`（`headCommit`、`worktreeClean`、`dirtyEntryCount`）；matrix 结束、scoped verifier 和 canonical 发布会再次读取当前 checkout。只有生成时与验证时均 clean 且 `headCommit` 与当前 `HEAD` 完全相等才通过；旧 ancestor commit 即使可达也不能作为当前发布证据。运行期间提交、修改或新增未跟踪源码会使整次 strict matrix 失效，必须在 clean checkout 上重跑。
 
 重要约束：
 
@@ -67,8 +79,10 @@ artifacts/testing/watch-mode-live/<timestamp>/
 
 关键文件：
 
-- `report.json`: agent 优先读取的机器可读报告。
+- `report.json`: agent 优先读取的机器可读报告；包含生成时的精确 Git `provenance`。
 - `report.md`: 人类可读摘要。
+- `../watch-mode-live-matrix-*.json`: 单次 matrix 的精确 run directory 清单和 source provenance。
+- `../latest-successful-watch-mode-strict-matrix.json`: 最近一次成功完成 scoped strict 验证、并与当前 clean `HEAD` 精确绑定的 18 格 canonical manifest。
 - `../latest-watch-mode-live.json`: 最新 live run 的轻量索引，只包含 `timestamp`、`reportPath`、`verdict`、`failureLayer`、`modelId`。
 - `snapshots.json`: driver、wasapi、bridge、physicalOutput、app、provider、playback 快照。
 - `steps.json`: 每个编排步骤的执行结果。
@@ -90,7 +104,7 @@ Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-probe.
 Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-content.json -Raw
 ```
 
-不要把仓库根目录下的 `report.json` 或 `report.md` 当作当前项目状态来源。当前状态只认 `artifacts/testing/watch-mode-live/<timestamp>/report.json`。普通本地 evidence 用 `npm run test:watch-mode-evidence`；发布前严格证据必须用 `npm run test:watch-mode-evidence:strict` 校验两个模型最新完整 live report。
+不要把仓库根目录下的 `report.json` 或 `report.md` 当作当前项目状态来源。普通本地诊断用 `npm run test:watch-mode-evidence` 扫描 `artifacts/testing/watch-mode-live/<timestamp>/report.json`；发布前严格证据只认 canonical manifest 列出的本次 18 个目录，禁止从 output root 自动挑选历史报告补格。
 
 ## 分层判定
 
@@ -125,7 +139,7 @@ npm run test:watch-mode-evidence
 npm run test:watch-mode-evidence:strict
 ```
 
-该命令只读取 `artifacts/testing/watch-mode-live/*/report.json`，会跳过 `cache`、`physical-output-smoke-*`、`reference-pcm-smoke-*` 等非完整 live 目录。普通 `npm run test:watch-mode-evidence` 校验最新完整 live report；严格模式要求两个模型各自有最新完整 live report，且 `strictContent.passed=true`。普通 `npm run quality:gate` 不会启动真实硬件链路；`release:verify` 会额外执行严格 evidence 门禁。
+普通 `npm run test:watch-mode-evidence` 会扫描 `artifacts/testing/watch-mode-live/*/report.json`，并跳过 `cache`、`physical-output-smoke-*`、`reference-pcm-smoke-*` 等非完整 live 目录。严格命令不执行这种扫描，只读取 canonical manifest 中精确列出的 18 份 live report，并继续校验 30 分钟时长、设备身份、唯一 session、report/manifest provenance 与当前 clean `HEAD` 精确相等，以及 `strictContent.passed=true`。ancestor commit、生成时 dirty、验证时 dirty 或未跟踪源码都会失败。普通 `npm run quality:gate` 不会启动真实硬件链路；`release:verify` 会额外执行严格 evidence 门禁。
 
 失败时重点看：
 
@@ -208,7 +222,7 @@ physical output content diverged from source media reference; coverage=... lengt
 
 ## 已验证样例
 
-以下目录是历史样例，只能说明当时某个链路行为曾经通过，不代表当前工作区自动通过。当前结论必须以本机最新完整 live report、`npm run test:watch-mode-evidence` 和发布前 `npm run test:watch-mode-evidence:strict` 为准。
+以下目录是历史样例，只能说明当时某个链路行为曾经通过，不代表当前工作区自动通过。普通诊断以本机最新完整 live report 和 `npm run test:watch-mode-evidence` 为准；发布结论只认 canonical strict manifest 及 `npm run test:watch-mode-evidence:strict`。
 
 历史完整管理员 live run：
 
@@ -320,7 +334,19 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 - 真实 provider/API 失败应归因到 `provider`，不要和 driver/bridge/physicalOutput 混在一起。
 - 覆盖率不能替代这条真实链路；覆盖率只保护纯逻辑，不能证明驱动、WASAPI、bridge、物理输出和真实 API 的组合行为。
 
+## 2026-08-10 三路线与反馈隔离约束
+
+- 三个变体是三个独立采集后端：`process-exclusion` 使用 WASAPI application loopback 并排除 Bridge 进程树；`virtual-driver` 使用虚拟扬声器/虚拟麦克风链；`echo-cancel` 使用物理端点 loopback 加 WebRTC AEC3。任何变体失败都不得静默切换到另一变体。
+- process-exclusion 的启动前探针必须同时验证 Windows build、`sourceCaptureMode=process-exclusion`、`captureBackend=wasapi-process-exclusion`、`processLoopbackStatus=ready` 和 `excludedProcessId=Bridge PID`。指纹探针必须证明 Bridge 及其子进程的译音未进入 source pipe，而独立外部进程的原声仍被保留。
+- process-exclusion 不安装、不修复、也不探测虚拟驱动；Bridge 的 source monitor 必须关闭，所有翻译语音只能走 Bridge translation pipe。
+- echo-cancel 只有在固定版本 WebRTC AEC3 的 Windows x64 MSVC 静态构建和离线 fixture 门禁通过后才可启动。旧纯 Rust 算法与 shadow 双引擎路径不再存在；生产 ASR 只接收 AEC3 输出 PCM，任何 AEC 指标均不得触发字幕、译文或译音删除。
+- echo-cancel 的译音由同一个 WASAPI render client 提交到物理端点，并从该 client 读取累计提交位置与 `GetCurrentPadding`。延迟估算使用 capture packet QPC age 与“当前 10 ms reference 之前”的真实 render lead；capture padding 用于校验 capture buffer 一致性，不能在 QPC age 已包含排队时间时重复相加。报告若仍显示 wall-clock/Rodio 推测或 `endpointRenderPadding=unavailable`，AEC 层必须判失败。
+- 报告不得再把内容型 `echo-suppressed` 作为终态。文本相似度可用于诊断，但 `recent-output-echo`、`short-cjk-output-echo`、`echo-chain-fragment` 和播放后时间窗不能参与最终输出决策。
+- 每条 translation frame 必须携带 cue id、创建时间、采样格式和预计时长；队列以预计开始播放时间执行 5 秒实时性预算，只淘汰尚未开始的最旧 cue，不中断当前播放。
+
 ## 2026-06-05 迭代约束
+
+> 以下 2026-06-05/2026-07-26 条目是历史行为记录；其中“两变体默认矩阵”、文本回声门控和旧 AEC 抑制规则已被上面的 2026-08-10 三路线约束取代。
 
 - 完整证据变体（默认 `-FeedbackLoopPrevention virtual-driver`）的 live 诊断 autostart 必须使用 `devices.feedbackLoopPrevention=virtual-driver`。如果使用 `echo-cancel`，应用仍可能把音频送入 Omni websocket，但 bridge `sourceSubscriberActive` 会一直为 false，原声 monitor 不会写入物理设备，无法证明用户能听到原声。因此 echo-cancel 只能作为独立变体运行，不能替代 virtual-driver 的完整门禁证据。
 - 前端 `VITE_OMNI_WATCH_MODE_AUTOSTART` 和 Tauri 后端 `OMNI_WATCH_MODE_AUTOSTART` 两条路径都必须设置同一组 watch 配置：`keepOriginalAudio=true`、`translatedAudioEnabled=true`、`monitorMode=original-and-translated`、`outputDeviceId=耳机 (iBasso-DC-Series)`。
@@ -342,10 +368,10 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 
 ## 2026-07-26 echo-cancel 变体
 
-- `run-watch-mode-live.ps1` 新增 `-FeedbackLoopPrevention virtual-driver|echo-cancel`（默认 virtual-driver），贯通 `.env.local` 的 `VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION`、进程/用户环境变量 `OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION` 和 SkipDesktopLaunch 的 Tauri CLI config 三条注入路径；echo-cancel run 的输出目录带 `-echo-cancel` 后缀，避免遮蔽 virtual-driver 证据。
+- `run-watch-mode-live.ps1` 支持 `-FeedbackLoopPrevention process-exclusion|virtual-driver|echo-cancel`（默认 virtual-driver），贯通 `.env.local` 的 `VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION`、进程/用户环境变量 `OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION` 和 SkipDesktopLaunch 的 Tauri CLI config 三条注入路径；非 virtual-driver run 的输出目录带路线后缀，避免证据互相遮蔽。
 - echo-cancel 变体下 bridge 无 source subscriber、原声不写物理设备，报告分类器把 `bridge`、`physicalOutput`、`physicalOutputContent`、`speechSegmentation`、`strictContent` 标记为 `skipped`，仍要求 `driver`、`wasapi`、`app`、`provider` 通过；核心通过条件是 app 层 `duplicateFinalTranslations` 检测器（任何实质重复 final 翻译即失败）。
 - `report.json`、`snapshots.json`、`latest-watch-mode-live.json` 都记录 `feedbackLoopPrevention`；verifier 通过 `--feedback-modes` 按 模型 × 变体 校验，未指定时默认只认 `virtual-driver`，旧报告缺字段时也按 virtual-driver 处理。
-- `npm run test:watch-mode-live:dry-run` 会对两种变体各做一次 config 注入探针并写入 `config-injection.json`，注入不一致直接失败。
+- `npm run test:watch-mode-live:dry-run` 会对三种路线各做一次 config 注入探针并写入 `config-injection.json`，注入不一致直接失败；产物始终是 non-live fixture evidence。
 
 ## 2026-06-05 低延迟二次翻译回归
 
@@ -388,7 +414,7 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 ## 2026-06-05 Watch mode passed sample after Omni VAD fix
 
 - Passed live sample: `artifacts/testing/watch-mode-live/20260605-191332/`.
-- 该目录是历史通过样例，不代表当前工作区自动通过；当前结论必须以本机最新完整 live report、`npm run test:watch-mode-evidence` 和发布前 `npm run test:watch-mode-evidence:strict` 为准。
+- 该目录是历史通过样例，不代表当前工作区自动通过；普通诊断以最新完整 live report 为准，发布结论只认 canonical strict manifest 及 `npm run test:watch-mode-evidence:strict`。
 - Command shape: `run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -PlaybackSeconds 12 -PostPlaybackWaitSeconds 24 -SessionReadyTimeoutSeconds 90`.
 - Result: `verdict=passed`; layers `driver`, `wasapi`, `bridge`, `physicalOutput`, `physicalOutputContent`, `speechSegmentation`, `app`, and `provider` all passed.
 - Route: `translationRoute=secondary`; app log confirms `subtitleTranslationMode=secondary`, `translationAudioSource=SubtitleTts`, `watch_mode.omni_preconnect_started`, and `watch_mode.omni_preconnect_reused`.

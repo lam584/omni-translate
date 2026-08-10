@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant, SystemTime};
@@ -40,11 +40,11 @@ pub(crate) use self::realtime_socket::{
 };
 pub(crate) mod session_errors;
 #[cfg(test)]
-mod acoustic_loop_tests;
-#[cfg(test)]
 mod local_ws_reconnect_tests;
 #[cfg(test)]
 mod replay_tests;
+#[cfg(test)]
+mod watch_report_replay_tests;
 mod session_worker;
 mod socket_event_processor;
 
@@ -65,18 +65,15 @@ use self::audio_pump::should_anchor_manual_turn_to_first_audible_append;
 use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
 use self::connection_coordinator::{
-    classify_completed_manual_response_for_target_language_with_context,
-    manual_turn_cue_to_discard, recent_acoustic_echo_evidence,
-    recent_echo_input_is_dominated,
+    completed_manual_response_decision,
+    manual_turn_cue_to_discard,
     should_route_uncorrelated_completed_transcription, ManualResponseDecision,
-    ManualResponseEchoContext, OmniCommitState,
-    OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
-    MANUAL_ECHO_ACTIVITY_WINDOW, MANUAL_RESPONSE_TIMEOUT_SECS,
+    OmniCommitState, OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
+    MANUAL_RESPONSE_TIMEOUT_SECS,
 };
 #[cfg(test)]
 use self::connection_coordinator::{
-    classify_completed_manual_response, MANUAL_COMMIT_INTERVAL_SECS,
-    MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
+    MANUAL_COMMIT_INTERVAL_SECS, MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
 };
 use self::event_processor::{
     OmniAudioOutputState, OmniEventProcessor, OmniReadinessState, OmniSubtitleEventState,
@@ -603,6 +600,33 @@ mod unit_tests {
     }
 
     #[test]
+    fn omni_speech_config_routes_process_exclusion_audio_to_bridge() {
+        let config = json!({
+            "devices": {
+                "feedbackLoopPrevention": "process-exclusion",
+                "outputSpeechEnabled": true
+            },
+            "speech": {
+                "enabled": true,
+                "localPlaybackEnabled": true
+            }
+        });
+
+        let speech = OmniSpeechConfig::from_config(&config);
+        let route = super::super::speech::SpeechOutputRoutePlan::for_configured_route(
+            "inbound",
+            speech.local_playback_enabled,
+            speech.virtual_mic_output_enabled,
+            speech.bridge_playback_enabled,
+        );
+
+        assert!(speech.any_output());
+        assert!(!route.play_to_speaker);
+        assert!(!route.write_to_virtual_mic);
+        assert!(route.write_to_bridge_playback);
+    }
+
+    #[test]
     fn omni_speech_config_defaults_to_disabled() {
         let speech = OmniSpeechConfig::from_config(&json!({}));
 
@@ -662,6 +686,7 @@ use self::protocol::{
     check_vad_warning, elapsed_ms_since,
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
     manual_turn_response_stream_active,
+    native_response_id_from_event, next_omni_cue_id, record_native_playback_stale,
     request_omni_playback_stop, reset_manual_turn_input_state, reset_omni_turn_state,
     resolve_completed_transcription, resolve_native_response_source_text,
     response_stream_owns_current_cue,
@@ -669,17 +694,35 @@ use self::protocol::{
     set_socket_read_timeout, set_socket_write_timeout, start_omni_playback,
     try_reconnect, write_live_source_to_cue, write_native_output_final_to_cue,
     write_native_output_preview_to_cue, write_native_translation_to_cue,
-    reconcile_late_native_transcription, update_native_response_cue_source,
-    OmniEventDiagnostics, OmniPlaybackCommand,
+    update_native_response_cue_source,
+    OmniEventDiagnostics, OmniPlaybackCommand, OmniPlaybackEnqueueOutcome,
+    OmniPlaybackOverflowReason, OmniPlaybackQueue,
 };
 #[cfg(test)]
 use protocol::{build_omni_session_update, build_omni_session_update_with_output_mode};
 #[cfg(test)]
 mod native_translation_tests {
-    use super::protocol::{
-        write_committed_native_translation_to_cue, LATE_NATIVE_TRANSCRIPTION_RECONCILE_MS,
-    };
+    use super::protocol::write_committed_native_translation_to_cue;
     use super::*;
+
+    #[test]
+    fn generated_omni_cue_ids_are_unique_without_waiting_for_the_clock() {
+        let first = next_omni_cue_id("inbound");
+        let second = next_omni_cue_id("inbound");
+
+        assert_ne!(first, second);
+        let first_tick = first
+            .rsplit('-')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("numeric first cue suffix");
+        let second_tick = second
+            .rsplit('-')
+            .next()
+            .and_then(|value| value.parse::<u64>().ok())
+            .expect("numeric second cue suffix");
+        assert!(second_tick > first_tick);
+    }
 
     #[test]
     fn native_omni_deltas_share_one_uncommitted_live_cue() {
@@ -747,85 +790,6 @@ mod native_translation_tests {
     }
 
     #[test]
-    fn late_native_transcription_reuses_recent_translation_and_drops_live_duplicate() {
-        let store = AudioStateStore::new();
-        let source = "This is a one billion dollar rocket ship, a future technology that";
-        let translated = "这是一艘价值十亿美元的火箭。";
-        let live_id = format!("omni-cue-inbound-{}", unix_ms().saturating_sub(10));
-        let fallback_id = format!("omni-cue-inbound-{}", unix_ms());
-
-        store.update_or_push_stt_cue(&live_id, source, false);
-        write_committed_native_translation_to_cue(
-            &store,
-            &fallback_id,
-            translated,
-            translated,
-        );
-
-        assert_eq!(
-            reconcile_late_native_transcription(&store, "inbound", source),
-            Some(fallback_id.clone())
-        );
-
-        let snapshot = store.snapshot();
-        assert!(!snapshot
-            .subtitle_overlay
-            .recent_cues
-            .iter()
-            .any(|cue| cue.cue_id == live_id));
-        let cue = snapshot
-            .subtitle_overlay
-            .recent_cues
-            .iter()
-            .find(|cue| cue.cue_id == fallback_id)
-            .expect("reconciled native cue");
-        assert!(cue.committed);
-        assert_eq!(cue.source_text, source);
-        assert_eq!(cue.translated_text, translated);
-        assert!(cue.display_segments.iter().all(|segment| !segment.pending));
-    }
-
-    #[test]
-    fn late_native_transcription_fills_an_empty_native_source_column() {
-        let store = AudioStateStore::new();
-        let source = "So much more.";
-        let translated = "还有更多精彩内容。";
-        let cue_id = format!("omni-cue-inbound-{}", unix_ms());
-        write_committed_native_translation_to_cue(&store, &cue_id, "", translated);
-
-        assert_eq!(
-            reconcile_late_native_transcription(&store, "inbound", source),
-            Some(cue_id.clone())
-        );
-
-        let snapshot = store.snapshot();
-        let cue = snapshot
-            .subtitle_overlay
-            .recent_cues
-            .iter()
-            .find(|cue| cue.cue_id == cue_id)
-            .expect("reconciled native cue");
-        assert_eq!(cue.source_text, source);
-        assert_eq!(cue.translated_text, translated);
-        assert!(cue.committed);
-    }
-
-    #[test]
-    fn late_native_transcription_does_not_reuse_an_old_fallback() {
-        let store = AudioStateStore::new();
-        let old_id = format!(
-            "omni-cue-inbound-{}",
-            unix_ms().saturating_sub(LATE_NATIVE_TRANSCRIPTION_RECONCILE_MS + 1)
-        );
-        write_committed_native_translation_to_cue(&store, &old_id, "旧译文", "旧译文");
-
-        assert_eq!(
-            reconcile_late_native_transcription(&store, "inbound", "new source"),
-            None
-        );
-    }
-
-    #[test]
     fn empty_completed_transcription_only_reuses_a_correlated_delta() {
         let empty_final = resolve_completed_transcription(
             "Oh, my dilemma.",
@@ -835,15 +799,11 @@ mod native_translation_tests {
         assert_eq!(empty_final.display_text, "Oh, my dilemma.");
         assert_eq!(empty_final.response_gate_text, "");
         assert_eq!(
-            classify_completed_manual_response(
+            completed_manual_response_decision(
                 true,
                 Some("item-Crf"),
                 Some("item-Crf"),
                 Some(&empty_final.response_gate_text),
-                "",
-                None,
-                true,
-                false,
             ),
             Some(ManualResponseDecision::SkipEmpty),
         );

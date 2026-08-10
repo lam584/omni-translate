@@ -9,6 +9,11 @@ pub(super) struct SessionRegistry {
     sessions: Mutex<HashMap<String, AudioRouteHandle>>,
     stt_handles: Mutex<HashMap<String, SttHandle>>,
     inbound_pipeline_lock: Mutex<()>,
+    /// Linearizes generation changes with late-worker error commits. Route
+    /// start/stop only hold this lock for the generation increment; a worker
+    /// performs any blocking Bridge query without it, then takes it again for
+    /// the final generation check and all user-visible error side effects.
+    inbound_route_authority: Mutex<()>,
     /// Cancellation token for detached inbound route starts. Every inbound
     /// start/stop command bumps it; a detached fast-watch worker re-reads it
     /// after acquiring the pipeline lock and aborts when it was superseded,
@@ -22,6 +27,7 @@ impl SessionRegistry {
             sessions: Mutex::new(HashMap::new()),
             stt_handles: Mutex::new(HashMap::new()),
             inbound_pipeline_lock: Mutex::new(()),
+            inbound_route_authority: Mutex::new(()),
             inbound_route_generation: AtomicU64::new(0),
         }
     }
@@ -34,7 +40,14 @@ impl SessionRegistry {
         self.inbound_route_generation.load(Ordering::SeqCst)
     }
 
+    pub(super) fn lock_inbound_route_authority(&self) -> MutexGuard<'_, ()> {
+        self.inbound_route_authority
+            .lock()
+            .expect("inbound route authority poisoned")
+    }
+
     pub(super) fn bump_inbound_route_generation(&self) -> u64 {
+        let _authority = self.lock_inbound_route_authority();
         self.inbound_route_generation.fetch_add(1, Ordering::SeqCst) + 1
     }
 

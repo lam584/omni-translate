@@ -1,7 +1,7 @@
-/// Owns the fallback WASAPI loopback capture lifecycle. The driver worker is
-/// selected by the production supervisor; this worker remains an explicit,
-/// testable fallback for installations without a functioning driver stream.
-#[allow(dead_code, reason = "explicit driverless capture fallback retained for installations without a working driver stream")]
+/// Legacy endpoint-loopback diagnostic prototype. No runtime capture mode or
+/// supervisor selects this worker; production routes are driver or process
+/// exclusion only.
+#[allow(dead_code, reason = "legacy endpoint-loopback diagnostic is not selectable at runtime")]
 struct WasapiCaptureWorker {
     state: Arc<Mutex<BridgeState>>,
     runtime_root: PathBuf,
@@ -9,7 +9,7 @@ struct WasapiCaptureWorker {
     source_tx: mpsc::SyncSender<Vec<u8>>,
 }
 
-#[allow(dead_code, reason = "constructor belongs to the retained driverless capture fallback")]
+#[allow(dead_code, reason = "legacy endpoint-loopback diagnostic is not selectable at runtime")]
 impl WasapiCaptureWorker {
     fn new(
         state: Arc<Mutex<BridgeState>>,
@@ -25,7 +25,7 @@ impl WasapiCaptureWorker {
     }
 }
 
-#[allow(dead_code, reason = "driverless capture fallback entrypoint is selected only by recovery builds")]
+#[allow(dead_code, reason = "legacy endpoint-loopback diagnostic is not selectable at runtime")]
 fn run_wasapi_source_worker(
     state: Arc<Mutex<BridgeState>>,
     runtime_root: PathBuf,
@@ -86,7 +86,7 @@ fn run_wasapi_source_worker(
     }
 }
 
-#[allow(dead_code, reason = "driverless capture generation is retained for recovery builds")]
+#[allow(dead_code, reason = "legacy endpoint-loopback diagnostic is not selectable at runtime")]
 fn capture_wasapi_source_generation(
     state: &Arc<Mutex<BridgeState>>,
     runtime_root: &Path,
@@ -197,7 +197,15 @@ fn capture_wasapi_source_generation(
                 current.source_worker_last_progress_timestamp_ms = Some(unix_ms());
             }
             diagnostics_invalid_samples = 0;
-            dispatch_source_frame(state, runtime_root, playback_tx, source_tx, payload);
+            dispatch_source_frame(
+                state,
+                runtime_root,
+                playback_tx,
+                source_tx,
+                generation,
+                SourceCaptureMode::None,
+                payload,
+            );
         }
         if diagnostics_started_at.elapsed()
             >= Duration::from_secs(OMNI_CAPTURE_DIAGNOSTICS_INTERVAL_SECS)
@@ -220,7 +228,7 @@ fn capture_wasapi_source_generation(
     }
 }
 
-#[allow(dead_code, reason = "packet helper belongs to the retained driverless capture fallback")]
+#[allow(dead_code, reason = "shared by process capture and legacy diagnostics")]
 fn append_capture_packet(sample_bytes: &mut VecDeque<u8>, mut packet: Vec<u8>, silent: bool) {
     if silent {
         packet.fill(0);
@@ -228,7 +236,7 @@ fn append_capture_packet(sample_bytes: &mut VecDeque<u8>, mut packet: Vec<u8>, s
     sample_bytes.extend(packet);
 }
 
-#[allow(dead_code, reason = "sample sanitizer belongs to the retained driverless capture fallback")]
+#[allow(dead_code, reason = "shared by process capture and legacy diagnostics")]
 fn sanitize_capture_sample(sample: f32) -> (f32, bool) {
     if sample.is_finite() {
         (sample.clamp(-1.0, 1.0), false)
@@ -237,7 +245,7 @@ fn sanitize_capture_sample(sample: f32) -> (f32, bool) {
     }
 }
 
-#[allow(dead_code, reason = "RMS helper belongs to the retained driverless capture fallback")]
+#[allow(dead_code, reason = "shared by process capture and legacy diagnostics")]
 fn capture_rms(square_sum: f64, sample_count: u64) -> f32 {
     if sample_count == 0 {
         0.0
@@ -246,7 +254,7 @@ fn capture_rms(square_sum: f64, sample_count: u64) -> f32 {
     }
 }
 
-#[allow(dead_code, reason = "device lookup belongs to the retained driverless capture fallback")]
+#[allow(dead_code, reason = "legacy endpoint-loopback diagnostic is not selectable at runtime")]
 fn find_render_device(
     enumerator: &DeviceEnumerator,
     requested_device_id: &str,
@@ -334,6 +342,15 @@ fn run_driver_source_worker(
 ) {
     let mut last_driver_open_error = None;
     loop {
+        let should_open_driver = {
+            let current = state.lock().unwrap();
+            current.source_capture_mode == SourceCaptureMode::VirtualDriver
+                && current.source_subscriber_active
+        };
+        if !should_open_driver {
+            thread::sleep(Duration::from_millis(25));
+            continue;
+        }
         {
             let mut current = state.lock().unwrap();
             current.update_progress("opening-driver");
@@ -402,10 +419,17 @@ fn run_driver_source_worker(
         let mut first_read_generation = u64::MAX;
         let mut first_non_empty_generation = u64::MAX;
         loop {
-            let (active, current_generation) = {
+            let (active, current_generation, capture_mode) = {
                 let current = state.lock().unwrap();
-                (current.source_subscriber_active, current.source_generation)
+                (
+                    current.source_subscriber_active,
+                    current.source_generation,
+                    current.source_capture_mode,
+                )
             };
+            if capture_mode != SourceCaptureMode::VirtualDriver {
+                break;
+            }
             if !active {
                 {
                     let mut current = state.lock().unwrap();
@@ -443,6 +467,7 @@ fn run_driver_source_worker(
                 &runtime_root,
                 &playback_tx,
                 &source_tx,
+                source_generation,
             );
 
             let mut bytes_read = 0;
@@ -520,6 +545,7 @@ fn run_driver_source_worker(
                     &runtime_root,
                     &playback_tx,
                     &source_tx,
+                    source_generation,
                 );
             }
 
@@ -597,6 +623,7 @@ fn try_release_source_frame(
     runtime_root: &Path,
     playback_tx: &mpsc::SyncSender<PlaybackCommand>,
     source_tx: &mpsc::SyncSender<Vec<u8>>,
+    source_generation: u64,
 ) -> bool {
     let Some(frame) = pacer.poll(started_at.elapsed()) else {
         return false;
@@ -611,7 +638,15 @@ fn try_release_source_frame(
             ),
         );
     }
-    dispatch_source_frame(state, runtime_root, playback_tx, source_tx, frame);
+    dispatch_source_frame(
+        state,
+        runtime_root,
+        playback_tx,
+        source_tx,
+        source_generation,
+        SourceCaptureMode::VirtualDriver,
+        frame,
+    );
     true
 }
 
@@ -620,13 +655,22 @@ fn dispatch_source_frame(
     _runtime_root: &Path,
     playback_tx: &mpsc::SyncSender<PlaybackCommand>,
     source_tx: &mpsc::SyncSender<Vec<u8>>,
+    expected_generation: u64,
+    expected_capture_mode: SourceCaptureMode,
     payload: Vec<u8>,
-) {
+) -> bool {
     let Ok(samples) = decode_pcm16le(&payload) else {
-        return;
+        return false;
     };
     let frame_count = samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
     let mut current = state.lock().unwrap();
+    if !current.source_subscriber_active
+        || current.source_generation != expected_generation
+        || current.source_capture_mode != expected_capture_mode
+    {
+        current.stale_source_frames_dropped += frame_count;
+        return false;
+    }
     current.source_frames_captured += frame_count;
     current.source_released_frames += 1;
     current.last_frame_timestamp_ms = Some(unix_ms());
@@ -637,7 +681,7 @@ fn dispatch_source_frame(
         INTERNAL_CHANNEL_COUNT,
         &current.mix_control,
     );
-    if current.monitor_playback_enabled && !monitor_samples.is_empty() {
+    if current.source_monitor_playback_enabled && !monitor_samples.is_empty() {
         let result = playback_tx.try_send(PlaybackCommand::Play(PlaybackJob {
             samples: monitor_samples,
             device_id: current.physical_playback_device_id.clone(),
@@ -647,6 +691,11 @@ fn dispatch_source_frame(
             ducking_depth_percent: current.mix_control.ducking_depth_percent,
             queued_at: Instant::now(),
             source_generation: current.source_generation,
+            cue_id: None,
+            created_at_ms: unix_ms(),
+            estimated_duration_ms: OMNI_SOURCE_FRAME_INTERVAL_MS,
+            playback_duration_ms: OMNI_SOURCE_FRAME_INTERVAL_MS,
+            translation_generation: 0,
         }));
         if result.is_err() {
             current.dropped_frame_count += frame_count;
@@ -656,6 +705,7 @@ fn dispatch_source_frame(
         current.dropped_frame_count += frame_count;
     }
     drop(current);
+    true
 }
 
 fn append_bridge_service_log(_runtime_root: &Path, message: &str) {
@@ -699,7 +749,8 @@ fn source_watchdog_summary(state: &BridgeState, now_ms: u64) -> String {
         .map(|timestamp| now_ms.saturating_sub(timestamp))
         .unwrap_or(0);
     format!(
-        "event=source_watchdog captureBackend=wasapi-endpoint-loopback sourceSubscriberActive={} sourceGeneration={} workerPhase={} lastProgressAgeMs={} captureRestarts={} capturePackets={} captureFrames={} capturePeak={:.6} captureRms={:.6} captureSilentPackets={} captureInvalidSamples={} monitorBufferedMs={} monitorUnderruns={} monitorOverruns={} readCalls={} zeroByteReads={} bytesRead={} capturedBytes={} deliveredBytes={} bufferedBytes={} droppedBytes={} pacerQueuedFrames={} pendingBytes={} releasedFrames={} underruns={}",
+        "event=source_watchdog captureBackend={} sourceSubscriberActive={} sourceGeneration={} workerPhase={} lastProgressAgeMs={} captureRestarts={} capturePackets={} captureFrames={} capturePeak={:.6} captureRms={:.6} captureSilentPackets={} captureInvalidSamples={} monitorBufferedMs={} monitorUnderruns={} monitorOverruns={} readCalls={} zeroByteReads={} bytesRead={} capturedBytes={} deliveredBytes={} bufferedBytes={} droppedBytes={} pacerQueuedFrames={} pendingBytes={} releasedFrames={} underruns={}",
+        state.capture_backend.as_str(),
         state.source_subscriber_active,
         state.source_generation,
         state.source_worker_phase,

@@ -195,6 +195,124 @@ describe('App bootstrap shell (real router + real i18n)', () => {
     );
   });
 
+  it('records active, repeated, error, and detailed bootstrap step transitions once', async () => {
+    appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockImplementation(async (onStep?: OnBootstrapStep) => {
+      for (const stepId of ['detect-runtime', 'check-ipc', 'init-runtime', 'init-audio'] as BootstrapStepId[]) {
+        onStep?.(stepId, 'active', `${stepId} active`);
+        onStep?.(stepId, 'active', `${stepId} still active`);
+        onStep?.(stepId, 'done', `${stepId} done`);
+      }
+      onStep?.('load-config', 'error', 'configuration unavailable');
+      onStep?.('load-config', 'error', 'duplicate terminal event');
+      return appMocks.bootstrapCleanup;
+    });
+
+    await renderApp(3);
+    await act(async () => {
+      vi.runOnlyPendingTimers();
+      await Promise.resolve();
+    });
+
+    expect(view.container.querySelector('.bootstrap-overlay')).toBeNull();
+    expect(appMocks.scheduleBridgeAutostartAfterStartup).toHaveBeenCalledOnce();
+  });
+
+  it('turns unfinished steps into recoverable errors at the hard timeout in Chinese', async () => {
+    await i18n.changeLanguage('zh-CN');
+    appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockImplementation((onStep?: OnBootstrapStep) => {
+      onStep?.('detect-runtime', 'done');
+      onStep?.('check-ipc', 'active');
+      return new Promise(() => undefined);
+    });
+
+    await renderApp();
+    await act(async () => {
+      vi.advanceTimersByTime(45_000);
+      await Promise.resolve();
+    });
+
+    expect(view.container.querySelector('.bootstrap-overlay')).toBeNull();
+    expect(view.container.textContent).toContain('启动超过 45 秒');
+  });
+
+  it('uses the English recoverable timeout message when the active locale is English', async () => {
+    await i18n.changeLanguage('en');
+    appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockReturnValue(new Promise(() => undefined));
+
+    await renderApp();
+    await act(async () => {
+      vi.advanceTimersByTime(45_000);
+      await Promise.resolve();
+    });
+
+    expect(view.container.textContent).toContain('Startup did not finish within 45 seconds');
+    await i18n.changeLanguage('zh-CN');
+  });
+
+  it('ignores late bootstrap callbacks and disposes a cleanup resolved after unmount', async () => {
+    let onStep: OnBootstrapStep | undefined;
+    let resolveBootstrap: ((cleanup: () => void) => void) | undefined;
+    const lateCleanup = vi.fn();
+    appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockImplementation((callback?: OnBootstrapStep) => {
+      onStep = callback;
+      return new Promise<() => void>((resolve) => {
+        resolveBootstrap = resolve;
+      });
+    });
+
+    await renderApp();
+    await view.unmount();
+    onStep?.('detect-runtime', 'done', 'late event');
+    await act(async () => {
+      resolveBootstrap?.(lateCleanup);
+      await Promise.resolve();
+    });
+
+    expect(lateCleanup).toHaveBeenCalledOnce();
+  });
+
+  it('reports non-Error bootstrap failures with the English user-facing message', async () => {
+    await i18n.changeLanguage('en');
+    appMocks.bootstrapDesktopRuntimeBridge.mockReset().mockRejectedValue('string bootstrap failure');
+
+    await renderApp(3);
+
+    expect(appendFrontendDiagnosticsLog).toHaveBeenCalledWith(
+      'runtime',
+      'error',
+      'startup.bootstrap_failed',
+      'string bootstrap failure',
+    );
+    expect(view.container.querySelector('.bootstrap-overlay')).toBeNull();
+    await i18n.changeLanguage('zh-CN');
+  });
+
+  it('marks bridge convergence complete when deferred bridge autostart rejects', async () => {
+    let rejectBridge: ((reason: Error) => void) | undefined;
+    appMocks.scheduleBridgeAutostartAfterStartup.mockReset().mockReturnValue({
+      cleanup: vi.fn(),
+      promise: new Promise<void>((_resolve, reject) => {
+        rejectBridge = reject;
+      }),
+    });
+
+    await renderApp(3);
+    await act(async () => {
+      vi.runOnlyPendingTimers();
+      await Promise.resolve();
+      await Promise.resolve();
+      rejectBridge?.(new Error('bridge convergence failed'));
+      await Promise.resolve();
+    });
+
+    expect(appendFrontendDiagnosticsLog).toHaveBeenCalledWith(
+      'runtime',
+      'info',
+      'startup.bridge_converged',
+      'convergence=error',
+    );
+  });
+
   it('does not duplicate backend watch autostart from the frontend', async () => {
     seedWatchAutostartEnv('watch_mode_diagnostic.run_id=app-test-autostart-skip');
 
@@ -337,8 +455,26 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
     expect(echoCancel.speech.textToSpeechModelId).toBe('qwen-audio-3.0-realtime-plus');
     expect(echoCancel.speech.translationAudioSource).toBe('omni-native');
 
-    const invalidValue = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
+    const processExclusion = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
+      VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION: 'process-exclusion',
+      VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE: 'native',
+      VITE_OMNI_WATCH_MODE_MODEL_ID: 'qwen-audio-process-exclusion',
+    });
+    expect(processExclusion.devices.feedbackLoopPrevention).toBe('process-exclusion');
+    expect(processExclusion.devices.subtitleTranslationMode).toBe('native');
+    expect(processExclusion.speech.translationAudioSource).toBe('omni-native');
+
+    const diagnosticNone = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
       VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION: 'none',
+    });
+    expect(diagnosticNone.devices.feedbackLoopPrevention).toBe('none');
+    expect(diagnosticNone.devices.outputSpeechEnabled).toBe(false);
+    expect(diagnosticNone.devices.inboundRoute.mixControl.translatedAudioEnabled).toBe(false);
+    expect(diagnosticNone.speech.enabled).toBe(false);
+    expect(diagnosticNone.speech.localPlaybackEnabled).toBe(false);
+
+    const invalidValue = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
+      VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION: 'guess-from-text',
     });
     expect(invalidValue.devices.feedbackLoopPrevention).toBe('virtual-driver');
   });
@@ -348,6 +484,17 @@ describe('buildWatchModeDiagnosticAutostartConfig', () => {
     const config = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, env);
     expect(config.devices.inboundVoiceModelId).toBe('qwen3.5-omni-flash-realtime');
     expect(config.devices.outboundVoiceModelId).toBe('qwen3.5-omni-flash-realtime');
+  });
+
+  it('falls back to the current native model and output level for unusable environment values', () => {
+    const config = buildWatchModeDiagnosticAutostartConfig(baseConfig as unknown as AppConfigDraft, {
+      VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION: 'process-exclusion',
+      VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE: 'native',
+      VITE_OMNI_WATCH_MODE_OUTPUT_LEVEL: 'not-a-number',
+    });
+
+    expect(config.devices.textToSpeechModelId).toBe(baseConfig.devices.inboundVoiceModelId);
+    expect(config.devices.outputLevel).toBe(baseConfig.devices.outputLevel);
   });
 });
 

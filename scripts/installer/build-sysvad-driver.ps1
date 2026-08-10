@@ -6,6 +6,7 @@ param(
   [string]$VisualStudioRoot = 'C:\Program Files\Microsoft Visual Studio\2022\Community',
   [string]$SigningPfxPath = '',
   [string]$SigningPfxPasswordPath = '',
+  [string]$SigningTimestampUrl = '',
   [switch]$SkipSigning
 )
 
@@ -29,13 +30,40 @@ function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
   }
 }
 
+function Get-CleanReleaseSourceProvenance([string]$WorkspacePath) {
+  $headCommit = (& git -C $WorkspacePath rev-parse --verify HEAD 2>$null | Out-String).Trim()
+  if ($LASTEXITCODE -ne 0 -or $headCommit -notmatch '^[a-fA-F0-9]{40}$') {
+    throw 'Release driver signing requires an exact git HEAD commit.'
+  }
+  $status = @(& git -C $WorkspacePath status --porcelain=v1 --untracked-files=all --ignore-submodules=none 2>$null)
+  if ($LASTEXITCODE -ne 0) {
+    throw 'Release driver signing could not inspect the git worktree.'
+  }
+  $dirtyEntries = @($status | Where-Object { -not [string]::IsNullOrWhiteSpace([string]$_) })
+  if ($dirtyEntries.Count -ne 0) {
+    throw "Release driver signing requires a clean worktree; found $($dirtyEntries.Count) dirty/untracked entries."
+  }
+  return [ordered]@{
+    schemaVersion = 1
+    source = 'git'
+    captureStatus = 'captured'
+    headCommit = $headCommit
+    worktreeClean = $true
+    dirtyEntryCount = 0
+  }
+}
+
 $workspacePath = (Resolve-Path -LiteralPath $WorkspaceRoot).Path
+$releaseSourceProvenance = if (-not [string]::IsNullOrWhiteSpace($SigningPfxPath) -and -not $SkipSigning) {
+  Get-CleanReleaseSourceProvenance $workspacePath
+} else { $null }
 $driverRoot = Join-Path $workspacePath 'drivers\windows-virtual-mic'
 $sysvadRoot = Join-Path $driverRoot 'sysvad'
 $endpointsProject = Join-Path $sysvadRoot 'EndpointsCommon\EndpointsCommon.vcxproj'
 $tabletProject = Join-Path $sysvadRoot 'TabletAudioSample\TabletAudioSample.vcxproj'
 $buildOutput = Join-Path $sysvadRoot "TabletAudioSample\$Platform\$Configuration"
 $packageRoot = Join-Path $driverRoot 'package'
+$kernelImportPolicyPath = Join-Path $driverRoot 'tests\fixtures\kernel-import-minimum-builds.json'
 $overlayRoot = Join-Path $workspacePath 'artifacts\driver-build\msbuild-overlay\v170'
 $toolsetRoot = Join-Path $overlayRoot "Platforms\$Platform\PlatformToolsets\WindowsKernelModeDriver10.0"
 $windowsKitsRoot = 'C:\Program Files (x86)\Windows Kits\10'
@@ -51,6 +79,7 @@ $dumpbin = Join-Path $vcToolsRoot.FullName 'bin\Hostx64\x64\dumpbin.exe'
 
 Assert-File $endpointsProject 'SYSVAD EndpointsCommon project'
 Assert-File $tabletProject 'SYSVAD TabletAudioSample project'
+Assert-File $kernelImportPolicyPath 'Kernel import minimum-build policy'
 Assert-File $msbuild 'MSBuild'
 Assert-File $dumpbin 'dumpbin'
 Assert-File (Join-Path $wdkBuildRoot 'WindowsDriver.Default.props') 'WDK build props'
@@ -144,16 +173,58 @@ $importOutput = & $dumpbin /imports $stagedSys
 if ($LASTEXITCODE -ne 0) {
   throw "dumpbin failed while inspecting $stagedSys. ExitCode=$LASTEXITCODE"
 }
-$allowedKernelModules = @('ntoskrnl.exe', 'portcls.sys', 'hal.dll', 'wdfldr.sys')
-$importedModules = @($importOutput | ForEach-Object {
-  if ($_ -match '^\s+([A-Za-z0-9_.-]+\.(?:dll|exe|sys))\s*$') {
-    $Matches[1].ToLowerInvariant()
+$kernelImportPolicy = Get-Content -LiteralPath $kernelImportPolicyPath -Raw -Encoding utf8 |
+  ConvertFrom-Json
+$declaredMinimumWindowsBuild = [int]$kernelImportPolicy.minimumSupportedWindowsBuild
+$allowedKernelModules = @($kernelImportPolicy.modules.PSObject.Properties.Name | ForEach-Object {
+  $_.ToLowerInvariant()
+})
+$importedModules = @()
+$importedSymbols = @()
+$currentImportModule = $null
+foreach ($line in $importOutput) {
+  if ($line -match '^\s*Summary\s*$') {
+    $currentImportModule = $null
+    continue
   }
-} | Select-Object -Unique)
+  if ($line -match '^\s+([A-Za-z0-9_.-]+\.(?:dll|exe|sys))\s*$') {
+    $currentImportModule = $Matches[1].ToLowerInvariant()
+    $importedModules += $currentImportModule
+    continue
+  }
+  if ($currentImportModule -and $line -match '^\s+[0-9A-Fa-f]+\s+([^\s]+)\s*$') {
+    $importedSymbols += [pscustomobject]@{
+      Module = $currentImportModule
+      Symbol = $Matches[1]
+    }
+  }
+}
+$importedModules = @($importedModules | Select-Object -Unique)
 $unexpectedModules = @($importedModules | Where-Object { $_ -notin $allowedKernelModules })
 if ($unexpectedModules.Count -ne 0) {
   throw "SYSVAD driver imports non-kernel modules: $($unexpectedModules -join ', ')"
 }
+$minimumWindowsBuild = 0
+foreach ($import in $importedSymbols) {
+  $moduleProperty = $kernelImportPolicy.modules.PSObject.Properties |
+    Where-Object { $_.Name.Equals($import.Module, [StringComparison]::OrdinalIgnoreCase) } |
+    Select-Object -First 1
+  if (-not $moduleProperty) {
+    throw "SYSVAD import policy does not declare module $($import.Module)."
+  }
+  $symbolProperty = $moduleProperty.Value.PSObject.Properties[$import.Symbol]
+  if (-not $symbolProperty) {
+    throw "SYSVAD import policy does not declare $($import.Module)!$($import.Symbol). Audit its minimum Windows build before shipping."
+  }
+  $minimumWindowsBuild = [Math]::Max($minimumWindowsBuild, [int]$symbolProperty.Value)
+}
+if ($minimumWindowsBuild -gt $declaredMinimumWindowsBuild) {
+  throw "SYSVAD imports require Windows build $minimumWindowsBuild, above the declared minimum $declaredMinimumWindowsBuild."
+}
+if ($minimumWindowsBuild -ne $declaredMinimumWindowsBuild) {
+  throw "SYSVAD import audit resolved build $minimumWindowsBuild, but the declared minimum is $declaredMinimumWindowsBuild. Keep the INF, installer, and import policy in lockstep."
+}
+Write-Output "SYSVAD kernel import audit passed: $($importedSymbols.Count) symbols, minimum Windows build $minimumWindowsBuild."
 Remove-Item -LiteralPath $stagedCat -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $stagedPublicCertificate -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $stagedMetadata -Force -ErrorAction SilentlyContinue
@@ -163,10 +234,13 @@ Invoke-Checked $infverif @('/u', $stagedInf)
 
 if ($SkipSigning) {
   $unsignedMetadata = [ordered]@{
-    generatedAt = (Get-Date).ToUniversalTime().ToString('o')
-    protocolVersion = '2026-07-27-smart-gain-v3'
+    sourceCommit = $null
+    sourceProvenance = $null
+    protocolVersion = '2026-08-10-audio-routing-v6'
     configuration = $Configuration
     platform = $Platform
+    minimumWindowsBuild = $declaredMinimumWindowsBuild
+    kernelImportMinimumWindowsBuild = $minimumWindowsBuild
     signingMode = 'unsigned'
     signerThumbprint = $null
   }
@@ -190,15 +264,22 @@ if (-not $SigningPfxPath) {
 if (-not $SigningPfxPasswordPath) {
   throw 'SigningPfxPasswordPath is required when SigningPfxPath is provided.'
 }
+if (-not $useDevelopmentSigningCredential -and [string]::IsNullOrWhiteSpace($SigningTimestampUrl)) {
+  throw 'SigningTimestampUrl is required for a release-injected driver signature.'
+}
 Assert-File $SigningPfxPath 'Signing PFX'
 Assert-File $SigningPfxPasswordPath 'Signing PFX password file'
 $signingPassword = (Get-Content -LiteralPath $SigningPfxPasswordPath -Raw).Trim()
 $signtool = Join-Path $wdkBinRoot 'x64\signtool.exe'
 $inf2cat = Join-Path $wdkBinRoot 'x86\Inf2Cat.exe'
 
-Invoke-Checked $signtool @('sign', '/fd', 'SHA256', '/f', $SigningPfxPath, '/p', $signingPassword, $stagedSys)
+$signingArguments = @('sign', '/fd', 'SHA256', '/f', $SigningPfxPath, '/p', $signingPassword)
+if (-not $useDevelopmentSigningCredential) {
+  $signingArguments += @('/tr', $SigningTimestampUrl, '/td', 'SHA256')
+}
+Invoke-Checked $signtool @($signingArguments + @($stagedSys))
 Invoke-Checked $inf2cat @("/driver:$packageRoot", '/os:10_X64', '/uselocaltime', '/verbose')
-Invoke-Checked $signtool @('sign', '/fd', 'SHA256', '/f', $SigningPfxPath, '/p', $signingPassword, $stagedCat)
+Invoke-Checked $signtool @($signingArguments + @($stagedCat))
 
 $signingCertificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
   $SigningPfxPath,
@@ -211,6 +292,9 @@ foreach ($signedPath in @($stagedSys, $stagedCat)) {
   if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $signingCertificate.Thumbprint) {
     throw "Unexpected Authenticode signer for $signedPath"
   }
+  if (-not $useDevelopmentSigningCredential -and -not $signature.TimeStamperCertificate) {
+    throw "Release-injected signature is missing an RFC3161 timestamp for $signedPath"
+  }
 }
 
 $certificatePath = [System.IO.Path]::ChangeExtension($SigningPfxPath, '.cer')
@@ -219,12 +303,17 @@ if ($isDevelopmentTestSigner -and (Test-Path -LiteralPath $certificatePath -Path
 }
 
 $packageMetadata = [ordered]@{
-  generatedAt = (Get-Date).ToUniversalTime().ToString('o')
-  protocolVersion = '2026-07-27-smart-gain-v3'
+  sourceCommit = if ($isDevelopmentTestSigner) { $null } else { [string]$releaseSourceProvenance.headCommit }
+  sourceProvenance = if ($isDevelopmentTestSigner) { $null } else { $releaseSourceProvenance }
+  protocolVersion = '2026-08-10-audio-routing-v6'
   configuration = $Configuration
   platform = $Platform
+  minimumWindowsBuild = $declaredMinimumWindowsBuild
+  kernelImportMinimumWindowsBuild = $minimumWindowsBuild
   signingMode = if ($isDevelopmentTestSigner) { 'development-test' } else { 'release-injected' }
   signerThumbprint = $signingCertificate.Thumbprint
+  timestampMode = if ($isDevelopmentTestSigner) { 'none' } else { 'rfc3161' }
+  timestampUrl = if ($isDevelopmentTestSigner) { $null } else { $SigningTimestampUrl }
 }
 Write-Utf8NoBom $stagedMetadata (($packageMetadata | ConvertTo-Json -Depth 3) + [Environment]::NewLine)
 

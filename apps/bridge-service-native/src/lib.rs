@@ -6,11 +6,48 @@ use omni_audio_dsp::enhance_speech_i16;
 
 pub use omni_bridge_protocol::{
     accepted_audio_frame_ack, decode_pcm16le, encode_pcm16le, rejected_audio_frame_ack,
-    AudioFrameAck, AudioFrameHeader, MixControl, BRIDGE_PROTOCOL_VERSION,
+    AudioFrameAck, AudioFrameHeader, AudioRouteDirection, AudioSampleFormat, CaptureBackend,
+    MixControl, ProcessLoopbackStatus, SourceCaptureMode, TranslationAudioSink,
+    BRIDGE_PROTOCOL_VERSION,
 };
 
 pub const INTERNAL_SAMPLE_RATE_HZ: u32 = 48_000;
 pub const INTERNAL_CHANNEL_COUNT: u16 = 2;
+pub const PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD: u32 = 20_348;
+
+/// Exact source commit embedded by production release builds. Cargo tracks
+/// `option_env!` as a compile-time input, so changing the commit forces every
+/// binary that calls this helper to relink instead of silently reusing an old
+/// executable from `target/release`.
+pub const COMPILED_BUILD_COMMIT: Option<&'static str> = option_env!("OMNI_BUILD_COMMIT");
+
+/// A side-effect-free authority probe used by release packaging. It must run
+/// before any device, pipe, or audio initialization in each shipped binary.
+pub fn emit_build_commit_if_requested() -> bool {
+    let mut args = std::env::args_os();
+    let _executable = args.next();
+    if args.next().as_deref() != Some(std::ffi::OsStr::new("--build-commit"))
+        || args.next().is_some()
+    {
+        return false;
+    }
+    println!("{}", COMPILED_BUILD_COMMIT.unwrap_or_default());
+    true
+}
+
+/// Pure capability classification kept outside the Windows host so protocol
+/// and unsupported-platform tests do not need WASAPI or a physical device.
+pub fn classify_process_loopback_capability(
+    windows_build_number: Option<u32>,
+) -> (bool, ProcessLoopbackStatus) {
+    match windows_build_number {
+        Some(build) if build >= PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD => {
+            (true, ProcessLoopbackStatus::Unknown)
+        }
+        Some(_) => (false, ProcessLoopbackStatus::Unsupported),
+        None => (false, ProcessLoopbackStatus::Failed),
+    }
+}
 
 /// Windows-only helpers shared by the diagnostic probe binaries
 /// (`omni-driver-audio-probe`, `omni-physical-output-probe`,
@@ -49,6 +86,60 @@ pub mod probe_support {
         (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_READ_DATA << 14) | (0x801 << 2) | METHOD_BUFFERED;
     pub const IOCTL_OMNI_BRIDGE_RESET: u32 =
         (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_WRITE_DATA << 14) | (0x802 << 2) | METHOD_BUFFERED;
+    pub const IOCTL_OMNI_BRIDGE_BEGIN_MIC_SESSION: u32 =
+        (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_WRITE_DATA << 14) | (0x803 << 2) | METHOD_BUFFERED;
+    pub const IOCTL_OMNI_BRIDGE_WRITE_MIC_PCM: u32 =
+        (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_WRITE_DATA << 14) | (0x804 << 2) | METHOD_BUFFERED;
+    pub const IOCTL_OMNI_BRIDGE_END_MIC_SESSION: u32 =
+        (FILE_DEVICE_OMNI_TRANSLATE << 16) | (FILE_WRITE_DATA << 14) | (0x805 << 2) | METHOD_BUFFERED;
+    pub const OMNI_BRIDGE_ABI_VERSION: u32 = 0x2026_0810;
+    pub const VIRTUAL_MIC_SAMPLE_RATE_HZ: u32 = 48_000;
+    pub const VIRTUAL_MIC_CHANNEL_COUNT: u32 = 1;
+    pub const VIRTUAL_MIC_BITS_PER_SAMPLE: u32 = 16;
+    pub const VIRTUAL_MIC_BLOCK_ALIGN_BYTES: u32 = 2;
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct VirtualMicFormat {
+        pub sample_rate_hz: u32,
+        pub channel_count: u32,
+        pub bits_per_sample: u32,
+        pub block_align_bytes: u32,
+    }
+
+    impl VirtualMicFormat {
+        pub const fn canonical() -> Self {
+            Self {
+                sample_rate_hz: VIRTUAL_MIC_SAMPLE_RATE_HZ,
+                channel_count: VIRTUAL_MIC_CHANNEL_COUNT,
+                bits_per_sample: VIRTUAL_MIC_BITS_PER_SAMPLE,
+                block_align_bytes: VIRTUAL_MIC_BLOCK_ALIGN_BYTES,
+            }
+        }
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct VirtualMicSession {
+        pub abi_version: u32,
+        pub struct_size: u32,
+        pub generation: u64,
+        pub format: VirtualMicFormat,
+    }
+
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct VirtualMicWriteHeader {
+        pub abi_version: u32,
+        pub header_bytes: u32,
+        pub generation: u64,
+        pub sample_rate_hz: u32,
+        pub channel_count: u32,
+        pub bits_per_sample: u32,
+        pub frame_count: u32,
+        pub payload_bytes: u32,
+        pub reserved: u32,
+    }
 
     /// Snapshot returned by `IOCTL_OMNI_BRIDGE_QUERY_STATUS`. The field order and
     /// `#[repr(C)]` layout mirror the kernel driver's struct exactly.
@@ -67,10 +158,25 @@ pub mod probe_support {
         pub render_set_write_packet_calls: u64,
         pub render_read_bytes_calls: u64,
         pub loopback_capture_read_calls: u64,
+        pub mic_ring_capacity_bytes: u32,
+        pub mic_buffered_bytes: u32,
+        pub mic_max_buffered_bytes: u32,
+        pub mic_sample_rate_hz: u32,
+        pub mic_channel_count: u32,
+        pub mic_bits_per_sample: u32,
+        pub mic_session_active: u32,
+        pub mic_reserved: u32,
+        pub mic_generation: u64,
+        pub mic_written_bytes: u64,
+        pub mic_consumed_bytes: u64,
+        pub mic_dropped_bytes: u64,
+        pub mic_underrun_bytes: u64,
+        pub mic_rejected_writes: u64,
     }
 
     /// Minimum number of bytes a valid `DriverStatus` query must return.
     pub const DRIVER_STATUS_BASE_SIZE: u32 = 40;
+    pub const DRIVER_STATUS_VIRTUAL_MIC_SIZE: u32 = 160;
 
     /// Render `error` as an owned `String` for the probes' `Result<_, String>`.
     pub fn error_text(error: impl std::fmt::Display) -> String {
@@ -164,6 +270,41 @@ pub mod probe_support {
         (2.0 * (real * real + imaginary * imaginary).sqrt() / samples.len() as f64) as f32
     }
 
+    /// Narrow-band fingerprint evidence with the local spectral background
+    /// removed. A live desktop is not an anechoic test chamber: unrelated
+    /// media and notification sounds can contribute a small raw magnitude at
+    /// the probe frequency. Comparing the exact bin with the median of nearby
+    /// bins keeps that broadband/ambient energy from being misreported as the
+    /// Bridge's deliberately injected fingerprint, without relaxing the leak
+    /// threshold for an actual narrow-band tone.
+    #[derive(Clone, Copy, Debug, PartialEq)]
+    pub struct IsolatedComponentAmplitude {
+        pub raw: f32,
+        pub local_noise_floor: f32,
+        pub isolated: f32,
+    }
+
+    pub fn isolated_component_amplitude(
+        samples: &[f32],
+        frequency_hz: f32,
+    ) -> IsolatedComponentAmplitude {
+        const LOCAL_OFFSETS_HZ: [f32; 10] = [
+            -41.0, -31.0, -23.0, -17.0, -11.0, 11.0, 17.0, 23.0, 31.0, 41.0,
+        ];
+        let raw = component_amplitude(samples, frequency_hz);
+        let mut nearby = LOCAL_OFFSETS_HZ.map(|offset| {
+            component_amplitude(samples, (frequency_hz + offset).max(20.0))
+        });
+        nearby.sort_by(f32::total_cmp);
+        let middle = nearby.len() / 2;
+        let local_noise_floor = (nearby[middle - 1] + nearby[middle]) * 0.5;
+        IsolatedComponentAmplitude {
+            raw,
+            local_noise_floor,
+            isolated: (raw - local_noise_floor).max(0.0),
+        }
+    }
+
     /// Coarse dominant-frequency scan (100..=5000 Hz in 25 Hz steps).
     pub fn coarse_dominant_frequency(samples: &[f32]) -> f32 {
         (100..=5_000)
@@ -179,6 +320,7 @@ pub mod probe_support {
     pub fn print_json_line<T: Serialize>(value: &T) {
         println!("{}", serde_json::to_string(value).unwrap());
     }
+
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -265,6 +407,19 @@ pub fn validate_translation_frame(
             header,
             "bridge.invalid-audio-direction",
             "audio pipe accepts translation frames only",
+        ));
+    }
+    if header.translation_sink == Some(TranslationAudioSink::VirtualMic)
+        && (header.cue_id.as_deref().is_none_or(str::is_empty)
+            || !matches!(
+                (header.chunk_index, header.chunk_count),
+                (Some(index), Some(count)) if count > 0 && index < count
+            ))
+    {
+        return Err(rejected_audio_frame_ack(
+            header,
+            "bridge.invalid-pcm-payload",
+            "virtual microphone frames require a valid chunkIndex/chunkCount pair",
         ));
     }
     let expected_bytes = header
@@ -533,6 +688,80 @@ fn db_to_gain(db: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::f32::consts::TAU;
+
+    const FINGERPRINT_TARGET_HZ: f32 = 997.0;
+    const FINGERPRINT_CAPTURE_FRAMES: usize = 135_360;
+
+    fn ambient_fingerprint_fixture(include_target: bool) -> Vec<f32> {
+        const BACKGROUND_OFFSETS_HZ: [f32; 10] = [
+            -41.0, -31.0, -23.0, -17.0, -11.0, 11.0, 17.0, 23.0, 31.0, 41.0,
+        ];
+        let mut state = 0x9e37_79b9_u32;
+        (0..FINGERPRINT_CAPTURE_FRAMES)
+            .map(|frame| {
+                state ^= state << 13;
+                state ^= state >> 17;
+                state ^= state << 5;
+                let broadband = (state as f32 / u32::MAX as f32 - 0.5) * 0.08;
+                let local_background = BACKGROUND_OFFSETS_HZ
+                    .iter()
+                    .map(|offset| {
+                        0.006
+                            * (TAU * (FINGERPRINT_TARGET_HZ + offset) * frame as f32
+                                / probe_support::SAMPLE_RATE as f32)
+                                .sin()
+                    })
+                    .sum::<f32>();
+                let target = if include_target && (4_800..100_800).contains(&frame) {
+                    0.08 * (TAU * FINGERPRINT_TARGET_HZ * (frame - 4_800) as f32
+                        / probe_support::SAMPLE_RATE as f32)
+                        .sin()
+                } else {
+                    0.0
+                };
+                broadband + local_background + target
+            })
+            .collect()
+    }
+
+    #[test]
+    fn local_spectral_background_is_not_misreported_as_a_fingerprint() {
+        let evidence = probe_support::isolated_component_amplitude(
+            &ambient_fingerprint_fixture(false),
+            FINGERPRINT_TARGET_HZ,
+        );
+        assert!(evidence.isolated < 0.003, "evidence={evidence:?}");
+    }
+
+    #[test]
+    fn a_real_narrow_band_fingerprint_remains_well_above_the_leak_limit() {
+        let evidence = probe_support::isolated_component_amplitude(
+            &ambient_fingerprint_fixture(true),
+            FINGERPRINT_TARGET_HZ,
+        );
+        assert!(evidence.isolated > 0.04, "evidence={evidence:?}");
+    }
+
+    #[test]
+    fn process_loopback_build_gate_is_platform_independent() {
+        assert_eq!(
+            classify_process_loopback_capability(Some(
+                PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD - 1
+            )),
+            (false, ProcessLoopbackStatus::Unsupported)
+        );
+        assert_eq!(
+            classify_process_loopback_capability(Some(
+                PROCESS_LOOPBACK_MINIMUM_WINDOWS_BUILD
+            )),
+            (true, ProcessLoopbackStatus::Unknown)
+        );
+        assert_eq!(
+            classify_process_loopback_capability(None),
+            (false, ProcessLoopbackStatus::Failed)
+        );
+    }
 
     #[test]
     fn resamples_24k_mono_translation_to_48k_stereo() {
@@ -822,6 +1051,48 @@ mod tests {
                 .error_code
                 .as_deref(),
             Some("bridge.invalid-pcm-payload")
+        );
+    }
+
+    #[test]
+    fn virtual_mic_frame_validation_requires_complete_bounded_chunk_identity() {
+        let mut header = translation_header();
+        header.translation_sink = Some(TranslationAudioSink::VirtualMic);
+        header.route_direction = Some(AudioRouteDirection::Outbound);
+        header.cue_id = Some("cue-virtual-mic".to_string());
+
+        let missing = validate_translation_frame(
+            Some("session-1"),
+            &header,
+            &[1, 0, 2, 0],
+        )
+        .unwrap_err();
+        assert_eq!(missing.error_code.as_deref(), Some("bridge.invalid-pcm-payload"));
+
+        header.chunk_index = Some(0);
+        header.chunk_count = Some(0);
+        assert_eq!(
+            validate_translation_frame(Some("session-1"), &header, &[1, 0, 2, 0])
+                .unwrap_err()
+                .error_code
+                .as_deref(),
+            Some("bridge.invalid-pcm-payload")
+        );
+
+        header.chunk_index = Some(1);
+        header.chunk_count = Some(1);
+        assert_eq!(
+            validate_translation_frame(Some("session-1"), &header, &[1, 0, 2, 0])
+                .unwrap_err()
+                .error_code
+                .as_deref(),
+            Some("bridge.invalid-pcm-payload")
+        );
+
+        header.chunk_index = Some(0);
+        assert_eq!(
+            validate_translation_frame(Some("session-1"), &header, &[1, 0, 2, 0]).unwrap(),
+            vec![1, 2]
         );
     }
 }

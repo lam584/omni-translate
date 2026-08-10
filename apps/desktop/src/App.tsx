@@ -108,10 +108,15 @@ export function buildWatchModeDiagnosticAutostartConfig(
     env,
     'VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE',
   );
-  const feedbackLoopPrevention =
-    watchModeEnvString(env, 'VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION') === 'echo-cancel'
-      ? 'echo-cancel'
-      : 'virtual-driver';
+  const requestedFeedbackLoopPrevention = watchModeEnvString(
+    env,
+    'VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION',
+  );
+  const feedbackLoopPrevention = requestedFeedbackLoopPrevention === 'echo-cancel'
+    || requestedFeedbackLoopPrevention === 'process-exclusion'
+    || requestedFeedbackLoopPrevention === 'none'
+    ? requestedFeedbackLoopPrevention
+    : 'virtual-driver';
   // Echo-cancel must obtain a render reference from the exact audio that is
   // played locally.  A stale renderer `.env.local` must not silently turn the
   // diagnostic back into the secondary/text-only path.
@@ -126,6 +131,7 @@ export function buildWatchModeDiagnosticAutostartConfig(
   const translationAudioSource = subtitleTranslationMode === 'native'
     ? 'omni-native'
     : 'subtitle-tts';
+  const translatedSpeechEnabled = feedbackLoopPrevention !== 'none';
 
   return {
     ...currentConfig,
@@ -140,14 +146,14 @@ export function buildWatchModeDiagnosticAutostartConfig(
       subtitleTranslationMode,
       subtitleTranslationModelId: subtitleTranslationMode === 'secondary' ? subtitleTranslationModelId : '',
       inboundSecondaryAudioModelId: subtitleTranslationMode === 'secondary' ? inboundSecondaryAudioModelId : '',
-      outputSpeechEnabled: true,
+      outputSpeechEnabled: translatedSpeechEnabled,
       feedbackLoopPrevention,
       inboundRoute: {
         ...currentConfig.devices.inboundRoute,
         mixControl: {
           ...currentConfig.devices.inboundRoute.mixControl,
           keepOriginalAudio: true,
-          translatedAudioEnabled: true,
+          translatedAudioEnabled: translatedSpeechEnabled,
           originalAudioGainDb: -4,
           translatedAudioGainDb: 0,
           translatedAudioAutoGainEnabled: true,
@@ -158,10 +164,10 @@ export function buildWatchModeDiagnosticAutostartConfig(
     },
     speech: {
       ...currentConfig.speech,
-      enabled: true,
+      enabled: translatedSpeechEnabled,
       textToSpeechModelId,
       outputTarget: 'speaker',
-      localPlaybackEnabled: true,
+      localPlaybackEnabled: translatedSpeechEnabled,
       virtualMicOutputEnabled: false,
       translationAudioSource,
     },

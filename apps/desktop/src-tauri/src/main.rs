@@ -8,7 +8,9 @@ mod contract_export;
 #[cfg(test)]
 mod ipc_boundary_tests;
 mod diagnostics;
+mod overlay_release_evidence;
 mod provider;
+mod release_evidence_diagnostic;
 mod runtime;
 mod shared;
 mod storage;
@@ -23,6 +25,7 @@ use bridge::state::BridgeStateStore;
 use diagnostics::events::{
     append_diagnostics_log, append_frontend_diagnostics_logs, set_diagnostics_log_level,
 };
+use overlay_release_evidence::collect_overlay_click_through_release_evidence;
 use runtime::contracts::RuntimeNotification;
 use runtime::events::sync_subtitle_overlay_window_state;
 use runtime::events::unlock_subtitle_overlay;
@@ -235,6 +238,14 @@ async fn debug_cred_direct(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 fn main() {
+    let mut arguments = std::env::args_os();
+    let _executable = arguments.next();
+    if arguments.next().as_deref() == Some(std::ffi::OsStr::new("--build-commit"))
+        && arguments.next().is_none()
+    {
+        println!("{}", option_env!("OMNI_BUILD_COMMIT").unwrap_or_default());
+        return;
+    }
     let diagnostics_store = diagnostics::bootstrap_logging();
     let diagnostics_store_for_notifications = diagnostics_store.clone();
 
@@ -255,7 +266,9 @@ fn main() {
         // commands the live-matrix / IPC self-test scripts invoke over CLI
         // (start_bridge_service, preconnect_omni_realtime, stop_audio_route,
         // bootstrap_storage, load_config_draft, debug_ipc_ping,
-        // debug_cred_direct). Removing a script-invoked command requires
+        // debug_cred_direct), plus the environment-gated release overlay OS
+        // authority reached only through a real tauri-driver session. Removing
+        // a script-invoked command requires
         // re-running the live matrix on real hardware.
         .invoke_handler(tauri::generate_handler![
             toggle_subtitle_overlay,
@@ -276,6 +289,7 @@ fn main() {
             bridge_v2,
             diagnostics_v2,
             configuration_v2,
+            collect_overlay_click_through_release_evidence,
             unlock_subtitle_overlay
         ])
         .setup(move |app| {
@@ -498,6 +512,7 @@ fn main() {
             // `debug_ipc_ping`; that proof can only arrive after setup returns
             // and the main WebView IPC channel is usable.
             watch_mode_diagnostic::schedule_after_ipc(app, &IPC_PING_RECEIVED);
+            release_evidence_diagnostic::schedule_after_ipc(app, &IPC_PING_RECEIVED);
 
             Ok(())
         })

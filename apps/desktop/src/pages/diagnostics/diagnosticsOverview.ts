@@ -6,6 +6,7 @@ import type { AppConfigDraft, RealtimeAudioMode } from '../../schema/config';
 import type { AudioRuntimeSnapshot } from '../../schema/audio-runtime';
 import type { RuntimeSnapshot } from '../../schema/runtime-core';
 import type { ProviderInteractionCapability } from '../../schema/provider-contract';
+import { isProcessLoopbackReady, resolveProcessLoopbackCapability } from '../../utils/process-loopback-capability';
 
 export type RuntimeEnvironmentSummary = {
   mode: 'browser-preview' | 'runtime-error' | 'live-action-needed' | 'live-ready';
@@ -149,6 +150,30 @@ export function formatDriverHealthLabel(health: string) {
   return i18n.t('diagnostics.status.notInstalled');
 }
 
+export function formatCaptureBackendLabel(backend: string) {
+  if (backend === 'wasapi-process-exclusion') {
+    return i18n.t('diagnostics.status.captureBackendProcessExclusion');
+  }
+  if (backend === 'driver-virtual-speaker') {
+    return i18n.t('diagnostics.status.captureBackendVirtualDriver');
+  }
+  if (backend === 'wasapi-endpoint-loopback') {
+    return i18n.t('diagnostics.status.captureBackendEndpointLoopback');
+  }
+  if (!backend || backend === 'none') {
+    return i18n.t('diagnostics.status.captureBackendNone');
+  }
+  return backend;
+}
+
+export function formatProcessLoopbackStatusLabel(status: string) {
+  if (status === 'ready') return i18n.t('diagnostics.status.processLoopbackReady');
+  if (status === 'probing') return i18n.t('diagnostics.status.processLoopbackProbing');
+  if (status === 'unsupported') return i18n.t('diagnostics.status.processLoopbackUnsupported');
+  if (status === 'failed') return i18n.t('diagnostics.status.processLoopbackFailed');
+  return i18n.t('diagnostics.status.unknown');
+}
+
 export function getIssueToneRank(tone: StatusTone) {
   switch (tone) {
     case 'risk':
@@ -206,16 +231,18 @@ export function getRuntimeEnvironmentSummary(
 
   const actualIssues: string[] = [];
 
-  const bridgeRequired = !configDraft || (
-    configDraft.devices.routeMode === 'watch' &&
-    configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
-  );
+  const feedbackMode = configDraft?.devices.feedbackLoopPrevention;
+  const watchRoute = configDraft?.devices.routeMode === 'watch';
+  const bridgeRequired = !configDraft || (watchRoute && ['virtual-driver', 'process-exclusion'].includes(feedbackMode ?? ''));
+  const driverRequired = !configDraft || (watchRoute && feedbackMode === 'virtual-driver');
+  const processLoopbackRequired = Boolean(configDraft && watchRoute && feedbackMode === 'process-exclusion');
+  const processLoopback = resolveProcessLoopbackCapability(runtimeSnapshot.bridge);
 
-  if (bridgeRequired && runtimeSnapshot.bridge.driverHealth === 'damaged') {
+  if (driverRequired && runtimeSnapshot.bridge.driverHealth === 'damaged') {
     actualIssues.push(i18n.t('diagnostics.issues.driverDamaged'));
   }
 
-  if (bridgeRequired && runtimeSnapshot.bridge.driverHealth === 'version-mismatch') {
+  if (driverRequired && runtimeSnapshot.bridge.driverHealth === 'version-mismatch') {
     actualIssues.push(i18n.t('diagnostics.issues.driverVersionMismatch'));
   }
 
@@ -223,8 +250,15 @@ export function getRuntimeEnvironmentSummary(
     actualIssues.push(i18n.t('diagnostics.issues.bridgeError', { code: runtimeSnapshot.bridge.lastErrorCode }));
   }
 
-  if (bridgeRequired && runtimeSnapshot.bridge.lastErrorCode === 'monitor.virtual-playback-loop') {
+  if (driverRequired && runtimeSnapshot.bridge.lastErrorCode === 'monitor.virtual-playback-loop') {
     actualIssues.push(i18n.t('diagnostics.issues.virtualPlaybackLoop'));
+  }
+
+  if (processLoopbackRequired && !isProcessLoopbackReady(processLoopback)) {
+    actualIssues.push(i18n.t('diagnostics.issues.processLoopbackUnavailable', {
+      status: formatProcessLoopbackStatusLabel(processLoopback.status),
+      detail: processLoopback.failureDetail ?? `${processLoopback.windowsBuildNumber ?? 'unknown'} / ${processLoopback.minimumWindowsBuild}`,
+    }));
   }
 
   if (audioRuntimeSnapshot.inbound.lastError) {
@@ -268,14 +302,16 @@ export function buildOverviewIssues(
 ): OverviewIssue[] {
   const issues = new Map<string, OverviewIssue>();
   const recentErrors = runtimeSnapshot.diagnostics.recentErrors.slice(0, 2);
-  const bridgeRequired = !configDraft || (
-    configDraft.devices.routeMode === 'watch' &&
-    configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
-  );
+  const feedbackMode = configDraft?.devices.feedbackLoopPrevention;
+  const watchRoute = configDraft?.devices.routeMode === 'watch';
+  const bridgeRequired = !configDraft || (watchRoute && ['virtual-driver', 'process-exclusion'].includes(feedbackMode ?? ''));
+  const driverRequired = !configDraft || (watchRoute && feedbackMode === 'virtual-driver');
+  const processLoopbackRequired = Boolean(configDraft && watchRoute && feedbackMode === 'process-exclusion');
+  const processLoopback = resolveProcessLoopbackCapability(runtimeSnapshot.bridge);
   const hasBridgeRuntimeIssue = bridgeRequired && (
-    runtimeSnapshot.bridge.driverHealth === 'damaged' ||
-    runtimeSnapshot.bridge.driverHealth === 'version-mismatch' ||
-    runtimeSnapshot.bridge.lifecycleState === 'error'
+    runtimeSnapshot.bridge.lifecycleState === 'error' ||
+    (driverRequired && ['damaged', 'version-mismatch'].includes(runtimeSnapshot.bridge.driverHealth)) ||
+    (processLoopbackRequired && !isProcessLoopbackReady(processLoopback))
   );
   const hasAudioRuntimeIssue =
     Boolean(audioRuntimeSnapshot.inbound.lastError) ||
@@ -305,10 +341,17 @@ export function buildOverviewIssues(
   }
 
   if (hasBridgeRuntimeIssue) {
+    const bridgeDetail = processLoopbackRequired
+      ? [
+        formatCaptureBackendLabel(processLoopback.captureBackend),
+        formatProcessLoopbackStatusLabel(processLoopback.status),
+        processLoopback.failureDetail,
+      ]
+      : [formatDriverHealthLabel(runtimeSnapshot.bridge.driverHealth), runtimeSnapshot.bridge.lastErrorCode];
     addIssue({
       id: 'bridge-runtime',
       title: i18n.t('diagnostics.issues.bridgeRuntimeTitle'),
-      detail: [formatDriverHealthLabel(runtimeSnapshot.bridge.driverHealth), runtimeSnapshot.bridge.lastErrorCode]
+      detail: bridgeDetail
         .filter((item): item is string => Boolean(item))
         .join(' · '),
       tone: 'warning',
@@ -355,6 +398,10 @@ export function buildOverviewSignals(
   effectiveBridgeStatus: string,
 ) {
   const recentErrorCount = runtimeSnapshot.diagnostics.recentErrors.slice(0, 6).length;
+  const processLoopback = resolveProcessLoopbackCapability(runtimeSnapshot.bridge);
+  const bridgeMeta = processLoopback.captureBackend !== 'none'
+    ? formatCaptureBackendLabel(processLoopback.captureBackend)
+    : formatDriverHealthLabel(runtimeSnapshot.bridge.driverHealth);
   return [
     {
       label: i18n.t('diagnostics.signals.environment'),
@@ -365,7 +412,7 @@ export function buildOverviewSignals(
     {
       label: i18n.t('diagnostics.signals.bridge'),
       value: formatBridgeStateLabel(runtimeSnapshot.bridge.bridgeState),
-      meta: formatDriverHealthLabel(runtimeSnapshot.bridge.driverHealth),
+      meta: bridgeMeta,
       tone: runtimeSnapshot.bridge.bridgeState === 'running' ? 'ready' : 'warning',
     },
     {
@@ -389,10 +436,12 @@ export function buildServiceMonitorItems(
   configDraft: AppConfigDraft,
   runtimeEnvironmentSummary: RuntimeEnvironmentSummary,
 ) {
-  const hasBridgeRuntimeIssue =
-    runtimeSnapshot.bridge.driverHealth === 'damaged' ||
-    runtimeSnapshot.bridge.driverHealth === 'version-mismatch' ||
-    runtimeSnapshot.bridge.lifecycleState === 'error';
+  const processLoopback = resolveProcessLoopbackCapability(runtimeSnapshot.bridge);
+  const processLoopbackSelected = configDraft.devices.routeMode === 'watch'
+    && configDraft.devices.feedbackLoopPrevention === 'process-exclusion';
+  const hasBridgeRuntimeIssue = runtimeSnapshot.bridge.lifecycleState === 'error'
+    || ['damaged', 'version-mismatch'].includes(runtimeSnapshot.bridge.driverHealth)
+    || (processLoopbackSelected && !isProcessLoopbackReady(processLoopback));
   const overlayVisible = isOverlayVisible(runtimeSnapshot);
 
   return [
@@ -404,7 +453,9 @@ export function buildServiceMonitorItems(
     },
     {
       label: i18n.t('diagnostics.services.bridgeService'),
-      summary: formatDriverHealthLabel(runtimeSnapshot.bridge.driverHealth),
+      summary: processLoopbackSelected
+        ? `${formatCaptureBackendLabel(processLoopback.captureBackend)} · ${formatProcessLoopbackStatusLabel(processLoopback.status)}`
+        : formatDriverHealthLabel(runtimeSnapshot.bridge.driverHealth),
       badge: formatBridgeStateLabel(runtimeSnapshot.bridge.bridgeState),
       tone: hasBridgeRuntimeIssue ? 'warning' : runtimeSnapshot.bridge.bridgeState === 'running' ? 'ready' : 'pending',
     },

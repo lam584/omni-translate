@@ -1,5 +1,5 @@
 {
-  "protocolVersion": "2026-07-27-smart-gain-v3",
+  "protocolVersion": "2026-08-10-audio-routing-v6",
   "installChannel": "development",
   "driverVersion": "0.10.0-dev",
   "bridgeVersion": "0.1.0",
@@ -7,9 +7,11 @@
   "installedAt": "2026-07-26T00:00:00.0000000Z",
   "targetDeviceId": "virtual-mic-default",
   "virtualRenderDeviceId": "omni-virtual-speaker-default",
+  "virtualCaptureDeviceId": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{bbbbbbbb-0000-0000-0000-000000000000}",
   "driverBackend": "sysvad-wave-rt",
   "deviceName": "Omni Translate Virtual Speaker",
   "installedInfPath": "drivers\\windows-virtual-mic\\package\\omni-virtual-speaker.inf",
   "pnpInstanceId": "ROOT\\MEDIA\\0000",
-  "endpointInstanceId": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{aaaaaaaa-0000-0000-0000-000000000000}"
+  "endpointInstanceId": "SWD\\MMDEVAPI\\{0.0.0.00000000}.{aaaaaaaa-0000-0000-0000-000000000000}",
+  "captureEndpointInstanceId": "SWD\\MMDEVAPI\\{0.0.1.00000000}.{bbbbbbbb-0000-0000-0000-000000000000}"
 }

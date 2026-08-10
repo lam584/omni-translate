@@ -4,7 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import i18n from '../../i18n/config';
 import { registerDomHarness } from '../../test-utils/component-test-harness';
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
-import { classifyBenchmarkError, useBenchmarkController, type BenchmarkVoiceModel } from './useBenchmarkController';
+import { classifyBenchmarkError, useBenchmarkController, type BenchmarkRunLifecycle, type BenchmarkVoiceModel } from './useBenchmarkController';
 
 const runtime = vi.hoisted(() => ({
   readProviderSecret: vi.fn(),
@@ -23,9 +23,10 @@ const option: BenchmarkVoiceModel = {
 describe('useBenchmarkController', () => {
   let controller: ReturnType<typeof useBenchmarkController>;
   let options: BenchmarkVoiceModel[];
+  let lifecycle: BenchmarkRunLifecycle;
 
   function Harness() {
-    controller = useBenchmarkController(options);
+    controller = useBenchmarkController(options, lifecycle);
     return null;
   }
 
@@ -34,6 +35,7 @@ describe('useBenchmarkController', () => {
       runtime.readProviderSecret.mockReset();
       runtime.runModelBenchmark.mockReset();
       options = [option];
+      lifecycle = {};
     },
   });
 
@@ -108,6 +110,40 @@ describe('useBenchmarkController', () => {
     expect(controller.error).toContain('offline');
     expect(controller.progress).toMatchObject({ status: 'error' });
     expect(controller.progress?.error).toContain('offline');
+  });
+
+  it('reports one durable lifecycle for the same generated run id', async () => {
+    const started = vi.fn();
+    const completed = vi.fn();
+    const failed = vi.fn();
+    lifecycle = { onStarted: started, onCompleted: completed, onFailed: failed };
+    runtime.readProviderSecret.mockResolvedValue({ secret: 'key' });
+    const report = createEmptyBenchmarkReport(option.apiModelId, 'sample.wav', option.interactionCapabilities);
+    runtime.runModelBenchmark.mockResolvedValue(report);
+    await mount();
+    await act(async () => controller.run());
+
+    expect(started).toHaveBeenCalledOnce();
+    expect(completed).toHaveBeenCalledOnce();
+    expect(failed).not.toHaveBeenCalled();
+    expect(started.mock.calls[0]?.[0]).toMatchObject({ report: expect.objectContaining({ audioFile: expect.any(String) }) });
+    expect(completed.mock.calls[0]?.[0].runId).toBe(started.mock.calls[0]?.[0].runId);
+    expect(runtime.runModelBenchmark.mock.calls[0]?.[3]).toMatchObject({ runId: started.mock.calls[0]?.[0].runId });
+  });
+
+  it('creates a durable failed lifecycle even when credential preflight fails', async () => {
+    const started = vi.fn();
+    const failed = vi.fn();
+    lifecycle = { onStarted: started, onFailed: failed };
+    runtime.readProviderSecret.mockResolvedValue({ secret: '' });
+    await mount();
+    await act(async () => controller.run());
+
+    expect(started).toHaveBeenCalledOnce();
+    expect(failed).toHaveBeenCalledOnce();
+    expect(failed.mock.calls[0]?.[0].runId).toBe(started.mock.calls[0]?.[0].runId);
+    expect(failed.mock.calls[0]?.[0].report.runs).toEqual([]);
+    expect(controller.modalOpen).toBe(true);
   });
 
   it('classifies common benchmark failures and preserves technical details', () => {

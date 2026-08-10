@@ -8,6 +8,7 @@ import { invokeWithTimeoutCore } from './invoke-with-timeout';
 import { createLogger } from './logger';
 
 const BRIDGE_REFRESH_TIMEOUT_MS = 120000;
+const BRIDGE_PROCESS_LOOPBACK_PROBE_TIMEOUT_MS = 20000;
 const BRIDGE_START_TIMEOUT_MS = 20000;
 const BRIDGE_INSTALL_TIMEOUT_MS = 120000;
 const BRIDGE_REPAIR_TIMEOUT_MS = 120000;
@@ -98,6 +99,19 @@ function withBridgePatch(patch: Partial<RuntimeSnapshot['bridge']>): RuntimeSnap
 
 export async function refreshBridgeRuntime(): Promise<RuntimeSnapshot> {
   return invokeBridgeWithTimeout(() => activeDesktopApi().bridge.refresh(), i18n.t('runtime.bridge.actionRefresh'), BRIDGE_REFRESH_TIMEOUT_MS, 'bridge-refresh');
+}
+
+export function canProbeProcessLoopbackCapability(): boolean {
+  return activeDesktopApi().capabilities.hasNativeShell;
+}
+
+export async function probeProcessLoopbackCapabilityRuntime(): Promise<RuntimeSnapshot> {
+  return invokeBridgeWithTimeout(
+    () => activeDesktopApi().bridge.probeProcessLoopback(),
+    i18n.t('runtime.bridge.actionRefresh'),
+    BRIDGE_PROCESS_LOOPBACK_PROBE_TIMEOUT_MS,
+    'bridge-process-loopback-probe',
+  );
 }
 
 export async function startBridgeServiceRuntime(config: AppConfigDraft): Promise<RuntimeSnapshot> {

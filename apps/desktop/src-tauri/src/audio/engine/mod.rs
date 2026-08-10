@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::fs::OpenOptions;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::thread;
@@ -17,15 +17,47 @@ use crate::runtime::state::RuntimeStateStore;
 
 use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime};
 use super::events::AUDIO_RUNTIME_SNAPSHOT_EVENT;
-use super::state::{AudioRouteHandle, AudioStateStore, CapturedSegmentAudio};
+use super::state::{
+    AudioRouteHandle, AudioStateStore, BridgeSourceFrameIdentity, CapturedSegmentAudio,
+};
 use super::time_utils::{ms_marker, now_unix_millis_marker, unix_ms};
 use crate::bridge::contracts::BridgeTranslationFrameHeader;
+
+const AUDIO_CAPTURE_FAILED_CODE: &str = "audio.capture-failed";
+
+#[cfg(test)]
+use crate::bridge::contracts::AudioSampleFormat;
 use crate::bridge::state::BridgeStateStore;
 
 mod retry;
 mod samples;
 mod device_catalog;
 mod device_initializer;
+mod aec_timing;
+mod bridge_source_io;
+mod bridge_source_startup;
+mod bridge_worker_authority;
+mod echo_diagnostics;
+
+use self::bridge_source_io::{
+    bridge_source_identity_disposition, bridge_source_route_error,
+    bridge_translation_status_disposition,
+    read_bridge_source_payload, record_bridge_translation_status,
+    write_bridge_translation_status_ack, BridgeSourceEnvelope,
+    BridgeSourceIdentityDisposition, BridgeTranslationStatusDisposition,
+};
+use self::bridge_source_startup::validate_bridge_source_startup;
+use self::bridge_worker_authority::{
+    apply_bridge_source_worker_error_if_current,
+    log_stale_bridge_source_failure,
+    BridgeSourceWorkerContext,
+};
+#[cfg(test)]
+use self::bridge_worker_authority::{
+    apply_process_loopback_capture_failure_if_current,
+    commit_bridge_source_worker_error_if_current,
+};
+use self::echo_diagnostics::EchoCancelDiagnostics;
 
 use self::retry::{
     with_audio_init_retry, AudioInitError, RetryAction, AUDIO_INIT_BASE_DELAY_MS,
@@ -37,6 +69,7 @@ use self::samples::{
 };
 use self::device_catalog::AudioDeviceCatalog;
 use self::device_initializer::{initialize_capture_route, InitializedCaptureRoute};
+use self::aec_timing::{qpc_now_100ns, AecDelayEstimator, CaptureClockObservation};
 
 const SAMPLE_RATE_HZ: usize = 48_000;
 const CHANNEL_COUNT: usize = 2;
@@ -45,7 +78,6 @@ const CHUNK_FRAMES: usize = 960;
 // -40 dB. Treating that as speech creates phantom segments while nobody talks.
 const SPEECH_THRESHOLD_DB: f32 = -32.0;
 const SILENCE_HOLD_CHUNKS: usize = 6;
-const ECHO_CANCEL_DELAY_SAMPLES: usize = 9_600;
 const BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS: u64 = 15;
 const BRIDGE_SOURCE_PIPE_RETRY_MS: u64 = 250;
 const DEVICE_FALLBACK_DELAY_MS: u64 = 500;
@@ -121,6 +153,13 @@ pub(crate) fn start_route(
     stop_route(app.clone(), store, direction)?;
 
     let spec = RouteSpec::from_config(&config, direction)?;
+    spec.ensure_feedback_backend_available()?;
+    if spec.echo_cancel_enabled() {
+        // Construct the real production engine before any route is marked
+        // started. A closed gate or missing linked AEC3 backend is a hard
+        // launch failure; the legacy Rust implementation is shadow-only.
+        store.activate_production_echo_canceller()?;
+    }
 
     // Fast path: if an idle pre-warmed device is parked for this exact target,
     // activate it in place (the warm thread transitions itself into the shared
@@ -144,7 +183,7 @@ pub(crate) fn start_route(
     };
 
     let effective_device_id =
-        if direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver" {
+        if spec.uses_bridge_source() {
             spec.requested_device_id.clone()
         } else {
             let enumerator = DeviceEnumerator::new().map_err_str()?;
@@ -152,18 +191,28 @@ pub(crate) fn start_route(
             device.get_id().map_err_str()?
         };
 
-    let waits_for_bridge_source =
-        direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver";
-    if waits_for_bridge_source {
+    let waits_for_bridge_source = spec.uses_bridge_source();
+    let bridge_source_context = if waits_for_bridge_source {
         let bridge_snapshot = app.state::<BridgeStateStore>().snapshot();
         diag_log_detail(
             &app,
             "audio",
             "info",
             "Inbound route delegated Bridge readiness to the capture worker.",
-            format!("pipe={} reconnectTimeoutSecs={BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS}", bridge_snapshot.pipe_path),
+            format!(
+                "pipe={} reconnectTimeoutSecs={BRIDGE_SOURCE_RECONNECT_TIMEOUT_SECS} sessionId={} sourceGeneration={}",
+                bridge_snapshot.pipe_path,
+                bridge_snapshot.session_id.as_deref().unwrap_or("none"),
+                bridge_snapshot.source_generation,
+            ),
         );
-    }
+        Some(BridgeSourceWorkerContext::new(
+            store.inbound_route_generation(),
+            bridge_snapshot,
+        ))
+    } else {
+        None
+    };
     if !waits_for_bridge_source {
         store.mark_route_started(
             direction,
@@ -193,6 +242,7 @@ pub(crate) fn start_route(
     let route_direction = direction.to_string();
     let app_handle = app.clone();
     let worker_spec = spec.clone();
+    let failure_context = bridge_source_context.clone();
 
     let init_done = Arc::new(AtomicBool::new(false));
     let init_done_for_worker = init_done.clone();
@@ -209,6 +259,7 @@ pub(crate) fn start_route(
                 stop_rx,
                 stt_sender,
                 init_done: Some(init_done_for_worker),
+                bridge_source_context,
             };
             if let Err(error) = worker.run(&audio_state) {
                 let (mut message, mut error_code, mut recommended_action) =
@@ -222,22 +273,43 @@ pub(crate) fn start_route(
                         error.clone(),
                     );
                     message = "音频采集线程异常退出，请检查音频设备后重试".to_string();
-                    error_code = Some("audio.capture-failed".to_string());
+                    error_code = Some(AUDIO_CAPTURE_FAILED_CODE.to_string());
                     recommended_action = Some("check-audio-device".to_string());
                 }
-                notify_route_worker_error(
-                    &app_handle,
-                    &route_direction,
-                    &message,
-                    error_code.as_deref(),
-                );
-                audio_state.mark_route_error(
-                    &route_direction,
-                    message,
-                    error_code,
-                    recommended_action,
-                );
-                let _ = emit_audio_snapshot(&app_handle, &audio_state);
+                let state_applied = if let Some(context) = failure_context.as_ref() {
+                    apply_bridge_source_worker_error_if_current(
+                        &app_handle,
+                        &audio_state,
+                        context,
+                        &route_direction,
+                        &message,
+                        error_code.as_deref(),
+                        recommended_action.as_deref(),
+                    )
+                } else if error_code.as_deref()
+                    == Some("bridge.process-loopback-capture-failed")
+                {
+                    false
+                } else {
+                    audio_state.mark_route_error(
+                        &route_direction,
+                        message.clone(),
+                        error_code.clone(),
+                        recommended_action.clone(),
+                    );
+                    true
+                };
+                if !state_applied {
+                    if let Some(context) = failure_context.as_ref() {
+                        log_stale_bridge_source_failure(
+                            &app_handle,
+                            context,
+                            &message,
+                            "worker-authority-mismatch",
+                        );
+                    }
+                    return;
+                }
             }
         })
         .map_err_str()?;
@@ -368,8 +440,8 @@ pub(crate) fn emit_audio_snapshot<R: tauri::Runtime>(
 /// users outside the session page unaware of a dead capture chain. Push an
 /// error-level runtime notification (source `audio-engine`) so the global
 /// toast host can surface it; the id embeds the error code for dedupe.
-fn notify_route_worker_error(
-    app: &AppHandle,
+fn notify_route_worker_error<R: tauri::Runtime>(
+    app: &AppHandle<R>,
     direction: &str,
     message: &str,
     error_code: Option<&str>,
@@ -498,10 +570,16 @@ impl RouteSpec {
             .and_then(Value::as_str)
             .unwrap_or("none")
             .to_string();
-        let aec_enabled = config
+        let configured_aec_enabled = config
             .pointer("/devices/aecEnabled")
             .and_then(Value::as_bool)
             .unwrap_or(true);
+        // `echo-cancel` names the WebRTC AEC3 capture backend; it is not a
+        // route that may silently run with processing disabled. Preserve the
+        // legacy toggle for other modes/outbound microphone processing, but
+        // force the effective inbound backend on whenever this mode is chosen.
+        let aec_enabled = feedback_loop_prevention == "echo-cancel"
+            || configured_aec_enabled;
         let route_device_id =
             if direction == "inbound" && feedback_loop_prevention == "virtual-driver" {
                 config.pointer("/devices/virtualRenderDeviceId")
@@ -566,6 +644,32 @@ impl RouteSpec {
         self.direction == "inbound"
             && self.feedback_loop_prevention == "echo-cancel"
             && self.aec_enabled
+    }
+
+    fn ensure_feedback_backend_available(&self) -> Result<(), String> {
+        if self.direction != "inbound" || self.feedback_loop_prevention != "echo-cancel" {
+            return Ok(());
+        }
+        let gate = crate::audio::echo_cancel::webrtc_aec3_build_gate();
+        if gate.ready {
+            return Ok(());
+        }
+        Err(format!(
+            "WebRTC AEC3 当前不可用，echo-cancel 路线未启动，也不会静默回退到旧 Rust AEC。请选择进程级排除或 Virtual Driver。dependency={} msvcBuildVerified={} linkedBackendPresent={} fixtureVerified={} reason={}",
+            gate.dependency,
+            gate.msvc_build_verified,
+            gate.linked_backend_present,
+            gate.fixture_verified,
+            gate.reason,
+        ))
+    }
+
+    fn uses_bridge_source(&self) -> bool {
+        self.direction == "inbound"
+            && matches!(
+                self.feedback_loop_prevention.as_str(),
+                "virtual-driver" | "process-exclusion"
+            )
     }
 
     fn wasapi_direction(&self) -> Direction {
@@ -781,6 +885,8 @@ impl RouteProcessor {
 mod tests {
     use super::*;
     use serde_json::json;
+    use std::cell::Cell;
+    use std::sync::atomic::AtomicUsize;
 
     fn speech_chunk(level: f32) -> Vec<u8> {
         let mut chunk = Vec::with_capacity(CHUNK_FRAMES * CHANNEL_COUNT * 4);
@@ -1013,7 +1119,7 @@ mod tests {
     }
 
     #[test]
-    fn route_spec_disables_echo_cancel_when_aec_toggle_off() {
+    fn echo_cancel_mode_forces_aec3_even_when_legacy_toggle_is_false() {
         let config = json!({
           "devices": {
             "feedbackLoopPrevention": "echo-cancel",
@@ -1024,7 +1130,8 @@ mod tests {
 
         let inbound = RouteSpec::from_config(&config, "inbound").expect("route spec should parse");
 
-        assert!(!inbound.echo_cancel_enabled());
+        assert!(inbound.aec_enabled);
+        assert!(inbound.echo_cancel_enabled());
     }
 
     #[test]
@@ -1040,6 +1147,43 @@ mod tests {
 
         assert!(inbound.aec_enabled);
         assert!(inbound.echo_cancel_enabled());
+    }
+
+    #[test]
+    #[cfg(not(feature = "webrtc-aec3"))]
+    fn echo_cancel_route_is_blocked_while_the_aec3_build_gate_is_closed() {
+        let config = json!({
+            "devices": {
+                "outputDeviceId": "speaker-1",
+                "feedbackLoopPrevention": "echo-cancel",
+                "aecEnabled": true,
+            }
+        });
+        let inbound = RouteSpec::from_config(&config, "inbound").expect("inbound spec");
+        let error = inbound
+            .ensure_feedback_backend_available()
+            .expect_err("legacy AEC must not silently back the public echo-cancel route");
+        assert!(error.contains("WebRTC AEC3 当前不可用"));
+        assert!(error.contains("不会静默回退到旧 Rust AEC"));
+        assert!(error.contains("x86_64-pc-windows-msvc"));
+    }
+
+    #[test]
+    #[cfg(feature = "webrtc-aec3")]
+    fn echo_cancel_route_is_available_only_in_the_linked_aec3_build() {
+        let config = json!({
+            "devices": {
+                "outputDeviceId": "speaker-1",
+                "feedbackLoopPrevention": "echo-cancel",
+                "aecEnabled": false,
+            }
+        });
+        let inbound = RouteSpec::from_config(&config, "inbound").expect("inbound spec");
+
+        assert!(inbound.echo_cancel_enabled());
+        inbound
+            .ensure_feedback_backend_available()
+            .expect("linked verified AEC3 route should be available");
     }
 
     #[test]
@@ -1069,11 +1213,25 @@ mod tests {
             frame_id: "frame-1".to_string(),
             stream_id: "stream-1".to_string(),
             sample_rate_hz,
+            sample_format: AudioSampleFormat::PcmS16le,
             channel_count: CHANNEL_COUNT as u16,
             frame_count,
             timestamp_ms: 1,
             payload_bytes,
+            bridge_process_id: Some(42),
+            bridge_instance_id: Some("bridge-instance-1".to_string()),
+            source_generation: Some(7),
+            source_generation_token: Some(
+                "bridge-instance-1:session-1:7".to_string(),
+            ),
+            cue_id: None,
+            created_at_ms: None,
+            estimated_duration_ms: None,
+            chunk_index: None,
+            chunk_count: None,
             translated_audio_enhancement_applied: false,
+            translation_sink: None,
+            route_direction: None,
         }
     }
 
@@ -1083,6 +1241,10 @@ mod tests {
         header: &BridgeTranslationFrameHeader,
         payload: &[u8],
     ) -> Vec<u8> {
+        bridge_source_json_envelope_bytes(&serde_json::to_value(header).unwrap(), payload)
+    }
+
+    fn bridge_source_json_envelope_bytes(header: &Value, payload: &[u8]) -> Vec<u8> {
         let header = serde_json::to_vec(header).unwrap();
         let mut envelope = Vec::new();
         envelope.extend_from_slice(&(header.len() as u32).to_le_bytes());
@@ -1097,10 +1259,24 @@ mod tests {
         let header =
             bridge_frame_header("bridge.source.frame", SAMPLE_RATE_HZ as u32, 1, payload.len());
         let envelope = bridge_source_envelope_bytes(&header, &payload);
+        let BridgeSourceEnvelope::Frame {
+            payload: parsed_payload,
+            identity,
+        } = read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap()
+        else {
+            panic!("expected source frame");
+        };
+        assert_eq!(parsed_payload, payload);
+        assert_eq!(identity.bridge_process_id, 42);
+        assert_eq!(identity.bridge_instance_id, "bridge-instance-1");
+        assert_eq!(identity.session_id, "session-1");
+        assert_eq!(identity.source_generation, 7);
         assert_eq!(
-            read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap(),
-            BridgeSourceEnvelope::Frame(payload)
+            identity.source_generation_token,
+            "bridge-instance-1:session-1:7"
         );
+        assert_eq!(identity.frame_timestamp_ms, 1);
+        assert!(identity.read_timestamp_ms > 0);
     }
 
     #[test]
@@ -1108,10 +1284,261 @@ mod tests {
         let header =
             bridge_frame_header("bridge.source.heartbeat", SAMPLE_RATE_HZ as u32, 0, 0);
         let envelope = bridge_source_envelope_bytes(&header, &[]);
+        let BridgeSourceEnvelope::Heartbeat(identity) =
+            read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap()
+        else {
+            panic!("expected source heartbeat");
+        };
+        assert_eq!(identity.bridge_process_id, 42);
+        assert_eq!(identity.source_generation, 7);
+    }
+
+    #[test]
+    fn bridge_source_identity_rebinds_only_the_current_process_incarnation() {
+        let mut current = crate::bridge::contracts::BridgeRuntimeSnapshot {
+            bridge_process_id: Some(42),
+            bridge_instance_id: Some("bridge-instance-new".to_string()),
+            session_id: Some("session-new".to_string()),
+            source_generation: 100,
+            source_generation_token: Some(
+                "bridge-instance-new:session-new:100".to_string(),
+            ),
+            ..Default::default()
+        };
+        let new_subscription = BridgeSourceFrameIdentity {
+            bridge_process_id: 42,
+            bridge_instance_id: "bridge-instance-new".to_string(),
+            session_id: "session-new".to_string(),
+            source_generation: 101,
+            source_generation_token:
+                "bridge-instance-new:session-new:101".to_string(),
+            frame_timestamp_ms: 1_000,
+            read_timestamp_ms: 1_001,
+        };
+        assert_eq!(
+            bridge_source_identity_disposition(&current, &new_subscription),
+            BridgeSourceIdentityDisposition::Rebind
+        );
+        current.source_generation = 101;
+        current.source_generation_token =
+            Some("bridge-instance-new:session-new:101".to_string());
+        assert_eq!(
+            bridge_source_identity_disposition(&current, &new_subscription),
+            BridgeSourceIdentityDisposition::Current
+        );
+
+        let old_process_frame = BridgeSourceFrameIdentity {
+            bridge_process_id: 41,
+            bridge_instance_id: "bridge-instance-old".to_string(),
+            session_id: "session-old".to_string(),
+            source_generation: 99,
+            source_generation_token:
+                "bridge-instance-old:session-old:99".to_string(),
+            frame_timestamp_ms: 999,
+            read_timestamp_ms: 1_002,
+        };
+        assert!(matches!(
+            bridge_source_identity_disposition(&current, &old_process_frame),
+            BridgeSourceIdentityDisposition::Reject(reason)
+                if reason.contains("bridge-process-mismatch")
+        ));
+    }
+
+    #[test]
+    fn bridge_source_error_envelope_surfaces_process_capture_failure_immediately() {
+        let mut header = serde_json::to_value(bridge_frame_header(
+            "bridge.source.error",
+            SAMPLE_RATE_HZ as u32,
+            0,
+            0,
+        ))
+        .unwrap();
+        header["errorCode"] = Value::String(
+            "bridge.process-loopback-capture-failed".to_string(),
+        );
+        header["message"] = Value::String("WASAPI process capture stopped".to_string());
+        let envelope = bridge_source_json_envelope_bytes(&header, &[]);
+
+        let parsed = read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap();
+        assert_eq!(
+            parsed,
+            BridgeSourceEnvelope::RouteError {
+                code: "bridge.process-loopback-capture-failed".to_string(),
+                message: "WASAPI process capture stopped".to_string(),
+            }
+        );
+        let BridgeSourceEnvelope::RouteError { code, message } = parsed else {
+            panic!("expected a route failure envelope");
+        };
+        let route_error = bridge_source_route_error(&code, &message);
+        assert!(route_error.contains("| code: bridge.process-loopback-capture-failed"));
+        assert!(route_error.contains("| recommended: restart-bridge"));
+    }
+
+    #[test]
+    fn activation_failure_keeps_its_typed_hresult_at_route_start() {
+        let bridge = crate::bridge::contracts::BridgeRuntimeSnapshot {
+            bridge_state: "degraded".to_string(),
+            lifecycle_state: "error".to_string(),
+            source_capture_mode:
+                crate::bridge::contracts::SourceCaptureMode::ProcessExclusion,
+            capture_backend:
+                crate::bridge::contracts::CaptureBackend::WasapiProcessExclusion,
+            process_loopback_supported: true,
+            process_loopback_status:
+                crate::bridge::contracts::ProcessLoopbackStatus::Failed,
+            process_loopback_failure_detail: Some(
+                "ActivateAudioInterfaceAsync injected HRESULT=0x88890004".to_string(),
+            ),
+            last_error_code: Some(
+                "bridge.process-loopback-activation-failed".to_string(),
+            ),
+            ..Default::default()
+        };
+
+        let error = process_loopback_route_start_error(&bridge)
+            .expect("a failed process route must stop Watch startup");
+        let (message, code, action) =
+            crate::audio::omni::session_errors::split_error_markers(&error);
+        assert!(message.contains("HRESULT=0x88890004"));
+        assert_eq!(
+            code.as_deref(),
+            Some("bridge.process-loopback-activation-failed")
+        );
+        assert_eq!(action.as_deref(), Some("open-diagnostics"));
+    }
+
+    #[test]
+    fn bridge_translation_status_envelope_preserves_cue_terminal_failure() {
+        let mut header = serde_json::to_value(bridge_frame_header(
+            "bridge.translation.status",
+            SAMPLE_RATE_HZ as u32,
+            0,
+            0,
+        ))
+        .unwrap();
+        header["statusId"] = Value::String("bridge-status-output-failure".to_string());
+        header["cueId"] = Value::String("cue-output-failure".to_string());
+        header["playbackStatus"] = Value::String("route-failed".to_string());
+        header["reason"] = Value::String("physical-output-open-failed".to_string());
+        header["errorCode"] =
+            Value::String("bridge.translation-playback-failed".to_string());
+        let envelope = bridge_source_json_envelope_bytes(&header, &[]);
+
         assert_eq!(
             read_bridge_source_payload(&mut std::io::Cursor::new(envelope)).unwrap(),
-            BridgeSourceEnvelope::Heartbeat
+            BridgeSourceEnvelope::TranslationStatus {
+                status_id: "bridge-status-output-failure".to_string(),
+                session_id: "session-1".to_string(),
+                cue_id: "cue-output-failure".to_string(),
+                status: "route-failed".to_string(),
+                reason: "physical-output-open-failed".to_string(),
+                error_code: Some("bridge.translation-playback-failed".to_string()),
+            }
         );
+    }
+
+    #[test]
+    fn bridge_translation_status_without_stable_id_is_rejected() {
+        let mut header = serde_json::to_value(bridge_frame_header(
+            "bridge.translation.status",
+            SAMPLE_RATE_HZ as u32,
+            0,
+            0,
+        ))
+        .unwrap();
+        header["cueId"] = Value::String("cue-without-status-id".to_string());
+        header["playbackStatus"] = Value::String("completed".to_string());
+        header["reason"] = Value::String("physical-playback-completed".to_string());
+        let envelope = bridge_source_json_envelope_bytes(&header, &[]);
+
+        assert!(read_bridge_source_payload(&mut std::io::Cursor::new(envelope))
+            .unwrap_err()
+            .contains("statusId"));
+    }
+
+    #[test]
+    fn bridge_translation_status_ack_is_length_prefixed_and_replay_stable() {
+        let mut wire = Vec::new();
+        write_bridge_translation_status_ack(
+            &mut wire,
+            "bridge-status-output-failure",
+            "session-1",
+        )
+        .unwrap();
+
+        let header_size = u32::from_le_bytes(wire[..4].try_into().unwrap()) as usize;
+        let ack: omni_bridge_protocol::TranslationPlaybackStatusAck =
+            serde_json::from_slice(&wire[4..4 + header_size]).unwrap();
+        assert_eq!(ack.event_type, "bridge.translation.status.ack");
+        assert_eq!(ack.status_id, "bridge-status-output-failure");
+        assert_eq!(ack.session_id, "session-1");
+    }
+
+    #[test]
+    fn failed_status_ack_keeps_desktop_receipt_for_idempotent_replay() {
+        struct BrokenAckWriter;
+        impl Write for BrokenAckWriter {
+            fn write(&mut self, _buf: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(
+                    std::io::ErrorKind::BrokenPipe,
+                    "simulated source disconnect",
+                ))
+            }
+
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let store = AudioStateStore::new();
+        assert!(store.accept_bridge_translation_status_once("bridge-status-retry"));
+        assert!(write_bridge_translation_status_ack(
+            &mut BrokenAckWriter,
+            "bridge-status-retry",
+            "session-1",
+        )
+        .is_err());
+        assert!(
+            !store.accept_bridge_translation_status_once("bridge-status-retry"),
+            "the replay must be ACKed without recording its terminal twice"
+        );
+    }
+
+    #[test]
+    fn stale_session_status_is_deduped_and_acknowledged_without_report_application() {
+        let store = AudioStateStore::new();
+        assert_eq!(
+            bridge_translation_status_disposition(
+                &store,
+                Some("active-session"),
+                "bridge-status-old-session",
+                "old-session",
+            ),
+            BridgeTranslationStatusDisposition::SessionMismatch
+        );
+        assert_eq!(
+            bridge_translation_status_disposition(
+                &store,
+                Some("active-session"),
+                "bridge-status-old-session",
+                "old-session",
+            ),
+            BridgeTranslationStatusDisposition::DuplicateReplay
+        );
+
+        let mut wire = Vec::new();
+        write_bridge_translation_status_ack(
+            &mut wire,
+            "bridge-status-old-session",
+            "old-session",
+        )
+        .unwrap();
+        let header_size = u32::from_le_bytes(wire[..4].try_into().unwrap()) as usize;
+        let ack: omni_bridge_protocol::TranslationPlaybackStatusAck =
+            serde_json::from_slice(&wire[4..4 + header_size]).unwrap();
+        assert_eq!(ack.status_id, "bridge-status-old-session");
+        assert_eq!(ack.session_id, "old-session");
     }
 
     #[test]
@@ -1155,6 +1582,309 @@ mod tests {
                 "Bridge source pipe initialization timed out (10s). | recommended: restart-bridge"
             )
         );
+    }
+
+    fn ready_process_bridge_snapshot(
+        session_id: &str,
+        source_generation: u64,
+    ) -> crate::bridge::contracts::BridgeRuntimeSnapshot {
+        crate::bridge::contracts::BridgeRuntimeSnapshot {
+            bridge_process_id: Some(42),
+            bridge_instance_id: Some(format!("instance-{session_id}")),
+            process_status: "running".to_string(),
+            bridge_state: "running".to_string(),
+            lifecycle_state: "ready".to_string(),
+            driver_health: "running".to_string(),
+            source_capture_mode:
+                crate::bridge::contracts::SourceCaptureMode::ProcessExclusion,
+            capture_backend:
+                crate::bridge::contracts::CaptureBackend::WasapiProcessExclusion,
+            process_loopback_supported: true,
+            process_loopback_status:
+                crate::bridge::contracts::ProcessLoopbackStatus::Ready,
+            capture_lifecycle_state: "capturing".to_string(),
+            source_worker_phase: "process-loopback-capturing".to_string(),
+            source_generation,
+            source_generation_token: Some(format!(
+                "instance-{session_id}:{session_id}:{source_generation}"
+            )),
+            session_id: Some(session_id.to_string()),
+            last_error_code: None,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn old_bridge_worker_failure_cannot_pollute_new_ready_route_generation() {
+        let audio_state = AudioStateStore::new();
+        let bridge_state = BridgeStateStore::new();
+        let old_snapshot = ready_process_bridge_snapshot("old-session", 7);
+        bridge_state.update_snapshot(|current| *current = old_snapshot.clone());
+        let old_context = BridgeSourceWorkerContext::new(
+            audio_state.inbound_route_generation(),
+            old_snapshot,
+        );
+
+        audio_state.bump_inbound_route_generation();
+        audio_state.mark_route_started(
+            "inbound",
+            "new-watch-route",
+            "system-output-default",
+            r"\\.\pipe\omni-new-source",
+        );
+        let new_snapshot = ready_process_bridge_snapshot("new-session", 8);
+        bridge_state.update_snapshot(|current| *current = new_snapshot.clone());
+
+        let prepare_calls = Cell::new(0usize);
+        let bridge_commits = Cell::new(0usize);
+        let notifications = Cell::new(0usize);
+        let applied = commit_bridge_source_worker_error_if_current(
+            &audio_state,
+            &old_context,
+            "inbound",
+            "old capture failed",
+            Some("bridge.process-loopback-capture-failed"),
+            Some("select-audio-route"),
+            || {
+                prepare_calls.set(prepare_calls.get() + 1);
+                Some(())
+            },
+            |_| {
+                bridge_commits.set(bridge_commits.get() + 1);
+                apply_process_loopback_capture_failure_if_current(
+                    &bridge_state,
+                    &old_context,
+                    "old capture failed",
+                    None,
+                )
+            },
+            || notifications.set(notifications.get() + 1),
+        );
+
+        assert!(!applied);
+        assert_eq!(prepare_calls.get(), 0);
+        assert_eq!(bridge_commits.get(), 0);
+        assert_eq!(notifications.get(), 0);
+        let bridge = bridge_state.snapshot();
+        assert_eq!(bridge.session_id.as_deref(), Some("new-session"));
+        assert_eq!(bridge.source_generation, 8);
+        assert_eq!(bridge.bridge_state, "running");
+        assert_eq!(
+            bridge.process_loopback_status,
+            crate::bridge::contracts::ProcessLoopbackStatus::Ready
+        );
+        assert_eq!(bridge.last_error_code, None);
+        let audio = audio_state.snapshot();
+        assert_eq!(audio.inbound.route_id, "new-watch-route");
+        assert_eq!(audio.inbound.capture_state, "capturing");
+        assert_eq!(audio.inbound.last_error_code, None);
+    }
+
+    #[test]
+    fn bridge_worker_failure_authority_follows_a_live_restart_rebind() {
+        let old = ready_process_bridge_snapshot("old-session", 7);
+        let context = BridgeSourceWorkerContext::new(3, old);
+        let failure_context = context.clone();
+        let mut new = ready_process_bridge_snapshot("new-session", 8);
+        new.bridge_process_id = Some(43);
+        new.bridge_instance_id = Some("instance-new-session".to_string());
+        new.source_generation_token =
+            Some("instance-new-session:new-session:8".to_string());
+
+        context.rebind(new.clone());
+
+        assert_eq!(failure_context.snapshot().bridge_process_id, Some(43));
+        assert_eq!(
+            failure_context.snapshot().session_id.as_deref(),
+            Some("new-session")
+        );
+        assert_eq!(failure_context.snapshot().source_generation, 8);
+    }
+
+    #[test]
+    fn current_bridge_worker_failure_marks_bridge_audio_and_watch_report_failed() {
+        let audio_state = AudioStateStore::new();
+        audio_state
+            .watch_session_report
+            .begin_or_reuse("process-exclusion", "watch-model");
+        let route_generation = audio_state.bump_inbound_route_generation();
+        audio_state.mark_route_started(
+            "inbound",
+            "current-watch-route",
+            "system-output-default",
+            r"\\.\pipe\omni-current-source",
+        );
+        let bridge_state = BridgeStateStore::new();
+        let current_snapshot = ready_process_bridge_snapshot("current-session", 11);
+        bridge_state.update_snapshot(|current| *current = current_snapshot.clone());
+        let context = BridgeSourceWorkerContext::new(route_generation, current_snapshot);
+
+        let notifications = Cell::new(0usize);
+        let applied = commit_bridge_source_worker_error_if_current(
+            &audio_state,
+            &context,
+            "inbound",
+            "current capture failed",
+            Some("bridge.process-loopback-capture-failed"),
+            Some("select-audio-route"),
+            || Some(()),
+            |_| {
+                apply_process_loopback_capture_failure_if_current(
+                    &bridge_state,
+                    &context,
+                    "current capture failed",
+                    None,
+                )
+            },
+            || notifications.set(notifications.get() + 1),
+        );
+
+        assert!(applied);
+        assert_eq!(notifications.get(), 1);
+        let bridge = bridge_state.snapshot();
+        assert_eq!(bridge.bridge_state, "degraded");
+        assert_eq!(
+            bridge.process_loopback_status,
+            crate::bridge::contracts::ProcessLoopbackStatus::Failed
+        );
+        assert_eq!(
+            bridge.last_error_code.as_deref(),
+            Some("bridge.process-loopback-capture-failed")
+        );
+        let audio = audio_state.snapshot();
+        assert_eq!(audio.inbound.capture_state, "buffering");
+        assert_eq!(
+            audio.inbound.last_error_code.as_deref(),
+            Some("bridge.process-loopback-capture-failed")
+        );
+        let report = audio_state
+            .watch_session_report
+            .snapshot()
+            .expect("active Watch report should retain the current failure");
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == "bridge-process-loopback-capture-failed"
+                && issue.severity == "error"
+        }));
+    }
+
+    #[test]
+    fn generation_bump_inside_query_phase_blocks_every_old_worker_side_effect() {
+        let audio_state = AudioStateStore::new();
+        audio_state
+            .watch_session_report
+            .begin_or_reuse("process-exclusion", "watch-model");
+        let generation = audio_state.bump_inbound_route_generation();
+        audio_state.mark_route_started(
+            "inbound",
+            "current-watch-route",
+            "system-output-default",
+            r"\\.\pipe\omni-current-source",
+        );
+        let context = BridgeSourceWorkerContext::new(
+            generation,
+            ready_process_bridge_snapshot("current-session", 11),
+        );
+        let bridge_commits = Cell::new(0usize);
+        let notifications = Cell::new(0usize);
+
+        let applied = commit_bridge_source_worker_error_if_current(
+            &audio_state,
+            &context,
+            "inbound",
+            "superseded capture failed",
+            Some("bridge.process-loopback-capture-failed"),
+            Some("select-audio-route"),
+            || {
+                audio_state.bump_inbound_route_generation();
+                Some(())
+            },
+            |_| {
+                bridge_commits.set(bridge_commits.get() + 1);
+                true
+            },
+            || notifications.set(notifications.get() + 1),
+        );
+
+        assert!(!applied);
+        assert_eq!(bridge_commits.get(), 0);
+        assert_eq!(notifications.get(), 0);
+        let audio = audio_state.snapshot();
+        assert_eq!(audio.inbound.capture_state, "capturing");
+        assert_eq!(audio.inbound.last_error_code, None);
+        let report = audio_state.watch_session_report.snapshot().unwrap();
+        assert!(report.issues.is_empty());
+    }
+
+    #[test]
+    fn blocking_query_allows_concurrent_start_and_stop_to_revoke_old_worker_commit() {
+        let audio_state = Arc::new(AudioStateStore::new());
+        audio_state
+            .watch_session_report
+            .begin_or_reuse("process-exclusion", "watch-model");
+        let generation = audio_state.bump_inbound_route_generation();
+        audio_state.mark_route_started(
+            "inbound",
+            "current-watch-route",
+            "system-output-default",
+            r"\\.\pipe\omni-current-source",
+        );
+        let context = BridgeSourceWorkerContext::new(
+            generation,
+            ready_process_bridge_snapshot("current-session", 11),
+        );
+        let bridge_commits = Arc::new(AtomicUsize::new(0));
+        let notifications = Arc::new(AtomicUsize::new(0));
+        let (query_entered_tx, query_entered_rx) = mpsc::channel();
+        let (query_release_tx, query_release_rx) = mpsc::channel();
+        let worker_state = Arc::clone(&audio_state);
+        let worker_bridge_commits = Arc::clone(&bridge_commits);
+        let worker_notifications = Arc::clone(&notifications);
+
+        let worker = thread::spawn(move || {
+            commit_bridge_source_worker_error_if_current(
+                &worker_state,
+                &context,
+                "inbound",
+                "superseded capture failed",
+                Some("bridge.process-loopback-capture-failed"),
+                Some("select-audio-route"),
+                || {
+                    query_entered_tx.send(()).unwrap();
+                    query_release_rx
+                        .recv_timeout(Duration::from_secs(2))
+                        .unwrap();
+                    Some(())
+                },
+                |_| {
+                    worker_bridge_commits.fetch_add(1, Ordering::SeqCst);
+                    true
+                },
+                || {
+                    worker_notifications.fetch_add(1, Ordering::SeqCst);
+                },
+            )
+        });
+
+        query_entered_rx
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        // These represent a new inbound start followed by stop. Both bumps,
+        // and even the route pipeline lock, remain available while the old
+        // worker's bounded Bridge query is blocked.
+        assert_eq!(audio_state.bump_inbound_route_generation(), generation + 1);
+        assert_eq!(audio_state.bump_inbound_route_generation(), generation + 2);
+        let pipeline = audio_state.lock_inbound_pipeline();
+        drop(pipeline);
+        query_release_tx.send(()).unwrap();
+
+        assert!(!worker.join().unwrap());
+        assert_eq!(bridge_commits.load(Ordering::SeqCst), 0);
+        assert_eq!(notifications.load(Ordering::SeqCst), 0);
+        let audio = audio_state.snapshot();
+        assert_eq!(audio.inbound.capture_state, "capturing");
+        assert_eq!(audio.inbound.last_error_code, None);
+        let report = audio_state.watch_session_report.snapshot().unwrap();
+        assert!(report.issues.is_empty());
     }
 
     #[test]

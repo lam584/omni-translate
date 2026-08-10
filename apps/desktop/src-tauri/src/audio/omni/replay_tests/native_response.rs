@@ -200,11 +200,12 @@ fn replay_turn_detected_response_uses_cancellation_terminal() {
         .any(|issue| issue.code == "native-empty-response"));
 }
 
-/// A cancelled response can beat both ASR delta and ASR final. Terminalize the
-/// speech-started placeholder immediately so the later transcript repairs that
-/// cue without reopening the translation lifecycle.
+/// A cancelled response can beat both ASR delta and ASR final. Because that
+/// response owner has no provider item id, the later identified transcript is
+/// not structurally correlated: keep the terminal response cue and the late
+/// source cue instead of guessing from timing or content.
 #[test]
-fn replay_cancelled_response_before_asr_text_keeps_late_final_terminal() {
+fn replay_cancelled_response_without_item_lineage_preserves_both_cues() {
     let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
     let mut slice = WorkerSlice::new();
     let final_source = "You.";
@@ -226,20 +227,68 @@ fn replay_cancelled_response_before_asr_text_keeps_late_final_terminal() {
         })),
     ];
     let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
-    for _ in 0..4 {
+    let mut response_cue_id = None;
+    for index in 0..4 {
         socket = harness.tick(socket, &mut slice);
+        if index == 0 {
+            response_cue_id = slice.current_cue_id.clone();
+        }
+        if index == 2 {
+            assert!(
+                slice.current_cue_id.is_none(),
+                "response.done must release the response-owned input cue",
+            );
+            assert!(slice
+                .event_diagnostics
+                .asr_cue_for_input_item("item-before-asr")
+                .is_none());
+            assert!(slice
+                .event_diagnostics
+                .native_response_cue_for_input_item("item-before-asr")
+                .is_none());
+        }
+        if index == 3 {
+            assert_ne!(
+                slice.current_cue_id.as_deref(),
+                response_cue_id.as_deref(),
+                "an unresolved final must allocate an independent cue",
+            );
+        }
     }
 
     let snapshot = harness.store().snapshot();
-    let cue = snapshot
+    let terminal_cue = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.translated_text == "[翻译失败] 实时响应被后续语音打断。")
+        .expect("cancelled response must retain its terminal cue");
+    assert!(terminal_cue.committed);
+    assert!(terminal_cue.translation_committed);
+
+    let late_source_cue = snapshot
         .subtitle_overlay
         .recent_cues
         .iter()
         .find(|cue| cue.source_text == final_source)
-        .expect("late ASR final should repair the cancelled response cue");
-    assert!(cue.committed);
-    assert!(cue.translation_committed);
-    assert_eq!(cue.translated_text, "[翻译失败] 实时响应被后续语音打断。");
+        .expect("uncorrelated late ASR final must remain visible");
+    let cue_debug = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .map(|cue| {
+            format!(
+                "{}|source={:?}|translated={:?}|committed={}",
+                cue.cue_id, cue.source_text, cue.translated_text, cue.committed,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_ne!(
+        late_source_cue.cue_id, terminal_cue.cue_id,
+        "unresolved cues: {cue_debug:?}",
+    );
+    assert!(!late_source_cue.committed);
+    assert!(late_source_cue.translated_text.is_empty());
 }
 
 /// Some OpenAI-compatible realtime providers put the final text only in the
@@ -481,6 +530,62 @@ fn replay_next_speech_started_preserves_prior_native_audio_buffer() {
         slice.pending_audio_response_id.as_deref(),
         Some("response-one")
     );
+}
+
+#[test]
+fn replay_audio_done_after_response_done_keeps_the_subtitle_cue_identity() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::ServerVad, Vec::new());
+    let mut slice = WorkerSlice::new();
+    let source = "Actual source cue";
+    let translated = "实际译文";
+    let steps = vec![
+        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_started" })),
+        ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.delta",
+            "item_id": "item-audio-owner",
+            "delta": source
+        })),
+        ScriptStep::Event(json!({ "type": "input_audio_buffer.speech_stopped" })),
+        ScriptStep::Event(json!({
+            "type": "response.created",
+            "response": { "id": "response-audio-owner" }
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.audio.delta",
+            "response_id": "response-audio-owner",
+            "delta": "AQACAA=="
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.done",
+            "response": {
+                "id": "response-audio-owner",
+                "output": [{ "content": [{ "type": "text", "text": translated }] }]
+            }
+        })),
+        ScriptStep::Event(json!({
+            "type": "response.audio.done",
+            "response_id": "response-audio-owner"
+        })),
+    ];
+    let mut socket = ScriptedRealtimeSocket::new(steps, harness.shared.clone());
+    for _ in 0..7 {
+        socket = harness.tick(socket, &mut slice);
+    }
+
+    let snapshot = harness.store().snapshot();
+    let cue = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.source_text == source)
+        .expect("response subtitle cue");
+    assert_eq!(cue.translated_text, translated);
+    assert_eq!(harness.playback_tx.pending_cue_ids(), [cue.cue_id.as_str()]);
+    assert!(harness
+        .playback_tx
+        .pending_cue_ids()
+        .iter()
+        .all(|cue_id| !cue_id.starts_with("omni-audio-")));
 }
 
 fn normalize_for_replay_assert(text: &str) -> String {

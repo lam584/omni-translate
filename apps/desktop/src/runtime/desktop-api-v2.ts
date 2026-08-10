@@ -40,7 +40,14 @@ import type { DriverRepairAction } from '../schema/driver-bridge-contract';
 import type { ProviderInteractionCapability } from '../schema/provider-contract';
 import type { ModelPreset } from '../schema/provider-template';
 import type { CredentialRefStatus, CredentialSecretPayload, ProviderModelCatalogRuntime, ProviderProbeProfileRuntime, ProviderSmokeResult } from '../schema/provider-runtime';
-import type { ConfigExportArtifact, ConfigSnapshotRecord } from '../schema/generated/runtime-core';
+import type {
+  BenchmarkHistoryClearResult,
+  BenchmarkHistoryDeleteResult,
+  BenchmarkHistoryPage,
+  BenchmarkHistoryRecord,
+  ConfigExportArtifact,
+  ConfigSnapshotRecord,
+} from '../schema/generated/runtime-core';
 import type {
   BridgeCommandV2,
   ConfigurationCommandV2,
@@ -83,6 +90,21 @@ export type ModelBenchmarkRunPayload = {
   authHeaderName?: string;
   authScheme?: string;
   provider?: ProviderDraft;
+};
+
+/** Payload accepted by the durable, secret-scrubbing benchmark history API. */
+export type BenchmarkHistorySavePayload = {
+  recordId?: string;
+  runId: string;
+  model: string;
+  runStatus: 'running' | 'completed' | 'failed' | 'interrupted';
+  scoreStatus: 'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed';
+  scoreVersion?: 'benchmark-score/v1';
+  totalScore?: number | null;
+  grade?: string | null;
+  report?: unknown | null;
+  score?: unknown | null;
+  error?: string | null;
 };
 
 export type InvokeFn = <T>(command: string, args?: Record<string, unknown>) => Promise<T>;
@@ -148,6 +170,7 @@ export class DesktopApiV2 {
   readonly bridge = {
     snapshot: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot['bridge']>>('bridge_v2', { command: { action: 'snapshot' } satisfies BridgeCommandV2 })),
     refresh: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'refresh' } satisfies BridgeCommandV2 })),
+    probeProcessLoopback: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'probeProcessLoopback' } satisfies BridgeCommandV2 })),
     start: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'start', config } satisfies BridgeCommandV2 })),
     stop: async () => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'stop' } satisfies BridgeCommandV2 })),
     install: async (config: AppConfigDraft) => unwrap(await this.invokeFn<ServiceResult<RuntimeSnapshot>>('bridge_v2', { command: { action: 'install', config } satisfies BridgeCommandV2 })),
@@ -187,6 +210,26 @@ export class DesktopApiV2 {
       unwrap(await this.invokeFn<ServiceResult<null>>('diagnostics_v2', { command: { action: 'openExternalUrl', url } satisfies DiagnosticsCommandV2 })),
     writeExportArtifact: async (filename: string, content: string) =>
       unwrap(await this.invokeFn<ServiceResult<{ outputPath: string; fileCount: number }>>('diagnostics_v2', { command: { action: 'writeExportArtifact', filename, content } satisfies DiagnosticsCommandV2 })),
+    saveBenchmarkHistory: async (record: BenchmarkHistorySavePayload) =>
+      unwrap(await this.invokeFn<ServiceResult<BenchmarkHistoryRecord>>('diagnostics_v2', {
+        command: { action: 'saveBenchmarkHistory', ...record } satisfies DiagnosticsCommandV2,
+      })),
+    listBenchmarkHistory: async (page?: number, pageSize?: number) =>
+      unwrap(await this.invokeFn<ServiceResult<BenchmarkHistoryPage>>('diagnostics_v2', {
+        command: { action: 'listBenchmarkHistory', page, pageSize } satisfies DiagnosticsCommandV2,
+      })),
+    getBenchmarkHistory: async (recordId: string) =>
+      unwrap(await this.invokeFn<ServiceResult<BenchmarkHistoryRecord>>('diagnostics_v2', {
+        command: { action: 'getBenchmarkHistory', recordId } satisfies DiagnosticsCommandV2,
+      })),
+    deleteBenchmarkHistory: async (recordId: string) =>
+      unwrap(await this.invokeFn<ServiceResult<BenchmarkHistoryDeleteResult>>('diagnostics_v2', {
+        command: { action: 'deleteBenchmarkHistory', recordId } satisfies DiagnosticsCommandV2,
+      })),
+    clearBenchmarkHistory: async () =>
+      unwrap(await this.invokeFn<ServiceResult<BenchmarkHistoryClearResult>>('diagnostics_v2', {
+        command: { action: 'clearBenchmarkHistory' } satisfies DiagnosticsCommandV2,
+      })),
   };
 
   readonly configuration = {

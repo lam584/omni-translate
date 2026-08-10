@@ -1,4 +1,5 @@
 use serde::Serialize;
+use serde_json::Value;
 use ts_rs::TS;
 
 #[derive(Clone, Serialize, TS)]
@@ -49,6 +50,75 @@ pub(crate) struct ConfigSnapshotRecord {
     pub snapshot_id: String,
     pub reason: String,
     pub created_at: String,
+}
+
+/// One row in the persisted, versioned benchmark history.  The payload fields
+/// intentionally remain JSON values: the scorer owns their detailed schema,
+/// while storage owns durable, secret-free retention and the list/detail
+/// boundary.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BenchmarkHistoryRecord {
+    pub record_id: String,
+    pub run_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub model: String,
+    #[ts(type = "'running' | 'completed' | 'failed' | 'interrupted'")]
+    pub run_status: String,
+    #[ts(type = "'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed'")]
+    pub score_status: String,
+    #[ts(type = "'benchmark-score/v1' | null")]
+    pub score_version: Option<String>,
+    pub total_score: Option<f64>,
+    pub grade: Option<String>,
+    #[ts(type = "unknown | null")]
+    pub report: Option<Value>,
+    #[ts(type = "unknown | null")]
+    pub score: Option<Value>,
+    pub error: Option<String>,
+}
+
+/// Compact history list row.  The report and scoring evidence are fetched only
+/// through `getBenchmarkHistory` so a large history remains quick to open.
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BenchmarkHistorySummary {
+    pub record_id: String,
+    pub run_id: String,
+    pub created_at: String,
+    pub updated_at: String,
+    pub model: String,
+    #[ts(type = "'running' | 'completed' | 'failed' | 'interrupted'")]
+    pub run_status: String,
+    #[ts(type = "'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed'")]
+    pub score_status: String,
+    #[ts(type = "'benchmark-score/v1' | null")]
+    pub score_version: Option<String>,
+    pub total_score: Option<f64>,
+    pub grade: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BenchmarkHistoryPage {
+    pub records: Vec<BenchmarkHistorySummary>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total_count: u64,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BenchmarkHistoryDeleteResult {
+    pub deleted: bool,
+}
+
+#[derive(Clone, Debug, Serialize, TS)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BenchmarkHistoryClearResult {
+    pub deleted_count: u64,
 }
 
 #[derive(Clone, Serialize, TS)]

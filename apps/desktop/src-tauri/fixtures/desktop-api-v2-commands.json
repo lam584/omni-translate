@@ -1491,7 +1491,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -6984,7 +6984,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -8545,7 +8545,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -10098,7 +10098,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -11669,7 +11669,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -13230,7 +13230,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -13345,6 +13345,15 @@
     "payload": {
       "command": {
         "action": "refresh"
+      }
+    }
+  },
+  {
+    "label": "bridge.probeProcessLoopback",
+    "command": "bridge_v2",
+    "payload": {
+      "command": {
+        "action": "probeProcessLoopback"
       }
     }
   },
@@ -14840,7 +14849,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -16401,7 +16410,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -17963,7 +17972,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",
@@ -18085,6 +18094,69 @@
       "command": {
         "action": "openExternalUrl",
         "url": "https://platform.openai.com/api-keys"
+      }
+    }
+  },
+  {
+    "label": "diagnostics.saveBenchmarkHistory",
+    "command": "diagnostics_v2",
+    "payload": {
+      "command": {
+        "action": "saveBenchmarkHistory",
+        "runId": "benchmark-v1-fixture-run",
+        "model": "fixture-judge-model",
+        "runStatus": "completed",
+        "scoreStatus": "final",
+        "scoreVersion": "benchmark-score/v1",
+        "totalScore": 91,
+        "grade": "A",
+        "report": {
+          "runs": []
+        },
+        "score": {
+          "version": "benchmark-score/v1"
+        },
+        "error": null
+      }
+    }
+  },
+  {
+    "label": "diagnostics.listBenchmarkHistory",
+    "command": "diagnostics_v2",
+    "payload": {
+      "command": {
+        "action": "listBenchmarkHistory",
+        "page": 1,
+        "pageSize": 50
+      }
+    }
+  },
+  {
+    "label": "diagnostics.getBenchmarkHistory",
+    "command": "diagnostics_v2",
+    "payload": {
+      "command": {
+        "action": "getBenchmarkHistory",
+        "recordId": "benchmark-v1-fixture-record"
+      }
+    }
+  },
+  {
+    "label": "diagnostics.deleteBenchmarkHistory",
+    "command": "diagnostics_v2",
+    "payload": {
+      "command": {
+        "action": "deleteBenchmarkHistory",
+        "recordId": "benchmark-v1-fixture-record"
+      }
+    }
+  },
+  {
+    "label": "diagnostics.clearBenchmarkHistory",
+    "command": "diagnostics_v2",
+    "payload": {
+      "command": {
+        "action": "clearBenchmarkHistory"
       }
     }
   },
@@ -19589,7 +19661,7 @@
             "status": "warning"
           },
           "driver": {
-            "protocolVersion": "2026-07-27-smart-gain-v3",
+            "protocolVersion": "2026-08-10-audio-routing-v6",
             "installChannel": "development",
             "installPhase": "rollback-required",
             "targetDeviceId": "virtual-mic-default",

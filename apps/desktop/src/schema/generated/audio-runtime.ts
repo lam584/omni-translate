@@ -57,7 +57,7 @@ export type SttConnectionRuntime = {
  */
 state: 'idle' | 'connected' | 'reconnecting' | 'disconnected', reconnectAttempt: number, maxReconnectAttempts: number, lastDisconnectReason: string | null, };
 
-export type EchoCaptureDiagnosticsRuntime = { aecSuppressedChunks: number, playbackActiveChunks: number, effectiveSuppressedChunks: number, };
+export type EchoCaptureDiagnosticsRuntime = { processedChunks: number, playbackActiveChunks: number, forwardedToAsrChunks: number, droppedChunks: number, };
 
 export type AudioRuntimeSnapshot = {
 /**
@@ -66,5 +66,5 @@ export type AudioRuntimeSnapshot = {
  * frontend can discard stale out-of-order push events (e.g. a pre-clear
  * snapshot arriving after the clear invoke reply).
  */
-snapshotSeq: number, status: 'preview' | 'ready' | 'degraded', host: string, renderDevices: Array<AudioDeviceRuntime>, captureDevices: Array<AudioDeviceRuntime>, inbound: AudioRouteRuntimeSnapshot, outbound: AudioRouteRuntimeSnapshot, subtitleOverlay: SubtitleOverlayRuntimeSnapshot, speech: SpeechRuntimeSnapshot, echoCaptureDiagnostics: EchoCaptureDiagnosticsRuntime, sessionStartedAt: string | null, sttConnected: boolean, sttBufferSize: number, sttConnection: SttConnectionRuntime, };
+snapshotSeq: number, status: 'preview' | 'ready' | 'degraded', host: string, renderDevices: Array<AudioDeviceRuntime>, captureDevices: Array<AudioDeviceRuntime>, inbound: AudioRouteRuntimeSnapshot, outbound: AudioRouteRuntimeSnapshot, subtitleOverlay: SubtitleOverlayRuntimeSnapshot, speech: SpeechRuntimeSnapshot, echoCaptureDiagnostics: EchoCaptureDiagnosticsRuntime, aecBackend: 'webrtc-aec3' | 'unavailable', aecStatus: 'ready' | 'unavailable', aecFailureDetail: string | null, sessionStartedAt: string | null, sttConnected: boolean, sttBufferSize: number, sttConnection: SttConnectionRuntime, };
 

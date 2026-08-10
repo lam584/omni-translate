@@ -27,6 +27,9 @@ const requiredFiles = [
   'scripts/testing/run-overlay-driver-smoke.ps1',
   'scripts/testing/startup-ipc-stress.mjs',
   'scripts/testing/run-startup-ipc-stress.ps1',
+  'scripts/testing/run-aec3-msvc-gate.mjs',
+  'crates/omni-webrtc-aec3/vcpkg.json',
+  'crates/omni-webrtc-aec3/build.rs',
 ];
 
 // Repo-root-relative path of the smoke this script executes at the end.
@@ -50,6 +53,7 @@ const requiredRootScripts = [
   'test:watch-mode-report',
   'test:startup-readiness',
   'test:desktop-shell',
+  'test:aec3-msvc',
   'smoke:overlay-driver',
   'test:startup-ipc-stress',
   'release:manifest',
@@ -72,6 +76,10 @@ const installerStillCopiesLegacyBridge =
   installerLayoutScript.includes(['bridge', 'Dist'].join('')) ||
   installerLayoutScript.includes(['bridge', 'Package'].join(''));
 const versionMismatch = [desktopPackage.version, nativeBridgeVersion].some((version) => version !== rootPackage.version);
+const desktopReleaseBuildScript = readText('scripts/development/build-desktop-release.mjs');
+const releaseShellLinksAec3 = desktopReleaseBuildScript.includes('--features webrtc-aec3')
+  && desktopPackage.scripts?.['build:installer']?.includes('--features webrtc-aec3')
+  && rootPackage.scripts?.['release:verify']?.includes('test:aec3-msvc');
 
 if (
   missingFiles.length ||
@@ -79,7 +87,8 @@ if (
   staleLegacyScripts.length ||
   legacyWorkspacePresent ||
   installerStillCopiesLegacyBridge ||
-  versionMismatch
+  versionMismatch ||
+  !releaseShellLinksAec3
 ) {
   if (missingFiles.length) {
     console.error(`Missing files: ${missingFiles.join(', ')}`);
@@ -104,6 +113,13 @@ if (
   if (versionMismatch) {
     console.error(
       `Version mismatch: root=${rootPackage.version}, desktop=${desktopPackage.version}, nativeBridge=${nativeBridgeVersion}`,
+    );
+  }
+
+  if (!releaseShellLinksAec3) {
+    console.error(
+      'Release AEC3 wiring is incomplete: release shell and installer builds must enable '
+      + '`webrtc-aec3`, and release:verify must execute test:aec3-msvc.',
     );
   }
 

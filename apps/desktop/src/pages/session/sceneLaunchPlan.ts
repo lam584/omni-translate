@@ -31,16 +31,10 @@ type Input = {
 };
 
 export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
-  // Watch mode plays translated speech back through the same physical output
-  // that the loopback route captures. Legacy drafts may still carry `none`,
-  // but starting that combination with speech enabled creates an unbounded
-  // model -> speaker -> capture -> model feedback loop. Keep virtual-driver
-  // isolation when the user selected it; otherwise make echo cancellation the
-  // safe watch-mode baseline and ensure its route gate is actually enabled.
-  const watchFeedbackLoopPrevention =
-    input.configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
-      ? 'virtual-driver'
-      : 'echo-cancel';
+  // Preserve the user's selected route exactly. Legacy `none` remains valid
+  // for subtitles-only/diagnostic capture, while launch preflight explicitly
+  // blocks it when translated speech would be played.
+  const watchFeedbackLoopPrevention = input.configDraft.devices.feedbackLoopPrevention;
   const config: AppConfigDraft = {
     ...input.configDraft,
     devices: {
@@ -56,7 +50,7 @@ export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
       ...(input.mode === 'watch' ? {
         feedbackLoopPrevention: watchFeedbackLoopPrevention,
         aecEnabled: watchFeedbackLoopPrevention === 'echo-cancel',
-        outputSpeechEnabled: true,
+        outputSpeechEnabled: input.configDraft.devices.outputSpeechEnabled,
         virtualMicOutputEnabled: false,
       } : {
         feedbackLoopPrevention: 'echo-cancel' as const,
@@ -71,9 +65,12 @@ export function buildSceneLaunchPlan(input: Input): SceneLaunchPlan {
       ...(input.mode === 'watch' ? { outputTarget: 'speaker' as const } : {}),
     },
   };
-  // Watch capture does not depend on Bridge. Starting with bridge-ready lets an
-  // unrelated bootstrap consume the entire launch deadline before native audio IPC.
-  const stages: SceneLaunchStage[] = input.mode === 'watch' ? [] : ['bridge-ready'];
+  // Every Watch launch converges the Bridge capture backend before binding the
+  // source route. For process/driver routes this starts the selected backend;
+  // for AEC/none it is a fast no-op unless a previously running Bridge must be
+  // re-initialized to `none` so its old capture generation and translation
+  // queue cannot leak across the mode switch.
+  const stages: SceneLaunchStage[] = ['bridge-ready'];
   // Omni route startup now returns as soon as its worker and audio queue exist.
   // The worker buffers captured audio until session.ready, so a separate blocking
   // preconnect would only delay the one-click path.

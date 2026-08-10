@@ -14,6 +14,8 @@ import {
   healthyDriver,
   healthyPhysicalOutput,
   healthyPhysicalOutputContent,
+  healthyProcessExclusionFingerprint,
+  healthyProcessExclusionBridge,
   healthyProvider,
   healthyWatchSessionReport,
   healthyWasapi,
@@ -95,6 +97,21 @@ test('treats an explicit interrupted source tail as a session warning, not an ap
   });
   assert.equal(realError.failureLayer, 'app');
   assert.match(realError.failureReason, /explicit cue issue/);
+});
+
+test('report records explicit git HEAD and clean-worktree provenance', () => {
+  const provenance = {
+    schemaVersion: 1,
+    source: 'git',
+    captureStatus: 'captured',
+    headCommit: 'fixture-exact-head',
+    worktreeClean: true,
+    dirtyEntryCount: 0,
+  };
+  const report = classify({ provenance });
+
+  assert.deepEqual(report.provenance, provenance);
+  assert.equal(report.commit, provenance.headCommit);
 });
 
 test('keeps cue timeline retention warnings non-blocking after a complete render', () => {
@@ -267,9 +284,47 @@ test('echo-cancel variant skips virtual-driver evidence layers and passes on hea
   assert.equal(report.layers.provider.status, 'passed');
   assert.equal(report.layers.aec.status, 'passed');
   assert.equal(report.layers.aec.data.outputMode, 'text-and-audio');
-  assert.equal(report.layers.aec.data.maxReferenceBufferDepthSamples, 96000);
+  assert.equal(report.layers.aec.data.backend, 'webrtc-aec3');
+  assert.equal(report.layers.aec.data.maxRender10msFrames, 100);
+  assert.equal(report.layers.aec.data.maxProcessedCapture10msFrames, 100);
+  assert.equal(report.layers.aec.data.maxErleDb, 20);
+  assert.equal(report.layers.aec.data.maxAsrForwardedChunks, 100);
+  assert.equal(report.layers.aec.data.maxAsrDeletedChunks, 0);
   assert.equal(report.layers.aec.data.speakerPlaybackSeconds, 1);
-  assert.equal(report.layers.aec.data.maxPureEchoRemovedDb, 20);
+  assert.equal(
+    report.layers.aec.data.liveScenario.expectedSubtitles.acceptedSource,
+    'watch-session-report-cues',
+  );
+  assert.equal(
+    report.layers.aec.data.liveScenario.expectedSubtitles.watchSessionId,
+    healthyWatchSessionReport.sessionId,
+  );
+  assert.deepEqual(
+    report.layers.aec.data.liveScenario.expectedSubtitles.acceptedCueIds,
+    ['cue-1'],
+  );
+});
+
+test('process-exclusion passes with real process fingerprint evidence and no driver probes', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'process-exclusion',
+    bridge: healthyProcessExclusionBridge,
+    driver: null,
+    wasapi: null,
+    physicalOutput: healthyProcessExclusionFingerprint,
+    bridgeLogText: '',
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
+  assert.equal(report.feedbackLoopPrevention, 'process-exclusion');
+  for (const layer of ['driver', 'wasapi', 'aec']) {
+    assert.equal(report.layers[layer].status, 'skipped');
+  }
+  assert.equal(report.layers.physicalOutput.status, 'passed');
+  assert.equal(report.layers.bridge.status, 'passed');
+  assert.equal(report.layers.physicalOutputContent.status, 'passed');
+  assert.equal(report.layers.app.status, 'passed');
 });
 
 test('echo-cancel rejects text-only sessions even when virtual-driver evidence is skipped', () => {
@@ -283,15 +338,155 @@ test('echo-cancel rejects text-only sessions even when virtual-driver evidence i
   assert.match(report.failureReason, /text-and-audio.*text-only/i);
 });
 
-test('echo-cancel enforces the pure-echo attenuation target independently of average capture removal', () => {
+test('echo-cancel records runtime ERLE without applying the pure-echo fixture threshold to double-talk', () => {
   const report = classify({
     feedbackLoopPrevention: 'echo-cancel',
-    appLogText: healthyAppLog.replace('avgPureEchoRemovedDb=20.0', 'avgPureEchoRemovedDb=9.9'),
+    appLogText: healthyAppLog.replace('erleDb=20.0', 'erleDb=14.9'),
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
+  assert.equal(report.layers.aec.data.maxErleDb, 14.9);
+});
+
+test('echo-cancel requires the build-time native pure-echo fixture gate', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('fixtureVerified=true', 'fixtureVerified=false'),
   });
 
   assert.equal(report.verdict, 'failed');
   assert.equal(report.failureLayer, 'aec');
-  assert.match(report.failureReason, /below the 10 dB initial target/i);
+  assert.match(report.failureReason, /native 15 dB pure-echo fixture gate/i);
+});
+
+test('echo-cancel requires submit position and padding from its physical WASAPI render client', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog
+      .replace('renderClock=wasapi-submit-position', 'renderClock=wall-clock-guess')
+      .replace(
+        'endpointRenderPadding=same-client-get-current-padding',
+        'endpointRenderPadding=unavailable',
+      ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /same-client WASAPI render timing/i);
+});
+
+test('echo-cancel rejects a non-WebRTC engine masquerading as the production backend', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('backend=webrtc-aec3', 'backend=scripted-test'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /linked WebRTC AEC3 backend/i);
+});
+
+test('echo-cancel rejects any ASR chunk deletion even when AEC3 metrics look healthy', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace(
+      'asrDeletedChunks=0',
+      'asrDeletedChunks=1',
+    ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /deleted capture chunks/i);
+});
+
+test('echo-cancel still rejects historical deletion-counter evidence', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace(
+      'asrDeletedChunks=0',
+      'effectiveSuppressedChunks=1',
+    ),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /deleted capture chunks/i);
+});
+
+test('echo-cancel surfaces native stats read failures instead of treating them as zero metrics', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('statsReadFailures=0', 'statsReadFailures=2'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /failed to read native AEC3 statistics 2 times/i);
+});
+
+test('echo-cancel requires numeric double-talk frame telemetry from the linked backend', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('doubleTalkFrames=12', 'doubleTalkFrames=unavailable'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /double-talk frame telemetry is unavailable/i);
+});
+
+test('echo-cancel live report rejects missing real three-stage physical-render evidence', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog
+      .split('\n')
+      .filter((line) => !line.includes('event=aec_live_scenario_stage'))
+      .join('\n'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /double-talk, dynamic-delay, and nonlinear physical-render scenario/i);
+});
+
+test('echo-cancel live report requires every expected source segment to survive AEC', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{ ...healthyWatchSessionReport.cues[0], sourceText: 'Good morning.' }],
+    },
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /accept every expected reference-media subtitle segment/i);
+  assert.equal(report.layers.aec.data.liveScenario.expectedSubtitles.acceptanceRate < 1, true);
+});
+
+test('echo-cancel live report rejects a static delay metric despite staged render requests', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog.replace('reportedDelayMs=125', 'reportedDelayMs=0'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /dynamic-delay injection did not change/i);
+});
+
+test('echo-cancel live report rejects a nonlinear label without changed physical PCM', () => {
+  const report = classify({
+    feedbackLoopPrevention: 'echo-cancel',
+    appLogText: healthyAppLog
+      .replace('changedSamples=9600 changedRatio=1.000000', 'changedSamples=0 changedRatio=0.000000'),
+  });
+
+  assert.equal(report.verdict, 'failed');
+  assert.equal(report.failureLayer, 'aec');
+  assert.match(report.failureReason, /nonlinear physical-render scenario/i);
 });
 
 test('echo-cancel keeps a failed virtual-driver probe as non-blocking diagnostics', () => {

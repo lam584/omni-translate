@@ -10,6 +10,61 @@ import { isWindows } from './testing-common.mjs';
 // so release scripts no longer depend on being launched from the repo root.
 export const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+export const captureCleanReleaseProvenance = (rootDir = repoRoot) => {
+  let headCommit;
+  let status;
+  try {
+    headCommit = execFileSync('git', ['rev-parse', '--verify', 'HEAD'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+    status = execFileSync('git', [
+      'status',
+      '--porcelain=v1',
+      '--untracked-files=all',
+      '--ignore-submodules=none',
+    ], {
+      cwd: rootDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (error) {
+    throw new Error(`Stable release provenance could not be captured from git: ${error.message}`);
+  }
+  if (!/^[a-f0-9]{40}$/i.test(headCommit)) {
+    throw new Error('Stable release provenance requires an exact 40-character git HEAD commit.');
+  }
+  const dirtyEntryCount = status
+    ? status.split(/\r?\n/).filter((line) => line.length > 0).length
+    : 0;
+  if (dirtyEntryCount !== 0) {
+    throw new Error(`Stable release artifacts require a clean worktree; found ${dirtyEntryCount} dirty/untracked entries.`);
+  }
+  return {
+    schemaVersion: 1,
+    source: 'git',
+    captureStatus: 'captured',
+    headCommit,
+    worktreeClean: true,
+    dirtyEntryCount: 0,
+  };
+};
+
+export const assertExactReleaseProvenance = (recorded, current, subject = 'release artifact') => {
+  if (
+    recorded?.schemaVersion !== 1
+    || recorded?.source !== 'git'
+    || recorded?.captureStatus !== 'captured'
+    || recorded?.worktreeClean !== true
+    || recorded?.dirtyEntryCount !== 0
+    || recorded?.headCommit !== current?.headCommit
+  ) {
+    throw new Error(`${subject} provenance does not match the exact current clean HEAD.`);
+  }
+  return recorded;
+};
+
 export const projectDocsDir = path.join('docs', '项目');
 
 // The four project docs shipped with every release (relative to the repo root).

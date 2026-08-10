@@ -11,7 +11,27 @@ pub(super) fn build_translation_system_prompt_with_glossary(
     glossary_prompt: Option<&str>,
 ) -> String {
     if provider.system_prompt_template == "benchmark-semantic-judge-v1" {
-        return "你是严格的翻译质量评审员。用户消息是 JSON，包含 source（原文）和 translation（译文）。只返回一个 JSON 对象，不要 Markdown，不要额外文字：{\"score\": number, \"rationale\": string}。score 必须是 0 到 100 的数字。评分只评价语义忠实度、事实/数字/单位保留、遗漏和无依据添加，不评价响应速度。rationale 用简洁中文说明主要依据。".to_string();
+        return r#"你是严格、可审计的翻译质量评审员。用户消息是 JSON，包含 source（原文）、reference（可选参考译文）和 translation（候选译文）。只返回一个有效 JSON 对象；不要 Markdown、代码围栏或额外文字。返回结构必须严格如下：
+{
+  "score": number,
+  "subscores": {
+    "adequacy": number,
+    "factsTerminology": number,
+    "omissionsAdditions": number,
+    "fluency": number
+  },
+  "rationale": string,
+  "criticalErrors": [
+    {
+      "category": "adequacy|facts-terminology|omissions-additions|fluency",
+      "severity": "minor|major|critical",
+      "description": string,
+      "sourceEvidence": string,
+      "translationEvidence": string
+    }
+  ]
+}
+所有 score 和 subscores 都必须是 0 到 100 的数字；score 必须等于四个 subscores 的算术平均值（四舍五入到最多两位小数）。四项等权含义为：adequacy 评价语义忠实度；factsTerminology 评价事实、专有名词、数字、日期和单位；omissionsAdditions 评价遗漏与无依据增译；fluency 评价目标语言自然、通顺且不改变原意。reference 仅作客观对照，不能机械照抄或忽略 source。不得评价响应速度、界面、模型身份或与翻译无关的内容。rationale 用简洁中文说明最主要得分或扣分原因。criticalErrors 必须是数组；没有可定位的重要错误时返回 []；每条错误必须给出简短、真实的 sourceEvidence 和 translationEvidence，不能编造证据。"#.to_string();
     }
     let mut prompt = format!(
         "你是一个只输出译文的翻译引擎。用户消息提供待翻译的原文（可能附带翻译规则或 Sentence 标注）。\n\
@@ -102,4 +122,77 @@ pub(crate) fn build_probe_guidance(
         _ => guidance.push("建议先修复认证、请求路径或响应格式，再重新探测。".to_string()),
     }
     guidance
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::{build_messages, build_translation_system_prompt_with_glossary};
+    use crate::provider::contracts::ProviderDraftInput;
+
+    fn semantic_judge_provider() -> ProviderDraftInput {
+        serde_json::from_value(json!({
+            "templateId": "benchmark-judge",
+            "providerId": "benchmark-judge",
+            "kind": "openai",
+            "displayName": "Benchmark judge",
+            "model": "judge-model",
+            "baseUrl": "https://example.invalid/v1",
+            "transport": "http",
+            "authRef": {
+                "kind": "credential-ref",
+                "reference": "credential://benchmark/judge",
+                "headerName": "Authorization",
+                "scheme": "Bearer"
+            },
+            "streamEnabled": false,
+            "timeoutMs": 30000,
+            "systemPromptTemplate": "benchmark-semantic-judge-v1"
+        }))
+        .expect("semantic judge fixture should deserialize")
+    }
+
+    #[test]
+    fn benchmark_semantic_judge_prompt_requires_auditable_structured_output() {
+        let provider = semantic_judge_provider();
+        let prompt = build_translation_system_prompt_with_glossary(
+            &provider,
+            "en",
+            "zh-CN",
+            None,
+        );
+
+        for required_field in [
+            "\"score\"",
+            "\"subscores\"",
+            "\"adequacy\"",
+            "\"factsTerminology\"",
+            "\"omissionsAdditions\"",
+            "\"fluency\"",
+            "\"rationale\"",
+            "\"criticalErrors\"",
+            "\"sourceEvidence\"",
+            "\"translationEvidence\"",
+        ] {
+            assert!(
+                prompt.contains(required_field),
+                "semantic judge prompt must require {required_field}: {prompt}"
+            );
+        }
+        assert!(prompt.contains("算术平均值"));
+        assert!(prompt.contains("reference"));
+        assert!(prompt.contains("不得评价响应速度"));
+    }
+
+    #[test]
+    fn benchmark_semantic_judge_messages_keep_the_json_input_intact() {
+        let provider = semantic_judge_provider();
+        let source = r#"{"source":"Hello","reference":"你好","translation":"您好"}"#;
+        let messages = build_messages(&provider, source, "en", "zh-CN", None);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[1]["content"], source);
+    }
 }

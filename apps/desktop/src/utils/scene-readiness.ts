@@ -5,6 +5,9 @@ import type { AppConfigDraft } from '../schema/config';
 import type { RuntimeSnapshot } from '../schema/runtime-core';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
 import { isPendingProbeCheckedAt } from './provider-probe';
+import { isProcessLoopbackReady, resolveProcessLoopbackCapability } from './process-loopback-capability';
+import { resolveAecCapability } from './aec-capability';
+import { resolveVirtualDriverCapability, type VirtualDriverCapability } from './virtual-driver-capability';
 
 export type SceneMode = 'watch' | 'game' | 'voice-room';
 
@@ -60,10 +63,24 @@ function getRuntimeBlocker(mode: SceneMode, runtimeSnapshot: RuntimeSnapshot): S
 export function watchModeNeedsBridge(configDraft: AppConfigDraft) {
   return (
     configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ||
+    configDraft.devices.feedbackLoopPrevention === 'process-exclusion' ||
     configDraft.devices.virtualMicOutputEnabled ||
     configDraft.speech?.outputTarget === 'virtual-mic' ||
     configDraft.speech?.outputTarget === 'both'
   );
+}
+
+function virtualMicOutputRequested(configDraft: AppConfigDraft) {
+  return configDraft.devices.virtualMicOutputEnabled
+    || configDraft.speech?.outputTarget === 'virtual-mic'
+    || configDraft.speech?.outputTarget === 'both';
+}
+
+function virtualMicUnavailableTitle(capability: VirtualDriverCapability) {
+  if (!capability.windowsBuildSupported) {
+    return `${i18n.t('audioRouting.unsupportedVirtualMicSpeech')} (Windows build ${capability.minimumWindowsBuild}+)`;
+  }
+  return i18n.t('audioRouting.unsupportedVirtualMicSpeech');
 }
 
 export function getWatchSceneReadiness(
@@ -90,8 +107,57 @@ export function getWatchSceneReadiness(
     };
   }
 
-  if (watchModeNeedsBridge(configDraft) && runtimeSnapshot.bridge.bridgeState !== 'running') {
-    blockers.push({ id: 'watch-bridge', title: i18n.t('sceneReadiness.virtualDriverPending'), route: '/audio-routing' });
+  const processExclusionSelected = configDraft.devices.feedbackLoopPrevention === 'process-exclusion';
+  const virtualDriverSelected = configDraft.devices.feedbackLoopPrevention === 'virtual-driver';
+  const processLoopback = resolveProcessLoopbackCapability(runtimeSnapshot.bridge);
+  const virtualDriver = resolveVirtualDriverCapability(runtimeSnapshot.bridge);
+  const aecCapability = resolveAecCapability(audioRuntimeSnapshot);
+  const translatedSpeechWithoutFeedbackRoute = configDraft.devices.feedbackLoopPrevention === 'none'
+    && Boolean(configDraft.devices.outputSpeechEnabled || configDraft.speech?.enabled);
+  const processLoopbackUnavailable = processExclusionSelected
+    && ['unsupported', 'failed'].includes(processLoopback.status);
+  const virtualDriverUnsupported = virtualDriverSelected && !virtualDriver.windowsBuildSupported;
+
+  if (translatedSpeechWithoutFeedbackRoute) {
+    blockers.push({ id: 'watch-feedback-route-required', title: i18n.t('sceneReadiness.feedbackRouteRequired'), route: '/audio-routing' });
+  } else if (configDraft.devices.feedbackLoopPrevention === 'echo-cancel' && !aecCapability.ready) {
+    blockers.push({ id: 'watch-aec-unavailable', title: i18n.t('sceneReadiness.aecUnavailable'), route: '/audio-routing' });
+  } else if (processLoopbackUnavailable) {
+    const title = processLoopback.status === 'failed'
+      ? i18n.t('sceneReadiness.processExclusionFailed', {
+        detail: processLoopback.failureDetail ?? i18n.t('sceneReadiness.processExclusionUnknownDetail'),
+      })
+      : i18n.t('sceneReadiness.processExclusionUnsupported', {
+        build: processLoopback.windowsBuildNumber ?? i18n.t('sceneReadiness.processExclusionUnknownBuild'),
+        minimum: processLoopback.minimumWindowsBuild,
+      });
+    blockers.push({ id: `watch-process-exclusion-${processLoopback.status}`, title, route: '/audio-routing' });
+  } else if (virtualDriverUnsupported) {
+    blockers.push({
+      id: 'watch-virtual-driver-unsupported',
+      title: virtualMicUnavailableTitle(virtualDriver),
+      route: '/audio-routing',
+    });
+  } else if (watchModeNeedsBridge(configDraft) && runtimeSnapshot.bridge.bridgeState !== 'running') {
+    blockers.push({
+      id: 'watch-bridge',
+      title: processExclusionSelected
+        ? i18n.t('sceneReadiness.processExclusionBridgePending')
+        : i18n.t('sceneReadiness.virtualDriverPending'),
+      route: '/audio-routing',
+    });
+  } else if (processExclusionSelected && !isProcessLoopbackReady(processLoopback)) {
+    blockers.push({
+      id: `watch-process-exclusion-${processLoopback.status}`,
+      title: i18n.t('sceneReadiness.processExclusionProbing'),
+      route: '/audio-routing',
+    });
+  } else if (virtualMicOutputRequested(configDraft) && !virtualDriver.virtualMicOutputReady) {
+    blockers.push({
+      id: `watch-virtual-mic-output-${runtimeSnapshot.bridge.virtualMicOutputStatus}`,
+      title: virtualMicUnavailableTitle(virtualDriver),
+      route: '/audio-routing',
+    });
   }
 
   if (!audioRuntimeSnapshot.inbound.streamBound) {
@@ -117,6 +183,11 @@ export function getGameSceneReadiness(
   audioRuntimeSnapshot: AudioRuntimeSnapshot,
 ): SceneReadiness {
   const blockers: SceneBlocker[] = [];
+  const aecCapability = resolveAecCapability(audioRuntimeSnapshot);
+  const virtualDriver = resolveVirtualDriverCapability(runtimeSnapshot.bridge);
+  const virtualDriverSelected = configDraft.devices.feedbackLoopPrevention === 'virtual-driver';
+  const isolatedOutboundUnavailable = configDraft.devices.feedbackLoopPrevention === 'process-exclusion'
+    || (virtualDriverSelected && !virtualDriver.virtualMicOutputReady);
 
   if (!hasProviderVerificationAttempt(configDraft)) {
     blockers.push({ id: 'game-provider', title: i18n.t('sceneReadiness.providerNotVerified'), route: '/providers' });
@@ -143,8 +214,18 @@ export function getGameSceneReadiness(
     blockers.push({ id: 'game-outbound', title: i18n.t('sceneReadiness.outboundMicPending'), route: '/audio-routing' });
   }
 
-  if (configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' || !configDraft.devices.aecEnabled) {
-    blockers.push({ id: 'game-aec', title: i18n.t('sceneReadiness.aecPending'), route: '/audio-routing' });
+  if (isolatedOutboundUnavailable) {
+    blockers.push({
+      id: 'game-virtual-mic-output-unavailable',
+      title: virtualMicUnavailableTitle(virtualDriver),
+      route: '/audio-routing',
+    });
+  } else if (!virtualDriverSelected && (configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' || !aecCapability.ready)) {
+    blockers.push({
+      id: 'game-aec',
+      title: aecCapability.ready ? i18n.t('sceneReadiness.aecPending') : i18n.t('sceneReadiness.aecUnavailable'),
+      route: '/audio-routing',
+    });
   }
 
   return {
@@ -162,6 +243,11 @@ export function getVoiceRoomSceneReadiness(
   audioRuntimeSnapshot: AudioRuntimeSnapshot,
 ): SceneReadiness {
   const blockers: SceneBlocker[] = [];
+  const aecCapability = resolveAecCapability(audioRuntimeSnapshot);
+  const virtualDriver = resolveVirtualDriverCapability(runtimeSnapshot.bridge);
+  const virtualDriverSelected = configDraft.devices.feedbackLoopPrevention === 'virtual-driver';
+  const isolatedOutboundUnavailable = configDraft.devices.feedbackLoopPrevention === 'process-exclusion'
+    || (virtualDriverSelected && !virtualDriver.virtualMicOutputReady);
 
   if (!hasProviderVerificationAttempt(configDraft)) {
     blockers.push({ id: 'voice-room-provider', title: i18n.t('sceneReadiness.providerNotVerified'), route: '/providers' });
@@ -184,8 +270,18 @@ export function getVoiceRoomSceneReadiness(
     blockers.push({ id: 'voice-room-outbound', title: i18n.t('sceneReadiness.micPending'), route: '/audio-routing' });
   }
 
-  if (configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' || !configDraft.devices.aecEnabled) {
-    blockers.push({ id: 'voice-room-aec', title: i18n.t('sceneReadiness.aecPending'), route: '/audio-routing' });
+  if (isolatedOutboundUnavailable) {
+    blockers.push({
+      id: 'voice-room-virtual-mic-output-unavailable',
+      title: virtualMicUnavailableTitle(virtualDriver),
+      route: '/audio-routing',
+    });
+  } else if (!virtualDriverSelected && (configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' || !aecCapability.ready)) {
+    blockers.push({
+      id: 'voice-room-aec',
+      title: aecCapability.ready ? i18n.t('sceneReadiness.aecPending') : i18n.t('sceneReadiness.aecUnavailable'),
+      route: '/audio-routing',
+    });
   }
 
   return {

@@ -1,10 +1,12 @@
 use tauri::AppHandle;
 
-use super::contracts::{BridgeRuntimeSnapshot, BridgeStateResponse};
+use super::contracts::{
+    BridgeProcessLoopbackProbeResponse, BridgeRuntimeSnapshot, BridgeStateResponse,
+};
 use super::ipc::{
-    ensure_bridge_runtime_root, flush_bridge_source, initialize_bridge,
-    query_state, query_state_fast, stop_bridge_process, terminate_stale_bridge_process,
-    write_virtual_mic_frame,
+    ensure_bridge_runtime_root, flush_bridge_source, initialize_bridge, query_state,
+    probe_process_loopback, query_state_fast, stop_bridge_process, terminate_stale_bridge_process,
+    write_process_playback_cue, write_virtual_mic_frame, BridgeInitializationFailure,
 };
 
 /// Typed client for all named-pipe operations bound to one Bridge runtime.
@@ -21,8 +23,16 @@ impl<'a> BridgeIpcClient<'a> {
         BridgeCommandClient::new(&self.snapshot.pipe_path).query_state(fast)
     }
 
-    pub(crate) fn initialize(&self) -> Result<BridgeRuntimeSnapshot, String> {
+    pub(crate) fn initialize(
+        &self,
+    ) -> Result<BridgeRuntimeSnapshot, BridgeInitializationFailure> {
         initialize_bridge(self.snapshot)
+    }
+
+    pub(crate) fn probe_process_loopback(
+        &self,
+    ) -> Result<BridgeProcessLoopbackProbeResponse, String> {
+        BridgeCommandClient::new(&self.snapshot.pipe_path).probe_process_loopback()
     }
 
     pub(crate) fn stop(&self) -> Result<(), String> {
@@ -69,6 +79,12 @@ impl<'a> BridgeCommandClient<'a> {
         if fast { query_state_fast(self.pipe_path) } else { query_state(self.pipe_path) }
     }
 
+    pub(crate) fn probe_process_loopback(
+        &self,
+    ) -> Result<BridgeProcessLoopbackProbeResponse, String> {
+        probe_process_loopback(self.pipe_path)
+    }
+
 }
 
 pub(crate) struct BridgeAudioWriter<'a, R: tauri::Runtime = tauri::Wry> {
@@ -80,14 +96,56 @@ impl<'a, R: tauri::Runtime> BridgeAudioWriter<'a, R> {
         Self { app }
     }
 
-    pub(crate) fn write_translation_frame(
+    /// Writes translated PCM to the virtual-microphone route. This path keeps
+    /// the existing 20 ms pacing required by the driver-facing transport.
+    pub(crate) fn write_virtual_mic_frame(
         &self,
         cue_id: &str,
         request_id: &str,
+        route_direction: &str,
         samples: &[i16],
         sample_rate_hz: u32,
         channels: u16,
+        created_at_ms: u64,
+        estimated_duration_ms: u64,
     ) -> Result<u64, String> {
-        write_virtual_mic_frame(self.app, cue_id, request_id, samples, sample_rate_hz, channels)
+        write_virtual_mic_frame(
+            self.app,
+            cue_id,
+            request_id,
+            route_direction,
+            samples,
+            sample_rate_hz,
+            channels,
+            created_at_ms,
+            estimated_duration_ms,
+        )
+    }
+
+    /// Enqueues one complete translated cue for Bridge-owned physical
+    /// playback. Process exclusion relies on cue-level queue semantics, so the
+    /// PCM must not be split into driver-style 20 ms jobs.
+    pub(crate) fn write_process_playback_cue(
+        &self,
+        cue_id: &str,
+        request_id: &str,
+        route_direction: &str,
+        samples: &[i16],
+        sample_rate_hz: u32,
+        channels: u16,
+        created_at_ms: u64,
+        estimated_duration_ms: u64,
+    ) -> Result<u64, String> {
+        write_process_playback_cue(
+            self.app,
+            cue_id,
+            request_id,
+            route_direction,
+            samples,
+            sample_rate_hz,
+            channels,
+            created_at_ms,
+            estimated_duration_ms,
+        )
     }
 }

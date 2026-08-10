@@ -86,3 +86,93 @@ test('bridge selectors pin the same friendly-name isolation contract', () => {
     'playback.rs no longer rejects the virtual speaker as a playback device',
   );
 });
+
+test('SYSVAD package registers a selectable virtual microphone capture endpoint', () => {
+  const miniPairs = readRepoText(
+    'drivers',
+    'windows-virtual-mic',
+    'sysvad',
+    'TabletAudioSample',
+    'minipairs.h',
+  );
+  const inx = readRepoText(
+    'drivers',
+    'windows-virtual-mic',
+    'sysvad',
+    'TabletAudioSample',
+    'ComponentizedAudioSample.inx',
+  );
+  const stream = readRepoText(
+    'drivers',
+    'windows-virtual-mic',
+    'sysvad',
+    'EndpointsCommon',
+    'minwavertstream.cpp',
+  );
+
+  assert.ok(miniPairs.includes('&MicInMiniports'));
+  assert.ok(miniPairs.includes('g_CaptureEndpoints[]'));
+  assert.ok(inx.includes('KSCATEGORY_CAPTURE'));
+  assert.ok(inx.includes('Omni Translate Virtual Microphone'));
+  assert.ok(stream.includes('OmniBridgeReadVirtualMicPcm'));
+});
+
+test('installed-route target capture uses Bridge v6 and a separate WASAPI process', () => {
+  const targetCapture = readRepoText(
+    'apps',
+    'bridge-service-native',
+    'src',
+    'bin',
+    'omni-virtual-mic-target-capture.rs',
+  );
+  const ipc = readRepoText(
+    'apps',
+    'bridge-service-native',
+    'src',
+    'bin',
+    'virtual_mic_target_capture',
+    'ipc.rs',
+  );
+  const artifacts = readRepoText(
+    'apps',
+    'bridge-service-native',
+    'src',
+    'bin',
+    'virtual_mic_target_capture',
+    'artifacts.rs',
+  );
+  const captureChild = readRepoText(
+    'apps',
+    'bridge-service-native',
+    'src',
+    'bin',
+    'virtual_mic_target_capture',
+    'capture_child.rs',
+  );
+
+  assert.ok(targetCapture.includes('Command::new(current_exe)'));
+  assert.ok(targetCapture.includes('.arg("--capture-child")'));
+  assert.ok(targetCapture.includes('mod capture_child'));
+  assert.ok(captureChild.includes('open_capture_stream(device, &format)'));
+  assert.ok(targetCapture.includes('virtualMicOutputRequested'));
+  assert.ok(targetCapture.includes('physical_delta != 0'));
+  assert.ok(ipc.includes('TranslationAudioSink::VirtualMic'));
+  assert.ok(ipc.includes('AudioRouteDirection::Outbound'));
+  assert.ok(ipc.includes('TranslationPlaybackStatusAck'));
+  assert.ok(artifacts.includes('virtual-mic-capture.wav'));
+  assert.ok(artifacts.includes('virtual-mic-capture-probe.json'));
+  assert.ok(artifacts.includes('runtime-snapshot.json'));
+});
+
+test('driver test and release layouts ship the real target-capture evidence command', () => {
+  const driverTest = readRepoText('scripts', 'installer', 'test-development-driver.ps1');
+  const helpers = readRepoText('scripts', 'installer', 'virtual-speaker-device.ps1');
+  const tauriInstaller = readRepoText('apps', 'desktop', 'src-tauri', 'tauri.installer.conf.json');
+  const releaseLayout = readRepoText('scripts', 'release', 'prepare-installer-layout.mjs');
+
+  assert.ok(driverTest.includes('Invoke-OmniVirtualMicTargetCaptureProbe'));
+  assert.ok(driverTest.includes('VirtualMicEvidenceOutputDirectory'));
+  assert.ok(helpers.includes('omni-virtual-mic-target-capture.exe'));
+  assert.ok(tauriInstaller.includes('omni-virtual-mic-target-capture.exe'));
+  assert.ok(releaseLayout.includes('omni-virtual-mic-target-capture.exe'));
+});

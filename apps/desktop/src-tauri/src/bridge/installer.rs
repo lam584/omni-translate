@@ -48,6 +48,10 @@ pub(crate) fn apply_driver_probe(snapshot: &mut BridgeRuntimeSnapshot, probe: Dr
     snapshot.root_device_count = probe.root_device_count;
     snapshot.root_instance_ids = probe.root_instance_ids;
     snapshot.endpoint_name = probe.endpoint_name;
+    snapshot.capture_endpoint_name = probe.capture_endpoint_name;
+    snapshot.virtual_mic_output_supported = probe.virtual_mic_output_supported;
+    snapshot.virtual_mic_output_status = probe.virtual_mic_output_status;
+    snapshot.virtual_mic_format = probe.virtual_mic_format;
     snapshot.abi_version = probe.abi_version;
     snapshot.ioctl_available = probe.ioctl_available;
     snapshot.driver_detail = probe.detail;
@@ -171,7 +175,7 @@ mod tests {
     use super::{apply_driver_probe, parse_driver_probe_output};
     use crate::bridge::contracts::{BridgeRuntimeSnapshot, DriverProbeResult};
 
-    const PROBE_JSON: &str = r#"{"schemaVersion":1,"driverHealth":"running","errorCode":null,"testSigningEnabled":true,"signatureEnforcementBypassed":false,"memoryIntegrityEnabled":false,"secureBootEnabled":null,"secureBootProbeStatus":"unavailable","rootDeviceCount":1,"rootInstanceIds":["ROOT\\MEDIA\\0000"],"endpointName":"扬声器 (Omni Translate Virtual Speaker)","abiVersion":"0X20260602","ioctlAvailable":true,"installedDriverVersion":"0.10.0-dev","detail":null}"#;
+    const PROBE_JSON: &str = r#"{"schemaVersion":1,"driverHealth":"running","errorCode":null,"testSigningEnabled":true,"signatureEnforcementBypassed":false,"memoryIntegrityEnabled":false,"secureBootEnabled":null,"secureBootProbeStatus":"unavailable","rootDeviceCount":1,"rootInstanceIds":["ROOT\\MEDIA\\0000"],"endpointName":"扬声器 (Omni Translate Virtual Speaker)","captureEndpointName":"麦克风 (Omni Translate Virtual Microphone)","virtualMicOutputSupported":true,"virtualMicOutputStatus":"ready","virtualMicFormat":"48000Hz/mono/pcm16","abiVersion":"0X20260810","ioctlAvailable":true,"installedDriverVersion":"0.10.0-dev","detail":null}"#;
 
     #[test]
     fn parses_utf8_driver_probe_with_localized_endpoint_name() {
@@ -182,7 +186,7 @@ mod tests {
             probe.endpoint_name.as_deref(),
             Some("扬声器 (Omni Translate Virtual Speaker)")
         );
-        assert_eq!(probe.abi_version.as_deref(), Some("0X20260602"));
+        assert_eq!(probe.abi_version.as_deref(), Some("0X20260810"));
     }
 
     #[test]
@@ -235,7 +239,13 @@ mod tests {
                 root_device_count: 1,
                 root_instance_ids: vec!["ROOT\\MEDIA\\0000".to_string()],
                 endpoint_name: Some("Speakers (Omni Translate Virtual Speaker)".to_string()),
-                abi_version: Some("0X20260604".to_string()),
+                capture_endpoint_name: Some(
+                    "Microphone (Omni Translate Virtual Microphone)".to_string(),
+                ),
+                virtual_mic_output_supported: true,
+                virtual_mic_output_status: "ready".to_string(),
+                virtual_mic_format: Some("48000Hz/mono/pcm16".to_string()),
+                abi_version: Some("0X20260810".to_string()),
                 ioctl_available: true,
                 installed_driver_version: Some("0.10.0-dev".to_string()),
                 detail: None,

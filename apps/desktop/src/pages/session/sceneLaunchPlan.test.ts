@@ -8,9 +8,9 @@ describe('buildSceneLaunchPlan', () => {
   const classicProfile = { nativeTranslation: false, speechDispatchPolicy: 'subtitle-tts' as const };
   const cases = [
     { name: 'watch omni', mode: 'watch' as const, omni: true, secondary: false,
-      stages: ['inbound-route'] },
+      stages: ['bridge-ready', 'inbound-route'] },
     { name: 'watch classic with speech', mode: 'watch' as const, omni: false, secondary: false,
-      stages: ['inbound-route', 'translate-worker', 'speech-dispatch'] },
+      stages: ['bridge-ready', 'inbound-route', 'translate-worker', 'speech-dispatch'] },
     { name: 'game', mode: 'game' as const, omni: false, secondary: false,
       stages: ['bridge-ready', 'inbound-route', 'outbound-route', 'translate-worker', 'speech-dispatch', 'subtitle-overlay'] },
     { name: 'voice room', mode: 'voice-room' as const, omni: false, secondary: false,
@@ -51,9 +51,9 @@ describe('buildSceneLaunchPlan', () => {
       secondarySubtitleTranslationEnabled: false,
     };
     expect(buildWatchFallbackPlan({ ...base, realtimeProfile: classicProfile, speechPatch: { enabled: false } }).stages)
-      .toEqual(['inbound-route', 'translate-worker']);
+      .toEqual(['bridge-ready', 'inbound-route', 'translate-worker']);
     expect(buildWatchFallbackPlan({ ...base, realtimeProfile: nativeProfile, speechPatch: { enabled: true } }).stages)
-      .toEqual(['inbound-route', 'speech-dispatch']);
+      .toEqual(['bridge-ready', 'inbound-route', 'speech-dispatch']);
   });
 
   it('preserves virtual-driver isolation instead of enabling acoustic echo cancellation', () => {
@@ -73,6 +73,48 @@ describe('buildSceneLaunchPlan', () => {
 
     expect(plan.config.devices.feedbackLoopPrevention).toBe('virtual-driver');
     expect(plan.config.devices.aecEnabled).toBe(false);
+  });
+
+  it('preserves process-exclusion isolation instead of enabling acoustic echo cancellation', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.devices.feedbackLoopPrevention = 'process-exclusion';
+    configDraft.devices.aecEnabled = true;
+
+    const plan = buildSceneLaunchPlan({
+      mode: 'watch',
+      configDraft,
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      realtimeProfile: nativeProfile,
+      speechPatch: { enabled: true },
+      secondarySubtitleTranslationEnabled: false,
+    });
+
+    expect(plan.config.devices.feedbackLoopPrevention).toBe('process-exclusion');
+    expect(plan.config.devices.aecEnabled).toBe(false);
+    expect(plan.stages).toEqual(['bridge-ready', 'inbound-route']);
+  });
+
+  it('preserves legacy none for subtitles-only Watch instead of silently migrating it to AEC', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    configDraft.devices.feedbackLoopPrevention = 'none';
+    configDraft.devices.outputSpeechEnabled = false;
+    configDraft.devices.aecEnabled = true;
+
+    const plan = buildSceneLaunchPlan({
+      mode: 'watch',
+      configDraft,
+      audioSnapshot: structuredClone(audioRuntimeSnapshotMock),
+      overlayVisible: false,
+      realtimeProfile: nativeProfile,
+      speechPatch: { enabled: false },
+      secondarySubtitleTranslationEnabled: false,
+    });
+
+    expect(plan.config.devices.feedbackLoopPrevention).toBe('none');
+    expect(plan.config.devices.outputSpeechEnabled).toBe(false);
+    expect(plan.config.devices.aecEnabled).toBe(false);
+    expect(plan.stages).toEqual(['bridge-ready', 'inbound-route']);
   });
 
   it('maps the launch attempt id onto the native inbound route id', () => {

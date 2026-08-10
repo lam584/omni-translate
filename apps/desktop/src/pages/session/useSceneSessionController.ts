@@ -29,6 +29,13 @@ import type { ResolvedRealtimeProfile } from '../../utils/realtime-profile';
 import { watchModeNeedsBridge } from '../../utils/scene-readiness';
 import { stringifyRedacted } from '../../utils/redact-sensitive-data';
 import { extractSessionErrorCode } from '../../utils/session-error-presentation';
+import { resolveAecCapability } from '../../utils/aec-capability';
+import { bridgeCaptureRouteMatches, bridgeProcessIsRunning } from '../../utils/bridge-capture-route';
+import {
+  isProcessLoopbackReady,
+  isProcessLoopbackSelectable,
+  resolveProcessLoopbackCapability,
+} from '../../utils/process-loopback-capability';
 import { buildSceneLaunchPlan, buildWatchFallbackPlan, type SceneLaunchStage } from './sceneLaunchPlan';
 import { executeSceneLaunchPlan, SceneLaunchError } from './sceneLaunchExecutor';
 import { sceneLaunchTimeoutMs } from './sceneLaunchTimeout';
@@ -65,7 +72,10 @@ function sceneLaunchTimeoutError(message: string) {
   return new Error(message);
 }
 
-function tagSceneLaunchError(message: string, code: 'session.launch-precheck-failed' | 'session.launch-stage-failed' | 'session.launch-timeout') {
+function tagSceneLaunchError(
+  message: string,
+  code: 'session.launch-precheck-failed' | 'session.launch-stage-failed' | 'session.launch-timeout' | 'bridge.virtual-mic-output-unavailable',
+) {
   return `${message} | code: ${code} | recommended: restart-session`;
 }
 
@@ -94,6 +104,27 @@ function isBridgeStartupError(error: unknown) {
   }
   const lower = message.toLowerCase();
   return ['bridge', 'driver', 'source pipe', 'virtual', 'sysvad', 'package', 'wasapi'].some((token) => lower.includes(token));
+}
+
+function assertBridgeCaptureRoute(
+  snapshot: RuntimeSnapshot,
+  feedbackMode: AppConfigDraft['devices']['feedbackLoopPrevention'],
+) {
+  if (!bridgeProcessIsRunning(snapshot.bridge) || !bridgeCaptureRouteMatches(snapshot.bridge, feedbackMode)) {
+    throw new Error(
+      `Bridge capture backend did not converge: requested=${feedbackMode} `
+      + `actual=${snapshot.bridge.sourceCaptureMode}/${snapshot.bridge.captureBackend} `
+      + `process=${snapshot.bridge.processStatus}/${snapshot.bridge.bridgeState}`,
+    );
+  }
+}
+
+function assertProcessExclusionReady(snapshot: RuntimeSnapshot) {
+  assertBridgeCaptureRoute(snapshot, 'process-exclusion');
+  const capability = resolveProcessLoopbackCapability(snapshot.bridge);
+  if (!isProcessLoopbackReady(capability)) {
+    throw new Error(capability.failureDetail ?? `process-loopback status=${capability.status}`);
+  }
 }
 
 /**
@@ -129,17 +160,68 @@ async function describeWatchLaunchFailure(
 /** Coordinates the Bridge readiness sequence used before scene startup. */
 export function useSceneSessionController(controller: SceneSessionControllerOptions) {
   const { runtimeSnapshot, setRuntimeSnapshot } = controller;
+  // A launch may reconfigure Bridge and then enter the Watch fallback inside
+  // the same render closure. Keep that successful native snapshot locally as
+  // well as publishing it to the store; otherwise fallback would reason from
+  // the pre-launch snapshot and could leave the just-started backend alive.
+  let latestBridgeRuntime = runtimeSnapshot;
+  const publishBridgeRuntime = (snapshot: RuntimeSnapshot) => {
+    latestBridgeRuntime = snapshot;
+    setRuntimeSnapshot(snapshot);
+  };
   const ensureBridgeReady = async (mode: SceneMode, nextConfig: AppConfigDraft): Promise<RuntimeSnapshot> => {
-    if (!watchModeNeedsBridge(nextConfig)) {
-      return runtimeSnapshot;
+    const currentRuntime = latestBridgeRuntime;
+    const feedbackMode = nextConfig.devices.feedbackLoopPrevention;
+    const bridgeProcessAlive = currentRuntime.bridge.processStatus === 'running';
+    const runningRouteNeedsNeutralization = mode === 'watch'
+      && bridgeProcessAlive
+      && !bridgeCaptureRouteMatches(currentRuntime.bridge, feedbackMode);
+    if (!watchModeNeedsBridge(nextConfig) && !runningRouteNeedsNeutralization) {
+      return currentRuntime;
     }
 
-    // Bridge convergence is already scheduled during application bootstrap.
-    // Never install/repair/restart it synchronously from the sub-second watch
-    // launch path; start_audio_route performs a cheap pipe health check and
-    // reports an immediately actionable error if prewarming did not succeed.
+    if (feedbackMode === 'process-exclusion') {
+      let latestRuntime = currentRuntime;
+      if (!bridgeProcessIsRunning(currentRuntime.bridge)
+        || !bridgeCaptureRouteMatches(currentRuntime.bridge, feedbackMode)) {
+        latestRuntime = await startBridgeServiceRuntime(nextConfig);
+        publishBridgeRuntime(latestRuntime);
+      } else if (!isProcessLoopbackReady(resolveProcessLoopbackCapability(currentRuntime.bridge))) {
+        latestRuntime = await refreshBridgeRuntime();
+        publishBridgeRuntime(latestRuntime);
+        if (!bridgeProcessIsRunning(latestRuntime.bridge)
+          || !bridgeCaptureRouteMatches(latestRuntime.bridge, feedbackMode)) {
+          latestRuntime = await startBridgeServiceRuntime(nextConfig);
+          publishBridgeRuntime(latestRuntime);
+        }
+      }
+      assertProcessExclusionReady(latestRuntime);
+      return latestRuntime;
+    }
+
+    // Keep the Watch path free of synchronous driver install/repair, but make
+    // launch itself authoritative: bootstrap may still be pending, and a user
+    // can change modes after bootstrap. A stopped/mismatched virtual-driver
+    // route is initialized here; AEC/none re-initializes an old running Bridge
+    // to the neutral `none` backend so stale source/output cannot survive.
     if (mode === 'watch') {
-      return runtimeSnapshot;
+      if (feedbackMode === 'virtual-driver') {
+        if (!bridgeProcessIsRunning(currentRuntime.bridge)
+          || !bridgeCaptureRouteMatches(currentRuntime.bridge, feedbackMode)) {
+          const started = await startBridgeServiceRuntime(nextConfig);
+          publishBridgeRuntime(started);
+          assertBridgeCaptureRoute(started, feedbackMode);
+          return started;
+        }
+        return currentRuntime;
+      }
+      if (runningRouteNeedsNeutralization) {
+        const started = await startBridgeServiceRuntime(nextConfig);
+        publishBridgeRuntime(started);
+        assertBridgeCaptureRoute(started, feedbackMode);
+        return started;
+      }
+      return currentRuntime;
     }
 
     // Bridge lifecycle IPC goes through the bridge-runtime wrappers so every
@@ -149,20 +231,19 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     let latestRuntime: RuntimeSnapshot;
     try {
       latestRuntime = await refreshBridgeRuntime();
-      setRuntimeSnapshot(latestRuntime);
+      publishBridgeRuntime(latestRuntime);
     } catch (refreshError) {
       appendFrontendDiagnosticsLog(
         'runtime',
         'warning',
         `[BridgeReady] refresh failed, proceeding with cached snapshot: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`,
       );
-      latestRuntime = runtimeSnapshot;
+      latestRuntime = currentRuntime;
     }
 
     if (latestRuntime.bridge.driverHealth === 'not-installed') {
-      const installed = await installDriverRuntime(nextConfig);
-      setRuntimeSnapshot(installed);
-      return installed;
+      latestRuntime = await installDriverRuntime(nextConfig);
+      publishBridgeRuntime(latestRuntime);
     }
     if (latestRuntime.bridge.driverHealth !== 'running') {
       const repairAction = latestRuntime.bridge.recommendedAction === 'rollback-driver'
@@ -171,11 +252,13 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
           ? 'restart-bridge' as const
           : 'reinstall-driver' as const;
       latestRuntime = await repairDriverRuntime(repairAction, nextConfig);
-      setRuntimeSnapshot(latestRuntime);
+      publishBridgeRuntime(latestRuntime);
     }
-    if (latestRuntime.bridge.bridgeState !== 'running') {
+    if (!bridgeProcessIsRunning(latestRuntime.bridge)
+      || !bridgeCaptureRouteMatches(latestRuntime.bridge, feedbackMode)) {
       const started = await startBridgeServiceRuntime(nextConfig);
-      setRuntimeSnapshot(started);
+      publishBridgeRuntime(started);
+      assertBridgeCaptureRoute(started, feedbackMode);
       return started;
     }
     return latestRuntime;
@@ -295,7 +378,27 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     let fallbackStage: SceneLaunchStage | null = null;
     try {
       await executeSceneLaunchPlan(fallbackPlan, {
-      ensureBridgeReady: async () => undefined,
+      ensureBridgeReady: async () => {
+        // Fallback is a real mode switch. Converge a running driver/process
+        // backend to `none` before binding the new endpoint-loopback route so
+        // no old source generation or translation queue survives.
+        await ensureBridgeReady('watch', fallbackPlan.config);
+        if (!subtitlesOnly) {
+          const capability = resolveAecCapability(options.audioSnapshot);
+          if (!capability.ready) {
+            const detail = capability.failureDetail ?? capability.status;
+            appendFrontendDiagnosticsLog('runtime', 'warning', '[WatchFallback] WebRTC AEC3 unavailable', stringifyRedacted({
+              backend: capability.backend,
+              status: capability.status,
+              detail,
+            }));
+            throw new Error(tagSceneLaunchError(
+              i18n.t('session.aecUnavailable', { detail }),
+              'session.launch-precheck-failed',
+            ));
+          }
+        }
+      },
       preconnectOmni: async () => undefined,
       cancelPreconnectOmni: async () => undefined,
       onPreconnectWarning: String,
@@ -339,7 +442,90 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
     }
     const plan = buildSceneLaunchPlan(options);
     const nextConfig = plan.config;
-    const launchTimeoutMs = sceneLaunchTimeoutMs(mode);
+    if (
+      mode === 'watch'
+      && nextConfig.devices.feedbackLoopPrevention === 'none'
+      && (nextConfig.devices.outputSpeechEnabled || options.speechPatch.enabled)
+    ) {
+      appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] translated speech requires a feedback route');
+      controller.pushNotification({
+        id: `scene-launch-feedback-route-required-${Date.now()}`,
+        level: 'error',
+        source: 'session',
+        message: tagSceneLaunchError(i18n.t('session.feedbackRouteRequired'), 'session.launch-precheck-failed'),
+        emittedAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if (
+      mode !== 'watch'
+      && ['virtual-driver', 'process-exclusion'].includes(options.configDraft.devices.feedbackLoopPrevention)
+    ) {
+      appendFrontendDiagnosticsLog(
+        'runtime',
+        'error',
+        '[SceneLaunch] outbound virtual microphone backend unavailable',
+        stringifyRedacted({
+          feedbackLoopPrevention: options.configDraft.devices.feedbackLoopPrevention,
+          errorCode: 'bridge.virtual-mic-output-unavailable',
+        }),
+      );
+      controller.pushNotification({
+        id: `scene-launch-virtual-mic-output-unavailable-${Date.now()}`,
+        level: 'error',
+        source: 'session',
+        message: tagSceneLaunchError(
+          i18n.t('audioRouting.unsupportedVirtualMicSpeech'),
+          'bridge.virtual-mic-output-unavailable',
+        ),
+        emittedAt: new Date().toISOString(),
+      });
+      return;
+    }
+    if (nextConfig.devices.feedbackLoopPrevention === 'echo-cancel') {
+      const capability = resolveAecCapability(options.audioSnapshot);
+      if (!capability.ready) {
+        const detail = capability.failureDetail ?? capability.status;
+        appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] WebRTC AEC3 unavailable', stringifyRedacted({
+          backend: capability.backend,
+          status: capability.status,
+          detail,
+        }));
+        controller.pushNotification({
+          id: `scene-launch-aec-unavailable-${Date.now()}`,
+          level: 'error',
+          source: 'session',
+          message: tagSceneLaunchError(i18n.t('session.aecUnavailable', { detail }), 'session.launch-precheck-failed'),
+          emittedAt: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+    if (mode === 'watch' && nextConfig.devices.feedbackLoopPrevention === 'process-exclusion') {
+      const capability = resolveProcessLoopbackCapability(runtimeSnapshot.bridge);
+      if (!isProcessLoopbackSelectable(capability)) {
+        const detail = capability.failureDetail
+          ?? (capability.status === 'unsupported'
+            ? `Windows build ${capability.windowsBuildNumber ?? 'unknown'} < ${capability.minimumWindowsBuild}`
+            : capability.status);
+        appendFrontendDiagnosticsLog('runtime', 'warning', '[SceneLaunch] process exclusion unavailable', stringifyRedacted({
+          status: capability.status,
+          supported: capability.supported,
+          windowsBuildNumber: capability.windowsBuildNumber,
+          minimumWindowsBuild: capability.minimumWindowsBuild,
+          detail,
+        }));
+        controller.pushNotification({
+          id: `scene-launch-process-exclusion-${Date.now()}`,
+          level: 'error',
+          source: 'session',
+          message: tagSceneLaunchError(i18n.t('session.processExclusionUnavailable', { detail }), 'session.launch-precheck-failed'),
+          emittedAt: new Date().toISOString(),
+        });
+        return;
+      }
+    }
+    const launchTimeoutMs = sceneLaunchTimeoutMs(mode, nextConfig.devices.feedbackLoopPrevention);
     const launchTimeoutMessage = controller.sceneLaunchTimeoutMessage(launchTimeoutMs / 1_000);
     let launchStage: SceneLaunchStage | null = null;
     let preconnectWarning: string | null = null;
@@ -356,13 +542,9 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         // the launch opened — the executor's rollback cannot reach a stage
         // that completed before the outer deadline fired.
         let overlayOpenedByLaunch = false;
-        // Sync the plan's corrected route configuration back into the drafts on
-        // every launch path, before the plan executes. Watch plans deliberately
-        // contain no bridge-ready stage, so this write-back must not live inside
-        // the executor's ensureBridgeReady callback: legacy watch drafts (e.g.
-        // feedbackLoopPrevention 'none' / virtualMicOutputEnabled true) would
-        // never migrate and watchModeNeedsBridge would keep misreporting a
-        // virtual-driver blocker against the actually-launched route.
+        // Sync non-route scene settings before the plan executes. The selected
+        // feedback route itself is preserved exactly; legacy `none` is never
+        // rewritten to another backend behind the user's back.
         controller.updateDeviceDraft({
           routeMode: mode,
           status: 'ready',
@@ -510,7 +692,12 @@ export function useSceneSessionController(controller: SceneSessionControllerOpti
         appendFrontendDiagnosticsLog('runtime', error.outcome.status === 'rollback-failed' ? 'error' : 'warning',
           `[SceneLaunch] status=${error.outcome.status} completed=${error.outcome.completedStages.join(',')} rolledBack=${error.outcome.rolledBackStages.join(',')} rollbackFailures=${error.outcome.rollbackFailures.length}`);
       }
-      if (mode === 'watch' && watchModeNeedsBridge(nextConfig) && isBridgeStartupError(launchError)) {
+      if (
+        mode === 'watch'
+        && nextConfig.devices.feedbackLoopPrevention !== 'process-exclusion'
+        && watchModeNeedsBridge(nextConfig)
+        && isBridgeStartupError(launchError)
+      ) {
         const fallback = (await controller.confirmWatchFallback()) ? 'subtitles-only' : 'aec';
         try {
           await startWatchFallback(options, fallback, launchError);

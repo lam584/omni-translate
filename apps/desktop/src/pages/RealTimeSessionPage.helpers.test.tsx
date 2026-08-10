@@ -107,6 +107,10 @@ describe('realTimeSessionPageHelpers', () => {
       voiceModelRaw: 'plain-model',
       realtimeProfile: { routeKind: 'local-vad', protocolDialect: null, source: 'none' },
     });
+    expect(resolveVoiceModelRuntime('plain-model')).toEqual({
+      voiceModelRaw: 'plain-model',
+      realtimeProfile: null,
+    });
   });
 
   it('keeps the persisted output preference and falls back when its Windows endpoint ID changes', () => {
@@ -123,6 +127,50 @@ describe('realTimeSessionPageHelpers', () => {
     expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBeNull();
 
     audioSnapshot.renderDevices = [];
+    expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBe('playback-device');
+  });
+
+  it('accepts the default physical endpoint for Bridge-owned Virtual Driver playback', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    const audioSnapshot = structuredClone(audioRuntimeSnapshotMock);
+    configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+    configDraft.devices.outputDeviceId = 'speaker-default';
+    audioSnapshot.renderDevices = [{
+      deviceId: 'physical-default',
+      label: 'USB Headphones',
+      interfaceName: 'USB Audio',
+      direction: 'render',
+      isDefault: true,
+      state: 'Active',
+    }];
+
+    expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBeNull();
+  });
+
+  it('blocks a Virtual Driver default alias when Windows default is the virtual speaker', () => {
+    const configDraft = structuredClone(appConfigDraftMock);
+    const audioSnapshot = structuredClone(audioRuntimeSnapshotMock);
+    configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+    configDraft.devices.outputDeviceId = 'speaker-default';
+    audioSnapshot.renderDevices = [
+      {
+        deviceId: 'omni-virtual-speaker-default',
+        label: 'Speakers (Omni Translate Virtual Speaker)',
+        interfaceName: 'Omni Translate Virtual Speaker',
+        direction: 'render',
+        isDefault: true,
+        state: 'Active',
+      },
+      {
+        deviceId: 'physical-speaker',
+        label: 'USB Headphones',
+        interfaceName: 'USB Audio',
+        direction: 'render',
+        isDefault: false,
+        state: 'Active',
+      },
+    ];
+
     expect(getSceneLaunchConfigurationProblem('watch', configDraft, audioSnapshot)).toBe('playback-device');
   });
 
@@ -198,6 +246,7 @@ describe('realTimeSessionPageHelpers', () => {
 
     const notice = renderToStaticMarkup(<CueSegmentRows cue={reconnectCue} />);
     expect(notice).toContain(reconnectCue.sourceText);
+    expect(renderToStaticMarkup(<CueSegmentRows cue={reconnectCue} current />)).toContain('live-text-source');
     expect(notice).not.toContain('翻译失败');
     expect(notice).not.toContain('正在调用');
   });
@@ -384,6 +433,18 @@ describe('realTimeSessionPageHelpers', () => {
     expect(emptyPending).toBe('');
     expect(untranslated).toContain('翻译失败');
     expect(failed).toContain('cue-queue-error');
+
+    const mixedFailure = renderToStaticMarkup(<CueSegmentRows cue={{
+      ...baseCue,
+      sourceText: 'source',
+      committed: true,
+      translationCommitted: true,
+      displaySegments: [
+        { sourceText: '', translatedText: '', pending: false },
+        { sourceText: 'source', translatedText: '', pending: false },
+      ],
+    }} />);
+    expect(mixedFailure.match(/翻译失败/gu)).toHaveLength(1);
   });
 
   it('shows one pending status without repeating it for every source segment', () => {

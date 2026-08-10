@@ -13,6 +13,8 @@ use tauri::{AppHandle, Manager};
 use self::contracts::{ConfigExportArtifact, ConfigSnapshotRecord, StorageRuntimeSnapshot};
 use self::repository::{ConfigRepository, RepositoryStats};
 
+pub(crate) use self::repository::BenchmarkHistorySaveInput;
+
 struct StoragePaths {
     database_path: PathBuf,
     export_dir: PathBuf,
@@ -55,7 +57,7 @@ impl StorageStateStore {
             paths.export_dir,
             paths.snapshot_dir,
         );
-        let stats = repository.initialize()?;
+        let stats = repository.initialize_for_app_startup()?;
         let snapshot = build_storage_snapshot(&repository, &stats);
 
         let mut inner = self
@@ -124,6 +126,41 @@ impl StorageStateStore {
         let stats = repository.initialize()?;
         let _ = self.refresh_snapshot(&repository, stats)?;
         Ok(config)
+    }
+
+    pub(crate) fn save_benchmark_history(
+        &self,
+        input: BenchmarkHistorySaveInput,
+    ) -> Result<contracts::BenchmarkHistoryRecord, String> {
+        self.repository()?.save_benchmark_history(input)
+    }
+
+    pub(crate) fn get_benchmark_history(
+        &self,
+        record_id: &str,
+    ) -> Result<contracts::BenchmarkHistoryRecord, String> {
+        self.repository()?.get_benchmark_history(record_id)
+    }
+
+    pub(crate) fn list_benchmark_history(
+        &self,
+        page: Option<u32>,
+        page_size: Option<u32>,
+    ) -> Result<contracts::BenchmarkHistoryPage, String> {
+        self.repository()?.list_benchmark_history(page, page_size)
+    }
+
+    pub(crate) fn delete_benchmark_history(
+        &self,
+        record_id: &str,
+    ) -> Result<contracts::BenchmarkHistoryDeleteResult, String> {
+        self.repository()?.delete_benchmark_history(record_id)
+    }
+
+    pub(crate) fn clear_benchmark_history(
+        &self,
+    ) -> Result<contracts::BenchmarkHistoryClearResult, String> {
+        self.repository()?.clear_benchmark_history()
     }
 
     fn repository(&self) -> Result<ConfigRepository, String> {

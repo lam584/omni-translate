@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useCallback } from 'react';
 import { Link } from 'react-router-dom';
@@ -21,11 +21,23 @@ import type { AudioInputProcessingContract, AudioMixControlContract } from '../s
 import type { DeviceDraft, FeedbackLoopPrevention, SpeechDraft } from '../schema/config';
 import { useAppStore } from '../stores/app-store';
 import { refreshAudioDevicesRuntime } from '../runtime/audio-runtime';
+import {
+  canProbeProcessLoopbackCapability,
+  probeProcessLoopbackCapabilityRuntime,
+} from '../runtime/bridge-runtime';
+import { useDesktopCapabilities } from '../runtime/desktop-api-context';
 import { buildAudioRuntimeBadges } from '../utils/audio-runtime-badges';
+import { resolveAecCapability } from '../utils/aec-capability';
 import { readCustomProviderTemplates } from '../utils/custom-provider-templates';
 import { resolveProviderModelCapabilities } from '../utils/provider-model-capabilities';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
 import { PROVIDER_TEMPLATE_CATALOG_UPDATED_EVENT, buildProviderTemplateCatalogEntries, readProviderTemplateCatalogPreferences } from '../utils/provider-template-catalog';
+import {
+  isProcessLoopbackReady,
+  isProcessLoopbackSelectable,
+  resolveProcessLoopbackCapability,
+} from '../utils/process-loopback-capability';
+import { resolveVirtualDriverCapability } from '../utils/virtual-driver-capability';
 import ScenarioCard, { tWithDefault, type ScenarioCardProps } from './audio-routing/ScenarioCard';
 
 
@@ -34,10 +46,13 @@ const sliderFillStyle = (percent: number) => ({ '--fill': `${percent}%` } as CSS
 
 function AudioRoutingPage() {
   const { t } = useTranslation();
+  const { hasNativeShell } = useDesktopCapabilities();
   const configDraft = useAppStore((state) => state.configDraft);
+  const runtimeSnapshot = useAppStore((state) => state.runtimeSnapshot);
   const audioRuntimeSnapshot = useAppStore((state) => state.audioRuntimeSnapshot);
   const runtimeNotifications = useAppStore((state) => state.runtimeNotifications);
   const setAudioRuntimeSnapshot = useAppStore((state) => state.setAudioRuntimeSnapshot);
+  const setRuntimeSnapshot = useAppStore((state) => state.setRuntimeSnapshot);
   const updateDeviceDraft = useAppStore((state) => state.updateDeviceDraft);
   const updateSpeechDraft = useAppStore((state) => state.updateSpeechDraft);
   const [customTemplates] = useState(() => readCustomProviderTemplates());
@@ -49,6 +64,7 @@ function AudioRoutingPage() {
   const deviceTests = useAudioDeviceTestController(resolveDeviceTestLabel, configDraft.devices.inputDeviceId);
   const [deviceRefreshBusy, setDeviceRefreshBusy] = useState(false);
   const [deviceRefreshError, setDeviceRefreshError] = useState<string | null>(null);
+  const processLoopbackProbeStartedRef = useRef(false);
 
   useEffect(() => {
     const refreshCatalogPreferences = () => setCatalogPreferences(readProviderTemplateCatalogPreferences());
@@ -59,6 +75,52 @@ function AudioRoutingPage() {
       window.removeEventListener('storage', refreshCatalogPreferences);
     };
   }, []);
+
+  useEffect(() => {
+    const processLoopbackStatus = useAppStore.getState().runtimeSnapshot.bridge.processLoopbackStatus;
+    if (
+      processLoopbackStatus !== 'unknown'
+      || processLoopbackProbeStartedRef.current
+      || !hasNativeShell
+      || !canProbeProcessLoopbackCapability()
+    ) {
+      return;
+    }
+    processLoopbackProbeStartedRef.current = true;
+    const current = useAppStore.getState().runtimeSnapshot;
+    setRuntimeSnapshot({
+      ...current,
+      bridge: {
+        ...current.bridge,
+        processLoopbackStatus: 'probing',
+        processLoopbackFailureDetail: null,
+      },
+    });
+
+    let cancelled = false;
+    void probeProcessLoopbackCapabilityRuntime()
+      .then((snapshot) => {
+        if (!cancelled) setRuntimeSnapshot(snapshot);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        const detail = error instanceof Error ? error.message : String(error);
+        const failed = useAppStore.getState().runtimeSnapshot;
+        setRuntimeSnapshot({
+          ...failed,
+          bridge: {
+            ...failed.bridge,
+            processLoopbackStatus: 'failed',
+            processLoopbackFailureDetail: detail,
+            lastErrorCode: 'bridge.process-loopback-activation-failed',
+            recommendedAction: 'open-diagnostics',
+          },
+        });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [hasNativeShell, setRuntimeSnapshot]);
 
   const templateCatalogEntries = useMemo(
     () => buildProviderTemplateCatalogEntries([...providerTemplates, ...customTemplates], catalogPreferences),
@@ -397,11 +459,56 @@ function AudioRoutingPage() {
     }
   };
 
+  const processLoopbackCapability = resolveProcessLoopbackCapability(runtimeSnapshot.bridge);
+  const virtualDriverCapability = resolveVirtualDriverCapability(runtimeSnapshot.bridge);
+  const aecCapability = resolveAecCapability(audioRuntimeSnapshot);
+  const aecDescription = aecCapability.ready
+    ? tWithDefault(t, 'audioRouting.feedbackEchoDesc')
+    : t('audioRouting.feedbackAecUnavailable', {
+      detail: aecCapability.failureDetail ?? tWithDefault(t, 'audioRouting.feedbackAecUnknownDetail'),
+      defaultValue: `AEC3 构建门禁尚未通过：${aecCapability.failureDetail ?? '运行时没有返回失败详情'}`,
+    });
+  const processExclusionReady = isProcessLoopbackReady(processLoopbackCapability);
+  const processExclusionSelectable = isProcessLoopbackSelectable(processLoopbackCapability);
+  const processExclusionDescription = (() => {
+    if (processExclusionReady) {
+      return tWithDefault(t, 'audioRouting.feedbackProcessExclusionDesc');
+    }
+    if (processLoopbackCapability.status === 'unsupported') {
+      const build = processLoopbackCapability.windowsBuildNumber ?? tWithDefault(t, 'audioRouting.feedbackProcessExclusionUnknownBuild');
+      return t('audioRouting.feedbackProcessExclusionUnsupported', {
+        build,
+        minimum: processLoopbackCapability.minimumWindowsBuild,
+        defaultValue: `当前 Windows build ${build} 不支持进程级排除；最低需要 build ${processLoopbackCapability.minimumWindowsBuild}。`,
+      });
+    }
+    if (processLoopbackCapability.status === 'failed') {
+      const detail = processLoopbackCapability.failureDetail ?? tWithDefault(t, 'audioRouting.feedbackProcessExclusionUnknownDetail');
+      return t('audioRouting.feedbackProcessExclusionFailed', {
+        detail,
+        defaultValue: `进程级排除能力探测失败：${detail}`,
+      });
+    }
+    return tWithDefault(t, 'audioRouting.feedbackProcessExclusionProbing');
+  })();
+  const virtualDriverDescription = virtualDriverCapability.windowsBuildSupported
+    ? tWithDefault(t, 'audioRouting.feedbackVirtualDriverDesc')
+    : `${tWithDefault(t, 'audioRouting.feedbackUnavailable')}: Windows build ${virtualDriverCapability.windowsBuildNumber}; ${virtualDriverCapability.minimumWindowsBuild}+`;
+
   const setFeedbackMode = (mode: Exclude<FeedbackLoopPrevention, 'none'>) => {
-    patchDeviceConfig({ feedbackLoopPrevention: mode });
+    if (mode === 'echo-cancel' && !aecCapability.ready) return;
+    if (mode === 'virtual-driver' && !virtualDriverCapability.windowsBuildSupported) return;
+    if (mode === 'process-exclusion' && !processExclusionSelectable) return;
+    patchDeviceConfig({
+      feedbackLoopPrevention: mode,
+      ...(mode === 'echo-cancel' ? { aecEnabled: true } : {}),
+    });
   };
 
+  const aecLockedByFeedbackMode = configDraft.devices.feedbackLoopPrevention === 'echo-cancel';
   const originalAudioVolumeControllable = configDraft.devices.feedbackLoopPrevention === 'virtual-driver';
+  const isolatedOutboundUnavailable = ['virtual-driver', 'process-exclusion']
+    .includes(configDraft.devices.feedbackLoopPrevention);
   const originalAudioVolumePercent = gainDbToVolumePercent(
     configDraft.devices.inboundRoute.mixControl.originalAudioGainDb,
   );
@@ -491,7 +598,9 @@ function AudioRoutingPage() {
             modelLabel={tWithDefault(t, 'audioRouting.chainOutboundModel')}
             modelSubtitle={outboundModelOption ? tWithDefault(t, 'audioRouting.modelSubtitleSttTranslationSpeech') : '—'}
             outboundLabel={tWithDefault(t, 'audioRouting.chainVirtualMicSpeaker')}
-            outboundSubtitle={tWithDefault(t, 'audioRouting.chainReturnToPeer')}
+            outboundSubtitle={isolatedOutboundUnavailable
+              ? tWithDefault(t, 'audioRouting.unsupportedVirtualMicSpeech')
+              : tWithDefault(t, 'audioRouting.chainReturnToPeer')}
           />
 
           {deviceSelectField(tWithDefault(t, 'audioRouting.microphone'), configDraft.devices.inputDeviceId, selectedInputAvailable, captureDevices, handleInputDeviceChange)}
@@ -512,9 +621,9 @@ function AudioRoutingPage() {
           </div>
 
           <div className="routing-toggle-stack">
-            <label className={['routing-toggle-pill', configDraft.devices.aecEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
-              <input aria-checked={configDraft.devices.aecEnabled} checked={configDraft.devices.aecEnabled} className="ui-switch" onChange={(event) => handleProcessingToggle('aecEnabled', 'echoCancellationEnabled', event.target.checked)} role="switch" type="checkbox" />
-              <span>{tWithDefault(t, 'audioRouting.aecEchoCancellation')}</span>
+            <label className={['routing-toggle-pill', (aecLockedByFeedbackMode || configDraft.devices.aecEnabled) ? 'routing-toggle-pill-on' : ''].join(' ')} title={aecLockedByFeedbackMode ? tWithDefault(t, 'audioRouting.feedbackEchoDesc') : undefined}>
+              <input aria-checked={aecLockedByFeedbackMode || configDraft.devices.aecEnabled} checked={aecLockedByFeedbackMode || configDraft.devices.aecEnabled} className="ui-switch" disabled={aecLockedByFeedbackMode} onChange={(event) => handleProcessingToggle('aecEnabled', 'echoCancellationEnabled', event.target.checked)} role="switch" type="checkbox" />
+              <span>{tWithDefault(t, 'audioRouting.aecEchoCancellation')}{aecLockedByFeedbackMode ? ' · AEC3' : ''}</span>
             </label>
             <label className={['routing-toggle-pill', configDraft.devices.ansEnabled ? 'routing-toggle-pill-on' : ''].join(' ')}>
               <input aria-checked={configDraft.devices.ansEnabled} checked={configDraft.devices.ansEnabled} className="ui-switch" onChange={(event) => handleProcessingToggle('ansEnabled', 'noiseSuppressionEnabled', event.target.checked)} role="switch" type="checkbox" />
@@ -626,34 +735,105 @@ function AudioRoutingPage() {
             <div className="routing-feedback-options" role="radiogroup" aria-label={tWithDefault(t, 'audioRouting.feedbackTitle')}>
               <button
                 aria-checked={configDraft.devices.feedbackLoopPrevention === 'echo-cancel'}
+                aria-describedby={configDraft.devices.feedbackLoopPrevention === 'echo-cancel'
+                  ? 'feedback-route-description'
+                  : !aecCapability.ready
+                    ? 'aec-availability-description'
+                    : undefined}
+                aria-disabled={!aecCapability.ready}
                 className={['routing-feedback-option', configDraft.devices.feedbackLoopPrevention === 'echo-cancel' ? 'routing-feedback-option-active' : ''].join(' ')}
+                disabled={!aecCapability.ready}
                 onClick={() => setFeedbackMode('echo-cancel')}
                 role="radio"
+                title={aecDescription}
                 type="button"
               >
                 <span className="routing-feedback-radio" aria-hidden="true">
                   {configDraft.devices.feedbackLoopPrevention === 'echo-cancel' ? <AppIcon name="check" size={11} /> : null}
                 </span>
-                <strong>{tWithDefault(t, 'audioRouting.feedbackEchoLabel')}</strong>
+                <span className="routing-feedback-option-label">
+                  <strong>{tWithDefault(t, 'audioRouting.feedbackEchoLabel')}</strong>
+                  {!aecCapability.ready ? <small>{tWithDefault(t, 'audioRouting.feedbackUnavailable')}</small> : null}
+                </span>
               </button>
               <button
                 aria-checked={configDraft.devices.feedbackLoopPrevention === 'virtual-driver'}
+                aria-describedby={!virtualDriverCapability.windowsBuildSupported
+                  ? 'virtual-driver-availability-description'
+                  : undefined}
+                aria-disabled={!virtualDriverCapability.windowsBuildSupported}
                 className={['routing-feedback-option', configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ? 'routing-feedback-option-active' : ''].join(' ')}
+                disabled={!virtualDriverCapability.windowsBuildSupported}
                 onClick={() => setFeedbackMode('virtual-driver')}
                 role="radio"
+                title={virtualDriverDescription}
                 type="button"
               >
                 <span className="routing-feedback-radio" aria-hidden="true">
                   {configDraft.devices.feedbackLoopPrevention === 'virtual-driver' ? <AppIcon name="check" size={11} /> : null}
                 </span>
-                <strong>{tWithDefault(t, 'audioRouting.feedbackVirtualDriverLabel')}</strong>
+                <span className="routing-feedback-option-label">
+                  <strong>{tWithDefault(t, 'audioRouting.feedbackVirtualDriverLabel')}</strong>
+                  {!virtualDriverCapability.windowsBuildSupported
+                    ? <small>{tWithDefault(t, 'audioRouting.feedbackUnavailable')}</small>
+                    : null}
+                </span>
+              </button>
+              <button
+                aria-checked={configDraft.devices.feedbackLoopPrevention === 'process-exclusion'}
+                aria-describedby={configDraft.devices.feedbackLoopPrevention === 'process-exclusion'
+                  ? 'feedback-route-description'
+                  : !processExclusionSelectable
+                    ? 'process-exclusion-availability-description'
+                    : undefined}
+                aria-disabled={!processExclusionSelectable}
+                className={[
+                  'routing-feedback-option',
+                  configDraft.devices.feedbackLoopPrevention === 'process-exclusion' ? 'routing-feedback-option-active' : '',
+                ].join(' ')}
+                disabled={!processExclusionSelectable}
+                onClick={() => setFeedbackMode('process-exclusion')}
+                role="radio"
+                title={processExclusionDescription}
+                type="button"
+              >
+                <span className="routing-feedback-radio" aria-hidden="true">
+                  {configDraft.devices.feedbackLoopPrevention === 'process-exclusion' ? <AppIcon name="check" size={11} /> : null}
+                </span>
+                <span className="routing-feedback-option-label">
+                  <strong>{tWithDefault(t, 'audioRouting.feedbackProcessExclusionLabel')}</strong>
+                  <small>{processExclusionReady
+                    ? tWithDefault(t, 'audioRouting.feedbackRecommended')
+                    : processExclusionSelectable
+                      ? tWithDefault(t, 'audioRouting.feedbackProbing')
+                      : tWithDefault(t, 'audioRouting.feedbackUnavailable')}</small>
+                </span>
               </button>
             </div>
-            <p className="routing-feedback-desc">
-              {configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
-                ? tWithDefault(t, 'audioRouting.feedbackVirtualDriverDesc')
-                : tWithDefault(t, 'audioRouting.feedbackEchoDesc')}
+            <p className="routing-feedback-desc" id="feedback-route-description">
+              {configDraft.devices.feedbackLoopPrevention === 'none'
+                ? tWithDefault(t, 'audioRouting.feedbackNoneSelected')
+                : configDraft.devices.feedbackLoopPrevention === 'process-exclusion'
+                  ? processExclusionDescription
+                : configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
+                  ? virtualDriverDescription
+                  : aecDescription}
             </p>
+            {!aecCapability.ready && configDraft.devices.feedbackLoopPrevention !== 'echo-cancel' ? (
+              <p className="routing-feedback-desc routing-feedback-unavailable-desc" id="aec-availability-description">
+                {aecDescription}
+              </p>
+            ) : null}
+            {!processExclusionSelectable && configDraft.devices.feedbackLoopPrevention !== 'process-exclusion' ? (
+              <p className="routing-feedback-desc routing-feedback-unavailable-desc" id="process-exclusion-availability-description">
+                {processExclusionDescription}
+              </p>
+            ) : null}
+            {!virtualDriverCapability.windowsBuildSupported && configDraft.devices.feedbackLoopPrevention !== 'virtual-driver' ? (
+              <p className="routing-feedback-desc routing-feedback-unavailable-desc" id="virtual-driver-availability-description">
+                {virtualDriverDescription}
+              </p>
+            ) : null}
           </div>
         </article>
       </section>

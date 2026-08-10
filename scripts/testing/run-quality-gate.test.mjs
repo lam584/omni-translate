@@ -2415,6 +2415,7 @@ test('provider evidence comparison is independent of JSON object key order', () 
     const emitter = readJson(emitterPath);
     const artifact = emitter.artifacts.find((entry) => entry.path === 'provider-probe-result.json');
     Object.assign(artifact, hashEvidenceArtifact(probePath));
+    emitter.timeline.at(-1).observedAt = emitter.timeline.at(-2).observedAt;
     writeJson(emitterPath, emitter);
 
     const checked = validateRawReleaseManualEvidence(rawDirectory, 'E2E-PROVIDER-PROBE', {
@@ -2460,7 +2461,7 @@ test('virtual-mic authority rejects fake PID, endpoint, delta, and timeline evid
           probe.cueStatusTimeline = [...probe.cueStatusTimeline].reverse();
           snapshot.cueStatusTimeline = [...snapshot.cueStatusTimeline].reverse();
         },
-        expected: /status 0 must be queued|timestamps must be strictly increasing/,
+        expected: /status 0 must be queued|timestamps must be (?:strictly increasing|monotonic and ordered)/,
       },
     ];
     for (const testCase of cases) {

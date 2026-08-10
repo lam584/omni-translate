@@ -148,4 +148,76 @@ describe('resolveRealtimeProfile', () => {
       }
     }
   });
+
+  it('infers each supported protocol family from unregistered provider model names', () => {
+    const inferredProfile = (modelId: string, kind: ProviderDraft['kind'], templateId: string) => {
+      const provider = dashscope(modelId);
+      provider.kind = kind;
+      provider.templateId = templateId;
+      provider.localModelCapabilityRegistry = [];
+      delete provider.templateRealtimeProtocol;
+      delete provider.realtimeProtocol;
+      return resolveRealtimeProfile(configWith(provider), modelId);
+    };
+
+    for (const modelId of [
+      'gemini-flash-live',
+      'gemini-flash-realtime',
+      'gemini-flash-native-audio',
+    ]) {
+      expect(inferredProfile(modelId, 'openai-compatible', 'template-gemini')).toMatchObject({
+        protocolDialect: 'gemini-live',
+        routeKind: 'gemini-live',
+        realtimeAudioMode: 'gemini_auto_activity',
+        nativeAudioOutput: true,
+        source: 'model-name',
+      });
+    }
+
+    expect(inferredProfile('qwen-livetranslate-v2', 'dashscope', 'template-dashscope')).toMatchObject({
+      protocolDialect: 'dashscope-livetranslate', routeKind: 'omni', nativeTranslation: true,
+    });
+    expect(inferredProfile('qwen-omni-realtime-v2', 'dashscope', 'template-dashscope')).toMatchObject({
+      protocolDialect: 'dashscope-omni', realtimeAudioMode: 'manual', nativeAudioOutput: true,
+    });
+    expect(inferredProfile('qwen-audio-realtime-v2', 'openai-compatible', 'template-custom')).toMatchObject({
+      protocolDialect: 'dashscope-omni', routeKind: 'omni', source: 'model-name',
+    });
+    expect(inferredProfile('qwen-asr-realtime-v2', 'dashscope', 'template-dashscope')).toMatchObject({
+      protocolDialect: 'dashscope-asr', routeKind: 'dashscope-asr', nativeAudioOutput: false,
+    });
+    expect(inferredProfile('deployment-without-hints', 'dashscope', 'template-dashscope')).toMatchObject({
+      protocolDialect: 'dashscope-omni', source: 'model-name',
+    });
+
+    expect(inferredProfile('gpt-translate-v2', 'openai-compatible', 'template-custom')).toMatchObject({
+      protocolDialect: 'openai-translation', nativeTranslation: true, speechDispatchPolicy: 'disabled',
+    });
+    expect(inferredProfile('gpt-transcribe-v2', 'openai-compatible', 'template-custom')).toMatchObject({
+      protocolDialect: 'openai-transcription', realtimeAudioMode: 'server_vad',
+    });
+    expect(inferredProfile('gpt-whisper-v2', 'openai-compatible', 'template-custom')).toMatchObject({
+      protocolDialect: 'openai-transcription', realtimeAudioMode: 'manual',
+    });
+    expect(inferredProfile('gpt-realtime-v2', 'openai-compatible', 'template-custom')).toMatchObject({
+      protocolDialect: 'openai-conversation', nativeAudioOutput: true,
+    });
+    expect(inferredProfile('gpt-live-v2', 'openai-compatible', 'template-custom')).toMatchObject({
+      protocolDialect: 'openai-conversation', source: 'model-name',
+    });
+    expect(inferredProfile('plain-text-model', 'openai-compatible', 'template-custom')).toMatchObject({
+      protocolDialect: null, routeKind: 'local-vad', speechDispatchPolicy: 'subtitle-tts', source: 'none',
+    });
+  });
+
+  it('resolves an unknown composite reference without a provider as a local profile', () => {
+    expect(resolveRealtimeProfile({ providers: [] }, 'missing-template::plain-model')).toMatchObject({
+      providerId: null,
+      modelId: 'plain-model',
+      protocolDialect: null,
+      routeKind: 'local-vad',
+      preconnectPolicy: 'disabled',
+      timeoutBudgetMs: 30_000,
+    });
+  });
 });

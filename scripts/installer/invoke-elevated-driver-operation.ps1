@@ -4,11 +4,13 @@ param(
   [Parameter(Mandatory = $true)][string]$ResultPath,
   [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
   [Parameter(Mandatory = $true)][string]$RuntimeRoot,
-  [Parameter(Mandatory = $true)][string]$InstallChannel,
+  [Parameter(Mandatory = $true)][ValidateSet('development', 'release')][string]$InstallChannel,
   [Parameter(Mandatory = $true)][string]$DriverVersion,
   [Parameter(Mandatory = $true)][string]$BridgeVersion,
   [Parameter(Mandatory = $true)][string]$TargetDeviceId,
-  [string]$VirtualRenderDeviceId = 'omni-virtual-speaker-default'
+  [string]$VirtualRenderDeviceId = 'omni-virtual-speaker-default',
+  [long]$RequestProcessId = 0,
+  [ValidateSet('already-elevated', 'uac-runas', 'unknown')][string]$ElevationMode = 'unknown'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,9 +19,15 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'driver-operation-common.ps1')
 
 function Write-OperationResult([bool]$Succeeded, [string]$Phase, [string]$ErrorCode, [string]$Summary) {
+  $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent()
+  $principal = New-Object System.Security.Principal.WindowsPrincipal($identity)
+  $isElevated = $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
   Write-DriverOperationResultFile -ResultPath $ResultPath -LogPath $logPath `
     -OperationId $OperationId -Action $Action -StartedAt $startedAt `
-    -Succeeded $Succeeded -Phase $Phase -ErrorCode $ErrorCode -Summary $Summary
+    -Succeeded $Succeeded -Phase $Phase -ErrorCode $ErrorCode -Summary $Summary `
+    -RequestProcessId $RequestProcessId -ElevatedProcessId $PID -Elevated $isElevated `
+    -ElevationMode $ElevationMode -InstallChannel $InstallChannel `
+    -DriverVersion $DriverVersion -BridgeVersion $BridgeVersion
 }
 
 function Get-DriverOperationErrorCode([string]$Message) {
@@ -46,6 +54,11 @@ try {
     'install' { 'install-development-driver.ps1' }
     'uninstall' { 'uninstall-development-driver.ps1' }
     'reinstall' { 'repair-driver.ps1' }
+  }
+  if ($InstallChannel -eq 'release') {
+    # Fail closed on the stable package before any install, repair, or uninstall
+    # action is allowed to mutate PnP/DriverStore/runtime state.
+    & (Join-Path $PSScriptRoot 'install-development-driver.ps1') @common -ValidatePackageOnly *> $logPath
   }
   if ($Action -eq 'reinstall') {
     & (Join-Path $PSScriptRoot $script) @common -Action 'rollback-driver' *> $logPath

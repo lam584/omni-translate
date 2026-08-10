@@ -143,8 +143,12 @@ export const audioRuntimeSnapshotMock: AudioRuntimeSnapshot = {
     ],
   },
   echoCaptureDiagnostics: {
-    aecSuppressedChunks: 0,
+    processedChunks: 0,
     playbackActiveChunks: 0,
-    effectiveSuppressedChunks: 0,
+    forwardedToAsrChunks: 0,
+    droppedChunks: 0,
   },
+  aecBackend: 'unavailable',
+  aecStatus: 'unavailable',
+  aecFailureDetail: 'webrtc-audio-processing 2.1.0: bundled AEC3 is not verified for x86_64-pc-windows-msvc',
 };

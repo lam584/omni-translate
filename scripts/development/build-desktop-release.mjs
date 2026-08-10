@@ -1,4 +1,27 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { existsSync, readdirSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+const workspaceRoot = path.resolve(scriptDirectory, '..', '..');
+const desktopRoot = path.join(workspaceRoot, 'apps', 'desktop');
+
+const findExecutable = (root, fileName) => {
+  if (!existsSync(root)) return null;
+  const pending = [root];
+  while (pending.length > 0) {
+    const directory = pending.pop();
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const candidate = path.join(directory, entry.name);
+      if (entry.isDirectory()) pending.push(candidate);
+      if (entry.isFile() && entry.name.toLowerCase() === fileName.toLowerCase()) {
+        return candidate;
+      }
+    }
+  }
+  return null;
+};
 
 const watchModeEnvironmentKeys = [
   'OMNI_WATCH_MODE_AUTOSTART',
@@ -23,14 +46,32 @@ const releaseEnvironment = { ...process.env };
 for (const key of watchModeEnvironmentKeys) {
   releaseEnvironment[key] = key.endsWith('_AUTOSTART') ? '0' : '';
 }
+const gitHead = spawnSync('git', ['rev-parse', '--verify', 'HEAD'], {
+  cwd: workspaceRoot,
+  encoding: 'utf8',
+  windowsHide: true,
+});
+const buildCommit = String(gitHead.stdout ?? '').trim();
+if (gitHead.status !== 0 || !/^[a-f0-9]{40}$/i.test(buildCommit)) {
+  console.error(`Failed to resolve the Desktop build commit: ${gitHead.stderr ?? ''}`);
+  process.exit(1);
+}
+releaseEnvironment.OMNI_BUILD_COMMIT = buildCommit;
+if (!releaseEnvironment.CMAKE) {
+  const acquiredCmake = findExecutable(
+    path.join(workspaceRoot, 'target', 'aec3-msvc-vcpkg-downloads', 'tools'),
+    'cmake.exe',
+  );
+  if (acquiredCmake) releaseEnvironment.CMAKE = acquiredCmake;
+}
 
 const isWindows = process.platform === 'win32';
 const executable = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'npx';
 const arguments_ = isWindows
-  ? ['/d', '/s', '/c', 'npx tauri build --no-bundle']
-  : ['tauri', 'build', '--no-bundle'];
+  ? ['/d', '/s', '/c', 'npx tauri build --no-bundle --features webrtc-aec3']
+  : ['tauri', 'build', '--no-bundle', '--features', 'webrtc-aec3'];
 const child = spawn(executable, arguments_, {
-  cwd: process.cwd(),
+  cwd: desktopRoot,
   env: releaseEnvironment,
   stdio: 'inherit',
 });

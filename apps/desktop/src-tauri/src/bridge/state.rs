@@ -1,5 +1,7 @@
 use std::process::Child;
-use std::sync::Mutex;
+use std::sync::{Mutex, MutexGuard, PoisonError};
+#[cfg(test)]
+use std::sync::TryLockResult;
 
 use super::contracts::BridgeRuntimeSnapshot;
 
@@ -9,6 +11,12 @@ pub(crate) struct BridgeProcessHandle {
 
 pub(crate) struct BridgeStateStore {
     inner: Mutex<BridgeState>,
+    /// Serializes every native operation that can observe or replace the
+    /// Bridge process/capture route. This is deliberately separate from
+    /// `inner`: lifecycle operations hold this guard across blocking process
+    /// cleanup, launch, Init, and playback-ownership handoff while taking the
+    /// snapshot/process mutex only for short updates.
+    lifecycle_operation: Mutex<()>,
 }
 
 struct BridgeState {
@@ -23,7 +31,19 @@ impl BridgeStateStore {
                 snapshot: BridgeRuntimeSnapshot::default(),
                 process: None,
             }),
+            lifecycle_operation: Mutex::new(()),
         }
+    }
+
+    pub(crate) fn lock_lifecycle_operation(&self) -> MutexGuard<'_, ()> {
+        self.lifecycle_operation
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn try_lock_lifecycle_operation(&self) -> TryLockResult<MutexGuard<'_, ()>> {
+        self.lifecycle_operation.try_lock()
     }
 
     pub(crate) fn snapshot(&self) -> BridgeRuntimeSnapshot {

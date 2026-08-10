@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import AppIcon from '../components/icons/AppIcon';
 import ModalDialog from '../components/ModalDialog';
@@ -7,6 +7,9 @@ import type { StatusTone } from '../components/page/StatusBadge';
 import i18n from '../i18n/config';
 import { installDriverRuntime, repairDriverRuntime, startBridgeServiceRuntime } from '../runtime/bridge-runtime';
 import { useDesktopApiV2 } from '../runtime/desktop-api-context';
+import type { BenchmarkReport } from '../runtime/benchmark-runtime';
+import { readProviderSecret } from '../runtime/provider-runtime';
+import { createLogger } from '../runtime/logger';
 import { resolveRuntimeBridgeStatus } from '../runtime/runtime-status';
 import { hasInvokeBridge } from '../runtime/tauri-runtime';
 import type { DiagnosticsExportScope } from '../schema/config';
@@ -18,10 +21,16 @@ import { resolveRecommendedDriverAction } from '../utils/driver-management';
 import { resolveInteractionCapabilities, resolveRealtimeAudioMode } from '../utils/provider-model-capabilities';
 import { collectProviderModelOptions } from '../utils/provider-model-options';
 import { LogLevelControl } from './diagnostics/LogLevelControl';
+import { BenchmarkHistoryPanel } from './diagnostics/BenchmarkHistoryPanel';
 import { useDiagnosticsWorkbenchController } from './diagnostics/useDiagnosticsActions';
 import { CUSTOM_AUDIO_VALUE } from './diagnostics/benchmark-audio-fixtures';
 import { useBenchmarkController, type BenchmarkVoiceModel } from './diagnostics/useBenchmarkController';
 import { formatSemanticJudgeError, runBenchmarkSemanticJudge, type BenchmarkJudgeModel, type BenchmarkSemanticJudgeResult } from './diagnostics/benchmarkSemanticJudge';
+import { scoreBenchmarkReport, type BenchmarkJudgeState, type BenchmarkRunState, type BenchmarkScoreV1 } from './diagnostics/benchmarkReportScore';
+import { resolveBenchmarkReferenceTranslation, resolveBenchmarkSourceText } from './diagnostics/benchmarkReferenceText';
+import { benchmarkScoreFromHistory, historyScoreStatus, type BenchmarkHistoryRecord } from './diagnostics/benchmarkHistory';
+import { formatHistoryTime } from './diagnostics/benchmarkHistoryFormat';
+import { useBenchmarkHistory } from './diagnostics/useBenchmarkHistory';
 import {
   BenchmarkProgressBanner, BenchmarkReportDetail, DiagnosticsReportExporter, ExportButton,
   LiveSessionEventDetail, buildOutputSegments, fmtMs, formatBenchmarkTxt,
@@ -30,12 +39,18 @@ import {
 } from './diagnostics/DiagnosticsDetails';
 import {
   buildOverviewIssues, buildOverviewSignals, buildServiceMonitorItems,
-  createEmptyBenchmarkReport, formatBridgeStateLabel, formatCaptureStateLabel,
+  createEmptyBenchmarkReport, formatBridgeStateLabel, formatCaptureBackendLabel, formatCaptureStateLabel,
   formatDriverHealthLabel, formatStatusLabel, getIssueToneRank,
-  getRuntimeEnvironmentSummary, hasSameIds, isOverlayVisible, resolveStatusTone,
+  formatProcessLoopbackStatusLabel, getRuntimeEnvironmentSummary, hasSameIds, isOverlayVisible, resolveStatusTone,
 } from './diagnostics/diagnosticsOverview';
 import WatchSessionReportPanel from './watch-report/WatchSessionReportPanel';
 import type { ExportArtifactReceipt } from '../runtime/export-artifact-runtime';
+
+const diagnosticsLogger = createLogger('runtime');
+
+function recordBenchmarkJudgeCredentialFailure(error: unknown): void {
+  diagnosticsLogger.warn('benchmark judge credential could not be read', describeUnknownError(error));
+}
 
 type RepairOption = {
   id: string;
@@ -48,7 +63,8 @@ type RepairOption = {
 
 export const diagnosticsPageHelpers = {
   hasSameIds, resolveStatusTone, formatStatusLabel, formatBridgeStateLabel, formatCaptureStateLabel,
-  formatDriverHealthLabel, getIssueToneRank, isOverlayVisible, getRuntimeEnvironmentSummary,
+  formatDriverHealthLabel, formatCaptureBackendLabel, formatProcessLoopbackStatusLabel,
+  getIssueToneRank, isOverlayVisible, getRuntimeEnvironmentSummary,
   buildOverviewIssues, buildOverviewSignals, buildServiceMonitorItems, createEmptyBenchmarkReport,
   isBinaryAudioOutputEvent, isTextOutputEvent, textLength,
   shouldUseCandidate, buildOutputSegments, fmtMs, formatLiveEventsTxt, formatBenchmarkTxt,
@@ -73,6 +89,31 @@ export async function runRecommendedBridgeAction(snapshot: RuntimeSnapshot, conf
     case 'start-bridge': return startBridgeServiceRuntime(configDraft);
     default: return repairDriverRuntime('restart-bridge', configDraft);
   }
+}
+
+function buildBenchmarkScore(
+  report: BenchmarkReport,
+  benchmarkState: BenchmarkRunState,
+  semanticJudge: BenchmarkSemanticJudgeResult | null = null,
+  judgeState: BenchmarkJudgeState = 'idle',
+  judgeError: string | null = null,
+  judgeContext: {
+    missingEvidence?: readonly string[];
+    model?: string | null;
+    rubricVersion?: string | null;
+  } = {},
+): BenchmarkScoreV1 {
+  return scoreBenchmarkReport(report, {
+    benchmarkState,
+    judgeError,
+    judgeMissingEvidence: judgeContext.missingEvidence,
+    judgeModel: judgeContext.model,
+    judgeRubricVersion: judgeContext.rubricVersion,
+    judgeState,
+    semanticJudge,
+    sourceText: resolveBenchmarkSourceText(report.audioFile),
+    referenceTranslation: resolveBenchmarkReferenceTranslation(report.audioFile),
+  });
 }
 
 function DiagnosticsPage() {
@@ -121,6 +162,59 @@ function DiagnosticsPage() {
     [configDraft.providers],
   );
 
+  const [historyExpanded, setHistoryExpanded] = useState(false);
+  const {
+    clear: clearStoredBenchmarkHistory,
+    error: benchmarkHistoryError,
+    get: getStoredBenchmarkHistory,
+    loadMore: loadMoreBenchmarkHistory,
+    loading: benchmarkHistoryLoading,
+    page: benchmarkHistoryPage,
+    refresh: refreshBenchmarkHistory,
+    remove: removeStoredBenchmarkHistory,
+    save: saveBenchmarkHistoryRecord,
+  } = useBenchmarkHistory(historyExpanded);
+  const historyRecordId = useRef<string | null>(null);
+  const historyRunId = useRef<string | null>(null);
+  const [historyDetail, setHistoryDetail] = useState<BenchmarkHistoryRecord | null>(null);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+  const [historyMutationError, setHistoryMutationError] = useState<string | null>(null);
+  const hasNativeShell = desktopApi.capabilities.hasNativeShell;
+  const persistBenchmarkHistory = useCallback(async ({
+    error = null,
+    report,
+    runStatus,
+    score,
+  }: {
+    error?: string | null;
+    report: BenchmarkReport;
+    runStatus: 'running' | 'completed' | 'failed';
+    score: BenchmarkScoreV1;
+  }) => {
+    if (!hasNativeShell) return;
+    const runId = historyRunId.current;
+    if (!runId) return;
+    try {
+      const persisted = await saveBenchmarkHistoryRecord({
+        recordId: historyRecordId.current ?? undefined,
+        runId,
+        model: report.model,
+        runStatus,
+        scoreStatus: historyScoreStatus(score),
+        scoreVersion: score.version,
+        totalScore: score.total,
+        grade: score.grade,
+        report,
+        score,
+        error,
+      });
+      historyRecordId.current = persisted.recordId;
+      setHistoryMutationError(null);
+    } catch (caught) {
+      setHistoryMutationError(describeUnknownError(caught));
+    }
+  }, [hasNativeShell, saveBenchmarkHistoryRecord]);
+
   const {
     modelId: benchmarkModelId,
     setModelId: setBenchmarkModelId,
@@ -136,28 +230,218 @@ function DiagnosticsPage() {
     setModalOpen: setBenchmarkModalOpen,
     progress: benchmarkProgress,
     run: runBenchmarkTest,
-  } = useBenchmarkController(voiceModelOptions);
+  } = useBenchmarkController(voiceModelOptions, {
+    onStarted: async ({ report, runId }) => {
+      historyRecordId.current = null;
+      historyRunId.current = runId;
+      await persistBenchmarkHistory({
+        report,
+        runStatus: 'running',
+        score: buildBenchmarkScore(report, 'running'),
+      });
+    },
+    onCompleted: async ({ report }) => {
+      await persistBenchmarkHistory({
+        report,
+        runStatus: 'completed',
+        score: buildBenchmarkScore(report, 'completed'),
+      });
+    },
+    onFailed: async ({ error, report }) => {
+      await persistBenchmarkHistory({
+        error: error ?? null,
+        report,
+        runStatus: 'failed',
+        score: buildBenchmarkScore(report, 'failed'),
+      });
+    },
+  });
   const [semanticJudgeModelId, setSemanticJudgeModelId] = useState('');
   const [semanticJudgeRunning, setSemanticJudgeRunning] = useState(false);
   const [semanticJudgeError, setSemanticJudgeError] = useState<string | null>(null);
   const [semanticJudgeResult, setSemanticJudgeResult] = useState<BenchmarkSemanticJudgeResult | null>(null);
+  const [semanticJudgeEvidenceMissing, setSemanticJudgeEvidenceMissing] = useState<readonly string[]>([]);
+  const automaticJudgeKey = useRef<string | null>(null);
   const effectiveSemanticJudgeModelId = semanticJudgeModels.some((model) => model.modelId === semanticJudgeModelId)
     ? semanticJudgeModelId
     : semanticJudgeModels[0]?.modelId ?? '';
-  const runSemanticJudge = async () => {
+  const selectedSemanticJudgeModel = semanticJudgeModels.find((model) => model.modelId === effectiveSemanticJudgeModelId) ?? null;
+  const judgeScoreContext = useMemo(() => ({
+    missingEvidence: selectedSemanticJudgeModel
+      ? semanticJudgeEvidenceMissing
+      : ['judge-model-unavailable'],
+    model: selectedSemanticJudgeModel?.displayName ?? null,
+    rubricVersion: 'benchmark-semantic-judge/v1',
+  }), [selectedSemanticJudgeModel, semanticJudgeEvidenceMissing]);
+  const runSemanticJudge = useCallback(async () => {
     if (!benchmarkReport) return;
-    const selected = semanticJudgeModels.find((model) => model.modelId === effectiveSemanticJudgeModelId);
-    if (!selected) return;
+    if (!selectedSemanticJudgeModel) {
+      setSemanticJudgeEvidenceMissing(['judge-model-unavailable']);
+      setSemanticJudgeError(null);
+      setSemanticJudgeResult(null);
+      await persistBenchmarkHistory({
+        report: benchmarkReport,
+        runStatus: 'completed',
+        score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'idle', null, {
+          missingEvidence: ['judge-model-unavailable'],
+          rubricVersion: 'benchmark-semantic-judge/v1',
+        }),
+      });
+      return;
+    }
+    const sourceText = resolveBenchmarkSourceText(benchmarkReport.audioFile);
+    const referenceTranslation = resolveBenchmarkReferenceTranslation(benchmarkReport.audioFile);
+    if (!sourceText || !referenceTranslation) {
+      // Missing fixture text is an evidence state, not a failed judge call.
+      setSemanticJudgeEvidenceMissing([]);
+      setSemanticJudgeError(null);
+      setSemanticJudgeResult(null);
+      await persistBenchmarkHistory({
+        report: benchmarkReport,
+        runStatus: 'completed',
+        score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'idle', null, {
+          model: selectedSemanticJudgeModel.displayName,
+          rubricVersion: 'benchmark-semantic-judge/v1',
+        }),
+      });
+      return;
+    }
+    let credential: string | null = null;
+    try {
+      credential = (await readProviderSecret(selectedSemanticJudgeModel.authReference)).secret;
+    } catch (caught) {
+      // The judge endpoint is deliberately not called when credential
+      // evidence cannot be read from the configured credential store.
+      recordBenchmarkJudgeCredentialFailure(caught);
+    }
+    if (!credential) {
+      const missingEvidence = ['judge-credential-unavailable'];
+      setSemanticJudgeEvidenceMissing(missingEvidence);
+      setSemanticJudgeError(null);
+      setSemanticJudgeResult(null);
+      await persistBenchmarkHistory({
+        report: benchmarkReport,
+        runStatus: 'completed',
+        score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'idle', null, {
+          missingEvidence,
+          model: selectedSemanticJudgeModel.displayName,
+          rubricVersion: 'benchmark-semantic-judge/v1',
+        }),
+      });
+      return;
+    }
     setSemanticJudgeRunning(true);
     setSemanticJudgeError(null);
+    setSemanticJudgeResult(null);
+    setSemanticJudgeEvidenceMissing([]);
+    await persistBenchmarkHistory({
+      report: benchmarkReport,
+      runStatus: 'completed',
+      score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'running', null, {
+        model: selectedSemanticJudgeModel.displayName,
+        rubricVersion: 'benchmark-semantic-judge/v1',
+      }),
+    });
     try {
-      setSemanticJudgeResult(await runBenchmarkSemanticJudge(benchmarkReport, selected));
-    } catch (error) {
-      setSemanticJudgeError(formatSemanticJudgeError(error));
+      const result = await runBenchmarkSemanticJudge(benchmarkReport, selectedSemanticJudgeModel, credential);
+      setSemanticJudgeResult(result);
+      await persistBenchmarkHistory({
+        report: benchmarkReport,
+        runStatus: 'completed',
+        score: buildBenchmarkScore(benchmarkReport, 'completed', result, 'completed'),
+      });
+    } catch (caught) {
+      const error = formatSemanticJudgeError(caught);
+      setSemanticJudgeError(error);
+      await persistBenchmarkHistory({
+        error,
+        report: benchmarkReport,
+        runStatus: 'completed',
+        score: buildBenchmarkScore(benchmarkReport, 'completed', null, 'failed', error, {
+          model: selectedSemanticJudgeModel.displayName,
+          rubricVersion: 'benchmark-semantic-judge/v1',
+        }),
+      });
     } finally {
       setSemanticJudgeRunning(false);
     }
+  }, [benchmarkReport, persistBenchmarkHistory, selectedSemanticJudgeModel]);
+  const benchmarkState = benchmarkError ? 'failed' : benchmarkRunning ? 'running' : 'completed';
+  const benchmarkScore = useMemo(() => benchmarkReport ? buildBenchmarkScore(
+    benchmarkReport,
+    benchmarkState,
+    semanticJudgeResult,
+    semanticJudgeRunning ? 'running' : semanticJudgeError ? 'failed' : semanticJudgeResult ? 'completed' : 'idle',
+    semanticJudgeError,
+    judgeScoreContext,
+  ) : null, [benchmarkReport, benchmarkState, judgeScoreContext, semanticJudgeError, semanticJudgeResult, semanticJudgeRunning]);
+  const benchmarkJudgeKey = benchmarkReport
+    ? `${benchmarkReport.model}|${benchmarkReport.audioFile}|${benchmarkReport.runs.map((run) => `${run.runIndex}:${run.responseDoneMs ?? ''}:${run.translationFinal}`).join('|')}|${effectiveSemanticJudgeModelId || 'judge-model-unavailable'}`
+    : null;
+  useEffect(() => {
+    if (
+      !benchmarkJudgeKey
+      || !benchmarkReport
+      || benchmarkState !== 'completed'
+      || semanticJudgeRunning
+      || semanticJudgeResult
+      || semanticJudgeError
+      || automaticJudgeKey.current === benchmarkJudgeKey
+    ) return;
+    automaticJudgeKey.current = benchmarkJudgeKey;
+    void runSemanticJudge().catch((caught) => {
+      automaticJudgeKey.current = null;
+      setSemanticJudgeRunning(false);
+      setSemanticJudgeError(formatSemanticJudgeError(caught));
+    });
+  }, [benchmarkJudgeKey, benchmarkReport, benchmarkState, runSemanticJudge, semanticJudgeError, semanticJudgeResult, semanticJudgeRunning]);
+  const startBenchmark = () => {
+    automaticJudgeKey.current = null;
+    setSemanticJudgeResult(null);
+    setSemanticJudgeError(null);
+    setSemanticJudgeEvidenceMissing([]);
+    setHistoryMutationError(null);
+    void runBenchmarkTest();
   };
+  const openBenchmarkHistory = useCallback(async (recordId: string) => {
+    try {
+      const record = await getStoredBenchmarkHistory(recordId);
+      setHistoryDetail(record);
+      setHistoryModalOpen(true);
+      setHistoryMutationError(null);
+    } catch (caught) {
+      setHistoryMutationError(describeUnknownError(caught));
+    }
+  }, [getStoredBenchmarkHistory]);
+  const deleteBenchmarkHistory = useCallback(async (recordId: string) => {
+    if (!window.confirm(i18n.t('diagnostics.benchmark.deleteHistoryConfirm'))) return;
+    try {
+      await removeStoredBenchmarkHistory(recordId);
+      if (historyRecordId.current === recordId) historyRecordId.current = null;
+      if (historyDetail?.recordId === recordId) {
+        setHistoryDetail(null);
+        setHistoryModalOpen(false);
+      }
+      setHistoryMutationError(null);
+    } catch (caught) {
+      setHistoryMutationError(describeUnknownError(caught));
+    }
+  }, [historyDetail, removeStoredBenchmarkHistory]);
+  const clearBenchmarkHistory = useCallback(async () => {
+    if (!window.confirm(i18n.t('diagnostics.benchmark.clearHistoryConfirm'))) return;
+    try {
+      await clearStoredBenchmarkHistory();
+      historyRecordId.current = null;
+      setHistoryDetail(null);
+      setHistoryModalOpen(false);
+      setHistoryMutationError(null);
+    } catch (caught) {
+      setHistoryMutationError(describeUnknownError(caught));
+    }
+  }, [clearStoredBenchmarkHistory]);
+  const handleBenchmarkHistoryActionFailure = useCallback((caught: unknown) => {
+    setHistoryMutationError(describeUnknownError(caught));
+  }, []);
   const runtimeEnvironmentSummary = useMemo(
     () => getRuntimeEnvironmentSummary(runtimeSnapshot, audioRuntimeSnapshot, configDraft),
     [runtimeSnapshot, audioRuntimeSnapshot, configDraft],
@@ -530,7 +814,7 @@ function DiagnosticsPage() {
             </div>
           ) : null}
           <div className="diagnostics-benchmark-row">
-            <button className="icon-button diagnostics-primary-action" disabled={benchmarkRunning || voiceModelOptions.length === 0} onClick={() => void runBenchmarkTest()} type="button">
+            <button className="icon-button diagnostics-primary-action" disabled={benchmarkRunning || semanticJudgeRunning || voiceModelOptions.length === 0} onClick={startBenchmark} type="button">
               <AppIcon name="activity" size={14} />
               {benchmarkRunning ? i18n.t('diagnostics.actions.testing') : i18n.t('diagnostics.benchmark.start')}
             </button>
@@ -540,10 +824,30 @@ function DiagnosticsPage() {
                 {i18n.t('diagnostics.benchmark.viewResults')}
               </button>
             ) : null}
+            {hasNativeShell ? (
+              <button aria-expanded={historyExpanded} className="icon-button" onClick={() => setHistoryExpanded((expanded) => !expanded)} type="button">
+                <AppIcon name="layers" size={14} />
+                {i18n.t('diagnostics.benchmark.openHistory')}
+              </button>
+            ) : null}
           </div>
           {benchmarkError ? <div className="diagnostics-benchmark-error">{benchmarkError}</div> : null}
           {benchmarkRunning ? <div className="diagnostics-benchmark-progress">{i18n.t('diagnostics.benchmark.streamingProgress')}</div> : null}
           <LogLevelControl />
+          {hasNativeShell && historyExpanded ? (
+            <BenchmarkHistoryPanel
+              error={historyMutationError ?? benchmarkHistoryError}
+              hasMore={benchmarkHistoryPage.records.length < benchmarkHistoryPage.totalCount}
+              loading={benchmarkHistoryLoading || benchmarkRunning || semanticJudgeRunning}
+              onClear={() => void clearBenchmarkHistory().catch(handleBenchmarkHistoryActionFailure)}
+              onDelete={(recordId) => void deleteBenchmarkHistory(recordId).catch(handleBenchmarkHistoryActionFailure)}
+              onLoadMore={() => void loadMoreBenchmarkHistory().catch(handleBenchmarkHistoryActionFailure)}
+              onOpen={(recordId) => void openBenchmarkHistory(recordId).catch(handleBenchmarkHistoryActionFailure)}
+              onRefresh={() => void refreshBenchmarkHistory().catch(handleBenchmarkHistoryActionFailure)}
+              records={benchmarkHistoryPage.records}
+              totalCount={benchmarkHistoryPage.totalCount}
+            />
+          ) : null}
         </div>
       </section>
 
@@ -701,7 +1005,7 @@ function DiagnosticsPage() {
               </div>
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 <ExportButton onExport={(format) => {
-                  exportReportWithFeedback(`benchmark-${benchmarkReport.model}`, format, (base) => DiagnosticsReportExporter.exportBenchmark(benchmarkReport, base, format));
+                  exportReportWithFeedback(`benchmark-${benchmarkReport.model}`, format, (base) => DiagnosticsReportExporter.exportBenchmark(benchmarkReport, base, format, benchmarkScore ?? undefined));
                 }} />
                 <button className="icon-button" onClick={() => setBenchmarkModalOpen(false)} type="button">
                   <AppIcon name="close" size={16} />
@@ -711,15 +1015,57 @@ function DiagnosticsPage() {
             {reportExportFeedbackBanner}
             <BenchmarkProgressBanner error={benchmarkError} progress={benchmarkProgress} />
             <BenchmarkReportDetail
+              benchmarkState={benchmarkState}
               onRunSemanticJudge={() => void runSemanticJudge().catch(() => undefined)}
-              onSemanticJudgeModelChange={(modelId) => { setSemanticJudgeModelId(modelId); setSemanticJudgeResult(null); setSemanticJudgeError(null); }}
+              onSemanticJudgeModelChange={(modelId) => {
+                setSemanticJudgeModelId(modelId);
+                setSemanticJudgeResult(null);
+                setSemanticJudgeError(null);
+                setSemanticJudgeEvidenceMissing([]);
+              }}
               report={benchmarkReport}
               semanticJudgeError={semanticJudgeError}
               semanticJudgeModelId={effectiveSemanticJudgeModelId}
               semanticJudgeModels={semanticJudgeModels}
               semanticJudgeResult={semanticJudgeResult}
               semanticJudgeRunning={semanticJudgeRunning}
+              score={benchmarkScore ?? undefined}
             />
+        </ModalDialog>
+      ) : null}
+
+      {historyModalOpen && historyDetail ? (
+        <ModalDialog aria-label={i18n.t('diagnostics.benchmark.historyDetail')} className="benchmark-modal" onClose={() => setHistoryModalOpen(false)} variant="benchmark">
+          <div className="benchmark-modal-head">
+            <div>
+              <span className="diagnostics-kicker">{i18n.t('diagnostics.benchmark.historyTitle')}</span>
+              <h3>{historyDetail.model}</h3>
+              <p>{formatHistoryTime(historyDetail.createdAt)}</p>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              {historyDetail.report ? (
+                <ExportButton onExport={(format) => {
+                  exportReportWithFeedback(`benchmark-history-${historyDetail.model}`, format, (base) => DiagnosticsReportExporter.exportBenchmark(
+                    historyDetail.report!,
+                    base,
+                    format,
+                    benchmarkScoreFromHistory(historyDetail.score) ?? undefined,
+                  ));
+                }} />
+              ) : null}
+              <button className="icon-button" onClick={() => setHistoryModalOpen(false)} type="button">
+                <AppIcon name="close" size={16} />
+              </button>
+            </div>
+          </div>
+          {reportExportFeedbackBanner}
+          {historyDetail.report ? (
+            <BenchmarkReportDetail
+              benchmarkState={historyDetail.runStatus === 'completed' ? 'completed' : 'failed'}
+              report={historyDetail.report}
+              score={benchmarkScoreFromHistory(historyDetail.score) ?? undefined}
+            />
+          ) : <p className="benchmark-empty">{i18n.t('diagnostics.benchmark.historyReportUnavailable')}</p>}
         </ModalDialog>
       ) : null}
 

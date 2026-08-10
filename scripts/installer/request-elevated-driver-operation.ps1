@@ -4,7 +4,7 @@ param(
   [Parameter(Mandatory = $true)][string]$ResultPath,
   [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
   [Parameter(Mandatory = $true)][string]$RuntimeRoot,
-  [Parameter(Mandatory = $true)][string]$InstallChannel,
+  [Parameter(Mandatory = $true)][ValidateSet('development', 'release')][string]$InstallChannel,
   [Parameter(Mandatory = $true)][string]$DriverVersion,
   [Parameter(Mandatory = $true)][string]$BridgeVersion,
   [Parameter(Mandatory = $true)][string]$TargetDeviceId,
@@ -20,7 +20,10 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ResultPath) | Out
 function Write-RequestResult([string]$ErrorCode, [string]$Summary) {
   Write-DriverOperationResultFile -ResultPath $ResultPath -LogPath $logPath `
     -OperationId $OperationId -Action $Action -StartedAt $startedAt `
-    -Succeeded $false -Phase 'failed' -ErrorCode $ErrorCode -Summary $Summary
+    -Succeeded $false -Phase 'failed' -ErrorCode $ErrorCode -Summary $Summary `
+    -RequestProcessId $PID -ElevatedProcessId $(if ($requestWasElevated) { $PID } else { 0 }) `
+    -Elevated $requestWasElevated -ElevationMode $elevationMode `
+    -InstallChannel $InstallChannel -DriverVersion $DriverVersion -BridgeVersion $BridgeVersion
 }
 
 function Test-IsAdministrator {
@@ -29,6 +32,8 @@ function Test-IsAdministrator {
   return $principal.IsInRole([System.Security.Principal.WindowsBuiltInRole]::Administrator)
 }
 
+$requestWasElevated = Test-IsAdministrator
+$elevationMode = if ($requestWasElevated) { 'already-elevated' } else { 'uac-runas' }
 $elevatedScript = Join-Path $PSScriptRoot 'invoke-elevated-driver-operation.ps1'
 $arguments = @(
   '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $elevatedScript,
@@ -36,11 +41,12 @@ $arguments = @(
   '-WorkspaceRoot', $WorkspaceRoot, '-RuntimeRoot', $RuntimeRoot,
   '-InstallChannel', $InstallChannel, '-DriverVersion', $DriverVersion,
   '-BridgeVersion', $BridgeVersion, '-TargetDeviceId', $TargetDeviceId,
-  '-VirtualRenderDeviceId', $VirtualRenderDeviceId
+  '-VirtualRenderDeviceId', $VirtualRenderDeviceId,
+  '-RequestProcessId', $PID, '-ElevationMode', $elevationMode
 )
 
 try {
-  if (Test-IsAdministrator) {
+  if ($requestWasElevated) {
     & 'powershell.exe' @arguments
     $exitCode = $LASTEXITCODE
   } else {

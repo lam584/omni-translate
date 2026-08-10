@@ -1,15 +1,25 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { RELEASE_DOCS, bundleName, readWorkspaceVersions, releasePaths, repoRoot } from '../lib/release-common.mjs';
+import {
+  RELEASE_DOCS,
+  bundleName,
+  captureCleanReleaseProvenance,
+  readWorkspaceVersions,
+  releasePaths,
+  repoRoot,
+} from '../lib/release-common.mjs';
 
 const rootDir = repoRoot;
 
 const { rootPackage, desktopPackage, nativeBridgeVersion } = readWorkspaceVersions();
+const sourceProvenance = captureCleanReleaseProvenance(rootDir);
 
 const manifest = {
   generatedAt: new Date().toISOString(),
   version: rootPackage.version,
+  sourceCommit: sourceProvenance.headCommit,
+  sourceProvenance,
   releaseChannel: 'stable',
   packageNaming: {
     portableBundle: `${bundleName(rootPackage.version)}.zip`,
@@ -50,6 +60,7 @@ const manifest = {
     layoutOutput: `artifacts/installer/${rootPackage.version}`,
     nativeBridgeExecutable: 'bridge-service-native/omni-bridge-service.exe',
     audioProbeExecutable: 'bridge-service-native/omni-driver-audio-probe.exe',
+    virtualMicTargetCaptureExecutable: 'bridge-service-native/omni-virtual-mic-target-capture.exe',
   },
   docs: ['README.md', path.join('i18n', 'README_en.md'), ...RELEASE_DOCS],
 };

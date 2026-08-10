@@ -30,7 +30,14 @@ function Write-DriverOperationResultFile {
     [string]$Phase,
     [string]$ErrorCode,
     [string]$Summary,
-    [string]$StartedAt
+    [string]$StartedAt,
+    [long]$RequestProcessId = 0,
+    [long]$ElevatedProcessId = 0,
+    [bool]$Elevated = $false,
+    [string]$ElevationMode = 'unknown',
+    [string]$InstallChannel = '',
+    [string]$DriverVersion = '',
+    [string]$BridgeVersion = ''
   )
   $result = [ordered]@{
     schemaVersion = 1
@@ -40,6 +47,13 @@ function Write-DriverOperationResultFile {
     phase = $Phase
     errorCode = $ErrorCode
     summary = $Summary
+    requestProcessId = $RequestProcessId
+    elevatedProcessId = $ElevatedProcessId
+    elevated = $Elevated
+    elevationMode = $ElevationMode
+    installChannel = $InstallChannel
+    driverVersion = $DriverVersion
+    bridgeVersion = $BridgeVersion
     logPath = $LogPath
     startedAt = $StartedAt
     finishedAt = (Get-Date).ToUniversalTime().ToString('o')

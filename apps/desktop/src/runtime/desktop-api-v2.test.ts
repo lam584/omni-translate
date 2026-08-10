@@ -101,6 +101,7 @@ describe('DesktopApiV2 configuration client', () => {
     await api.session.startAudioRoute('inbound', config);
     await api.bridge.snapshot();
     await api.bridge.refresh();
+    await api.bridge.probeProcessLoopback();
     await api.bridge.start(config);
     await api.bridge.stop();
     await api.bridge.install(config);
@@ -118,6 +119,16 @@ describe('DesktopApiV2 configuration client', () => {
     await api.diagnostics.openExportDirectory('C:/exports/report.json');
     await api.diagnostics.openExternalUrl('https://platform.openai.com/api-keys');
     await api.diagnostics.writeExportArtifact('report.json', '{}');
+    const benchmarkHistory = {
+      runId: 'benchmark-run-1', model: 'model-test', runStatus: 'completed' as const,
+      scoreStatus: 'final' as const, scoreVersion: 'benchmark-score/v1' as const,
+      totalScore: 88, grade: 'B', report: { runs: [] }, score: { schemaVersion: 'benchmark-score/v1' }, error: null,
+    };
+    await api.diagnostics.saveBenchmarkHistory(benchmarkHistory);
+    await api.diagnostics.listBenchmarkHistory();
+    await api.diagnostics.getBenchmarkHistory('history-1');
+    await api.diagnostics.deleteBenchmarkHistory('history-1');
+    await api.diagnostics.clearBenchmarkHistory();
     await api.configuration.load();
     await api.configuration.save(config);
     await api.configuration.reset();
@@ -158,6 +169,7 @@ describe('DesktopApiV2 configuration client', () => {
     ]);
     expect(calls).toContainEqual(['start_audio_route', { direction: 'inbound', config }]);
     expect(calls).toContainEqual(['start_bridge_service', { config }]);
+    expect(calls).toContainEqual(['bridge_v2', { command: { action: 'probeProcessLoopback' } }]);
     expect(calls).toContainEqual(['diagnostics_v2', { command: { action: 'snapshot' } }]);
     expect(calls).toContainEqual(['diagnostics_v2', { command: { action: 'watchSessionReport' } }]);
     expect(calls).toContainEqual(['diagnostics_v2', { command: { action: 'clearWatchSessionReport' } }]);
@@ -169,6 +181,19 @@ describe('DesktopApiV2 configuration client', () => {
     expect(calls).toContainEqual(['diagnostics_v2', {
       command: { action: 'writeExportArtifact', filename: 'report.json', content: '{}' },
     }]);
+    expect(calls).toContainEqual(['diagnostics_v2', {
+      command: { action: 'saveBenchmarkHistory', ...benchmarkHistory },
+    }]);
+    expect(calls).toContainEqual(['diagnostics_v2', {
+      command: { action: 'listBenchmarkHistory', page: undefined, pageSize: undefined },
+    }]);
+    expect(calls).toContainEqual(['diagnostics_v2', {
+      command: { action: 'getBenchmarkHistory', recordId: 'history-1' },
+    }]);
+    expect(calls).toContainEqual(['diagnostics_v2', {
+      command: { action: 'deleteBenchmarkHistory', recordId: 'history-1' },
+    }]);
+    expect(calls).toContainEqual(['diagnostics_v2', { command: { action: 'clearBenchmarkHistory' } }]);
     expect(calls).toContainEqual(['debug_ipc_ping', undefined]);
     expect(calls).toContainEqual(['session_v2', { command: { action: 'bootstrap' } }]);
     expect(calls).toContainEqual(['configuration_v2', { command: { action: 'runtimeSnapshot' } }]);
@@ -185,7 +210,7 @@ describe('DesktopApiV2 configuration client', () => {
       'provider_v2',
       { command: { action: 'runModelBenchmark', ...benchmarkPayload } },
     ]);
-    expect(calls).toHaveLength(54);
+    expect(calls).toHaveLength(60);
   });
 
   it('adapts native window coordinates, sizing and popup menus', async () => {
@@ -314,6 +339,7 @@ async function collectEmittedCommands(): Promise<FixtureEntry[]> {
     ['runtime.bootstrapAudio', () => api.runtime.bootstrapAudio()],
     ['bridge.snapshot', () => api.bridge.snapshot()],
     ['bridge.refresh', () => api.bridge.refresh()],
+    ['bridge.probeProcessLoopback', () => api.bridge.probeProcessLoopback()],
     ['bridge.start', () => api.bridge.start(config)],
     ['bridge.stop', () => api.bridge.stop()],
     ['bridge.install', () => api.bridge.install(config)],
@@ -326,6 +352,22 @@ async function collectEmittedCommands(): Promise<FixtureEntry[]> {
     ['diagnostics.clearWatchSessionReport', () => api.diagnostics.clearWatchSessionReport()],
     ['diagnostics.snapshot', () => api.diagnostics.snapshot()],
     ['diagnostics.openExternalUrl', () => api.diagnostics.openExternalUrl('https://platform.openai.com/api-keys')],
+    ['diagnostics.saveBenchmarkHistory', () => api.diagnostics.saveBenchmarkHistory({
+      runId: 'benchmark-v1-fixture-run',
+      model: 'fixture-judge-model',
+      runStatus: 'completed',
+      scoreStatus: 'final',
+      scoreVersion: 'benchmark-score/v1',
+      totalScore: 91,
+      grade: 'A',
+      report: { runs: [] },
+      score: { version: 'benchmark-score/v1' },
+      error: null,
+    })],
+    ['diagnostics.listBenchmarkHistory', () => api.diagnostics.listBenchmarkHistory(1, 50)],
+    ['diagnostics.getBenchmarkHistory', () => api.diagnostics.getBenchmarkHistory('benchmark-v1-fixture-record')],
+    ['diagnostics.deleteBenchmarkHistory', () => api.diagnostics.deleteBenchmarkHistory('benchmark-v1-fixture-record')],
+    ['diagnostics.clearBenchmarkHistory', () => api.diagnostics.clearBenchmarkHistory()],
     ['configuration.load', () => api.configuration.load()],
     ['configuration.save', () => api.configuration.save(config)],
     ['configuration.reset', () => api.configuration.reset()],
@@ -384,6 +426,7 @@ describe('desktop-api-v2 command fixture (renderer→shell wire pin)', () => {
     // either side must extend this ledger together with the fixture.
     expect([...seen].sort()).toEqual([
       'bridge_v2:install',
+      'bridge_v2:probeProcessLoopback',
       'bridge_v2:refresh',
       'bridge_v2:repair',
       'bridge_v2:snapshot',
@@ -402,10 +445,15 @@ describe('desktop-api-v2 command fixture (renderer→shell wire pin)', () => {
       'configuration_v2:secretRead',
       'configuration_v2:secretStatus',
       'configuration_v2:secretUpsert',
+      'diagnostics_v2:clearBenchmarkHistory',
       'diagnostics_v2:clearWatchSessionReport',
+      'diagnostics_v2:deleteBenchmarkHistory',
       'diagnostics_v2:export',
+      'diagnostics_v2:getBenchmarkHistory',
+      'diagnostics_v2:listBenchmarkHistory',
       'diagnostics_v2:openExternalUrl',
       'diagnostics_v2:overlaySelfCheck',
+      'diagnostics_v2:saveBenchmarkHistory',
       'diagnostics_v2:selfCheck',
       'diagnostics_v2:snapshot',
       'diagnostics_v2:watchSessionReport',

@@ -124,6 +124,15 @@ function resolveSceneVoiceModelId(mode: SceneMode, configDraft: AppConfigDraft):
     : configDraft.devices.inboundVoiceModelId;
 }
 
+function isDefaultOutputAlias(deviceId: string): boolean {
+  return ['', 'default', 'speaker-default', 'system-output-default'].includes(deviceId.trim());
+}
+
+function isOmniVirtualRenderDevice(device: AudioRuntimeSnapshot['renderDevices'][number]): boolean {
+  return [device.deviceId, device.label, device.interfaceName]
+    .some((value) => value.includes('Omni Translate Virtual Speaker'));
+}
+
 function getSceneLaunchConfigurationProblem(
   mode: SceneMode,
   configDraft: AppConfigDraft,
@@ -144,8 +153,23 @@ function getSceneLaunchConfigurationProblem(
     // Windows endpoint IDs may change after a driver update, USB reconnect, or
     // default-device switch. The native route already falls back to the current
     // default endpoint when the persisted ID is stale.
-    if (audioSnapshot.renderDevices.length === 0) {
+    const physicalRenderDevices = audioSnapshot.renderDevices.filter(
+      (device) => !isOmniVirtualRenderDevice(device),
+    );
+    if (physicalRenderDevices.length === 0) {
       return 'playback-device';
+    }
+    // Bridge owns both source monitoring and translated speech in Virtual
+    // Driver mode. A default alias is safe only while Windows' current default
+    // is physical; if the virtual endpoint became default, Bridge deliberately
+    // rejects it to prevent a digital feedback loop and the user must choose a
+    // concrete physical endpoint.
+    if (configDraft.devices.feedbackLoopPrevention === 'virtual-driver'
+      && isDefaultOutputAlias(configDraft.devices.outputDeviceId)) {
+      const defaultRenderDevice = audioSnapshot.renderDevices.find((device) => device.isDefault);
+      if (!defaultRenderDevice || isOmniVirtualRenderDevice(defaultRenderDevice)) {
+        return 'playback-device';
+      }
     }
   }
   return null;

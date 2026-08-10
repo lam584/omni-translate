@@ -304,6 +304,7 @@
     <ClCompile Include="..\hw.cpp" />
     <ClCompile Include="..\kshelper.cpp" />
     <ClCompile Include="..\omni_bridge_ring.cpp" />
+    <ClCompile Include="micintopo.cpp" />
     <ClCompile Include="..\savedata.cpp" />
     <ClCompile Include="..\tonegenerator.cpp" />
     <ResourceCompile Include="TabletAudioSample.rc" />

@@ -67,6 +67,24 @@ const allowedSameAsSourceValuePatterns = [
   /^(?:GPT|Qwen|DashScope|Gemini|OpenAI|Omni)[\w.-]*$/u,
   /^(?:gpt|qwen|gemini|dashscope|openai)[a-z0-9._-]*$/u,
 ];
+// The public benchmark-score/v1 report deliberately has an English fallback
+// outside English and Simplified Chinese. `withEnglishFallback()` in the
+// runtime deep-merges that bundle before rendering, so treating these keys as
+// missing would reject the documented fallback policy rather than a broken
+// user-visible translation. Keep this exceptionally narrow: all other keys,
+// including the EN/ZH v1 copy itself, retain the normal coverage gate.
+const intentionalEnglishFallbackPrefixes = [
+  'diagnostics.benchmark.score',
+  'diagnostics.benchmark.history',
+];
+const intentionalEnglishFallbackKeys = new Set([
+  'diagnostics.benchmark.clearHistory',
+  'diagnostics.benchmark.clearHistoryConfirm',
+  'diagnostics.benchmark.deleteHistory',
+  'diagnostics.benchmark.deleteHistoryConfirm',
+  'diagnostics.benchmark.loadMoreHistory',
+  'diagnostics.benchmark.openHistory',
+]);
 
 function readJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, 'utf8'));
@@ -147,6 +165,14 @@ function isSameAsSource(locale, key, value, sourceValue) {
   return value === sourceValue;
 }
 
+function usesIntentionalEnglishFallback(locale, key) {
+  if (locale === sourceLocale || locale === 'zh-CN') {
+    return false;
+  }
+  return intentionalEnglishFallbackKeys.has(key)
+    || intentionalEnglishFallbackPrefixes.some((prefix) => key.startsWith(prefix));
+}
+
 function percent(numerator, denominator) {
   return denominator === 0 ? 100 : (numerator / denominator) * 100;
 }
@@ -162,33 +188,36 @@ const results = localeFiles.map((file) => {
   const locale = path.basename(file, '.json');
   const values = flatten(readJson(path.join(localeDir, file)));
   const keys = new Set(Object.keys(values));
-  const missing = sourceKeys.filter((key) => !keys.has(key));
+  const checkedSourceKeys = sourceKeys.filter((key) => !usesIntentionalEnglishFallback(locale, key));
+  const intentionalEnglishFallback = sourceKeys.filter((key) => usesIntentionalEnglishFallback(locale, key));
+  const missing = checkedSourceKeys.filter((key) => !keys.has(key));
   const extra = Object.keys(values).filter((key) => !Object.hasOwn(source, key)).sort();
-  const empty = sourceKeys.filter((key) => keys.has(key) && !isEmptyValue(source[key]) && isEmptyValue(values[key]));
-  const sameAsSource = sourceKeys.filter((key) => isSameAsSource(locale, key, values[key], source[key]));
-  const placeholderMismatch = sourceKeys.filter((key) => {
+  const empty = checkedSourceKeys.filter((key) => keys.has(key) && !isEmptyValue(source[key]) && isEmptyValue(values[key]));
+  const sameAsSource = checkedSourceKeys.filter((key) => isSameAsSource(locale, key, values[key], source[key]));
+  const placeholderMismatch = checkedSourceKeys.filter((key) => {
     if (!keys.has(key)) {
       return false;
     }
     return !sameMembers(placeholders(source[key]), placeholders(values[key]));
   });
-  const rejected = sourceKeys.filter((key) => keys.has(key) && isRejectedTranslationValue(values[key]));
-  const translated = sourceKeys.length - missing.length - empty.length - sameAsSource.length - rejected.length;
+  const rejected = checkedSourceKeys.filter((key) => keys.has(key) && isRejectedTranslationValue(values[key]));
+  const translated = checkedSourceKeys.length - missing.length - empty.length - sameAsSource.length - rejected.length;
 
   return {
     locale,
     file,
-    total: sourceKeys.length,
+    total: checkedSourceKeys.length,
     keys: keys.size,
     translated,
-    structuralCoverage: percent(sourceKeys.length - missing.length, sourceKeys.length),
-    translationCoverage: percent(translated, sourceKeys.length),
+    structuralCoverage: percent(checkedSourceKeys.length - missing.length, checkedSourceKeys.length),
+    translationCoverage: percent(translated, checkedSourceKeys.length),
     missing,
     extra,
     empty,
     sameAsSource,
     rejected,
     placeholderMismatch,
+    intentionalEnglishFallback,
   };
 });
 
@@ -262,7 +291,7 @@ const thresholdFailures =
 let ratchetFailures = [];
 if (updateRatchetBaseline) {
   const baseline = {
-    comment: 'Translation coverage ratchet. New English keys must be translated in every locale.',
+    comment: 'Translation coverage ratchet. New English keys must be translated in every locale except documented benchmark-score/v1 English fallbacks.',
     sourceKeys,
     translationCoverage: Object.fromEntries(
       results.filter(({ locale }) => locale !== sourceLocale).map(({ locale, translationCoverage }) => [locale, translationCoverage]),
@@ -281,11 +310,11 @@ if (updateRatchetBaseline) {
     } else if (result.translationCoverage + Number.EPSILON < minimum) {
       ratchetFailures.push(`${result.locale}: coverage ${result.translationCoverage.toFixed(4)}% < baseline ${minimum.toFixed(4)}%`);
     }
-    const untranslatedNew = newKeys.filter((key) =>
+    const untranslatedNew = newKeys.filter((key) => !usesIntentionalEnglishFallback(result.locale, key) && (
       result.missing.includes(key)
       || result.empty.includes(key)
       || result.sameAsSource.includes(key)
-      || result.rejected.includes(key));
+      || result.rejected.includes(key)));
     if (untranslatedNew.length > 0) {
       ratchetFailures.push(`${result.locale}: untranslated new keys: ${untranslatedNew.join(', ')}`);
     }

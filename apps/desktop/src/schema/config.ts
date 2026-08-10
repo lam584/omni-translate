@@ -25,7 +25,7 @@ export type SubtitleTranslationMode = 'native' | 'secondary';
 
 export type VirtualMicState = 'not-installed' | 'pending' | 'ready';
 
-export type FeedbackLoopPrevention = 'none' | 'echo-cancel' | 'virtual-driver';
+export type FeedbackLoopPrevention = 'none' | 'echo-cancel' | 'virtual-driver' | 'process-exclusion';
 
 export type SubtitleMode = 'bilingual' | 'translation-only';
 
@@ -336,7 +336,7 @@ export const appConfigFieldMappings: SQLiteFieldMapping[] = [
   { draftPath: 'devices.subtitleTranslationMode', sqliteTable: 'audio_device_preferences', sqliteColumn: 'subtitle_translation_mode', note: 'Subtitle translation mode.' },
   { draftPath: 'devices.subtitleTranslationModelId', sqliteTable: 'audio_device_preferences', sqliteColumn: 'subtitle_translation_model_id', note: 'Secondary subtitle model.' },
   { draftPath: 'devices.inputLevel', sqliteTable: 'audio_device_preferences', sqliteColumn: 'input_level', note: 'Input gain level (0-100).' },
-  { draftPath: 'devices.aecEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'aec_enabled', note: 'Acoustic echo cancellation; gates native echo-cancel in RouteSpec together with feedbackLoopPrevention.' },
+  { draftPath: 'devices.aecEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'aec_enabled', note: 'Legacy/manual processing toggle outside echo-cancel; the echo-cancel route always forces its WebRTC AEC3 backend on.' },
   { draftPath: 'devices.ansEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'ans_enabled', note: 'Automatic noise suppression.' },
   { draftPath: 'devices.agcEnabled', sqliteTable: 'audio_device_preferences', sqliteColumn: 'agc_enabled', note: 'Automatic gain control.' },
   { draftPath: 'devices.outputLevel', sqliteTable: 'audio_device_preferences', sqliteColumn: 'output_level', note: 'Output volume level (0-100).' },

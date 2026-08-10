@@ -1,4 +1,5 @@
 mod config;
+mod process_exclusion_restart;
 
 #[cfg(test)]
 mod tests;
@@ -6,15 +7,21 @@ mod tests;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
+use serde_json::Value;
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 use self::config::{configure_watch_mode, configure_watch_realtime_provider};
+use self::process_exclusion_restart::schedule_process_exclusion_restart;
 use crate::audio::events::{
     preconnect_omni_realtime_inner, start_audio_route_inner, stop_audio_route,
 };
 use crate::audio::state::AudioStateStore;
-use crate::bridge::events::start_bridge_service;
+use crate::bridge::events::{repair_driver_runtime, start_bridge_service};
+use crate::bridge::ipc::{apply_query as apply_bridge_query, BridgeIpcClient};
+use crate::bridge::contracts::{
+    BridgeRuntimeSnapshot, CaptureBackend, ProcessLoopbackStatus, SourceCaptureMode,
+};
 use crate::bridge::state::BridgeStateStore;
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::runtime::state::RuntimeStateStore;
@@ -33,7 +40,12 @@ const DEFAULT_INBOUND_SECONDARY_AUDIO_MODEL_ID: &str =
 const IPC_READY_TIMEOUT: Duration = Duration::from_secs(30);
 const IPC_READY_POLL: Duration = Duration::from_millis(50);
 const MIN_AUTOSTART_CAPTURE_DURATION_MS: u64 = 1_000;
-const MAX_AUTOSTART_CAPTURE_DURATION_MS: u64 = 300_000;
+// The live matrix runner accepts captures up to 7,200 seconds. Keep the native
+// diagnostic owner aligned so a requested 30-minute cell is never silently
+// truncated to the historical five-minute limit.
+const MAX_AUTOSTART_CAPTURE_DURATION_MS: u64 = 7_200_000;
+const PROCESS_EXCLUSION_RESTART_RECOVERY_TIMEOUT: Duration = Duration::from_secs(30);
+const PROCESS_EXCLUSION_RESTART_POLL: Duration = Duration::from_millis(50);
 
 fn env_flag_enabled(name: &str) -> bool {
     std::env::var(name)
@@ -46,6 +58,41 @@ fn bounded_autostart_capture_duration_ms(value: u64) -> u64 {
         MIN_AUTOSTART_CAPTURE_DURATION_MS,
         MAX_AUTOSTART_CAPTURE_DURATION_MS,
     )
+}
+
+fn parse_feedback_loop_prevention(value: Option<&str>) -> Result<String, String> {
+    let Some(value) = value else {
+        return Ok("virtual-driver".to_string());
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        "process-exclusion" | "virtual-driver" | "echo-cancel" => Ok(normalized),
+        _ => Err(format!(
+            "Unsupported OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION '{value}'; expected process-exclusion, virtual-driver, or echo-cancel"
+        )),
+    }
+}
+
+fn process_exclusion_restart_after_ms() -> Result<Option<u64>, String> {
+    let Ok(raw) = std::env::var("OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS") else {
+        return Ok(None);
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let value = trimmed.parse::<u64>().map_err(|error| {
+        format!(
+            "OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS must be a positive integer: {error}"
+        )
+    })?;
+    if value == 0 {
+        return Err(
+            "OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS must be greater than zero"
+                .to_string(),
+        );
+    }
+    Ok(Some(value))
 }
 
 pub(crate) fn autostart_enabled() -> bool {
@@ -231,15 +278,32 @@ fn start(app: &AppHandle) {
         std::env::var("OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE")
             .unwrap_or_else(|_| "subtitle-tts".to_string())
     };
-    let feedback_loop_prevention = std::env::var("OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION")
-        .map(|value| {
-            if value.trim().eq_ignore_ascii_case("echo-cancel") {
-                "echo-cancel".to_string()
-            } else {
-                "virtual-driver".to_string()
-            }
-        })
-        .unwrap_or_else(|_| "virtual-driver".to_string());
+    let feedback_loop_prevention_raw =
+        std::env::var("OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION").ok();
+    let feedback_loop_prevention = match parse_feedback_loop_prevention(
+        feedback_loop_prevention_raw.as_deref(),
+    ) {
+        Ok(value) => value,
+        Err(error) => {
+            let _ = append_diagnostics_log(
+                &app_handle,
+                "runtime",
+                "error",
+                "watch_mode.diagnostic_autostart_config_failed",
+                Some(format!(
+                    "runMarker={} error={error}",
+                    if run_marker.is_empty() {
+                        "-"
+                    } else {
+                        run_marker.as_str()
+                    }
+                )),
+                None,
+                None,
+            );
+            return;
+        }
+    };
 
     let _ = append_diagnostics_log(
         &app_handle,
@@ -413,15 +477,31 @@ fn start(app: &AppHandle) {
         }
     }
 
+    start_diagnostic_audio_route(
+        &app_handle,
+        &run_marker,
+        &output_device_id,
+        config,
+        &feedback_loop_prevention,
+    );
+}
+
+fn start_diagnostic_audio_route(
+    app: &AppHandle,
+    run_marker: &str,
+    output_device_id: &str,
+    config: Value,
+    feedback_loop_prevention: &str,
+) {
     match start_audio_route_inner(
-        app_handle.clone(),
+        app.clone(),
         &app.state::<AudioStateStore>(),
         "inbound".to_string(),
-        config,
+        config.clone(),
     ) {
         Ok(snapshot) => {
             let _ = append_diagnostics_log(
-                &app_handle,
+                app,
                 "runtime",
                 "info",
                 "watch_mode.diagnostic_autostart_route_started",
@@ -430,23 +510,29 @@ fn start(app: &AppHandle) {
                     if run_marker.is_empty() {
                         "-"
                     } else {
-                        run_marker.as_str()
+                        run_marker
                     },
                     snapshot.status,
                     if output_device_id.is_empty() {
                         "-"
                     } else {
-                        output_device_id.as_str()
+                        output_device_id
                     }
                 )),
                 None,
                 None,
             );
-            schedule_capture(&app_handle, &run_marker);
+            schedule_process_exclusion_restart(
+                app,
+                run_marker,
+                config,
+                feedback_loop_prevention,
+            );
+            schedule_capture(app, run_marker);
         }
         Err(error) => {
             let _ = append_diagnostics_log(
-                &app_handle,
+                app,
                 "runtime",
                 "error",
                 "watch_mode.diagnostic_autostart_route_failed",
@@ -458,6 +544,134 @@ fn start(app: &AppHandle) {
     }
 }
 
+#[derive(Clone)]
+struct ProcessExclusionSourceObservation {
+    bridge: BridgeRuntimeSnapshot,
+    frame: crate::audio::state::BridgeSourceFrameIdentity,
+}
+
+fn query_and_cache_bridge_runtime(app: &AppHandle) -> Result<BridgeRuntimeSnapshot, String> {
+    let bridge_state = app.state::<BridgeStateStore>();
+    let cached = bridge_state.snapshot();
+    let query = BridgeIpcClient::new(&cached).query_state(true)?;
+    Ok(bridge_state.update_snapshot(|current| {
+        apply_bridge_query(current, query);
+    }))
+}
+
+fn process_exclusion_source_is_ready(
+    bridge: &BridgeRuntimeSnapshot,
+    frame: &crate::audio::state::BridgeSourceFrameIdentity,
+) -> bool {
+    bridge.process_status == "running"
+        && bridge.bridge_state == "running"
+        && bridge.source_capture_mode == SourceCaptureMode::ProcessExclusion
+        && bridge.capture_backend == CaptureBackend::WasapiProcessExclusion
+        && bridge.process_loopback_status == ProcessLoopbackStatus::Ready
+        && bridge.source_subscriber_active
+        && bridge.bridge_process_id == Some(frame.bridge_process_id)
+        && bridge.excluded_process_id == Some(frame.bridge_process_id)
+        && bridge.bridge_instance_id.as_deref() == Some(frame.bridge_instance_id.as_str())
+        && bridge.session_id.as_deref() == Some(frame.session_id.as_str())
+        && bridge.source_generation == frame.source_generation
+        && bridge.source_generation_token.as_deref()
+            == Some(frame.source_generation_token.as_str())
+        && bridge.source_frames_captured > 0
+        && bridge.last_frame_timestamp_ms.is_some()
+}
+
+async fn wait_for_process_exclusion_source(
+    app: &AppHandle,
+    previous: Option<&ProcessExclusionSourceObservation>,
+) -> Result<ProcessExclusionSourceObservation, String> {
+    let started = Instant::now();
+    let mut last_detail = "no Bridge state query completed".to_string();
+    while started.elapsed() < PROCESS_EXCLUSION_RESTART_RECOVERY_TIMEOUT {
+        match query_and_cache_bridge_runtime(app) {
+            Ok(bridge) => {
+                let evidence = app
+                    .state::<AudioStateStore>()
+                    .bridge_source_runtime_evidence();
+                let frame = bridge.bridge_instance_id.as_deref().and_then(|instance_id| {
+                    if previous.is_some() {
+                        bridge
+                            .source_generation_token
+                            .as_deref()
+                            .and_then(|token| evidence.first_frame_for_generation(token))
+                            .cloned()
+                    } else {
+                        evidence
+                            .last_accepted
+                            .as_ref()
+                            .filter(|identity| identity.bridge_instance_id == instance_id)
+                            .cloned()
+                    }
+                });
+                if let Some(frame) = frame {
+                    let changed = previous.is_none_or(|old| {
+                        bridge.bridge_process_id != old.bridge.bridge_process_id
+                            && bridge.bridge_instance_id != old.bridge.bridge_instance_id
+                            && bridge.session_id != old.bridge.session_id
+                            && bridge.source_generation != old.bridge.source_generation
+                            && bridge.source_generation_token
+                                != old.bridge.source_generation_token
+                    });
+                    if changed && process_exclusion_source_is_ready(&bridge, &frame) {
+                        return Ok(ProcessExclusionSourceObservation { bridge, frame });
+                    }
+                }
+                last_detail = format!(
+                    "bridgeProcessId={} bridgeInstanceId={} sessionId={} sourceGeneration={} sourceGenerationToken={} sourceFramesCaptured={} sourceSubscriberActive={} processLoopbackStatus={} excludedProcessId={} evidenceAcceptedFrames={}",
+                    bridge
+                        .bridge_process_id
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    bridge.bridge_instance_id.as_deref().unwrap_or("none"),
+                    bridge.session_id.as_deref().unwrap_or("none"),
+                    bridge.source_generation,
+                    bridge.source_generation_token.as_deref().unwrap_or("none"),
+                    bridge.source_frames_captured,
+                    bridge.source_subscriber_active,
+                    bridge.process_loopback_status.as_str(),
+                    bridge
+                        .excluded_process_id
+                        .map(|value| value.to_string())
+                        .unwrap_or_else(|| "none".to_string()),
+                    evidence.accepted_frame_count,
+                );
+            }
+            Err(error) => last_detail = error,
+        }
+        tokio::time::sleep(PROCESS_EXCLUSION_RESTART_POLL).await;
+    }
+    Err(format!(
+        "process-exclusion source did not reach an identity-bound ready state within {}ms: {last_detail}",
+        PROCESS_EXCLUSION_RESTART_RECOVERY_TIMEOUT.as_millis()
+    ))
+}
+
+fn log_process_exclusion_restart_failure(
+    app: &AppHandle,
+    run_marker: &str,
+    stage: &str,
+    started_at_unix_ms: u64,
+    error: &str,
+) {
+    let _ = append_diagnostics_log(
+        app,
+        "runtime",
+        "error",
+        "event=process_exclusion_restart_summary",
+        Some(format!(
+            "status=failed runMarker={} stage={stage} startedAtUnixMs={started_at_unix_ms} recoveredAtMs=0 recoveredAtUnixMs=0 error={}",
+            if run_marker.is_empty() { "-" } else { run_marker },
+            error.replace(char::is_whitespace, "_"),
+        )),
+        None,
+        None,
+    );
+}
+
 /// The live Watch matrix must stop the same desktop process that owns the
 /// in-memory report. Launching a second executable with `tauri invoke` creates
 /// another app instance and can never read that report. Keep this diagnostic
@@ -467,9 +681,8 @@ fn schedule_capture(app: &AppHandle, run_marker: &str) {
     let duration_ms = std::env::var("OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS")
         .ok()
         .and_then(|value| value.trim().parse::<u64>().ok())
-        // The live runner's documented maximum is five minutes. This leaves
-        // enough time for the full two-minute benchmark fixture plus delayed
-        // subtitle TTS playback, while remaining bounded and diagnostic-only.
+        // Keep the user-requested matrix duration intact up to the runner's
+        // documented two-hour ceiling.
         .map(bounded_autostart_capture_duration_ms);
     let report_path = std::env::var("OMNI_WATCH_MODE_REPORT_PATH")
         .unwrap_or_default()

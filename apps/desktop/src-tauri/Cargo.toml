@@ -4,6 +4,12 @@ version = "0.1.0"
 edition = "2021"
 license = "Apache-2.0"
 
+[features]
+default = []
+# Release-only AEC route. The dependency itself refuses every target except
+# x86_64-pc-windows-msvc and links the pinned official vcpkg WebRTC package.
+webrtc-aec3 = ["dep:omni-webrtc-aec3", "omni-webrtc-aec3/linked"]
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -12,6 +18,7 @@ chrono = "0.4"
 omni-audio-dsp = { path = "../../../crates/omni-audio-dsp" }
 omni-bridge-protocol = { path = "../../../crates/omni-bridge-protocol" }
 omni-logging = { path = "../../../crates/omni-logging" }
+omni-webrtc-aec3 = { path = "../../../crates/omni-webrtc-aec3", optional = true }
 cpal = "0.17.3"
 hound = "3.5.1"
 keyring = "4"
@@ -24,6 +31,8 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 ts-rs = { version = "12", features = ["serde-compat"] }
 serde_json = "1"
+sha2 = "0.10"
+png = "0.18"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tokio = { version = "1", features = ["time"] }
 uuid = { version = "1", features = ["v4", "v7"] }
@@ -31,7 +40,7 @@ tungstenite = { version = "0.29", features = ["rustls-tls-webpki-roots"] }
 url = "2"
 wasapi = "0.23.0"
 whatlang = "0.18"
-windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Credentials", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Graphics_Dwm", "Win32_Graphics_Gdi", "Win32_Security_Credentials", "Win32_System_LibraryLoader", "Win32_System_Performance", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
 hmac = "0.12"
 sha1 = "0.10"
 

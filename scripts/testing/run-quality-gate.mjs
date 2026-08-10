@@ -12,6 +12,13 @@ import {
 import { prepareInstallRegressionReport } from './prepare-install-regression-report.mjs';
 import { prepareManualE2eReport } from './prepare-manual-e2e-report.mjs';
 import { preparePerformanceBaselineReport } from './prepare-performance-baseline.mjs';
+import { currentGitProvenance } from './git-provenance.mjs';
+import {
+  INSTALL_REGRESSION_SCENARIOS,
+  MANUAL_E2E_SCENARIOS,
+  validateMarkdownManualReport,
+  validatePerformanceReport,
+} from './release-manual-evidence.mjs';
 import { runQualityGateAuto } from './run-quality-gate-auto.mjs';
 
 const defaultOutputRoot = 'artifacts/logs/testing/quality-gate';
@@ -28,28 +35,21 @@ const resolveExistingPath = (candidate) => {
   return resolved;
 };
 
-export const testMarkdownManualReport = (content) => {
-  const issues = [];
-  if (/TODO/.test(content)) issues.push('contains TODO placeholders');
-  if (/^- Operator:\s*$/m.test(content)) issues.push('operator is missing');
-  if (/^- Build:\s*$/m.test(content)) issues.push('build is missing');
-  if (/^- \[ \] PASS$/m.test(content)) issues.push('PASS checkbox is not selected');
-  if (!/^- \[[xX]\] PASS$/m.test(content)) issues.push('missing selected PASS verdict');
-  if (/^- \[[xX]\] FAIL$/m.test(content)) issues.push('FAIL verdict is selected');
-  if (/^- \[ \] (?!FAIL$).+/m.test(content)) issues.push('contains unchecked checklist items');
-  return issues;
+export const testMarkdownManualReport = (content, options = {}) => {
+  const artifactKind = options.artifactKind ?? 'manual-e2e';
+  const expectedScenarios = artifactKind === 'install-regression'
+    ? INSTALL_REGRESSION_SCENARIOS
+    : MANUAL_E2E_SCENARIOS;
+  return validateMarkdownManualReport(content, {
+    ...options,
+    artifactKind,
+    expectedScenarios,
+  });
 };
 
-export const testPerformanceReport = (payload) => {
-  const issues = [];
-  for (const [name, value] of Object.entries(payload?.measurements ?? {})) {
-    if (value == null) issues.push(`missing measurement: ${name}`);
-  }
-  if (payload?.verdict !== 'PASS') issues.push('verdict is not PASS');
-  if (isBlank(payload?.operator)) issues.push('operator is missing');
-  if (isBlank(payload?.build)) issues.push('build is missing');
-  return issues;
-};
+export const testPerformanceReport = (payload, options = {}) => (
+  validatePerformanceReport(payload, options)
+);
 
 export const buildQualityGateSummary = ({
   autoSummary,
@@ -147,15 +147,23 @@ export const runQualityGate = ({
   const installRegression = isBlank(installRegressionReport)
     ? prepareInstallRegressionReport({ outputRoot: path.join(manualRoot, 'install-regression') })
     : resolveExistingPath(installRegressionReport);
+  const currentProvenance = currentGitProvenance({ cwd: repoRoot });
+  const validationOptions = { workspaceRoot: repoRoot, currentProvenance };
 
   const summary = buildQualityGateSummary({
     autoSummary,
     e2eReport,
     performanceBaseline,
     installRegression,
-    e2eIssues: testMarkdownManualReport(readReportText(e2eReport)),
-    performanceIssues: testPerformanceReport(readJson(performanceBaseline)),
-    installIssues: testMarkdownManualReport(readReportText(installRegression)),
+    e2eIssues: testMarkdownManualReport(readReportText(e2eReport), {
+      ...validationOptions,
+      artifactKind: 'manual-e2e',
+    }),
+    performanceIssues: testPerformanceReport(readJson(performanceBaseline), validationOptions),
+    installIssues: testMarkdownManualReport(readReportText(installRegression), {
+      ...validationOptions,
+      artifactKind: 'install-regression',
+    }),
     allowPendingManual,
   });
 

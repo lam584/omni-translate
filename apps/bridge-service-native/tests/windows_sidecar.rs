@@ -5,6 +5,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::Path,
     process::{Child, Command, Stdio},
+    sync::{Mutex, MutexGuard, OnceLock},
     thread,
     time::{Duration, Instant},
 };
@@ -12,10 +13,29 @@ use std::{
 use serde_json::{json, Value};
 use tempfile::TempDir;
 
-use omni_bridge_protocol::BRIDGE_PROTOCOL_VERSION;
+use omni_bridge_protocol::{
+    TranslationPlaybackStatusAck, BRIDGE_PROTOCOL_VERSION,
+};
+
+static PROCESS_LOOPBACK_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn process_loopback_test_guard() -> MutexGuard<'static, ()> {
+    PROCESS_LOOPBACK_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn sidecar_path() -> &'static str {
     env!("CARGO_BIN_EXE_omni-bridge-service")
+}
+
+fn physical_output_probe_path() -> &'static str {
+    env!("CARGO_BIN_EXE_omni-physical-output-probe")
+}
+
+fn tone_render_probe_path() -> &'static str {
+    env!("CARGO_BIN_EXE_omni-tone-render-probe")
 }
 
 fn spawn_sidecar(pipe_name: &str, runtime_root: &Path) -> Child {
@@ -30,6 +50,36 @@ fn spawn_sidecar(pipe_name: &str, runtime_root: &Path) -> Child {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap()
+}
+
+fn spawn_sidecar_with_process_fault(
+    pipe_name: &str,
+    runtime_root: &Path,
+    windows_build_number: u32,
+    activation_hresult: Option<&str>,
+) -> Child {
+    let mut command = Command::new(sidecar_path());
+    command
+        .args([
+            "--pipe-name",
+            pipe_name,
+            "--runtime-root",
+            runtime_root.to_str().unwrap(),
+        ])
+        .env("OMNI_BRIDGE_TEST_ALLOW_FAULT_INJECTION", "1")
+        .env(
+            "OMNI_BRIDGE_TEST_WINDOWS_BUILD_NUMBER",
+            windows_build_number.to_string(),
+        )
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    if let Some(hresult) = activation_hresult {
+        command.env(
+            "OMNI_BRIDGE_TEST_PROCESS_LOOPBACK_ACTIVATION_HRESULT",
+            hresult,
+        );
+    }
+    command.spawn().unwrap()
 }
 
 fn wait_until_ready(child: &mut Child) {
@@ -91,11 +141,717 @@ fn init_session(pipe_name: &str, session_id: &str) {
             "protocolVersion": BRIDGE_PROTOCOL_VERSION,
             "expectedDriverVersion": "0.0.0-test",
             "expectedBridgeVersion": "0.0.0-test",
-            "monitorPlaybackEnabled": false
+            "monitorPlaybackEnabled": false,
+            "translationPlaybackEnabled": false
         }),
     );
     assert_eq!(response["type"], "bridge.init.ack");
     assert_eq!(response["protocolVersion"], BRIDGE_PROTOCOL_VERSION);
+}
+
+fn wait_for_process_source_running(pipe_name: &str) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let state = send_control(
+            pipe_name,
+            json!({
+                "type": "bridge.state.query",
+                "requestId": "process-source-running"
+            }),
+        );
+        if state["captureLifecycleState"] == "process-loopback-running"
+            && state["sourceSubscriberActive"] == true
+        {
+            return state;
+        }
+        if state["processLoopbackStatus"] == "failed" || Instant::now() >= deadline {
+            panic!("process source route did not become ready: {state}");
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn read_source_envelope(pipe: &mut File) -> Value {
+    let mut header_size = [0u8; 4];
+    pipe.read_exact(&mut header_size).unwrap();
+    let mut header = vec![0u8; u32::from_le_bytes(header_size) as usize];
+    pipe.read_exact(&mut header).unwrap();
+    let header: Value = serde_json::from_slice(&header).unwrap();
+    let mut payload = vec![0u8; header["payloadBytes"].as_u64().unwrap_or(0) as usize];
+    pipe.read_exact(&mut payload).unwrap();
+    header
+}
+
+fn acknowledge_translation_status(pipe: &mut File, status: &Value) {
+    let ack = TranslationPlaybackStatusAck {
+        event_type: "bridge.translation.status.ack".to_string(),
+        status_id: status["statusId"]
+            .as_str()
+            .expect("translation statusId")
+            .to_string(),
+        session_id: status["sessionId"]
+            .as_str()
+            .expect("translation sessionId")
+            .to_string(),
+    };
+    let header = serde_json::to_vec(&ack).unwrap();
+    pipe.write_all(&(header.len() as u32).to_le_bytes())
+        .unwrap();
+    pipe.write_all(&header).unwrap();
+    pipe.flush().unwrap();
+}
+
+#[test]
+fn translation_terminal_replays_after_disconnect_until_desktop_acknowledges_status_id() {
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-status-replay-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+    init_session(&pipe_name, "session-1");
+
+    let header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let ack = exchange_audio_frame(&pipe_name, &header, &[1, 0, 2, 0]).unwrap();
+    assert_eq!(ack["type"], "bridge.translation.ack");
+
+    let source_path = format!(r"\\.\pipe\{pipe_name}-source");
+    let mut first_source = open_pipe(&source_path);
+    let first_delivery = read_source_envelope(&mut first_source);
+    assert_eq!(first_delivery["type"], "bridge.translation.status");
+    assert_eq!(first_delivery["playbackStatus"], "stale-dropped");
+    assert_eq!(first_delivery["cueId"], "cue-1");
+    assert!(!first_delivery["statusId"].as_str().unwrap().is_empty());
+
+    // Simulate the exact failure window: Bridge completed WriteFile, then the
+    // Desktop reader disappeared before its ACK reached the server.
+    drop(first_source);
+
+    let mut second_source = open_pipe(&source_path);
+    let replay = read_source_envelope(&mut second_source);
+    assert_eq!(replay, first_delivery, "retry must preserve the stable statusId");
+    acknowledge_translation_status(&mut second_source, &replay);
+
+    let next = read_source_envelope(&mut second_source);
+    assert_eq!(
+        next["type"], "bridge.source.heartbeat",
+        "a matching ACK must remove the terminal before normal source delivery resumes"
+    );
+    drop(second_source);
+
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+}
+
+fn wait_for_log_text(path: &Path, expected: &str) -> String {
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let content = fs::read_to_string(path).unwrap_or_default();
+        if content.contains(expected) {
+            return content;
+        }
+        if Instant::now() >= deadline {
+            panic!("timed out waiting for {expected:?} in {}: {content}", path.display());
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn proactive_process_loopback_probe_never_starts_source_capture_or_driver_probe() {
+    let _process_loopback_guard = process_loopback_test_guard();
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-process-probe-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+
+    let response = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.process-loopback.probe",
+            "requestId": "process-loopback-probe-1",
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION
+        }),
+    );
+    assert_eq!(response["type"], "bridge.process-loopback.probe.ack");
+    assert_eq!(response["protocolVersion"], BRIDGE_PROTOCOL_VERSION);
+    assert!(matches!(
+        response["processLoopbackStatus"].as_str(),
+        Some("ready") | Some("unsupported") | Some("failed")
+    ));
+    assert!(response["probeProcessId"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(response["sourceCaptureMode"], "none");
+    assert_eq!(response["captureBackend"], "none");
+
+    let state = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.state.query",
+            "requestId": "process-loopback-probe-state-1"
+        }),
+    );
+    assert_eq!(state["sourceCaptureMode"], "none");
+    assert_eq!(state["captureBackend"], "none");
+    assert_eq!(state["sourceSubscriberActive"], false);
+    assert_eq!(state["bridgeProcessId"], sidecar.id());
+    assert!(state["bridgeInstanceId"].as_str().is_some_and(|value| !value.is_empty()));
+    assert!(state["sourceGeneration"].as_u64().unwrap_or_default() > 0);
+    assert!(state["sourceGenerationToken"]
+        .as_str()
+        .is_some_and(|value| !value.is_empty()));
+    assert_eq!(state["capturePacketCount"], 0);
+    assert_eq!(state["driverHealth"], "not-installed");
+
+    shutdown(&pipe_name);
+    let _ = sidecar.wait();
+}
+
+#[test]
+fn injected_activation_hresult_reaches_control_and_source_error_envelopes() {
+    let _process_loopback_guard = process_loopback_test_guard();
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-process-activation-fault-{}", std::process::id());
+    let mut sidecar = spawn_sidecar_with_process_fault(
+        &pipe_name,
+        runtime_root.path(),
+        20_348,
+        Some("0x88890004"),
+    );
+    wait_until_ready(&mut sidecar);
+
+    let response = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.init",
+            "requestId": "injected-activation-failure",
+            "sessionId": "injected-activation-session",
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            "sourceCaptureMode": "process-exclusion",
+            "physicalPlaybackDeviceId": "omni-no-physical-endpoint-needed",
+            "monitorPlaybackEnabled": false,
+            "translationPlaybackEnabled": false
+        }),
+    );
+    assert_eq!(response["type"], "bridge.error", "{response}");
+    assert_eq!(response["code"], "bridge.process-loopback-activation-failed");
+    assert_eq!(response["sourceCaptureMode"], "process-exclusion");
+    assert_eq!(response["captureBackend"], "wasapi-process-exclusion");
+    assert_eq!(response["processLoopbackStatus"], "failed");
+    assert_eq!(response["windowsBuildNumber"], 20_348);
+    assert!(response["processLoopbackFailureDetail"]
+        .as_str()
+        .unwrap()
+        .contains("HRESULT=0x88890004"));
+
+    let mut source_pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"));
+    let source_error = read_source_envelope(&mut source_pipe);
+    assert_eq!(source_error["type"], "bridge.source.error");
+    assert_eq!(
+        source_error["errorCode"],
+        "bridge.process-loopback-activation-failed"
+    );
+    assert!(source_error["message"]
+        .as_str()
+        .unwrap()
+        .contains("HRESULT=0x88890004"));
+
+    let state = send_control(
+        &pipe_name,
+        json!({"type": "bridge.state.query", "requestId": "fault-state"}),
+    );
+    assert_eq!(state["bridgeState"], "degraded");
+    assert_eq!(state["lifecycleState"], "error");
+    assert_eq!(state["sourceSubscriberActive"], false);
+    assert_eq!(state["capturePacketCount"], 0);
+    assert_eq!(state["playbackFramesWritten"], 0);
+
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+}
+
+#[test]
+fn injected_unsupported_build_never_attempts_process_activation() {
+    let _process_loopback_guard = process_loopback_test_guard();
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-process-unsupported-{}", std::process::id());
+    let mut sidecar = spawn_sidecar_with_process_fault(
+        &pipe_name,
+        runtime_root.path(),
+        20_347,
+        Some("0xDEADBEEF"),
+    );
+    wait_until_ready(&mut sidecar);
+
+    let response = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.init",
+            "requestId": "unsupported-build",
+            "sessionId": "unsupported-build-session",
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            "sourceCaptureMode": "process-exclusion",
+            "monitorPlaybackEnabled": false,
+            "translationPlaybackEnabled": false
+        }),
+    );
+    assert_eq!(response["type"], "bridge.error", "{response}");
+    assert_eq!(response["code"], "bridge.process-loopback-unsupported");
+    assert_eq!(response["processLoopbackStatus"], "unsupported");
+    assert_eq!(response["processLoopbackSupported"], false);
+    assert_eq!(response["windowsBuildNumber"], 20_347);
+    assert!(!response["message"].as_str().unwrap().contains("DEADBEEF"));
+
+    let mut source_pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"));
+    let source_error = read_source_envelope(&mut source_pipe);
+    assert_eq!(source_error["type"], "bridge.source.error");
+    assert_eq!(
+        source_error["errorCode"],
+        "bridge.process-loopback-unsupported"
+    );
+
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+}
+
+#[test]
+fn process_exclusion_init_is_driver_independent_and_never_falls_back() {
+    let _process_loopback_guard = process_loopback_test_guard();
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-process-exclusion-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+
+    let response = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.init",
+            "requestId": "process-exclusion-init-1",
+            "sessionId": "session-1",
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            "sourceCaptureMode": "process-exclusion",
+            "monitorPlaybackEnabled": false,
+            "translationPlaybackEnabled": false
+        }),
+    );
+    assert_eq!(response["sourceCaptureMode"], "process-exclusion");
+    assert_eq!(response["captureBackend"], "wasapi-process-exclusion");
+    assert_eq!(response["driverHealth"], "not-installed");
+    assert_eq!(response["processLoopbackMinimumWindowsBuild"], 20_348);
+    match response["type"].as_str().unwrap() {
+        "bridge.init.ack" => {
+            assert_eq!(response["bridgeState"], "running");
+            assert_eq!(response["processLoopbackStatus"], "ready");
+            assert_eq!(response["processLoopbackSupported"], true);
+            let source_pipe = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"));
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let state = loop {
+                let state = send_control(
+                    &pipe_name,
+                    json!({
+                        "type": "bridge.state.query",
+                        "requestId": "process-exclusion-state-1"
+                    }),
+                );
+                if state["captureLifecycleState"] == "process-loopback-running"
+                    || state["processLoopbackStatus"] == "failed"
+                    || Instant::now() >= deadline
+                {
+                    break state;
+                }
+                thread::sleep(Duration::from_millis(25));
+            };
+            assert_eq!(state["translationPlaybackEnabled"], true);
+            assert_eq!(state["sourceMonitorPlaybackEnabled"], false);
+            if state["processLoopbackStatus"] == "failed" {
+                assert_eq!(
+                    state["lastErrorCode"],
+                    "bridge.process-loopback-capture-failed"
+                );
+                assert_eq!(state["bridgeState"], "degraded");
+            } else {
+                assert_eq!(
+                    state["captureLifecycleState"],
+                    "process-loopback-running",
+                    "process-loopback source worker did not activate: {state}"
+                );
+            }
+            drop(source_pipe);
+        }
+        "bridge.error" => {
+            assert!(matches!(
+                response["code"].as_str(),
+                Some("bridge.process-loopback-unsupported")
+                    | Some("bridge.process-loopback-activation-failed")
+            ));
+            assert_ne!(response["captureBackend"], "driver-virtual-speaker");
+        }
+        response_type => panic!("unexpected process-exclusion init response: {response_type}"),
+    }
+
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+    fs::remove_dir_all(runtime_root.path()).ok();
+}
+
+#[test]
+fn process_exclusion_intentional_mute_acknowledges_with_a_terminal_cue_reason() {
+    let _process_loopback_guard = process_loopback_test_guard();
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-process-muted-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+
+    let response = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.init",
+            "requestId": "process-muted-init",
+            "sessionId": "session-1",
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            "sourceCaptureMode": "process-exclusion",
+            "monitorPlaybackEnabled": false,
+            "translationPlaybackEnabled": false,
+            "mixControl": {
+                "keepOriginalAudio": true,
+                "translatedAudioEnabled": false,
+                "translatedAudioGainDb": 0.0,
+                "translatedAudioAutoGainEnabled": true,
+                "originalAudioGainDb": 0.0,
+                "duckingEnabled": false,
+                "duckingDepthPercent": 0,
+                "monitorMode": "original-only"
+            }
+        }),
+    );
+    if response["type"] == "bridge.error" {
+        assert!(matches!(
+            response["code"].as_str(),
+            Some("bridge.process-loopback-unsupported")
+                | Some("bridge.process-loopback-activation-failed")
+        ));
+        shutdown(&pipe_name);
+        assert!(sidecar.wait().unwrap().success());
+        return;
+    }
+    assert_eq!(response["type"], "bridge.init.ack");
+    assert_eq!(response["processLoopbackStatus"], "ready");
+
+    let header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    let ack = exchange_audio_frame(&pipe_name, &header, &[1, 0, 2, 0]).unwrap();
+    assert_eq!(ack["type"], "bridge.translation.ack");
+    let log = wait_for_log_text(
+        &runtime_root.path().join("bridge-service.log"),
+        "event=translation_playback_status status=stale-dropped cueId=cue-1 reason=translated-audio-muted",
+    );
+    assert!(!log.contains("status=completed cueId=cue-1"));
+
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+}
+
+#[test]
+fn process_exclusion_fingerprint_excludes_bridge_and_preserves_external_process_audio() {
+    let _process_loopback_guard = process_loopback_test_guard();
+    let runtime_root = TempDir::new().unwrap();
+    let output = Command::new(physical_output_probe_path())
+        .args([
+            "--bridge-exe",
+            sidecar_path(),
+            "--tone-player-exe",
+            tone_render_probe_path(),
+            "--runtime-root",
+            runtime_root.path().to_str().unwrap(),
+            "--physical-playback-device-id",
+            "default",
+            "--physical-playback-level",
+            "50",
+            "--process-exclusion-fingerprint",
+        ])
+        .output()
+        .expect("process exclusion fingerprint probe must launch");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let result: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|error| {
+        panic!(
+            "process exclusion fingerprint probe returned invalid JSON: {error}; status={}; stdout={stdout}; stderr={stderr}",
+            output.status,
+        )
+    });
+
+    if result["skipped"] == true {
+        assert!(output.status.success(), "a supported skip must exit zero: {result}");
+        assert_eq!(result["probeKind"], "process-exclusion-fingerprint");
+        assert!(matches!(
+            result["skipCode"].as_str(),
+            Some("probe.no-physical-render-endpoint")
+                | Some("bridge.process-loopback-unsupported")
+        ));
+        eprintln!("process exclusion fingerprint skipped with explicit evidence: {result}");
+        return;
+    }
+
+    assert!(
+        output.status.success(),
+        "process exclusion fingerprint failed: status={} result={result} stderr={stderr}",
+        output.status,
+    );
+    assert_eq!(result["passed"], true, "fingerprint result: {result}");
+    assert_eq!(result["status"], "passed");
+    assert_eq!(result["probeKind"], "process-exclusion-fingerprint");
+    let evidence = &result["processExclusionFingerprint"];
+    assert_eq!(evidence["sourceCaptureMode"], "process-exclusion");
+    assert_eq!(evidence["captureBackend"], "wasapi-process-exclusion");
+    assert_eq!(evidence["processLoopbackStatus"], "ready");
+    assert_eq!(evidence["bridgeProcessId"], evidence["excludedProcessId"]);
+    assert_ne!(
+        evidence["externalPlayerProcessId"], evidence["bridgeProcessId"],
+        "the preservation tone must originate outside the excluded Bridge process"
+    );
+    assert_ne!(
+        evidence["bridgeChildPlayerProcessId"], evidence["bridgeProcessId"],
+        "the Bridge-child tone must run in a distinct process"
+    );
+    assert_eq!(
+        evidence["bridgeChildParentProcessId"], evidence["bridgeProcessId"],
+        "the excluded child fingerprint must be emitted by a real Bridge process descendant"
+    );
+    assert_eq!(
+        evidence["bridgeChildExitCode"], 0,
+        "the Bridge-child tone process must complete successfully"
+    );
+    assert!(
+        evidence["physicalTranslationNoiseMargin"].as_f64().unwrap() >= 0.001,
+        "Bridge fingerprint must clear the local physical noise floor: {evidence}"
+    );
+    assert!(
+        evidence["physicalTranslationSnrRatio"].as_f64().unwrap() >= 2.0,
+        "Bridge fingerprint must have a measurable physical SNR: {evidence}"
+    );
+    assert!(
+        evidence["physicalTranslationToExternalRatio"].as_f64().unwrap()
+            >= evidence["minimumPhysicalTranslationToExternalRatio"]
+                .as_f64()
+                .unwrap(),
+        "Bridge fingerprint must be detectable relative to the external reference and configured 50% playback level: {evidence}"
+    );
+    assert!(
+        evidence["physicalExternalComponent"].as_f64().unwrap() >= 0.01,
+        "external fingerprint must be proven on the physical endpoint: {evidence}"
+    );
+    assert!(
+        evidence["physicalBridgeChildComponent"].as_f64().unwrap() >= 0.01,
+        "Bridge-child fingerprint must be proven on the physical endpoint: {evidence}"
+    );
+    assert!(
+        evidence["sourceExternalComponent"].as_f64().unwrap() >= 0.01,
+        "external fingerprint must survive the Bridge source pipe: {evidence}"
+    );
+    assert!(
+        evidence["sourceTranslationComponent"].as_f64().unwrap()
+            <= evidence["translationComponentLimit"].as_f64().unwrap(),
+        "Bridge fingerprint leaked into the source pipe: {evidence}"
+    );
+    assert!(
+        evidence["sourceBridgeChildComponent"].as_f64().unwrap()
+            <= evidence["translationComponentLimit"].as_f64().unwrap(),
+        "Bridge-child fingerprint leaked into the source pipe: {evidence}"
+    );
+    assert!(
+        evidence["sourceToPhysicalTranslationRatio"].as_f64().unwrap()
+            <= evidence["sourceToPhysicalRatioLimit"].as_f64().unwrap(),
+        "excluded/physical ratio exceeded its strict threshold: {evidence}"
+    );
+    assert!(
+        evidence["sourceTranslationToExternalRatio"].as_f64().unwrap()
+            <= evidence["sourceToExternalRatioLimit"].as_f64().unwrap(),
+        "excluded/external ratio exceeded its strict threshold: {evidence}"
+    );
+    assert!(
+        evidence["sourceToPhysicalBridgeChildRatio"].as_f64().unwrap()
+            <= evidence["sourceToPhysicalRatioLimit"].as_f64().unwrap(),
+        "excluded/physical Bridge-child ratio exceeded its strict threshold: {evidence}"
+    );
+    assert!(
+        runtime_root.path().join("process-exclusion-physical-output.wav").is_file(),
+        "physical-loopback evidence WAV must be retained"
+    );
+    assert!(
+        runtime_root.path().join("process-exclusion-source-pipe.wav").is_file(),
+        "source-pipe evidence WAV must be retained"
+    );
+}
+
+#[test]
+fn concurrent_process_exclusion_fingerprint_probes_are_serialized_without_cross_contamination() {
+    let _process_loopback_guard = process_loopback_test_guard();
+    let runtime_a = TempDir::new().unwrap();
+    let runtime_b = TempDir::new().unwrap();
+    let spawn_probe = |runtime_root: &Path| {
+        Command::new(physical_output_probe_path())
+            .args([
+                "--bridge-exe",
+                sidecar_path(),
+                "--tone-player-exe",
+                tone_render_probe_path(),
+                "--runtime-root",
+                runtime_root.to_str().unwrap(),
+                "--physical-playback-device-id",
+                "default",
+                "--physical-playback-level",
+                "50",
+                "--process-exclusion-fingerprint",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("concurrent process exclusion fingerprint probe must launch")
+    };
+
+    let first = spawn_probe(runtime_a.path());
+    let second = spawn_probe(runtime_b.path());
+    let first_output = first.wait_with_output().unwrap();
+    let second_output = second.wait_with_output().unwrap();
+
+    for (label, output) in [("first", first_output), ("second", second_output)] {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let result: Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|error| {
+            panic!(
+                "{label} concurrent fingerprint returned invalid JSON: {error}; status={}; stdout={stdout}; stderr={stderr}",
+                output.status,
+            )
+        });
+        if result["skipped"] == true {
+            assert!(output.status.success(), "{label} skip must exit zero: {result}");
+            continue;
+        }
+        assert!(
+            output.status.success(),
+            "{label} concurrent fingerprint failed: {result}; stderr={stderr}"
+        );
+        let evidence = &result["processExclusionFingerprint"];
+        assert!(
+            evidence["sourceTranslationComponent"].as_f64().unwrap()
+                <= evidence["translationComponentLimit"].as_f64().unwrap(),
+            "{label} probe saw another Bridge translation fingerprint: {evidence}"
+        );
+        assert!(
+            evidence["sourceBridgeChildComponent"].as_f64().unwrap()
+                <= evidence["translationComponentLimit"].as_f64().unwrap(),
+            "{label} probe saw another Bridge-child fingerprint: {evidence}"
+        );
+    }
+}
+
+#[test]
+fn process_exclusion_restart_retargets_the_new_bridge_without_old_source_frames() {
+    let _process_loopback_guard = process_loopback_test_guard();
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-process-restart-{}", std::process::id());
+
+    let mut first = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut first);
+    let first_init = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.init",
+            "requestId": "process-restart-init-a",
+            "sessionId": "process-restart-session-a",
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            "sourceCaptureMode": "process-exclusion",
+            "monitorPlaybackEnabled": false,
+            "translationPlaybackEnabled": false
+        }),
+    );
+    if first_init["type"] == "bridge.error"
+        && first_init["code"] == "bridge.process-loopback-unsupported"
+    {
+        eprintln!("process exclusion restart skipped with explicit evidence: {first_init}");
+        shutdown(&pipe_name);
+        assert!(first.wait().unwrap().success());
+        return;
+    }
+    assert_eq!(first_init["type"], "bridge.init.ack", "{first_init}");
+    let first_pid = first.id();
+    let mut first_source = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"));
+    let first_state = wait_for_process_source_running(&pipe_name);
+    assert_eq!(first_state["excludedProcessId"], first_pid);
+    let first_envelope = read_source_envelope(&mut first_source);
+    assert_eq!(first_envelope["sessionId"], "process-restart-session-a");
+    assert_eq!(first_envelope["bridgeProcessId"], first_pid);
+    assert_eq!(
+        first_envelope["bridgeInstanceId"],
+        first_state["bridgeInstanceId"]
+    );
+    assert_eq!(
+        first_envelope["sourceGeneration"],
+        first_state["sourceGeneration"]
+    );
+    assert_eq!(
+        first_envelope["sourceGenerationToken"],
+        first_state["sourceGenerationToken"]
+    );
+    assert_eq!(first_envelope["sampleFormat"], "pcm-s16le");
+    assert_eq!(first_envelope["frameId"], "driver-source-1");
+    drop(first_source);
+    shutdown(&pipe_name);
+    assert!(first.wait().unwrap().success());
+
+    let mut second = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut second);
+    let second_pid = second.id();
+    assert_ne!(second_pid, first_pid);
+    let second_init = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.init",
+            "requestId": "process-restart-init-b",
+            "sessionId": "process-restart-session-b",
+            "protocolVersion": BRIDGE_PROTOCOL_VERSION,
+            "sourceCaptureMode": "process-exclusion",
+            "monitorPlaybackEnabled": false,
+            "translationPlaybackEnabled": false
+        }),
+    );
+    assert_eq!(second_init["type"], "bridge.init.ack", "{second_init}");
+    let mut second_source = open_pipe(&format!(r"\\.\pipe\{pipe_name}-source"));
+    let second_state = wait_for_process_source_running(&pipe_name);
+    assert_eq!(second_state["excludedProcessId"], second_pid);
+    assert_ne!(second_state["excludedProcessId"], first_pid);
+    let second_envelope = read_source_envelope(&mut second_source);
+    assert_eq!(second_envelope["sessionId"], "process-restart-session-b");
+    assert_eq!(second_envelope["bridgeProcessId"], second_pid);
+    assert_eq!(
+        second_envelope["bridgeInstanceId"],
+        second_state["bridgeInstanceId"]
+    );
+    assert_eq!(
+        second_envelope["sourceGeneration"],
+        second_state["sourceGeneration"]
+    );
+    assert_eq!(
+        second_envelope["sourceGenerationToken"],
+        second_state["sourceGenerationToken"]
+    );
+    assert_ne!(second_envelope["sessionId"], first_envelope["sessionId"]);
+    assert_ne!(
+        second_envelope["bridgeInstanceId"],
+        first_envelope["bridgeInstanceId"]
+    );
+    assert_ne!(
+        second_envelope["sourceGeneration"],
+        first_envelope["sourceGeneration"]
+    );
+    assert_ne!(
+        second_envelope["sourceGenerationToken"],
+        first_envelope["sourceGenerationToken"]
+    );
+    assert_eq!(second_envelope["sampleFormat"], "pcm-s16le");
+    assert_eq!(
+        second_envelope["frameId"], "driver-source-1",
+        "a restarted source subscriber must begin from a fresh generation"
+    );
+    drop(second_source);
+    shutdown(&pipe_name);
+    assert!(second.wait().unwrap().success());
 }
 
 fn translation_header(session_id: &str, event_type: &str, frame_count: u64, payload_bytes: u64) -> Value {
@@ -106,10 +862,14 @@ fn translation_header(session_id: &str, event_type: &str, frame_count: u64, payl
         "frameId": "frame-1",
         "streamId": "stream-1",
         "sampleRateHz": 24000,
+        "sampleFormat": "pcm-s16le",
         "channelCount": 1,
         "frameCount": frame_count,
         "timestampMs": 1,
-        "payloadBytes": payload_bytes
+        "payloadBytes": payload_bytes,
+        "cueId": "cue-1",
+        "translationSink": "physical-playback",
+        "routeDirection": "inbound"
     })
 }
 
@@ -178,10 +938,13 @@ fn audio_pipe_returns_a_framed_session_mismatch_nack() {
         "frameId": "frame-1",
         "streamId": "stream-1",
         "sampleRateHz": 24000,
+        "sampleFormat": "pcm-s16le",
         "channelCount": 1,
         "frameCount": 2,
         "timestampMs": 1,
-        "payloadBytes": 4
+        "payloadBytes": 4,
+        "translationSink": "physical-playback",
+        "routeDirection": "inbound"
     });
     let encoded = serde_json::to_vec(&header).unwrap();
     pipe.write_all(&(encoded.len() as u32).to_le_bytes())
@@ -220,10 +983,56 @@ fn audio_pipe_acknowledges_a_valid_translation_frame() {
     assert_eq!(ack["acceptedFrames"], 2);
     assert!(ack.get("errorCode").is_none_or(Value::is_null));
 
+    let log = wait_for_log_text(
+        &runtime_root.path().join("bridge-service.log"),
+        "event=translation_playback_status status=stale-dropped cueId=cue-1 reason=translation-playback-disabled",
+    );
+    assert!(!log.contains("status=completed cueId=cue-1"));
+
     // The accepted payload is persisted for diagnostics, byte for byte.
     assert_eq!(
         fs::read(runtime_root.path().join("last-translation-frame.pcm")).unwrap(),
         vec![1, 0, 2, 0]
+    );
+
+    shutdown(&pipe_name);
+    assert!(sidecar.wait().unwrap().success());
+    fs::remove_dir_all(runtime_root.path()).ok();
+}
+
+#[test]
+fn audio_pipe_rejects_virtual_mic_output_without_entering_physical_playback() {
+    let runtime_root = TempDir::new().unwrap();
+    let pipe_name = format!("omni-bridge-virtual-mic-nack-{}", std::process::id());
+    let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
+    wait_until_ready(&mut sidecar);
+    init_session(&pipe_name, "session-1");
+
+    let mut header = translation_header("session-1", "bridge.translation.frame", 2, 4);
+    header["translationSink"] = json!("virtual-mic");
+    header["routeDirection"] = json!("outbound");
+    header["chunkIndex"] = json!(0);
+    header["chunkCount"] = json!(1);
+    let nack = exchange_audio_frame(&pipe_name, &header, &[1, 0, 2, 0])
+        .expect("an unavailable virtual-mic sink must be nacked, not played physically");
+    assert_eq!(nack["type"], "bridge.translation.nack");
+    assert_eq!(
+        nack["errorCode"],
+        "bridge.virtual-mic-output-unavailable"
+    );
+    assert_eq!(nack["acceptedFrames"], 0);
+
+    let state = send_control(
+        &pipe_name,
+        json!({
+            "type": "bridge.state.query",
+            "requestId": "virtual-mic-state-1"
+        }),
+    );
+    assert_eq!(state["playbackFramesWritten"], 0);
+    assert_eq!(
+        state["lastErrorCode"],
+        "bridge.virtual-mic-output-unavailable"
     );
 
     shutdown(&pipe_name);
@@ -271,6 +1080,19 @@ fn malformed_and_truncated_audio_frames_do_not_kill_the_sidecar() {
     let mut sidecar = spawn_sidecar(&pipe_name, runtime_root.path());
     wait_until_ready(&mut sidecar);
     init_session(&pipe_name, "session-1");
+
+    // v4 never infers a PCM representation from the other dimensions. A
+    // frame without the explicit sample format is malformed at the envelope.
+    let mut missing_sample_format =
+        translation_header("session-1", "bridge.translation.frame", 2, 4);
+    missing_sample_format
+        .as_object_mut()
+        .unwrap()
+        .remove("sampleFormat");
+    assert!(
+        exchange_audio_frame(&pipe_name, &missing_sample_format, &[1, 0, 2, 0]).is_none(),
+        "a header without sampleFormat must be rejected before PCM decoding"
+    );
 
     // Garbage bytes where the JSON header should be: the sidecar drops the
     // connection without a response instead of crashing.

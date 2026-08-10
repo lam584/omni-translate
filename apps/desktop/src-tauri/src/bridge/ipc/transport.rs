@@ -204,3 +204,21 @@ pub(crate) fn query_state_fast(pipe_path: &str) -> Result<BridgeStateResponse, S
         Duration::ZERO,
     )?)
 }
+
+pub(crate) fn probe_process_loopback(
+    pipe_path: &str,
+) -> Result<BridgeProcessLoopbackProbeResponse, String> {
+    let event = write_command(
+        pipe_path,
+        &DriverBridgeCommand::ProcessLoopbackProbe(BridgeProcessLoopbackProbeRequest {
+            request_id: format!("bridge-process-loopback-probe-{}", now_unix_ms()),
+            protocol_version: omni_bridge_protocol::BRIDGE_PROTOCOL_VERSION.to_string(),
+        }),
+    )?;
+    match event {
+        DriverBridgeEvent::ProcessLoopbackProbeAck(probe) => Ok(probe),
+        DriverBridgeEvent::Error(error) => Err(format!("{}: {}", error.code, error.message)),
+        _ => Err("Bridge Service returned an unexpected process-loopback probe response."
+            .to_string()),
+    }
+}

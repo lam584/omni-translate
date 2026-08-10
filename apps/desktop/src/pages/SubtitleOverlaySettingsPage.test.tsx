@@ -240,4 +240,76 @@ describe('SubtitleOverlaySettingsPage font size controls', () => {
       await Promise.resolve();
     });
   });
+
+  it('updates advanced row effects, text opacity, alignment, background and preview scene', async () => {
+    await renderPage();
+
+    const fieldInput = <T extends HTMLInputElement | HTMLSelectElement>(labelKey: string, selector: string) =>
+      Array.from(container.querySelectorAll<HTMLLabelElement>('label'))
+        .find((label) => label.textContent?.includes(labelKey))?.querySelector<T>(selector);
+    const setNativeValue = (element: HTMLInputElement | HTMLSelectElement, value: string) => {
+      const prototype = element instanceof HTMLSelectElement ? HTMLSelectElement.prototype : HTMLInputElement.prototype;
+      Object.getOwnPropertyDescriptor(prototype, 'value')?.set?.call(element, value);
+    };
+    const change = (element: HTMLInputElement | HTMLSelectElement, value: string) => {
+      setNativeValue(element, value);
+      element.dispatchEvent(new Event(element instanceof HTMLSelectElement ? 'change' : 'input', { bubbles: true }));
+      if (element instanceof HTMLInputElement && element.type === 'checkbox') {
+        element.dispatchEvent(new Event('change', { bubbles: true }));
+      }
+    };
+
+    const sourceTab = buttonByText(container, 'settings.overlayTextRole.source')!;
+    const rightAlign = buttonByText(container, 'settings.overlayAlign.right')!;
+    const lightScene = buttonByText(container, 'settings.overlayPreviewScene.light')!;
+    const textOpacity = fieldInput<HTMLInputElement>('settings.overlayTextOpacityLabel', 'input[type="range"]')!;
+    const backgroundOpacity = fieldInput<HTMLInputElement>('settings.overlayBackgroundOpacityLabel', 'input[type="range"]')!;
+    const fontWeight = fieldInput<HTMLSelectElement>('settings.overlayFontWeightLabel', 'select')!;
+    const outlineSwitch = Array.from(container.querySelectorAll<HTMLInputElement>('input[role="switch"]'))[0]!;
+    const shadowSwitch = Array.from(container.querySelectorAll<HTMLInputElement>('input[role="switch"]'))[1]!;
+    const effectColors = Array.from(container.querySelectorAll<HTMLLabelElement>('label'))
+      .filter((label) => label.textContent?.includes('settings.overlayEffectColorLabel'))
+      .map((label) => label.querySelector<HTMLInputElement>('input[type="color"]')!);
+    const outlineWidth = fieldInput<HTMLInputElement>('settings.overlayOutlineWidthLabel', 'input[type="range"]')!;
+    const shadowOpacity = fieldInput<HTMLInputElement>('settings.overlayShadowOpacityLabel', 'input[type="range"]')!;
+    const shadowX = fieldInput<HTMLInputElement>('settings.overlayShadowXLabel', 'input[type="range"]')!;
+    const shadowY = fieldInput<HTMLInputElement>('settings.overlayShadowYLabel', 'input[type="range"]')!;
+    const shadowBlur = fieldInput<HTMLInputElement>('settings.overlayShadowBlurLabel', 'input[type="range"]')!;
+
+    await act(async () => {
+      sourceTab.click();
+      rightAlign.click();
+      lightScene.click();
+      change(textOpacity, '64');
+      change(backgroundOpacity, '37');
+      change(fontWeight, '700');
+      outlineSwitch.click();
+      shadowSwitch.click();
+      change(effectColors[0]!, '#123456');
+      change(effectColors[1]!, '#654321');
+      change(outlineWidth, '3');
+      change(shadowOpacity, '45');
+      change(shadowX, '-4');
+      change(shadowY, '6');
+      change(shadowBlur, '11');
+    });
+
+    const subtitles = useAppStore.getState().configDraft.subtitles;
+    expect(subtitles).toMatchObject({
+      overlayTextAlign: 'right',
+      overlayTextOpacity: 0.64,
+      overlayBackgroundOpacity: 0.37,
+      overlaySourceTextStyle: {
+        fontWeight: 700,
+        outlineColor: '#123456',
+        outlineWidth: 3,
+        shadowColor: '#654321',
+        shadowOpacity: 0.45,
+        shadowOffsetX: -4,
+        shadowOffsetY: 6,
+        shadowBlur: 11,
+      },
+    });
+    expect(container.querySelector('.overlay-preview-stage-light')).not.toBeNull();
+  });
 });

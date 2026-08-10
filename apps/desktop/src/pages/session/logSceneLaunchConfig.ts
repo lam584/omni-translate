@@ -5,6 +5,7 @@ import { appendFrontendDiagnosticsLog } from '../../runtime/diagnostics-runtime'
 import type { SceneMode } from '../../utils/scene-readiness';
 import i18n from '../../i18n/config';
 import { stringifyRedacted } from '../../utils/redact-sensitive-data';
+import { resolveProcessLoopbackCapability } from '../../utils/process-loopback-capability';
 
 function resolveSceneLabel(mode: SceneMode) {
   return mode === 'watch' ? i18n.t('session.watchMode') : i18n.t('session.conversationMode');
@@ -26,6 +27,7 @@ export function logSceneLaunchConfig(
   const glossary = configDraft.glossary;
   const diagnostics = configDraft.diagnostics;
   const bridge = runtimeSnapshot.bridge;
+  const processLoopback = resolveProcessLoopbackCapability(bridge);
 
   const lines: string[] = [];
 
@@ -214,6 +216,15 @@ export function logSceneLaunchConfig(
   log('installChannel', bridge.installChannel);
   log('installPhase', bridge.installPhase);
   log('captureBackend', bridge.captureBackend);
+  log('sourceCaptureMode', processLoopback.sourceCaptureMode);
+  log('processLoopbackSupported', processLoopback.supported);
+  log('processLoopbackStatus', processLoopback.status);
+  log('windowsBuildNumber', processLoopback.windowsBuildNumber);
+  log('processLoopbackMinimumWindowsBuild', processLoopback.minimumWindowsBuild);
+  log('excludedProcessId', processLoopback.excludedProcessId);
+  log('processLoopbackFailureDetail', processLoopback.failureDetail ?? '(none)');
+  log('sourceMonitorPlaybackEnabled', processLoopback.sourceMonitorPlaybackEnabled);
+  log('translationPlaybackEnabled', processLoopback.translationPlaybackEnabled);
   log('captureLifecycleState', bridge.captureLifecycleState);
   log('targetDeviceId', bridge.targetDeviceId);
   log('virtualRenderDeviceId', bridge.virtualRenderDeviceId);
@@ -234,6 +245,11 @@ export function logSceneLaunchConfig(
   log('ioctlAvailable', bridge.ioctlAvailable);
   log('endpointName', bridge.endpointName ?? '(none)');
   log('abiVersion', bridge.abiVersion ?? '(none)');
+
+  section('AEC capability');
+  log('aecBackend', audioRuntimeSnapshot.aecBackend);
+  log('aecStatus', audioRuntimeSnapshot.aecStatus);
+  log('aecFailureDetail', audioRuntimeSnapshot.aecFailureDetail ?? '(none)');
 
   // ---- Glossary configuration ----
   section('Glossary configuration (glossary)');

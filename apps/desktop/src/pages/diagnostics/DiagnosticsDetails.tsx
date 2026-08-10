@@ -4,9 +4,13 @@ import i18n from '../../i18n/config';
 import type { BenchmarkProgressEvent, BenchmarkReport, BenchmarkAudioFileInfo } from '../../runtime/benchmark-runtime';
 import type { LiveSessionEvents } from '../../runtime/live-session-events-runtime';
 import { writeExportArtifactRuntime, type ExportArtifactReceipt } from '../../runtime/export-artifact-runtime';
-import { scoreBenchmarkReport } from './benchmarkReportScore';
+import {
+  scoreBenchmarkReport,
+  type BenchmarkRunState,
+  type BenchmarkScoreV1,
+} from './benchmarkReportScore';
 import type { BenchmarkJudgeModel, BenchmarkSemanticJudgeResult } from './benchmarkSemanticJudge';
-import { resolveBenchmarkReferenceTranslation } from './benchmarkReferenceText';
+import { resolveBenchmarkReferenceTranslation, resolveBenchmarkSourceText } from './benchmarkReferenceText';
 
 type BenchmarkProgressView = Pick<BenchmarkProgressEvent, 'status' | 'phase' | 'message' | 'audioChunksSent' | 'totalAudioChunks' | 'error'>;
 
@@ -181,6 +185,236 @@ export function AudioFileInfoSection({ info }: { info: BenchmarkAudioFileInfo })
   );
 }
 
+function formatScoreValue(value: number | null): string {
+  return value == null ? '—' : value.toFixed(1);
+}
+
+function scoreStatusLabel(status: BenchmarkScoreV1['status']): string {
+  return i18n.t(`diagnostics.benchmark.scoreStatus.${status}`);
+}
+
+function missingEvidenceLabel(value: string): string {
+  const labels: Record<string, string> = {
+    'source-text': i18n.t('diagnostics.benchmark.scoreMissingSource'),
+    'reference-translation': i18n.t('diagnostics.benchmark.scoreMissingReference'),
+    'completed-translation': i18n.t('diagnostics.benchmark.scoreMissingTranslation'),
+    'judge-result-for-each-completed-run': i18n.t('diagnostics.benchmark.scoreMissingJudge'),
+    'judge-model-unavailable': i18n.t('diagnostics.benchmark.scoreMissingJudgeModel'),
+    'judge-credential-unavailable': i18n.t('diagnostics.benchmark.scoreMissingJudgeCredential'),
+    'chrF2-for-each-completed-run': 'chrF2',
+    'declared-runs': i18n.t('diagnostics.benchmark.scoreMissingRuns'),
+    'run-record-for-each-declared-run': i18n.t('diagnostics.benchmark.scoreMissingRunRecord'),
+  };
+  return labels[value] ?? value.replace(/-/gu, ' ');
+}
+
+function scoreDimensionSummary(score: BenchmarkScoreV1, dimension: keyof BenchmarkScoreV1['dimensions']): string {
+  const incompleteSummary = (detail: { score: number | null; missingEvidence: string[] }) => {
+    if (detail.score != null) return null;
+    return detail.missingEvidence.length
+      ? detail.missingEvidence.map(missingEvidenceLabel).join(' · ')
+      : i18n.t('diagnostics.benchmark.scoreEvidencePending');
+  };
+  switch (dimension) {
+    case 'semantic': {
+      const detail = score.dimensions.semantic;
+      const missing = incompleteSummary(detail);
+      if (missing) return missing;
+      const weakestJudgeRun = [...detail.evidence.judge.runs]
+        .sort((left, right) => left.score - right.score || left.runIndex - right.runIndex)[0];
+      const runLabel = weakestJudgeRun
+        ? `${i18n.t('diagnostics.benchmark.scoreRun', { run: weakestJudgeRun.runIndex + 1 })}: `
+        : '';
+      const keyError = weakestJudgeRun?.criticalErrors[0];
+      if (keyError) return `${runLabel}${keyError.category}: ${keyError.description}`;
+      if (weakestJudgeRun?.rationale) return `${runLabel}${weakestJudgeRun.rationale}`;
+      return i18n.t('diagnostics.benchmark.scoreSemanticSummary', {
+        reference: formatScoreValue(detail.evidence.referenceAverage),
+        judge: formatScoreValue(detail.evidence.judge.average),
+      });
+    }
+    case 'latency': {
+      const detail = score.dimensions.latency;
+      const missing = incompleteSummary(detail);
+      if (missing) return missing;
+      const slowest = detail.evidence.signals
+        .filter((signal) => signal.score != null)
+        .sort((left, right) => (left.score ?? 0) - (right.score ?? 0))[0];
+      return slowest
+        ? i18n.t('diagnostics.benchmark.scoreLatencySummary', {
+          run: slowest.runIndex + 1,
+          signal: slowest.signal === 'firstToken'
+            ? i18n.t('diagnostics.benchmark.scoreFirstToken')
+            : i18n.t('diagnostics.benchmark.scoreFirstCommitted'),
+          latency: (slowest.latencyMs ?? 0).toFixed(1),
+        })
+        : i18n.t('diagnostics.benchmark.scoreEvidencePending');
+    }
+    case 'completeness': {
+      const detail = score.dimensions.completeness;
+      const missing = incompleteSummary(detail);
+      if (missing) return missing;
+      return i18n.t('diagnostics.benchmark.scoreCompletenessSummary', {
+        completed: detail.evidence.completedRuns,
+        declared: detail.evidence.declaredRuns,
+      });
+    }
+    case 'stability': {
+      const detail = score.dimensions.stability;
+      const missing = incompleteSummary(detail);
+      if (missing) return missing;
+      return i18n.t('diagnostics.benchmark.scoreStabilitySummary', {
+        successful: detail.evidence.successfulRuns,
+        declared: detail.evidence.declaredRuns,
+        deduction: detail.evidence.totalDeduction,
+      });
+    }
+  }
+}
+
+function ScoreFormula({ children }: { children: ReactNode }) {
+  return <p className="benchmark-score-formula"><strong>{i18n.t('diagnostics.benchmark.scoreFormula')}:</strong> {children}</p>;
+}
+
+function BenchmarkScoreCard({ score }: { score: BenchmarkScoreV1 }) {
+  const semantic = score.dimensions.semantic;
+  const latency = score.dimensions.latency;
+  const completeness = score.dimensions.completeness;
+  const stability = score.dimensions.stability;
+  const dimensions: Array<{ key: keyof BenchmarkScoreV1['dimensions']; label: string }> = [
+    { key: 'semantic', label: i18n.t('watchReport.score.semantic') },
+    { key: 'latency', label: i18n.t('watchReport.score.latency') },
+    { key: 'completeness', label: i18n.t('watchReport.score.completeness') },
+    { key: 'stability', label: i18n.t('diagnostics.benchmark.scoreStability') },
+  ];
+
+  return (
+    <section className="benchmark-result-score benchmark-result-score-v1" aria-label={i18n.t('diagnostics.benchmark.scoreTitle')}>
+      <div className="benchmark-result-score-total">
+        <span>{i18n.t('diagnostics.benchmark.scoreTitle')}</span>
+        <small>{score.version} · {scoreStatusLabel(score.status)}</small>
+        <strong>{formatScoreValue(score.total)}</strong>
+        <b>{score.grade ?? '—'}</b>
+      </div>
+      <div className="benchmark-result-score-dimensions">
+        {dimensions.map(({ key, label }) => {
+          const dimension = score.dimensions[key];
+          return (
+            <BenchmarkMetric
+              hint={scoreDimensionSummary(score, key)}
+              key={key}
+              label={`${label} · ${dimension.weight}%`}
+              value={formatScoreValue(dimension.score)}
+            />
+          );
+        })}
+      </div>
+      <p>{scoreStatusLabel(score.status)}</p>
+      <div className="benchmark-score-details">
+        <details>
+          <summary>{i18n.t('watchReport.score.semantic')} · {formatScoreValue(semantic.score)}</summary>
+          <ScoreFormula>{semantic.formula}</ScoreFormula>
+          <div className="benchmark-score-evidence-grid">
+            <BenchmarkMetric label="chrF2" value={formatScoreValue(semantic.evidence.referenceAverage)} />
+            <BenchmarkMetric label={i18n.t('diagnostics.benchmark.scoreJudgeAverage')} value={formatScoreValue(semantic.evidence.judge.average)} />
+            <BenchmarkMetric label={i18n.t('diagnostics.benchmark.scoreCompletedRuns')} value={semantic.evidence.completedRunIndexes.length} />
+            <BenchmarkMetric label={i18n.t('diagnostics.benchmark.scoreJudgeModel')} value={semantic.evidence.judge.model ?? '—'} />
+            <BenchmarkMetric label="rubricVersion" value={semantic.evidence.judge.rubricVersion ?? '—'} />
+          </div>
+          {semantic.missingEvidence.length ? (
+            <p className="benchmark-score-missing"><strong>{i18n.t('diagnostics.benchmark.scoreMissingEvidence')}:</strong> {semantic.missingEvidence.map(missingEvidenceLabel).join(' · ')}</p>
+          ) : null}
+          {semantic.evidence.referenceByRun.length ? (
+            <ul className="benchmark-score-list">
+              {semantic.evidence.referenceByRun.map(({ runIndex, chrF2 }) => (
+                <li key={`reference-${runIndex}`}>
+                  <span>{i18n.t('diagnostics.benchmark.scoreRun', { run: runIndex + 1 })}: chrF2 {formatScoreValue(chrF2.score)} (P {formatScoreValue(chrF2.precision)}, R {formatScoreValue(chrF2.recall)})</span>
+                  <details className="benchmark-score-chrf-raw">
+                    <summary>chrF2 raw n-gram evidence</summary>
+                    <p className="benchmark-score-formula">{chrF2.normalization}; n = 1–{chrF2.characterNgramOrder}; β = {chrF2.beta}</p>
+                    <div className="benchmark-score-signal-table-wrap">
+                      <table className="benchmark-score-signal-table">
+                        <thead><tr><th>n</th><th>candidate n-grams</th><th>reference n-grams</th><th>matches</th><th>P</th><th>R</th></tr></thead>
+                        <tbody>
+                          {chrF2.orders.map((order) => (
+                            <tr key={order.order}>
+                              <td>{order.order}</td>
+                              <td>{order.candidateNgrams}</td>
+                              <td>{order.referenceNgrams}</td>
+                              <td>{order.matchedNgrams}</td>
+                              <td>{formatScoreValue(order.precision)}</td>
+                              <td>{formatScoreValue(order.recall)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </details>
+                </li>
+              ))}
+            </ul>
+          ) : null}
+          {semantic.evidence.judge.runs.length ? (
+            <ul className="benchmark-score-list">
+              {semantic.evidence.judge.runs.map((run) => (
+                <li key={`judge-${run.runIndex}`}>
+                  <strong>{i18n.t('diagnostics.benchmark.scoreRun', { run: run.runIndex + 1 })}: {formatScoreValue(run.score)}</strong>
+                  <span>{` ${i18n.t('diagnostics.benchmark.scoreSubscores')}: ${i18n.t('diagnostics.benchmark.scoreAdequacy')} ${formatScoreValue(run.subscores.adequacy)}, ${i18n.t('diagnostics.benchmark.scoreFactsTerminology')} ${formatScoreValue(run.subscores.factsTerminology)}, ${i18n.t('diagnostics.benchmark.scoreOmissionsAdditions')} ${formatScoreValue(run.subscores.omissionsAdditions)}, ${i18n.t('diagnostics.benchmark.scoreFluency')} ${formatScoreValue(run.subscores.fluency)}`}</span>
+                  {run.rationale ? <span className="benchmark-score-rationale">{run.rationale}</span> : null}
+                  {run.criticalErrors.map((error, index) => (
+                    <span className="benchmark-score-critical-error" key={`${error.category}-${index}`}>{error.category}: {error.description}{error.sourceEvidence ? ` [${error.sourceEvidence}]` : ''}{error.candidateEvidence ? ` → ${error.candidateEvidence}` : ''}</span>
+                  ))}
+                </li>
+              ))}
+            </ul>
+          ) : null}
+        </details>
+        <details>
+          <summary>{i18n.t('watchReport.score.latency')} · {formatScoreValue(latency.score)}</summary>
+          <ScoreFormula>{latency.formula}</ScoreFormula>
+          {latency.missingEvidence.length ? <p className="benchmark-score-missing"><strong>{i18n.t('diagnostics.benchmark.scoreMissingEvidence')}:</strong> {latency.missingEvidence.map(missingEvidenceLabel).join(' · ')}</p> : null}
+          <div className="benchmark-score-signal-table-wrap">
+            <table className="benchmark-score-signal-table">
+              <thead><tr><th>{i18n.t('diagnostics.benchmark.scoreRun')}</th><th>{i18n.t('diagnostics.benchmark.scoreSignal')}</th><th>{i18n.t('diagnostics.benchmark.scoreObserved')}</th><th>{i18n.t('diagnostics.benchmark.scoreThreshold')}</th><th>{i18n.t('diagnostics.benchmark.scoreContribution')}</th></tr></thead>
+              <tbody>
+                {latency.evidence.signals.map((signal) => (
+                  <tr key={`${signal.runIndex}-${signal.signal}`}>
+                    <td>{signal.runIndex + 1}</td>
+                    <td>{signal.signal === 'firstToken' ? i18n.t('diagnostics.benchmark.scoreFirstToken') : i18n.t('diagnostics.benchmark.scoreFirstCommitted')}</td>
+                    <td>{signal.latencyMs == null ? '—' : `${signal.latencyMs.toFixed(1)}ms`}</td>
+                    <td>≤{signal.threshold.good}ms = 100; ≥{signal.threshold.bad}ms = 0</td>
+                    <td>{formatScoreValue(signal.score)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </details>
+        <details>
+          <summary>{i18n.t('watchReport.score.completeness')} · {formatScoreValue(completeness.score)}</summary>
+          <ScoreFormula>{completeness.formula}</ScoreFormula>
+          <p>{i18n.t('diagnostics.benchmark.scoreCompletenessSummary', { completed: completeness.evidence.completedRuns, declared: completeness.evidence.declaredRuns })}</p>
+          {completeness.evidence.incompleteRuns.length ? (
+            <ul className="benchmark-score-list">
+              {completeness.evidence.incompleteRuns.map((run) => <li key={`incomplete-${run.runIndex}`}>{i18n.t('diagnostics.benchmark.scoreRun', { run: run.runIndex + 1 })}: {run.missing.map(missingEvidenceLabel).join(', ')}</li>)}
+            </ul>
+          ) : null}
+        </details>
+        <details>
+          <summary>{i18n.t('diagnostics.benchmark.scoreStability')} · {formatScoreValue(stability.score)}</summary>
+          <ScoreFormula>{stability.formula}</ScoreFormula>
+          <p>{i18n.t('diagnostics.benchmark.scoreStabilitySummary', { successful: stability.evidence.successfulRuns, declared: stability.evidence.declaredRuns, deduction: stability.evidence.totalDeduction })}</p>
+          {stability.evidence.deductions.length ? (
+            <ul className="benchmark-score-list">
+              {stability.evidence.deductions.map((deduction) => <li key={`${deduction.runIndex}-${deduction.responseOrdinal}`}>{i18n.t('diagnostics.benchmark.scoreRun', { run: deduction.runIndex + 1 })}: {i18n.t('diagnostics.benchmark.scoreExtraResponse', { response: deduction.responseOrdinal, deduction: deduction.amount })}</li>)}
+            </ul>
+          ) : <p className="benchmark-score-no-deductions">{i18n.t('diagnostics.benchmark.scoreNoDeductions')}</p>}
+        </details>
+      </div>
+    </section>
+  );
+}
+
 export function BenchmarkReportDetail({
   report,
   semanticJudgeModels = [],
@@ -188,6 +422,8 @@ export function BenchmarkReportDetail({
   semanticJudgeRunning = false,
   semanticJudgeError = null,
   semanticJudgeResult = null,
+  benchmarkState,
+  score,
   onSemanticJudgeModelChange,
   onRunSemanticJudge,
 }: {
@@ -197,12 +433,27 @@ export function BenchmarkReportDetail({
   semanticJudgeRunning?: boolean;
   semanticJudgeError?: string | null;
   semanticJudgeResult?: BenchmarkSemanticJudgeResult | null;
+  benchmarkState?: BenchmarkRunState;
+  score?: BenchmarkScoreV1;
   onSemanticJudgeModelChange?: (modelId: string) => void;
   onRunSemanticJudge?: () => void;
 }) {
+  const benchmarkScore = score ?? scoreBenchmarkReport(report, {
+    benchmarkState,
+    judgeError: semanticJudgeError,
+    judgeState: semanticJudgeRunning ? 'running' : semanticJudgeError ? 'failed' : semanticJudgeResult ? 'completed' : 'idle',
+    semanticJudge: semanticJudgeResult,
+    sourceText: resolveBenchmarkSourceText(report.audioFile),
+    referenceTranslation: resolveBenchmarkReferenceTranslation(report.audioFile),
+  });
   const run = report.runs[0];
   if (!run) {
-    return <div className="benchmark-empty">{i18n.t('diagnostics.benchmark.waitingFirstData')}</div>;
+    return (
+      <div className="benchmark-detail">
+        <BenchmarkScoreCard score={benchmarkScore} />
+        <div className="benchmark-empty">{i18n.t('diagnostics.benchmark.waitingFirstData')}</div>
+      </div>
+    );
   }
 
   const fmt = (value: number | null | undefined, unit = 'ms') => (value == null ? 'N/A' : `${value.toFixed(1)}${unit}`);
@@ -246,31 +497,9 @@ export function BenchmarkReportDetail({
   const latestAsrDeltas = run.asrDeltas
     .map((delta, index) => ({ delta, index }))
     .reverse();
-  const benchmarkScore = scoreBenchmarkReport(report, {
-    llmSemanticScore: semanticJudgeResult?.score ?? null,
-    referenceTranslation: resolveBenchmarkReferenceTranslation(report.audioFile),
-  });
-
   return (
     <div className="benchmark-detail">
-      <section className="benchmark-result-score" aria-label={i18n.t('watchReport.score.title')}>
-        <div className="benchmark-result-score-total">
-          <span>{i18n.t('watchReport.score.title')}</span>
-          <strong>{benchmarkScore.total}</strong>
-          <b>{benchmarkScore.grade}</b>
-        </div>
-        <div className="benchmark-result-score-dimensions">
-          <BenchmarkMetric label={i18n.t('watchReport.score.semantic')} value={benchmarkScore.dimensions.semantic ?? '—'} />
-          <BenchmarkMetric label={i18n.t('watchReport.score.latency')} value={benchmarkScore.dimensions.latency} />
-          <BenchmarkMetric label={i18n.t('watchReport.score.completeness')} value={benchmarkScore.dimensions.completeness} />
-          <BenchmarkMetric label={i18n.t('watchReport.score.reliability')} value={benchmarkScore.dimensions.reliability} />
-        </div>
-        <p>{benchmarkScore.semanticEvidence === 'llm-judge'
-          ? i18n.t('watchReport.score.llmEnabled')
-          : benchmarkScore.semanticEvidence === 'reference-proxy'
-            ? i18n.t('watchReport.score.semanticProxy')
-            : i18n.t('watchReport.score.semanticUnavailable')}</p>
-      </section>
+      <BenchmarkScoreCard score={benchmarkScore} />
       {onSemanticJudgeModelChange && onRunSemanticJudge ? (
         <section className="benchmark-semantic-judge">
           <label>
@@ -284,7 +513,7 @@ export function BenchmarkReportDetail({
             {semanticJudgeRunning ? i18n.t('runtime.benchmark.semanticJudgeRunning') : i18n.t('runtime.benchmark.semanticJudgeRun')}
           </button>
           {semanticJudgeError ? <p className="benchmark-warning" role="alert">{semanticJudgeError}</p> : null}
-          {semanticJudgeResult ? <p className="benchmark-semantic-judge-result">{i18n.t('runtime.benchmark.semanticJudgeResult', { model: semanticJudgeResult.model, score: semanticJudgeResult.score })}{semanticJudgeResult.rationale ? `：${semanticJudgeResult.rationale}` : ''}</p> : null}
+          {semanticJudgeResult ? <p className="benchmark-semantic-judge-result">{i18n.t('runtime.benchmark.semanticJudgeResult', { model: semanticJudgeResult.model, score: semanticJudgeResult.score, count: semanticJudgeResult.runs.length })}</p> : null}
         </section>
       ) : null}
       {(isSparse || responseDoneBeforeFullAudio) ? (
@@ -431,11 +660,15 @@ export function exportJson(data: unknown, filename: string): Promise<ExportArtif
 
 // eslint-disable-next-line react-refresh/only-export-components -- static download facade is shared by the diagnostics screen and export tests.
 export class DiagnosticsReportExporter {
-  static exportBenchmark(report: BenchmarkReport, basename: string, format: 'json' | 'txt') {
+  static exportBenchmark(report: BenchmarkReport, basename: string, format: 'json' | 'txt', score?: BenchmarkScoreV1) {
+    const benchmarkScore = score ?? scoreBenchmarkReport(report, {
+      sourceText: resolveBenchmarkSourceText(report.audioFile),
+      referenceTranslation: resolveBenchmarkReferenceTranslation(report.audioFile),
+    });
     if (format === 'json') {
-      return exportJson(report, `${basename}.json`);
+      return exportJson({ report, benchmarkScore }, `${basename}.json`);
     }
-    return exportFile(formatBenchmarkTxt(report), `${basename}.txt`, 'text/plain');
+    return exportFile(formatBenchmarkTxt(report, benchmarkScore), `${basename}.txt`, 'text/plain');
   }
 
   static exportLiveEvents(events: LiveSessionEvents, basename: string, format: 'json' | 'txt') {
@@ -502,12 +735,39 @@ export function formatLiveEventsTxt(events: LiveSessionEvents): string {
   return lines.join('\n');
 }
 
-export function formatBenchmarkTxt(report: BenchmarkReport): string {
+export function formatBenchmarkTxt(report: BenchmarkReport, score?: BenchmarkScoreV1): string {
   const lines: string[] = [];
   lines.push(`=== Benchmark Report ===`);
   lines.push(`Model: ${report.model}`);
   lines.push(`Audio File: ${report.audioFile}`);
   lines.push(`Audio Duration: ${report.audioDurationSecs.toFixed(1)}s`);
+  const benchmarkScore = score ?? scoreBenchmarkReport(report, {
+    sourceText: resolveBenchmarkSourceText(report.audioFile),
+    referenceTranslation: resolveBenchmarkReferenceTranslation(report.audioFile),
+  });
+  lines.push('');
+  lines.push('--- Public Benchmark Score ---');
+  lines.push(`  Version: ${benchmarkScore.version}`);
+  lines.push(`  Status: ${benchmarkScore.status}`);
+  lines.push(`  Total: ${benchmarkScore.total ?? 'N/A'}${benchmarkScore.grade ? ` (${benchmarkScore.grade})` : ''}`);
+  lines.push(`  Weights: semantic ${benchmarkScore.weights.semantic}%, latency ${benchmarkScore.weights.latency}%, completeness ${benchmarkScore.weights.completeness}%, stability ${benchmarkScore.weights.stability}%`);
+  Object.entries(benchmarkScore.dimensions).forEach(([name, dimension]) => {
+    lines.push(`  ${name}: ${dimension.score ?? 'N/A'} (${dimension.status})`);
+    lines.push(`    Formula: ${dimension.formula}`);
+    if (dimension.missingEvidence.length) lines.push(`    Missing evidence: ${dimension.missingEvidence.join(', ')}`);
+  });
+  if (benchmarkScore.deductions.length) {
+    lines.push('  Stability deductions:');
+    benchmarkScore.deductions.forEach((deduction) => lines.push(`    Run #${deduction.runIndex + 1}, response #${deduction.responseOrdinal}: -${deduction.amount}`));
+  }
+  if (benchmarkScore.judge.model) {
+    lines.push(`  Judge: ${benchmarkScore.judge.model} (${benchmarkScore.judge.rubricVersion ?? 'unknown rubric'})`);
+    benchmarkScore.judge.runs.forEach((run) => {
+      lines.push(`    Run #${run.runIndex + 1}: ${run.score}; adequacy ${run.subscores.adequacy}, facts/terms ${run.subscores.factsTerminology}, omissions/additions ${run.subscores.omissionsAdditions}, fluency ${run.subscores.fluency}`);
+      if (run.rationale) lines.push(`      Rationale: ${run.rationale}`);
+      run.criticalErrors.forEach((error) => lines.push(`      Critical error [${error.category}]: ${error.description}`));
+    });
+  }
   if (report.audioInfo) {
     const ai = report.audioInfo;
     lines.push('');
@@ -550,6 +810,13 @@ export function formatBenchmarkTxt(report: BenchmarkReport): string {
     }
     lines.push('');
   });
+  // Keep the readable report above, then include both source objects intact
+  // so a TXT export is as auditable and reproducible as its JSON sibling.
+  lines.push('--- Raw Benchmark Report JSON ---');
+  lines.push(JSON.stringify(report, null, 2));
+  lines.push('');
+  lines.push('--- BenchmarkScoreV1 JSON ---');
+  lines.push(JSON.stringify(benchmarkScore, null, 2));
   return lines.join('\n');
 }
 

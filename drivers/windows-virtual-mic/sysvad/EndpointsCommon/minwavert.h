@@ -604,6 +604,11 @@ protected:
         return (m_DeviceType == eSpeakerDevice) ? TRUE : FALSE;
     }
 
+    BOOL IsVirtualMicrophoneDevice()
+    {
+        return (m_DeviceType == eMicInDevice) ? TRUE : FALSE;
+    }
+
     BOOL IsOffloadPin(ULONG nPinId);
 
     BOOL IsBridgePin(ULONG nPinId);

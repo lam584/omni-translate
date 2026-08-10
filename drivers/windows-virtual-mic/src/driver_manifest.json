@@ -1,8 +1,11 @@
 {
   "deviceId": "virtual-mic-default",
   "deviceName": "Omni Translate Virtual Speaker",
-  "endpointDirection": "render",
+  "captureDeviceName": "Omni Translate Virtual Microphone",
+  "endpointDirections": ["render", "capture"],
   "base": "SYSVAD-derived development scaffold",
-  "mode": "silent-render-sink",
+  "mode": "isolated-render-capture-bridge",
+  "virtualMicFormat": "48000Hz/mono/pcm16",
+  "bridgeAbiVersion": "0x20260810",
   "version": "0.10.0-dev"
 }

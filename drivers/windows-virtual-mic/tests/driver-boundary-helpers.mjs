@@ -20,6 +20,10 @@ export function readFixture(name) {
   return JSON.parse(fs.readFileSync(path.join(fixturesDir, name), 'utf8'));
 }
 
+export function isVirtualDriverWindowsBuildSupported(windowsBuild, minimumWindowsBuild = 19041) {
+  return Number.isInteger(windowsBuild) && windowsBuild >= minimumWindowsBuild;
+}
+
 // Mirrors CTL_CODE from winioctl.h for METHOD_BUFFERED contracts.
 export const METHOD_BUFFERED = 0;
 export const FILE_READ_DATA = 0x0001;
@@ -150,5 +154,86 @@ export class BridgeRingSimulator {
       DeliveredBytes: this.deliveredBytes,
       DroppedBytes: this.droppedBytes,
     };
+  }
+}
+
+export class VirtualMicRingSimulator {
+  constructor(maxBufferedBytes) {
+    this.maxBufferedBytes = maxBufferedBytes;
+    this.generation = 0;
+    this.active = false;
+    this.owner = null;
+    this.bufferedBytes = 0;
+    this.writtenBytes = 0;
+    this.consumedBytes = 0;
+    this.droppedBytes = 0;
+    this.underrunBytes = 0;
+    this.rejectedWrites = 0;
+  }
+
+  begin(owner, generation) {
+    if (!Number.isSafeInteger(generation) || generation <= 0) throw new Error('invalid generation');
+    if (this.owner !== null && this.owner !== owner) {
+      this.rejectedWrites += 1;
+      return false;
+    }
+    if (generation !== this.generation) {
+      this.generation = generation;
+      this.bufferedBytes = 0;
+      this.writtenBytes = 0;
+      this.consumedBytes = 0;
+      this.droppedBytes = 0;
+      this.underrunBytes = 0;
+      this.rejectedWrites = 0;
+    }
+    this.owner = owner;
+    this.active = true;
+    return true;
+  }
+
+  write(owner, generation, byteCount) {
+    if (
+      !this.active ||
+      this.owner !== owner ||
+      generation !== this.generation ||
+      byteCount <= 0 ||
+      byteCount % 2 !== 0
+    ) {
+      this.rejectedWrites += 1;
+      return false;
+    }
+    this.writtenBytes += byteCount;
+    const retained = Math.min(byteCount, this.maxBufferedBytes);
+    const skipped = byteCount - retained;
+    const overflow = Math.max(0, this.bufferedBytes + retained - this.maxBufferedBytes);
+    this.droppedBytes += skipped + overflow;
+    this.bufferedBytes = this.bufferedBytes + retained - overflow;
+    return true;
+  }
+
+  end(owner, generation) {
+    if (generation !== this.generation || (this.owner !== null && this.owner !== owner)) {
+      this.rejectedWrites += 1;
+      return false;
+    }
+    this.active = false;
+    this.owner = null;
+    return true;
+  }
+
+  close(owner) {
+    if (this.owner !== owner) return false;
+    this.active = false;
+    this.owner = null;
+    return true;
+  }
+
+  capture(byteCount) {
+    const consumed = Math.min(byteCount, this.bufferedBytes);
+    const trackUnderrun = this.active || this.bufferedBytes > 0;
+    this.bufferedBytes -= consumed;
+    this.consumedBytes += consumed;
+    if (trackUnderrun) this.underrunBytes += byteCount - consumed;
+    return consumed;
   }
 }

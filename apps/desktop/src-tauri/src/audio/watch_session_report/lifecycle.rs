@@ -210,36 +210,4 @@ impl WatchSessionReportStore {
         session.push_cue_event(index, event);
     }
 
-    /// Keeps intentionally rejected input in the technical timeline without
-    /// turning it into a user-visible model failure. This is used for local
-    /// translated playback that the manual response gate identifies as echo:
-    /// the provider correctly receives no `response.create`, so the cue is an
-    /// excluded diagnostic sample rather than a missing model response.
-    pub(crate) fn record_source_suppressed(
-        &self,
-        cue_id: &str,
-        route_direction: &str,
-        reason: &str,
-    ) {
-        let mut guard = self.inner.lock().expect("watch session report poisoned");
-        let Some(session) = guard.as_mut() else {
-            return;
-        };
-        let elapsed = session.elapsed_ms();
-        let index = session.ensure_cue(cue_id, route_direction, None);
-        let event = session.event(
-            "source",
-            "echo-suppressed",
-            elapsed,
-            "",
-            Some(format!("reason={reason}")),
-            true,
-            false,
-            None,
-            None,
-            None,
-        );
-        session.push_cue_event(index, event);
-    }
-
 }

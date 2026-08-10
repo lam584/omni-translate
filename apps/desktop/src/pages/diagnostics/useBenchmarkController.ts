@@ -2,11 +2,21 @@ import { useEffect, useMemo, useState } from 'react';
 import i18n from '../../i18n/config';
 import { runModelBenchmark, type BenchmarkProgressEvent, type BenchmarkReport } from '../../runtime/benchmark-runtime';
 import { readProviderSecret } from '../../runtime/provider-runtime';
+import { createLogger } from '../../runtime/logger';
 import type { ProviderDraft, RealtimeAudioMode } from '../../schema/config';
 import type { ProviderInteractionCapability } from '../../schema/provider-contract';
 import { describeUnknownError } from '../../utils/describe-unknown-error';
 import { ALL_BENCHMARK_AUDIO_PRESETS, CUSTOM_AUDIO_VALUE, DEFAULT_BENCHMARK_AUDIO_PATH } from './benchmark-audio-fixtures';
 import { createEmptyBenchmarkReport } from './diagnosticsOverview';
+
+const benchmarkLogger = createLogger('runtime');
+
+function recordLifecyclePersistenceFailure(stage: string, error: unknown): void {
+  benchmarkLogger.warn(
+    'benchmark history lifecycle persistence failed',
+    `stage=${stage} error=${describeUnknownError(error)}`,
+  );
+}
 
 export type BenchmarkVoiceModel = {
   modelId: string;
@@ -23,6 +33,18 @@ export type BenchmarkVoiceModel = {
 };
 
 type BenchmarkProgressView = Pick<BenchmarkProgressEvent, 'status' | 'phase' | 'message' | 'audioChunksSent' | 'totalAudioChunks' | 'error'>;
+
+export type BenchmarkRunLifecycleEvent = {
+  runId: string;
+  report: BenchmarkReport;
+  error?: string | null;
+};
+
+export type BenchmarkRunLifecycle = {
+  onStarted?: (event: BenchmarkRunLifecycleEvent) => Promise<void> | void;
+  onCompleted?: (event: BenchmarkRunLifecycleEvent) => Promise<void> | void;
+  onFailed?: (event: BenchmarkRunLifecycleEvent) => Promise<void> | void;
+};
 
 export function classifyBenchmarkError(error: unknown) {
   const detail = describeUnknownError(error);
@@ -43,7 +65,10 @@ export function classifyBenchmarkError(error: unknown) {
   return `${guidance}\n${chinese ? '技术详情' : 'Technical details'}：${detail}`;
 }
 
-export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[]) {
+export function useBenchmarkController(
+  voiceModelOptions: BenchmarkVoiceModel[],
+  lifecycle: BenchmarkRunLifecycle = {},
+) {
   const [modelId, setModelId] = useState('');
   const [audioSource, setAudioSource] = useState<string>(DEFAULT_BENCHMARK_AUDIO_PATH);
   const [customPath, setCustomPath] = useState('');
@@ -78,17 +103,32 @@ export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[])
     setRunning(true);
     setError(null);
     setProgress({ status: 'running', phase: 'starting', message: i18n.t('diagnostics.benchmark.preparing'), audioChunksSent: 0, totalAudioChunks: 0, error: null });
+    const runId = `benchmark-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    // Establish the durable run identity before reading credentials or opening
+    // a provider connection. A missing key or another preflight failure is a
+    // real benchmark attempt and must remain visible in history.
+    const initialReport = createEmptyBenchmarkReport(
+      selected.apiModelId,
+      mp3Path,
+      selected.interactionCapabilities,
+      selected.realtimeAudioMode,
+    );
+    let latestReport: BenchmarkReport | null = initialReport;
+    setReport(initialReport);
+    setModalOpen(true);
     try {
+      // History persistence must never prevent a live benchmark from running.
+      // Await the initial write so terminal updates can target the same record.
+      try {
+        await lifecycle.onStarted?.({ runId, report: initialReport });
+      } catch (persistenceError) {
+        // The result still remains exportable from the in-memory modal.
+        recordLifecyclePersistenceFailure('started', persistenceError);
+      }
       const secretPayload = await readProviderSecret(selected.authReference);
       if (!secretPayload.secret) throw new Error(i18n.t('diagnostics.benchmark.missingApiKey', { model: selected.displayName }));
-      setReport(createEmptyBenchmarkReport(
-        selected.apiModelId,
-        mp3Path,
-        selected.interactionCapabilities,
-        selected.realtimeAudioMode,
-      ));
-      setModalOpen(true);
       const nextReport = await runModelBenchmark(selected.apiModelId, secretPayload.secret, mp3Path, {
+        runId,
         realtimeAudioMode: selected.realtimeAudioMode,
         interactionCapabilities: selected.interactionCapabilities,
         providerKind: selected.providerKind,
@@ -97,16 +137,33 @@ export function useBenchmarkController(voiceModelOptions: BenchmarkVoiceModel[])
         authScheme: selected.authScheme,
         provider: selected.provider,
         onProgress: (event) => {
+          latestReport = event.report;
           setReport(event.report);
           setProgress({ status: event.status, phase: event.phase, message: event.message, audioChunksSent: event.audioChunksSent, totalAudioChunks: event.totalAudioChunks, error: event.error });
         },
       });
+      latestReport = nextReport;
       setReport(nextReport);
       setProgress((current) => ({ status: 'completed', phase: 'completed', message: current!.message || i18n.t('diagnostics.benchmark.completed'), audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: null }));
+      try {
+        await lifecycle.onCompleted?.({ runId, report: nextReport });
+      } catch (persistenceError) {
+        // A persistence failure is not a benchmark failure.
+        recordLifecyclePersistenceFailure('completed', persistenceError);
+      }
     } catch (caught) {
       const message = classifyBenchmarkError(caught);
       setError(message);
       setProgress((current) => ({ status: 'error', phase: current!.phase, message, audioChunksSent: current!.audioChunksSent, totalAudioChunks: current!.totalAudioChunks, error: message }));
+      if (latestReport) {
+        try {
+          await lifecycle.onFailed?.({ runId, report: latestReport, error: message });
+        } catch (persistenceError) {
+          // Preserve the original benchmark error rather than replacing it
+          // with a secondary history persistence failure.
+          recordLifecyclePersistenceFailure('failed', persistenceError);
+        }
+      }
     } finally {
       setRunning(false);
     }

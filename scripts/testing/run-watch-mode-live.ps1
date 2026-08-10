@@ -9,10 +9,11 @@ param(
   [int]$PostPlaybackWaitSeconds = 120,
   [ValidateRange(1, 100)]
   [int]$SessionReadyTimeoutSeconds = 90,
-  # The committed benchmark fixtures are roughly two minutes long. Leave time
-  # for full playback plus route teardown and the atomic report write.
-  [ValidateRange(1, 300)]
-  [int]$WatchAutoStopAfterSeconds = 180,
+  # Stable-route evidence must exercise every model/route pair for at least
+  # 30 minutes. Keep the direct runner aligned with the matrix contract so a
+  # short run cannot later be mistaken for release evidence.
+  [ValidateRange(1800, 7200)]
+  [int]$WatchAutoStopAfterSeconds = 1800,
   [switch]$SkipDesktopLaunch,
   [switch]$SkipDriverRepair,
   [switch]$AllowDriverRepair,
@@ -27,12 +28,19 @@ param(
   [string]$SubtitleTranslationModelId = "template-dashscope-realtime::qwen3.6-flash-2026-04-16",
   [string]$InboundSecondaryAudioModelId = "template-dashscope-realtime::qwen3.5-omni-plus-realtime",
   [string]$PhysicalPlaybackDeviceId = "default",
-  [ValidateSet("virtual-driver", "echo-cancel")]
+  [ValidateSet("default-speaker", "usb", "bluetooth")]
+  [string]$PhysicalPlaybackDeviceClass = "default-speaker",
+  [string]$PhysicalPlaybackDeviceProfileId = "default-speaker",
+  [ValidateSet("process-exclusion", "virtual-driver", "echo-cancel")]
   [string]$FeedbackLoopPrevention = "virtual-driver",
   [string]$ExpectedPhysicalPlaybackDeviceName = ""
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($PhysicalPlaybackDeviceProfileId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+  throw "PhysicalPlaybackDeviceProfileId must contain only letters, digits, '.', '_', or '-'."
+}
 
 # Production Tauri builds always write diagnostics under LocalAppData; the
 # workspace diagnostics root is a debug-only convention. The live runner now
@@ -71,8 +79,8 @@ if (-not $PSBoundParameters.ContainsKey("FixtureRoot") -and $env:OMNI_WATCH_MODE
   $FixtureRoot = $env:OMNI_WATCH_MODE_LIVE_FIXTURE_ROOT
 }
 if (-not $PSBoundParameters.ContainsKey("FeedbackLoopPrevention") -and $env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION) {
-  if ($env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION -notin @("virtual-driver", "echo-cancel")) {
-    throw "OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION must be 'virtual-driver' or 'echo-cancel'; got '$($env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION)'."
+  if ($env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION -notin @("process-exclusion", "virtual-driver", "echo-cancel")) {
+    throw "OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION must be 'process-exclusion', 'virtual-driver', or 'echo-cancel'; got '$($env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION)'."
   }
   $FeedbackLoopPrevention = $env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION
 }
@@ -81,13 +89,14 @@ function New-WatchModeOutputDirectory {
   param([string]$Root)
   $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
   $modelSuffix = if ($WatchModelId) { "-$($WatchModelId -replace '[^A-Za-z0-9_.-]', '_')" } else { "" }
-  $feedbackSuffix = if ($FeedbackLoopPrevention -eq "echo-cancel") { "-echo-cancel" } else { "" }
+  $feedbackSuffix = if ($FeedbackLoopPrevention -eq "virtual-driver") { "" } else { "-$FeedbackLoopPrevention" }
+  $deviceSuffix = "-$($PhysicalPlaybackDeviceProfileId -replace '[^A-Za-z0-9_.-]', '_')"
   $resolvedRoot = if ([System.IO.Path]::IsPathRooted($Root)) {
     [System.IO.Path]::GetFullPath($Root)
   } else {
     Join-Path (Resolve-Path ".").Path $Root
   }
-  $target = Join-Path $resolvedRoot "$timestamp$modelSuffix$feedbackSuffix"
+  $target = Join-Path $resolvedRoot "$timestamp$modelSuffix$feedbackSuffix$deviceSuffix"
   New-Item -ItemType Directory -Force -Path $target | Out-Null
   return $target
 }
@@ -184,6 +193,16 @@ function Wait-WatchSessionReportAndDesktopExit {
   } while ([DateTime]::UtcNow -lt $DeadlineUtc)
 
   throw "timed out waiting for same-process Watch report and desktop exit. ProcessId=$ProcessId ReportReady=$reportReady DeadlineUtc=$($DeadlineUtc.ToString('o')) Path=$Path"
+}
+
+function Get-WatchSessionReportDeadlineUtc {
+  param(
+    [Parameter(Mandatory = $true)][DateTime]$LaunchedAtUtc,
+    [Parameter(Mandatory = $true)][int]$ReadyTimeoutSeconds,
+    [Parameter(Mandatory = $true)][int]$AutoStopAfterSeconds,
+    [int]$CompletionGraceSeconds = 120
+  )
+  return $LaunchedAtUtc.AddSeconds($ReadyTimeoutSeconds + $AutoStopAfterSeconds + $CompletionGraceSeconds)
 }
 
 function Set-Utf8NoBomContent {
@@ -294,6 +313,130 @@ function Convert-ComObjectToInterface {
 function Get-DefaultRenderEndpointId {
   Add-CoreAudioPolicyConfig
   return [OmniTranslate.AudioEndpointSwitcher]::GetDefaultRenderEndpointId()
+}
+
+function Get-PhysicalPlaybackDeviceClassFromSignals {
+  param([string[]]$Signals)
+  $classificationText = (@($Signals) | Where-Object { $_ } | ForEach-Object { [string]$_ }) -join " "
+  if ($classificationText -match '(?i)bluetooth|\bbth(?:enum|hf|a2dp)?\b|a2dp|hands[ -]?free') {
+    return "bluetooth"
+  }
+  if ($classificationText -match '(?i)\busb\b|usb[\\#_-]|vid_[0-9a-f]{4}') {
+    return "usb"
+  }
+  if ($classificationText.Trim()) {
+    return "default-speaker"
+  }
+  return $null
+}
+
+function Get-RenderEndpointRegistryIdentity {
+  param([string]$RequestedDeviceId)
+  $resolvedDeviceId = if (-not $RequestedDeviceId -or $RequestedDeviceId -eq "default") {
+    Get-DefaultRenderEndpointId
+  } else {
+    $RequestedDeviceId
+  }
+  if (-not $resolvedDeviceId) {
+    throw "Windows did not resolve a physical render endpoint id for '$RequestedDeviceId'."
+  }
+  $registryPath = "Registry::HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows\CurrentVersion\MMDevices\Audio\Render\$resolvedDeviceId\Properties"
+  if (-not (Test-Path -LiteralPath $registryPath -PathType Container)) {
+    throw "physical render endpoint '$resolvedDeviceId' has no Windows MMDevice registry evidence"
+  }
+  $properties = Get-ItemProperty -LiteralPath $registryPath
+  $friendlyName = [string]$properties.'{a45c254e-df1c-4efd-8020-67d146a850e0},14'
+  if (-not $friendlyName.Trim()) {
+    throw "physical render endpoint '$resolvedDeviceId' has no Windows MMDevice friendly name"
+  }
+  $signals = @($resolvedDeviceId, $friendlyName)
+  foreach ($property in $properties.PSObject.Properties) {
+    if ($property.Name -like 'PS*' -or $null -eq $property.Value) { continue }
+    if ($property.Value -is [string]) {
+      $signals += [string]$property.Value
+    } elseif ($property.Value -is [string[]]) {
+      $signals += @($property.Value)
+    }
+  }
+  return [pscustomobject]@{
+    resolvedDeviceId = $resolvedDeviceId
+    resolvedDeviceName = $friendlyName.Trim()
+    classificationSignals = @($signals | Where-Object { $_ } | Select-Object -Unique -First 32)
+  }
+}
+
+function New-PhysicalPlaybackDeviceEvidence {
+  param(
+    [string]$ProfileId,
+    [string]$ExpectedDeviceClass,
+    [string]$RequestedDeviceId,
+    [string]$ResolvedDeviceId,
+    [string]$ResolvedDeviceName,
+    [string[]]$ClassificationSignals,
+    [string]$RouteEvidenceSource,
+    [bool]$FixtureOnly = $false
+  )
+  $inferredClass = Get-PhysicalPlaybackDeviceClassFromSignals @(
+    $ResolvedDeviceId,
+    $ResolvedDeviceName,
+    $ClassificationSignals
+  )
+  if ($inferredClass -ne $ExpectedDeviceClass) {
+    throw "physical endpoint class mismatch: profile=$ProfileId expected=$ExpectedDeviceClass inferred=$inferredClass id=$ResolvedDeviceId name=$ResolvedDeviceName"
+  }
+  return [pscustomobject]@{
+    profileId = $ProfileId
+    deviceClass = $ExpectedDeviceClass
+    requestedDeviceId = $RequestedDeviceId
+    resolvedDeviceId = $ResolvedDeviceId
+    resolvedDeviceName = $ResolvedDeviceName
+    classificationSignals = @($ClassificationSignals)
+    classificationSource = "windows-mmdevice-registry"
+    routeEvidenceSource = $RouteEvidenceSource
+    verified = -not $FixtureOnly
+    fixtureOnly = $FixtureOnly
+  }
+}
+
+function Resolve-PhysicalPlaybackDeviceEvidence {
+  param($PhysicalOutputProbe)
+  $probeResult = if ($PhysicalOutputProbe -and $PhysicalOutputProbe.ok) {
+    $PhysicalOutputProbe.result
+  } else {
+    $null
+  }
+  if ($FeedbackLoopPrevention -ne "echo-cancel") {
+    if (-not $probeResult -or $probeResult.skipped -or -not $probeResult.passed) {
+      throw "the $FeedbackLoopPrevention route has no passed physical-output endpoint probe"
+    }
+  }
+  $probeResolvedId = if ($probeResult) { [string]$probeResult.resolvedPhysicalPlaybackDeviceId } else { "" }
+  $identity = Get-RenderEndpointRegistryIdentity $(
+    if ($probeResolvedId) { $probeResolvedId } else { $PhysicalPlaybackDeviceId }
+  )
+  $probeResolvedName = if ($probeResult) { [string]$probeResult.resolvedPhysicalPlaybackDeviceName } else { "" }
+  if ($ExpectedPhysicalPlaybackDeviceName) {
+    $nameMatches = $identity.resolvedDeviceName -like "*$ExpectedPhysicalPlaybackDeviceName*" -or
+      ($probeResolvedName -and $probeResolvedName -like "*$ExpectedPhysicalPlaybackDeviceName*")
+    if (-not $nameMatches) {
+      throw "resolved endpoint '$($identity.resolvedDeviceName)' does not match expected device name '$ExpectedPhysicalPlaybackDeviceName'"
+    }
+  }
+  $signals = @($identity.classificationSignals)
+  if ($probeResolvedName) { $signals += $probeResolvedName }
+  $routeEvidenceSource = if ($FeedbackLoopPrevention -eq "echo-cancel") {
+    "desktop-runtime-route+windows-mmdevice"
+  } else {
+    "physical-output-probe+runtime-route"
+  }
+  return New-PhysicalPlaybackDeviceEvidence `
+    -ProfileId $PhysicalPlaybackDeviceProfileId `
+    -ExpectedDeviceClass $PhysicalPlaybackDeviceClass `
+    -RequestedDeviceId $PhysicalPlaybackDeviceId `
+    -ResolvedDeviceId $identity.resolvedDeviceId `
+    -ResolvedDeviceName $identity.resolvedDeviceName `
+    -ClassificationSignals $signals `
+    -RouteEvidenceSource $routeEvidenceSource
 }
 
 function Set-DefaultRenderEndpoint {
@@ -411,6 +554,11 @@ function Get-PhysicalOutputContentSkipReason {
     return "SkipPhysicalOutputContentStt was provided"
   }
   return $null
+}
+
+function Test-UsesVirtualDriverBackend {
+  param([string]$FeedbackMode)
+  return $FeedbackMode -eq "virtual-driver"
 }
 
 function Convert-DriverProbeToJsonFile {
@@ -589,11 +737,7 @@ function Set-WatchModeSecondaryConfig {
     $Config.speech.textToSpeechModelId = $SecondaryAudioModelId
   }
   $Config.devices.outputSpeechEnabled = $true
-  if ($FeedbackMode -eq "echo-cancel") {
-    $Config.devices.feedbackLoopPrevention = "echo-cancel"
-  } else {
-    $Config.devices.feedbackLoopPrevention = "virtual-driver"
-  }
+  $Config.devices.feedbackLoopPrevention = $FeedbackMode
   $mixControl.keepOriginalAudio = $true
   $mixControl.translatedAudioEnabled = $true
   $mixControl.originalAudioGainDb = 0
@@ -970,6 +1114,108 @@ function Stop-DesktopFrontendServer {
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
 }
 
+function Start-WatchModeSystemMetricsSampler {
+  param(
+    [Parameter(Mandatory = $true)][int]$ProcessId,
+    [Parameter(Mandatory = $true)][string]$OutputDirectory
+  )
+  $collectorPath = Join-Path $workspaceRoot "scripts/testing/collect-watch-mode-system-metrics.ps1"
+  $metricsPath = Join-Path $OutputDirectory "system-metrics.json"
+  $stdoutPath = Join-Path $OutputDirectory "system-metrics.stdout.log"
+  $stderrPath = Join-Path $OutputDirectory "system-metrics.stderr.log"
+  Remove-Item -LiteralPath $metricsPath -Force -ErrorAction SilentlyContinue
+  $process = Start-Process -FilePath "powershell.exe" `
+    -ArgumentList @(
+      '-NoProfile',
+      '-ExecutionPolicy', 'Bypass',
+      '-File', "`"$collectorPath`"",
+      '-RootProcessId', "$ProcessId",
+      '-OutputPath', "`"$metricsPath`"",
+      '-SampleIntervalMs', '1000'
+    ) `
+    -WorkingDirectory $workspaceRoot `
+    -RedirectStandardOutput $stdoutPath `
+    -RedirectStandardError $stderrPath `
+    -WindowStyle Hidden `
+    -PassThru
+  $script:systemMetricsSamplerProcess = $process
+  return [pscustomobject]@{
+    pid = $process.Id
+    rootProcessId = $ProcessId
+    outputPath = $metricsPath
+    stdout = $stdoutPath
+    stderr = $stderrPath
+    sampleIntervalMs = 1000
+  }
+}
+
+function Complete-WatchModeSystemMetricsSampler {
+  param($Sampler)
+  if (-not $Sampler -or -not $Sampler.pid) {
+    throw "system metrics sampler was not started"
+  }
+  $process = $script:systemMetricsSamplerProcess
+  if ($process -and -not $process.HasExited) {
+    Wait-Process -Id $process.Id -Timeout 15 -ErrorAction SilentlyContinue
+    $process.Refresh()
+  }
+  if ($process -and -not $process.HasExited) {
+    throw "system metrics sampler did not exit after desktop process $($Sampler.rootProcessId) exited"
+  }
+  if (-not (Test-Path -LiteralPath $Sampler.outputPath -PathType Leaf)) {
+    $collectorError = if (Test-Path -LiteralPath $Sampler.stderr -PathType Leaf) {
+      Get-Content -LiteralPath $Sampler.stderr -Raw -Encoding UTF8
+    } else { '' }
+    throw "system metrics sampler did not write $($Sampler.outputPath): $collectorError"
+  }
+  $metrics = Get-Content -LiteralPath $Sampler.outputPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if (
+    $metrics.artifactKind -ne 'watch-mode-system-metrics' -or
+    $metrics.completionReason -ne 'root-process-exited' -or
+    [int]$metrics.sampleCount -le 0 -or
+    @($metrics.collectionErrors).Count -gt 0
+  ) {
+    throw (
+      "system metrics sampler emitted unusable evidence: " +
+      "completionReason=$($metrics.completionReason) sampleCount=$($metrics.sampleCount) " +
+      "errors=$(@($metrics.collectionErrors) -join '; ')"
+    )
+  }
+  return [pscustomobject]@{
+    outputPath = $Sampler.outputPath
+    sampleCount = [int]$metrics.sampleCount
+    startedAt = $metrics.startedAt
+    finishedAt = $metrics.finishedAt
+    completionReason = $metrics.completionReason
+  }
+}
+
+function Stop-WatchModeSystemMetricsSampler {
+  $process = $script:systemMetricsSamplerProcess
+  if ($process -and -not $process.HasExited) {
+    Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+  }
+  $script:systemMetricsSamplerProcess = $null
+}
+
+function Get-WatchModeLiveScenarioEnvironment {
+  param(
+    [Parameter(Mandatory = $true)]
+    [ValidateSet('virtual-driver', 'process-exclusion', 'echo-cancel')]
+    [string]$FeedbackMode,
+    [Parameter(Mandatory = $true)]
+    [ValidateRange(1800000, 7200000)]
+    [int64]$AutoStopAfterMs
+  )
+  return [pscustomobject]@{
+    autoStopAfterMs = "$AutoStopAfterMs"
+    processExclusionRestartAfterMs = if ($FeedbackMode -eq 'process-exclusion') {
+      "$([Math]::Floor($AutoStopAfterMs / 2))"
+    } else { $null }
+    aecLiveScenario = if ($FeedbackMode -eq 'echo-cancel') { '1' } else { $null }
+  }
+}
+
 function Start-WatchModeDesktopShell {
   param([string]$OutputDirectory, [string]$RunMarker, [string]$PhysicalDeviceId)
   if ($SkipDesktopLaunch) {
@@ -1009,6 +1255,9 @@ function Start-WatchModeDesktopShell {
   $providerInputPcmPath = Join-Path $OutputDirectory "provider-input-16k-mono.pcm"
   $watchSessionReportPath = Join-Path $OutputDirectory "watch-session-report.json"
   $watchReportAutoStopAfterMs = $WatchAutoStopAfterSeconds * 1000
+  $liveScenarioEnvironment = Get-WatchModeLiveScenarioEnvironment `
+    -FeedbackMode $FeedbackLoopPrevention `
+    -AutoStopAfterMs $watchReportAutoStopAfterMs
   Remove-Item -LiteralPath $watchSessionReportPath -Force -ErrorAction SilentlyContinue
   $previousAutostart = $env:OMNI_WATCH_MODE_AUTOSTART
   $previousRunMarker = $env:OMNI_WATCH_MODE_RUN_MARKER
@@ -1022,6 +1271,8 @@ function Start-WatchModeDesktopShell {
   $previousSubtitleTranslationModelId = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID
   $previousInboundSecondaryAudioModelId = $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID
   $previousFeedbackLoopPrevention = $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION
+  $previousProcessExclusionRestartAfterMs = $env:OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS
+  $previousAecLiveScenario = $env:OMNI_WATCH_MODE_AEC_LIVE_SCENARIO
   $previousAutoStopAfterMs = $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS
   $previousReportPath = $env:OMNI_WATCH_MODE_REPORT_PATH
   $previousExitAfterReport = $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT
@@ -1052,7 +1303,9 @@ function Start-WatchModeDesktopShell {
       $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $InboundSecondaryAudioModelId
     }
     $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $FeedbackLoopPrevention
-    $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = "$watchReportAutoStopAfterMs"
+    $env:OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS = $liveScenarioEnvironment.processExclusionRestartAfterMs
+    $env:OMNI_WATCH_MODE_AEC_LIVE_SCENARIO = $liveScenarioEnvironment.aecLiveScenario
+    $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $liveScenarioEnvironment.autoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $watchSessionReportPath
     $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = "1"
     if ($AllowElevatedDesktopLaunch) {
@@ -1069,6 +1322,8 @@ function Start-WatchModeDesktopShell {
         "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID",
         "OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID",
         "OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION",
+        "OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS",
+        "OMNI_WATCH_MODE_AEC_LIVE_SCENARIO",
         "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS",
         "OMNI_WATCH_MODE_REPORT_PATH",
         "OMNI_WATCH_MODE_EXIT_AFTER_REPORT"
@@ -1111,11 +1366,27 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $previousSubtitleTranslationModelId
     $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $previousInboundSecondaryAudioModelId
     $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $previousFeedbackLoopPrevention
+    $env:OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS = $previousProcessExclusionRestartAfterMs
+    $env:OMNI_WATCH_MODE_AEC_LIVE_SCENARIO = $previousAecLiveScenario
     $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $previousAutoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $previousReportPath
     $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = $previousExitAfterReport
   }
-  Start-Sleep -Seconds $WarmupSeconds
+  $systemMetricsSampler = $null
+  try {
+    $systemMetricsSampler = Start-WatchModeSystemMetricsSampler `
+      -ProcessId ([int]$process.Id) `
+      -OutputDirectory $OutputDirectory
+    Start-Sleep -Seconds $WarmupSeconds
+  } catch {
+    if ($elevatedLaunch) {
+      Stop-ElevatedWatchModeDesktopLaunch $elevatedLaunch | Out-Null
+    } else {
+      Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
+    }
+    Stop-WatchModeSystemMetricsSampler
+    throw
+  }
   return [pscustomobject]@{
     pid = $process.Id
     stdout = $stdout
@@ -1128,6 +1399,7 @@ function Start-WatchModeDesktopShell {
     watchSessionReportPath = $watchSessionReportPath
     watchReportAutoStopAfterMs = $watchReportAutoStopAfterMs
     launchedAtUtc = $desktopLaunchedAtUtc
+    systemMetricsSampler = $systemMetricsSampler
     guardianPid = if ($elevatedLaunch) { $elevatedLaunch.guardianPid } else { $null }
     guardianLeasePath = if ($elevatedLaunch) { $elevatedLaunch.guardianLeasePath } else { $null }
     guardianEnvironmentPath = if ($elevatedLaunch) { $elevatedLaunch.guardianEnvironmentPath } else { $null }
@@ -1276,7 +1548,7 @@ function Invoke-StartWatchModeViaTauriCli {
   }
   $config.speech.translationAudioSource = "subtitle-tts"
   Set-WatchModelOnConfig $config $WatchModelId $WatchRealtimeProtocol
-  Set-WatchModeSecondaryConfig $config $SubtitleTranslationModelId $InboundSecondaryAudioModelId
+  Set-WatchModeSecondaryConfig $config $SubtitleTranslationModelId $InboundSecondaryAudioModelId $FeedbackLoopPrevention
   if ($PhysicalDeviceId) {
     $config.devices.outputDeviceId = $PhysicalDeviceId
     $config.devices.outputLevel = 50
@@ -1574,7 +1846,9 @@ function Start-TestMediaPlayback {
   }
   $injectorExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-watch-media-injector.exe"
   if (Test-Path -LiteralPath $injectorExe -PathType Leaf) {
-    $args = @("--media", (Resolve-Path -LiteralPath $PathToMedia).Path)
+    $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
+    $mediaSha256 = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
+    $args = @("--media", $resolvedMediaPath)
     $referencePcmPath = $null
     if ($OutputDirectory) {
       $referencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
@@ -1586,7 +1860,9 @@ function Start-TestMediaPlayback {
     if ($PlaybackSeconds -gt 0) {
       $args += @("--max-seconds", "$PlaybackSeconds")
     }
+    $playbackStartedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $output = & $injectorExe @args
+    $playbackFinishedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     $exitCode = $LASTEXITCODE
     if ($exitCode -ne 0 -or -not $output) {
       throw "watch media injector failed. ExitCode=$exitCode Output=$output"
@@ -1599,6 +1875,10 @@ function Start-TestMediaPlayback {
       playbackMode = "wasapi-media-injector"
       endpointId = $result.endpointId
       mediaPath = $result.mediaPath
+      mediaSha256 = $mediaSha256
+      injectorProcessId = $result.processId
+      startedAtMs = if ($result.startedAtMs) { $result.startedAtMs } else { $playbackStartedAtMs }
+      finishedAtMs = if ($result.finishedAtMs) { $result.finishedAtMs } else { $playbackFinishedAtMs }
       renderedFrames = $result.renderedFrames
       renderedSeconds = $result.renderedSeconds
       referencePcmPath = $referencePcmPath
@@ -1646,6 +1926,8 @@ namespace OmniTranslate {
   }
   $alias = "omni_watch_test_$PID"
   $resolvedMediaPath = (Resolve-Path -LiteralPath $PathToMedia).Path
+  $mediaSha256 = (Get-FileHash -LiteralPath $resolvedMediaPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $playbackStartedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $durationSeconds = $null
   $volumeWarning = $null
   try {
@@ -1687,6 +1969,10 @@ namespace OmniTranslate {
     playbackMode = "mci-default-endpoint"
     endpointId = $PlaybackEndpointId
     mediaPath = $resolvedMediaPath
+    mediaSha256 = $mediaSha256
+    injectorProcessId = $PID
+    startedAtMs = $playbackStartedAtMs
+    finishedAtMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
     playedSeconds = if ($PlaybackSeconds -gt 0) { $PlaybackSeconds } else { $durationSeconds }
     naturalDurationSeconds = $durationSeconds
     volumeWarning = $volumeWarning
@@ -1753,8 +2039,44 @@ function Read-BridgeSourceFrame {
   }
 }
 
+function New-BridgeSourceProbeInitPayload {
+  param(
+    [string]$FeedbackMode,
+    [string]$SessionId
+  )
+  $sourceCaptureMode = if ($FeedbackMode -eq "process-exclusion") { "process-exclusion" } else { "virtual-driver" }
+  return [ordered]@{
+    type = 'bridge.init'
+    requestId = "watch-mode-probe-init-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+    protocolVersion = '2026-08-10-audio-routing-v6'
+    sessionId = $SessionId
+    installChannel = 'development'
+    targetDeviceId = 'virtual-mic-default'
+    virtualRenderDeviceId = 'virtual-speaker-default'
+    physicalPlaybackDeviceId = 'default'
+    physicalPlaybackLevel = 50
+    monitorPlaybackEnabled = $false
+    translationPlaybackEnabled = $true
+    sourceCaptureMode = $sourceCaptureMode
+    expectedDriverVersion = '0.10.0-dev'
+    expectedBridgeVersion = '0.1.0'
+    mixControl = [ordered]@{
+      keepOriginalAudio = $true
+      translatedAudioEnabled = $true
+      translatedAudioGainDb = 0
+      originalAudioGainDb = 0
+      duckingEnabled = $false
+      duckingDepthPercent = 0
+      monitorMode = 'translated-only'
+    }
+  }
+}
+
 function Invoke-BridgeSourceProbe {
-  param([string]$OutputDirectory)
+  param(
+    [string]$OutputDirectory,
+    [string]$FeedbackMode = "virtual-driver"
+  )
   $bridgeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-bridge-service.exe"
   if (-not (Test-Path -LiteralPath $bridgeExe -PathType Leaf)) {
     throw "Bridge executable not found: $bridgeExe"
@@ -1762,7 +2084,7 @@ function Invoke-BridgeSourceProbe {
   $probeRuntimeRoot = Join-Path $OutputDirectory "bridge-source-probe-runtime"
   New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
   $installStateJson = [ordered]@{
-    protocolVersion = '2026-07-27-smart-gain-v3'
+    protocolVersion = '2026-08-10-audio-routing-v6'
     installChannel = 'development'
     driverVersion = '0.10.0-dev'
     bridgeVersion = '0.1.0'
@@ -1789,31 +2111,13 @@ function Invoke-BridgeSourceProbe {
   try {
     Start-Sleep -Milliseconds 600
     $phase = "init"
-    $init = Write-NamedPipeJsonLine $pipeName ([ordered]@{
-      type = 'bridge.init'
-      requestId = "watch-mode-probe-init-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
-      protocolVersion = '2026-07-27-smart-gain-v3'
-      sessionId = "watch-mode-probe-session-$PID"
-      installChannel = 'development'
-      targetDeviceId = 'virtual-mic-default'
-      virtualRenderDeviceId = 'virtual-speaker-default'
-      physicalPlaybackDeviceId = 'default'
-      physicalPlaybackLevel = 50
-      monitorPlaybackEnabled = $false
-      expectedDriverVersion = '0.10.0-dev'
-      expectedBridgeVersion = '0.1.0'
-      mixControl = [ordered]@{
-        keepOriginalAudio = $true
-        translatedAudioEnabled = $true
-        translatedAudioGainDb = 0
-        originalAudioGainDb = 0
-        duckingEnabled = $false
-        duckingDepthPercent = 0
-        monitorMode = 'translated-only'
-      }
-    })
-    $phase = "source_frame"
-    $frame = Read-BridgeSourceFrame "$pipeName-source"
+    $sessionId = "watch-mode-probe-session-$PID"
+    $initPayload = New-BridgeSourceProbeInitPayload $FeedbackMode $sessionId
+    $init = Write-NamedPipeJsonLine $pipeName $initPayload
+    if (Test-UsesVirtualDriverBackend $FeedbackMode) {
+      $phase = "source_frame"
+      $frame = Read-BridgeSourceFrame "$pipeName-source"
+    }
     $phase = "state_query"
     $state = Write-NamedPipeJsonLine $pipeName ([ordered]@{
       type = 'bridge.state.query'
@@ -1884,14 +2188,18 @@ function Invoke-BridgeSourceProbe {
 }
 
 function Invoke-PhysicalOutputProbe {
-  param([string]$OutputDirectory)
+  param([string]$OutputDirectory, [string]$FeedbackMode)
   $probeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-physical-output-probe.exe"
   $bridgeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-bridge-service.exe"
+  $tonePlayerExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-tone-render-probe.exe"
   if (-not (Test-Path -LiteralPath $probeExe -PathType Leaf)) {
     throw "Physical output probe executable not found: $probeExe"
   }
   if (-not (Test-Path -LiteralPath $bridgeExe -PathType Leaf)) {
     throw "Bridge executable not found: $bridgeExe"
+  }
+  if ($FeedbackMode -eq "process-exclusion" -and -not (Test-Path -LiteralPath $tonePlayerExe -PathType Leaf)) {
+    throw "Tone render probe executable not found: $tonePlayerExe"
   }
   $probeRuntimeRoot = Join-Path $OutputDirectory "physical-output-probe-runtime"
   New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
@@ -1901,12 +2209,19 @@ function Invoke-PhysicalOutputProbe {
   if (($probeDeviceId -eq "default" -or [string]::IsNullOrWhiteSpace($probeDeviceId)) -and $ExpectedPhysicalPlaybackDeviceName) {
     $probeDeviceId = $ExpectedPhysicalPlaybackDeviceName
   }
-  $output = & $probeExe `
-    --bridge-exe $bridgeExe `
-    --runtime-root $probeRuntimeRoot `
-    --physical-playback-device-id $probeDeviceId `
-    --physical-playback-level 50 `
-    2> $stderr
+  $probeArgs = @(
+    "--bridge-exe", $bridgeExe,
+    "--runtime-root", $probeRuntimeRoot,
+    "--physical-playback-device-id", $probeDeviceId,
+    "--physical-playback-level", "50"
+  )
+  if ($FeedbackMode -eq "process-exclusion") {
+    $probeArgs += @(
+      "--tone-player-exe", $tonePlayerExe,
+      "--process-exclusion-fingerprint"
+    )
+  }
+  $output = & $probeExe @probeArgs 2> $stderr
   $exitCode = $LASTEXITCODE
   $text = ($output -join [Environment]::NewLine)
   Set-Utf8NoBomContent $stdout $text
@@ -1918,10 +2233,10 @@ function Invoke-PhysicalOutputProbe {
   } catch {
     throw "physical output probe returned invalid JSON. ExitCode=$exitCode Output=$text"
   }
-  if ($exitCode -ne 0 -or -not $result.passed) {
+  if ($exitCode -ne 0 -or (-not $result.passed -and -not $result.skipped)) {
     throw "physical output probe failed. ExitCode=$exitCode Detail=$($result.detail)"
   }
-  if ($ExpectedPhysicalPlaybackDeviceName) {
+  if ($ExpectedPhysicalPlaybackDeviceName -and -not $result.skipped) {
     $resolvedName = [string]$result.resolvedPhysicalPlaybackDeviceName
     if ($resolvedName -notlike "*$ExpectedPhysicalPlaybackDeviceName*") {
       throw "physical output probe resolved '$resolvedName', expected device name containing '$ExpectedPhysicalPlaybackDeviceName'"
@@ -2427,10 +2742,9 @@ function Build-OmniRealtimeDiagnostic {
   if ($buildExit -ne 0) {
     throw "omni realtime STT diagnostic build failed with exit code $buildExit; see $buildLog and $buildErr"
   }
-  $exe = Join-Path $workspaceRoot "scripts/diagnostics/omni-realtime/target/debug/omni-realtime-diagnostic.exe"
-  if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
-    $exe = Join-Path $workspaceRoot "target/debug/omni-realtime-diagnostic.exe"
-  }
+  # The strict matrix fixes CARGO_TARGET_DIR to the workspace target. Never
+  # prefer a stale standalone-crate target over the just-built current-HEAD binary.
+  $exe = Join-Path $workspaceRoot "target/debug/omni-realtime-diagnostic.exe"
   if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
     throw "omni realtime STT diagnostic executable was not built"
   }
@@ -2921,16 +3235,24 @@ function Build-SnapshotsFile {
   }
   $bridge = [pscustomobject]@{}
   if (Test-Path -LiteralPath $BridgeLogPath -PathType Leaf) {
-    if ($bridgeProbe -and $bridgeProbe.state -and $bridgeProbe.sourceFrame) {
+    if ($bridgeProbe -and $bridgeProbe.state -and ($bridgeProbe.sourceFrame -or $FeedbackLoopPrevention -eq "process-exclusion")) {
       $bridge = [pscustomobject]@{
         probePassed = $bridgeProbe.passed -ne $false
         bridgeState = $bridgeProbe.state.bridgeState
         driverHealth = $bridgeProbe.state.driverHealth
+        sourceCaptureMode = $bridgeProbe.state.sourceCaptureMode
+        captureBackend = $bridgeProbe.state.captureBackend
+        processLoopbackSupported = $bridgeProbe.state.processLoopbackSupported
+        processLoopbackStatus = $bridgeProbe.state.processLoopbackStatus
+        windowsBuildNumber = $bridgeProbe.state.windowsBuildNumber
+        processLoopbackMinimumWindowsBuild = $bridgeProbe.state.processLoopbackMinimumWindowsBuild
+        excludedProcessId = $bridgeProbe.state.excludedProcessId
+        processLoopbackFailureDetail = $bridgeProbe.state.processLoopbackFailureDetail
         sourceSubscriberActive = $bridgeProbe.state.sourceSubscriberActive
         sourceReadCalls = $bridgeProbe.state.sourceReadCalls
         droppedFrameCount = $bridgeProbe.state.droppedFrameCount
         lastErrorCode = $bridgeProbe.state.lastErrorCode
-        sourceFramePayloadBytes = $bridgeProbe.sourceFrame.payloadBytes
+        sourceFramePayloadBytes = if ($bridgeProbe.sourceFrame) { $bridgeProbe.sourceFrame.payloadBytes } else { 0 }
         pipeName = $bridgeProbe.pipeName
         sourcePipeName = $bridgeProbe.sourcePipeName
       }
@@ -2966,6 +3288,12 @@ function Build-SnapshotsFile {
   } else {
     $null
   }
+  $deviceEvidencePath = Join-Path $OutputDirectory "physical-playback-device.json"
+  $deviceEvidence = if (Test-Path -LiteralPath $deviceEvidencePath -PathType Leaf) {
+    Get-Content -LiteralPath $deviceEvidencePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } else {
+    $null
+  }
   $watchSessionReportPath = Join-Path $OutputDirectory "watch-session-report.json"
   $watchSessionReport = if (Test-Path -LiteralPath $watchSessionReportPath -PathType Leaf) {
     Get-Content -LiteralPath $watchSessionReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -2987,6 +3315,7 @@ function Build-SnapshotsFile {
     startedAtLocal = $StartedAtLocal
     modelId = if ($WatchModelId) { $WatchModelId } else { $null }
     feedbackLoopPrevention = $FeedbackLoopPrevention
+    deviceEvidence = $deviceEvidence
     translationRoute = $translationRoute
     driver = $driver
     wasapi = $driver
@@ -3038,6 +3367,9 @@ function Save-WatchModeRunArtifacts {
     [pscustomobject]@{ ok = $false; result = $null; error = "driver probe did not run" }
   }
   $playbackSnapshot = if ($PlaybackStep -and $PlaybackStep.ok) { $PlaybackStep.result } else { $null }
+  if ($playbackSnapshot) {
+    $playbackSnapshot | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $OutputDirectory "playback.json") -Encoding UTF8
+  }
   Build-SnapshotsFile $OutputDirectory $effectiveDriverProbe (Join-Path $OutputDirectory "app.log") (Join-Path $OutputDirectory "bridge-service.log") $RunMarker $StartedAtLocal $playbackSnapshot | Out-Null
   @($Steps) | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $OutputDirectory "steps.json") -Encoding UTF8
   Invoke-ReportGenerator $OutputDirectory "live"
@@ -3052,7 +3384,7 @@ $startedAtLocal = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 if ($DryRun) {
   $injectionVariants = @()
   $defaultConfigPath = Join-Path $workspaceRoot "apps/desktop/src-tauri/defaults/app-config.default.json"
-  foreach ($mode in @("virtual-driver", "echo-cancel")) {
+  foreach ($mode in @("process-exclusion", "virtual-driver", "echo-cancel")) {
     $probeConfig = Get-Content -LiteralPath $defaultConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Set-WatchModelOnConfig $probeConfig $WatchModelId $WatchRealtimeProtocol
     Set-WatchModeSecondaryConfig $probeConfig $SubtitleTranslationModelId $InboundSecondaryAudioModelId $mode
@@ -3072,7 +3404,7 @@ if ($DryRun) {
     selectedFeedbackLoopPrevention = $FeedbackLoopPrevention
     variants = $injectionVariants
   } | ConvertTo-Json -Depth 6 | Set-Content -Path (Join-Path $outputDir "config-injection.json") -Encoding UTF8
-  Write-Host "==> dry-run feedback config injection verified: virtual-driver, echo-cancel (selected=$FeedbackLoopPrevention)"
+  Write-Host "==> dry-run feedback config injection verified: process-exclusion, virtual-driver, echo-cancel (selected=$FeedbackLoopPrevention)"
   $resolvedFixtureRoot = if ([System.IO.Path]::IsPathRooted($FixtureRoot)) {
     [System.IO.Path]::GetFullPath($FixtureRoot)
   } else {
@@ -3102,6 +3434,103 @@ if ($DryRun) {
   $dryRunSnapshotsPath = Join-Path $outputDir "snapshots.json"
   $dryRunSnapshots = Get-Content -LiteralPath $dryRunSnapshotsPath -Raw -Encoding UTF8 | ConvertFrom-Json
   $dryRunSnapshots | Add-Member -NotePropertyName feedbackLoopPrevention -NotePropertyValue $FeedbackLoopPrevention -Force
+  $dryRunDeviceIdentity = switch ($PhysicalPlaybackDeviceClass) {
+    "usb" {
+      [pscustomobject]@{
+        id = "USB\VID_1234&PID_5678\dry-run-$PhysicalPlaybackDeviceProfileId"
+        name = "Dry-run USB Speakers"
+        signals = @("USB\VID_1234&PID_5678", "USB Audio Device")
+      }
+    }
+    "bluetooth" {
+      [pscustomobject]@{
+        id = "BTHENUM\DEV_DRYRUN_$PhysicalPlaybackDeviceProfileId"
+        name = "Dry-run Bluetooth A2DP Speakers"
+        signals = @("BTHENUM\DEV_DRYRUN", "Bluetooth A2DP")
+      }
+    }
+    default {
+      [pscustomobject]@{
+        id = "HDAUDIO\FUNC_01&VEN_DRYRUN\$PhysicalPlaybackDeviceProfileId"
+        name = "Dry-run Default Speakers"
+        signals = @("HDAUDIO\FUNC_01", "High Definition Audio")
+      }
+    }
+  }
+  $dryRunSnapshots | Add-Member -NotePropertyName deviceEvidence -NotePropertyValue ([pscustomobject]@{
+    profileId = $PhysicalPlaybackDeviceProfileId
+    deviceClass = $PhysicalPlaybackDeviceClass
+    requestedDeviceId = $PhysicalPlaybackDeviceId
+    resolvedDeviceId = $dryRunDeviceIdentity.id
+    resolvedDeviceName = $dryRunDeviceIdentity.name
+    classificationSignals = @($dryRunDeviceIdentity.signals)
+    classificationSource = "fixture"
+    routeEvidenceSource = "fixture"
+    verified = $false
+    fixtureOnly = $true
+  }) -Force
+  if ($FeedbackLoopPrevention -eq "process-exclusion") {
+    # The built-in fixture defaults to the virtual-driver route. Replace its
+    # backend and synthetic fingerprint evidence so a process-exclusion dry
+    # run exercises the same report schema without claiming to be live audio.
+    $dryRunSnapshots.driver = $null
+    $dryRunSnapshots.wasapi = $null
+    $dryRunSnapshots.physicalOutput = [pscustomobject]@{
+      passed = $true
+      status = 'passed'
+      probeKind = 'process-exclusion-fingerprint'
+      fixtureOnly = $true
+      physicalPlaybackDeviceId = 'dry-run-speaker'
+      resolvedPhysicalPlaybackDeviceId = 'dry-run-speaker'
+      resolvedPhysicalPlaybackDeviceName = 'Dry-run Speakers'
+      playbackFramesWrittenBefore = 0
+      playbackFramesWrittenAfter = 96000
+      capturedFrames = 134400
+      rms = 0.2
+      toneComponent = 0.08
+      invalidSamples = 0
+      processExclusionFingerprint = [pscustomobject]@{
+        bridgeProcessId = 4242
+        excludedProcessId = 4242
+        externalPlayerProcessId = 5001
+        bridgeChildPlayerProcessId = 5002
+        bridgeChildParentProcessId = 4242
+        bridgeChildExitCode = 0
+        sourceCaptureMode = 'process-exclusion'
+        captureBackend = 'wasapi-process-exclusion'
+        processLoopbackStatus = 'ready'
+        physicalTranslationComponent = 0.08
+        physicalExternalComponent = 0.16
+        physicalBridgeChildComponent = 0.16
+        sourceTranslationComponent = 0.0004
+        sourceExternalComponent = 0.15
+        sourceBridgeChildComponent = 0.0002
+        sourceToPhysicalTranslationRatio = 0.005
+        sourceTranslationToExternalRatio = 0.0027
+        sourceToPhysicalBridgeChildRatio = 0.00125
+        translationComponentLimit = 0.003
+        sourceToPhysicalRatioLimit = 0.05
+        sourceToExternalRatioLimit = 0.05
+      }
+    }
+    $dryRunSnapshots.bridge = [pscustomobject]@{
+      probePassed = $true
+      bridgeState = 'running'
+      driverHealth = 'not-installed'
+      sourceCaptureMode = 'process-exclusion'
+      captureBackend = 'wasapi-process-exclusion'
+      processLoopbackSupported = $true
+      processLoopbackStatus = 'ready'
+      windowsBuildNumber = 26100
+      processLoopbackMinimumWindowsBuild = 20348
+      excludedProcessId = 4242
+      processLoopbackFailureDetail = $null
+      sourceSubscriberActive = $false
+      sourceReadCalls = 0
+      sourceFramePayloadBytes = 0
+      droppedFrameCount = 0
+    }
+  }
   $dryRunSnapshots | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $dryRunSnapshotsPath -Encoding UTF8
   Invoke-ReportGenerator $outputDir "dry-run"
   $dryRunReportPath = Join-Path $outputDir "report.json"
@@ -3115,6 +3544,7 @@ if ($DryRun) {
 
 $steps = @()
 $desktopProcess = $null
+$script:systemMetricsSamplerProcess = $null
 $script:elevatedDesktopLaunch = $null
 $desktopEnvState = $null
 $driverProbe = $null
@@ -3123,6 +3553,7 @@ $physicalOutputRecorder = $null
 $physicalOutputRecorderStep = $null
 $physicalOutputRecordingStep = $null
 $physicalOutputContentStep = $null
+$deviceEvidenceStep = $null
 $sourceMediaTranscriptStep = $null
 $artifactsSaved = $false
 $criticalFailureMessage = $null
@@ -3146,18 +3577,30 @@ try {
       Invoke-StopWatchRouteViaTauriCli
     } -ContinueOnError
   }
-  $driverProbe = Invoke-Step "driver probe" {
-    & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") -WorkspaceRoot $workspaceRoot
-  } -ContinueOnError
-
-  if (-not $driverProbe.ok -and -not $SkipDriverRepair -and $AllowDriverRepair) {
-    $steps += Invoke-Step "repair driver with explicit elevation" { Invoke-ElevatedDriverReinstall $outputDir } -ContinueOnError
-    $driverProbe = Invoke-Step "driver probe after repair" {
+  if (Test-UsesVirtualDriverBackend $FeedbackLoopPrevention) {
+    $driverProbe = Invoke-Step "driver probe" {
       & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") -WorkspaceRoot $workspaceRoot
     } -ContinueOnError
-  }
-  elseif (-not $driverProbe.ok -and -not $SkipDriverRepair -and -not $AllowDriverRepair) {
-    Write-Host "driver probe failed; skipping elevated repair because -AllowDriverRepair was not provided"
+
+    if (-not $driverProbe.ok -and -not $SkipDriverRepair -and $AllowDriverRepair) {
+      $steps += Invoke-Step "repair driver with explicit elevation" { Invoke-ElevatedDriverReinstall $outputDir } -ContinueOnError
+      $driverProbe = Invoke-Step "driver probe after repair" {
+        & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") -WorkspaceRoot $workspaceRoot
+      } -ContinueOnError
+    }
+    elseif (-not $driverProbe.ok -and -not $SkipDriverRepair -and -not $AllowDriverRepair) {
+      Write-Host "driver probe failed; skipping elevated repair because -AllowDriverRepair was not provided"
+    }
+  } else {
+    $driverProbe = [pscustomobject]@{
+      name = "driver probe"
+      ok = $true
+      result = [pscustomobject]@{
+        skipped = $true
+        reason = "$FeedbackLoopPrevention does not install, probe, or depend on the virtual driver"
+      }
+      error = $null
+    }
   }
   $steps += $driverProbe
   Convert-DriverProbeToJsonFile $driverProbe (Join-Path $outputDir "driver.json")
@@ -3168,13 +3611,13 @@ try {
       ok = $true
       result = [pscustomobject]@{
         skipped = $true
-        reason = "echo-cancel Watch capture does not require the virtual-driver source endpoint"
+        reason = "echo-cancel Watch capture does not use a Bridge source backend"
       }
       error = $null
     }
   } else {
     Invoke-Step "bridge source frame probe" {
-      Invoke-BridgeSourceProbe $outputDir
+      Invoke-BridgeSourceProbe $outputDir $FeedbackLoopPrevention
     } -ContinueOnError
   }
   $steps += $bridgeSourceProbe
@@ -3195,13 +3638,13 @@ try {
       ok = $true
       result = [pscustomobject]@{
         skipped = $true
-        reason = "echo-cancel Watch capture uses the configured/default physical endpoint directly"
+        reason = "echo-cancel does not use a Bridge physical-output isolation probe"
       }
       error = $null
     }
   } else {
     Invoke-Step "physical output loopback probe" {
-      Invoke-PhysicalOutputProbe $outputDir
+      Invoke-PhysicalOutputProbe $outputDir $FeedbackLoopPrevention
     } -ContinueOnError
   }
   $steps += $physicalOutputProbe
@@ -3212,11 +3655,16 @@ try {
     [pscustomobject]@{ error = $physicalOutputProbe.error } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "physical-output-probe.json") -Encoding UTF8
   }
 
-  $resolvedPhysicalDeviceId = if ($FeedbackLoopPrevention -eq "echo-cancel") {
-    if ($PhysicalPlaybackDeviceId -and $PhysicalPlaybackDeviceId -ne "default") { $PhysicalPlaybackDeviceId } else { $null }
-  } else {
-    Get-PhysicalOutputResolvedDeviceId $physicalOutputProbe
+  $deviceEvidenceStep = Invoke-Step "resolve and classify physical playback endpoint" {
+    Resolve-PhysicalPlaybackDeviceEvidence $physicalOutputProbe
+  } -ContinueOnError
+  $steps += $deviceEvidenceStep
+  if (-not $deviceEvidenceStep.ok) {
+    throw "physical playback device evidence failed: $($deviceEvidenceStep.error)"
   }
+  $deviceEvidenceStep.result | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "physical-playback-device.json") -Encoding UTF8
+  $resolvedPhysicalDeviceId = [string]$deviceEvidenceStep.result.resolvedDeviceId
+  Set-DesktopPhysicalPlaybackOverride $resolvedPhysicalDeviceId
   $desktopProcess = Invoke-Step "start desktop shell" { Start-WatchModeDesktopShell $outputDir $runMarker $resolvedPhysicalDeviceId } -ContinueOnError
   $steps += $desktopProcess
 
@@ -3238,8 +3686,7 @@ try {
       $appLogBeforePlayback = if ($runtimePathBeforePlayback) { Join-Path $runtimePathBeforePlayback.Path "app.log" } else { Join-Path $RuntimeRoot "app.log" }
       # Count the readiness budget from the desktop launch, not from this wait.
       # Warm-up therefore cannot silently extend a failed single-model run past
-      # the configured limit. SessionReadyTimeoutSeconds is capped at 100 by
-      # parameter validation, leaving cleanup grace below the two-minute gate.
+      # the configured limit.
       $readinessDeadlineUtc = ([DateTime]$desktopProcess.result.launchedAtUtc).AddSeconds($SessionReadyTimeoutSeconds)
       $readinessStep = Invoke-Step "wait for same-process provider and frontend IPC readiness" {
         Wait-WatchModeAppReadiness `
@@ -3296,7 +3743,10 @@ try {
         }
         $steps += $playbackStep
         $requiredWatchReportPath = Join-Path $outputDir "watch-session-report.json"
-        $reportDeadlineUtc = ([DateTime]$desktopProcess.result.launchedAtUtc).AddSeconds(420)
+        $reportDeadlineUtc = Get-WatchSessionReportDeadlineUtc `
+          -LaunchedAtUtc ([DateTime]$desktopProcess.result.launchedAtUtc) `
+          -ReadyTimeoutSeconds $SessionReadyTimeoutSeconds `
+          -AutoStopAfterSeconds $WatchAutoStopAfterSeconds
         $reportWaitStep = Invoke-Step "wait for same-process Watch report and desktop exit" {
           Wait-WatchSessionReportAndDesktopExit `
             -Path $requiredWatchReportPath `
@@ -3390,6 +3840,14 @@ try {
     }
   } -ContinueOnError
 
+  $systemMetricsStep = Invoke-Step "complete desktop process-tree system metrics sampling" {
+    Complete-WatchModeSystemMetricsSampler $desktopProcess.result.systemMetricsSampler
+  } -ContinueOnError
+  $steps += $systemMetricsStep
+  if (-not $systemMetricsStep.ok -and -not $criticalFailureMessage) {
+    $criticalFailureMessage = "desktop system metrics evidence failed: $($systemMetricsStep.error)"
+  }
+
   if ($criticalFailureMessage) {
     throw $criticalFailureMessage
   }
@@ -3419,6 +3877,7 @@ try {
   throw
 } finally {
   Stop-WatchModeDesktopShell $desktopProcess | Out-Null
+  Stop-WatchModeSystemMetricsSampler
   try {
     Stop-StaleBridgeService $RuntimeRoot | Out-Null
   } catch {

@@ -1,39 +1,40 @@
 import {
   isMain,
+  repoRoot,
   runPrepareReportCli,
   writeJson,
   writeTimestampedReport,
 } from '../lib/testing-common.mjs';
+import { currentGitProvenance } from './git-provenance.mjs';
+import {
+  PERFORMANCE_MEASUREMENT_NAMES,
+  PERFORMANCE_THRESHOLDS,
+  RELEASE_MANUAL_SCHEMA_VERSION,
+} from './release-manual-evidence.mjs';
 
 const defaultOutputRoot = 'artifacts/testing/perf-baseline';
 
-const baselinePayload = (generatedAt) => ({
+const baselinePayload = (generatedAt, provenance) => ({
+  schemaVersion: RELEASE_MANUAL_SCHEMA_VERSION,
+  artifactKind: 'performance-baseline',
   generatedAt,
   operator: '',
-  build: '',
+  build: provenance.headCommit ?? '',
   verdict: 'PENDING',
+  provenance,
   environment: 'Windows desktop shell',
   scenario: 'Provider probe + subtitle display + speech dispatch + diagnostics export',
-  thresholds: {
-    providerFirstEventLatencyMs: 1200,
-    subtitleCueCommitLatencyMs: 800,
-    ttsRoundTripLatencyMs: 2200,
-    cpuP95Percent: 65,
-    memoryPeakMb: 900,
-    stabilityWindowMinutes: 30,
-    allowedDropouts: 0,
-  },
-  measurements: {
-    providerFirstEventLatencyMs: null,
-    subtitleCueCommitLatencyMs: null,
-    ttsRoundTripLatencyMs: null,
-    cpuP95Percent: null,
-    memoryPeakMb: null,
-    observedDropouts: null,
+  thresholds: { ...PERFORMANCE_THRESHOLDS },
+  measurements: Object.fromEntries(PERFORMANCE_MEASUREMENT_NAMES.map((name) => [name, null])),
+  sourceEvidence: {
+    receiptPath: '',
+    receiptSha256: '',
   },
   notes: [
-    'Fill measurements after running the Milestone M smoke path in the desktop shell.',
-    'CPU should be recorded as sample P95 and memory should use peak working set or minimum available ratio.',
+    'This file is a pending schema template, not a fill-in-the-numbers release artifact.',
+    'Create the release baseline with assemble-performance-baseline.mjs on the same exact clean HEAD as the canonical strict Watch matrix.',
+    'The assembler archives all 18 report.json and system-metrics.json files; the validator independently recomputes every aggregate from those raw artifacts.',
+    'Hand-written measurements, a standalone performance-source.json, missing system samples, or rehashed edited aggregates cannot pass.',
   ],
 });
 
@@ -42,7 +43,10 @@ export const preparePerformanceBaselineReport = ({ outputRoot = defaultOutputRoo
     outputRoot,
     filePrefix: 'desktop-perf-baseline',
     extension: 'json',
-    render: (reportPath, generatedAt) => writeJson(reportPath, baselinePayload(generatedAt)),
+    render: (reportPath, generatedAt) => writeJson(
+      reportPath,
+      baselinePayload(generatedAt, currentGitProvenance({ cwd: repoRoot })),
+    ),
   });
 
 if (isMain(import.meta.url)) {

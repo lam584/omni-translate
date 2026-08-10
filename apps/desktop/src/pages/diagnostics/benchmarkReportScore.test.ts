@@ -1,12 +1,30 @@
 import { describe, expect, it } from 'vitest';
 import type { BenchmarkReport } from '../../runtime/benchmark-runtime';
-import { scoreBenchmarkReport } from './benchmarkReportScore';
+import {
+  calculateChrF2,
+  scoreBenchmarkReport,
+  scoreLatencyRamp,
+  type BenchmarkSemanticJudgeEvidence,
+} from './benchmarkReportScore';
+
+const judge = (runs: Array<{ runIndex: number; score: number }>): BenchmarkSemanticJudgeEvidence => ({
+  model: 'judge-model',
+  rubricVersion: 'benchmark-semantic-judge/v1',
+  score: runs.reduce((sum, run) => sum + run.score, 0) / runs.length,
+  runs: runs.map(({ runIndex, score }) => ({
+    runIndex,
+    score,
+    subscores: { adequacy: score, factsTerminology: score, omissionsAdditions: score, fluency: score },
+    rationale: '',
+    criticalErrors: [],
+  })),
+});
 
 const report = (): BenchmarkReport => ({
   model: 'model', audioFile: 'general.wav', audioDurationSecs: 120,
   runs: [{ runIndex: 0, model: 'model', connectMs: 100, sessionReadyMs: 200, audioSendMs: 120_000,
     audioChunksSent: 100, audioDurationSecs: 120, firstAsrMs: 500, asrDeltas: [], asrFinal: 'hello',
-    firstOutputMs: 2_000, firstCommittedMs: 5_000, outputDeltas: [], translationFinal: '你好',
+    firstOutputMs: 2_100, firstCommittedMs: 5_100, outputDeltas: [], translationFinal: '你好',
     responseCreatedMs: 100, responseDoneMs: 120_100, responseDoneAudioChunksSent: 100,
     responseDoneAudioSentSecs: 120, responseCount: 1, speechStartedMs: 100, speechStoppedMs: 119_000,
     timeToFirstTokenMs: 2_000, timeToFirstCommittedMs: 5_000, totalOutputDurationMs: 118_000, outputDeltaCount: 10 }],
@@ -16,35 +34,112 @@ const report = (): BenchmarkReport => ({
     p90DeltaIntervalMs: 20, p99DeltaIntervalMs: 30, minDeltaIntervalMs: 5, maxDeltaIntervalMs: 40 },
 });
 
-describe('scoreBenchmarkReport', () => {
-  it('scores objective dimensions without inventing a semantic score', () => {
-    expect(scoreBenchmarkReport(report())).toMatchObject({ total: 100, grade: 'A', semanticEvidence: 'unavailable', dimensions: { semantic: null, latency: 100, completeness: 100, reliability: 100 } });
+function score(input: BenchmarkReport, semanticJudge = judge([{ runIndex: 0, score: 100 }])) {
+  return scoreBenchmarkReport(input, {
+    benchmarkState: 'completed',
+    sourceText: 'hello',
+    referenceTranslation: '你好',
+    semanticJudge,
   });
-  it('allows LLM judgment to change semantic only', () => {
-    const base = scoreBenchmarkReport(report());
-    const judged = scoreBenchmarkReport(report(), { llmSemanticScore: 50 });
-    expect(judged.dimensions).toMatchObject({ semantic: 50, latency: base.dimensions.latency, completeness: base.dimensions.completeness, reliability: base.dimensions.reliability });
+}
+
+describe('benchmark-score/v1', () => {
+  it('uses reproducible Unicode NFKC chrF2 character 1–6 gram evidence', () => {
+    const chrF2 = calculateChrF2('ＡＢ\nＣ', 'ABC');
+    expect(chrF2).toMatchObject({ metric: 'chrF2', beta: 2, characterNgramOrder: 6, score: 100, precision: 100, recall: 100 });
+    expect(chrF2?.orders.map(({ order }) => order)).toEqual([1, 2, 3]);
   });
 
-  it('uses reference evidence for known translations and blends an LLM score when present', () => {
-    const reference = scoreBenchmarkReport(report(), { referenceTranslation: '你好' });
-    expect(reference).toMatchObject({
-      semanticEvidence: 'reference-proxy',
-      dimensions: { semantic: 100 },
+  it('issues an official score only with all four dimensions and full judge evidence', () => {
+    expect(score(report())).toMatchObject({
+      schemaVersion: 'benchmark-score/v1',
+      status: 'official',
+      total: 100,
+      grade: 'A',
+      dimensions: {
+        semantic: { score: 100, status: 'scored' },
+        latency: { score: 100, status: 'scored' },
+        completeness: { score: 100, status: 'scored' },
+        stability: { score: 100, status: 'scored' },
+      },
     });
-
-    const judged = scoreBenchmarkReport(report(), { referenceTranslation: '你好', llmSemanticScore: 50 });
-    expect(judged).toMatchObject({ semanticEvidence: 'llm-judge', dimensions: { semantic: 70 } });
   });
 
-  it('scores response-relative latency instead of the absolute audio offset', () => {
-    const longAudio = report();
-    const run = longAudio.runs[0]!;
-    run.responseCreatedMs = 113_614.4;
-    run.firstOutputMs = 113_615;
-    run.firstCommittedMs = 113_615.6;
-    run.timeToFirstTokenMs = 113_615;
-    run.timeToFirstCommittedMs = 113_615.6;
-    expect(scoreBenchmarkReport(longAudio).dimensions.latency).toBe(100);
+  it('does not reweight dimensions or issue a total while semantic evidence is missing', () => {
+    const result = scoreBenchmarkReport(report(), {
+      benchmarkState: 'completed',
+      sourceText: 'hello',
+      referenceTranslation: '你好',
+    });
+    expect(result).toMatchObject({ status: 'evidence-insufficient', total: null, grade: null });
+    expect(result.dimensions.semantic.missingEvidence).toContain('judge-result-for-each-completed-run');
+  });
+
+  it('uses response-relative latency and its documented boundary/linear thresholds', () => {
+    expect(scoreLatencyRamp(2_000, 2_000, 8_000)).toBe(100);
+    expect(scoreLatencyRamp(8_000, 2_000, 8_000)).toBe(0);
+    expect(scoreLatencyRamp(5_000, 2_000, 8_000)).toBe(50);
+    const slow = report();
+    slow.runs[0]!.responseCreatedMs = 100_000;
+    slow.runs[0]!.firstOutputMs = 105_000;
+    slow.runs[0]!.firstCommittedMs = 110_000;
+    expect(score(slow).dimensions.latency.score).toBe(50);
+  });
+
+  it('requires latency evidence for every run rather than treating a gap as zero', () => {
+    const incomplete = report();
+    incomplete.runs[0]!.firstCommittedMs = null;
+    incomplete.runs[0]!.timeToFirstCommittedMs = null;
+    const result = score(incomplete);
+    expect(result.status).toBe('evidence-insufficient');
+    expect(result.total).toBeNull();
+    expect(result.dimensions.latency.missingEvidence).toContain('run-0-firstCommitted');
+  });
+
+  it('does not substitute legacy whole-run timers for missing response-created evidence', () => {
+    const incomplete = report();
+    incomplete.runs[0]!.responseCreatedMs = null;
+    // These legacy fields are populated by the old runner from its absolute
+    // run clock and must not be misrepresented as response-relative v1 data.
+    incomplete.runs[0]!.timeToFirstTokenMs = 2_000;
+    incomplete.runs[0]!.timeToFirstCommittedMs = 5_000;
+    const result = score(incomplete);
+    expect(result.status).toBe('evidence-insufficient');
+    expect(result.dimensions.latency.score).toBeNull();
+    expect(result.dimensions.latency.missingEvidence).toContain('run-0-firstToken');
+  });
+
+  it('requires response-count telemetry before scoring stability', () => {
+    const incomplete = report();
+    incomplete.runs[0]!.responseCount = Number.NaN;
+    const result = score(incomplete);
+    expect(result.status).toBe('evidence-insufficient');
+    expect(result.dimensions.stability.score).toBeNull();
+    expect(result.dimensions.stability.missingEvidence).toContain('run-0-response-count');
+  });
+
+  it('aggregates every successful run and exposes duplicate-response deductions', () => {
+    const multi = report();
+    multi.runs.push({ ...multi.runs[0]!, runIndex: 1, translationFinal: '再见', responseCount: 3 });
+    multi.summary.runCount = 2;
+    multi.summary.successfulRuns = 2;
+    const result = scoreBenchmarkReport(multi, {
+      benchmarkState: 'completed',
+      sourceText: 'hello',
+      referenceTranslation: '你好',
+      semanticJudge: judge([{ runIndex: 0, score: 100 }, { runIndex: 1, score: 50 }]),
+    });
+    expect(result.dimensions.semantic.evidence.judge.judgedRunIndexes).toEqual([0, 1]);
+    expect(result.dimensions.stability.evidence.totalDeduction).toBe(10);
+    expect(result.deductions).toHaveLength(2);
+  });
+
+  it('reports judge and benchmark failures without fabricating a total', () => {
+    expect(scoreBenchmarkReport(report(), {
+      benchmarkState: 'completed', sourceText: 'hello', referenceTranslation: '你好', judgeState: 'failed', judgeError: 'timeout',
+    })).toMatchObject({ status: 'judge-failed', total: null });
+    expect(scoreBenchmarkReport(report(), {
+      benchmarkState: 'failed', sourceText: 'hello', referenceTranslation: '你好', semanticJudge: judge([{ runIndex: 0, score: 100 }]),
+    })).toMatchObject({ status: 'benchmark-failed', total: null });
   });
 });

@@ -143,7 +143,7 @@ export default function DriverManagementCard({ variant = 'settings' }: { variant
         <dl className="driver-management-details">
           <div><dt>{t('driverManagement.detail.rootNodes')}</dt><dd>{bridge.rootDeviceCount} · {bridge.rootInstanceIds.join(', ') || t('driverManagement.value.none')}</dd></div>
           <div><dt>{t('driverManagement.detail.probeState')}</dt><dd>{t(`driverManagement.value.${bridge.driverProbeState}`)}</dd></div>
-          <div><dt>{t('driverManagement.detail.endpoint')}</dt><dd>{bridge.endpointName ?? t('driverManagement.value.notFound')}</dd></div>
+          <div><dt>{t('driverManagement.detail.endpoint')}</dt><dd>{[bridge.endpointName, bridge.captureEndpointName].filter(Boolean).join(' / ') || t('driverManagement.value.notFound')}</dd></div>
           <div><dt>{t('driverManagement.detail.abi')}</dt><dd>{bridge.abiVersion ?? t('driverManagement.value.unavailable')}</dd></div>
           <div><dt>{t('driverManagement.detail.testSigning')}</dt><dd>{t(bridge.testSigningEnabled ? 'driverManagement.value.enabled' : 'driverManagement.value.disabled')}</dd></div>
           <div><dt>{t('driverManagement.detail.signatureEnforcementBypass')}</dt><dd>{t(bridge.signatureEnforcementBypassed ? 'driverManagement.value.enabledUntilRestart' : 'driverManagement.value.disabled')}</dd></div>

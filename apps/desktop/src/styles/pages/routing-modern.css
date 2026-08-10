@@ -432,7 +432,7 @@
 
 .routing-feedback-options {
   display: grid;
-  grid-template-columns: 1fr 1fr;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
 }
 
@@ -456,6 +456,16 @@
   background: #fafbfd;
 }
 
+.routing-feedback-option:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.routing-feedback-option:disabled:hover {
+  border-color: var(--rt-border);
+  background: #ffffff;
+}
+
 .routing-feedback-option:focus-visible {
   outline: none;
   box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.22);
@@ -463,6 +473,21 @@
 
 .routing-feedback-option strong {
   font-weight: 600;
+}
+
+.routing-feedback-option-label {
+  display: inline-flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  line-height: 1.2;
+}
+
+.routing-feedback-option-label small {
+  margin-top: 2px;
+  color: var(--rt-ink-soft);
+  font-size: 10px;
+  font-weight: 500;
 }
 
 .routing-feedback-option-active {
@@ -498,6 +523,10 @@
   font-size: 11px;
   color: #94a3b8;
   line-height: 1.5;
+}
+
+.routing-feedback-unavailable-desc {
+  color: #b45309;
 }
 
 .scenario-grid {
@@ -1142,7 +1171,7 @@ body:not(:has(.subtitle-overlay-root)) .routing-workspace-v9 .routing-panel h3 {
 }
 
 body:not(:has(.subtitle-overlay-root)) .routing-workspace-v9 .routing-feedback-options {
-  grid-template-columns: 1fr 1fr !important;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) !important;
 }
 
 @media (max-width: 640px) {

@@ -1,902 +1,546 @@
-use std::collections::VecDeque;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-const TARGET_SAMPLE_RATE_HZ: u32 = 48_000;
-const TARGET_CHANNEL_COUNT: usize = 2;
-/// Upper bound for the per-block least-squares gain estimate. WASAPI loopback
-/// normally carries our render stream close to unity, while speaker/mixer
-/// gain can move it in either direction. Bounding the estimate prevents an
-/// unrelated source block from producing an unstable subtraction gain.
-const MAX_ECHO_PATH_GAIN: f32 = 2.0;
-/// RMS above which the playback-aligned reference block counts as active TTS
-/// output rather than silence between segments.
-const REFERENCE_ACTIVE_RMS: f32 = 0.01;
-/// A block is safe to drop only when adaptive subtraction leaves no audible
-/// non-reference signal. This is deliberately absolute: in Watch mode the
-/// source video is often 10-20 dB quieter than translated playback, so a
-/// captured/reference energy ratio cannot distinguish source audio from echo.
-const PURE_ECHO_RESIDUAL_RMS: f32 = 0.003;
-const PURE_ECHO_CORRELATION: f32 = 0.8;
-/// Acoustic speaker bleed can leave delayed reflections after the direct-path
-/// projection. If the residual is still predictable from a recent render
-/// reference, it remains echo rather than valid double talk.
-const ECHO_TAIL_CORRELATION: f32 = 0.35;
-const ECHO_TAIL_MAX_LAG_MS: usize = 50;
-const ECHO_TAIL_LAG_STEP_MS: usize = 1;
-/// WASAPI render startup and loopback delivery latency varies by endpoint and
-/// can change when a Bluetooth/USB device wakes up. Search a bounded window
-/// instead of assuming every device matches the nominal 100 ms route delay.
-const ADAPTIVE_DELAY_MAX_MS: usize = 1_000;
-const ADAPTIVE_DELAY_COARSE_STEP_MS: usize = 5;
-const ADAPTIVE_DELAY_FINE_RADIUS_MS: usize = 6;
-const ADAPTIVE_DELAY_FINE_STEP_MS: usize = 1;
-/// Correlation scoring samples one channel every four frames. The selected
-/// alignment is still subtracted at full resolution.
-const ALIGNMENT_SCORE_FRAME_STRIDE: usize = 4;
-/// Below this correlation, projection is more likely to carve unrelated
-/// program audio than to remove translated playback.
-const MIN_ECHO_ALIGNMENT_CORRELATION: f32 = 0.2;
-/// Residual gain applied while TTS is audibly playing and no double talk is
-/// detected: half-duplex energy suppression layered on top of the linear
-/// subtraction, because a fixed 0.8 attenuation alone cannot match the real
-/// acoustic path gain.
-const PLAYBACK_GATE_GAIN: f32 = 0.1;
+mod production;
+pub(crate) use production::{create_production_echo_canceller, ProductionEchoCanceller};
 
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct EchoCancellationMetrics {
-    pub(crate) alignment_found: bool,
-    pub(crate) correlation: f32,
-    pub(crate) delay_samples: usize,
-    pub(crate) reference_rms: f32,
-    pub(crate) captured_rms: f32,
-    pub(crate) residual_rms: f32,
-    pub(crate) echo_path_gain: f32,
-    pub(crate) tail_correlation: f32,
-}
+pub(crate) const TARGET_SAMPLE_RATE_HZ: u32 = 48_000;
+pub(crate) const TARGET_CHANNEL_COUNT: usize = 2;
+const AEC_FRAME_DURATION_MS: usize = 10;
+const AEC_FRAME_FRAMES: usize =
+    TARGET_SAMPLE_RATE_HZ as usize * AEC_FRAME_DURATION_MS / 1_000;
+const AEC_FRAME_SAMPLES: usize = AEC_FRAME_FRAMES * TARGET_CHANNEL_COUNT;
 
-/// Returns a conservative *diagnostic* indication that the captured block
-/// still contains rendered speaker audio. This is intentionally weaker than
-/// `suppress_asr`: user speech may overlap translated playback, so it is used
-/// only by the late manual-response echo gate, never to drop capture audio.
-pub(crate) fn has_acoustic_echo_evidence(metrics: EchoCancellationMetrics) -> bool {
-    const GATE_MIN_CORRELATION: f32 = 0.35;
-    const GATE_MIN_CAPTURE_SHARE: f32 = 0.15;
-
-    if !metrics.alignment_found
-        || metrics.reference_rms <= REFERENCE_ACTIVE_RMS
-        || metrics.captured_rms <= f32::EPSILON
-        || metrics.correlation < GATE_MIN_CORRELATION
-    {
-        return false;
-    }
-
-    let estimated_echo_rms = metrics.reference_rms * metrics.echo_path_gain;
-    estimated_echo_rms >= metrics.captured_rms * GATE_MIN_CAPTURE_SHARE
-}
-
+/// Processed capture returned by the sole production backend, WebRTC AEC3.
+/// Every sample in this result is forwarded to ASR; echo probabilities are
+/// telemetry and never authorize dropping a capture frame.
 pub(crate) struct EchoCancellationResult {
     pub(crate) samples: Vec<f32>,
-    /// True when the aligned playback reference is active and the captured
-    /// block is dominated by that playback. The capture worker must not send
-    /// such a block to ASR: the Omni pump intentionally forwards a short
-    /// silence tail, so merely reducing the samples would still feed the
-    /// translated speaker output back to the model.
-    pub(crate) suppress_asr: bool,
-    pub(crate) metrics: EchoCancellationMetrics,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct EchoAlignment {
-    delay_samples: usize,
-    block_start: usize,
-    correlation: f32,
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct EchoCancellerEngineStats {
+    pub(crate) backend: &'static str,
+    pub(crate) render_10ms_frames: u64,
+    pub(crate) capture_10ms_frames: u64,
+    pub(crate) reset_count: u64,
+    pub(crate) rejected_frame_count: u64,
+    pub(crate) stats_read_failure_count: u64,
+    pub(crate) erle_db: Option<f64>,
+    pub(crate) residual_echo_likelihood: Option<f64>,
+    pub(crate) reported_delay_ms: Option<i32>,
+    /// APM does not expose a stable AEC3 double-talk frame counter yet.
+    pub(crate) double_talk_frames: Option<u64>,
+    pub(crate) render_underrun_count: u64,
+    pub(crate) capture_underrun_count: u64,
+    pub(crate) processing_call_count: u64,
+    pub(crate) processing_time_micros_total: u64,
+    pub(crate) max_processing_time_micros: u64,
 }
 
-/// Time-aligned reference of what the speaker is actually playing.
-///
-/// Callers may push a whole TTS segment before its blocking playback starts;
-/// the buffer keeps its own playback clock (`play_cursor`) that advances with
-/// wall time, so `subtract_from` always reads the reference block that was
-/// audible when the captured chunk was recorded instead of assuming the
-/// buffer tail is "now".
-pub(crate) struct EchoReferenceBuffer {
-    buffer: VecDeque<f32>,
-    capacity: usize,
-    /// Interleaved samples of `buffer` the playback clock has consumed.
-    play_cursor: f64,
-    last_advance: Option<Instant>,
+/// A failed native stats query retains the last successful observation and
+/// increments an explicit counter. Telemetry failure cannot affect PCM flow.
+#[derive(Debug)]
+#[cfg(any(feature = "webrtc-aec3", test))]
+struct LastGoodNativeStats<T: Copy + Default> {
+    last: T,
+    read_failure_count: u64,
 }
 
-impl EchoReferenceBuffer {
-    pub(crate) fn new(capacity_frames: usize) -> Self {
+#[cfg(any(feature = "webrtc-aec3", test))]
+impl<T: Copy + Default> Default for LastGoodNativeStats<T> {
+    fn default() -> Self {
         Self {
-            buffer: VecDeque::with_capacity(capacity_frames * TARGET_CHANNEL_COUNT),
-            capacity: capacity_frames * TARGET_CHANNEL_COUNT,
-            play_cursor: 0.0,
-            last_advance: None,
+            last: T::default(),
+            read_failure_count: 0,
         }
     }
+}
 
-    pub(crate) fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
+#[cfg(any(feature = "webrtc-aec3", test))]
+impl<T: Copy + Default> LastGoodNativeStats<T> {
+    fn observe<E>(&mut self, result: Result<T, E>) -> T {
+        match result {
+            Ok(value) => {
+                self.last = value;
+                value
+            }
+            Err(_) => {
+                self.read_failure_count = self.read_failure_count.saturating_add(1);
+                self.last
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WebRtcAec3BuildGate {
+    pub(crate) ready: bool,
+    pub(crate) msvc_build_verified: bool,
+    pub(crate) linked_backend_present: bool,
+    pub(crate) fixture_verified: bool,
+    pub(crate) dependency: &'static str,
+    pub(crate) reason: &'static str,
+}
+
+// A linked build is a verifiable fact: the optional dependency build script
+// is Windows/MSVC/x64-only and runs the deterministic native fixture before
+// Cargo can finish. An unlinked build therefore cannot advertise AEC3.
+const WEBRTC_AEC3_LINKED_BUILD: bool = cfg!(all(
+    feature = "webrtc-aec3",
+    target_os = "windows",
+    target_env = "msvc",
+    target_arch = "x86_64"
+));
+const WEBRTC_AEC3_MSVC_BUILD_VERIFIED: bool = WEBRTC_AEC3_LINKED_BUILD;
+const WEBRTC_AEC3_LINKED_BACKEND_PRESENT: bool = WEBRTC_AEC3_LINKED_BUILD;
+const WEBRTC_AEC3_FIXTURE_VERIFIED: bool = WEBRTC_AEC3_LINKED_BUILD;
+
+pub(crate) const fn webrtc_aec3_build_gate() -> WebRtcAec3BuildGate {
+    let ready = WEBRTC_AEC3_MSVC_BUILD_VERIFIED
+        && WEBRTC_AEC3_LINKED_BACKEND_PRESENT
+        && WEBRTC_AEC3_FIXTURE_VERIFIED;
+    let reason = if !WEBRTC_AEC3_MSVC_BUILD_VERIFIED {
+        "bundled AEC3 is not verified for x86_64-pc-windows-msvc"
+    } else if !WEBRTC_AEC3_LINKED_BACKEND_PRESENT {
+        "no verified statically linked WebRTC AEC3 FFI backend is present"
+    } else if !WEBRTC_AEC3_FIXTURE_VERIFIED {
+        "the deterministic 48 kHz/10 ms AEC3 fixture has not passed"
+    } else {
+        "verified"
+    };
+    WebRtcAec3BuildGate {
+        ready,
+        msvc_build_verified: WEBRTC_AEC3_MSVC_BUILD_VERIFIED,
+        linked_backend_present: WEBRTC_AEC3_LINKED_BACKEND_PRESENT,
+        fixture_verified: WEBRTC_AEC3_FIXTURE_VERIFIED,
+        dependency: "official vcpkg webrtc@2026-03-17#1 (baseline ea1a7396b05637a53bf23c078647ecc0edee4b80)",
+        reason,
+    }
+}
+
+fn production_aec3_unavailable_error(gate: WebRtcAec3BuildGate) -> String {
+    format!(
+        "WebRTC AEC3 production backend is unavailable: dependency={} reason={}",
+        gate.dependency, gate.reason,
+    )
+}
+
+/// Exact 10 ms boundary for the single AEC implementation. Upper layers see
+/// this Rust interface only and never depend on WebRTC C++ types.
+pub(crate) trait EchoCancellerEngine: Send {
+    fn push_render_10ms(&mut self, frame: &[f32], render_time: Instant) -> Result<(), String>;
+    fn process_capture_10ms(
+        &mut self,
+        frame: &[f32],
+        delay_samples: usize,
+        capture_time: Instant,
+    ) -> Result<EchoCancellationResult, String>;
+    fn reset(&mut self) -> Result<(), String>;
+    fn stats(&self) -> EchoCancellerEngineStats;
+}
+
+/// Format/frame adapter around WebRTC AEC3. Provider-native render formats are
+/// normalized to 48 kHz stereo and both directions are delivered as exact,
+/// strictly continuous 10 ms frames.
+pub(crate) struct EchoCanceller {
+    engine: Box<dyn EchoCancellerEngine>,
+}
+
+impl EchoCanceller {
+    fn from_engine(engine: Box<dyn EchoCancellerEngine>) -> Self {
+        Self { engine }
     }
 
-    /// Current reference depth in interleaved samples, surfaced by the
-    /// periodic echo-cancel diagnostics summary.
-    pub(crate) fn depth_samples(&self) -> usize {
-        self.buffer.len()
-    }
-
-    pub(crate) fn push_samples(
+    #[cfg(test)]
+    pub(crate) fn push_render(
         &mut self,
         samples: &[f32],
         sample_rate_hz: u32,
         channel_count: u16,
-    ) {
-        self.push_samples_at(samples, sample_rate_hz, channel_count, Instant::now());
+    ) -> Result<(), String> {
+        self.push_render_at(samples, sample_rate_hz, channel_count, Instant::now())
     }
 
-    pub(crate) fn push_samples_at(
+    fn push_render_at(
         &mut self,
         samples: &[f32],
         sample_rate_hz: u32,
         channel_count: u16,
-        now: Instant,
-    ) {
-        self.advance_play_cursor(now);
-        // A new segment starts playing when it is pushed; if the clock ran
-        // into the silence past the previous segment, snap it back to the end
-        // of the buffered audio so the appended samples align with "now".
-        self.play_cursor = self.play_cursor.min(self.buffer.len() as f64);
-        if samples.is_empty() || sample_rate_hz == 0 || channel_count == 0 {
-            return;
-        }
-
-        let channel_count = channel_count as usize;
-        let input_frames = samples.len() / channel_count;
-        if input_frames == 0 {
-            return;
-        }
-
-        let output_frames = ((input_frames as u64 * TARGET_SAMPLE_RATE_HZ as u64)
-            / sample_rate_hz as u64)
-            .max(1) as usize;
-        let ratio = sample_rate_hz as f32 / TARGET_SAMPLE_RATE_HZ as f32;
-
-        for output_frame in 0..output_frames {
-            let source_pos = output_frame as f32 * ratio;
-            let left_index = source_pos.floor() as usize;
-            let right_index = (left_index + 1).min(input_frames - 1);
-            let frac = source_pos - left_index as f32;
-
-            let (left, right) = if channel_count == 1 {
-                let sample = lerp(samples[left_index], samples[right_index], frac);
-                (sample, sample)
+        render_time: Instant,
+    ) -> Result<(), String> {
+        let normalized = normalize_to_target_stereo(samples, sample_rate_hz, channel_count);
+        for (frame_index, chunk) in normalized.chunks(AEC_FRAME_SAMPLES).enumerate() {
+            let frame_time = render_time
+                .checked_add(Duration::from_millis(
+                    (frame_index * AEC_FRAME_DURATION_MS) as u64,
+                ))
+                .unwrap_or(render_time);
+            if chunk.len() == AEC_FRAME_SAMPLES {
+                self.engine.push_render_10ms(chunk, frame_time)?;
             } else {
-                let left_a = samples[left_index * channel_count];
-                let left_b = samples[right_index * channel_count];
-                let right_a = samples[left_index * channel_count + 1];
-                let right_b = samples[right_index * channel_count + 1];
-                (lerp(left_a, left_b, frac), lerp(right_a, right_b, frac))
-            };
-
-            self.push_sample(left);
-            self.push_sample(right);
+                let mut padded = vec![0.0_f32; AEC_FRAME_SAMPLES];
+                padded[..chunk.len()].copy_from_slice(chunk);
+                self.engine.push_render_10ms(&padded, frame_time)?;
+            }
         }
+        Ok(())
     }
 
-    pub(crate) fn subtract_from(
+    #[cfg(test)]
+    fn push_render_at_for_test(
+        &mut self,
+        samples: &[f32],
+        sample_rate_hz: u32,
+        channel_count: u16,
+        render_time: Instant,
+    ) -> Result<(), String> {
+        self.push_render_at(samples, sample_rate_hz, channel_count, render_time)
+    }
+
+    pub(crate) fn process_capture(
         &mut self,
         captured: &[f32],
         delay_samples: usize,
-    ) -> EchoCancellationResult {
-        self.subtract_from_at(captured, delay_samples, Instant::now())
+    ) -> Result<EchoCancellationResult, String> {
+        self.process_capture_at(captured, delay_samples, Instant::now())
     }
 
-    pub(crate) fn subtract_from_at(
+    fn process_capture_at(
         &mut self,
         captured: &[f32],
         delay_samples: usize,
-        now: Instant,
-    ) -> EchoCancellationResult {
-        self.advance_play_cursor(now);
-        if captured.is_empty() || self.buffer.is_empty() {
-            return EchoCancellationResult {
+        capture_end: Instant,
+    ) -> Result<EchoCancellationResult, String> {
+        if captured.is_empty() {
+            return Ok(EchoCancellationResult { samples: Vec::new() });
+        }
+
+        let complete_frame_count = captured.len() / AEC_FRAME_SAMPLES;
+        if complete_frame_count == 0 {
+            return Ok(EchoCancellationResult {
                 samples: captured.to_vec(),
-                suppress_asr: false,
-                metrics: EchoCancellationMetrics::default(),
-            };
+            });
         }
 
-        // Align the playback position to a frame boundary so stereo channels
-        // stay paired, then find the reference block that best matches this
-        // capture. `delay_samples` remains the preferred/nominal route delay,
-        // but real endpoint latency is allowed to move within a bounded window.
-        let cursor = (self.play_cursor as usize / TARGET_CHANNEL_COUNT) * TARGET_CHANNEL_COUNT;
-        let Some(alignment) = self.best_echo_alignment(captured, cursor, delay_samples) else {
-            return EchoCancellationResult {
-                samples: captured.to_vec(),
-                suppress_asr: false,
-                metrics: EchoCancellationMetrics::default(),
-            };
-        };
-        let block_start = alignment.block_start as i64;
-
-        let mut reference_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
-        let mut captured_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
-        let mut cross_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
-        let reference: Vec<f32> = captured
-            .iter()
+        let mut samples = Vec::with_capacity(captured.len());
+        for (frame_index, frame) in captured[..complete_frame_count * AEC_FRAME_SAMPLES]
+            .chunks_exact(AEC_FRAME_SAMPLES)
             .enumerate()
-            .map(|(index, sample)| {
-                let position = block_start + index as i64;
-                let reference = if position >= 0 && (position as usize) < self.buffer.len() {
-                    self.buffer[position as usize]
-                } else {
-                    0.0
-                };
-                let channel = index % TARGET_CHANNEL_COUNT;
-                reference_energy[channel] += reference * reference;
-                captured_energy[channel] += sample * sample;
-                cross_energy[channel] += sample * reference;
-                reference
-            })
-            .collect();
+        {
+            let frames_after = complete_frame_count - frame_index - 1;
+            let capture_time = capture_end
+                .checked_sub(Duration::from_millis(
+                    (frames_after * AEC_FRAME_DURATION_MS) as u64,
+                ))
+                .unwrap_or(capture_end);
+            samples.extend(
+                self.engine
+                    .process_capture_10ms(
+                        frame,
+                        delay_samples.saturating_sub(frame_index * AEC_FRAME_SAMPLES),
+                        capture_time,
+                    )?
+                    .samples,
+            );
+        }
 
-        // Estimate the actual render-to-capture gain for this block rather
-        // than subtracting a fixed 0.8. In system-loopback Watch mode the
-        // captured stream is `video + our translated playback`; least-squares
-        // projection removes the latter while retaining the unrelated video.
-        let mut echo_path_gains = [0.0_f32; TARGET_CHANNEL_COUNT];
-        if alignment.correlation >= MIN_ECHO_ALIGNMENT_CORRELATION {
-            for channel in 0..TARGET_CHANNEL_COUNT {
-                if reference_energy[channel] > f32::EPSILON {
-                    echo_path_gains[channel] =
-                        (cross_energy[channel] / reference_energy[channel])
-                            .clamp(0.0, MAX_ECHO_PATH_GAIN);
-                }
-            }
-        }
-        let mut cleaned: Vec<f32> = captured
-            .iter()
-            .zip(reference.iter())
-            .enumerate()
-            .map(|(index, (sample, reference))| {
-                let channel = index % TARGET_CHANNEL_COUNT;
-                (sample - reference * echo_path_gains[channel]).clamp(-1.0, 1.0)
-            })
-            .collect();
-
-        // Never use captured/reference loudness as a half-duplex gate: a quiet
-        // movie under louder translated speech is valid double talk. Drop a
-        // block only when it is strongly correlated with our render reference
-        // AND adaptive subtraction leaves an inaudible residual.
-        let block_len = captured.len() as f32;
-        let reference_energy_total = reference_energy.iter().sum::<f32>();
-        let captured_energy_total = captured_energy.iter().sum::<f32>();
-        let echo_path_gain = echo_path_gains.iter().sum::<f32>()
-            / TARGET_CHANNEL_COUNT as f32;
-        let reference_rms = (reference_energy_total / block_len).sqrt();
-        let captured_rms = (captured_energy_total / block_len).sqrt();
-        let residual_rms = (cleaned.iter().map(|sample| sample * sample).sum::<f32>()
-            / block_len)
-            .sqrt();
-        let correlation = alignment.correlation;
-        let residual_energy = residual_rms * residual_rms * block_len;
-        let mut max_tail_correlation = 0.0_f32;
-        if residual_energy > f32::EPSILON {
-            let samples_per_ms = TARGET_SAMPLE_RATE_HZ as usize
-                * TARGET_CHANNEL_COUNT
-                / 1_000;
-            for lag_ms in
-                (ECHO_TAIL_LAG_STEP_MS..=ECHO_TAIL_MAX_LAG_MS)
-                    .step_by(ECHO_TAIL_LAG_STEP_MS)
-            {
-                let lag_samples = lag_ms * samples_per_ms;
-                let mut delayed_energy = 0.0_f32;
-                let mut residual_cross = 0.0_f32;
-                for (index, residual) in cleaned.iter().enumerate() {
-                    let position = block_start + index as i64 - lag_samples as i64;
-                    let delayed_reference = if position >= 0
-                        && (position as usize) < self.buffer.len()
-                    {
-                        self.buffer[position as usize]
-                    } else {
-                        0.0
-                    };
-                    delayed_energy += delayed_reference * delayed_reference;
-                    residual_cross += residual * delayed_reference;
-                }
-                let denominator = (residual_energy * delayed_energy).sqrt();
-                if denominator > f32::EPSILON {
-                    max_tail_correlation = max_tail_correlation
-                        .max((residual_cross.abs() / denominator).clamp(0.0, 1.0));
-                }
-            }
-        }
-        let suppress_asr = reference_rms > REFERENCE_ACTIVE_RMS
-            && captured_rms > f32::EPSILON
-            && correlation >= PURE_ECHO_CORRELATION
-            && (residual_rms < PURE_ECHO_RESIDUAL_RMS
-                || max_tail_correlation >= ECHO_TAIL_CORRELATION);
-        if suppress_asr {
-            for sample in cleaned.iter_mut() {
-                *sample *= PLAYBACK_GATE_GAIN;
-            }
-        }
-        EchoCancellationResult {
-            samples: cleaned,
-            suppress_asr,
-            metrics: EchoCancellationMetrics {
-                alignment_found: true,
-                correlation,
-                delay_samples: alignment.delay_samples,
-                reference_rms,
-                captured_rms,
-                residual_rms,
-                echo_path_gain,
-                tail_correlation: max_tail_correlation,
-            },
-        }
+        // Never synthesize a padded capture frame: preserve any unexpected
+        // tail byte-for-byte so no near-end audio can disappear.
+        samples.extend_from_slice(&captured[complete_frame_count * AEC_FRAME_SAMPLES..]);
+        Ok(EchoCancellationResult { samples })
     }
 
-    fn best_echo_alignment(
-        &self,
+    #[cfg(test)]
+    fn process_capture_at_for_test(
+        &mut self,
         captured: &[f32],
-        cursor: usize,
-        preferred_delay_samples: usize,
-    ) -> Option<EchoAlignment> {
-        let samples_per_ms =
-            TARGET_SAMPLE_RATE_HZ as usize * TARGET_CHANNEL_COUNT / 1_000;
-        let coarse_step =
-            (ADAPTIVE_DELAY_COARSE_STEP_MS * samples_per_ms).max(TARGET_CHANNEL_COUNT);
-        let max_delay = (ADAPTIVE_DELAY_MAX_MS * samples_per_ms)
-            .max(preferred_delay_samples.saturating_add(coarse_step));
-        let mut best = None;
-
-        for delay in (0..=max_delay).step_by(coarse_step) {
-            self.consider_echo_alignment(captured, cursor, delay, preferred_delay_samples, &mut best);
-        }
-        self.consider_echo_alignment(
-            captured,
-            cursor,
-            preferred_delay_samples,
-            preferred_delay_samples,
-            &mut best,
-        );
-
-        let coarse = best?;
-        let fine_radius = ADAPTIVE_DELAY_FINE_RADIUS_MS * samples_per_ms;
-        let fine_step =
-            (ADAPTIVE_DELAY_FINE_STEP_MS * samples_per_ms).max(TARGET_CHANNEL_COUNT);
-        let fine_start = coarse.delay_samples.saturating_sub(fine_radius);
-        let fine_end = coarse
-            .delay_samples
-            .saturating_add(fine_radius)
-            .min(max_delay);
-        for delay in (fine_start..=fine_end).step_by(fine_step) {
-            self.consider_echo_alignment(captured, cursor, delay, preferred_delay_samples, &mut best);
-        }
-        best
-    }
-
-    fn consider_echo_alignment(
-        &self,
-        captured: &[f32],
-        cursor: usize,
         delay_samples: usize,
-        preferred_delay_samples: usize,
-        best: &mut Option<EchoAlignment>,
-    ) {
-        let delay_samples =
-            (delay_samples / TARGET_CHANNEL_COUNT) * TARGET_CHANNEL_COUNT;
-        let Some(block_end) = cursor.checked_sub(delay_samples) else {
-            return;
-        };
-        let Some(block_start) = block_end.checked_sub(captured.len()) else {
-            return;
-        };
-        if block_end > self.buffer.len() {
-            return;
-        }
-
-        let mut reference_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
-        let mut captured_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
-        let mut cross_energy = [0.0_f32; TARGET_CHANNEL_COUNT];
-        let mut sample_count = 0usize;
-        for frame in (0..captured.len() / TARGET_CHANNEL_COUNT)
-            .step_by(ALIGNMENT_SCORE_FRAME_STRIDE)
-        {
-            let base = frame * TARGET_CHANNEL_COUNT;
-            for channel in 0..TARGET_CHANNEL_COUNT {
-                let index = base + channel;
-                let reference = self.buffer[block_start + index];
-                let sample = captured[index];
-                reference_energy[channel] += reference * reference;
-                captured_energy[channel] += sample * sample;
-                cross_energy[channel] += sample * reference;
-            }
-            sample_count += 1;
-        }
-        if sample_count == 0 || captured_energy.iter().all(|energy| *energy <= f32::EPSILON) {
-            return;
-        }
-        if reference_energy
-            .iter()
-            .all(|energy| (*energy / sample_count as f32).sqrt() <= REFERENCE_ACTIVE_RMS)
-        {
-            return;
-        }
-        let correlation = (0..TARGET_CHANNEL_COUNT)
-            .filter_map(|channel| {
-                let denominator =
-                    (reference_energy[channel] * captured_energy[channel]).sqrt();
-                (denominator > f32::EPSILON).then(|| {
-                    (cross_energy[channel].abs() / denominator).clamp(0.0, 1.0)
-                })
-            })
-            .fold(0.0_f32, f32::max);
-        if correlation <= f32::EPSILON {
-            return;
-        }
-        let candidate = EchoAlignment {
-            delay_samples,
-            block_start,
-            correlation,
-        };
-        let replace = best.is_none_or(|current| {
-            correlation > current.correlation + f32::EPSILON
-                || ((correlation - current.correlation).abs() <= f32::EPSILON
-                    && delay_samples.abs_diff(preferred_delay_samples)
-                        < current.delay_samples.abs_diff(preferred_delay_samples))
-        });
-        if replace {
-            *best = Some(candidate);
-        }
+        capture_end: Instant,
+    ) -> Result<EchoCancellationResult, String> {
+        self.process_capture_at(captured, delay_samples, capture_end)
     }
 
-    /// Moves the playback clock forward by the wall time elapsed since the
-    /// previous call. The cursor may run past the buffered audio into the
-    /// silence after playback finished (bounded so it cannot grow without
-    /// limit); `push_samples_at` snaps it back when new audio starts.
-    fn advance_play_cursor(&mut self, now: Instant) {
-        if let Some(previous) = self.last_advance {
-            let elapsed = now.saturating_duration_since(previous).as_secs_f64();
-            let advanced =
-                elapsed * TARGET_SAMPLE_RATE_HZ as f64 * TARGET_CHANNEL_COUNT as f64;
-            self.play_cursor = (self.play_cursor + advanced)
-                .min((self.buffer.len() + self.capacity) as f64);
-        }
-        self.last_advance = Some(now);
+    pub(crate) fn reset(&mut self) -> Result<(), String> {
+        self.engine.reset()
     }
 
-    fn push_sample(&mut self, sample: f32) {
-        // `capacity` is a retention target, not permission to discard audio
-        // that has not played yet. Native responses are queued as one complete
-        // PCM block and can exceed 30 seconds; dropping the front here made a
-        // 42-second response use the wrong 30-second reference from its first
-        // sample onward. Reclaim only samples already consumed by the playback
-        // clock and allow a long in-flight segment to grow temporarily.
-        while self.buffer.len() >= self.capacity && self.play_cursor >= 1.0 {
-            self.buffer.pop_front();
-            self.play_cursor = (self.play_cursor - 1.0).max(0.0);
-        }
-        self.buffer.push_back(sample.clamp(-1.0, 1.0));
+    pub(crate) fn stats(&self) -> EchoCancellerEngineStats {
+        self.engine.stats()
     }
 }
 
-fn lerp(left: f32, right: f32, frac: f32) -> f32 {
-    left + (right - left) * frac
+pub(crate) fn normalize_to_target_stereo(
+    samples: &[f32],
+    sample_rate_hz: u32,
+    channel_count: u16,
+) -> Vec<f32> {
+    if samples.is_empty() || sample_rate_hz == 0 || channel_count == 0 {
+        return Vec::new();
+    }
+    let channels = channel_count as usize;
+    let input_frames = samples.len() / channels;
+    if input_frames == 0 {
+        return Vec::new();
+    }
+    let output_frames = ((input_frames as u64 * TARGET_SAMPLE_RATE_HZ as u64)
+        / sample_rate_hz as u64)
+        .max(1) as usize;
+    let ratio = sample_rate_hz as f32 / TARGET_SAMPLE_RATE_HZ as f32;
+    let mut output = Vec::with_capacity(output_frames * TARGET_CHANNEL_COUNT);
+    for output_frame in 0..output_frames {
+        let source_position = output_frame as f32 * ratio;
+        let left_index = source_position.floor() as usize;
+        let right_index = (left_index + 1).min(input_frames.saturating_sub(1));
+        let fraction = source_position - left_index as f32;
+        let left_base = left_index.min(input_frames - 1) * channels;
+        let right_base = right_index * channels;
+        let (left, right) = if channels == 1 {
+            let sample = lerp(samples[left_base], samples[right_base], fraction);
+            (sample, sample)
+        } else {
+            (
+                lerp(samples[left_base], samples[right_base], fraction),
+                lerp(
+                    samples[left_base + 1],
+                    samples[right_base + 1],
+                    fraction,
+                ),
+            )
+        };
+        output.push(left);
+        output.push(right);
+    }
+    output
 }
 
-/// Root-mean-square level of a sample block. Shared by the echo-cancel and
-/// acoustic-loop test suites.
-#[cfg(test)]
-pub(crate) fn rms(samples: &[f32]) -> f32 {
-    (samples.iter().map(|sample| sample * sample).sum::<f32>() / samples.len() as f32).sqrt()
+fn lerp(left: f32, right: f32, fraction: f32) -> f32 {
+    left + (right - left) * fraction
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
     use super::*;
-    use std::time::Duration;
 
-    /// Mirrors `ECHO_CANCEL_DELAY_SAMPLES` in the capture engine.
-    const TEST_DELAY_SAMPLES: usize = 9_600;
-    /// One 960-frame stereo capture chunk in interleaved samples.
-    const TEST_CHUNK_SAMPLES: usize = 1_920;
-    const TEST_ECHO_PATH_GAIN: f32 = 0.8;
-
-    fn sine_mono(frames: usize, amplitude: f32) -> Vec<f32> {
-        (0..frames)
-            .map(|index| (index as f32 * 0.13).sin() * amplitude)
-            .collect()
+    struct ScriptedEngine {
+        backend: &'static str,
+        output_sample: f32,
+        render_times: Arc<Mutex<Vec<Instant>>>,
+        capture_times: Arc<Mutex<Vec<Instant>>>,
+        capture_delays: Arc<Mutex<Vec<usize>>>,
+        render_frames: u64,
+        capture_frames: u64,
+        reset_count: u64,
     }
 
-    /// Builds the capture chunk the microphone hears `seconds_played` seconds
-    /// into playback: the reference block that ended `TEST_DELAY_SAMPLES`
-    /// behind the playback position, scaled by the acoustic echo path gain.
-    fn echoed_block(reference_mono: &[f32], seconds_played: u64, gain: f32) -> Vec<f32> {
-        echoed_block_with_delay(reference_mono, seconds_played, TEST_DELAY_SAMPLES, gain)
+    impl ScriptedEngine {
+        fn new(
+            backend: &'static str,
+            output_sample: f32,
+        ) -> (
+            Self,
+            Arc<Mutex<Vec<Instant>>>,
+            Arc<Mutex<Vec<Instant>>>,
+            Arc<Mutex<Vec<usize>>>,
+        ) {
+            let render_times = Arc::new(Mutex::new(Vec::new()));
+            let capture_times = Arc::new(Mutex::new(Vec::new()));
+            let capture_delays = Arc::new(Mutex::new(Vec::new()));
+            (
+                Self {
+                    backend,
+                    output_sample,
+                    render_times: Arc::clone(&render_times),
+                    capture_times: Arc::clone(&capture_times),
+                    capture_delays: Arc::clone(&capture_delays),
+                    render_frames: 0,
+                    capture_frames: 0,
+                    reset_count: 0,
+                },
+                render_times,
+                capture_times,
+                capture_delays,
+            )
+        }
     }
 
-    fn echoed_block_with_delay(
-        reference_mono: &[f32],
-        seconds_played: u64,
-        delay_samples: usize,
-        gain: f32,
-    ) -> Vec<f32> {
-        let cursor =
-            seconds_played as usize * TARGET_SAMPLE_RATE_HZ as usize * TARGET_CHANNEL_COUNT;
-        let block_start = cursor - delay_samples - TEST_CHUNK_SAMPLES;
-        (0..TEST_CHUNK_SAMPLES)
-            .map(|index| reference_mono[(block_start + index) / 2] * gain)
-            .collect()
-    }
+    impl EchoCancellerEngine for ScriptedEngine {
+        fn push_render_10ms(
+            &mut self,
+            frame: &[f32],
+            render_time: Instant,
+        ) -> Result<(), String> {
+            if frame.len() != AEC_FRAME_SAMPLES {
+                return Err("scripted engine received an invalid render frame".to_string());
+            }
+            self.render_frames = self.render_frames.saturating_add(1);
+            self.render_times.lock().unwrap().push(render_time);
+            Ok(())
+        }
 
-    fn broadband_mono(frames: usize, amplitude: f32) -> Vec<f32> {
-        let mut state = 0x1234_5678_u32;
-        let mut smoothed = 0.0_f32;
-        (0..frames)
-            .map(|_| {
-                state ^= state << 13;
-                state ^= state >> 17;
-                state ^= state << 5;
-                let white = (state as f32 / u32::MAX as f32).mul_add(2.0, -1.0);
-                smoothed = smoothed.mul_add(0.82, white * 0.18);
-                smoothed * amplitude
+        fn process_capture_10ms(
+            &mut self,
+            frame: &[f32],
+            delay_samples: usize,
+            capture_time: Instant,
+        ) -> Result<EchoCancellationResult, String> {
+            if frame.len() != AEC_FRAME_SAMPLES {
+                return Err("scripted engine received an invalid capture frame".to_string());
+            }
+            self.capture_frames = self.capture_frames.saturating_add(1);
+            self.capture_times.lock().unwrap().push(capture_time);
+            self.capture_delays.lock().unwrap().push(delay_samples);
+            Ok(EchoCancellationResult {
+                samples: vec![self.output_sample; frame.len()],
             })
-            .collect()
-    }
+        }
 
-    /// Seeds a 30-second-capacity reference buffer with `seconds` of a tone at
-    /// `amplitude`, pushed at a freshly captured playback start instant.
-    fn seeded_reference_buffer(
-        seconds: usize,
-        amplitude: f32,
-    ) -> (EchoReferenceBuffer, Vec<f32>, Instant) {
-        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
-        let reference = sine_mono(seconds * 48_000, amplitude);
-        let playback_started = Instant::now();
-        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
-        (buffer, reference, playback_started)
-    }
+        fn reset(&mut self) -> Result<(), String> {
+            self.reset_count = self.reset_count.saturating_add(1);
+            Ok(())
+        }
 
-    /// A cosine capture block unrelated to the reference tone, scaled by `gain`;
-    /// used to prove pass-through/double-talk behavior with no aligned echo.
-    fn cosine_capture_block(gain: f32) -> Vec<f32> {
-        (0..TEST_CHUNK_SAMPLES)
-            .map(|index| (index as f32 * 0.031).cos() * gain)
-            .collect()
-    }
-
-    #[test]
-    fn converts_mono_to_stereo_reference() {
-        let mut buffer = EchoReferenceBuffer::new(4);
-        buffer.push_samples(&[0.5, -0.5], 48_000, 1);
-
-        assert_eq!(buffer.buffer.len(), 4);
-        assert_eq!(buffer.buffer[0], 0.5);
-        assert_eq!(buffer.buffer[1], 0.5);
-        assert_eq!(buffer.buffer[2], -0.5);
-        assert_eq!(buffer.buffer[3], -0.5);
-    }
-
-    #[test]
-    fn resamples_24k_to_48k() {
-        let mut buffer = EchoReferenceBuffer::new(8);
-        buffer.push_samples(&[0.25, 0.75], 24_000, 1);
-
-        assert_eq!(buffer.buffer.len(), 8);
-        assert!(buffer.buffer[2] > 0.25);
-    }
-
-    #[test]
-    fn keeps_unplayed_samples_when_a_segment_exceeds_soft_capacity() {
-        let mut buffer = EchoReferenceBuffer::new(1);
-        buffer.push_samples(&[0.1, 0.2, 0.3], 48_000, 1);
-
-        assert_eq!(buffer.buffer.len(), 6);
-        assert_eq!(buffer.buffer[0], 0.1);
-        assert_eq!(buffer.buffer[5], 0.3);
-    }
-
-    #[test]
-    fn reclaims_consumed_samples_before_appending_a_new_segment() {
-        let mut buffer = EchoReferenceBuffer::new(1);
-        let started = Instant::now();
-        buffer.push_samples_at(&[0.1, 0.2, 0.3], 48_000, 1, started);
-        buffer.push_samples_at(
-            &[0.7],
-            48_000,
-            1,
-            started + Duration::from_secs(1),
-        );
-
-        assert_eq!(buffer.buffer.len(), 2);
-        assert_eq!(buffer.buffer[0], 0.7);
-        assert_eq!(buffer.buffer[1], 0.7);
-    }
-
-    #[test]
-    fn empty_buffer_returns_capture() {
-        let mut buffer = EchoReferenceBuffer::new(4);
-        let captured = vec![0.2, -0.2];
-
-        let cancellation = buffer.subtract_from(&captured, 0);
-        assert_eq!(cancellation.samples, captured);
-        assert!(!cancellation.suppress_asr);
-        assert!(buffer.is_empty());
-    }
-
-    #[test]
-    fn cancels_echo_aligned_to_actual_playback_progress() {
-        let (mut buffer, reference, playback_started) = seeded_reference_buffer(3, 0.5);
-
-        // Two seconds into playback the capture loop receives the echo of the
-        // block played `TEST_DELAY_SAMPLES` earlier, at the exact path gain
-        // the canceller compensates for.
-        let captured = echoed_block(&reference, 2, TEST_ECHO_PATH_GAIN);
-        let cancellation = buffer.subtract_from_at(
-            &captured,
-            TEST_DELAY_SAMPLES,
-            playback_started + Duration::from_secs(2),
-        );
-
-        assert!(
-            rms(&cancellation.samples) < rms(&captured) * 0.05,
-            "residual echo too high: cleaned_rms={} captured_rms={}",
-            rms(&cancellation.samples),
-            rms(&captured)
-        );
-        assert!(cancellation.suppress_asr);
-        assert!(has_acoustic_echo_evidence(cancellation.metrics));
-    }
-
-    #[test]
-    fn weak_alignment_is_not_used_as_late_echo_gate_evidence() {
-        assert!(!has_acoustic_echo_evidence(EchoCancellationMetrics {
-            alignment_found: true,
-            correlation: 0.34,
-            reference_rms: 0.1,
-            captured_rms: 0.02,
-            echo_path_gain: 0.8,
-            ..EchoCancellationMetrics::default()
-        }));
-        assert!(!has_acoustic_echo_evidence(EchoCancellationMetrics {
-            alignment_found: true,
-            correlation: 0.8,
-            reference_rms: 0.1,
-            captured_rms: 0.02,
-            echo_path_gain: 0.01,
-            ..EchoCancellationMetrics::default()
-        }));
-    }
-
-    #[test]
-    fn adapts_to_endpoint_latency_instead_of_leaking_translated_playback() {
-        let playback_started = Instant::now();
-        let reference = broadband_mono(3 * 48_000, 0.5);
-
-        for actual_delay_ms in [35_usize, 220, 650] {
-            let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
-            buffer.push_samples_at(&reference, 48_000, 1, playback_started);
-            let actual_delay_samples =
-                actual_delay_ms * TARGET_SAMPLE_RATE_HZ as usize * TARGET_CHANNEL_COUNT / 1_000;
-            let captured = echoed_block_with_delay(
-                &reference,
-                2,
-                actual_delay_samples,
-                TEST_ECHO_PATH_GAIN,
-            );
-
-            let cancellation = buffer.subtract_from_at(
-                &captured,
-                TEST_DELAY_SAMPLES,
-                playback_started + Duration::from_secs(2),
-            );
-
-            assert!(
-                rms(&cancellation.samples) < rms(&captured) * 0.05,
-                "latency {actual_delay_ms}ms leaked translated playback: cleaned_rms={} captured_rms={}",
-                rms(&cancellation.samples),
-                rms(&captured)
-            );
-            assert!(
-                cancellation.suppress_asr,
-                "latency {actual_delay_ms}ms must be suppressed before realtime ASR"
-            );
+        fn stats(&self) -> EchoCancellerEngineStats {
+            EchoCancellerEngineStats {
+                backend: self.backend,
+                render_10ms_frames: self.render_frames,
+                capture_10ms_frames: self.capture_frames,
+                reset_count: self.reset_count,
+                rejected_frame_count: 0,
+                stats_read_failure_count: 0,
+                erle_db: None,
+                residual_echo_likelihood: None,
+                reported_delay_ms: None,
+                double_talk_frames: None,
+                render_underrun_count: 0,
+                capture_underrun_count: 0,
+                processing_call_count: self.capture_frames,
+                processing_time_micros_total: 0,
+                max_processing_time_micros: 0,
+            }
         }
     }
 
     #[test]
-    fn long_segment_keeps_early_reference_aligned_past_soft_capacity() {
-        // Model audio arrives as one complete segment before blocking playback
-        // begins. A one-second soft capacity must not evict the first two
-        // seconds of this three-second segment before they have played.
-        let mut buffer = EchoReferenceBuffer::new(48_000);
-        let reference = sine_mono(3 * 48_000, 0.5);
-        let playback_started = Instant::now();
-        buffer.push_samples_at(&reference, 48_000, 1, playback_started);
-
-        let captured = echoed_block(&reference, 1, TEST_ECHO_PATH_GAIN);
-        let cancellation = buffer.subtract_from_at(
-            &captured,
-            TEST_DELAY_SAMPLES,
-            playback_started + Duration::from_secs(1),
-        );
-
-        assert!(
-            rms(&cancellation.samples) < rms(&captured) * 0.05,
-            "early reference was evicted or shifted: cleaned_rms={} captured_rms={}",
-            rms(&cancellation.samples),
-            rms(&captured)
-        );
-        assert!(cancellation.suppress_asr);
+    fn last_good_stats_survive_a_native_read_failure() {
+        let mut stats = LastGoodNativeStats::<u64>::default();
+        assert_eq!(stats.observe::<()>(Ok(42)), 42);
+        assert_eq!(stats.observe::<&str>(Err("unavailable")), 42);
+        assert_eq!(stats.read_failure_count, 1);
     }
 
     #[test]
-    fn suppresses_residual_echo_while_tts_is_playing() {
-        let (mut buffer, reference, playback_started) = seeded_reference_buffer(3, 0.5);
+    fn mono_render_is_normalized_to_target_stereo() {
+        let normalized = normalize_to_target_stereo(&[0.25, -0.25], 48_000, 1);
+        assert_eq!(normalized, vec![0.25, 0.25, -0.25, -0.25]);
+    }
 
-        // The acoustic path gain differs from ATTENUATION, so plain linear
-        // subtraction leaves an audible residual; the playback gate must
-        // suppress it while the reference block is active.
-        let captured = echoed_block(&reference, 2, 0.5);
-        let cancellation = buffer.subtract_from_at(
-            &captured,
-            TEST_DELAY_SAMPLES,
-            playback_started + Duration::from_secs(2),
-        );
+    #[test]
+    fn adapter_splits_twenty_ms_into_contiguous_ten_ms_frames() {
+        let (engine, render_times, capture_times, capture_delays) =
+            ScriptedEngine::new("webrtc-aec3", 0.25);
+        let mut canceller = EchoCanceller::from_engine(Box::new(engine));
+        let started = Instant::now();
+        canceller
+            .push_render_at_for_test(&vec![0.1; 960], 48_000, 1, started)
+            .unwrap();
+        let captured = vec![0.5; AEC_FRAME_SAMPLES * 2];
+        let capture_end = started + Duration::from_millis(20);
+        let processed = canceller
+            .process_capture_at_for_test(&captured, AEC_FRAME_SAMPLES * 2, capture_end)
+            .unwrap();
 
-        assert!(
-            rms(&cancellation.samples) < rms(&captured) * 0.1,
-            "gated residual too high: cleaned_rms={} captured_rms={}",
-            rms(&cancellation.samples),
-            rms(&captured)
+        assert_eq!(processed.samples, vec![0.25; captured.len()]);
+        assert_eq!(
+            render_times.lock().unwrap().as_slice(),
+            &[started, started + Duration::from_millis(10)]
         );
-        assert!(
-            cancellation.suppress_asr,
-            "playback-dominated capture must be dropped before the Omni silence grace"
+        assert_eq!(
+            capture_times.lock().unwrap().as_slice(),
+            &[
+                capture_end - Duration::from_millis(10),
+                capture_end,
+            ]
+        );
+        assert_eq!(canceller.stats().render_10ms_frames, 2);
+        assert_eq!(canceller.stats().capture_10ms_frames, 2);
+        assert_eq!(
+            capture_delays.lock().unwrap().as_slice(),
+            &[AEC_FRAME_SAMPLES * 2, AEC_FRAME_SAMPLES]
         );
     }
 
     #[test]
-    fn keeps_double_talk_audible_during_playback() {
-        let (mut buffer, _reference, playback_started) = seeded_reference_buffer(3, 0.2);
+    fn unexpected_capture_tail_is_forwarded_unchanged() {
+        let (engine, _, _, _) = ScriptedEngine::new("webrtc-aec3", 0.25);
+        let mut canceller = EchoCanceller::from_engine(Box::new(engine));
+        let mut captured = vec![0.5; AEC_FRAME_SAMPLES];
+        captured.extend([0.7, -0.7]);
 
-        // The listener talks loudly over quiet TTS playback; the gate must
-        // back off so their speech still reaches STT.
-        let captured = cosine_capture_block(0.9);
-        let cancellation = buffer.subtract_from_at(
-            &captured,
-            TEST_DELAY_SAMPLES,
-            playback_started + Duration::from_secs(2),
+        let processed = canceller.process_capture(&captured, 0).unwrap();
+        assert_eq!(
+            &processed.samples[..AEC_FRAME_SAMPLES],
+            vec![0.25; AEC_FRAME_SAMPLES].as_slice()
         );
-
-        assert!(
-            rms(&cancellation.samples) > rms(&captured) * 0.5,
-            "double talk was gated away: cleaned_rms={} captured_rms={}",
-            rms(&cancellation.samples),
-            rms(&captured)
-        );
-        assert!(!cancellation.suppress_asr);
+        assert_eq!(&processed.samples[AEC_FRAME_SAMPLES..], &[0.7, -0.7]);
     }
 
     #[test]
-    fn keeps_quiet_program_audio_under_louder_translated_playback() {
-        let (mut buffer, reference, playback_started) = seeded_reference_buffer(3, 0.18);
-        let translated_playback = echoed_block(&reference, 2, TEST_ECHO_PATH_GAIN);
-        let program_audio = cosine_capture_block(0.025);
-        let captured: Vec<f32> = translated_playback
-            .iter()
-            .zip(program_audio.iter())
-            .map(|(translated, program)| translated + program)
-            .collect();
-
-        let cancellation = buffer.subtract_from_at(
-            &captured,
-            TEST_DELAY_SAMPLES,
-            playback_started + Duration::from_secs(2),
-        );
-
-        assert!(
-            rms(&cancellation.samples) > rms(&program_audio) * 0.7,
-            "quiet source was gated: cleaned_rms={} source_rms={}",
-            rms(&cancellation.samples),
-            rms(&program_audio)
-        );
-        assert!(
-            rms(&cancellation.samples) < rms(&program_audio) * 1.3,
-            "translated playback was not removed: cleaned_rms={} source_rms={}",
-            rms(&cancellation.samples),
-            rms(&program_audio)
-        );
-        assert!(!cancellation.suppress_asr);
+    fn production_factory_rejects_any_non_webrtc_engine() {
+        let (engine, _, _, _) = ScriptedEngine::new("scripted-test", 0.25);
+        let error = ProductionEchoCanceller::from_verified_aec3_engine_for_test(Box::new(engine))
+            .err()
+            .expect("a non-WebRTC backend must never enter production");
+        assert!(error.contains("rejected non-WebRTC backend"));
+        assert!(error.contains("scripted-test"));
     }
 
     #[test]
-    fn passes_capture_through_after_playback_finished() {
-        let (mut buffer, _reference, playback_started) = seeded_reference_buffer(1, 0.5);
-
-        // Long after the one-second reference finished playing, capture must
-        // pass through untouched even though old samples remain buffered.
-        let captured = cosine_capture_block(0.4);
-        let cancellation = buffer.subtract_from_at(
-            &captured,
-            TEST_DELAY_SAMPLES,
-            playback_started + Duration::from_secs(5),
-        );
-
-        assert_eq!(cancellation.samples, captured);
-        assert!(!cancellation.suppress_asr);
+    fn production_returns_only_the_verified_aec3_pcm() {
+        let (engine, _, _, _) = ScriptedEngine::new("webrtc-aec3", 0.25);
+        let mut production =
+            ProductionEchoCanceller::from_verified_aec3_engine_for_test(Box::new(engine))
+                .unwrap();
+        let captured = vec![0.8; AEC_FRAME_SAMPLES];
+        production
+            .push_render(&captured, TARGET_SAMPLE_RATE_HZ, TARGET_CHANNEL_COUNT as u16)
+            .unwrap();
+        let processed = production.process_capture(&captured, 0).unwrap();
+        assert_eq!(processed.samples, vec![0.25; AEC_FRAME_SAMPLES]);
+        assert_eq!(production.stats().backend, "webrtc-aec3");
     }
 
     #[test]
-    fn ignores_degenerate_push_inputs() {
-        let mut buffer = EchoReferenceBuffer::new(4);
-        buffer.push_samples(&[], 48_000, 1);
-        buffer.push_samples(&[0.5], 0, 1);
-        buffer.push_samples(&[0.5], 48_000, 0);
-        // Fewer samples than one full frame of the claimed channel count.
-        buffer.push_samples(&[0.5], 48_000, 2);
-
-        assert!(buffer.is_empty());
-        assert_eq!(buffer.depth_samples(), 0);
+    #[cfg(not(feature = "webrtc-aec3"))]
+    fn closed_gate_cannot_construct_a_public_aec_route() {
+        let error = create_production_echo_canceller()
+            .err()
+            .expect("AEC3 is not linked or fixture-verified in this build");
+        assert!(error.contains("WebRTC AEC3 production backend is unavailable"));
+        assert!(error.contains("x86_64-pc-windows-msvc"));
     }
 
     #[test]
-    fn capture_before_playback_reaches_the_delay_passes_through() {
-        let (mut buffer, _reference, playback_started) = seeded_reference_buffer(1, 0.5);
-
-        // The echo path is TEST_DELAY_SAMPLES long, so a capture taken right
-        // at playback start cannot contain any speaker output yet; the
-        // canceller must not carve the aligned-to-nothing reference out of it.
-        let captured = cosine_capture_block(0.4);
-        let cancellation = buffer.subtract_from_at(&captured, TEST_DELAY_SAMPLES, playback_started);
-
-        assert_eq!(cancellation.samples, captured);
-        assert!(!cancellation.suppress_asr);
+    #[cfg(not(feature = "webrtc-aec3"))]
+    fn aec3_stays_behind_the_explicit_windows_build_gate() {
+        let gate = webrtc_aec3_build_gate();
+        assert!(!gate.ready);
+        assert!(!gate.msvc_build_verified);
+        assert!(!gate.linked_backend_present);
+        assert!(!gate.fixture_verified);
+        assert!(gate.dependency.starts_with("official vcpkg webrtc@2026-03-17#1"));
     }
 
     #[test]
-    fn new_segment_after_a_silence_gap_realigns_the_play_cursor() {
-        let mut buffer = EchoReferenceBuffer::new(48_000 * 30);
-        let playback_started = Instant::now();
-        // First 1-second segment, then 4 seconds of silence: the playback
-        // clock runs far past the buffered audio.
-        buffer.push_samples_at(&sine_mono(48_000, 0.5), 48_000, 1, playback_started);
-
-        // A new segment starts after the gap; the cursor must snap back to
-        // the end of the buffered audio so this segment aligns with "now".
-        let second_segment = sine_mono(48_000, 0.3);
-        let second_started = playback_started + Duration::from_secs(5);
-        buffer.push_samples_at(&second_segment, 48_000, 1, second_started);
-
-        // One second into the second segment the microphone hears its echo:
-        // the reference block that ended TEST_DELAY_SAMPLES behind the cursor,
-        // located near the end of the second segment.
-        let first_segment_samples = 48_000 * TARGET_CHANNEL_COUNT;
-        let cursor = first_segment_samples + 48_000 * TARGET_CHANNEL_COUNT;
-        let block_start = cursor - TEST_DELAY_SAMPLES - TEST_CHUNK_SAMPLES;
-        let captured: Vec<f32> = (0..TEST_CHUNK_SAMPLES)
-            .map(|index| {
-                second_segment[(block_start + index - first_segment_samples) / 2]
-                    * TEST_ECHO_PATH_GAIN
-            })
-            .collect();
-        let cancellation = buffer.subtract_from_at(
-            &captured,
-            TEST_DELAY_SAMPLES,
-            second_started + Duration::from_secs(1),
-        );
-
-        assert!(
-            rms(&cancellation.samples) < rms(&captured) * 0.05,
-            "cursor misaligned after silence gap: cleaned_rms={} captured_rms={}",
-            rms(&cancellation.samples),
-            rms(&captured)
-        );
-        assert!(cancellation.suppress_asr);
+    #[cfg(feature = "webrtc-aec3")]
+    fn linked_msvc_build_is_the_only_way_to_open_the_public_gate() {
+        let gate = webrtc_aec3_build_gate();
+        assert!(gate.ready);
+        assert!(gate.msvc_build_verified);
+        assert!(gate.linked_backend_present);
+        assert!(gate.fixture_verified);
+        let production = create_production_echo_canceller().unwrap();
+        assert_eq!(production.stats().backend, "webrtc-aec3");
     }
 }

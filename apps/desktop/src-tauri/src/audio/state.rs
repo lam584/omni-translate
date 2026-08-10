@@ -1,3 +1,4 @@
+use std::collections::{HashSet, VecDeque};
 use std::sync::{mpsc::Sender, Arc, Mutex, MutexGuard, RwLock};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -6,9 +7,13 @@ use super::contracts::{
     SpeechRuntimeSnapshot,
     SubtitleCueRuntime, SubtitleDisplaySegmentRuntime, SubtitleOverlayRuntimeSnapshot,
 };
-use super::echo_cancel::{EchoCancellationResult, EchoReferenceBuffer};
+use super::echo_cancel::{
+    create_production_echo_canceller, EchoCancellationResult, EchoCancellerEngineStats,
+    ProductionEchoCanceller,
+};
 use super::engine::CaptureRouteWarmer;
 use super::omni::{OmniHandle, OmniOutputMode, OmniSpeechConfig};
+use super::playback_ownership::DesktopPlaybackOwnership;
 use super::stt::SttHandle;
 use super::time_utils::{ms_marker, unix_ms};
 use super::watch_session_report::WatchSessionReportStore;
@@ -17,20 +22,22 @@ mod audio_cache;
 mod cue_lifecycle;
 mod report_publish;
 mod deferred_translation;
-mod echo_activity;
+mod echo_backend;
+mod bridge_source_evidence;
 mod omni_sessions;
+mod omni_session_lifecycle;
 mod session_registry;
 mod metrics;
 mod route_state;
 mod subtitle_store;
 pub(crate) use audio_cache::{CachedTtsAudio, CapturedSegmentAudio};
+pub(crate) use bridge_source_evidence::BridgeSourceFrameIdentity;
+use bridge_source_evidence::BridgeSourceRuntimeEvidence;
 use cue_lifecycle::{
     finalize_cue_display_segments, new_subtitle_cue, route_direction_from_cue_id,
     trim_recent_subtitle_cues,
 };
 use deferred_translation::DeferredTranslationStore;
-use echo_activity::EchoAsrActivity;
-pub(crate) use echo_activity::EchoSuppressionSnapshot;
 use audio_cache::AudioCacheStore;
 use omni_sessions::OmniSessionStore;
 use session_registry::SessionRegistry;
@@ -41,6 +48,59 @@ use subtitle_store::SubtitleStore;
 pub(crate) struct AudioRouteHandle {
     pub stop_tx: Sender<()>,
     pub join_handle: JoinHandle<()>,
+}
+
+#[derive(Default)]
+struct EchoRenderClock {
+    last_player_position: Option<Duration>,
+    last_submitted_frames: Option<u64>,
+    last_endpoint_padding_frames: Option<u32>,
+    /// Actual physical PCM prefix inserted ahead of the current reference.
+    /// Zero during all normal/non-diagnostic playback.
+    last_physical_prefix_offset_frames: Option<u32>,
+    /// Frames between the render observation and the first sample of the
+    /// reference frame most recently passed to AEC3. Unlike endpoint padding,
+    /// this excludes the reference frame itself.
+    last_reference_lead_frames: Option<u32>,
+    last_observed_at: Option<Instant>,
+    discontinuity_count: u64,
+    last_discontinuity_reason: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct EchoRenderClockSnapshot {
+    pub(crate) player_position: Option<Duration>,
+    pub(crate) submitted_frames: Option<u64>,
+    pub(crate) endpoint_padding_frames: Option<u32>,
+    pub(crate) reference_lead_frames: Option<u32>,
+    pub(crate) last_observed_at: Option<Instant>,
+    pub(crate) discontinuity_count: u64,
+    pub(crate) last_discontinuity_reason: Option<&'static str>,
+}
+
+const BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY: usize = 4_096;
+
+#[derive(Default)]
+struct BridgeTranslationStatusReceipts {
+    order: VecDeque<String>,
+    ids: HashSet<String>,
+}
+
+impl BridgeTranslationStatusReceipts {
+    fn insert(&mut self, status_id: &str) -> bool {
+        if status_id.trim().is_empty() || self.ids.contains(status_id) {
+            return false;
+        }
+        let status_id = status_id.to_string();
+        self.ids.insert(status_id.clone());
+        self.order.push_back(status_id);
+        while self.order.len() > BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY {
+            if let Some(expired) = self.order.pop_front() {
+                self.ids.remove(&expired);
+            }
+        }
+        true
+    }
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum OmniSessionLifecycle {
@@ -68,8 +128,11 @@ pub(crate) struct AudioStateStore {
     session_registry: SessionRegistry,
     omni_sessions: OmniSessionStore,
     audio_cache: AudioCacheStore,
-    echo_buffer: Mutex<EchoReferenceBuffer>,
-    echo_asr_activity: Mutex<EchoAsrActivity>,
+    desktop_playback_ownership: DesktopPlaybackOwnership,
+    /// Active public AEC backend. This slot can only be populated through the
+    /// verified WebRTC AEC3 factory.
+    echo_canceller: Mutex<Option<ProductionEchoCanceller>>,
+    echo_render_clock: Mutex<EchoRenderClock>,
     /// Monotonic timestamp of the most recent observed speaker playback. The
     /// ASR completion can arrive just after the playback worker flips back to
     /// waiting, so the echo gate needs a bounded post-playback tail context.
@@ -89,6 +152,15 @@ pub(crate) struct AudioStateStore {
     /// `processed` map when the value changes so stale entries from before the
     /// reconnect cannot block re-translation of new cues.
     reconnect_generation: std::sync::atomic::AtomicU64,
+    /// Recent stable Bridge translation status ids already applied to
+    /// diagnostics and the Watch report. This lives above an individual
+    /// source-pipe connection/route worker so a replay after a reader
+    /// disconnect is acknowledged without applying terminal side effects
+    /// twice. Bridge FIFO delivery blocks behind its single unacknowledged
+    /// front event, so entries older than this bounded window cannot still be
+    /// awaiting replay when they are evicted.
+    bridge_translation_status_receipts: Mutex<BridgeTranslationStatusReceipts>,
+    bridge_source_runtime_evidence: Mutex<BridgeSourceRuntimeEvidence>,
     /// Monotonically increasing snapshot sequence number. Incremented on every
     /// `snapshot()` call so the frontend can discard stale out-of-order events.
     snapshot_seq: std::sync::atomic::AtomicU64,
@@ -105,14 +177,21 @@ impl AudioStateStore {
             session_registry: SessionRegistry::new(),
             omni_sessions: OmniSessionStore::new(),
             audio_cache: AudioCacheStore::new(),
-            echo_buffer: Mutex::new(EchoReferenceBuffer::new(48_000 * 30)),
-            echo_asr_activity: Mutex::new(EchoAsrActivity::default()),
+            desktop_playback_ownership: DesktopPlaybackOwnership::default(),
+            echo_canceller: Mutex::new(None),
+            echo_render_clock: Mutex::new(EchoRenderClock::default()),
             speaker_playback_last_active_at: Mutex::new(None),
             deferred_subtitle_translation_cues: DeferredTranslationStore::new(),
             active_omni_speech_config: Mutex::new(None),
             warmer: CaptureRouteWarmer::new(),
             stt_session_epoch: std::sync::atomic::AtomicU64::new(0),
             reconnect_generation: std::sync::atomic::AtomicU64::new(0),
+            bridge_translation_status_receipts: Mutex::new(
+                BridgeTranslationStatusReceipts::default(),
+            ),
+            bridge_source_runtime_evidence: Mutex::new(
+                BridgeSourceRuntimeEvidence::default(),
+            ),
             snapshot_seq: std::sync::atomic::AtomicU64::new(0),
             watch_session_report: WatchSessionReportStore::new(),
         }
@@ -121,6 +200,10 @@ impl AudioStateStore {
     /// later `start_route` only has to `start_stream`.
     pub(crate) fn warmer(&self) -> &CaptureRouteWarmer {
         &self.warmer
+    }
+
+    pub(crate) fn desktop_playback_ownership(&self) -> &DesktopPlaybackOwnership {
+        &self.desktop_playback_ownership
     }
 
     pub(crate) fn snapshot(&self) -> AudioRuntimeSnapshot {
@@ -136,6 +219,13 @@ impl AudioStateStore {
 
     pub(crate) fn lock_inbound_pipeline(&self) -> MutexGuard<'_, ()> {
         self.session_registry.lock_inbound_pipeline()
+    }
+
+    /// Short commit gate shared by inbound route-generation changes and late
+    /// source-worker failure publication. Never hold it while performing
+    /// blocking Bridge IPC; worker code re-enters it only after the query.
+    pub(crate) fn lock_inbound_route_authority(&self) -> MutexGuard<'_, ()> {
+        self.session_registry.lock_inbound_route_authority()
     }
 
     /// Current inbound-route command generation. See
@@ -184,71 +274,6 @@ impl AudioStateStore {
                 Err(poisoned) => *poisoned.into_inner() = next,
             }
         }
-    }
-
-    pub(crate) fn push_echo_reference(
-        &self,
-        samples: &[f32],
-        sample_rate_hz: u32,
-        channel_count: u16,
-    ) {
-        self.echo_buffer
-            .lock()
-            .expect("echo buffer poisoned")
-            .push_samples(samples, sample_rate_hz, channel_count);
-    }
-
-    pub(crate) fn subtract_echo(
-        &self,
-        captured: &[f32],
-        delay_samples: usize,
-    ) -> EchoCancellationResult {
-        self.echo_buffer
-            .lock()
-            .expect("echo buffer poisoned")
-            .subtract_from(captured, delay_samples)
-    }
-
-    pub(crate) fn record_echo_asr_chunk(
-        &self,
-        aec_suppressed: bool,
-        playback_active: bool,
-        effective_suppressed: bool,
-        acoustic_echo_evidence: bool,
-    ) {
-        {
-            let mut state = self.inner.lock().expect("audio state poisoned");
-            state.echo_capture_diagnostics.record(
-                aec_suppressed,
-                playback_active,
-                effective_suppressed,
-            );
-        }
-        self.echo_asr_activity
-            .lock()
-            .expect("echo ASR activity poisoned")
-            .record(
-                effective_suppressed,
-                acoustic_echo_evidence,
-                Instant::now(),
-            );
-    }
-
-    pub(crate) fn recent_echo_suppression(
-        &self,
-        window: Duration,
-    ) -> EchoSuppressionSnapshot {
-        self.echo_asr_activity
-            .lock()
-            .expect("echo ASR activity poisoned")
-            .snapshot(window, Instant::now())
-    }
-
-    /// Reference-buffer depth and emptiness probe for the periodic
-    /// echo-cancel diagnostics summary.
-    pub(crate) fn echo_reference_diagnostics(&self) -> (usize, bool) {
-        let buffer = self.echo_buffer.lock().expect("echo buffer poisoned");
-        (buffer.depth_samples(), buffer.is_empty())
     }
 
     fn note_first_translation_source(&self, cue_id: &str, source_text: &str) {
@@ -359,109 +384,6 @@ impl AudioStateStore {
 
     pub(crate) fn take_omni_handle(&self, direction: &str) -> Option<OmniHandle> {
         self.omni_sessions.take_handle(direction)
-    }
-
-    pub(crate) fn begin_omni_session(
-        &self,
-        direction: &str,
-        model_id: &str,
-        realtime_audio_mode: &str,
-        subtitle_translate_active: bool,
-        output_mode: OmniOutputMode,
-        glossary_signature: u64,
-    ) -> u64 {
-        self.omni_sessions
-            .begin(
-                direction,
-                model_id,
-                realtime_audio_mode,
-                subtitle_translate_active,
-                output_mode,
-                glossary_signature,
-            )
-    }
-
-    pub(crate) fn mark_omni_session_ready(&self, direction: &str, generation: u64) -> bool {
-        self.omni_sessions.mark_ready(direction, generation)
-    }
-
-    pub(crate) fn mark_omni_session_failed(
-        &self,
-        direction: &str,
-        generation: u64,
-        error: impl Into<String>,
-    ) -> bool {
-        self.omni_sessions.mark_failed(direction, generation, error.into())
-    }
-
-    pub(crate) fn mark_omni_session_stopping(
-        &self,
-        direction: &str,
-        generation: u64,
-        reason: impl Into<String>,
-    ) -> bool {
-        self.omni_sessions.mark_stopping(direction, generation, reason.into())
-    }
-
-    pub(crate) fn clear_omni_session(
-        &self,
-        direction: &str,
-        generation: u64,
-        reason: impl Into<String>,
-    ) -> bool {
-        let _ = reason.into();
-        self.omni_sessions.clear(direction, generation)
-    }
-
-    pub(crate) fn matching_ready_omni_session(
-        &self,
-        direction: &str,
-        model_id: &str,
-        realtime_audio_mode: &str,
-        subtitle_translate_active: bool,
-        output_mode: OmniOutputMode,
-        glossary_signature: u64,
-    ) -> Option<u64> {
-        self.omni_sessions
-            .matching_ready(
-                direction,
-                model_id,
-                realtime_audio_mode,
-                subtitle_translate_active,
-                output_mode,
-                glossary_signature,
-            )
-    }
-
-    pub(crate) fn take_matching_omni_sender(
-        &self,
-        direction: &str,
-        model_id: &str,
-        realtime_audio_mode: &str,
-        subtitle_translate_active: bool,
-        output_mode: OmniOutputMode,
-        glossary_signature: u64,
-    ) -> Option<Sender<Vec<u8>>> {
-        self.omni_sessions
-            .take_matching_sender(
-                direction,
-                model_id,
-                realtime_audio_mode,
-                subtitle_translate_active,
-                output_mode,
-                glossary_signature,
-            )
-    }
-
-    pub(crate) fn omni_session_metadata(
-        &self,
-        direction: &str,
-    ) -> Option<OmniSessionMetadata> {
-        self.omni_sessions.metadata(direction)
-    }
-
-    pub(crate) fn is_current_omni_session(&self, direction: &str, generation: u64) -> bool {
-        self.omni_sessions.is_current(direction, generation)
     }
 
     pub(crate) fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
@@ -816,6 +738,19 @@ impl AudioStateStore {
         } else {
             "ready".to_string()
         };
+    }
+
+    /// Returns `true` exactly once for a non-empty Bridge translation status
+    /// id during this Desktop process lifetime. The caller applies the status
+    /// before sending its ACK; replayed delivery is ACKed again but skipped.
+    pub(crate) fn accept_bridge_translation_status_once(&self, status_id: &str) -> bool {
+        if status_id.trim().is_empty() {
+            return false;
+        }
+        self.bridge_translation_status_receipts
+            .lock()
+            .expect("bridge translation status receipt store poisoned")
+            .insert(status_id)
     }
 
     /// Returns whether translated audio is currently being rendered to a
@@ -1389,37 +1324,31 @@ mod tests {
     }
 
     #[test]
-    fn recent_echo_suppression_tracks_total_and_suppressed_chunks() {
+    fn aec3_capture_diagnostics_track_forwarding_without_a_drop_path() {
         let store = AudioStateStore::new();
-        store.record_echo_asr_chunk(false, false, false, false);
-        store.record_echo_asr_chunk(true, true, true, true);
-        store.record_echo_asr_chunk(false, true, false, true);
-        store.record_echo_asr_chunk(true, false, true, false);
+        store.record_aec3_capture_chunk(false);
+        store.record_aec3_capture_chunk(true);
+        store.record_aec3_capture_chunk(true);
+        store.record_aec3_capture_chunk(false);
 
-        assert_eq!(
-            store.recent_echo_suppression(Duration::from_secs(12)),
-            EchoSuppressionSnapshot {
-                total_chunks: 4,
-                suppressed_chunks: 2,
-                correlated_chunks: 2,
-            },
-        );
         let diagnostics = store.snapshot().echo_capture_diagnostics;
-        assert_eq!(diagnostics.aec_suppressed_chunks, 2);
+        assert_eq!(diagnostics.processed_chunks, 4);
         assert_eq!(diagnostics.playback_active_chunks, 2);
-        assert_eq!(diagnostics.effective_suppressed_chunks, 2);
+        assert_eq!(diagnostics.forwarded_to_asr_chunks, 4);
+        assert_eq!(diagnostics.dropped_chunks, 0);
     }
 
     #[test]
     fn inbound_route_start_resets_echo_capture_diagnostics() {
         let store = AudioStateStore::new();
-        store.record_echo_asr_chunk(true, true, true, true);
+        store.record_aec3_capture_chunk(true);
         store.mark_route_start_requested("inbound", "watch-attempt", "loopback");
 
         let diagnostics = store.snapshot().echo_capture_diagnostics;
-        assert_eq!(diagnostics.aec_suppressed_chunks, 0);
+        assert_eq!(diagnostics.processed_chunks, 0);
         assert_eq!(diagnostics.playback_active_chunks, 0);
-        assert_eq!(diagnostics.effective_suppressed_chunks, 0);
+        assert_eq!(diagnostics.forwarded_to_asr_chunks, 0);
+        assert_eq!(diagnostics.dropped_chunks, 0);
     }
 
     #[test]
@@ -1684,5 +1613,83 @@ mod tests {
             ),
             None
         );
+    }
+
+    #[test]
+    fn bridge_translation_status_receipts_are_idempotent_across_route_workers() {
+        let store = AudioStateStore::new();
+
+        assert!(store.accept_bridge_translation_status_once("bridge-status-1"));
+        // The receipt is retained before the source-pipe ACK is attempted. If
+        // that write fails and Bridge replays after reconnect, side effects
+        // remain suppressed and only the ACK is retried.
+        assert!(!store.accept_bridge_translation_status_once("bridge-status-1"));
+        assert!(store.accept_bridge_translation_status_once("bridge-status-2"));
+        assert!(!store.accept_bridge_translation_status_once(""));
+    }
+
+    #[test]
+    fn bridge_translation_status_receipts_have_a_bounded_fifo_window() {
+        let store = AudioStateStore::new();
+        for index in 0..=BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY {
+            assert!(store.accept_bridge_translation_status_once(&format!(
+                "bridge-status-{index}"
+            )));
+        }
+
+        let receipts = store
+            .bridge_translation_status_receipts
+            .lock()
+            .expect("receipt store");
+        assert_eq!(receipts.ids.len(), BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY);
+        assert_eq!(receipts.order.len(), BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY);
+        assert!(!receipts.ids.contains("bridge-status-0"));
+        assert!(receipts.ids.contains(&format!(
+            "bridge-status-{}",
+            BRIDGE_TRANSLATION_STATUS_RECEIPT_CAPACITY
+        )));
+    }
+
+    #[test]
+    fn bridge_source_evidence_preserves_first_last_and_timed_old_frame_rejections() {
+        fn identity(
+            instance: &str,
+            frame_timestamp_ms: u64,
+            read_timestamp_ms: u64,
+        ) -> BridgeSourceFrameIdentity {
+            BridgeSourceFrameIdentity {
+                bridge_process_id: 42,
+                bridge_instance_id: instance.to_string(),
+                session_id: format!("session-{instance}"),
+                source_generation: 7,
+                source_generation_token: format!("{instance}:session-{instance}:7"),
+                frame_timestamp_ms,
+                read_timestamp_ms,
+            }
+        }
+
+        let store = AudioStateStore::new();
+        store.record_bridge_source_frame_accepted(identity("old", 900, 1_000));
+        store.record_bridge_source_frame_accepted(identity("old", 950, 1_050));
+        store.record_bridge_source_frame_rejected(identity("old", 960, 1_060));
+        store.record_bridge_source_frame_rejected(identity("old", 970, 1_070));
+        store.record_bridge_source_frame_accepted(identity("new", 1_100, 1_110));
+
+        let evidence = store.bridge_source_runtime_evidence();
+        assert_eq!(evidence.accepted_frame_count, 3);
+        assert_eq!(evidence.rejected_frame_count, 2);
+        assert_eq!(evidence.accepted_for_instance("old"), 2);
+        assert_eq!(
+            evidence
+                .first_frame_for_generation("old:session-old:7")
+                .unwrap()
+                .frame_timestamp_ms,
+            900
+        );
+        assert_eq!(
+            evidence.last_accepted.as_ref().unwrap().bridge_instance_id,
+            "new"
+        );
+        assert_eq!(evidence.rejected_for_instance_since("old", 1_065), 1);
     }
 }

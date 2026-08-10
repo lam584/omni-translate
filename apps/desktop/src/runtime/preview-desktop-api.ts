@@ -24,8 +24,15 @@ import type {
   DesktopSize,
   DiagnosticsLogLevel,
   FrontendDiagnosticsBatchEntry,
+  BenchmarkHistorySavePayload,
   ModelBenchmarkRunPayload,
 } from './desktop-api-v2';
+import type {
+  BenchmarkHistoryClearResult,
+  BenchmarkHistoryDeleteResult,
+  BenchmarkHistoryPage,
+  BenchmarkHistoryRecord,
+} from '../schema/generated/runtime-core';
 import { resolveRealtimeProfile } from '../utils/realtime-profile';
 
 /** Capability flags a desktop-api implementation advertises to callers. */
@@ -256,6 +263,14 @@ export class PreviewDesktopApi {
   readonly bridge = {
     snapshot: async (): Promise<RuntimeSnapshot['bridge']> => structuredClone(this.runtimeSnapshot.bridge),
     refresh: async () => this.shellSnapshot(),
+    probeProcessLoopback: async () =>
+      this.patchBridge({
+        processLoopbackSupported: true,
+        processLoopbackStatus: 'ready',
+        windowsBuildNumber: 26100,
+        processLoopbackMinimumWindowsBuild: 20348,
+        processLoopbackFailureDetail: null,
+      }),
     start: async (config: AppConfigDraft) =>
       this.patchBridge({
         processStatus: 'running',
@@ -340,6 +355,16 @@ export class PreviewDesktopApi {
     openExportDirectory: async (_outputPath: string) => Promise.reject(previewUnavailable('diagnostics.openExportDirectory')),
     openExternalUrl: async (url: string) => { window.open(url, '_blank', 'noopener,noreferrer'); return null; },
     writeExportArtifact: async (_filename: string, _content: string) => Promise.reject(previewUnavailable('diagnostics.writeExportArtifact')),
+    saveBenchmarkHistory: async (_record: BenchmarkHistorySavePayload): Promise<BenchmarkHistoryRecord> =>
+      Promise.reject(previewUnavailable('diagnostics.saveBenchmarkHistory')),
+    listBenchmarkHistory: async (_page?: number, _pageSize?: number): Promise<BenchmarkHistoryPage> =>
+      Promise.reject(previewUnavailable('diagnostics.listBenchmarkHistory')),
+    getBenchmarkHistory: async (_recordId: string): Promise<BenchmarkHistoryRecord> =>
+      Promise.reject(previewUnavailable('diagnostics.getBenchmarkHistory')),
+    deleteBenchmarkHistory: async (_recordId: string): Promise<BenchmarkHistoryDeleteResult> =>
+      Promise.reject(previewUnavailable('diagnostics.deleteBenchmarkHistory')),
+    clearBenchmarkHistory: async (): Promise<BenchmarkHistoryClearResult> =>
+      Promise.reject(previewUnavailable('diagnostics.clearBenchmarkHistory')),
   };
 
   readonly configuration = {

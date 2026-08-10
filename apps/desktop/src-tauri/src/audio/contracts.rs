@@ -356,35 +356,28 @@ impl SttConnectionRuntime {
 #[derive(Clone, Serialize, TS)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct EchoCaptureDiagnosticsRuntime {
-    pub aec_suppressed_chunks: u64,
+    pub processed_chunks: u64,
     pub playback_active_chunks: u64,
-    pub effective_suppressed_chunks: u64,
+    pub forwarded_to_asr_chunks: u64,
+    pub dropped_chunks: u64,
 }
 
 impl EchoCaptureDiagnosticsRuntime {
     pub(crate) fn empty() -> Self {
         Self {
-            aec_suppressed_chunks: 0,
+            processed_chunks: 0,
             playback_active_chunks: 0,
-            effective_suppressed_chunks: 0,
+            forwarded_to_asr_chunks: 0,
+            dropped_chunks: 0,
         }
     }
 
-    pub(crate) fn record(
-        &mut self,
-        aec_suppressed: bool,
-        playback_active: bool,
-        effective_suppressed: bool,
-    ) {
-        if aec_suppressed {
-            self.aec_suppressed_chunks = self.aec_suppressed_chunks.saturating_add(1);
-        }
+    pub(crate) fn record_aec3_capture(&mut self, playback_active: bool) {
+        self.processed_chunks = self.processed_chunks.saturating_add(1);
         if playback_active {
             self.playback_active_chunks = self.playback_active_chunks.saturating_add(1);
         }
-        if effective_suppressed {
-            self.effective_suppressed_chunks = self.effective_suppressed_chunks.saturating_add(1);
-        }
+        self.forwarded_to_asr_chunks = self.forwarded_to_asr_chunks.saturating_add(1);
     }
 }
 
@@ -406,6 +399,11 @@ pub(crate) struct AudioRuntimeSnapshot {
     pub subtitle_overlay: SubtitleOverlayRuntimeSnapshot,
     pub speech: SpeechRuntimeSnapshot,
     pub echo_capture_diagnostics: EchoCaptureDiagnosticsRuntime,
+    #[ts(type = "'webrtc-aec3' | 'unavailable'")]
+    pub aec_backend: String,
+    #[ts(type = "'ready' | 'unavailable'")]
+    pub aec_status: String,
+    pub aec_failure_detail: Option<String>,
     pub session_started_at: Option<String>,
     pub stt_connected: bool,
     pub stt_buffer_size: u64,
@@ -414,6 +412,7 @@ pub(crate) struct AudioRuntimeSnapshot {
 
 impl AudioRuntimeSnapshot {
     pub(crate) fn preview() -> Self {
+        let aec_gate = crate::audio::echo_cancel::webrtc_aec3_build_gate();
         Self {
             snapshot_seq: 0,
             status: "preview".to_string(),
@@ -425,6 +424,28 @@ impl AudioRuntimeSnapshot {
             subtitle_overlay: SubtitleOverlayRuntimeSnapshot::empty(),
             speech: SpeechRuntimeSnapshot::preview(),
             echo_capture_diagnostics: EchoCaptureDiagnosticsRuntime::empty(),
+            aec_backend: if aec_gate.ready {
+                "webrtc-aec3"
+            } else {
+                "unavailable"
+            }
+            .to_string(),
+            aec_status: if aec_gate.ready {
+                "ready"
+            } else {
+                "unavailable"
+            }
+            .to_string(),
+            aec_failure_detail: (!aec_gate.ready).then(|| {
+                format!(
+                    "dependency={} msvcBuildVerified={} linkedBackendPresent={} fixtureVerified={} reason={}",
+                    aec_gate.dependency,
+                    aec_gate.msvc_build_verified,
+                    aec_gate.linked_backend_present,
+                    aec_gate.fixture_verified,
+                    aec_gate.reason
+                )
+            }),
             session_started_at: None,
             stt_connected: false,
             stt_buffer_size: 0,
@@ -469,5 +490,32 @@ mod tests {
         assert!(declaration.contains("displaySourceText?: string"));
         assert!(declaration.contains("displaySegments?: Array<SubtitleDisplaySegmentRuntime>"));
         assert!(declaration.contains("translationCommitted?: boolean"));
+    }
+
+    #[test]
+    #[cfg(not(feature = "webrtc-aec3"))]
+    fn snapshot_exposes_the_same_closed_aec3_gate_used_by_route_start() {
+        let snapshot = AudioRuntimeSnapshot::preview();
+
+        assert_eq!(snapshot.aec_backend, "unavailable");
+        assert_eq!(snapshot.aec_status, "unavailable");
+        assert!(snapshot
+            .aec_failure_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("x86_64-pc-windows-msvc")));
+        assert!(snapshot
+            .aec_failure_detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("linkedBackendPresent=false")));
+    }
+
+    #[test]
+    #[cfg(feature = "webrtc-aec3")]
+    fn linked_snapshot_exposes_the_verified_aec3_gate_used_by_route_start() {
+        let snapshot = AudioRuntimeSnapshot::preview();
+
+        assert_eq!(snapshot.aec_backend, "webrtc-aec3");
+        assert_eq!(snapshot.aec_status, "ready");
+        assert_eq!(snapshot.aec_failure_detail, None);
     }
 }

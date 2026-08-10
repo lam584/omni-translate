@@ -23,7 +23,7 @@ use crate::provider::events as provider_events;
 use crate::runtime::events as runtime_events;
 use crate::runtime::state::RuntimeStateStore;
 use crate::storage::events as storage_events;
-use crate::storage::StorageStateStore;
+use crate::storage::{BenchmarkHistorySaveInput, StorageStateStore};
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -426,6 +426,7 @@ pub(crate) async fn session_v2(
 pub(crate) enum BridgeCommandV2 {
     Snapshot,
     Refresh,
+    ProbeProcessLoopback,
     Start {
         #[ts(type = "unknown")]
         config: Value,
@@ -458,6 +459,7 @@ pub(crate) async fn bridge_v2<R: tauri::Runtime>(
             BridgeCommandV2::Snapshot => to_value(bridge_events::get_bridge_runtime_snapshot(app.state::<BridgeStateStore>()))
                 .map_err(|error| ServiceErrorV2::from(error.to_string())),
             BridgeCommandV2::Refresh => serialize_result(bridge_events::refresh_bridge_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>())),
+            BridgeCommandV2::ProbeProcessLoopback => serialize_result(bridge_events::probe_process_loopback_capability(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>())),
             BridgeCommandV2::Start { config } => serialize_result(bridge_events::start_bridge_service(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>(), config)),
             BridgeCommandV2::Stop => serialize_result(bridge_events::stop_bridge_service(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>())),
             BridgeCommandV2::Install { config } => serialize_result(bridge_events::install_driver_runtime(app.clone(), app.state::<RuntimeStateStore>(), app.state::<BridgeStateStore>(), config)),
@@ -481,6 +483,41 @@ pub(crate) enum DiagnosticsCommandV2 {
     OpenExportDirectory { output_path: String },
     WriteExportArtifact { filename: String, content: String },
     OpenExternalUrl { url: String },
+    /// Creates a new `benchmark-score/v1` record when `recordId` is omitted,
+    /// or replaces the complete persisted snapshot for that record when it is
+    /// supplied.  The report/score values are arbitrary JSON and are scrubbed
+    /// for credentials before they reach SQLite.
+    SaveBenchmarkHistory {
+        #[ts(optional)]
+        record_id: Option<String>,
+        run_id: String,
+        model: String,
+        #[ts(type = "'running' | 'completed' | 'failed' | 'interrupted'")]
+        run_status: String,
+        #[ts(type = "'pending' | 'judging' | 'final' | 'evidence-insufficient' | 'judge-failed' | 'benchmark-failed'")]
+        score_status: String,
+        #[ts(optional, type = "'benchmark-score/v1'")]
+        score_version: Option<String>,
+        #[ts(optional = nullable)]
+        total_score: Option<f64>,
+        #[ts(optional = nullable)]
+        grade: Option<String>,
+        #[ts(optional, type = "unknown")]
+        report: Option<Value>,
+        #[ts(optional, type = "unknown")]
+        score: Option<Value>,
+        #[ts(optional = nullable)]
+        error: Option<String>,
+    },
+    ListBenchmarkHistory {
+        #[ts(optional)]
+        page: Option<u32>,
+        #[ts(optional)]
+        page_size: Option<u32>,
+    },
+    GetBenchmarkHistory { record_id: String },
+    DeleteBenchmarkHistory { record_id: String },
+    ClearBenchmarkHistory,
 }
 
 // Runs off the main thread (async) so bundle/file I/O (e.g. export) cannot
@@ -544,6 +581,55 @@ pub(crate) async fn diagnostics_v2<R: tauri::Runtime>(
                 serialize_result(crate::diagnostics::export_artifacts::write_export_artifact(&app, &filename, &content)),
             DiagnosticsCommandV2::OpenExternalUrl { url } =>
                 serialize_result(crate::diagnostics::export_artifacts::open_external_url(&url)),
+            DiagnosticsCommandV2::SaveBenchmarkHistory {
+                record_id,
+                run_id,
+                model,
+                run_status,
+                score_status,
+                score_version,
+                total_score,
+                grade,
+                report,
+                score,
+                error,
+            } => serialize_result((|| {
+                let storage = app.state::<StorageStateStore>();
+                storage.ensure_initialized(&app)?;
+                storage.save_benchmark_history(BenchmarkHistorySaveInput {
+                    record_id,
+                    run_id,
+                    model,
+                    run_status,
+                    score_status,
+                    score_version,
+                    total_score,
+                    grade,
+                    report,
+                    score,
+                    error,
+                })
+            })()),
+            DiagnosticsCommandV2::ListBenchmarkHistory { page, page_size } => serialize_result((|| {
+                let storage = app.state::<StorageStateStore>();
+                storage.ensure_initialized(&app)?;
+                storage.list_benchmark_history(page, page_size)
+            })()),
+            DiagnosticsCommandV2::GetBenchmarkHistory { record_id } => serialize_result((|| {
+                let storage = app.state::<StorageStateStore>();
+                storage.ensure_initialized(&app)?;
+                storage.get_benchmark_history(&record_id)
+            })()),
+            DiagnosticsCommandV2::DeleteBenchmarkHistory { record_id } => serialize_result((|| {
+                let storage = app.state::<StorageStateStore>();
+                storage.ensure_initialized(&app)?;
+                storage.delete_benchmark_history(&record_id)
+            })()),
+            DiagnosticsCommandV2::ClearBenchmarkHistory => serialize_result((|| {
+                let storage = app.state::<StorageStateStore>();
+                storage.ensure_initialized(&app)?;
+                storage.clear_benchmark_history()
+            })()),
         }
     }
     .await;
@@ -646,8 +732,9 @@ pub(crate) async fn configuration_v2<R: tauri::Runtime>(
 #[cfg(test)]
 mod tests {
     use super::{
-        attach_request_id, BridgeCommandV2, ConfigurationCommandV2, RuntimeEventV2, ServiceErrorV2,
-        ServiceResult, SessionCommandV2, should_refresh_live_omni_speech_config,
+        attach_request_id, BridgeCommandV2, ConfigurationCommandV2, DiagnosticsCommandV2,
+        RuntimeEventV2, ServiceErrorV2, ServiceResult, SessionCommandV2,
+        should_refresh_live_omni_speech_config,
     };
 
     #[test]
@@ -664,6 +751,29 @@ mod tests {
             serde_json::from_str(r#"{"action":"createSnapshot","reason":"before-import"}"#)
                 .unwrap();
         assert!(matches!(configuration, ConfigurationCommandV2::CreateSnapshot { .. }));
+        let history: DiagnosticsCommandV2 = serde_json::from_str(
+            r#"{"action":"saveBenchmarkHistory","runId":"run-1","model":"judge-model","runStatus":"completed","scoreStatus":"final","scoreVersion":"benchmark-score/v1","totalScore":91,"grade":"A","report":{"event":"done"},"score":{"version":"benchmark-score/v1"}}"#,
+        )
+        .unwrap();
+        assert!(matches!(
+            history,
+            DiagnosticsCommandV2::SaveBenchmarkHistory {
+                ref run_id,
+                ref score_status,
+                total_score: Some(91.0),
+                ..
+            } if run_id == "run-1" && score_status == "final"
+        ));
+        let list: DiagnosticsCommandV2 =
+            serde_json::from_str(r#"{"action":"listBenchmarkHistory","page":2,"pageSize":50}"#)
+                .unwrap();
+        assert!(matches!(
+            list,
+            DiagnosticsCommandV2::ListBenchmarkHistory {
+                page: Some(2),
+                page_size: Some(50)
+            }
+        ));
         let bridge: BridgeCommandV2 = serde_json::from_str(
             r#"{"action":"repair","repairAction":"rollback-driver","config":{}}"#,
         )

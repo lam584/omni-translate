@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { appConfigDraftMock } from '../defaults/app-config';
 import { audioRuntimeSnapshotMock } from '../defaults/audio-runtime';
@@ -215,5 +215,32 @@ describe('PreviewDesktopApi', () => {
     await expect(api.window.setLogicalSize({ width: 1, height: 1 })).resolves.toBeUndefined();
     await expect(api.window.popupMenu([], { x: 0, y: 0 })).resolves.toBeUndefined();
     expect(await api.runtime.bootstrapAudio()).toEqual(audioRuntimeSnapshotMock);
+  });
+
+  it('implements every harmless preview operation and rejects durable history writes', async () => {
+    const api = new PreviewDesktopApi();
+    const config = draft();
+    const open = vi.spyOn(window, 'open').mockReturnValue(null);
+
+    const profile = await api.provider.resolveRealtimeProfile(config, config.providers[0]!.model);
+    expect(profile.modelId).toBe(config.providers[0]!.model);
+    expect(await api.session.refreshDevices()).toMatchObject({ status: 'preview' });
+    expect(await api.session.preconnect(config)).toMatchObject({ status: 'preview' });
+    expect(await api.session.cancelPreconnect()).toMatchObject({ status: 'preview' });
+    expect(await api.session.prewarmRoutes(config)).toMatchObject({ status: 'preview' });
+    expect(await api.session.syncOverlayRegion()).toMatchObject({ subtitleOverlay: expect.any(Object) });
+    expect(await api.session.syncOverlayWindowState(true, false, true)).toMatchObject({ subtitleOverlay: expect.any(Object) });
+    expect(await api.diagnostics.overlaySelfCheck()).toMatchObject({ bridgeStatus: 'browser-preview' });
+
+    await expect(api.diagnostics.openExternalUrl('https://example.com/key')).resolves.toBeNull();
+    expect(open).toHaveBeenCalledWith('https://example.com/key', '_blank', 'noopener,noreferrer');
+    await expect(api.overlay.rendered({} as never)).resolves.toBeUndefined();
+    await expect(api.window.isVisible()).resolves.toBe(true);
+
+    await expect(api.diagnostics.saveBenchmarkHistory({} as never)).rejects.toThrow('browser-preview');
+    await expect(api.diagnostics.listBenchmarkHistory()).rejects.toThrow('browser-preview');
+    await expect(api.diagnostics.getBenchmarkHistory('record-1')).rejects.toThrow('browser-preview');
+    await expect(api.diagnostics.deleteBenchmarkHistory('record-1')).rejects.toThrow('browser-preview');
+    await expect(api.diagnostics.clearBenchmarkHistory()).rejects.toThrow('browser-preview');
   });
 });

@@ -5,12 +5,14 @@
  * `type` discriminants added by the internally-tagged serde enums
  * (DriverBridgeCommand / DriverBridgeEvent in src-tauri/src/bridge/contracts.rs),
  * derives the union aliases the rest of the app imports, and keeps the pinned
- * protocol version literal.
+ * protocol version literal guarded by scripts/testing/verify-contracts.mjs.
  */
 import type {
   BridgeAudioFrame as GeneratedBridgeAudioFrame,
   BridgeInitRequest as GeneratedBridgeInitRequest,
   BridgeInitResponse as GeneratedBridgeInitResponse,
+  BridgeProcessLoopbackProbeRequest as GeneratedBridgeProcessLoopbackProbeRequest,
+  BridgeProcessLoopbackProbeResponse as GeneratedBridgeProcessLoopbackProbeResponse,
   BridgeShutdownRequest as GeneratedBridgeShutdownRequest,
   BridgeStateQuery as GeneratedBridgeStateQuery,
   BridgeStateResponse as GeneratedBridgeStateResponse,
@@ -24,7 +26,7 @@ import type {
   MixControl as GeneratedMixControl,
 } from './generated/driver-bridge-contract';
 
-export type DriverBridgeProtocolVersion = '2026-07-27-smart-gain-v3';
+export type DriverBridgeProtocolVersion = '2026-08-10-audio-routing-v6';
 
 // Union aliases derived from the generated fields, so the literal members
 // have exactly one source of truth (the Rust contract).
@@ -49,6 +51,14 @@ export type BridgeInitRequest = { type: 'bridge.init' } & GeneratedBridgeInitReq
 
 export type BridgeInitResponse = { type: 'bridge.init.ack' } & GeneratedBridgeInitResponse;
 
+export type BridgeProcessLoopbackProbeRequest = {
+  type: 'bridge.process-loopback.probe';
+} & GeneratedBridgeProcessLoopbackProbeRequest;
+
+export type BridgeProcessLoopbackProbeResponse = {
+  type: 'bridge.process-loopback.probe.ack';
+} & GeneratedBridgeProcessLoopbackProbeResponse;
+
 export type BridgeWriteFrameRequest = { type: 'bridge.frame.write' } & GeneratedBridgeWriteFrameRequest;
 
 export type BridgeWriteFrameAck = { type: 'bridge.frame.ack' } & GeneratedBridgeWriteFrameAck;
@@ -61,10 +71,11 @@ export type BridgeShutdownRequest = { type: 'bridge.shutdown' } & GeneratedBridg
 
 export type DriverBridgeErrorEvent = { type: 'bridge.error' } & GeneratedDriverBridgeErrorEvent;
 
-export type DriverBridgeCommand = BridgeInitRequest | BridgeWriteFrameRequest | BridgeStateQuery | BridgeShutdownRequest;
+export type DriverBridgeCommand = BridgeInitRequest | BridgeProcessLoopbackProbeRequest | BridgeWriteFrameRequest | BridgeStateQuery | BridgeShutdownRequest;
 
 export type DriverBridgeEvent =
   | BridgeInitResponse
+  | BridgeProcessLoopbackProbeResponse
   | BridgeWriteFrameAck
   | BridgeStateSnapshot
   | DriverBridgeErrorEvent;

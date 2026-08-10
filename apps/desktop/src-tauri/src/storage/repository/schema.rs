@@ -1,5 +1,5 @@
-pub(super) const CURRENT_SCHEMA_VERSION: i64 = 2;
-pub(super) const RELATIONAL_SCHEMA_NAME: &str = "0002_translated_audio_auto_gain";
+pub(super) const CURRENT_SCHEMA_VERSION: i64 = 3;
+pub(super) const RELATIONAL_SCHEMA_NAME: &str = "0003_benchmark_history";
 pub(super) const DEFAULT_CONFIG_JSON: &str =
     include_str!("../../../defaults/app-config.default.json");
 
@@ -377,6 +377,32 @@ CREATE TABLE config_snapshots (
   config_json TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+"#;
+
+/// Benchmark history is deliberately separate from the relational config
+/// schema.  A config save clears and rewrites config tables, whereas history
+/// must survive saves, resets and imports.  Keeping this table out of
+/// `RELATIONAL_TABLES` also lets an existing v2 database gain history without
+/// triggering the legacy config-schema reset path.
+pub(super) const CREATE_BENCHMARK_HISTORY_SCHEMA_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS benchmark_history (
+  record_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  model TEXT NOT NULL,
+  run_status TEXT NOT NULL,
+  score_status TEXT NOT NULL,
+  score_version TEXT,
+  total_score REAL,
+  grade TEXT,
+  report_json TEXT,
+  score_json TEXT,
+  error TEXT
+);
+
+CREATE INDEX IF NOT EXISTS benchmark_history_created_at_idx
+  ON benchmark_history (created_at DESC, record_id DESC);
 "#;
 
 #[cfg(test)]

@@ -62,9 +62,6 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
             let latest = cues
                 .iter()
                 .find(|cue| cue.cue_id == *cue_id && cue.revision == *latest_revision)?;
-            if cue_is_intentionally_suppressed(latest) {
-                return None;
-            }
             if is_interrupted_session_tail(latest, completed, session_elapsed_ms) {
                 return cues
                     .iter()
@@ -72,7 +69,6 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
                         cue.cue_id == *cue_id
                             && cue.revision < *latest_revision
                             && cue_has_complete_visible_pipeline(cue)
-                            && !cue_is_intentionally_suppressed(cue)
                     })
                     .max_by_key(|cue| cue.revision)
                     .map(|cue| (cue_id.clone(), cue.revision));
@@ -92,8 +88,7 @@ pub(super) fn build_snapshot(session: &WatchSession) -> WatchSessionReportRuntim
                 .get(&cue.cue_id)
                 .map_or(true, |representative| cue.revision != *representative);
         cue.events.sort_by_key(|event| event.elapsed_ms);
-        let intentionally_suppressed = cue_is_intentionally_suppressed(cue);
-        let superseded = superseded_revision || intentionally_suppressed;
+        let superseded = superseded_revision;
         cue.source_to_llm_first_ms = duration_between(cue.source_at_ms, cue.llm_first_at_ms);
         cue.source_to_render_ms = duration_between(cue.source_at_ms, cue.rendered_first_at_ms);
         cue.llm_first_to_publish_ms =
@@ -311,12 +306,6 @@ fn cue_has_complete_visible_pipeline(cue: &WatchCueComparisonRuntime) -> bool {
     cue.llm_first_at_ms.is_some()
         && cue.published_first_at_ms.is_some()
         && cue.rendered_first_at_ms.is_some()
-}
-
-fn cue_is_intentionally_suppressed(cue: &WatchCueComparisonRuntime) -> bool {
-    cue.events.iter().any(|event| {
-        event.stage == "source" && event.kind == "echo-suppressed" && !event.accepted
-    })
 }
 
 fn is_interrupted_session_tail(

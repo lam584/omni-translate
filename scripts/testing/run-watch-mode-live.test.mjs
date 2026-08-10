@@ -49,7 +49,11 @@ function extractedReportWaitFunctions() {
       `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
     `$functions = $ast.FindAll({ param($node) ` +
       `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
-      `$node.Name -in @('Assert-WatchSessionReportFile','Wait-WatchSessionReportAndDesktopExit') ` +
+      `$node.Name -in @(` +
+        `'Assert-WatchSessionReportFile',` +
+        `'Wait-WatchSessionReportAndDesktopExit',` +
+        `'Get-WatchSessionReportDeadlineUtc'` +
+      `) ` +
     `}, $true); ` +
     `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
   );
@@ -136,6 +140,48 @@ function extractedPhysicalOutputContentPolicyFunctions() {
   );
 }
 
+function extractedBridgeProbePolicyFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @('Test-UsesVirtualDriverBackend','New-BridgeSourceProbeInitPayload') ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedPhysicalDeviceEvidenceFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @(` +
+        `'Get-PhysicalPlaybackDeviceClassFromSignals',` +
+        `'New-PhysicalPlaybackDeviceEvidence'` +
+      `) ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedLiveScenarioEnvironmentFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -eq 'Get-WatchModeLiveScenarioEnvironment' ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
 test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
@@ -147,17 +193,135 @@ test('run-watch-mode-live.ps1 parses without PowerShell syntax errors', { skip: 
   assert.equal(probe.status, 0, `runner has PowerShell syntax errors:\n${probe.stderr}`);
 });
 
+test('physical endpoint evidence accepts USB and Bluetooth signals and rejects a mismatched class', { skip: !isWindows }, () => {
+  const probe = runPowerShell([
+    '-Command',
+    extractedPhysicalDeviceEvidenceFunctions() +
+      `$usb = New-PhysicalPlaybackDeviceEvidence ` +
+        `-ProfileId 'usb-dac' -ExpectedDeviceClass 'usb' -RequestedDeviceId 'usb-requested' ` +
+        `-ResolvedDeviceId 'USB\\VID_1234&PID_5678\\endpoint' -ResolvedDeviceName 'USB DAC' ` +
+        `-ClassificationSignals @('USB Audio Device','VID_1234') -RouteEvidenceSource 'test'; ` +
+      `$bluetooth = New-PhysicalPlaybackDeviceEvidence ` +
+        `-ProfileId 'bt-headset' -ExpectedDeviceClass 'bluetooth' -RequestedDeviceId 'bt-requested' ` +
+        `-ResolvedDeviceId 'BTHENUM\\DEV_001' -ResolvedDeviceName 'Headphones' ` +
+        `-ClassificationSignals @('Bluetooth','A2DP') -RouteEvidenceSource 'test'; ` +
+      `$mismatchRejected = $false; ` +
+      `try { ` +
+        `New-PhysicalPlaybackDeviceEvidence ` +
+          `-ProfileId 'wrong' -ExpectedDeviceClass 'usb' -RequestedDeviceId 'wrong' ` +
+          `-ResolvedDeviceId 'BTHENUM\\DEV_002' -ResolvedDeviceName 'Bluetooth Headset' ` +
+          `-ClassificationSignals @('Bluetooth','A2DP') -RouteEvidenceSource 'test' -ErrorAction Stop | Out-Null ` +
+      `} catch { $mismatchRejected = $true }; ` +
+      `[pscustomobject]@{ usb = $usb; bluetooth = $bluetooth; mismatchRejected = $mismatchRejected } | ConvertTo-Json -Depth 6`,
+  ]);
+  assert.equal(probe.status, 0, `device evidence probe failed:\n${probe.stderr}`);
+  const result = JSON.parse(probe.stdout.trim());
+  assert.equal(result.usb.deviceClass, 'usb');
+  assert.equal(result.usb.verified, true);
+  assert.equal(result.usb.fixtureOnly, false);
+  assert.equal(result.bluetooth.deviceClass, 'bluetooth');
+  assert.equal(result.bluetooth.verified, true);
+  assert.equal(result.mismatchRejected, true);
+});
+
+test('live runner duration binder accepts 1800 seconds and rejects shorter or oversized evidence runs', { skip: !isWindows }, () => {
+  const probe = runPowerShell([
+    '-Command',
+    `$errors = $null; ` +
+      `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+        `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+      `if ($errors.Count -gt 0) { exit 2 }; ` +
+      `$durationProbe = [scriptblock]::Create(` +
+        `$ast.ParamBlock.Extent.Text + [Environment]::NewLine + '$WatchAutoStopAfterSeconds'` +
+      `); ` +
+      `$accepted = & $durationProbe -WatchAutoStopAfterSeconds 1800; ` +
+      `$shortRejected = $false; ` +
+      `try { & $durationProbe -WatchAutoStopAfterSeconds 1799 -ErrorAction Stop | Out-Null } ` +
+      `catch { $shortRejected = $true }; ` +
+      `$oversizedRejected = $false; ` +
+      `try { & $durationProbe -WatchAutoStopAfterSeconds 7201 -ErrorAction Stop | Out-Null } ` +
+      `catch { $oversizedRejected = $true }; ` +
+      `if ($accepted -eq 1800 -and $shortRejected -and $oversizedRejected) { exit 0 }; ` +
+      `Write-Error "duration validation mismatch: accepted=$accepted shortRejected=$shortRejected oversizedRejected=$oversizedRejected"; exit 1`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+});
+
+test('live runner schedules a midpoint process restart and does not truncate 1800 seconds to five minutes', { skip: !isWindows }, () => {
+  const probe = runPowerShell([
+    '-Command',
+    extractedLiveScenarioEnvironmentFunctions() +
+      `$process = Get-WatchModeLiveScenarioEnvironment -FeedbackMode 'process-exclusion' -AutoStopAfterMs 1800000; ` +
+      `$aec = Get-WatchModeLiveScenarioEnvironment -FeedbackMode 'echo-cancel' -AutoStopAfterMs 1800000; ` +
+      `$virtual = Get-WatchModeLiveScenarioEnvironment -FeedbackMode 'virtual-driver' -AutoStopAfterMs 1800000; ` +
+      `[pscustomobject]@{ process = $process; aec = $aec; virtual = $virtual } | ConvertTo-Json -Depth 4 -Compress`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const result = JSON.parse(probe.stdout.trim());
+  assert.equal(result.process.autoStopAfterMs, '1800000');
+  assert.equal(result.process.processExclusionRestartAfterMs, '900000');
+  assert.equal(result.process.aecLiveScenario, null);
+  assert.equal(result.aec.autoStopAfterMs, '1800000');
+  assert.equal(result.aec.processExclusionRestartAfterMs, null);
+  assert.equal(result.aec.aecLiveScenario, '1');
+  assert.equal(result.virtual.autoStopAfterMs, '1800000');
+  assert.equal(result.virtual.processExclusionRestartAfterMs, null);
+  assert.equal(result.virtual.aecLiveScenario, null);
+});
+
+test('watch report deadline includes readiness, 30-minute capture, and atomic-write grace', { skip: !isWindows }, () => {
+  const probe = runPowerShell([
+    '-Command',
+    extractedReportWaitFunctions() +
+      `$launched = [DateTime]::SpecifyKind([DateTime]::Parse('2026-08-10T00:00:00'), [DateTimeKind]::Utc); ` +
+      `$deadline = Get-WatchSessionReportDeadlineUtc ` +
+        `-LaunchedAtUtc $launched -ReadyTimeoutSeconds 90 -AutoStopAfterSeconds 1800; ` +
+      `[int]($deadline - $launched).TotalSeconds`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  assert.equal(Number(probe.stdout.trim()), 2_010);
+});
+
 test('echo-cancel skips virtual-driver physical-output content recording', { skip: !isWindows }, () => {
   const policy = runPowerShell([
     '-Command',
     `${extractedPhysicalOutputContentPolicyFunctions()} ` +
       `$echo = Get-PhysicalOutputContentSkipReason -FeedbackMode 'echo-cancel' -SkipContentStt $false; ` +
+      `$process = Get-PhysicalOutputContentSkipReason -FeedbackMode 'process-exclusion' -SkipContentStt $false; ` +
       `$explicit = Get-PhysicalOutputContentSkipReason -FeedbackMode 'virtual-driver' -SkipContentStt $true; ` +
       `$normal = Get-PhysicalOutputContentSkipReason -FeedbackMode 'virtual-driver' -SkipContentStt $false; ` +
-      `if ($echo -and $explicit -and -not $normal) { exit 0 }; exit 1`,
+      `if ($echo -and $explicit -and -not $normal -and -not $process) { exit 0 }; exit 1`,
   ]);
 
   assert.equal(policy.status, 0, policy.stderr || policy.stdout);
+});
+
+test('process-exclusion probe uses v5 init capability fields without requiring an idle source frame', { skip: !isWindows }, () => {
+  const probe = runPowerShell([
+    '-Command',
+    extractedBridgeProbePolicyFunctions() +
+      `$payload = New-BridgeSourceProbeInitPayload -FeedbackMode 'process-exclusion' -SessionId 'probe-session'; ` +
+      `$result = [pscustomobject]@{ ` +
+        `payload = $payload; ` +
+        `processUsesDriver = Test-UsesVirtualDriverBackend 'process-exclusion'; ` +
+        `echoUsesDriver = Test-UsesVirtualDriverBackend 'echo-cancel'; ` +
+        `virtualUsesDriver = Test-UsesVirtualDriverBackend 'virtual-driver' ` +
+      `}; $result | ConvertTo-Json -Depth 8 -Compress`,
+  ]);
+
+  assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  const result = JSON.parse(probe.stdout.trim());
+  assert.equal(result.payload.protocolVersion, '2026-08-10-audio-routing-v6');
+  assert.equal(result.payload.sourceCaptureMode, 'process-exclusion');
+  assert.equal(result.payload.sessionId, 'probe-session');
+  assert.equal(result.payload.monitorPlaybackEnabled, false);
+  assert.equal(result.payload.translationPlaybackEnabled, true);
+  assert.equal(result.processUsesDriver, false);
+  assert.equal(result.echoUsesDriver, false);
+  assert.equal(result.virtualUsesDriver, true);
 });
 
 test('app readiness wait fails immediately on diagnostic IPC infrastructure error', { skip: !isWindows }, () => {
@@ -485,13 +649,13 @@ test('dry-run executes end to end and produces passing, content-checked artifact
     assert.equal(runDirectories.length, 1, `expected exactly one dry-run output directory, got: ${runDirectories.join(', ')}`);
     const runDirectory = path.join(outputRoot, runDirectories[0]);
 
-    // Feedback config injection must be probed for BOTH modes and each probe
+    // Feedback config injection must be probed for all modes and each probe
     // must have landed the requested mode in the effective config.
     const injection = readJsonArtifact(path.join(runDirectory, 'config-injection.json'));
     assert.equal(injection.selectedFeedbackLoopPrevention, 'virtual-driver');
     assert.deepEqual(
       injection.variants.map((variant) => variant.requested).sort(),
-      ['echo-cancel', 'virtual-driver'],
+      ['echo-cancel', 'process-exclusion', 'virtual-driver'],
     );
     for (const variant of injection.variants) {
       assert.equal(variant.injected, variant.requested, `feedback injection drifted for ${variant.requested}`);
@@ -502,12 +666,31 @@ test('dry-run executes end to end and produces passing, content-checked artifact
     // so evidence from different modes can never mask each other.
     const snapshots = readJsonArtifact(path.join(runDirectory, 'snapshots.json'));
     assert.equal(snapshots.feedbackLoopPrevention, 'virtual-driver');
+    assert.deepEqual(
+      {
+        profileId: snapshots.deviceEvidence.profileId,
+        deviceClass: snapshots.deviceEvidence.deviceClass,
+        requestedDeviceId: snapshots.deviceEvidence.requestedDeviceId,
+        verified: snapshots.deviceEvidence.verified,
+        fixtureOnly: snapshots.deviceEvidence.fixtureOnly,
+      },
+      {
+        profileId: 'default-speaker',
+        deviceClass: 'default-speaker',
+        requestedDeviceId: 'default',
+        verified: false,
+        fixtureOnly: true,
+      },
+    );
+    assert.match(snapshots.deviceEvidence.resolvedDeviceId, /HDAUDIO/i);
 
     // The generated report must classify the healthy fixture as passed; a
     // report-pipeline regression turns this into a hard failure.
     const report = readJsonArtifact(path.join(runDirectory, 'report.json'));
     assert.equal(report.verdict, 'passed', `dry-run fixture report failed: ${JSON.stringify(report, null, 2)}`);
     assert.equal(report.failureLayer, null);
+    assert.equal(report.deviceEvidence.deviceClass, 'default-speaker');
+    assert.equal(report.deviceEvidence.fixtureOnly, true);
 
     for (const artifact of ['steps.json', 'app.log', 'bridge-service.log']) {
       assert.ok(fs.existsSync(path.join(runDirectory, artifact)), `dry-run must persist ${artifact}`);
@@ -534,17 +717,21 @@ test('matrix runner executes both strict watch models and verifies strict eviden
   const matrix = await import('./run-watch-mode-live-matrix.mjs');
 
   assert.deepEqual(matrix.DEFAULT_MODELS, ['qwen3.5-omni-flash-realtime', 'qwen3.5-livetranslate-flash-realtime']);
-  assert.deepEqual(matrix.DEFAULT_FEEDBACK_MODES, ['virtual-driver', 'echo-cancel']);
+  assert.deepEqual(matrix.DEFAULT_FEEDBACK_MODES, ['process-exclusion', 'virtual-driver', 'echo-cancel']);
 
   const argv = matrix.buildRunnerArgv({
     model: 'qwen3.5-omni-flash-realtime',
     feedbackMode: 'virtual-driver',
+    physicalPlaybackDeviceClass: 'usb',
+    physicalPlaybackDeviceProfileId: 'usb-dac',
     allowElevatedDesktopLaunch: true,
     runnerArgs: ['-DryRun'],
   });
   assert.equal(argv[argv.indexOf('-WatchModelId') + 1], 'qwen3.5-omni-flash-realtime');
   assert.equal(argv[argv.indexOf('-FeedbackLoopPrevention') + 1], 'virtual-driver');
   assert.equal(argv[argv.indexOf('-PlaybackSeconds') + 1], '0');
+  assert.equal(argv[argv.indexOf('-PhysicalPlaybackDeviceClass') + 1], 'usb');
+  assert.equal(argv[argv.indexOf('-PhysicalPlaybackDeviceProfileId') + 1], 'usb-dac');
   assert.ok(argv.includes('-AllowElevatedDesktopLaunch'));
   assert.deepEqual(argv.slice(-1), ['-DryRun'], 'runner passthrough args must stay appended verbatim');
 
@@ -552,9 +739,16 @@ test('matrix runner executes both strict watch models and verifies strict eviden
     'artifacts/testing/watch-mode-live',
     matrix.DEFAULT_MODELS,
     matrix.DEFAULT_FEEDBACK_MODES,
+    matrix.SUPPORTED_DEVICE_CLASSES,
+    'E:\\artifacts\\watch-mode-current-manifest.json',
   );
   assert.equal(verifyArgv[0], './scripts/testing/verify-watch-mode-evidence.mjs');
   assert.ok(verifyArgv.includes('--strict'));
   assert.equal(verifyArgv[verifyArgv.indexOf('--models') + 1], matrix.DEFAULT_MODELS.join(','));
   assert.equal(verifyArgv[verifyArgv.indexOf('--feedback-modes') + 1], matrix.DEFAULT_FEEDBACK_MODES.join(','));
+  assert.equal(verifyArgv[verifyArgv.indexOf('--device-classes') + 1], matrix.SUPPORTED_DEVICE_CLASSES.join(','));
+  assert.equal(
+    verifyArgv[verifyArgv.indexOf('--run-manifest') + 1],
+    'E:\\artifacts\\watch-mode-current-manifest.json',
+  );
 });

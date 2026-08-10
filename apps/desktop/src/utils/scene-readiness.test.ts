@@ -14,6 +14,12 @@ function makeReadinessInputs() {
   };
 }
 
+function markAecReady(audioSnapshot: typeof audioRuntimeSnapshotMock) {
+  audioSnapshot.aecBackend = 'webrtc-aec3';
+  audioSnapshot.aecStatus = 'ready';
+  audioSnapshot.aecFailureDetail = null;
+}
+
 /** Scene readiness for a config against pristine runtime/audio snapshots. */
 function scenesFor(configDraft: typeof appConfigDraftMock) {
   return getAllSceneReadiness(configDraft, structuredClone(runtimeSnapshotMock), structuredClone(audioRuntimeSnapshotMock));
@@ -29,6 +35,7 @@ function conversationScenes(options: {
   runtimeSnapshot.bridge.bridgeState = 'running';
   audioSnapshot.inbound.streamBound = true;
   audioSnapshot.outbound.streamBound = true;
+  markAecReady(audioSnapshot);
   configDraft.devices.feedbackLoopPrevention = options.feedbackLoopPrevention;
   configDraft.devices.aecEnabled = options.aecEnabled;
   return getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
@@ -39,6 +46,7 @@ function watchScenesWithBridgeConfig(options: {
   bridgeState: 'running' | 'stopped';
   feedbackLoopPrevention: (typeof appConfigDraftMock)['devices']['feedbackLoopPrevention'];
   virtualMicOutputEnabled: boolean;
+  outputSpeechEnabled?: boolean;
   outputTarget?: (typeof appConfigDraftMock)['speech']['outputTarget'];
 }) {
   const { configDraft, runtimeSnapshot, audioSnapshot } = makeReadinessInputs();
@@ -46,6 +54,10 @@ function watchScenesWithBridgeConfig(options: {
   runtimeSnapshot.bridge.bridgeState = options.bridgeState;
   configDraft.devices.feedbackLoopPrevention = options.feedbackLoopPrevention;
   configDraft.devices.virtualMicOutputEnabled = options.virtualMicOutputEnabled;
+  if (options.outputSpeechEnabled !== undefined) {
+    configDraft.devices.outputSpeechEnabled = options.outputSpeechEnabled;
+    configDraft.speech.enabled = options.outputSpeechEnabled;
+  }
   if (options.outputTarget) configDraft.speech.outputTarget = options.outputTarget;
   return getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
 }
@@ -56,6 +68,7 @@ function makeWatchReadyRuntimeInputs() {
   runtimeSnapshot.bridgeStatus = 'tauri-shell';
   runtimeSnapshot.bridge.bridgeState = 'running';
   audioSnapshot.inbound.streamBound = true;
+  markAecReady(audioSnapshot);
   runtimeSnapshot.windows = runtimeSnapshot.windows.map((item) =>
     item.label === 'subtitle-overlay' ? { ...item, visible: true } : item,
   );
@@ -131,6 +144,89 @@ describe('scene readiness', () => {
     expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-aec')).toBe(false);
   });
 
+  it('reports the missing virtual-microphone backend for isolated conversation routes', () => {
+    for (const feedbackLoopPrevention of ['virtual-driver', 'process-exclusion'] as const) {
+      const scenes = conversationScenes({ feedbackLoopPrevention, aecEnabled: false });
+      expect(scenes[1]?.blockers).toContainEqual(expect.objectContaining({
+        id: 'game-virtual-mic-output-unavailable',
+      }));
+      expect(scenes[2]?.blockers).toContainEqual(expect.objectContaining({
+        id: 'voice-room-virtual-mic-output-unavailable',
+      }));
+      expect(scenes[1]?.blockers.some((blocker) => blocker.id === 'game-aec')).toBe(false);
+      expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-aec')).toBe(false);
+    }
+  });
+
+  it('accepts the Virtual Driver conversation route only when its outbound microphone capability is ready', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeReadinessInputs();
+    runtimeSnapshot.bridgeStatus = 'tauri-shell';
+    runtimeSnapshot.bridge.bridgeState = 'running';
+    Object.assign(runtimeSnapshot.bridge, {
+      windowsBuildNumber: 19041,
+      virtualMicOutputSupported: true,
+      virtualMicOutputStatus: 'ready',
+      captureEndpointName: 'Microphone (Omni Translate Virtual Microphone)',
+      virtualMicFormat: '48000Hz/mono/pcm16',
+    });
+    audioSnapshot.inbound.streamBound = true;
+    audioSnapshot.outbound.streamBound = true;
+    configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+
+    const scenes = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+
+    expect(scenes[1]?.blockers.some((blocker) => blocker.id === 'game-virtual-mic-output-unavailable')).toBe(false);
+    expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-virtual-mic-output-unavailable')).toBe(false);
+    expect(scenes[1]?.blockers.some((blocker) => blocker.id === 'game-aec')).toBe(false);
+    expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-aec')).toBe(false);
+  });
+
+  it('treats echo-cancel as the AEC3 backend even when a legacy toggle was saved false', () => {
+    const scenes = conversationScenes({ feedbackLoopPrevention: 'echo-cancel', aecEnabled: false });
+
+    expect(scenes[1]?.blockers.some((blocker) => blocker.id === 'game-aec')).toBe(false);
+    expect(scenes[2]?.blockers.some((blocker) => blocker.id === 'voice-room-aec')).toBe(false);
+  });
+
+  it('keeps echo-cancel blocked while the generated AEC3 capability is unavailable', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeWatchReadyRuntimeInputs();
+    configDraft.devices.feedbackLoopPrevention = 'echo-cancel';
+    configDraft.devices.aecEnabled = true;
+    audioSnapshot.aecBackend = 'unavailable';
+    audioSnapshot.aecStatus = 'unavailable';
+    audioSnapshot.aecFailureDetail = 'MSVC build gate is closed';
+
+    const scenes = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot);
+
+    expect(scenes[0]?.blockers).toContainEqual(expect.objectContaining({ id: 'watch-aec-unavailable' }));
+    expect(scenes[1]?.blockers).toContainEqual(expect.objectContaining({ id: 'game-aec', title: expect.stringContaining('不可用') }));
+    expect(scenes[2]?.blockers).toContainEqual(expect.objectContaining({ id: 'voice-room-aec', title: expect.stringContaining('不可用') }));
+  });
+
+  it('requires an explicit feedback route for translated Watch speech but permits subtitles-only none', () => {
+    const translated = makeWatchReadyRuntimeInputs();
+    translated.configDraft.devices.feedbackLoopPrevention = 'none';
+    translated.configDraft.devices.outputSpeechEnabled = true;
+
+    const translatedWatch = getAllSceneReadiness(
+      translated.configDraft,
+      translated.runtimeSnapshot,
+      translated.audioSnapshot,
+    )[0];
+
+    expect(translatedWatch?.blockers).toContainEqual(expect.objectContaining({ id: 'watch-feedback-route-required' }));
+
+    translated.configDraft.devices.outputSpeechEnabled = false;
+    translated.configDraft.speech.enabled = false;
+    const subtitlesOnlyWatch = getAllSceneReadiness(
+      translated.configDraft,
+      translated.runtimeSnapshot,
+      translated.audioSnapshot,
+    )[0];
+
+    expect(subtitlesOnlyWatch?.blockers.some((blocker) => blocker.id === 'watch-feedback-route-required')).toBe(false);
+  });
+
   it('adds a bridge blocker in watch mode when feedbackLoopPrevention is virtual-driver and bridge is not running', () => {
     const scenes = watchScenesWithBridgeConfig({
       bridgeState: 'stopped',
@@ -142,11 +238,77 @@ describe('scene readiness', () => {
     expect(scenes[0]?.blockers.some((blocker) => blocker.id === 'watch-bridge')).toBe(true);
   });
 
+  it('blocks an imported Virtual Driver route below Windows build 19041 without changing the selection', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeWatchReadyRuntimeInputs();
+    configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+    runtimeSnapshot.bridge.windowsBuildNumber = 19040;
+
+    const watch = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot)[0];
+
+    expect(watch?.blockers).toContainEqual(expect.objectContaining({
+      id: 'watch-virtual-driver-unsupported',
+      title: expect.stringContaining('19041'),
+    }));
+    expect(configDraft.devices.feedbackLoopPrevention).toBe('virtual-driver');
+  });
+
+  it('requires a running Bridge for process exclusion without requiring a virtual driver', () => {
+    const scenes = watchScenesWithBridgeConfig({
+      bridgeState: 'stopped',
+      feedbackLoopPrevention: 'process-exclusion',
+      virtualMicOutputEnabled: false,
+      outputTarget: 'speaker',
+    });
+
+    expect(scenes[0]?.blockers).toContainEqual(expect.objectContaining({
+      id: 'watch-bridge',
+      title: expect.stringContaining('进程级排除'),
+    }));
+  });
+
+  it('blocks an unsupported process-exclusion draft without silently downgrading it', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeWatchReadyRuntimeInputs();
+    configDraft.devices.feedbackLoopPrevention = 'process-exclusion';
+    Object.assign(runtimeSnapshot.bridge, {
+      processLoopbackSupported: false,
+      processLoopbackStatus: 'unsupported',
+      windowsBuildNumber: 19045,
+      processLoopbackMinimumWindowsBuild: 20348,
+      processLoopbackFailureDetail: null,
+    });
+
+    const watch = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot)[0];
+
+    expect(watch?.blockers).toContainEqual(expect.objectContaining({
+      id: 'watch-process-exclusion-unsupported',
+      title: expect.stringContaining('20348'),
+    }));
+    expect(configDraft.devices.feedbackLoopPrevention).toBe('process-exclusion');
+  });
+
+  it('accepts process exclusion only after the capability probe is ready', () => {
+    const { configDraft, runtimeSnapshot, audioSnapshot } = makeWatchReadyRuntimeInputs();
+    configDraft.devices.feedbackLoopPrevention = 'process-exclusion';
+    Object.assign(runtimeSnapshot.bridge, {
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      windowsBuildNumber: 26100,
+      processLoopbackMinimumWindowsBuild: 20348,
+      processLoopbackFailureDetail: null,
+    });
+
+    const watch = getAllSceneReadiness(configDraft, runtimeSnapshot, audioSnapshot)[0];
+
+    expect(watch?.blockers.some((blocker) => blocker.id.startsWith('watch-process-exclusion'))).toBe(false);
+    expect(watch?.blockers.some((blocker) => blocker.id === 'watch-bridge')).toBe(false);
+  });
+
   it('adds a bridge blocker in watch mode when virtualMicOutputEnabled is true and bridge is not running', () => {
     const scenes = watchScenesWithBridgeConfig({
       bridgeState: 'stopped',
       feedbackLoopPrevention: 'none',
       virtualMicOutputEnabled: true,
+      outputSpeechEnabled: false,
       outputTarget: 'speaker',
     });
 

@@ -5,13 +5,18 @@ import { idleBridgeTelemetryDefaults } from '../defaults/runtime-shell';
 export const driverStateSnapshotMock: BridgeStateSnapshot = {
   type: 'bridge.state.snapshot',
   requestId: 'bridge-state-query-default',
-  protocolVersion: '2026-07-27-smart-gain-v3',
+  protocolVersion: '2026-08-10-audio-routing-v6',
   bridgeState: 'degraded',
   lifecycleState: 'error',
   driverHealth: 'version-mismatch',
   driverVersion: '0.8.1-dev',
   bridgeVersion: '0.1.0-skeleton',
   ...idleBridgeTelemetryDefaults,
+  captureEndpointName: undefined,
+  virtualMicFormat: undefined,
+  windowsBuildNumber: undefined,
+  excludedProcessId: undefined,
+  processLoopbackFailureDetail: undefined,
   lastErrorCode: 'driver.version-mismatch',
 };
 

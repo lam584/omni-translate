@@ -3704,6 +3704,7 @@ dependencies = [
 name = "omni-bridge-service"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cpal",
  "minimp3",
  "omni-audio-dsp",
@@ -3712,7 +3713,9 @@ dependencies = [
  "rodio",
  "serde",
  "serde_json",
+ "sha2",
  "tempfile",
+ "uuid",
  "wasapi",
  "windows-sys 0.61.2",
 ]
@@ -3732,12 +3735,15 @@ dependencies = [
  "omni-audio-dsp",
  "omni-bridge-protocol",
  "omni-logging",
+ "omni-webrtc-aec3",
+ "png 0.18.1",
  "reqwest",
  "rodio",
  "rusqlite",
  "serde",
  "serde_json",
  "sha1",
+ "sha2",
  "tauri",
  "tauri-build",
  "tempfile",
@@ -3757,6 +3763,10 @@ version = "0.1.0"
 dependencies = [
  "chrono",
 ]
+
+[[package]]
+name = "omni-webrtc-aec3"
+version = "0.1.0"
 
 [[package]]
 name = "once_cell"

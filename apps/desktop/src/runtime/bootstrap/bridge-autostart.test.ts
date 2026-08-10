@@ -44,6 +44,7 @@ describe('scheduleBridgeAutostartAfterStartup', () => {
     const refreshed = autostartableSnapshot();
     const started = structuredClone(refreshed);
     started.bridge.processStatus = 'running';
+    started.bridge.bridgeState = 'running';
     invokeMock.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
       if (command === 'bridge_v2' && args?.command?.action === 'refresh') {
         return { data: refreshed, warnings: [] };
@@ -61,7 +62,10 @@ describe('scheduleBridgeAutostartAfterStartup', () => {
   });
 
   it.each([
-    ['bridge already running', (snapshot: ReturnType<typeof autostartableSnapshot>) => { snapshot.bridge.processStatus = 'running'; }],
+    ['bridge already running', (snapshot: ReturnType<typeof autostartableSnapshot>) => {
+      snapshot.bridge.processStatus = 'running';
+      snapshot.bridge.bridgeState = 'running';
+    }],
     ['driver not running', (snapshot: ReturnType<typeof autostartableSnapshot>) => { snapshot.bridge.driverHealth = 'not-installed'; }],
     ['not in the tauri shell', (snapshot: ReturnType<typeof autostartableSnapshot>) => { snapshot.bridgeStatus = 'browser-preview'; }],
   ])('skips the start when %s', async (_label, mutate) => {
@@ -75,6 +79,111 @@ describe('scheduleBridgeAutostartAfterStartup', () => {
     await scheduleBridgeAutostartAfterStartup(structuredClone(appConfigDraftMock), 0).promise;
 
     expect(invokeMock).not.toHaveBeenCalledWith('start_bridge_service', expect.anything());
+  });
+
+  it('starts process-exclusion Bridge directly without refreshing or probing a virtual driver', async () => {
+    const current = autostartableSnapshot();
+    current.bridge.driverHealth = 'not-installed';
+    const started = structuredClone(current);
+    Object.assign(started.bridge, {
+      processStatus: 'running',
+      bridgeState: 'running',
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+    });
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: current }));
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'start_bridge_service') return started;
+      throw new Error(`unexpected command ${command}`);
+    });
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+
+    await scheduleBridgeAutostartAfterStartup(config, 0).promise;
+
+    expect(invokeMock).not.toHaveBeenCalledWith('bridge_v2', expect.anything());
+    expect(invokeMock).toHaveBeenCalledWith('start_bridge_service', expect.anything());
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('re-initializes a running Bridge directly when saved process exclusion finds virtual-driver capture', async () => {
+    const current = autostartableSnapshot();
+    Object.assign(current.bridge, {
+      processStatus: 'running',
+      bridgeState: 'running',
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+    });
+    const started = structuredClone(current);
+    Object.assign(started.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+    });
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: current }));
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === 'start_bridge_service') return started;
+      throw new Error(`unexpected command ${command}`);
+    });
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+
+    await scheduleBridgeAutostartAfterStartup(config, 0).promise;
+
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith('start_bridge_service', expect.anything());
+    expect(invokeMock).not.toHaveBeenCalledWith('bridge_v2', expect.anything());
+  });
+
+  it('re-initializes a refreshed running process backend when virtual-driver is selected', async () => {
+    const refreshed = autostartableSnapshot();
+    Object.assign(refreshed.bridge, {
+      processStatus: 'running',
+      bridgeState: 'running',
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+    });
+    const started = structuredClone(refreshed);
+    Object.assign(started.bridge, {
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+    });
+    invokeMock.mockImplementation(async (command: string, args?: { command?: { action?: string } }) => {
+      if (command === 'bridge_v2' && args?.command?.action === 'refresh') {
+        return { data: refreshed, warnings: [] };
+      }
+      if (command === 'start_bridge_service') return started;
+      throw new Error(`unexpected command ${command}`);
+    });
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'virtual-driver';
+
+    await scheduleBridgeAutostartAfterStartup(config, 0).promise;
+
+    expect(invokeMock).toHaveBeenCalledWith('bridge_v2', { command: { action: 'refresh' } });
+    expect(invokeMock).toHaveBeenCalledWith('start_bridge_service', expect.anything());
+    expect(useAppStore.getState().runtimeSnapshot.bridge.sourceCaptureMode).toBe('virtual-driver');
+  });
+
+  it('does not start Bridge when process exclusion is explicitly unsupported', async () => {
+    const current = autostartableSnapshot();
+    current.bridge.driverHealth = 'not-installed';
+    Object.assign(current.bridge, {
+      processLoopbackSupported: false,
+      processLoopbackStatus: 'unsupported',
+      windowsBuildNumber: 19045,
+      processLoopbackMinimumWindowsBuild: 20348,
+    });
+    useAppStore.setState((state) => ({ ...state, runtimeSnapshot: current }));
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+
+    await scheduleBridgeAutostartAfterStartup(config, 0).promise;
+
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it('skips generic bridge autostart when the native IPC ping owns Watch diagnostic startup', async () => {

@@ -13,6 +13,7 @@ export const SPEECH_EVENT_KINDS = [
   'speech.deferred',
   'speech.cache-hit',
   'speech.realtime-audio-requested',
+  'speech.bridge-playback-queued',
   'speech.completed',
   'speech.error',
   'speech.ptt-blocked',

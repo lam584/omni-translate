@@ -193,6 +193,7 @@ fn push_event(
 struct MixPlan {
     speaker_samples: Vec<i16>,
     virtual_mic_samples: Vec<i16>,
+    bridge_playback_samples: Vec<i16>,
     sample_rate_hz: u32,
     channel_count: u16,
     mix_mode: String,
@@ -288,10 +289,21 @@ impl<'a> SpeechMixPlanner<'a> {
     } else {
         Vec::new()
     };
+    // In both isolated routes Bridge already owns original-audio monitoring:
+    // process exclusion leaves the source app on the physical endpoint, while
+    // Virtual Driver monitors its captured source separately. Translation
+    // playback therefore adds only translated speech (plus its prompt), or the
+    // original track would be played twice. Bridge applies physical volume.
+    let bridge_playback_samples = if config.bridge_playback_enabled {
+        translated_with_prompt
+    } else {
+        Vec::new()
+    };
 
     MixPlan {
         speaker_samples,
         virtual_mic_samples,
+        bridge_playback_samples,
         sample_rate_hz,
         channel_count,
         mix_mode: if !original.is_empty() {

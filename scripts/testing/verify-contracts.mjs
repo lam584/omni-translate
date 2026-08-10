@@ -4,7 +4,7 @@ import path from 'node:path';
 import { verifyConfigPaths } from './verify-config-paths.mjs';
 
 const rootDir = process.cwd();
-const protocolVersion = '2026-07-27-smart-gain-v3';
+const protocolVersion = '2026-08-10-audio-routing-v6';
 const legacyBridgeName = ['bridge', 'service'].join('-');
 const legacyBridgePath = path.join('apps', legacyBridgeName);
 const legacyBridgePackage = ['@omni', legacyBridgeName].join('/');

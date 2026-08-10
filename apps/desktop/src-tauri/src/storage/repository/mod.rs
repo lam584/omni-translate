@@ -8,17 +8,21 @@ use super::contracts::{ConfigExportArtifact, ConfigSnapshotRecord};
 use crate::common::MapErrToString;
 
 mod json_merge;
+mod benchmark_history;
 mod persisters;
 mod persistence_methods;
 mod schema;
 mod snapshot_service;
 
+pub(crate) use self::benchmark_history::BenchmarkHistorySaveInput;
+
 use self::json_merge::{
     default_config_value, enforce_current_driver_contract, merge_objects, write_json_file,
 };
 use self::schema::{
-    tables_cleared_on_save, CREATE_RELATIONAL_SCHEMA_SQL, CURRENT_SCHEMA_VERSION,
-    OLD_CONFIG_TABLES, RELATIONAL_SCHEMA_NAME, RELATIONAL_TABLES,
+    tables_cleared_on_save, CREATE_BENCHMARK_HISTORY_SCHEMA_SQL,
+    CREATE_RELATIONAL_SCHEMA_SQL, CURRENT_SCHEMA_VERSION, OLD_CONFIG_TABLES,
+    RELATIONAL_SCHEMA_NAME, RELATIONAL_TABLES,
 };
 use self::snapshot_service::ConfigSnapshotService;
 use self::persisters::{
@@ -65,6 +69,17 @@ impl ConfigRepository {
     pub(crate) fn initialize(&self) -> Result<RepositoryStats, String> {
         self.ensure_directories()?;
         let connection = self.migrated_connection()?;
+        self.read_stats(&connection)
+    }
+
+    /// Startup-only initialization.  Unlike ordinary repository opens, this
+    /// recovers a process that exited while a benchmark was still marked
+    /// `running`; config saves and ordinary history updates must never turn an
+    /// active benchmark into an interrupted one.
+    pub(crate) fn initialize_for_app_startup(&self) -> Result<RepositoryStats, String> {
+        self.ensure_directories()?;
+        let connection = self.migrated_connection()?;
+        self.mark_stale_benchmark_runs_interrupted(&connection)?;
         self.read_stats(&connection)
     }
 
@@ -283,6 +298,9 @@ impl ConfigRepository {
                 )
                 .map_err_str()?;
         }
+        connection
+            .execute_batch(CREATE_BENCHMARK_HISTORY_SCHEMA_SQL)
+            .map_err_str()?;
 
         connection
             .execute(

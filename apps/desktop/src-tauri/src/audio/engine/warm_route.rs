@@ -67,7 +67,17 @@ impl CaptureRouteWarmer {
                 return;
             }
         };
-        if direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver" {
+        if let Err(error) = spec.ensure_feedback_backend_available() {
+            diag_log_detail(
+                app,
+                "audio",
+                "debug",
+                "预热跳过：音频反馈后端不可用。",
+                format!("direction={direction} error={error}"),
+            );
+            return;
+        }
+        if spec.uses_bridge_source() {
             return;
         }
         let requested_device_id = spec.requested_device_id.clone();
@@ -141,7 +151,7 @@ impl CaptureRouteWarmer {
         spec: &RouteSpec,
         stt_sender: Option<mpsc::Sender<Vec<u8>>>,
     ) -> Result<AudioRouteHandle, Option<mpsc::Sender<Vec<u8>>>> {
-        if direction == "inbound" && spec.feedback_loop_prevention == "virtual-driver" {
+        if spec.uses_bridge_source() {
             return Err(stt_sender);
         }
 

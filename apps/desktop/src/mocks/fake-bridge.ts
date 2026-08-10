@@ -16,7 +16,11 @@ import {
   type WatchTimelineEventRuntime,
 } from '../schema/audio-runtime';
 import type { AppConfigDraft, DiagnosticsExportScope } from '../schema/config';
-import type { CredentialRefStatus, CredentialSecretPayload } from '../schema/provider-runtime';
+import type {
+  BridgeInlinePcmFrameHeader,
+  DriverBridgeErrorCode,
+} from '../schema/driver-bridge-contract';
+import type { CredentialRefStatus, CredentialSecretPayload, ProviderSmokeResult } from '../schema/provider-runtime';
 import {
   RUNTIME_NOTIFICATION_EVENT,
   RUNTIME_SNAPSHOT_EVENT,
@@ -24,8 +28,20 @@ import {
   type RuntimeSnapshot,
   type RuntimeNotification,
 } from '../schema/runtime-core';
+import type {
+  BenchmarkHistoryClearResult,
+  BenchmarkHistoryDeleteResult,
+  BenchmarkHistoryPage,
+  BenchmarkHistoryRecord,
+  BenchmarkHistorySummary,
+} from '../schema/generated/runtime-core';
 import type { SpeechEventKind } from '../schema/speech-event-kinds';
 import { resolveRealtimeProfile } from '../utils/realtime-profile';
+import { resolveVirtualDriverCapability, VIRTUAL_MIC_PCM_FORMAT } from '../utils/virtual-driver-capability';
+import { createLogger } from '../runtime/logger';
+
+const fakeBridgeLogger = createLogger('runtime');
+const FAKE_VIRTUAL_MIC_CAPTURE_ENDPOINT = 'Microphone (Omni Translate Virtual Microphone)';
 
 /**
  * Injectable contract double for the desktop-runtime ↔ bridge boundary.
@@ -60,6 +76,17 @@ export type FakeOverlayWindowState = {
   locked: boolean;
   rounded: boolean;
   hotspotInteractive: boolean;
+};
+
+export type FakeTranslationDispatch = {
+  cueId: string | null;
+  requestId: string;
+  translationSink: NonNullable<BridgeInlinePcmFrameHeader['translationSink']>;
+  routeDirection: NonNullable<BridgeInlinePcmFrameHeader['routeDirection']>;
+  status: 'completed' | 'route-failed';
+  acceptedFrames: number;
+  playbackFramesWritten: number;
+  errorCode: DriverBridgeErrorCode | null;
 };
 
 /**
@@ -198,6 +225,11 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
 
   /** Persisted config document behind `configuration_v2` load/save. */
   let configDocument: AppConfigDraft = structuredClone(appConfigDraftMock);
+  let speechConfig: AppConfigDraft['speech'] = structuredClone(configDocument.speech);
+  let speechBridgeCaptureMode: 'virtual-driver' | 'process-exclusion' | null = null;
+  let speechBridgePlaybackEnabled = false;
+  const benchmarkHistory = new Map<string, BenchmarkHistoryRecord>();
+  let benchmarkHistorySequence = 0;
 
   const calls: FakeBridgeCall[] = [];
   let overlayWindowState: FakeOverlayWindowState | null = null;
@@ -205,6 +237,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
   let dispatchSequence = 0;
   let eventSequence = 0;
   let runtimeEventSequence = 0;
+  const translationDispatches: FakeTranslationDispatch[] = [];
 
   // ── Event bus (fake `listen`) ──
 
@@ -515,11 +548,29 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
    * worker. It reports waiting-subtitle (enabled) or idle, and no frame
    * counter moves until a cue is actually dispatched.
    */
+  function bridgeOwnsTranslationPlayback() {
+    return speechBridgePlaybackEnabled
+      && runtime.bridge.translationPlaybackEnabled
+      && ['virtual-driver', 'process-exclusion'].includes(runtime.bridge.sourceCaptureMode);
+  }
+
+  function virtualMicOutputIsReady() {
+    return resolveVirtualDriverCapability(runtime.bridge).virtualMicOutputReady;
+  }
+
   function startSpeech(config: AppConfigDraft | undefined) {
     const enabled = config?.speech?.enabled ?? true;
+    speechConfig = structuredClone(config?.speech ?? configDocument.speech);
+    const feedbackMode = config?.devices.feedbackLoopPrevention ?? 'none';
+    speechBridgeCaptureMode = feedbackMode === 'virtual-driver' || feedbackMode === 'process-exclusion'
+      ? feedbackMode
+      : null;
+    speechBridgePlaybackEnabled = speechConfig.localPlaybackEnabled && speechBridgeCaptureMode !== null;
     audio.speech.status = 'ready';
     audio.speech.dispatchState = enabled ? 'waiting-subtitle' : 'idle';
-    audio.speech.outputTarget = config?.speech?.outputTarget ?? audio.speech.outputTarget;
+    audio.speech.outputTarget = speechBridgePlaybackEnabled
+      ? 'bridge-playback'
+      : speechConfig.outputTarget;
     audio.speech.lastError = null;
   }
 
@@ -569,12 +620,88 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       audio.speech.currentCueId = cueId;
       audio.speech.currentRequestId = requestId;
       audio.speech.lastStartedAt = new Date().toISOString();
-      const outputTarget = audio.speech.outputTarget;
-      if (outputTarget === 'speaker' || outputTarget === 'both') {
-        audio.speech.speakerFramesWritten += SPEECH_FRAMES_PER_DISPATCH;
-      }
-      if (outputTarget === 'virtual-mic' || outputTarget === 'both') {
+      const routeDirection = cue?.routeDirection ?? 'inbound';
+      const bridgePlayback = bridgeOwnsTranslationPlayback() && routeDirection === 'inbound';
+      const localPlaybackEnabled = speechConfig.localPlaybackEnabled && speechBridgeCaptureMode === null;
+      const virtualMicOutputEnabled = speechConfig.virtualMicOutputEnabled;
+      const playToSpeaker = routeDirection === 'inbound'
+        ? localPlaybackEnabled && !bridgePlayback
+        : localPlaybackEnabled && !virtualMicOutputEnabled;
+      const writeToVirtualMic = routeDirection === 'outbound' && virtualMicOutputEnabled;
+
+      if (writeToVirtualMic) {
+        if (!virtualMicOutputIsReady()) {
+          const errorCode: DriverBridgeErrorCode = 'bridge.virtual-mic-output-unavailable';
+          const configuredMode = speechBridgeCaptureMode ?? 'none';
+          const error = `${errorCode}: cue=${cueId ?? '-'} configuredCaptureMode=${configuredMode} routeDirection=outbound virtualMicOutputSupported=${runtime.bridge.virtualMicOutputSupported} virtualMicOutputStatus=${runtime.bridge.virtualMicOutputStatus}; virtual microphone output capability is not ready`;
+          translationDispatches.push({
+            cueId,
+            requestId,
+            translationSink: 'virtual-mic',
+            routeDirection,
+            status: 'route-failed',
+            acceptedFrames: 0,
+            playbackFramesWritten: 0,
+            errorCode,
+          });
+          runtime.bridge.lastErrorCode = errorCode;
+          pushRuntimeSnapshot();
+          appendDiagnosticsLog({
+            category: 'audio',
+            level: 'error',
+            summary: errorCode,
+            detail: error,
+          });
+          audio.speech.dispatchState = 'error';
+          audio.speech.lastError = error;
+          audio.speech.status = 'degraded';
+          audio.speech.currentCueId = null;
+          audio.speech.currentRequestId = null;
+          speechEvent('speech.error', error, cueId, null);
+          pushAudioSnapshot();
+          return;
+        }
+
+        translationDispatches.push({
+          cueId,
+          requestId,
+          translationSink: 'virtual-mic',
+          routeDirection,
+          status: 'completed',
+          acceptedFrames: SPEECH_FRAMES_PER_DISPATCH,
+          playbackFramesWritten: 0,
+          errorCode: null,
+        });
         audio.speech.virtualMicFramesWritten += SPEECH_FRAMES_PER_DISPATCH;
+        runtime.bridge.translatedFramesAccepted += SPEECH_FRAMES_PER_DISPATCH;
+        runtime.bridge.virtualMicFramesWritten =
+          (runtime.bridge.virtualMicFramesWritten ?? 0) + SPEECH_FRAMES_PER_DISPATCH;
+        runtime.bridge.virtualMicLastGeneration =
+          (runtime.bridge.virtualMicLastGeneration ?? 0) + 1;
+        runtime.bridge.virtualMicSessionActive = true;
+        runtime.bridge.lastFrameTimestampMs = Date.now();
+        runtime.bridge.lastErrorCode = null;
+        pushRuntimeSnapshot();
+      }
+
+      if (bridgePlayback) {
+        translationDispatches.push({
+          cueId,
+          requestId,
+          translationSink: 'physical-playback',
+          routeDirection,
+          status: 'completed',
+          acceptedFrames: SPEECH_FRAMES_PER_DISPATCH,
+          playbackFramesWritten: SPEECH_FRAMES_PER_DISPATCH,
+          errorCode: null,
+        });
+        runtime.bridge.translatedFramesAccepted += SPEECH_FRAMES_PER_DISPATCH;
+        runtime.bridge.playbackFramesWritten += SPEECH_FRAMES_PER_DISPATCH;
+        runtime.bridge.lastFrameTimestampMs = Date.now();
+        runtime.bridge.lastErrorCode = null;
+        pushRuntimeSnapshot();
+      } else if (playToSpeaker) {
+        audio.speech.speakerFramesWritten += SPEECH_FRAMES_PER_DISPATCH;
       }
       pushAudioSnapshot();
 
@@ -582,7 +709,13 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       audio.speech.currentCueId = null;
       audio.speech.currentRequestId = null;
       audio.speech.lastCompletedAt = new Date().toISOString();
-      speechEvent('speech.completed', 'cue playback completed', cueId, requestId);
+      const bridgeQueued = bridgePlayback;
+      speechEvent(
+        bridgeQueued ? 'speech.bridge-playback-queued' : 'speech.completed',
+        bridgeQueued ? 'cue accepted by Bridge translation playback' : 'cue playback completed',
+        cueId,
+        requestId,
+      );
       pushAudioSnapshot();
     });
   }
@@ -596,16 +729,49 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
   }
 
   function applyBridgeRunning(config: AppConfigDraft | undefined) {
+    const feedbackMode = config?.devices.feedbackLoopPrevention ?? 'none';
+    const sourceCaptureMode = feedbackMode === 'process-exclusion'
+      ? 'process-exclusion' as const
+      : feedbackMode === 'virtual-driver'
+        ? 'virtual-driver' as const
+        : 'none' as const;
+    const captureBackend = sourceCaptureMode === 'process-exclusion'
+      ? 'wasapi-process-exclusion' as const
+      : sourceCaptureMode === 'virtual-driver'
+        ? 'driver-virtual-speaker' as const
+        : 'none' as const;
+    const virtualMicOutputRequested = config?.speech.virtualMicOutputEnabled ?? false;
+    const virtualMicOutputReady = sourceCaptureMode === 'virtual-driver' && virtualMicOutputRequested;
     runtime.bridge = {
       ...runtime.bridge,
       processStatus: 'running',
       bridgeState: 'running',
       lifecycleState: 'ready',
-      driverHealth: 'running',
+      driverHealth: sourceCaptureMode === 'virtual-driver' ? 'running' : 'not-installed',
       installPhase: 'ready',
       lastErrorCode: null,
       sessionId: 'fake-bridge-session',
       lastHandshakeAt: new Date().toISOString(),
+      sourceCaptureMode,
+      captureBackend,
+      processLoopbackSupported: sourceCaptureMode === 'process-exclusion',
+      processLoopbackStatus: sourceCaptureMode === 'process-exclusion' ? 'ready' : 'unknown',
+      windowsBuildNumber: sourceCaptureMode === 'process-exclusion' || sourceCaptureMode === 'virtual-driver'
+        ? 26_100
+        : runtime.bridge.windowsBuildNumber,
+      excludedProcessId: sourceCaptureMode === 'process-exclusion' ? 4_242 : null,
+      processLoopbackFailureDetail: null,
+      sourceMonitorPlaybackEnabled: sourceCaptureMode === 'virtual-driver'
+        && (config?.speech.localPlaybackEnabled ?? true),
+      translationPlaybackEnabled: sourceCaptureMode === 'process-exclusion'
+        || (sourceCaptureMode === 'virtual-driver'
+          && (config?.speech.localPlaybackEnabled ?? true)),
+      virtualMicOutputRequested,
+      virtualMicOutputSupported: virtualMicOutputReady,
+      virtualMicOutputStatus: virtualMicOutputReady ? 'ready' : 'unsupported',
+      captureEndpointName: virtualMicOutputReady ? FAKE_VIRTUAL_MIC_CAPTURE_ENDPOINT : null,
+      virtualMicFormat: virtualMicOutputReady ? VIRTUAL_MIC_PCM_FORMAT : null,
+      virtualMicSessionActive: false,
       expectedDriverVersion: config?.driver?.expectedDriverVersion ?? runtime.bridge.expectedDriverVersion,
       expectedBridgeVersion: config?.driver?.expectedBridgeVersion ?? runtime.bridge.expectedBridgeVersion,
     };
@@ -618,6 +784,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       bridgeState: 'stopped',
       lifecycleState: 'stopped',
       sessionId: null,
+      virtualMicSessionActive: false,
     };
   }
 
@@ -958,6 +1125,104 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     };
   }
 
+  function benchmarkHistorySummary(record: BenchmarkHistoryRecord): BenchmarkHistorySummary {
+    return {
+      recordId: record.recordId,
+      runId: record.runId,
+      createdAt: record.createdAt,
+      updatedAt: record.updatedAt,
+      model: record.model,
+      runStatus: record.runStatus,
+      scoreStatus: record.scoreStatus,
+      scoreVersion: record.scoreVersion,
+      totalScore: record.totalScore,
+      grade: record.grade,
+      error: record.error,
+    };
+  }
+
+  function readHistoryPage(value: unknown, fallback: number, maximum: number) {
+    const parsed = typeof value === 'number' ? value : Number(value);
+    return Number.isInteger(parsed) ? Math.min(maximum, Math.max(1, parsed)) : fallback;
+  }
+
+  function saveBenchmarkHistory(command: Record<string, unknown>): BenchmarkHistoryRecord {
+    const runId = String(command.runId ?? '');
+    const model = String(command.model ?? '');
+    const runStatus = String(command.runStatus ?? '');
+    const scoreStatus = String(command.scoreStatus ?? '');
+    const validRunStatuses: BenchmarkHistoryRecord['runStatus'][] = ['running', 'completed', 'failed', 'interrupted'];
+    const validScoreStatuses: BenchmarkHistoryRecord['scoreStatus'][] = ['pending', 'judging', 'final', 'evidence-insufficient', 'judge-failed', 'benchmark-failed'];
+    if (!runId || !model || !validRunStatuses.includes(runStatus as BenchmarkHistoryRecord['runStatus']) || !validScoreStatuses.includes(scoreStatus as BenchmarkHistoryRecord['scoreStatus'])) {
+      throw serviceErrorV2({ code: 'diagnostics.invalid-request', message: 'fake benchmark history record is invalid' });
+    }
+    if (command.scoreVersion != null && command.scoreVersion !== 'benchmark-score/v1') {
+      throw serviceErrorV2({ code: 'diagnostics.invalid-request', message: 'fake benchmark history accepts benchmark-score/v1 only' });
+    }
+
+    const requestedRecordId = typeof command.recordId === 'string' && command.recordId.trim() ? command.recordId : null;
+    const existing = requestedRecordId
+      ? benchmarkHistory.get(requestedRecordId)
+      : [...benchmarkHistory.values()].find((record) => record.runId === runId);
+    if (requestedRecordId && !existing) {
+      throw serviceErrorV2({ code: 'diagnostics.not-found', message: 'fake benchmark history record was not found' });
+    }
+    if (existing && existing.runId !== runId) {
+      throw serviceErrorV2({ code: 'diagnostics.invalid-request', message: 'fake benchmark history record id does not match run id' });
+    }
+
+    const now = new Date().toISOString();
+    const record: BenchmarkHistoryRecord = {
+      recordId: existing?.recordId ?? `fake-benchmark-history-${++benchmarkHistorySequence}`,
+      runId,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now,
+      model,
+      runStatus: runStatus as BenchmarkHistoryRecord['runStatus'],
+      scoreStatus: scoreStatus as BenchmarkHistoryRecord['scoreStatus'],
+      scoreVersion: 'benchmark-score/v1',
+      totalScore: typeof command.totalScore === 'number' ? command.totalScore : null,
+      grade: typeof command.grade === 'string' ? command.grade : null,
+      report: command.report ?? null,
+      score: command.score ?? null,
+      error: typeof command.error === 'string' ? command.error : null,
+    };
+    benchmarkHistory.set(record.recordId, record);
+    return structuredClone(record);
+  }
+
+  function listBenchmarkHistory(command: Record<string, unknown>): BenchmarkHistoryPage {
+    const page = readHistoryPage(command.page, 1, Number.MAX_SAFE_INTEGER);
+    const pageSize = readHistoryPage(command.pageSize, 50, 100);
+    const records = [...benchmarkHistory.values()]
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt) || right.recordId.localeCompare(left.recordId));
+    return {
+      records: records.slice((page - 1) * pageSize, page * pageSize).map(benchmarkHistorySummary),
+      page,
+      pageSize,
+      totalCount: records.length,
+    };
+  }
+
+  function getBenchmarkHistory(command: Record<string, unknown>): BenchmarkHistoryRecord {
+    const recordId = String(command.recordId ?? '');
+    const record = benchmarkHistory.get(recordId);
+    if (!record) {
+      throw serviceErrorV2({ code: 'diagnostics.not-found', message: 'fake benchmark history record was not found' });
+    }
+    return structuredClone(record);
+  }
+
+  function deleteBenchmarkHistory(command: Record<string, unknown>): BenchmarkHistoryDeleteResult {
+    return { deleted: benchmarkHistory.delete(String(command.recordId ?? '')) };
+  }
+
+  function clearBenchmarkHistory(): BenchmarkHistoryClearResult {
+    const deletedCount = benchmarkHistory.size;
+    benchmarkHistory.clear();
+    return { deletedCount };
+  }
+
   function handleDiagnosticsAction(action: string | null, args: Record<string, unknown> | undefined) {
     const command = (args?.command ?? {}) as Record<string, unknown>;
     switch (action) {
@@ -981,6 +1246,16 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
           outputPath: `C:\\Users\\fake\\Downloads\\${String(command.filename ?? 'watch-session-report.json')}`,
           fileCount: 1,
         });
+      case 'saveBenchmarkHistory':
+        return envelope(saveBenchmarkHistory(command));
+      case 'listBenchmarkHistory':
+        return envelope(listBenchmarkHistory(command));
+      case 'getBenchmarkHistory':
+        return envelope(getBenchmarkHistory(command));
+      case 'deleteBenchmarkHistory':
+        return envelope(deleteBenchmarkHistory(command));
+      case 'clearBenchmarkHistory':
+        return envelope(clearBenchmarkHistory());
       default:
         throw new Error(`fake bridge: unsupported diagnostics_v2 action ${String(action)}`);
     }
@@ -1081,6 +1356,52 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
     return envelope(JSON.stringify(plan.report));
   }
 
+  function runFakeSemanticJudge(command: Record<string, unknown>): ServiceEnvelope<ProviderSmokeResult> {
+    const providerConfig = command.provider as { providerId?: unknown; transport?: unknown } | undefined;
+    let request: { runIndex?: unknown } = {};
+    if (typeof command.sourceText === 'string') {
+      try {
+        request = JSON.parse(command.sourceText) as { runIndex?: unknown };
+      } catch (error) {
+        // The real provider will return a structured error for malformed
+        // content. This test bridge preserves a valid fixture response so the
+        // diagnostics page can exercise its one-shot judge lifecycle.
+        fakeBridgeLogger.debug('fake benchmark judge request was not JSON', String(error));
+        request = {};
+      }
+    }
+    const transcript = JSON.stringify({
+      subscores: {
+        adequacy: 90,
+        factsTerminology: 90,
+        omissionsAdditions: 90,
+        fluency: 90,
+      },
+      rationale: `Fake auditable semantic review for run ${Number(request.runIndex ?? 0) + 1}.`,
+      criticalErrors: [],
+    });
+    return envelope({
+      requestId: 'fake-benchmark-semantic-judge',
+      providerId: typeof providerConfig?.providerId === 'string' ? providerConfig.providerId : 'fake-provider',
+      status: 'completed',
+      transportRequested: typeof providerConfig?.transport === 'string' ? providerConfig.transport : 'http',
+      transportEffective: typeof providerConfig?.transport === 'string' ? providerConfig.transport : 'http',
+      fallbackApplied: false,
+      streamObserved: false,
+      durationMs: 12,
+      firstEventLatencyMs: 4,
+      transcript,
+      sourceLanguage: String(command.sourceLanguage ?? ''),
+      targetLanguage: String(command.targetLanguage ?? ''),
+      eventLog: [],
+      inputTokens: null,
+      outputTokens: null,
+      audioSeconds: null,
+      routingDecision: { subtitlePriority: 'balanced', speechDisposition: 'ready', rationale: 'fake semantic judge' },
+      error: null,
+    });
+  }
+
   function handleProviderAction(action: string | null, args: Record<string, unknown> | undefined) {
     const command = (args?.command ?? {}) as Record<string, unknown>;
     switch (action) {
@@ -1091,6 +1412,8 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
         ));
       case 'runModelBenchmark':
         return runProgrammedBenchmark(command);
+      case 'smoke':
+        return runFakeSemanticJudge(command);
       default:
         throw new Error(`fake bridge: unsupported provider_v2 action ${String(action)}`);
     }
@@ -1178,6 +1501,7 @@ export function createFakeBridge(provider: FakeProvider = createFakeProvider()) 
       ),
     getAudioSnapshot: () => structuredClone(audio),
     getRuntimeSnapshot: () => structuredClone(runtime),
+    getTranslationDispatches: () => structuredClone(translationDispatches),
     getLiveSessionEvents: () => structuredClone(liveSession),
     getWatchSessionReport: () => structuredClone(liveSessionAsWatchReport()),
     getOverlayWindowState: () => (overlayWindowState ? { ...overlayWindowState } : null),

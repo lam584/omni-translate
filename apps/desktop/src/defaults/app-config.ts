@@ -258,7 +258,7 @@ export const appConfigDraftMock: AppConfigDraft = {
     status: 'warning',
   },
   driver: {
-    protocolVersion: '2026-07-27-smart-gain-v3',
+    protocolVersion: '2026-08-10-audio-routing-v6',
     installChannel: 'development',
     installPhase: 'rollback-required',
     targetDeviceId: 'virtual-mic-default',

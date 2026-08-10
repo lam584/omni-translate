@@ -97,7 +97,11 @@ vi.mock('./sceneLaunchTimeout', () => ({ sceneLaunchTimeoutMs: () => 100 }));
 import { sceneSessionControllerHelpers, useSceneSessionController } from './useSceneSessionController';
 
 function cloneAudio(): AudioRuntimeSnapshot {
-  return structuredClone(audioRuntimeSnapshotMock);
+  const audio = structuredClone(audioRuntimeSnapshotMock);
+  audio.aecBackend = 'webrtc-aec3';
+  audio.aecStatus = 'ready';
+  audio.aecFailureDetail = null;
+  return audio;
 }
 
 function cloneRuntime(): RuntimeSnapshot {
@@ -108,6 +112,7 @@ function readyRuntime(overrides: Partial<RuntimeSnapshot['bridge']> = {}): Runti
   const snapshot = cloneRuntime();
   snapshot.bridge = {
     ...snapshot.bridge,
+    processStatus: 'running',
     driverHealth: 'running',
     bridgeState: 'running',
     recommendedAction: null,
@@ -138,7 +143,7 @@ function makeHarness(runtimeSnapshot = readyRuntime()) {
 
 function makeLaunchOptions(mode: 'watch' | 'voice-room' = 'watch') {
   const configDraft = structuredClone(appConfigDraftMock);
-  configDraft.devices.feedbackLoopPrevention = 'none';
+  configDraft.devices.feedbackLoopPrevention = 'echo-cancel';
   configDraft.devices.virtualMicOutputEnabled = false;
   configDraft.speech.outputTarget = 'speaker';
   const audioSnapshot = cloneAudio();
@@ -300,8 +305,8 @@ describe('useSceneSessionController IPC orchestration', () => {
   });
 
   it('reports a fallback failure and rolls the AEC fallback back when its speech stage fails', async () => {
-    // Real fallback topology: subtitles-only → [inbound-route]; AEC (speech
-    // enabled) → [inbound-route, speech-dispatch].
+    // Real fallback topology always converges Bridge first: subtitles-only →
+    // [bridge-ready, inbound-route]; AEC adds speech-dispatch.
     mocks.watchNeedsBridge.mockReturnValue(true);
     mocks.startRoute.mockRejectedValueOnce('bridge initial string').mockRejectedValueOnce('fallback route string');
     const first = makeHarness(); first.controller.confirmWatchFallback.mockResolvedValue(false);
@@ -318,9 +323,10 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(second.controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
   });
 
-  it('migrates legacy Watch drafts on the real bridge-free plan and warns on non-Error preconnect failures', async () => {
-    // Use the real watch plan: its stages never include 'bridge-ready', so the
-    // legacy draft correction must run outside the bridge-ready callback.
+  it('migrates legacy Watch drafts on the real plan and warns on non-Error preconnect failures', async () => {
+    // Every Watch plan now includes bridge-ready so a previous capture backend
+    // is converged or neutralized before the new route starts. Legacy draft
+    // correction must still happen before that stage consumes the config.
     const watch = makeHarness();
     await watch.api.launchScene(makeLaunchOptions('watch'));
     expect(watch.controller.updateDeviceDraft).toHaveBeenCalledWith(expect.objectContaining({
@@ -353,11 +359,198 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('overlay string') }));
   });
 
-  it('keeps Watch startup off the synchronous Bridge IPC path even when Bridge is required', async () => {
+  it('does not touch an already-neutral Bridge for Watch AEC', async () => {
     mocks.watchNeedsBridge.mockReturnValue(true);
     const { api, controller } = makeHarness();
     await expect(api.ensureBridgeReady('watch', structuredClone(appConfigDraftMock))).resolves.toBe(controller.runtimeSnapshot);
     expect(mocks.refreshBridge).not.toHaveBeenCalled();
+    expect(mocks.startBridge).not.toHaveBeenCalled();
+  });
+
+  it('starts a stopped Bridge on the Watch critical path for process exclusion', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(true);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+    const cached = readyRuntime({ driverHealth: 'not-installed', bridgeState: 'stopped' });
+    const started = readyRuntime({ driverHealth: 'not-installed', bridgeState: 'running' });
+    Object.assign(started.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      windowsBuildNumber: 26100,
+      processLoopbackMinimumWindowsBuild: 20348,
+    });
+    mocks.startBridge.mockResolvedValue(started);
+    const { api, controller } = makeHarness(cached);
+
+    await expect(api.ensureBridgeReady('watch', config)).resolves.toBe(started);
+
+    expect(mocks.startBridge).toHaveBeenCalledWith(config);
+    expect(mocks.refreshBridge).not.toHaveBeenCalled();
+    expect(mocks.installBridge).not.toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(started);
+  });
+
+  it('starts a stopped virtual-driver Bridge on the Watch critical path without synchronous repair', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(true);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'virtual-driver';
+    const stopped = readyRuntime({ processStatus: 'stopped', bridgeState: 'stopped' });
+    const started = readyRuntime();
+    Object.assign(started.bridge, {
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+    });
+    mocks.startBridge.mockResolvedValue(started);
+    const { api, controller } = makeHarness(stopped);
+
+    await expect(api.ensureBridgeReady('watch', config)).resolves.toBe(started);
+
+    expect(mocks.startBridge).toHaveBeenCalledWith(config);
+    expect(mocks.refreshBridge).not.toHaveBeenCalled();
+    expect(mocks.installBridge).not.toHaveBeenCalled();
+    expect(mocks.repairBridge).not.toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(started);
+  });
+
+  it.each([
+    ['process-exclusion', 'wasapi-process-exclusion'],
+    ['virtual-driver', 'driver-virtual-speaker'],
+  ] as const)('neutralizes a running %s Bridge before Watch AEC starts', async (sourceCaptureMode, captureBackend) => {
+    mocks.watchNeedsBridge.mockReturnValue(false);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'echo-cancel';
+    const previousRoute = readyRuntime();
+    Object.assign(previousRoute.bridge, { sourceCaptureMode, captureBackend });
+    const neutral = readyRuntime();
+    Object.assign(neutral.bridge, { sourceCaptureMode: 'none', captureBackend: 'none' });
+    mocks.startBridge.mockResolvedValue(neutral);
+    const { api, controller } = makeHarness(previousRoute);
+
+    await expect(api.ensureBridgeReady('watch', config)).resolves.toBe(neutral);
+
+    expect(mocks.startBridge).toHaveBeenCalledWith(config);
+    expect(mocks.refreshBridge).not.toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(neutral);
+  });
+
+  it('keeps a stopped Bridge stopped for Watch AEC', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(false);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'echo-cancel';
+    const stopped = readyRuntime({ processStatus: 'stopped', bridgeState: 'stopped' });
+    const { api } = makeHarness(stopped);
+
+    await expect(api.ensureBridgeReady('watch', config)).resolves.toBe(stopped);
+
+    expect(mocks.startBridge).not.toHaveBeenCalled();
+    expect(mocks.refreshBridge).not.toHaveBeenCalled();
+  });
+
+  it('refreshes a running process-exclusion Bridge until its capability is explicit', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(true);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+    const probing = readyRuntime({ bridgeState: 'running' });
+    Object.assign(probing.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: false,
+      processLoopbackStatus: 'unknown',
+    });
+    const ready = readyRuntime({ bridgeState: 'running' });
+    Object.assign(ready.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      windowsBuildNumber: 26100,
+      processLoopbackMinimumWindowsBuild: 20348,
+    });
+    mocks.refreshBridge.mockResolvedValue(ready);
+    const { api, controller } = makeHarness(probing);
+
+    await expect(api.ensureBridgeReady('watch', config)).resolves.toBe(ready);
+
+    expect(mocks.refreshBridge).toHaveBeenCalledWith();
+    expect(mocks.startBridge).not.toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(ready);
+  });
+
+  it('re-initializes a running Bridge when process exclusion is selected from another capture backend', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(true);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+    const wrongMode = readyRuntime();
+    Object.assign(wrongMode.bridge, {
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+    });
+    const converged = readyRuntime({ driverHealth: 'not-installed' });
+    Object.assign(converged.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      windowsBuildNumber: 26100,
+      processLoopbackMinimumWindowsBuild: 20348,
+    });
+    mocks.startBridge.mockResolvedValue(converged);
+    const { api, controller } = makeHarness(wrongMode);
+
+    await expect(api.ensureBridgeReady('watch', config)).resolves.toBe(converged);
+
+    expect(mocks.startBridge).toHaveBeenCalledWith(config);
+    expect(mocks.refreshBridge).not.toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(converged);
+  });
+
+  it('rejects process exclusion when Bridge start returns the wrong capture backend', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(true);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+    const wrongMode = readyRuntime({ bridgeState: 'stopped', processStatus: 'stopped' });
+    const badStart = readyRuntime();
+    Object.assign(badStart.bridge, {
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+    });
+    mocks.startBridge.mockResolvedValue(badStart);
+    const { api } = makeHarness(wrongMode);
+
+    await expect(api.ensureBridgeReady('watch', config)).rejects.toThrow('did not converge');
+  });
+
+  it('re-initializes a running process Bridge when Watch selects virtual-driver capture', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(true);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'virtual-driver';
+    const processRuntime = readyRuntime();
+    Object.assign(processRuntime.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+    });
+    const virtualRuntime = readyRuntime();
+    Object.assign(virtualRuntime.bridge, {
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+    });
+    mocks.startBridge.mockResolvedValue(virtualRuntime);
+    const { api, controller } = makeHarness(processRuntime);
+
+    await expect(api.ensureBridgeReady('watch', config)).resolves.toBe(virtualRuntime);
+
+    expect(mocks.startBridge).toHaveBeenCalledWith(config);
+    expect(mocks.refreshBridge).not.toHaveBeenCalled();
+    expect(mocks.installBridge).not.toHaveBeenCalled();
+    expect(controller.setRuntimeSnapshot).toHaveBeenCalledWith(virtualRuntime);
   });
 
   it('falls back to cached Bridge state when refresh IPC fails', async () => {
@@ -420,6 +613,130 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(controller.setRuntimeSnapshot).toHaveBeenLastCalledWith(started);
   });
 
+  it('starts process-exclusion Bridge without installing or repairing a virtual driver', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(true);
+    const config = structuredClone(appConfigDraftMock);
+    config.devices.feedbackLoopPrevention = 'process-exclusion';
+    const stopped = readyRuntime({ driverHealth: 'not-installed', bridgeState: 'stopped' });
+    mocks.refreshBridge.mockResolvedValue(stopped);
+    const started = readyRuntime({ driverHealth: 'not-installed' });
+    Object.assign(started.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+    });
+    mocks.startBridge.mockResolvedValue(started);
+    const { api } = makeHarness();
+
+    await expect(api.ensureBridgeReady('voice-room', config)).resolves.toBe(started);
+
+    expect(mocks.startBridge).toHaveBeenCalledWith(config);
+    expect(mocks.installBridge).not.toHaveBeenCalled();
+    expect(mocks.repairBridge).not.toHaveBeenCalled();
+  });
+
+  it('blocks unsupported process exclusion before route startup and preserves the selection', async () => {
+    const runtime = readyRuntime();
+    Object.assign(runtime.bridge, {
+      processLoopbackSupported: false,
+      processLoopbackStatus: 'unsupported',
+      windowsBuildNumber: 19045,
+      processLoopbackMinimumWindowsBuild: 20348,
+    });
+    const options = makeLaunchOptions('watch');
+    options.configDraft.devices.feedbackLoopPrevention = 'process-exclusion';
+    const { api, controller } = makeHarness(runtime);
+
+    await api.launchScene(options);
+
+    expect(mocks.startRoute).not.toHaveBeenCalled();
+    expect(controller.updateDeviceDraft).not.toHaveBeenCalled();
+    expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'error',
+      message: expect.stringContaining('20348'),
+    }));
+    expect(options.configDraft.devices.feedbackLoopPrevention).toBe('process-exclusion');
+  });
+
+  it('blocks isolated voice-room outbound before claiming virtual-mic delivery', async () => {
+    for (const feedbackLoopPrevention of ['virtual-driver', 'process-exclusion'] as const) {
+      mocks.startRoute.mockClear();
+      const options = makeLaunchOptions('voice-room');
+      options.configDraft.devices.feedbackLoopPrevention = feedbackLoopPrevention;
+      const { api, controller } = makeHarness();
+
+      await api.launchScene(options);
+
+      expect(mocks.startRoute).not.toHaveBeenCalled();
+      expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({
+        level: 'error',
+        message: expect.stringContaining('bridge.virtual-mic-output-unavailable'),
+      }));
+      expect(options.configDraft.devices.feedbackLoopPrevention).toBe(feedbackLoopPrevention);
+    }
+  });
+
+  it('blocks echo-cancel before route startup while the generated AEC3 gate is unavailable', async () => {
+    const options = makeLaunchOptions('watch');
+    options.configDraft.devices.feedbackLoopPrevention = 'echo-cancel';
+    options.audioSnapshot.aecBackend = 'unavailable';
+    options.audioSnapshot.aecStatus = 'unavailable';
+    options.audioSnapshot.aecFailureDetail = 'x64 MSVC gate is closed';
+    const { api, controller } = makeHarness();
+
+    await api.launchScene(options);
+
+    expect(mocks.startRoute).not.toHaveBeenCalled();
+    expect(controller.confirmWatchFallback).not.toHaveBeenCalled();
+    expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'error',
+      message: expect.stringContaining('x64 MSVC gate is closed'),
+    }));
+    expect(options.configDraft.devices.feedbackLoopPrevention).toBe('echo-cancel');
+  });
+
+  it('preserves legacy none and blocks translated Watch speech until a route is explicitly selected', async () => {
+    const options = makeLaunchOptions('watch');
+    options.configDraft.devices.feedbackLoopPrevention = 'none';
+    options.configDraft.devices.outputSpeechEnabled = true;
+    options.configDraft.devices.aecEnabled = false;
+    options.speechPatch = { enabled: true };
+    const { api, controller } = makeHarness();
+
+    await api.launchScene(options);
+
+    expect(mocks.startRoute).not.toHaveBeenCalled();
+    expect(controller.updateDeviceDraft).not.toHaveBeenCalled();
+    expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'error',
+      message: expect.stringContaining('反馈治理'),
+    }));
+    expect(options.configDraft.devices.feedbackLoopPrevention).toBe('none');
+  });
+
+  it('never offers the virtual-driver fallback when a ready process-exclusion route fails', async () => {
+    mocks.watchNeedsBridge.mockReturnValue(true);
+    const runtime = readyRuntime();
+    Object.assign(runtime.bridge, {
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+      windowsBuildNumber: 26100,
+      processLoopbackMinimumWindowsBuild: 20348,
+    });
+    const options = makeLaunchOptions('watch');
+    options.configDraft.devices.feedbackLoopPrevention = 'process-exclusion';
+    mocks.startRoute.mockRejectedValueOnce(new Error('bridge process-loopback failed'));
+    const { api, controller } = makeHarness(runtime);
+
+    await api.launchScene(options);
+
+    expect(controller.confirmWatchFallback).not.toHaveBeenCalled();
+    expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'error' }));
+  });
+
   it('stops every active native IPC pipeline and publishes each returned snapshot', async () => {
     const active = cloneAudio();
     active.inbound.streamBound = true;
@@ -433,7 +750,7 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.stopSpeech).toHaveBeenCalledTimes(1);
     expect(mocks.stopTranslation).toHaveBeenCalledTimes(1);
     expect(mocks.stopRoute.mock.calls.map(([direction]) => direction)).toEqual(['outbound', 'inbound']);
-    expect(controller.setAudioSnapshot).toHaveBeenLastCalledWith(audioRuntimeSnapshotMock);
+    expect(controller.setAudioSnapshot).toHaveBeenLastCalledWith(cloneAudio());
   });
 
   it('continues stop compensation and reports IPC failures when snapshot refresh and a stop step fail', async () => {
@@ -607,8 +924,8 @@ describe('useSceneSessionController IPC orchestration', () => {
   });
 
   it('runs every real AEC-fallback stage after a Bridge-class failure', async () => {
-    // Real AEC fallback plan: [inbound-route, speech-dispatch] — no bridge
-    // stage, no translate worker, no renderer-owned overlay.
+    // Real AEC fallback plan: [bridge-ready, inbound-route, speech-dispatch]
+    // with no translate worker or renderer-owned overlay.
     mocks.watchNeedsBridge.mockReturnValue(true);
     mocks.startRoute.mockRejectedValueOnce(new Error('virtual bridge unavailable'));
     const { api, controller } = makeHarness();
@@ -621,6 +938,137 @@ describe('useSceneSessionController IPC orchestration', () => {
     expect(mocks.startTranslation).not.toHaveBeenCalled();
     expect(mocks.showOverlay).not.toHaveBeenCalled();
     expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({ level: 'warning' }));
+  });
+
+  it('neutralizes a running virtual-driver backend before subtitles-only fallback', async () => {
+    const virtualDriverRuntime = readyRuntime({
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+    });
+    const neutralRuntime = readyRuntime({
+      sourceCaptureMode: 'none',
+      captureBackend: 'none',
+      driverHealth: 'not-installed',
+    });
+    mocks.watchNeedsBridge.mockImplementation((config: typeof appConfigDraftMock) => (
+      config.devices.feedbackLoopPrevention === 'virtual-driver'
+    ));
+    mocks.startRoute
+      .mockRejectedValueOnce(new Error('bridge source pipe unavailable'))
+      .mockResolvedValueOnce(cloneAudio());
+    mocks.startBridge.mockResolvedValueOnce(neutralRuntime);
+    const options = makeLaunchOptions('watch');
+    options.configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+    const { api, controller } = makeHarness(virtualDriverRuntime);
+    controller.confirmWatchFallback.mockResolvedValue(true);
+
+    await api.launchScene(options);
+
+    expect(mocks.startBridge).toHaveBeenCalledTimes(1);
+    expect(mocks.startBridge).toHaveBeenCalledWith(expect.objectContaining({
+      devices: expect.objectContaining({ feedbackLoopPrevention: 'none' }),
+      speech: expect.objectContaining({ localPlaybackEnabled: false }),
+    }));
+    expect(mocks.startRoute.mock.calls[1]?.[1]).toEqual(expect.objectContaining({
+      devices: expect.objectContaining({ feedbackLoopPrevention: 'none' }),
+    }));
+  });
+
+  it('neutralizes a stale process backend before AEC fallback after driver startup fails', async () => {
+    const processRuntime = readyRuntime({
+      sourceCaptureMode: 'process-exclusion',
+      captureBackend: 'wasapi-process-exclusion',
+      processLoopbackSupported: true,
+      processLoopbackStatus: 'ready',
+    });
+    const neutralRuntime = readyRuntime({
+      sourceCaptureMode: 'none',
+      captureBackend: 'none',
+      processLoopbackStatus: 'unknown',
+    });
+    mocks.watchNeedsBridge.mockImplementation((config: typeof appConfigDraftMock) => (
+      config.devices.feedbackLoopPrevention === 'virtual-driver'
+    ));
+    mocks.startBridge
+      .mockRejectedValueOnce(new Error('bridge virtual-driver startup failed'))
+      .mockResolvedValueOnce(neutralRuntime);
+    const options = makeLaunchOptions('watch');
+    options.configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+    options.speechPatch = { enabled: true };
+    const { api, controller } = makeHarness(processRuntime);
+    controller.confirmWatchFallback.mockResolvedValue(false);
+
+    await api.launchScene(options);
+
+    expect(mocks.startBridge).toHaveBeenCalledTimes(2);
+    expect(mocks.startBridge.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+      devices: expect.objectContaining({ feedbackLoopPrevention: 'virtual-driver' }),
+    }));
+    expect(mocks.startBridge.mock.calls[1]?.[0]).toEqual(expect.objectContaining({
+      devices: expect.objectContaining({ feedbackLoopPrevention: 'echo-cancel' }),
+    }));
+    expect(mocks.startRoute).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start an already stopped neutral Bridge during subtitles-only fallback', async () => {
+    const stoppedNeutralRuntime = readyRuntime({
+      processStatus: 'stopped',
+      bridgeState: 'stopped',
+      sourceCaptureMode: 'none',
+      captureBackend: 'none',
+    });
+    mocks.watchNeedsBridge.mockImplementation((config: typeof appConfigDraftMock) => (
+      config.devices.feedbackLoopPrevention === 'virtual-driver'
+    ));
+    mocks.startBridge.mockRejectedValueOnce(new Error('bridge startup failed'));
+    const options = makeLaunchOptions('watch');
+    options.configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+    const { api, controller } = makeHarness(stoppedNeutralRuntime);
+    controller.confirmWatchFallback.mockResolvedValue(true);
+
+    await api.launchScene(options);
+
+    expect(mocks.startBridge).toHaveBeenCalledTimes(1);
+    expect(mocks.startRoute).toHaveBeenCalledTimes(1);
+    expect(mocks.startRoute.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      devices: expect.objectContaining({ feedbackLoopPrevention: 'none' }),
+    }));
+  });
+
+  it('runs the AEC3 capability preflight after neutralizing fallback Bridge state', async () => {
+    const virtualDriverRuntime = readyRuntime({
+      sourceCaptureMode: 'virtual-driver',
+      captureBackend: 'driver-virtual-speaker',
+    });
+    const neutralRuntime = readyRuntime({ sourceCaptureMode: 'none', captureBackend: 'none' });
+    mocks.watchNeedsBridge.mockImplementation((config: typeof appConfigDraftMock) => (
+      config.devices.feedbackLoopPrevention === 'virtual-driver'
+    ));
+    mocks.startRoute.mockRejectedValueOnce(new Error('bridge source pipe unavailable'));
+    mocks.startBridge.mockResolvedValueOnce(neutralRuntime);
+    const options = makeLaunchOptions('watch');
+    options.configDraft.devices.feedbackLoopPrevention = 'virtual-driver';
+    options.audioSnapshot.aecStatus = 'unavailable';
+    options.audioSnapshot.aecFailureDetail = 'AEC3 native engine unavailable';
+    const { api, controller } = makeHarness(virtualDriverRuntime);
+    controller.confirmWatchFallback.mockResolvedValue(false);
+
+    await api.launchScene(options);
+
+    expect(mocks.startBridge).toHaveBeenCalledWith(expect.objectContaining({
+      devices: expect.objectContaining({ feedbackLoopPrevention: 'echo-cancel' }),
+    }));
+    expect(mocks.startRoute).toHaveBeenCalledTimes(1);
+    expect(mocks.appendLog).toHaveBeenCalledWith(
+      'runtime',
+      'warning',
+      '[WatchFallback] WebRTC AEC3 unavailable',
+      expect.any(String),
+    );
+    expect(controller.pushNotification).toHaveBeenCalledWith(expect.objectContaining({
+      level: 'error',
+      message: expect.stringContaining('AEC3 native engine unavailable'),
+    }));
   });
 
   it('compensates completed non-audio stages when a real voice-room launch fails late', async () => {

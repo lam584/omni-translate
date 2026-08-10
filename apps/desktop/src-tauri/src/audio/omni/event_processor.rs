@@ -183,7 +183,8 @@ impl OmniEventProcessor {
     pub(super) fn process_audio_done<R: tauri::Runtime>(
         state: OmniAudioOutputState,
         app: &AppHandle<R>,
-        playback_tx: &mpsc::SyncSender<OmniPlaybackCommand>,
+        playback_queue: &OmniPlaybackQueue,
+        cue_id: Option<&str>,
     ) -> OmniAudioOutputState {
         let OmniAudioOutputState {
             mut pending_audio_delta_count,
@@ -192,29 +193,95 @@ impl OmniEventProcessor {
             mut pending_audio_buffer,
         } = state;
         if !pending_audio_buffer.is_empty() {
-            let cue_id = format!("omni-audio-{}", unix_ms());
             let sample_count = pending_audio_buffer.len();
             let duration_ms = ((sample_count as u64) * 1000)
-                .saturating_div(OMNI_OUTPUT_SAMPLE_RATE_HZ as u64);
+                .div_ceil(OMNI_OUTPUT_SAMPLE_RATE_HZ as u64);
             let response_id =
                 pending_audio_response_id.as_deref().unwrap_or("(none)");
-            let enqueue_status = match playback_tx.try_send(OmniPlaybackCommand::Play {
+            let audio_state = app.state::<AudioStateStore>();
+            let Some(cue_id) = cue_id.filter(|value| !value.trim().is_empty()) else {
+                let detail = format!(
+                    "原生翻译音频无法关联到实际字幕 cue，已拒绝进入播放队列。responseId={response_id}"
+                );
+                audio_state.watch_session_report.record_session_issue(
+                    "output",
+                    "native-playback-missing-cue",
+                    "error",
+                    &detail,
+                );
+                let _ = diag_log(
+                    app,
+                    "omni",
+                    "error",
+                    format!(
+                        "[AUDIO] native audio.done route failed: response_id={response_id} reason=missing-subtitle-cue samples={sample_count}"
+                    ),
+                );
+                pending_audio_buffer.clear();
+                pending_audio_delta_count = 0;
+                pending_audio_delta_base64_bytes = 0;
+                pending_audio_response_id = None;
+                return OmniAudioOutputState {
+                    pending_audio_delta_count,
+                    pending_audio_delta_base64_bytes,
+                    pending_audio_response_id,
+                    pending_audio_buffer,
+                };
+            };
+            let created_at_ms = unix_ms();
+            let enqueue_status = match playback_queue.enqueue(OmniPlaybackCommand::Play {
                 samples: std::mem::take(&mut pending_audio_buffer),
-                cue_id: cue_id.clone(),
+                cue_id: cue_id.to_string(),
                 sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
                 queued_at: Instant::now(),
+                created_at_ms,
+                estimated_duration_ms: duration_ms,
             }) {
-                Ok(()) => "queued",
-                Err(mpsc::TrySendError::Full(_)) => {
-                    let _ = diag_log(
-                        &app,
-                        "omni",
-                        "warning",
-                        "[AUDIO] omni playback queue full, dropping oldest audio",
+                OmniPlaybackEnqueueOutcome::Queued => "queued",
+                OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped_cue_ids } => {
+                    record_native_playback_stale(
+                        app,
+                        &audio_state,
+                        &dropped_cue_ids,
+                        "realtime-budget-at-enqueue",
                     );
-                    "dropped_queue_full"
+                    "queued_after_stale_drop"
                 }
-                Err(mpsc::TrySendError::Disconnected(_)) => "dropped_disconnected",
+                OmniPlaybackEnqueueOutcome::Overflow {
+                    reason,
+                    dropped_cue_ids,
+                } => {
+                    record_native_playback_stale(
+                        app,
+                        &audio_state,
+                        &dropped_cue_ids,
+                        "realtime-budget-at-enqueue",
+                    );
+                    let reason = match reason {
+                        OmniPlaybackOverflowReason::QueueFull => "queue-full-with-fresh-pending",
+                        OmniPlaybackOverflowReason::RealtimeBudget => {
+                            "projected-start-outside-realtime-budget"
+                        }
+                    };
+                    audio_state.watch_session_report.record_session_issue(
+                        "output",
+                        "native-playback-queue-overflow",
+                        "error",
+                        &format!(
+                            "原生翻译语音无法在实时预算内开始，且没有可淘汰的过期 pending cue。cueId={cue_id} reason={reason}"
+                        ),
+                    );
+                    let _ = diag_log(
+                        app,
+                        "omni",
+                        "error",
+                        format!(
+                            "[AUDIO] native playback queue overflow: cue_id={cue_id} reason={reason}"
+                        ),
+                    );
+                    "dropped_overflow"
+                }
+                OmniPlaybackEnqueueOutcome::Stopped => "dropped_stopped",
             };
             let log_level = if enqueue_status == "queued" {
                 "info"
@@ -294,7 +361,10 @@ impl OmniEventProcessor {
         store
             .watch_session_report
             .push_output_delta(event_type, delta, "");
-        event_diagnostics.claim_next_native_response_owner(current_cue_id.as_deref());
+        event_diagnostics.claim_native_response_owner_for_response(
+            native_response_id_from_event(evt),
+            current_cue_id.as_deref(),
+        );
         let response_source_text = resolve_native_response_source_text(
             store,
             event_diagnostics.native_response_cue_id.as_deref(),
@@ -407,7 +477,10 @@ impl OmniEventProcessor {
             "",
             &pending_translated_text,
         );
-        event_diagnostics.claim_next_native_response_owner(current_cue_id.as_deref());
+        event_diagnostics.claim_native_response_owner_for_response(
+            native_response_id_from_event(evt),
+            current_cue_id.as_deref(),
+        );
         let response_source_text = resolve_native_response_source_text(
             store,
             event_diagnostics.native_response_cue_id.as_deref(),
@@ -484,5 +557,70 @@ impl OmniEventProcessor {
             st_skip_logged,
             event_diagnostics,
         }
+    }
+}
+
+#[cfg(test)]
+mod audio_done_tests {
+    use super::*;
+    use tauri::Manager;
+
+    fn app() -> tauri::App<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        app
+    }
+
+    fn buffered_audio() -> OmniAudioOutputState {
+        OmniAudioOutputState {
+            pending_audio_delta_count: 1,
+            pending_audio_delta_base64_bytes: 8,
+            pending_audio_response_id: Some("resp-audio".to_string()),
+            pending_audio_buffer: vec![1, -1, 2, -2],
+        }
+    }
+
+    #[test]
+    fn native_audio_done_uses_the_actual_subtitle_cue_id() {
+        let app = app();
+        let queue = OmniPlaybackQueue::new(2);
+
+        let state = OmniEventProcessor::process_audio_done(
+            buffered_audio(),
+            &app.handle().clone(),
+            &queue,
+            Some("omni-cue-inbound-actual"),
+        );
+
+        assert!(state.pending_audio_buffer.is_empty());
+        assert_eq!(queue.pending_cue_ids(), ["omni-cue-inbound-actual"]);
+    }
+
+    #[test]
+    fn native_audio_without_a_subtitle_owner_is_rejected_instead_of_fabricating_a_cue() {
+        let app = app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        store
+            .watch_session_report
+            .begin_or_reuse("test", "native-audio-cue-owner");
+        let queue = OmniPlaybackQueue::new(2);
+
+        let state = OmniEventProcessor::process_audio_done(
+            buffered_audio(),
+            &handle,
+            &queue,
+            None,
+        );
+
+        assert!(state.pending_audio_buffer.is_empty());
+        assert!(queue.pending_cue_ids().is_empty());
+        let report = store.watch_session_report.snapshot().expect("watch report");
+        assert!(report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "native-playback-missing-cue"));
     }
 }

@@ -23,6 +23,7 @@ describe('executeSceneLaunchPlan', () => {
     expect(sceneLaunchTimeoutMs('watch')).toBe(900);
     expect(sceneLaunchTimeoutMs('voice-room')).toBe(900);
     expect(sceneLaunchTimeoutMs('game')).toBe(900);
+    expect(sceneLaunchTimeoutMs('watch', 'process-exclusion')).toBe(8000);
   });
 
   it('returns fully-started after a sequential launch', async () => {

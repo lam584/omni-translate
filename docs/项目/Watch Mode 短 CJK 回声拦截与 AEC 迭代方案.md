@@ -1,4 +1,6 @@
-# Watch Mode 短 CJK 回声拦截与 AEC 迭代方案
+# Watch Mode 短 CJK 回声拦截与 AEC 迭代方案（归档）
+
+> **状态：已废弃，不得作为当前实现依据。** 2026-08-10 起，字幕、译文和译音的最终决策链已移除 `recent-output-echo`、`short-cjk-output-echo`、`echo-chain-fragment`、`echo-dominated` 以及播放后固定时间窗整段抑制。文本相似度只允许用于诊断展示，不得删除非空转录或阻止翻译。当前反馈治理由三个独立后端承担：Windows 进程级排除、Virtual Driver、WebRTC AEC3；旧纯 Rust AEC 与 shadow 双引擎路径均已从生产代码删除。本文件保留为历史根因记录，当前验收以三路线方案和真实链路矩阵为准。
 
 ## 1. 背景
 
@@ -389,7 +391,7 @@ npm run test:watch-mode-report
 
 本轮有 `3` 次 `native-playback-queue-expired` 警告（最长排队 `5373 ms`），它们不表示 AEC 或字幕失败，已作为后续播放队列调度优化项保留。
 
-`npm run test:watch-mode-evidence:strict` 是发布前的完整矩阵门禁，默认要求两个指定模型和 `virtual-driver`、`echo-cancel` 两种变体；本轮只验证 `echo-cancel`，不能用它替代完整发布矩阵。
+`npm run test:watch-mode-evidence:strict` 是发布前的完整矩阵门禁，只读取最近一次成功 strict matrix 原子发布的 canonical manifest，要求两个指定模型、`process-exclusion`/`virtual-driver`/`echo-cancel` 三条路线和 default-speaker/USB/Bluetooth 三类设备，共 18 个独立且每格不少于 30 分钟的 live run；单独验证 `echo-cancel` 不能替代完整发布矩阵。
 
 如果改动跨进程协议或配置契约，还需按仓库核心边界规则执行对应的 contracts 和 bridge 验证。
 

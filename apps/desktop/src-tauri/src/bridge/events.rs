@@ -7,7 +7,7 @@ use std::time::{Duration, Instant, SystemTime};
 use std::path::Path;
 
 use serde_json::Value;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 
 use crate::diagnostics::events::append_diagnostics_log_quiet;
 use crate::log_debug;
@@ -20,9 +20,15 @@ use crate::runtime::events::{
 use crate::runtime::state::RuntimeStateStore;
 use crate::shared::time::now_unix_seconds_marker;
 
-use super::contracts::{reconcile_bridge_snapshot, BridgeMixControl, BridgeRuntimeSnapshot};
+use super::contracts::{
+    reconcile_bridge_snapshot, BridgeMixControl, BridgeRuntimeSnapshot, CaptureBackend,
+    ProcessLoopbackStatus, SourceCaptureMode,
+};
 use super::installer::{apply_driver_probe, probe_driver, run_elevated_driver_operation};
-use super::ipc::{apply_query, bridge_cli_path, BridgeIpcClient, BridgeProcessSupervisor};
+use super::ipc::{
+    apply_process_loopback_probe, apply_query, bridge_cli_path, BridgeIpcClient,
+    BridgeProcessSupervisor,
+};
 use super::state::BridgeStateStore;
 
 const DRIVER_STATE_STALE_THRESHOLD: Duration = Duration::from_secs(300);
@@ -62,6 +68,14 @@ fn extract_driver_string(config: &Value, pointer: &str, default: &str) -> String
 }
 
 fn apply_driver_config(snapshot: &mut BridgeRuntimeSnapshot, config: &Value) {
+    snapshot.source_capture_mode = match config
+        .pointer("/devices/feedbackLoopPrevention")
+        .and_then(Value::as_str)
+    {
+        Some("virtual-driver") => SourceCaptureMode::VirtualDriver,
+        Some("process-exclusion") => SourceCaptureMode::ProcessExclusion,
+        _ => SourceCaptureMode::None,
+    };
     snapshot.install_channel =
         extract_driver_string(config, "/driver/installChannel", &snapshot.install_channel);
     snapshot.install_phase =
@@ -83,10 +97,24 @@ fn apply_driver_config(snapshot: &mut BridgeRuntimeSnapshot, config: &Value) {
         .and_then(Value::as_u64)
         .unwrap_or(snapshot.physical_playback_level)
         .min(100);
-    snapshot.monitor_playback_enabled = config
+    let local_playback_enabled = config
         .pointer("/speech/localPlaybackEnabled")
         .and_then(Value::as_bool)
         .unwrap_or(snapshot.monitor_playback_enabled);
+    snapshot.monitor_playback_enabled = local_playback_enabled;
+    snapshot.translation_playback_enabled = local_playback_enabled
+        && snapshot.source_capture_mode == SourceCaptureMode::VirtualDriver;
+    snapshot.virtual_mic_output_requested = config
+        .pointer("/speech/virtualMicOutputEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    if snapshot.source_capture_mode == SourceCaptureMode::ProcessExclusion {
+        // The bridge is the only authorized translated-audio renderer in this
+        // mode. Source monitoring remains independently disabled by the native
+        // capture backend so original system audio is not replayed twice.
+        snapshot.monitor_playback_enabled = true;
+        snapshot.translation_playback_enabled = true;
+    }
     snapshot.mix_control = BridgeMixControl {
         keep_original_audio: config
             .pointer("/devices/inboundRoute/mixControl/keepOriginalAudio")
@@ -268,27 +296,18 @@ fn build_started_process(snapshot: &BridgeRuntimeSnapshot) -> Result<std::proces
         .map_err(|error| format!("无法启动 Node.js 进程: {}", error))
 }
 
-fn stop_existing_process(state: &BridgeStateStore) {
-    if let Some(mut process) = state.take_process() {
-        let _ = process.child.kill();
-        let _ = process.child.wait();
-    }
-}
-
-fn cleanup_existing_bridge_process(
-    snapshot: &BridgeRuntimeSnapshot,
-    state: &BridgeStateStore,
-) -> Result<(), String> {
-    stop_existing_process(state);
-    let _ = BridgeIpcClient::new(snapshot).stop();
-    thread::sleep(Duration::from_millis(150));
-    BridgeProcessSupervisor::new(snapshot).terminate_stale()
-}
-
 /// Returns true when the cached driver state is stale or unhealthy enough
 /// to warrant a full driver probe. On startup refresh, healthy cached state
 /// (driver_health=running, no errors) skips the expensive probe_driver call.
 fn should_probe_driver_on_startup_refresh(snapshot: &BridgeRuntimeSnapshot) -> bool {
+    // Process loopback is a driver-independent capture backend. Refreshing an
+    // active process-exclusion route must never launch the virtual-driver
+    // PowerShell probe, even when the cached driver fields are unknown, stale,
+    // or report a previous driver error.
+    if snapshot.source_capture_mode == SourceCaptureMode::ProcessExclusion {
+        return false;
+    }
+
     if snapshot.driver_health == "not-installed"
         || snapshot.driver_health == "version-mismatch"
         || snapshot.driver_health == "unknown"
@@ -347,7 +366,7 @@ fn should_use_full_bridge_pipe_query(snapshot: &BridgeRuntimeSnapshot) -> bool {
     snapshot.process_status == "running" && snapshot.session_id.is_some()
 }
 
-fn start_bridge_from_snapshot<R: tauri::Runtime>(
+fn launch_bridge_process<R: tauri::Runtime>(
     snapshot: &BridgeRuntimeSnapshot,
     bridge_state: &BridgeStateStore,
     app: &AppHandle<R>,
@@ -459,45 +478,12 @@ fn start_bridge_from_snapshot<R: tauri::Runtime>(
     }
 
     bridge_state.set_process(child);
-    let initialized = BridgeIpcClient::new(snapshot).initialize()?;
-    bridge_state.update_snapshot(|current| *current = initialized);
     Ok(())
 }
 
-fn emit_bridge_notification<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    runtime_state: &RuntimeStateStore,
-    id: &str,
-    message: &str,
-) {
-    if let Err(error) = emit_runtime_notification(
-        app,
-        runtime_state,
-        RuntimeNotification::info(id, "bridge-runtime", message, now_unix_seconds_marker()),
-    ) {
-        log_bridge_event(
-            app,
-            "warning",
-            "Bridge runtime notification emit failed.",
-            Some(format!("id={id} error={error}")),
-        );
-    }
-}
-
-fn log_bridge_event<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    level: &str,
-    summary: impl Into<String>,
-    detail: Option<String>,
-) {
-    let _ = append_diagnostics_log_quiet(app, "bridge", level, summary, detail, None, None);
-}
-
-pub(crate) fn get_bridge_runtime_snapshot(
-    state: State<'_, BridgeStateStore>,
-) -> super::contracts::BridgeRuntimeSnapshot {
-    state.snapshot()
-}
+include!("events/capability.rs");
+include!("events/playback_ownership.rs");
+include!("events/lifecycle.rs");
 
 // `(async)` runs the IPC path off the main thread so blocking driver probing
 // cannot starve the event loop. The plain fn stays callable by `bridge_v2`.
@@ -506,6 +492,7 @@ pub(crate) fn refresh_bridge_runtime<R: tauri::Runtime>(
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
+    let _lifecycle_operation = bridge_state.lock_lifecycle_operation();
     let t0 = Instant::now();
     let snapshot = bridge_state.snapshot();
     log_debug!(
@@ -620,6 +607,16 @@ pub(crate) fn start_bridge_service<R: tauri::Runtime>(
     bridge_state: State<'_, BridgeStateStore>,
     config: Value,
 ) -> Result<RuntimeSnapshot, String> {
+    let _lifecycle_operation = bridge_state.lock_lifecycle_operation();
+    start_bridge_service_serialized(app, runtime_state, bridge_state.clone(), config)
+}
+
+fn start_bridge_service_serialized<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    runtime_state: State<'_, RuntimeStateStore>,
+    bridge_state: State<'_, BridgeStateStore>,
+    config: Value,
+) -> Result<RuntimeSnapshot, String> {
     let t0 = Instant::now();
     let mut snapshot = bridge_state.snapshot();
     apply_driver_config(&mut snapshot, &config);
@@ -643,6 +640,14 @@ pub(crate) fn start_bridge_service<R: tauri::Runtime>(
             .unwrap_or(false)
         {
             record_bridge_start_error(&bridge_state, "bridge.start-failed", error.clone());
+        }
+        if let Err(emit_error) = emit_runtime_snapshot(&app, &runtime_state) {
+            log_bridge_event(
+                &app,
+                "warning",
+                "Bridge 启动失败状态无法同步到运行时快照。",
+                Some(emit_error.to_string()),
+            );
         }
         return Err(error);
     }
@@ -671,8 +676,18 @@ pub(crate) fn stop_bridge_service<R: tauri::Runtime>(
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
+    let _lifecycle_operation = bridge_state.lock_lifecycle_operation();
+    stop_bridge_service_serialized(app, runtime_state, bridge_state.clone())
+}
+
+fn stop_bridge_service_serialized<R: tauri::Runtime>(
+    app: AppHandle<R>,
+    runtime_state: State<'_, RuntimeStateStore>,
+    bridge_state: State<'_, BridgeStateStore>,
+) -> Result<RuntimeSnapshot, String> {
     let snapshot = bridge_state.snapshot();
     cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
+    release_desktop_playback_ownership(&app);
 
     bridge_state.update_snapshot(|current| {
         current.process_status = "stopped".to_string();
@@ -708,6 +723,7 @@ pub(crate) fn install_driver_runtime<R: tauri::Runtime>(
     bridge_state: State<'_, BridgeStateStore>,
     config: Value,
 ) -> Result<RuntimeSnapshot, String> {
+    let _lifecycle_operation = bridge_state.lock_lifecycle_operation();
     let mut snapshot = bridge_state.snapshot();
     cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
     apply_driver_config(&mut snapshot, &config);
@@ -766,6 +782,7 @@ pub(crate) fn uninstall_driver_runtime<R: tauri::Runtime>(
     runtime_state: State<'_, RuntimeStateStore>,
     bridge_state: State<'_, BridgeStateStore>,
 ) -> Result<RuntimeSnapshot, String> {
+    let _lifecycle_operation = bridge_state.lock_lifecycle_operation();
     let snapshot = bridge_state.snapshot();
     log_bridge_event(
         &app,
@@ -774,6 +791,7 @@ pub(crate) fn uninstall_driver_runtime<R: tauri::Runtime>(
         Some(format!("runtimeRoot={}", snapshot.runtime_root)),
     );
     cleanup_existing_bridge_process(&snapshot, &bridge_state)?;
+    release_desktop_playback_ownership(&app);
     bridge_state
         .update_snapshot(|current| current.install_phase = "waiting-for-elevation".to_string());
     let operation = run_elevated_driver_operation_or_record(&snapshot, &bridge_state, "uninstall")?;
@@ -813,9 +831,14 @@ pub(crate) fn repair_driver_runtime<R: tauri::Runtime>(
     config: Value,
     action: String,
 ) -> Result<RuntimeSnapshot, String> {
+    let _lifecycle_operation = bridge_state.lock_lifecycle_operation();
     if action == "restart-bridge" {
-        let _ = stop_bridge_service(app.clone(), runtime_state.clone(), bridge_state.clone())?;
-        return start_bridge_service(app, runtime_state, bridge_state, config);
+        let _ = stop_bridge_service_serialized(
+            app.clone(),
+            runtime_state.clone(),
+            bridge_state.clone(),
+        )?;
+        return start_bridge_service_serialized(app, runtime_state, bridge_state.clone(), config);
     }
 
     let mut snapshot = bridge_state.snapshot();
@@ -866,4 +889,459 @@ pub(crate) fn repair_driver_runtime<R: tauri::Runtime>(
         "驱动修复链路已执行，并重新完成 Bridge 握手。",
     );
     Ok(build_runtime_snapshot(&app, &runtime_state))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        apply_driver_config, process_loopback_probe_launch_snapshot,
+        process_loopback_probe_uses_active_route_health,
+        run_bridge_start_with_playback_ownership, should_probe_driver_on_startup_refresh,
+    };
+    use crate::audio::state::AudioStateStore;
+    use crate::bridge::contracts::{
+        BridgeRuntimeSnapshot, CaptureBackend, SourceCaptureMode,
+    };
+    use crate::bridge::state::BridgeStateStore;
+    use serde_json::json;
+    use std::sync::mpsc;
+    use std::sync::TryLockError;
+    use std::thread;
+    use std::time::Duration;
+    use tauri::Manager;
+
+    type MockApp = tauri::App<tauri::test::MockRuntime>;
+    type MockAppHandle = tauri::AppHandle<tauri::test::MockRuntime>;
+
+    const CONCURRENCY_TEST_TIMEOUT: Duration = Duration::from_secs(2);
+
+    fn lifecycle_test_app() -> MockApp {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock lifecycle app should build");
+        app.manage(AudioStateStore::new());
+        app.manage(BridgeStateStore::new());
+        app
+    }
+
+    fn route_snapshot(mode: SourceCaptureMode) -> BridgeRuntimeSnapshot {
+        BridgeRuntimeSnapshot {
+            process_status: "starting".to_string(),
+            source_capture_mode: mode,
+            capture_backend: match mode {
+                SourceCaptureMode::None => CaptureBackend::None,
+                SourceCaptureMode::VirtualDriver => CaptureBackend::DriverVirtualSpeaker,
+                SourceCaptureMode::ProcessExclusion => CaptureBackend::WasapiProcessExclusion,
+            },
+            ..Default::default()
+        }
+    }
+
+    fn commit_started_route(bridge_state: &BridgeStateStore, mode: SourceCaptureMode) {
+        bridge_state.update_snapshot(|current| {
+            current.process_status = "running".to_string();
+            current.bridge_state = "running".to_string();
+            current.lifecycle_state = "ready".to_string();
+            current.source_capture_mode = mode;
+            current.capture_backend = match mode {
+                SourceCaptureMode::None => CaptureBackend::None,
+                SourceCaptureMode::VirtualDriver => CaptureBackend::DriverVirtualSpeaker,
+                SourceCaptureMode::ProcessExclusion => CaptureBackend::WasapiProcessExclusion,
+            };
+        });
+    }
+
+    fn simulated_start(
+        app: MockAppHandle,
+        mode: SourceCaptureMode,
+        attempting: mpsc::Sender<()>,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    ) -> Result<(), String> {
+        let bridge_state = app.state::<BridgeStateStore>();
+        attempting.send(()).unwrap();
+        let _operation = bridge_state.lock_lifecycle_operation();
+        let snapshot = route_snapshot(mode);
+        run_bridge_start_with_playback_ownership(&snapshot, &bridge_state, &app, || {
+            entered.send(()).unwrap();
+            release
+                .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+                .map_err(|error| error.to_string())?;
+            commit_started_route(&bridge_state, mode);
+            Ok(())
+        })
+    }
+
+    fn simulated_stop(
+        app: MockAppHandle,
+        attempting: mpsc::Sender<()>,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+    ) -> Result<(), String> {
+        let bridge_state = app.state::<BridgeStateStore>();
+        attempting.send(()).unwrap();
+        let _operation = bridge_state.lock_lifecycle_operation();
+        entered.send(()).unwrap();
+        release
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .map_err(|error| error.to_string())?;
+        bridge_state.update_snapshot(|current| {
+            current.process_status = "stopped".to_string();
+            current.bridge_state = "stopped".to_string();
+            current.lifecycle_state = "stopped".to_string();
+            current.source_capture_mode = SourceCaptureMode::None;
+            current.capture_backend = CaptureBackend::None;
+        });
+        app.state::<AudioStateStore>()
+            .desktop_playback_ownership()
+            .release_to_desktop();
+        Ok(())
+    }
+
+    fn assert_second_operation_is_blocked(
+        attempting: &mpsc::Receiver<()>,
+        entered: &mpsc::Receiver<()>,
+    ) {
+        attempting
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .expect("second lifecycle operation should reach the native gate");
+        assert!(matches!(
+            entered.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+    }
+
+    #[test]
+    fn lifecycle_gate_reports_would_block_while_an_operation_owns_it() {
+        let bridge_state = BridgeStateStore::new();
+        let _operation = bridge_state.lock_lifecycle_operation();
+        assert!(matches!(
+            bridge_state.try_lock_lifecycle_operation(),
+            Err(TryLockError::WouldBlock)
+        ));
+    }
+
+    #[test]
+    fn process_exclusion_refresh_never_probes_the_virtual_driver() {
+        let snapshot = BridgeRuntimeSnapshot {
+            source_capture_mode: SourceCaptureMode::ProcessExclusion,
+            driver_health: "unknown".to_string(),
+            driver_probe_state: "failed".to_string(),
+            last_error_code: Some("driver.probe-failed".to_string()),
+            runtime_root: "definitely-missing-process-loopback-runtime-root".to_string(),
+            ..Default::default()
+        };
+
+        assert!(!should_probe_driver_on_startup_refresh(&snapshot));
+    }
+
+    #[test]
+    fn proactive_process_loopback_probe_launch_is_neutral_and_preserves_driver_evidence() {
+        let snapshot = BridgeRuntimeSnapshot {
+            process_status: "stopped".to_string(),
+            driver_health: "running".to_string(),
+            driver_version: Some("0.10.0-dev".to_string()),
+            source_capture_mode: SourceCaptureMode::VirtualDriver,
+            capture_backend: CaptureBackend::DriverVirtualSpeaker,
+            source_generation: 22,
+            source_subscriber_active: true,
+            monitor_playback_enabled: true,
+            translation_playback_enabled: true,
+            session_id: Some("old-session".to_string()),
+            ..Default::default()
+        };
+
+        let neutral = process_loopback_probe_launch_snapshot(&snapshot);
+
+        assert_eq!(neutral.process_status, "starting");
+        assert_eq!(neutral.source_capture_mode, SourceCaptureMode::None);
+        assert_eq!(neutral.capture_backend, CaptureBackend::None);
+        assert_eq!(neutral.session_id, None);
+        assert!(!neutral.monitor_playback_enabled);
+        assert!(!neutral.source_monitor_playback_enabled);
+        assert!(!neutral.translation_playback_enabled);
+        assert_eq!(neutral.driver_health, "running");
+        assert_eq!(neutral.driver_version.as_deref(), Some("0.10.0-dev"));
+        assert_eq!(neutral.source_generation, 22);
+        assert!(!neutral.source_subscriber_active);
+    }
+
+    #[test]
+    fn proactive_probe_does_not_publish_probing_over_active_process_route_health() {
+        let active = BridgeRuntimeSnapshot {
+            process_status: "running".to_string(),
+            source_capture_mode: SourceCaptureMode::ProcessExclusion,
+            capture_backend: CaptureBackend::WasapiProcessExclusion,
+            ..Default::default()
+        };
+        assert!(process_loopback_probe_uses_active_route_health(&active));
+
+        let stopped = BridgeRuntimeSnapshot {
+            process_status: "stopped".to_string(),
+            source_capture_mode: SourceCaptureMode::ProcessExclusion,
+            ..Default::default()
+        };
+        assert!(!process_loopback_probe_uses_active_route_health(&stopped));
+
+        let virtual_driver = BridgeRuntimeSnapshot {
+            process_status: "running".to_string(),
+            source_capture_mode: SourceCaptureMode::VirtualDriver,
+            ..Default::default()
+        };
+        assert!(!process_loopback_probe_uses_active_route_health(
+            &virtual_driver
+        ));
+    }
+
+    #[test]
+    fn virtual_driver_refresh_keeps_existing_probe_behavior() {
+        let snapshot = BridgeRuntimeSnapshot {
+            source_capture_mode: SourceCaptureMode::VirtualDriver,
+            driver_health: "unknown".to_string(),
+            ..Default::default()
+        };
+
+        assert!(should_probe_driver_on_startup_refresh(&snapshot));
+    }
+
+    #[test]
+    fn virtual_driver_initialization_enables_its_bridge_translation_player() {
+        let mut snapshot = BridgeRuntimeSnapshot::default();
+
+        apply_driver_config(
+            &mut snapshot,
+            &json!({
+                "devices": {
+                    "feedbackLoopPrevention": "virtual-driver",
+                    "outputDeviceId": "speaker-default"
+                },
+                "speech": { "localPlaybackEnabled": true }
+            }),
+        );
+
+        assert_eq!(snapshot.source_capture_mode, SourceCaptureMode::VirtualDriver);
+        assert!(snapshot.monitor_playback_enabled);
+        assert!(snapshot.translation_playback_enabled);
+        assert_eq!(snapshot.physical_playback_device_id, "speaker-default");
+    }
+
+    #[test]
+    fn neutral_bridge_does_not_claim_translation_playback() {
+        let mut snapshot = BridgeRuntimeSnapshot::default();
+
+        apply_driver_config(
+            &mut snapshot,
+            &json!({
+                "devices": { "feedbackLoopPrevention": "none" },
+                "speech": { "localPlaybackEnabled": true }
+            }),
+        );
+
+        assert_eq!(snapshot.source_capture_mode, SourceCaptureMode::None);
+        assert!(!snapshot.translation_playback_enabled);
+    }
+
+    #[test]
+    fn lifecycle_gate_serializes_process_then_nonprocess_start_and_commits_one_owner() {
+        let app = lifecycle_test_app();
+        let (first_attempting_tx, first_attempting_rx) = mpsc::channel();
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (first_release_tx, first_release_rx) = mpsc::channel();
+        let first_app = app.handle().clone();
+        let first = thread::spawn(move || {
+            simulated_start(
+                first_app,
+                SourceCaptureMode::ProcessExclusion,
+                first_attempting_tx,
+                first_entered_tx,
+                first_release_rx,
+            )
+        });
+        first_attempting_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+        first_entered_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+
+        let (second_attempting_tx, second_attempting_rx) = mpsc::channel();
+        let (second_entered_tx, second_entered_rx) = mpsc::channel();
+        let (second_release_tx, second_release_rx) = mpsc::channel();
+        let second_app = app.handle().clone();
+        let second = thread::spawn(move || {
+            simulated_start(
+                second_app,
+                SourceCaptureMode::VirtualDriver,
+                second_attempting_tx,
+                second_entered_tx,
+                second_release_rx,
+            )
+        });
+        assert_second_operation_is_blocked(&second_attempting_rx, &second_entered_rx);
+
+        first_release_tx.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        second_entered_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+        second_release_tx.send(()).unwrap();
+        second.join().unwrap().unwrap();
+
+        let snapshot = app.state::<BridgeStateStore>().snapshot();
+        assert_eq!(snapshot.process_status, "running");
+        assert_eq!(snapshot.source_capture_mode, SourceCaptureMode::VirtualDriver);
+        assert_eq!(snapshot.capture_backend, CaptureBackend::DriverVirtualSpeaker);
+        assert_eq!(
+            app.state::<AudioStateStore>()
+                .desktop_playback_ownership()
+                .test_snapshot(),
+            ("desktop", 3, 0)
+        );
+    }
+
+    #[test]
+    fn lifecycle_gate_serializes_nonprocess_then_process_start_and_keeps_desktop_closed() {
+        let app = lifecycle_test_app();
+        let (first_attempting_tx, first_attempting_rx) = mpsc::channel();
+        let (first_entered_tx, first_entered_rx) = mpsc::channel();
+        let (first_release_tx, first_release_rx) = mpsc::channel();
+        let first_app = app.handle().clone();
+        let first = thread::spawn(move || {
+            simulated_start(
+                first_app,
+                SourceCaptureMode::VirtualDriver,
+                first_attempting_tx,
+                first_entered_tx,
+                first_release_rx,
+            )
+        });
+        first_attempting_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+        first_entered_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+
+        let (second_attempting_tx, second_attempting_rx) = mpsc::channel();
+        let (second_entered_tx, second_entered_rx) = mpsc::channel();
+        let (second_release_tx, second_release_rx) = mpsc::channel();
+        let second_app = app.handle().clone();
+        let second = thread::spawn(move || {
+            simulated_start(
+                second_app,
+                SourceCaptureMode::ProcessExclusion,
+                second_attempting_tx,
+                second_entered_tx,
+                second_release_rx,
+            )
+        });
+        assert_second_operation_is_blocked(&second_attempting_rx, &second_entered_rx);
+
+        first_release_tx.send(()).unwrap();
+        first.join().unwrap().unwrap();
+        second_entered_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+        second_release_tx.send(()).unwrap();
+        second.join().unwrap().unwrap();
+
+        let snapshot = app.state::<BridgeStateStore>().snapshot();
+        assert_eq!(snapshot.process_status, "running");
+        assert_eq!(
+            snapshot.source_capture_mode,
+            SourceCaptureMode::ProcessExclusion
+        );
+        assert_eq!(
+            snapshot.capture_backend,
+            CaptureBackend::WasapiProcessExclusion
+        );
+        assert_eq!(
+            app.state::<AudioStateStore>()
+                .desktop_playback_ownership()
+                .test_snapshot(),
+            ("process-exclusion", 3, 0)
+        );
+    }
+
+    #[test]
+    fn lifecycle_gate_serializes_process_start_then_stop_and_releases_desktop_last() {
+        let app = lifecycle_test_app();
+        let (start_attempting_tx, start_attempting_rx) = mpsc::channel();
+        let (start_entered_tx, start_entered_rx) = mpsc::channel();
+        let (start_release_tx, start_release_rx) = mpsc::channel();
+        let start_app = app.handle().clone();
+        let start = thread::spawn(move || {
+            simulated_start(
+                start_app,
+                SourceCaptureMode::ProcessExclusion,
+                start_attempting_tx,
+                start_entered_tx,
+                start_release_rx,
+            )
+        });
+        start_attempting_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+        start_entered_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+
+        let (stop_attempting_tx, stop_attempting_rx) = mpsc::channel();
+        let (stop_entered_tx, stop_entered_rx) = mpsc::channel();
+        let (stop_release_tx, stop_release_rx) = mpsc::channel();
+        let stop_app = app.handle().clone();
+        let stop = thread::spawn(move || {
+            simulated_stop(
+                stop_app,
+                stop_attempting_tx,
+                stop_entered_tx,
+                stop_release_rx,
+            )
+        });
+        assert_second_operation_is_blocked(&stop_attempting_rx, &stop_entered_rx);
+
+        start_release_tx.send(()).unwrap();
+        start.join().unwrap().unwrap();
+        stop_entered_rx
+            .recv_timeout(CONCURRENCY_TEST_TIMEOUT)
+            .unwrap();
+        stop_release_tx.send(()).unwrap();
+        stop.join().unwrap().unwrap();
+
+        let snapshot = app.state::<BridgeStateStore>().snapshot();
+        assert_eq!(snapshot.process_status, "stopped");
+        assert_eq!(snapshot.source_capture_mode, SourceCaptureMode::None);
+        assert_eq!(snapshot.capture_backend, CaptureBackend::None);
+        assert_eq!(
+            app.state::<AudioStateStore>()
+                .desktop_playback_ownership()
+                .test_snapshot(),
+            ("desktop", 3, 0)
+        );
+    }
+
+    #[test]
+    fn failed_process_start_keeps_desktop_playback_closed_without_fallback() {
+        let app = lifecycle_test_app();
+        let bridge_state = app.state::<BridgeStateStore>();
+        let _operation = bridge_state.lock_lifecycle_operation();
+        let snapshot = route_snapshot(SourceCaptureMode::ProcessExclusion);
+
+        let error = run_bridge_start_with_playback_ownership(
+            &snapshot,
+            &bridge_state,
+            app.handle(),
+            || Err("injected-process-init-failure".to_string()),
+        )
+        .expect_err("failed process Init must not fall back to Desktop playback");
+
+        assert_eq!(error, "injected-process-init-failure");
+        assert_eq!(bridge_state.snapshot().source_capture_mode, SourceCaptureMode::None);
+        assert_eq!(
+            app.state::<AudioStateStore>()
+                .desktop_playback_ownership()
+                .test_snapshot(),
+            ("process-exclusion", 2, 0)
+        );
+    }
 }

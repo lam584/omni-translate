@@ -1,0 +1,115 @@
+{
+  "schemaVersion": 2,
+  "sourceArtifact": "watch-session-report-qwen3.5-omni-plus-realtime-2026-08-09T15-38-20-743Z.json",
+  "provenance": "De-identified source-event timing excerpt from the 2026-08-09 Watch report. Offsets are normalized to the first retained event; provider item ids are stable pseudonyms; provider, session, output, credential, and absolute-time fields are omitted.",
+  "sourceElapsedMsOrigin": 30793,
+  "events": [
+    {
+      "offsetMs": 0,
+      "cueId": "cue-01",
+      "itemId": "item-01",
+      "kind": "delta",
+      "text": "To Mars to live in your"
+    },
+    {
+      "offsetMs": 13,
+      "cueId": "cue-01",
+      "itemId": "item-01",
+      "kind": "completed",
+      "text": "To Mars to live in your"
+    },
+    {
+      "offsetMs": 1052,
+      "cueId": "cue-02",
+      "itemId": "item-02",
+      "kind": "delta",
+      "text": "New hope."
+    },
+    {
+      "offsetMs": 1233,
+      "cueId": "cue-02",
+      "itemId": "item-02",
+      "kind": "completed",
+      "text": ""
+    },
+    {
+      "offsetMs": 21582,
+      "cueId": "cue-03",
+      "itemId": "item-03",
+      "kind": "delta",
+      "text": "What is your final word, buddy?"
+    },
+    {
+      "offsetMs": 21596,
+      "cueId": "cue-03",
+      "itemId": "item-03",
+      "kind": "completed",
+      "text": "What is your final word, buddy?"
+    },
+    {
+      "offsetMs": 22770,
+      "cueId": "cue-04",
+      "itemId": "item-04",
+      "kind": "delta",
+      "text": "Which, when you combine"
+    },
+    {
+      "offsetMs": 22783,
+      "cueId": "cue-04",
+      "itemId": "item-04",
+      "kind": "completed",
+      "text": "Which, when you combine"
+    },
+    {
+      "offsetMs": 53341,
+      "cueId": "cue-05",
+      "itemId": "item-05",
+      "kind": "delta",
+      "text": "Anything anyone can do on a"
+    },
+    {
+      "offsetMs": 53355,
+      "cueId": "cue-05",
+      "itemId": "item-05",
+      "kind": "completed",
+      "text": "Anything anyone can do on a"
+    },
+    {
+      "offsetMs": 54988,
+      "cueId": "cue-06",
+      "itemId": "item-06",
+      "kind": "delta",
+      "text": "I can do."
+    },
+    {
+      "offsetMs": 55002,
+      "cueId": "cue-06",
+      "itemId": "item-06",
+      "kind": "completed",
+      "text": "I can do."
+    },
+    {
+      "offsetMs": 56267,
+      "cueId": "cue-07",
+      "itemId": "item-07",
+      "kind": "delta",
+      "text": "Does it by using"
+    },
+    {
+      "offsetMs": 56281,
+      "cueId": "cue-07",
+      "itemId": "item-07",
+      "kind": "completed",
+      "text": "Does it by using"
+    }
+  ],
+  "expectedCompletedSources": [
+    "To Mars to live in your",
+    "New hope.",
+    "What is your final word, buddy?",
+    "Which, when you combine",
+    "Anything anyone can do on a",
+    "I can do.",
+    "Does it by using"
+  ]
+}

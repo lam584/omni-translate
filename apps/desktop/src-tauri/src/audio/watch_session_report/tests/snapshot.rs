@@ -277,49 +277,6 @@ const WATCH_REPORT_SOURCE_FIXTURE: [&str; 6] = [
     }
 
     #[test]
-    fn intentionally_suppressed_playback_echo_stays_detail_only() {
-        let store = WatchSessionReportStore::new();
-        let session_id = store.begin_or_reuse("test", "model");
-        store.record_source("cue-real", "inbound", "hello", true);
-        store.record_model_final(
-            "cue-real",
-            "inbound",
-            "native",
-            "你好",
-            true,
-            None,
-            None,
-        );
-        store.record_publish("cue-real", "inbound", "hello", "你好", &[], true);
-        let started = {
-            let guard = store.inner.lock().expect("report");
-            guard.as_ref().expect("session").started_unix_ms
-        };
-        store.record_overlay_receipt(receipt(&session_id, "cue-real", started));
-
-        store.record_source("cue-echo", "inbound", "你好", true);
-        store.record_source_suppressed("cue-echo", "inbound", "recent-output-echo");
-        store.complete();
-
-        let report = store.snapshot().expect("report");
-        assert_eq!(report.summary.cue_count, 1);
-        assert_eq!(report.summary.complete_cue_count, 1);
-        assert_eq!(report.summary.issue_count, 0);
-        let echo = report
-            .cues
-            .iter()
-            .find(|cue| cue.cue_id == "cue-echo")
-            .expect("echo detail cue");
-        assert_eq!(echo.comparison_status, "superseded");
-        assert!(echo.issues.is_empty());
-        assert!(echo.events.iter().any(|event| {
-            event.kind == "echo-suppressed"
-                && !event.accepted
-                && event.detail.as_deref() == Some("reason=recent-output-echo")
-        }));
-    }
-
-    #[test]
     fn report_fixture_source_texts_keep_model_and_publish_stages() {
         let store = WatchSessionReportStore::new();
         let session_id = store.begin_or_reuse("test", "qwen-audio-3.0-realtime-plus");
@@ -379,9 +336,10 @@ const WATCH_REPORT_SOURCE_FIXTURE: [&str; 6] = [
                 .iter()
                 .find(|cue| cue.source_text == source)
                 .expect("report fixture cue");
-            assert!(!cue.events.iter().any(|event| {
-                event.stage == "source" && event.kind == "echo-suppressed"
-            }));
+            assert!(cue
+                .events
+                .iter()
+                .any(|event| event.stage == "source" && event.accepted));
             assert!(cue
                 .events
                 .iter()

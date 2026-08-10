@@ -229,6 +229,12 @@ describe('RealTimeSessionPage one-click launch', () => {
     audioRuntimeSnapshot.inbound.streamBound = false;
     audioRuntimeSnapshot.outbound.streamBound = false;
     audioRuntimeSnapshot.speech.dispatchState = 'idle';
+    // Successful launch scenarios exercise the route orchestration itself.
+    // Declare the AEC3 build gate ready here so the production preflight gate
+    // does not replace those scenarios with the explicit unavailable path.
+    audioRuntimeSnapshot.aecBackend = 'webrtc-aec3';
+    audioRuntimeSnapshot.aecStatus = 'ready';
+    audioRuntimeSnapshot.aecFailureDetail = null;
 
     useAppStore.setState((state) => ({
       ...state,
@@ -886,7 +892,7 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(useAppStore.getState().audioRuntimeSnapshot.speech.dispatchState).toBe('waiting-subtitle');
   });
 
-  it('delegates virtual-driver readiness to the background watch worker', async () => {
+  it('initializes the selected virtual-driver backend before the Watch route starts', async () => {
     await act(async () => {
       useAppStore.setState((state) => ({
         ...state,
@@ -923,7 +929,7 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     await clickAndSettle(launchButton);
 
-    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(fake.commandCalls('bridge_v2').map((call) => call.action)).toEqual(['start']);
     expect(routeStartArgs(0)).toMatchObject({
       direction: 'inbound',
       config: { speech: { localPlaybackEnabled: true } },
@@ -957,12 +963,12 @@ describe('RealTimeSessionPage one-click launch', () => {
 
     expect(confirmMock).not.toHaveBeenCalled();
     expect(container.querySelector('[role="dialog"]')).toBeNull();
-    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(fake.commandCalls('bridge_v2').map((call) => call.action)).toEqual(['start']);
     expect(routeStartArgs(0)).toMatchObject({ direction: 'inbound' });
     confirmMock.mockRestore();
   });
 
-  it('preserves the requested watch route while Bridge converges in the background', async () => {
+  it('preserves the requested watch route after Bridge converges to virtual-driver', async () => {
     const confirmMock = vi.spyOn(window, 'confirm').mockReturnValue(false);
     fake.rejectNextAction('install', { code: 'bridge.install-failed', message: 'SYSVAD package missing' });
     await act(async () => {
@@ -989,7 +995,7 @@ describe('RealTimeSessionPage one-click launch', () => {
       direction: 'inbound',
       config: { devices: { routeMode: 'watch', feedbackLoopPrevention: 'virtual-driver' } },
     });
-    expect(bridgeLifecycleCalls()).toHaveLength(0);
+    expect(fake.commandCalls('bridge_v2').map((call) => call.action)).toEqual(['start']);
     confirmMock.mockRestore();
   });
 
@@ -1473,6 +1479,122 @@ describe('RealTimeSessionPage one-click launch', () => {
     expect(container.textContent).toContain('系统音频采集异常');
     expect(container.textContent).toContain('Bridge source pipe initialization timed out (10s).');
     expect(container.textContent).toContain('建议重启 Bridge Service 后重试');
+  });
+
+  it('shows reconnection progress, then a temporary restored notice', async () => {
+    vi.useFakeTimers();
+    const reconnecting = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    reconnecting.sttConnection = {
+      state: 'reconnecting',
+      reconnectAttempt: 2,
+      maxReconnectAttempts: 5,
+      lastDisconnectReason: 'network reset',
+    };
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot: reconnecting }));
+
+    await renderPage();
+    expect(container.textContent).toContain('2/5');
+
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        audioRuntimeSnapshot: {
+          ...state.audioRuntimeSnapshot,
+          sttConnection: { ...state.audioRuntimeSnapshot.sttConnection, state: 'connected' },
+        },
+      }));
+      await Promise.resolve();
+    });
+    expect(container.textContent).toContain('连接已恢复');
+
+    await act(async () => {
+      vi.advanceTimersByTime(5000);
+    });
+    expect(container.textContent).not.toContain('连接已恢复');
+  });
+
+  it('extracts structured error codes and renders both provider and route recovery actions', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audioRuntimeSnapshot.inbound.lastError = 'authentication rejected | code: session.credential-invalid | recommended: open-providers';
+    audioRuntimeSnapshot.inbound.lastErrorCode = null;
+    audioRuntimeSnapshot.outbound.lastError = 'provider timeout | code: session.network-unreachable | recommended: restart-session';
+    audioRuntimeSnapshot.outbound.lastErrorCode = null;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await renderPage();
+
+    expect(container.textContent).toContain('session.credential-invalid');
+    expect(container.textContent).toContain('session.network-unreachable');
+    expect(container.querySelector('a[href="/settings/providers"]')).not.toBeNull();
+    expect(container.querySelector('a[href="/audio-routing"]')).not.toBeNull();
+  });
+
+  it('renders legacy restart-session guidance and outbound provider recovery', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    audioRuntimeSnapshot.inbound.lastError = 'legacy capture failure';
+    audioRuntimeSnapshot.inbound.lastErrorCode = null;
+    audioRuntimeSnapshot.inbound.recommendedAction = 'restart-session';
+    audioRuntimeSnapshot.outbound.lastError = 'quota rejected | code: session.quota-exceeded | recommended: open-providers';
+    audioRuntimeSnapshot.outbound.lastErrorCode = null;
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await renderPage();
+
+    expect(container.textContent).toContain('建议重新启动会话');
+    expect(container.textContent).toContain('session.quota-exceeded');
+    expect(container.querySelectorAll('a[href="/settings/providers"]')).toHaveLength(1);
+  });
+
+  it('updates the active subtitle heading for translated and failed terminal cues', async () => {
+    const audioRuntimeSnapshot = structuredClone(useAppStore.getState().audioRuntimeSnapshot);
+    const cue = audioRuntimeSnapshot.subtitleOverlay.recentCues[0];
+    audioRuntimeSnapshot.subtitleOverlay.activeCue = {
+      ...cue,
+      cueId: 'active-translated',
+      sourceText: 'hello',
+      translatedText: '你好',
+      committed: true,
+      translationCommitted: true,
+    };
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await renderPage();
+    expect(container.querySelector('.live-text-head strong')?.textContent).toContain('已翻译');
+
+    await act(async () => {
+      useAppStore.setState((state) => ({
+        ...state,
+        audioRuntimeSnapshot: {
+          ...state.audioRuntimeSnapshot,
+          subtitleOverlay: {
+            ...state.audioRuntimeSnapshot.subtitleOverlay,
+            activeCue: {
+              ...state.audioRuntimeSnapshot.subtitleOverlay.activeCue!,
+              translatedText: '',
+              translationCommitted: true,
+            },
+          },
+        },
+      }));
+    });
+    expect(container.querySelector('.live-text-head strong')?.textContent).toContain('失败');
+  });
+
+  it('stops an active route before the advised session restart', async () => {
+    const config = useAppStore.getState().configDraft;
+    await fake.invoke('start_audio_route', { direction: 'inbound', config });
+    await fake.settle();
+    const audioRuntimeSnapshot = fake.getAudioSnapshot();
+    audioRuntimeSnapshot.inbound.recommendedAction = 'restart-session';
+    useAppStore.setState((state) => ({ ...state, audioRuntimeSnapshot }));
+
+    await renderPage();
+    const restartButton = Array.from(container.querySelectorAll<HTMLButtonElement>('button'))
+      .find((button) => button.textContent?.includes('重新启动会话'));
+    await clickAndSettle(restartButton);
+
+    expect(stopRouteDirections()).toContain('inbound');
+    expect(routeStartDirections()).toContain('inbound');
   });
 
   it('handles every Watch fallback dialog dismissal and diagnostics-ready mode', async () => {

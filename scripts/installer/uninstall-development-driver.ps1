@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
   [Parameter(Mandatory = $true)][string]$RuntimeRoot,
-  [Parameter(Mandatory = $true)][string]$InstallChannel,
+  [Parameter(Mandatory = $true)][ValidateSet('development', 'release')][string]$InstallChannel,
   [Parameter(Mandatory = $true)][string]$DriverVersion,
   [Parameter(Mandatory = $true)][string]$BridgeVersion,
   [Parameter(Mandatory = $true)][string]$TargetDeviceId,

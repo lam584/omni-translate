@@ -1,0 +1,65 @@
+name: WebRTC AEC3 MSVC gate
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "crates/omni-webrtc-aec3/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "apps/desktop/package.json"
+      - "apps/desktop/src-tauri/Cargo.toml"
+      - "apps/desktop/src-tauri/src/audio/echo_cancel.rs"
+      - "apps/desktop/src-tauri/src/audio/echo_cancel/**"
+      - "apps/desktop/src-tauri/src/audio/engine/**"
+      - "apps/desktop/src-tauri/src/audio/speech/**"
+      - "scripts/testing/run-aec3-msvc-gate.mjs"
+      - "scripts/development/build-desktop-release.mjs"
+      - "scripts/release/verify-release.mjs"
+      - ".github/workflows/aec3-msvc.yml"
+      - ".github/workflows/release-verify.yml"
+  push:
+    branches: [main]
+    paths:
+      - "crates/omni-webrtc-aec3/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "package.json"
+      - "apps/desktop/package.json"
+      - "apps/desktop/src-tauri/Cargo.toml"
+      - "apps/desktop/src-tauri/src/audio/echo_cancel.rs"
+      - "apps/desktop/src-tauri/src/audio/echo_cancel/**"
+      - "apps/desktop/src-tauri/src/audio/engine/**"
+      - "apps/desktop/src-tauri/src/audio/speech/**"
+      - "scripts/testing/run-aec3-msvc-gate.mjs"
+      - "scripts/development/build-desktop-release.mjs"
+      - "scripts/release/verify-release.mjs"
+      - ".github/workflows/aec3-msvc.yml"
+      - ".github/workflows/release-verify.yml"
+
+jobs:
+  linked-aec3:
+    runs-on: windows-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Cache vcpkg downloads and binary packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            target/aec3-msvc-vcpkg-downloads
+            target/aec3-msvc-vcpkg-installed
+          key: aec3-vcpkg-${{ runner.os }}-ea1a7396-x64-windows-static-md-v1
+
+      - name: Build, link, and run WebRTC AEC3 fixtures
+        run: npm run test:aec3-msvc

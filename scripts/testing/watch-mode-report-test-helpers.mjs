@@ -33,6 +33,23 @@ export const healthyBridge = {
   droppedFrameCount: 0,
 };
 
+export const healthyProcessExclusionBridge = {
+  bridgeState: 'running',
+  driverHealth: 'not-installed',
+  sourceCaptureMode: 'process-exclusion',
+  captureBackend: 'wasapi-process-exclusion',
+  processLoopbackSupported: true,
+  processLoopbackStatus: 'ready',
+  windowsBuildNumber: 26100,
+  processLoopbackMinimumWindowsBuild: 20348,
+  excludedProcessId: 4242,
+  processLoopbackFailureDetail: null,
+  sourceSubscriberActive: false,
+  sourceReadCalls: 0,
+  sourceFramePayloadBytes: 0,
+  droppedFrameCount: 0,
+};
+
 export const healthyApp = {
   routeState: 'capturing',
   overlayVisible: true,
@@ -54,6 +71,10 @@ export const healthyWatchSessionReport = {
   },
   cues: [{
     cueId: 'cue-1',
+    sourceText: fs.readFileSync(
+      path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', 'watch-mode-en-original.txt'),
+      'utf8',
+    ).trim(),
     comparisonStatus: 'exact',
     llmFirstAtMs: 100,
     publishedFirstAtMs: 140,
@@ -81,6 +102,40 @@ export const healthyPhysicalOutput = {
   rms: 0.08,
   toneComponent: 0.07,
   invalidSamples: 0,
+};
+
+export const healthyProcessExclusionFingerprint = {
+  ...healthyPhysicalOutput,
+  status: 'passed',
+  probeKind: 'process-exclusion-fingerprint',
+  processExclusionFingerprint: {
+    bridgeProcessId: 4242,
+    excludedProcessId: 4242,
+    externalPlayerProcessId: 5001,
+    bridgeChildPlayerProcessId: 5002,
+    bridgeChildParentProcessId: 4242,
+    bridgeChildExitCode: 0,
+    sourceCaptureMode: 'process-exclusion',
+    captureBackend: 'wasapi-process-exclusion',
+    processLoopbackStatus: 'ready',
+    translationFrequencyHz: 997,
+    externalFrequencyHz: 1733,
+    bridgeChildFrequencyHz: 2449,
+    physicalTranslationComponent: 0.08,
+    physicalExternalComponent: 0.16,
+    physicalBridgeChildComponent: 0.16,
+    sourceTranslationComponent: 0.0004,
+    sourceExternalComponent: 0.15,
+    sourceBridgeChildComponent: 0.0002,
+    sourceToPhysicalTranslationRatio: 0.005,
+    sourceTranslationToExternalRatio: 0.0027,
+    sourceToPhysicalBridgeChildRatio: 0.00125,
+    sourceCapturedFrames: 134400,
+    sourceRms: 0.19,
+    translationComponentLimit: 0.003,
+    sourceToPhysicalRatioLimit: 0.05,
+    sourceToExternalRatioLimit: 0.05,
+  },
 };
 
 export const healthyPhysicalOutputContent = {
@@ -146,13 +201,52 @@ export const healthyAppLog = [
   'watch_mode.omni_session_config | model=test-model realtimeAudioMode=server_vad outputMode=text-and-audio inputAudioFormat=pcm16 isLivetranslate=false subtitleTranslateActive=false sid=0198testsid',
   '[AUDIO] playback request received: cue_id=omni-audio-test samples=24000 sample_rate_hz=24000 duration_ms=1000 enabled=true local_playback=true virtual_mic=false sid=0198testsid',
   '[AUDIO] speaker playback completed: cue_id=omni-audio-test frames=24000 sample_rate_hz=24000 sid=0198testsid',
-  'event=echo_cancel_summary | direction=inbound subtractCount=100 intervalChunks=100 alignedChunks=92 alignmentRatePct=92.0 aecSuppressedChunks=12 intervalAecSuppressedChunks=12 avgPureEchoRemovedDb=20.0 playbackActiveChunks=90 effectiveSuppressedChunks=12 refBufferDepthSamples=96000 refBufferEmpty=false avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 avgCorrelation=0.91 maxCorrelation=0.96 avgDelayMs=125.0 avgResidualDb=-62.0 sid=0198testsid',
+  'event=echo_cancel_backend | backend=webrtc-aec3 frameMs=10 renderSubmitFormat=48000-f32-stereo renderClock=wasapi-submit-position endpointRenderPadding=same-client-get-current-padding webRtcAec3Ready=true msvcBuildVerified=true linkedBackendPresent=true fixtureVerified=true sid=0198testsid',
+  'event=echo_cancel_summary | direction=inbound backend=webrtc-aec3 render10msFrames=50 capture10msFrames=50 processedCapture10msFrames=50 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=10.0 residualEchoLikelihood=0.08 reportedDelayMs=0 doubleTalkFrames=0 avgProcessingUs=110.0 maxProcessingUs=230 captureChunks=50 intervalCaptureChunks=50 playbackActiveChunks=40 asrForwardedChunks=50 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-50.0 avgRemovedDb=10.0 sid=0198testsid',
+  'event=echo_cancel_summary | direction=inbound backend=webrtc-aec3 render10msFrames=100 capture10msFrames=100 processedCapture10msFrames=100 resetCount=1 rejectedFrames=0 statsReadFailures=0 renderUnderruns=0 captureUnderruns=0 erleDb=20.0 residualEchoLikelihood=0.02 reportedDelayMs=125 doubleTalkFrames=12 avgProcessingUs=120.0 maxProcessingUs=250 captureChunks=100 intervalCaptureChunks=100 playbackActiveChunks=90 asrForwardedChunks=100 asrDeletedChunks=0 avgPreDb=-40.0 avgPostDb=-60.0 avgRemovedDb=20.0 sid=0198testsid',
+  'event=aec_live_scenario_stage status=completed cueId=cue-1 stage=double-talk ordinal=1 delayMs=0 nonlinearity=none referenceFrames=4800 physicalFrames=4800 changedSamples=0 changedRatio=0.000000 started=true completed=true startedAtMs=1000000 completedAtMs=1000100 source=runtime-physical-render playbackSource=native-omni',
+  'event=aec_live_scenario_stage status=completed cueId=cue-2 stage=dynamic-delay ordinal=2 delayMs=80 nonlinearity=none referenceFrames=4800 physicalFrames=8640 changedSamples=0 changedRatio=0.000000 started=true completed=true startedAtMs=1000200 completedAtMs=1000300 source=runtime-physical-render playbackSource=native-omni',
+  'event=aec_live_scenario_stage status=completed cueId=cue-3 stage=nonlinear ordinal=3 delayMs=160 nonlinearity=soft-clip referenceFrames=4800 physicalFrames=12480 changedSamples=9600 changedRatio=1.000000 started=true completed=true startedAtMs=1000400 completedAtMs=1000500 source=runtime-physical-render playbackSource=native-omni',
   'watch route ensured subtitle overlay visible detail=label=subtitle-overlay visible=true sid=0198testsid',
   'subtitle cue appended id=cue-1 sid=0198testsid',
   'model_trace finished status=ok elapsedMs=1200 sid=0198testsid',
 ].join('\n');
 
+export const healthyProcessExclusionRestartLog = [
+  'event=process_exclusion_restart_started status=started oldBridgeProcessId=4242 restartTriggeredAtUnixMs=1000000',
+  'event=process_exclusion_restart_summary status=passed startedAtUnixMs=999000 oldBridgeProcessId=4242 newBridgeProcessId=4343 oldBridgeInstanceId=instance-old newBridgeInstanceId=instance-new oldSessionId=session-old newSessionId=session-new oldSourceGeneration=101 newSourceGeneration=202 oldSourceGenerationToken=token-old newSourceGenerationToken=token-new oldLastFrameTimestampMs=1000100 oldLastFrameReadTimestampMs=1000150 newFirstFrameTimestampMs=1000300 newFirstFrameReadTimestampMs=1000350 restartTriggeredAtUnixMs=1000200 recoveredAtUnixMs=1000400 downtimeMs=200 sourceFramesBefore=1000 sourceFramesAfter=2000 oldFramesAfterRestart=0 oldFrameRejectedCount=0 excludedProcessId=4343 processLoopbackStatus=ready captureBackend=wasapi-process-exclusion sourceSubscriberActive=true',
+].join('\n');
+
+export const healthySystemMetrics = {
+  schemaVersion: 1,
+  artifactKind: 'watch-mode-system-metrics',
+  collector: 'scripts/testing/collect-watch-mode-system-metrics.ps1',
+  rootProcessId: 4000,
+  scope: 'process-tree',
+  sampleIntervalMs: 1000,
+  startedAt: '1970-01-01T00:16:39.000Z',
+  finishedAt: '1970-01-01T00:16:42.000Z',
+  completionReason: 'root-process-exited',
+  sampleCount: 3,
+  collectionErrors: [],
+  samples: [
+    { timestamp: '1970-01-01T00:16:39.000Z', elapsedMs: 0, bridgeProcessIds: [4242] },
+    { timestamp: '1970-01-01T00:16:40.000Z', elapsedMs: 1000, bridgeProcessIds: [] },
+    { timestamp: '1970-01-01T00:16:41.000Z', elapsedMs: 2000, bridgeProcessIds: [4343] },
+  ],
+};
+
+export const healthyAecPlayback = {
+  playbackMode: 'wasapi-media-injector',
+  mediaPath: 'scripts/testing/fixtures/watch-mode-en-original.wav',
+  mediaSha256: 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f',
+  processId: 5001,
+  startedAtMs: 999900,
+  finishedAtMs: 1000600,
+};
+
 export function classify(overrides = {}) {
+  const feedbackLoopPrevention = overrides.feedbackLoopPrevention ?? 'virtual-driver';
   return classifyWatchModeRun({
     mode: 'live',
     driver: healthyDriver,
@@ -164,7 +258,11 @@ export function classify(overrides = {}) {
     watchSessionReport: healthyWatchSessionReport,
     provider: healthyProvider,
     bridgeLogText: healthyBridgeLog,
-    appLogText: healthyAppLog,
+    appLogText: feedbackLoopPrevention === 'process-exclusion'
+      ? [healthyAppLog, healthyProcessExclusionRestartLog].join('\n')
+      : healthyAppLog,
+    playback: feedbackLoopPrevention === 'echo-cancel' ? healthyAecPlayback : null,
+    systemMetrics: feedbackLoopPrevention === 'process-exclusion' ? healthySystemMetrics : null,
     ...overrides,
   });
 }

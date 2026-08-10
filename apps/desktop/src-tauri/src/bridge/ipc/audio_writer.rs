@@ -2,9 +2,12 @@ pub(crate) fn write_virtual_mic_frame<R: tauri::Runtime>(
     app: &AppHandle<R>,
     cue_id: &str,
     request_id: &str,
+    route_direction: &str,
     samples: &[i16],
     sample_rate_hz: u32,
     channel_count: u16,
+    created_at_ms: u64,
+    estimated_duration_ms: u64,
 ) -> Result<u64, String> {
     let chunks = virtual_mic_pacing_chunks(samples, sample_rate_hz, channel_count)?;
     let bridge_state = app.state::<BridgeStateStore>();
@@ -26,12 +29,83 @@ pub(crate) fn write_virtual_mic_frame<R: tauri::Runtime>(
             "bridge.translation.frame",
             cue_id,
             &format!("{request_id}-chunk-{index}"),
+            route_direction,
+            TranslationAudioSink::VirtualMic,
             chunk,
             sample_rate_hz,
             channel_count,
+            created_at_ms,
+            estimated_duration_ms,
+            Some(index as u32),
+            Some(chunks.len() as u32),
         )?;
     }
     Ok(accepted_frames)
+}
+
+pub(crate) fn write_process_playback_cue<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    cue_id: &str,
+    request_id: &str,
+    route_direction: &str,
+    samples: &[i16],
+    sample_rate_hz: u32,
+    channel_count: u16,
+    created_at_ms: u64,
+    estimated_duration_ms: u64,
+) -> Result<u64, String> {
+    let chunks = process_playback_cue_chunks(samples, sample_rate_hz, channel_count)?;
+    let Some(cue) = chunks.first() else {
+        return Ok(0);
+    };
+    write_bridge_audio_frame(
+        app,
+        "bridge.translation.frame",
+        cue_id,
+        request_id,
+        route_direction,
+        TranslationAudioSink::PhysicalPlayback,
+        cue,
+        sample_rate_hz,
+        channel_count,
+        created_at_ms,
+        estimated_duration_ms,
+        None,
+        None,
+    )
+}
+
+fn validate_translation_audio_format(
+    samples: &[i16],
+    sample_rate_hz: u32,
+    channel_count: u16,
+) -> Result<(), String> {
+    if sample_rate_hz == 0 || channel_count == 0 {
+        return Err(
+            "Bridge translation audio requires a non-zero sample rate and channel count."
+                .to_string(),
+        );
+    }
+    if samples.len() % channel_count as usize != 0 {
+        return Err(format!(
+            "Bridge translation audio contains a partial channel frame (samples={}, channels={channel_count}).",
+            samples.len(),
+        ));
+    }
+    Ok(())
+}
+
+fn process_playback_cue_chunks(
+    samples: &[i16],
+    sample_rate_hz: u32,
+    channel_count: u16,
+) -> Result<Vec<&[i16]>, String> {
+    validate_translation_audio_format(samples, sample_rate_hz, channel_count)?;
+    Ok(if samples.is_empty() {
+        Vec::new()
+    } else {
+        vec![samples]
+    })
 }
 
 fn virtual_mic_pacing_chunks(
@@ -39,11 +113,7 @@ fn virtual_mic_pacing_chunks(
     sample_rate_hz: u32,
     channel_count: u16,
 ) -> Result<Vec<&[i16]>, String> {
-    if sample_rate_hz == 0 || channel_count == 0 {
-        return Err(
-            "Virtual mic pacing requires a non-zero sample rate and channel count.".to_string(),
-        );
-    }
+    validate_translation_audio_format(samples, sample_rate_hz, channel_count)?;
     let samples_per_chunk = (sample_rate_hz as usize / 50).max(1) * channel_count as usize;
     Ok(samples.chunks(samples_per_chunk).collect())
 }
@@ -66,15 +136,76 @@ fn accepted_translation_frames(ack: &BridgeTranslationFrameAck) -> Result<u64, S
     Ok(ack.accepted_frames as u64)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn translation_frame_header(
+    event_type: &str,
+    request_id: &str,
+    session_id: String,
+    cue_id: &str,
+    route_direction: AudioRouteDirection,
+    translation_sink: TranslationAudioSink,
+    sample_rate_hz: u32,
+    channel_count: u16,
+    frame_count: usize,
+    payload_bytes: usize,
+    created_at_ms: u64,
+    estimated_duration_ms: u64,
+    chunk_index: Option<u32>,
+    chunk_count: Option<u32>,
+) -> BridgeTranslationFrameHeader {
+    BridgeTranslationFrameHeader {
+        event_type: event_type.to_string(),
+        request_id: request_id.to_string(),
+        session_id,
+        frame_id: format!("{}-{}", cue_id, Uuid::new_v4()),
+        stream_id: cue_id.to_string(),
+        sample_rate_hz,
+        sample_format: AudioSampleFormat::PcmS16le,
+        channel_count,
+        frame_count,
+        timestamp_ms: now_unix_ms(),
+        payload_bytes,
+        bridge_process_id: None,
+        bridge_instance_id: None,
+        source_generation: None,
+        source_generation_token: None,
+        cue_id: Some(cue_id.to_string()),
+        created_at_ms: Some(created_at_ms),
+        estimated_duration_ms: Some(estimated_duration_ms),
+        chunk_index,
+        chunk_count,
+        translated_audio_enhancement_applied: true,
+        translation_sink: Some(translation_sink),
+        route_direction: Some(route_direction),
+    }
+}
+
+fn parse_route_direction(value: &str) -> Result<AudioRouteDirection, String> {
+    match value {
+        "inbound" => Ok(AudioRouteDirection::Inbound),
+        "outbound" => Ok(AudioRouteDirection::Outbound),
+        _ => Err(format!(
+            "bridge.invalid-audio-direction: translated audio has unsupported routeDirection={value}"
+        )),
+    }
+}
+
 fn write_bridge_audio_frame<R: tauri::Runtime>(
     app: &AppHandle<R>,
     event_type: &str,
     cue_id: &str,
     request_id: &str,
+    route_direction: &str,
+    translation_sink: TranslationAudioSink,
     samples: &[i16],
     sample_rate_hz: u32,
     channel_count: u16,
+    created_at_ms: u64,
+    estimated_duration_ms: u64,
+    chunk_index: Option<u32>,
+    chunk_count: Option<u32>,
 ) -> Result<u64, String> {
+    let route_direction = parse_route_direction(route_direction)?;
     let bridge_state = app.state::<BridgeStateStore>();
     let snapshot = bridge_state.snapshot();
     if snapshot.process_status != "running" || snapshot.bridge_state != "running" {
@@ -100,24 +231,27 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         "Bridge Service 会话不存在。".to_string()
     })?;
 
-    let frame_id = format!("{}-{}", cue_id, Uuid::new_v4());
+    let frame_count = samples.len() / channel_count as usize;
     let mut bytes = Vec::with_capacity(samples.len() * 2);
     for sample in samples {
         bytes.extend_from_slice(&sample.to_le_bytes());
     }
-    let header = BridgeTranslationFrameHeader {
-        event_type: event_type.to_string(),
-        request_id: request_id.to_string(),
+    let header = translation_frame_header(
+        event_type,
+        request_id,
         session_id,
-        frame_id,
-        stream_id: cue_id.to_string(),
+        cue_id,
+        route_direction,
+        translation_sink,
         sample_rate_hz,
         channel_count,
-        frame_count: samples.len() / channel_count as usize,
-        timestamp_ms: now_unix_ms(),
-        payload_bytes: bytes.len(),
-        translated_audio_enhancement_applied: true,
-    };
+        frame_count,
+        bytes.len(),
+        created_at_ms,
+        estimated_duration_ms,
+        chunk_index,
+        chunk_count,
+    );
     let header_bytes = serde_json::to_vec(&header).map_err(|error| error.to_string())?;
     let mut audio_pipe = OpenOptions::new()
         .read(true)

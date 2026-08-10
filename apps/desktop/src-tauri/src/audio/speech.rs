@@ -1,14 +1,11 @@
 use std::collections::{hash_map::DefaultHasher, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
-use std::num::{NonZeroU16, NonZeroU32};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use cpal::traits::{DeviceTrait, HostTrait};
 use omni_audio_dsp::{enhance_speech_i16, SpeechEnhancementMetrics};
-use rodio::{buffer::SamplesBuffer, DeviceSinkBuilder, Player};
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 
@@ -28,8 +25,14 @@ const MAX_PROCESSED_CUES: usize = 128;
 const PROMPT_TONE_MS: u32 = 90;
 
 mod playback_engine;
+mod aec_live_scenario;
+mod speaker_render_event;
 
+use self::aec_live_scenario::{
+    active_aec_live_scenario_assignment, AecLiveScenarioRender,
+};
 use self::playback_engine::{SpeechPlaybackEngine, SpeechPlaybackResult, SynthesisOutput};
+pub(crate) use self::speaker_render_event::SpeakerRenderEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TranslationAudioSource {
@@ -360,6 +363,8 @@ mod tests {
             output_target: "both".to_string(),
             local_playback_enabled: true,
             virtual_mic_output_enabled: true,
+            bridge_playback_enabled: false,
+            bridge_capture_mode: None,
             speaker_device_id: None,
             speaker_output_level: 100,
             priority: "subtitle-first".to_string(),
@@ -409,6 +414,43 @@ mod tests {
         assert_eq!(plan.mix_mode, "original-plus-translated");
         assert!(plan.ducking_active);
         assert_eq!(plan.enhancement_metrics.auto_gain_db, 0.0);
+
+        let mut bridge_config = config.clone();
+        bridge_config.local_playback_enabled = false;
+        bridge_config.virtual_mic_output_enabled = false;
+        bridge_config.bridge_playback_enabled = true;
+        let captured = CapturedSegmentAudio {
+            cue_id: cue.cue_id.clone(),
+            sample_rate_hz: 48_000,
+            channel_count: 2,
+            pcm_f32le: vec![0, 0, 64, 63, 0, 0, 64, 63, 0, 0, 64, 63, 0, 0, 64, 63],
+        };
+        let bridge_with_original = SpeechMixPlanner::new(
+            &cue,
+            Some(captured),
+            vec![2000, -2000, 1000, -1000],
+            24_000,
+            1,
+            &bridge_config,
+        )
+        .build();
+        let bridge_without_original = SpeechMixPlanner::new(
+            &cue,
+            None,
+            vec![2000, -2000, 1000, -1000],
+            24_000,
+            1,
+            &bridge_config,
+        )
+        .build();
+        assert!(bridge_with_original.speaker_samples.is_empty());
+        assert!(bridge_with_original.virtual_mic_samples.is_empty());
+        assert!(!bridge_with_original.bridge_playback_samples.is_empty());
+        assert_eq!(
+            bridge_with_original.bridge_playback_samples,
+            bridge_without_original.bridge_playback_samples,
+            "Bridge playback must not replay source audio that is already audible"
+        );
     }
 
     #[test]
@@ -460,10 +502,155 @@ mod tests {
     }
 
     #[test]
-    fn virtual_driver_feedback_prevention_disables_local_playback() {
+    fn bridge_owned_physical_playback_does_not_override_outbound_virtual_mic_semantics() {
+        let inbound = SpeechOutputRoutePlan::for_configured_route("inbound", true, true, true);
+        assert!(!inbound.play_to_speaker);
+        assert!(!inbound.write_to_virtual_mic);
+        assert!(inbound.write_to_bridge_playback);
+
+        let outbound = SpeechOutputRoutePlan::for_configured_route("outbound", true, true, true);
+        assert!(!outbound.play_to_speaker);
+        assert!(outbound.write_to_virtual_mic);
+        assert!(!outbound.write_to_bridge_playback);
+    }
+
+    fn ready_bridge_translation_snapshot(
+        mode: crate::bridge::contracts::SourceCaptureMode,
+    ) -> crate::bridge::contracts::BridgeRuntimeSnapshot {
+        use crate::bridge::contracts::{CaptureBackend, ProcessLoopbackStatus, SourceCaptureMode};
+
+        let mut snapshot = crate::bridge::contracts::BridgeRuntimeSnapshot::default();
+        snapshot.process_status = "running".to_string();
+        snapshot.bridge_state = "running".to_string();
+        snapshot.lifecycle_state = "ready".to_string();
+        snapshot.session_id = Some("session-route-owner".to_string());
+        snapshot.source_capture_mode = mode;
+        snapshot.translation_playback_enabled = true;
+        match mode {
+            SourceCaptureMode::VirtualDriver => {
+                snapshot.capture_backend = CaptureBackend::DriverVirtualSpeaker;
+                snapshot.driver_health = "running".to_string();
+            }
+            SourceCaptureMode::ProcessExclusion => {
+                snapshot.capture_backend = CaptureBackend::WasapiProcessExclusion;
+                snapshot.process_loopback_supported = true;
+                snapshot.process_loopback_status = ProcessLoopbackStatus::Ready;
+                snapshot.excluded_process_id = Some(4242);
+            }
+            SourceCaptureMode::None => {}
+        }
+        snapshot
+    }
+
+    #[test]
+    fn active_bridge_capture_blocks_process_or_driver_to_desktop_config_drift() {
+        use crate::bridge::contracts::SourceCaptureMode;
+
+        let desktop_plan = SpeechOutputRoutePlan::for_configured_route(
+            "inbound",
+            true,
+            false,
+            false,
+        );
+        for active_mode in [
+            SourceCaptureMode::ProcessExclusion,
+            SourceCaptureMode::VirtualDriver,
+        ] {
+            let snapshot = ready_bridge_translation_snapshot(active_mode);
+            let error = translation_output_route_violation(
+                "cue-config-drift",
+                "inbound",
+                None,
+                &desktop_plan,
+                &snapshot,
+            )
+            .expect("an active isolated capture route must block Desktop playback");
+            assert!(error.contains("bridge.translation-output-bypass"));
+            assert!(error.contains(active_mode.as_str()));
+        }
+    }
+
+    #[test]
+    fn configured_bridge_capture_blocks_runtime_route_mismatch() {
+        use crate::bridge::contracts::SourceCaptureMode;
+
+        let bridge_plan = SpeechOutputRoutePlan::for_configured_route(
+            "inbound",
+            false,
+            false,
+            true,
+        );
+        let inactive = crate::bridge::contracts::BridgeRuntimeSnapshot::default();
+        for configured_mode in [
+            SourceCaptureMode::ProcessExclusion,
+            SourceCaptureMode::VirtualDriver,
+        ] {
+            let error = translation_output_route_violation(
+                "cue-runtime-mismatch",
+                "inbound",
+                Some(configured_mode),
+                &bridge_plan,
+                &inactive,
+            )
+            .expect("a configured isolated route must not write to a mismatched Bridge");
+            assert!(error.contains("bridge.translation-output-bypass"));
+            assert!(error.contains(configured_mode.as_str()));
+        }
+    }
+
+    #[test]
+    fn matching_process_and_driver_routes_keep_bridge_as_the_only_owner() {
+        use crate::bridge::contracts::SourceCaptureMode;
+
+        let bridge_plan = SpeechOutputRoutePlan::for_configured_route(
+            "inbound",
+            false,
+            false,
+            true,
+        );
+        for configured_mode in [
+            SourceCaptureMode::ProcessExclusion,
+            SourceCaptureMode::VirtualDriver,
+        ] {
+            let snapshot = ready_bridge_translation_snapshot(configured_mode);
+            assert_eq!(
+                translation_output_route_violation(
+                    "cue-matching-route",
+                    "inbound",
+                    Some(configured_mode),
+                    &bridge_plan,
+                    &snapshot,
+                ),
+                None,
+            );
+        }
+    }
+
+    #[test]
+    fn isolated_routes_allow_outbound_only_through_the_bridge_virtual_mic_sink() {
+        use crate::bridge::contracts::SourceCaptureMode;
+
+        let outbound = SpeechOutputRoutePlan::for_configured_route("outbound", true, true, true);
+        for mode in [
+            SourceCaptureMode::VirtualDriver,
+            SourceCaptureMode::ProcessExclusion,
+        ] {
+            let snapshot = ready_bridge_translation_snapshot(mode);
+            assert_eq!(translation_output_route_violation(
+                "cue-outbound-virtual-mic",
+                "outbound",
+                Some(mode),
+                &outbound,
+                &snapshot,
+            ), None);
+        }
+    }
+
+    #[test]
+    fn process_exclusion_disables_desktop_playback_and_enables_bridge_playback() {
         let config = json!({
             "devices": {
-                "feedbackLoopPrevention": "virtual-driver"
+                "feedbackLoopPrevention": "process-exclusion"
             },
             "speech": {
                 "localPlaybackEnabled": true
@@ -471,10 +658,27 @@ mod tests {
         });
 
         assert!(!desktop_direct_playback_enabled_for_config(&config));
+        assert!(bridge_translation_playback_enabled_for_config(&config));
     }
 
     #[test]
-    fn virtual_driver_feedback_prevention_keeps_explicit_physical_output() {
+    fn virtual_driver_routes_default_local_playback_only_through_bridge() {
+        let config = json!({
+            "devices": {
+                "feedbackLoopPrevention": "virtual-driver",
+                "outputDeviceId": "speaker-default"
+            },
+            "speech": {
+                "localPlaybackEnabled": true
+            }
+        });
+
+        assert!(!desktop_direct_playback_enabled_for_config(&config));
+        assert!(bridge_translation_playback_enabled_for_config(&config));
+    }
+
+    #[test]
+    fn virtual_driver_keeps_bridge_as_the_single_owner_for_explicit_physical_output() {
         let config = json!({
             "devices": {
                 "feedbackLoopPrevention": "virtual-driver",
@@ -485,7 +689,53 @@ mod tests {
             }
         });
 
-        assert!(desktop_direct_playback_enabled_for_config(&config));
+        assert!(!desktop_direct_playback_enabled_for_config(&config));
+        assert!(bridge_translation_playback_enabled_for_config(&config));
+        let plan = SpeechOutputRoutePlan::for_configured_route(
+            "inbound",
+            desktop_direct_playback_enabled_for_config(&config),
+            false,
+            bridge_translation_playback_enabled_for_config(&config),
+        );
+        assert_eq!(
+            plan,
+            SpeechOutputRoutePlan {
+                play_to_speaker: false,
+                write_to_virtual_mic: false,
+                write_to_bridge_playback: true,
+            }
+        );
+    }
+
+    #[test]
+    fn virtual_driver_tts_config_keeps_a_bridge_sink_with_the_default_alias() {
+        let config = SpeechConfig::from_value(&json!({
+            "speech": {
+                "enabled": true,
+                "translationAudioSource": "subtitle-tts",
+                "localPlaybackEnabled": true,
+                "outputTarget": "speaker"
+            },
+            "devices": {
+                "feedbackLoopPrevention": "virtual-driver",
+                "outputDeviceId": "speaker-default",
+                "outputSpeechEnabled": true
+            }
+        }))
+        .expect("virtual-driver TTS config should parse");
+
+        assert!(!config.local_playback_enabled);
+        assert!(config.bridge_playback_enabled);
+        assert_eq!(config.output_target, "bridge-playback");
+        let plan = SpeechOutputRoutePlan::for_configured_route(
+            "inbound",
+            config.local_playback_enabled,
+            config.virtual_mic_output_enabled,
+            config.bridge_playback_enabled,
+        );
+        assert!(!plan.play_to_speaker);
+        assert!(!plan.write_to_virtual_mic);
+        assert!(plan.write_to_bridge_playback);
     }
 
     #[test]

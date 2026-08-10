@@ -3,14 +3,18 @@
   "kernelDeviceName": "\\Device\\OmniTranslateVirtualAudio",
   "dosDeviceName": "\\DosDevices\\OmniTranslateVirtualAudio",
   "deviceType": "0x8337",
-  "abiVersion": "0x20260602",
+  "abiVersion": "0x20260810",
   "ioctls": {
     "readPcm": { "function": "0x800", "access": "read", "method": "buffered", "code": "0x83376000" },
     "queryStatus": { "function": "0x801", "access": "read", "method": "buffered", "code": "0x83376004" },
-    "reset": { "function": "0x802", "access": "write", "method": "buffered", "code": "0x8337A008" }
+    "reset": { "function": "0x802", "access": "write", "method": "buffered", "code": "0x8337A008" },
+    "beginMicSession": { "function": "0x803", "access": "write", "method": "buffered", "code": "0x8337A00C" },
+    "writeMicPcm": { "function": "0x804", "access": "write", "method": "buffered", "code": "0x8337A010" },
+    "endMicSession": { "function": "0x805", "access": "write", "method": "buffered", "code": "0x8337A014" }
   },
   "statusStruct": {
     "name": "OMNI_BRIDGE_STATUS",
+    "baseSizeBytes": 40,
     "fields": [
       { "name": "AbiVersion", "type": "ULONG", "bytes": 4 },
       { "name": "RingCapacityBytes", "type": "ULONG", "bytes": 4 },
@@ -18,9 +22,28 @@
       { "name": "MaxBufferedBytes", "type": "ULONG", "bytes": 4 },
       { "name": "CapturedBytes", "type": "ULONGLONG", "bytes": 8 },
       { "name": "DeliveredBytes", "type": "ULONGLONG", "bytes": 8 },
-      { "name": "DroppedBytes", "type": "ULONGLONG", "bytes": 8 }
+      { "name": "DroppedBytes", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "RenderStreamsCreated", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "RenderRunTransitions", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "RenderSetWritePacketCalls", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "RenderReadBytesCalls", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "LoopbackCaptureReadCalls", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "MicRingCapacityBytes", "type": "ULONG", "bytes": 4 },
+      { "name": "MicBufferedBytes", "type": "ULONG", "bytes": 4 },
+      { "name": "MicMaxBufferedBytes", "type": "ULONG", "bytes": 4 },
+      { "name": "MicSampleRateHz", "type": "ULONG", "bytes": 4 },
+      { "name": "MicChannelCount", "type": "ULONG", "bytes": 4 },
+      { "name": "MicBitsPerSample", "type": "ULONG", "bytes": 4 },
+      { "name": "MicSessionActive", "type": "ULONG", "bytes": 4 },
+      { "name": "MicReserved", "type": "ULONG", "bytes": 4 },
+      { "name": "MicGeneration", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "MicWrittenBytes", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "MicConsumedBytes", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "MicDroppedBytes", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "MicUnderrunBytes", "type": "ULONGLONG", "bytes": 8 },
+      { "name": "MicRejectedWrites", "type": "ULONGLONG", "bytes": 8 }
     ],
-    "sizeBytes": 40
+    "sizeBytes": 160
   },
   "frameGeometry": {
     "sampleRateHz": 48000,
@@ -28,5 +51,12 @@
     "bytesPerSample": 2,
     "frameIntervalMs": 20,
     "chunkBytes": 3840
+  },
+  "virtualMicGeometry": {
+    "sampleRateHz": 48000,
+    "channelCount": 1,
+    "bitsPerSample": 16,
+    "blockAlignBytes": 2,
+    "maxBufferedMilliseconds": 5000
   }
 }

@@ -469,9 +469,17 @@ export const buildStrictRuntimeAuthority = ({
   run = spawnSync,
   environment = strictRuntimeEnvironment(process.env),
 } = {}) => {
-  const npmExecutable = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const npmExecutable = process.platform === 'win32'
+    ? (process.env.ComSpec || 'cmd.exe')
+    : 'npm';
   for (const args of STRICT_RUNTIME_BUILD_COMMANDS) {
-    const result = run(npmExecutable, [...args], {
+    // Node 24 rejects direct CreateProcess calls for .cmd shims with EINVAL.
+    // Route the fixed npm command through cmd.exe without interpolating user
+    // input so the strict Windows builder works on every supported Node line.
+    const spawnArgs = process.platform === 'win32'
+      ? ['/d', '/s', '/c', 'npm.cmd', ...args]
+      : [...args];
+    const result = run(npmExecutable, spawnArgs, {
       cwd: repoRoot,
       stdio: 'inherit',
       windowsHide: true,

@@ -770,7 +770,11 @@ function parseProcessExclusionRestart(appLog, input) {
     Number.isFinite(startedAtMs)
     && Number.isFinite(restartTriggeredAtMs)
     && Number.isFinite(recoveredAtMs)
-    && startedAtMs <= oldLastFrameReadTimestampMs
+    // The restart controller records `startedAt` after its final pre-restart
+    // frame poll.  That timestamp can therefore be a few milliseconds after
+    // the last old-frame read; the ordering that matters is that both the
+    // old-frame watermark and controller start precede the trigger.
+    && startedAtMs <= restartTriggeredAtMs
     && oldLastFrameReadTimestampMs <= restartTriggeredAtMs
     && restartTriggeredAtMs <= newFirstFrameReadTimestampMs
     && newFirstFrameReadTimestampMs <= recoveredAtMs

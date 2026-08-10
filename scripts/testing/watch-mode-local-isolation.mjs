@@ -26,6 +26,9 @@ export const LOCAL_ISOLATION_REUSE_MODE = 'orchestration-only';
 export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   'scripts/testing/run-watch-mode-live-matrix.mjs',
   'scripts/testing/run-watch-mode-live-matrix.test.mjs',
+  'scripts/testing/verify-watch-mode-evidence.mjs',
+  'scripts/testing/watch-mode-local-isolation.mjs',
+  'scripts/testing/watch-mode-local-isolation.test.mjs',
 ]);
 
 const DEFAULT_OUTPUT_ROOT = 'artifacts/testing/watch-mode-local-isolation';
@@ -443,7 +446,7 @@ export function reusableLocalIsolationAuthorityFailure({
   const recordedImplementation = authorityInventoryByPath(manifest.implementationHashes);
   const currentImplementation = authorityInventoryByPath(implementationHashes);
   for (const [entryPath, entry] of recordedImplementation) {
-    if (entryPath === 'scripts/testing/run-watch-mode-live-matrix.mjs') continue;
+    if (LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entryPath)) continue;
     const current = currentImplementation.get(entryPath);
     if (!current || current.bytes !== entry.bytes || current.sha256 !== entry.sha256) {
       return `local isolation reuse implementation changed outside the orchestration file: ${entryPath}`;

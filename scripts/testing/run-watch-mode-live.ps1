@@ -354,6 +354,17 @@ function Get-RenderEndpointRegistryIdentity {
   $properties = Get-ItemProperty -LiteralPath $registryPath
   $friendlyName = [string]$properties.'{a45c254e-df1c-4efd-8020-67d146a850e0},14'
   if (-not $friendlyName.Trim()) {
+    $endpointName = [string]$properties.'{a45c254e-df1c-4efd-8020-67d146a850e0},2'
+    $deviceName = [string]$properties.'{b3f8fa53-0004-438e-9003-51a46e139bfc},6'
+    $friendlyName = if ($endpointName.Trim() -and $deviceName.Trim()) {
+      "$($endpointName.Trim()) ($($deviceName.Trim()))"
+    } elseif ($endpointName.Trim()) {
+      $endpointName
+    } else {
+      $deviceName
+    }
+  }
+  if (-not $friendlyName.Trim()) {
     throw "physical render endpoint '$resolvedDeviceId' has no Windows MMDevice friendly name"
   }
   $signals = @($resolvedDeviceId, $friendlyName)

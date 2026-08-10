@@ -16,6 +16,11 @@ import {
   SUPPORTED_DEVICE_CLASSES,
 } from './run-watch-mode-live-matrix.mjs';
 import {
+  LIVE_LLM_CELLS,
+  MODEL_STABILITY_CELLS,
+  balancedReleasePlanFailure,
+} from './watch-mode-balanced-release-plan.mjs';
+import {
   resolveAuthorityPath,
   STRICT_MATRIX_ARTIFACT_KIND,
   STRICT_MATRIX_SCHEMA_VERSION,
@@ -68,7 +73,7 @@ export const PERFORMANCE_THRESHOLDS = Object.freeze({
   ttsRoundTripLatencyMs: 2200,
   cpuP95Percent: 65,
   memoryPeakMb: 900,
-  stabilityWindowMinutes: 30,
+  stabilityWindowMinutes: 10,
   allowedDropouts: 0,
 });
 
@@ -479,13 +484,11 @@ export const performanceThresholdIssues = (measurements, thresholds = PERFORMANC
   return issues;
 };
 
-const expectedPerformanceCellKeys = () => DEFAULT_MODELS.flatMap((modelId) => (
-  DEFAULT_FEEDBACK_MODES.flatMap((feedbackMode) => (
-    SUPPORTED_DEVICE_CLASSES.map((deviceClass) => `${modelId}::${feedbackMode}::${deviceClass}`)
-  ))
-));
+const expectedPerformanceCellKeys = () => LIVE_LLM_CELLS.map(({ cellId }) => cellId);
 
-const performanceCellKey = ({ modelId, feedbackLoopPrevention, deviceClass }) => (
+const performanceCellKey = (cell) => String(cell?.cellId ?? '');
+
+const reportIdentityKey = ({ modelId, feedbackLoopPrevention, deviceClass }) => (
   `${modelId}::${feedbackLoopPrevention}::${deviceClass}`
 );
 
@@ -516,6 +519,8 @@ const strictPerformanceShapeFailure = (manifest) => {
   if (manifest.strict !== true || manifest.evidenceMode !== 'live' || manifest.verification !== 'passed') {
     return 'canonical strict matrix must be a verified passed live strict matrix';
   }
+  const validationPlanFailure = balancedReleasePlanFailure(manifest.validationPlan);
+  if (validationPlanFailure) return validationPlanFailure;
   if (
     !isDeepStrictEqual(manifest.models, DEFAULT_MODELS)
     || !isDeepStrictEqual(manifest.feedbackLoopPreventionModes, DEFAULT_FEEDBACK_MODES)
@@ -542,7 +547,7 @@ const strictPerformanceShapeFailure = (manifest) => {
     || new Set(actualCells).size !== expectedCells.length
     || expectedCells.some((cellKey) => !actualCells.includes(cellKey))
   ) {
-    return 'canonical strict matrix cell set is not the exact 2-model x 3-route x 3-device release grid';
+    return 'canonical strict matrix paid cell set is not the exact budget-approved balanced release plan';
   }
   return null;
 };
@@ -551,7 +556,8 @@ const strictPerformanceShapeFailure = (manifest) => {
  * Resolves the canonical performance source through the same production
  * authority path as `test:watch-mode-evidence:strict`. A verification receipt
  * is only an index: all cell receipts, fixed raw artifacts, rebuilt reports,
- * runtime binaries, and the strict 18-cell verdict are checked again here.
+ * runtime binaries, zero-LLM local isolation authority, and the strict balanced
+ * release verdict are checked again here.
  */
 export function resolvePerformanceStrictAuthority({
   workspaceRoot = repoRoot,
@@ -590,6 +596,7 @@ export function resolvePerformanceStrictAuthority({
     models: DEFAULT_MODELS,
     feedbackModes: DEFAULT_FEEDBACK_MODES,
     deviceClasses: SUPPORTED_DEVICE_CLASSES,
+    releaseCells: LIVE_LLM_CELLS,
     runDirectories: authority.runDirectories,
     authorizedReports: authority.authorizedReports,
     currentProvenance,
@@ -608,13 +615,14 @@ export function resolvePerformanceStrictAuthority({
     const report = authority.authorizedReports.get(authorityMapKey(runDirectory));
     if (!report) throw new Error(`canonical strict matrix cell ${index} has no authorized rebuilt report`);
     const cellKey = performanceCellKey(cell);
-    const reportCellKey = performanceCellKey({
+    const reportCellIdentity = reportIdentityKey({
       modelId: report.modelId,
       feedbackLoopPrevention: report.feedbackLoopPrevention,
       deviceClass: report.deviceEvidence?.deviceClass,
     });
-    if (reportCellKey !== cellKey) {
-      throw new Error(`canonical strict matrix cell ${index} authorized report identity is ${reportCellKey}, expected ${cellKey}`);
+    const expectedReportIdentity = reportIdentityKey(cell);
+    if (reportCellIdentity !== expectedReportIdentity) {
+      throw new Error(`canonical strict matrix cell ${index} authorized report identity is ${reportCellIdentity}, expected ${expectedReportIdentity}`);
     }
     reportsByCell.set(cellKey, report);
     runDirectoriesByCell.set(cellKey, runDirectory);
@@ -1085,12 +1093,14 @@ export function derivePerformanceMeasurementsFromSource(
         issues.push(`${cellKey}: strict authority did not return an authorized report/run directory`);
         continue;
       }
-      const actualCellKey = [
-        report?.modelId,
-        report?.feedbackLoopPrevention,
-        report?.deviceEvidence?.deviceClass,
-      ].join('::');
-      if (actualCellKey !== cellKey) issues.push(`${cellKey}: Watch report identity is ${actualCellKey}`);
+      const manifestCell = manifest?.cells?.find((cell) => cell.cellId === cellKey);
+      const actualIdentity = reportIdentityKey({
+        modelId: report?.modelId,
+        feedbackLoopPrevention: report?.feedbackLoopPrevention,
+        deviceClass: report?.deviceEvidence?.deviceClass,
+      });
+      const expectedIdentity = reportIdentityKey(manifestCell ?? {});
+      if (actualIdentity !== expectedIdentity) issues.push(`${cellKey}: Watch report identity is ${actualIdentity}`);
       if (report?.mode !== 'live' || report?.verdict !== 'passed') {
         issues.push(`${cellKey}: Watch report must be a passed live report`);
       }
@@ -1143,7 +1153,7 @@ export function derivePerformanceMeasurementsFromSource(
         continue;
       }
       const watchDurationMs = Math.min(elapsedMs, summaryDurationMs);
-      stabilityDurationsMs.push(watchDurationMs);
+      if (manifestCell?.tier === 'model-stability') stabilityDurationsMs.push(watchDurationMs);
       const recomputedLatency = recomputeWatchLatencyEvidence(watch, cellKey);
       issues.push(...recomputedLatency.issues);
       const providerLatency = recomputedLatency.providerLatencyMs;
@@ -1183,8 +1193,8 @@ export function derivePerformanceMeasurementsFromSource(
   const completeAggregates = [
     providerLatencies.length === expectedCells.length,
     subtitleLatencies.length === expectedCells.length,
-    ttsLatencies.length === expectedCells.length - (DEFAULT_MODELS.length * SUPPORTED_DEVICE_CLASSES.length),
-    stabilityDurationsMs.length === expectedCells.length,
+    ttsLatencies.length === LIVE_LLM_CELLS.filter((cell) => cell.feedbackLoopPrevention !== 'echo-cancel').length,
+    stabilityDurationsMs.length === MODEL_STABILITY_CELLS.length,
     cpuP95Values.length === expectedCells.length,
     memoryPeakValues.length === expectedCells.length,
   ].every(Boolean);

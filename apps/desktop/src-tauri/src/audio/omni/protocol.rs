@@ -1891,23 +1891,6 @@ pub(crate) fn build_dashscope_text_item(text: &str) -> Value {
     })
 }
 
-pub(crate) fn build_omni_session_update_for_provider(
-    provider: &ProviderDraftInput,
-    voice: &str,
-    instructions: &str,
-    audio_mode: RealtimeAudioMode,
-    target_language: &str,
-) -> Value {
-    build_omni_session_update_for_provider_with_output_mode(
-        provider,
-        voice,
-        instructions,
-        audio_mode,
-        target_language,
-        OmniOutputMode::TextAndAudio,
-    )
-}
-
 pub(crate) fn build_omni_session_update_for_provider_with_output_mode(
     provider: &ProviderDraftInput,
     voice: &str,

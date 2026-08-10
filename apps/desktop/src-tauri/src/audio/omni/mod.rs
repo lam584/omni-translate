@@ -679,10 +679,9 @@ mod protocol;
 pub(crate) use self::protocol::{
     build_dashscope_audio_append, build_dashscope_input_audio_commit,
     build_dashscope_response_create, build_dashscope_session_update, build_dashscope_text_item,
-    build_omni_session_update_for_provider, OmniOutputMode, OmniSpeechConfig,
+    build_omni_session_update_for_provider_with_output_mode, OmniOutputMode, OmniSpeechConfig,
 };
 use self::protocol::{
-    build_omni_session_update_for_provider_with_output_mode,
     check_vad_warning, elapsed_ms_since,
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
     manual_turn_response_stream_active,

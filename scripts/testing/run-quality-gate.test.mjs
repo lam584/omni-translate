@@ -54,6 +54,10 @@ import {
   DEFAULT_MODELS,
   SUPPORTED_DEVICE_CLASSES,
 } from './run-watch-mode-live-matrix.mjs';
+import {
+  BALANCED_RELEASE_PLAN,
+  LIVE_LLM_CELLS,
+} from './watch-mode-balanced-release-plan.mjs';
 import { buildSteps } from './run-all-tests.mjs';
 import { buildAutoSteps } from './run-quality-gate-auto.mjs';
 import {
@@ -1261,7 +1265,7 @@ const buildSystemMetrics = ({ processId, durationMs, cpuPercent = 20, memoryMb =
 };
 
 const buildPerformanceWorkspace = ({
-  durationMs = 30 * 60 * 1000,
+  durationMs = null,
   providerLatencyMs = 800,
   subtitleLatencyMs = 500,
   ttsLatencySeconds = 1.5,
@@ -1276,11 +1280,17 @@ const buildPerformanceWorkspace = ({
   const runDirectories = [];
   const cells = [];
   let processId = 10_000;
-  for (const modelId of DEFAULT_MODELS) {
-    for (const feedbackLoopPrevention of DEFAULT_FEEDBACK_MODES) {
-      for (const deviceClass of SUPPORTED_DEVICE_CLASSES) {
+  for (const plannedCell of LIVE_LLM_CELLS) {
+        const {
+          cellId: cellKey,
+          tier,
+          modelId,
+          feedbackLoopPrevention,
+          deviceClass,
+          durationSeconds,
+        } = plannedCell;
+        const cellDurationMs = durationMs ?? durationSeconds * 1000;
         processId += 1;
-        const cellKey = `${modelId}::${feedbackLoopPrevention}::${deviceClass}`;
         const runDirectory = path.join(evidenceRoot, 'runs', String(runDirectories.length + 1).padStart(2, '0'));
         fs.mkdirSync(runDirectory, { recursive: true });
         const llmFinalAtMs = 10_000;
@@ -1296,9 +1306,9 @@ const buildPerformanceWorkspace = ({
           verdict: 'passed',
           watchSessionReport: {
             status: 'completed',
-            elapsedMs: durationMs,
+            elapsedMs: cellDurationMs,
             summary: {
-              durationMs,
+              durationMs: cellDurationMs,
               cueCount: 1,
               p95SourceToLlmFirstMs: providerLatencyMs,
               p95LlmFinalToRenderMs: subtitleLatencyMs,
@@ -1345,7 +1355,7 @@ const buildPerformanceWorkspace = ({
         if (omitMetricsCell !== cellKey) {
           writeJson(path.join(runDirectory, 'system-metrics.json'), buildSystemMetrics({
             processId,
-            durationMs,
+            durationMs: cellDurationMs,
             cpuPercent,
             memoryMb,
           }));
@@ -1353,6 +1363,10 @@ const buildPerformanceWorkspace = ({
         runDirectories.push(runDirectory);
         const runDirectoryRelative = path.relative(evidenceRoot, runDirectory).split(path.sep).join('/');
         cells.push({
+          cellId: cellKey,
+          tier,
+          providerMode: 'live-dashscope',
+          durationSeconds,
           modelId,
           feedbackLoopPrevention,
           deviceClass,
@@ -1362,14 +1376,12 @@ const buildPerformanceWorkspace = ({
           receiptBytes: 123,
           receiptSha256: crypto.createHash('sha256').update(cellKey).digest('hex'),
         });
-      }
-    }
   }
   const manifestPath = path.join(evidenceRoot, CANONICAL_STRICT_MATRIX_MANIFEST);
   const sourceManifestName = 'watch-mode-live-matrix-source.json';
   const verificationReceiptName = 'watch-mode-live-matrix-source.json.verified.json';
   writeJson(path.join(evidenceRoot, sourceManifestName), {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-strict-matrix-authority',
     generatedAt: TEST_NOW.toISOString(),
     testFixture: true,
@@ -1382,12 +1394,13 @@ const buildPerformanceWorkspace = ({
     testFixture: true,
   });
   writeJson(manifestPath, {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-strict-matrix-authority',
     generatedAt: TEST_NOW.toISOString(),
     evidenceMode: 'live',
     strict: true,
     provenance: TEST_PROVENANCE,
+    validationPlan: BALANCED_RELEASE_PLAN,
     models: DEFAULT_MODELS,
     feedbackLoopPreventionModes: DEFAULT_FEEDBACK_MODES,
     deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({
@@ -1413,8 +1426,8 @@ function testPerformanceAuthorityResolver({ workspaceRoot, manifestPath }) {
   );
   assert.equal(path.resolve(manifestPath), path.resolve(expectedManifestPath));
   const manifest = readJson(manifestPath);
-  if (manifest.schemaVersion !== 2 || manifest.artifactKind !== 'watch-mode-strict-matrix-authority') {
-    throw new Error('test performance authority requires the schema-v2 strict manifest');
+  if (manifest.schemaVersion !== 3 || manifest.artifactKind !== 'watch-mode-strict-matrix-authority') {
+    throw new Error('test performance authority requires the schema-v3 strict manifest');
   }
   const runDirectories = manifest.runDirectories.map((candidate) => (
     path.resolve(path.dirname(manifestPath), candidate)
@@ -1424,7 +1437,7 @@ function testPerformanceAuthorityResolver({ workspaceRoot, manifestPath }) {
   const rawArtifactsByCell = new Map();
   const authorizedReports = new Map();
   for (const [index, cell] of manifest.cells.entries()) {
-    const cellKey = `${cell.modelId}::${cell.feedbackLoopPrevention}::${cell.deviceClass}`;
+    const cellKey = cell.cellId;
     const runDirectory = runDirectories[index];
     const report = readJson(path.join(runDirectory, 'report.json'));
     reportsByCell.set(cellKey, report);
@@ -2676,13 +2689,13 @@ test('production performance authority rejects a legacy schema-v1 canonical mani
       manifestPath: fixture.manifestPath,
       currentProvenance: TEST_PROVENANCE,
       now: TEST_NOW.getTime(),
-    }), /schemaVersion=2/);
+    }), /schemaVersion=3/);
   } finally {
     fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
   }
 });
 
-test('performance assembler and validator recompute a complete 18-cell baseline', () => {
+test('performance assembler and validator recompute the eight paid balanced-plan cells', () => {
   const fixture = assembleFixture();
   try {
     assert.equal(fixture.verdict, 'PASS');
@@ -2693,7 +2706,7 @@ test('performance assembler and validator recompute a complete 18-cell baseline'
       cpuP95Percent: 20,
       memoryPeakMb: 400,
       observedDropouts: 0,
-      stabilityDurationMinutes: 30,
+      stabilityDurationMinutes: 10,
     });
     assert.deepEqual(
       testPerformanceReport(fixture.report, validationOptions(fixture.workspaceRoot)),
@@ -2818,7 +2831,7 @@ test('performance gate rejects threshold violations, dropouts, and short stabili
   for (const [options, expectedIssue] of [
     [{ providerLatencyMs: 1300 }, 'providerFirstEventLatencyMs=1300 exceeds threshold 1200'],
     [{ dropouts: 1 }, 'observedDropouts must be 0'],
-    [{ durationMs: 29 * 60 * 1000 }, 'stabilityDurationMinutes=29 is shorter than 30'],
+    [{ durationMs: 9 * 60 * 1000 }, 'stabilityDurationMinutes=9 is shorter than 10'],
   ]) {
     const fixture = assembleFixture(options);
     try {
@@ -2846,7 +2859,7 @@ test('performance gate rejects old or dirty current checkout provenance', () => 
 });
 
 test('performance assembler refuses a canonical matrix cell without raw system metrics', () => {
-  const missingCell = `${DEFAULT_MODELS[0]}::${DEFAULT_FEEDBACK_MODES[0]}::${SUPPORTED_DEVICE_CLASSES[0]}`;
+  const missingCell = LIVE_LLM_CELLS[0].cellId;
   const fixture = buildPerformanceWorkspace({ omitMetricsCell: missingCell });
   try {
     assert.throws(() => assemblePerformanceBaseline({

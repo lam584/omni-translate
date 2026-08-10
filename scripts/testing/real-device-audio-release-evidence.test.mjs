@@ -23,6 +23,10 @@ import {
   DEFAULT_MODELS,
   SUPPORTED_DEVICE_CLASSES,
 } from './run-watch-mode-live-matrix.mjs';
+import {
+  BALANCED_RELEASE_PLAN,
+  LIVE_LLM_CELLS,
+} from './watch-mode-balanced-release-plan.mjs';
 
 const TEST_HEAD = 'a'.repeat(40);
 const TEST_NOW = new Date('2026-08-10T10:00:00.000Z');
@@ -87,7 +91,7 @@ const playbackLog = ({ failed = false } = {}) => Array.from({ length: 8 }, (_, i
   ].join('\n');
 }).join('\n');
 
-const watchReport = ({ durationMs = 1_800_000 } = {}) => {
+const watchReport = ({ durationMs = 180_000 } = {}) => {
   const cues = Array.from({ length: 8 }, (_, index) => ({
     cueId: `watch-cue-${index + 1}`,
     comparisonStatus: 'exact',
@@ -119,7 +123,7 @@ const watchReport = ({ durationMs = 1_800_000 } = {}) => {
 };
 
 function buildAuthorizedFixture({
-  durationMs = 1_800_000,
+  durationMs = 180_000,
   failedPlayback = false,
   endpointId = '{0.0.0.00000000}.{physical-default}',
   endpointName = 'Speakers (Realtek Audio)',
@@ -280,7 +284,7 @@ function buildAuthorizedFixture({
     else writeText(candidate, 'authorized raw evidence\n');
   }
   const receipt = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-live-cell-authority',
     generatedAt: '2026-08-10T09:35:00.000Z',
     provenance,
@@ -293,7 +297,7 @@ function buildAuthorizedFixture({
   const receiptPath = path.join(runDirectory, 'matrix-cell-authority.json');
   writeJson(receiptPath, receipt);
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',
@@ -362,11 +366,12 @@ test('canonical release grid binds each device class to its declared profileId',
     bluetooth: 'headset-a2dp',
   };
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',
     verification: 'passed',
+    validationPlan: BALANCED_RELEASE_PLAN,
     models: DEFAULT_MODELS,
     feedbackLoopPreventionModes: DEFAULT_FEEDBACK_MODES,
     deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({
@@ -376,18 +381,12 @@ test('canonical release grid binds each device class to its declared profileId',
     cells: [],
     runDirectories: [],
   };
-  for (const modelId of DEFAULT_MODELS) {
-    for (const feedbackLoopPrevention of DEFAULT_FEEDBACK_MODES) {
-      for (const deviceClass of SUPPORTED_DEVICE_CLASSES) {
-        manifest.cells.push({
-          modelId,
-          feedbackLoopPrevention,
-          deviceClass,
-          deviceProfileId: profileIds[deviceClass],
-        });
-        manifest.runDirectories.push(`runs/${manifest.runDirectories.length + 1}`);
-      }
-    }
+  for (const plannedCell of LIVE_LLM_CELLS) {
+    manifest.cells.push({
+      ...plannedCell,
+      deviceProfileId: profileIds[plannedCell.deviceClass],
+    });
+    manifest.runDirectories.push(`runs/${manifest.runDirectories.length + 1}`);
   }
   assert.equal(exactReleaseGridFailure(manifest), null);
   manifest.cells[0].deviceProfileId = 'wrong-profile';
@@ -496,7 +495,7 @@ test('wrong endpoint, missing WAV, hash tampering, and skip markers fail closed'
 
 test('short session and failed translation route are rejected before assembly', async () => {
   for (const fixture of [
-    buildAuthorizedFixture({ durationMs: 600_000 }),
+    buildAuthorizedFixture({ durationMs: 120_000 }),
     buildAuthorizedFixture({ failedPlayback: true }),
   ]) {
     const plan = buildPlan(fixture);
@@ -506,7 +505,7 @@ test('short session and failed translation route are rejected before assembly', 
         authorityResolver: () => fixture.resolved,
         collectEvidence: async () => ({ packageDirectory: 'package', manifestPath: 'manifest' }),
       }),
-      /30-minute session|zero route failures/,
+      /3.minute pairwise.live session|zero route failures/,
     );
     assert.equal(fs.existsSync(plan.runDirectory), false);
   }

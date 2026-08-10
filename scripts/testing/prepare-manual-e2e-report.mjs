@@ -95,7 +95,7 @@ const reportLines = (generatedAt, provenance) => [
   ),
   ...scenario(
     MANUAL_E2E_SCENARIOS[2],
-    'Use the fixed qwen3.5-omni/process-exclusion/default-speaker cell from the current canonical strict Watch Mode schema-v2 authority. The assembler re-verifies the complete release matrix, copies the selected cell receipt and fixed raw inventory, and proves that Desktop-generated translated cues completed through Bridge-owned physical playback on the actual Windows MMDevice endpoint.',
+    'Use the fixed qwen3.5-omni pairwise-live/process-exclusion/default-speaker cell from the current canonical strict Watch Mode schema-v3 budget-balanced authority. The assembler re-verifies the complete release plan, copies the selected cell receipt and fixed raw inventory, and proves that Desktop-generated translated cues completed through Bridge-owned physical playback on the actual Windows MMDevice endpoint.',
     [
       '- CollectorProfile: omni.release.real-device-audio/v1',
       '- AuthorityStatus: ready (canonical strict-v2 Watch Mode authority; requires the complete current-HEAD live matrix)',

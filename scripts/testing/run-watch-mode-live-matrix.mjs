@@ -27,20 +27,29 @@ import {
   validateStrictMatrixVerificationReceipt,
   verifyStrictMatrixAuthority,
 } from './verify-watch-mode-evidence.mjs';
+import {
+  BALANCED_RELEASE_PLAN,
+  LIVE_LLM_CELLS,
+  RELEASE_DEVICE_CLASSES,
+  RELEASE_FEEDBACK_MODES,
+  RELEASE_MODELS,
+  balancedReleasePlanFailure,
+} from './watch-mode-balanced-release-plan.mjs';
+import {
+  runLocalIsolationMatrix,
+  verifyLocalIsolationManifest,
+} from './watch-mode-local-isolation.mjs';
 
-export const DEFAULT_MODELS = [
-  'qwen3.5-omni-flash-realtime',
-  'qwen3.5-livetranslate-flash-realtime',
-];
+export const DEFAULT_MODELS = RELEASE_MODELS;
 export const WATCH_MODEL_PROTOCOLS = Object.freeze({
   'qwen3.5-omni-plus-realtime': 'dashscope-omni',
   'qwen3.5-omni-flash-realtime': 'dashscope-omni',
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
-export const DEFAULT_FEEDBACK_MODES = ['process-exclusion', 'virtual-driver', 'echo-cancel'];
-export const SUPPORTED_FEEDBACK_MODES = ['process-exclusion', 'virtual-driver', 'echo-cancel'];
-export const SUPPORTED_DEVICE_CLASSES = ['default-speaker', 'usb', 'bluetooth'];
-export const MIN_WATCH_AUTO_STOP_AFTER_SECONDS = 1_800;
+export const DEFAULT_FEEDBACK_MODES = RELEASE_FEEDBACK_MODES;
+export const SUPPORTED_FEEDBACK_MODES = RELEASE_FEEDBACK_MODES;
+export const SUPPORTED_DEVICE_CLASSES = RELEASE_DEVICE_CLASSES;
+export const MIN_WATCH_AUTO_STOP_AFTER_SECONDS = 180;
 export const MAX_WATCH_AUTO_STOP_AFTER_SECONDS = 7_200;
 export const CANONICAL_STRICT_MATRIX_MANIFEST = 'latest-successful-watch-mode-strict-matrix.json';
 export const STRICT_RUNTIME_BUILD_COMMANDS = Object.freeze([
@@ -64,11 +73,12 @@ export const MATRIX_DEFAULTS = {
   physicalPlaybackDeviceClass: 'default-speaker',
   physicalPlaybackDeviceProfileId: 'default-speaker',
   expectedPhysicalPlaybackDeviceName: '',
+  providerId: 'provider-dashscope',
 };
 
 const RUNNER_SCRIPT = path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1');
 // The PowerShell runner starts the auto-stop clock inside the desktop process,
-// so readiness can consume its complete budget before the 30-minute session.
+// so readiness can consume its complete budget before the planned live session.
 // Allow the report its own atomic-write grace, then leave the matrix enough time
 // to finish recorder/STT/report post-processing before killing the process tree.
 export const WATCH_REPORT_COMPLETION_GRACE_SECONDS = 120;
@@ -137,6 +147,8 @@ Options:
   --physical-playback-device-class <class>         diagnostic single-device class: ${SUPPORTED_DEVICE_CLASSES.join(', ')}
   --physical-playback-device-profile-id <id>       diagnostic single-device profile id
   --expected-physical-playback-device-name <name>  default: empty
+  --provider-id <id>                               strict paid-cell preflight provider
+                                                   (default: ${MATRIX_DEFAULTS.providerId})
   --device-profiles <json-or-file>                  required for strict matrix; must contain exactly one
                                                    default-speaker, usb, and bluetooth profile
   --diagnostic-single-device                       explicit non-strict single-device diagnostic; never
@@ -495,6 +507,53 @@ export function strictRuntimeEnvironment(baseEnvironment = process.env) {
   return environment;
 }
 
+export const runStrictProviderPreflight = ({
+  providerId = MATRIX_DEFAULTS.providerId,
+  provenance,
+  environment = process.env,
+  run = spawnSync,
+  now = new Date(),
+  exists = fs.existsSync,
+  readEmitter = (candidate) => (fs.existsSync(candidate)
+    ? JSON.parse(fs.readFileSync(candidate, 'utf8'))
+    : null),
+} = {}) => {
+  const executablePath = path.join(repoRoot, 'target', 'release', 'omni-desktop-shell.exe');
+  if (!exists(executablePath)) {
+    throw new Error(`strict provider preflight Desktop executable is missing: ${executablePath}`);
+  }
+  const outputDirectory = path.join(
+    repoRoot,
+    'artifacts',
+    'testing',
+    'watch-mode-provider-preflight',
+    now.toISOString().replace(/[-:.TZ]/g, ''),
+  );
+  const result = run(executablePath, [], {
+    cwd: path.dirname(executablePath),
+    env: {
+      ...environment,
+      OMNI_RELEASE_EVIDENCE_SCENARIO: 'E2E-PROVIDER-PROBE',
+      OMNI_RELEASE_EVIDENCE_OUTPUT_DIRECTORY: outputDirectory,
+      OMNI_RELEASE_EVIDENCE_HEAD_COMMIT: provenance.headCommit,
+      OMNI_RELEASE_EVIDENCE_PROVIDER_ID: providerId,
+      OMNI_LOG_LEVEL: 'debug',
+    },
+    encoding: 'utf8',
+    windowsHide: false,
+    timeout: 300_000,
+  });
+  const emitterPath = path.join(outputDirectory, 'emitter-result.json');
+  const emitter = readEmitter(emitterPath);
+  if ((result.status ?? 1) !== 0 || emitter?.status !== 'completed') {
+    const detail = emitter?.error ?? result.error?.message ?? result.stderr ?? `exit=${result.status ?? 1}`;
+    throw new Error(
+      `strict paid-cell provider preflight failed for ${providerId}; no local or paid matrix cells were started: ${detail}`,
+    );
+  }
+  return { providerId, outputDirectory, emitterPath };
+};
+
 function assertRuntimeBinaryContinuity(recorded, stage) {
   const current = currentAuthorityRuntimeBinaryHashes();
   if (!sameAuthorityInventory(recorded, current)) {
@@ -512,6 +571,8 @@ export const writeMatrixRunManifest = ({
   now = new Date(),
   provenance = currentGitProvenance({ cwd: repoRoot }),
   authorityRuntimeBinaryHashes,
+  releaseCells = null,
+  localIsolationAuthority = null,
 }) => {
   if (strict) assertStrictMatrixProvenance(provenance);
   const resolvedOutputRoot = path.resolve(repoRoot, outputRoot);
@@ -521,7 +582,10 @@ export const writeMatrixRunManifest = ({
     resolvedOutputRoot,
     `watch-mode-live-matrix-${timestamp}-${process.pid}.json`,
   );
-  const expectedRunCount = modelList.length * feedbackModeList.length * deviceProfiles.length;
+  const plannedLiveCells = strict ? (releaseCells ?? LIVE_LLM_CELLS) : null;
+  const expectedRunCount = strict
+    ? plannedLiveCells.length
+    : modelList.length * feedbackModeList.length * deviceProfiles.length;
   if (runDirectories.length !== expectedRunCount) {
     throw new Error(`matrix manifest has ${runDirectories.length} run directories; expected ${expectedRunCount}`);
   }
@@ -530,17 +594,33 @@ export const writeMatrixRunManifest = ({
     ? (authorityRuntimeBinaryHashes ?? currentAuthorityRuntimeBinaryHashes())
     : null;
   const cells = [];
-  let runIndex = 0;
-  for (const modelId of modelList) {
-    for (const feedbackLoopPrevention of feedbackModeList) {
-      for (const deviceProfile of deviceProfiles) {
+  const deviceProfileByClass = new Map(deviceProfiles.map((profile) => [profile.deviceClass, profile]));
+  const manifestCells = strict
+    ? plannedLiveCells
+    : modelList.flatMap((modelId) => feedbackModeList.flatMap((feedbackLoopPrevention) => (
+      deviceProfiles.map((deviceProfile) => ({
+        modelId,
+        feedbackLoopPrevention,
+        deviceClass: deviceProfile.deviceClass,
+      }))
+    )));
+  for (let runIndex = 0; runIndex < manifestCells.length; runIndex += 1) {
+    const plannedCell = manifestCells[runIndex];
+    const deviceProfile = deviceProfileByClass.get(plannedCell.deviceClass);
+    if (!deviceProfile) {
+      throw new Error(`matrix cell ${plannedCell.cellId ?? runIndex} has no device profile for ${plannedCell.deviceClass}`);
+    }
         if (strict) {
           cells.push(writeCellAuthorityReceipt({
             outputRoot: resolvedOutputRoot,
             runDirectory: runDirectories[runIndex],
             matrixCell: {
-              modelId,
-              feedbackLoopPrevention,
+              cellId: plannedCell.cellId,
+              tier: plannedCell.tier,
+              providerMode: plannedCell.providerMode,
+              durationSeconds: plannedCell.durationSeconds,
+              modelId: plannedCell.modelId,
+              feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
               deviceClass: deviceProfile.deviceClass,
               deviceProfileId: deviceProfile.profileId,
             },
@@ -550,9 +630,6 @@ export const writeMatrixRunManifest = ({
             now,
           }));
         }
-        runIndex += 1;
-      }
-    }
   }
   const scopedRunDirectories = strict
     ? cells.map((cell) => cell.runDirectory)
@@ -570,6 +647,8 @@ export const writeMatrixRunManifest = ({
     runDirectories: scopedRunDirectories,
     ...(strict
       ? {
+          validationPlan: BALANCED_RELEASE_PLAN,
+          localIsolation: localIsolationAuthority,
           authority: {
             runner: MATRIX_RUNNER_ID,
             collector: LIVE_RUN_COLLECTOR_ID,
@@ -612,10 +691,13 @@ export const publishSuccessfulStrictMatrixManifest = ({
     && manifest.schemaVersion === STRICT_MATRIX_SCHEMA_VERSION
     && manifest.artifactKind === STRICT_MATRIX_ARTIFACT_KIND
     && manifest.evidenceMode === 'live'
+    && balancedReleasePlanFailure(manifest.validationPlan) === null
+    && manifest.localIsolation?.manifestPath
+    && manifest.localIsolation?.sha256
+    && Number(manifest.localIsolation?.bytes) > 0
     && JSON.stringify(manifest.models) === JSON.stringify(DEFAULT_MODELS)
     && JSON.stringify(manifest.feedbackLoopPreventionModes) === JSON.stringify(DEFAULT_FEEDBACK_MODES)
-    && manifest.runDirectories?.length
-      === DEFAULT_MODELS.length * DEFAULT_FEEDBACK_MODES.length * SUPPORTED_DEVICE_CLASSES.length
+    && manifest.runDirectories?.length === LIVE_LLM_CELLS.length
     && manifest.cells?.length === manifest.runDirectories?.length
     && profileClasses.length === SUPPORTED_DEVICE_CLASSES.length
     && SUPPORTED_DEVICE_CLASSES.every((deviceClass) => (
@@ -623,7 +705,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
     ));
   if (!exactReleaseShape) {
     throw new Error(
-      'refusing to publish canonical strict manifest: verified matrix is not the exact 2-model x 3-route x 3-device release grid',
+      'refusing to publish canonical strict manifest: verified matrix is not the exact budget-approved balanced release plan',
     );
   }
   const uniqueRunDirectories = new Set(
@@ -699,6 +781,7 @@ export const publishSuccessfulStrictMatrixManifest = ({
     models: DEFAULT_MODELS,
     feedbackModes: DEFAULT_FEEDBACK_MODES,
     deviceClasses: SUPPORTED_DEVICE_CLASSES,
+    releaseCells: LIVE_LLM_CELLS,
     runDirectories: verifiedAuthority.runDirectories,
     authorizedReports: verifiedAuthority.authorizedReports,
     currentProvenance,
@@ -856,11 +939,56 @@ export const runMatrix = async (options) => {
     if (postBuildFailure) {
       throw new Error(`strict Watch Mode release build changed source provenance: ${postBuildFailure}`);
     }
+    console.error(`==> Preflighting paid-cell provider ${options.providerId}`);
+    runStrictProviderPreflight({
+      providerId: options.providerId,
+      provenance: startProvenance,
+      environment: liveRunnerEnvironment,
+    });
+  }
+  let localIsolationAuthority = null;
+  if (strict) {
+    console.error('==> Running zero-LLM local isolation layer (3 routes x 3 device classes x 5 minutes)');
+    const localIsolation = await runLocalIsolationMatrix({
+      deviceProfiles,
+      workspaceRoot: repoRoot,
+      provenance: startProvenance,
+    });
+    verifyLocalIsolationManifest({
+      manifestPath: localIsolation.manifestPath,
+      workspaceRoot: repoRoot,
+      provenance: startProvenance,
+      runtimeBinaryHashes,
+    });
+    const manifestStats = fs.statSync(localIsolation.manifestPath);
+    localIsolationAuthority = {
+      manifestPath: path.relative(repoRoot, localIsolation.manifestPath).split(path.sep).join('/'),
+      bytes: manifestStats.size,
+      sha256: fileAuthorityEntry(
+        localIsolation.manifestPath,
+        path.basename(localIsolation.manifestPath),
+      ).sha256,
+    };
   }
   const runDirectories = [];
-  for (const model of modelList) {
-    for (const feedbackMode of feedbackModeList) {
-      for (const deviceProfile of deviceProfiles) {
+  const deviceProfileByClass = new Map(deviceProfiles.map((profile) => [profile.deviceClass, profile]));
+  const executionCells = strict
+    ? LIVE_LLM_CELLS
+    : modelList.flatMap((model) => feedbackModeList.flatMap((feedbackMode) => (
+      deviceProfiles.map((deviceProfile) => ({
+        modelId: model,
+        feedbackLoopPrevention: feedbackMode,
+        deviceClass: deviceProfile.deviceClass,
+        durationSeconds: options.watchAutoStopAfterSeconds,
+      }))
+    )));
+  for (const plannedCell of executionCells) {
+        const model = plannedCell.modelId;
+        const feedbackMode = plannedCell.feedbackLoopPrevention;
+        const deviceProfile = deviceProfileByClass.get(plannedCell.deviceClass);
+        if (!deviceProfile) {
+          throw new Error(`Watch Mode cell ${plannedCell.cellId ?? '-'} has no device profile for ${plannedCell.deviceClass}`);
+        }
         console.error(`==> Running Watch Mode live ${strict ? 'strict matrix' : 'non-strict single-device diagnostic'} model: ${model} feedbackLoopPrevention: ${feedbackMode} device: ${deviceProfile.profileId}[${deviceProfile.deviceClass}]`);
         const watchRealtimeProtocol = resolveWatchRealtimeProtocol(model, aliasModel, aliasProtocol);
         const runnerOptions = {
@@ -871,6 +999,7 @@ export const runMatrix = async (options) => {
           watchRealtimeProtocol,
           physicalPlaybackDeviceClass: deviceProfile.deviceClass,
           physicalPlaybackDeviceProfileId: deviceProfile.profileId,
+          watchAutoStopAfterSeconds: plannedCell.durationSeconds,
         };
         const { exitCode, stdout } = await runLiveRunner(
           buildRunnerArgv(runnerOptions),
@@ -890,11 +1019,11 @@ export const runMatrix = async (options) => {
         }
         runDirectories.push(resolvedRunDirectory);
         if (strict) assertRuntimeBinaryContinuity(runtimeBinaryHashes, `during matrix cell ${model}/${feedbackMode}/${deviceProfile.profileId}`);
-      }
-    }
   }
   const outputRoot = options.outputRoot ?? MATRIX_DEFAULTS.outputRoot;
-  const expectedRunCount = modelList.length * feedbackModeList.length * deviceProfiles.length;
+  const expectedRunCount = strict
+    ? LIVE_LLM_CELLS.length
+    : modelList.length * feedbackModeList.length * deviceProfiles.length;
   if (runDirectories.length !== expectedRunCount) {
     throw new Error(`Watch Mode matrix produced ${runDirectories.length} run directories; expected ${expectedRunCount}.`);
   }
@@ -923,6 +1052,8 @@ export const runMatrix = async (options) => {
     strict,
     provenance: completionProvenance,
     authorityRuntimeBinaryHashes: runtimeBinaryHashes,
+    releaseCells: strict ? LIVE_LLM_CELLS : null,
+    localIsolationAuthority,
   });
   console.error(
     strict

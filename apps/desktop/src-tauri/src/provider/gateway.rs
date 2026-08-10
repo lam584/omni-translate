@@ -839,7 +839,10 @@ mod tests {
     #[test]
     fn realtime_websocket_smoke_uses_realtime_api_protocol() {
         let (ws_url, _server) = spawn_ws_server(|websocket| {
-            let _ = websocket.read().expect("session.update should arrive");
+            let session = websocket.read().expect("session.update should arrive");
+            let session: serde_json::Value = serde_json::from_str(session.to_text().unwrap())
+                .expect("session.update should be valid JSON");
+            assert_eq!(session.pointer("/session/modalities"), Some(&serde_json::json!(["text"])));
             let _ = websocket
                 .read()
                 .expect("conversation.item.create should arrive");

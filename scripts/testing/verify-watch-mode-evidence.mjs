@@ -26,6 +26,14 @@ import {
   sameAuthorityInventory,
   validateFileAuthorityEntry,
 } from './watch-mode-evidence-authority.mjs';
+import {
+  BALANCED_RELEASE_PLAN,
+  LIVE_LLM_CELLS,
+  RELEASE_DEVICE_CLASSES,
+  RELEASE_MODELS,
+  balancedReleasePlanFailure,
+} from './watch-mode-balanced-release-plan.mjs';
+import { verifyLocalIsolationManifest } from './watch-mode-local-isolation.mjs';
 
 export const STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND = 'watch-mode-strict-matrix-verification';
 
@@ -62,6 +70,10 @@ export function writeStrictMatrixVerificationReceipt({
     implementationHashes: authority.implementationHashes,
     runtimeBinaryHashes: authority.runtimeBinaryHashes,
     cells: manifest.cells.map((cell) => ({
+      cellId: cell.cellId,
+      tier: cell.tier,
+      providerMode: cell.providerMode,
+      durationSeconds: cell.durationSeconds,
       modelId: cell.modelId,
       feedbackLoopPrevention: cell.feedbackLoopPrevention,
       deviceClass: cell.deviceClass,
@@ -127,6 +139,10 @@ export function validateStrictMatrixVerificationReceipt({
     throw new Error('strict matrix verification receipt implementation/runtime authority mismatch');
   }
   const expectedCells = manifest.cells.map((cell) => ({
+    cellId: cell.cellId,
+    tier: cell.tier,
+    providerMode: cell.providerMode,
+    durationSeconds: cell.durationSeconds,
     modelId: cell.modelId,
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
@@ -165,16 +181,9 @@ export const PROCESS_EXCLUSION_REQUIRED_LAYERS = REQUIRED_LAYERS.filter(
 );
 
 const DEFAULT_ROOT = 'artifacts/testing/watch-mode-live';
-const DEFAULT_STRICT_MODELS = [
-  'qwen3.5-omni-flash-realtime',
-  'qwen3.5-livetranslate-flash-realtime',
-];
-export const DEFAULT_STRICT_DEVICE_CLASSES = [
-  'default-speaker',
-  'usb',
-  'bluetooth',
-];
-export const MIN_STRICT_SESSION_DURATION_MS = 1_800_000;
+const DEFAULT_STRICT_MODELS = RELEASE_MODELS;
+export const DEFAULT_STRICT_DEVICE_CLASSES = RELEASE_DEVICE_CLASSES;
+export const MIN_STRICT_SESSION_DURATION_MS = 180_000;
 const EXCLUDED_DIRECTORY_PATTERNS = [
   /^cache$/i,
   /^physical-output-smoke-/i,
@@ -249,6 +258,10 @@ function assertExactObject(left, right, label) {
 
 function assertCellIdentity(receiptCell, manifestCell, report, index) {
   assertExactObject(receiptCell, {
+    cellId: manifestCell.cellId,
+    tier: manifestCell.tier,
+    providerMode: manifestCell.providerMode,
+    durationSeconds: manifestCell.durationSeconds,
     modelId: manifestCell.modelId,
     feedbackLoopPrevention: manifestCell.feedbackLoopPrevention,
     deviceClass: manifestCell.deviceClass,
@@ -364,7 +377,11 @@ function assertRawMediaAuthority(runDirectory, implementationHashes, cell, index
   }
 }
 
-function assertSystemMetricsAuthority(runDirectory, index) {
+function assertSystemMetricsAuthority(
+  runDirectory,
+  index,
+  minimumDurationMs = MIN_STRICT_SESSION_DURATION_MS,
+) {
   const steps = readJson(path.join(runDirectory, 'steps.json'));
   const desktopStep = Array.isArray(steps)
     ? steps.find((step) => step?.name === 'start desktop shell')
@@ -396,7 +413,7 @@ function assertSystemMetricsAuthority(runDirectory, index) {
     || metrics.collectionErrors.length !== 0
     || !Number.isFinite(startedAtMs)
     || !Number.isFinite(finishedAtMs)
-    || finishedAtMs - startedAtMs < MIN_STRICT_SESSION_DURATION_MS - 15_000
+    || finishedAtMs - startedAtMs < minimumDurationMs - 15_000
   ) {
     throw new Error(`strict matrix cell ${index} system metrics do not prove the complete production Desktop process-tree lifetime`);
   }
@@ -439,8 +456,8 @@ function assertSystemMetricsAuthority(runDirectory, index) {
     previousElapsedMs = elapsedMs;
     previousTimestampMs = timestampMs;
   }
-  if (previousElapsedMs < MIN_STRICT_SESSION_DURATION_MS - 15_000) {
-    throw new Error(`strict matrix cell ${index} system metrics samples do not span the required 30-minute live window`);
+  if (previousElapsedMs < minimumDurationMs - 15_000) {
+    throw new Error(`strict matrix cell ${index} system metrics samples do not span the required live window`);
   }
 }
 
@@ -688,6 +705,8 @@ export function verifyStrictMatrixAuthority({
   now = Date.now(),
   maxAgeDays = DEFAULT_MAX_EVIDENCE_AGE_DAYS,
   currentRuntimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
+  releaseCells = LIVE_LLM_CELLS,
+  requireLocalIsolation = true,
 }) {
   const resolvedRoot = path.resolve(evidenceRoot);
   const resolvedManifestPath = path.resolve(manifestPath);
@@ -699,6 +718,28 @@ export function verifyStrictMatrixAuthority({
     || manifest.artifactKind !== STRICT_MATRIX_ARTIFACT_KIND
   ) {
     throw new Error(`strict evidence requires ${STRICT_MATRIX_ARTIFACT_KIND} schemaVersion=${STRICT_MATRIX_SCHEMA_VERSION}`);
+  }
+  const planFailure = balancedReleasePlanFailure(manifest.validationPlan);
+  if (planFailure) throw new Error(planFailure);
+  if (requireLocalIsolation && (!manifest.localIsolation || typeof manifest.localIsolation !== 'object')) {
+    throw new Error('strict evidence requires the zero-LLM local isolation authority');
+  }
+  if (requireLocalIsolation) {
+    const localManifestPath = path.resolve(workspaceRoot, manifest.localIsolation.manifestPath ?? '');
+    const localManifestAuthority = fileAuthorityEntry(
+      localManifestPath,
+      path.basename(localManifestPath),
+    );
+    if (
+      localManifestAuthority.bytes !== manifest.localIsolation.bytes
+      || localManifestAuthority.sha256 !== manifest.localIsolation.sha256
+    ) throw new Error('strict local isolation manifest hash/size binding mismatch');
+    verifyLocalIsolationManifest({
+      manifestPath: localManifestPath,
+      workspaceRoot,
+      provenance: currentProvenance,
+      runtimeBinaryHashes: currentRuntimeBinaryHashes,
+    });
   }
   if (manifest.authority?.runner !== MATRIX_RUNNER_ID) {
     throw new Error(`strict authority runner must be ${MATRIX_RUNNER_ID}`);
@@ -718,6 +759,9 @@ export function verifyStrictMatrixAuthority({
   }
   if (manifest.cells.length !== manifest.runDirectories?.length) {
     throw new Error('strict authority cells/runDirectories length mismatch');
+  }
+  if (manifest.cells.length !== releaseCells.length) {
+    throw new Error(`strict authority manifest must contain exactly ${releaseCells.length} paid live cells`);
   }
   const manifestGeneratedAtMs = Date.parse(manifest.generatedAt ?? '');
   if (!Number.isFinite(manifestGeneratedAtMs)) {
@@ -752,6 +796,12 @@ export function verifyStrictMatrixAuthority({
   const seenDirectories = new Set();
   for (let index = 0; index < manifest.cells.length; index += 1) {
     const cell = manifest.cells[index];
+    const plannedCell = releaseCells[index];
+    for (const key of ['cellId', 'tier', 'providerMode', 'durationSeconds', 'modelId', 'feedbackLoopPrevention', 'deviceClass']) {
+      if (cell?.[key] !== plannedCell?.[key]) {
+        throw new Error(`strict matrix cell ${index} does not match balanced release plan field ${key}`);
+      }
+    }
     if (cell.runDirectory !== manifest.runDirectories[index]) {
       throw new Error(`strict matrix cell ${index} runDirectory does not match the manifest scope`);
     }
@@ -829,7 +879,7 @@ export function verifyStrictMatrixAuthority({
       mode: 'live',
       provenance: receipt.provenance,
     });
-    assertSystemMetricsAuthority(runDirectory, index);
+    assertSystemMetricsAuthority(runDirectory, index, cell.durationSeconds * 1_000);
     assertRawMediaAuthority(runDirectory, currentImplementationHashes, cell, index);
     if (cell.feedbackLoopPrevention === 'virtual-driver') {
       assertVirtualDriverBinaryAuthority(runDirectory, currentRuntimeBinaryHashes, index);
@@ -940,7 +990,7 @@ function strictContentFailure(report) {
   return null;
 }
 
-export function strictWatchSessionReportFailure(report) {
+export function strictWatchSessionReportFailure(report, minimumDurationMs = MIN_STRICT_SESSION_DURATION_MS) {
   const watch = report?.watchSessionReport;
   if (!watch) return 'strict evidence requires a saved watchSessionReport';
   if (watch.status !== 'completed') {
@@ -951,8 +1001,8 @@ export function strictWatchSessionReportFailure(report) {
   if (!Number.isFinite(elapsedMs) || !Number.isFinite(summaryDurationMs)) {
     return 'watchSessionReport must include numeric elapsedMs and summary.durationMs';
   }
-  if (elapsedMs < MIN_STRICT_SESSION_DURATION_MS || summaryDurationMs < MIN_STRICT_SESSION_DURATION_MS) {
-    return `watchSessionReport duration is too short: elapsedMs=${elapsedMs} summary.durationMs=${summaryDurationMs} minimum=${MIN_STRICT_SESSION_DURATION_MS}`;
+  if (elapsedMs < minimumDurationMs || summaryDurationMs < minimumDurationMs) {
+    return `watchSessionReport duration is too short: elapsedMs=${elapsedMs} summary.durationMs=${summaryDurationMs} minimum=${minimumDurationMs}`;
   }
   if (Math.abs(elapsedMs - summaryDurationMs) > 1_000) {
     return `watchSessionReport duration fields disagree: elapsedMs=${elapsedMs} summary.durationMs=${summaryDurationMs}`;
@@ -1100,7 +1150,10 @@ export function strictAecScenarioFailure(report) {
   return null;
 }
 
-export function strictProcessExclusionRestartFailure(report) {
+export function strictProcessExclusionRestartFailure(
+  report,
+  minimumDurationMs = MIN_STRICT_SESSION_DURATION_MS,
+) {
   if (report?.mode !== 'live') return 'process-exclusion restart evidence must come from a live run';
   const restart = report?.layers?.bridge?.data?.processExclusionRestart;
   if (!restart || restart.completed !== true) {
@@ -1170,16 +1223,16 @@ export function strictProcessExclusionRestartFailure(report) {
   if (
     restart.metricsProveTransition !== true
     || metrics.valid !== true
-    || Number(metrics.durationMs) < MIN_STRICT_SESSION_DURATION_MS - 15_000
+    || Number(metrics.durationMs) < minimumDurationMs - 15_000
     || !Number.isFinite(metricsWallDurationMs)
-    || metricsWallDurationMs < MIN_STRICT_SESSION_DURATION_MS - 15_000
+    || metricsWallDurationMs < minimumDurationMs - 15_000
     || Number(metrics.samplesWithOldPid) <= 0
     || Number(metrics.samplesWithNewPid) <= 0
     || metrics.oldPidAbsentAfterNew !== true
     || restartOffsetMs < metricsWallDurationMs * 0.35
     || restartOffsetMs > metricsWallDurationMs * 0.65
   ) {
-    return 'process-exclusion restart is not corroborated near the midpoint of a 30-minute real process-tree metrics timeline';
+    return 'process-exclusion restart is not corroborated near the midpoint of the required real process-tree metrics timeline';
   }
   return null;
 }
@@ -1398,7 +1451,10 @@ function basicFailure(entry, options = {}) {
     }
   }
   if (options.strict) {
-    const watchReportReason = strictWatchSessionReportFailure(entry.report);
+    const watchReportReason = strictWatchSessionReportFailure(
+      entry.report,
+      options.minimumDurationMs,
+    );
     if (watchReportReason) {
       return {
         failedLayers: ['watchSessionReport'],
@@ -1409,7 +1465,7 @@ function basicFailure(entry, options = {}) {
     const scenarioReason = feedbackMode === 'echo-cancel'
       ? strictAecScenarioFailure(entry.report)
       : feedbackMode === 'process-exclusion'
-        ? strictProcessExclusionRestartFailure(entry.report)
+        ? strictProcessExclusionRestartFailure(entry.report, options.minimumDurationMs)
         : null;
     if (scenarioReason) {
       const failedLayer = feedbackMode === 'echo-cancel' ? 'aecScenario' : 'processExclusionRestart';
@@ -1740,6 +1796,7 @@ export function findWatchModeEvidence(options = {}) {
   const requestedFeedbackModes = normalizeModels(options.feedbackModes);
   const feedbackModes = requestedFeedbackModes.length > 0 ? requestedFeedbackModes : ['virtual-driver'];
   const deviceClasses = normalizeDeviceClasses(options.deviceClasses);
+  const releaseCells = Array.isArray(options.releaseCells) ? options.releaseCells : null;
   let runDirectories;
   try {
     runDirectories = resolveScopedRunDirectories(root, options.runDirectories);
@@ -1757,7 +1814,7 @@ export function findWatchModeEvidence(options = {}) {
   if (strict && runDirectories === null) {
     return {
       ok: false,
-      reason: 'strict Watch Mode evidence requires the schema-v2 authority manifest emitted by run-watch-mode-live-matrix.mjs; scanning outputRoot and --run-directories are disabled',
+      reason: `strict Watch Mode evidence requires the schema-v${STRICT_MATRIX_SCHEMA_VERSION} budget-balanced authority manifest emitted by run-watch-mode-live-matrix.mjs; scanning outputRoot and --run-directories are disabled`,
       root,
       latest: null,
       candidates: [],
@@ -1765,7 +1822,19 @@ export function findWatchModeEvidence(options = {}) {
       modelResults: [],
     };
   }
-  if (strict && runDirectories && models.length > 0) {
+  if (strict && runDirectories && releaseCells) {
+    if (runDirectories.length !== releaseCells.length) {
+      return {
+        ok: false,
+        reason: `strict Watch Mode run scope has ${runDirectories.length} run directories; expected exactly ${releaseCells.length} for the balanced paid-live plan`,
+        root,
+        latest: null,
+        candidates: [],
+        invalidCandidates: [],
+        modelResults: [],
+      };
+    }
+  } else if (strict && runDirectories && models.length > 0) {
     const expectedRunCount = models.length
       * feedbackModes.length
       * (deviceClasses.length > 0 ? deviceClasses.length : 1);
@@ -1828,6 +1897,83 @@ export function findWatchModeEvidence(options = {}) {
       candidates,
       invalidCandidates,
       modelResults: [],
+    };
+  }
+
+  if (releaseCells) {
+    const byDirectory = new Map(completeCandidates.map((entry) => {
+      const directory = path.resolve(path.dirname(entry.reportPath));
+      return [process.platform === 'win32' ? directory.toLowerCase() : directory, entry];
+    }));
+    const modelResults = releaseCells.map((plannedCell, index) => {
+      const runDirectory = path.resolve(runDirectories[index]);
+      const identity = process.platform === 'win32' ? runDirectory.toLowerCase() : runDirectory;
+      const latest = byDirectory.get(identity) ?? null;
+      if (!latest) {
+        return {
+          cellId: plannedCell.cellId,
+          tier: plannedCell.tier,
+          modelId: plannedCell.modelId,
+          feedbackMode: plannedCell.feedbackLoopPrevention,
+          deviceClass: plannedCell.deviceClass,
+          ok: false,
+          latest: null,
+          failedLayers: [],
+          reason: `no complete live watch-mode report found for balanced cell ${plannedCell.cellId}`,
+        };
+      }
+      if (
+        latest.modelId !== plannedCell.modelId
+        || latest.feedbackMode !== plannedCell.feedbackLoopPrevention
+        || latest.deviceClass !== plannedCell.deviceClass
+      ) {
+        return {
+          cellId: plannedCell.cellId,
+          tier: plannedCell.tier,
+          modelId: plannedCell.modelId,
+          feedbackMode: plannedCell.feedbackLoopPrevention,
+          deviceClass: plannedCell.deviceClass,
+          ok: false,
+          latest,
+          failedLayers: ['identity'],
+          reason: `balanced cell identity mismatch for ${plannedCell.cellId}`,
+        };
+      }
+      const failure = basicFailure(latest, {
+        strict,
+        expectedDeviceClass: plannedCell.deviceClass,
+        minimumDurationMs: plannedCell.durationSeconds * 1_000,
+        now: options.now,
+        maxAgeDays: options.maxAgeDays,
+        currentProvenance,
+        latencyThresholds: options.latencyThresholds,
+      });
+      return {
+        cellId: plannedCell.cellId,
+        tier: plannedCell.tier,
+        modelId: plannedCell.modelId,
+        feedbackMode: plannedCell.feedbackLoopPrevention,
+        deviceClass: plannedCell.deviceClass,
+        ok: failure.reason == null,
+        latest,
+        failedLayers: failure.failedLayers,
+        reason: failure.reason,
+        latestFailure: failure.latestFailure,
+      };
+    });
+    applyMatrixIdentityFailures(modelResults);
+    const failed = modelResults.filter((item) => !item.ok);
+    return {
+      ok: failed.length === 0,
+      reason: failed.length === 0
+        ? null
+        : `balanced Watch Mode evidence failed: ${failed.map((item) => `${item.cellId}: ${item.reason}`).join('; ')}`,
+      root,
+      latest: modelResults[0]?.latest ?? null,
+      failedLayers: [...new Set(modelResults.flatMap((item) => item.failedLayers))],
+      candidates: completeCandidates,
+      invalidCandidates,
+      modelResults,
     };
   }
 
@@ -2056,7 +2202,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
       if (!strict) runDirectories = resolved.runDirectories;
     } else if (args['run-directories']) {
       if (strict) {
-        throw new Error('strict evidence does not accept --run-directories; use the schema-v2 authority manifest emitted by run-watch-mode-live-matrix.mjs');
+        throw new Error(`strict evidence does not accept --run-directories; use the schema-v${STRICT_MATRIX_SCHEMA_VERSION} authority manifest emitted by run-watch-mode-live-matrix.mjs`);
       }
       runDirectories = normalizeRunDirectories(String(args['run-directories']), {
         baseDirectory: path.resolve(args.root ?? DEFAULT_ROOT),
@@ -2075,6 +2221,7 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
     deviceClasses,
     runDirectories,
     authorizedReports,
+    releaseCells: strict ? LIVE_LLM_CELLS : null,
     currentProvenance,
     maxAgeDays: args['max-age-days'],
     latencyThresholds,

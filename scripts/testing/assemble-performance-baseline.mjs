@@ -119,7 +119,7 @@ export function assemblePerformanceBaseline({
     }));
     const seenCells = new Set();
     for (const [index, cell] of manifest.cells.entries()) {
-      const cellKey = `${cell.modelId}::${cell.feedbackLoopPrevention}::${cell.deviceClass}`;
+      const cellKey = cell.cellId;
       const runDirectory = authority.runDirectoriesByCell.get(cellKey);
       const report = authority.reportsByCell.get(cellKey);
       if (!runDirectory || !report) {
@@ -199,7 +199,7 @@ export function assemblePerformanceBaseline({
       build: provenance.headCommit,
       verdict: thresholdFailures.length === 0 ? 'PASS' : 'FAIL',
       provenance,
-      environment: 'Windows production desktop shell; canonical 2-model x 3-route x 3-device matrix',
+      environment: 'Windows production desktop shell; canonical budget-balanced release validation plan',
       scenario: 'Provider p95 + subtitle commit p95 + subtitle TTS playback + process-tree resource stability',
       thresholds: { ...PERFORMANCE_THRESHOLDS },
       measurements: source.measurements,
@@ -211,7 +211,7 @@ export function assemblePerformanceBaseline({
       notes: [
         'Measurements were independently assembled from archived canonical Watch reports and raw system-metrics samples.',
         'CPU is the worst per-cell process-tree p95; memory is the matrix-wide process-tree peak.',
-        'Stability duration is the shortest verified Watch session across all 18 cells.',
+        'Stability duration is the shortest verified Watch session across the two 10-minute model-stability cells.',
       ],
     };
     const resolvedOutputRoot = ensureDir(path.resolve(workspaceRoot, outputRoot));

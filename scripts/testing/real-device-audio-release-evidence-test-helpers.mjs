@@ -59,7 +59,7 @@ const playbackLog = ({ failed = false } = {}) => Array.from({ length: 8 }, (_, i
   ].join('\n');
 }).join('\n');
 
-const watchReport = ({ durationMs = 1_800_000 } = {}) => {
+const watchReport = ({ durationMs = 180_000 } = {}) => {
   const cues = Array.from({ length: 8 }, (_, index) => ({
     cueId: `watch-cue-${index + 1}`,
     comparisonStatus: 'exact',
@@ -94,7 +94,7 @@ export function createRealDeviceAudioAuthorityFixture({
   workspaceRoot,
   provenance,
   generatedAt = '2026-08-10T09:30:00.000Z',
-  durationMs = 1_800_000,
+  durationMs = 180_000,
   failedPlayback = false,
   endpointId = '{0.0.0.00000000}.{physical-default}',
   endpointName = 'Speakers (Realtek Audio)',
@@ -257,7 +257,7 @@ export function createRealDeviceAudioAuthorityFixture({
     else writeText(candidate, 'authorized raw evidence\n');
   }
   const receipt = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifactKind: 'watch-mode-live-cell-authority',
     generatedAt: '2026-08-10T09:35:00.000Z',
     provenance,
@@ -270,7 +270,7 @@ export function createRealDeviceAudioAuthorityFixture({
   const receiptPath = path.join(runDirectory, 'matrix-cell-authority.json');
   writeJson(receiptPath, receipt);
   const manifest = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',

@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { isDeepStrictEqual } from 'node:util';
 
 import {
   compactTimestamp,
@@ -574,7 +575,7 @@ const validateDiagnosticsSnapshotShapes = (issues, snapshots) => {
     || !Array.isArray(config.providers) || config.providers.length === 0) {
     issues.push('config snapshot does not match the persisted application configuration contract');
   }
-  if (JSON.stringify(runtime?.diagnostics) !== JSON.stringify(diagnostics)) {
+  if (!isDeepStrictEqual(runtime?.diagnostics, diagnostics)) {
     issues.push('runtime snapshot embedded diagnostics does not match its standalone snapshot');
   }
   for (const [embedded, standalone, subject, fields] of [
@@ -678,7 +679,7 @@ const validateFullDiagnosticsBundle = (bundleRoot, options) => {
     generatedAt: manifest?.generatedAt,
     ...snapshots,
   });
-  if (JSON.stringify(summary) !== JSON.stringify(recomputedSummary)) {
+  if (!isDeepStrictEqual(summary, recomputedSummary)) {
     issues.push('diagnostics summary does not match the independently recomputed production snapshots');
   }
 
@@ -909,7 +910,7 @@ const validateProviderConfig = (root, options) => {
     || Number(value?.desktopProcessId) !== Number(emitter.result?.desktopProcessId)
     || String(value?.sourceHeadCommit ?? '').toLowerCase()
       !== String(emitter.result?.sourceHeadCommit ?? '').toLowerCase()
-    || JSON.stringify(value?.diagnosticsExport) !== JSON.stringify(emitter.diagnostics)
+    || !isDeepStrictEqual(value?.diagnosticsExport, emitter.diagnostics)
   ) issues.push('provider config snapshot is not bound to the desktop emitter and diagnostics invocation');
   return {
     issues,
@@ -1072,7 +1073,7 @@ const validateProviderProbe = (root, options) => {
     || Number(value?.desktopProcessId) !== Number(emitter.result?.desktopProcessId)
     || String(value?.sourceHeadCommit ?? '').toLowerCase()
       !== String(emitter.result?.sourceHeadCommit ?? '').toLowerCase()
-    || JSON.stringify(value?.diagnosticsExport) !== JSON.stringify(emitter.diagnostics)
+    || !isDeepStrictEqual(value?.diagnosticsExport, emitter.diagnostics)
     || value?.credentialStatus?.backend !== 'windows-credential-manager'
     || value?.credentialStatus?.exists !== true
   ) issues.push('provider probe is not bound to the desktop emitter, credential status, and diagnostics invocation');
@@ -1125,7 +1126,7 @@ const validateDiagnosticsBundle = (root, options) => {
     || String(receipt?.sourceHeadCommit ?? '').toLowerCase()
       !== String(emitter.result?.sourceHeadCommit ?? '').toLowerCase()
     || receipt?.productionHandler !== 'diagnostics_events::export_diagnostics_bundle'
-    || JSON.stringify(receipt?.diagnosticsExport) !== JSON.stringify(emitter.diagnostics)
+    || !isDeepStrictEqual(receipt?.diagnosticsExport, emitter.diagnostics)
   ) issues.push('diagnostics export receipt is not bound to its production emitter invocation');
   const receiptTimeIssue = timestampIssue(receipt?.capturedAt, 'diagnostics receipt capturedAt', options);
   if (receiptTimeIssue) issues.push(receiptTimeIssue);

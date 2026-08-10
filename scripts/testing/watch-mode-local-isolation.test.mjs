@@ -8,6 +8,7 @@ import { LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import {
   buildLocalIsolationRuntime,
   createLocalIsolationMatrixDirectory,
+  localIsolationRuntimeInventory,
   reusableLocalIsolationAuthorityFailure,
   runLocalIsolationCell,
 } from './watch-mode-local-isolation.mjs';
@@ -114,4 +115,16 @@ test('local isolation reuse is explicit and cannot silently fall back to exact r
     workspaceRoot: process.cwd(),
   });
   assert.match(failure, /reuse mode must be orchestration-only/);
+});
+
+test('local isolation runtime scope excludes paid-only media injector binaries', () => {
+  const local = [
+    { path: 'target/release/omni-bridge-service.exe', bytes: 1, sha256: 'a' },
+    { path: 'target/release/omni-physical-output-probe.exe', bytes: 2, sha256: 'b' },
+  ];
+  const scoped = localIsolationRuntimeInventory([
+    ...local,
+    { path: 'target/release/omni-watch-media-injector.exe', bytes: 3, sha256: 'c' },
+  ]);
+  assert.deepEqual(scoped, local);
 });

@@ -24,12 +24,30 @@ export const LOCAL_ISOLATION_RUNNER_ID = 'scripts/testing/watch-mode-local-isola
 export const LOCAL_ISOLATION_CANONICAL_MANIFEST = 'latest-successful-watch-mode-local-isolation.json';
 export const LOCAL_ISOLATION_REUSE_MODE = 'orchestration-only';
 export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
+  'package.json',
+  'apps/bridge-service-native/src/bin/omni-watch-media-injector.rs',
   'scripts/testing/run-watch-mode-live-matrix.mjs',
   'scripts/testing/run-watch-mode-live-matrix.test.mjs',
   'scripts/testing/run-watch-mode-live.ps1',
   'scripts/testing/verify-watch-mode-evidence.mjs',
   'scripts/testing/watch-mode-local-isolation.mjs',
   'scripts/testing/watch-mode-local-isolation.test.mjs',
+]);
+
+// The zero-LLM layer invokes only these probe/runtime artifacts.  The paid
+// Watch layer has additional binaries (notably the media injector) whose
+// changes must invalidate paid-cell receipts, but cannot invalidate a local
+// isolation receipt that never launches them.  Keep this scope explicit so a
+// rebuilt paid binary is not silently treated as part of the local evidence.
+export const LOCAL_ISOLATION_RUNTIME_BINARY_PATHS = Object.freeze([
+  'target/release/omni-bridge-service.exe',
+  'target/release/omni-physical-output-probe.exe',
+  'target/release/omni-tone-render-probe.exe',
+  'target/release/omni-driver-audio-probe.exe',
+  'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys',
+  'drivers/windows-virtual-mic/package/omni-virtual-speaker.cat',
+  'drivers/windows-virtual-mic/package/omni-virtual-speaker.inf',
+  'drivers/windows-virtual-mic/package/driver-package.json',
 ]);
 
 const DEFAULT_OUTPUT_ROOT = 'artifacts/testing/watch-mode-local-isolation';
@@ -40,6 +58,11 @@ const TONE_PROBE_EXE = 'target/release/omni-tone-render-probe.exe';
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const portable = (value) => value.split(path.sep).join('/');
+
+export const localIsolationRuntimeInventory = (entries) => {
+  const inventory = authorityInventoryByPath(entries);
+  return LOCAL_ISOLATION_RUNTIME_BINARY_PATHS.map((entryPath) => inventory.get(entryPath)).filter(Boolean);
+};
 
 function atomicWriteJson(filePath, value) {
   const temporaryPath = `${filePath}.${process.pid}.tmp`;
@@ -458,16 +481,22 @@ export function reusableLocalIsolationAuthorityFailure({
       return `local isolation reuse introduced an unrecorded implementation file: ${entryPath}`;
     }
   }
-  if (!Array.isArray(reuseAuthority.sourceRuntimeBinaryHashes) || !sameAuthorityInventory(
-    manifest.runtimeBinaryHashes,
-    reuseAuthority.sourceRuntimeBinaryHashes,
-  )) {
+  const recordedLocalRuntime = localIsolationRuntimeInventory(manifest.runtimeBinaryHashes);
+  const sourceLocalRuntime = localIsolationRuntimeInventory(reuseAuthority.sourceRuntimeBinaryHashes);
+  const currentLocalRuntime = localIsolationRuntimeInventory(runtimeBinaryHashes);
+  if (
+    recordedLocalRuntime.length !== LOCAL_ISOLATION_RUNTIME_BINARY_PATHS.length
+    || sourceLocalRuntime.length !== LOCAL_ISOLATION_RUNTIME_BINARY_PATHS.length
+    || !sameAuthorityInventory(recordedLocalRuntime, sourceLocalRuntime)
+  ) {
     return 'local isolation reuse source runtime authority is not bound to the recorded manifest';
   }
-  if (!Array.isArray(reuseAuthority.currentRuntimeBinaryHashes) || !sameAuthorityInventory(
-    runtimeBinaryHashes,
-    reuseAuthority.currentRuntimeBinaryHashes,
-  )) {
+  const rebuiltLocalRuntime = localIsolationRuntimeInventory(reuseAuthority.currentRuntimeBinaryHashes);
+  if (
+    currentLocalRuntime.length !== LOCAL_ISOLATION_RUNTIME_BINARY_PATHS.length
+    || rebuiltLocalRuntime.length !== LOCAL_ISOLATION_RUNTIME_BINARY_PATHS.length
+    || !sameAuthorityInventory(currentLocalRuntime, rebuiltLocalRuntime)
+  ) {
     return 'local isolation reuse current runtime authority is not bound to the rebuilt matrix binaries';
   }
   return null;

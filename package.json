@@ -27,7 +27,7 @@
     "test:all": "node ./scripts/testing/run-all-tests.mjs",
     "verify:desktop": "npm run verify --workspace @omni/desktop",
     "check:bridge-service-native": "cargo check --manifest-path apps/bridge-service-native/Cargo.toml",
-    "build:bridge-service-native": "cargo build --release --manifest-path apps/bridge-service-native/Cargo.toml",
+    "build:bridge-service-native": "cargo build --release --bins --manifest-path apps/bridge-service-native/Cargo.toml",
     "test:bridge-service-native": "cargo test --manifest-path apps/bridge-service-native/Cargo.toml",
     "coverage:tooling": "node ./scripts/testing/bootstrap-coverage-tooling.mjs",
     "coverage:gate": "node ./scripts/testing/run-coverage-gate.mjs --full",

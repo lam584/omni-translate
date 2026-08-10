@@ -8,6 +8,7 @@ import { LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import {
   buildLocalIsolationRuntime,
   createLocalIsolationMatrixDirectory,
+  reusableLocalIsolationAuthorityFailure,
   runLocalIsolationCell,
 } from './watch-mode-local-isolation.mjs';
 
@@ -101,4 +102,16 @@ test('local isolation cell refuses a clock that does not reach its duration', as
     }),
     /probe failed/,
   );
+});
+
+test('local isolation reuse is explicit and cannot silently fall back to exact reuse', () => {
+  const failure = reusableLocalIsolationAuthorityFailure({
+    manifest: { provenance },
+    provenance,
+    implementationHashes: [],
+    runtimeBinaryHashes: [],
+    reuseAuthority: { mode: 'unexpected' },
+    workspaceRoot: process.cwd(),
+  });
+  assert.match(failure, /reuse mode must be orchestration-only/);
 });

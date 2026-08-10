@@ -739,6 +739,7 @@ export function verifyStrictMatrixAuthority({
       workspaceRoot,
       provenance: currentProvenance,
       runtimeBinaryHashes: currentRuntimeBinaryHashes,
+      reuseAuthority: manifest.localIsolation.reuse ?? null,
     });
   }
   if (manifest.authority?.runner !== MATRIX_RUNNER_ID) {

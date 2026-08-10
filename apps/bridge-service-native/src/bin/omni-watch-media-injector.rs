@@ -23,7 +23,7 @@ mod injector {
     use omni_bridge_service::probe_support::open_render_stream;
     use serde::Serialize;
     use std::collections::VecDeque;
-    use std::path::PathBuf;
+    use std::path::{Path, PathBuf};
     use std::thread;
     use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
     use wasapi::{
@@ -130,7 +130,7 @@ mod injector {
     pub(super) fn run() -> Result<InjectorResult, String> {
         let started_at_ms = unix_ms();
         let args = parse_args()?;
-        let decoded = decode_mp3(&args.media_path)?;
+        let decoded = decode_media(&args.media_path)?;
         if decoded.samples.is_empty() {
             return Err(format!(
                 "media decoded to zero samples: {}",
@@ -237,7 +237,7 @@ mod injector {
                 }
                 "--help" | "-h" => {
                     return Err(
-                        "Usage: omni-watch-media-injector --media <mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--reference-pcm16k-mono-path <path>]".to_string(),
+                        "Usage: omni-watch-media-injector --media <wav-or-mp3> [--endpoint-id <id>] [--endpoint-name <name>] [--max-seconds <seconds>] [--reference-pcm16k-mono-path <path>]".to_string(),
                     );
                 }
                 other => return Err(format!("unknown argument: {other}")),
@@ -290,7 +290,136 @@ mod injector {
         ))
     }
 
-    fn decode_mp3(path: &PathBuf) -> Result<DecodedAudio, String> {
+    fn decode_media(path: &Path) -> Result<DecodedAudio, String> {
+        let bytes = std::fs::read(path)
+            .map_err(|error| format!("failed to read media '{}': {error}", path.display()))?;
+        if bytes.len() >= 12 && &bytes[0..4] == b"RIFF" && &bytes[8..12] == b"WAVE" {
+            return decode_wav_pcm(path, &bytes);
+        }
+        decode_mp3(path)
+    }
+
+    fn decode_wav_pcm(path: &Path, bytes: &[u8]) -> Result<DecodedAudio, String> {
+        let mut cursor = 12usize;
+        let mut format_chunk = None;
+        let mut data_chunk = None;
+        while cursor + 8 <= bytes.len() {
+            let chunk_id = &bytes[cursor..cursor + 4];
+            let chunk_size = u32::from_le_bytes(
+                bytes[cursor + 4..cursor + 8]
+                    .try_into()
+                    .expect("WAV chunk size is four bytes"),
+            ) as usize;
+            let chunk_start = cursor + 8;
+            let chunk_end = chunk_start
+                .checked_add(chunk_size)
+                .ok_or_else(|| format!("WAV chunk size overflows '{}': {chunk_size}", path.display()))?;
+            if chunk_end > bytes.len() {
+                return Err(format!(
+                    "WAV chunk exceeds file '{}': end={chunk_end} length={}",
+                    path.display(),
+                    bytes.len()
+                ));
+            }
+            match chunk_id {
+                b"fmt " => format_chunk = Some(&bytes[chunk_start..chunk_end]),
+                b"data" => data_chunk = Some(&bytes[chunk_start..chunk_end]),
+                _ => {}
+            }
+            cursor = chunk_end + (chunk_size & 1);
+        }
+
+        let format = format_chunk
+            .ok_or_else(|| format!("WAV media has no fmt chunk: {}", path.display()))?;
+        if format.len() < 16 {
+            return Err(format!(
+                "WAV fmt chunk is too short for '{}': {} bytes",
+                path.display(),
+                format.len()
+            ));
+        }
+        let audio_format = u16::from_le_bytes([format[0], format[1]]);
+        let channels = u16::from_le_bytes([format[2], format[3]]) as usize;
+        let sample_rate = u32::from_le_bytes([format[4], format[5], format[6], format[7]]);
+        let block_align = u16::from_le_bytes([format[12], format[13]]) as usize;
+        let bits_per_sample = u16::from_le_bytes([format[14], format[15]]);
+        if channels == 0 || sample_rate == 0 || bits_per_sample == 0 {
+            return Err(format!(
+                "WAV fmt chunk has invalid audio parameters for '{}': channels={channels} sampleRate={sample_rate} bits={bits_per_sample}",
+                path.display()
+            ));
+        }
+        if audio_format != 1 && audio_format != 3 {
+            return Err(format!(
+                "WAV media '{}' uses unsupported audio format {audio_format}; expected PCM (1) or IEEE float (3)",
+                path.display()
+            ));
+        }
+        let bytes_per_sample = (bits_per_sample as usize).div_ceil(8);
+        let expected_block_align = channels
+            .checked_mul(bytes_per_sample)
+            .ok_or_else(|| format!("WAV block alignment overflows '{}': channels={channels}", path.display()))?;
+        if block_align != expected_block_align {
+            return Err(format!(
+                "WAV block alignment mismatch for '{}': declared={block_align} expected={expected_block_align}",
+                path.display()
+            ));
+        }
+        let data = data_chunk
+            .ok_or_else(|| format!("WAV media has no data chunk: {}", path.display()))?;
+        if data.len() % block_align != 0 {
+            return Err(format!(
+                "WAV data is not frame-aligned for '{}': bytes={} blockAlign={block_align}",
+                path.display(),
+                data.len()
+            ));
+        }
+
+        let mut samples = Vec::with_capacity(data.len() / bytes_per_sample);
+        for sample in data.chunks_exact(bytes_per_sample) {
+            let value = match (audio_format, bits_per_sample) {
+                (1, 8) => (sample[0] as f32 - 128.0) / 128.0,
+                (1, 16) => i16::from_le_bytes([sample[0], sample[1]]) as f32 / 32_768.0,
+                (1, 24) => {
+                    let raw = (sample[0] as i32)
+                        | ((sample[1] as i32) << 8)
+                        | ((sample[2] as i32) << 16);
+                    let signed = if raw & 0x0080_0000 != 0 {
+                        raw | !0x00ff_ffff
+                    } else {
+                        raw
+                    };
+                    signed as f32 / 8_388_608.0
+                }
+                (1, 32) => {
+                    i32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]) as f32
+                        / 2_147_483_648.0
+                }
+                (3, 32) => f32::from_le_bytes([sample[0], sample[1], sample[2], sample[3]]),
+                (3, 64) => f64::from_le_bytes([
+                    sample[0], sample[1], sample[2], sample[3], sample[4], sample[5], sample[6],
+                    sample[7],
+                ]) as f32,
+                _ => {
+                    return Err(format!(
+                        "WAV media '{}' uses unsupported sample format={audio_format} bits={bits_per_sample}",
+                        path.display()
+                    ));
+                }
+            };
+            if !value.is_finite() {
+                return Err(format!("WAV media '{}' contains a non-finite sample", path.display()));
+            }
+            samples.push(value.clamp(-1.0, 1.0));
+        }
+        Ok(DecodedAudio {
+            samples,
+            source_sample_rate_hz: sample_rate,
+            source_channels: channels,
+        })
+    }
+
+    fn decode_mp3(path: &Path) -> Result<DecodedAudio, String> {
         let file = std::fs::File::open(path)
             .map_err(|error| format!("failed to open media '{}': {error}", path.display()))?;
         let mut decoder = minimp3::Decoder::new(file);
@@ -323,6 +452,44 @@ mod injector {
             source_sample_rate_hz: source_sample_rate_hz.unwrap_or(TARGET_SAMPLE_RATE as u32),
             source_channels: source_channels.unwrap_or(1),
         })
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn decodes_pcm16_wav_instead_of_treating_it_as_mp3() {
+            let directory = tempfile::tempdir().expect("tempdir");
+            let path = directory.path().join("sample.wav");
+            let pcm = [-32_768i16, -16_384, 0, 16_384, 32_767];
+            let data_len = (pcm.len() * 2) as u32;
+            let mut wav = Vec::new();
+            wav.extend_from_slice(b"RIFF");
+            wav.extend_from_slice(&(36u32 + data_len).to_le_bytes());
+            wav.extend_from_slice(b"WAVEfmt ");
+            wav.extend_from_slice(&16u32.to_le_bytes());
+            wav.extend_from_slice(&1u16.to_le_bytes());
+            wav.extend_from_slice(&1u16.to_le_bytes());
+            wav.extend_from_slice(&24_000u32.to_le_bytes());
+            wav.extend_from_slice(&48_000u32.to_le_bytes());
+            wav.extend_from_slice(&2u16.to_le_bytes());
+            wav.extend_from_slice(&16u16.to_le_bytes());
+            wav.extend_from_slice(b"data");
+            wav.extend_from_slice(&data_len.to_le_bytes());
+            for sample in pcm {
+                wav.extend_from_slice(&sample.to_le_bytes());
+            }
+            std::fs::write(&path, wav).expect("write WAV");
+
+            let decoded = decode_media(&path).expect("decode WAV");
+            assert_eq!(decoded.source_sample_rate_hz, 24_000);
+            assert_eq!(decoded.source_channels, 1);
+            assert_eq!(decoded.samples.len(), pcm.len());
+            assert!((decoded.samples[0] + 1.0).abs() < 0.0001);
+            assert!(decoded.samples[2].abs() < 0.0001);
+            assert!((decoded.samples[4] - 0.9999695).abs() < 0.0001);
+        }
     }
 
     fn resample_to_48k_stereo(samples: &[f32], sample_rate_hz: u32, channels: usize) -> Vec<f32> {

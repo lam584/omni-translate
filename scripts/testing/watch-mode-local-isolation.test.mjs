@@ -7,6 +7,7 @@ import test from 'node:test';
 import { LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
 import {
   buildLocalIsolationRuntime,
+  createLocalIsolationMatrixDirectory,
   runLocalIsolationCell,
 } from './watch-mode-local-isolation.mjs';
 
@@ -19,6 +20,17 @@ const provenance = {
   worktreeClean: true,
   dirtyEntryCount: 0,
 };
+
+test('local isolation creates its output root on a first clean-machine run', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-root-'));
+  const matrixDirectory = path.join(root, 'missing-parent', 'matrix');
+  createLocalIsolationMatrixDirectory(matrixDirectory);
+  assert.equal(fs.statSync(matrixDirectory).isDirectory(), true);
+  assert.throws(
+    () => createLocalIsolationMatrixDirectory(matrixDirectory),
+    /EEXIST/,
+  );
+});
 
 test('standalone local isolation rebuilds Bridge and driver from the exact clean HEAD', () => {
   const calls = [];

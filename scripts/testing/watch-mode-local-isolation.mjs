@@ -394,7 +394,7 @@ export async function runLocalIsolationMatrix({
     outputRoot,
     `${compactTimestamp(new Date(generatedAtMs))}-${provenance.headCommit.slice(0, 12)}`,
   );
-  fs.mkdirSync(matrixDirectory, { recursive: false });
+  createLocalIsolationMatrixDirectory(matrixDirectory);
   const aecGateResult = runAecGate({ workspaceRoot });
   const aecGateLogPath = path.join(matrixDirectory, 'aec3-msvc-gate.log');
   fs.writeFileSync(
@@ -455,6 +455,11 @@ export async function runLocalIsolationMatrix({
     ),
   });
   return { manifestPath, canonicalPath, manifest };
+}
+
+export function createLocalIsolationMatrixDirectory(matrixDirectory) {
+  fs.mkdirSync(path.dirname(matrixDirectory), { recursive: true });
+  fs.mkdirSync(matrixDirectory, { recursive: false });
 }
 
 if (isMain(import.meta.url)) {

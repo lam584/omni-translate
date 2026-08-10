@@ -369,17 +369,21 @@ export async function runLocalIsolationMatrix({
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
   now = () => Date.now(),
   runCell = runLocalIsolationCell,
-  runAecGate = ({ workspaceRoot: root }) => spawnSync(
-    process.platform === 'win32' ? 'npm.cmd' : 'npm',
-    ['run', 'test:aec3-msvc'],
-    {
+  runAecGate = ({ workspaceRoot: root }) => {
+    const executable = process.platform === 'win32'
+      ? (process.env.ComSpec || 'cmd.exe')
+      : 'npm';
+    const args = process.platform === 'win32'
+      ? ['/d', '/s', '/c', 'npm.cmd', 'run', 'test:aec3-msvc']
+      : ['run', 'test:aec3-msvc'];
+    return spawnSync(executable, args, {
       cwd: root,
       env: process.env,
       encoding: 'utf8',
       windowsHide: true,
       timeout: 900_000,
-    },
-  ),
+    });
+  },
 }) {
   assertCleanCurrentHead(provenance);
   const implementationHashes = currentAuthorityImplementationHashes({ workspaceRoot });

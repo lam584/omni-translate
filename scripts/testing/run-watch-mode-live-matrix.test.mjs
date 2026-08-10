@@ -458,7 +458,18 @@ test('strict matrix rebuilds every executed release binary before collecting evi
     }),
     /strict runtime build failed with exit code 1/,
   );
-  assert.deepEqual(calls.map((entry) => entry.args), STRICT_RUNTIME_BUILD_COMMANDS);
+  assert.deepEqual(
+    calls.map((entry) => (
+      process.platform === 'win32' ? entry.args.slice(4) : entry.args
+    )),
+    STRICT_RUNTIME_BUILD_COMMANDS,
+  );
+  if (process.platform === 'win32') {
+    assert.ok(calls.every((entry) => entry.executable === (process.env.ComSpec || 'cmd.exe')));
+    assert.ok(calls.every((entry) => (
+      JSON.stringify(entry.args.slice(0, 4)) === JSON.stringify(['/d', '/s', '/c', 'npm.cmd'])
+    )));
+  }
   assert.deepEqual(STRICT_RUNTIME_BUILD_COMMANDS, [
     ['run', 'build:tauri', '--workspace', '@omni/desktop'],
     ['run', 'build:bridge-service-native'],

@@ -356,19 +356,34 @@ const orderedTimeline = (issues, timeline, expected, subject) => {
     issues.push(`${subject} must contain exactly ${expected.join(' -> ')}`);
     return;
   }
-  let previous = -Infinity;
+  let previousTimestamp = -Infinity;
+  let previousMonotonic = -Infinity;
   for (const [index, expectedStatus] of expected.entries()) {
     const event = timeline[index];
     const status = event?.playbackStatus ?? event?.status ?? event?.event;
     if (status !== expectedStatus) issues.push(`${subject} status ${index} must be ${expectedStatus}`);
-    const observedAt = parseEvidenceTimestamp(event?.observedAt ?? event?.timestamp);
+    const rawTimestamp = event?.observedAt ?? event?.timestamp ?? event?.timestampMs;
+    const observedAt = typeof rawTimestamp === 'number'
+      ? rawTimestamp
+      : parseEvidenceTimestamp(rawTimestamp);
     const monotonic = Number(event?.collectorReceivedAtMonotonicNs);
-    const orderingValue = Number.isFinite(monotonic) ? monotonic : observedAt;
-    if (!Number.isFinite(orderingValue) || orderingValue <= previous) {
-      issues.push(`${subject} timestamps must be strictly increasing`);
+    const sequence = Number(event?.sequence);
+    const hasMonotonic = Number.isFinite(monotonic);
+    const hasSequence = Number.isInteger(sequence) && sequence > 0;
+    if (hasSequence && sequence !== index + 1) {
+      issues.push(`${subject} sequence ${index} must be ${index + 1}`);
+    }
+    if (
+      !Number.isFinite(observedAt)
+      || observedAt < previousTimestamp
+      || (hasMonotonic && monotonic <= previousMonotonic)
+      || (!hasMonotonic && !hasSequence && observedAt <= previousTimestamp)
+    ) {
+      issues.push(`${subject} timestamps must be monotonic and ordered`);
       break;
     }
-    previous = orderingValue;
+    previousTimestamp = observedAt;
+    if (hasMonotonic) previousMonotonic = monotonic;
   }
 };
 

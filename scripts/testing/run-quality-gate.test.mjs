@@ -2402,6 +2402,31 @@ test('Provider probe validator cross-checks raw result, top-level fields, and di
   }
 });
 
+test('provider evidence comparison is independent of JSON object key order', () => {
+  const rawDirectory = makeTempDir();
+  const reverseKeys = (value) => Object.fromEntries(Object.entries(value).reverse());
+  try {
+    writeScenarioRawEvidence(rawDirectory, 'E2E-PROVIDER-PROBE');
+    const probePath = path.join(rawDirectory, 'provider-probe-result.json');
+    const probe = readJson(probePath);
+    probe.diagnosticsExport = reverseKeys(probe.diagnosticsExport);
+    writeJson(probePath, probe);
+    const emitterPath = path.join(rawDirectory, 'emitter-result.json');
+    const emitter = readJson(emitterPath);
+    const artifact = emitter.artifacts.find((entry) => entry.path === 'provider-probe-result.json');
+    Object.assign(artifact, hashEvidenceArtifact(probePath));
+    writeJson(emitterPath, emitter);
+
+    const checked = validateRawReleaseManualEvidence(rawDirectory, 'E2E-PROVIDER-PROBE', {
+      now: TEST_NOW.getTime(),
+      currentProvenance: TEST_PROVENANCE,
+    });
+    assert.deepEqual(checked.issues, []);
+  } finally {
+    fs.rmSync(rawDirectory, { recursive: true, force: true });
+  }
+});
+
 test('virtual-mic authority rejects fake PID, endpoint, delta, and timeline evidence', () => {
   const scratch = makeTempDir();
   try {

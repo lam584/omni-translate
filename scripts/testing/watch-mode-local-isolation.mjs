@@ -22,6 +22,11 @@ export const LOCAL_ISOLATION_ARTIFACT_KIND = 'watch-mode-local-isolation-authori
 export const LOCAL_ISOLATION_CELL_ARTIFACT_KIND = 'watch-mode-local-isolation-cell';
 export const LOCAL_ISOLATION_RUNNER_ID = 'scripts/testing/watch-mode-local-isolation.mjs';
 export const LOCAL_ISOLATION_CANONICAL_MANIFEST = 'latest-successful-watch-mode-local-isolation.json';
+export const LOCAL_ISOLATION_REUSE_MODE = 'orchestration-only';
+export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
+  'scripts/testing/run-watch-mode-live-matrix.mjs',
+  'scripts/testing/run-watch-mode-live-matrix.test.mjs',
+]);
 
 const DEFAULT_OUTPUT_ROOT = 'artifacts/testing/watch-mode-local-isolation';
 const BRIDGE_EXE = 'target/release/omni-bridge-service.exe';
@@ -299,6 +304,7 @@ export function verifyLocalIsolationManifest({
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
   implementationHashes = currentAuthorityImplementationHashes({ workspaceRoot }),
   runtimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
+  reuseAuthority = null,
 }) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
   if (
@@ -307,15 +313,27 @@ export function verifyLocalIsolationManifest({
     || manifest.planId !== BALANCED_RELEASE_PLAN_ID
     || manifest.verdict !== 'passed'
   ) throw new Error('local isolation manifest is not a passed balanced release authority');
-  const provenanceFailure = exactGitProvenanceFailure(manifest.provenance, provenance, {
-    recordedSubject: 'local isolation manifest provenance',
-    currentSubject: 'current checkout provenance',
-  });
-  if (provenanceFailure) throw new Error(provenanceFailure);
-  if (
-    !sameAuthorityInventory(manifest.implementationHashes, implementationHashes)
-    || !sameAuthorityInventory(manifest.runtimeBinaryHashes, runtimeBinaryHashes)
-  ) throw new Error('local isolation implementation/runtime authority mismatch');
+  if (reuseAuthority) {
+    const reuseFailure = reusableLocalIsolationAuthorityFailure({
+      manifest,
+      provenance,
+      implementationHashes,
+      runtimeBinaryHashes,
+      reuseAuthority,
+      workspaceRoot,
+    });
+    if (reuseFailure) throw new Error(reuseFailure);
+  } else {
+    const provenanceFailure = exactGitProvenanceFailure(manifest.provenance, provenance, {
+      recordedSubject: 'local isolation manifest provenance',
+      currentSubject: 'current checkout provenance',
+    });
+    if (provenanceFailure) throw new Error(provenanceFailure);
+    if (
+      !sameAuthorityInventory(manifest.implementationHashes, implementationHashes)
+      || !sameAuthorityInventory(manifest.runtimeBinaryHashes, runtimeBinaryHashes)
+    ) throw new Error('local isolation implementation/runtime authority mismatch');
+  }
   const manifestRoot = path.dirname(path.resolve(manifestPath));
   const aecLogAuthority = fileAuthorityEntry(
     path.resolve(manifestRoot, manifest.aec3Gate?.path ?? ''),
@@ -360,6 +378,126 @@ export function verifyLocalIsolationManifest({
     }
   }
   return manifest;
+}
+
+const authorityInventoryByPath = (entries) => new Map(
+  (Array.isArray(entries) ? entries : []).map((entry) => [entry?.path, entry]),
+);
+
+const gitText = (workspaceRoot, args) => {
+  const result = spawnSync('git', args, {
+    cwd: workspaceRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (result.status !== 0) return null;
+  return String(result.stdout ?? '').trim();
+};
+
+const reusableSourceChangedPaths = (workspaceRoot, sourceCommit, currentCommit) => {
+  const output = gitText(workspaceRoot, ['diff', '--name-only', `${sourceCommit}..${currentCommit}`, '--']);
+  if (output === null) return null;
+  return output ? output.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean).sort() : [];
+};
+
+export function reusableLocalIsolationAuthorityFailure({
+  manifest,
+  provenance,
+  implementationHashes,
+  runtimeBinaryHashes,
+  reuseAuthority,
+  workspaceRoot = repoRoot,
+}) {
+  if (reuseAuthority?.mode !== LOCAL_ISOLATION_REUSE_MODE) {
+    return `local isolation reuse mode must be ${LOCAL_ISOLATION_REUSE_MODE}`;
+  }
+  const sourceCommit = String(manifest.provenance?.headCommit ?? '').toLowerCase();
+  const currentCommit = String(provenance?.headCommit ?? '').toLowerCase();
+  if (!/^[a-f0-9]{40}$/.test(sourceCommit) || !/^[a-f0-9]{40}$/.test(currentCommit)) {
+    return 'local isolation reuse requires full source and current git commits';
+  }
+  if (sourceCommit === currentCommit) {
+    return 'local isolation reuse requires a distinct source commit';
+  }
+  if (manifest.provenance?.worktreeClean !== true || Number(manifest.provenance?.dirtyEntryCount) !== 0) {
+    return 'local isolation reuse source authority must have been captured from a clean worktree';
+  }
+  if (provenance?.worktreeClean !== true || Number(provenance?.dirtyEntryCount) !== 0) {
+    return 'local isolation reuse requires the current worktree to be clean';
+  }
+  const ancestor = gitText(workspaceRoot, ['merge-base', '--is-ancestor', sourceCommit, currentCommit]);
+  if (ancestor === null) {
+    return `local isolation reuse source commit ${sourceCommit} is not an ancestor of current commit ${currentCommit}`;
+  }
+  const changedPaths = reusableSourceChangedPaths(workspaceRoot, sourceCommit, currentCommit);
+  if (!changedPaths) return 'local isolation reuse could not inspect the source-to-current diff';
+  if (changedPaths.length === 0 || changedPaths.some((entry) => !LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entry))) {
+    return `local isolation reuse permits only orchestration files to change; changed=${changedPaths.join(',')}`;
+  }
+  if (JSON.stringify(reuseAuthority.changedPaths ?? []) !== JSON.stringify(changedPaths)) {
+    return 'local isolation reuse changed-path declaration does not match the git diff';
+  }
+  if (reuseAuthority.sourceCommit !== sourceCommit || reuseAuthority.verifiedCommit !== currentCommit) {
+    return 'local isolation reuse source/current commit declaration does not match the checkout';
+  }
+  const recordedImplementation = authorityInventoryByPath(manifest.implementationHashes);
+  const currentImplementation = authorityInventoryByPath(implementationHashes);
+  for (const [entryPath, entry] of recordedImplementation) {
+    if (entryPath === 'scripts/testing/run-watch-mode-live-matrix.mjs') continue;
+    const current = currentImplementation.get(entryPath);
+    if (!current || current.bytes !== entry.bytes || current.sha256 !== entry.sha256) {
+      return `local isolation reuse implementation changed outside the orchestration file: ${entryPath}`;
+    }
+  }
+  for (const entryPath of currentImplementation.keys()) {
+    if (!recordedImplementation.has(entryPath)) {
+      return `local isolation reuse introduced an unrecorded implementation file: ${entryPath}`;
+    }
+  }
+  if (!Array.isArray(reuseAuthority.sourceRuntimeBinaryHashes) || !sameAuthorityInventory(
+    manifest.runtimeBinaryHashes,
+    reuseAuthority.sourceRuntimeBinaryHashes,
+  )) {
+    return 'local isolation reuse source runtime authority is not bound to the recorded manifest';
+  }
+  if (!Array.isArray(reuseAuthority.currentRuntimeBinaryHashes) || !sameAuthorityInventory(
+    runtimeBinaryHashes,
+    reuseAuthority.currentRuntimeBinaryHashes,
+  )) {
+    return 'local isolation reuse current runtime authority is not bound to the rebuilt matrix binaries';
+  }
+  return null;
+}
+
+export function createReusableLocalIsolationAuthority({
+  manifestPath,
+  provenance,
+  implementationHashes,
+  runtimeBinaryHashes,
+  workspaceRoot = repoRoot,
+}) {
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  const sourceCommit = String(manifest.provenance?.headCommit ?? '').toLowerCase();
+  const currentCommit = String(provenance?.headCommit ?? '').toLowerCase();
+  const changedPaths = reusableSourceChangedPaths(workspaceRoot, sourceCommit, currentCommit);
+  const reuseAuthority = {
+    mode: LOCAL_ISOLATION_REUSE_MODE,
+    sourceCommit,
+    verifiedCommit: currentCommit,
+    changedPaths: changedPaths ?? [],
+    sourceRuntimeBinaryHashes: manifest.runtimeBinaryHashes,
+    currentRuntimeBinaryHashes: runtimeBinaryHashes,
+  };
+  const failure = reusableLocalIsolationAuthorityFailure({
+    manifest,
+    provenance,
+    implementationHashes,
+    runtimeBinaryHashes,
+    reuseAuthority,
+    workspaceRoot,
+  });
+  if (failure) throw new Error(failure);
+  return reuseAuthority;
 }
 
 export async function runLocalIsolationMatrix({

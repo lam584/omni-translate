@@ -36,6 +36,7 @@ import {
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
 import {
+  createReusableLocalIsolationAuthority,
   runLocalIsolationMatrix,
   verifyLocalIsolationManifest,
 } from './watch-mode-local-isolation.mjs';
@@ -980,13 +981,22 @@ export const runMatrix = async (options) => {
     let localIsolationManifestPath = reusableManifest
       ? resolveReusableLocalIsolationManifest(reusableManifest, { workspaceRoot: repoRoot })
       : null;
+    let localIsolationReuseAuthority = null;
     if (localIsolationManifestPath) {
       console.error(`==> Reusing verified zero-LLM local isolation authority: ${path.relative(repoRoot, localIsolationManifestPath)}`);
+      localIsolationReuseAuthority = createReusableLocalIsolationAuthority({
+        manifestPath: localIsolationManifestPath,
+        provenance: startProvenance,
+        implementationHashes: currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }),
+        runtimeBinaryHashes,
+        workspaceRoot: repoRoot,
+      });
       verifyLocalIsolationManifest({
         manifestPath: localIsolationManifestPath,
         workspaceRoot: repoRoot,
         provenance: startProvenance,
         runtimeBinaryHashes,
+        reuseAuthority: localIsolationReuseAuthority,
       });
     } else {
       console.error('==> Running zero-LLM local isolation layer (3 routes x 3 device classes x 5 minutes)');
@@ -1004,13 +1014,14 @@ export const runMatrix = async (options) => {
       localIsolationManifestPath = localIsolation.manifestPath;
     }
     const manifestStats = fs.statSync(localIsolationManifestPath);
-    localIsolationAuthority = {
+      localIsolationAuthority = {
       manifestPath: path.relative(repoRoot, localIsolationManifestPath).split(path.sep).join('/'),
       bytes: manifestStats.size,
       sha256: fileAuthorityEntry(
         localIsolationManifestPath,
         path.basename(localIsolationManifestPath),
       ).sha256,
+      ...(localIsolationReuseAuthority ? { reuse: localIsolationReuseAuthority } : {}),
     };
   } else if (String(options.reuseLocalIsolation ?? '').trim()) {
     throw new Error('--reuse-local-isolation is only valid for the strict balanced matrix');

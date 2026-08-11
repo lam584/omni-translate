@@ -2173,6 +2173,7 @@ function Invoke-BridgeSourceProbe {
       $audioProbeStdout = Join-Path $probeRuntimeRoot "audio-probe.stdout.log"
       $audioProbeStderr = Join-Path $probeRuntimeRoot "audio-probe.stderr.log"
       $audioProbeProcess = Start-Process -FilePath $audioProbeExe `
+        -ArgumentList @("--inject-only") `
         -RedirectStandardOutput $audioProbeStdout `
         -RedirectStandardError $audioProbeStderr `
         -WindowStyle Hidden -PassThru

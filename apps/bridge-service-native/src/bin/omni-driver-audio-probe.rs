@@ -12,7 +12,26 @@ fn main() {
     if omni_bridge_service::emit_build_commit_if_requested() {
         return;
     }
-    use probe::{run_probe, FailureResult};
+    use probe::{run_inject_only, run_probe, FailureResult, InjectionResult};
+
+    if std::env::args().any(|arg| arg == "--inject-only") {
+        match run_inject_only() {
+            Ok(result) => println!("{}", serde_json::to_string(&result).unwrap()),
+            Err(detail) => {
+                println!(
+                    "{}",
+                    serde_json::to_string(&InjectionResult {
+                        passed: false,
+                        frames_written: 0,
+                        detail: Some(detail),
+                    })
+                    .unwrap()
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     match run_probe() {
         Ok(result) => {
@@ -139,6 +158,14 @@ mod probe {
     pub(super) struct FailureResult {
         pub passed: bool,
         pub detail: String,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct InjectionResult {
+        pub passed: bool,
+        pub frames_written: usize,
+        pub detail: Option<String>,
     }
 
     #[derive(Default)]
@@ -370,6 +397,38 @@ mod probe {
         fn drop(&mut self) {
             let _ = self.audio_client.stop_stream();
         }
+    }
+
+    pub(super) fn run_inject_only() -> Result<InjectionResult, String> {
+        initialize_mta().ok().map_err(error_text)?;
+        let enumerator = DeviceEnumerator::new().map_err(error_text)?;
+        let device = find_virtual_speaker(&enumerator)?;
+        let format = WaveFormat::new(32, 32, &SampleType::Float, SAMPLE_RATE, CHANNELS, None);
+        let mut render = ToneRender::start(&device, &format)?;
+        let deadline = Instant::now() + Duration::from_millis(TONE_DURATION_MS);
+        let mut frames_written = 0usize;
+        while Instant::now() < deadline {
+            let available = render
+                .audio_client
+                .get_available_space_in_frames()
+                .map_err(error_text)? as usize;
+            if available > 0 {
+                render.write_available()?;
+                frames_written = frames_written.saturating_add(available);
+            } else {
+                thread::sleep(Duration::from_millis(2));
+            }
+        }
+        thread::sleep(Duration::from_millis(100));
+        drop(render);
+        if frames_written == 0 {
+            return Err("inject-only render submitted zero frames".to_string());
+        }
+        Ok(InjectionResult {
+            passed: true,
+            frames_written,
+            detail: None,
+        })
     }
 
     pub(super) fn run_probe() -> Result<ProbeResult, String> {

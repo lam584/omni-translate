@@ -273,11 +273,7 @@ mod injector {
             let device = device_result.map_err(error_text)?;
             let id = device.get_id().map_err(error_text)?;
             let name = device.get_friendlyname().map_err(error_text)?;
-            if endpoint_id
-                .map(|requested| requested == id)
-                .unwrap_or(false)
-                || name.contains(endpoint_name)
-            {
+            if render_device_matches_request(endpoint_id, &id, &name, endpoint_name) {
                 return Ok(device);
             }
             names.push(format!("{name} [{id}]"));
@@ -288,6 +284,21 @@ mod injector {
             endpoint_name,
             names.join(" | ")
         ))
+    }
+
+    fn render_device_matches_request(
+        requested_endpoint_id: Option<&str>,
+        actual_endpoint_id: &str,
+        actual_endpoint_name: &str,
+        requested_endpoint_name: &str,
+    ) -> bool {
+        // An explicit endpoint ID is authoritative. Falling back to the
+        // legacy friendly-name selector here can silently route media to the
+        // virtual speaker while the live recorder captures a physical device.
+        match requested_endpoint_id {
+            Some(requested) => requested == actual_endpoint_id,
+            None => actual_endpoint_name.contains(requested_endpoint_name),
+        }
     }
 
     fn decode_media(path: &Path) -> Result<DecodedAudio, String> {
@@ -489,6 +500,28 @@ mod injector {
             assert!((decoded.samples[0] + 1.0).abs() < 0.0001);
             assert!(decoded.samples[2].abs() < 0.0001);
             assert!((decoded.samples[4] - 0.9999695).abs() < 0.0001);
+        }
+
+        #[test]
+        fn explicit_endpoint_id_never_falls_back_to_virtual_speaker_name() {
+            assert!(render_device_matches_request(
+                Some("{physical-endpoint}"),
+                "{physical-endpoint}",
+                "Speakers (High Definition Audio Device)",
+                "Omni Translate Virtual Speaker",
+            ));
+            assert!(!render_device_matches_request(
+                Some("{physical-endpoint}"),
+                "{virtual-endpoint}",
+                "Omni Translate Virtual Speaker",
+                "Omni Translate Virtual Speaker",
+            ));
+            assert!(render_device_matches_request(
+                None,
+                "{virtual-endpoint}",
+                "Omni Translate Virtual Speaker",
+                "Omni Translate Virtual Speaker",
+            ));
         }
     }
 

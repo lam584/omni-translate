@@ -10,6 +10,11 @@ pub(super) struct OmniAudioPumpState {
     /// Number of 16 kHz mono PCM samples appended after the latest successful
     /// manual commit. This prevents a lone tail frame from being committed.
     pub(super) audio_samples_since_commit: u64,
+    /// Audio appended while a provider response was still completing must not
+    /// be used to arm an immediate empty/tail commit after response.done.
+    /// The response handler clears this gate; the next successfully accepted
+    /// append opens a fresh manual turn.
+    pub(super) manual_turn_audio_after_response: bool,
     pub(super) manual_turn_started_at: Option<SystemTime>,
     /// Actual speaker state observed when the current manual turn received its
     /// first audible capture. Manual providers omit server VAD, so this is the
@@ -86,6 +91,7 @@ impl OmniAudioPump {
             mut chunk_count,
             mut sent_audio_since_commit,
             mut audio_samples_since_commit,
+            mut manual_turn_audio_after_response,
             mut manual_turn_started_at,
             mut manual_turn_started_during_playback,
             mut session_ready_for_audio,
@@ -300,6 +306,7 @@ impl OmniAudioPump {
                     }
                 }
             }
+            manual_turn_audio_after_response = true;
             // Only audio accepted by the current socket belongs to the
             // provider's current input buffer. A failed append that triggers
             // reconnect must not arm or grow the next manual commit.
@@ -341,6 +348,7 @@ impl OmniAudioPump {
             chunk_count,
             sent_audio_since_commit,
             audio_samples_since_commit,
+            manual_turn_audio_after_response,
             manual_turn_started_at,
             manual_turn_started_during_playback,
             session_ready_for_audio,

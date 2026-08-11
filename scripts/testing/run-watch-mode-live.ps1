@@ -2636,6 +2636,9 @@ function Read-SubtitleQueueTimeline {
   foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech\.segment_playback_written\s+\|\s+cue=(omni-cue-\d+)\s+segmentIndex=(\d+)', [Text.RegularExpressions.RegexOptions]::Multiline)) {
     [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "segment_playback_written"; cueId = $match.Groups[2].Value; rank = $null; seq = [int]$match.Groups[3].Value; text = "" })
   }
+  foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*event=translation_playback_status\s+\|[^\r\n]*cueId=(omni-cue-\d+)[^\r\n]*\bstatus=completed\b[^\r\n]*\breason=physical-playback-completed\b', [Text.RegularExpressions.RegexOptions]::Multiline)) {
+    [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "bridge_playback_completed"; cueId = $match.Groups[2].Value; rank = $null; seq = $null; text = "" })
+  }
   $orderedEvents = @($events | Sort-Object index)
   $finalWrites = @($orderedEvents | Where-Object { $_.kind -eq "translation_write" -and $_.rank -match '^(Final|Forced)$' })
   $lastCueTs = 0L
@@ -2673,13 +2676,13 @@ function Read-SubtitleQueueTimeline {
   foreach ($event in $orderedEvents) {
     if ($event.kind -eq "cue_started") { $startedCueCount++ }
     elseif ($event.kind -eq "segment_tts_queued") { $queuedSegmentCount++ }
-    elseif ($event.kind -eq "segment_playback_written") { $playedSegmentCount++ }
+    elseif ($event.kind -eq "segment_playback_written" -or $event.kind -eq "bridge_playback_completed") { $playedSegmentCount++ }
   }
   $firstCueStarted = @($orderedEvents | Where-Object { $_.kind -eq "cue_started" } | Select-Object -First 1)
   $firstTranslationWrite = @($orderedEvents | Where-Object { $_.kind -eq "translation_write" } | Select-Object -First 1)
   $firstFinalTranslationWrite = @($orderedEvents | Where-Object { $_.kind -eq "translation_write" -and $_.rank -match '^(Final|Forced|Replacement)$' } | Select-Object -First 1)
   $firstTtsQueued = @($orderedEvents | Where-Object { $_.kind -eq "segment_tts_queued" } | Select-Object -First 1)
-  $firstPlaybackWritten = @($orderedEvents | Where-Object { $_.kind -eq "segment_playback_written" } | Select-Object -First 1)
+  $firstPlaybackWritten = @($orderedEvents | Where-Object { $_.kind -eq "segment_playback_written" -or $_.kind -eq "bridge_playback_completed" } | Select-Object -First 1)
   function Get-EventLatencySeconds {
     param($StartEvent, $EndEvent)
     if (-not ($StartEvent -and $EndEvent)) { return $null }
@@ -2993,7 +2996,20 @@ function Get-SourceMediaReferenceTranscript {
     $previous = $env:DASHSCOPE_API_KEY
     try {
       $env:DASHSCOPE_API_KEY = $apiKey
-      $args = @("--mp3", $resolvedMediaPath, "--manual")
+      # The live injector writes the authoritative 16 kHz mono reference next
+      # to the run.  Passing a WAV file through the diagnostic's MP3 decoder
+      # produces a plausible-looking PCM length but garbage audio, which in
+      # turn makes the paid source-content gate report "no audio".  Reuse the
+      # injector reference when present; only use the MP3 path for actual
+      # compressed media.
+      $referencePcmPath = Join-Path $OutputDirectory "source-media-reference-16k-mono.pcm"
+      if (Test-Path -LiteralPath $referencePcmPath -PathType Leaf) {
+        $args = @("--pcm", $referencePcmPath, "--manual")
+      } elseif ([IO.Path]::GetExtension($resolvedMediaPath).ToLowerInvariant() -eq ".wav") {
+        throw "WAV source reference PCM was not produced by the media injector: $referencePcmPath"
+      } else {
+        $args = @("--mp3", $resolvedMediaPath, "--manual")
+      }
       if ($PlaybackSeconds -gt 0) {
         $args += @("--limit-seconds", "$PlaybackSeconds")
       }
@@ -3199,7 +3215,7 @@ function Read-WatchModeTranslationRoute {
   if ($match) {
     return $match.Groups[1].Value
   }
-  if ($text -match "speech\.segment_tts_queued|speech\.segment_playback_written") {
+  if ($text -match "speech\.segment_tts_queued|speech\.segment_playback_written|speech\.bridge-playback-queued|event=translation_playback_status") {
     return "secondary"
   }
   return "native"
@@ -3217,7 +3233,11 @@ function Read-SpeechSegmentationSummary {
   }
   $text = Get-LogTextAfterMarker $AppLog $RunMarker
   $queued = [regex]::Matches($text, "speech\.segment_tts_queued[^\r\n]*")
-  $played = [regex]::Matches($text, "speech\.segment_playback_written[^\r\n]*")
+  # Bridge-owned playback intentionally skips the local WASAPI writer event.
+  # Count its exactly-once completed status as a played segment so the
+  # physical-output content gate observes the same sink that Watch used.
+  $playedLocal = [regex]::Matches($text, "speech\.segment_playback_written[^\r\n]*")
+  $playedBridge = [regex]::Matches($text, "event=translation_playback_status[^\r\n]*\bstatus=completed\b[^\r\n]*\breason=physical-playback-completed\b")
   $maxSource = 0
   $maxTranslated = 0
   foreach ($item in $queued) {
@@ -3228,7 +3248,7 @@ function Read-SpeechSegmentationSummary {
   }
   return [pscustomobject]@{
     queuedSegments = $queued.Count
-    playedSegments = $played.Count
+    playedSegments = $playedLocal.Count + $playedBridge.Count
     maxSourceChars = $maxSource
     maxTranslatedChars = $maxTranslated
   }

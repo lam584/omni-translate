@@ -104,6 +104,11 @@ export function buildLocalIsolationRuntime({
       env: environment,
       stdio: 'inherit',
       windowsHide: true,
+      // Windows exposes npm as a .cmd shim. Node cannot spawn that shim
+      // directly from some non-interactive/SSH hosts unless shell dispatch
+      // is enabled; keep the command/arguments fixed and only opt into the
+      // platform command resolver here.
+      shell: process.platform === 'win32',
     });
     if (result.error || Number(result.status) !== 0) {
       throw new Error(`local isolation runtime build failed: npm ${args.join(' ')}`);

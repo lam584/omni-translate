@@ -28,6 +28,7 @@ struct OmniSessionRuntime {
     audio_samples_since_commit: u64,
     manual_response_pending: bool,
     manual_response_item_id: Option<String>,
+    manual_turn_audio_after_response: bool,
     last_vad_event_time: SystemTime,
     vad_event_count: u64,
     last_commit_time: SystemTime,
@@ -67,6 +68,7 @@ impl OmniSessionRuntime {
             audio_samples_since_commit: 0,
             manual_response_pending: false,
             manual_response_item_id: None,
+            manual_turn_audio_after_response: false,
             last_vad_event_time: SystemTime::now(),
             vad_event_count: 0,
             last_commit_time: SystemTime::now(),
@@ -335,6 +337,7 @@ fn run_omni_worker(
         mut audio_samples_since_commit,
         mut manual_response_pending,
         mut manual_response_item_id,
+        mut manual_turn_audio_after_response,
         mut last_vad_event_time,
         mut vad_event_count,
         mut last_commit_time,
@@ -415,6 +418,7 @@ fn run_omni_worker(
             chunk_count,
             sent_audio_since_commit,
             audio_samples_since_commit,
+            manual_turn_audio_after_response,
             manual_turn_started_at,
             manual_turn_started_during_playback,
             session_ready_for_audio,
@@ -452,6 +456,7 @@ fn run_omni_worker(
         chunk_count = pump_state.chunk_count;
         sent_audio_since_commit = pump_state.sent_audio_since_commit;
         audio_samples_since_commit = pump_state.audio_samples_since_commit;
+        manual_turn_audio_after_response = pump_state.manual_turn_audio_after_response;
         manual_turn_started_at = pump_state.manual_turn_started_at;
         manual_turn_started_during_playback = pump_state.manual_turn_started_during_playback;
         session_ready_for_audio = pump_state.session_ready_for_audio;
@@ -482,6 +487,7 @@ fn run_omni_worker(
                     &mut manual_response_item_id,
                     &mut sent_audio_since_commit,
                     &mut audio_samples_since_commit,
+                    &mut manual_turn_audio_after_response,
                     &mut last_commit_time,
                     &mut manual_turn_started_at,
                     &mut manual_turn_started_during_playback,
@@ -517,6 +523,7 @@ fn run_omni_worker(
                 manual_turn_started_during_playback,
                 sent_audio_since_commit,
                 audio_samples_since_commit,
+                manual_turn_audio_after_response,
                 manual_response_pending,
                 manual_response_item_id,
                 manual_turn_timed_out: false,
@@ -534,6 +541,7 @@ fn run_omni_worker(
         manual_turn_started_during_playback = commit_state.manual_turn_started_during_playback;
         sent_audio_since_commit = commit_state.sent_audio_since_commit;
         audio_samples_since_commit = commit_state.audio_samples_since_commit;
+        manual_turn_audio_after_response = commit_state.manual_turn_audio_after_response;
         manual_response_pending = commit_state.manual_response_pending;
         manual_response_item_id = commit_state.manual_response_item_id;
         if let Some(started_during_playback) =
@@ -630,6 +638,9 @@ fn run_omni_worker(
                 transcription_completed_at,
                 manual_response_pending,
                 manual_response_item_id,
+                sent_audio_since_commit,
+                audio_samples_since_commit,
+                manual_turn_audio_after_response,
             },
             OmniSocketEventContext {
                 app: &app,
@@ -681,6 +692,9 @@ fn run_omni_worker(
         transcription_completed_at = poll.state.transcription_completed_at;
         manual_response_pending = poll.state.manual_response_pending;
         manual_response_item_id = poll.state.manual_response_item_id;
+        sent_audio_since_commit = poll.state.sent_audio_since_commit;
+        audio_samples_since_commit = poll.state.audio_samples_since_commit;
+        manual_turn_audio_after_response = poll.state.manual_turn_audio_after_response;
         if poll.socket_reconnected {
             reset_gate_after_reconnect!();
         }
@@ -737,6 +751,7 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
     manual_response_item_id: &mut Option<String>,
     sent_audio_since_commit: &mut bool,
     audio_samples_since_commit: &mut u64,
+    manual_turn_audio_after_response: &mut bool,
     last_commit_time: &mut SystemTime,
     manual_turn_started_at: &mut Option<SystemTime>,
     manual_turn_started_during_playback: &mut Option<bool>,
@@ -766,6 +781,7 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
         manual_response_item_id,
         sent_audio_since_commit,
         audio_samples_since_commit,
+        manual_turn_audio_after_response,
         last_commit_time,
         manual_turn_started_at,
         manual_turn_started_during_playback,
@@ -792,6 +808,7 @@ pub(super) fn reset_session_state_after_reconnect(
     manual_response_item_id: &mut Option<String>,
     sent_audio_since_commit: &mut bool,
     audio_samples_since_commit: &mut u64,
+    manual_turn_audio_after_response: &mut bool,
     last_commit_time: &mut SystemTime,
     manual_turn_started_at: &mut Option<SystemTime>,
     manual_turn_started_during_playback: &mut Option<bool>,
@@ -811,6 +828,7 @@ pub(super) fn reset_session_state_after_reconnect(
     *manual_response_item_id = None;
     *sent_audio_since_commit = false;
     *audio_samples_since_commit = 0;
+    *manual_turn_audio_after_response = false;
     *last_commit_time = SystemTime::now();
     *manual_turn_started_at = None;
     *manual_turn_started_during_playback = None;
@@ -869,6 +887,7 @@ mod reconnect_reset_tests {
         let mut manual_response_item_id = Some("item-old".to_string());
         let mut sent_audio_since_commit = true;
         let mut audio_samples_since_commit = 32_000_u64;
+        let mut manual_turn_audio_after_response = true;
         let mut last_commit_time = SystemTime::now();
         let mut manual_turn_started_at = Some(SystemTime::now());
         let mut manual_turn_started_during_playback = Some(true);
@@ -890,6 +909,7 @@ mod reconnect_reset_tests {
             &mut manual_response_item_id,
             &mut sent_audio_since_commit,
             &mut audio_samples_since_commit,
+            &mut manual_turn_audio_after_response,
             &mut last_commit_time,
             &mut manual_turn_started_at,
             &mut manual_turn_started_during_playback,
@@ -914,6 +934,7 @@ mod reconnect_reset_tests {
         assert!(manual_response_item_id.is_none());
         assert!(!sent_audio_since_commit);
         assert_eq!(audio_samples_since_commit, 0);
+        assert!(!manual_turn_audio_after_response);
         assert!(manual_turn_started_at.is_none());
         assert!(manual_turn_started_during_playback.is_none());
         assert!(current_cue_id.is_none());

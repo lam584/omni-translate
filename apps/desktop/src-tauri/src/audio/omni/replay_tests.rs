@@ -65,6 +65,7 @@ struct WorkerSlice {
     reconnect_count: usize,
     sent_audio_since_commit: bool,
     audio_samples_since_commit: u64,
+    manual_turn_audio_after_response: bool,
     manual_response_pending: bool,
     manual_response_item_id: Option<String>,
     last_vad_event_time: SystemTime,
@@ -94,6 +95,7 @@ impl WorkerSlice {
             reconnect_count: 0,
             sent_audio_since_commit: false,
             audio_samples_since_commit: 0,
+            manual_turn_audio_after_response: false,
             manual_response_pending: false,
             manual_response_item_id: None,
             last_vad_event_time: SystemTime::now(),
@@ -201,6 +203,7 @@ impl ReplayHarness {
                 manual_turn_started_during_playback: slice.manual_turn_started_during_playback,
                 sent_audio_since_commit: slice.sent_audio_since_commit,
                 audio_samples_since_commit: slice.audio_samples_since_commit,
+                manual_turn_audio_after_response: slice.manual_turn_audio_after_response,
                 manual_response_pending: slice.manual_response_pending,
                 manual_response_item_id: slice.manual_response_item_id.clone(),
                 manual_turn_timed_out: false,
@@ -218,6 +221,7 @@ impl ReplayHarness {
         slice.manual_turn_started_during_playback = commit_state.manual_turn_started_during_playback;
         slice.sent_audio_since_commit = commit_state.sent_audio_since_commit;
         slice.audio_samples_since_commit = commit_state.audio_samples_since_commit;
+        slice.manual_turn_audio_after_response = commit_state.manual_turn_audio_after_response;
         slice.manual_response_pending = commit_state.manual_response_pending;
         slice.manual_response_item_id = commit_state.manual_response_item_id;
         if let Some(started_during_playback) =
@@ -283,6 +287,9 @@ impl ReplayHarness {
                 transcription_completed_at: slice.transcription_completed_at,
                 manual_response_pending: slice.manual_response_pending,
                 manual_response_item_id: slice.manual_response_item_id.clone(),
+                sent_audio_since_commit: slice.sent_audio_since_commit,
+                audio_samples_since_commit: slice.audio_samples_since_commit,
+                manual_turn_audio_after_response: slice.manual_turn_audio_after_response,
             },
             OmniSocketEventContext {
                 app: &app,
@@ -335,6 +342,9 @@ impl ReplayHarness {
         slice.transcription_completed_at = state.transcription_completed_at;
         slice.manual_response_pending = state.manual_response_pending;
         slice.manual_response_item_id = state.manual_response_item_id;
+        slice.sent_audio_since_commit = state.sent_audio_since_commit;
+        slice.audio_samples_since_commit = state.audio_samples_since_commit;
+        slice.manual_turn_audio_after_response = state.manual_turn_audio_after_response;
         let mut socket = state.socket;
 
         if poll.socket_reconnected {
@@ -346,6 +356,7 @@ impl ReplayHarness {
                 &mut slice.manual_response_item_id,
                 &mut slice.sent_audio_since_commit,
                 &mut slice.audio_samples_since_commit,
+                &mut slice.manual_turn_audio_after_response,
                 &mut slice.last_commit_time,
                 &mut slice.manual_turn_started_at,
                 &mut slice.manual_turn_started_during_playback,
@@ -610,6 +621,7 @@ fn replay_long_idle_then_new_audio_starts_a_fresh_commit_timer() {
     slice.last_commit_time = backdated(MANUAL_COMMIT_INTERVAL_SECS + 10);
     slice.manual_turn_started_at = Some(SystemTime::now());
     slice.sent_audio_since_commit = true;
+    slice.manual_turn_audio_after_response = true;
     slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
 
     let socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Idle], harness.shared.clone());
@@ -633,6 +645,7 @@ fn replay_short_tail_never_arms_an_empty_manual_commit() {
     slice.last_commit_time = backdated(MANUAL_COMMIT_INTERVAL_SECS + 1);
     slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS + 1));
     slice.sent_audio_since_commit = true;
+    slice.manual_turn_audio_after_response = true;
     // A real Flash run rejected this 300 ms tail as "buffer too small".
     slice.audio_samples_since_commit = 4_800;
 
@@ -735,6 +748,7 @@ fn replay_manual_gate_serializes_response_create_until_response_done() {
     slice.manual_response_pending = true;
     slice.manual_response_item_id = Some("item-current".to_string());
     slice.sent_audio_since_commit = true;
+    slice.manual_turn_audio_after_response = true;
     slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
     slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS + 1));
 
@@ -807,6 +821,13 @@ fn replay_manual_gate_serializes_response_create_until_response_done() {
         "response.done releases the next manual turn"
     );
 
+    // The response handler deliberately closes the old post-response tail.
+    // Model the next successful append before asking the coordinator to arm a
+    // new commit; a response.done tick alone must never commit stale audio.
+    slice.sent_audio_since_commit = true;
+    slice.manual_turn_audio_after_response = true;
+    slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
+    slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS + 1));
     let _socket = harness.tick(socket, &mut slice);
     assert_eq!(
         harness

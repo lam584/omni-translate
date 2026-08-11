@@ -393,6 +393,10 @@ pub(super) struct OmniCommitState {
     pub(super) manual_turn_started_during_playback: Option<bool>,
     pub(super) sent_audio_since_commit: bool,
     pub(super) audio_samples_since_commit: u64,
+    /// Only a successfully appended chunk after the last response.done may
+    /// open the next manual commit. This prevents DashScope from receiving a
+    /// late commit for a buffer it already drained with the prior response.
+    pub(super) manual_turn_audio_after_response: bool,
     pub(super) manual_response_pending: bool,
     pub(super) manual_response_item_id: Option<String>,
     pub(super) manual_turn_timed_out: bool,
@@ -892,6 +896,7 @@ impl OmniConnectionCoordinator {
             mut manual_turn_started_during_playback,
             mut sent_audio_since_commit,
             mut audio_samples_since_commit,
+            manual_turn_audio_after_response,
             mut manual_response_pending,
             mut manual_response_item_id,
             manual_turn_timed_out: _,
@@ -916,6 +921,7 @@ impl OmniConnectionCoordinator {
                         "event=manual_response_gate_timeout action=drop_pending_response",
                     );
                 } else if let Some((turn_elapsed, commit_reason)) = (!manual_response_pending
+                    && manual_turn_audio_after_response
                     && sent_audio_since_commit)
                     .then(|| {
                         manual_turn_started_at
@@ -977,6 +983,7 @@ impl OmniConnectionCoordinator {
             manual_turn_started_during_playback,
             sent_audio_since_commit,
             audio_samples_since_commit,
+            manual_turn_audio_after_response,
             manual_response_pending,
             manual_response_item_id,
             manual_turn_timed_out,

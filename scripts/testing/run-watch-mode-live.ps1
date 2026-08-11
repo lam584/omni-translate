@@ -2156,6 +2156,7 @@ function Invoke-BridgeSourceProbe {
   $init = $null
   $state = $null
   $frame = $null
+  $audioProbeProcess = $null
   $phase = "init"
   try {
     Start-Sleep -Milliseconds 600
@@ -2165,7 +2166,27 @@ function Invoke-BridgeSourceProbe {
     $init = Write-NamedPipeJsonLine $pipeName $initPayload
     if (Test-UsesVirtualDriverBackend $FeedbackMode) {
       $phase = "source_frame"
+      $audioProbeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-driver-audio-probe.exe"
+      if (-not (Test-Path -LiteralPath $audioProbeExe -PathType Leaf)) {
+        throw "Driver audio probe executable not found: $audioProbeExe"
+      }
+      $audioProbeStdout = Join-Path $probeRuntimeRoot "audio-probe.stdout.log"
+      $audioProbeStderr = Join-Path $probeRuntimeRoot "audio-probe.stderr.log"
+      $audioProbeProcess = Start-Process -FilePath $audioProbeExe `
+        -RedirectStandardOutput $audioProbeStdout `
+        -RedirectStandardError $audioProbeStderr `
+        -WindowStyle Hidden -PassThru
+      Start-Sleep -Milliseconds 250
       $frame = Read-BridgeSourceFrame "$pipeName-source"
+      if (-not $audioProbeProcess.WaitForExit(15000)) {
+        throw "driver audio probe did not exit after source frame injection"
+      }
+      if ($audioProbeProcess.ExitCode -ne 0) {
+        $probeError = if (Test-Path -LiteralPath $audioProbeStderr) {
+          Get-Content -LiteralPath $audioProbeStderr -Raw -ErrorAction SilentlyContinue
+        } else { "" }
+        throw "driver audio probe failed with exit code $($audioProbeProcess.ExitCode): $probeError"
+      }
     }
     $phase = "state_query"
     $state = Write-NamedPipeJsonLine $pipeName ([ordered]@{
@@ -2230,6 +2251,9 @@ function Invoke-BridgeSourceProbe {
     } | ConvertTo-Json -Depth 12 | Set-Content -Path $diagnosticsPath -Encoding UTF8
     throw "bridge source probe failed during ${phase}: $errorMessage Diagnostics=$diagnosticsPath"
   } finally {
+    if ($audioProbeProcess -and -not $audioProbeProcess.HasExited) {
+      Stop-Process -Id $audioProbeProcess.Id -Force -ErrorAction SilentlyContinue
+    }
     if (-not $process.HasExited) {
       Stop-Process -Id $process.Id -Force -ErrorAction SilentlyContinue
     }

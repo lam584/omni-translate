@@ -3602,7 +3602,12 @@ try {
   Add-Content -LiteralPath $appLogForMarker -Value $runMarker -Encoding UTF8
   $desktopEnvState = Set-DesktopAutostartEnvFile $runMarker $outputDir
 
-  $steps += Invoke-Step "build bridge service native" { npm run build:bridge-service-native } -ContinueOnError
+  # Windows PowerShell promotes cargo's successful stderr progress line to a
+  # NativeCommandError when ErrorActionPreference=Stop. Run npm through cmd
+  # with stdout/stderr merged so a zero exit remains a successful build step.
+  $steps += Invoke-Step "build bridge service native" {
+    & cmd.exe /d /c 'npm.cmd run build:bridge-service-native 2>&1'
+  } -ContinueOnError
   if (-not $SkipDesktopLaunch) {
     $steps += Invoke-Step "stop stale desktop shell before live run" {
       Stop-StaleWatchModeDesktopShell

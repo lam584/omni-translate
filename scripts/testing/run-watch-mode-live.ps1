@@ -25,6 +25,8 @@ param(
   [string]$WatchModelId = "",
   [ValidateSet("", "dashscope-omni", "dashscope-livetranslate", "dashscope-asr", "openai-conversation", "openai-translation", "openai-transcription", "openai-flat", "gemini-live")]
   [string]$WatchRealtimeProtocol = "",
+  [ValidateSet("native", "secondary")]
+  [string]$SubtitleTranslationMode = "secondary",
   [string]$SubtitleTranslationModelId = "template-dashscope-realtime::qwen3.6-flash-2026-04-16",
   [string]$InboundSecondaryAudioModelId = "template-dashscope-realtime::qwen3.5-omni-plus-realtime",
   [string]$PhysicalPlaybackDeviceId = "default",
@@ -492,8 +494,12 @@ function Set-DesktopAutostartEnvFile {
     })
   }
   $expiresAtMs = [DateTimeOffset]::UtcNow.AddMinutes(45).ToUnixTimeMilliseconds()
-  $diagnosticSubtitleTranslationMode = if ($FeedbackLoopPrevention -eq "echo-cancel") { "native" } else { "secondary" }
-  $diagnosticTranslationAudioSource = if ($FeedbackLoopPrevention -eq "echo-cancel") { "omni-native" } else { "subtitle-tts" }
+  # The paid matrix may explicitly request native Omni output even on the
+  # process-exclusion route.  Route choice and subtitle translation mode are
+  # independent; do not silently downgrade native output to the secondary
+  # translator based on the feedback mode.
+  $diagnosticSubtitleTranslationMode = $SubtitleTranslationMode
+  $diagnosticTranslationAudioSource = if ($SubtitleTranslationMode -eq "native") { "omni-native" } else { "subtitle-tts" }
   $next = @($lines | Where-Object { $_ -ne "" })
   $next += "VITE_OMNI_WATCH_MODE_AUTOSTART=1"
   $next += "VITE_OMNI_WATCH_MODE_RUN_MARKER=$RunMarker"
@@ -507,10 +513,10 @@ function Set-DesktopAutostartEnvFile {
   if ($WatchModelId) {
     $next += "VITE_OMNI_WATCH_MODE_MODEL_ID=$WatchModelId"
   }
-  if ($SubtitleTranslationModelId) {
+  if ($SubtitleTranslationMode -eq "secondary" -and $SubtitleTranslationModelId) {
     $next += "VITE_OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID=$SubtitleTranslationModelId"
   }
-  if ($InboundSecondaryAudioModelId) {
+  if ($SubtitleTranslationMode -eq "secondary" -and $InboundSecondaryAudioModelId) {
     $next += "VITE_OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID=$InboundSecondaryAudioModelId"
   }
   $next += "VITE_OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION=$FeedbackLoopPrevention"
@@ -705,7 +711,9 @@ function Set-WatchModeSecondaryConfig {
     $Config,
     [string]$SubtitleModelId,
     [string]$SecondaryAudioModelId,
-    [string]$FeedbackMode = $FeedbackLoopPrevention
+    [string]$FeedbackMode = $FeedbackLoopPrevention,
+    [ValidateSet("native", "secondary")]
+    [string]$TranslationMode = $SubtitleTranslationMode
   )
   if (-not $Config.devices) {
     $Config | Add-Member -NotePropertyName devices -NotePropertyValue ([pscustomobject]@{})
@@ -744,6 +752,25 @@ function Set-WatchModeSecondaryConfig {
     "monitorMode"
   )) {
     Ensure-ValueProperty $mixControl $name
+  }
+  if ($TranslationMode -eq "native") {
+    $Config.devices.subtitleTranslationMode = "native"
+    $Config.devices.subtitleTranslationModelId = ""
+    $Config.devices.inboundSecondaryAudioModelId = ""
+    $Config.devices.outputSpeechEnabled = $true
+    $Config.devices.feedbackLoopPrevention = $FeedbackMode
+    $mixControl.keepOriginalAudio = $true
+    $mixControl.translatedAudioEnabled = $true
+    $mixControl.originalAudioGainDb = 0
+    $mixControl.translatedAudioGainDb = 0
+    $mixControl.duckingEnabled = $true
+    $mixControl.monitorMode = "original-and-translated"
+    $Config.speech.enabled = $true
+    $Config.speech.outputTarget = "speaker"
+    $Config.speech.localPlaybackEnabled = $true
+    $Config.speech.virtualMicOutputEnabled = $false
+    $Config.speech.translationAudioSource = "omni-native"
+    return
   }
   $Config.devices.subtitleTranslationMode = "secondary"
   if ($SubtitleModelId) {
@@ -1299,14 +1326,14 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
     $diagnosticOutputDeviceId = if ($PhysicalDeviceId) { $PhysicalDeviceId } else { "default" }
-    $diagnosticSubtitleTranslationMode = if ($FeedbackLoopPrevention -eq "echo-cancel") { "native" } else { "secondary" }
+    $diagnosticSubtitleTranslationMode = $SubtitleTranslationMode
     $env:OMNI_WATCH_MODE_OUTPUT_DEVICE_ID = $diagnosticOutputDeviceId
     $env:OMNI_WATCH_MODE_OUTPUT_LEVEL = "50"
     # Echo-cancel evidence replays the realtime model's native output so AEC
     # observes the exact speaker signal. The virtual-driver route retains the
     # secondary subtitle-TTS path that it isolates from inbound capture.
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE = $diagnosticSubtitleTranslationMode
-    $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = if ($FeedbackLoopPrevention -eq "echo-cancel") { "omni-native" } else { "subtitle-tts" }
+    $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = if ($SubtitleTranslationMode -eq "native") { "omni-native" } else { "subtitle-tts" }
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $providerInputPcmPath
     if ($WatchModelId) {
       $env:OMNI_WATCH_MODE_MODEL_ID = $WatchModelId
@@ -1314,11 +1341,15 @@ function Start-WatchModeDesktopShell {
     if ($WatchRealtimeProtocol) {
       $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL = $WatchRealtimeProtocol
     }
-    if ($SubtitleTranslationModelId) {
+    if ($SubtitleTranslationMode -eq "secondary" -and $SubtitleTranslationModelId) {
       $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $SubtitleTranslationModelId
+    } elseif ($SubtitleTranslationMode -eq "native") {
+      $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = ""
     }
-    if ($InboundSecondaryAudioModelId) {
+    if ($SubtitleTranslationMode -eq "secondary" -and $InboundSecondaryAudioModelId) {
       $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = $InboundSecondaryAudioModelId
+    } elseif ($SubtitleTranslationMode -eq "native") {
+      $env:OMNI_WATCH_MODE_INBOUND_SECONDARY_AUDIO_MODEL_ID = ""
     }
     $env:OMNI_WATCH_MODE_FEEDBACK_LOOP_PREVENTION = $FeedbackLoopPrevention
     $env:OMNI_WATCH_MODE_PROCESS_EXCLUSION_RESTART_AFTER_MS = $liveScenarioEnvironment.processExclusionRestartAfterMs
@@ -1566,7 +1597,7 @@ function Invoke-StartWatchModeViaTauriCli {
   }
   $config.speech.translationAudioSource = "subtitle-tts"
   Set-WatchModelOnConfig $config $WatchModelId $WatchRealtimeProtocol
-  Set-WatchModeSecondaryConfig $config $SubtitleTranslationModelId $InboundSecondaryAudioModelId $FeedbackLoopPrevention
+  Set-WatchModeSecondaryConfig $config $SubtitleTranslationModelId $InboundSecondaryAudioModelId $FeedbackLoopPrevention $SubtitleTranslationMode
   if ($PhysicalDeviceId) {
     $config.devices.outputDeviceId = $PhysicalDeviceId
     $config.devices.outputLevel = 50
@@ -3425,7 +3456,7 @@ if ($DryRun) {
   foreach ($mode in @("process-exclusion", "virtual-driver", "echo-cancel")) {
     $probeConfig = Get-Content -LiteralPath $defaultConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Set-WatchModelOnConfig $probeConfig $WatchModelId $WatchRealtimeProtocol
-    Set-WatchModeSecondaryConfig $probeConfig $SubtitleTranslationModelId $InboundSecondaryAudioModelId $mode
+    Set-WatchModeSecondaryConfig $probeConfig $SubtitleTranslationModelId $InboundSecondaryAudioModelId $mode $SubtitleTranslationMode
     $injected = $probeConfig.devices.feedbackLoopPrevention
     if ($injected -ne $mode) {
       throw "dry-run feedback config injection mismatch: requested=$mode injected=$injected"

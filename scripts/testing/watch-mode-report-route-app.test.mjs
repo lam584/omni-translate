@@ -99,6 +99,48 @@ test('treats an explicit interrupted source tail as a session warning, not an ap
   assert.match(realError.failureReason, /explicit cue issue/);
 });
 
+test('does not fail on retry errors retained only by superseded revisions', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [
+        ...healthyWatchSessionReport.cues,
+        {
+          ...healthyWatchSessionReport.cues[0],
+          cueId: 'cue-old-revision',
+          comparisonStatus: 'superseded',
+          issues: [{
+            category: 'model',
+            code: 'retry-exhausted',
+            severity: 'error',
+          }],
+        },
+      ],
+    },
+  });
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
+});
+
+test('does not fail a fully rendered cue whose retry error was recovered by a final output', () => {
+  const report = classify({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        comparisonStatus: 'formatting-only',
+        issues: [{
+          category: 'model',
+          code: 'retry-exhausted',
+          severity: 'error',
+        }],
+      }],
+    },
+  });
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.failureLayer, null);
+});
+
 test('report records explicit git HEAD and clean-worktree provenance', () => {
   const provenance = {
     schemaVersion: 1,

@@ -56,6 +56,9 @@ const BRIDGE_EXE = 'target/release/omni-bridge-service.exe';
 const PHYSICAL_PROBE_EXE = 'target/release/omni-physical-output-probe.exe';
 const DRIVER_PROBE_EXE = 'target/release/omni-driver-audio-probe.exe';
 const TONE_PROBE_EXE = 'target/release/omni-tone-render-probe.exe';
+const TRANSIENT_ENDPOINT_CREATE_FAILED = '0x8889000f';
+const TRANSIENT_ENDPOINT_CREATE_MAX_ATTEMPTS = 3;
+const TRANSIENT_ENDPOINT_CREATE_RETRY_DELAY_MS = 750;
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
 const portable = (value) => value.split(path.sep).join('/');
@@ -165,6 +168,17 @@ const commandResult = (command, args, { cwd, environment, timeoutMs }) => {
   };
 };
 
+const waitForTransientEndpointRetry = (delayMs) => {
+  const signal = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
+  Atomics.wait(signal, 0, 0, delayMs);
+};
+
+const isTransientEndpointCreateFailure = (result) => [
+  result?.stdout,
+  result?.stderr,
+  result?.error,
+].filter(Boolean).join('\n').toLowerCase().includes(TRANSIENT_ENDPOINT_CREATE_FAILED);
+
 const parseProbeJson = (result, label) => {
   if (result.exitCode !== 0 || result.error) {
     throw new Error(`${label} failed: exit=${result.exitCode} error=${result.error ?? '-'} stderr=${result.stderr}`);
@@ -188,18 +202,36 @@ export function runLocalIsolationProbeIteration({
   workspaceRoot = repoRoot,
   environment = process.env,
   run = commandResult,
+  waitForRetry = waitForTransientEndpointRetry,
 }) {
   const iterationDirectory = path.join(cellDirectory, 'iterations', String(iteration).padStart(4, '0'));
   fs.mkdirSync(iterationDirectory, { recursive: true });
   const execute = (relativeCommand, args, label, timeoutMs = 90_000) => {
-    const result = run(path.resolve(workspaceRoot, relativeCommand), args, {
-      cwd: workspaceRoot,
-      environment,
-      timeoutMs,
-    });
+    let result;
+    let attempts = 0;
+    do {
+      attempts += 1;
+      result = run(path.resolve(workspaceRoot, relativeCommand), args, {
+        cwd: workspaceRoot,
+        environment,
+        timeoutMs,
+      });
+      const retryable = isTransientEndpointCreateFailure(result);
+      if (retryable && attempts < TRANSIENT_ENDPOINT_CREATE_MAX_ATTEMPTS) {
+        // AUDCLNT_E_ENDPOINT_CREATE_FAILED (0x8889000F) can be returned by a
+        // just-released shared endpoint after many short WASAPI probe streams.
+        // Preserve each failed attempt, then retry only this documented
+        // transient condition; every other failure remains fail-closed.
+        fs.writeFileSync(path.join(iterationDirectory, `${label}.attempt-${attempts}.stdout.log`), result.stdout || '\n', 'utf8');
+        fs.writeFileSync(path.join(iterationDirectory, `${label}.attempt-${attempts}.stderr.log`), result.stderr || '\n', 'utf8');
+        waitForRetry(TRANSIENT_ENDPOINT_CREATE_RETRY_DELAY_MS);
+        continue;
+      }
+      break;
+    } while (true);
     fs.writeFileSync(path.join(iterationDirectory, `${label}.stdout.log`), result.stdout || '\n', 'utf8');
     fs.writeFileSync(path.join(iterationDirectory, `${label}.stderr.log`), result.stderr || '\n', 'utf8');
-    return { result, parsed: parseProbeJson(result, label) };
+    return { result, attempts, parsed: parseProbeJson(result, label) };
   };
   const runtimeRoot = path.join(iterationDirectory, 'runtime');
   const physicalArgs = [
@@ -214,14 +246,14 @@ export function runLocalIsolationProbeIteration({
       '--process-exclusion-fingerprint',
       '--tone-player-exe', path.resolve(workspaceRoot, TONE_PROBE_EXE),
     ], 'process-exclusion');
-    probes.push({ kind: 'process-exclusion-fingerprint', data: outcome.parsed });
+    probes.push({ kind: 'process-exclusion-fingerprint', attempts: outcome.attempts, data: outcome.parsed });
   } else {
     if (cell.feedbackLoopPrevention === 'virtual-driver') {
       const driver = execute(DRIVER_PROBE_EXE, [], 'virtual-driver');
-      probes.push({ kind: 'virtual-driver-roundtrip', data: driver.parsed });
+      probes.push({ kind: 'virtual-driver-roundtrip', attempts: driver.attempts, data: driver.parsed });
     }
     const physical = execute(PHYSICAL_PROBE_EXE, physicalArgs, 'physical-output');
-    probes.push({ kind: 'physical-output', data: physical.parsed });
+    probes.push({ kind: 'physical-output', attempts: physical.attempts, data: physical.parsed });
   }
   const resolvedNames = probes.map(({ data }) => (
     data.resolvedPhysicalPlaybackDeviceName ?? data.endpointName ?? ''

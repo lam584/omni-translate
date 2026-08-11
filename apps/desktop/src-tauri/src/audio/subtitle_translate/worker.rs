@@ -374,7 +374,13 @@ impl SubtitleTranslationWorker {
         for update in wake_update.take().into_iter().chain(translation_rx.try_iter()) {
             match update {
                 TranslationUpdate::Delta(delta) => {
-                    handle_translation_delta(&app, store, delta, &mut cue_states);
+                    handle_translation_delta(
+                        &app,
+                        store,
+                        delta,
+                        &mut cue_states,
+                        &written_final_keys,
+                    );
                 }
                 TranslationUpdate::Outcome(outcome) => {
                     scheduler.finish(&outcome.job.key);

@@ -255,6 +255,7 @@ fn handle_translation_delta(
     store: &AudioStateStore,
     delta: TranslationDelta,
     cue_states: &mut HashMap<String, CueTranslationLedger>,
+    written_final_keys: &HashSet<String>,
 ) {
     let job = delta.job;
     let cue_state = cue_states
@@ -262,14 +263,22 @@ fn handle_translation_delta(
         .or_insert_with(CueTranslationLedger::new);
     let stale = is_stale_translation_job(&job, cue_state);
     let exists = cue_exists(store, &job.cue_id);
+    // A completed final/replacement may still have a late streaming callback
+    // queued behind its outcome. It must not be allowed to mutate the visible
+    // subtitle after the outcome path has already made the job terminal.
+    let duplicate_final = is_duplicate_final_translation_update(&job, written_final_keys);
     store.watch_session_report.record_model_delta_for_cue(
         &job.cue_id,
         "secondary-text-translation",
         &delta.raw_delta,
-        !stale && exists,
+        !stale && exists && !duplicate_final,
         Some(&job.key),
         Some(&format!("sequence-{}", job.sequence)),
     );
+    if duplicate_final {
+        log_translation_skip(app, &job.cue_id, "worker_duplicate_final_translation_delta");
+        return;
+    }
     if stale {
         log_translation_skip(app, &job.cue_id, "stale_partial_revision");
         return;
@@ -296,6 +305,14 @@ fn handle_translation_delta(
             sequence: job.sequence,
         },
     );
+}
+
+fn is_duplicate_final_translation_update(
+    job: &TranslationJob,
+    written_final_keys: &HashSet<String>,
+) -> bool {
+    should_dedupe_written_translation(translation_rank(&job.result))
+        && written_final_keys.contains(&job.key)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -823,6 +840,31 @@ mod tests {
             glossary: Default::default(),
             trace: None,
         }
+    }
+
+    #[test]
+    fn completed_final_job_rejects_late_streaming_delta() {
+        let final_job = job_for_test(
+            "cue-1",
+            7,
+            sentence_result("A completed sentence.", false, false),
+        );
+        let forced_job = job_for_test(
+            "cue-1",
+            8,
+            sentence_result("A pending fragment", true, false),
+        );
+        let mut written_final_keys = HashSet::new();
+        written_final_keys.insert(final_job.key.clone());
+
+        assert!(is_duplicate_final_translation_update(
+            &final_job,
+            &written_final_keys
+        ));
+        assert!(!is_duplicate_final_translation_update(
+            &forced_job,
+            &written_final_keys
+        ));
     }
 
     #[test]

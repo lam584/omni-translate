@@ -2182,11 +2182,26 @@ function Invoke-BridgeSourceProbe {
       if (-not $audioProbeProcess.WaitForExit(15000)) {
         throw "driver audio probe did not exit after source frame injection"
       }
-      if ($audioProbeProcess.ExitCode -ne 0) {
+      $audioProbeProcess.Refresh()
+      $probeOutput = if (Test-Path -LiteralPath $audioProbeStdout) {
+        Get-Content -LiteralPath $audioProbeStdout -Raw -ErrorAction SilentlyContinue
+      } else { "" }
+      $probeResult = $null
+      try {
+        if ($probeOutput.Trim()) {
+          $probeResult = $probeOutput | ConvertFrom-Json
+        }
+      } catch {
+        throw "driver audio probe produced invalid JSON: $($_.Exception.Message)"
+      }
+      if ($null -eq $probeResult -or $probeResult.passed -ne $true) {
         $probeError = if (Test-Path -LiteralPath $audioProbeStderr) {
           Get-Content -LiteralPath $audioProbeStderr -Raw -ErrorAction SilentlyContinue
         } else { "" }
-        throw "driver audio probe failed with exit code $($audioProbeProcess.ExitCode): $probeError"
+        throw "driver audio probe did not report passed=true: $probeError $probeOutput"
+      }
+      if ($null -ne $audioProbeProcess.ExitCode -and $audioProbeProcess.ExitCode -ne 0) {
+        throw "driver audio probe reported exit code $($audioProbeProcess.ExitCode) after passed=true"
       }
     }
     $phase = "state_query"

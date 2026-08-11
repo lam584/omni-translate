@@ -1024,7 +1024,19 @@ export function strictWatchSessionReportFailure(report, minimumDurationMs = MIN_
     return `watchSessionReport has ${watch.summary.unrenderedCueCount} published cue(s) without visible rendering`;
   }
   const invalid = cues.find((cue) => {
+    // Superseded revisions remain in the report as diagnostic history. Only
+    // the selected logical revision can determine the strict app verdict;
+    // retain the older retry/error events without treating them as active
+    // output failures.
+    if (cue?.comparisonStatus === 'superseded') return false;
     const issues = Array.isArray(cue.issues) ? cue.issues : [];
+    const recoveredRetryOnly = ['exact', 'formatting-only'].includes(cue?.comparisonStatus)
+      && Number.isFinite(Number(cue?.llmFirstAtMs))
+      && Number.isFinite(Number(cue?.publishedFirstAtMs))
+      && Number.isFinite(Number(cue?.renderedFirstAtMs))
+      && issues.length > 0
+      && issues.every((issue) => issue?.code === 'retry-exhausted');
+    if (recoveredRetryOnly) return false;
     // A capture may stop while the provider still has an unfinished source
     // hypothesis. Keep that interruption explicit in the exported report,
     // but do not treat it as a model/publish/render failure in the strict

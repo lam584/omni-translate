@@ -625,6 +625,38 @@ test('strict Watch report validation requires a complete visible three-stage cue
       }],
     },
   }), /explicit issue/);
+  assert.equal(strictWatchSessionReportFailure({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [
+        ...healthyWatchSessionReport.cues,
+        {
+          ...healthyWatchSessionReport.cues[0],
+          cueId: 'cue-old-revision',
+          comparisonStatus: 'superseded',
+          issues: [{
+            category: 'model',
+            code: 'retry-exhausted',
+            severity: 'error',
+          }],
+        },
+      ],
+    },
+  }), null);
+  assert.equal(strictWatchSessionReportFailure({
+    watchSessionReport: {
+      ...healthyWatchSessionReport,
+      cues: [{
+        ...healthyWatchSessionReport.cues[0],
+        comparisonStatus: 'formatting-only',
+        issues: [{
+          category: 'model',
+          code: 'retry-exhausted',
+          severity: 'error',
+        }],
+      }],
+    },
+  }), null);
   assert.match(strictWatchSessionReportFailure({
     watchSessionReport: {
       ...healthyWatchSessionReport,

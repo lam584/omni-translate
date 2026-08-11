@@ -1089,7 +1089,19 @@ export function watchSessionReportFailure(report, { required = true } = {}) {
     return `watch session report contains ${unrendered} published cue(s) without visible rendering`;
   }
   const invalidCue = cues.find((cue) => {
+    // Revisions marked superseded are retained for forensic timelines, but
+    // they are not the logical output selected for the session. A transient
+    // provider retry on one of those revisions must not fail an otherwise
+    // complete later revision; the selected revision is still checked below.
+    if (cue?.comparisonStatus === 'superseded') return false;
     const issues = Array.isArray(cue.issues) ? cue.issues : [];
+    const recoveredRetryOnly = ['exact', 'formatting-only'].includes(cue?.comparisonStatus)
+      && Number.isFinite(Number(cue?.llmFirstAtMs))
+      && Number.isFinite(Number(cue?.publishedFirstAtMs))
+      && Number.isFinite(Number(cue?.renderedFirstAtMs))
+      && issues.length > 0
+      && issues.every((issue) => issue?.code === 'retry-exhausted');
+    if (recoveredRetryOnly) return false;
     const blockingIssues = issues.filter((issue) => !(
       issue?.category === 'data'
       && issue?.code === 'cue-events-truncated'

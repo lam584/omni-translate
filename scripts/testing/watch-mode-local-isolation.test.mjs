@@ -9,6 +9,7 @@ import {
   buildLocalIsolationRuntime,
   createLocalIsolationMatrixDirectory,
   localIsolationRuntimeInventory,
+  runLocalIsolationProbeIteration,
   reusableLocalIsolationAuthorityFailure,
   runLocalIsolationCell,
 } from './watch-mode-local-isolation.mjs';
@@ -102,6 +103,50 @@ test('local isolation cell refuses a clock that does not reach its duration', as
       runIteration: () => { calls += 1; throw new Error('probe failed'); },
     }),
     /probe failed/,
+  );
+});
+
+test('local isolation retries only transient WASAPI endpoint creation failures', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-retry-'));
+  const cellDirectory = path.join(root, 'cell');
+  const calls = [];
+  const waits = [];
+  const result = runLocalIsolationProbeIteration({
+    cell: LOCAL_ISOLATION_CELLS[0],
+    profile: {
+      profileId: 'default-speaker',
+      deviceClass: 'default-speaker',
+      physicalPlaybackDeviceId: 'default',
+      expectedPhysicalPlaybackDeviceName: 'Speaker',
+    },
+    cellDirectory,
+    iteration: 1,
+    workspaceRoot: root,
+    waitForRetry: (delayMs) => waits.push(delayMs),
+    run: () => {
+      calls.push('probe');
+      if (calls.length === 1) {
+        return {
+          exitCode: 1,
+          stdout: '{"passed":false,"detail":"Windows returned an error: 0x8889000F"}\n',
+          stderr: '',
+          error: null,
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout: '{"passed":true,"resolvedPhysicalPlaybackDeviceName":"Speaker"}\n',
+        stderr: '',
+        error: null,
+      };
+    },
+  });
+  assert.deepEqual(calls, ['probe', 'probe']);
+  assert.deepEqual(waits, [750]);
+  assert.equal(result.probes[0].attempts, 2);
+  assert.equal(
+    fs.existsSync(path.join(cellDirectory, 'iterations', '0001', 'process-exclusion.attempt-1.stdout.log')),
+    true,
   );
 });
 

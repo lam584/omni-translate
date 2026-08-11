@@ -3724,7 +3724,21 @@ try {
       }
     }
     if (-not $criticalFailureMessage) {
-      $watchPlaybackEndpointId = if ($driverProbe.ok) { $driverProbe.result.WasapiEndpointId } else { $null }
+      # The virtual-driver route intentionally renders its source through the
+      # installed virtual endpoint. The other routes must inject the source
+      # into the same resolved physical endpoint that the recorder/probe uses;
+      # letting the injector silently choose the OS default can select a
+      # different endpoint (for example, the VM default changed after probe)
+      # and make the physical-content evidence record only silence.
+      $watchPlaybackEndpointId = if (
+        $FeedbackLoopPrevention -eq "virtual-driver" -and
+        $driverProbe.ok -and
+        $driverProbe.result.WasapiEndpointId
+      ) {
+        [string]$driverProbe.result.WasapiEndpointId
+      } else {
+        [string]$resolvedPhysicalDeviceId
+      }
       $runtimePathBeforePlayback = Resolve-Path -LiteralPath $RuntimeRoot -ErrorAction SilentlyContinue
       $appLogBeforePlayback = if ($runtimePathBeforePlayback) { Join-Path $runtimePathBeforePlayback.Path "app.log" } else { Join-Path $RuntimeRoot "app.log" }
       # Count the readiness budget from the desktop launch, not from this wait.

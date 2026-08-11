@@ -321,6 +321,22 @@ match socket.read_message() {
                                             );
                                             reset_turn = true;
                                         } else {
+                                            // Bind the response to the ASR item that
+                                            // authorized this commit before the next
+                                            // incremental hypothesis can open a new cue.
+                                            // In subtitle mode the input-side cue is
+                                            // intentionally released after the final;
+                                            // without this owner, response output falls
+                                            // back to the mutable current cue and is
+                                            // reported as model-output-not-published.
+                                            if let Some(cue_id) = completed_cue_id {
+                                                event_diagnostics.capture_native_response_owner(
+                                                    cue_id.to_string(),
+                                                    evt["item_id"]
+                                                        .as_str()
+                                                        .map(str::to_owned),
+                                                );
+                                            }
                                             if let Some(cue_id) = completed_cue_id {
                                                 store.approve_subtitle_cue_translation(cue_id);
                                             }
@@ -545,24 +561,28 @@ match socket.read_message() {
                     "input_audio_buffer.speech_stopped" => {
                         last_vad_event_time = SystemTime::now();
                         vad_event_count += 1;
-                        if !subtitle_translate_active || native_translation_reuse_active {
-                            if let Some(cue_id) = current_cue_id.clone() {
-                                let item_id = event_diagnostics.last_asr_delta_item_id.clone();
-                                event_diagnostics.capture_native_response_owner(
-                                    cue_id.clone(),
-                                    item_id.clone(),
-                                );
-                                let _ = diag_log(
-                                    &app,
-                                    "omni",
-                                    "debug",
-                                    format!(
-                                        "[VAD] native response ownership queued cue_id={cue_id} item_id={} pendingOwners={}",
-                                        item_id.as_deref().unwrap_or("(none)"),
-                                        event_diagnostics.pending_native_response_owner_count(),
-                                    ),
-                                );
-                            }
+                        if let Some(cue_id) = current_cue_id.clone() {
+                            // Subtitle translation still has a native response
+                            // stream whose output must remain attached to the
+                            // source cue that caused it. The secondary worker
+                            // owns publication, but not response identity.
+                            let item_id = event_diagnostics.last_asr_delta_item_id.clone();
+                            event_diagnostics.capture_native_response_owner(
+                                cue_id.clone(),
+                                item_id.clone(),
+                            );
+                            let _ = diag_log(
+                                &app,
+                                "omni",
+                                "debug",
+                                format!(
+                                    "[VAD] native response ownership queued cue_id={cue_id} item_id={} pendingOwners={} subtitleTranslateActive={} nativeTranslationReuse={}",
+                                    item_id.as_deref().unwrap_or("(none)"),
+                                    event_diagnostics.pending_native_response_owner_count(),
+                                    subtitle_translate_active,
+                                    native_translation_reuse_active,
+                                ),
+                            );
                         }
                         let _ = diag_log(
                             &app,

@@ -577,6 +577,47 @@ impl WatchSessionReportStore {
         }
     }
 
+    /// Records native response output against an explicitly resolved response
+    /// owner. The legacy `push_output_delta` fallback uses the newest cue,
+    /// which is unsafe when a provider opens the next ASR hypothesis before
+    /// the previous response finishes.
+    pub(crate) fn push_output_delta_for_cue(
+        &self,
+        cue_id: &str,
+        event_type: &str,
+        stash: &str,
+        committed_text: &str,
+    ) {
+        if cue_id.trim().is_empty() {
+            self.push_output_delta(event_type, stash, committed_text);
+            return;
+        }
+        let direction = self.cue_direction(cue_id);
+        if !committed_text.is_empty() {
+            self.record_model_final(
+                cue_id,
+                &direction,
+                "native-realtime",
+                committed_text,
+                true,
+                None,
+                None,
+            );
+        } else if !stash.is_empty() {
+            self.record_model_delta(
+                cue_id,
+                &direction,
+                "native-realtime",
+                stash,
+                true,
+                None,
+                None,
+            );
+        } else {
+            self.record_milestone_now(event_type);
+        }
+    }
+
     pub(crate) fn snapshot(&self) -> Option<WatchSessionReportRuntime> {
         let guard = self.inner.lock().expect("watch session report poisoned");
         guard.as_ref().map(build_snapshot)

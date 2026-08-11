@@ -358,13 +358,26 @@ impl OmniEventProcessor {
             pending_translated_text.push_str(delta);
             delta
         };
-        store
-            .watch_session_report
-            .push_output_delta(event_type, delta, "");
         event_diagnostics.claim_native_response_owner_for_response(
             native_response_id_from_event(evt),
             current_cue_id.as_deref(),
         );
+        if let Some(cue_id) = event_diagnostics
+            .native_response_cue_id
+            .as_deref()
+            .or(current_cue_id.as_deref())
+        {
+            store.watch_session_report.push_output_delta_for_cue(
+                cue_id,
+                event_type,
+                delta,
+                "",
+            );
+        } else {
+            store
+                .watch_session_report
+                .push_output_delta(event_type, delta, "");
+        }
         let response_source_text = resolve_native_response_source_text(
             store,
             event_diagnostics.native_response_cue_id.as_deref(),
@@ -472,15 +485,28 @@ impl OmniEventProcessor {
             pending_translated_text.clone();
         event_diagnostics.last_output_done_at_ms =
             Some(elapsed_ms_since(&session_started_at));
-        store.watch_session_report.push_output_delta(
-            event_type,
-            "",
-            &pending_translated_text,
-        );
         event_diagnostics.claim_native_response_owner_for_response(
             native_response_id_from_event(evt),
             current_cue_id.as_deref(),
         );
+        if let Some(cue_id) = event_diagnostics
+            .native_response_cue_id
+            .as_deref()
+            .or(current_cue_id.as_deref())
+        {
+            store.watch_session_report.push_output_delta_for_cue(
+                cue_id,
+                event_type,
+                "",
+                &pending_translated_text,
+            );
+        } else {
+            store.watch_session_report.push_output_delta(
+                event_type,
+                "",
+                &pending_translated_text,
+            );
+        }
         let response_source_text = resolve_native_response_source_text(
             store,
             event_diagnostics.native_response_cue_id.as_deref(),
@@ -563,6 +589,7 @@ impl OmniEventProcessor {
 #[cfg(test)]
 mod audio_done_tests {
     use super::*;
+    use serde_json::json;
     use tauri::Manager;
 
     fn app() -> tauri::App<tauri::test::MockRuntime> {
@@ -622,5 +649,72 @@ mod audio_done_tests {
             .issues
             .iter()
             .any(|issue| issue.code == "native-playback-missing-cue"));
+    }
+
+    #[test]
+    fn subtitle_native_output_stays_with_response_owner_when_next_asr_cue_opens() {
+        let app = app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        store
+            .watch_session_report
+            .begin_or_reuse("test", "subtitle-response-owner");
+        store
+            .watch_session_report
+            .record_source("cue-original", "inbound", "authoritative source", true);
+        store
+            .watch_session_report
+            .record_source("cue-next", "inbound", "next hypothesis", false);
+
+        let mut event_diagnostics = OmniEventDiagnostics::default();
+        event_diagnostics.capture_native_response_owner(
+            "cue-original".to_string(),
+            Some("item-original".to_string()),
+        );
+        let delta = OmniEventProcessor::process_transcript_delta(
+            OmniSubtitleEventState {
+                current_cue_id: Some("cue-next".to_string()),
+                pending_source_text: "next hypothesis".to_string(),
+                pending_translated_text: String::new(),
+                st_skip_logged: false,
+                event_diagnostics,
+            },
+            &handle,
+            &store,
+            "inbound",
+            &json!({
+                "type": "response.output_text.delta",
+                "response_id": "resp-original",
+                "delta": "译文"
+            }),
+            "response.output_text.delta",
+            true,
+            false,
+        );
+        let done = OmniEventProcessor::process_transcript_done(
+            delta,
+            &handle,
+            &store,
+            "inbound",
+            &json!({
+                "type": "response.output_text.done",
+                "response": {
+                    "id": "resp-original",
+                    "status": "completed",
+                    "output": [{"content": [{"text": "译文"}]}]
+                }
+            }),
+            "response.output_text.done",
+            &SystemTime::now(),
+            true,
+            false,
+        );
+
+        assert_eq!(done.event_diagnostics.native_response_cue_id.as_deref(), Some("cue-original"));
+        let report = store.watch_session_report.snapshot().expect("watch report");
+        let original = report.cues.iter().find(|cue| cue.cue_id == "cue-original").expect("owner cue");
+        let next = report.cues.iter().find(|cue| cue.cue_id == "cue-next").expect("next cue");
+        assert_eq!(original.llm_text, "译文");
+        assert!(next.llm_text.is_empty(), "next ASR cue must not receive prior response output");
     }
 }

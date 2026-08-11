@@ -362,21 +362,28 @@ impl OmniEventProcessor {
             native_response_id_from_event(evt),
             current_cue_id.as_deref(),
         );
-        if let Some(cue_id) = event_diagnostics
-            .native_response_cue_id
-            .as_deref()
-            .or(current_cue_id.as_deref())
-        {
-            store.watch_session_report.push_output_delta_for_cue(
-                cue_id,
-                event_type,
-                delta,
-                "",
-            );
-        } else {
-            store
-                .watch_session_report
-                .push_output_delta(event_type, delta, "");
+        // In secondary subtitle mode the native realtime response is only a
+        // control-plane transcript; the subtitle worker owns the visible
+        // translation and publication. Do not record the native text as an
+        // unpublished model output, otherwise every successful secondary cue
+        // is reported as `model-output-not-published`.
+        if !subtitle_translate_active || native_translation_reuse_active {
+            if let Some(cue_id) = event_diagnostics
+                .native_response_cue_id
+                .as_deref()
+                .or(current_cue_id.as_deref())
+            {
+                store.watch_session_report.push_output_delta_for_cue(
+                    cue_id,
+                    event_type,
+                    delta,
+                    "",
+                );
+            } else {
+                store
+                    .watch_session_report
+                    .push_output_delta(event_type, delta, "");
+            }
         }
         let response_source_text = resolve_native_response_source_text(
             store,
@@ -489,23 +496,25 @@ impl OmniEventProcessor {
             native_response_id_from_event(evt),
             current_cue_id.as_deref(),
         );
-        if let Some(cue_id) = event_diagnostics
-            .native_response_cue_id
-            .as_deref()
-            .or(current_cue_id.as_deref())
-        {
-            store.watch_session_report.push_output_delta_for_cue(
-                cue_id,
-                event_type,
-                "",
-                &pending_translated_text,
-            );
-        } else {
-            store.watch_session_report.push_output_delta(
-                event_type,
-                "",
-                &pending_translated_text,
-            );
+        if !subtitle_translate_active || native_translation_reuse_active {
+            if let Some(cue_id) = event_diagnostics
+                .native_response_cue_id
+                .as_deref()
+                .or(current_cue_id.as_deref())
+            {
+                store.watch_session_report.push_output_delta_for_cue(
+                    cue_id,
+                    event_type,
+                    "",
+                    &pending_translated_text,
+                );
+            } else {
+                store.watch_session_report.push_output_delta(
+                    event_type,
+                    "",
+                    &pending_translated_text,
+                );
+            }
         }
         let response_source_text = resolve_native_response_source_text(
             store,
@@ -714,7 +723,11 @@ mod audio_done_tests {
         let report = store.watch_session_report.snapshot().expect("watch report");
         let original = report.cues.iter().find(|cue| cue.cue_id == "cue-original").expect("owner cue");
         let next = report.cues.iter().find(|cue| cue.cue_id == "cue-next").expect("next cue");
-        assert_eq!(original.llm_text, "译文");
+        assert!(original.llm_text.is_empty(), "secondary subtitle mode must not publish native response text");
+        assert!(
+            original.events.iter().all(|event| event.stage != "model"),
+            "secondary subtitle mode must leave native response output to the subtitle worker"
+        );
         assert!(next.llm_text.is_empty(), "next ASR cue must not receive prior response output");
     }
 }

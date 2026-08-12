@@ -1,1 +1,2 @@
 drivers/windows-virtual-mic/sysvad/** linguist-vendored
+drivers/windows-virtual-mic/package/driver-package.json text eol=lf

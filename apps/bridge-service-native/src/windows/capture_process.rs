@@ -203,7 +203,21 @@ fn capture_process_loopback_generation(
                 payload,
             );
         }
-        event_handle.wait_for_event(100).map_err_str()?;
+        // `wasapi::Handle::wait_for_event` reports a normal `WAIT_TIMEOUT` as
+        // `EventTimeout`. Process loopback is allowed to have short periods
+        // without an audio packet (for example while an endpoint is idle), so
+        // that result must return to the state check above rather than tear
+        // down the healthy capture route and its source subscriber.
+        wait_for_process_capture_event(event_handle.wait_for_event(100))?;
+    }
+}
+
+fn wait_for_process_capture_event(
+    event_wait: Result<(), wasapi::WasapiError>,
+) -> Result<(), String> {
+    match event_wait {
+        Ok(()) | Err(wasapi::WasapiError::EventTimeout) => Ok(()),
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -235,6 +249,16 @@ pub(super) fn take_process_capture_chunk(
         payload.extend_from_slice(&((sample * i16::MAX as f32) as i16).to_le_bytes());
     }
     Some((payload, invalid_samples))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn idle_process_loopback_event_timeout_keeps_capture_route_alive() {
+        assert!(wait_for_process_capture_event(Err(wasapi::WasapiError::EventTimeout)).is_ok());
+    }
 }
 
 pub(super) fn fail_process_loopback_route(

@@ -468,7 +468,11 @@ const gitText = (workspaceRoot, args) => {
 };
 
 const reusableSourceChangedPaths = (workspaceRoot, sourceCommit, currentCommit) => {
-  const output = gitText(workspaceRoot, ['diff', '--name-only', `${sourceCommit}..${currentCommit}`, '--']);
+  // Git's default quotePath mode escapes a Chinese documentation path on some
+  // Windows installations, which makes a valid allow-listed path look like an
+  // unknown source change. Request the literal UTF-8 pathname before applying
+  // the exact allow-list comparison.
+  const output = gitText(workspaceRoot, ['-c', 'core.quotePath=false', 'diff', '--name-only', `${sourceCommit}..${currentCommit}`, '--']);
   if (output === null) return null;
   return output ? output.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean).sort() : [];
 };

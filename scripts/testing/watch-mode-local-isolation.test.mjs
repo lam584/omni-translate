@@ -28,8 +28,11 @@ const provenance = {
   dirtyEntryCount: 0,
 };
 
-test('only the known v2 local sub-plan may be reused across the paid-tier v3 change', () => {
-  assert.deepEqual(LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS, ['watch-mode-balanced-v2']);
+test('only known plans with identical zero-provider cells may reuse local authority', () => {
+  assert.deepEqual(LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS, [
+    'watch-mode-balanced-v2',
+    'watch-mode-balanced-v4',
+  ]);
 });
 
 test('provider-only credential decoding is explicitly outside the zero-provider isolation layer', () => {

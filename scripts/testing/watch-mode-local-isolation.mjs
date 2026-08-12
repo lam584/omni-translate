@@ -23,12 +23,13 @@ export const LOCAL_ISOLATION_CELL_ARTIFACT_KIND = 'watch-mode-local-isolation-ce
 export const LOCAL_ISOLATION_RUNNER_ID = 'scripts/testing/watch-mode-local-isolation.mjs';
 export const LOCAL_ISOLATION_CANONICAL_MANIFEST = 'latest-successful-watch-mode-local-isolation.json';
 export const LOCAL_ISOLATION_REUSE_MODE = 'orchestration-only';
-// The v2 and v3 release plans have the exact same six zero-Provider cells.
-// Only the paid tiers changed their drain/stability allocation. A v2 local
-// authority can therefore be reused only through the separately audited
-// orchestration-only path below; ordinary verification still requires v3.
+// These prior plans have the exact same six zero-Provider cells. Only the
+// paid tiers or device-budget orchestration changed. Their local authorities
+// can be reused only through the separately audited path below; ordinary
+// verification still requires the current plan.
 export const LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS = Object.freeze([
   'watch-mode-balanced-v2',
+  'watch-mode-balanced-v4',
 ]);
 export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   '.gitattributes',

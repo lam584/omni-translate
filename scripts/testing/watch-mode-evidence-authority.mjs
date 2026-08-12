@@ -50,6 +50,7 @@ const COMMON_CELL_ARTIFACTS = Object.freeze([
   'app.log',
   'bridge-service.log',
   'bridge-source-probe.json',
+  'virtual-driver-media-source-preflight.json',
   'driver.json',
   'physical-output-probe.json',
   'physical-playback-device.json',

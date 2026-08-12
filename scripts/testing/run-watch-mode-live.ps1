@@ -4,6 +4,11 @@ param(
   [string]$FixtureRoot = "scripts/testing/fixtures/watch-mode-live",
   [string]$OutputRoot = "artifacts/testing/watch-mode-live",
   [string]$RuntimeRoot = "artifacts/diagnostics/logs",
+  # Some clean test VMs intentionally do not install the full WDK. When a
+  # Microsoft-signed devcon.exe has been staged inside the workspace, pass it
+  # explicitly to the development-driver health probe instead of falling back
+  # to a machine-wide WDK location.
+  [string]$DevconPath = "",
   [int]$WarmupSeconds = 12,
   [int]$PlaybackSeconds = 0,
   [int]$PostPlaybackWaitSeconds = 120,
@@ -85,6 +90,9 @@ if (-not $PSBoundParameters.ContainsKey("FeedbackLoopPrevention") -and $env:OMNI
     throw "OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION must be 'process-exclusion', 'virtual-driver', or 'echo-cancel'; got '$($env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION)'."
   }
   $FeedbackLoopPrevention = $env:OMNI_WATCH_MODE_LIVE_FEEDBACK_LOOP_PREVENTION
+}
+if (-not $PSBoundParameters.ContainsKey("DevconPath") -and $env:OMNI_WATCH_MODE_DEVCON_PATH) {
+  $DevconPath = $env:OMNI_WATCH_MODE_DEVCON_PATH
 }
 
 function New-WatchModeOutputDirectory {
@@ -583,6 +591,39 @@ function Get-PhysicalOutputContentSkipReason {
 function Test-UsesVirtualDriverBackend {
   param([string]$FeedbackMode)
   return $FeedbackMode -eq "virtual-driver"
+}
+
+function Get-WatchModeDriverProbeArguments {
+  param(
+    [Parameter(Mandatory = $true)][string]$WorkspaceRoot,
+    [string]$RequestedDevconPath = ""
+  )
+  $arguments = @{ WorkspaceRoot = $WorkspaceRoot }
+  if (-not [string]::IsNullOrWhiteSpace($RequestedDevconPath)) {
+    $arguments.DevconPath = $RequestedDevconPath
+  }
+  return $arguments
+}
+
+function Get-VirtualDriverPreflightFailure {
+  param(
+    [Parameter(Mandatory = $true)][string]$FeedbackMode,
+    $DriverProbe
+  )
+  if (-not (Test-UsesVirtualDriverBackend $FeedbackMode)) {
+    return $null
+  }
+  if ($null -eq $DriverProbe) {
+    return "virtual-driver preflight did not produce a driver probe result"
+  }
+  if ($DriverProbe.ok -eq $true) {
+    return $null
+  }
+  $detail = [string]$DriverProbe.error
+  if ([string]::IsNullOrWhiteSpace($detail)) {
+    $detail = "the driver probe returned ok=false without diagnostics"
+  }
+  return "virtual-driver preflight failed before the Desktop/LLM session: $detail"
 }
 
 function Convert-DriverProbeToJsonFile {
@@ -2300,6 +2341,171 @@ function Invoke-BridgeSourceProbe {
   }
 }
 
+function Invoke-VirtualDriverMediaSourcePreflight {
+  param(
+    [Parameter(Mandatory = $true)][string]$OutputDirectory,
+    [Parameter(Mandatory = $true)][string]$VirtualRenderEndpointId,
+    [Parameter(Mandatory = $true)][string]$PathToMedia
+  )
+  # The development-driver health probe injects directly through the IOCTL
+  # surface. That proves the ring and source pipe, but it does not prove that
+  # the exact WASAPI media injector used by a paid Watch cell reached the
+  # virtual render endpoint. Keep this zero-LLM probe separate and require a
+  # freshly observed source frame before the Desktop can preconnect a model.
+  if ([string]::IsNullOrWhiteSpace($VirtualRenderEndpointId)) {
+    throw "virtual-driver media source preflight requires the driver probe WasapiEndpointId"
+  }
+  if (-not (Test-Path -LiteralPath $PathToMedia -PathType Leaf)) {
+    throw "virtual-driver media source preflight media file was not found: $PathToMedia"
+  }
+  $bridgeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-bridge-service.exe"
+  $injectorExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-watch-media-injector.exe"
+  $audioProbeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-driver-audio-probe.exe"
+  foreach ($requiredExe in @($bridgeExe, $injectorExe, $audioProbeExe)) {
+    if (-not (Test-Path -LiteralPath $requiredExe -PathType Leaf)) {
+      throw "virtual-driver media source preflight executable was not built: $requiredExe"
+    }
+  }
+
+  $preflightRoot = Join-Path $OutputDirectory "virtual-driver-media-source-preflight-runtime"
+  New-Item -ItemType Directory -Force -Path $preflightRoot | Out-Null
+  $installStateJson = [ordered]@{
+    protocolVersion = '2026-08-10-audio-routing-v6'
+    installChannel = 'development'
+    driverVersion = '0.10.0-dev'
+    bridgeVersion = '0.1.0'
+    driverHealth = 'running'
+    installedAt = (Get-Date -Format s)
+    targetDeviceId = 'virtual-mic-default'
+    virtualRenderDeviceId = 'virtual-speaker-default'
+    driverBackend = 'sysvad-wave-rt'
+  } | ConvertTo-Json -Depth 6
+  Set-Utf8NoBomContent (Join-Path $preflightRoot "driver-install-state.json") $installStateJson
+
+  $resetStdout = Join-Path $preflightRoot "driver-reset.stdout.log"
+  $resetStderr = Join-Path $preflightRoot "driver-reset.stderr.log"
+  $resetProcess = Start-Process -FilePath $audioProbeExe `
+    -ArgumentList @("--reset-only") `
+    -RedirectStandardOutput $resetStdout `
+    -RedirectStandardError $resetStderr `
+    -WindowStyle Hidden -Wait -PassThru
+  $resetOutput = if (Test-Path -LiteralPath $resetStdout -PathType Leaf) {
+    Get-Content -LiteralPath $resetStdout -Raw -Encoding UTF8
+  } else { "" }
+  $resetResult = $null
+  try {
+    if ($resetOutput.Trim()) {
+      $resetResult = $resetOutput | ConvertFrom-Json
+    }
+  } catch {
+    throw "virtual-driver media source preflight reset emitted invalid JSON: $($_.Exception.Message)"
+  }
+  if ($resetProcess.ExitCode -ne 0 -or $null -eq $resetResult -or $resetResult.passed -ne $true) {
+    $resetError = if (Test-Path -LiteralPath $resetStderr -PathType Leaf) {
+      Get-Content -LiteralPath $resetStderr -Raw -Encoding UTF8
+    } else { "" }
+    throw "virtual-driver media source preflight could not reset the driver ring: $resetError $resetOutput"
+  }
+
+  $pipeName = "omni-watch-media-preflight-$PID"
+  $bridgeStdout = Join-Path $OutputDirectory "virtual-driver-media-source-preflight.bridge.stdout.log"
+  $bridgeStderr = Join-Path $OutputDirectory "virtual-driver-media-source-preflight.bridge.stderr.log"
+  $injectorStdout = Join-Path $OutputDirectory "virtual-driver-media-source-preflight.injector.stdout.log"
+  $injectorStderr = Join-Path $OutputDirectory "virtual-driver-media-source-preflight.injector.stderr.log"
+  $diagnosticsPath = Join-Path $OutputDirectory "virtual-driver-media-source-preflight-diagnostics.json"
+  $bridgeProcess = $null
+  $injectorProcess = $null
+  $init = $null
+  $frame = $null
+  $injectorResult = $null
+  $phase = "start_bridge"
+  try {
+    $bridgeProcess = Start-Process -FilePath $bridgeExe -ArgumentList @(
+      "--pipe-name", $pipeName,
+      "--runtime-root", $preflightRoot,
+      "--bridge-version", "0.1.0"
+    ) -RedirectStandardOutput $bridgeStdout -RedirectStandardError $bridgeStderr -WindowStyle Hidden -PassThru
+    Start-Sleep -Milliseconds 600
+    $phase = "init"
+    $sessionId = "watch-mode-media-preflight-$PID"
+    $init = Write-NamedPipeJsonLine $pipeName (New-BridgeSourceProbeInitPayload "virtual-driver" $sessionId)
+    $phase = "render_media"
+    $injectorProcess = Start-Process -FilePath $injectorExe `
+      -ArgumentList @("--media", (Resolve-Path -LiteralPath $PathToMedia).Path, "--endpoint-id", $VirtualRenderEndpointId, "--max-seconds", "5") `
+      -RedirectStandardOutput $injectorStdout `
+      -RedirectStandardError $injectorStderr `
+      -WindowStyle Hidden -PassThru
+    $phase = "read_source_frame"
+    $frame = Read-BridgeSourceFrame "$pipeName-source" -TimeoutMs 12000
+    if (-not $injectorProcess.WaitForExit(20000)) {
+      throw "watch media injector did not exit after the virtual-driver source frame"
+    }
+    $injectorProcess.Refresh()
+    $injectorOutput = if (Test-Path -LiteralPath $injectorStdout -PathType Leaf) {
+      Get-Content -LiteralPath $injectorStdout -Raw -Encoding UTF8
+    } else { "" }
+    try {
+      if ($injectorOutput.Trim()) {
+        $injectorResult = $injectorOutput | ConvertFrom-Json
+      }
+    } catch {
+      throw "watch media injector emitted invalid JSON: $($_.Exception.Message)"
+    }
+    if ((($null -ne $injectorProcess.ExitCode) -and $injectorProcess.ExitCode -ne 0) -or $null -eq $injectorResult -or $injectorResult.passed -ne $true) {
+      $injectorError = if (Test-Path -LiteralPath $injectorStderr -PathType Leaf) {
+        Get-Content -LiteralPath $injectorStderr -Raw -Encoding UTF8
+      } else { "" }
+      throw "watch media injector did not report passed=true: $injectorError $injectorOutput"
+    }
+    $phase = "shutdown"
+    [void](Write-NamedPipeJsonLine $pipeName ([ordered]@{
+      type = 'bridge.shutdown'
+      requestId = "watch-mode-media-preflight-shutdown-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
+      sessionId = $sessionId
+      reason = 'watch-mode-media-preflight-complete'
+    }))
+    return [pscustomobject]@{
+      passed = $true
+      reset = $resetResult
+      init = $init
+      sourceFrame = $frame
+      injector = $injectorResult
+      virtualRenderEndpointId = $VirtualRenderEndpointId
+      pipeName = $pipeName
+      sourcePipeName = "$pipeName-source"
+      bridgeStdout = $bridgeStdout
+      bridgeStderr = $bridgeStderr
+      injectorStdout = $injectorStdout
+      injectorStderr = $injectorStderr
+    }
+  } catch {
+    $errorMessage = $_.Exception.Message
+    [pscustomobject]@{
+      passed = $false
+      phase = $phase
+      error = $errorMessage
+      init = $init
+      sourceFrame = $frame
+      injector = $injectorResult
+      virtualRenderEndpointId = $VirtualRenderEndpointId
+      pipeName = $pipeName
+      sourcePipeName = "$pipeName-source"
+      bridgeStdout = $bridgeStdout
+      bridgeStderr = $bridgeStderr
+      injectorStdout = $injectorStdout
+      injectorStderr = $injectorStderr
+    } | ConvertTo-Json -Depth 12 | Set-Content -Path $diagnosticsPath -Encoding UTF8
+    throw "virtual-driver media source preflight failed during ${phase}: $errorMessage Diagnostics=$diagnosticsPath"
+  } finally {
+    if ($injectorProcess -and -not $injectorProcess.HasExited) {
+      Stop-Process -Id $injectorProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+    if ($bridgeProcess -and -not $bridgeProcess.HasExited) {
+      Stop-Process -Id $bridgeProcess.Id -Force -ErrorAction SilentlyContinue
+    }
+  }
+}
+
 function Invoke-PhysicalOutputProbe {
   param([string]$OutputDirectory, [string]$FeedbackMode)
   $probeExe = Resolve-OmniBuiltExecutable -BuildProfile "release" -ExecutableName "omni-physical-output-probe.exe"
@@ -3751,6 +3957,7 @@ $physicalOutputRecordingStep = $null
 $physicalOutputContentStep = $null
 $deviceEvidenceStep = $null
 $sourceMediaTranscriptStep = $null
+$virtualDriverMediaPreflight = $null
 $artifactsSaved = $false
 $criticalFailureMessage = $null
 try {
@@ -3779,14 +3986,17 @@ try {
     } -ContinueOnError
   }
   if (Test-UsesVirtualDriverBackend $FeedbackLoopPrevention) {
+    $driverProbeArguments = Get-WatchModeDriverProbeArguments `
+      -WorkspaceRoot $workspaceRoot `
+      -RequestedDevconPath $DevconPath
     $driverProbe = Invoke-Step "driver probe" {
-      & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") -WorkspaceRoot $workspaceRoot
+      & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") @driverProbeArguments
     } -ContinueOnError
 
     if (-not $driverProbe.ok -and -not $SkipDriverRepair -and $AllowDriverRepair) {
       $steps += Invoke-Step "repair driver with explicit elevation" { Invoke-ElevatedDriverReinstall $outputDir } -ContinueOnError
       $driverProbe = Invoke-Step "driver probe after repair" {
-        & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") -WorkspaceRoot $workspaceRoot
+        & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") @driverProbeArguments
       } -ContinueOnError
     }
     elseif (-not $driverProbe.ok -and -not $SkipDriverRepair -and -not $AllowDriverRepair) {
@@ -3805,8 +4015,19 @@ try {
   }
   $steps += $driverProbe
   Convert-DriverProbeToJsonFile $driverProbe (Join-Path $outputDir "driver.json")
+  $criticalFailureMessage = Get-VirtualDriverPreflightFailure $FeedbackLoopPrevention $driverProbe
 
-  $bridgeSourceProbe = if ($FeedbackLoopPrevention -eq "echo-cancel") {
+  $bridgeSourceProbe = if ($criticalFailureMessage) {
+    [pscustomobject]@{
+      name = "bridge source frame probe"
+      ok = $true
+      result = [pscustomobject]@{
+        skipped = $true
+        reason = $criticalFailureMessage
+      }
+      error = $null
+    }
+  } elseif ($FeedbackLoopPrevention -eq "echo-cancel") {
     [pscustomobject]@{
       name = "bridge source frame probe"
       ok = $true
@@ -3831,6 +4052,55 @@ try {
     } else {
       [pscustomobject]@{ passed = $false; error = $bridgeSourceProbe.error } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "bridge-source-probe.json") -Encoding UTF8
     }
+  }
+  if ($FeedbackLoopPrevention -ne "echo-cancel" -and -not $bridgeSourceProbe.ok -and -not $criticalFailureMessage) {
+    $criticalFailureMessage = "bridge source frame preflight failed before the Desktop/LLM session: $($bridgeSourceProbe.error)"
+  }
+
+  $virtualDriverMediaPreflight = if (Test-UsesVirtualDriverBackend $FeedbackLoopPrevention) {
+    if ($criticalFailureMessage) {
+      [pscustomobject]@{
+        name = "virtual-driver media source preflight"
+        ok = $true
+        result = [pscustomobject]@{
+          skipped = $true
+          reason = $criticalFailureMessage
+        }
+        error = $null
+      }
+    } else {
+      Invoke-Step "virtual-driver media source preflight" {
+        Invoke-VirtualDriverMediaSourcePreflight `
+          -OutputDirectory $outputDir `
+          -VirtualRenderEndpointId ([string]$driverProbe.result.WasapiEndpointId) `
+          -PathToMedia $MediaPath
+      } -ContinueOnError
+    }
+  } else {
+    [pscustomobject]@{
+      name = "virtual-driver media source preflight"
+      ok = $true
+      result = [pscustomobject]@{
+        skipped = $true
+        reason = "$FeedbackLoopPrevention does not use the virtual-driver media path"
+      }
+      error = $null
+    }
+  }
+  $steps += $virtualDriverMediaPreflight
+  if ($virtualDriverMediaPreflight.ok) {
+    $virtualDriverMediaPreflight.result | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
+  } else {
+    $preflightDiagnosticsPath = Join-Path $outputDir "virtual-driver-media-source-preflight-diagnostics.json"
+    if (Test-Path -LiteralPath $preflightDiagnosticsPath -PathType Leaf) {
+      Get-Content -LiteralPath $preflightDiagnosticsPath -Raw -Encoding UTF8 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
+    } else {
+      [pscustomobject]@{ passed = $false; error = $virtualDriverMediaPreflight.error } | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "virtual-driver-media-source-preflight.json") -Encoding UTF8
+    }
+    $criticalFailureMessage = "virtual-driver media source preflight failed before the Desktop/LLM session: $($virtualDriverMediaPreflight.error)"
+  }
+  if ($criticalFailureMessage) {
+    throw $criticalFailureMessage
   }
 
   $physicalOutputProbe = if ($FeedbackLoopPrevention -eq "echo-cancel") {
@@ -3866,7 +4136,16 @@ try {
   $deviceEvidenceStep.result | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $outputDir "physical-playback-device.json") -Encoding UTF8
   $resolvedPhysicalDeviceId = [string]$deviceEvidenceStep.result.resolvedDeviceId
   Set-DesktopPhysicalPlaybackOverride $resolvedPhysicalDeviceId
-  $desktopProcess = Invoke-Step "start desktop shell" { Start-WatchModeDesktopShell $outputDir $runMarker $resolvedPhysicalDeviceId } -ContinueOnError
+  $desktopProcess = if ($criticalFailureMessage) {
+    [pscustomobject]@{
+      name = "start desktop shell"
+      ok = $false
+      result = $null
+      error = "skipped because $criticalFailureMessage"
+    }
+  } else {
+    Invoke-Step "start desktop shell" { Start-WatchModeDesktopShell $outputDir $runMarker $resolvedPhysicalDeviceId } -ContinueOnError
+  }
   $steps += $desktopProcess
 
   if ($desktopProcess.ok) {
@@ -4035,7 +4314,9 @@ try {
       error = $desktopProcess.error
     }
     $steps += $playbackStep
-    $criticalFailureMessage = "desktop shell did not start: $($desktopProcess.error)"
+    if (-not $criticalFailureMessage) {
+      $criticalFailureMessage = "desktop shell did not start: $($desktopProcess.error)"
+    }
   }
 
   $requiredWatchReportPath = Join-Path $outputDir "watch-session-report.json"
@@ -4055,9 +4336,21 @@ try {
     }
   } -ContinueOnError
 
-  $systemMetricsStep = Invoke-Step "complete desktop process-tree system metrics sampling" {
-    Complete-WatchModeSystemMetricsSampler $desktopProcess.result.systemMetricsSampler
-  } -ContinueOnError
+  $systemMetricsStep = if ($desktopProcess -and $desktopProcess.ok -and $desktopProcess.result -and $desktopProcess.result.systemMetricsSampler) {
+    Invoke-Step "complete desktop process-tree system metrics sampling" {
+      Complete-WatchModeSystemMetricsSampler $desktopProcess.result.systemMetricsSampler
+    } -ContinueOnError
+  } else {
+    [pscustomobject]@{
+      name = "complete desktop process-tree system metrics sampling"
+      ok = $true
+      result = [pscustomobject]@{
+        skipped = $true
+        reason = "desktop shell did not start"
+      }
+      error = $null
+    }
+  }
   $steps += $systemMetricsStep
   if (-not $systemMetricsStep.ok -and -not $criticalFailureMessage) {
     $criticalFailureMessage = "desktop system metrics evidence failed: $($systemMetricsStep.error)"

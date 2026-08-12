@@ -46,10 +46,12 @@ impl<'a> SpeechPlaybackEngine<'a> {
             self.config.virtual_mic_output_enabled,
             self.config.bridge_playback_enabled,
         );
-        let bridge_snapshot = self
-            .app
-            .state::<crate::bridge::state::BridgeStateStore>()
-            .snapshot();
+        let bridge_snapshot = wait_for_translation_output_route(
+            self.app,
+            &cue.route_direction,
+            self.config.bridge_capture_mode,
+            &output_route,
+        );
         if let Some(error) = translation_output_route_violation(
             &cue.cue_id,
             &cue.route_direction,

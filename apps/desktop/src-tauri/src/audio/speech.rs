@@ -194,6 +194,7 @@ include!("speech/planner.rs");
 include!("speech/mixer.rs");
 
 include!("speech/output.rs");
+include!("speech/bridge_route_recovery.rs");
 
 include!("speech/config.rs");
 
@@ -596,6 +597,90 @@ mod tests {
             assert!(error.contains("bridge.translation-output-bypass"));
             assert!(error.contains(configured_mode.as_str()));
         }
+    }
+
+    #[test]
+    fn controlled_process_restart_waits_for_bridge_owner_to_recover() {
+        use crate::bridge::contracts::{
+            CaptureBackend, ProcessLoopbackStatus, SourceCaptureMode,
+        };
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        app.manage(crate::bridge::state::BridgeStateStore::new());
+        let bridge_state = app.state::<crate::bridge::state::BridgeStateStore>();
+        bridge_state.update_snapshot(|snapshot| {
+            snapshot.source_capture_mode = SourceCaptureMode::None;
+            snapshot.capture_backend = CaptureBackend::WasapiProcessExclusion;
+            snapshot.process_loopback_supported = true;
+            snapshot.process_loopback_status = ProcessLoopbackStatus::Ready;
+            snapshot.process_status = "stopped".to_string();
+            snapshot.bridge_state = "stopped".to_string();
+            snapshot.lifecycle_state = "starting".to_string();
+        });
+        let handle = app.handle().clone();
+        let updater = handle.clone();
+        let join = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            updater
+                .state::<crate::bridge::state::BridgeStateStore>()
+                .update_snapshot(|snapshot| {
+                    snapshot.source_capture_mode = SourceCaptureMode::ProcessExclusion;
+                    snapshot.process_status = "running".to_string();
+                    snapshot.bridge_state = "running".to_string();
+                    snapshot.lifecycle_state = "ready".to_string();
+                    snapshot.translation_playback_enabled = true;
+                    snapshot.session_id = Some("restarted-session".to_string());
+                });
+        });
+        let plan = SpeechOutputRoutePlan::for_configured_route("inbound", false, false, true);
+        let started = Instant::now();
+        let snapshot = wait_for_translation_output_route(
+            &handle,
+            "inbound",
+            Some(SourceCaptureMode::ProcessExclusion),
+            &plan,
+        );
+        join.join().expect("snapshot updater");
+
+        assert!(started.elapsed() >= Duration::from_millis(75));
+        assert_eq!(snapshot.process_status, "running");
+        assert_eq!(snapshot.source_capture_mode, SourceCaptureMode::ProcessExclusion);
+        assert_eq!(translation_output_route_violation(
+            "cue-after-restart",
+            "inbound",
+            Some(SourceCaptureMode::ProcessExclusion),
+            &plan,
+            &snapshot,
+        ), None);
+    }
+
+    #[test]
+    fn unrelated_stopped_bridge_does_not_enter_recovery_wait() {
+        use crate::bridge::contracts::SourceCaptureMode;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock app");
+        app.manage(crate::bridge::state::BridgeStateStore::new());
+        let plan = SpeechOutputRoutePlan::for_configured_route("inbound", false, false, true);
+        let started = Instant::now();
+        let snapshot = wait_for_translation_output_route(
+            &app.handle().clone(),
+            "inbound",
+            Some(SourceCaptureMode::ProcessExclusion),
+            &plan,
+        );
+
+        assert!(started.elapsed() < Duration::from_millis(250));
+        assert!(translation_output_route_violation(
+            "cue-stopped",
+            "inbound",
+            Some(SourceCaptureMode::ProcessExclusion),
+            &plan,
+            &snapshot,
+        ).is_some());
     }
 
     #[test]

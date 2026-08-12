@@ -365,6 +365,7 @@ export const resolveWatchRealtimeProtocol = (model, aliasModel = '', aliasProtoc
 export const buildRunnerArgv = ({
   model,
   watchRealtimeProtocol = '',
+  subtitleTranslationMode = 'native',
   feedbackMode,
   outputRoot = MATRIX_DEFAULTS.outputRoot,
   mediaPath = MATRIX_DEFAULTS.mediaPath,
@@ -391,6 +392,7 @@ export const buildRunnerArgv = ({
     '-MediaPath', mediaPath,
     '-WarmupSeconds', String(warmupSeconds),
     '-WatchModelId', model,
+    '-SubtitleTranslationMode', subtitleTranslationMode,
     '-PlaybackSeconds', String(playbackSeconds),
     '-PostPlaybackWaitSeconds', String(postPlaybackWaitSeconds),
     '-SessionReadyTimeoutSeconds', String(sessionReadyTimeoutSeconds),

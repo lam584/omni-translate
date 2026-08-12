@@ -2847,6 +2847,62 @@ function Get-PhysicalOutputSttApiKey {
     } catch {
     }
   }
+  try {
+    $reference = "credential://provider/dashscope/default"
+    $normalized = $reference -replace '[:/\\ ]', '_'
+    $targetName = "OmniTranslate:$normalized"
+    if (-not ("OmniWatchCredentialReader" -as [type])) {
+      Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+
+public static class OmniWatchCredentialReader {
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  private struct CREDENTIAL {
+    public UInt32 Flags;
+    public UInt32 Type;
+    public IntPtr TargetName;
+    public IntPtr Comment;
+    public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten;
+    public UInt32 CredentialBlobSize;
+    public IntPtr CredentialBlob;
+    public UInt32 Persist;
+    public UInt32 AttributeCount;
+    public IntPtr Attributes;
+    public IntPtr TargetAlias;
+    public IntPtr UserName;
+  }
+
+  [DllImport("Advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+  private static extern bool CredRead(string target, UInt32 type, UInt32 flags, out IntPtr credential);
+
+  [DllImport("Advapi32.dll", SetLastError = true)]
+  private static extern void CredFree(IntPtr buffer);
+
+  public static string ReadGenericSecret(string target) {
+    IntPtr pointer;
+    if (!CredRead(target, 1, 0, out pointer)) return null;
+    try {
+      var credential = (CREDENTIAL)Marshal.PtrToStructure(pointer, typeof(CREDENTIAL));
+      if (credential.CredentialBlob == IntPtr.Zero || credential.CredentialBlobSize == 0) return null;
+      var bytes = new byte[credential.CredentialBlobSize];
+      Marshal.Copy(credential.CredentialBlob, bytes, 0, bytes.Length);
+      return System.Text.Encoding.UTF8.GetString(bytes);
+    } finally {
+      CredFree(pointer);
+    }
+  }
+}
+'@
+    }
+    $credentialKey = [OmniWatchCredentialReader]::ReadGenericSecret($targetName)
+    if (-not [string]::IsNullOrWhiteSpace($credentialKey)) {
+      return $credentialKey
+    }
+  } catch {
+    # Credential Manager is an optional local source for the subprocess-only
+    # physical-output verifier. Do not expose the secret or error details.
+  }
   return $null
 }
 

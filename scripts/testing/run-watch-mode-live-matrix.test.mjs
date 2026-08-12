@@ -135,6 +135,7 @@ test('sample pair argv binds every always-forwarded runner parameter', () => {
     '-MediaPath', 'scripts/testing/fixtures/watch-mode-en-original.wav',
     '-WarmupSeconds', '12',
     '-WatchModelId', 'qwen3.5-omni-flash-realtime',
+    '-SubtitleTranslationMode', 'native',
     '-PlaybackSeconds', '0',
     '-PostPlaybackWaitSeconds', '120',
     '-SessionReadyTimeoutSeconds', '90',
@@ -189,7 +190,7 @@ test('switch parameters are appended bare, only when enabled, in guard order', (
     allowElevatedDesktopLaunch: true,
     skipPhysicalOutputContentStt: true,
   });
-  assert.deepEqual(allOn.slice(26), RUNNER_SWITCHES.map((name) => `-${name}`));
+  assert.deepEqual(allOn.slice(28), RUNNER_SWITCHES.map((name) => `-${name}`));
 
   const allOff = buildRunnerArgv({ model: SAMPLE_MODEL, feedbackMode: SAMPLE_FEEDBACK_MODE });
   for (const name of RUNNER_SWITCHES) {

@@ -140,6 +140,19 @@ function extractedPhysicalOutputContentPolicyFunctions() {
   );
 }
 
+function extractedPhysicalOutputSttCredentialFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -eq 'Get-PhysicalOutputSttApiKey' ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
 function extractedBridgeProbePolicyFunctions() {
   return (
     `$errors = $null; ` +
@@ -297,6 +310,26 @@ test('echo-cancel skips virtual-driver physical-output content recording', { ski
   ]);
 
   assert.equal(policy.status, 0, policy.stderr || policy.stdout);
+});
+
+test('physical output STT falls back to the current-user DashScope credential without persisting it', { skip: !isWindows }, () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-output-stt-credential-'));
+  try {
+    const probe = runPowerShell([
+      '-Command',
+      `${extractedPhysicalOutputSttCredentialFunctions()} ` +
+        `$workspaceRoot = ${quotePowerShell(directory)}; ` +
+        `Remove-Item Env:OMNI_TEST_DASHSCOPE_API_KEY -ErrorAction SilentlyContinue; ` +
+        `function global:Add-Type { param([Parameter(ValueFromRemainingArguments=$true)]$Arguments) throw 'unexpected native credential invocation' }; ` +
+        `function global:OmniWatchCredentialReader { }; ` +
+        `class OmniWatchCredentialReader { static [string] ReadGenericSecret([string]$target) { if ($target -ne 'OmniTranslate:credential___provider_dashscope_default') { throw 'unexpected target' }; return 'vault-only-test-key' } }; ` +
+        `$result = Get-PhysicalOutputSttApiKey; ` +
+        `if ($result -ne 'vault-only-test-key') { exit 1 }`,
+    ]);
+    assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true });
+  }
 });
 
 test('process-exclusion probe uses v5 init capability fields without requiring an idle source frame', { skip: !isWindows }, () => {

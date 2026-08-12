@@ -82,7 +82,7 @@ impl OmniSocketEventProcessor {
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
     ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
-        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, mut sent_audio_since_commit, mut audio_samples_since_commit, mut manual_turn_audio_after_response } = state;
+        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, sent_audio_since_commit, audio_samples_since_commit, manual_turn_audio_after_response } = state;
         let OmniSocketEventContext {
             app, store, direction, session_generation, session_started_at,
             subtitle_translate_active, native_translation_reuse_active,
@@ -629,19 +629,22 @@ match socket.read_message() {
                             manual_response_pending = false;
                             manual_response_requested = false;
                             manual_response_item_id = None;
-                            // Audio captured while the previous response was
-                            // in flight may already have been drained or
-                            // rejected by DashScope. Require a fresh accepted
-                            // append before arming another commit; otherwise
-                            // the next tick can send an empty/tail commit.
-                            sent_audio_since_commit = false;
-                            audio_samples_since_commit = 0;
-                            manual_turn_audio_after_response = false;
+                            // The provider accepts input_audio_buffer.append
+                            // while the prior response streams. Those chunks
+                            // belong to its next input buffer, not to the
+                            // response that just completed. Clearing them
+                            // here loses a whole continuous-media turn when a
+                            // response is slow; retain the accumulated audio
+                            // and let the next worker tick submit it through
+                            // the normal minimum-length/manual-commit gate.
+                            // A short tail is still rejected by that gate.
                             let _ = diag_log(
                                 app,
                                 "omni",
                                 "debug",
-                                "event=manual_response_gate state=response_done_released",
+                                format!(
+                                    "event=manual_response_gate state=response_done_released retainedSamples={audio_samples_since_commit} retainedAudible={sent_audio_since_commit}"
+                                ),
                             );
                         }
                     }

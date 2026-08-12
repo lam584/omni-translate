@@ -10,10 +10,10 @@ pub(super) struct OmniAudioPumpState {
     /// Number of 16 kHz mono PCM samples appended after the latest successful
     /// manual commit. This prevents a lone tail frame from being committed.
     pub(super) audio_samples_since_commit: u64,
-    /// Audio appended while a provider response was still completing must not
-    /// be used to arm an immediate empty/tail commit after response.done.
-    /// The response handler clears this gate; the next successfully accepted
-    /// append opens a fresh manual turn.
+    /// At least one accepted append belongs to the input buffer following the
+    /// latest manual commit. It may arrive while the prior response streams;
+    /// after response.done the manual gate serially commits this accumulated
+    /// turn, subject to the normal audible/minimum-length checks.
     pub(super) manual_turn_audio_after_response: bool,
     pub(super) manual_turn_started_at: Option<SystemTime>,
     /// Actual speaker state observed when the current manual turn received its

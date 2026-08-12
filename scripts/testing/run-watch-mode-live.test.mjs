@@ -127,6 +127,41 @@ function extractedElevationGuardFunctions() {
   );
 }
 
+function extractedSpeechSegmentationFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @('Get-LogTextAfterMarker','Read-SpeechSegmentationSummary') ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+test('native Bridge queued and started statuses count as physical speech evidence', { skip: !isWindows }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-native-speech-evidence-'));
+  const logPath = path.join(tempRoot, 'app.log');
+  fs.writeFileSync(logPath, [
+    'before marker event=translation_playback_status | cueId=old status=started reason=physical-playback-started',
+    'run-marker-native',
+    'event=translation_playback_status | cueId=cue-1 status=queued reason=accepted',
+    'event=translation_playback_status | cueId=cue-1 status=started reason=physical-playback-started',
+  ].join('\n'));
+  try {
+    const command = `${extractedSpeechSegmentationFunctions()} ` +
+      `Read-SpeechSegmentationSummary ${quotePowerShell(logPath)} 'run-marker-native' | ConvertTo-Json -Compress`;
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr);
+    const summary = JSON.parse(result.stdout.trim());
+    assert.equal(summary.queuedSegments, 1);
+    assert.equal(summary.playedSegments, 1);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 function extractedPhysicalOutputContentPolicyFunctions() {
   return (
     `$errors = $null; ` +

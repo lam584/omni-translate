@@ -2,7 +2,7 @@
 
 The native Windows sidecar is the production Bridge process. It owns:
 
-- protocol `2026-08-10-audio-routing-v6` control commands on `\\.\pipe\omni-bridge-ipc`
+- protocol `2026-08-13-audio-routing-v7` control commands on `\\.\pipe\omni-bridge-ipc`
 - inline translated PCM envelopes on `\\.\pipe\omni-bridge-ipc-audio`
 - pre-mix source PCM envelopes on `\\.\pipe\omni-bridge-ipc-source`
 - `24 kHz mono` to `48 kHz stereo f32` normalization

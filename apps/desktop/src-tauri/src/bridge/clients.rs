@@ -6,7 +6,8 @@ use super::contracts::{
 use super::ipc::{
     ensure_bridge_runtime_root, flush_bridge_source, initialize_bridge, query_state,
     probe_process_loopback, query_state_fast, stop_bridge_process, terminate_stale_bridge_process,
-    write_process_playback_cue, write_virtual_mic_frame, BridgeInitializationFailure,
+    write_process_playback_cue, write_process_playback_stream, write_virtual_mic_frame,
+    BridgeInitializationFailure,
 };
 
 /// Typed client for all named-pipe operations bound to one Bridge runtime.
@@ -146,6 +147,35 @@ impl<'a, R: tauri::Runtime> BridgeAudioWriter<'a, R> {
             channels,
             created_at_ms,
             estimated_duration_ms,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn write_process_playback_stream(
+        &self,
+        cue_id: &str,
+        request_id: &str,
+        route_direction: &str,
+        samples: &[i16],
+        sample_rate_hz: u32,
+        channels: u16,
+        created_at_ms: u64,
+        estimated_duration_ms: u64,
+        chunk_index: u32,
+        stream_state: omni_bridge_protocol::TranslationStreamState,
+    ) -> Result<u64, String> {
+        write_process_playback_stream(
+            self.app,
+            cue_id,
+            request_id,
+            route_direction,
+            samples,
+            sample_rate_hz,
+            channels,
+            created_at_ms,
+            estimated_duration_ms,
+            chunk_index,
+            stream_state,
         )
     }
 }

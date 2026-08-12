@@ -1,5 +1,27 @@
 use super::*;
 
+pub(super) fn spawn_audio_pipe_server(
+    pipe_name: String,
+    state: Arc<Mutex<BridgeState>>,
+    runtime_root: PathBuf,
+    playback_tx: mpsc::SyncSender<PlaybackCommand>,
+    playback_control_tx: mpsc::Sender<PlaybackControlCommand>,
+    translation_queue: Arc<Mutex<TranslationPlaybackQueue>>,
+) {
+    thread::spawn(move || {
+        serve_named_pipe(&pipe_name, move |handle| {
+            handle_audio_client(
+                handle,
+                &state,
+                &runtime_root,
+                &playback_tx,
+                &playback_control_tx,
+                &translation_queue,
+            )
+        });
+    });
+}
+
 pub(super) fn handle_virtual_mic_frame(
     handle: HANDLE,
     state: &Arc<Mutex<BridgeState>>,
@@ -198,12 +220,38 @@ pub(super) fn handle_physical_translation_frame(
     handle: HANDLE,
     runtime_root: &Path,
     playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+    playback_control_tx: &mpsc::Sender<PlaybackControlCommand>,
     translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
     header: &AudioFrameHeader,
     payload: &[u8],
     monitor_samples: Vec<f32>,
     mut current: std::sync::MutexGuard<'_, BridgeState>,
 ) {
+    if let Some(stream_state) = header.stream_state {
+        handle_physical_translation_stream_frame(
+            handle,
+            runtime_root,
+            playback_tx,
+            playback_control_tx,
+            translation_queue,
+            header,
+            payload,
+            monitor_samples,
+            current,
+            stream_state,
+        );
+        return;
+    }
+    if current.physical_translation_stream_active() {
+        let ack = rejected_audio_frame_ack(
+            header,
+            "bridge.queue-overflow",
+            "complete translation cues cannot enter playback while an open-ended physical stream is active",
+        );
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
     if let Some(reason) = translation_non_playback_reason(
         current.translation_playback_enabled,
         current.mix_control.translated_audio_enabled,
@@ -346,6 +394,174 @@ pub(super) fn handle_physical_translation_frame(
         }
     }
     current.translated_frames_accepted += header.frame_count as u64;
+    let ack = accepted_audio_frame_ack(header, current.playback_frames_written);
+    let _ = fs::create_dir_all(runtime_root);
+    let _ = fs::write(runtime_root.join("last-translation-frame.pcm"), payload);
+    drop(current);
+    let _ = write_framed_json(handle, &ack);
+}
+
+#[allow(clippy::too_many_arguments)]
+fn handle_physical_translation_stream_frame(
+    handle: HANDLE,
+    runtime_root: &Path,
+    playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+    playback_control_tx: &mpsc::Sender<PlaybackControlCommand>,
+    translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
+    header: &AudioFrameHeader,
+    payload: &[u8],
+    monitor_samples: Vec<f32>,
+    mut current: std::sync::MutexGuard<'_, BridgeState>,
+    stream_state: TranslationStreamState,
+) {
+    let Some(cue_id) = header.cue_id.as_deref().filter(|value| !value.trim().is_empty()) else {
+        let ack = rejected_audio_frame_ack(header, "bridge.invalid-audio-frame", "physical translation streams require cueId");
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    };
+    let Some(chunk_index) = header.chunk_index else {
+        let ack = rejected_audio_frame_ack(header, "bridge.invalid-audio-frame", "physical translation streams require chunkIndex");
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    };
+    if matches!(stream_state, TranslationStreamState::End | TranslationStreamState::Abort)
+        && !monitor_samples.is_empty()
+    {
+        let ack = rejected_audio_frame_ack(header, "bridge.invalid-audio-frame", "physical translation stream end must have an empty payload");
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
+    if !matches!(stream_state, TranslationStreamState::End | TranslationStreamState::Abort)
+        && monitor_samples.is_empty()
+    {
+        let ack = rejected_audio_frame_ack(header, "bridge.invalid-audio-frame", "physical translation stream audio chunks must not be empty");
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
+    if let Some(reason) = translation_non_playback_reason(
+        current.translation_playback_enabled,
+        current.mix_control.translated_audio_enabled,
+        !matches!(stream_state, TranslationStreamState::End | TranslationStreamState::Abort)
+            && monitor_samples.is_empty(),
+    ) {
+        let ack = rejected_audio_frame_ack(header, "bridge.translation-playback-disabled", reason);
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
+    let (mut next_ledger, admission) = match prepare_physical_stream_admission(
+        &current.physical_translation_stream_ledger,
+        cue_id,
+        chunk_index,
+        stream_state,
+    ) {
+        Ok(value) => value,
+        Err(detail) => {
+            let ack = rejected_audio_frame_ack(header, "bridge.invalid-audio-frame", detail);
+            drop(current);
+            let _ = write_framed_json(handle, &ack);
+            return;
+        }
+    };
+    if admission == PhysicalStreamAdmission::Start {
+        let queue = translation_queue.lock().unwrap();
+        if queue.active.is_some() || !queue.pending.is_empty() {
+            let ack = rejected_audio_frame_ack(
+                header,
+                "bridge.queue-overflow",
+                "physical translation stream cannot start while a complete cue is queued or playing",
+            );
+            drop(queue);
+            drop(current);
+            let _ = write_framed_json(handle, &ack);
+            return;
+        }
+    }
+    if admission == PhysicalStreamAdmission::Duplicate {
+        let ack = accepted_audio_frame_ack(header, current.playback_frames_written);
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
+    if stream_state == TranslationStreamState::Abort {
+        current.physical_translation_stream_ledger.finish(cue_id);
+        let _ = playback_control_tx.send(PlaybackControlCommand::AbortTranslationStream {
+            cue_id: cue_id.to_string(),
+            reason: "physical-playback-stream-aborted".to_string(),
+            error_code: "bridge.translation-playback-failed".to_string(),
+        });
+        let ack = accepted_audio_frame_ack(header, current.playback_frames_written);
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
+    let playback_frames = monitor_samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
+    if !matches!(stream_state, TranslationStreamState::End | TranslationStreamState::Abort)
+        && next_ledger.reserve_frames(cue_id, playback_frames).is_err()
+    {
+        current.physical_translation_stream_ledger.finish(cue_id);
+        current.dropped_frame_count = current.dropped_frame_count.saturating_add(playback_frames);
+        current.last_error_code = Some("bridge.queue-overflow".to_string());
+        let _ = playback_control_tx.send(PlaybackControlCommand::AbortTranslationStream {
+            cue_id: cue_id.to_string(),
+            reason: "physical-stream-realtime-budget".to_string(),
+            error_code: "bridge.queue-overflow".to_string(),
+        });
+        let ack = rejected_audio_frame_ack(
+            header,
+            "bridge.queue-overflow",
+            "physical translation stream exceeds the five-second realtime buffer budget",
+        );
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
+    let now_ms = unix_ms();
+    let duration_ms = playback_frames
+        .saturating_mul(1_000)
+        .div_ceil(INTERNAL_SAMPLE_RATE_HZ as u64);
+    let job = PlaybackJob {
+        samples: monitor_samples,
+        device_id: current.physical_playback_device_id.clone(),
+        volume: playback_volume(current.physical_playback_level),
+        source_frame: false,
+        ducking_enabled: current.mix_control.ducking_enabled,
+        ducking_depth_percent: current.mix_control.ducking_depth_percent,
+        queued_at: Instant::now(),
+        source_generation: current.source_generation,
+        cue_id: Some(cue_id.to_string()),
+        created_at_ms: header.created_at_ms.unwrap_or(now_ms),
+        estimated_duration_ms: header.estimated_duration_ms.unwrap_or(duration_ms),
+        playback_duration_ms: duration_ms,
+        translation_generation: current.translation_generation,
+    };
+    if playback_tx
+        .try_send(PlaybackCommand::TranslationStream(PhysicalTranslationStreamCommand {
+            job,
+            state: stream_state,
+        }))
+        .is_err()
+    {
+        let ack = rejected_audio_frame_ack(header, "bridge.queue-overflow", "physical translation stream command queue is full");
+        drop(current);
+        let _ = write_framed_json(handle, &ack);
+        return;
+    }
+    current.physical_translation_stream_ledger = next_ledger;
+    current.translated_frames_accepted += header.frame_count as u64;
+    service_log(
+        LogLevel::Info,
+        &header.request_id,
+        &format!(
+            "event=translation_stream_frame status=accepted cueId={cue_id} streamState={} chunkIndex={chunk_index} frames={}",
+            stream_state.as_str(),
+            header.frame_count,
+        ),
+    );
     let ack = accepted_audio_frame_ack(header, current.playback_frames_written);
     let _ = fs::create_dir_all(runtime_root);
     let _ = fs::write(runtime_root.join("last-translation-frame.pcm"), payload);

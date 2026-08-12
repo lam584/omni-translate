@@ -2138,7 +2138,7 @@ function New-BridgeSourceProbeInitPayload {
   return [ordered]@{
     type = 'bridge.init'
     requestId = "watch-mode-probe-init-$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())"
-    protocolVersion = '2026-08-10-audio-routing-v6'
+    protocolVersion = '2026-08-13-audio-routing-v7'
     sessionId = $SessionId
     installChannel = 'development'
     targetDeviceId = 'virtual-mic-default'
@@ -2174,7 +2174,7 @@ function Invoke-BridgeSourceProbe {
   $probeRuntimeRoot = Join-Path $OutputDirectory "bridge-source-probe-runtime"
   New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
   $installStateJson = [ordered]@{
-    protocolVersion = '2026-08-10-audio-routing-v6'
+    protocolVersion = '2026-08-13-audio-routing-v7'
     installChannel = 'development'
     driverVersion = '0.10.0-dev'
     bridgeVersion = '0.1.0'
@@ -2370,7 +2370,7 @@ function Invoke-VirtualDriverMediaSourcePreflight {
   $preflightRoot = Join-Path $OutputDirectory "virtual-driver-media-source-preflight-runtime"
   New-Item -ItemType Directory -Force -Path $preflightRoot | Out-Null
   $installStateJson = [ordered]@{
-    protocolVersion = '2026-08-10-audio-routing-v6'
+    protocolVersion = '2026-08-13-audio-routing-v7'
     installChannel = 'development'
     driverVersion = '0.10.0-dev'
     bridgeVersion = '0.1.0'

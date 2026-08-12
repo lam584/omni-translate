@@ -92,7 +92,10 @@ const OMNI_READ_TIMEOUT_MS: u64 = 200;
 const OMNI_VAD_WARNING_INTERVAL_SECS: u64 = 30;
 const TRANSCRIPTION_COMPLETED_TIMEOUT_MS: u64 = 30_000;
 const OMNI_OUTPUT_SAMPLE_RATE_HZ: u32 = 24_000;
-const OMNI_PLAYBACK_QUEUE_CAPACITY: usize = 3;
+// Realtime native audio deltas may be as small as 20 ms. Capacity must permit
+// the full five-second time budget plus lifecycle control frames; projected
+// audio duration, not item count, remains the authoritative admission limit.
+const OMNI_PLAYBACK_QUEUE_CAPACITY: usize = 260;
 const OMNI_PLAYBACK_MAX_QUEUE_AGE: Duration = Duration::from_secs(5);
 const OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 500;
 const OMNI_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;

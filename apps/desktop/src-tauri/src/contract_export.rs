@@ -115,6 +115,7 @@ fn generated_files() -> Vec<GeneratedFile> {
                     decl::<protocol::MixControl>(),
                     decl::<protocol::TranslationAudioSink>(),
                     decl::<protocol::AudioRouteDirection>(),
+                    decl::<protocol::TranslationStreamState>(),
                     decl::<protocol::AudioFrameHeader>(),
                     decl::<protocol::TranslationPlaybackStatusKind>(),
                     decl::<protocol::TranslationPlaybackStatusEvent>(),

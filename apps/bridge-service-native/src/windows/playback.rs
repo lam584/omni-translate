@@ -141,6 +141,7 @@ fn handle_source_subscriber(
             estimated_duration_ms: None,
             chunk_index: None,
             chunk_count: None,
+            stream_state: None,
             translated_audio_enhancement_applied: false,
             translation_sink: None,
             route_direction: None,
@@ -208,13 +209,18 @@ fn run_playback_worker(
     translation_queue: Arc<Mutex<TranslationPlaybackQueue>>,
 ) {
     let mut output: Option<PlaybackOutput> = None;
+    let mut physical_stream: Option<ActivePhysicalTranslationStream> = None;
+    let mut cancelled_physical_streams = std::collections::HashSet::new();
     loop {
         apply_playback_control_commands(
             &playback_control_rx,
             &mut output,
             &state,
             &translation_queue,
+            &mut physical_stream,
+            &mut cancelled_physical_streams,
         );
+        finish_completed_physical_stream(&output, &state, &mut physical_stream);
         finish_completed_translation(&output, &state, &translation_queue);
 
         let disconnected = match playback_rx.recv_timeout(Duration::from_millis(
@@ -234,6 +240,16 @@ fn run_playback_worker(
                 play_source_job(job, &mut output, &state);
                 false
             }
+            Ok(PlaybackCommand::TranslationStream(command)) => {
+                play_physical_translation_stream(
+                    command,
+                    &mut output,
+                    &state,
+                    &mut physical_stream,
+                    &mut cancelled_physical_streams,
+                );
+                false
+            }
             Ok(PlaybackCommand::TranslationQueued) | Err(mpsc::RecvTimeoutError::Timeout) => false,
             Err(mpsc::RecvTimeoutError::Disconnected) => true,
         };
@@ -245,9 +261,122 @@ fn run_playback_worker(
             &mut output,
             &state,
             &translation_queue,
+            &mut physical_stream,
+            &mut cancelled_physical_streams,
         );
-        start_next_translation(&mut output, &state, &translation_queue);
+        if physical_stream.is_none() {
+            start_next_translation(&mut output, &state, &translation_queue);
+        }
     }
+}
+
+fn play_physical_translation_stream(
+    command: PhysicalTranslationStreamCommand,
+    output: &mut Option<PlaybackOutput>,
+    state: &Arc<Mutex<BridgeState>>,
+    active: &mut Option<ActivePhysicalTranslationStream>,
+    cancelled: &mut std::collections::HashSet<String>,
+) {
+    let PhysicalTranslationStreamCommand { job, state: stream_state } = command;
+    let cue_id = job.cue_id.clone().unwrap_or_default();
+    if cancelled.contains(&cue_id) {
+        if matches!(stream_state, TranslationStreamState::End | TranslationStreamState::Abort) {
+            cancelled.remove(&cue_id);
+        }
+        return;
+    }
+    if stream_state == TranslationStreamState::Abort {
+        if active.as_ref().is_some_and(|current| current.cue_id == cue_id) {
+            if let Some(output) = output.as_mut() {
+                output.translation_player.clear();
+            }
+            *active = None;
+            let mut current = state.lock().unwrap();
+            current.physical_translation_stream_ledger.finish(&cue_id);
+            current.monitor_playback_state = "ready".to_string();
+            current.emit_translation_status(
+                Some(&cue_id),
+                TranslationPlaybackStatusKind::RouteFailed,
+                "physical-playback-stream-aborted",
+                Some("bridge.translation-playback-failed"),
+            );
+        }
+        return;
+    }
+    if stream_state == TranslationStreamState::End {
+        if let Some(current) = active.as_mut().filter(|current| current.cue_id == cue_id) {
+            current.ended = true;
+        }
+        return;
+    }
+    if stream_state == TranslationStreamState::Start {
+        if active.is_some() {
+            let mut current = state.lock().unwrap();
+            current.dropped_frame_count += job.playback_duration_ms
+                .saturating_mul(INTERNAL_SAMPLE_RATE_HZ as u64) / 1_000;
+            current.last_error_code = Some("bridge.queue-overflow".to_string());
+            current.emit_translation_status(
+                Some(&cue_id),
+                TranslationPlaybackStatusKind::RouteFailed,
+                "physical-stream-overlap",
+                Some("bridge.queue-overflow"),
+            );
+            return;
+        }
+        if output.as_ref().map(|current| current.device_id.as_str()) != Some(job.device_id.as_str()) {
+            *output = match open_playback_output(&job.device_id) {
+                Ok(next) => Some(next),
+                Err(error) => {
+                    let mut current = state.lock().unwrap();
+                    current.physical_translation_stream_ledger.finish(&cue_id);
+                    current.last_error_code = Some("bridge.translation-playback-failed".to_string());
+                    current.emit_translation_status(
+                        Some(&cue_id),
+                        TranslationPlaybackStatusKind::RouteFailed,
+                        &format!("physical-output-open-failed:{error}"),
+                        Some("bridge.translation-playback-failed"),
+                    );
+                    return;
+                }
+            };
+        }
+        *active = Some(ActivePhysicalTranslationStream {
+            cue_id: cue_id.clone(),
+            created_at_ms: job.created_at_ms,
+            estimated_duration_ms: job.estimated_duration_ms,
+            playback_frames: 0,
+            translation_generation: job.translation_generation,
+            ended: false,
+        });
+        let mut current = state.lock().unwrap();
+        current.monitor_playback_state = "playing".to_string();
+        current.emit_translation_status(Some(&cue_id), TranslationPlaybackStatusKind::Queued, "accepted-stream", None);
+        current.emit_translation_status(Some(&cue_id), TranslationPlaybackStatusKind::Started, "physical-playback-stream-started", None);
+    }
+    let Some(stream) = active.as_mut().filter(|current| {
+        current.cue_id == cue_id && current.translation_generation == job.translation_generation
+    }) else { return; };
+    let Some(output) = output.as_mut() else { return; };
+    flush_source_pending(output);
+    output.translation_generation = Some(job.translation_generation);
+    output.translation_player.set_volume(job.volume);
+    output.translation_player.play();
+    let frames = job.samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
+    output.translation_player.append(SamplesBuffer::new(
+        NonZeroU16::new(INTERNAL_CHANNEL_COUNT).unwrap(),
+        NonZeroU32::new(INTERNAL_SAMPLE_RATE_HZ).unwrap(),
+        job.samples,
+    ));
+    stream.playback_frames = stream.playback_frames.saturating_add(frames);
+    stream.estimated_duration_ms = stream
+        .estimated_duration_ms
+        .saturating_add(job.playback_duration_ms);
+    let mut current = state.lock().unwrap();
+    current.resolved_physical_playback_device_id = output.resolved_device_id.clone();
+    current.playback_frames_written = current.playback_frames_written.saturating_add(frames);
+    current.translation_queue_end_timestamp_ms = unix_ms().saturating_add(
+        output.translation_player.len() as u64 * 1_000,
+    );
 }
 
 fn apply_playback_control_commands(
@@ -255,8 +384,30 @@ fn apply_playback_control_commands(
     output: &mut Option<PlaybackOutput>,
     state: &Arc<Mutex<BridgeState>>,
     translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
+    physical_stream: &mut Option<ActivePhysicalTranslationStream>,
+    cancelled_physical_streams: &mut std::collections::HashSet<String>,
 ) {
-    while let Ok(PlaybackControlCommand::StopAll(request)) = playback_control_rx.try_recv() {
+    while let Ok(command) = playback_control_rx.try_recv() {
+        let PlaybackControlCommand::StopAll(request) = command else {
+            let PlaybackControlCommand::AbortTranslationStream { cue_id, reason, error_code } = command else { unreachable!() };
+            if physical_stream.as_ref().is_some_and(|stream| stream.cue_id == cue_id) {
+                if let Some(output) = output.as_mut() {
+                    output.translation_player.clear();
+                }
+                *physical_stream = None;
+            }
+            let mut current = state.lock().unwrap();
+            cancelled_physical_streams.insert(cue_id.clone());
+            current.physical_translation_stream_ledger.finish(&cue_id);
+            current.monitor_playback_state = "ready".to_string();
+            current.emit_translation_status(
+                Some(&cue_id),
+                TranslationPlaybackStatusKind::RouteFailed,
+                &reason,
+                Some(&error_code),
+            );
+            continue;
+        };
         if let Some(output) = output.as_mut() {
             output.source_pending_samples.clear();
             output.source_player.clear();
@@ -269,6 +420,8 @@ fn apply_playback_control_commands(
                 output.translation_generation = None;
             }
         }
+        *physical_stream = None;
+        cancelled_physical_streams.clear();
         if request.recreate_output {
             *output = None;
         }

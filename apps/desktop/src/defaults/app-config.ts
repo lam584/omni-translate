@@ -258,7 +258,7 @@ export const appConfigDraftMock: AppConfigDraft = {
     status: 'warning',
   },
   driver: {
-    protocolVersion: '2026-08-10-audio-routing-v6',
+    protocolVersion: '2026-08-13-audio-routing-v7',
     installChannel: 'development',
     installPhase: 'rollback-required',
     targetDeviceId: 'virtual-mic-default',

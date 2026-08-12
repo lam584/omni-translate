@@ -618,6 +618,7 @@ mod probe {
             estimated_duration_ms: Some(duration_ms),
             chunk_index: None,
             chunk_count: None,
+            stream_state: None,
             translated_audio_enhancement_applied: false,
             translation_sink: Some(TranslationAudioSink::PhysicalPlayback),
             route_direction: Some(AudioRouteDirection::Inbound),

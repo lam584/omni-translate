@@ -181,6 +181,7 @@ fn build_virtual_mic_header(
         estimated_duration_ms: Some((frame_count as u64 * 1_000).div_ceil(48_000)),
         chunk_index: Some(0),
         chunk_count: Some(1),
+        stream_state: None,
         translated_audio_enhancement_applied: true,
         translation_sink: Some(TranslationAudioSink::VirtualMic),
         route_direction: Some(AudioRouteDirection::Outbound),

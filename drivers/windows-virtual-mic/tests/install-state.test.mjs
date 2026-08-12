@@ -422,7 +422,7 @@ function virtualMicCaptureAuthorityFixture(wav, expectedPcm, startFrame) {
     collectorVersion: '0.1.0',
     parentCollectorProcessId: 101,
     captureChildProcessId: 202,
-    bridgeProtocolVersion: '2026-08-10-audio-routing-v6',
+    bridgeProtocolVersion: '2026-08-13-audio-routing-v7',
     bridgeProcessId: 303,
     bridgeInstanceId: 'bridge-instance-fixture',
     bridgeSessionId: sessionId,
@@ -528,7 +528,7 @@ test('VMic health authority is recomputed from raw v6 endpoint/counter/timeline/
   assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
   const projection = JSON.parse(result.stdout);
   assert.equal(projection.passed, true);
-  assert.equal(projection.protocolVersion, '2026-08-10-audio-routing-v6');
+  assert.equal(projection.protocolVersion, '2026-08-13-audio-routing-v7');
   assert.equal(projection.bridgeProcessId, 303);
   assert.equal(projection.fingerprintAuthority.algorithm, 'omni-vmic-fingerprint-pcm16-v1');
   assert.equal(projection.fingerprintAuthority.maxSampleDelta, 1);

@@ -1,7 +1,7 @@
 {
     "sourceCommit":  null,
     "sourceProvenance":  null,
-    "protocolVersion":  "2026-08-10-audio-routing-v6",
+    "protocolVersion":  "2026-08-13-audio-routing-v7",
     "configuration":  "Release",
     "platform":  "x64",
     "minimumWindowsBuild":  19041,

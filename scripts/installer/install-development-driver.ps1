@@ -142,7 +142,7 @@ function Assert-OmniStableReleasePackage {
   }
   if (
     -not $Metadata -or
-    $Metadata.protocolVersion -ne '2026-08-10-audio-routing-v6' -or
+    $Metadata.protocolVersion -ne '2026-08-13-audio-routing-v7' -or
     $Metadata.configuration -ne 'Release' -or
     $Metadata.platform -ne 'x64' -or
     $Metadata.signingMode -ne 'release-injected' -or
@@ -329,7 +329,7 @@ if ($InstallChannel -eq 'release') {
 }
 
 $state = [ordered]@{
-  protocolVersion = '2026-08-10-audio-routing-v6'
+  protocolVersion = '2026-08-13-audio-routing-v7'
   installChannel = $InstallChannel
   driverVersion = if ($InstallChannel -eq 'release') { [string]$installedDriverAuthority.installedDriverVersion } else { $DriverVersion }
   requestedDriverVersion = $DriverVersion

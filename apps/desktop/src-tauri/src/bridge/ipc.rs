@@ -24,6 +24,7 @@ use super::contracts::{
     BridgeShutdownRequest, BridgeSourceFlushRequest, BridgeStateQuery, BridgeStateResponse,
     BridgeTranslationFrameAck, BridgeTranslationFrameHeader, DriverBridgeCommand,
     DriverBridgeErrorEvent, DriverBridgeEvent, TranslationAudioSink,
+    TranslationStreamState,
 };
 use super::state::BridgeStateStore;
 
@@ -1047,6 +1048,7 @@ mod tests {
             192_000,
             1_750_000_000_123,
             1_000,
+            None,
             None,
             None,
         );

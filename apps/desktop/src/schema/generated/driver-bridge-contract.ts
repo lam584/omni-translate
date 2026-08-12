@@ -14,6 +14,8 @@ export type TranslationAudioSink = "physical-playback" | "virtual-mic";
 
 export type AudioRouteDirection = "inbound" | "outbound";
 
+export type TranslationStreamState = "start" | "chunk" | "end" | "abort";
+
 export type AudioFrameHeader = { type: 'bridge.source.frame' | 'bridge.source.heartbeat' | 'bridge.source.error' | 'bridge.translation.frame', requestId: string, sessionId: string, frameId: string, streamId: string, sampleRateHz: 16000 | 24000 | 48000, sampleFormat: 'pcm-s16le', channelCount: 1 | 2, frameCount: number, timestampMs: number, payloadBytes: number,
 /**
  * Native Bridge process that produced a source frame. Translation frames
@@ -44,7 +46,12 @@ sourceGenerationToken?: string, cueId?: string, createdAtMs?: number, estimatedD
  * require both chunk fields so cue terminal events never depend on a
  * request-id naming convention or an inactivity timer.
  */
-chunkIndex?: number, chunkCount?: number, translatedAudioEnhancementApplied: boolean,
+chunkIndex?: number, chunkCount?: number,
+/**
+ * Open-ended physical playback stream phase. Present only for streaming
+ * physical translation; fixed virtual-mic chunks leave it absent.
+ */
+streamState?: TranslationStreamState, translatedAudioEnhancementApplied: boolean,
 /**
  * Required by `bridge.translation.frame` and absent from source frames.
  * The Bridge validates it before dispatching any translated PCM.

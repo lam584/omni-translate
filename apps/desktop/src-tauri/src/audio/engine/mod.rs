@@ -1229,6 +1229,7 @@ mod tests {
             estimated_duration_ms: None,
             chunk_index: None,
             chunk_count: None,
+            stream_state: None,
             translated_audio_enhancement_applied: false,
             translation_sink: None,
             route_direction: None,

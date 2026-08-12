@@ -4,7 +4,7 @@ use ts_rs::TS;
 pub(crate) use omni_bridge_protocol::{
     AudioFrameAck as BridgeTranslationFrameAck, AudioFrameHeader as BridgeTranslationFrameHeader,
     AudioRouteDirection, AudioSampleFormat, CaptureBackend, MixControl as BridgeMixControl,
-    ProcessLoopbackStatus, SourceCaptureMode, TranslationAudioSink,
+    ProcessLoopbackStatus, SourceCaptureMode, TranslationAudioSink, TranslationStreamState,
 };
 
 #[derive(Clone, Serialize, Deserialize, TS)]
@@ -337,7 +337,7 @@ pub(crate) enum DriverBridgeEvent {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeInitRequest {
     pub request_id: String,
-    #[ts(type = "'2026-08-10-audio-routing-v6'")]
+    #[ts(type = "'2026-08-13-audio-routing-v7'")]
     pub protocol_version: String,
     pub session_id: String,
     #[ts(type = "'development' | 'release'")]
@@ -359,7 +359,7 @@ pub(crate) struct BridgeInitRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeInitResponse {
     pub request_id: String,
-    #[ts(type = "'2026-08-10-audio-routing-v6'")]
+    #[ts(type = "'2026-08-13-audio-routing-v7'")]
     pub protocol_version: String,
     #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,
@@ -408,7 +408,7 @@ fn default_virtual_mic_output_status() -> String {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeProcessLoopbackProbeRequest {
     pub request_id: String,
-    #[ts(type = "'2026-08-10-audio-routing-v6'")]
+    #[ts(type = "'2026-08-13-audio-routing-v7'")]
     pub protocol_version: String,
 }
 
@@ -416,7 +416,7 @@ pub(crate) struct BridgeProcessLoopbackProbeRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeProcessLoopbackProbeResponse {
     pub request_id: String,
-    #[ts(type = "'2026-08-10-audio-routing-v6'")]
+    #[ts(type = "'2026-08-13-audio-routing-v7'")]
     pub protocol_version: String,
     pub process_loopback_supported: bool,
     pub process_loopback_status: ProcessLoopbackStatus,
@@ -453,7 +453,7 @@ const fn default_process_loopback_minimum_windows_build() -> u32 {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BridgeStateResponse {
     pub request_id: String,
-    #[ts(type = "'2026-08-10-audio-routing-v6'")]
+    #[ts(type = "'2026-08-13-audio-routing-v7'")]
     pub protocol_version: String,
     #[ts(type = "'stopped' | 'starting' | 'running' | 'degraded'")]
     pub bridge_state: String,

@@ -3,7 +3,11 @@
     const PROCESS_TRANSLATION_FINGERPRINT_HZ: f32 = 997.0;
     const PROCESS_EXTERNAL_FINGERPRINT_HZ: f32 = 1_733.0;
     const PROCESS_CHILD_FINGERPRINT_HZ: f32 = 2_449.0;
-    const PROCESS_FINGERPRINT_AMPLITUDE: f32 = 0.24;
+    // Keep the authority threshold strict while surviving endpoints that apply
+    // a fixed shared-mode attenuation. 0.36 remains below clipping even
+    // with all three diagnostic tones present; the production translation
+    // playback level is still independently verified at 50%.
+    const PROCESS_FINGERPRINT_AMPLITUDE: f32 = 0.36;
     const PROCESS_FINGERPRINT_SECONDS: f32 = 2.0;
     const PROCESS_CAPTURE_WINDOW_MS: u64 = 2_800;
     const MIN_PROCESS_FINGERPRINT_COMPONENT: f32 = 0.01;

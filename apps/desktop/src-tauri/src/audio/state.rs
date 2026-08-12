@@ -740,6 +740,17 @@ impl AudioStateStore {
         };
     }
 
+    pub(crate) fn active_omni_speech_config(&self) -> Option<OmniSpeechConfig> {
+        let slot = self
+            .active_omni_speech_config
+            .lock()
+            .expect("omni speech config slot poisoned");
+        slot.as_ref().map(|shared| match shared.read() {
+            Ok(config) => config.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        })
+    }
+
     /// Returns `true` exactly once for a non-empty Bridge translation status
     /// id during this Desktop process lifetime. The caller applies the status
     /// before sending its ACK; replayed delivery is ACKed again but skipped.

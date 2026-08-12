@@ -73,7 +73,9 @@ export const PERFORMANCE_THRESHOLDS = Object.freeze({
   ttsRoundTripLatencyMs: 2200,
   cpuP95Percent: 65,
   memoryPeakMb: 900,
-  stabilityWindowMinutes: 10,
+  stabilityWindowMinutes: Math.min(
+    ...MODEL_STABILITY_CELLS.map((cell) => cell.durationSeconds / 60),
+  ),
   allowedDropouts: 0,
 });
 

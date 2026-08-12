@@ -38,6 +38,7 @@ pub(crate) fn write_virtual_mic_frame<R: tauri::Runtime>(
             estimated_duration_ms,
             Some(index as u32),
             Some(chunks.len() as u32),
+            None,
         )?;
     }
     Ok(accepted_frames)
@@ -72,6 +73,40 @@ pub(crate) fn write_process_playback_cue<R: tauri::Runtime>(
         estimated_duration_ms,
         None,
         None,
+        None,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn write_process_playback_stream<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    cue_id: &str,
+    request_id: &str,
+    route_direction: &str,
+    samples: &[i16],
+    sample_rate_hz: u32,
+    channel_count: u16,
+    created_at_ms: u64,
+    estimated_duration_ms: u64,
+    chunk_index: u32,
+    stream_state: TranslationStreamState,
+) -> Result<u64, String> {
+    validate_translation_audio_format(samples, sample_rate_hz, channel_count)?;
+    write_bridge_audio_frame(
+        app,
+        "bridge.translation.frame",
+        cue_id,
+        request_id,
+        route_direction,
+        TranslationAudioSink::PhysicalPlayback,
+        samples,
+        sample_rate_hz,
+        channel_count,
+        created_at_ms,
+        estimated_duration_ms,
+        Some(chunk_index),
+        None,
+        Some(stream_state),
     )
 }
 
@@ -152,6 +187,7 @@ fn translation_frame_header(
     estimated_duration_ms: u64,
     chunk_index: Option<u32>,
     chunk_count: Option<u32>,
+    stream_state: Option<TranslationStreamState>,
 ) -> BridgeTranslationFrameHeader {
     BridgeTranslationFrameHeader {
         event_type: event_type.to_string(),
@@ -174,6 +210,7 @@ fn translation_frame_header(
         estimated_duration_ms: Some(estimated_duration_ms),
         chunk_index,
         chunk_count,
+        stream_state,
         translated_audio_enhancement_applied: true,
         translation_sink: Some(translation_sink),
         route_direction: Some(route_direction),
@@ -204,6 +241,7 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
     estimated_duration_ms: u64,
     chunk_index: Option<u32>,
     chunk_count: Option<u32>,
+    stream_state: Option<TranslationStreamState>,
 ) -> Result<u64, String> {
     let route_direction = parse_route_direction(route_direction)?;
     let bridge_state = app.state::<BridgeStateStore>();
@@ -251,6 +289,7 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         estimated_duration_ms,
         chunk_index,
         chunk_count,
+        stream_state,
     );
     let header_bytes = serde_json::to_vec(&header).map_err(|error| error.to_string())?;
     let mut audio_pipe = OpenOptions::new()

@@ -21,6 +21,10 @@ pub(super) struct OmniSocketEventState<S: RealtimeSocket, R: tauri::Runtime = ta
     pub(super) pending_audio_delta_count: u64,
     pub(super) pending_audio_delta_base64_bytes: u64,
     pub(super) pending_audio_response_id: Option<String>,
+    pub(super) pending_audio_stream_cue_id: Option<String>,
+    pub(super) pending_audio_stream_chunk_index: u32,
+    pub(super) pending_audio_stream_created_at_ms: Option<u64>,
+    pub(super) pending_audio_stream_aborted: bool,
     pub(super) last_vad_event_time: SystemTime,
     pub(super) vad_event_count: u64,
     pub(super) transcription_completed_flag: bool,
@@ -82,7 +86,7 @@ impl OmniSocketEventProcessor {
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
     ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
-        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, sent_audio_since_commit, audio_samples_since_commit, manual_turn_audio_after_response } = state;
+        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut pending_audio_stream_cue_id, mut pending_audio_stream_chunk_index, mut pending_audio_stream_created_at_ms, mut pending_audio_stream_aborted, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, sent_audio_since_commit, audio_samples_since_commit, manual_turn_audio_after_response } = state;
         let OmniSocketEventContext {
             app, store, direction, session_generation, session_started_at,
             subtitle_translate_active, native_translation_reuse_active,
@@ -116,6 +120,10 @@ let mut stop_worker = false;
                         pending_audio_delta_count,
                         pending_audio_delta_base64_bytes,
                         pending_audio_response_id,
+                        pending_audio_stream_cue_id,
+                        pending_audio_stream_chunk_index,
+                        pending_audio_stream_created_at_ms,
+                        pending_audio_stream_aborted,
                         last_vad_event_time,
                         vad_event_count,
                         transcription_completed_flag,
@@ -517,20 +525,34 @@ match socket.read_message() {
                             native_response_id_from_event(&evt),
                             current_cue_id.as_deref(),
                         );
+                        let audio_delta_cue_id = native_response_id_from_event(&evt)
+                            .and_then(|response_id| event_diagnostics.native_response_cue_for_response_id(response_id))
+                            .or_else(|| current_cue_id.clone());
                         let output = OmniEventProcessor::process_audio_delta(
                             OmniAudioOutputState {
                                 pending_audio_delta_count,
                                 pending_audio_delta_base64_bytes,
                                 pending_audio_response_id,
                                 pending_audio_buffer,
+                                pending_audio_stream_cue_id,
+                                pending_audio_stream_chunk_index,
+                                pending_audio_stream_created_at_ms,
+                                pending_audio_stream_aborted,
                             },
                             &app,
                             &evt,
+                            direction,
+                            audio_delta_cue_id.as_deref(),
+                            playback_tx,
                         );
                         pending_audio_delta_count = output.pending_audio_delta_count;
                         pending_audio_delta_base64_bytes = output.pending_audio_delta_base64_bytes;
                         pending_audio_response_id = output.pending_audio_response_id;
                         pending_audio_buffer = output.pending_audio_buffer;
+                        pending_audio_stream_cue_id = output.pending_audio_stream_cue_id;
+                        pending_audio_stream_chunk_index = output.pending_audio_stream_chunk_index;
+                        pending_audio_stream_created_at_ms = output.pending_audio_stream_created_at_ms;
+                        pending_audio_stream_aborted = output.pending_audio_stream_aborted;
                     }
                     "response.audio.done" => {
                         let audio_response_id = native_response_id_from_event(&evt)
@@ -557,15 +579,24 @@ match socket.read_message() {
                                 pending_audio_delta_base64_bytes,
                                 pending_audio_response_id,
                                 pending_audio_buffer,
+                                pending_audio_stream_cue_id,
+                                pending_audio_stream_chunk_index,
+                                pending_audio_stream_created_at_ms,
+                                pending_audio_stream_aborted,
                             },
                             &app,
                             &playback_tx,
                             audio_cue_id.as_deref(),
+                            direction,
                         );
                         pending_audio_delta_count = output.pending_audio_delta_count;
                         pending_audio_delta_base64_bytes = output.pending_audio_delta_base64_bytes;
                         pending_audio_response_id = output.pending_audio_response_id;
                         pending_audio_buffer = output.pending_audio_buffer;
+                        pending_audio_stream_cue_id = output.pending_audio_stream_cue_id;
+                        pending_audio_stream_chunk_index = output.pending_audio_stream_chunk_index;
+                        pending_audio_stream_created_at_ms = output.pending_audio_stream_created_at_ms;
+                        pending_audio_stream_aborted = output.pending_audio_stream_aborted;
                     }
                     "input_audio_buffer.speech_stopped" => {
                         last_vad_event_time = SystemTime::now();

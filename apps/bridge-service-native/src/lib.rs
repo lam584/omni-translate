@@ -8,6 +8,7 @@ pub use omni_bridge_protocol::{
     accepted_audio_frame_ack, decode_pcm16le, encode_pcm16le, rejected_audio_frame_ack,
     AudioFrameAck, AudioFrameHeader, AudioRouteDirection, AudioSampleFormat, CaptureBackend,
     MixControl, ProcessLoopbackStatus, SourceCaptureMode, TranslationAudioSink,
+    TranslationStreamState,
     BRIDGE_PROTOCOL_VERSION,
 };
 
@@ -420,6 +421,18 @@ pub fn validate_translation_frame(
             header,
             "bridge.invalid-pcm-payload",
             "virtual microphone frames require a valid chunkIndex/chunkCount pair",
+        ));
+    }
+    if header.translation_sink == Some(TranslationAudioSink::PhysicalPlayback)
+        && header.stream_state.is_some()
+        && (header.cue_id.as_deref().is_none_or(str::is_empty)
+            || header.chunk_index.is_none()
+            || header.chunk_count.is_some())
+    {
+        return Err(rejected_audio_frame_ack(
+            header,
+            "bridge.invalid-pcm-payload",
+            "streaming physical playback requires cueId/chunkIndex and forbids chunkCount",
         ));
     }
     let expected_bytes = header
@@ -1047,6 +1060,41 @@ mod tests {
         wrong_size.payload_bytes = 2;
         assert_eq!(
             validate_translation_frame(Some("session-1"), &wrong_size, &[1, 0])
+                .unwrap_err()
+                .error_code
+                .as_deref(),
+            Some("bridge.invalid-pcm-payload")
+        );
+    }
+
+    #[test]
+    fn streaming_physical_frame_requires_open_ended_chunk_identity() {
+        let mut header = translation_header();
+        header.translation_sink = Some(TranslationAudioSink::PhysicalPlayback);
+        header.stream_state = Some(TranslationStreamState::Start);
+        header.chunk_index = Some(0);
+        header.chunk_count = None;
+        header.cue_id = Some("stream-cue".to_string());
+        assert!(
+            validate_translation_frame(Some("session-1"), &header, &[1, 0, 2, 0]).is_ok(),
+            "{:?}",
+            validate_translation_frame(Some("session-1"), &header, &[1, 0, 2, 0])
+        );
+
+        let mut fixed_count = header.clone();
+        fixed_count.chunk_count = Some(1);
+        assert_eq!(
+            validate_translation_frame(Some("session-1"), &fixed_count, &[1, 0, 2, 0])
+                .unwrap_err()
+                .error_code
+                .as_deref(),
+            Some("bridge.invalid-pcm-payload")
+        );
+
+        let mut missing_cue = header;
+        missing_cue.cue_id = None;
+        assert_eq!(
+            validate_translation_frame(Some("session-1"), &missing_cue, &[1, 0, 2, 0])
                 .unwrap_err()
                 .error_code
                 .as_deref(),

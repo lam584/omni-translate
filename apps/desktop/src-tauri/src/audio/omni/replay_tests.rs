@@ -286,6 +286,10 @@ impl ReplayHarness {
                 pending_audio_delta_count: slice.pending_audio_delta_count,
                 pending_audio_delta_base64_bytes: slice.pending_audio_delta_base64_bytes,
                 pending_audio_response_id: slice.pending_audio_response_id.clone(),
+                pending_audio_stream_cue_id: None,
+                pending_audio_stream_chunk_index: 0,
+                pending_audio_stream_created_at_ms: None,
+                pending_audio_stream_aborted: false,
                 last_vad_event_time: slice.last_vad_event_time,
                 vad_event_count: slice.vad_event_count,
                 transcription_completed_flag: slice.transcription_completed_flag,
@@ -378,6 +382,10 @@ impl ReplayHarness {
                 &mut slice.pending_audio_delta_count,
                 &mut slice.pending_audio_delta_base64_bytes,
                 &mut slice.pending_audio_response_id,
+                &mut None,
+                &mut 0,
+                &mut None,
+                &mut false,
                 &mut slice.session_ready_for_audio,
             );
         }

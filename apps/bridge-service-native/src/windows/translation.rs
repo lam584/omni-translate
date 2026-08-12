@@ -18,7 +18,14 @@ struct PlaybackJob {
 enum PlaybackCommand {
     Play(PlaybackJob),
     TranslationQueued,
+    TranslationStream(PhysicalTranslationStreamCommand),
     FlushSource,
+}
+
+#[derive(Debug)]
+struct PhysicalTranslationStreamCommand {
+    job: PlaybackJob,
+    state: TranslationStreamState,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -40,6 +47,11 @@ struct PlaybackStopRequest {
 
 enum PlaybackControlCommand {
     StopAll(PlaybackStopRequest),
+    AbortTranslationStream {
+        cue_id: String,
+        reason: String,
+        error_code: String,
+    },
 }
 
 struct ActiveTranslationPlayback {
@@ -48,6 +60,55 @@ struct ActiveTranslationPlayback {
     estimated_duration_ms: u64,
     playback_frames: u64,
     expected_end_ms: u64,
+}
+
+struct ActivePhysicalTranslationStream {
+    cue_id: String,
+    created_at_ms: u64,
+    estimated_duration_ms: u64,
+    playback_frames: u64,
+    translation_generation: u64,
+    ended: bool,
+}
+
+fn finish_completed_physical_stream(
+    output: &Option<PlaybackOutput>,
+    state: &Arc<Mutex<BridgeState>>,
+    active: &mut Option<ActivePhysicalTranslationStream>,
+) {
+    let Some(stream) = active.as_ref() else { return; };
+    if !stream.ended
+        || output
+            .as_ref()
+            .map(|current| !current.translation_player.empty())
+            .unwrap_or(false)
+    {
+        return;
+    }
+    let completed = active.take().unwrap();
+    let now_ms = unix_ms();
+    let mut current = state.lock().unwrap();
+    current.physical_translation_stream_ledger.finish(&completed.cue_id);
+    current.monitor_playback_state = "ready".to_string();
+    current.translation_queue_end_timestamp_ms = now_ms;
+    current.emit_translation_status(
+        Some(&completed.cue_id),
+        TranslationPlaybackStatusKind::Completed,
+        "physical-playback-stream-completed",
+        None,
+    );
+    drop(current);
+    service_log(
+        LogLevel::Info,
+        &completed.cue_id,
+        &format!(
+            "event=translation_playback_status status=completed cueId={} totalAgeMs={} estimatedDurationMs={} playbackFrames={}",
+            completed.cue_id,
+            now_ms.saturating_sub(completed.created_at_ms),
+            completed.estimated_duration_ms,
+            completed.playback_frames,
+        ),
+    );
 }
 
 #[derive(Debug)]
@@ -129,6 +190,232 @@ struct TranslationPlaybackQueue {
     capacity: usize,
     pending: VecDeque<PlaybackJob>,
     active: Option<ActiveTranslationPlayback>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PhysicalStreamAdmission {
+    Start,
+    Chunk,
+    End,
+    Duplicate,
+}
+
+#[derive(Clone, Default)]
+struct PhysicalTranslationStreamLedger {
+    active: std::collections::HashMap<String, PhysicalTranslationStreamCursor>,
+    completed: std::collections::HashSet<String>,
+}
+
+#[derive(Clone)]
+struct PhysicalTranslationStreamCursor {
+    next_chunk_index: u32,
+    ended: bool,
+    started_at: Instant,
+    accepted_frames: u64,
+}
+
+impl PhysicalTranslationStreamLedger {
+    fn active_cue_ids(&self) -> Vec<String> {
+        self.active.keys().cloned().collect()
+    }
+    fn admit(
+        &mut self,
+        cue_id: &str,
+        chunk_index: u32,
+        state: TranslationStreamState,
+    ) -> Result<PhysicalStreamAdmission, &'static str> {
+        if self.completed.contains(cue_id) {
+            return Ok(PhysicalStreamAdmission::Duplicate);
+        }
+        match state {
+            TranslationStreamState::Start => {
+                if chunk_index != 0 || !self.active.is_empty() {
+                    return Err("physical stream start must be the first chunk");
+                }
+                self.active.insert(
+                    cue_id.to_string(),
+                    PhysicalTranslationStreamCursor {
+                        next_chunk_index: 1,
+                        ended: false,
+                        started_at: Instant::now(),
+                        accepted_frames: 0,
+                    },
+                );
+                Ok(PhysicalStreamAdmission::Start)
+            }
+            TranslationStreamState::Chunk => {
+                let Some(next) = self.active.get_mut(cue_id) else {
+                    return Err("physical stream chunk requires an active cue");
+                };
+                if next.ended {
+                    return Err("physical stream chunk cannot follow stream end");
+                }
+                if chunk_index < next.next_chunk_index {
+                    return Ok(PhysicalStreamAdmission::Duplicate);
+                }
+                if chunk_index != next.next_chunk_index {
+                    return Err("physical stream chunks must be contiguous");
+                }
+                next.next_chunk_index = next.next_chunk_index.saturating_add(1);
+                Ok(PhysicalStreamAdmission::Chunk)
+            }
+            TranslationStreamState::End => {
+                let Some(next) = self.active.get_mut(cue_id) else {
+                    return Err("physical stream end requires an active cue");
+                };
+                if next.ended && chunk_index == next.next_chunk_index {
+                    return Ok(PhysicalStreamAdmission::Duplicate);
+                }
+                if chunk_index != next.next_chunk_index {
+                    return Err("physical stream end must follow the final chunk");
+                }
+                next.ended = true;
+                Ok(PhysicalStreamAdmission::End)
+            }
+            TranslationStreamState::Abort => {
+                if !self.active.contains_key(cue_id) {
+                    return Err("physical stream abort requires an active cue");
+                }
+                Ok(PhysicalStreamAdmission::End)
+            }
+        }
+    }
+
+    fn finish(&mut self, cue_id: &str) {
+        if self.active.remove(cue_id).is_some() {
+            self.completed.insert(cue_id.to_string());
+        }
+    }
+
+    fn reserve_frames(&mut self, cue_id: &str, frames: u64) -> Result<(), &'static str> {
+        let Some(cursor) = self.active.get_mut(cue_id) else {
+            return Err("physical stream frame reservation requires an active cue");
+        };
+        let elapsed_frames = cursor
+            .started_at
+            .elapsed()
+            .as_secs_f64()
+            .mul_add(INTERNAL_SAMPLE_RATE_HZ as f64, 0.0) as u64;
+        let max_accepted = elapsed_frames.saturating_add(
+            INTERNAL_SAMPLE_RATE_HZ as u64 * TRANSLATION_MAX_PROJECTED_LATENCY_MS / 1_000,
+        );
+        let next = cursor.accepted_frames.saturating_add(frames);
+        if next > max_accepted {
+            return Err("physical translation stream exceeds the five-second realtime buffer budget");
+        }
+        cursor.accepted_frames = next;
+        Ok(())
+    }
+
+    fn reset(&mut self) {
+        self.active.clear();
+        self.completed.clear();
+    }
+}
+
+impl BridgeState {
+    fn reset_translation_cue_ledgers(&mut self) {
+        self.virtual_mic_cue_ledger.reset();
+        self.physical_translation_stream_ledger.reset();
+    }
+
+    fn physical_translation_stream_active(&self) -> bool {
+        !self.physical_translation_stream_ledger.active.is_empty()
+    }
+}
+
+fn prepare_physical_stream_admission(
+    ledger: &PhysicalTranslationStreamLedger,
+    cue_id: &str,
+    chunk_index: u32,
+    state: TranslationStreamState,
+) -> Result<(PhysicalTranslationStreamLedger, PhysicalStreamAdmission), &'static str> {
+    let mut next = ledger.clone();
+    let admission = next.admit(cue_id, chunk_index, state)?;
+    Ok((next, admission))
+}
+
+#[cfg(test)]
+mod physical_stream_tests {
+    use super::*;
+
+    #[test]
+    fn open_ended_physical_stream_requires_contiguous_start_chunks_and_end() {
+        let mut ledger = PhysicalTranslationStreamLedger::default();
+        assert_eq!(
+            ledger.admit("cue", 0, TranslationStreamState::Start),
+            Ok(PhysicalStreamAdmission::Start)
+        );
+        assert_eq!(
+            ledger.admit("cue", 1, TranslationStreamState::Chunk),
+            Ok(PhysicalStreamAdmission::Chunk)
+        );
+        assert_eq!(
+            ledger.admit("cue", 2, TranslationStreamState::Chunk),
+            Ok(PhysicalStreamAdmission::Chunk)
+        );
+        assert_eq!(
+            ledger.admit("cue", 3, TranslationStreamState::End),
+            Ok(PhysicalStreamAdmission::End)
+        );
+    }
+
+    #[test]
+    fn physical_stream_rejects_gaps_and_is_idempotent_after_completion() {
+        let mut ledger = PhysicalTranslationStreamLedger::default();
+        assert!(ledger
+            .admit("cue", 1, TranslationStreamState::Start)
+            .is_err());
+        assert_eq!(
+            ledger.admit("cue", 0, TranslationStreamState::Start),
+            Ok(PhysicalStreamAdmission::Start)
+        );
+        assert!(ledger
+            .admit("cue", 2, TranslationStreamState::Chunk)
+            .is_err());
+        assert_eq!(
+            ledger.admit("cue", 1, TranslationStreamState::End),
+            Ok(PhysicalStreamAdmission::End)
+        );
+        assert_eq!(
+            ledger.admit("cue", 1, TranslationStreamState::End),
+            Ok(PhysicalStreamAdmission::Duplicate)
+        );
+    }
+
+    #[test]
+    fn physical_stream_rejects_a_second_cue_until_the_active_cue_ends() {
+        let mut ledger = PhysicalTranslationStreamLedger::default();
+        assert_eq!(
+            ledger.admit("first", 0, TranslationStreamState::Start),
+            Ok(PhysicalStreamAdmission::Start)
+        );
+        assert!(ledger
+            .admit("second", 0, TranslationStreamState::Start)
+            .is_err());
+        assert_eq!(ledger.active_cue_ids(), ["first"]);
+        ledger.reset();
+        assert_eq!(
+            ledger.admit("second", 0, TranslationStreamState::Start),
+            Ok(PhysicalStreamAdmission::Start)
+        );
+    }
+
+    #[test]
+    fn physical_stream_budget_is_elapsed_playback_plus_five_seconds() {
+        let mut ledger = PhysicalTranslationStreamLedger::default();
+        assert_eq!(
+            ledger.admit("cue", 0, TranslationStreamState::Start),
+            Ok(PhysicalStreamAdmission::Start)
+        );
+        let budget_frames = INTERNAL_SAMPLE_RATE_HZ as u64
+            * TRANSLATION_MAX_PROJECTED_LATENCY_MS
+            / 1_000;
+        assert!(ledger.reserve_frames("cue", budget_frames).is_ok());
+        assert!(ledger
+            .reserve_frames("cue", INTERNAL_SAMPLE_RATE_HZ as u64)
+            .is_err());
+    }
 }
 
 impl TranslationPlaybackQueue {
@@ -306,7 +593,11 @@ fn request_playback_stop(
     let stop_through_generation = current.translation_generation;
     current.translation_generation = current.translation_generation.wrapping_add(1);
     let (active, pending) = translation_queue.lock().unwrap().clear();
-    let mut terminated_cues = Vec::with_capacity(pending.len() + usize::from(active.is_some()));
+    let streaming_cues = current.physical_translation_stream_ledger.active_cue_ids();
+    current.physical_translation_stream_ledger.reset();
+    let mut terminated_cues = Vec::with_capacity(
+        pending.len() + usize::from(active.is_some()) + streaming_cues.len(),
+    );
     if let Some(active) = active {
         current.dropped_frame_count += active.playback_frames;
         terminated_cues.push(TranslationCueTerminal {
@@ -321,6 +612,14 @@ fn request_playback_stop(
             job.samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
         terminated_cues.push(TranslationCueTerminal {
             cue_id: job.cue_id,
+            status,
+            reason: reason.clone(),
+            error_code: error_code.clone(),
+        });
+    }
+    for cue_id in streaming_cues {
+        terminated_cues.push(TranslationCueTerminal {
+            cue_id: Some(cue_id),
             status,
             reason: reason.clone(),
             error_code: error_code.clone(),

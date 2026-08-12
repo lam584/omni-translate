@@ -1409,6 +1409,22 @@ export function evaluateStrictContent(input) {
   const lengthRatio = referenceChars > 0 ? outputChars / referenceChars : 0;
   const subtitleQueue = content?.subtitleQueue ?? {};
   const speechSegmentation = input.speechSegmentation ?? {};
+  // Keep the historical strict-content helper default on the secondary
+  // contract. A live native route is explicit at classification time, so it
+  // alone selects native completion evidence below.
+  const translationRoute = input.translationRoute === 'native' ? 'native' : 'secondary';
+  const completedNativeCueIds = new Set(
+    (Array.isArray(input.watchSessionReport?.cues) ? input.watchSessionReport.cues : [])
+      .filter((cue) => (
+        ['exact', 'formatting-only'].includes(cue?.comparisonStatus)
+        && String(cue?.llmText ?? '').trim()
+        && String(cue?.publishedText ?? '').trim()
+        && String(cue?.renderedText ?? '').trim()
+      ))
+      .map((cue) => String(cue.cueId ?? '').trim())
+      .filter(Boolean),
+  );
+  const nativeCompletedCueCount = completedNativeCueIds.size;
   const finalWriteCount = asNumber(subtitleQueue.finalWriteCount);
   const queuedSegmentCount = Math.max(
     asNumber(subtitleQueue.queuedSegmentCount),
@@ -1460,9 +1476,23 @@ export function evaluateStrictContent(input) {
   if (missingConcepts.length > 0) failures.push(`missing required concepts: ${missingConcepts.join(', ')}`);
   if (forbiddenErrors.length > 0) failures.push(`forbidden translation errors: ${forbiddenErrors.map((item) => item.text).join(', ')}`);
   if (lengthRatioEvidence < 0.45 || lengthRatioEvidence > 2.4) failures.push(`strict output/reference length ratio is out of range; lengthRatio=${lengthRatioEvidence.toFixed(3)}`);
-  if (finalWriteCount < 8) failures.push(`too few final subtitle translations; finalWriteCount=${finalWriteCount}`);
-  if (queuedSegmentCount < 8) failures.push(`too few queued translated speech segments; queuedSegmentCount=${queuedSegmentCount}`);
-  if (playedSegmentCount < 8) failures.push(`too few played translated speech segments; playedSegmentCount=${playedSegmentCount}`);
+  if (translationRoute === 'secondary') {
+    if (finalWriteCount < 8) failures.push(`too few final subtitle translations; finalWriteCount=${finalWriteCount}`);
+    if (queuedSegmentCount < 8) failures.push(`too few queued translated speech segments; queuedSegmentCount=${queuedSegmentCount}`);
+    if (playedSegmentCount < 8) failures.push(`too few played translated speech segments; playedSegmentCount=${playedSegmentCount}`);
+  } else {
+    // Native Omni publishes its final subtitle with the provider response and
+    // sends its PCM directly through the physical playback owner. It does not
+    // create secondary subtitle-TTS queue writes, so requiring that queue
+    // would reject a healthy native route. Still require multiple completed,
+    // rendered native translations and matching physical completion evidence.
+    if (nativeCompletedCueCount < 2) {
+      failures.push(`too few completed native translation cues; nativeCompletedCueCount=${nativeCompletedCueCount}`);
+    }
+    if (playedSegmentCount < 2) {
+      failures.push(`too few completed native translated speech playbacks; playedSegmentCount=${playedSegmentCount}`);
+    }
+  }
   if (content?.contentConsistency?.combinedEvidence?.passed === false) {
     failures.push('combined physical/structured translation evidence did not pass');
   }
@@ -1484,6 +1514,8 @@ export function evaluateStrictContent(input) {
     missingConcepts,
     forbiddenErrors,
     requiredConcepts: STRICT_REQUIRED_CONCEPTS,
+    translationRoute,
+    nativeCompletedCueCount,
     finalWriteCount,
     queuedSegmentCount,
     playedSegmentCount,
@@ -1884,6 +1916,7 @@ export function classifyWatchModeRun(input) {
   const processExclusionRestart = parseProcessExclusionRestart(appLog, input);
   const strictContent = input.strictContent ?? evaluateStrictContent({
     ...input,
+    translationRoute,
     speechSegmentation,
   });
   const physicalOutputContentSkipped = input.physicalOutputContent?.skipped === true;

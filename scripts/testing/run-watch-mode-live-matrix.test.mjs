@@ -17,6 +17,7 @@ import {
   WATCH_REPORT_COMPLETION_GRACE_SECONDS,
   STRICT_RUNTIME_BUILD_COMMANDS,
   assertLiveMatrixRunnerArgs,
+  assertStrictLiveReportPassed,
   assertStrictMatrixProvenance,
   assertStrictEvidenceOptions,
   assertStrictReleaseMatrixLists,
@@ -52,6 +53,24 @@ const CLEAN_PROVENANCE = Object.freeze({
   dirtyEntryCount: 0,
 });
 const TEST_RUNTIME_BINARY_HASHES = Object.freeze([]);
+
+test('strict matrix refuses a failed cell report before another paid cell starts', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-strict-report-'));
+  try {
+    fs.writeFileSync(path.join(root, 'report.json'), JSON.stringify({
+      verdict: 'failed',
+      failureReason: 'strict content is incomplete',
+    }));
+    assert.throws(
+      () => assertStrictLiveReportPassed(root),
+      /failed before another paid cell can start.*strict content is incomplete/,
+    );
+    fs.writeFileSync(path.join(root, 'report.json'), JSON.stringify({ verdict: 'passed' }));
+    assert.equal(assertStrictLiveReportPassed(root).verdict, 'passed');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
 
 // Guard order matches the runner switch forwarding the retired matrix .ps1 used.
 const RUNNER_SWITCHES = [

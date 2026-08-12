@@ -24,8 +24,8 @@ test('balanced release plan caps paid LLM time at 38 minutes', () => {
   assert.equal(balancedReleasePlanFailure(BALANCED_RELEASE_PLAN), null);
 
   const formerThreeDevicePlan = structuredClone(BALANCED_RELEASE_PLAN);
-  formerThreeDevicePlan.planId = 'watch-mode-balanced-v1';
-  formerThreeDevicePlan.schemaVersion = 1;
+  formerThreeDevicePlan.planId = 'watch-mode-balanced-v2';
+  formerThreeDevicePlan.schemaVersion = 2;
   assert.match(balancedReleasePlanFailure(formerThreeDevicePlan), /schema/);
 });
 
@@ -56,13 +56,13 @@ test('pairwise live cells cover every model/route pair and every route on both r
       new Set(RELEASE_DEVICE_CLASSES),
     );
   }
-  assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => entry.durationSeconds === 180));
+  assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => entry.durationSeconds === 240));
 });
 
-test('model stability uses one ten-minute cell per model', () => {
+test('model stability uses one seven-minute cell per model', () => {
   assert.deepEqual(MODEL_STABILITY_CELLS.map((entry) => entry.modelId), RELEASE_MODELS);
   assert.ok(MODEL_STABILITY_CELLS.every((entry) => (
-    entry.durationSeconds === 600
+    entry.durationSeconds === 420
     && entry.feedbackLoopPrevention === 'process-exclusion'
     && entry.deviceClass === 'default-speaker'
   )));

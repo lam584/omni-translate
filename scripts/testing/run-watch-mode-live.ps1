@@ -9,8 +9,8 @@ param(
   [int]$PostPlaybackWaitSeconds = 120,
   [ValidateRange(1, 100)]
   [int]$SessionReadyTimeoutSeconds = 90,
-  # The budget-approved release plan assigns 180 seconds to pairwise cells
-  # and 600 seconds to per-model stability cells. The authority manifest binds
+  # The budget-approved release plan assigns 240 seconds to pairwise cells
+  # and 420 seconds to per-model stability cells. The authority manifest binds
   # the exact duration expected for each cell.
   [ValidateRange(180, 7200)]
   [int]$WatchAutoStopAfterSeconds = 180,

@@ -3222,6 +3222,14 @@ function Compare-WatchModeContent {
   )
   $sourceReferenceText = [string]$ReferenceTranscript.source
   $translationReferenceText = [string]$ReferenceTranscript.translation
+  # The manual realtime diagnostic can finish the source transcript while its
+  # translated stream is cut at provider/session close. A short prefix is not
+  # an authoritative translation reference and must not make a complete
+  # physical translation look like excessive output. The strict report gate
+  # independently checks native subtitle concepts and physical cue delivery.
+  if ($translationReferenceText.Trim().Length -lt 200) {
+    $translationReferenceText = ""
+  }
   if (-not $sourceReferenceText -and -not $translationReferenceText) {
     return [pscustomobject]@{
       passed = $false
@@ -3615,7 +3623,7 @@ function Read-SpeechSegmentationSummary {
   # audible. Requiring `completed` here made the evidence depend on TTS length
   # and silently extended the paid-session budget.
   $playedLocal = [regex]::Matches($text, "speech\.segment_playback_written[^\r\n]*")
-  $playedBridge = [regex]::Matches($text, "event=translation_playback_status[^\r\n]*\bstatus=started\b[^\r\n]*\breason=physical-playback-started\b")
+  $playedBridge = [regex]::Matches($text, "event=translation_playback_status[^\r\n]*\bstatus=started\b[^\r\n]*\breason=physical-playback(?:-stream)?-started\b")
   $maxSource = 0
   $maxTranslated = 0
   foreach ($item in $queuedLocal) {

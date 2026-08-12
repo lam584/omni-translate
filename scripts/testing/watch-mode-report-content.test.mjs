@@ -239,6 +239,91 @@ test('strict reference-media content passes with full reference coverage and seg
   assert.equal(result.missingConcepts.length, 0);
 });
 
+test('strict native reference-media content accepts completed native cues instead of secondary TTS queue writes', () => {
+  const result = evaluateStrictContent({
+    translationRoute: 'native',
+    physicalOutputContent: strictTestMediaContent({
+      subtitleQueue: {
+        finalWriteCount: 0,
+        queuedSegmentCount: 0,
+        playedSegmentCount: 2,
+      },
+      translatedSpeech: {
+        passed: true,
+        queuedSegments: 0,
+        playedSegments: 2,
+        transcriptChars: testMediaReferenceTranslation.length,
+      },
+    }),
+    watchSessionReport: {
+      cues: [
+        {
+          cueId: 'native-cue-1',
+          comparisonStatus: 'exact',
+          llmText: '第一段译文',
+          publishedText: '第一段译文',
+          renderedText: '第一段译文',
+        },
+        {
+          cueId: 'native-cue-2',
+          comparisonStatus: 'formatting-only',
+          llmText: '第二段译文',
+          publishedText: '第二段译文',
+          renderedText: '第二段译文',
+        },
+      ],
+    },
+  });
+
+  assert.equal(result.passed, true);
+  assert.equal(result.translationRoute, 'native');
+  assert.equal(result.nativeCompletedCueCount, 2);
+  assert.equal(result.finalWriteCount, 0);
+});
+
+test('strict native reference-media content rejects a single completed physical playback', () => {
+  const result = evaluateStrictContent({
+    translationRoute: 'native',
+    physicalOutputContent: strictTestMediaContent({
+      subtitleQueue: { finalWriteCount: 0, queuedSegmentCount: 0, playedSegmentCount: 1 },
+      translatedSpeech: {
+        passed: true,
+        queuedSegments: 0,
+        playedSegments: 1,
+        transcriptChars: testMediaReferenceTranslation.length,
+      },
+    }),
+    watchSessionReport: {
+      cues: [{
+        cueId: 'native-cue-1',
+        comparisonStatus: 'exact',
+        llmText: '唯一译文',
+        publishedText: '唯一译文',
+        renderedText: '唯一译文',
+      }],
+    },
+  });
+
+  assert.equal(result.passed, false);
+  assert.match(result.failures.join('\n'), /nativeCompletedCueCount=1/);
+  assert.match(result.failures.join('\n'), /playedSegmentCount=1/);
+});
+
+test('strict secondary reference-media content still requires the subtitle-TTS queue', () => {
+  const result = evaluateStrictContent({
+    translationRoute: 'secondary',
+    physicalOutputContent: strictTestMediaContent({
+      subtitleQueue: { finalWriteCount: 0, queuedSegmentCount: 0, playedSegmentCount: 2 },
+      translatedSpeech: { passed: true, queuedSegments: 0, playedSegments: 2 },
+    }),
+    speechSegmentation: { queuedSegments: 0, playedSegments: 2 },
+  });
+
+  assert.equal(result.passed, false);
+  assert.match(result.failures.join('\n'), /finalWriteCount=0/);
+  assert.match(result.failures.join('\n'), /queuedSegmentCount=0/);
+});
+
 test('strict reference-media content reuses passed combined physical evidence for coverage', () => {
   const structuredConceptOnly = [
     '十亿美元',
@@ -379,6 +464,7 @@ test('strict reference-media content fails when only the opening translation is 
 test('classifies strict reference-media failure with all strict failure reasons', () => {
   const openingOnly = '杩欐槸涓€鑹樹环鍊煎崄浜跨編鍏冪殑鐏椋炶埞';
   const report = classify({
+    translationRoute: 'secondary',
     physicalOutputContent: strictTestMediaContent({
       translation: openingOnly,
       subtitleText: openingOnly,

@@ -252,8 +252,10 @@ the canonical strict Watch matrix on the required default-speaker and separate
 USB endpoints. Bluetooth remains an optional diagnostic endpoint. Every live matrix cell now writes `system-metrics.json`
 with raw one-second samples for the Desktop process tree. The budget-balanced
 release plan first runs 6 five-minute local-isolation cells with the Provider
-disabled, then 6 three-minute pairwise live cells and 2 ten-minute model
-stability cells. The paid live budget is therefore 38 minutes. After all
+disabled, then 6 four-minute pairwise live cells and 2 seven-minute model
+stability cells. The paid live budget is therefore 38 minutes. The pairwise
+extension leaves time for the native realtime translation tail to drain to the
+physical endpoint. After all
 authorities pass, assemble the baseline:
 
 ```powershell

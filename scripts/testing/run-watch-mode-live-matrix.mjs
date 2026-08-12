@@ -896,6 +896,24 @@ export const lastRunDirectoryLine = (text, rootDir = repoRoot) => {
   return undefined;
 };
 
+// A runner can finish its process lifecycle successfully while its authoritative
+// report rejects the live evidence. Stop here before another paid provider
+// session begins, rather than discovering the failure only after all cells.
+export const assertStrictLiveReportPassed = (runDirectory) => {
+  const reportPath = path.join(runDirectory, 'report.json');
+  let report;
+  try {
+    report = JSON.parse(fs.readFileSync(reportPath, 'utf8').replace(/^\uFEFF/, ''));
+  } catch (error) {
+    throw new Error(`strict matrix cell has no readable authoritative report: ${reportPath} (${error.message})`);
+  }
+  if (report?.verdict !== 'passed') {
+    const detail = String(report?.failureReason ?? report?.failureLayer ?? 'no failure detail');
+    throw new Error(`strict matrix cell report failed before another paid cell can start: ${reportPath} (${detail})`);
+  }
+  return report;
+};
+
 const runLiveRunner = (runnerArgv, timeoutMs, environment = process.env) => new Promise((resolve, reject) => {
   const child = spawn(
     'powershell.exe',
@@ -1076,7 +1094,10 @@ export const runMatrix = async (options) => {
           throw new Error(`Watch Mode live runner reused run directory ${resolvedRunDirectory}; every matrix cell requires its own artifact directory.`);
         }
         runDirectories.push(resolvedRunDirectory);
-        if (strict) assertRuntimeBinaryContinuity(runtimeBinaryHashes, `during matrix cell ${model}/${feedbackMode}/${deviceProfile.profileId}`);
+        if (strict) {
+          assertStrictLiveReportPassed(resolvedRunDirectory);
+          assertRuntimeBinaryContinuity(runtimeBinaryHashes, `during matrix cell ${model}/${feedbackMode}/${deviceProfile.profileId}`);
+        }
   }
   const outputRoot = options.outputRoot ?? MATRIX_DEFAULTS.outputRoot;
   const expectedRunCount = strict

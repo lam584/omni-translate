@@ -157,6 +157,8 @@ test('keeps an explicitly skipped physical-content STT layer out of balanced dia
 
   assert.equal(report.verdict, 'passed');
   assert.equal(report.layers.physicalOutputContent.status, 'skipped');
+  assert.equal(report.layers.strictContent.status, 'skipped');
+  assert.match(report.layers.strictContent.reason, /explicitly skipped/);
   assert.equal(report.failureLayer, null);
 });
 

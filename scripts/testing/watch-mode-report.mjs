@@ -1920,8 +1920,11 @@ export function classifyWatchModeRun(input) {
     layers.physicalOutputContent.reason = input.physicalOutputContent.reason
       ?? 'physical output content STT was explicitly skipped';
     layers.physicalOutputContent.reasons = [];
+    layers.strictContent.status = 'skipped';
+    layers.strictContent.reason = 'strict reference-media content STT was explicitly skipped with physical output content';
+    layers.strictContent.reasons = [];
   }
-  if (!echoCancelVariant && !strictContent.passed) {
+  if (!echoCancelVariant && !physicalOutputContentSkipped && !strictContent.passed) {
     layers.strictContent.status = 'failed';
     layers.strictContent.reason = strictContent.reason ?? 'strict reference-media content evidence failed';
     layers.strictContent.reasons = Array.isArray(strictContent.failures) && strictContent.failures.length > 0
@@ -1990,7 +1993,7 @@ export function classifyWatchModeRun(input) {
         ['provider', providerReason],
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
         ['app', watchReportReason],
-        ['strictContent', layers.strictContent.reason],
+        ['strictContent', physicalOutputContentSkipped ? null : layers.strictContent.reason],
       ]
     : [
         ['driver', driverLayerFailed(input.driver)],
@@ -2015,7 +2018,7 @@ export function classifyWatchModeRun(input) {
         ...(providerBeforeAppReason ? [] : [['provider', providerReason]]),
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
         ['app', watchReportReason],
-        ['strictContent', layers.strictContent.reason],
+        ['strictContent', physicalOutputContentSkipped ? null : layers.strictContent.reason],
       ];
 
   const skippedLayers = echoCancelVariant

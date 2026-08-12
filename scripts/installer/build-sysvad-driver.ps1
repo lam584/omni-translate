@@ -148,6 +148,12 @@ $msbuildArgs = @(
   "/p:Configuration=$Configuration",
   "/p:Platform=$Platform",
   "/p:WindowsTargetPlatformVersion=$WindowsKitVersion",
+  # The WDK's automatic TestSign chooses an IDE-created certificate from the
+  # current token's personal store.  It is neither the project PFX nor part of
+  # the staged package authority, and can be present without a private key in
+  # non-IDE/interactive task tokens.  The explicit SignTool calls below always
+  # sign the staged SYS and generated CAT with the configured project PFX.
+  '/p:SignMode=None',
   '/p:SkipPackageVerification=true',
   "/p:VCTargetsPath=$overlayRoot\"
 )

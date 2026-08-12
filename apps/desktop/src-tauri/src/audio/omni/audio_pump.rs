@@ -42,6 +42,13 @@ pub(super) struct OmniAudioPump {
     state: OmniAudioPumpState,
 }
 
+fn provider_input_is_writable(
+    session_ready_for_audio: bool,
+    defer_audio_until_response_done: bool,
+) -> bool {
+    session_ready_for_audio && !defer_audio_until_response_done
+}
+
 impl OmniAudioPump {
     pub(super) fn log_waiting_if_needed(
         app: &AppHandle,
@@ -84,6 +91,7 @@ impl OmniAudioPump {
         output_mode: OmniOutputMode,
         target_language: &str,
         session_started_at: &SystemTime,
+        defer_audio_until_response_done: bool,
     ) -> Result<OmniAudioPumpState, String> {
         let OmniAudioPumpState {
             mut buffer_size,
@@ -113,7 +121,7 @@ impl OmniAudioPump {
         let mut socket_reconnected = false;
         let mut pre_session_chunks_drained_this_tick = 0usize;
         loop {
-            let raw_chunk = if session_ready_for_audio {
+            let raw_chunk = if provider_input_is_writable(session_ready_for_audio, defer_audio_until_response_done) {
                 match pre_session_audio_queue
                     .pop_front()
                     .or_else(|| audio_rx.try_recv().ok())
@@ -138,7 +146,7 @@ impl OmniAudioPump {
                                 "omni",
                                 "debug",
                                 format!(
-                                    "[SESSION] buffering audio before session ready: queued={} dropped={pre_session_audio_dropped}",
+                                    "[SESSION] buffering audio before provider input is writable: queued={} dropped={pre_session_audio_dropped} responseActive={defer_audio_until_response_done}",
                                     pre_session_audio_queue.len()
                                 ),
                             );
@@ -384,4 +392,16 @@ pub(super) fn should_anchor_manual_turn_to_first_audible_append(
     audio_mode.uses_manual_commit()
         && !had_audible_since_commit
         && has_audible_since_commit
+}
+
+#[cfg(test)]
+mod tests {
+    use super::provider_input_is_writable;
+
+    #[test]
+    fn manual_response_gate_keeps_provider_input_closed_until_response_done() {
+        assert!(!provider_input_is_writable(false, false));
+        assert!(!provider_input_is_writable(true, true));
+        assert!(provider_input_is_writable(true, false));
+    }
 }

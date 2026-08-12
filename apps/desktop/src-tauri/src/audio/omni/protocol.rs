@@ -2697,13 +2697,12 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
             _ => {}
         }
     }
-    if write_succeeded && matches!(
-        stream_state,
-        omni_bridge_protocol::TranslationStreamState::Start
-            | omni_bridge_protocol::TranslationStreamState::Chunk
-    ) {
-        thread::sleep(Duration::from_millis(estimated_duration_ms));
-    }
+    // Bridge owns the physical render clock and paces stream chunks against
+    // WASAPI. Sleeping for every 20 ms chunk here duplicates that pacing and
+    // lets bursty provider deltas fill the bounded command queue, eventually
+    // aborting an already-started sentence. Submit accepted chunks promptly;
+    // the queue's projected-duration accounting still protects whole-cue
+    // scheduling without turning this IPC worker into a second audio clock.
 }
 
 fn run_omni_playback_worker<R: tauri::Runtime>(

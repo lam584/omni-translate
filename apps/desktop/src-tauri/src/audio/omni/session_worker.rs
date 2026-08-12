@@ -465,6 +465,7 @@ fn run_omni_worker(
             output_mode,
             &target_language,
             &session_started_at,
+            audio_mode.uses_manual_commit() && manual_response_pending,
         )?;
         buffer_size = pump_state.buffer_size;
         reconnect_count = pump_state.reconnect_count;

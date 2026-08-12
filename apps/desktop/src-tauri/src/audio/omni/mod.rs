@@ -97,7 +97,12 @@ const OMNI_OUTPUT_SAMPLE_RATE_HZ: u32 = 24_000;
 // audio duration, not item count, remains the authoritative admission limit.
 const OMNI_PLAYBACK_QUEUE_CAPACITY: usize = 260;
 const OMNI_PLAYBACK_MAX_QUEUE_AGE: Duration = Duration::from_secs(5);
-const OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 500;
+// Also buffers continuous input while a manual provider response is active.
+// DashScope does not preserve appends made during response streaming in the
+// next input buffer. 4,000 20 ms frames cover the longest allowed response
+// gate plus scheduling jitter without an unbounded channel-to-provider
+// backlog; once response.done arrives the normal pump drains this queue.
+const OMNI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 4_000;
 const OMNI_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;
 const OMNI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
 // Forty 20 ms frames keep 800 ms of trailing silence, matching the server-VAD

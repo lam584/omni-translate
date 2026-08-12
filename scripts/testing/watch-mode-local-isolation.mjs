@@ -116,21 +116,19 @@ export function buildLocalIsolationRuntime({
   environment.CARGO_TARGET_DIR = path.join(workspaceRoot, 'target');
   environment.OMNI_BUILD_COMMIT = provenance.headCommit;
   delete environment.CARGO_BUILD_TARGET;
-  const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+  const npm = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm';
   for (const args of [
     ['run', 'build:bridge-service-native'],
     ['run', 'driver:build-sysvad'],
   ]) {
-    const result = run(npm, args, {
+    const commandArgs = process.platform === 'win32'
+      ? ['/d', '/s', '/c', 'npm.cmd', ...args]
+      : args;
+    const result = run(npm, commandArgs, {
       cwd: workspaceRoot,
       env: environment,
       stdio: 'inherit',
       windowsHide: true,
-      // Windows exposes npm as a .cmd shim. Node cannot spawn that shim
-      // directly from some non-interactive/SSH hosts unless shell dispatch
-      // is enabled; keep the command/arguments fixed and only opt into the
-      // platform command resolver here.
-      shell: process.platform === 'win32',
     });
     if (result.error || Number(result.status) !== 0) {
       throw new Error(`local isolation runtime build failed: npm ${args.join(' ')}`);

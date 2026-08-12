@@ -9,6 +9,7 @@ import {
   buildLocalIsolationRuntime,
   createLocalIsolationMatrixDirectory,
   localIsolationRuntimeInventory,
+  LOCAL_ISOLATION_REUSE_ALLOWED_PATHS,
   LOCAL_ISOLATION_REUSE_MODE,
   LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS,
   LOCAL_ISOLATION_RUNTIME_BINARY_PATHS,
@@ -29,6 +30,16 @@ const provenance = {
 
 test('only the known v2 local sub-plan may be reused across the paid-tier v3 change', () => {
   assert.deepEqual(LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS, ['watch-mode-balanced-v2']);
+});
+
+test('provider-only credential decoding is explicitly outside the zero-provider isolation layer', () => {
+  assert.equal(
+    LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(
+      'apps/desktop/src-tauri/src/storage/credential.rs',
+    ),
+    true,
+  );
+  assert.equal(LOCAL_ISOLATION_CELLS.every((cell) => cell.providerMode === 'disabled'), true);
 });
 
 test('local isolation creates its output root on a first clean-machine run', () => {

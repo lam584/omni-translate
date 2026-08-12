@@ -136,6 +136,19 @@ export function buildLocalIsolationRuntime({
       throw new Error(`local isolation runtime build failed: npm ${args.join(' ')}`);
     }
   }
+  const realtimeDiagnostic = run('cargo', [
+    'build',
+    '--manifest-path',
+    'scripts/diagnostics/omni-realtime/Cargo.toml',
+  ], {
+    cwd: workspaceRoot,
+    env: environment,
+    stdio: 'inherit',
+    windowsHide: true,
+  });
+  if (realtimeDiagnostic.error || Number(realtimeDiagnostic.status) !== 0) {
+    throw new Error('local isolation runtime build failed: omni-realtime-diagnostic');
+  }
   const after = provenanceReader();
   const failure = exactGitProvenanceFailure(provenance, after, {
     recordedSubject: 'local isolation pre-build provenance',

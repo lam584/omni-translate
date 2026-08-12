@@ -2707,12 +2707,21 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
             _ => {}
         }
     }
-    // Bridge owns the physical render clock and paces stream chunks against
-    // WASAPI. Sleeping for every 20 ms chunk here duplicates that pacing and
-    // lets bursty provider deltas fill the bounded command queue, eventually
-    // aborting an already-started sentence. Submit accepted chunks promptly;
-    // the queue's projected-duration accounting still protects whole-cue
-    // scheduling without turning this IPC worker into a second audio clock.
+    // Provider deltas are aggregated into one-second bounded commands before
+    // they reach this worker. Pace successful audio submissions so the next
+    // cue cannot start while Bridge is still draining the prior stream. The
+    // former 20 ms command fan-out made this wait overflow the 260-command
+    // queue; batching keeps even a two-minute response below that hard bound.
+    if write_succeeded
+        && matches!(
+            stream_state,
+            omni_bridge_protocol::TranslationStreamState::Start
+                | omni_bridge_protocol::TranslationStreamState::Chunk
+        )
+        && estimated_duration_ms > 0
+    {
+        thread::sleep(Duration::from_millis(estimated_duration_ms));
+    }
 }
 
 fn run_omni_playback_worker<R: tauri::Runtime>(
@@ -3426,6 +3435,19 @@ mod omni_playback_tests {
                 ..
             }
         ));
+    }
+
+    #[test]
+    fn one_second_stream_batches_keep_two_minutes_below_command_capacity() {
+        let queue = OmniPlaybackQueue::new(OMNI_PLAYBACK_QUEUE_CAPACITY);
+        for index in 0..120 {
+            assert!(matches!(
+                queue.enqueue(queued_stream("two-minute-stream", index, Duration::from_secs(1))),
+                OmniPlaybackEnqueueOutcome::Queued
+                    | OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { .. }
+            ));
+        }
+        assert_eq!(queue.pending_cue_ids().len(), 120);
     }
 
     #[test]

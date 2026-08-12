@@ -118,6 +118,7 @@ export function buildLocalIsolationRuntime({
   delete environment.CARGO_BUILD_TARGET;
   const npm = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm';
   for (const args of [
+    ['run', 'build:desktop-shell'],
     ['run', 'build:bridge-service-native'],
     ['run', 'driver:build-sysvad'],
   ]) {

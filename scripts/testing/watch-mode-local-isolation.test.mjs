@@ -70,6 +70,7 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
   });
   const npmPrefix = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm.cmd'] : [];
   assert.deepEqual(calls.map(({ args }) => args), [
+    [...npmPrefix, 'run', 'build:desktop-shell'],
     [...npmPrefix, 'run', 'build:bridge-service-native'],
     [...npmPrefix, 'run', 'driver:build-sysvad'],
     ['build', '--manifest-path', 'scripts/diagnostics/omni-realtime/Cargo.toml'],

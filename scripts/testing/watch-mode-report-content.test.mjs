@@ -281,7 +281,7 @@ test('strict native reference-media content accepts completed native cues instea
   assert.equal(result.finalWriteCount, 0);
 });
 
-test('strict native reference-media content rejects a single completed physical playback', () => {
+test('strict native reference-media content accepts one complete continuous-source cue', () => {
   const result = evaluateStrictContent({
     translationRoute: 'native',
     physicalOutputContent: strictTestMediaContent({
@@ -304,9 +304,36 @@ test('strict native reference-media content rejects a single completed physical 
     },
   });
 
+  assert.equal(result.passed, true);
+  assert.equal(result.nativeCompletedCueCount, 1);
+  assert.equal(result.playedSegmentCount, 1);
+});
+
+test('strict native reference-media content rejects a cue that never reaches the physical sink', () => {
+  const result = evaluateStrictContent({
+    translationRoute: 'native',
+    physicalOutputContent: strictTestMediaContent({
+      subtitleQueue: { finalWriteCount: 0, queuedSegmentCount: 0, playedSegmentCount: 0 },
+      translatedSpeech: {
+        passed: false,
+        queuedSegments: 1,
+        playedSegments: 0,
+        transcriptChars: testMediaReferenceTranslation.length,
+      },
+    }),
+    watchSessionReport: {
+      cues: [{
+        cueId: 'native-cue-1',
+        comparisonStatus: 'exact',
+        llmText: '唯一译文',
+        publishedText: '唯一译文',
+        renderedText: '唯一译文',
+      }],
+    },
+  });
+
   assert.equal(result.passed, false);
-  assert.match(result.failures.join('\n'), /nativeCompletedCueCount=1/);
-  assert.match(result.failures.join('\n'), /playedSegmentCount=1/);
+  assert.match(result.failures.join('\n'), /playedSegmentCount=0/);
 });
 
 test('strict secondary reference-media content still requires the subtitle-TTS queue', () => {

@@ -3589,22 +3589,30 @@ function Read-SpeechSegmentationSummary {
     }
   }
   $text = Get-LogTextAfterMarker $AppLog $RunMarker
-  $queued = [regex]::Matches($text, "speech\.segment_tts_queued[^\r\n]*")
+  $queuedLocal = [regex]::Matches($text, "speech\.segment_tts_queued[^\r\n]*")
+  # Native Omni audio is submitted directly to the Bridge and therefore never
+  # emits the secondary-TTS queue marker. Count the Bridge's stable cue status
+  # so native and secondary routes expose the same evidence shape.
+  $queuedBridge = [regex]::Matches($text, "event=translation_playback_status[^\r\n]*\bstatus=queued\b[^\r\n]*\breason=accepted\b")
   # Bridge-owned playback intentionally skips the local WASAPI writer event.
-  # Count its exactly-once completed status as a played segment so the
-  # physical-output content gate observes the same sink that Watch used.
+  # A long native response can legitimately still be playing when the bounded
+  # paid provider window closes. `started` proves that the physical sink
+  # accepted and began rendering the cue; the simultaneous loopback recording
+  # and STT content checks below prove that translated audio was actually
+  # audible. Requiring `completed` here made the evidence depend on TTS length
+  # and silently extended the paid-session budget.
   $playedLocal = [regex]::Matches($text, "speech\.segment_playback_written[^\r\n]*")
-  $playedBridge = [regex]::Matches($text, "event=translation_playback_status[^\r\n]*\bstatus=completed\b[^\r\n]*\breason=physical-playback-completed\b")
+  $playedBridge = [regex]::Matches($text, "event=translation_playback_status[^\r\n]*\bstatus=started\b[^\r\n]*\breason=physical-playback-started\b")
   $maxSource = 0
   $maxTranslated = 0
-  foreach ($item in $queued) {
+  foreach ($item in $queuedLocal) {
     $sourceMatch = [regex]::Match($item.Value, "sourceChars=(\d+)")
     if ($sourceMatch.Success) { $maxSource = [Math]::Max($maxSource, [int]$sourceMatch.Groups[1].Value) }
     $translatedMatch = [regex]::Match($item.Value, "translatedChars=(\d+)")
     if ($translatedMatch.Success) { $maxTranslated = [Math]::Max($maxTranslated, [int]$translatedMatch.Groups[1].Value) }
   }
   return [pscustomobject]@{
-    queuedSegments = $queued.Count
+    queuedSegments = $queuedLocal.Count + $queuedBridge.Count
     playedSegments = $playedLocal.Count + $playedBridge.Count
     maxSourceChars = $maxSource
     maxTranslatedChars = $maxTranslated

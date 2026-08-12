@@ -9,6 +9,7 @@ import {
   buildLocalIsolationRuntime,
   createLocalIsolationMatrixDirectory,
   localIsolationRuntimeInventory,
+  LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS,
   runLocalIsolationProbeIteration,
   reusableLocalIsolationAuthorityFailure,
   runLocalIsolationCell,
@@ -23,6 +24,10 @@ const provenance = {
   worktreeClean: true,
   dirtyEntryCount: 0,
 };
+
+test('only the known v2 local sub-plan may be reused across the paid-tier v3 change', () => {
+  assert.deepEqual(LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS, ['watch-mode-balanced-v2']);
+});
 
 test('local isolation creates its output root on a first clean-machine run', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-root-'));

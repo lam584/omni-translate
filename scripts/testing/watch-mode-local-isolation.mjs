@@ -23,6 +23,13 @@ export const LOCAL_ISOLATION_CELL_ARTIFACT_KIND = 'watch-mode-local-isolation-ce
 export const LOCAL_ISOLATION_RUNNER_ID = 'scripts/testing/watch-mode-local-isolation.mjs';
 export const LOCAL_ISOLATION_CANONICAL_MANIFEST = 'latest-successful-watch-mode-local-isolation.json';
 export const LOCAL_ISOLATION_REUSE_MODE = 'orchestration-only';
+// The v2 and v3 release plans have the exact same six zero-Provider cells.
+// Only the paid tiers changed their drain/stability allocation. A v2 local
+// authority can therefore be reused only through the separately audited
+// orchestration-only path below; ordinary verification still requires v3.
+export const LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS = Object.freeze([
+  'watch-mode-balanced-v2',
+]);
 export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   '.gitattributes',
   'package.json',
@@ -380,10 +387,15 @@ export function verifyLocalIsolationManifest({
   reuseAuthority = null,
 }) {
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
+  const planIdAccepted = manifest.planId === BALANCED_RELEASE_PLAN_ID
+    || (
+      reuseAuthority?.mode === LOCAL_ISOLATION_REUSE_MODE
+      && LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS.includes(manifest.planId)
+    );
   if (
     manifest.schemaVersion !== LOCAL_ISOLATION_SCHEMA_VERSION
     || manifest.artifactKind !== LOCAL_ISOLATION_ARTIFACT_KIND
-    || manifest.planId !== BALANCED_RELEASE_PLAN_ID
+    || !planIdAccepted
     || manifest.verdict !== 'passed'
   ) throw new Error('local isolation manifest is not a passed balanced release authority');
   if (reuseAuthority) {

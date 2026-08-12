@@ -160,7 +160,12 @@ function extractedBridgeProbePolicyFunctions() {
       `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
     `$functions = $ast.FindAll({ param($node) ` +
       `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
-      `$node.Name -in @('Test-UsesVirtualDriverBackend','New-BridgeSourceProbeInitPayload') ` +
+      `$node.Name -in @(` +
+        `'Test-UsesVirtualDriverBackend',` +
+        `'New-BridgeSourceProbeInitPayload',` +
+        `'Get-WatchModeDriverProbeArguments',` +
+        `'Get-VirtualDriverPreflightFailure'` +
+      `) ` +
     `}, $true); ` +
     `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
   );
@@ -332,16 +337,24 @@ test('physical output STT falls back to the current-user DashScope credential wi
   }
 });
 
-test('process-exclusion probe uses v5 init capability fields without requiring an idle source frame', { skip: !isWindows }, () => {
+test('bridge probe policy uses v6 init fields and blocks a failed virtual-driver probe before a model session', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
     extractedBridgeProbePolicyFunctions() +
       `$payload = New-BridgeSourceProbeInitPayload -FeedbackMode 'process-exclusion' -SessionId 'probe-session'; ` +
+      `$driverArgs = Get-WatchModeDriverProbeArguments -WorkspaceRoot 'E:\\workspace' -RequestedDevconPath 'E:\\workspace\\tools\\devcon.exe'; ` +
+      `$virtualFailure = Get-VirtualDriverPreflightFailure 'virtual-driver' ([pscustomobject]@{ ok = $false; error = 'installed driver hash differs from package' }); ` +
+      `$virtualSuccess = Get-VirtualDriverPreflightFailure 'virtual-driver' ([pscustomobject]@{ ok = $true; error = $null }); ` +
+      `$processFailure = Get-VirtualDriverPreflightFailure 'process-exclusion' ([pscustomobject]@{ ok = $false; error = 'not relevant' }); ` +
       `$result = [pscustomobject]@{ ` +
         `payload = $payload; ` +
         `processUsesDriver = Test-UsesVirtualDriverBackend 'process-exclusion'; ` +
         `echoUsesDriver = Test-UsesVirtualDriverBackend 'echo-cancel'; ` +
-        `virtualUsesDriver = Test-UsesVirtualDriverBackend 'virtual-driver' ` +
+        `virtualUsesDriver = Test-UsesVirtualDriverBackend 'virtual-driver'; ` +
+        `driverProbeArguments = $driverArgs; ` +
+        `virtualFailure = $virtualFailure; ` +
+        `virtualSuccess = $virtualSuccess; ` +
+        `processFailure = $processFailure ` +
       `}; $result | ConvertTo-Json -Depth 8 -Compress`,
   ]);
 
@@ -355,6 +368,12 @@ test('process-exclusion probe uses v5 init capability fields without requiring a
   assert.equal(result.processUsesDriver, false);
   assert.equal(result.echoUsesDriver, false);
   assert.equal(result.virtualUsesDriver, true);
+  assert.equal(result.driverProbeArguments.WorkspaceRoot, 'E:\\workspace');
+  assert.equal(result.driverProbeArguments.DevconPath, 'E:\\workspace\\tools\\devcon.exe');
+  assert.match(result.virtualFailure, /before the Desktop\/LLM session/i);
+  assert.match(result.virtualFailure, /installed driver hash differs/i);
+  assert.equal(result.virtualSuccess, null);
+  assert.equal(result.processFailure, null);
 });
 
 test('app readiness wait fails immediately on diagnostic IPC infrastructure error', { skip: !isWindows }, () => {

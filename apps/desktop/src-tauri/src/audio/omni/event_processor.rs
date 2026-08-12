@@ -29,6 +29,41 @@ pub(super) struct OmniReadinessState {
 impl OmniEventProcessor {
     const BRIDGE_STREAM_BATCH_SAMPLES: usize = OMNI_OUTPUT_SAMPLE_RATE_HZ as usize;
 
+    fn record_stream_enqueue_rejection<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+        outcome: &OmniPlaybackEnqueueOutcome,
+        detail: &str,
+    ) {
+        let report = &app.state::<AudioStateStore>().watch_session_report;
+        match outcome {
+            OmniPlaybackEnqueueOutcome::Overflow {
+                reason: OmniPlaybackOverflowReason::RealtimeBudget,
+                ..
+            } => report.record_session_issue(
+                "output",
+                "native-playback-stream-stale-dropped",
+                "warning",
+                detail,
+            ),
+            OmniPlaybackEnqueueOutcome::Overflow {
+                reason: OmniPlaybackOverflowReason::QueueFull,
+                ..
+            } => report.record_session_issue(
+                "output",
+                "native-playback-stream-overflow",
+                "error",
+                detail,
+            ),
+            OmniPlaybackEnqueueOutcome::Stopped => report.record_session_issue(
+                "output",
+                "native-playback-stream-stopped",
+                "warning",
+                detail,
+            ),
+            _ => {}
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(super) fn process_session_ready<R: tauri::Runtime>(
         mut state: OmniReadinessState,
@@ -210,7 +245,7 @@ impl OmniEventProcessor {
                                         stream_state,
                                     });
                                     if matches!(
-                                        enqueue,
+                                        &enqueue,
                                         OmniPlaybackEnqueueOutcome::Overflow { .. }
                                             | OmniPlaybackEnqueueOutcome::Stopped
                                     ) {
@@ -223,9 +258,10 @@ impl OmniEventProcessor {
                                         pending_audio_stream_chunk_index = 0;
                                         pending_audio_stream_created_at_ms = None;
                                         pending_audio_stream_aborted = true;
-                                        audio_state.watch_session_report.record_session_issue(
-                                            "output", "native-playback-stream-overflow", "error",
-                                            "Native audio stream exceeded the bounded playback scheduler.",
+                                        Self::record_stream_enqueue_rejection(
+                                            app,
+                                            &enqueue,
+                                            "Native audio stream could not enter the bounded realtime playback scheduler.",
                                         );
                                     }
                                     if !pending_audio_stream_aborted {
@@ -313,16 +349,17 @@ impl OmniEventProcessor {
                     chunk_index: pending_audio_stream_chunk_index,
                     stream_state: omni_bridge_protocol::TranslationStreamState::Chunk,
                 });
-                if matches!(result, OmniPlaybackEnqueueOutcome::Overflow { .. } | OmniPlaybackEnqueueOutcome::Stopped) {
+                if matches!(&result, OmniPlaybackEnqueueOutcome::Overflow { .. } | OmniPlaybackEnqueueOutcome::Stopped) {
                     playback_queue.abort_stream(
                         &stream_cue_id,
                         pending_audio_stream_chunk_index,
                         created_at_ms,
                     );
                     pending_audio_stream_aborted = true;
-                    app.state::<AudioStateStore>().watch_session_report.record_session_issue(
-                        "output", "native-playback-stream-overflow", "error",
-                        "Native audio stream tail could not enter the bounded playback scheduler.",
+                    Self::record_stream_enqueue_rejection(
+                        app,
+                        &result,
+                        "Native audio stream tail could not enter the bounded realtime playback scheduler.",
                     );
                 } else {
                     pending_audio_stream_chunk_index =
@@ -342,15 +379,16 @@ impl OmniEventProcessor {
                     chunk_index: pending_audio_stream_chunk_index,
                     stream_state: omni_bridge_protocol::TranslationStreamState::End,
                 });
-                if matches!(result, OmniPlaybackEnqueueOutcome::Overflow { .. } | OmniPlaybackEnqueueOutcome::Stopped) {
+                if matches!(&result, OmniPlaybackEnqueueOutcome::Overflow { .. } | OmniPlaybackEnqueueOutcome::Stopped) {
                     playback_queue.abort_stream(
                         cue_id.unwrap_or("unknown-native-cue"),
                         pending_audio_stream_chunk_index,
                         created_at_ms,
                     );
-                    app.state::<AudioStateStore>().watch_session_report.record_session_issue(
-                        "output", "native-playback-stream-overflow", "error",
-                        "Native audio stream end could not enter the bounded playback scheduler.",
+                    Self::record_stream_enqueue_rejection(
+                        app,
+                        &result,
+                        "Native audio stream end could not enter the bounded realtime playback scheduler.",
                     );
                 }
             }
@@ -840,6 +878,34 @@ mod audio_done_tests {
             .issues
             .iter()
             .any(|issue| issue.code == "native-playback-missing-cue"));
+    }
+
+    #[test]
+    fn realtime_budget_rejection_is_reported_as_stale_instead_of_queue_overflow() {
+        let app = app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        store
+            .watch_session_report
+            .begin_or_reuse("test", "native-audio-realtime-budget");
+
+        OmniEventProcessor::record_stream_enqueue_rejection(
+            &handle,
+            &OmniPlaybackEnqueueOutcome::Overflow {
+                reason: OmniPlaybackOverflowReason::RealtimeBudget,
+                dropped_cue_ids: Vec::new(),
+            },
+            "new cue is outside the realtime playback budget",
+        );
+
+        let report = store.watch_session_report.snapshot().expect("watch report");
+        assert!(report.issues.iter().any(|issue| {
+            issue.code == "native-playback-stream-stale-dropped" && issue.severity == "warning"
+        }));
+        assert!(!report
+            .issues
+            .iter()
+            .any(|issue| issue.code == "native-playback-stream-overflow"));
     }
 
     #[test]

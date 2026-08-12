@@ -130,6 +130,36 @@ test('does not classify a successful credential-vault read as a provider failure
   assert.deepEqual(report.diagnostics.evidence.appErrors, []);
 });
 
+test('uses live source watchdog progress when the preflight snapshot was waiting for a subscriber', () => {
+  const report = classify({
+    bridge: {
+      ...healthyBridge,
+      sourceSubscriberActive: false,
+      sourceReadCalls: 30,
+    },
+    bridgeLogText: [
+      healthyBridgeLog,
+      '2026-01-01 00:00:01.000 [NORMAL] [bridge] - - event=source_watchdog captureBackend=driver-virtual-speaker sourceSubscriberActive=true workerPhase=driver-read-returned lastProgressAgeMs=1 capturePackets=0 captureFrames=0 readCalls=48570 bytesRead=24253440 capturedBytes=24253440 releasedFrames=6316 droppedFrames=0 sid=bridge-0198testsid-1000',
+    ].join('\n'),
+  });
+
+  assert.notEqual(report.failureLayer, 'bridge');
+  assert.notEqual(report.failureReason, 'bridge source subscriber is not active');
+});
+
+test('keeps an explicitly skipped physical-content STT layer out of balanced diagnostics', () => {
+  const report = classify({
+    physicalOutputContent: {
+      skipped: true,
+      reason: 'SkipPhysicalOutputContentStt was provided',
+    },
+  });
+
+  assert.equal(report.verdict, 'passed');
+  assert.equal(report.layers.physicalOutputContent.status, 'skipped');
+  assert.equal(report.failureLayer, null);
+});
+
 test('echo-cancel suppresses virtual-driver evidence but preserves a real provider failure', () => {
   const providerError = 'provider.translate_text end_call | {"payload":{"error":"HTTP 429 rate limit exceeded","status":"failed"}}';
   const report = classify({

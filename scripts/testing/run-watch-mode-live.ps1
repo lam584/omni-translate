@@ -3479,6 +3479,13 @@ function Save-WatchModeRunArtifacts {
   if ($playbackSnapshot) {
     $playbackSnapshot | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path $OutputDirectory "playback.json") -Encoding UTF8
   }
+  $physicalContentStep = @($Steps | Where-Object {
+    $_.name -eq "transcribe and compare physical output content"
+  } | Select-Object -Last 1)
+  if ($physicalContentStep -and $physicalContentStep.result -and $physicalContentStep.result.skipped) {
+    $physicalContentStep.result | ConvertTo-Json -Depth 12 | Set-Content `
+      -Path (Join-Path $OutputDirectory "physical-output-content.json") -Encoding UTF8
+  }
   Build-SnapshotsFile $OutputDirectory $effectiveDriverProbe (Join-Path $OutputDirectory "app.log") (Join-Path $OutputDirectory "bridge-service.log") $RunMarker $StartedAtLocal $playbackSnapshot | Out-Null
   @($Steps) | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $OutputDirectory "steps.json") -Encoding UTF8
   Invoke-ReportGenerator $OutputDirectory "live"

@@ -976,6 +976,19 @@ function wasapiInjectedPlaybackFailed(wasapi, playback, appLog) {
   return null;
 }
 
+function bridgeLogShowsActiveSource(bridgeLog) {
+  return (bridgeLog?.watchdogSummaries ?? []).some((watchdog) => (
+    watchdog.sourceSubscriberActive === 'true'
+    && (
+      asNumber(watchdog.readCalls, 0) > 0
+      || asNumber(watchdog.bytesRead, 0) > 0
+      || asNumber(watchdog.capturedBytes, 0) > 0
+      || asNumber(watchdog.releasedFrames, 0) > 0
+      || asNumber(watchdog.captureFrames, 0) > 0
+    )
+  ));
+}
+
 function bridgeLayerFailed(bridge, bridgeLog, feedbackLoopPrevention = 'virtual-driver') {
   const metrics = bridgeLog.metrics;
   const processExclusion = feedbackLoopPrevention === 'process-exclusion';
@@ -1016,7 +1029,17 @@ function bridgeLayerFailed(bridge, bridgeLog, feedbackLoopPrevention = 'virtual-
   }
   if (bridge?.bridgeState && !['running', 'ready'].includes(bridge.bridgeState)) return `bridgeState is ${bridge.bridgeState}`;
   if (processExclusion) return null;
-  if (bridge?.sourceSubscriberActive === false) return 'bridge source subscriber is not active';
+  // The pre-playback source probe intentionally runs before Desktop opens the
+  // source pipe, so its snapshot can legitimately say waiting-subscriber even
+  // when the later live Watch session subscribed and delivered frames. Prefer
+  // run-scoped watchdog evidence over that stale preflight value; a genuinely
+  // failed source still has no active watchdog with progress counters.
+  if (
+    bridge?.sourceSubscriberActive === false
+    && !bridgeLogShowsActiveSource(bridgeLog)
+  ) {
+    return 'bridge source subscriber is not active';
+  }
   if (
     asNumber(bridge?.sourceReadCalls) === 0
     && asNumber(bridge?.sourceFramePayloadBytes) === 0
@@ -1863,6 +1886,7 @@ export function classifyWatchModeRun(input) {
     ...input,
     speechSegmentation,
   });
+  const physicalOutputContentSkipped = input.physicalOutputContent?.skipped === true;
   const layers = {
     environment: createLayer('environment', input.steps),
     driver: createLayer('driver', input.driver),
@@ -1891,6 +1915,12 @@ export function classifyWatchModeRun(input) {
     }),
     provider: createLayer('provider', input.provider),
   };
+  if (physicalOutputContentSkipped) {
+    layers.physicalOutputContent.status = 'skipped';
+    layers.physicalOutputContent.reason = input.physicalOutputContent.reason
+      ?? 'physical output content STT was explicitly skipped';
+    layers.physicalOutputContent.reasons = [];
+  }
   if (!echoCancelVariant && !strictContent.passed) {
     layers.strictContent.status = 'failed';
     layers.strictContent.reason = strictContent.reason ?? 'strict reference-media content evidence failed';
@@ -1954,7 +1984,9 @@ export function classifyWatchModeRun(input) {
         ...(subtitleConfigReason ? [['app', subtitleConfigReason]] : []),
         ...(hardProviderReason ? [['provider', hardProviderReason]] : []),
         ...(secondaryPreconnectReason ? [['app', secondaryPreconnectReason]] : []),
-        ['physicalOutputContent', physicalOutputContentLayerFailed(input.physicalOutputContent)],
+        ['physicalOutputContent', physicalOutputContentSkipped
+          ? null
+          : physicalOutputContentLayerFailed(input.physicalOutputContent)],
         ['provider', providerReason],
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
         ['app', watchReportReason],
@@ -1977,7 +2009,9 @@ export function classifyWatchModeRun(input) {
           watchSessionReport: input.watchSessionReport,
           requireWatchReport: (input.mode ?? 'live') === 'live',
         })],
-        ['physicalOutputContent', physicalOutputContentLayerFailed(input.physicalOutputContent)],
+        ['physicalOutputContent', physicalOutputContentSkipped
+          ? null
+          : physicalOutputContentLayerFailed(input.physicalOutputContent)],
         ...(providerBeforeAppReason ? [] : [['provider', providerReason]]),
         ['speechSegmentation', speechSegmentationLayerFailed(speechSegmentation, translationRoute)],
         ['app', watchReportReason],

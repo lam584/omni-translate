@@ -100,6 +100,8 @@ const STRICT_REQUIRED_CONCEPTS = [
   '一美元的灯泡',
 ];
 const STRICT_REQUIRED_CONCEPT_ALIASES = new Map([
+  ['十亿美元', ['10亿美元']],
+  ['五亿美元', ['5亿美元']],
   ['一美元的灯泡', ['一美元灯泡', '1美元灯泡', '1美元的灯泡']],
 ]);
 const STRICT_FORBIDDEN_ERRORS = [

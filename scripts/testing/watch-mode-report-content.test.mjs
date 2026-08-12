@@ -239,6 +239,22 @@ test('strict reference-media content passes with full reference coverage and seg
   assert.equal(result.missingConcepts.length, 0);
 });
 
+test('strict reference-media concepts accept equivalent Arabic-number currency forms', () => {
+  const result = evaluateStrictContent({
+    physicalOutputContent: strictTestMediaContent({
+      translation: testMediaReferenceTranslation
+        .replaceAll('十亿美元', '10 亿美元')
+        .replaceAll('五亿美元', '5 亿美元')
+        .replaceAll('一美元的灯泡', '1 美元灯泡'),
+      subtitleText: '',
+      segmentTranslationText: '',
+    }),
+  });
+
+  assert.equal(result.passed, true);
+  assert.deepEqual(result.missingConcepts, []);
+});
+
 test('strict native reference-media content accepts completed native cues instead of secondary TTS queue writes', () => {
   const result = evaluateStrictContent({
     translationRoute: 'native',

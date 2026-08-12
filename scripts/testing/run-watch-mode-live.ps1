@@ -26,6 +26,10 @@ param(
   [switch]$StopDesktopAfterPlayback,
   [switch]$AllowElevatedDesktopLaunch,
   [switch]$SkipPhysicalOutputContentStt,
+  # Re-run only the paid physical-output STT/comparison against artifacts from
+  # an already completed live session. This never starts Desktop, Bridge, media
+  # playback, or a new Watch provider session.
+  [string]$RecoverPhysicalOutputContentRunDirectory = "",
   [string]$MediaPath = "scripts/testing/fixtures/watch-mode-en-original.wav",
   [string]$WatchModelId = "",
   [ValidateSet("", "dashscope-omni", "dashscope-livetranslate", "dashscope-asr", "openai-conversation", "openai-translation", "openai-transcription", "openai-flat", "gemini-live")]
@@ -3116,7 +3120,16 @@ function Build-OmniRealtimeDiagnostic {
   param([string]$OutputDirectory)
   $buildLog = Join-Path $OutputDirectory "omni-realtime-diagnostic.build.log"
   $buildErr = Join-Path $OutputDirectory "omni-realtime-diagnostic.build.stderr.log"
-  $buildExit = Invoke-NativeProcessToLog "cargo.exe" @("build", "--manifest-path", "scripts/diagnostics/omni-realtime/Cargo.toml") $workspaceRoot $buildLog $buildErr
+  $previousCargoTargetDir = $env:CARGO_TARGET_DIR
+  try {
+    # This diagnostic crate is not a workspace member. Pin its output to the
+    # repository target directory here instead of relying on the matrix
+    # caller's environment; diagnostic-single-device uses the same verifier.
+    $env:CARGO_TARGET_DIR = Join-Path $workspaceRoot "target"
+    $buildExit = Invoke-NativeProcessToLog "cargo.exe" @("build", "--manifest-path", "scripts/diagnostics/omni-realtime/Cargo.toml") $workspaceRoot $buildLog $buildErr
+  } finally {
+    $env:CARGO_TARGET_DIR = $previousCargoTargetDir
+  }
   if ($buildExit -ne 0) {
     throw "omni realtime STT diagnostic build failed with exit code $buildExit; see $buildLog and $buildErr"
   }
@@ -3787,6 +3800,50 @@ function Save-WatchModeRunArtifacts {
 
 $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 Set-Location $workspaceRoot
+
+if ($RecoverPhysicalOutputContentRunDirectory) {
+  $recoveryDirectory = (Resolve-Path -LiteralPath $RecoverPhysicalOutputContentRunDirectory -ErrorAction Stop).Path
+  $recordingPath = Join-Path $recoveryDirectory "physical-output-recording.json"
+  $sourceTranscriptPath = Join-Path $recoveryDirectory "source-media-transcript.json"
+  $appLogPath = Join-Path $recoveryDirectory "app.log"
+  foreach ($requiredPath in @($recordingPath, $sourceTranscriptPath, $appLogPath)) {
+    if (-not (Test-Path -LiteralPath $requiredPath -PathType Leaf)) {
+      throw "physical-output recovery artifact is missing: $requiredPath"
+    }
+  }
+  $markerMatches = [regex]::Matches(
+    (Get-Content -LiteralPath $appLogPath -Raw -Encoding UTF8),
+    'watch_mode_diagnostic\.run_id=[0-9a-fA-F]{32}'
+  )
+  if ($markerMatches.Count -eq 0) {
+    throw "physical-output recovery app.log has no Watch run marker: $appLogPath"
+  }
+  $recoveryMarker = $markerMatches[$markerMatches.Count - 1].Value
+  $recording = Get-Content -LiteralPath $recordingPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $sourceTranscript = Get-Content -LiteralPath $sourceTranscriptPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $result = Invoke-PhysicalOutputContentStt `
+    $recoveryDirectory `
+    $recording `
+    $appLogPath `
+    $recoveryMarker `
+    $sourceTranscript
+  [ordered]@{
+    schemaVersion = 1
+    recoveredAt = Get-Date -Format o
+    runDirectory = $recoveryDirectory
+    runMarker = $recoveryMarker
+    replayedWatchSession = $false
+    replayedPhysicalOutput = $false
+    invokedPhysicalOutputStt = $true
+    resultPassed = [bool]$result.passed
+  } | ConvertTo-Json -Depth 6 | Set-Content `
+    -LiteralPath (Join-Path $recoveryDirectory "physical-output-content-recovery.json") `
+    -Encoding UTF8
+  Invoke-ReportGenerator $recoveryDirectory "live"
+  Write-Output $recoveryDirectory
+  exit $(if ($result.passed) { 0 } else { 1 })
+}
+
 $outputDir = New-WatchModeOutputDirectory $OutputRoot
 $runMarker = "watch_mode_diagnostic.run_id=$([System.Guid]::NewGuid().ToString('N'))"
 $startedAtLocal = Get-Date -Format "yyyy-MM-dd HH:mm:ss"

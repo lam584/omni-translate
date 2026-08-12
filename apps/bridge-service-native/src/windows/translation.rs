@@ -377,6 +377,28 @@ mod physical_stream_tests {
         );
     }
 
+    #[test]
+    fn an_admitted_stream_can_continue_well_beyond_five_seconds() {
+        let mut ledger = PhysicalTranslationStreamLedger::default();
+        assert_eq!(
+            ledger.admit("long-cue", 0, TranslationStreamState::Start),
+            Ok(PhysicalStreamAdmission::Start)
+        );
+        // One thousand provider deltas is deliberately much longer than the
+        // five-second admission budget. Once a stream has started, duration
+        // is not a queue-start deadline and must not abort the active cue.
+        for chunk_index in 1..=1_000 {
+            assert_eq!(
+                ledger.admit("long-cue", chunk_index, TranslationStreamState::Chunk),
+                Ok(PhysicalStreamAdmission::Chunk)
+            );
+        }
+        assert_eq!(
+            ledger.admit("long-cue", 1_001, TranslationStreamState::End),
+            Ok(PhysicalStreamAdmission::End)
+        );
+    }
+
 }
 
 impl TranslationPlaybackQueue {

@@ -188,19 +188,17 @@ impl OmniEventProcessor {
                                 let created_at_ms = *pending_audio_stream_created_at_ms
                                     .get_or_insert_with(unix_ms);
                                 let raw = std::mem::take(&mut pending_audio_buffer);
-                                const STREAM_SCHEDULER_CHUNK_FRAMES: usize =
-                                    (OMNI_OUTPUT_SAMPLE_RATE_HZ as usize * 20) / 1_000;
-                                for samples in raw.chunks(STREAM_SCHEDULER_CHUNK_FRAMES) {
+                                if !raw.is_empty() {
                                     let stream_state = if pending_audio_stream_cue_id.is_none() {
                                         omni_bridge_protocol::TranslationStreamState::Start
                                     } else {
                                         omni_bridge_protocol::TranslationStreamState::Chunk
                                     };
-                                    let chunk_duration_ms = (samples.len() as u64)
+                                    let chunk_duration_ms = (raw.len() as u64)
                                         .saturating_mul(1_000)
                                         .div_ceil(OMNI_OUTPUT_SAMPLE_RATE_HZ as u64);
                                     let enqueue = playback_queue.enqueue(OmniPlaybackCommand::Stream {
-                                        samples: samples.to_vec(),
+                                        samples: raw,
                                         cue_id: cue_id.to_string(),
                                         sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
                                         queued_at: Instant::now(),
@@ -227,11 +225,12 @@ impl OmniEventProcessor {
                                             "output", "native-playback-stream-overflow", "error",
                                             "Native audio stream exceeded the bounded playback scheduler.",
                                         );
-                                        break;
                                     }
-                                    pending_audio_stream_cue_id = Some(cue_id.to_string());
-                                    pending_audio_stream_chunk_index =
-                                        pending_audio_stream_chunk_index.saturating_add(1);
+                                    if !pending_audio_stream_aborted {
+                                        pending_audio_stream_cue_id = Some(cue_id.to_string());
+                                        pending_audio_stream_chunk_index =
+                                            pending_audio_stream_chunk_index.saturating_add(1);
+                                    }
                                 }
                             }
                         }

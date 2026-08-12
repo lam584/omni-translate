@@ -2122,9 +2122,19 @@ impl OmniPlaybackQueue {
                 dropped_cue_ids,
             };
         }
-        if omni_playback_queue_age_expired(
-            projected_start.saturating_duration_since(command.queued_at()),
-        ) {
+        let requires_realtime_start = matches!(
+            &command,
+            OmniPlaybackCommand::Play { .. }
+                | OmniPlaybackCommand::Stream {
+                    stream_state: omni_bridge_protocol::TranslationStreamState::Start,
+                    ..
+                }
+        );
+        if requires_realtime_start
+            && omni_playback_queue_age_expired(
+                projected_start.saturating_duration_since(command.queued_at()),
+            )
+        {
             return OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
                 dropped_cue_ids,
@@ -3387,18 +3397,30 @@ mod omni_playback_tests {
     }
 
     #[test]
-    fn streaming_queue_enforces_the_five_second_audio_budget_not_chunk_count() {
+    fn accepted_stream_can_continue_beyond_the_five_second_start_budget() {
         let queue = OmniPlaybackQueue::new(260);
-        for index in 0..250 {
+        for index in 0..251 {
             assert!(matches!(
                 queue.enqueue(queued_stream("stream", index, Duration::from_millis(20))),
                 OmniPlaybackEnqueueOutcome::Queued
                     | OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { .. }
             ));
         }
-        assert_eq!(queue.pending_cue_ids().len(), 250);
+        assert_eq!(queue.pending_cue_ids().len(), 251);
+    }
+
+    #[test]
+    fn a_new_stream_start_still_obeys_the_five_second_start_budget() {
+        let queue = OmniPlaybackQueue::new(260);
+        for index in 0..251 {
+            assert!(matches!(
+                queue.enqueue(queued_stream("stream", index, Duration::from_millis(20))),
+                OmniPlaybackEnqueueOutcome::Queued
+                    | OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { .. }
+            ));
+        }
         assert!(matches!(
-            queue.enqueue(queued_stream("stream", 250, Duration::from_millis(20))),
+            queue.enqueue(queued_stream("next", 0, Duration::from_millis(20))),
             OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
                 ..

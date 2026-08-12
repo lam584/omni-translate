@@ -453,7 +453,7 @@ fn handle_physical_translation_stream_frame(
         let _ = write_framed_json(handle, &ack);
         return;
     }
-    let (mut next_ledger, admission) = match prepare_physical_stream_admission(
+    let (next_ledger, admission) = match prepare_physical_stream_admission(
         &current.physical_translation_stream_ledger,
         cue_id,
         chunk_index,
@@ -500,26 +500,6 @@ fn handle_physical_translation_stream_frame(
         return;
     }
     let playback_frames = monitor_samples.len() as u64 / INTERNAL_CHANNEL_COUNT as u64;
-    if !matches!(stream_state, TranslationStreamState::End | TranslationStreamState::Abort)
-        && next_ledger.reserve_frames(cue_id, playback_frames).is_err()
-    {
-        current.physical_translation_stream_ledger.finish(cue_id);
-        current.dropped_frame_count = current.dropped_frame_count.saturating_add(playback_frames);
-        current.last_error_code = Some("bridge.queue-overflow".to_string());
-        let _ = playback_control_tx.send(PlaybackControlCommand::AbortTranslationStream {
-            cue_id: cue_id.to_string(),
-            reason: "physical-stream-realtime-budget".to_string(),
-            error_code: "bridge.queue-overflow".to_string(),
-        });
-        let ack = rejected_audio_frame_ack(
-            header,
-            "bridge.queue-overflow",
-            "physical translation stream exceeds the five-second realtime buffer budget",
-        );
-        drop(current);
-        let _ = write_framed_json(handle, &ack);
-        return;
-    }
     let now_ms = unix_ms();
     let duration_ms = playback_frames
         .saturating_mul(1_000)

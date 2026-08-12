@@ -210,8 +210,6 @@ struct PhysicalTranslationStreamLedger {
 struct PhysicalTranslationStreamCursor {
     next_chunk_index: u32,
     ended: bool,
-    started_at: Instant,
-    accepted_frames: u64,
 }
 
 impl PhysicalTranslationStreamLedger {
@@ -237,8 +235,6 @@ impl PhysicalTranslationStreamLedger {
                     PhysicalTranslationStreamCursor {
                         next_chunk_index: 1,
                         ended: false,
-                        started_at: Instant::now(),
-                        accepted_frames: 0,
                     },
                 );
                 Ok(PhysicalStreamAdmission::Start)
@@ -285,26 +281,6 @@ impl PhysicalTranslationStreamLedger {
         if self.active.remove(cue_id).is_some() {
             self.completed.insert(cue_id.to_string());
         }
-    }
-
-    fn reserve_frames(&mut self, cue_id: &str, frames: u64) -> Result<(), &'static str> {
-        let Some(cursor) = self.active.get_mut(cue_id) else {
-            return Err("physical stream frame reservation requires an active cue");
-        };
-        let elapsed_frames = cursor
-            .started_at
-            .elapsed()
-            .as_secs_f64()
-            .mul_add(INTERNAL_SAMPLE_RATE_HZ as f64, 0.0) as u64;
-        let max_accepted = elapsed_frames.saturating_add(
-            INTERNAL_SAMPLE_RATE_HZ as u64 * TRANSLATION_MAX_PROJECTED_LATENCY_MS / 1_000,
-        );
-        let next = cursor.accepted_frames.saturating_add(frames);
-        if next > max_accepted {
-            return Err("physical translation stream exceeds the five-second realtime buffer budget");
-        }
-        cursor.accepted_frames = next;
-        Ok(())
     }
 
     fn reset(&mut self) {
@@ -401,21 +377,6 @@ mod physical_stream_tests {
         );
     }
 
-    #[test]
-    fn physical_stream_budget_is_elapsed_playback_plus_five_seconds() {
-        let mut ledger = PhysicalTranslationStreamLedger::default();
-        assert_eq!(
-            ledger.admit("cue", 0, TranslationStreamState::Start),
-            Ok(PhysicalStreamAdmission::Start)
-        );
-        let budget_frames = INTERNAL_SAMPLE_RATE_HZ as u64
-            * TRANSLATION_MAX_PROJECTED_LATENCY_MS
-            / 1_000;
-        assert!(ledger.reserve_frames("cue", budget_frames).is_ok());
-        assert!(ledger
-            .reserve_frames("cue", INTERNAL_SAMPLE_RATE_HZ as u64)
-            .is_err());
-    }
 }
 
 impl TranslationPlaybackQueue {

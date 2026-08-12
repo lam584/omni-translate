@@ -14,8 +14,8 @@ import {
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
 
-test('balanced release plan caps paid LLM time at 38 minutes', () => {
-  assert.equal(BALANCED_RELEASE_PLAN.paidLlmSeconds, 38 * 60);
+test('balanced release plan caps paid LLM time at 24 minutes', () => {
+  assert.equal(BALANCED_RELEASE_PLAN.paidLlmSeconds, 24 * 60);
   assert.equal(LOCAL_ISOLATION_CELLS.length, 6);
   assert.equal(PAIRWISE_LIVE_CELLS.length, 6);
   assert.equal(MODEL_STABILITY_CELLS.length, 2);
@@ -56,13 +56,13 @@ test('pairwise live cells cover every model/route pair and every route on both r
       new Set(RELEASE_DEVICE_CLASSES),
     );
   }
-  assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => entry.durationSeconds === 285));
+  assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => entry.durationSeconds === 180));
 });
 
-test('model stability uses one 4m45s cell per model', () => {
+test('model stability uses one three-minute cell per model', () => {
   assert.deepEqual(MODEL_STABILITY_CELLS.map((entry) => entry.modelId), RELEASE_MODELS);
   assert.ok(MODEL_STABILITY_CELLS.every((entry) => (
-    entry.durationSeconds === 285
+    entry.durationSeconds === 180
     && entry.feedbackLoopPrevention === 'process-exclusion'
     && entry.deviceClass === 'default-speaker'
   )));

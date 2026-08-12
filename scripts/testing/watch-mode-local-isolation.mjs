@@ -48,6 +48,12 @@ export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   'scripts/testing/verify-watch-mode-evidence.mjs',
   'scripts/testing/watch-mode-local-isolation.mjs',
   'scripts/testing/watch-mode-local-isolation.test.mjs',
+  // The local layer disables Provider access (`providerCalls === 0`) and does
+  // not launch the Desktop shell. Credential decoding can therefore be
+  // revalidated by the provider preflight without invalidating the six
+  // Bridge/probe/driver isolation cells. Runtime hashes below still have to
+  // match byte-for-byte before this reuse is accepted.
+  'apps/desktop/src-tauri/src/storage/credential.rs',
 ]);
 
 // The zero-LLM layer invokes only these probe/runtime artifacts.  The paid

@@ -637,9 +637,11 @@ export async function runLocalIsolationMatrix({
     const args = process.platform === 'win32'
       ? ['/d', '/s', '/c', 'npm.cmd', 'run', 'test:aec3-msvc']
       : ['run', 'test:aec3-msvc'];
+    const environment = { ...process.env, CARGO_TARGET_DIR: path.join(root, 'target') };
+    delete environment.CARGO_BUILD_TARGET;
     return spawnSync(executable, args, {
       cwd: root,
-      env: process.env,
+      env: environment,
       encoding: 'utf8',
       windowsHide: true,
       timeout: 900_000,

@@ -298,6 +298,15 @@
                     ));
                 }
 
+                // Publishing the child PID proves that Bridge spawned the
+                // descendant, not that its independent WASAPI stream has
+                // started rendering yet.  Give that stream one shared-mode
+                // scheduling quantum before opening the measurement window;
+                // otherwise a valid child can complete just after the short
+                // fingerprint window and look falsely absent from physical
+                // evidence.  The subsequent frequency threshold is unchanged.
+                thread::sleep(Duration::from_millis(250));
+
                 let mut physical_metrics = CaptureMetrics::default();
                 let started = Instant::now();
                 while started.elapsed() < Duration::from_millis(PROCESS_CAPTURE_WINDOW_MS) {

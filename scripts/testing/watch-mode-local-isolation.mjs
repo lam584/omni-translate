@@ -31,6 +31,7 @@ export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   'scripts/testing/run-watch-mode-live-matrix.mjs',
   'scripts/testing/run-watch-mode-live-matrix.test.mjs',
   'scripts/testing/run-watch-mode-live.ps1',
+  'scripts/testing/run-watch-mode-live.test.mjs',
   'scripts/testing/watch-mode-report.mjs',
   'scripts/testing/verify-watch-mode-evidence.mjs',
   'scripts/testing/watch-mode-local-isolation.mjs',

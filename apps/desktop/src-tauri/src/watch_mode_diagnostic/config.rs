@@ -187,6 +187,18 @@ pub(super) fn configure_watch_mode(
         &["devices", "outputDeviceId"],
         output_device_id.to_string(),
     );
+    // Physical Watch routes capture the loopback stream of the same render
+    // endpoint used by the media injector and translated playback. Do not let
+    // a persisted concrete inbound device override the endpoint selected for
+    // this diagnostic run. Virtual-driver intentionally captures its virtual
+    // render endpoint instead and is resolved separately by the audio engine.
+    if feedback_loop_prevention != "virtual-driver" {
+        set_json_pointer_string(
+            config,
+            &["devices", "inboundRoute", "input", "deviceId"],
+            output_device_id.to_string(),
+        );
+    }
     set_json_pointer_number(config, &["devices", "outputLevel"], output_level);
     set_json_pointer_string(
         config,

@@ -213,7 +213,7 @@ fn read_windows_credential(reference: &str) -> Result<Option<String>, String> {
             credential.CredentialBlob,
             credential.CredentialBlobSize as usize,
         );
-        String::from_utf8(blob.to_vec())
+        decode_windows_credential_blob(blob)
             .map(Some)
             .map_err(|_| "Windows Credential Manager 返回的 API Key 不是有效 UTF-8。".to_string())
     };
@@ -228,6 +228,28 @@ fn read_windows_credential(reference: &str) -> Result<Option<String>, String> {
     );
 
     secret_result
+}
+
+#[cfg(target_os = "windows")]
+fn decode_windows_credential_blob(blob: &[u8]) -> Result<String, std::string::FromUtf8Error> {
+    // Legacy writers may persist generic credentials as UTF-16LE. ASCII
+    // UTF-16LE is also valid UTF-8, but decoding it that way leaves an
+    // embedded NUL after every character and invalidates HTTP auth headers.
+    let looks_like_utf16le = blob.len() >= 2
+        && blob.len().is_multiple_of(2)
+        && blob.chunks_exact(2).all(|pair| pair[1] == 0);
+
+    if looks_like_utf16le {
+        let units = blob
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        if let Ok(secret) = String::from_utf16(&units) {
+            return Ok(secret);
+        }
+    }
+
+    String::from_utf8(blob.to_vec())
 }
 
 #[cfg(all(target_os = "windows", test))]
@@ -350,7 +372,7 @@ fn normalize_reference(reference: &str) -> String {
 #[cfg(test)]
 mod tests {
     #[cfg(target_os = "windows")]
-    use super::{delete_windows_credential, KeyringCredentialVault};
+    use super::{decode_windows_credential_blob, delete_windows_credential, KeyringCredentialVault};
     use super::{
         normalize_reference, run_credential_operation, CredentialVault, MemoryCredentialVault,
     };
@@ -428,6 +450,20 @@ mod tests {
 
         delete_windows_credential(&super::normalize_reference(&reference))
             .expect("test credential should be removable");
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_vault_decodes_legacy_utf16le_secret_without_embedded_nuls() {
+        let encoded = "dashscope-token"
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            decode_windows_credential_blob(&encoded).expect("legacy UTF-16LE should decode"),
+            "dashscope-token"
+        );
     }
 
     #[test]

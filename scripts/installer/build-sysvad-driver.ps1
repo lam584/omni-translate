@@ -250,7 +250,7 @@ if ($SkipSigning) {
     signingMode = 'unsigned'
     signerThumbprint = $null
   }
-  Write-Utf8NoBom $stagedMetadata (($unsignedMetadata | ConvertTo-Json -Depth 3) + [Environment]::NewLine)
+  Write-Utf8NoBom $stagedMetadata (($unsignedMetadata | ConvertTo-Json -Depth 3) + "`n")
   Write-Warning 'Staged INF and SYS without CAT because -SkipSigning was supplied.'
   exit 0
 }
@@ -321,6 +321,6 @@ $packageMetadata = [ordered]@{
   timestampMode = if ($isDevelopmentTestSigner) { 'none' } else { 'rfc3161' }
   timestampUrl = if ($isDevelopmentTestSigner) { $null } else { $SigningTimestampUrl }
 }
-Write-Utf8NoBom $stagedMetadata (($packageMetadata | ConvertTo-Json -Depth 3) + [Environment]::NewLine)
+Write-Utf8NoBom $stagedMetadata (($packageMetadata | ConvertTo-Json -Depth 3) + "`n")
 
 Write-Output "SYSVAD package staged at $packageRoot"

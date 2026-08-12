@@ -24,8 +24,10 @@ export const LOCAL_ISOLATION_RUNNER_ID = 'scripts/testing/watch-mode-local-isola
 export const LOCAL_ISOLATION_CANONICAL_MANIFEST = 'latest-successful-watch-mode-local-isolation.json';
 export const LOCAL_ISOLATION_REUSE_MODE = 'orchestration-only';
 export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
+  '.gitattributes',
   'package.json',
   'apps/bridge-service-native/src/bin/omni-watch-media-injector.rs',
+  'scripts/installer/build-sysvad-driver.ps1',
   'scripts/testing/run-watch-mode-live-matrix.mjs',
   'scripts/testing/run-watch-mode-live-matrix.test.mjs',
   'scripts/testing/run-watch-mode-live.ps1',

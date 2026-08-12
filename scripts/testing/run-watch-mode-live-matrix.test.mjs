@@ -89,7 +89,7 @@ test('matrix defaults freeze the strict-evidence contract', () => {
     expectedPhysicalPlaybackDeviceName: '',
     providerId: 'provider-dashscope',
   });
-  assert.deepEqual(SUPPORTED_DEVICE_CLASSES, ['default-speaker', 'usb', 'bluetooth']);
+  assert.deepEqual(SUPPORTED_DEVICE_CLASSES, ['default-speaker', 'usb']);
   const packageJson = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
   assert.match(
     packageJson.scripts['test:watch-mode-evidence:strict'],
@@ -359,12 +359,6 @@ test('resolveDeviceProfiles fails closed for strict runs and accepts single-devi
       physicalPlaybackDeviceId: 'usb-endpoint-id',
       expectedPhysicalPlaybackDeviceName: 'USB Audio',
     },
-    {
-      profileId: 'bluetooth-headphones',
-      deviceClass: 'bluetooth',
-      physicalPlaybackDeviceId: 'bluetooth-endpoint-id',
-      expectedPhysicalPlaybackDeviceName: 'Bluetooth',
-    },
   ];
   assert.deepEqual(resolveDeviceProfiles({ deviceProfiles: JSON.stringify(profiles) }), profiles);
 
@@ -413,7 +407,7 @@ test('verify invocation targets the strict evidence checker', () => {
       'artifacts/testing/watch-mode-live',
       ['model-a', 'model-b'],
       ['virtual-driver', 'echo-cancel'],
-      ['default-speaker', 'usb', 'bluetooth'],
+      ['default-speaker', 'usb'],
       'E:\\artifacts\\watch-mode-live-matrix.json',
     ),
     [
@@ -422,7 +416,7 @@ test('verify invocation targets the strict evidence checker', () => {
       '--strict',
       '--models', 'model-a,model-b',
       '--feedback-modes', 'virtual-driver,echo-cancel',
-      '--device-classes', 'default-speaker,usb,bluetooth',
+      '--device-classes', 'default-speaker,usb',
       '--run-manifest', 'E:\\artifacts\\watch-mode-live-matrix.json',
     ],
   );
@@ -519,7 +513,6 @@ test('matrix manifest contains only the current invocation run directories', () 
   const currentRuns = [
     path.join(outputRoot, 'current-default'),
     path.join(outputRoot, 'current-usb'),
-    path.join(outputRoot, 'current-bluetooth'),
   ];
   for (const runDirectory of currentRuns) {
     writeAuthorityPlaceholderArtifacts(runDirectory, 'process-exclusion');
@@ -531,7 +524,6 @@ test('matrix manifest contains only the current invocation run directories', () 
     deviceProfiles: [
       { profileId: 'default', deviceClass: 'default-speaker' },
       { profileId: 'usb', deviceClass: 'usb' },
-      { profileId: 'bluetooth', deviceClass: 'bluetooth' },
     ],
     runDirectories: currentRuns,
     strict: true,
@@ -551,7 +543,7 @@ test('matrix manifest contains only the current invocation run directories', () 
   assert.equal(fs.existsSync(manifestPath), true);
   assert.deepEqual(manifest.runDirectories, currentRuns.map((directory) => path.basename(directory)));
   assert.equal(manifest.schemaVersion, 3);
-  assert.equal(manifest.cells.length, 3);
+  assert.equal(manifest.cells.length, 2);
   assert.equal(manifest.strict, true);
   assert.equal(manifest.evidenceMode, 'live');
   assert.deepEqual(manifest.provenance, CLEAN_PROVENANCE);

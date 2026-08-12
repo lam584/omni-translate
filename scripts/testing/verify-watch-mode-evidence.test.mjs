@@ -1565,14 +1565,14 @@ test('strict device matrix rejects one captured session copied across device cel
   assert.match(result.reason, /duplicate live artifact\/session/);
 });
 
-test('strict device matrix accepts the complete two-model by three-route by three-device grid', () => {
+test('strict device matrix accepts the complete two-model by three-route by two-device grid', () => {
   const root = makeTempRoot();
   const models = [
     'qwen3.5-omni-flash-realtime',
     'qwen3.5-livetranslate-flash-realtime',
   ];
   const feedbackModes = ['process-exclusion', 'virtual-driver', 'echo-cancel'];
-  const deviceClasses = ['default-speaker', 'usb', 'bluetooth'];
+  const deviceClasses = ['default-speaker', 'usb'];
   let runIndex = 0;
   for (const modelId of models) {
     for (const feedbackLoopPrevention of feedbackModes) {
@@ -1609,7 +1609,7 @@ test('strict device matrix accepts the complete two-model by three-route by thre
   });
 
   assert.equal(result.ok, true, result.reason);
-  assert.equal(result.modelResults.length, 18);
+  assert.equal(result.modelResults.length, 12);
   assert.ok(result.modelResults.every((entry) => entry.ok));
 });
 

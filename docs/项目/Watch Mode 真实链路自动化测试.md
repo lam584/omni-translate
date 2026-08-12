@@ -32,7 +32,7 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . .\scripts\test
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
 ```
 
-双模型 × 三路线 × 三设备严格矩阵：
+双模型 × 三路线 × 两个真实物理设备严格矩阵：
 
 ```powershell
 node .\scripts\testing\run-watch-mode-live-matrix.mjs --device-profiles .\artifacts\testing\watch-mode-device-profiles.json --skip-driver-repair --allow-elevated-desktop-launch
@@ -40,7 +40,7 @@ node .\scripts\testing\run-watch-mode-live-matrix.mjs --device-profiles .\artifa
 
 PowerShell 下使用 npm 11 转发参数时需要两层 `--`：`npm run test:watch-mode-live:matrix -- -- --device-profiles ...`。上面直接执行 Node 入口可避免 npm 版本对参数转发语义的差异。
 
-严格入口必须显式传入 `--device-profiles`，JSON 中必须恰好各有一个 `default-speaker`、`usb`、`bluetooth` profile；USB/蓝牙还必须写明真实 MMDevice id 和预期端点名称。缺失 profile 时矩阵直接失败，绝不退化成默认扬声器单设备。matrix 默认对每个模型跑 `process-exclusion`、`virtual-driver` 和 `echo-cancel` 三个 `feedbackLoopPrevention` 变体，并把本次 18 个 run directory 写入唯一 manifest；verifier 只读取该 manifest，不扫描 output root 中的历史报告。支持 Windows build 20348 及以上时，`process-exclusion` 是推荐路线；能力探测失败时该变体必须明确失败或跳过为不支持，不能静默改跑其他后端。单设备调试请直接运行 `run-watch-mode-live.ps1`，或显式使用 `--diagnostic-single-device`；其结果属于 non-strict，不能发布 release manifest。单独跑 process-exclusion 变体：
+严格入口必须显式传入 `--device-profiles`，JSON 中必须恰好各有一个 `default-speaker` 与独立 `usb` profile；USB 必须写明真实 MMDevice id 和预期端点名称。Bluetooth 是可选诊断端点，不能用 USB 端点伪装。缺失 profile 时矩阵直接失败，绝不退化成默认扬声器单设备。matrix 默认对每个模型跑 `process-exclusion`、`virtual-driver` 和 `echo-cancel` 三个 `feedbackLoopPrevention` 变体，并把本次 14 个 run directory 写入唯一 manifest；verifier 只读取该 manifest，不扫描 output root 中的历史报告。支持 Windows build 20348 及以上时，`process-exclusion` 是推荐路线；能力探测失败时该变体必须明确失败或跳过为不支持，不能静默改跑其他后端。单设备调试请直接运行 `run-watch-mode-live.ps1`，或显式使用 `--diagnostic-single-device`；其结果属于 non-strict，不能发布 release manifest。单独跑 process-exclusion 变体：
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -FeedbackLoopPrevention process-exclusion -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
@@ -58,13 +58,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-wa
 npm run test:watch-mode-evidence:strict
 ```
 
-该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。发布验证采用预算平衡方案：9 个零 LLM 本地隔离格（3 路线 × 3 设备类，每格 5 分钟）、6 个 live 配对格（每格 3 分钟）和 2 个模型稳定格（每格 10 分钟）。只有这 17 个格子的固定 authority 全部通过，本次 scoped verifier 才会原子替换 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。matrix 明确拒绝 `-DryRun`，脚本 fixture 自测只能使用 `npm run test:watch-mode-live:dry-run`，其报告保持 `mode=dry-run`，不会进入 strict 验收。
+该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。发布验证采用预算平衡方案：6 个零 LLM 本地隔离格（3 路线 × 2 个真实物理设备类，每格 5 分钟）、6 个 live 配对格（每格 3 分钟）和 2 个模型稳定格（每格 10 分钟）。只有这 14 个格子的固定 authority 全部通过，本次 scoped verifier 才会原子替换 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。matrix 明确拒绝 `-DryRun`，脚本 fixture 自测只能使用 `npm run test:watch-mode-live:dry-run`，其报告保持 `mode=dry-run`，不会进入 strict 验收。
 
 付费 live 层固定为 38 LLM 分钟，而不是原来的 18 × 30 分钟：
 
 - `pairwise-live`：6 个模型/路线/设备配对格 × 3 分钟，共 18 分钟；保证每个模型、每条路线和每类设备在组合层都出现。
 - `model-stability`：2 个模型 × 10 分钟，共 20 分钟；固定使用 `process-exclusion/default-speaker`。
-- `local-isolation`：9 个格 × 5 分钟，Provider 完全禁用，`providerCalls=0`，不消耗 LLM token。
+- `local-isolation`：6 个格 × 5 分钟，Provider 完全禁用，`providerCalls=0`，不消耗 LLM token。
 
 矩阵在构建完成后、任何本地格或付费格开始前，会先对 `provider-dashscope` 执行 production provider preflight；若凭据、entitlement、streaming 或翻译文本不可用，整次运行立即 fail-closed，避免产生长时设备占用或付费调用。
 
@@ -90,7 +90,7 @@ artifacts/testing/watch-mode-live/<timestamp>/
 - `report.json`: agent 优先读取的机器可读报告；包含生成时的精确 Git `provenance`。
 - `report.md`: 人类可读摘要。
 - `../watch-mode-live-matrix-*.json`: 单次 matrix 的精确 run directory 清单和 source provenance。
-- `../latest-successful-watch-mode-strict-matrix.json`: 最近一次成功完成 scoped strict 验证、并与当前 clean `HEAD` 精确绑定的预算平衡 canonical manifest（9 个零 LLM 本地格 + 8 个付费 live 格）。
+- `../latest-successful-watch-mode-strict-matrix.json`: 最近一次成功完成 scoped strict 验证、并与当前 clean `HEAD` 精确绑定的预算平衡 canonical manifest（6 个零 LLM 本地格 + 8 个付费 live 格）。
 - `../latest-watch-mode-live.json`: 最新 live run 的轻量索引，只包含 `timestamp`、`reportPath`、`verdict`、`failureLayer`、`modelId`。
 - `snapshots.json`: driver、wasapi、bridge、physicalOutput、app、provider、playback 快照。
 - `steps.json`: 每个编排步骤的执行结果。
@@ -112,7 +112,7 @@ Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-probe.
 Get-Content artifacts\testing\watch-mode-live\<timestamp>\physical-output-content.json -Raw
 ```
 
-不要把仓库根目录下的 `report.json` 或 `report.md` 当作当前项目状态来源。普通本地诊断用 `npm run test:watch-mode-evidence` 扫描 `artifacts/testing/watch-mode-live/<timestamp>/report.json`；发布前严格证据只认 canonical manifest 绑定的本次 9 个本地 authority 格和 8 个 live 目录，禁止从 output root 自动挑选历史报告补格。
+不要把仓库根目录下的 `report.json` 或 `report.md` 当作当前项目状态来源。普通本地诊断用 `npm run test:watch-mode-evidence` 扫描 `artifacts/testing/watch-mode-live/<timestamp>/report.json`；发布前严格证据只认 canonical manifest 绑定的本次 6 个本地 authority 格和 8 个 live 目录，禁止从 output root 自动挑选历史报告补格。
 
 ## 分层判定
 

@@ -151,8 +151,8 @@ Options:
   --provider-id <id>                               strict paid-cell preflight provider
                                                     (default: ${MATRIX_DEFAULTS.providerId})
   --device-profiles <json-or-file>                  required for strict matrix; must contain exactly one
-                                                    default-speaker, usb, and bluetooth profile
-  --reuse-local-isolation <manifest>                strict-only; reuse a passed current-HEAD 9-cell
+                                                    default-speaker and usb profile
+  --reuse-local-isolation <manifest>                strict-only; reuse a passed current-HEAD 6-cell
                                                    zero-LLM authority instead of rerunning local cells
   --diagnostic-single-device                       explicit non-strict single-device diagnostic; never
                                                    produces release matrix evidence
@@ -999,7 +999,7 @@ export const runMatrix = async (options) => {
         reuseAuthority: localIsolationReuseAuthority,
       });
     } else {
-      console.error('==> Running zero-LLM local isolation layer (3 routes x 3 device classes x 5 minutes)');
+      console.error('==> Running zero-LLM local isolation layer (3 routes x 2 verified physical device classes x 5 minutes)');
       const localIsolation = await runLocalIsolationMatrix({
         deviceProfiles,
         workspaceRoot: repoRoot,

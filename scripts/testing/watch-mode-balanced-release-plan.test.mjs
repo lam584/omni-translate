@@ -16,12 +16,17 @@ import {
 
 test('balanced release plan caps paid LLM time at 38 minutes', () => {
   assert.equal(BALANCED_RELEASE_PLAN.paidLlmSeconds, 38 * 60);
-  assert.equal(LOCAL_ISOLATION_CELLS.length, 9);
+  assert.equal(LOCAL_ISOLATION_CELLS.length, 6);
   assert.equal(PAIRWISE_LIVE_CELLS.length, 6);
   assert.equal(MODEL_STABILITY_CELLS.length, 2);
   assert.equal(LIVE_LLM_CELLS.length, 8);
-  assert.equal(BALANCED_RELEASE_CELLS.length, 17);
+  assert.equal(BALANCED_RELEASE_CELLS.length, 14);
   assert.equal(balancedReleasePlanFailure(BALANCED_RELEASE_PLAN), null);
+
+  const formerThreeDevicePlan = structuredClone(BALANCED_RELEASE_PLAN);
+  formerThreeDevicePlan.planId = 'watch-mode-balanced-v1';
+  formerThreeDevicePlan.schemaVersion = 1;
+  assert.match(balancedReleasePlanFailure(formerThreeDevicePlan), /schema/);
 });
 
 test('local isolation covers every route and device without a provider', () => {
@@ -36,15 +41,17 @@ test('local isolation covers every route and device without a provider', () => {
   )));
 });
 
-test('pairwise live cells cover each model against every route and device', () => {
+test('pairwise live cells cover every model/route pair and every route on both real device classes', () => {
   for (const modelId of RELEASE_MODELS) {
     assert.deepEqual(
       new Set(PAIRWISE_LIVE_CELLS.filter((entry) => entry.modelId === modelId)
         .map((entry) => entry.feedbackLoopPrevention)),
       new Set(RELEASE_FEEDBACK_MODES),
     );
+  }
+  for (const feedbackLoopPrevention of RELEASE_FEEDBACK_MODES) {
     assert.deepEqual(
-      new Set(PAIRWISE_LIVE_CELLS.filter((entry) => entry.modelId === modelId)
+      new Set(PAIRWISE_LIVE_CELLS.filter((entry) => entry.feedbackLoopPrevention === feedbackLoopPrevention)
         .map((entry) => entry.deviceClass)),
       new Set(RELEASE_DEVICE_CLASSES),
     );

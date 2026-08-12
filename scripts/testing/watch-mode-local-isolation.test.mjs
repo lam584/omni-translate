@@ -71,6 +71,7 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
   assert.deepEqual(calls.map(({ args }) => args), [
     ['run', 'build:bridge-service-native'],
     ['run', 'driver:build-sysvad'],
+    ['build', '--manifest-path', 'scripts/diagnostics/omni-realtime/Cargo.toml'],
   ]);
   assert.ok(calls.every(({ target }) => target === path.join(process.cwd(), 'target')));
 });

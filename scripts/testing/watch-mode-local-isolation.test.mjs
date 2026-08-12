@@ -9,7 +9,9 @@ import {
   buildLocalIsolationRuntime,
   createLocalIsolationMatrixDirectory,
   localIsolationRuntimeInventory,
+  LOCAL_ISOLATION_REUSE_MODE,
   LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS,
+  LOCAL_ISOLATION_RUNTIME_BINARY_PATHS,
   runLocalIsolationProbeIteration,
   reusableLocalIsolationAuthorityFailure,
   runLocalIsolationCell,
@@ -165,6 +167,39 @@ test('local isolation reuse is explicit and cannot silently fall back to exact r
     workspaceRoot: process.cwd(),
   });
   assert.match(failure, /reuse mode must be orchestration-only/);
+});
+
+test('local isolation reuse accepts the exact clean HEAD with identical implementation authority', () => {
+  const runtimeBinaryHashes = LOCAL_ISOLATION_RUNTIME_BINARY_PATHS.map((entryPath, index) => ({
+    path: entryPath,
+    bytes: index + 1,
+    sha256: String(index + 1).padStart(64, '0'),
+  }));
+  const implementationHashes = [{
+    path: 'scripts/testing/watch-mode-local-isolation.mjs',
+    bytes: 10,
+    sha256: 'a'.repeat(64),
+  }];
+  const failure = reusableLocalIsolationAuthorityFailure({
+    manifest: {
+      provenance,
+      implementationHashes,
+      runtimeBinaryHashes,
+    },
+    provenance,
+    implementationHashes,
+    runtimeBinaryHashes,
+    reuseAuthority: {
+      mode: LOCAL_ISOLATION_REUSE_MODE,
+      sourceCommit: provenance.headCommit,
+      verifiedCommit: provenance.headCommit,
+      changedPaths: [],
+      sourceRuntimeBinaryHashes: runtimeBinaryHashes,
+      currentRuntimeBinaryHashes: runtimeBinaryHashes,
+    },
+    workspaceRoot: process.cwd(),
+  });
+  assert.equal(failure, null);
 });
 
 test('local isolation runtime scope excludes paid-only media injector binaries', () => {

@@ -505,23 +505,28 @@ export function reusableLocalIsolationAuthorityFailure({
   if (!/^[a-f0-9]{40}$/.test(sourceCommit) || !/^[a-f0-9]{40}$/.test(currentCommit)) {
     return 'local isolation reuse requires full source and current git commits';
   }
-  if (sourceCommit === currentCommit) {
-    return 'local isolation reuse requires a distinct source commit';
-  }
   if (manifest.provenance?.worktreeClean !== true || Number(manifest.provenance?.dirtyEntryCount) !== 0) {
     return 'local isolation reuse source authority must have been captured from a clean worktree';
   }
   if (provenance?.worktreeClean !== true || Number(provenance?.dirtyEntryCount) !== 0) {
     return 'local isolation reuse requires the current worktree to be clean';
   }
-  const ancestor = gitText(workspaceRoot, ['merge-base', '--is-ancestor', sourceCommit, currentCommit]);
-  if (ancestor === null) {
-    return `local isolation reuse source commit ${sourceCommit} is not an ancestor of current commit ${currentCommit}`;
-  }
-  const changedPaths = reusableSourceChangedPaths(workspaceRoot, sourceCommit, currentCommit);
+  const exactHeadReuse = sourceCommit === currentCommit;
+  const changedPaths = exactHeadReuse
+    ? []
+    : reusableSourceChangedPaths(workspaceRoot, sourceCommit, currentCommit);
   if (!changedPaths) return 'local isolation reuse could not inspect the source-to-current diff';
-  if (changedPaths.length === 0 || changedPaths.some((entry) => !LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entry))) {
+  if (
+    (!exactHeadReuse && changedPaths.length === 0)
+    || changedPaths.some((entry) => !LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entry))
+  ) {
     return `local isolation reuse permits only orchestration files to change; changed=${changedPaths.join(',')}`;
+  }
+  if (!exactHeadReuse) {
+    const ancestor = gitText(workspaceRoot, ['merge-base', '--is-ancestor', sourceCommit, currentCommit]);
+    if (ancestor === null) {
+      return `local isolation reuse source commit ${sourceCommit} is not an ancestor of current commit ${currentCommit}`;
+    }
   }
   if (JSON.stringify(reuseAuthority.changedPaths ?? []) !== JSON.stringify(changedPaths)) {
     return 'local isolation reuse changed-path declaration does not match the git diff';
@@ -531,6 +536,9 @@ export function reusableLocalIsolationAuthorityFailure({
   }
   const recordedImplementation = authorityInventoryByPath(manifest.implementationHashes);
   const currentImplementation = authorityInventoryByPath(implementationHashes);
+  if (exactHeadReuse && !sameAuthorityInventory(manifest.implementationHashes, implementationHashes)) {
+    return 'local isolation exact-HEAD reuse requires identical implementation authority';
+  }
   for (const [entryPath, entry] of recordedImplementation) {
     if (LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entryPath)) continue;
     const current = currentImplementation.get(entryPath);
@@ -574,7 +582,9 @@ export function createReusableLocalIsolationAuthority({
   const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8').replace(/^\uFEFF/, ''));
   const sourceCommit = String(manifest.provenance?.headCommit ?? '').toLowerCase();
   const currentCommit = String(provenance?.headCommit ?? '').toLowerCase();
-  const changedPaths = reusableSourceChangedPaths(workspaceRoot, sourceCommit, currentCommit);
+  const changedPaths = sourceCommit === currentCommit
+    ? []
+    : reusableSourceChangedPaths(workspaceRoot, sourceCommit, currentCommit);
   const reuseAuthority = {
     mode: LOCAL_ISOLATION_REUSE_MODE,
     sourceCommit,

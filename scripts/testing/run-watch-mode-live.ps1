@@ -30,6 +30,7 @@ param(
   # an already completed live session. This never starts Desktop, Bridge, media
   # playback, or a new Watch provider session.
   [string]$RecoverPhysicalOutputContentRunDirectory = "",
+  [switch]$ReuseExistingPhysicalOutputStt,
   [string]$MediaPath = "scripts/testing/fixtures/watch-mode-en-original.wav",
   [string]$WatchModelId = "",
   [ValidateSet("", "dashscope-omni", "dashscope-livetranslate", "dashscope-asr", "openai-conversation", "openai-translation", "openai-transcription", "openai-flat", "gemini-live")]
@@ -3829,12 +3830,33 @@ if ($RecoverPhysicalOutputContentRunDirectory) {
   $recoveryMarker = $markerMatches[$markerMatches.Count - 1].Value
   $recording = Get-Content -LiteralPath $recordingPath -Raw -Encoding UTF8 | ConvertFrom-Json
   $sourceTranscript = Get-Content -LiteralPath $sourceTranscriptPath -Raw -Encoding UTF8 | ConvertFrom-Json
-  $result = Invoke-PhysicalOutputContentStt `
-    $recoveryDirectory `
-    $recording `
-    $appLogPath `
-    $recoveryMarker `
-    $sourceTranscript
+  if ($ReuseExistingPhysicalOutputStt) {
+    $contentPath = Join-Path $recoveryDirectory "physical-output-content.json"
+    if (-not (Test-Path -LiteralPath $contentPath -PathType Leaf)) {
+      throw "existing physical-output STT result is missing: $contentPath"
+    }
+    $result = Get-Content -LiteralPath $contentPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    $segmentation = Read-SpeechSegmentationSummary $appLogPath $recoveryMarker
+    $contentConsistency = Compare-WatchModeContent `
+      $sourceTranscript `
+      ([string]$result.source) `
+      ([string]$result.translation) `
+      (Get-UniqueClauseText @([string]$result.subtitleText, [string]$result.segmentTranslationText))
+    $translatedSpeechPassed = ($segmentation.playedSegments -gt 0)
+    $result.contentConsistency = $contentConsistency
+    $result.translatedSpeech.passed = $translatedSpeechPassed
+    $result.translatedSpeech.playedSegments = $segmentation.playedSegments
+    $result.translatedSpeech.queuedSegments = $segmentation.queuedSegments
+    $result.passed = ([bool]$result.originalPassthrough.passed -and $translatedSpeechPassed -and $contentConsistency.passed)
+    $result | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $contentPath -Encoding UTF8
+  } else {
+    $result = Invoke-PhysicalOutputContentStt `
+      $recoveryDirectory `
+      $recording `
+      $appLogPath `
+      $recoveryMarker `
+      $sourceTranscript
+  }
   [ordered]@{
     schemaVersion = 1
     recoveredAt = Get-Date -Format o
@@ -3842,7 +3864,8 @@ if ($RecoverPhysicalOutputContentRunDirectory) {
     runMarker = $recoveryMarker
     replayedWatchSession = $false
     replayedPhysicalOutput = $false
-    invokedPhysicalOutputStt = $true
+    invokedPhysicalOutputStt = (-not $ReuseExistingPhysicalOutputStt)
+    reusedExistingPhysicalOutputStt = [bool]$ReuseExistingPhysicalOutputStt
     resultPassed = [bool]$result.passed
   } | ConvertTo-Json -Depth 6 | Set-Content `
     -LiteralPath (Join-Path $recoveryDirectory "physical-output-content-recovery.json") `

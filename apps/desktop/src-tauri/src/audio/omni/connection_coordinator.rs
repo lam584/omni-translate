@@ -414,9 +414,10 @@ pub(super) struct OmniCommitState {
     pub(super) manual_turn_started_during_playback: Option<bool>,
     pub(super) sent_audio_since_commit: bool,
     pub(super) audio_samples_since_commit: u64,
-    /// Only a successfully appended chunk after the last response.done may
-    /// open the next manual commit. This prevents DashScope from receiving a
-    /// late commit for a buffer it already drained with the prior response.
+    /// A successfully appended chunk after the latest manual commit opens the
+    /// next turn. The provider accepts these chunks while a prior response is
+    /// streaming, so response.done must retain them and serially commit the
+    /// completed next turn rather than dropping continuous-media input.
     pub(super) manual_turn_audio_after_response: bool,
     pub(super) manual_response_pending: bool,
     /// `transcription.completed` can be delivered more than once for the

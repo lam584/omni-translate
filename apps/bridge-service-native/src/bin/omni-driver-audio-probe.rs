@@ -12,7 +12,25 @@ fn main() {
     if omni_bridge_service::emit_build_commit_if_requested() {
         return;
     }
-    use probe::{run_inject_only, run_probe, FailureResult, InjectionResult};
+    use probe::{reset_only, run_inject_only, run_probe, FailureResult, InjectionResult, ResetResult};
+
+    if std::env::args().any(|arg| arg == "--reset-only") {
+        match reset_only() {
+            Ok(result) => println!("{}", serde_json::to_string(&result).unwrap()),
+            Err(detail) => {
+                println!(
+                    "{}",
+                    serde_json::to_string(&ResetResult {
+                        passed: false,
+                        detail: Some(detail),
+                    })
+                    .unwrap()
+                );
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
 
     if std::env::args().any(|arg| arg == "--inject-only") {
         match run_inject_only() {
@@ -165,6 +183,13 @@ mod probe {
     pub(super) struct InjectionResult {
         pub passed: bool,
         pub frames_written: usize,
+        pub detail: Option<String>,
+    }
+
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    pub(super) struct ResetResult {
+        pub passed: bool,
         pub detail: Option<String>,
     }
 
@@ -397,6 +422,14 @@ mod probe {
         fn drop(&mut self) {
             let _ = self.audio_client.stop_stream();
         }
+    }
+
+    pub(super) fn reset_only() -> Result<ResetResult, String> {
+        reset_driver_ring()?;
+        Ok(ResetResult {
+            passed: true,
+            detail: None,
+        })
     }
 
     pub(super) fn run_inject_only() -> Result<InjectionResult, String> {
@@ -831,7 +864,7 @@ mod probe {
         };
         if ok == 0 {
             Err(format!(
-                "driver reset failed before WASAPI probe: {}",
+                "driver reset failed: {}",
                 std::io::Error::last_os_error()
             ))
         } else {

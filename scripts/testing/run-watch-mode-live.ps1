@@ -2203,6 +2203,30 @@ function Invoke-BridgeSourceProbe {
       if ($null -ne $audioProbeProcess.ExitCode -and $audioProbeProcess.ExitCode -ne 0) {
         throw "driver audio probe reported exit code $($audioProbeProcess.ExitCode) after passed=true"
       }
+      $resetStdout = Join-Path $probeRuntimeRoot "audio-probe-reset.stdout.log"
+      $resetStderr = Join-Path $probeRuntimeRoot "audio-probe-reset.stderr.log"
+      $resetProcess = Start-Process -FilePath $audioProbeExe `
+        -ArgumentList @("--reset-only") `
+        -RedirectStandardOutput $resetStdout `
+        -RedirectStandardError $resetStderr `
+        -WindowStyle Hidden -Wait -PassThru
+      $resetOutput = if (Test-Path -LiteralPath $resetStdout) {
+        Get-Content -LiteralPath $resetStdout -Raw -ErrorAction SilentlyContinue
+      } else { "" }
+      $resetResult = $null
+      try {
+        if ($resetOutput.Trim()) {
+          $resetResult = $resetOutput | ConvertFrom-Json
+        }
+      } catch {
+        throw "driver reset produced invalid JSON: $($_.Exception.Message)"
+      }
+      if ($resetProcess.ExitCode -ne 0 -or $null -eq $resetResult -or $resetResult.passed -ne $true) {
+        $resetError = if (Test-Path -LiteralPath $resetStderr) {
+          Get-Content -LiteralPath $resetStderr -Raw -ErrorAction SilentlyContinue
+        } else { "" }
+        throw "driver reset after source frame probe did not report passed=true: $resetError $resetOutput"
+      }
     }
     $phase = "state_query"
     $state = Write-NamedPipeJsonLine $pipeName ([ordered]@{

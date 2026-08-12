@@ -274,7 +274,7 @@ receipt, the 6-cell zero-LLM local authority, and all 8 paid live
 count, and SHA-256. Validation rebuilds every authorized Watch report, derives
 the provider and subtitle p95 values from raw cue timestamps, and independently
 recomputes TTS latency, process-tree CPU p95, peak memory, dropout evidence, and
-the shorter duration of the two 10-minute stability cells. Legacy canonical manifests, self-reported
+the shorter duration of the two plan-authorized stability cells (currently three minutes each). Legacy canonical manifests, self-reported
 canonical PASS, missing receipts/raw files, and rehashed aggregate summaries
 are rejected.
 

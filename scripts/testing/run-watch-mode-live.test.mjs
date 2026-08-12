@@ -395,7 +395,7 @@ test('bridge probe policy uses v6 init fields and blocks a failed virtual-driver
 
   assert.equal(probe.status, 0, probe.stderr || probe.stdout);
   const result = JSON.parse(probe.stdout.trim());
-  assert.equal(result.payload.protocolVersion, '2026-08-10-audio-routing-v6');
+  assert.equal(result.payload.protocolVersion, '2026-08-13-audio-routing-v7');
   assert.equal(result.payload.sourceCaptureMode, 'process-exclusion');
   assert.equal(result.payload.sessionId, 'probe-session');
   assert.equal(result.payload.monitorPlaybackEnabled, false);

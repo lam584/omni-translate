@@ -29,6 +29,10 @@ fn reconnect_reset_marks_the_session_not_ready_for_audio() {
     let mut pending_audio_delta_count = 3_u64;
     let mut pending_audio_delta_base64_bytes = 4_096_u64;
     let mut pending_audio_response_id = Some("resp-old".to_string());
+    let mut pending_audio_stream_cue_id = Some("cue-stream-old".to_string());
+    let mut pending_audio_stream_chunk_index = 3_u32;
+    let mut pending_audio_stream_created_at_ms = Some(1_u64);
+    let mut pending_audio_stream_aborted = true;
     let mut session_ready_for_audio = true;
 
     reset_session_state_after_reconnect(
@@ -41,7 +45,10 @@ fn reconnect_reset_marks_the_session_not_ready_for_audio() {
         &mut transcription_completed_flag, &mut transcription_completed_at,
         &mut event_diagnostics, &mut pending_audio_buffer,
         &mut pending_audio_delta_count, &mut pending_audio_delta_base64_bytes,
-        &mut pending_audio_response_id, &mut session_ready_for_audio,
+        &mut pending_audio_response_id, &mut pending_audio_stream_cue_id,
+        &mut pending_audio_stream_chunk_index, &mut pending_audio_stream_created_at_ms,
+        &mut pending_audio_stream_aborted,
+        &mut session_ready_for_audio,
     );
 
     assert!(!session_ready_for_audio, "audio must buffer until the new session confirms");
@@ -57,5 +64,9 @@ fn reconnect_reset_marks_the_session_not_ready_for_audio() {
     assert!(pending_audio_buffer.is_empty());
     assert_eq!(pending_audio_delta_count, 0);
     assert!(pending_audio_response_id.is_none());
+    assert!(pending_audio_stream_cue_id.is_none());
+    assert_eq!(pending_audio_stream_chunk_index, 0);
+    assert!(pending_audio_stream_created_at_ms.is_none());
+    assert!(!pending_audio_stream_aborted);
     assert!(last_commit_time.elapsed().unwrap_or_default() < Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS));
 }

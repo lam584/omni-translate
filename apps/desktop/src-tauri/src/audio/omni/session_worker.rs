@@ -43,6 +43,10 @@ struct OmniSessionRuntime {
     pending_audio_delta_count: u64,
     pending_audio_delta_base64_bytes: u64,
     pending_audio_response_id: Option<String>,
+    pending_audio_stream_cue_id: Option<String>,
+    pending_audio_stream_chunk_index: u32,
+    pending_audio_stream_created_at_ms: Option<u64>,
+    pending_audio_stream_aborted: bool,
     session_ready_for_audio: bool,
     pre_session_audio_queue: VecDeque<Vec<u8>>,
     pre_session_audio_dropped: u64,
@@ -84,6 +88,10 @@ impl OmniSessionRuntime {
             pending_audio_delta_count: 0,
             pending_audio_delta_base64_bytes: 0,
             pending_audio_response_id: None,
+            pending_audio_stream_cue_id: None,
+            pending_audio_stream_chunk_index: 0,
+            pending_audio_stream_created_at_ms: None,
+            pending_audio_stream_aborted: false,
             session_ready_for_audio: false,
             pre_session_audio_queue: VecDeque::new(),
             pre_session_audio_dropped: 0,
@@ -354,6 +362,10 @@ fn run_omni_worker(
         mut pending_audio_delta_count,
         mut pending_audio_delta_base64_bytes,
         mut pending_audio_response_id,
+        mut pending_audio_stream_cue_id,
+        mut pending_audio_stream_chunk_index,
+        mut pending_audio_stream_created_at_ms,
+        mut pending_audio_stream_aborted,
         mut session_ready_for_audio,
         mut pre_session_audio_queue,
         mut pre_session_audio_dropped,
@@ -482,6 +494,13 @@ fn run_omni_worker(
         // through a helper struct across the whole pump loop.
         macro_rules! reset_gate_after_reconnect {
             () => {
+                if let Some(cue_id) = pending_audio_stream_cue_id.as_deref() {
+                    playback_tx.abort_stream(
+                        cue_id,
+                        pending_audio_stream_chunk_index,
+                        pending_audio_stream_created_at_ms.unwrap_or_else(unix_ms),
+                    );
+                }
                 reset_manual_gate_after_reconnect(
                     &app,
                     store,
@@ -505,6 +524,10 @@ fn run_omni_worker(
                     &mut pending_audio_delta_count,
                     &mut pending_audio_delta_base64_bytes,
                     &mut pending_audio_response_id,
+                    &mut pending_audio_stream_cue_id,
+                    &mut pending_audio_stream_chunk_index,
+                    &mut pending_audio_stream_created_at_ms,
+                    &mut pending_audio_stream_aborted,
                     &mut session_ready_for_audio,
                 )
             };
@@ -638,6 +661,10 @@ fn run_omni_worker(
                 pending_audio_delta_count,
                 pending_audio_delta_base64_bytes,
                 pending_audio_response_id,
+                pending_audio_stream_cue_id,
+                pending_audio_stream_chunk_index,
+                pending_audio_stream_created_at_ms,
+                pending_audio_stream_aborted,
                 last_vad_event_time,
                 vad_event_count,
                 transcription_completed_flag,
@@ -693,6 +720,10 @@ fn run_omni_worker(
         pending_audio_delta_count = poll.state.pending_audio_delta_count;
         pending_audio_delta_base64_bytes = poll.state.pending_audio_delta_base64_bytes;
         pending_audio_response_id = poll.state.pending_audio_response_id;
+        pending_audio_stream_cue_id = poll.state.pending_audio_stream_cue_id;
+        pending_audio_stream_chunk_index = poll.state.pending_audio_stream_chunk_index;
+        pending_audio_stream_created_at_ms = poll.state.pending_audio_stream_created_at_ms;
+        pending_audio_stream_aborted = poll.state.pending_audio_stream_aborted;
         last_vad_event_time = poll.state.last_vad_event_time;
         vad_event_count = poll.state.vad_event_count;
         transcription_completed_flag = poll.state.transcription_completed_flag;
@@ -774,6 +805,10 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
     pending_audio_delta_count: &mut u64,
     pending_audio_delta_base64_bytes: &mut u64,
     pending_audio_response_id: &mut Option<String>,
+    pending_audio_stream_cue_id: &mut Option<String>,
+    pending_audio_stream_chunk_index: &mut u32,
+    pending_audio_stream_created_at_ms: &mut Option<u64>,
+    pending_audio_stream_aborted: &mut bool,
     session_ready_for_audio: &mut bool,
 ) {
     if audio_mode.uses_manual_commit() && *manual_response_pending {
@@ -805,65 +840,12 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
         pending_audio_delta_count,
         pending_audio_delta_base64_bytes,
         pending_audio_response_id,
+        pending_audio_stream_cue_id,
+        pending_audio_stream_chunk_index,
+        pending_audio_stream_created_at_ms,
+        pending_audio_stream_aborted,
         session_ready_for_audio,
     );
-}
-
-/// State portion of the post-reconnect reset, kept free of `AppHandle` so the
-/// reconnect contract stays directly unit-testable.
-#[allow(clippy::too_many_arguments)]
-pub(super) fn reset_session_state_after_reconnect(
-    store: &AudioStateStore,
-    manual_response_pending: &mut bool,
-    manual_response_requested: &mut bool,
-    manual_response_item_id: &mut Option<String>,
-    sent_audio_since_commit: &mut bool,
-    audio_samples_since_commit: &mut u64,
-    manual_turn_audio_after_response: &mut bool,
-    last_commit_time: &mut SystemTime,
-    manual_turn_started_at: &mut Option<SystemTime>,
-    manual_turn_started_during_playback: &mut Option<bool>,
-    current_cue_id: &mut Option<String>,
-    pending_source_text: &mut String,
-    pending_translated_text: &mut String,
-    transcription_completed_flag: &mut bool,
-    transcription_completed_at: &mut Option<SystemTime>,
-    event_diagnostics: &mut OmniEventDiagnostics,
-    pending_audio_buffer: &mut Vec<i16>,
-    pending_audio_delta_count: &mut u64,
-    pending_audio_delta_base64_bytes: &mut u64,
-    pending_audio_response_id: &mut Option<String>,
-    session_ready_for_audio: &mut bool,
-) {
-    *manual_response_pending = false;
-    *manual_response_requested = false;
-    *manual_response_item_id = None;
-    *sent_audio_since_commit = false;
-    *audio_samples_since_commit = 0;
-    *manual_turn_audio_after_response = false;
-    *last_commit_time = SystemTime::now();
-    *manual_turn_started_at = None;
-    *manual_turn_started_during_playback = None;
-    if let Some(cue_id) = current_cue_id.as_deref() {
-        store.discard_uncommitted_subtitle_cue(cue_id);
-    }
-    reset_omni_turn_state(
-        current_cue_id,
-        pending_source_text,
-        pending_translated_text,
-        transcription_completed_flag,
-        transcription_completed_at,
-        event_diagnostics,
-    );
-    pending_audio_buffer.clear();
-    *pending_audio_delta_count = 0;
-    *pending_audio_delta_base64_bytes = 0;
-    *pending_audio_response_id = None;
-    // The replacement socket has not confirmed its session.update yet; audio
-    // sent now would race the provider's session setup and be dropped (or
-    // transcribed against the wrong configuration). Buffer through the
-    // pre-session queue until the new session.created/session.updated lands.
-    *session_ready_for_audio = false;
 }
 
 #[cfg(test)]
@@ -873,3 +855,7 @@ mod reconnect_reset_tests;
 #[path = "session_worker/reconnect.rs"]
 mod reconnect;
 pub(super) use reconnect::reconnect_socket;
+
+#[path = "session_worker/reconnect_state.rs"]
+mod reconnect_state;
+pub(super) use reconnect_state::reset_session_state_after_reconnect;

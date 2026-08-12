@@ -13,7 +13,8 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait};
 use omni_bridge_protocol::{
     audio_pipe_path, control_pipe_path, source_pipe_path, TranslationPlaybackStatusAck,
-    TranslationPlaybackStatusEvent, TranslationPlaybackStatusKind, DEFAULT_PIPE_NAME,
+    TranslationPlaybackStatusEvent, TranslationPlaybackStatusKind, TranslationStreamState,
+    DEFAULT_PIPE_NAME,
 };
 use omni_bridge_service::{
     accepted_audio_frame_ack, classify_driver_health_with_device_evidence,
@@ -43,7 +44,9 @@ mod audio_client;
 mod virtual_mic;
 mod win32;
 
-use self::audio_client::{handle_physical_translation_frame, handle_virtual_mic_frame};
+use self::audio_client::{
+    handle_physical_translation_frame, handle_virtual_mic_frame, spawn_audio_pipe_server,
+};
 use self::capture_process::ProcessLoopbackCaptureWorker;
 use self::virtual_mic::{
     apply_virtual_mic_driver_status, probe_virtual_mic_output, stop_virtual_mic_session,
@@ -260,6 +263,7 @@ struct BridgeState {
     virtual_mic_rejected_writes: u64,
     virtual_mic_session_active: bool,
     virtual_mic_cue_ledger: VirtualMicCueLedger,
+    physical_translation_stream_ledger: PhysicalTranslationStreamLedger,
     translation_generation: u64,
     translation_queue_end_timestamp_ms: u64,
     playback_frames_written: u64,
@@ -479,6 +483,7 @@ impl BridgeHost {
             state.clone(),
             self.runtime_root.clone(),
             playback_tx.clone(),
+            playback_control_tx.clone(),
             translation_queue.clone(),
         );
         spawn_source_pipe_server(
@@ -632,26 +637,6 @@ fn read_arg(args: &[String], key: &str) -> Option<String> {
         .cloned()
 }
 
-fn spawn_audio_pipe_server(
-    pipe_name: String,
-    state: Arc<Mutex<BridgeState>>,
-    runtime_root: PathBuf,
-    playback_tx: mpsc::SyncSender<PlaybackCommand>,
-    translation_queue: Arc<Mutex<TranslationPlaybackQueue>>,
-) {
-    thread::spawn(move || {
-        serve_named_pipe(&pipe_name, move |handle| {
-            handle_audio_client(
-                handle,
-                &state,
-                &runtime_root,
-                &playback_tx,
-                &translation_queue,
-            )
-        });
-    });
-}
-
 fn spawn_source_pipe_server(
     pipe_name: String,
     state: Arc<Mutex<BridgeState>>,
@@ -747,6 +732,7 @@ fn handle_audio_client(
     state: &Arc<Mutex<BridgeState>>,
     runtime_root: &Path,
     playback_tx: &mpsc::SyncSender<PlaybackCommand>,
+    playback_control_tx: &mpsc::Sender<PlaybackControlCommand>,
     translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
 ) {
     let Ok(header_len_bytes) = read_exact(handle, 4) else {
@@ -882,6 +868,7 @@ fn handle_audio_client(
             handle,
             runtime_root,
             playback_tx,
+            playback_control_tx,
             translation_queue,
             &header,
             &payload,
@@ -1391,7 +1378,9 @@ mod tests {
         assert_eq!(response["type"], "bridge.init.ack");
         assert!(translation_queue.lock().unwrap().pending.is_empty());
         assert!(playback_rx.try_recv().is_err());
-        let PlaybackControlCommand::StopAll(stop) = playback_control_rx.try_recv().unwrap();
+        let PlaybackControlCommand::StopAll(stop) = playback_control_rx.try_recv().unwrap() else {
+            panic!("expected stop-all playback control");
+        };
         assert_eq!(stop.reason, "physical-playback-device-changed");
         assert_eq!(stop.error_code, None);
         assert!(
@@ -1525,7 +1514,9 @@ mod tests {
 
             assert_eq!(response["type"], "bridge.init.ack");
             let PlaybackControlCommand::StopAll(stop) =
-                playback_control_rx.try_recv().unwrap();
+                playback_control_rx.try_recv().unwrap() else {
+                    panic!("expected stop-all playback control");
+                };
             assert_eq!(stop.reason, "capture-mode-changed");
             assert_eq!(stop.terminated_cues.len(), 2);
             assert!(stop
@@ -1963,7 +1954,9 @@ mod tests {
         )
         .expect("the process route must produce a stop request");
 
-        let PlaybackControlCommand::StopAll(received) = playback_control_rx.try_recv().unwrap();
+        let PlaybackControlCommand::StopAll(received) = playback_control_rx.try_recv().unwrap() else {
+            panic!("expected stop-all playback control");
+        };
         assert_eq!(received, stop);
         assert_eq!(stop.reason, "process-loopback-capture-failed");
         assert_eq!(

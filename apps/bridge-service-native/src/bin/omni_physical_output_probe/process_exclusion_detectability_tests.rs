@@ -30,4 +30,11 @@ mod detectability_tests {
         };
         assert!(!physical_translation_is_detectable(&evidence, 0.013282, 50));
     }
+
+    #[test]
+    fn diagnostic_fingerprint_amplitude_keeps_three_tones_below_clipping() {
+        assert!(PROCESS_FINGERPRINT_AMPLITUDE >= 0.36);
+        // Two full-level external/child tones plus the 50%-level Bridge tone.
+        assert!(PROCESS_FINGERPRINT_AMPLITUDE * 2.5 < 1.0);
+    }
 }

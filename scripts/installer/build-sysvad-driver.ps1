@@ -246,7 +246,7 @@ if ($SkipSigning) {
   $unsignedMetadata = [ordered]@{
     sourceCommit = $null
     sourceProvenance = $null
-    protocolVersion = '2026-08-10-audio-routing-v6'
+    protocolVersion = '2026-08-13-audio-routing-v7'
     configuration = $Configuration
     platform = $Platform
     minimumWindowsBuild = $declaredMinimumWindowsBuild
@@ -315,7 +315,7 @@ if ($isDevelopmentTestSigner -and (Test-Path -LiteralPath $certificatePath -Path
 $packageMetadata = [ordered]@{
   sourceCommit = if ($isDevelopmentTestSigner) { $null } else { [string]$releaseSourceProvenance.headCommit }
   sourceProvenance = if ($isDevelopmentTestSigner) { $null } else { $releaseSourceProvenance }
-  protocolVersion = '2026-08-10-audio-routing-v6'
+  protocolVersion = '2026-08-13-audio-routing-v7'
   configuration = $Configuration
   platform = $Platform
   minimumWindowsBuild = $declaredMinimumWindowsBuild

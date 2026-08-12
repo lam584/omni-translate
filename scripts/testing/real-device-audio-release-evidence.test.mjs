@@ -505,7 +505,7 @@ test('short session and failed translation route are rejected before assembly', 
         authorityResolver: () => fixture.resolved,
         collectEvidence: async () => ({ packageDirectory: 'package', manifestPath: 'manifest' }),
       }),
-      /3.minute pairwise.live session|zero route failures/,
+      /budget-approved pairwise-live session|zero route failures/,
     );
     assert.equal(fs.existsSync(plan.runDirectory), false);
   }

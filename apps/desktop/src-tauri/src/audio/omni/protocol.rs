@@ -1987,24 +1987,38 @@ pub(super) enum OmniPlaybackCommand {
         created_at_ms: u64,
         estimated_duration_ms: u64,
     },
+    Stream {
+        samples: Vec<i16>,
+        cue_id: String,
+        sample_rate_hz: u32,
+        queued_at: Instant,
+        created_at_ms: u64,
+        estimated_duration_ms: u64,
+        chunk_index: u32,
+        stream_state: omni_bridge_protocol::TranslationStreamState,
+    },
 }
 
 impl OmniPlaybackCommand {
     fn cue_id(&self) -> &str {
         match self {
-            Self::Play { cue_id, .. } => cue_id,
+            Self::Play { cue_id, .. } | Self::Stream { cue_id, .. } => cue_id,
         }
     }
 
     fn queued_at(&self) -> Instant {
         match self {
-            Self::Play { queued_at, .. } => *queued_at,
+            Self::Play { queued_at, .. } | Self::Stream { queued_at, .. } => *queued_at,
         }
     }
 
     fn estimated_duration(&self) -> Duration {
         match self {
             Self::Play {
+                estimated_duration_ms,
+                ..
+            }
+            | Self::Stream {
                 estimated_duration_ms,
                 ..
             } => Duration::from_millis(*estimated_duration_ms),
@@ -2116,6 +2130,37 @@ impl OmniPlaybackQueue {
         }
     }
 
+    pub(super) fn abort_stream(
+        &self,
+        cue_id: &str,
+        chunk_index: u32,
+        created_at_ms: u64,
+    ) {
+        let mut state = self
+            .inner
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if state.stopped {
+            return;
+        }
+        state.pending.retain(|command| {
+            !matches!(command, OmniPlaybackCommand::Stream { cue_id: pending, .. } if pending == cue_id)
+        });
+        state.pending.push_front(OmniPlaybackCommand::Stream {
+            samples: Vec::new(),
+            cue_id: cue_id.to_string(),
+            sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+            queued_at: Instant::now(),
+            created_at_ms,
+            estimated_duration_ms: 0,
+            chunk_index,
+            stream_state: omni_bridge_protocol::TranslationStreamState::Abort,
+        });
+        drop(state);
+        self.inner.available.notify_one();
+    }
+
     fn projected_start(state: &OmniPlaybackQueueState, now: Instant) -> Instant {
         let active_end = state.active_expected_end.unwrap_or(now).max(now);
         state.pending.iter().fold(active_end, |start, command| {
@@ -2131,7 +2176,8 @@ impl OmniPlaybackQueue {
         let mut retained = VecDeque::with_capacity(state.pending.len());
         let mut dropped_cue_ids = Vec::new();
         for command in state.pending.drain(..) {
-            if omni_playback_queue_age_expired(
+            let can_expire_independently = matches!(command, OmniPlaybackCommand::Play { .. });
+            if can_expire_independently && omni_playback_queue_age_expired(
                 projected_start.saturating_duration_since(command.queued_at()),
             ) {
                 dropped_cue_ids.push(command.cue_id().to_string());
@@ -2252,7 +2298,7 @@ pub(super) fn record_native_playback_stale<R: tauri::Runtime>(
     }
 }
 
-fn render_omni_output_samples(
+pub(super) fn render_omni_output_samples(
     samples: &[i16],
     sample_rate_hz: u32,
     output_level: u64,
@@ -2272,7 +2318,7 @@ fn render_omni_output_samples(
     )
 }
 
-fn desktop_render_output_level(
+pub(super) fn desktop_render_output_level(
     output_route: &crate::audio::speech::SpeechOutputRoutePlan,
     configured_output_level: u64,
 ) -> u64 {
@@ -2303,11 +2349,11 @@ pub(crate) struct OmniSpeechConfig {
     pub(super) local_playback_enabled: bool,
     pub(super) virtual_mic_output_enabled: bool,
     pub(super) bridge_playback_enabled: bool,
-    bridge_capture_mode: Option<crate::bridge::contracts::SourceCaptureMode>,
+    pub(super) bridge_capture_mode: Option<crate::bridge::contracts::SourceCaptureMode>,
     speaker_device_id: Option<String>,
-    speaker_output_level: u64,
-    translated_audio_gain_db: f32,
-    translated_audio_auto_gain_enabled: bool,
+    pub(super) speaker_output_level: u64,
+    pub(super) translated_audio_gain_db: f32,
+    pub(super) translated_audio_auto_gain_enabled: bool,
     echo_guard_enabled: bool,
 }
 
@@ -2499,6 +2545,92 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
     }
 }
 
+fn process_omni_stream_playback_command<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    audio_state: &AudioStateStore,
+    speech_config: &Arc<std::sync::RwLock<OmniSpeechConfig>>,
+    route_direction: &str,
+    playback_queue: &OmniPlaybackQueue,
+    command: OmniPlaybackCommand,
+) {
+    let OmniPlaybackCommand::Stream {
+        samples, cue_id, sample_rate_hz, created_at_ms, estimated_duration_ms,
+        chunk_index, stream_state, ..
+    } = command else { unreachable!() };
+    if stream_state == omni_bridge_protocol::TranslationStreamState::Abort {
+        if let Err(error) = BridgeAudioWriter::new(app).write_process_playback_stream(
+            &cue_id, &format!("omni-stream-{cue_id}-{chunk_index}-abort"),
+            route_direction, &[], sample_rate_hz, 1, created_at_ms, 0,
+            chunk_index, stream_state,
+        ) {
+            audio_state.watch_session_report.record_session_issue(
+                "output", "bridge-translation-abort-failed", "error", &error,
+            );
+        }
+        return;
+    }
+    let current_config = match speech_config.read() {
+        Ok(config) => config.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
+    let output_route = crate::audio::speech::SpeechOutputRoutePlan::for_configured_route(
+        route_direction,
+        current_config.local_playback_enabled,
+        current_config.virtual_mic_output_enabled,
+        current_config.bridge_playback_enabled,
+    );
+    let bridge_snapshot = app.state::<crate::bridge::state::BridgeStateStore>().snapshot();
+    if !output_route.write_to_bridge_playback {
+        playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
+        audio_state.watch_session_report.record_session_issue(
+            "output", "bridge.translation-output-bypass", "error",
+            "Native stream route changed before its Bridge playback command was submitted.",
+        );
+        return;
+    }
+    if let Some(error) = crate::audio::speech::translation_output_route_violation(
+        &cue_id, route_direction, current_config.bridge_capture_mode,
+        &output_route, &bridge_snapshot,
+    ) {
+        playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
+        let error_code = crate::audio::speech::translation_output_route_error_code(&error);
+        audio_state.watch_session_report.record_session_issue(
+            "output", error_code, "error", &error,
+        );
+        return;
+    }
+    let output_samples = if stream_state == omni_bridge_protocol::TranslationStreamState::End {
+        Vec::new()
+    } else {
+        render_omni_output_samples(
+            &samples, sample_rate_hz, 100,
+            current_config.translated_audio_gain_db,
+            current_config.translated_audio_auto_gain_enabled,
+        ).0
+    };
+    let request_id = format!("omni-stream-{cue_id}-{chunk_index}");
+    let write_succeeded = match BridgeAudioWriter::new(app).write_process_playback_stream(
+        &cue_id, &request_id, route_direction, &output_samples, sample_rate_hz, 1,
+        created_at_ms, estimated_duration_ms, chunk_index, stream_state,
+    ) {
+        Ok(_) => true,
+        Err(error) => {
+            playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
+            audio_state.watch_session_report.record_session_issue(
+                "output", "bridge-translation-write-failed", "error", &error,
+            );
+            false
+        }
+    };
+    if write_succeeded && matches!(
+        stream_state,
+        omni_bridge_protocol::TranslationStreamState::Start
+            | omni_bridge_protocol::TranslationStreamState::Chunk
+    ) {
+        thread::sleep(Duration::from_millis(estimated_duration_ms));
+    }
+}
+
 fn run_omni_playback_worker<R: tauri::Runtime>(
     app: AppHandle<R>,
     speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
@@ -2538,6 +2670,16 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                 );
                 let _active_guard = OmniPlaybackActiveGuard(&playback_worker_queue);
                 match cmd {
+                    command @ OmniPlaybackCommand::Stream { .. } => {
+                        process_omni_stream_playback_command(
+                            &app,
+                            &audio_state,
+                            &speech_config,
+                            &route_direction,
+                            &playback_worker_queue,
+                            command,
+                        );
+                    }
                     OmniPlaybackCommand::Play {
                         samples,
                         cue_id,
@@ -3112,7 +3254,7 @@ mod omni_playback_tests {
 
     #[test]
     fn bounded_queue_rejects_new_audio_without_replacing_fresh_pending_cues() {
-        let queue = OmniPlaybackQueue::new(OMNI_PLAYBACK_QUEUE_CAPACITY);
+        let queue = OmniPlaybackQueue::new(3);
         assert_eq!(
             queue.enqueue(queued_play("first")),
             OmniPlaybackEnqueueOutcome::Queued
@@ -3150,6 +3292,59 @@ mod omni_playback_tests {
         ));
     }
 
+    fn queued_stream(
+        cue_id: &str,
+        chunk_index: u32,
+        duration: Duration,
+    ) -> OmniPlaybackCommand {
+        OmniPlaybackCommand::Stream {
+            samples: vec![0; (duration.as_millis() as usize * OMNI_OUTPUT_SAMPLE_RATE_HZ as usize) / 1_000],
+            cue_id: cue_id.to_string(),
+            sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+            queued_at: Instant::now(),
+            created_at_ms: unix_ms(),
+            estimated_duration_ms: duration.as_millis() as u64,
+            chunk_index,
+            stream_state: if chunk_index == 0 {
+                omni_bridge_protocol::TranslationStreamState::Start
+            } else {
+                omni_bridge_protocol::TranslationStreamState::Chunk
+            },
+        }
+    }
+
+    #[test]
+    fn streaming_queue_enforces_the_five_second_audio_budget_not_chunk_count() {
+        let queue = OmniPlaybackQueue::new(260);
+        for index in 0..250 {
+            assert!(matches!(
+                queue.enqueue(queued_stream("stream", index, Duration::from_millis(20))),
+                OmniPlaybackEnqueueOutcome::Queued
+                    | OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { .. }
+            ));
+        }
+        assert_eq!(queue.pending_cue_ids().len(), 250);
+        assert!(matches!(
+            queue.enqueue(queued_stream("stream", 250, Duration::from_millis(20))),
+            OmniPlaybackEnqueueOutcome::Overflow {
+                reason: OmniPlaybackOverflowReason::RealtimeBudget,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn stream_abort_removes_every_pending_chunk_and_is_prioritized() {
+        let queue = OmniPlaybackQueue::new(8);
+        assert_eq!(queue.enqueue(queued_stream("stream", 0, Duration::from_secs(1))), OmniPlaybackEnqueueOutcome::Queued);
+        assert_eq!(queue.enqueue(queued_stream("stream", 1, Duration::from_secs(1))), OmniPlaybackEnqueueOutcome::Queued);
+        assert_eq!(queue.enqueue(queued_play("other")), OmniPlaybackEnqueueOutcome::Queued);
+        queue.abort_stream("stream", 2, unix_ms());
+        assert_eq!(queue.pending_cue_ids(), ["stream", "other"]);
+        let OmniPlaybackReceiveOutcome::Command { command, .. } = queue.recv_timeout(Duration::ZERO) else { panic!("abort command") };
+        assert!(matches!(command, OmniPlaybackCommand::Stream { stream_state: omni_bridge_protocol::TranslationStreamState::Abort, .. }));
+    }
+
     #[test]
     fn enqueue_drops_only_expired_pending_audio_and_keeps_fresh_cues() {
         let queue = OmniPlaybackQueue::new(3);
@@ -3167,7 +3362,7 @@ mod omni_playback_tests {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let OmniPlaybackCommand::Play { queued_at, .. } = &mut state.pending[0];
+            let OmniPlaybackCommand::Play { queued_at, .. } = &mut state.pending[0] else { unreachable!() };
             *queued_at = Instant::now() - Duration::from_secs(6);
         }
 
@@ -3218,7 +3413,7 @@ mod omni_playback_tests {
                 .state
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
-            let OmniPlaybackCommand::Play { queued_at, .. } = &mut state.pending[0];
+            let OmniPlaybackCommand::Play { queued_at, .. } = &mut state.pending[0] else { unreachable!() };
             *queued_at = Instant::now() - Duration::from_secs(6);
         }
 

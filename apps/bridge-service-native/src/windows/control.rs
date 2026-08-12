@@ -114,7 +114,7 @@ fn handle_control(
                     );
                 }
                 current.virtual_mic_session_active = false;
-                current.virtual_mic_cue_ledger.reset();
+                current.reset_translation_cue_ledgers();
             }
             current.virtual_mic_output_requested = virtual_mic_output_requested;
             current.process_loopback_supported = process_loopback_supported;
@@ -278,7 +278,7 @@ fn handle_control(
             }
             let mut current = state.lock().unwrap();
             current.virtual_mic_session_active = false;
-            current.virtual_mic_cue_ledger.reset();
+            current.reset_translation_cue_ledgers();
             current.session_id = None;
             current.bridge_state = "stopped".to_string();
             current.lifecycle_state = "stopped".to_string();

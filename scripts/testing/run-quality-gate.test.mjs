@@ -247,7 +247,7 @@ const writeVirtualMicCaptureEvidence = (
     collectorVersion: '0.1.0',
     parentCollectorProcessId: 4101,
     captureChildProcessId: 4102,
-    bridgeProtocolVersion: '2026-08-10-audio-routing-v6',
+    bridgeProtocolVersion: '2026-08-13-audio-routing-v7',
     bridgeProcessId: 4103,
     bridgeInstanceId: 'bridge-instance-release-1',
     bridgeSessionId: sessionId,
@@ -1016,7 +1016,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
     case 'INSTALL-FRESH':
       writeJson(path.join(rawDirectory, 'fresh-install-evidence.json'), installOperation('install-fresh-operation'));
       writeJson(path.join(rawDirectory, 'driver-install-state.json'), {
-        protocolVersion: '2026-08-10-audio-routing-v6',
+        protocolVersion: '2026-08-13-audio-routing-v7',
         installChannel: 'stable',
         driverHealth: 'running',
         driverVersion: '1.2.3',
@@ -1057,7 +1057,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         artifactKind: 'bridge-production-handshake',
         passed: true,
         connectedAt: TEST_NOW.toISOString(),
-        protocolVersion: '2026-08-10-audio-routing-v6',
+        protocolVersion: '2026-08-13-audio-routing-v7',
         bridgeProcessId: 6101,
         rootInstanceId: 'ROOT\\MEDIA\\0000',
         captureEndpointName: 'Omni Translate Virtual Microphone',
@@ -1100,7 +1100,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         artifactKind: 'bridge-production-handshake',
         passed: true,
         connectedAt: TEST_NOW.toISOString(),
-        protocolVersion: '2026-08-10-audio-routing-v6',
+        protocolVersion: '2026-08-13-audio-routing-v7',
         bridgeProcessId: 6102,
         captureEndpointName: 'Omni Translate Virtual Microphone',
       });
@@ -2732,7 +2732,7 @@ test('performance assembler and validator recompute the eight paid balanced-plan
       cpuP95Percent: 20,
       memoryPeakMb: 400,
       observedDropouts: 0,
-      stabilityDurationMinutes: 10,
+      stabilityDurationMinutes: 3,
     });
     assert.deepEqual(
       testPerformanceReport(fixture.report, validationOptions(fixture.workspaceRoot)),
@@ -2857,7 +2857,7 @@ test('performance gate rejects threshold violations, dropouts, and short stabili
   for (const [options, expectedIssue] of [
     [{ providerLatencyMs: 1300 }, 'providerFirstEventLatencyMs=1300 exceeds threshold 1200'],
     [{ dropouts: 1 }, 'observedDropouts must be 0'],
-    [{ durationMs: 9 * 60 * 1000 }, 'stabilityDurationMinutes=9 is shorter than 10'],
+    [{ durationMs: 2 * 60 * 1000 }, 'stabilityDurationMinutes=2 is shorter than 3'],
   ]) {
     const fixture = assembleFixture(options);
     try {

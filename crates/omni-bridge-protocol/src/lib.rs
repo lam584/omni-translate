@@ -5,7 +5,7 @@
 use serde::{Deserialize, Serialize};
 use ts_rs::TS;
 
-pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-08-10-audio-routing-v6";
+pub const BRIDGE_PROTOCOL_VERSION: &str = "2026-08-13-audio-routing-v7";
 
 pub const DEFAULT_PIPE_NAME: &str = "omni-bridge-ipc";
 
@@ -259,6 +259,11 @@ pub struct AudioFrameHeader {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[ts(optional)]
     pub chunk_count: Option<u32>,
+    /// Open-ended physical playback stream phase. Present only for streaming
+    /// physical translation; fixed virtual-mic chunks leave it absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[ts(optional)]
+    pub stream_state: Option<TranslationStreamState>,
     #[serde(default)]
     pub translated_audio_enhancement_applied: bool,
     /// Required by `bridge.translation.frame` and absent from source frames.
@@ -282,6 +287,31 @@ pub enum TranslationPlaybackStatusKind {
     Completed,
     StaleDropped,
     RouteFailed,
+}
+
+/// Open-ended physical playback stream lifecycle. Realtime providers do not
+/// know the final chunk count while `response.audio.delta` is arriving, so
+/// physical playback uses an explicit start/chunk/end sequence. Virtual-mic
+/// delivery keeps its fixed `chunkIndex/chunkCount` contract.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize, TS)]
+#[serde(rename_all = "kebab-case")]
+#[ts(rename_all = "kebab-case")]
+pub enum TranslationStreamState {
+    Start,
+    Chunk,
+    End,
+    Abort,
+}
+
+impl TranslationStreamState {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Start => "start",
+            Self::Chunk => "chunk",
+            Self::End => "end",
+            Self::Abort => "abort",
+        }
+    }
 }
 
 impl TranslationPlaybackStatusKind {
@@ -427,6 +457,7 @@ pub fn translation_header_fixture() -> AudioFrameHeader {
         estimated_duration_ms: None,
         chunk_index: None,
         chunk_count: None,
+        stream_state: None,
         translated_audio_enhancement_applied: false,
         translation_sink: Some(TranslationAudioSink::PhysicalPlayback),
         route_direction: Some(AudioRouteDirection::Inbound),

@@ -14,7 +14,7 @@ import { validateVirtualMicCaptureArtifacts } from './virtual-mic-fingerprint-au
 export const INSTALL_RELEASE_EVIDENCE_SCHEMA_VERSION = 1;
 export const INSTALL_RELEASE_COLLECTOR_ID = 'omni.release.install-authority';
 export const INSTALL_RELEASE_COLLECTOR_VERSION = '1.0.0';
-export const INSTALL_RELEASE_PROTOCOL_VERSION = '2026-08-10-audio-routing-v6';
+export const INSTALL_RELEASE_PROTOCOL_VERSION = '2026-08-13-audio-routing-v7';
 export const INSTALL_RELEASE_SCENARIOS = Object.freeze([
   'INSTALL-FRESH',
   'INSTALL-REPAIR',

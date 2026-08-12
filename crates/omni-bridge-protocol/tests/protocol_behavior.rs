@@ -1,9 +1,10 @@
 use omni_bridge_protocol::{
     accepted_audio_frame_ack, audio_pipe_path, control_pipe_path, decode_pcm16le,
     encode_pcm16le, rejected_audio_frame_ack, source_pipe_path, translation_header_fixture,
-    AudioFrameHeader, CaptureBackend, MixControl, ProcessLoopbackStatus, SourceCaptureMode,
-    TranslationPlaybackStatusAck, TranslationPlaybackStatusEvent,
-    TranslationPlaybackStatusKind, DEFAULT_PIPE_NAME,
+    AudioFrameHeader, AudioRouteDirection, CaptureBackend, MixControl, ProcessLoopbackStatus,
+    SourceCaptureMode, TranslationAudioSink, TranslationPlaybackStatusAck,
+    TranslationPlaybackStatusEvent, TranslationPlaybackStatusKind, TranslationStreamState,
+    DEFAULT_PIPE_NAME,
 };
 
 #[test]
@@ -70,6 +71,47 @@ fn public_capture_contract_keeps_stable_wire_values_and_defaults() {
     }))
     .unwrap();
     assert!(legacy_mix.translated_audio_auto_gain_enabled);
+}
+
+#[test]
+fn public_translation_route_and_stream_states_keep_stable_wire_values() {
+    assert_eq!(
+        [
+            TranslationAudioSink::PhysicalPlayback.as_str(),
+            TranslationAudioSink::VirtualMic.as_str(),
+        ],
+        ["physical-playback", "virtual-mic"]
+    );
+    assert_eq!(
+        [
+            AudioRouteDirection::Inbound.as_str(),
+            AudioRouteDirection::Outbound.as_str(),
+        ],
+        ["inbound", "outbound"]
+    );
+    assert_eq!(
+        [
+            TranslationStreamState::Start.as_str(),
+            TranslationStreamState::Chunk.as_str(),
+            TranslationStreamState::End.as_str(),
+            TranslationStreamState::Abort.as_str(),
+        ],
+        ["start", "chunk", "end", "abort"]
+    );
+
+    for (state, wire_value) in [
+        (TranslationStreamState::Start, "start"),
+        (TranslationStreamState::Chunk, "chunk"),
+        (TranslationStreamState::End, "end"),
+        (TranslationStreamState::Abort, "abort"),
+    ] {
+        assert_eq!(serde_json::to_value(state).unwrap(), wire_value);
+        assert_eq!(
+            serde_json::from_value::<TranslationStreamState>(serde_json::json!(wire_value))
+                .unwrap(),
+            state
+        );
+    }
 }
 
 #[test]

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { verifyConfigPaths } from './verify-config-paths.mjs';
 
 const rootDir = process.cwd();
-const protocolVersion = '2026-08-10-audio-routing-v6';
+const protocolVersion = '2026-08-13-audio-routing-v7';
 const legacyBridgeName = ['bridge', 'service'].join('-');
 const legacyBridgePath = path.join('apps', legacyBridgeName);
 const legacyBridgePackage = ['@omni', legacyBridgeName].join('/');
@@ -96,6 +96,11 @@ assertTextMatch(
   path.join('apps', 'desktop', 'src', 'schema', 'driver-bridge-contract.ts'),
   new RegExp(`DriverBridgeProtocolVersion\\s*=\\s*'${protocolVersion}'`),
   'desktop TypeScript bridge contract',
+);
+assertTextMatch(
+  path.join('apps', 'desktop', 'src', 'schema', 'generated', 'driver-bridge-contract.ts'),
+  /export type TranslationStreamState = "start" \| "chunk" \| "end" \| "abort";/,
+  'generated physical translation stream states',
 );
 assertTextMatch(
   path.join('apps', 'desktop', 'src', 'defaults', 'app-config.ts'),

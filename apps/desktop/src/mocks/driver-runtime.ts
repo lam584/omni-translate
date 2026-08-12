@@ -5,7 +5,7 @@ import { idleBridgeTelemetryDefaults } from '../defaults/runtime-shell';
 export const driverStateSnapshotMock: BridgeStateSnapshot = {
   type: 'bridge.state.snapshot',
   requestId: 'bridge-state-query-default',
-  protocolVersion: '2026-08-10-audio-routing-v6',
+  protocolVersion: '2026-08-13-audio-routing-v7',
   bridgeState: 'degraded',
   lifecycleState: 'error',
   driverHealth: 'version-mismatch',

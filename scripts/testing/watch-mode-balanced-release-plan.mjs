@@ -1,8 +1,8 @@
 // v2 is intentionally incompatible with the former three-device matrix.  A
 // strict receipt must never make the now-unavailable Bluetooth class look
 // covered by the two independently verified physical endpoint classes.
-export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v3';
-export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 3;
+export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v4';
+export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 4;
 
 export const RELEASE_MODELS = Object.freeze([
   'qwen3.5-omni-flash-realtime',
@@ -22,12 +22,12 @@ export const RELEASE_DEVICE_CLASSES = Object.freeze([
 
 export const RELEASE_TIER_DURATIONS_SECONDS = Object.freeze({
   'local-isolation': 300,
-  // A full 126-second source fixture can finish its last native Omni audio
-  // response after capture ends. Give each coverage cell one minute to drain
-  // that real response, then trade the same 3 minutes from the two stability
-  // cells. The total paid provider budget remains exactly 38 minutes.
-  'pairwise-live': 240,
-  'model-stability': 420,
+  // A full 126-second source fixture can begin its last native audio response
+  // near the end of capture. Give every paid cell the same 4m45s window so its
+  // final physical response can drain without shifting risk into stability.
+  // The total paid provider budget remains exactly 38 minutes.
+  'pairwise-live': 285,
+  'model-stability': 285,
 });
 
 const cell = ({ tier, modelId = null, feedbackLoopPrevention, deviceClass }) => Object.freeze({

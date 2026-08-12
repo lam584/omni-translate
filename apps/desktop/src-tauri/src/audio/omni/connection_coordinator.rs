@@ -67,13 +67,34 @@ pub(super) fn manual_response_decision(source: &str) -> ManualResponseDecision {
 /// Production response gate. Content similarity, playback age and acoustic
 /// telemetry are intentionally absent from this API, so they cannot become a
 /// subtitle/translation deletion rule again without changing this boundary.
+#[cfg(test)]
 pub(super) fn completed_manual_response_decision(
     manual_response_pending: bool,
     committed_item_id: Option<&str>,
     completed_item_id: Option<&str>,
     completed_source_text: Option<&str>,
 ) -> Option<ManualResponseDecision> {
+    completed_manual_response_decision_for_gate(
+        manual_response_pending,
+        false,
+        committed_item_id,
+        completed_item_id,
+        completed_source_text,
+    )
+}
+
+/// Same response-gate classification with the in-flight response claim made
+/// explicit. Runtime callers must use this form so duplicate completed events
+/// cannot create another response while the first is still streaming.
+pub(super) fn completed_manual_response_decision_for_gate(
+    manual_response_pending: bool,
+    manual_response_requested: bool,
+    committed_item_id: Option<&str>,
+    completed_item_id: Option<&str>,
+    completed_source_text: Option<&str>,
+) -> Option<ManualResponseDecision> {
     if !manual_response_pending
+        || manual_response_requested
         || committed_item_id.is_none()
         || committed_item_id != completed_item_id
     {
@@ -398,6 +419,11 @@ pub(super) struct OmniCommitState {
     /// late commit for a buffer it already drained with the prior response.
     pub(super) manual_turn_audio_after_response: bool,
     pub(super) manual_response_pending: bool,
+    /// `transcription.completed` can be delivered more than once for the
+    /// same provider item. Once its first successful `response.create` has
+    /// been sent, retain the gate until `response.done`; otherwise a duplicate
+    /// completion can create a concurrent response and corrupt cue ordering.
+    pub(super) manual_response_requested: bool,
     pub(super) manual_response_item_id: Option<String>,
     pub(super) manual_turn_timed_out: bool,
     pub(super) committed_source_started_during_playback: Option<bool>,
@@ -615,6 +641,21 @@ mod manual_response_gate_tests {
         assert_eq!(
             manual_response_decision("Yes, that is exactly right"),
             ManualResponseDecision::Create
+        );
+    }
+
+    #[test]
+    fn duplicate_completed_transcript_cannot_create_a_second_inflight_response() {
+        assert_eq!(
+            completed_manual_response_decision_for_gate(
+                true,
+                true,
+                Some("item-current"),
+                Some("item-current"),
+                Some("the completed source replayed by the provider"),
+            ),
+            None,
+            "a successful response.create claims the committed item until response.done",
         );
     }
 
@@ -898,6 +939,7 @@ impl OmniConnectionCoordinator {
             mut audio_samples_since_commit,
             manual_turn_audio_after_response,
             mut manual_response_pending,
+            mut manual_response_requested,
             mut manual_response_item_id,
             manual_turn_timed_out: _,
             committed_source_started_during_playback: _,
@@ -907,6 +949,7 @@ impl OmniConnectionCoordinator {
         if audio_mode.uses_manual_commit() {
             if let Ok(elapsed) = last_commit_time.elapsed() {
                 if manual_response_pending
+                    && !manual_response_requested
                     && elapsed.as_secs() >= MANUAL_RESPONSE_TIMEOUT_SECS
                 {
                     manual_response_pending = false;
@@ -966,6 +1009,7 @@ impl OmniConnectionCoordinator {
                         sent_audio_since_commit = false;
                         audio_samples_since_commit = 0;
                         manual_response_pending = true;
+                        manual_response_requested = false;
                         manual_response_item_id = None;
                         let _ = diag_log(
                             app,
@@ -985,6 +1029,7 @@ impl OmniConnectionCoordinator {
             audio_samples_since_commit,
             manual_turn_audio_after_response,
             manual_response_pending,
+            manual_response_requested,
             manual_response_item_id,
             manual_turn_timed_out,
             committed_source_started_during_playback,

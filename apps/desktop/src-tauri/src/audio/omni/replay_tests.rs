@@ -20,6 +20,7 @@ use crate::audio::glossary::GlossaryContext;
 use crate::audio::state::AudioStateStore;
 
 mod native_response;
+mod manual_response_gate;
 mod text_only_reconnect;
 
 type MockHandle = tauri::AppHandle<tauri::test::MockRuntime>;
@@ -67,6 +68,7 @@ struct WorkerSlice {
     audio_samples_since_commit: u64,
     manual_turn_audio_after_response: bool,
     manual_response_pending: bool,
+    manual_response_requested: bool,
     manual_response_item_id: Option<String>,
     last_vad_event_time: SystemTime,
     vad_event_count: u64,
@@ -97,6 +99,7 @@ impl WorkerSlice {
             audio_samples_since_commit: 0,
             manual_turn_audio_after_response: false,
             manual_response_pending: false,
+            manual_response_requested: false,
             manual_response_item_id: None,
             last_vad_event_time: SystemTime::now(),
             vad_event_count: 0,
@@ -205,6 +208,7 @@ impl ReplayHarness {
                 audio_samples_since_commit: slice.audio_samples_since_commit,
                 manual_turn_audio_after_response: slice.manual_turn_audio_after_response,
                 manual_response_pending: slice.manual_response_pending,
+                manual_response_requested: slice.manual_response_requested,
                 manual_response_item_id: slice.manual_response_item_id.clone(),
                 manual_turn_timed_out: false,
                 committed_source_started_during_playback: None,
@@ -223,6 +227,7 @@ impl ReplayHarness {
         slice.audio_samples_since_commit = commit_state.audio_samples_since_commit;
         slice.manual_turn_audio_after_response = commit_state.manual_turn_audio_after_response;
         slice.manual_response_pending = commit_state.manual_response_pending;
+        slice.manual_response_requested = commit_state.manual_response_requested;
         slice.manual_response_item_id = commit_state.manual_response_item_id;
         if let Some(started_during_playback) =
             commit_state.committed_source_started_during_playback
@@ -286,6 +291,7 @@ impl ReplayHarness {
                 transcription_completed_flag: slice.transcription_completed_flag,
                 transcription_completed_at: slice.transcription_completed_at,
                 manual_response_pending: slice.manual_response_pending,
+                manual_response_requested: slice.manual_response_requested,
                 manual_response_item_id: slice.manual_response_item_id.clone(),
                 sent_audio_since_commit: slice.sent_audio_since_commit,
                 audio_samples_since_commit: slice.audio_samples_since_commit,
@@ -341,6 +347,7 @@ impl ReplayHarness {
         slice.transcription_completed_flag = state.transcription_completed_flag;
         slice.transcription_completed_at = state.transcription_completed_at;
         slice.manual_response_pending = state.manual_response_pending;
+        slice.manual_response_requested = state.manual_response_requested;
         slice.manual_response_item_id = state.manual_response_item_id;
         slice.sent_audio_since_commit = state.sent_audio_since_commit;
         slice.audio_samples_since_commit = state.audio_samples_since_commit;
@@ -353,6 +360,7 @@ impl ReplayHarness {
                 &self.store(),
                 self.audio_mode,
                 &mut slice.manual_response_pending,
+                &mut slice.manual_response_requested,
                 &mut slice.manual_response_item_id,
                 &mut slice.sent_audio_since_commit,
                 &mut slice.audio_samples_since_commit,
@@ -737,109 +745,6 @@ fn replay_provider_errors_without_current_cue_are_kept_in_the_watch_report() {
         .iter()
         .any(|detail| detail.contains("buffer too small")));
 }
-
-/// A completed transcription starts the model response but must not release
-/// the next manual commit until response.done. The production Flash ordering
-/// previously overlapped response.create calls and ended in InternalError.
-#[test]
-fn replay_manual_gate_serializes_response_create_until_response_done() {
-    let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
-    let mut slice = WorkerSlice::new();
-    slice.manual_response_pending = true;
-    slice.manual_response_item_id = Some("item-current".to_string());
-    slice.sent_audio_since_commit = true;
-    slice.manual_turn_audio_after_response = true;
-    slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
-    slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS + 1));
-
-    let socket = ScriptedRealtimeSocket::new(
-        vec![
-            ScriptStep::Event(json!({
-                "type": "conversation.item.input_audio_transcription.completed",
-                "item_id": "item-current",
-                "transcript": "the current translated turn"
-            })),
-            ScriptStep::Event(json!({
-                "type": "response.text.delta",
-                "delta": "当前"
-            })),
-            ScriptStep::Event(json!({
-                "type": "response.text.done",
-                "text": "当前译文"
-            })),
-            ScriptStep::Event(json!({ "type": "response.done" })),
-            ScriptStep::Idle,
-        ],
-        harness.shared.clone(),
-    );
-
-    let socket = harness.tick(socket, &mut slice);
-    assert!(
-        slice.manual_response_pending,
-        "response.create keeps the manual gate closed until response.done"
-    );
-    assert_eq!(
-        harness
-            .sent_types()
-            .iter()
-            .filter(|kind| kind.as_str() == "response.create")
-            .count(),
-        1,
-    );
-    assert!(
-        !harness
-            .sent_types()
-            .iter()
-            .any(|kind| kind == "input_audio_buffer.commit"),
-        "the buffered next turn must not overlap the active response",
-    );
-
-    let socket = harness.tick(socket, &mut slice);
-    assert!(
-        slice.manual_response_pending,
-        "a text delta must not release the manual response gate"
-    );
-    assert!(!harness
-        .sent_types()
-        .iter()
-        .any(|kind| kind == "input_audio_buffer.commit"));
-
-    let socket = harness.tick(socket, &mut slice);
-    assert!(
-        slice.manual_response_pending,
-        "response.text.done must still wait for response.done"
-    );
-    assert_eq!(slice.pending_translated_text, "当前译文");
-    assert!(!harness
-        .sent_types()
-        .iter()
-        .any(|kind| kind == "input_audio_buffer.commit"));
-
-    let socket = harness.tick(socket, &mut slice);
-    assert!(
-        !slice.manual_response_pending,
-        "response.done releases the next manual turn"
-    );
-
-    // The response handler deliberately closes the old post-response tail.
-    // Model the next successful append before asking the coordinator to arm a
-    // new commit; a response.done tick alone must never commit stale audio.
-    slice.sent_audio_since_commit = true;
-    slice.manual_turn_audio_after_response = true;
-    slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
-    slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS + 1));
-    let _socket = harness.tick(socket, &mut slice);
-    assert_eq!(
-        harness
-            .sent_types()
-            .iter()
-            .filter(|kind| kind.as_str() == "input_audio_buffer.commit")
-            .count(),
-        1,
-        "the accumulated turn commits on the first tick after response.done",
-    );
-}
-
 
 /// Replay 3 — manual-gate timeout → the awaited item's completed arrives late.
 /// The timed-out turn released the gate and its input state; the late

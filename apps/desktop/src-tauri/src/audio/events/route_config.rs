@@ -248,12 +248,19 @@ impl ResolvedRoutePlan {
             .filter(|text| !text.is_empty() && !is_legacy_default_instructions(text))
             .map(str::to_string)
             .unwrap_or(default_instructions);
+        // Realtime models occasionally normalize a large spoken amount to a
+        // smaller magnitude. This is a translation requirement, not a Watch
+        // fixture hint: preserve every number, unit, date and monetary amount
+        // exactly in the target language for every Omni route.
+        let numeric_fidelity_instruction = "Preserve every numerical value, date, unit, currency amount, percentage, and magnitude exactly. Never round, shorten, or change a number's scale.";
         Self {
             direction: direction.to_string(),
             requested_voice_model: requested_voice_model.clone(),
             target_language,
             voice,
-            instructions: glossary.with_instructions(&base_instructions),
+            instructions: glossary.with_instructions(&format!(
+                "{base_instructions}\n{numeric_fidelity_instruction}"
+            )),
             glossary,
             omni_speech_config,
             provider,

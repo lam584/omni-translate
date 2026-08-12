@@ -392,7 +392,7 @@ export function inspectAuthorizedRealDeviceCell(resolved) {
   if (watch?.status !== 'completed' || elapsedMs < MIN_SESSION_DURATION_MS
     || summaryDurationMs < MIN_SESSION_DURATION_MS
     || Math.abs(elapsedMs - summaryDurationMs) > 1000) {
-    issues.push('real-device Watch session is not a completed continuous 3-minute pairwise-live session');
+    issues.push('real-device Watch session is not a completed continuous budget-approved pairwise-live session');
   }
   const expectedCues = Array.isArray(watch?.cues)
     ? watch.cues.filter((cue) => cue?.comparisonStatus !== 'superseded')

@@ -211,7 +211,7 @@ export function assemblePerformanceBaseline({
       notes: [
         'Measurements were independently assembled from archived canonical Watch reports and raw system-metrics samples.',
         'CPU is the worst per-cell process-tree p95; memory is the matrix-wide process-tree peak.',
-        'Stability duration is the shortest verified Watch session across the two 10-minute model-stability cells.',
+        'Stability duration is the shortest verified Watch session across the two 4m45s model-stability cells.',
       ],
     };
     const resolvedOutputRoot = ensureDir(path.resolve(workspaceRoot, outputRoot));

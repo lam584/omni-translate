@@ -1004,6 +1004,10 @@ mod tests {
             assert_eq!(plan.legacy_vad_bypass, expected_legacy_bypass, "routeMode={route_mode}");
             assert_eq!(plan.target_language, "ja");
             assert_eq!(plan.session_reuse_key.model, provider.model);
+            assert!(
+                plan.instructions.contains("Preserve every numerical value"),
+                "realtime translation plans must retain numeric magnitude exactly",
+            );
         }
     }
 

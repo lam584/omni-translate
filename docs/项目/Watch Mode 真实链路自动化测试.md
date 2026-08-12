@@ -62,8 +62,8 @@ npm run test:watch-mode-evidence:strict
 
 付费 live 层固定为 38 LLM 分钟，而不是原来的 18 × 30 分钟：
 
-- `pairwise-live`：6 个模型/路线/设备配对格 × 4 分钟，共 24 分钟；保证每个模型、每条路线和每类设备在组合层都出现，并为实时翻译的尾段物理播放预留排空时间。
-- `model-stability`：2 个模型 × 7 分钟，共 14 分钟；固定使用 `process-exclusion/default-speaker`。
+- `pairwise-live`：6 个模型/路线/设备配对格 × 4 分 45 秒，共 28 分 30 秒；保证每个模型、每条路线和每类设备在组合层都出现，并为实时翻译的尾段物理播放预留排空时间。
+- `model-stability`：2 个模型 × 4 分 45 秒，共 9 分 30 秒；固定使用 `process-exclusion/default-speaker`。全部付费格统一时长，避免把尾段排空风险转移到稳定性格。
 - `local-isolation`：6 个格 × 5 分钟，Provider 完全禁用，`providerCalls=0`，不消耗 LLM token。
 
 矩阵在构建完成后、任何本地格或付费格开始前，会先对 `provider-dashscope` 执行 production provider preflight；若凭据、entitlement、streaming 或翻译文本不可用，整次运行立即 fail-closed，避免产生长时设备占用或付费调用。

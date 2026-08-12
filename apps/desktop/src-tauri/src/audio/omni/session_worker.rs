@@ -27,6 +27,7 @@ struct OmniSessionRuntime {
     sent_audio_since_commit: bool,
     audio_samples_since_commit: u64,
     manual_response_pending: bool,
+    manual_response_requested: bool,
     manual_response_item_id: Option<String>,
     manual_turn_audio_after_response: bool,
     last_vad_event_time: SystemTime,
@@ -67,6 +68,7 @@ impl OmniSessionRuntime {
             sent_audio_since_commit: false,
             audio_samples_since_commit: 0,
             manual_response_pending: false,
+            manual_response_requested: false,
             manual_response_item_id: None,
             manual_turn_audio_after_response: false,
             last_vad_event_time: SystemTime::now(),
@@ -336,6 +338,7 @@ fn run_omni_worker(
         mut sent_audio_since_commit,
         mut audio_samples_since_commit,
         mut manual_response_pending,
+        mut manual_response_requested,
         mut manual_response_item_id,
         mut manual_turn_audio_after_response,
         mut last_vad_event_time,
@@ -484,6 +487,7 @@ fn run_omni_worker(
                     store,
                     audio_mode,
                     &mut manual_response_pending,
+                    &mut manual_response_requested,
                     &mut manual_response_item_id,
                     &mut sent_audio_since_commit,
                     &mut audio_samples_since_commit,
@@ -525,6 +529,7 @@ fn run_omni_worker(
                 audio_samples_since_commit,
                 manual_turn_audio_after_response,
                 manual_response_pending,
+                manual_response_requested,
                 manual_response_item_id,
                 manual_turn_timed_out: false,
                 committed_source_started_during_playback: None,
@@ -543,6 +548,7 @@ fn run_omni_worker(
         audio_samples_since_commit = commit_state.audio_samples_since_commit;
         manual_turn_audio_after_response = commit_state.manual_turn_audio_after_response;
         manual_response_pending = commit_state.manual_response_pending;
+        manual_response_requested = commit_state.manual_response_requested;
         manual_response_item_id = commit_state.manual_response_item_id;
         if let Some(started_during_playback) =
             commit_state.committed_source_started_during_playback
@@ -637,6 +643,7 @@ fn run_omni_worker(
                 transcription_completed_flag,
                 transcription_completed_at,
                 manual_response_pending,
+                manual_response_requested,
                 manual_response_item_id,
                 sent_audio_since_commit,
                 audio_samples_since_commit,
@@ -691,6 +698,7 @@ fn run_omni_worker(
         transcription_completed_flag = poll.state.transcription_completed_flag;
         transcription_completed_at = poll.state.transcription_completed_at;
         manual_response_pending = poll.state.manual_response_pending;
+        manual_response_requested = poll.state.manual_response_requested;
         manual_response_item_id = poll.state.manual_response_item_id;
         sent_audio_since_commit = poll.state.sent_audio_since_commit;
         audio_samples_since_commit = poll.state.audio_samples_since_commit;
@@ -748,6 +756,7 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
     store: &AudioStateStore,
     audio_mode: RealtimeAudioMode,
     manual_response_pending: &mut bool,
+    manual_response_requested: &mut bool,
     manual_response_item_id: &mut Option<String>,
     sent_audio_since_commit: &mut bool,
     audio_samples_since_commit: &mut u64,
@@ -778,6 +787,7 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
     reset_session_state_after_reconnect(
         store,
         manual_response_pending,
+        manual_response_requested,
         manual_response_item_id,
         sent_audio_since_commit,
         audio_samples_since_commit,
@@ -805,6 +815,7 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
 pub(super) fn reset_session_state_after_reconnect(
     store: &AudioStateStore,
     manual_response_pending: &mut bool,
+    manual_response_requested: &mut bool,
     manual_response_item_id: &mut Option<String>,
     sent_audio_since_commit: &mut bool,
     audio_samples_since_commit: &mut u64,
@@ -825,6 +836,7 @@ pub(super) fn reset_session_state_after_reconnect(
     session_ready_for_audio: &mut bool,
 ) {
     *manual_response_pending = false;
+    *manual_response_requested = false;
     *manual_response_item_id = None;
     *sent_audio_since_commit = false;
     *audio_samples_since_commit = 0;
@@ -855,136 +867,9 @@ pub(super) fn reset_session_state_after_reconnect(
 }
 
 #[cfg(test)]
-mod reconnect_reset_tests {
-    use super::*;
+#[path = "session_worker/reconnect_reset_tests.rs"]
+mod reconnect_reset_tests;
 
-    #[test]
-    fn every_manual_turn_anchors_on_its_first_successful_audible_append() {
-        assert!(should_anchor_manual_turn_to_first_audible_append(
-            RealtimeAudioMode::Manual,
-            false,
-            true,
-        ));
-        assert!(!should_anchor_manual_turn_to_first_audible_append(
-            RealtimeAudioMode::Manual,
-            true,
-            true,
-        ));
-        assert!(!should_anchor_manual_turn_to_first_audible_append(
-            RealtimeAudioMode::ServerVad,
-            false,
-            true,
-        ));
-    }
-
-    /// Field bug: after a mid-session reconnect, `session_ready_for_audio`
-    /// stayed true, so captured audio was pumped into the new socket before
-    /// the provider confirmed the new session.
-    #[test]
-    fn reconnect_reset_marks_the_session_not_ready_for_audio() {
-        let store = AudioStateStore::new();
-        let mut manual_response_pending = true;
-        let mut manual_response_item_id = Some("item-old".to_string());
-        let mut sent_audio_since_commit = true;
-        let mut audio_samples_since_commit = 32_000_u64;
-        let mut manual_turn_audio_after_response = true;
-        let mut last_commit_time = SystemTime::now();
-        let mut manual_turn_started_at = Some(SystemTime::now());
-        let mut manual_turn_started_during_playback = Some(true);
-        let mut current_cue_id = Some("cue-old".to_string());
-        let mut pending_source_text = "half a sentence".to_string();
-        let mut pending_translated_text = "半句译文".to_string();
-        let mut transcription_completed_flag = true;
-        let mut transcription_completed_at = Some(SystemTime::now());
-        let mut event_diagnostics = OmniEventDiagnostics::default();
-        let mut pending_audio_buffer = vec![1_i16, -1];
-        let mut pending_audio_delta_count = 3_u64;
-        let mut pending_audio_delta_base64_bytes = 4_096_u64;
-        let mut pending_audio_response_id = Some("resp-old".to_string());
-        let mut session_ready_for_audio = true;
-
-        reset_session_state_after_reconnect(
-            &store,
-            &mut manual_response_pending,
-            &mut manual_response_item_id,
-            &mut sent_audio_since_commit,
-            &mut audio_samples_since_commit,
-            &mut manual_turn_audio_after_response,
-            &mut last_commit_time,
-            &mut manual_turn_started_at,
-            &mut manual_turn_started_during_playback,
-            &mut current_cue_id,
-            &mut pending_source_text,
-            &mut pending_translated_text,
-            &mut transcription_completed_flag,
-            &mut transcription_completed_at,
-            &mut event_diagnostics,
-            &mut pending_audio_buffer,
-            &mut pending_audio_delta_count,
-            &mut pending_audio_delta_base64_bytes,
-            &mut pending_audio_response_id,
-            &mut session_ready_for_audio,
-        );
-
-        assert!(
-            !session_ready_for_audio,
-            "audio must buffer in the pre-session queue until the new session confirms"
-        );
-        assert!(!manual_response_pending);
-        assert!(manual_response_item_id.is_none());
-        assert!(!sent_audio_since_commit);
-        assert_eq!(audio_samples_since_commit, 0);
-        assert!(!manual_turn_audio_after_response);
-        assert!(manual_turn_started_at.is_none());
-        assert!(manual_turn_started_during_playback.is_none());
-        assert!(current_cue_id.is_none());
-        assert!(pending_audio_buffer.is_empty());
-        assert_eq!(pending_audio_delta_count, 0);
-        assert!(pending_audio_response_id.is_none());
-        // A reconnect must not inherit a stale timer and immediately commit a
-        // tiny fragment before enough new-session audio has accumulated.
-        assert!(
-            last_commit_time.elapsed().unwrap_or_default()
-                < Duration::from_secs(MANUAL_COMMIT_INTERVAL_SECS)
-        );
-    }
-}
-
-pub(super) fn reconnect_socket<R: tauri::Runtime>(
-    app: &AppHandle<R>,
-    provider: &ProviderDraftInput,
-    voice: &str,
-    instructions: &str,
-    audio_mode: RealtimeAudioMode,
-    output_mode: OmniOutputMode,
-    target_language: &str,
-) -> Result<tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>, String>
-{
-    if provider.kind != "dashscope" {
-        return Err(format!(
-            "Omni 重连仅支持 dashscope provider，当前为 {} (provider_id={})",
-            provider.kind, provider.provider_id
-        ));
-    }
-    let request = build_dashscope_ws_request(provider)?;
-
-    let (mut socket, _) =
-        connect(request).map_err(|error| format!("无法重新连接 Omni 服务: {error}"))?;
-    set_socket_write_timeout(&mut socket);
-    set_socket_read_timeout(&mut socket);
-
-    let session_cfg = build_omni_session_update_for_provider_with_output_mode(
-        provider,
-        voice,
-        instructions,
-        audio_mode,
-        target_language,
-        output_mode,
-    );
-    socket
-        .send(Message::Text(session_cfg.to_string().into()))
-        .map_err(|error| format!("无法重发 Omni session 配置: {error}"))?;
-
-    let _ = diag_log(app, "omni", "info", "reconnected to Omni service");
-    Ok(socket)
-}
+#[path = "session_worker/reconnect.rs"]
+mod reconnect;
+pub(super) use reconnect::reconnect_socket;

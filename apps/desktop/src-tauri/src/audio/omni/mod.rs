@@ -65,7 +65,7 @@ use self::audio_pump::should_anchor_manual_turn_to_first_audible_append;
 use self::asr_event_processor::{OmniAsrEventProcessor, OmniAsrEventState};
 use self::connection::OmniConnection;
 use self::connection_coordinator::{
-    completed_manual_response_decision,
+    completed_manual_response_decision_for_gate,
     manual_turn_cue_to_discard,
     should_route_uncorrelated_completed_transcription, ManualResponseDecision,
     OmniCommitState, OmniConnectedSession, OmniConnectionCoordinator, OmniReconnectState,
@@ -73,6 +73,7 @@ use self::connection_coordinator::{
 };
 #[cfg(test)]
 use self::connection_coordinator::{
+    completed_manual_response_decision,
     MANUAL_COMMIT_INTERVAL_SECS, MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
 };
 use self::event_processor::{

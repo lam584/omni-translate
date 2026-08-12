@@ -56,13 +56,13 @@ test('pairwise live cells cover every model/route pair and every route on both r
       new Set(RELEASE_DEVICE_CLASSES),
     );
   }
-  assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => entry.durationSeconds === 240));
+  assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => entry.durationSeconds === 285));
 });
 
-test('model stability uses one seven-minute cell per model', () => {
+test('model stability uses one 4m45s cell per model', () => {
   assert.deepEqual(MODEL_STABILITY_CELLS.map((entry) => entry.modelId), RELEASE_MODELS);
   assert.ok(MODEL_STABILITY_CELLS.every((entry) => (
-    entry.durationSeconds === 420
+    entry.durationSeconds === 285
     && entry.feedbackLoopPrevention === 'process-exclusion'
     && entry.deviceClass === 'default-speaker'
   )));

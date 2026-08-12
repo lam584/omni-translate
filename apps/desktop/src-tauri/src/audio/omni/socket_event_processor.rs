@@ -26,6 +26,7 @@ pub(super) struct OmniSocketEventState<S: RealtimeSocket, R: tauri::Runtime = ta
     pub(super) transcription_completed_flag: bool,
     pub(super) transcription_completed_at: Option<SystemTime>,
     pub(super) manual_response_pending: bool,
+    pub(super) manual_response_requested: bool,
     pub(super) manual_response_item_id: Option<String>,
     pub(super) sent_audio_since_commit: bool,
     pub(super) audio_samples_since_commit: u64,
@@ -81,7 +82,7 @@ impl OmniSocketEventProcessor {
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
     ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
-        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_item_id, mut sent_audio_since_commit, mut audio_samples_since_commit, mut manual_turn_audio_after_response } = state;
+        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, mut sent_audio_since_commit, mut audio_samples_since_commit, mut manual_turn_audio_after_response } = state;
         let OmniSocketEventContext {
             app, store, direction, session_generation, session_started_at,
             subtitle_translate_active, native_translation_reuse_active,
@@ -120,6 +121,7 @@ let mut stop_worker = false;
                         transcription_completed_flag,
                         transcription_completed_at,
                         manual_response_pending,
+                        manual_response_requested,
                         manual_response_item_id,
                         sent_audio_since_commit,
                         audio_samples_since_commit,
@@ -293,8 +295,9 @@ match socket.read_message() {
                         if audio_mode.uses_manual_commit() {
                             let completed_source_text = output.completed_source_text.as_deref();
                             let completed_cue_id = output.completed_cue_id.as_deref();
-                            if let Some(decision) = completed_manual_response_decision(
+                            if let Some(decision) = completed_manual_response_decision_for_gate(
                                 manual_response_pending,
+                                manual_response_requested,
                                 manual_response_item_id.as_deref(),
                                 evt["item_id"].as_str(),
                                 completed_source_text,
@@ -321,6 +324,11 @@ match socket.read_message() {
                                             );
                                             reset_turn = true;
                                         } else {
+                                            // Claim this committed item before any later
+                                            // duplicate `transcription.completed` can be
+                                            // observed. DashScope may replay the final event
+                                            // while the model response is still streaming.
+                                            manual_response_requested = true;
                                             // Bind the response to the ASR item that
                                             // authorized this commit before the next
                                             // incremental hypothesis can open a new cue.
@@ -413,6 +421,7 @@ match socket.read_message() {
                                         );
                                     }
                                     manual_response_pending = false;
+                                    manual_response_requested = false;
                                     manual_response_item_id = None;
                                 } else {
                                     // Keep one manual response in flight until
@@ -618,6 +627,7 @@ match socket.read_message() {
                         );
                         if audio_mode.uses_manual_commit() && manual_response_pending {
                             manual_response_pending = false;
+                            manual_response_requested = false;
                             manual_response_item_id = None;
                             // Audio captured while the previous response was
                             // in flight may already have been drained or

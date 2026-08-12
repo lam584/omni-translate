@@ -66,6 +66,9 @@ fn echo_cancel_speech_model_diagnostic_replays_native_audio_on_default_output() 
     let mut config = json!({
         "devices": {
             "outputDeviceId": "stale-device-id",
+            "inboundRoute": {
+                "input": { "deviceId": "stale-capture-device-id" }
+            },
             "subtitleTranslationMode": "secondary",
             "subtitleTranslationModelId": "stale-text-model",
             "inboundSecondaryAudioModelId": "stale-audio-model"
@@ -96,6 +99,10 @@ fn echo_cancel_speech_model_diagnostic_replays_native_audio_on_default_output() 
     );
     assert_eq!(config["speech"]["translationAudioSource"], "omni-native");
     assert_eq!(config["devices"]["outputDeviceId"], "default");
+    assert_eq!(
+        config["devices"]["inboundRoute"]["input"]["deviceId"],
+        "default"
+    );
     assert_eq!(config["devices"]["outputSpeechEnabled"], true);
     assert_eq!(config["speech"]["localPlaybackEnabled"], true);
     assert_eq!(
@@ -110,7 +117,13 @@ fn echo_cancel_speech_model_diagnostic_replays_native_audio_on_default_output() 
 
 #[test]
 fn virtual_driver_speech_model_diagnostic_stays_subtitle_only() {
-    let mut config = json!({});
+    let mut config = json!({
+        "devices": {
+            "inboundRoute": {
+                "input": { "deviceId": "persisted-physical-device" }
+            }
+        }
+    });
 
     configure_watch_mode(
         &mut config,
@@ -125,6 +138,10 @@ fn virtual_driver_speech_model_diagnostic_stays_subtitle_only() {
     );
 
     assert_eq!(config["devices"]["outputDeviceId"], "default");
+    assert_eq!(
+        config["devices"]["inboundRoute"]["input"]["deviceId"],
+        "persisted-physical-device"
+    );
     assert_eq!(config["devices"]["outputSpeechEnabled"], false);
     assert_eq!(config["speech"]["localPlaybackEnabled"], false);
     assert_eq!(

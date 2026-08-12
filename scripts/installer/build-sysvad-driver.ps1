@@ -23,6 +23,10 @@ function Write-Utf8NoBom([string]$Path, [string]$Text) {
   [System.IO.File]::WriteAllText($Path, $Text, $utf8NoBom)
 }
 
+function ConvertTo-CanonicalJson([object]$Value) {
+  return (($Value | ConvertTo-Json -Depth 3) -replace "`r`n", "`n") + "`n"
+}
+
 function Invoke-Checked([string]$Executable, [string[]]$Arguments) {
   & $Executable @Arguments
   if ($LASTEXITCODE -ne 0) {
@@ -250,7 +254,7 @@ if ($SkipSigning) {
     signingMode = 'unsigned'
     signerThumbprint = $null
   }
-  Write-Utf8NoBom $stagedMetadata (($unsignedMetadata | ConvertTo-Json -Depth 3) + "`n")
+  Write-Utf8NoBom $stagedMetadata (ConvertTo-CanonicalJson $unsignedMetadata)
   Write-Warning 'Staged INF and SYS without CAT because -SkipSigning was supplied.'
   exit 0
 }
@@ -321,6 +325,6 @@ $packageMetadata = [ordered]@{
   timestampMode = if ($isDevelopmentTestSigner) { 'none' } else { 'rfc3161' }
   timestampUrl = if ($isDevelopmentTestSigner) { $null } else { $SigningTimestampUrl }
 }
-Write-Utf8NoBom $stagedMetadata (($packageMetadata | ConvertTo-Json -Depth 3) + "`n")
+Write-Utf8NoBom $stagedMetadata (ConvertTo-CanonicalJson $packageMetadata)
 
 Write-Output "SYSVAD package staged at $packageRoot"

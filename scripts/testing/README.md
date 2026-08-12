@@ -248,10 +248,10 @@ the stable release scenario. Fake Bridge counters alone are not endpoint
 capture evidence.
 
 Do not type performance measurements into the pending JSON template. First run
-the canonical strict Watch matrix on the required default-speaker, USB, and
-Bluetooth endpoints. Every live matrix cell now writes `system-metrics.json`
+the canonical strict Watch matrix on the required default-speaker and separate
+USB endpoints. Bluetooth remains an optional diagnostic endpoint. Every live matrix cell now writes `system-metrics.json`
 with raw one-second samples for the Desktop process tree. The budget-balanced
-release plan first runs 9 five-minute local-isolation cells with the Provider
+release plan first runs 6 five-minute local-isolation cells with the Provider
 disabled, then 6 three-minute pairwise live cells and 2 ten-minute model
 stability cells. The paid live budget is therefore 38 minutes. After all
 authorities pass, assemble the baseline:
@@ -266,7 +266,7 @@ from the same exact clean `HEAD`. Production assembly and validation rerun the
 complete schema-v3 balanced strict authority verifier; the verification receipt is only
 an index, not authority by itself. The archive binds the canonical manifest,
 its strict source manifest and verification receipt, every per-cell authority
-receipt, the 9-cell zero-LLM local authority, and all 8 paid live
+receipt, the 6-cell zero-LLM local authority, and all 8 paid live
 `report.json` and `system-metrics.json` files by path, byte
 count, and SHA-256. Validation rebuilds every authorized Watch report, derives
 the provider and subtitle p95 values from raw cue timestamps, and independently
@@ -280,7 +280,7 @@ Evidence collection boundaries:
 | Artifact | Command or action | Prerequisites | Typical duration | Verifiable output |
 | --- | --- | --- | --- | --- |
 | Manual E2E | Run `collect:release-evidence:desktop` for the three Desktop-backed scenarios, `collect:release-evidence:real-device-audio` after the strict matrix, `collect:release-evidence:overlay` on an interactive Windows desktop, and `collect:release-evidence:virtual-mic` | Clean exact HEAD, release Desktop binary, configured live Provider credential for Provider scenarios, complete current-HEAD strict matrix, native virtual microphone ready, an installed Microsoft Edge WebView2 runtime, network access for the runner to install pinned `tauri-driver` 2.0.6 with `--locked` and fetch the exactly matching Microsoft-signed WebDriver into `artifacts/tooling/overlay-click-through`, and a named overlay operator on an unlocked interactive desktop | Desktop/diagnostics, vmic, and overlay take minutes; the real-device assembler takes seconds after the balanced matrix | Six independently validated scenario receipts; stable release requires all six |
-| Canonical performance source | `node ./scripts/testing/run-watch-mode-live-matrix.mjs --device-profiles <json> --skip-driver-repair` | Clean exact HEAD, production binaries, available DashScope credential, one verified default/USB/Bluetooth endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | 83 minutes raw collection (45 zero-LLM + 38 paid live), normally 1.5–2.5 hours with build/readiness/post-processing | Canonical strict manifest, 9 local-isolation authorities, 8 passed live `report.json`, and 8 raw `system-metrics.json` files |
+| Canonical performance source | `node ./scripts/testing/run-watch-mode-live-matrix.mjs --device-profiles <json> --skip-driver-repair` | Clean exact HEAD, production binaries, available DashScope credential, one verified default-speaker endpoint and one distinct USB endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | 68 minutes raw collection (30 zero-LLM + 38 paid live), normally 1.25–2 hours with build/readiness/post-processing | Canonical strict manifest, 6 local-isolation authorities, 8 passed live `report.json`, and 8 raw `system-metrics.json` files |
 | Performance assembly | `node ./scripts/testing/assemble-performance-baseline.mjs --operator "<name>"` | The complete canonical matrix above, still on the same clean HEAD | Seconds to about one minute | Receipt-backed `desktop-perf-baseline-*.json`; CPU/memory/latency/dropout/duration are recomputed |
 | Install regression | `npm run test:install-regression`; then run each `collect:release-evidence:install:*` command and archive its returned package directory | Windows x64 UAC test machine, exact current-clean-HEAD canonical signed package, RFC3161 timestamps, and an older canonical signed package for upgrade | 20-40 minutes plus operator review | Five independently recomputed collector packages/receipts; schema-shaped files and prose cannot satisfy a scenario |
 
@@ -447,9 +447,9 @@ Run the live watch-mode diagnostic on Windows:
 npm run test:watch-mode-live
 ```
 
-Run the strict two-model, three-route, three-device matrix on Windows. The
+Run the strict two-model, three-route, two-physical-device matrix on Windows. The
 strict entry requires `--device-profiles` to explicitly contain exactly one
-`default-speaker`, one `usb`, and one `bluetooth` profile; it never falls back
+`default-speaker` and one distinct `usb` profile; it never falls back
 to the default endpoint. Matrix options are double-dash Node flags (they
 survive `npm run ... --` on npm 11):
 
@@ -462,8 +462,8 @@ alias requires two separators: `npm run test:watch-mode-live:matrix -- --
 --device-profiles ...`. Invoking the Node entry point directly, as above,
 avoids npm-version-specific argument forwarding.
 
-The JSON file must contain `{"deviceProfiles":[...]}` with the three device
-classes above. USB and Bluetooth profiles require explicit MMDevice ids and
+The JSON file must contain `{"deviceProfiles":[...]}` with the two required device
+classes above. The USB profile requires an explicit MMDevice id and
 expected endpoint names. For a one-device live diagnostic, invoke
 `run-watch-mode-live.ps1` directly or pass `--diagnostic-single-device`; that
 mode is explicitly non-strict. The matrix rejects `-DryRun`; fixture-backed

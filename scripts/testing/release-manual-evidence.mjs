@@ -536,7 +536,7 @@ const strictPerformanceShapeFailure = (manifest) => {
       deviceClasses.filter((candidate) => candidate === deviceClass).length === 1
     ))
   ) {
-    return 'canonical strict matrix device profiles are not exactly default-speaker, usb, and bluetooth';
+    return 'canonical strict matrix device profiles are not exactly default-speaker and usb';
   }
   const expectedCells = expectedPerformanceCellKeys();
   const actualCells = Array.isArray(manifest.cells)

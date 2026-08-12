@@ -1,5 +1,8 @@
-export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v1';
-export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 1;
+// v2 is intentionally incompatible with the former three-device matrix.  A
+// strict receipt must never make the now-unavailable Bluetooth class look
+// covered by the two independently verified physical endpoint classes.
+export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v2';
+export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 2;
 
 export const RELEASE_MODELS = Object.freeze([
   'qwen3.5-omni-flash-realtime',
@@ -15,7 +18,6 @@ export const RELEASE_FEEDBACK_MODES = Object.freeze([
 export const RELEASE_DEVICE_CLASSES = Object.freeze([
   'default-speaker',
   'usb',
-  'bluetooth',
 ]);
 
 export const RELEASE_TIER_DURATIONS_SECONDS = Object.freeze({
@@ -61,7 +63,7 @@ export const PAIRWISE_LIVE_CELLS = Object.freeze([
     tier: 'pairwise-live',
     modelId: RELEASE_MODELS[0],
     feedbackLoopPrevention: 'echo-cancel',
-    deviceClass: 'bluetooth',
+    deviceClass: 'default-speaker',
   }),
   cell({
     tier: 'pairwise-live',
@@ -73,13 +75,13 @@ export const PAIRWISE_LIVE_CELLS = Object.freeze([
     tier: 'pairwise-live',
     modelId: RELEASE_MODELS[1],
     feedbackLoopPrevention: 'virtual-driver',
-    deviceClass: 'bluetooth',
+    deviceClass: 'default-speaker',
   }),
   cell({
     tier: 'pairwise-live',
     modelId: RELEASE_MODELS[1],
     feedbackLoopPrevention: 'echo-cancel',
-    deviceClass: 'default-speaker',
+    deviceClass: 'usb',
   }),
 ]);
 

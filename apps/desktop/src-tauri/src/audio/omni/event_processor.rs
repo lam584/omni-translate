@@ -415,6 +415,7 @@ impl OmniEventProcessor {
                     );
                     "dropped_overflow"
                 }
+                OmniPlaybackEnqueueOutcome::Terminated => "dropped_terminated",
                 OmniPlaybackEnqueueOutcome::Stopped => "dropped_stopped",
             };
             let log_level = if enqueue_status == "queued" {

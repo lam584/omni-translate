@@ -2040,12 +2040,14 @@ pub(super) enum OmniPlaybackEnqueueOutcome {
         reason: OmniPlaybackOverflowReason,
         dropped_cue_ids: Vec<String>,
     },
+    Terminated,
     Stopped,
 }
 
 struct OmniPlaybackQueueState {
     pending: VecDeque<OmniPlaybackCommand>,
     active_expected_end: Option<Instant>,
+    terminated_stream_cues: std::collections::HashSet<String>,
     stopped: bool,
 }
 
@@ -2081,6 +2083,7 @@ impl OmniPlaybackQueue {
                 state: std::sync::Mutex::new(OmniPlaybackQueueState {
                     pending: VecDeque::with_capacity(capacity),
                     active_expected_end: None,
+                    terminated_stream_cues: std::collections::HashSet::new(),
                     stopped: false,
                 }),
                 available: std::sync::Condvar::new(),
@@ -2100,6 +2103,14 @@ impl OmniPlaybackQueue {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.stopped {
             return OmniPlaybackEnqueueOutcome::Stopped;
+        }
+
+        if matches!(
+            &command,
+            OmniPlaybackCommand::Stream { cue_id, .. }
+                if state.terminated_stream_cues.contains(cue_id)
+        ) {
+            return OmniPlaybackEnqueueOutcome::Terminated;
         }
 
         let now = Instant::now();
@@ -2142,6 +2153,9 @@ impl OmniPlaybackQueue {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if state.stopped {
+            return;
+        }
+        if !state.terminated_stream_cues.insert(cue_id.to_string()) {
             return;
         }
         state.pending.retain(|command| {
@@ -2238,6 +2252,7 @@ impl OmniPlaybackQueue {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         state.stopped = true;
         state.pending.clear();
+        state.terminated_stream_cues.clear();
         state.active_expected_end = None;
         drop(state);
         self.inner.available.notify_all();
@@ -2545,12 +2560,23 @@ fn play_native_translation_to_speaker<R: tauri::Runtime>(
     }
 }
 
+fn bridge_route_is_transitioning(
+    configured_mode: Option<crate::bridge::contracts::SourceCaptureMode>,
+    snapshot: &crate::bridge::contracts::BridgeRuntimeSnapshot,
+) -> bool {
+    configured_mode == Some(snapshot.source_capture_mode)
+        && (snapshot.process_status == "starting"
+            || snapshot.bridge_state == "starting"
+            || snapshot.lifecycle_state == "initializing")
+}
+
 fn process_omni_stream_playback_command<R: tauri::Runtime>(
     app: &AppHandle<R>,
     audio_state: &AudioStateStore,
     speech_config: &Arc<std::sync::RwLock<OmniSpeechConfig>>,
     route_direction: &str,
     playback_queue: &OmniPlaybackQueue,
+    active_stream_instances: &mut std::collections::HashMap<String, String>,
     command: OmniPlaybackCommand,
 ) {
     let OmniPlaybackCommand::Stream {
@@ -2558,6 +2584,14 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         chunk_index, stream_state, ..
     } = command else { unreachable!() };
     if stream_state == omni_bridge_protocol::TranslationStreamState::Abort {
+        let started_instance = active_stream_instances.remove(&cue_id);
+        let current_instance = app
+            .state::<crate::bridge::state::BridgeStateStore>()
+            .snapshot()
+            .bridge_instance_id;
+        if started_instance.is_none() || started_instance != current_instance {
+            return;
+        }
         if let Err(error) = BridgeAudioWriter::new(app).write_process_playback_stream(
             &cue_id, &format!("omni-stream-{cue_id}-{chunk_index}-abort"),
             route_direction, &[], sample_rate_hz, 1, created_at_ms, 0,
@@ -2580,6 +2614,22 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         current_config.bridge_playback_enabled,
     );
     let bridge_snapshot = app.state::<crate::bridge::state::BridgeStateStore>().snapshot();
+    if matches!(
+        stream_state,
+        omni_bridge_protocol::TranslationStreamState::Chunk
+            | omni_bridge_protocol::TranslationStreamState::End
+    ) && active_stream_instances.get(&cue_id) != bridge_snapshot.bridge_instance_id.as_ref()
+    {
+        active_stream_instances.remove(&cue_id);
+        playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
+        audio_state.watch_session_report.record_session_issue(
+            "output",
+            "native-playback-stream-generation-ended",
+            "warning",
+            "Native playback stream ended because the Bridge generation changed.",
+        );
+        return;
+    }
     if !output_route.write_to_bridge_playback {
         playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
         audio_state.watch_session_report.record_session_issue(
@@ -2592,10 +2642,22 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         &cue_id, route_direction, current_config.bridge_capture_mode,
         &output_route, &bridge_snapshot,
     ) {
+        let route_is_transitioning = bridge_route_is_transitioning(
+            current_config.bridge_capture_mode,
+            &bridge_snapshot,
+        );
+        active_stream_instances.remove(&cue_id);
         playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
         let error_code = crate::audio::speech::translation_output_route_error_code(&error);
         audio_state.watch_session_report.record_session_issue(
-            "output", error_code, "error", &error,
+            "output",
+            if route_is_transitioning {
+                "native-playback-stream-route-transition"
+            } else {
+                error_code
+            },
+            if route_is_transitioning { "warning" } else { "error" },
+            &error,
         );
         return;
     }
@@ -2622,6 +2684,19 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
             false
         }
     };
+    if write_succeeded {
+        match stream_state {
+            omni_bridge_protocol::TranslationStreamState::Start => {
+                if let Some(instance_id) = bridge_snapshot.bridge_instance_id {
+                    active_stream_instances.insert(cue_id.clone(), instance_id);
+                }
+            }
+            omni_bridge_protocol::TranslationStreamState::End => {
+                active_stream_instances.remove(&cue_id);
+            }
+            _ => {}
+        }
+    }
     if write_succeeded && matches!(
         stream_state,
         omni_bridge_protocol::TranslationStreamState::Start
@@ -2638,11 +2713,9 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
     playback_worker_queue: OmniPlaybackQueue,
     playback_stop_requested: Arc<AtomicBool>,
 ) {
-    let audio_state = app.state::<AudioStateStore>();
+    let audio_state = app.state::<AudioStateStore>(); let mut active_stream_instances = std::collections::HashMap::new();
     loop {
-                if playback_stop_requested.load(Ordering::Acquire) {
-                    break;
-                }
+                if playback_stop_requested.load(Ordering::Acquire) { break; }
                 let (cmd, dropped_cue_ids) = match playback_worker_queue
                     .recv_timeout(Duration::from_millis(200))
                 {
@@ -2677,6 +2750,7 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                             &speech_config,
                             &route_direction,
                             &playback_worker_queue,
+                            &mut active_stream_instances,
                             command,
                         );
                     }
@@ -3343,6 +3417,73 @@ mod omni_playback_tests {
         assert_eq!(queue.pending_cue_ids(), ["stream", "other"]);
         let OmniPlaybackReceiveOutcome::Command { command, .. } = queue.recv_timeout(Duration::ZERO) else { panic!("abort command") };
         assert!(matches!(command, OmniPlaybackCommand::Stream { stream_state: omni_bridge_protocol::TranslationStreamState::Abort, .. }));
+    }
+
+    #[test]
+    fn stream_abort_is_idempotent_and_rejects_late_chunks_and_end() {
+        let queue = OmniPlaybackQueue::new(8);
+        assert_eq!(
+            queue.enqueue(queued_stream("stream", 0, Duration::from_millis(20))),
+            OmniPlaybackEnqueueOutcome::Queued
+        );
+        queue.abort_stream("stream", 1, unix_ms());
+        queue.abort_stream("stream", 2, unix_ms());
+        assert_eq!(queue.pending_cue_ids(), ["stream"]);
+        assert_eq!(
+            queue.enqueue(queued_stream("stream", 1, Duration::from_millis(20))),
+            OmniPlaybackEnqueueOutcome::Terminated
+        );
+        assert_eq!(
+            queue.enqueue(OmniPlaybackCommand::Stream {
+                samples: Vec::new(),
+                cue_id: "stream".to_string(),
+                sample_rate_hz: OMNI_OUTPUT_SAMPLE_RATE_HZ,
+                queued_at: Instant::now(),
+                created_at_ms: unix_ms(),
+                estimated_duration_ms: 0,
+                chunk_index: 2,
+                stream_state: omni_bridge_protocol::TranslationStreamState::End,
+            }),
+            OmniPlaybackEnqueueOutcome::Terminated
+        );
+        let OmniPlaybackReceiveOutcome::Command { command, .. } =
+            queue.recv_timeout(Duration::ZERO)
+        else {
+            panic!("single abort command")
+        };
+        assert!(matches!(
+            command,
+            OmniPlaybackCommand::Stream {
+                stream_state: omni_bridge_protocol::TranslationStreamState::Abort,
+                ..
+            }
+        ));
+        assert!(matches!(
+            queue.recv_timeout(Duration::ZERO),
+            OmniPlaybackReceiveOutcome::Timeout
+        ));
+    }
+
+    #[test]
+    fn bridge_restart_starting_state_is_a_transient_stream_transition() {
+        let mut snapshot = crate::bridge::contracts::BridgeRuntimeSnapshot::default();
+        snapshot.source_capture_mode = crate::bridge::contracts::SourceCaptureMode::ProcessExclusion;
+        snapshot.process_status = "starting".to_string();
+        snapshot.bridge_state = "stopped".to_string();
+        snapshot.lifecycle_state = "stopped".to_string();
+        assert!(bridge_route_is_transitioning(
+            Some(crate::bridge::contracts::SourceCaptureMode::ProcessExclusion),
+            &snapshot,
+        ));
+        assert!(!bridge_route_is_transitioning(
+            Some(crate::bridge::contracts::SourceCaptureMode::VirtualDriver),
+            &snapshot,
+        ));
+        snapshot.process_status = "running".to_string();
+        assert!(!bridge_route_is_transitioning(
+            Some(crate::bridge::contracts::SourceCaptureMode::ProcessExclusion),
+            &snapshot,
+        ));
     }
 
     #[test]

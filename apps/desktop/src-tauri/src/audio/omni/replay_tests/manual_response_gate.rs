@@ -59,14 +59,14 @@ fn replay_manual_gate_serializes_response_create_until_response_done() {
     let socket = harness.tick(socket, &mut slice);
     assert!(!slice.manual_response_pending, "response.done releases the next manual turn");
     assert!(!slice.manual_response_requested);
-    assert!(slice.sent_audio_since_commit, "response.done retains accepted next-turn audio");
-    assert!(slice.manual_turn_audio_after_response);
-    assert_eq!(slice.audio_samples_since_commit, MANUAL_COMMIT_MIN_AUDIO_SAMPLES);
+    assert!(!slice.sent_audio_since_commit, "response.done discards stale provider-buffer accounting");
+    assert!(!slice.manual_turn_audio_after_response);
+    assert_eq!(slice.audio_samples_since_commit, 0);
     let _socket = harness.tick(socket, &mut slice);
     assert_eq!(
         harness.sent_types().iter().filter(|kind| kind.as_str() == "input_audio_buffer.commit").count(),
-        1,
-        "the turn accumulated while the response streamed commits after response.done",
+        0,
+        "response.done must not commit audio that the provider did not retain",
     );
 }
 

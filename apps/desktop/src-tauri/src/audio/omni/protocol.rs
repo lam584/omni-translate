@@ -2623,7 +2623,9 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         current_config.virtual_mic_output_enabled,
         current_config.bridge_playback_enabled,
     );
-    let bridge_snapshot = app.state::<crate::bridge::state::BridgeStateStore>().snapshot();
+    let bridge_snapshot = crate::audio::speech::wait_for_translation_output_route(
+        app, route_direction, current_config.bridge_capture_mode, &output_route,
+    );
     if matches!(
         stream_state,
         omni_bridge_protocol::TranslationStreamState::Chunk
@@ -2820,9 +2822,9 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                             cfg.virtual_mic_output_enabled,
                             cfg.bridge_playback_enabled,
                         );
-                        let bridge_snapshot = app
-                            .state::<crate::bridge::state::BridgeStateStore>()
-                            .snapshot();
+                        let bridge_snapshot = crate::audio::speech::wait_for_translation_output_route(
+                            &app, &route_direction, cfg.bridge_capture_mode, &output_route,
+                        );
                         if let Some(error) =
                             crate::audio::speech::translation_output_route_violation(
                                 &cue_id,

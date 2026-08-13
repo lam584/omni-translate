@@ -260,10 +260,22 @@ try {
     [string]$recordedXml.Task.Principals.Principal.UserId -cne $expectedSid -or
     [string]$recordedXml.Task.Principals.Principal.LogonType -cne 'InteractiveToken'
   ) { throw 'registered interactive task does not match the immutable action/principal' }
+  $taskInfoBeforeStart = Get-ScheduledTaskInfo -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
   Start-ScheduledTask -TaskPath $taskPath -TaskName $taskName
   $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$payload.timeoutMs)
+  $taskObservedRunning = $false
+  $taskObservedStarted = $false
   while (-not (Test-Path -LiteralPath $terminalPath -PathType Leaf)) {
     if ([DateTime]::UtcNow -ge $deadline) { throw 'interactive task timed out before terminal authority' }
+    $taskState = (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop).State
+    $taskInfo = Get-ScheduledTaskInfo -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+    if ($taskState -eq 'Running') { $taskObservedRunning = $true }
+    if ($taskObservedRunning -or $taskInfo.LastRunTime -ne $taskInfoBeforeStart.LastRunTime) {
+      $taskObservedStarted = $true
+    }
+    if ($taskObservedStarted -and $taskState -ne 'Running') {
+      throw "interactive task exited before terminal authority (LastTaskResult=$([int]$taskInfo.LastTaskResult))"
+    }
     Start-Sleep -Milliseconds 250
   }
   while ((Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName).State -eq 'Running') {

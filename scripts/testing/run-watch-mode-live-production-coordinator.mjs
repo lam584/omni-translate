@@ -428,6 +428,7 @@ function runChildProcess(executable, args, {
   signal,
   timeoutMs = 60_000,
   environment = process.env,
+  input = '',
 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
@@ -435,11 +436,12 @@ function runChildProcess(executable, args, {
       env: environment,
       shell: false,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let timer;
     const finish = (callback) => {
       if (settled) return;
       settled = true;
@@ -452,27 +454,43 @@ function runChildProcess(executable, args, {
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
     child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stdin.once('error', (error) => {
+      // A remote process can fail and close stdin before ssh has consumed the
+      // entire script. Its exit code/stderr remain the useful failure signal.
+      if (error.code !== 'EPIPE') finish(() => reject(error));
+    });
     child.once('error', (error) => finish(() => reject(error)));
     child.once('exit', (exitCode) => finish(() => resolve({
       exitCode: exitCode ?? 1,
       stdout,
       stderr,
     })));
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
+    child.stdin.end(input);
   });
 }
 
-function encodedPowerShell(body, payload) {
+const REMOTE_POWERSHELL_STDIN_BOOTSTRAP = Buffer.from(
+  '$source = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($source))',
+  'utf16le',
+).toString('base64');
+
+export function remotePowerShellInvocation(body, payload) {
   const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
-  const script = [
-    "$ErrorActionPreference = 'Stop'",
-    `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
-    '$payload = $payloadJson | ConvertFrom-Json',
-    body,
-  ].join('\n');
-  return Buffer.from(script, 'utf16le').toString('base64');
+  return {
+    args: [
+      'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+      '-EncodedCommand', REMOTE_POWERSHELL_STDIN_BOOTSTRAP,
+    ],
+    input: [
+      "$ErrorActionPreference = 'Stop'",
+      `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
+      '$payload = $payloadJson | ConvertFrom-Json',
+      body,
+    ].join('\n'),
+  };
 }
 
 function lastNonEmptyLine(text) {
@@ -581,16 +599,17 @@ export function createSshProductionTransport({
   const remoteLeasePaths = new Map();
   const completedRemoteResults = new Map();
 
-  const runRemote = async (worker, body, payload, options = {}) => runProcess(
-    config.sshExecutable,
-    [
+  const runRemote = async (worker, body, payload, options = {}) => {
+    const invocation = remotePowerShellInvocation(body, payload);
+    return runProcess(config.sshExecutable, [
       ...sshBaseArgs(worker),
       `${worker.user}@${worker.host}`,
-      'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-EncodedCommand', encodedPowerShell(body, payload),
-    ],
-    options,
-  );
+      ...invocation.args,
+    ], {
+      ...options,
+      input: invocation.input,
+    });
+  };
   const upload = async (worker, localPath, remotePath, options = {}) => {
     const result = await runProcess(
       config.scpExecutable,

@@ -13,6 +13,7 @@ import {
   PRODUCTION_WORKER_CONFIG_KIND,
   PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY,
   PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
+  PRODUCTION_PRESERVED_WORKER_READINESS_BODY,
   PRODUCTION_REMOTE_CELL_TIMEOUT_MS,
   PRODUCTION_WORKER_READINESS_FINALIZE_BODY,
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
@@ -370,6 +371,40 @@ test('remote PowerShell streams large scripts through SSH stdin instead of the W
   const bootstrap = Buffer.from(invocation.args.at(-1), 'base64').toString('utf16le');
   assert.match(bootstrap, /\[Console\]::In\.ReadToEnd\(\)/);
   assert.match(bootstrap, /ScriptBlock/);
+});
+
+test('preserved worker readiness is decoded as UTF-8 and returned as one compact JSON line', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-preserved-readiness-'));
+  const readinessRoot = path.join(root, 'readiness');
+  fs.mkdirSync(readinessRoot, { recursive: true });
+  const readiness = {
+    artifactKind: 'watch-mode-production-worker-zero-provider-readiness',
+    workerId: 'vm1-default',
+    providerCalls: 0,
+    profiles: [{ resolvedDeviceName: '扬声器 (High Definition Audio Device)' }],
+  };
+  fs.writeFileSync(
+    path.join(readinessRoot, 'zero-provider-readiness.json'),
+    `${JSON.stringify(readiness, null, 2)}\n`,
+    'utf8',
+  );
+  const invocation = remotePowerShellInvocation(
+    PRODUCTION_PRESERVED_WORKER_READINESS_BODY,
+    { remoteRoot: root },
+  );
+  try {
+    const result = spawnSync(invocation.args[0], invocation.args.slice(1), {
+      input: invocation.input,
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const nonEmptyLines = result.stdout.split(/\r?\n/).filter((line) => line.trim());
+    assert.equal(nonEmptyLines.length, 1);
+    assert.deepEqual(JSON.parse(nonEmptyLines[0]), readiness);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('interactive remote wrapper accepts a successful PowerShell control with no native exit code', { skip: !isWindows }, () => {

@@ -263,6 +263,11 @@ test('interactive control projects readiness and paid-cell fields only inside th
     );
   }
   assert.match(control, /if \(\$mode -eq 'shard-cell'\) \{[\s\S]*?\$taskTerminal\['leaseId'\]/);
+  assert.match(control, /Export-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
+  assert.match(control, /recordedXml\.Task\.Principals\.Principal\.UserId -cne \$expectedSid/);
+  assert.match(control, /recordedXml\.Task\.Principals\.Principal\.LogonType -cne 'InteractiveToken'/);
+  assert.doesNotMatch(control, /recorded\.Principal\.UserId -cne \[string\]\$command\.expectedUserId/);
+  assert.doesNotMatch(control, /recorded\.Principal\.LogonType -cne 'InteractiveToken'/);
 });
 
 test('production runtime build embeds the coordinator key identity before preflight', () => {

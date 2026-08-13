@@ -249,13 +249,16 @@ try {
   Register-ScheduledTask -TaskPath $taskPath -TaskName $taskName -Action $action -Principal $principal -Settings $settings | Out-Null
   $registered = $true
   $recorded = Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
+  $recordedXml = [xml](Export-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop)
   if (
     @($recorded.Actions).Count -ne 1 -or
     [string]$recorded.Actions[0].Execute -cne 'powershell.exe' -or
     [string]$recorded.Actions[0].Arguments -cne $arguments -or
-    [string]$recorded.Principal.UserId -cne [string]$command.expectedUserId -or
-    [string]$recorded.Principal.LogonType -cne 'InteractiveToken' -or
-    [string]$recorded.Principal.RunLevel -cne 'Limited'
+    [string]$recorded.Principal.RunLevel -cne 'Limited' -or
+    [string]$recordedXml.Task.Actions.Exec.Command -cne 'powershell.exe' -or
+    [string]$recordedXml.Task.Actions.Exec.Arguments -cne $arguments -or
+    [string]$recordedXml.Task.Principals.Principal.UserId -cne $expectedSid -or
+    [string]$recordedXml.Task.Principals.Principal.LogonType -cne 'InteractiveToken'
   ) { throw 'registered interactive task does not match the immutable action/principal' }
   Start-ScheduledTask -TaskPath $taskPath -TaskName $taskName
   $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$payload.timeoutMs)

@@ -55,6 +55,14 @@ test('remote runtime verification retries transient failures but never accepts a
   assert.equal(calls, 3);
 });
 
+test('remote failures preserve stdout diagnostics when PowerShell writes no stderr', async () => {
+  await assert.rejects(runRemoteJsonWithRetries(async () => ({
+    exitCode: 1,
+    stdout: 'readiness failure detail\n',
+    stderr: '',
+  }), 'worker readiness', { attempts: 1, delayMs: 0 }), /readiness failure detail/);
+});
+
 function quotePowerShell(value) {
   return `'${String(value).replaceAll("'", "''")}'`;
 }

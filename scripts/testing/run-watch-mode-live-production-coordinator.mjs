@@ -72,8 +72,12 @@ $controlHash = (Get-FileHash -LiteralPath $control -Algorithm SHA256).Hash.ToLow
 if ($controlHash -cne [string]$payload.controlScriptSha256) { throw 'interactive task control script hash mismatch' }
 $json = $payload.interactiveRequest | ConvertTo-Json -Depth 30 -Compress
 $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($json))
-& $control -PayloadBase64 $encoded
-if ($LASTEXITCODE -ne 0) { throw "interactive task control failed with exit $LASTEXITCODE" }
+$controlOutput = @(& $control -PayloadBase64 $encoded)
+# The control is a PowerShell script, not a native executable. A successful
+# script invocation does not set LASTEXITCODE, and comparing that null value to
+# zero falsely rejects the immutable readiness/terminal authorities it wrote.
+# ErrorActionPreference=Stop already propagates script failures.
+$controlOutput
 `;
 
 

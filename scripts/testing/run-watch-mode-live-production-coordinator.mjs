@@ -516,12 +516,37 @@ function runChildProcess(executable, args, {
     timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
-    child.stdin.end(input);
+    void (async () => {
+      try {
+        const bytes = Buffer.from(String(input), 'utf8');
+        for (let offset = 0; offset < bytes.length; offset += 16 * 1024) {
+          const chunk = bytes.subarray(offset, Math.min(offset + 16 * 1024, bytes.length));
+          if (!child.stdin.write(chunk)) {
+            await new Promise((drain) => child.stdin.once('drain', drain));
+          }
+        }
+        child.stdin.end();
+      } catch (error) {
+        child.kill('SIGKILL');
+        finish(() => reject(error));
+      }
+    })();
   });
 }
 
+const REMOTE_POWERSHELL_STDIN_TERMINATOR = '__OMNI_REMOTE_SCRIPT_END_V1__';
 const REMOTE_POWERSHELL_STDIN_BOOTSTRAP = Buffer.from(
-  '$source = [Console]::In.ReadToEnd(); & ([ScriptBlock]::Create($source))',
+  [
+    '$chunks = [Text.StringBuilder]::new()',
+    'while ($true) {',
+    '  $line = [Console]::In.ReadLine()',
+    "  if ($null -eq $line) { throw 'stdin ended before the remote script terminator' }",
+    `  if ($line -ceq '${REMOTE_POWERSHELL_STDIN_TERMINATOR}') { break }`,
+    '  [void]$chunks.Append($line)',
+    '}',
+    '$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($chunks.ToString()))',
+    '& ([ScriptBlock]::Create($source))',
+  ].join('; '),
   'utf16le',
 ).toString('base64');
 
@@ -530,19 +555,22 @@ export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS = 5 * 60 * 1000
 
 export function remotePowerShellInvocation(body, payload) {
   const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
+  const source = [
+    "$ErrorActionPreference = 'Stop'",
+    '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)',
+    '$OutputEncoding = [Console]::OutputEncoding',
+    `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
+    '$payload = $payloadJson | ConvertFrom-Json',
+    body,
+  ].join('\n');
+  const encodedSource = Buffer.from(source, 'utf8').toString('base64');
+  const framedSource = encodedSource.match(/.{1,4096}/g) ?? [];
   return {
     args: [
       'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-EncodedCommand', REMOTE_POWERSHELL_STDIN_BOOTSTRAP,
     ],
-    input: [
-      "$ErrorActionPreference = 'Stop'",
-      '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)',
-      '$OutputEncoding = [Console]::OutputEncoding',
-      `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
-      '$payload = $payloadJson | ConvertFrom-Json',
-      body,
-    ].join('\n'),
+    input: `${framedSource.join('\n')}\n${REMOTE_POWERSHELL_STDIN_TERMINATOR}\n`,
   };
 }
 

@@ -30,6 +30,11 @@ param(
   # from canonical fixture hashes, local PCM, cue receipts, and playback logs.
   [switch]$StrictPaidAuthority,
   [string]$MatrixCellId = "",
+  # A production shard has already validated this signed, zero-provider
+  # readiness receipt before claiming its lease. Virtual-driver cells consume
+  # the exact installed/package authority from it so the limited Session-1
+  # task never repeats administrator-only DriverStore enumeration.
+  [string]$WorkerReadinessReceiptPath = "",
   # Re-run only the paid physical-output STT/comparison against artifacts from
   # an already completed live session. This never starts Desktop, Bridge, media
   # playback, or a new Watch provider session.
@@ -647,6 +652,67 @@ function Convert-DriverProbeToJsonFile {
     $DriverProbe.result | ConvertTo-Json -Depth 8 | Set-Content -Path $TargetPath -Encoding UTF8
   } else {
     [pscustomobject]@{ error = $DriverProbe.error } | ConvertTo-Json -Depth 8 | Set-Content -Path $TargetPath -Encoding UTF8
+  }
+}
+
+function Get-SignedWorkerReadinessDriverProbe {
+  param([string]$ReceiptPath)
+  if ([string]::IsNullOrWhiteSpace($ReceiptPath)) {
+    throw 'strict virtual-driver cell requires WorkerReadinessReceiptPath'
+  }
+  $resolved = (Resolve-Path -LiteralPath $ReceiptPath -ErrorAction Stop).Path
+  $receipt = Get-Content -LiteralPath $resolved -Raw -Encoding UTF8 | ConvertFrom-Json
+  if (
+    [string]$receipt.artifactKind -ne 'watch-mode-production-worker-zero-provider-readiness' -or
+    [string]$receipt.executionId -ne [string]$env:OMNI_SHARD_EXECUTION_ID -or
+    [string]$receipt.workerId -ne [string]$env:OMNI_SHARD_WORKER_ID -or
+    [string]$receipt.vmIdentityDigest -ne [string]$env:OMNI_SHARD_VM_IDENTITY_DIGEST -or
+    [int]$receipt.providerCalls -ne 0 -or
+    $receipt.driverRequired -ne $true -or
+    $null -eq $receipt.driver
+  ) { throw 'worker readiness receipt identity is invalid for this strict virtual-driver cell' }
+  $driver = $receipt.driver
+  $packageRoot = Join-Path $workspaceRoot 'drivers\windows-virtual-mic\package'
+  $packageSys = Join-Path $packageRoot 'omni-virtual-speaker.sys'
+  $packageCat = Join-Path $packageRoot 'omni-virtual-speaker.cat'
+  $packageInf = Join-Path $packageRoot 'omni-virtual-speaker.inf'
+  $service = Get-CimInstance Win32_SystemDriver -Filter "Name='omni_translate_virtual_speaker'" -ErrorAction Stop
+  $installedPath = [string]$service.PathName
+  $installedPath = $installedPath.Trim().Trim('"')
+  if ($installedPath.StartsWith('\??\', [StringComparison]::Ordinal)) { $installedPath = $installedPath.Substring(4) }
+  if ($installedPath.StartsWith('\SystemRoot\', [StringComparison]::OrdinalIgnoreCase)) {
+    $installedPath = Join-Path $env:SystemRoot $installedPath.Substring(12)
+  }
+  $installedPath = [Environment]::ExpandEnvironmentVariables($installedPath)
+  foreach ($required in @($packageSys, $packageCat, $packageInf, $installedPath)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "readiness-bound driver file is missing: $required" }
+  }
+  $sysHash = (Get-FileHash -LiteralPath $packageSys -Algorithm SHA256).Hash.ToLowerInvariant()
+  $catHash = (Get-FileHash -LiteralPath $packageCat -Algorithm SHA256).Hash.ToLowerInvariant()
+  $infHash = (Get-FileHash -LiteralPath $packageInf -Algorithm SHA256).Hash.ToLowerInvariant()
+  $installedHash = (Get-FileHash -LiteralPath $installedPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  if (
+    [string]$service.State -ne 'Running' -or
+    $sysHash -ne [string]$driver.packageSysSha256 -or
+    $catHash -ne [string]$driver.packageCatSha256 -or
+    $infHash -ne [string]$driver.packageInfSha256 -or
+    $installedHash -ne [string]$driver.installedSysSha256 -or
+    $installedHash -ne $sysHash
+  ) { throw 'current limited-session driver identity no longer matches signed worker readiness' }
+  $endpoint = Get-OmniVirtualSpeakerEndpoint 'Omni Translate Virtual Speaker'
+  if (-not $endpoint) { throw 'signed worker readiness driver endpoint is no longer available' }
+  $endpointId = [string]$endpoint.InstanceId
+  if ($endpointId.StartsWith('SWD\MMDEVAPI\', [StringComparison]::OrdinalIgnoreCase)) {
+    $endpointId = $endpointId.Substring('SWD\MMDEVAPI\'.Length)
+  }
+  if ([string]::IsNullOrWhiteSpace($endpointId) -or -not $endpointId.StartsWith('{0.0.0.', [StringComparison]::OrdinalIgnoreCase)) {
+    throw 'signed worker readiness virtual render endpoint has no canonical WASAPI id'
+  }
+  return [pscustomobject]@{
+    InstalledDriverAuthority = $driver
+    WasapiEndpointId = $endpointId
+    readinessReceiptPath = $resolved
+    providerCalls = 0
   }
 }
 
@@ -4643,12 +4709,18 @@ try {
     } -ContinueOnError
   }
   if (Test-UsesVirtualDriverBackend $FeedbackLoopPrevention) {
-    $driverProbeArguments = Get-WatchModeDriverProbeArguments `
-      -WorkspaceRoot $workspaceRoot `
-      -RequestedDevconPath $DevconPath
-    $driverProbe = Invoke-Step "driver probe" {
-      & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") @driverProbeArguments
-    } -ContinueOnError
+    if ($StrictPaidAuthority) {
+      $driverProbe = Invoke-Step "driver probe from signed worker readiness" {
+        Get-SignedWorkerReadinessDriverProbe $WorkerReadinessReceiptPath
+      } -ContinueOnError
+    } else {
+      $driverProbeArguments = Get-WatchModeDriverProbeArguments `
+        -WorkspaceRoot $workspaceRoot `
+        -RequestedDevconPath $DevconPath
+      $driverProbe = Invoke-Step "driver probe" {
+        & (Join-Path $workspaceRoot "scripts/installer/test-development-driver.ps1") @driverProbeArguments
+      } -ContinueOnError
+    }
 
     if (-not $driverProbe.ok -and -not $SkipDriverRepair -and $AllowDriverRepair) {
       $steps += Invoke-Step "repair driver with explicit elevation" { Invoke-ElevatedDriverReinstall $outputDir } -ContinueOnError

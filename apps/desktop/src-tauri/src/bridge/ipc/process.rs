@@ -56,6 +56,24 @@ pub(crate) fn bridge_cli_release_candidates() -> [PathBuf; 2] {
     ]
 }
 
+fn installed_bridge_cli_candidates(exe_dir: &Path) -> [PathBuf; 4] {
+    [
+        exe_dir.join("omni-bridge-service.exe"),
+        exe_dir
+            .join("resources")
+            .join("bridge-service-native")
+            .join("omni-bridge-service.exe"),
+        exe_dir
+            .join("bridge-service-native")
+            .join("omni-bridge-service.exe"),
+        exe_dir
+            .parent()
+            .unwrap_or(exe_dir)
+            .join("bridge-service-native")
+            .join("omni-bridge-service.exe"),
+    ]
+}
+
 pub(crate) fn bridge_cli_path() -> PathBuf {
     let [preferred_path, legacy_path] = bridge_cli_release_candidates();
     if preferred_path.exists() {
@@ -67,20 +85,7 @@ pub(crate) fn bridge_cli_path() -> PathBuf {
 
     if let Ok(exe_path) = std::env::current_exe() {
         if let Some(exe_dir) = exe_path.parent() {
-            for candidate in &[
-                exe_dir
-                    .join("resources")
-                    .join("bridge-service-native")
-                    .join("omni-bridge-service.exe"),
-                exe_dir
-                    .join("bridge-service-native")
-                    .join("omni-bridge-service.exe"),
-                exe_dir
-                    .parent()
-                    .unwrap_or(exe_dir)
-                    .join("bridge-service-native")
-                    .join("omni-bridge-service.exe"),
-            ] {
+            for candidate in &installed_bridge_cli_candidates(exe_dir) {
                 if candidate.exists() {
                     return candidate.clone();
                 }

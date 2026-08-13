@@ -411,19 +411,25 @@ test('remote PowerShell streams large scripts through SSH stdin instead of the W
     },
   );
   assert.ok(invocation.input.length > 32_768);
-  assert.ok(invocation.args.join(' ').length < 1_024);
+  assert.ok(invocation.args.join(' ').length < 4_096);
   assert.equal(invocation.args.includes('-EncodedCommand'), true);
   assert.equal(invocation.args.join(' ').includes(marker), false);
-  const payloadMatch = invocation.input.match(/FromBase64String\('([^']+)'\)/);
+  const framedLines = invocation.input.trimEnd().split('\n');
+  assert.equal(framedLines.at(-1), '__OMNI_REMOTE_SCRIPT_END_V1__');
+  assert.ok(framedLines.slice(0, -1).every((line) => line.length <= 4096));
+  const streamedSource = Buffer.from(framedLines.slice(0, -1).join(''), 'base64').toString('utf8');
+  const payloadMatch = streamedSource.match(/FromBase64String\('([^']+)'\)/);
   assert.ok(payloadMatch);
   const streamedPayload = JSON.parse(Buffer.from(payloadMatch[1], 'base64').toString('utf8'));
   assert.equal(streamedPayload.entries.length, 256);
   assert.equal(streamedPayload.entries[0].sha256, marker);
   assert.equal(streamedPayload.localizedName, '扬声器 (High Definition Audio Device)');
-  assert.match(invocation.input, /Console\]::OutputEncoding = \[Text\.UTF8Encoding\]::new\(\$false\)/);
-  assert.match(invocation.input, /\$OutputEncoding = \[Console\]::OutputEncoding/);
+  assert.match(streamedSource, /Console\]::OutputEncoding = \[Text\.UTF8Encoding\]::new\(\$false\)/);
+  assert.match(streamedSource, /\$OutputEncoding = \[Console\]::OutputEncoding/);
   const bootstrap = Buffer.from(invocation.args.at(-1), 'base64').toString('utf16le');
-  assert.match(bootstrap, /\[Console\]::In\.ReadToEnd\(\)/);
+  assert.match(bootstrap, /\[Console\]::In\.ReadLine\(\)/);
+  assert.match(bootstrap, /__OMNI_REMOTE_SCRIPT_END_V1__/);
+  assert.doesNotMatch(bootstrap, /ReadToEnd/);
   assert.match(bootstrap, /ScriptBlock/);
 });
 

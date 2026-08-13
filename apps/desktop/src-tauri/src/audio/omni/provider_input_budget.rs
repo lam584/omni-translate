@@ -21,6 +21,8 @@ const PCM_PATH_ENV: &str = "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH";
 const MODEL_ENV: &str = "OMNI_WATCH_MODE_MODEL_ID";
 const PROTOCOL_ENV: &str = "OMNI_WATCH_MODE_REALTIME_PROTOCOL";
 const STRICT_PAID_AUTHORITY_ENV: &str = "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY";
+const INCIDENT_REPLAY_AUTHORITY_ENV: &str = "OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY";
+const INCIDENT_ID_ENV: &str = "OMNI_WATCH_MODE_INCIDENT_ID";
 const EXPECTED_PROVIDER_ID_ENV: &str = "OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID";
 const EXPECTED_TEMPLATE_ID_ENV: &str = "OMNI_WATCH_MODE_EXPECTED_PROVIDER_TEMPLATE_ID";
 const EXPECTED_PROVIDER_KIND_ENV: &str = "OMNI_WATCH_MODE_EXPECTED_PROVIDER_KIND";
@@ -37,6 +39,9 @@ const STRICT_OMNI_MODEL: &str = "qwen3.5-omni-flash-realtime";
 const STRICT_OMNI_PROTOCOL: &str = "dashscope-omni";
 const STRICT_LIVETRANSLATE_MODEL: &str = "qwen3.5-livetranslate-flash-realtime";
 const STRICT_LIVETRANSLATE_PROTOCOL: &str = "dashscope-livetranslate";
+const INCIDENT_PLUS_MODEL: &str = "qwen3.5-omni-plus-realtime";
+const INCIDENT_PLUS_PROTOCOL: &str = "dashscope-omni";
+const INCIDENT_PLUS_ID: &str = "watch-mode-loss-incident-plus-v1";
 
 #[derive(Debug)]
 pub(super) struct ProviderInputBudget {
@@ -52,6 +57,8 @@ struct EnabledProviderInputBudget {
     run_marker: String,
     session_generation: u64,
     strict_paid_authority: bool,
+    incident_replay_authority: bool,
+    incident_id: Option<String>,
     provider_id: String,
     template_id: String,
     provider_kind: String,
@@ -122,12 +129,27 @@ impl ProviderInputBudget {
                 ))
             }
         };
+        let incident_replay_authority = match read_env(INCIDENT_REPLAY_AUTHORITY_ENV) {
+            None => false,
+            Some(value) if value.trim() == "1" => true,
+            Some(_) => {
+                return Err(format!(
+                    "{INCIDENT_REPLAY_AUTHORITY_ENV} must be exactly 1 when present"
+                ))
+            }
+        };
+        if strict_paid_authority && incident_replay_authority {
+            return Err(
+                "strict paid and incident replay provider authorities are mutually exclusive".to_string(),
+            );
+        }
         // CELL_ID/AUTOSTART/RUN_MARKER are shared by ordinary Watch Mode runs.
         // Only budget-specific variables opt into this production send gate;
         // once any is present, the complete binding is mandatory. The paid
         // authority sentinel is independent: it must never be bypassable by
         // removing every budget-specific variable.
         if !strict_paid_authority
+            && !incident_replay_authority
             && max_samples.is_none()
             && ledger_path.is_none()
             && lease_id.is_none()
@@ -192,7 +214,18 @@ impl ProviderInputBudget {
                 "strict provider input budget requires a provider baseUrl with a hostname"
                     .to_string()
             })?;
-        if strict_paid_authority {
+        let incident_id = if incident_replay_authority {
+            let incident_id = required(INCIDENT_ID_ENV, read_env(INCIDENT_ID_ENV))?;
+            if incident_id != INCIDENT_PLUS_ID {
+                return Err(format!(
+                    "incident replay provider authority requires {INCIDENT_ID_ENV}={INCIDENT_PLUS_ID}"
+                ));
+            }
+            Some(incident_id)
+        } else {
+            None
+        };
+        if strict_paid_authority || incident_replay_authority {
             if session_generation == 0 {
                 return Err(
                     "strict paid provider authority requires a non-zero session generation"
@@ -221,14 +254,21 @@ impl ProviderInputBudget {
                 EXPECTED_CREDENTIAL_REFERENCE_ENV,
                 read_env(EXPECTED_CREDENTIAL_REFERENCE_ENV),
             )?;
-            let approved_pair = matches!(
-                (expected_model.as_str(), expected_protocol.as_str()),
-                (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL)
-                    | (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
-            );
+            let approved_pair = if strict_paid_authority {
+                matches!(
+                    (expected_model.as_str(), expected_protocol.as_str()),
+                    (STRICT_OMNI_MODEL, STRICT_OMNI_PROTOCOL)
+                        | (STRICT_LIVETRANSLATE_MODEL, STRICT_LIVETRANSLATE_PROTOCOL)
+                )
+            } else {
+                matches!(
+                    (expected_model.as_str(), expected_protocol.as_str()),
+                    (INCIDENT_PLUS_MODEL, INCIDENT_PLUS_PROTOCOL)
+                )
+            };
             if !approved_pair {
                 return Err(format!(
-                    "strict paid provider authority rejected model/protocol pair {expected_model}/{expected_protocol}"
+                    "provider authority rejected model/protocol pair {expected_model}/{expected_protocol}"
                 ));
             }
             for (label, actual, expected, fixed) in [
@@ -313,6 +353,8 @@ impl ProviderInputBudget {
                 run_marker,
                 session_generation,
                 strict_paid_authority,
+                incident_replay_authority,
+                incident_id,
                 provider_id: provider_id.to_string(),
                 template_id: template_id.to_string(),
                 provider_kind: provider_kind.to_string(),
@@ -348,7 +390,9 @@ impl ProviderInputBudget {
     pub(super) fn strict_paid_authority_enabled(&self) -> bool {
         self.enabled
             .as_ref()
-            .is_some_and(|budget| budget.strict_paid_authority)
+            .is_some_and(|budget| {
+                budget.strict_paid_authority || budget.incident_replay_authority
+            })
     }
 
     /// Persists the attempt before the WebSocket handshake starts. In strict
@@ -516,7 +560,7 @@ impl Drop for ProviderInputBudget {
 impl EnabledProviderInputBudget {
     fn record_initial_connect_attempt(&self) -> Result<(), String> {
         let current = self.initial_connect_attempts.load(Ordering::SeqCst);
-        if self.strict_paid_authority && current >= 1 {
+        if (self.strict_paid_authority || self.incident_replay_authority) && current >= 1 {
             self.set_terminal_reason("initial-connect-retry-forbidden");
             self.write_final_snapshot(false)?;
             return Err(
@@ -563,7 +607,7 @@ impl EnabledProviderInputBudget {
     }
 
     fn authorize_reconnect_before_connect(&self, trigger: &str) -> Result<(), String> {
-        if !self.strict_paid_authority {
+        if !self.strict_paid_authority && !self.incident_replay_authority {
             return Ok(());
         }
         let trigger = trigger.trim();
@@ -637,6 +681,8 @@ impl EnabledProviderInputBudget {
             "sessionGeneration": self.session_generation,
             "direction": "inbound",
             "strictPaidAuthority": self.strict_paid_authority,
+            "incidentReplayAuthority": self.incident_replay_authority,
+            "incidentId": self.incident_id,
             "providerId": self.provider_id,
             "templateId": self.template_id,
             "providerKind": self.provider_kind,
@@ -690,6 +736,8 @@ impl EnabledProviderInputBudget {
             "sessionGeneration": self.session_generation,
             "direction": "inbound",
             "strictPaidAuthority": self.strict_paid_authority,
+            "incidentReplayAuthority": self.incident_replay_authority,
+            "incidentId": self.incident_id,
             "providerId": self.provider_id,
             "templateId": self.template_id,
             "providerKind": self.provider_kind,
@@ -822,6 +870,30 @@ mod tests {
             STRICT_OMNI_PROTOCOL,
             |name| environment.get(name).cloned(),
         )
+    }
+
+    fn incident_environment(path: &Path, max_samples: &str) -> HashMap<String, String> {
+        let mut environment = enabled_environment(path, max_samples);
+        environment.remove(STRICT_PAID_AUTHORITY_ENV);
+        environment.insert(
+            INCIDENT_REPLAY_AUTHORITY_ENV.to_string(),
+            "1".to_string(),
+        );
+        environment.insert(INCIDENT_ID_ENV.to_string(), INCIDENT_PLUS_ID.to_string());
+        environment.insert(MODEL_ENV.to_string(), INCIDENT_PLUS_MODEL.to_string());
+        environment.insert(
+            PROTOCOL_ENV.to_string(),
+            INCIDENT_PLUS_PROTOCOL.to_string(),
+        );
+        environment
+    }
+
+    fn incident_provider() -> ProviderDraftInput {
+        let mut provider = provider(STRICT_PROVIDER_ID);
+        provider.model = INCIDENT_PLUS_MODEL.to_string();
+        provider.template_realtime_protocol = Some(INCIDENT_PLUS_PROTOCOL.to_string());
+        provider.realtime_protocol = Some(INCIDENT_PLUS_PROTOCOL.to_string());
+        provider
     }
 
     fn final_record(path: &Path) -> Value {
@@ -1046,6 +1118,56 @@ mod tests {
             .expect_err("strict sentinel without budget authority must fail");
 
         assert!(error.contains(MAX_SAMPLES_ENV), "{error}");
+    }
+
+    #[test]
+    fn incident_plus_authority_accepts_only_the_signed_plus_omni_pair() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("incident-ledger.json");
+        let environment = incident_environment(&path, "10");
+        let budget = budget_from_map_with_provider(&environment, &incident_provider())
+            .expect("incident authority accepts Plus with dashscope-omni");
+
+        budget
+            .record_initial_connect_attempt()
+            .expect("one incident initial connection is authorized");
+        drop(budget);
+
+        let ledger = final_record(&path);
+        assert_eq!(ledger["strictPaidAuthority"], false);
+        assert_eq!(ledger["incidentReplayAuthority"], true);
+        assert_eq!(ledger["incidentId"], INCIDENT_PLUS_ID);
+        assert_eq!(ledger["model"], INCIDENT_PLUS_MODEL);
+        assert_eq!(ledger["protocol"], INCIDENT_PLUS_PROTOCOL);
+    }
+
+    #[test]
+    fn incident_plus_authority_rejects_other_models_before_ledger_creation() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("incident-rejected.json");
+        let mut environment = incident_environment(&path, "10");
+        environment.insert(MODEL_ENV.to_string(), STRICT_OMNI_MODEL.to_string());
+        let provider = provider(STRICT_PROVIDER_ID);
+
+        let error = budget_from_map_with_provider(&environment, &provider)
+            .expect_err("incident authority must reject a strict-matrix model");
+
+        assert!(error.contains("rejected model/protocol pair"), "{error}");
+        assert!(!path.exists(), "incident model rejection must precede ledger creation");
+    }
+
+    #[test]
+    fn paid_authority_modes_cannot_be_combined() {
+        let directory = tempdir().expect("tempdir");
+        let path = directory.path().join("combined-authority.json");
+        let mut environment = incident_environment(&path, "10");
+        environment.insert(STRICT_PAID_AUTHORITY_ENV.to_string(), "1".to_string());
+
+        let error = budget_from_map_with_provider(&environment, &incident_provider())
+            .expect_err("combined paid authority modes must fail closed");
+
+        assert!(error.contains("mutually exclusive"), "{error}");
+        assert!(!path.exists(), "combined authority rejection must precede ledger creation");
     }
 
     #[test]

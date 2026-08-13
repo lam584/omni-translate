@@ -208,43 +208,54 @@ test('native Bridge queued and started statuses count as physical speech evidenc
   }
 });
 
-test('strict paid source authority uses canonical hashes, fixture texts, and injector PCM without remote STT', { skip: !isWindows }, () => {
+test('paid source authorities use canonical hashes, fixture texts, and injector PCM without remote STT', { skip: !isWindows }, () => {
   const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-canonical-source-'));
   const referencePcmPath = path.join(outputDirectory, 'source-media-reference-16k-mono.pcm');
   fs.writeFileSync(referencePcmPath, buildCanonicalReferencePcm({ workspaceRoot: path.resolve('.') }));
   try {
     const canonicalMedia = path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav');
-    const command = `${extractedStrictPaidSourceAuthorityFunctions()} ` +
-      `$workspaceRoot = ${quotePowerShell(path.resolve('.'))}; ` +
-      `$StrictPaidAuthority = $true; ` +
-      `function Get-PhysicalOutputSttApiKey { throw 'remote credential path must not execute' }; ` +
-      `function Build-OmniRealtimeDiagnostic { throw 'remote diagnostic path must not execute' }; ` +
-      `Get-SourceMediaReferenceTranscript ${quotePowerShell(outputDirectory)} ${quotePowerShell(canonicalMedia)} | ConvertTo-Json -Depth 4 -Compress`;
-    const result = runPowerShell(['-Command', command]);
-    assert.equal(result.status, 0, result.stderr || result.stdout);
-    const authority = JSON.parse(result.stdout.trim());
-    assert.equal(authority.passed, true);
-    assert.equal(authority.authorityMode, 'canonical-fixture-local-v2');
-    assert.equal(authority.remoteProviderCalls, 0);
-    assert.equal(authority.externalAudioSeconds, 0);
-    assert.equal(authority.mediaPath, 'scripts/testing/fixtures/watch-mode-en-original.wav');
-    assert.equal(authority.referencePcm.path, 'source-media-reference-16k-mono.pcm');
-    assert.equal(authority.mediaSha256, 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f');
-    assert.equal(authority.referencePcm.samples, 2_013_045);
-    assert.equal(typeof authority.source, 'string', JSON.stringify(authority.source));
-    assert.equal(typeof authority.translation, 'string', JSON.stringify(authority.translation));
-    assert.equal(
-      authority.source.replaceAll('\r\n', '\n'),
-      fs.readFileSync(path.resolve('scripts/testing/fixtures/watch-mode-en-original.txt'), 'utf8').replaceAll('\r\n', '\n'),
-    );
-    assert.equal(
-      authority.translation.replaceAll('\r\n', '\n'),
-      fs.readFileSync(path.resolve('scripts/testing/fixtures/watch-mode-en-original.zh-CN.txt'), 'utf8').replaceAll('\r\n', '\n'),
-    );
+    for (const authorityVariables of [
+      '$StrictPaidAuthority = $true; $IncidentReplayAuthority = $false;',
+      '$StrictPaidAuthority = $false; $IncidentReplayAuthority = $true;',
+    ]) {
+      const command = `${extractedStrictPaidSourceAuthorityFunctions()} ` +
+        `$workspaceRoot = ${quotePowerShell(path.resolve('.'))}; ` +
+        `${authorityVariables} ` +
+        `function Get-PhysicalOutputSttApiKey { throw 'remote credential path must not execute' }; ` +
+        `function Build-OmniRealtimeDiagnostic { throw 'remote diagnostic path must not execute' }; ` +
+        `Get-SourceMediaReferenceTranscript ${quotePowerShell(outputDirectory)} ${quotePowerShell(canonicalMedia)} | ConvertTo-Json -Depth 4 -Compress`;
+      const result = runPowerShell(['-Command', command]);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      const authority = JSON.parse(result.stdout.trim());
+      assert.equal(authority.passed, true);
+      assert.equal(authority.authorityMode, 'canonical-fixture-local-v2');
+      assert.equal(authority.remoteProviderCalls, 0);
+      assert.equal(authority.externalAudioSeconds, 0);
+      assert.equal(authority.mediaPath, 'scripts/testing/fixtures/watch-mode-en-original.wav');
+      assert.equal(authority.referencePcm.path, 'source-media-reference-16k-mono.pcm');
+      assert.equal(authority.mediaSha256, 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f');
+      assert.equal(authority.referencePcm.samples, 2_013_045);
+      assert.equal(typeof authority.source, 'string', JSON.stringify(authority.source));
+      assert.equal(typeof authority.translation, 'string', JSON.stringify(authority.translation));
+      assert.equal(
+        authority.source.replaceAll('\r\n', '\n'),
+        fs.readFileSync(path.resolve('scripts/testing/fixtures/watch-mode-en-original.txt'), 'utf8').replaceAll('\r\n', '\n'),
+      );
+      assert.equal(
+        authority.translation.replaceAll('\r\n', '\n'),
+        fs.readFileSync(path.resolve('scripts/testing/fixtures/watch-mode-en-original.zh-CN.txt'), 'utf8').replaceAll('\r\n', '\n'),
+      );
+    }
 
     const forged = fs.readFileSync(referencePcmPath);
     forged.writeInt16LE(forged.readInt16LE(0) ^ 1, 0);
     fs.writeFileSync(referencePcmPath, forged);
+    const command = `${extractedStrictPaidSourceAuthorityFunctions()} ` +
+      `$workspaceRoot = ${quotePowerShell(path.resolve('.'))}; ` +
+      `$StrictPaidAuthority = $false; $IncidentReplayAuthority = $true; ` +
+      `function Get-PhysicalOutputSttApiKey { throw 'remote credential path must not execute' }; ` +
+      `function Build-OmniRealtimeDiagnostic { throw 'remote diagnostic path must not execute' }; ` +
+      `Get-SourceMediaReferenceTranscript ${quotePowerShell(outputDirectory)} ${quotePowerShell(canonicalMedia)} | ConvertTo-Json -Depth 4 -Compress`;
     const rejected = runPowerShell(['-Command', command]);
     assert.equal(rejected.status, 0, rejected.stderr || rejected.stdout);
     const rejectedAuthority = JSON.parse(rejected.stdout.trim());

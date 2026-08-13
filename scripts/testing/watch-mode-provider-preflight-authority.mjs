@@ -65,6 +65,7 @@ function validateObservedAuthorization(value, expected, label, issues) {
     'externalAudioSamples', 'leaseReservations', 'grantGeneratedAt',
     'reservationIssuedAts', 'consumptionClaim', 'tokenBudget',
   ];
+  if (Object.hasOwn(expected, 'incidentId')) exactFields.push('incidentId');
   for (const field of exactFields) {
     if (!sameCanonical(observed[field], expected[field])) {
       issues.push(`${label} ${field} does not match the signed authorization`);
@@ -488,9 +489,12 @@ export function validateProviderPreflightRawAuthority(sourceRoot, {
   const checkedAt = evidenceTimestampInterval(probe?.checkedAt);
   const connectCompletedAt = Date.parse(String(probe?.providerConnectCompletedAt ?? ''));
   const emitterCompletedAt = Date.parse(String(emitter?.completedAt ?? ''));
+  const expectedReservationCount = expectedAuthorization
+    ? (expectedAuthorization.leaseReservationDigests?.length ?? 0)
+    : 8;
   if (expectedAuthorization && (
     !Number.isFinite(grantAt)
-    || reservationTimes.length !== 8
+    || reservationTimes.length !== expectedReservationCount
     || reservationTimes.some((value) => !Number.isFinite(value) || value <= grantAt)
     || !Number.isFinite(claimAt)
     || claimAt <= Math.max(...reservationTimes)

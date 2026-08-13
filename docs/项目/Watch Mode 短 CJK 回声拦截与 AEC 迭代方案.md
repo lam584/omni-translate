@@ -417,3 +417,29 @@ npm run test:watch-mode-report
 7. 根据真实数据决定是否增加播放队列调度策略。
 
 核心原则是：**AEC 负责消除自有音频，连续性模型负责保护真实输入，文本门控只负责拦截剩余的高置信回声。**
+
+## 15. 2026-08-14 丢失事故收尾（当前实现依据）
+
+本节补充归档方案之后实际发现的事故与现行约束；若与前文历史设计冲突，以本节和真实链路自动化测试文档为准。
+
+### 15.1 三条已经隔离的根因
+
+1. **文本回声误抑制。** 原始 Plus 会话曾把非空 ASR final 标为 `recent-output-echo`、`echo-chain-fragment` 或 `short-cjk-output-echo`，从而没有创建对应 response/cue。当前 manual response gate 只拒绝空文本、重复 completed、旧 session/response owner 或已停止会话；播放进行中和播放结束后四秒内的非空合法 final 仍必须恰好创建一次 response，并允许 cue 审批、译文发布和译音链路继续执行。文本相似度及上述历史原因码只能出现在诊断中，不能作为删除 ASR、字幕、译文或译音的条件。
+2. **Native 译音队列误伤长流。** 5 秒实时预算只在一个 stream 的 `Start` 入队时判断。已经接纳的同一 stream 后续一秒批次可以跨越整段语音时长，不会因为累计长度被当作陈旧 Play 丢弃；`Abort` 会清除尚未播放的尾段并拒绝晚到 chunk/End。仍允许淘汰真正过期的独立 `Play`，但诊断必须写出 `cueId`、`predictedStartMs`、`observedQueueAgeMs` 和原因，不能静默丢失。
+3. **播放回灌、AEC 与端点时钟。** `SpeakerRenderEvent` 的 render reference 以真实 WASAPI 提交位置和 `GetCurrentPadding` 建立，与 capture packet QPC age 一同形成 AEC3 的 48 kHz stereo 10 ms 对齐输入。AEC3 输出会继续交给 ASR；播放活跃、AEC 遥测、残余回声概率和时钟估计均不是文本/cue 删除条件。异常 reset、render/capture underrun 或端点时钟证据不足必须诊断并使 AEC 证据失败，而不是“吞掉内容后通过”。
+
+### 15.2 回归与诊断优先级
+
+脱敏 fixture `watch-2026-08-09-echo-suppression-incident-replay.json` 重放十四个历史状态形状；每个非空 final 都断言一次且仅一次 `response.create`、已提交 cue/译文，以及没有历史文本回声原因或 native 队列故障。
+
+发生新的丢失或复述时，按下面顺序查看报告和日志，而不是先放宽阈值：
+
+1. ASR final 的文本是否非空、session/owner 是否当前、manual response gate 是否只出现允许的拒绝原因；随后核对 `response.create`、cue approval、`discard_uncommitted_subtitle_cue` 和最终翻译发布。
+2. `native-playback-queue-expired`、`native-playback-queue-overflow`、`native-playback-stream-stale-dropped`、`native-playback-queue-stale-dropped` 是否带有 cue ID、预测开始时间和实际排队年龄；再查看 stream Start/Chunk/End/Abort 与 Bridge 状态回执。
+3. AEC 层的 render/capture 格式、端点 padding、QPC age、reset 数、render/capture underrun、`maxAsrDeletedChunks` 及 source/physical endpoint 身份。任何内容性“echo-suppressed”都应被视为回归信号，而非成功信号。
+
+### 15.3 证据边界
+
+`qwen3.5-omni-plus-realtime` 的三格事故专项是独立签名 authority：process-exclusion/default-speaker、virtual-driver/USB、echo-cancel/default-speaker 各 180 秒，合计最多 8,640,000 个 16 kHz 输入样本。它只证明这次事故在 Plus 与三种反馈治理路径中未复现，并且每次 text-only preflight 都绑定三份 lease、消费 claim、当前二进制哈希和原始预检证据。
+
+严格发布矩阵仍固定为两个 release 模型、六个 pairwise-live 格和两个 model-stability 格，共八格。Plus 专项不能替代、扩充或改变其 `LIVE_LLM_CELLS`、签名计划、预算或 verifier；只有 Plus 专项先全部通过，才允许开始固定八格矩阵。

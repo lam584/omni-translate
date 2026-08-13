@@ -2035,13 +2035,27 @@ pub(super) enum OmniPlaybackOverflowReason {
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum OmniPlaybackEnqueueOutcome {
     Queued,
-    QueuedAfterDroppingStale { dropped_cue_ids: Vec<String> },
+    QueuedAfterDroppingStale { dropped: Vec<OmniPlaybackStaleDrop> },
     Overflow {
         reason: OmniPlaybackOverflowReason,
-        dropped_cue_ids: Vec<String>,
+        dropped: Vec<OmniPlaybackStaleDrop>,
+        /// Projected start relative to the rejected command's enqueue time.
+        /// This is diagnostic data only; it never changes the realtime
+        /// admission decision.
+        projected_start_delay_ms: u64,
     },
     Terminated,
     Stopped,
+}
+
+/// A command that was still pending when its projected start crossed the
+/// realtime budget.  Keep the per-command projection with the diagnostic so a
+/// report can distinguish a real stale cue from a normal long stream.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct OmniPlaybackStaleDrop {
+    pub(super) cue_id: String,
+    pub(super) projected_start_delay_ms: u64,
+    pub(super) observed_queue_age_ms: u64,
 }
 
 struct OmniPlaybackQueueState {
@@ -2068,9 +2082,9 @@ pub(super) struct OmniPlaybackQueue {
 enum OmniPlaybackReceiveOutcome {
     Command {
         command: OmniPlaybackCommand,
-        dropped_cue_ids: Vec<String>,
+        dropped: Vec<OmniPlaybackStaleDrop>,
     },
-    StaleDropped(Vec<String>),
+    StaleDropped(Vec<OmniPlaybackStaleDrop>),
     Timeout,
     Stopped,
 }
@@ -2114,12 +2128,17 @@ impl OmniPlaybackQueue {
         }
 
         let now = Instant::now();
-        let dropped_cue_ids = Self::drain_expired_pending(&mut state, now);
+        let dropped = Self::drain_expired_pending(&mut state, now);
         let projected_start = Self::projected_start(&state, now);
+        let projected_start_delay = projected_start.saturating_duration_since(command.queued_at());
+        let projected_start_delay_ms = projected_start_delay
+            .as_millis()
+            .min(u64::MAX as u128) as u64;
         if state.pending.len() >= self.inner.capacity {
             return OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::QueueFull,
-                dropped_cue_ids,
+                dropped,
+                projected_start_delay_ms,
             };
         }
         let requires_realtime_start = matches!(
@@ -2130,24 +2149,21 @@ impl OmniPlaybackQueue {
                     ..
                 }
         );
-        if requires_realtime_start
-            && omni_playback_queue_age_expired(
-                projected_start.saturating_duration_since(command.queued_at()),
-            )
-        {
+        if requires_realtime_start && omni_playback_queue_age_expired(projected_start_delay) {
             return OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
-                dropped_cue_ids,
+                dropped,
+                projected_start_delay_ms,
             };
         }
         state.pending.push_back(command);
         drop(state);
         self.inner.available.notify_one();
 
-        if dropped_cue_ids.is_empty() {
+        if dropped.is_empty() {
             OmniPlaybackEnqueueOutcome::Queued
         } else {
-            OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped_cue_ids }
+            OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped }
         }
     }
 
@@ -2195,23 +2211,32 @@ impl OmniPlaybackQueue {
     fn drain_expired_pending(
         state: &mut OmniPlaybackQueueState,
         now: Instant,
-    ) -> Vec<String> {
+    ) -> Vec<OmniPlaybackStaleDrop> {
         let mut projected_start = state.active_expected_end.unwrap_or(now).max(now);
         let mut retained = VecDeque::with_capacity(state.pending.len());
-        let mut dropped_cue_ids = Vec::new();
+        let mut dropped = Vec::new();
         for command in state.pending.drain(..) {
             let can_expire_independently = matches!(command, OmniPlaybackCommand::Play { .. });
-            if can_expire_independently && omni_playback_queue_age_expired(
-                projected_start.saturating_duration_since(command.queued_at()),
-            ) {
-                dropped_cue_ids.push(command.cue_id().to_string());
+            let projected_start_delay = projected_start
+                .saturating_duration_since(command.queued_at());
+            if can_expire_independently && omni_playback_queue_age_expired(projected_start_delay) {
+                dropped.push(OmniPlaybackStaleDrop {
+                    cue_id: command.cue_id().to_string(),
+                    projected_start_delay_ms: projected_start_delay
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                    observed_queue_age_ms: now
+                        .saturating_duration_since(command.queued_at())
+                        .as_millis()
+                        .min(u64::MAX as u128) as u64,
+                });
             } else {
                 projected_start += command.estimated_duration();
                 retained.push_back(command);
             }
         }
         state.pending = retained;
-        dropped_cue_ids
+        dropped
     }
 
     fn recv_timeout(&self, timeout: Duration) -> OmniPlaybackReceiveOutcome {
@@ -2225,17 +2250,17 @@ impl OmniPlaybackQueue {
             if state.stopped {
                 return OmniPlaybackReceiveOutcome::Stopped;
             }
-            let dropped_cue_ids = Self::drain_expired_pending(&mut state, Instant::now());
+            let dropped = Self::drain_expired_pending(&mut state, Instant::now());
             if let Some(command) = state.pending.pop_front() {
                 state.active_expected_end =
                     Some(Instant::now() + command.estimated_duration());
                 return OmniPlaybackReceiveOutcome::Command {
                     command,
-                    dropped_cue_ids,
+                    dropped,
                 };
             }
-            if !dropped_cue_ids.is_empty() {
-                return OmniPlaybackReceiveOutcome::StaleDropped(dropped_cue_ids);
+            if !dropped.is_empty() {
+                return OmniPlaybackReceiveOutcome::StaleDropped(dropped);
             }
 
             let remaining = deadline.saturating_duration_since(Instant::now());
@@ -2300,10 +2325,16 @@ impl Drop for OmniPlaybackActiveGuard<'_> {
 pub(super) fn record_native_playback_stale<R: tauri::Runtime>(
     app: &AppHandle<R>,
     store: &AudioStateStore,
-    cue_ids: &[String],
+    dropped: &[OmniPlaybackStaleDrop],
     reason: &str,
 ) {
-    for cue_id in cue_ids {
+    for stale in dropped {
+        let cue_id = &stale.cue_id;
+        let reason = format!(
+            "{reason} predictedStartMs={} observedQueueAgeMs={}",
+            stale.projected_start_delay_ms,
+            stale.observed_queue_age_ms,
+        );
         store.watch_session_report.record_session_issue(
             "output",
             "native-playback-queue-stale-dropped",
@@ -2870,18 +2901,18 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
     let audio_state = app.state::<AudioStateStore>(); let mut active_stream_instances = std::collections::HashMap::new();
     loop {
                 if playback_stop_requested.load(Ordering::Acquire) { break; }
-                let (cmd, dropped_cue_ids) = match playback_worker_queue
+                let (cmd, dropped) = match playback_worker_queue
                     .recv_timeout(Duration::from_millis(200))
                 {
                     OmniPlaybackReceiveOutcome::Command {
                         command,
-                        dropped_cue_ids,
-                    } => (command, dropped_cue_ids),
-                    OmniPlaybackReceiveOutcome::StaleDropped(dropped_cue_ids) => {
+                        dropped,
+                    } => (command, dropped),
+                    OmniPlaybackReceiveOutcome::StaleDropped(dropped) => {
                         record_native_playback_stale(
                             &app,
                             &audio_state,
-                            &dropped_cue_ids,
+                            &dropped,
                             "realtime-budget-before-start",
                         );
                         continue;
@@ -2892,7 +2923,7 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                 record_native_playback_stale(
                     &app,
                     &audio_state,
-                    &dropped_cue_ids,
+                    &dropped,
                     "realtime-budget-before-start",
                 );
                 let _active_guard = OmniPlaybackActiveGuard(&playback_worker_queue);
@@ -2922,13 +2953,13 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                         }
                         let queued_for = queued_at.elapsed();
                         if omni_playback_queue_age_expired(queued_for) {
+                            let queued_ms = queued_for.as_millis().min(u64::MAX as u128) as u64;
                             audio_state.watch_session_report.record_session_issue(
                                 "output",
                                 "native-playback-queue-expired",
                                 "warning",
                                 &format!(
-                                    "原生翻译语音排队 {} ms 后过期，已丢弃。",
-                                    queued_for.as_millis()
+                                    "原生翻译语音排队 {queued_ms} ms 后过期，已丢弃。cueId={cue_id} predictedStartMs={queued_ms} observedQueueAgeMs={queued_ms} reason=worker-start-expired"
                                 ),
                             );
                             let _ = diag_log(
@@ -2936,8 +2967,7 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                                 "omni",
                                 "warning",
                                 format!(
-                                    "[AUDIO] stale native playback dropped: cue_id={cue_id} queued_ms={}",
-                                    queued_for.as_millis()
+                                    "[AUDIO] stale native playback dropped: cue_id={cue_id} predicted_start_ms={queued_ms} observed_queue_age_ms={queued_ms} reason=worker-start-expired"
                                 ),
                             );
                             continue;
@@ -3469,13 +3499,14 @@ mod omni_playback_tests {
             queue.enqueue(queued_play("third")),
             OmniPlaybackEnqueueOutcome::Queued
         );
-        assert_eq!(
+        assert!(matches!(
             queue.enqueue(queued_play("fourth")),
             OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::QueueFull,
-                dropped_cue_ids: Vec::new(),
-            }
-        );
+                dropped,
+                projected_start_delay_ms,
+            } if dropped.is_empty() && projected_start_delay_ms > 0
+        ));
         assert_eq!(queue.pending_cue_ids(), ["first", "second", "third"]);
 
         let stop_requested = AtomicBool::new(false);
@@ -3660,12 +3691,14 @@ mod omni_playback_tests {
             *queued_at = Instant::now() - Duration::from_secs(6);
         }
 
-        assert_eq!(
+        assert!(matches!(
             queue.enqueue(queued_play("new")),
-            OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale {
-                dropped_cue_ids: vec!["expired".to_string()],
-            }
-        );
+            OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped }
+                if dropped.len() == 1
+                    && dropped[0].cue_id == "expired"
+                    && dropped[0].projected_start_delay_ms >= 6_000
+                    && dropped[0].observed_queue_age_ms >= 6_000
+        ));
         assert_eq!(queue.pending_cue_ids(), ["fresh", "new"]);
     }
 
@@ -3673,7 +3706,7 @@ mod omni_playback_tests {
     fn active_native_audio_can_fill_budget_without_being_interrupted() {
         let queue = OmniPlaybackQueue::new(2);
         assert_eq!(
-            queue.enqueue(queued_play_with_duration("active", Duration::from_secs(6))),
+            queue.enqueue(queued_play_with_duration("active", Duration::from_millis(6_100))),
             OmniPlaybackEnqueueOutcome::Queued
         );
         let OmniPlaybackReceiveOutcome::Command { command, .. } =
@@ -3683,13 +3716,14 @@ mod omni_playback_tests {
         };
         assert_eq!(command.cue_id(), "active");
 
-        assert_eq!(
+        assert!(matches!(
             queue.enqueue(queued_play("new")),
             OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
-                dropped_cue_ids: Vec::new(),
-            }
-        );
+                dropped,
+                projected_start_delay_ms,
+            } if dropped.is_empty() && projected_start_delay_ms >= 6_000
+        ));
         assert!(queue.pending_cue_ids().is_empty());
         queue.finish_active();
     }
@@ -3713,9 +3747,48 @@ mod omni_playback_tests {
 
         assert!(matches!(
             queue.recv_timeout(Duration::ZERO),
-            OmniPlaybackReceiveOutcome::StaleDropped(cue_ids)
-                if cue_ids == ["became-stale"]
+            OmniPlaybackReceiveOutcome::StaleDropped(dropped)
+                if dropped.len() == 1
+                    && dropped[0].cue_id == "became-stale"
+                    && dropped[0].projected_start_delay_ms >= 6_000
+                    && dropped[0].observed_queue_age_ms >= 6_000
         ));
         assert!(queue.pending_cue_ids().is_empty());
+    }
+
+    #[test]
+    fn stale_playback_diagnostic_binds_cue_and_queue_timing() {
+        use tauri::Manager;
+
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        store
+            .watch_session_report
+            .begin_or_reuse("test", "native-playback-stale-diagnostic");
+        record_native_playback_stale(
+            &handle,
+            &store,
+            &[OmniPlaybackStaleDrop {
+                cue_id: "cue-stale".to_string(),
+                projected_start_delay_ms: 5_432,
+                observed_queue_age_ms: 5_006,
+            }],
+            "realtime-budget-before-start",
+        );
+
+        let report = store.watch_session_report.snapshot().expect("watch report");
+        let issue = report
+            .issues
+            .iter()
+            .find(|issue| issue.code == "native-playback-queue-stale-dropped")
+            .expect("stale playback issue");
+        assert!(issue.message.contains("cueId=cue-stale"));
+        assert!(issue.message.contains("predictedStartMs=5432"));
+        assert!(issue.message.contains("observedQueueAgeMs=5006"));
+        assert!(issue.message.contains("reason=realtime-budget-before-start"));
     }
 }

@@ -22,6 +22,7 @@ use crate::audio::state::AudioStateStore;
 mod native_response;
 mod manual_response_gate;
 mod text_only_reconnect;
+mod echo_suppression_incident;
 
 type MockHandle = tauri::AppHandle<tauri::test::MockRuntime>;
 

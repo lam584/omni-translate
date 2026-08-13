@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "incidentId": "watch-2026-08-09-echo-suppression",
+  "sourceArtifact": "watch-session-report-qwen3.5-omni-plus-realtime-2026-08-09T15-38-20-743Z.json",
+  "provenance": "De-identified regression fixture. It preserves the order and the three historical text-gate state shapes without retaining customer audio, provider identifiers, or report text.",
+  "events": [
+    { "offsetMs": 28231, "itemId": "echo-item-01", "historicalReason": "recent-output-echo", "playbackContext": "active", "source": "新的句子一。", "translation": "translation one" },
+    { "offsetMs": 29104, "itemId": "echo-item-02", "historicalReason": "recent-output-echo", "playbackContext": "recent", "source": "新的句子二。", "translation": "translation two" },
+    { "offsetMs": 30588, "itemId": "echo-item-03", "historicalReason": "short-cjk-output-echo", "playbackContext": "active", "source": "继续。", "translation": "translation three" },
+    { "offsetMs": 31761, "itemId": "echo-item-04", "historicalReason": "echo-chain-fragment", "playbackContext": "recent", "source": "这是新内容。", "translation": "translation four" },
+    { "offsetMs": 50117, "itemId": "echo-item-05", "historicalReason": "recent-output-echo", "playbackContext": "active", "source": "不要丢失。", "translation": "translation five" },
+    { "offsetMs": 50982, "itemId": "echo-item-06", "historicalReason": "echo-chain-fragment", "playbackContext": "recent", "source": "短句也要保留。", "translation": "translation six" },
+    { "offsetMs": 52644, "itemId": "echo-item-07", "historicalReason": "short-cjk-output-echo", "playbackContext": "active", "source": "好。", "translation": "translation seven" },
+    { "offsetMs": 53426, "itemId": "echo-item-08", "historicalReason": "recent-output-echo", "playbackContext": "recent", "source": "下一段继续。", "translation": "translation eight" },
+    { "offsetMs": 82463, "itemId": "echo-item-09", "historicalReason": "echo-chain-fragment", "playbackContext": "active", "source": "播放时说话。", "translation": "translation nine" },
+    { "offsetMs": 83547, "itemId": "echo-item-10", "historicalReason": "short-cjk-output-echo", "playbackContext": "recent", "source": "谁？", "translation": "translation ten" },
+    { "offsetMs": 84795, "itemId": "echo-item-11", "historicalReason": "recent-output-echo", "playbackContext": "active", "source": "这是真实输入。", "translation": "translation eleven" },
+    { "offsetMs": 95166, "itemId": "echo-item-12", "historicalReason": "echo-chain-fragment", "playbackContext": "recent", "source": "仍然需要字幕。", "translation": "translation twelve" },
+    { "offsetMs": 97318, "itemId": "echo-item-13", "historicalReason": "short-cjk-output-echo", "playbackContext": "active", "source": "在。", "translation": "translation thirteen" },
+    { "offsetMs": 99783, "itemId": "echo-item-14", "historicalReason": "echo-chain-fragment", "playbackContext": "recent", "source": "最后一句保留。", "translation": "translation fourteen" }
+  ]
+}

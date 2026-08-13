@@ -354,6 +354,30 @@ Get-Process omni-desktop-shell,omni-bridge-service -ErrorAction SilentlyContinue
 - 报告不得再把内容型 `echo-suppressed` 作为终态。文本相似度可用于诊断，但 `recent-output-echo`、`short-cjk-output-echo`、`echo-chain-fragment` 和播放后时间窗不能参与最终输出决策。
 - 每条 translation frame 必须携带 cue id、创建时间、采样格式和预计时长；队列以预计开始播放时间执行 5 秒实时性预算，只淘汰尚未开始的最旧 cue，不中断当前播放。
 
+## 2026-08-14 Plus 丢失事故专项与收尾顺序
+
+原始 `qwen3.5-omni-plus-realtime` Watch Session 曾同时出现三类故障：历史文本回声原因码误拦截非空 final、单条 native `Play` 超过实时预算、以及播放回灌/AEC/端点时钟异常可能掩盖真实输入。当前回归基线是脱敏的十四事件 replay fixture；它覆盖 `recent-output-echo`、`echo-chain-fragment`、`short-cjk-output-echo` 三种历史状态形状。播放活跃或播放后四秒内的非空合法 final 都必须只触发一次 `response.create`，并保留已批准 cue、译文和后续播放链路。空文本、重复 completed、旧 response owner、旧 session 和已停止会话仍须拒绝。
+
+真实付费验收必须严格分两阶段，顺序不可交换：
+
+1. **Plus 事故专项。** 使用 `scripts/testing/run-watch-mode-incident-plus.mjs` 生成独立的 signed execution authority，产物位于 `artifacts/testing/watch-mode-incident-plus/<execution-id>/`。固定三格为 `qwen3.5-omni-plus-realtime` × process-exclusion/default-speaker、virtual-driver/USB、echo-cancel/default-speaker；前两格为第一波，AEC 格为第二波。每格 180 秒/2,880,000 个 16 kHz 样本，总计 540 秒/8,640,000 样本，辅助外部音频必须为零。专项有自己的三份 lease、text-only preflight grant/reservation/consumption claim、预算账本、manifest 和 verification receipt，绝不复用八格 release matrix 的任何授权或结果。
+2. **固定八格严格发布矩阵。** 仅当 Plus 三格均通过后，才启动 `npm run test:watch-mode-live:production-coordinator` 的原有两模型八格计划。不得把 Plus 加入、替换或缩减 `LIVE_LLM_CELLS`、`SHARD_MATRIX_CELL_COUNT = 8` 或严格 verifier。
+
+两阶段前均需从最终 clean commit 重建并重做本地 authority：AEC3 MSVC、WebRTC fixture/release 绑定、Desktop/Bridge/必要 driver/probe runtime、local-isolation authority，以及两台 VM 的 zero-provider readiness（设备 profile、进程排除/虚拟驱动能力、Bridge source、Interactive Session、凭据可见性）。旧 `E:\omni-paid-execution-f2541ac` 仅作为失败历史，不可覆盖、删除或混入新 execution。
+
+Plus 专项每格除既有报告层和 canonical source 严格内容校验外，还必须满足：非空 final 不出现上述三种历史文本原因；正常 stream 不出现 `native-playback-queue-expired`、`native-playback-queue-overflow` 或 `native-playback-stream-stale-dropped`；AEC 格须具有完整 AEC 诊断且没有异常 reset/underrun 或整段字幕/译文被吞掉。真正陈旧的独立 Play 可以拒绝，但报告必须包含 cue ID、预测开始时间和明确原因。
+
+任一零费用门禁失败时停止进入 Provider 阶段，沿 `ASR final → manual gate → cue lifecycle → response.create → subtitle/translation` 或 `audio delta → stream batch → playback queue → Bridge receipt → Watch report` 调用链复现并补最小回归。任一付费格失败时停止该 execution 的后续 dispatch，保留计划、lease、日志、trace、预算和 VM 诊断；修复后从新的 clean commit、新 execution ID、新本地 authority/readiness/preflight 开始，完整重跑受影响的专项三格或严格八格，不能拼接旧结果。
+
+最后执行：
+
+```text
+npm run test:watch-mode-evidence:strict
+npm run quality:gate:release
+```
+
+收尾 manifest 必须同时引用当前 commit 的 local-isolation manifest、worker readiness、Provider preflight receipt、Plus incident manifest/receipt、八格 shard manifest/strict verification receipt、运行时二进制哈希和两套预算账本。
+
 ## 2026-06-05 迭代约束
 
 > 以下 2026-06-05/2026-07-26 条目是历史行为记录；其中“两变体默认矩阵”、文本回声门控和旧 AEC 抑制规则已被上面的 2026-08-10 三路线约束取代。

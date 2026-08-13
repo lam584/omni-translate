@@ -33,14 +33,33 @@ import {
   resolveLiveRunnerTimeoutMs,
   resolveMatrixLists,
   resolveWatchRealtimeProtocol,
+  runMatrix,
   runStrictProviderPreflight,
   runnerArgsRequestDryRun,
   splitRunnerArgs,
+  stageShardMatrixIntegration,
   strictRuntimeEnvironment,
   writeMatrixRunManifest,
 } from './run-watch-mode-live-matrix.mjs';
-import { requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
+import { fileAuthorityEntry, requiredCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import {
+  SHARD_CELL_RESULT_FILE,
+  SHARD_EXECUTION_PLAN_FILE,
+  SHARD_MANIFEST_FILE,
+  createWorkerReadinessRequest,
+  generateCoordinatorSigningKeyPair,
+} from './watch-mode-shard-authority.mjs';
+import {
+  PROVIDER_PREFLIGHT_COMPLETION_FILE,
+  PROVIDER_PREFLIGHT_GRANT_FILE,
+  PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY,
+  createProviderPreflightCompletion,
+  createProviderPreflightGrant,
+  createProviderPreflightLeaseReservations,
+  providerPreflightAuthorizationConsumption,
+  providerPreflightReservationFileName,
+} from './watch-mode-provider-preflight-authorization.mjs';
 
 const SAMPLE_MODEL = 'qwen3.5-omni-flash-realtime';
 const SAMPLE_FEEDBACK_MODE = 'echo-cancel';
@@ -81,6 +100,7 @@ const RUNNER_SWITCHES = [
   'StopDesktopAfterPlayback',
   'AllowElevatedDesktopLaunch',
   'SkipPhysicalOutputContentStt',
+  'StrictPaidAuthority',
 ];
 
 function writeAuthorityPlaceholderArtifacts(runDirectory, feedbackMode) {
@@ -89,6 +109,21 @@ function writeAuthorityPlaceholderArtifacts(runDirectory, feedbackMode) {
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     fs.writeFileSync(filePath, relativePath.endsWith('.json') ? '{}\n' : 'fixture\n', 'utf8');
   }
+}
+
+function writeMatrixBudgetPlaceholder(outputRoot) {
+  const ledgerPath = path.join(outputRoot, 'external-provider-budget-matrix.json');
+  fs.writeFileSync(ledgerPath, '{"passed":true}\n', 'utf8');
+  const authority = fileAuthorityEntry(ledgerPath, path.basename(ledgerPath));
+  return {
+    passed: true,
+    matrixCeilingSeconds: 1_440,
+    reservedSessionSeconds: 1_440,
+    auxiliaryExternalAudioSeconds: 0,
+    ledgerPath: authority.path,
+    ledgerBytes: authority.bytes,
+    ledgerSha256: authority.sha256,
+  };
 }
 
 test('matrix defaults freeze the strict-evidence contract', () => {
@@ -184,6 +219,7 @@ test('every forwarded parameter exists in the live runner param block', () => {
     stopDesktopAfterPlayback: true,
     allowElevatedDesktopLaunch: true,
     skipPhysicalOutputContentStt: true,
+    strictPaidAuthority: true,
   });
   for (const entry of argv) {
     if (!entry.startsWith('-')) {
@@ -208,6 +244,7 @@ test('switch parameters are appended bare, only when enabled, in guard order', (
     stopDesktopAfterPlayback: true,
     allowElevatedDesktopLaunch: true,
     skipPhysicalOutputContentStt: true,
+    strictPaidAuthority: true,
   });
   assert.deepEqual(allOn.slice(28), RUNNER_SWITCHES.map((name) => `-${name}`));
 
@@ -303,6 +340,62 @@ test('parseMatrixCliArgs maps kebab-case flags, coerces integers, and collects r
     /must be between 180 and 7200/,
   );
   assert.throws(() => parseMatrixCliArgs(['--unknown-flag', 'x']), /Unknown flag --unknown-flag/);
+});
+
+test('strict paid matrix cannot override a release model protocol through an alias', async () => {
+  await assert.rejects(
+    () => runMatrix({
+      models: DEFAULT_MODELS.join(','),
+      feedbackLoopPreventionModes: DEFAULT_FEEDBACK_MODES.join(','),
+      deviceProfiles: JSON.stringify(SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({
+        profileId: deviceClass,
+        deviceClass,
+        physicalPlaybackDeviceId: `endpoint-${deviceClass}`,
+        expectedPhysicalPlaybackDeviceName: deviceClass,
+      }))),
+      aliasModel: DEFAULT_MODELS[0],
+      aliasProtocol: 'dashscope-livetranslate',
+      runnerArgs: [],
+    }),
+    /forbids model aliases and alias protocols/,
+  );
+});
+
+test('legacy strict matrix fails before build, preflight, or any paid cell launch', async () => {
+  await assert.rejects(
+    () => runMatrix({
+      models: DEFAULT_MODELS.join(','),
+      feedbackLoopPreventionModes: DEFAULT_FEEDBACK_MODES.join(','),
+      mediaPath: MATRIX_DEFAULTS.mediaPath,
+      playbackSeconds: 0,
+      watchAutoStopAfterSeconds: 180,
+      subtitleTranslationMode: 'native',
+      deviceProfiles: JSON.stringify(SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({
+        profileId: deviceClass,
+        deviceClass,
+        physicalPlaybackDeviceId: `endpoint-${deviceClass}`,
+        expectedPhysicalPlaybackDeviceName: deviceClass,
+      }))),
+      runnerArgs: [],
+    }),
+    /legacy strict matrix entry is disabled before build\/preflight\/provider launch/,
+  );
+});
+
+test('strict paid argv binds the fail-closed local authority contract', () => {
+  const argv = buildRunnerArgv({
+    model: SAMPLE_MODEL,
+    feedbackMode: SAMPLE_FEEDBACK_MODE,
+    strictPaidAuthority: true,
+    cellId: 'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker',
+  });
+  assert.ok(argv.includes('-StrictPaidAuthority'));
+  assert.equal(
+    argv[argv.indexOf('-MatrixCellId') + 1],
+    'pairwise-live::qwen3.5-omni-flash-realtime::echo-cancel::default-speaker',
+  );
+  assert.equal(argv[argv.indexOf('-SubtitleTranslationMode') + 1], 'native');
+  assert.equal(argv[argv.indexOf('-WatchAutoStopAfterSeconds') + 1], '180');
 });
 
 test('reusable local isolation authority is restricted to a repo-local manifest', () => {
@@ -459,6 +552,9 @@ test('strict matrix rejects switches that bypass canonical media or raw physical
     { skipPhysicalOutputContentStt: true },
     { playbackSeconds: 120 },
     { runnerArgs: ['-SkipPhysicalOutputContentStt'] },
+    { subtitleTranslationMode: 'secondary' },
+    { watchAutoStopAfterSeconds: 181 },
+    { runnerArgs: ['-SubtitleTranslationMode', 'secondary'] },
   ]) {
     assert.throws(() => assertStrictEvidenceOptions(options), /evidence-weakening options/);
   }
@@ -550,6 +646,7 @@ test('matrix manifest contains only the current invocation run directories', () 
     now: new Date('2026-08-10T00:00:00.000Z'),
     provenance: CLEAN_PROVENANCE,
     authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
     releaseCells: currentRuns.map((_, index) => ({
       cellId: `test::model-a::process-exclusion::${SUPPORTED_DEVICE_CLASSES[index]}`,
       tier: 'pairwise-live',
@@ -562,12 +659,362 @@ test('matrix manifest contains only the current invocation run directories', () 
   });
   assert.equal(fs.existsSync(manifestPath), true);
   assert.deepEqual(manifest.runDirectories, currentRuns.map((directory) => path.basename(directory)));
-  assert.equal(manifest.schemaVersion, 3);
+  assert.equal(manifest.schemaVersion, 4);
   assert.equal(manifest.cells.length, 2);
   assert.equal(manifest.strict, true);
   assert.equal(manifest.evidenceMode, 'live');
   assert.deepEqual(manifest.provenance, CLEAN_PROVENANCE);
   assert.deepEqual(JSON.parse(fs.readFileSync(manifestPath, 'utf8')), manifest);
+});
+
+test('strict shard writer projects guest authority into the manifest and every downstream cell receipt', () => {
+  const outputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-shard-projection-'));
+  const currentRuns = [path.join(outputRoot, 'guest-one'), path.join(outputRoot, 'guest-two')];
+  const releaseCells = currentRuns.map((_, index) => ({
+    cellId: `test-shard-cell-${index}`,
+    tier: 'pairwise-live',
+    providerMode: 'live-dashscope',
+    durationSeconds: 180,
+    modelId: SAMPLE_MODEL,
+    feedbackLoopPrevention: 'echo-cancel',
+    deviceClass: SUPPORTED_DEVICE_CLASSES[index],
+  }));
+  for (const runDirectory of currentRuns) writeAuthorityPlaceholderArtifacts(runDirectory, 'echo-cancel');
+  const integrationCells = releaseCells.map((cell, index) => ({
+    origin: 'guest-shard-result',
+    executionId: 'execution-1',
+    planDigest: 'a'.repeat(64),
+    cellIndex: index,
+    cellId: cell.cellId,
+    workerId: `worker-${index}`,
+    vmIdentityDigest: `${index + 1}`.repeat(64),
+    waveIndex: 0,
+    leaseId: `lease-${index}`,
+    leaseDigest: 'b'.repeat(64),
+    shardRoot: `execution/shards/worker-${index}`,
+    shardManifest: { path: `execution/shards/worker-${index}/shard-manifest.json`, bytes: 1, sha256: 'c'.repeat(64), manifestDigest: 'd'.repeat(64) },
+    result: { path: `${path.basename(currentRuns[index])}/shard-cell-result.json`, bytes: 1, sha256: 'e'.repeat(64), resultDigest: 'f'.repeat(64) },
+    guestRunDirectory: `cells/${index}`,
+    runDirectory: path.basename(currentRuns[index]),
+    runtimeBinaryHashes: [],
+    usageAuthority: { leaseId: `lease-${index}` },
+    deviceAuthority: { deviceClass: cell.deviceClass },
+  }));
+  const shardExecution = { executionRoot: 'execution' };
+  const matrixIntegration = { cells: integrationCells };
+  try {
+    const { manifest } = writeMatrixRunManifest({
+      outputRoot,
+      modelList: [SAMPLE_MODEL],
+      feedbackModeList: ['echo-cancel'],
+      deviceProfiles: SUPPORTED_DEVICE_CLASSES.map((deviceClass) => ({ profileId: deviceClass, deviceClass })),
+      runDirectories: currentRuns,
+      strict: true,
+      provenance: CLEAN_PROVENANCE,
+      authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      releaseCells,
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
+      shardExecution,
+      matrixIntegration,
+    });
+    assert.deepEqual(manifest.shardExecution, shardExecution);
+    assert.deepEqual(manifest.matrixIntegration, matrixIntegration);
+    assert.deepEqual(manifest.cells.map((cell) => cell.shardAuthority), integrationCells);
+    for (let index = 0; index < currentRuns.length; index += 1) {
+      const receipt = JSON.parse(fs.readFileSync(path.join(currentRuns[index], 'matrix-cell-authority.json'), 'utf8'));
+      assert.deepEqual(receipt.shardAuthority, integrationCells[index]);
+    }
+  } finally {
+    fs.rmSync(outputRoot, { recursive: true, force: true });
+  }
+});
+
+test('shard staging copies three guest roots and emits only evidence-root-relative eight-cell projections', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-shard-stage-'));
+  const coordinatorRoot = path.join(root, 'coordinator');
+  const evidenceRoot = path.join(root, 'evidence');
+  fs.mkdirSync(coordinatorRoot, { recursive: true });
+  const workerIds = ['vm-1', 'vm-2', 'vm-3'];
+  const fixtureProvenance = {
+    schemaVersion: 1,
+    source: 'git',
+    captureStatus: 'captured',
+    headCommit: '3'.repeat(40),
+    worktreeClean: true,
+    dirtyEntryCount: 0,
+  };
+  const fixtureInventory = [{ path: 'fixture/artifact.bin', bytes: 1, sha256: '4'.repeat(64) }];
+  const fixtureWorkers = workerIds.map((workerId, index) => ({
+    workerId,
+    interactiveUser: 'VMUser',
+    vmIdentity: { provider: 'vmware', uuidBios: `fixture-vm-${index + 1}` },
+    deviceProfileInstances: [
+      {
+        instanceId: `${workerId}-default`,
+        profileId: 'vmware-hda-default',
+        deviceClass: 'default-speaker',
+        physicalPlaybackDeviceId: 'default',
+        expectedPhysicalPlaybackDeviceName: '',
+      },
+      ...(workerId === 'vm-2' ? [{
+        instanceId: `${workerId}-usb`,
+        profileId: 'realtek-usb-spdif',
+        deviceClass: 'usb',
+        physicalPlaybackDeviceId: 'fixture-usb-endpoint',
+        expectedPhysicalPlaybackDeviceName: 'Fixture USB',
+      }] : []),
+    ],
+  }));
+  const plan = {
+    executionId: 'fixture-execution',
+    planDigest: 'a'.repeat(64),
+    provenance: fixtureProvenance,
+    authority: {
+      implementationHashes: fixtureInventory,
+      runtimeBinaryHashes: fixtureInventory,
+      shardOrchestrationImplementationHashes: fixtureInventory,
+    },
+    workers: fixtureWorkers,
+    cells: LIVE_LLM_CELLS.map((cell, index) => ({
+      cellIndex: index,
+      cellId: cell.cellId,
+      workerId: workerIds[index % workerIds.length],
+      vmIdentityDigest: String((index % workerIds.length) + 1).repeat(64),
+      waveIndex: Math.floor(index / workerIds.length),
+      leaseId: `lease-${index}`,
+      deviceProfileInstanceId: cell.deviceClass === 'usb' ? 'vm-2-usb' : `${workerIds[index % workerIds.length]}-default`,
+    })),
+  };
+  const preflightRawRoot = path.join(coordinatorRoot, 'provider-preflight-evidence', 'raw');
+  fs.mkdirSync(preflightRawRoot, { recursive: true });
+  const preflightRawPath = path.join(preflightRawRoot, 'emitter-result.json');
+  fs.writeFileSync(preflightRawPath, '{"status":"completed"}\n', 'utf8');
+  const preflightInventoryPath = path.join(coordinatorRoot, 'provider-preflight-evidence', 'inventory.json');
+  fs.writeFileSync(preflightInventoryPath, JSON.stringify({
+    rawEvidenceRoot: 'provider-preflight-evidence/raw',
+    entries: [fileAuthorityEntry(preflightRawPath, 'emitter-result.json')],
+  }), 'utf8');
+  const preflightReceiptPath = path.join(coordinatorRoot, 'provider-preflight-receipt.json');
+  fs.writeFileSync(preflightReceiptPath, JSON.stringify({
+    evidenceAuthority: fileAuthorityEntry(preflightInventoryPath, 'provider-preflight-evidence/inventory.json'),
+    rawEvidenceRoot: 'provider-preflight-evidence/raw',
+  }), 'utf8');
+  plan.providerPreflightAuthority = fileAuthorityEntry(
+    preflightReceiptPath,
+    'provider-preflight-receipt.json',
+  );
+  const readinessRequest = createWorkerReadinessRequest({
+    executionId: plan.executionId,
+    generatedAt: new Date('2026-08-10T00:00:00.000Z'),
+    provenance: fixtureProvenance,
+    runtimeBinaryHashes: fixtureInventory,
+    workers: fixtureWorkers,
+    assignments: plan.cells,
+  });
+  const readinessRequestPath = path.join(coordinatorRoot, 'worker-readiness-request.json');
+  fs.writeFileSync(readinessRequestPath, JSON.stringify(readinessRequest), 'utf8');
+  const readinessAuthorities = fixtureWorkers.map((worker) => {
+    const receiptPath = path.join(coordinatorRoot, 'worker-readiness', `${worker.workerId}.json`);
+    fs.mkdirSync(path.dirname(receiptPath), { recursive: true });
+    fs.writeFileSync(receiptPath, JSON.stringify({ workerId: worker.workerId, providerCalls: 0 }), 'utf8');
+    return {
+      workerId: worker.workerId,
+      providerCalls: 0,
+      ...fileAuthorityEntry(receiptPath, `worker-readiness/${worker.workerId}.json`),
+    };
+  });
+  const signingKeys = generateCoordinatorSigningKeyPair();
+  const grant = createProviderPreflightGrant({
+    executionId: plan.executionId,
+    generatedAt: new Date('2026-08-10T00:00:01.000Z'),
+    expiresAt: new Date('2026-08-10T01:00:00.000Z'),
+    provenance: fixtureProvenance,
+    authorityImplementationHashes: fixtureInventory,
+    runtimeBinaryHashes: fixtureInventory,
+    shardOrchestrationImplementationHashes: fixtureInventory,
+    localIsolationAuthority: { path: 'local.json', bytes: 1, sha256: '5'.repeat(64), providerCalls: 0 },
+    workerReadinessRequest: readinessRequest,
+    workerReadinessRequestAuthority: fileAuthorityEntry(
+      readinessRequestPath,
+      'worker-readiness-request.json',
+    ),
+    workerReadinessAuthorities: readinessAuthorities,
+    workers: fixtureWorkers,
+    assignments: plan.cells,
+    signingKeys,
+  });
+  const grantPath = path.join(coordinatorRoot, PROVIDER_PREFLIGHT_GRANT_FILE);
+  fs.writeFileSync(grantPath, JSON.stringify(grant), 'utf8');
+  const reservations = createProviderPreflightLeaseReservations({
+    grant,
+    issuedAt: new Date('2026-08-10T00:00:02.000Z'),
+    signingKeys,
+  });
+  const reservationRoot = path.join(coordinatorRoot, PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY);
+  fs.mkdirSync(reservationRoot);
+  const reservationAuthorities = reservations.map((reservation, index) => {
+    const fileName = providerPreflightReservationFileName(reservation, index);
+    const filePath = path.join(reservationRoot, fileName);
+    fs.writeFileSync(filePath, JSON.stringify(reservation), 'utf8');
+    return {
+      cellId: reservation.cellId,
+      leaseId: reservation.leaseId,
+      digest: reservation.digest,
+      ...fileAuthorityEntry(
+        filePath,
+        `${PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY}/${fileName}`,
+      ),
+    };
+  });
+  const authorization = providerPreflightAuthorizationConsumption({
+    grant,
+    leaseReservations: reservations,
+  });
+  const consumptionClaimPath = path.join(coordinatorRoot, 'provider-preflight-consumption-claim.json');
+  const consumptionClaim = {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-provider-preflight-consumption-claim',
+    executionId: plan.executionId,
+    grantDigest: grant.digest,
+    authorizationDigest: authorization.authorizationDigest,
+    coordinatorKeyId: grant.signature.keyId,
+    claimedAt: '2026-08-10T00:00:02.500Z',
+    desktopProcessId: 4242,
+    desktopExecutablePath: path.join(root, 'target', 'release', 'omni-desktop-shell.exe'),
+    desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
+    desktopExecutableBytes: 1,
+    desktopExecutableSha256: '7'.repeat(64),
+    retryPolicy: 'new-execution-required',
+  };
+  fs.writeFileSync(consumptionClaimPath, `${JSON.stringify(consumptionClaim)}\n`, 'utf8');
+  const consumptionClaimAuthority = {
+    ...consumptionClaim,
+    ...fileAuthorityEntry(consumptionClaimPath, 'provider-preflight-consumption-claim.json'),
+  };
+  fs.writeFileSync(preflightReceiptPath, JSON.stringify({
+    evidenceAuthority: fileAuthorityEntry(preflightInventoryPath, 'provider-preflight-evidence/inventory.json'),
+    rawEvidenceRoot: 'provider-preflight-evidence/raw',
+    generatedAt: '2026-08-10T00:00:03.000Z',
+    ...authorization,
+    consumptionClaim: consumptionClaimAuthority,
+    tokenBudget: authorization.tokenBudget,
+    inputTokens: 64,
+    outputTokens: 12,
+    audioSeconds: null,
+    status: 'completed',
+  }), 'utf8');
+  plan.providerPreflightAuthority = {
+    ...fileAuthorityEntry(preflightReceiptPath, 'provider-preflight-receipt.json'),
+    generatedAt: '2026-08-10T00:00:03.000Z',
+    ...authorization,
+    consumptionClaim: consumptionClaimAuthority,
+    tokenBudget: authorization.tokenBudget,
+    inputTokens: 64,
+    outputTokens: 12,
+    audioSeconds: null,
+    status: 'completed',
+  };
+  const completion = createProviderPreflightCompletion({
+    grant,
+    leaseReservations: reservations,
+    preflightAuthority: plan.providerPreflightAuthority,
+    generatedAt: new Date('2026-08-10T00:00:04.000Z'),
+    signingKeys,
+  });
+  const completionPath = path.join(coordinatorRoot, PROVIDER_PREFLIGHT_COMPLETION_FILE);
+  fs.writeFileSync(completionPath, JSON.stringify(completion), 'utf8');
+  plan.providerPreflightGrant = {
+    ...fileAuthorityEntry(grantPath, PROVIDER_PREFLIGHT_GRANT_FILE),
+    digest: grant.digest,
+  };
+  plan.providerPreflightLeaseReservations = reservationAuthorities;
+  plan.providerPreflightAuthorization = {
+    grantDigest: grant.digest,
+    leaseReservationDigests: reservations.map((reservation) => reservation.digest),
+    authorizationDigest: authorization.authorizationDigest,
+    tokenBudget: authorization.tokenBudget,
+    consumptionClaim: consumptionClaimAuthority,
+  };
+  plan.providerPreflightCompletion = {
+    ...fileAuthorityEntry(completionPath, PROVIDER_PREFLIGHT_COMPLETION_FILE),
+    digest: completion.digest,
+    grantDigest: grant.digest,
+    authorizationDigest: authorization.authorizationDigest,
+    tokenBudget: authorization.tokenBudget,
+    inputTokens: 64,
+    outputTokens: 12,
+    audioSeconds: null,
+    consumptionClaim: consumptionClaimAuthority,
+  };
+  const planPath = path.join(coordinatorRoot, SHARD_EXECUTION_PLAN_FILE);
+  fs.writeFileSync(planPath, JSON.stringify(plan), 'utf8');
+  const leasePaths = plan.cells.map((cell, index) => {
+    const leasePath = path.join(coordinatorRoot, 'leases', `${index}.json`);
+    fs.mkdirSync(path.dirname(leasePath), { recursive: true });
+    fs.writeFileSync(leasePath, JSON.stringify({ cellId: cell.cellId, leaseId: cell.leaseId }), 'utf8');
+    return leasePath;
+  });
+  const aggregatePath = path.join(coordinatorRoot, 'coordinator-aggregate.json');
+  fs.writeFileSync(aggregatePath, JSON.stringify({
+    aggregateDigest: 'b'.repeat(64),
+    budget: { actualExternalAudioSamples: 16_000 * 120 * LIVE_LLM_CELLS.length },
+  }), 'utf8');
+  const shards = [];
+  const collectedCells = [];
+  for (const workerId of workerIds) {
+    const shardRoot = path.join(root, 'guests', workerId);
+    fs.mkdirSync(shardRoot, { recursive: true });
+    const manifestPath = path.join(shardRoot, SHARD_MANIFEST_FILE);
+    fs.writeFileSync(manifestPath, JSON.stringify({ manifestDigest: `${workerId.at(-1)}`.repeat(64) }), 'utf8');
+    shards.push({ workerId, shardRoot, manifestPath });
+  }
+  for (const cell of plan.cells) {
+    const shardRoot = shards.find((shard) => shard.workerId === cell.workerId).shardRoot;
+    const runDirectoryRelative = `runs/cell-${cell.cellIndex}`;
+    const runDirectory = path.join(shardRoot, ...runDirectoryRelative.split('/'));
+    fs.mkdirSync(runDirectory, { recursive: true });
+    fs.writeFileSync(path.join(runDirectory, SHARD_CELL_RESULT_FILE), JSON.stringify({
+      leaseDigest: `c${cell.cellIndex}`.padEnd(64, 'c'),
+      resultDigest: `d${cell.cellIndex}`.padEnd(64, 'd'),
+      runDirectory: runDirectoryRelative,
+      authority: { runtimeBinaryHashes: [] },
+      usageAuthority: { leaseId: cell.leaseId },
+      deviceAuthority: { deviceClass: LIVE_LLM_CELLS[cell.cellIndex].deviceClass },
+    }), 'utf8');
+    collectedCells.push({ cellId: cell.cellId, sourceRunDirectory: runDirectory });
+  }
+  try {
+    const staged = stageShardMatrixIntegration({
+      evidenceRoot,
+      executionRootName: 'staged-execution',
+      planPath,
+      leasePaths,
+      coordinatorAggregatePath: aggregatePath,
+      shards,
+      collectedMatrixIntegration: {
+        provenance: CLEAN_PROVENANCE,
+        authorityImplementationHashes: [],
+        authorityRuntimeBinaryHashes: [],
+        shardOrchestrationImplementationHashes: [],
+        localIsolationAuthority: { passed: true },
+        providerPreflightAuthority: { status: 'completed' },
+        releaseCells: LIVE_LLM_CELLS,
+        cells: collectedCells,
+      },
+    });
+    assert.equal(staged.runDirectories.length, LIVE_LLM_CELLS.length);
+    assert.deepEqual(staged.matrixIntegration.cells.map((cell) => cell.cellId), LIVE_LLM_CELLS.map((cell) => cell.cellId));
+    assert.equal(staged.shardExecution.leases.length, LIVE_LLM_CELLS.length);
+    assert.equal(staged.shardExecution.shards.length, 3);
+    assert.ok(staged.runDirectories.every((directory) => path.relative(evidenceRoot, directory) && !path.relative(evidenceRoot, directory).startsWith('..')));
+    assert.ok(staged.matrixIntegration.cells.every((cell) => (
+      !Object.hasOwn(cell, 'sourceRunDirectory')
+      && !path.isAbsolute(cell.runDirectory)
+      && fs.existsSync(path.join(evidenceRoot, ...cell.runDirectory.split('/')))
+    )));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('canonical strict manifest requires raw re-verification after the verifier receipt', () => {
@@ -594,6 +1041,7 @@ test('canonical strict manifest requires raw re-verification after the verifier 
     now: new Date('2026-08-10T00:00:00.000Z'),
     provenance: CLEAN_PROVENANCE,
     authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+    externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
     releaseCells: LIVE_LLM_CELLS,
   });
   assert.throws(
@@ -633,6 +1081,7 @@ test('canonical strict manifest requires raw re-verification after the verifier 
       now: new Date('2026-08-10T09:45:00.000Z'),
       provenance: CLEAN_PROVENANCE,
       authorityRuntimeBinaryHashes: TEST_RUNTIME_BINARY_HASHES,
+      externalProviderBudget: writeMatrixBudgetPlaceholder(outputRoot),
       releaseCells: LIVE_LLM_CELLS,
     }),
     /expected 8/,
@@ -703,6 +1152,17 @@ test('strict provider preflight accepts only a completed production emitter', ()
     exists: () => true,
     run: () => ({ status: 0 }),
     readEmitter: () => ({ status: 'completed' }),
+    validateEvidence: () => ({
+      issues: [],
+      summary: {
+        providerId: 'provider-dashscope',
+        model: SAMPLE_MODEL,
+        operation: 'text-translation-preflight',
+        inputMode: 'text-only',
+        externalAudioSamples: 0,
+        providerInvocationCount: 1,
+      },
+    }),
     now: new Date('2026-08-11T03:00:00.000Z'),
   });
   assert.equal(result.providerId, 'provider-dashscope');

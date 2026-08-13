@@ -13,6 +13,7 @@ import {
   LOCAL_ISOLATION_REUSE_MODE,
   LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS,
   LOCAL_ISOLATION_RUNTIME_BINARY_PATHS,
+  paidOnlyCargoLockReuseFailure,
   runLocalIsolationProbeIteration,
   reusableLocalIsolationAuthorityFailure,
   runLocalIsolationCell,
@@ -32,6 +33,7 @@ test('only known plans with identical zero-provider cells may reuse local author
   assert.deepEqual(LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS, [
     'watch-mode-balanced-v2',
     'watch-mode-balanced-v4',
+    'watch-mode-balanced-v5',
   ]);
 });
 
@@ -43,6 +45,140 @@ test('provider-only credential decoding is explicitly outside the zero-provider 
     true,
   );
   assert.equal(LOCAL_ISOLATION_CELLS.every((cell) => cell.providerMode === 'disabled'), true);
+});
+
+test('Desktop product reuse scope is exactly the explicitly audited paid-only paths', () => {
+  assert.deepEqual(
+    LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.filter((entryPath) => (
+      entryPath.startsWith('apps/desktop/src-tauri/src/')
+    )).sort(),
+    [
+      'apps/desktop/src-tauri/src/audio/engine/bridge_source_io.rs',
+      'apps/desktop/src-tauri/src/audio/engine/mod.rs',
+      'apps/desktop/src-tauri/src/audio/engine/workers.rs',
+      'apps/desktop/src-tauri/src/audio/omni/audio_pump.rs',
+      'apps/desktop/src-tauri/src/audio/omni/connection_coordinator.rs',
+      'apps/desktop/src-tauri/src/audio/omni/mod.rs',
+      'apps/desktop/src-tauri/src/audio/omni/protocol.rs',
+      'apps/desktop/src-tauri/src/audio/omni/provider_input_budget.rs',
+      'apps/desktop/src-tauri/src/audio/omni/replay_tests.rs',
+      'apps/desktop/src-tauri/src/audio/omni/session_worker.rs',
+      'apps/desktop/src-tauri/src/audio/omni/session_worker/reconnect.rs',
+      'apps/desktop/src-tauri/src/audio/omni/socket_event_processor.rs',
+      'apps/desktop/src-tauri/src/audio/omni/translated_pcm_authority.rs',
+      'apps/desktop/src-tauri/src/diagnostics/events.rs',
+      'apps/desktop/src-tauri/src/provider/contracts.rs',
+      'apps/desktop/src-tauri/src/provider/events.rs',
+      'apps/desktop/src-tauri/src/provider/gateway_parts/probe.rs',
+      'apps/desktop/src-tauri/src/provider/gateway_parts/transport.rs',
+      'apps/desktop/src-tauri/src/provider/state.rs',
+      'apps/desktop/src-tauri/src/release_evidence_diagnostic.rs',
+      'apps/desktop/src-tauri/src/release_evidence_diagnostic/artifacts.rs',
+      'apps/desktop/src-tauri/src/release_evidence_diagnostic/provider_preflight_authority.rs',
+      'apps/desktop/src-tauri/src/release_evidence_diagnostic/provider_selection.rs',
+      'apps/desktop/src-tauri/src/storage/credential.rs',
+      'apps/desktop/src-tauri/src/watch_mode_diagnostic/config.rs',
+      'apps/desktop/src-tauri/src/watch_mode_diagnostic/tests.rs',
+    ],
+  );
+});
+
+test('all non-Desktop paid orchestration and metadata reuse paths are explicitly audited', () => {
+  for (const entryPath of [
+    'AGENTS.md',
+    'apps/desktop/src-tauri/Cargo.toml',
+    'apps/desktop/src-tauri/build.rs',
+    'apps/desktop/src/pages/providers/ProviderCatalogComponents.test.tsx',
+    'apps/desktop/src/runtime/preview-desktop-api.ts',
+    'apps/desktop/src/schema/generated/provider-runtime.ts',
+    'apps/desktop/src/utils/provider-probe.test.ts',
+    'docs/项目/Watch Mode 短 CJK 回声拦截与 AEC 迭代方案.md',
+    'docs/项目/测试与质量门禁.md',
+    'scripts/development/build-desktop-release.mjs',
+    'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
+    'scripts/testing/invoke-watch-mode-interactive-task.ps1',
+    'scripts/testing/real-device-audio-release-evidence-test-helpers.mjs',
+    'scripts/testing/real-device-audio-release-evidence.test.mjs',
+    'scripts/testing/run-quality-gate.test.mjs',
+    'scripts/testing/run-watch-mode-interactive-task.ps1',
+    'scripts/testing/watch-mode-canonical-source-authority.mjs',
+    'scripts/testing/watch-mode-canonical-source-authority.test.mjs',
+    'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
+  ]) {
+    assert.equal(LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entryPath), true, entryPath);
+  }
+});
+
+test('Cargo.lock reuse allows only the paid Desktop ring dependency edge', () => {
+  const source = `version = 4
+
+[[package]]
+name = "omni-bridge-service"
+version = "0.1.0"
+checksum = "${'a'.repeat(64)}"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "omni-desktop-shell"
+version = "0.1.0"
+dependencies = [
+ "reqwest",
+ "rodio",
+]
+`;
+  const current = source.replace(' "rodio",', ' "reqwest",\n "ring",\n "rodio",')
+    .replace(' "reqwest",\n "reqwest",', ' "reqwest",');
+  assert.equal(paidOnlyCargoLockReuseFailure({ sourceText: source, currentText: current }), null);
+  assert.match(
+    paidOnlyCargoLockReuseFailure({
+      sourceText: source,
+      currentText: current.replace(' "serde",', ' "serde",\n "sha2",'),
+    }),
+    /changed outside/,
+  );
+  assert.match(
+    paidOnlyCargoLockReuseFailure({
+      sourceText: source,
+      currentText: source.replace(' "serde",', ' "serde",\n "ring",'),
+    }),
+    /newly added omni-desktop-shell ring dependency/,
+  );
+  assert.match(
+    paidOnlyCargoLockReuseFailure({
+      sourceText: source,
+      currentText: current.replace(`checksum = "${'a'.repeat(64)}"`, `checksum = "${'b'.repeat(64)}"`),
+    }),
+    /changed outside/,
+  );
+  assert.equal(LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes('Cargo.lock'), false);
+});
+
+test('verifier regression tests are explicit orchestration-only reuse changes', () => {
+  assert.equal(
+    LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(
+      'scripts/testing/verify-watch-mode-evidence.test.mjs',
+    ),
+    true,
+  );
+});
+
+test('paid shard/coordinator implementations are explicit zero-provider reuse exclusions', () => {
+  for (const entryPath of [
+    'scripts/testing/run-watch-mode-live-coordinator.mjs',
+    'scripts/testing/run-watch-mode-live-coordinator.test.mjs',
+    'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+    'scripts/testing/run-watch-mode-live-production-coordinator.test.mjs',
+    'scripts/testing/release-manual-collector.mjs',
+    'scripts/testing/watch-mode-provider-preflight-authority.mjs',
+    'scripts/testing/run-watch-mode-live-shard.mjs',
+    'scripts/testing/run-watch-mode-live-shard.test.mjs',
+    'scripts/testing/watch-mode-shard-authority.mjs',
+    'scripts/testing/watch-mode-shard-authority.test.mjs',
+  ]) {
+    assert.equal(LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entryPath), true, entryPath);
+  }
 });
 
 test('local isolation creates its output root on a first clean-machine run', () => {
@@ -234,7 +370,7 @@ test('local isolation reuse accepts the exact clean HEAD with identical implemen
   assert.equal(failure, null);
 });
 
-test('local isolation runtime scope excludes paid-only media injector binaries', () => {
+test('local isolation runtime scope excludes Desktop and paid-only media injector binaries', () => {
   const local = [
     { path: 'target/release/omni-bridge-service.exe', bytes: 1, sha256: 'a' },
     { path: 'target/release/omni-physical-output-probe.exe', bytes: 2, sha256: 'b' },
@@ -242,6 +378,7 @@ test('local isolation runtime scope excludes paid-only media injector binaries',
   const scoped = localIsolationRuntimeInventory([
     ...local,
     { path: 'target/release/omni-watch-media-injector.exe', bytes: 3, sha256: 'c' },
+    { path: 'target/release/omni-desktop-shell.exe', bytes: 4, sha256: 'd' },
   ]);
   assert.deepEqual(scoped, local);
 });

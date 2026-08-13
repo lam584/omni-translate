@@ -14,9 +14,8 @@ param(
   [int]$PostPlaybackWaitSeconds = 120,
   [ValidateRange(1, 100)]
   [int]$SessionReadyTimeoutSeconds = 90,
-  # The budget-approved release plan assigns 240 seconds to pairwise cells
-  # and 420 seconds to per-model stability cells. The authority manifest binds
-  # the exact duration expected for each cell.
+  # The budget-approved paid release plan assigns an exact 180-second ceiling
+  # to every cell. Longer values remain available only to non-strict diagnostics.
   [ValidateRange(180, 7200)]
   [int]$WatchAutoStopAfterSeconds = 180,
   [switch]$SkipDesktopLaunch,
@@ -26,6 +25,11 @@ param(
   [switch]$StopDesktopAfterPlayback,
   [switch]$AllowElevatedDesktopLaunch,
   [switch]$SkipPhysicalOutputContentStt,
+  # Strict paid matrix contract: only the selected native realtime model may
+  # access DashScope. Source-reference and physical-output authority are built
+  # from canonical fixture hashes, local PCM, cue receipts, and playback logs.
+  [switch]$StrictPaidAuthority,
+  [string]$MatrixCellId = "",
   # Re-run only the paid physical-output STT/comparison against artifacts from
   # an already completed live session. This never starts Desktop, Bridge, media
   # playback, or a new Watch provider session.
@@ -699,8 +703,57 @@ function Ensure-ValueProperty {
   }
 }
 
+function Enter-StrictPaidProviderEnvironment {
+  param([bool]$Enabled)
+  $fixed = [ordered]@{
+    OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY = "1"
+    OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID = "provider-dashscope"
+    OMNI_WATCH_MODE_EXPECTED_PROVIDER_TEMPLATE_ID = "template-dashscope-realtime"
+    OMNI_WATCH_MODE_EXPECTED_PROVIDER_KIND = "dashscope"
+    OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST = "dashscope.aliyuncs.com"
+    OMNI_WATCH_MODE_EXPECTED_PROVIDER_CREDENTIAL_REFERENCE = "credential://provider/dashscope/default"
+  }
+  $previous = [ordered]@{}
+  foreach ($entry in $fixed.GetEnumerator()) {
+    $previous[$entry.Key] = [Environment]::GetEnvironmentVariable(
+      $entry.Key,
+      [EnvironmentVariableTarget]::Process
+    )
+    if ($Enabled) {
+      [Environment]::SetEnvironmentVariable(
+        $entry.Key,
+        [string]$entry.Value,
+        [EnvironmentVariableTarget]::Process
+      )
+    }
+  }
+  return [pscustomobject]@{
+    enabled = $Enabled
+    names = @($fixed.Keys)
+    values = $fixed
+    previous = $previous
+  }
+}
+
+function Exit-StrictPaidProviderEnvironment {
+  param($State)
+  if (-not $State) { return }
+  foreach ($name in @($State.names)) {
+    [Environment]::SetEnvironmentVariable(
+      [string]$name,
+      $State.previous[[string]$name],
+      [EnvironmentVariableTarget]::Process
+    )
+  }
+}
+
 function Set-WatchModelOnConfig {
-  param($Config, [string]$ModelId, [string]$RealtimeProtocol = "")
+  param(
+    $Config,
+    [string]$ModelId,
+    [string]$RealtimeProtocol = "",
+    [bool]$RequireStrictProvider = $false
+  )
   if (-not $ModelId) {
     return
   }
@@ -718,14 +771,53 @@ function Set-WatchModelOnConfig {
     $separator = $ModelId.IndexOf("::")
     $templateId = if ($separator -ge 0) { $ModelId.Substring(0, $separator) } else { "" }
     $resolvedModelId = if ($separator -ge 0) { $ModelId.Substring($separator + 2) } else { $ModelId }
-    $provider = @($Config.providers | Where-Object {
-      ($templateId -and $_.templateId -eq $templateId) -or
-      (-not $templateId -and (
-        ($RealtimeProtocol -like "dashscope-*" -and $_.kind -eq "dashscope") -or
-        ($RealtimeProtocol -like "openai-*" -and $_.kind -eq "openai-compatible") -or
-        ($RealtimeProtocol -eq "gemini-live" -and $_.templateId -like "*gemini*")
-      ))
-    } | Select-Object -First 1)
+    if ($RequireStrictProvider) {
+      if ($RealtimeProtocol -notin @("dashscope-omni", "dashscope-livetranslate")) {
+        throw "Strict paid Watch provider requires a budget-approved DashScope realtime protocol."
+      }
+      $strictProviders = @($Config.providers | Where-Object {
+        $_.providerId -ceq "provider-dashscope" -and
+        $_.templateId -ceq "template-dashscope-realtime"
+      })
+      if ($strictProviders.Count -ne 1) {
+        throw "Strict paid Watch provider requires exactly one provider-dashscope/template-dashscope-realtime entry."
+      }
+      $provider = $strictProviders[0]
+      $providerUri = $null
+      if (-not [Uri]::TryCreate([string]$provider.baseUrl, [UriKind]::Absolute, [ref]$providerUri)) {
+        throw "Strict paid Watch provider baseUrl is not an absolute URI."
+      }
+      if (
+        $provider.kind -cne "dashscope" -or
+        $providerUri.Scheme -cne "https" -or
+        -not [string]::IsNullOrEmpty($providerUri.UserInfo) -or
+        -not $providerUri.IsDefaultPort -or
+        $providerUri.Host -cne "dashscope.aliyuncs.com" -or
+        $provider.streamEnabled -ne $true -or
+        $provider.authRef.kind -cne "credential-ref" -or
+        $provider.authRef.reference -cne "credential://provider/dashscope/default" -or
+        $provider.authRef.headerName -cne "Authorization" -or
+        $provider.authRef.scheme -cne "bearer" -or
+        @($provider.customHeaders).Count -ne 0 -or
+        $provider.systemPromptTemplate -cne "game-live-translation-cn" -or
+        $provider.timeoutMs -ne 12000 -or
+        [double]$provider.temperature -ne 0.2 -or
+        $provider.maxOutputTokens -ne 256 -or
+        @($provider.responseModalities).Count -ne 1 -or
+        @($provider.responseModalities)[0] -cne "text"
+      ) {
+        throw "Strict paid Watch provider identity, endpoint, or credential reference does not match the signed authority."
+      }
+    } else {
+      $provider = @($Config.providers | Where-Object {
+        ($templateId -and $_.templateId -eq $templateId) -or
+        (-not $templateId -and (
+          ($RealtimeProtocol -like "dashscope-*" -and $_.kind -eq "dashscope") -or
+          ($RealtimeProtocol -like "openai-*" -and $_.kind -eq "openai-compatible") -or
+          ($RealtimeProtocol -eq "gemini-live" -and $_.templateId -like "*gemini*")
+        ))
+      } | Select-Object -First 1)
+    }
     if (-not $provider) {
       throw "No provider can host explicit Watch realtime protocol '$RealtimeProtocol'."
     }
@@ -1357,6 +1449,11 @@ function Start-WatchModeDesktopShell {
   $previousSubtitleTranslationMode = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE
   $previousTranslationAudioSource = $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE
   $previousProviderInputPcmPath = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH
+  $previousProviderInputMaxSamples = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES
+  $previousProviderInputLedgerPath = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH
+  $previousProviderInputCellId = $env:OMNI_WATCH_MODE_CELL_ID
+  $previousProviderInputLeaseId = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
+  $previousTranslatedPcmAuthorityDir = $env:OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR
   $previousWatchModelId = $env:OMNI_WATCH_MODE_MODEL_ID
   $previousWatchRealtimeProtocol = $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL
   $previousSubtitleTranslationModelId = $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID
@@ -1367,8 +1464,11 @@ function Start-WatchModeDesktopShell {
   $previousAutoStopAfterMs = $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS
   $previousReportPath = $env:OMNI_WATCH_MODE_REPORT_PATH
   $previousExitAfterReport = $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT
+  $previousLogLevel = $env:OMNI_LOG_LEVEL
   $elevatedLaunch = $null
+  $strictPaidProviderEnvironment = $null
   try {
+    $strictPaidProviderEnvironment = Enter-StrictPaidProviderEnvironment ([bool]$StrictPaidAuthority)
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
     $diagnosticOutputDeviceId = if ($PhysicalDeviceId) { $PhysicalDeviceId } else { "default" }
@@ -1381,6 +1481,33 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE = $diagnosticSubtitleTranslationMode
     $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = if ($SubtitleTranslationMode -eq "native") { "omni-native" } else { "subtitle-tts" }
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $providerInputPcmPath
+    if ($StrictPaidAuthority) {
+      $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = "$($WatchAutoStopAfterSeconds * 16000)"
+      $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH = Join-Path $OutputDirectory "provider-input-budget-ledger.json"
+      $env:OMNI_WATCH_MODE_CELL_ID = $MatrixCellId
+      $translatedPcmAuthorityDirectory = Join-Path $OutputDirectory "translated-cue-pcm"
+      # The Rust authority owns exclusive creation of this directory. Creating
+      # it here would turn a clean strict-paid launch into a deterministic
+      # fail-closed collision before the first provider connection.
+      $env:OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR = $translatedPcmAuthorityDirectory
+      # The matrix/shard coordinator must issue this lease before the paid
+      # process starts. Never mint or reuse an implicit ambient lease here.
+      $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = $previousProviderInputLeaseId.Trim()
+      $leaseReceipt = [ordered]@{
+        schemaVersion = 1
+        artifactKind = "watch-mode-provider-input-budget-lease"
+        cellId = $MatrixCellId
+        leaseId = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
+        runMarker = $RunMarker
+        maxSamples = [int]$env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES
+      }
+      $leaseReceiptJson = $leaseReceipt | ConvertTo-Json -Depth 3
+      [System.IO.File]::WriteAllText(
+        (Join-Path $OutputDirectory "provider-input-budget-lease.json"),
+        $leaseReceiptJson,
+        [System.Text.UTF8Encoding]::new($false)
+      )
+    }
     if ($WatchModelId) {
       $env:OMNI_WATCH_MODE_MODEL_ID = $WatchModelId
     }
@@ -1403,6 +1530,11 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $liveScenarioEnvironment.autoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $watchSessionReportPath
     $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = "1"
+    if ($StrictPaidAuthority) {
+      # Debug model-trace summaries and the PCM dump cross-check the Rust
+      # send-boundary ledger, which remains the paid-input authority.
+      $env:OMNI_LOG_LEVEL = "debug"
+    }
     if ($AllowElevatedDesktopLaunch) {
       $watchEnvironmentNames = @(
         "OMNI_WATCH_MODE_AUTOSTART",
@@ -1412,6 +1544,11 @@ function Start-WatchModeDesktopShell {
         "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE",
         "OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE",
         "OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH",
+        "OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES",
+        "OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH",
+        "OMNI_WATCH_MODE_CELL_ID",
+        "OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID",
+        "OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR",
         "OMNI_WATCH_MODE_MODEL_ID",
         "OMNI_WATCH_MODE_REALTIME_PROTOCOL",
         "OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID",
@@ -1421,8 +1558,12 @@ function Start-WatchModeDesktopShell {
         "OMNI_WATCH_MODE_AEC_LIVE_SCENARIO",
         "OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS",
         "OMNI_WATCH_MODE_REPORT_PATH",
-        "OMNI_WATCH_MODE_EXIT_AFTER_REPORT"
+        "OMNI_WATCH_MODE_EXIT_AFTER_REPORT",
+        "OMNI_LOG_LEVEL"
       )
+      if ($StrictPaidAuthority) {
+        $watchEnvironmentNames += @($strictPaidProviderEnvironment.names)
+      }
       $launchEnvironment = @{}
       foreach ($name in $watchEnvironmentNames) {
         $launchEnvironment[$name] = [System.Environment]::GetEnvironmentVariable($name, [System.EnvironmentVariableTarget]::Process)
@@ -1456,6 +1597,12 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE = $previousSubtitleTranslationMode
     $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = $previousTranslationAudioSource
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $previousProviderInputPcmPath
+    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = $previousProviderInputMaxSamples
+    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH = $previousProviderInputLedgerPath
+    $env:OMNI_WATCH_MODE_CELL_ID = $previousProviderInputCellId
+    $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = $previousProviderInputLeaseId
+    Exit-StrictPaidProviderEnvironment $strictPaidProviderEnvironment
+    $env:OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR = $previousTranslatedPcmAuthorityDir
     $env:OMNI_WATCH_MODE_MODEL_ID = $previousWatchModelId
     $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL = $previousWatchRealtimeProtocol
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODEL_ID = $previousSubtitleTranslationModelId
@@ -1466,6 +1613,7 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $previousAutoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $previousReportPath
     $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = $previousExitAfterReport
+    $env:OMNI_LOG_LEVEL = $previousLogLevel
   }
   $systemMetricsSampler = $null
   try {
@@ -1642,7 +1790,7 @@ function Invoke-StartWatchModeViaTauriCli {
     $config | Add-Member -NotePropertyName speech -NotePropertyValue ([pscustomobject]@{})
   }
   $config.speech.translationAudioSource = "subtitle-tts"
-  Set-WatchModelOnConfig $config $WatchModelId $WatchRealtimeProtocol
+  Set-WatchModelOnConfig $config $WatchModelId $WatchRealtimeProtocol ([bool]$StrictPaidAuthority)
   Set-WatchModeSecondaryConfig $config $SubtitleTranslationModelId $InboundSecondaryAudioModelId $FeedbackLoopPrevention $SubtitleTranslationMode
   if ($PhysicalDeviceId) {
     $config.devices.outputDeviceId = $PhysicalDeviceId
@@ -2584,6 +2732,7 @@ function Start-PhysicalOutputContentRecorder {
   $transcriptionPcmPath = Join-Path $OutputDirectory "physical-output-recording-16k-mono.pcm"
   $stdout = Join-Path $OutputDirectory "physical-output-recorder.stdout.log"
   $stderr = Join-Path $OutputDirectory "physical-output-recorder.stderr.log"
+  $startedAtEpochMs = [DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
   $process = Start-Process -FilePath $probeExe -ArgumentList @(
     "--record-only",
     "--record-seconds", "$recordSeconds",
@@ -2595,6 +2744,7 @@ function Start-PhysicalOutputContentRecorder {
     pid = $process.Id
     process = $process
     recordSeconds = $recordSeconds
+    startedAtEpochMs = $startedAtEpochMs
     recordingPath = $recordingPath
     transcriptionPcmPath = $transcriptionPcmPath
     stdout = $stdout
@@ -2942,6 +3092,7 @@ function Read-SubtitleQueueTimeline {
   foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech\.segment_playback_written\s+\|\s+cue=(omni-cue-\d+)\s+segmentIndex=(\d+)', [Text.RegularExpressions.RegexOptions]::Multiline)) {
     [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "segment_playback_written"; cueId = $match.Groups[2].Value; rank = $null; seq = [int]$match.Groups[3].Value; text = "" })
   }
+  $parsed | Add-Member -NotePropertyName recordingStartedAtEpochMs -NotePropertyValue ([int64]$Recorder.startedAtEpochMs) -Force
   foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*event=translation_playback_status\s+\|[^\r\n]*cueId=(omni-cue-\d+)[^\r\n]*\bstatus=completed\b[^\r\n]*\breason=physical-playback-completed\b', [Text.RegularExpressions.RegexOptions]::Multiline)) {
     [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "bridge_playback_completed"; cueId = $match.Groups[2].Value; rank = $null; seq = $null; text = "" })
   }
@@ -3346,8 +3497,333 @@ function Compare-WatchModeTextPair {
   }
 }
 
+function Invoke-CanonicalSourceAuthorityNode {
+  param(
+    [string]$OutputDirectory,
+    [ValidateSet("Reference", "Source", "Combined")][string]$Mode = "Combined"
+  )
+  $authorityScript = Join-Path $workspaceRoot "scripts/testing/watch-mode-canonical-source-authority.mjs"
+  if (-not (Test-Path -LiteralPath $authorityScript -PathType Leaf)) {
+    throw "canonical source authority implementation is missing: $authorityScript"
+  }
+  $arguments = @(
+    $authorityScript,
+    "--run-directory", $OutputDirectory,
+    "--workspace-root", $workspaceRoot
+  )
+  if ($Mode -eq "Reference") { $arguments += "--reference-only" }
+  if ($Mode -eq "Source") { $arguments += "--source-only" }
+  $output = @(& node @arguments 2>&1 | ForEach-Object { [string]$_ })
+  $exitCode = $LASTEXITCODE
+  $text = ($output -join "`n").Trim()
+  if ($exitCode -ne 0) {
+    throw "canonical source authority failed ($Mode, exit=$exitCode): $text"
+  }
+  try {
+    $result = $text | ConvertFrom-Json
+  } catch {
+    throw "canonical source authority returned invalid JSON ($Mode): $($_.Exception.Message)"
+  }
+  if (-not $result -or $result.passed -ne $true -or $result.remoteProviderCalls -ne 0 -or $result.externalAudioSeconds -ne 0) {
+    throw "canonical source authority did not return an exact zero-provider PASS ($Mode)"
+  }
+  return $result
+}
+
+function Get-CanonicalSourceMediaReference {
+  param([string]$OutputDirectory, [string]$MediaPath)
+  $resultPath = Join-Path $OutputDirectory "source-media-transcript.json"
+  $canonicalMediaPath = Join-Path $workspaceRoot "scripts/testing/fixtures/watch-mode-en-original.wav"
+  try {
+    $resolvedMediaPath = (Resolve-Path -LiteralPath $MediaPath -ErrorAction Stop).Path
+    $resolvedCanonicalPath = (Resolve-Path -LiteralPath $canonicalMediaPath -ErrorAction Stop).Path
+    if (-not $resolvedMediaPath.Equals($resolvedCanonicalPath, [StringComparison]::OrdinalIgnoreCase)) {
+      throw "strict paid authority requires canonical media: $resolvedCanonicalPath"
+    }
+    # This reconstructs the injector's complete 16 kHz mono PCM from the
+    # canonical RIFF/WAVE bytes and compares it byte-for-byte before a passed
+    # source authority can be written. It also binds the checksum, metadata,
+    # and exact UTF-8 fixture texts without any Provider call.
+    $validated = Invoke-CanonicalSourceAuthorityNode $OutputDirectory "Reference"
+    $result = [pscustomobject]@{
+      schemaVersion = 2
+      authorityMode = "canonical-fixture-local-v2"
+      passed = $true
+      remoteProviderCalls = 0
+      externalAudioSeconds = 0
+      mediaPath = [string]$validated.media.path
+      mediaSha256 = [string]$validated.media.sha256
+      mediaBytes = [long]$validated.media.bytes
+      checksumPath = [string]$validated.checksum.path
+      metadataPath = [string]$validated.metadata.path
+      playbackSeconds = $null
+      fullMedia = $true
+      source = [string]$validated.source
+      translation = [string]$validated.translation
+      sourceText = $validated.sourceText
+      translationText = $validated.translationText
+      referencePcm = $validated.referencePcm
+      fixture = $validated.fixture
+    }
+  } catch {
+    $result = [pscustomobject]@{
+      schemaVersion = 2
+      authorityMode = "canonical-fixture-local-v2"
+      passed = $false
+      remoteProviderCalls = 0
+      externalAudioSeconds = 0
+      error = $_.Exception.Message
+    }
+  }
+  # Windows PowerShell 5.1's ConvertTo-Json can recurse pathologically through
+  # long strings at unnecessarily high depths. This schema is only two nested
+  # object levels deep, so four is both complete and bounded.
+  $json = $result | ConvertTo-Json -Depth 4
+  [System.IO.File]::WriteAllText($resultPath, $json, [System.Text.UTF8Encoding]::new($false))
+  return $result
+}
+
+function Read-TranslatedCuePlaybackAuthority {
+  param([string]$OutputDirectory, [string]$AppLogPath, [string]$RunMarker)
+  $watchReportPath = Join-Path $OutputDirectory "watch-session-report.json"
+  if (-not (Test-Path -LiteralPath $watchReportPath -PathType Leaf)) {
+    return [pscustomobject]@{ passed = $false; error = "watch-session-report.json is missing" }
+  }
+  $watchReport = Get-Content -LiteralPath $watchReportPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $completeCues = @($watchReport.cues | Where-Object {
+    $_.comparisonStatus -in @("exact", "formatting-only") -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.llmText) -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.publishedText) -and
+    -not [string]::IsNullOrWhiteSpace([string]$_.renderedText)
+  })
+  $raw = if (Test-Path -LiteralPath $AppLogPath -PathType Leaf) {
+    Get-LogTextAfterMarker $AppLogPath $RunMarker
+  } else {
+    ""
+  }
+  $events = @()
+  $eventIndex = 0
+  foreach ($line in ($raw -split "`r?`n")) {
+    if ($line -notmatch 'event=translation_playback_status') { continue }
+    $cueMatch = [regex]::Match($line, '\bcueId=([A-Za-z0-9._:-]+)')
+    $statusMatch = [regex]::Match($line, '\bstatus=(queued|started|completed)\b')
+    if (-not $cueMatch.Success -or -not $statusMatch.Success) { continue }
+    $eventIndex += 1
+    $events += [pscustomobject]@{
+      cueId = $cueMatch.Groups[1].Value
+      status = $statusMatch.Groups[1].Value
+      eventIndex = $eventIndex
+    }
+  }
+  $matched = @()
+  $invalid = @()
+  $completeCueIds = @($completeCues | ForEach-Object { [string]$_.cueId } | Select-Object -Unique)
+  foreach ($cueId in $completeCueIds) {
+    $cueEvents = @($events | Where-Object { $_.cueId -eq $cueId })
+    $queuedEvents = @($cueEvents | Where-Object { $_.status -eq "queued" })
+    $startedEvents = @($cueEvents | Where-Object { $_.status -eq "started" })
+    $completedEvents = @($cueEvents | Where-Object { $_.status -eq "completed" })
+    $exactlyOnce = (
+      $queuedEvents.Count -eq 1 -and
+      $startedEvents.Count -eq 1 -and
+      $completedEvents.Count -eq 1
+    )
+    $ordered = (
+      $exactlyOnce -and
+      $queuedEvents[0].eventIndex -lt $startedEvents[0].eventIndex -and
+      $startedEvents[0].eventIndex -lt $completedEvents[0].eventIndex
+    )
+    if ($exactlyOnce -and $ordered) {
+      $matched += $cueId
+    } else {
+      $invalid += [pscustomobject]@{
+        cueId = $cueId
+        queuedCount = $queuedEvents.Count
+        startedCount = $startedEvents.Count
+        completedCount = $completedEvents.Count
+        ordered = $ordered
+      }
+    }
+  }
+  $devicePath = Join-Path $OutputDirectory "physical-playback-device.json"
+  $device = if (Test-Path -LiteralPath $devicePath -PathType Leaf) {
+    Get-Content -LiteralPath $devicePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } else {
+    $null
+  }
+  return [pscustomobject]@{
+    passed = ($completeCueIds.Count -gt 0 -and $matched.Count -eq $completeCueIds.Count -and $invalid.Count -eq 0 -and $device -and $device.verified)
+    completeCueCount = $completeCueIds.Count
+    queuedCueCount = @($events | Where-Object { $_.status -eq "queued" } | Select-Object -ExpandProperty cueId -Unique).Count
+    startedCueCount = @($events | Where-Object { $_.status -eq "started" } | Select-Object -ExpandProperty cueId -Unique).Count
+    completedCueCount = @($events | Where-Object { $_.status -eq "completed" } | Select-Object -ExpandProperty cueId -Unique).Count
+    matchedCueIds = @($matched)
+    matchedCueCount = $matched.Count
+    invalidCues = @($invalid)
+    resolvedPhysicalDeviceId = if ($device) { [string]$device.resolvedDeviceId } else { $null }
+    resolvedPhysicalDeviceName = if ($device) { [string]$device.resolvedDeviceName } else { $null }
+    deviceVerified = if ($device) { [bool]$device.verified } else { $false }
+    detail = if ($completeCueIds.Count -eq 0) { "no fully published/rendered native cue was available" } elseif ($invalid.Count -gt 0) { "every complete native cue must have exactly one ordered queued, started, and completed physical playback event" } elseif (-not $device -or -not $device.verified) { "physical playback endpoint authority is missing or unverified" } else { $null }
+  }
+}
+
+function Get-TranslatedPcmLoopbackAuthority {
+  param([string]$OutputDirectory, $Recording, $PlaybackAuthority)
+  $matcherPath = Join-Path $workspaceRoot "scripts/testing/watch-mode-translated-pcm-loopback.mjs"
+  $leasePath = Join-Path $OutputDirectory "provider-input-budget-lease.json"
+  if (-not (Test-Path -LiteralPath $leasePath -PathType Leaf)) {
+    return [pscustomobject]@{ passed = $false; authorityMode = "translated-pcm-loopback-correlation-v1"; error = "provider input budget lease is missing" }
+  }
+  $lease = Get-Content -LiteralPath $leasePath -Raw -Encoding UTF8 | ConvertFrom-Json
+  $protocol = if ($WatchRealtimeProtocol) {
+    $WatchRealtimeProtocol
+  } elseif ($WatchModelId -eq "qwen3.5-livetranslate-flash-realtime") {
+    "dashscope-livetranslate"
+  } else {
+    "dashscope-omni"
+  }
+  $arguments = @(
+    $matcherPath,
+    "--run-directory", $OutputDirectory,
+    "--app-log", $AppLogPath,
+    "--run-marker", $RunMarker,
+    "--recording-started-at-ms", ([string]$Recording.recordingStartedAtEpochMs),
+    "--cell-id", $MatrixCellId,
+    "--lease-id", ([string]$lease.leaseId),
+    "--model-id", $WatchModelId,
+    "--protocol", $protocol
+  )
+  $stdoutPath = Join-Path $OutputDirectory "translated-pcm-loopback.stdout.json"
+  $stderrPath = Join-Path $OutputDirectory "translated-pcm-loopback.stderr.log"
+  $process = Start-Process -FilePath "node" -ArgumentList $arguments -RedirectStandardOutput $stdoutPath -RedirectStandardError $stderrPath -WindowStyle Hidden -Wait -PassThru
+  if (-not (Test-Path -LiteralPath $stdoutPath -PathType Leaf)) {
+    return [pscustomobject]@{ passed = $false; authorityMode = "translated-pcm-loopback-correlation-v1"; error = "translated PCM matcher returned no JSON"; exitCode = $process.ExitCode }
+  }
+  try {
+    $authority = Get-Content -LiteralPath $stdoutPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  } catch {
+    return [pscustomobject]@{ passed = $false; authorityMode = "translated-pcm-loopback-correlation-v1"; error = "translated PCM matcher JSON is invalid: $($_.Exception.Message)"; exitCode = $process.ExitCode }
+  }
+  if ($process.ExitCode -ne 0 -and $authority.passed) {
+    $authority.passed = $false
+    $authority | Add-Member -NotePropertyName error -NotePropertyValue "translated PCM matcher exited with $($process.ExitCode)" -Force
+  }
+  return $authority
+}
+
+function Get-LocalPhysicalOutputContentAuthority {
+  param([string]$OutputDirectory, $Recording, [string]$AppLogPath, [string]$RunMarker, $SourceReferenceTranscript)
+  $resultPath = Join-Path $OutputDirectory "physical-output-content.json"
+  $pcmPath = [string]$Recording.transcriptionPcmPath
+  if (-not (Test-Path -LiteralPath $pcmPath -PathType Leaf)) {
+    [pscustomobject]@{
+      schemaVersion = 1
+      authorityMode = "local-pcm-cue-playback-v1"
+      passed = $false
+      remoteProviderCalls = 0
+      error = "physical output PCM file was not created"
+      recording = $Recording
+    } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $resultPath -Encoding UTF8
+    return Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  }
+  $sourceWindowSeconds = if ($PlaybackSeconds -gt 0) {
+    [Math]::Max(8, $PlaybackSeconds + 8)
+  } elseif ($Recording -and $Recording.audioQuality -and $Recording.audioQuality.durationSeconds) {
+    [Math]::Max(8, [Math]::Min([double]$Recording.audioQuality.durationSeconds, 90))
+  } else {
+    90
+  }
+  $sourceWindow = Copy-PcmWindow $pcmPath (Join-Path $OutputDirectory "physical-output-recording-source-window-16k-mono.pcm") 16000 $sourceWindowSeconds
+  $canonicalSourceAndPhysical = if ($sourceWindow) {
+    try {
+      Invoke-CanonicalSourceAuthorityNode $OutputDirectory "Combined"
+    } catch {
+      [pscustomobject]@{ passed = $false; error = $_.Exception.Message }
+    }
+  } else {
+    [pscustomobject]@{ passed = $false; error = "physical output source window was not created" }
+  }
+  $originalSimilarity = if ($canonicalSourceAndPhysical.passed -and $canonicalSourceAndPhysical.physicalSourceWaveform) {
+    $canonicalSourceAndPhysical.physicalSourceWaveform
+  } else {
+    [pscustomobject]@{ passed = $false; error = [string]$canonicalSourceAndPhysical.error }
+  }
+  $segmentation = Read-SpeechSegmentationSummary $AppLogPath $RunMarker
+  $subtitleQueue = Read-SubtitleQueueTimeline $AppLogPath $RunMarker
+  $subtitleText = Get-RecentSubtitleText $AppLogPath $RunMarker
+  $segmentTranslationText = Get-RecentFinalSegmentTranslationText $AppLogPath $RunMarker
+  $structuredText = Get-UniqueClauseText @($subtitleText, $segmentTranslationText)
+  $structuredComparison = if ($SourceReferenceTranscript -and $SourceReferenceTranscript.passed) {
+    Compare-WatchModeTextPair ([string]$SourceReferenceTranscript.translation) $structuredText
+  } else {
+    [pscustomobject]@{ passed = $false; error = "canonical source authority did not pass" }
+  }
+  $playbackAuthority = Read-TranslatedCuePlaybackAuthority $OutputDirectory $AppLogPath $RunMarker
+  $translatedAcousticAuthority = Get-TranslatedPcmLoopbackAuthority $OutputDirectory $Recording $playbackAuthority
+  $translatedSpeechPassed = ($segmentation.playedSegments -gt 0 -and $playbackAuthority.passed -and $translatedAcousticAuthority.passed)
+  $recordingAudible = ($Recording -and $Recording.rms -gt 0 -and $Recording.peak -gt 0)
+  $contentConsistency = [pscustomobject]@{
+    passed = [bool]$structuredComparison.passed
+    coverage = $structuredComparison.coverage
+    lengthRatio = $structuredComparison.lengthRatio
+    referenceClauseCount = $structuredComparison.referenceClauseCount
+    outputClauseCount = $structuredComparison.outputClauseCount
+    missingClauses = @($structuredComparison.missingClauses)
+    extraClauses = @($structuredComparison.extraClauses)
+    referenceChars = $structuredComparison.referenceChars
+    outputChars = $structuredComparison.outputChars
+    physicalTranscript = $null
+    physicalTranslation = $null
+    structuredEvidence = $structuredComparison
+    combinedEvidence = $structuredComparison
+    evidenceMode = "canonical-target-text-plus-cue-playback-plus-loopback-pcm"
+    warnings = @()
+  }
+  [pscustomobject]@{
+    schemaVersion = 1
+    authorityMode = "local-pcm-cue-playback-v1"
+    passed = ($originalSimilarity.passed -and $recordingAudible -and $translatedSpeechPassed -and $structuredComparison.passed)
+    remoteProviderCalls = 0
+    externalAudioSeconds = 0
+    source = ""
+    translation = ""
+    sourceReference = $SourceReferenceTranscript
+    contentConsistency = $contentConsistency
+    subtitleText = $subtitleText
+    segmentTranslationText = $segmentTranslationText
+    subtitleQueue = $subtitleQueue
+    sttSourceWindow = $sourceWindow
+    originalPassthrough = [pscustomobject]@{
+      passed = [bool]$originalSimilarity.passed
+      transcriptChars = 0
+      authority = "canonical-source-signed-waveform-v1"
+      sourceSimilarity = $originalSimilarity
+    }
+    translatedSpeech = [pscustomobject]@{
+      passed = $translatedSpeechPassed
+      playedSegments = $segmentation.playedSegments
+      queuedSegments = $segmentation.queuedSegments
+      transcriptChars = 0
+      authority = "structured-cue-plus-physical-playback-lifecycle"
+      playbackAuthority = $playbackAuthority
+      acousticAuthority = $translatedAcousticAuthority
+    }
+    mixedOutput = [pscustomobject]@{
+      passed = $recordingAudible
+      rms = $Recording.rms
+      peak = $Recording.peak
+    }
+    recording = $Recording
+    audioQuality = $Recording.audioQuality
+  } | ConvertTo-Json -Depth 12 | Set-Content -LiteralPath $resultPath -Encoding UTF8
+  return Get-Content -LiteralPath $resultPath -Raw -Encoding UTF8 | ConvertFrom-Json
+}
+
 function Get-SourceMediaReferenceTranscript {
   param([string]$OutputDirectory, [string]$MediaPath)
+  if ($StrictPaidAuthority) {
+    return Get-CanonicalSourceMediaReference $OutputDirectory $MediaPath
+  }
   $resultPath = Join-Path $OutputDirectory "source-media-transcript.json"
   if (-not (Test-Path -LiteralPath $MediaPath -PathType Leaf)) {
     [pscustomobject]@{ passed = $false; error = "source media file not found: $MediaPath" } | ConvertTo-Json -Depth 8 | Set-Content -Path $resultPath -Encoding UTF8
@@ -3433,6 +3909,14 @@ function Invoke-PhysicalOutputContentStt {
   if (-not $Recording) {
     [pscustomobject]@{ passed = $false; error = "physical output recording did not run" } | ConvertTo-Json -Depth 8 | Set-Content -Path $resultPath -Encoding UTF8
     return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+  }
+  if ($StrictPaidAuthority) {
+    return Get-LocalPhysicalOutputContentAuthority `
+      $OutputDirectory `
+      $Recording `
+      $AppLogPath `
+      $RunMarker `
+      $SourceReferenceTranscript
   }
   if ($SkipPhysicalOutputContentStt) {
     [pscustomobject]@{
@@ -3798,7 +4282,12 @@ function Save-WatchModeRunArtifacts {
   $physicalContentStep = @($Steps | Where-Object {
     $_.name -eq "transcribe and compare physical output content"
   } | Select-Object -Last 1)
-  if ($physicalContentStep -and $physicalContentStep.result -and $physicalContentStep.result.skipped) {
+  if (
+    $FeedbackLoopPrevention -ne "echo-cancel" -and
+    $physicalContentStep -and
+    $physicalContentStep.result -and
+    $physicalContentStep.result.skipped
+  ) {
     $physicalContentStep.result | ConvertTo-Json -Depth 12 | Set-Content `
       -Path (Join-Path $OutputDirectory "physical-output-content.json") -Encoding UTF8
   }
@@ -3807,8 +4296,74 @@ function Save-WatchModeRunArtifacts {
   Invoke-ReportGenerator $OutputDirectory "live"
 }
 
+function Write-StrictPaidCellBudget {
+  param([string]$OutputDirectory, [string]$AppLogPath, [string]$RunMarker)
+  $budgetScript = Join-Path $workspaceRoot "scripts/testing/watch-mode-external-provider-budget.mjs"
+  $arguments = @(
+    $budgetScript,
+    "--run-directory", $OutputDirectory,
+    "--app-log", $AppLogPath,
+    "--run-marker", $RunMarker,
+    "--cell-id", $MatrixCellId,
+    "--model-id", $WatchModelId,
+    "--feedback-mode", $FeedbackLoopPrevention,
+    "--translation-mode", $SubtitleTranslationMode,
+    "--session-ceiling-seconds", "$WatchAutoStopAfterSeconds"
+  )
+  $output = @(& node @arguments 2>&1 | ForEach-Object { "$_" })
+  $exitCode = $LASTEXITCODE
+  if ($exitCode -ne 0) {
+    throw "strict paid-cell provider budget failed before matrix continuation: $($output -join ' ')"
+  }
+  $budgetPath = Join-Path $OutputDirectory "external-provider-budget.json"
+  if (-not (Test-Path -LiteralPath $budgetPath -PathType Leaf)) {
+    throw "strict paid-cell provider budget did not create $budgetPath"
+  }
+  $ledger = Get-Content -LiteralPath $budgetPath -Raw -Encoding UTF8 | ConvertFrom-Json
+  if (-not $ledger.passed) {
+    throw "strict paid-cell provider budget did not pass"
+  }
+  return $ledger
+}
+
 $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 Set-Location $workspaceRoot
+
+if ($StrictPaidAuthority) {
+  if ($DryRun) { throw "StrictPaidAuthority is only valid for a live paid cell" }
+  if ($RecoverPhysicalOutputContentRunDirectory) { throw "StrictPaidAuthority forbids paid physical-output STT recovery" }
+  if ($WatchModelId -notin @("qwen3.5-omni-flash-realtime", "qwen3.5-livetranslate-flash-realtime")) {
+    throw "StrictPaidAuthority allows only the two budget-approved Watch models; got '$WatchModelId'"
+  }
+  if ([string]::IsNullOrWhiteSpace($MatrixCellId)) {
+    throw "StrictPaidAuthority requires MatrixCellId before provider launch"
+  }
+  if ([string]::IsNullOrWhiteSpace($env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID)) {
+    throw "StrictPaidAuthority requires a coordinator-issued OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID before provider launch"
+  }
+  if ($SubtitleTranslationMode -ne "native") {
+    throw "StrictPaidAuthority forbids secondary translation/TTS; SubtitleTranslationMode must be native"
+  }
+  if ($WatchAutoStopAfterSeconds -ne 180) {
+    throw "StrictPaidAuthority requires a 180-second provider session ceiling; got $WatchAutoStopAfterSeconds"
+  }
+  if ($PlaybackSeconds -ne 0) {
+    throw "StrictPaidAuthority requires complete canonical media playback; PlaybackSeconds must be 0"
+  }
+  if ($SkipPhysicalOutputContentStt) {
+    throw "StrictPaidAuthority does not permit skipping local physical-output authority"
+  }
+  $strictCanonicalMedia = (Resolve-Path -LiteralPath (Join-Path $workspaceRoot "scripts/testing/fixtures/watch-mode-en-original.wav") -ErrorAction Stop).Path
+  $strictRequestedMedia = (Resolve-Path -LiteralPath $MediaPath -ErrorAction Stop).Path
+  if (-not $strictRequestedMedia.Equals($strictCanonicalMedia, [StringComparison]::OrdinalIgnoreCase)) {
+    throw "StrictPaidAuthority requires canonical media: $strictCanonicalMedia"
+  }
+  $strictDeclaredHash = ((Get-Content -LiteralPath (Join-Path $workspaceRoot "scripts/testing/fixtures/watch-mode-en-original.sha256") -Raw -Encoding UTF8).Trim() -split '\s+')[0].ToLowerInvariant()
+  $strictActualHash = (Get-FileHash -LiteralPath $strictRequestedMedia -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($strictActualHash -ne $strictDeclaredHash) {
+    throw "StrictPaidAuthority canonical media checksum mismatch before provider launch"
+  }
+}
 
 if ($RecoverPhysicalOutputContentRunDirectory) {
   $recoveryDirectory = (Resolve-Path -LiteralPath $RecoverPhysicalOutputContentRunDirectory -ErrorAction Stop).Path
@@ -3884,7 +4439,7 @@ if ($DryRun) {
   $defaultConfigPath = Join-Path $workspaceRoot "apps/desktop/src-tauri/defaults/app-config.default.json"
   foreach ($mode in @("process-exclusion", "virtual-driver", "echo-cancel")) {
     $probeConfig = Get-Content -LiteralPath $defaultConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Set-WatchModelOnConfig $probeConfig $WatchModelId $WatchRealtimeProtocol
+    Set-WatchModelOnConfig $probeConfig $WatchModelId $WatchRealtimeProtocol ([bool]$StrictPaidAuthority)
     Set-WatchModeSecondaryConfig $probeConfig $SubtitleTranslationModelId $InboundSecondaryAudioModelId $mode $SubtitleTranslationMode
     $injected = $probeConfig.devices.feedbackLoopPrevention
     if ($injected -ne $mode) {
@@ -4458,6 +5013,16 @@ try {
   Assert-WatchSessionReportFile $requiredWatchReportPath | Out-Null
   if ($reportWaitStep -and -not $reportWaitStep.ok) {
     throw "same-process Watch report did not complete within the desktop launch deadline: $($reportWaitStep.error)"
+  }
+
+  if ($StrictPaidAuthority) {
+    $strictBudgetStep = Invoke-Step "validate strict paid external provider budget" {
+      Write-StrictPaidCellBudget $outputDir $appLogBeforePlayback $runMarker
+    } -ContinueOnError
+    $steps += $strictBudgetStep
+    if (-not $strictBudgetStep.ok) {
+      throw $strictBudgetStep.error
+    }
   }
 
   Save-WatchModeRunArtifacts $outputDir $driverProbe $playbackStep $steps $runMarker $startedAtLocal $criticalFailureMessage

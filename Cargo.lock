@@ -3738,6 +3738,7 @@ dependencies = [
  "omni-webrtc-aec3",
  "png 0.18.1",
  "reqwest",
+ "ring",
  "rodio",
  "rusqlite",
  "serde",

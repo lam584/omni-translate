@@ -11,7 +11,7 @@ export type ProviderRoutingDecision = { subtitlePriority: 'balanced' | 'subtitle
 
 export type ProviderProbeCheckRuntime = { id: string, key: 'streaming' | 'latency' | 'error-shape' | 'response-shape', label: string, status: ProviderProbeCheckStatus, summary: string, };
 
-export type ProviderProbeProfileRuntime = { id: string, templateId: string, providerId: string, verdict: ProviderProbeVerdict, checkedAt: string, measuredLatencyMs: number, latencyBudgetMs: number, streamSupported: boolean, errorShapeStable: boolean, responseShapeStable: boolean, transportRequested: string, transportEffective: string, fallbackApplied: boolean, checks: Array<ProviderProbeCheckRuntime>, guidance: Array<string>, routingDecision: ProviderRoutingDecision, error: ProviderRuntimeError | null, };
+export type ProviderProbeProfileRuntime = { id: string, templateId: string, providerId: string, verdict: ProviderProbeVerdict, checkedAt: string, measuredLatencyMs: number, latencyBudgetMs: number, streamSupported: boolean, errorShapeStable: boolean, responseShapeStable: boolean, transportRequested: string, transportEffective: string, fallbackApplied: boolean, inputTokens: number | null, outputTokens: number | null, audioSeconds: number | null, checks: Array<ProviderProbeCheckRuntime>, guidance: Array<string>, routingDecision: ProviderRoutingDecision, error: ProviderRuntimeError | null, };
 
 export type ProviderStreamEventRecord = { eventType: string, summary: string, segmentId: string | null, textDelta: string | null, text: string | null, audioChunkRef: string | null, };
 

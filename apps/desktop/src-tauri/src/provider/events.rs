@@ -47,6 +47,15 @@ pub(crate) async fn probe_provider(app: AppHandle, provider: ProviderDraftInput)
             verdict: result.verdict.clone(),
             checked_at: result.checked_at.clone(),
             transport_effective: result.transport_effective.clone(),
+            configured_model: None,
+            model: None,
+            protocol: None,
+            preflight_authorization: None,
+            provider_connect_started_at: None,
+            provider_connect_completed_at: None,
+            input_tokens: result.input_tokens,
+            output_tokens: result.output_tokens,
+            audio_seconds: result.audio_seconds,
         });
     }
     let level = if result.error.is_some() || result.verdict != "available" {

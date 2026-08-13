@@ -18,6 +18,7 @@ import {
   STRICT_MATRIX_SCHEMA_VERSION,
   canonicalJson,
   currentAuthorityImplementationHashes,
+  currentPaidAuthorityImplementationHashes,
   currentAuthorityRuntimeBinaryHashes,
   fileAuthorityEntry,
   forbiddenCellArtifactPaths,
@@ -33,7 +34,59 @@ import {
   RELEASE_MODELS,
   balancedReleasePlanFailure,
 } from './watch-mode-balanced-release-plan.mjs';
+import {
+  EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ,
+  MATRIX_EXTERNAL_PROVIDER_BUDGET_FILE,
+  STRICT_PAID_CELL_CEILING_SECONDS,
+  STRICT_PAID_MATRIX_CEILING_SECONDS,
+  STRICT_PAID_MODEL_PROTOCOLS,
+  STRICT_PAID_PROVIDER_IDENTITY,
+  assertCellExternalProviderBudget,
+  assertMatrixExternalProviderBudget,
+} from './watch-mode-external-provider-budget.mjs';
+import {
+  SHARD_CELL_RESULT_FILE,
+  SHARD_EXECUTION_PLAN_FILE,
+  SHARD_ALLOWED_WORKER_COUNTS,
+  SHARD_MANIFEST_FILE,
+  SHARD_MATRIX_CELL_COUNT,
+  SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES,
+  currentShardOrchestrationImplementationHashes,
+  sameAuthorityInventory as sameShardAuthorityInventory,
+  sha256Canonical,
+  validateShardManifest,
+  validateWorkerReadinessRequest,
+  validateWorkerZeroProviderReadinessAuthority,
+  verifyCellLease,
+  verifySignedExecutionPlan,
+} from './watch-mode-shard-authority.mjs';
+import {
+  COORDINATOR_AGGREGATE_FILE,
+  COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT,
+  COORDINATOR_PROVIDER_PREFLIGHT_FILE,
+  COORDINATOR_PROVIDER_PREFLIGHT_INVENTORY_FILE,
+  COORDINATOR_PROVIDER_PREFLIGHT_INVENTORY_KIND,
+  COORDINATOR_PROVIDER_PREFLIGHT_KIND,
+  validateCoordinatorAggregate,
+} from './run-watch-mode-live-coordinator.mjs';
+import { buildTranslatedPcmLoopbackAuthority } from './watch-mode-translated-pcm-loopback.mjs';
+import { validateRunCanonicalSourceAuthority } from './watch-mode-canonical-source-authority.mjs';
 import { verifyLocalIsolationManifest } from './watch-mode-local-isolation.mjs';
+import { validateProviderPreflightRawAuthority } from './watch-mode-provider-preflight-authority.mjs';
+import {
+  PROVIDER_PREFLIGHT_COMPLETION_FILE,
+  PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_FILE,
+  PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND,
+  PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
+  PROVIDER_PREFLIGHT_GRANT_FILE,
+  PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY,
+  PROVIDER_PREFLIGHT_MODEL,
+  PROVIDER_PREFLIGHT_PROTOCOL,
+  PROVIDER_PREFLIGHT_PROVIDER_ID,
+  providerPreflightReservationFileName,
+  validateProviderPreflightAuthorizationAuthorities,
+  verifyProviderPreflightCompletion,
+} from './watch-mode-provider-preflight-authorization.mjs';
 
 export const STRICT_MATRIX_VERIFICATION_ARTIFACT_KIND = 'watch-mode-strict-matrix-verification';
 
@@ -68,7 +121,11 @@ export function writeStrictMatrixVerificationReceipt({
     sourceManifestBytes: sourceManifest.bytes,
     sourceManifestSha256: sourceManifest.sha256,
     implementationHashes: authority.implementationHashes,
+    paidImplementationHashes: authority.paidImplementationHashes,
     runtimeBinaryHashes: authority.runtimeBinaryHashes,
+    externalProviderBudget: manifest.externalProviderBudget,
+    ...(manifest.shardExecution ? { shardExecution: manifest.shardExecution } : {}),
+    ...(manifest.matrixIntegration ? { matrixIntegration: manifest.matrixIntegration } : {}),
     cells: manifest.cells.map((cell) => ({
       cellId: cell.cellId,
       tier: cell.tier,
@@ -82,6 +139,7 @@ export function writeStrictMatrixVerificationReceipt({
       receiptPath: cell.receiptPath,
       receiptBytes: cell.receiptBytes,
       receiptSha256: cell.receiptSha256,
+      ...(cell.shardAuthority ? { shardAuthority: cell.shardAuthority } : {}),
     })),
     verdict: 'passed',
   };
@@ -96,6 +154,7 @@ export function validateStrictMatrixVerificationReceipt({
   manifest,
   currentProvenance,
   implementationHashes,
+  paidImplementationHashes = currentPaidAuthorityImplementationHashes(),
   runtimeBinaryHashes,
 }) {
   const resolvedReceiptPath = path.resolve(receiptPath);
@@ -134,10 +193,26 @@ export function validateStrictMatrixVerificationReceipt({
   if (provenanceFailure) throw new Error(provenanceFailure);
   if (
     !sameAuthorityInventory(receipt.implementationHashes, implementationHashes)
+    || !sameAuthorityInventory(receipt.paidImplementationHashes, paidImplementationHashes)
     || !sameAuthorityInventory(receipt.runtimeBinaryHashes, runtimeBinaryHashes)
   ) {
-    throw new Error('strict matrix verification receipt implementation/runtime authority mismatch');
+    throw new Error('strict matrix verification receipt implementation/paid/runtime authority mismatch');
   }
+  assertExactObject(
+    receipt.externalProviderBudget,
+    manifest.externalProviderBudget,
+    'strict matrix verification receipt external provider budget',
+  );
+  assertExactObject(
+    receipt.shardExecution,
+    manifest.shardExecution,
+    'strict matrix verification receipt shard execution',
+  );
+  assertExactObject(
+    receipt.matrixIntegration,
+    manifest.matrixIntegration,
+    'strict matrix verification receipt shard matrix integration',
+  );
   const expectedCells = manifest.cells.map((cell) => ({
     cellId: cell.cellId,
     tier: cell.tier,
@@ -151,6 +226,7 @@ export function validateStrictMatrixVerificationReceipt({
     receiptPath: cell.receiptPath,
     receiptBytes: cell.receiptBytes,
     receiptSha256: cell.receiptSha256,
+    ...(cell.shardAuthority ? { shardAuthority: cell.shardAuthority } : {}),
   }));
   assertExactObject(receipt.cells, expectedCells, 'strict matrix verification receipt cells');
   return { receiptPath: resolvedReceiptPath, receipt };
@@ -633,6 +709,7 @@ function assertCanonicalVerificationBinding({
   evidenceRoot,
   currentProvenance,
   implementationHashes,
+  paidImplementationHashes,
   runtimeBinaryHashes,
 }) {
   if (manifest.verification !== 'passed') return;
@@ -679,11 +756,31 @@ function assertCanonicalVerificationBinding({
   if (provenanceFailure) throw new Error(provenanceFailure);
   if (
     !sameAuthorityInventory(receipt.implementationHashes, implementationHashes)
+    || !sameAuthorityInventory(receipt.paidImplementationHashes, paidImplementationHashes)
     || !sameAuthorityInventory(receipt.runtimeBinaryHashes, runtimeBinaryHashes)
   ) {
-    throw new Error('canonical strict verification receipt implementation/runtime authority mismatch');
+    throw new Error('canonical strict verification receipt implementation/paid/runtime authority mismatch');
   }
+  assertExactObject(
+    receipt.externalProviderBudget,
+    manifest.externalProviderBudget,
+    'canonical strict verification receipt external provider budget',
+  );
+  assertExactObject(
+    receipt.shardExecution,
+    manifest.shardExecution,
+    'canonical strict verification receipt shard execution',
+  );
+  assertExactObject(
+    receipt.matrixIntegration,
+    manifest.matrixIntegration,
+    'canonical strict verification receipt shard matrix integration',
+  );
   const expectedCells = manifest.cells.map((cell) => ({
+    cellId: cell.cellId,
+    tier: cell.tier,
+    providerMode: cell.providerMode,
+    durationSeconds: cell.durationSeconds,
     modelId: cell.modelId,
     feedbackLoopPrevention: cell.feedbackLoopPrevention,
     deviceClass: cell.deviceClass,
@@ -692,8 +789,1461 @@ function assertCanonicalVerificationBinding({
     receiptPath: cell.receiptPath,
     receiptBytes: cell.receiptBytes,
     receiptSha256: cell.receiptSha256,
+    ...(cell.shardAuthority ? { shardAuthority: cell.shardAuthority } : {}),
   }));
   assertExactObject(receipt.cells, expectedCells, 'canonical strict verification receipt cells');
+}
+
+function assertStrictMatrixExternalProviderBudget({
+  manifest,
+  evidenceRoot,
+  releaseCells,
+  cellLedgers,
+}) {
+  if (!manifest.externalProviderBudget || typeof manifest.externalProviderBudget !== 'object') {
+    throw new Error('strict authority manifest is missing the external provider budget authority');
+  }
+  const ledgerPath = validateFileAuthorityEntry(
+    evidenceRoot,
+    {
+      path: manifest.externalProviderBudget.ledgerPath,
+      bytes: manifest.externalProviderBudget.ledgerBytes,
+      sha256: manifest.externalProviderBudget.ledgerSha256,
+    },
+    MATRIX_EXTERNAL_PROVIDER_BUDGET_FILE,
+    'strict matrix external provider budget ledger',
+  );
+  let recorded;
+  try {
+    recorded = assertMatrixExternalProviderBudget(ledgerPath, cellLedgers, {
+      expectedCells: releaseCells,
+    });
+  } catch (error) {
+    throw new Error(`strict matrix external provider budget authority failed: ${error.message}`);
+  }
+  const manifestProjection = { ...manifest.externalProviderBudget };
+  delete manifestProjection.ledgerPath;
+  delete manifestProjection.ledgerBytes;
+  delete manifestProjection.ledgerSha256;
+  assertExactObject(
+    manifestProjection,
+    recorded,
+    'strict matrix external provider budget manifest projection',
+  );
+
+  const expectedReservedSeconds = releaseCells.reduce(
+    (total, cell) => total + Number(cell.durationSeconds),
+    0,
+  );
+  const matrixSampleCap = STRICT_PAID_MATRIX_CEILING_SECONDS
+    * EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ;
+  if (
+    recorded.passed !== true
+    || Number(recorded.matrixCeilingSeconds) !== STRICT_PAID_MATRIX_CEILING_SECONDS
+    || Number(recorded.cellCeilingSeconds) !== STRICT_PAID_CELL_CEILING_SECONDS
+    || Number(recorded.cellCount) !== releaseCells.length
+    || Number(recorded.reservedSessionSeconds) !== expectedReservedSeconds
+    || expectedReservedSeconds > STRICT_PAID_MATRIX_CEILING_SECONDS
+    || !Number.isInteger(Number(recorded.actualProviderInputSamples))
+    || Number(recorded.actualProviderInputSamples) <= 0
+    || Number(recorded.actualProviderInputSamples) > matrixSampleCap
+    || Number(recorded.auxiliaryExternalAudioSeconds) !== 0
+    || !Array.isArray(recorded.violations)
+    || recorded.violations.length !== 0
+  ) {
+    throw new Error(
+      `strict matrix external provider budget must bind ${releaseCells.length} ordered cells, `
+      + `${expectedReservedSeconds}s reserved, and at most ${matrixSampleCap} actual 16 kHz samples`,
+    );
+  }
+  const expectedCellIds = releaseCells.map((cell) => cell.cellId);
+  const recordedCellIds = recorded.cells?.map((cell) => cell.cellId);
+  const leaseIds = recorded.cells?.map((cell) => cell.leaseId);
+  if (canonicalJson(recordedCellIds) !== canonicalJson(expectedCellIds)) {
+    throw new Error('strict matrix external provider budget cell ids/order do not match the release plan');
+  }
+  if (
+    !Array.isArray(leaseIds)
+    || leaseIds.length !== releaseCells.length
+    || leaseIds.some((leaseId) => typeof leaseId !== 'string' || !leaseId.trim())
+    || new Set(leaseIds).size !== releaseCells.length
+  ) {
+    throw new Error('strict matrix external provider budget requires one unique non-empty Rust leaseId per cell');
+  }
+  return recorded;
+}
+
+export function assertStrictTranslatedPcmLoopbackAuthority({
+  runDirectory,
+  cell,
+  cellExternalProviderBudget,
+  index,
+}) {
+  if (cell.feedbackLoopPrevention === 'echo-cancel') return null;
+  const recordingAuthority = readJson(path.join(runDirectory, 'physical-output-recording.json'));
+  const rebuilt = buildTranslatedPcmLoopbackAuthority({
+    runDirectory,
+    appLogPath: path.join(runDirectory, 'app.log'),
+    runMarker: cellExternalProviderBudget.runMarker,
+    recordingStartedAtEpochMs: Number(recordingAuthority.recordingStartedAtEpochMs),
+    cellId: cell.cellId,
+    leaseId: cellExternalProviderBudget.providerSendBoundary?.leaseId,
+    modelId: cell.modelId,
+    protocol: cellExternalProviderBudget.providerSendBoundary?.protocol,
+  });
+  if (rebuilt.passed !== true) {
+    throw new Error(
+      `strict matrix cell ${index} translated PCM loopback authority failed raw reconstruction: `
+      + rebuilt.violations.join('; '),
+    );
+  }
+  const matcherOutput = readJson(path.join(runDirectory, 'translated-pcm-loopback.stdout.json'));
+  const physicalAuthority = readJson(path.join(runDirectory, 'physical-output-content.json'));
+  assertExactObject(
+    matcherOutput,
+    rebuilt,
+    `strict matrix cell ${index} translated PCM matcher output`,
+  );
+  assertExactObject(
+    physicalAuthority.translatedSpeech?.acousticAuthority,
+    rebuilt,
+    `strict matrix cell ${index} physical translated PCM acoustic authority`,
+  );
+  return rebuilt;
+}
+
+const portableAuthorityPath = (...parts) => parts
+  .map((part) => String(part ?? '').replaceAll('\\', '/').replace(/^\/+|\/+$/g, ''))
+  .filter(Boolean)
+  .join('/');
+
+function strictAuthorityTimestamp(value, label) {
+  const text = String(value ?? '').trim();
+  const timestamp = /^unix-ms:\d+$/.test(text)
+    ? Number(text.slice('unix-ms:'.length))
+    : /^unix:\d+$/.test(text)
+      ? Number(text.slice('unix:'.length)) * 1_000
+      : Date.parse(text);
+  if (!Number.isFinite(timestamp)) throw new Error(`${label} is missing or invalid`);
+  return timestamp;
+}
+
+function strictAuthorityTimestampInterval(value, label) {
+  const text = String(value ?? '').trim();
+  if (/^unix:\d+$/.test(text)) {
+    const start = Number(text.slice('unix:'.length)) * 1_000;
+    return { start, end: start + 999 };
+  }
+  const timestamp = strictAuthorityTimestamp(value, label);
+  return { start: timestamp, end: timestamp };
+}
+
+function strictTextOnlyPreflightUsage(value, tokenBudget, label) {
+  const inputTokens = value?.inputTokens;
+  const outputTokens = value?.outputTokens;
+  const audioSeconds = value?.audioSeconds;
+  if (
+    tokenBudget?.maxInputTokens !== 4_096
+    || tokenBudget?.maxOutputTokens !== 256
+    || !Number.isSafeInteger(inputTokens)
+    || inputTokens < 0
+    || inputTokens > 4_096
+    || !Number.isSafeInteger(outputTokens)
+    || outputTokens < 0
+    || outputTokens > 256
+    || (audioSeconds !== null && audioSeconds !== 0)
+  ) {
+    throw new Error(`${label} does not bind present token counters within 4096/256 and null|0 audioSeconds`);
+  }
+  return { inputTokens, outputTokens, audioSeconds };
+}
+
+function assertPhysicalSourceWindowPrefix(runDirectory, canonicalAuthority, index) {
+  const recordingPath = path.join(runDirectory, 'physical-output-recording-16k-mono.pcm');
+  const sourceWindowPath = path.join(
+    runDirectory,
+    'physical-output-recording-source-window-16k-mono.pcm',
+  );
+  const recording = fs.readFileSync(recordingPath);
+  const sourceWindow = fs.readFileSync(sourceWindowPath);
+  const physicalContent = readJson(path.join(runDirectory, 'physical-output-content.json'));
+  const rebuiltWindow = canonicalAuthority?.physicalSourceWaveform?.sourceWindowPcm;
+  if (
+    sourceWindow.length === 0
+    || sourceWindow.length > recording.length
+    || !sourceWindow.equals(recording.subarray(0, sourceWindow.length))
+    || rebuiltWindow?.path !== 'physical-output-recording-source-window-16k-mono.pcm'
+    || Number(rebuiltWindow?.bytes) !== sourceWindow.length
+    || physicalContent.sttSourceWindow?.sampleRateHz !== 16_000
+    || Number(physicalContent.sttSourceWindow?.bytes) !== sourceWindow.length
+    || !path.win32.isAbsolute(String(physicalContent.sttSourceWindow?.path ?? ''))
+    || path.win32.basename(String(physicalContent.sttSourceWindow?.path ?? ''))
+      !== path.basename(sourceWindowPath)
+  ) {
+    throw new Error(
+      `strict matrix cell ${index} physical source window is not the exact bound prefix of the raw recording PCM`,
+    );
+  }
+}
+
+function resolveStrictAuthorityDirectory(parentDirectory, relativePath, label) {
+  const resolved = resolveAuthorityPath(parentDirectory, relativePath, label);
+  const normalized = String(relativePath ?? '').replaceAll('\\', '/');
+  let cursor = path.resolve(parentDirectory);
+  for (const component of normalized.split('/').filter(Boolean)) {
+    cursor = path.join(cursor, component);
+    let stats;
+    try {
+      stats = fs.lstatSync(cursor);
+    } catch {
+      throw new Error(`${label} is missing: ${cursor}`);
+    }
+    if (!stats.isDirectory() || stats.isSymbolicLink()) {
+      throw new Error(`${label} must contain only real, non-symlink directories: ${cursor}`);
+    }
+  }
+  return resolved;
+}
+
+function strictRecursiveFileInventory(rootDirectory, label) {
+  const root = path.resolve(rootDirectory);
+  const rootStats = fs.lstatSync(root);
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new Error(`${label} must be a real non-symlink directory`);
+  }
+  const entries = [];
+  const visit = (directory) => {
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      const candidate = path.join(directory, entry.name);
+      const stats = fs.lstatSync(candidate);
+      const relativePath = path.relative(root, candidate).replaceAll('\\', '/');
+      if (stats.isSymbolicLink()) {
+        throw new Error(`${label} may not contain symlinks: ${relativePath}`);
+      }
+      if (stats.isDirectory()) visit(candidate);
+      else if (stats.isFile()) entries.push(fileAuthorityEntry(candidate, relativePath));
+      else throw new Error(`${label} contains an unsupported filesystem entry: ${relativePath}`);
+    }
+  };
+  visit(root);
+  entries.sort((left, right) => left.path.localeCompare(right.path));
+  if (entries.length === 0) throw new Error(`${label} may not be empty`);
+  return entries;
+}
+
+export function verifyStrictShardProviderPreflightAuthorization({
+  plan,
+  executionRoot,
+  executionRootRelative,
+  evidenceRoot,
+  workspaceRoot = process.cwd(),
+  shardExecution,
+  matrixIntegration,
+  currentImplementationHashes,
+  currentRuntimeBinaryHashes,
+  currentShardImplementationHashes,
+  validationAt,
+}) {
+  const authorization = validateProviderPreflightAuthorizationAuthorities({
+    root: executionRoot,
+    grantAuthority: plan.providerPreflightGrant,
+    leaseReservationAuthorities: plan.providerPreflightLeaseReservations,
+    authorizationDigest: plan.providerPreflightAuthorization?.authorizationDigest,
+    expected: {
+      executionId: plan.executionId,
+      provenance: plan.provenance,
+      authorityImplementationHashes: currentImplementationHashes,
+      runtimeBinaryHashes: currentRuntimeBinaryHashes,
+      shardOrchestrationImplementationHashes: currentShardImplementationHashes,
+    },
+  });
+  const { grant, leaseReservations, consumption } = authorization;
+  const claimAuthority = plan.providerPreflightAuthorization?.consumptionClaim;
+  const claimPath = validateFileAuthorityEntry(
+    executionRoot,
+    claimAuthority,
+    PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_FILE,
+    'strict shard provider preflight consumption claim',
+  );
+  const claim = readJson(claimPath);
+  const expectedClaimKeys = [
+    'artifactKind',
+    'authorizationDigest',
+    'claimedAt',
+    'coordinatorKeyId',
+    'desktopExecutableBytes',
+    'desktopExecutablePath',
+    'desktopExecutableRelativePath',
+    'desktopExecutableSha256',
+    'desktopProcessId',
+    'executionId',
+    'grantDigest',
+    'retryPolicy',
+    'schemaVersion',
+  ].sort();
+  if (canonicalJson(Object.keys(claim).sort()) !== canonicalJson(expectedClaimKeys)) {
+    throw new Error('strict shard provider preflight consumption claim has unexpected or missing fields');
+  }
+  const expectedDesktopPath = path.resolve(
+    workspaceRoot,
+    ...PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE.split('/'),
+  );
+  const recordedDesktop = currentRuntimeBinaryHashes.find(
+    (entry) => entry.path === PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE,
+  );
+  const latestReservationAtMs = Math.max(...leaseReservations.map((entry) => (
+    strictAuthorityTimestamp(
+      entry.issuedAt,
+      'strict shard provider preflight reservation issuedAt',
+    )
+  )));
+  const claimAtMs = strictAuthorityTimestamp(
+    claim.claimedAt,
+    'strict shard provider preflight consumption claim claimedAt',
+  );
+  if (
+    claim.schemaVersion !== 1
+    || claim.artifactKind !== PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_KIND
+    || claim.executionId !== plan.executionId
+    || claim.grantDigest !== grant.digest
+    || claim.authorizationDigest !== authorization.authorizationDigest
+    || claim.coordinatorKeyId !== grant.signature?.keyId
+    || claimAtMs <= latestReservationAtMs
+    || !Number.isInteger(Number(claim.desktopProcessId))
+    || Number(claim.desktopProcessId) <= 0
+    || claim.desktopExecutableRelativePath !== PROVIDER_PREFLIGHT_DESKTOP_EXECUTABLE
+    || !path.isAbsolute(String(claim.desktopExecutablePath ?? ''))
+    || path.resolve(String(claim.desktopExecutablePath)) !== expectedDesktopPath
+    || Number(claim.desktopExecutableBytes) !== Number(recordedDesktop?.bytes)
+    || claim.desktopExecutableSha256 !== recordedDesktop?.sha256
+    || claim.retryPolicy !== 'new-execution-required'
+  ) {
+    throw new Error('strict shard provider preflight consumption claim does not bind the signed authorization/runtime');
+  }
+  const claimProjection = {
+    ...claim,
+    ...fileAuthorityEntry(claimPath, PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_FILE),
+  };
+  assertExactObject(
+    claimAuthority,
+    claimProjection,
+    'strict shard signed-plan provider preflight consumption claim',
+  );
+  const expectedPlanAuthorization = {
+    grantDigest: grant.digest,
+    leaseReservationDigests: leaseReservations.map((entry) => entry.digest),
+    authorizationDigest: authorization.authorizationDigest,
+    tokenBudget: structuredClone(consumption.tokenBudget),
+    consumptionClaim: claimProjection,
+  };
+  assertExactObject(
+    plan.providerPreflightAuthorization,
+    expectedPlanAuthorization,
+    'strict shard signed-plan provider preflight authorization',
+  );
+  if (
+    canonicalJson(grant.localIsolationAuthority) !== canonicalJson(plan.localIsolationAuthority)
+    || canonicalJson(grant.workerReadinessRequest) !== canonicalJson(plan.workerReadinessRequest)
+  ) {
+    throw new Error('strict shard provider preflight grant does not bind the signed plan prerequisites');
+  }
+  const expectedGrantWorkers = plan.workers.map((worker) => ({
+    workerId: worker.workerId,
+    ...(String(worker.interactiveUser ?? '').trim()
+      ? { interactiveUser: String(worker.interactiveUser).trim() }
+      : {}),
+    vmIdentity: worker.vmIdentity,
+    vmIdentityDigest: worker.vmIdentityDigest,
+    deviceProfileInstances: worker.deviceProfileInstances,
+  }));
+  assertExactObject(
+    grant.workers,
+    expectedGrantWorkers,
+    'strict shard provider preflight grant workers',
+  );
+  const expectedGrantCells = plan.cells.map((cell) => ({
+    cellIndex: cell.cellIndex,
+    cellId: cell.cellId,
+    providerId: PROVIDER_PREFLIGHT_PROVIDER_ID,
+    modelId: cell.modelId,
+    protocol: STRICT_PAID_MODEL_PROTOCOLS[cell.modelId],
+    feedbackLoopPrevention: cell.feedbackLoopPrevention,
+    deviceClass: cell.deviceClass,
+    workerId: cell.workerId,
+    waveIndex: cell.waveIndex,
+    deviceProfileInstanceId: cell.deviceProfileInstance.instanceId,
+    leaseId: cell.leaseId,
+    maxExternalAudioSamples: cell.maxExternalAudioSamples,
+  }));
+  assertExactObject(
+    grant.cells,
+    expectedGrantCells,
+    'strict shard provider preflight grant paid cells',
+  );
+
+  const requestPath = validateFileAuthorityEntry(
+    executionRoot,
+    grant.workerReadinessRequestAuthority,
+    'worker-readiness-request.json',
+    'strict shard preflight worker readiness request',
+  );
+  const request = readJson(requestPath);
+  validateWorkerReadinessRequest(request, {
+    executionId: plan.executionId,
+    provenance: plan.provenance,
+    runtimeBinaryHashes: currentRuntimeBinaryHashes,
+    workers: plan.workers,
+    assignments: plan.cells,
+  });
+  assertExactObject(
+    request,
+    plan.workerReadinessRequest,
+    'strict shard staged worker readiness request',
+  );
+  const grantGeneratedAtMs = strictAuthorityTimestamp(
+    grant.generatedAt,
+    'strict shard provider preflight grant generatedAt',
+  );
+  resolveStrictAuthorityDirectory(
+    executionRoot,
+    'worker-readiness',
+    'strict shard staged worker readiness directory',
+  );
+  const stagedWorkerReadiness = [];
+  for (let index = 0; index < plan.workers.length; index += 1) {
+    const worker = plan.workers[index];
+    const recorded = grant.workerReadinessAuthorities[index];
+    const expectedInternalPath = `worker-readiness/${worker.workerId}.json`;
+    const readinessPath = validateFileAuthorityEntry(
+      executionRoot,
+      recorded,
+      expectedInternalPath,
+      `strict shard preflight worker ${worker.workerId} readiness`,
+    );
+    const validated = validateWorkerZeroProviderReadinessAuthority({
+      receiptPath: readinessPath,
+      plan,
+      workerId: worker.workerId,
+      now: validationAt,
+      authorityPath: expectedInternalPath,
+    });
+    if (
+      recorded.workerId !== worker.workerId
+      || Number(recorded.providerCalls) !== 0
+      || recorded.driverRequired !== Boolean(
+        plan.workerReadinessRequest.workers[index].driverRequired,
+      )
+      || validated.receipt.credentialStatus?.blobNonEmpty !== true
+      || !Number.isInteger(
+        validated.receipt.credentialStatus?.credentialBlobBytes,
+      )
+      || Number(validated.receipt.credentialStatus?.credentialBlobBytes) <= 0
+      || Number(validated.receipt.credentialStatus?.credentialBlobBytes) > 2_560
+      || strictAuthorityTimestamp(
+        validated.receipt.generatedAt,
+        `strict shard worker ${worker.workerId} readiness generatedAt`,
+      ) >= grantGeneratedAtMs
+    ) {
+      throw new Error(`strict shard worker ${worker.workerId} readiness was not completed before the paid grant`);
+    }
+    stagedWorkerReadiness.push({
+      ...recorded,
+      ...fileAuthorityEntry(
+        readinessPath,
+        portableAuthorityPath(executionRootRelative, expectedInternalPath),
+      ),
+    });
+  }
+
+  const completionPath = validateFileAuthorityEntry(
+    executionRoot,
+    plan.providerPreflightCompletion,
+    PROVIDER_PREFLIGHT_COMPLETION_FILE,
+    'strict shard provider preflight completion',
+  );
+  const completion = readJson(completionPath);
+  verifyProviderPreflightCompletion(completion, grant, leaseReservations);
+  assertExactObject(
+    completion.consumptionClaim,
+    claimProjection,
+    'strict shard provider preflight completion consumption claim',
+  );
+  if (canonicalJson(completion.preflightAuthority) !== canonicalJson(plan.providerPreflightAuthority)) {
+    throw new Error('strict shard provider preflight completion does not bind the exact staged receipt authority');
+  }
+  const completionGeneratedAtMs = strictAuthorityTimestamp(
+    completion.generatedAt,
+    'strict shard provider preflight completion generatedAt',
+  );
+  const planGeneratedAtMs = strictAuthorityTimestamp(
+    plan.generatedAt,
+    'strict shard signed plan generatedAt',
+  );
+  if (completionGeneratedAtMs >= planGeneratedAtMs) {
+    throw new Error('strict shard signed plan was not generated after provider preflight completion');
+  }
+
+  const stagedGrantPath = path.join(executionRoot, PROVIDER_PREFLIGHT_GRANT_FILE);
+  assertExactObject(
+    plan.providerPreflightGrant,
+    {
+      ...fileAuthorityEntry(stagedGrantPath, PROVIDER_PREFLIGHT_GRANT_FILE),
+      digest: grant.digest,
+    },
+    'strict shard signed-plan provider preflight grant authority',
+  );
+  assertExactObject(
+    plan.providerPreflightLeaseReservations,
+    authorization.leaseReservationAuthorities,
+    'strict shard signed-plan provider preflight reservation authorities',
+  );
+  assertExactObject(
+    plan.providerPreflightCompletion,
+    {
+      ...fileAuthorityEntry(completionPath, PROVIDER_PREFLIGHT_COMPLETION_FILE),
+      digest: completion.digest,
+      grantDigest: completion.grantDigest,
+      authorizationDigest: completion.authorizationDigest,
+      tokenBudget: structuredClone(completion.preflightAuthority.tokenBudget),
+      inputTokens: completion.preflightAuthority.inputTokens,
+      outputTokens: completion.preflightAuthority.outputTokens,
+      audioSeconds: completion.preflightAuthority.audioSeconds,
+      consumptionClaim: claimProjection,
+    },
+    'strict shard signed-plan provider preflight completion authority',
+  );
+  const stagedGrant = {
+    ...fileAuthorityEntry(
+      stagedGrantPath,
+      portableAuthorityPath(executionRootRelative, PROVIDER_PREFLIGHT_GRANT_FILE),
+    ),
+    digest: grant.digest,
+  };
+  const stagedReservations = leaseReservations.map((reservation, index) => {
+    const fileName = providerPreflightReservationFileName(reservation, index);
+    const reservationPath = path.join(
+      executionRoot,
+      PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY,
+      fileName,
+    );
+    return {
+      cellId: reservation.cellId,
+      leaseId: reservation.leaseId,
+      digest: reservation.digest,
+      ...fileAuthorityEntry(
+        reservationPath,
+        portableAuthorityPath(
+          executionRootRelative,
+          PROVIDER_PREFLIGHT_LEASE_RESERVATION_DIRECTORY,
+          fileName,
+        ),
+      ),
+    };
+  });
+  const stagedCompletion = {
+    ...fileAuthorityEntry(
+      completionPath,
+      portableAuthorityPath(executionRootRelative, PROVIDER_PREFLIGHT_COMPLETION_FILE),
+    ),
+    digest: completion.digest,
+    grantDigest: completion.grantDigest,
+    authorizationDigest: completion.authorizationDigest,
+    tokenBudget: structuredClone(completion.preflightAuthority.tokenBudget),
+    inputTokens: completion.preflightAuthority.inputTokens,
+    outputTokens: completion.preflightAuthority.outputTokens,
+    audioSeconds: completion.preflightAuthority.audioSeconds,
+    consumptionClaim: {
+      ...claim,
+      ...fileAuthorityEntry(
+        claimPath,
+        portableAuthorityPath(
+          executionRootRelative,
+          PROVIDER_PREFLIGHT_CONSUMPTION_CLAIM_FILE,
+        ),
+      ),
+    },
+  };
+  const stagedAuthorization = {
+    ...expectedPlanAuthorization,
+    consumptionClaim: stagedCompletion.consumptionClaim,
+  };
+  const stagedRequest = fileAuthorityEntry(
+    requestPath,
+    portableAuthorityPath(executionRootRelative, 'worker-readiness-request.json'),
+  );
+  const expectedProjection = {
+    providerPreflightGrant: stagedGrant,
+    providerPreflightLeaseReservations: stagedReservations,
+    providerPreflightAuthorization: stagedAuthorization,
+    providerPreflightCompletion: stagedCompletion,
+    workerReadinessRequest: stagedRequest,
+    workerReadiness: stagedWorkerReadiness,
+  };
+  for (const [key, value] of Object.entries(expectedProjection)) {
+    assertExactObject(
+      shardExecution?.[key],
+      value,
+      `strict shard execution ${key}`,
+    );
+    assertExactObject(
+      matrixIntegration?.[key],
+      value,
+      `strict shard matrixIntegration ${key}`,
+    );
+  }
+  return {
+    ...authorization,
+    completion,
+    consumption,
+    claim,
+    claimProjection,
+    stagedClaimProjection: stagedCompletion.consumptionClaim,
+    projection: expectedProjection,
+  };
+}
+
+export function verifyStrictShardProviderPreflightAuthority({
+  plan,
+  executionRoot,
+  executionRootRelative,
+  evidenceRoot,
+  currentProvenance,
+  workspaceRoot,
+  validationAt,
+  authorization,
+  validateEvidence = validateProviderPreflightRawAuthority,
+}) {
+  if (typeof validateEvidence !== 'function') {
+    throw new Error('strict shard provider preflight requires an independent raw evidence validator');
+  }
+  const validatedConsumption = authorization?.consumption;
+  const expectedClaim = authorization?.claimProjection;
+  if (!validatedConsumption || !expectedClaim) {
+    throw new Error('strict shard provider preflight is missing its validated signed authorization');
+  }
+  const expectedAuthorization = {
+    ...validatedConsumption,
+    consumptionClaim: expectedClaim,
+  };
+  const expectedReceiptPath = portableAuthorityPath(
+    executionRootRelative,
+    COORDINATOR_PROVIDER_PREFLIGHT_FILE,
+  );
+  const receiptPath = validateFileAuthorityEntry(
+    evidenceRoot,
+    {
+      ...plan.providerPreflightAuthority,
+      path: expectedReceiptPath,
+    },
+    expectedReceiptPath,
+    'strict shard single provider preflight receipt',
+  );
+  const receipt = readJson(receiptPath);
+  const inventoryPath = validateFileAuthorityEntry(
+    executionRoot,
+    receipt.evidenceAuthority,
+    COORDINATOR_PROVIDER_PREFLIGHT_INVENTORY_FILE,
+    'strict shard provider preflight raw inventory',
+  );
+  const inventory = readJson(inventoryPath);
+  const rawRoot = resolveStrictAuthorityDirectory(
+    executionRoot,
+    COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT,
+    'strict shard provider preflight raw evidence root',
+  );
+  const rebuiltEntries = strictRecursiveFileInventory(
+    rawRoot,
+    'strict shard provider preflight raw evidence',
+  );
+  const rebuiltDigest = sha256Canonical(rebuiltEntries);
+  if (
+    inventory.schemaVersion !== 1
+    || inventory.artifactKind !== COORDINATOR_PROVIDER_PREFLIGHT_INVENTORY_KIND
+    || inventory.executionId !== plan.executionId
+    || inventory.scenarioId !== 'E2E-PROVIDER-PROBE'
+    || inventory.providerId !== expectedAuthorization.providerId
+    || inventory.model !== expectedAuthorization.model
+    || inventory.protocol !== expectedAuthorization.protocol
+    || Number(inventory.invocationCount) !== expectedAuthorization.invocationCount
+    || inventory.operation !== expectedAuthorization.operation
+    || inventory.inputMode !== expectedAuthorization.inputMode
+    || Number(inventory.externalAudioSamples) !== expectedAuthorization.externalAudioSamples
+    || inventory.grantDigest !== expectedAuthorization.grantDigest
+    || canonicalJson(inventory.leaseReservationDigests)
+      !== canonicalJson(expectedAuthorization.leaseReservationDigests)
+    || inventory.authorizationDigest !== expectedAuthorization.authorizationDigest
+    || canonicalJson(inventory.consumptionClaim) !== canonicalJson(expectedClaim)
+    || canonicalJson(inventory.tokenBudget)
+      !== canonicalJson(expectedAuthorization.tokenBudget)
+    || inventory.rawEvidenceRoot !== COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT
+    || Number(inventory.entryCount) !== rebuiltEntries.length
+    || inventory.inventoryDigest !== rebuiltDigest
+  ) {
+    throw new Error('strict shard provider preflight inventory identity/digest is invalid');
+  }
+  assertExactObject(
+    inventory.entries,
+    rebuiltEntries,
+    'strict shard provider preflight exact raw inventory',
+  );
+
+  const providerProbeResult = readJson(path.join(rawRoot, 'provider-probe-result.json'));
+  if (
+    receipt.schemaVersion !== 1
+    || receipt.artifactKind !== COORDINATOR_PROVIDER_PREFLIGHT_KIND
+    || receipt.executionId !== plan.executionId
+    || receipt.scenarioId !== 'E2E-PROVIDER-PROBE'
+    || Number(receipt.invocationCount) !== 1
+    || receipt.operation !== 'text-translation-preflight'
+    || receipt.inputMode !== 'text-only'
+    || receipt.status !== 'completed'
+    || Number(receipt.externalAudioSamples) !== 0
+    || receipt.providerId !== PROVIDER_PREFLIGHT_PROVIDER_ID
+    || receipt.providerId !== expectedAuthorization.providerId
+    || receipt.model !== PROVIDER_PREFLIGHT_MODEL
+    || receipt.model !== expectedAuthorization.model
+    || receipt.protocol !== PROVIDER_PREFLIGHT_PROTOCOL
+    || receipt.protocol !== expectedAuthorization.protocol
+    || receipt.grantDigest !== expectedAuthorization.grantDigest
+    || canonicalJson(receipt.leaseReservationDigests)
+      !== canonicalJson(expectedAuthorization.leaseReservationDigests)
+    || receipt.authorizationDigest !== expectedAuthorization.authorizationDigest
+    || canonicalJson(receipt.consumptionClaim) !== canonicalJson(expectedClaim)
+    || canonicalJson(receipt.tokenBudget)
+      !== canonicalJson(expectedAuthorization.tokenBudget)
+    || receipt.rawEvidenceRoot !== COORDINATOR_PROVIDER_PREFLIGHT_EVIDENCE_ROOT
+    || Number(receipt.rawEvidenceCount) !== rebuiltEntries.length
+    || receipt.rawEvidenceDigest !== rebuiltDigest
+    || providerProbeResult.providerId !== expectedAuthorization.providerId
+    || providerProbeResult.model !== expectedAuthorization.model
+    || providerProbeResult.protocol !== expectedAuthorization.protocol
+    || providerProbeResult.operation !== expectedAuthorization.operation
+    || providerProbeResult.inputMode !== expectedAuthorization.inputMode
+    || Number(providerProbeResult.externalAudioSamples)
+      !== expectedAuthorization.externalAudioSamples
+    || Number(providerProbeResult.providerInvocationCount)
+      !== expectedAuthorization.invocationCount
+  ) {
+    throw new Error('strict shard provider preflight is not exactly one completed text-only invocation');
+  }
+
+  const emitterResult = readJson(path.join(rawRoot, 'emitter-result.json'));
+  const rawProbeResult = providerProbeResult.rawProbeResult;
+  const diagnosticsProbeSummary = readJson(path.join(
+    rawRoot,
+    'diagnostics-bundle',
+    'snapshots',
+    'extra',
+    'provider-probe-summary.json',
+  ));
+  const diagnosticsConfig = readJson(path.join(
+    rawRoot,
+    'diagnostics-bundle',
+    'snapshots',
+    'config.json',
+  ));
+  const configuredProviders = Array.isArray(diagnosticsConfig?.providers)
+    ? diagnosticsConfig.providers.filter((provider) => (
+      provider?.providerId === PROVIDER_PREFLIGHT_PROVIDER_ID
+      && provider?.templateId === STRICT_PAID_PROVIDER_IDENTITY.templateId
+    ))
+    : [];
+  const configuredProvider = configuredProviders[0];
+  const preflightUsages = [
+    [providerProbeResult, 'strict shard provider preflight top-level probe'],
+    [rawProbeResult, 'strict shard provider preflight raw provider result'],
+    [diagnosticsProbeSummary, 'strict shard provider preflight diagnostics summary'],
+    [emitterResult, 'strict shard provider preflight emitter'],
+  ].map(([value, label]) => strictTextOnlyPreflightUsage(
+    value,
+    expectedAuthorization.tokenBudget,
+    label,
+  ));
+  if (preflightUsages.some((usage) => (
+    canonicalJson(usage) !== canonicalJson(preflightUsages[0])
+  ))) {
+    throw new Error('strict shard provider preflight token/audio usage differs across raw layers');
+  }
+  for (const [candidate, label] of [
+    [inventory, 'strict shard provider preflight inventory'],
+    [receipt, 'strict shard provider preflight receipt'],
+  ]) {
+    const usage = strictTextOnlyPreflightUsage(
+      candidate,
+      expectedAuthorization.tokenBudget,
+      label,
+    );
+    if (canonicalJson(usage) !== canonicalJson(preflightUsages[0])) {
+      throw new Error(`${label} token/audio usage does not match the independently rebuilt raw evidence`);
+    }
+  }
+  const authorizationObservedAt = providerProbeResult.preflightAuthorization
+    ?.authorizationObservedAt;
+  const observedAuthorization = {
+    ...expectedAuthorization,
+    leaseReservations: authorization.leaseReservations.map((reservation, index) => ({
+      cellIndex: index,
+      cellId: reservation.cellId,
+      workerId: reservation.workerId,
+      waveIndex: reservation.waveIndex,
+      leaseId: reservation.leaseId,
+      maxExternalAudioSamples: reservation.maxExternalAudioSamples,
+      digest: reservation.digest,
+      issuedAt: reservation.issuedAt,
+    })),
+    grantGeneratedAt: authorization.grant.generatedAt,
+    reservationIssuedAts: authorization.leaseReservations.map((reservation) => (
+      reservation.issuedAt
+    )),
+    authorizationObservedAt,
+  };
+  const observedConfiguredModel = String(providerProbeResult.configuredModel ?? '').trim();
+  const connectStartedAt = providerProbeResult.providerConnectStartedAt;
+  const connectCompletedAt = providerProbeResult.providerConnectCompletedAt;
+  if (
+    !observedConfiguredModel
+    || configuredProviders.length !== 1
+    || configuredProvider?.model !== observedConfiguredModel
+    || configuredProvider?.kind !== STRICT_PAID_PROVIDER_IDENTITY.providerKind
+    || configuredProvider?.transport !== 'websocket'
+    || configuredProvider?.streamEnabled !== true
+    || configuredProvider?.authRef?.kind !== 'credential-ref'
+    || configuredProvider?.authRef?.headerName !== 'Authorization'
+    || String(configuredProvider?.authRef?.scheme ?? '').toLowerCase() !== 'bearer'
+    || !Array.isArray(configuredProvider?.customHeaders)
+    || configuredProvider.customHeaders.length !== 0
+    || configuredProvider?.systemPromptTemplate !== 'game-live-translation-cn'
+    || Number(configuredProvider?.timeoutMs) !== 12_000
+    || Number(configuredProvider?.temperature) !== 0.2
+    || Number(configuredProvider?.maxOutputTokens) !== 256
+    || canonicalJson(configuredProvider?.responseModalities) !== canonicalJson(['text'])
+    || configuredProvider?.authRef?.reference
+      !== STRICT_PAID_PROVIDER_IDENTITY.credentialReference
+    || providerProbeResult.templateId !== STRICT_PAID_PROVIDER_IDENTITY.templateId
+    || providerProbeResult.endpointHost !== STRICT_PAID_PROVIDER_IDENTITY.endpointHost
+    || providerProbeResult.transportRequested !== 'websocket'
+    || providerProbeResult.effectiveTransport !== 'websocket'
+    || rawProbeResult?.transportRequested !== 'websocket'
+    || rawProbeResult?.transportEffective !== 'websocket'
+    || rawProbeResult?.fallbackApplied !== false
+    || diagnosticsProbeSummary?.transportEffective !== 'websocket'
+    || providerProbeResult.credentialStatus?.backend !== 'windows-credential-manager'
+    || providerProbeResult.credentialStatus?.exists !== true
+    || providerProbeResult.credentialStatus?.reference
+      !== STRICT_PAID_PROVIDER_IDENTITY.credentialReference
+  ) {
+    throw new Error('strict shard provider preflight configured provider identity is invalid');
+  }
+  try {
+    const configuredEndpoint = new URL(configuredProvider.baseUrl);
+    if (
+      configuredEndpoint.protocol !== 'https:'
+      || configuredEndpoint.hostname !== STRICT_PAID_PROVIDER_IDENTITY.endpointHost
+      || configuredEndpoint.port
+      || configuredEndpoint.username
+      || configuredEndpoint.password
+    ) {
+      throw new Error('endpoint mismatch');
+    }
+  } catch {
+    throw new Error('strict shard provider preflight configured endpoint is invalid');
+  }
+  assertExactObject(
+    providerProbeResult.preflightAuthorization,
+    observedAuthorization,
+    'strict shard provider preflight consumed authorization',
+  );
+  for (const [candidate, label] of [
+    [rawProbeResult, 'raw provider result'],
+    [diagnosticsProbeSummary, 'diagnostics provider summary'],
+  ]) {
+    if (
+      candidate?.configuredModel !== observedConfiguredModel
+      || candidate?.model !== expectedAuthorization.model
+      || candidate?.protocol !== expectedAuthorization.protocol
+      || candidate?.providerConnectStartedAt !== connectStartedAt
+      || candidate?.providerConnectCompletedAt !== connectCompletedAt
+    ) {
+      throw new Error(`strict shard provider preflight ${label} model/protocol/connect authority mismatch`);
+    }
+    assertExactObject(
+      candidate.preflightAuthorization,
+      observedAuthorization,
+      `strict shard provider preflight ${label} consumed authorization`,
+    );
+  }
+  if (
+    emitterResult.preflightAuthorization == null
+    || emitterResult.providerConnectStartedAt !== connectStartedAt
+    || emitterResult.providerConnectCompletedAt !== connectCompletedAt
+    || Number(emitterResult.desktopProcessId) !== Number(expectedClaim.desktopProcessId)
+    || emitterResult.desktopExecutable !== expectedClaim.desktopExecutablePath
+    || emitterResult.desktopExecutableSha256 !== expectedClaim.desktopExecutableSha256
+  ) {
+    throw new Error('strict shard provider preflight emitter does not bind the provider connect authority');
+  }
+  assertExactObject(
+    emitterResult.preflightAuthorization,
+    observedAuthorization,
+    'strict shard provider preflight emitter consumed authorization',
+  );
+  const lastReservationAtMs = Math.max(...authorization.leaseReservations.map((entry) => (
+    strictAuthorityTimestamp(entry.issuedAt, 'strict shard provider preflight reservation issuedAt')
+  )));
+  const authorizationObservedAtMs = strictAuthorityTimestamp(
+    authorizationObservedAt,
+    'strict shard provider preflight authorizationObservedAt',
+  );
+  const connectStartedAtMs = strictAuthorityTimestamp(
+    connectStartedAt,
+    'strict shard provider preflight providerConnectStartedAt',
+  );
+  const checkedAtInterval = strictAuthorityTimestampInterval(
+    providerProbeResult.checkedAt,
+    'strict shard provider preflight checkedAt',
+  );
+  const connectCompletedAtMs = strictAuthorityTimestamp(
+    connectCompletedAt,
+    'strict shard provider preflight providerConnectCompletedAt',
+  );
+  if (
+    authorizationObservedAtMs <= lastReservationAtMs
+    || authorizationObservedAtMs >= strictAuthorityTimestamp(
+      expectedClaim.claimedAt,
+      'strict shard provider preflight consumption claim claimedAt',
+    )
+    || strictAuthorityTimestamp(
+      expectedClaim.claimedAt,
+      'strict shard provider preflight consumption claim claimedAt',
+    ) >= connectStartedAtMs
+    || checkedAtInterval.end < connectStartedAtMs
+    || checkedAtInterval.start > connectCompletedAtMs
+    || connectCompletedAtMs > strictAuthorityTimestamp(
+      emitterResult.completedAt,
+      'strict shard provider preflight emitter completedAt',
+    )
+  ) {
+    throw new Error('strict shard provider preflight authorization/connect timeline is invalid');
+  }
+  for (const key of [
+    'providerId',
+    'model',
+    'protocol',
+    'operation',
+    'inputMode',
+    'status',
+    'externalAudioSamples',
+    'invocationCount',
+    'scenarioId',
+    'rawEvidenceRoot',
+    'rawEvidenceCount',
+    'rawEvidenceDigest',
+    'executionId',
+    'grantDigest',
+    'leaseReservationDigests',
+    'authorizationDigest',
+    'consumptionClaim',
+    'tokenBudget',
+    'inputTokens',
+    'outputTokens',
+    'audioSeconds',
+    'generatedAt',
+  ]) {
+    if (canonicalJson(plan.providerPreflightAuthority?.[key]) !== canonicalJson(receipt[key])) {
+      throw new Error(`strict shard signed plan provider preflight ${key} mismatch`);
+    }
+  }
+
+  const validationAtMs = Number(
+    validationAt instanceof Date ? validationAt.getTime() : validationAt,
+  );
+  const raw = validateEvidence(rawRoot, {
+    now: validationAtMs,
+    workspaceRoot,
+    implementationRoot: workspaceRoot,
+    currentProvenance,
+    expectedAuthorization,
+  });
+  if (
+    !raw.summary
+    || !Array.isArray(raw.issues)
+    || raw.issues.length !== 0
+    || raw.summary.providerId !== receipt.providerId
+    || raw.summary.model !== receipt.model
+    || raw.summary.protocol !== receipt.protocol
+    || raw.summary.executionId !== receipt.executionId
+    || raw.summary.grantDigest !== receipt.grantDigest
+    || canonicalJson(raw.summary.leaseReservationDigests)
+      !== canonicalJson(receipt.leaseReservationDigests)
+    || raw.summary.authorizationDigest !== receipt.authorizationDigest
+    || canonicalJson(raw.summary.tokenBudget)
+      !== canonicalJson(expectedAuthorization.tokenBudget)
+    || Number(raw.summary.inputTokens) !== preflightUsages[0].inputTokens
+    || Number(raw.summary.outputTokens) !== preflightUsages[0].outputTokens
+    || raw.summary.audioSeconds !== preflightUsages[0].audioSeconds
+    || raw.summary.operation !== receipt.operation
+    || raw.summary.inputMode !== receipt.inputMode
+    || Number(raw.summary.externalAudioSamples) !== Number(receipt.externalAudioSamples)
+    || Number(raw.summary.providerInvocationCount) !== Number(receipt.invocationCount)
+  ) {
+    throw new Error(
+      `strict shard provider preflight production raw authority failed: `
+      + `${raw.issues?.join('; ') || 'summary/provider/model mismatch'}`,
+    );
+  }
+  const evidenceTimes = raw.evidenceTimes ?? [];
+  const receiptGeneratedAtMs = strictAuthorityTimestamp(
+    receipt.generatedAt,
+    'strict shard provider preflight receipt generatedAt',
+  );
+  if (
+    evidenceTimes.length === 0
+    || evidenceTimes.some((value) => (
+      strictAuthorityTimestamp(value, 'strict shard provider preflight raw evidence timestamp')
+        <= lastReservationAtMs
+    ))
+    || Math.max(...evidenceTimes.map((value) => strictAuthorityTimestamp(
+      value,
+      'strict shard provider preflight raw evidence timestamp',
+    ))) >= receiptGeneratedAtMs
+    || receiptGeneratedAtMs >= strictAuthorityTimestamp(
+      authorization.completion.generatedAt,
+      'strict shard provider preflight completion generatedAt',
+    )
+  ) {
+    throw new Error('strict shard provider preflight authorization/raw/receipt/completion order is invalid');
+  }
+  return { receipt, inventory, raw, rawRoot, authorization };
+}
+
+export function buildStrictShardCellAuthorityProjection({
+  matrixCell,
+  planCell,
+  shardBinding,
+  shardManifest,
+  shardManifestAuthority,
+  resultBinding,
+  result,
+}) {
+  return {
+    origin: 'guest-shard-result',
+    executionId: result.executionId,
+    planDigest: result.planDigest,
+    cellIndex: planCell.cellIndex,
+    cellId: planCell.cellId,
+    workerId: planCell.workerId,
+    vmIdentityDigest: planCell.vmIdentityDigest,
+    waveIndex: planCell.waveIndex,
+    leaseId: result.leaseId,
+    leaseDigest: result.leaseDigest,
+    shardRoot: shardBinding.shardRoot,
+    shardManifest: {
+      ...shardManifestAuthority,
+      manifestDigest: shardManifest.manifestDigest,
+    },
+    result: {
+      ...resultBinding.result,
+      resultDigest: result.resultDigest,
+    },
+    guestRunDirectory: result.runDirectory,
+    runDirectory: matrixCell.runDirectory,
+    runtimeBinaryHashes: result.authority.runtimeBinaryHashes,
+    ...(result.workerReadinessAuthority
+      ? { workerReadinessAuthority: result.workerReadinessAuthority }
+      : {}),
+    ...(result.interactiveSessionAuthority
+      ? { interactiveSessionAuthority: result.interactiveSessionAuthority }
+      : {}),
+    usageAuthority: result.usageAuthority,
+    deviceAuthority: result.deviceAuthority,
+  };
+}
+
+export function verifyStrictShardMatrixAuthority({
+  manifest,
+  evidenceRoot,
+  releaseCells = LIVE_LLM_CELLS,
+  cellReceipts,
+  currentProvenance,
+  currentImplementationHashes,
+  currentRuntimeBinaryHashes,
+  externalProviderBudget = manifest.externalProviderBudget,
+  workspaceRoot = process.cwd(),
+  validationAt = new Date(manifest.generatedAt),
+  validatePreflightEvidence = validateProviderPreflightRawAuthority,
+}) {
+  const resolvedRoot = path.resolve(evidenceRoot);
+  const rootStats = fs.lstatSync(resolvedRoot);
+  if (!rootStats.isDirectory() || rootStats.isSymbolicLink()) {
+    throw new Error('strict shard evidence root must be a real non-symlink directory');
+  }
+  const shardExecution = manifest.shardExecution;
+  const matrixIntegration = manifest.matrixIntegration;
+  if (!shardExecution || typeof shardExecution !== 'object') {
+    throw new Error('strict paid matrix is missing shardExecution guest authority');
+  }
+  if (!matrixIntegration || typeof matrixIntegration !== 'object') {
+    throw new Error('strict paid matrix is missing shard matrixIntegration authority');
+  }
+  if (!Array.isArray(cellReceipts) || cellReceipts.length !== releaseCells.length) {
+    throw new Error('strict shard verification requires one validated production cell receipt per release cell');
+  }
+  const currentShardImplementationHashes = currentShardOrchestrationImplementationHashes({
+    workspaceRoot,
+  });
+  if (
+    !sameShardAuthorityInventory(
+      shardExecution.shardOrchestrationImplementationHashes,
+      currentShardImplementationHashes,
+    )
+    || !sameShardAuthorityInventory(
+      matrixIntegration.shardOrchestrationImplementationHashes,
+      currentShardImplementationHashes,
+    )
+  ) {
+    throw new Error('strict shard orchestration implementation hashes do not match the current checkout');
+  }
+
+  const executionRootRelative = String(shardExecution.executionRoot ?? '').replaceAll('\\', '/');
+  const executionRoot = resolveStrictAuthorityDirectory(
+    resolvedRoot,
+    executionRootRelative,
+    'strict shard execution root',
+  );
+  const expectedPlanPath = portableAuthorityPath(
+    executionRootRelative,
+    SHARD_EXECUTION_PLAN_FILE,
+  );
+  const planPath = validateFileAuthorityEntry(
+    resolvedRoot,
+    shardExecution.plan,
+    expectedPlanPath,
+    'strict shard signed execution plan',
+  );
+  const plan = readJson(planPath);
+  verifySignedExecutionPlan(plan, {
+    now: validationAt,
+    currentProvenance,
+    currentAuthorityImplementationHashes: currentImplementationHashes,
+    currentRuntimeBinaryHashes,
+    currentShardImplementationHashes,
+  });
+  if (
+    !sameShardAuthorityInventory(
+      plan.authority?.shardOrchestrationImplementationHashes,
+      currentShardImplementationHashes,
+    )
+  ) {
+    throw new Error('strict shard execution plan does not bind current shard implementation hashes');
+  }
+  if (!plan.workerReadinessRequest) {
+    throw new Error('strict production shard execution plan does not bind pre-provider worker readiness');
+  }
+  const expectedWorkerCount = Array.isArray(plan.workers) ? plan.workers.length : 0;
+  if (!SHARD_ALLOWED_WORKER_COUNTS.includes(expectedWorkerCount)) {
+    throw new Error('strict shard execution plan must bind exactly two or three unique workers');
+  }
+  const preflightAuthorization = verifyStrictShardProviderPreflightAuthorization({
+    plan,
+    executionRoot,
+    executionRootRelative,
+    evidenceRoot: resolvedRoot,
+    workspaceRoot,
+    shardExecution,
+    matrixIntegration,
+    currentImplementationHashes,
+    currentRuntimeBinaryHashes,
+    currentShardImplementationHashes,
+    validationAt,
+  });
+  const preflightAuthority = verifyStrictShardProviderPreflightAuthority({
+    plan,
+    executionRoot,
+    executionRootRelative,
+    evidenceRoot: resolvedRoot,
+    currentProvenance,
+    workspaceRoot,
+    validationAt,
+    authorization: preflightAuthorization,
+    validateEvidence: validatePreflightEvidence,
+  });
+
+  if (!Array.isArray(shardExecution.leases) || shardExecution.leases.length !== SHARD_MATRIX_CELL_COUNT) {
+    throw new Error(`strict shard execution requires exactly ${SHARD_MATRIX_CELL_COUNT} signed cell leases`);
+  }
+  const leases = [];
+  const leasePaths = new Set();
+  for (let index = 0; index < shardExecution.leases.length; index += 1) {
+    const leaseAuthority = shardExecution.leases[index];
+    const planCell = plan.cells[index];
+    const leasePathValue = String(leaseAuthority?.path ?? '').replaceAll('\\', '/');
+    const expectedLeasePrefix = `${portableAuthorityPath(executionRootRelative, 'leases')}/`;
+    if (!leasePathValue.startsWith(expectedLeasePrefix) || !leasePathValue.endsWith('.json')) {
+      throw new Error(`strict shard lease ${index} is outside the immutable execution lease directory`);
+    }
+    if (leasePaths.has(leasePathValue)) {
+      throw new Error(`strict shard execution reuses lease authority path ${leasePathValue}`);
+    }
+    leasePaths.add(leasePathValue);
+    const leasePath = validateFileAuthorityEntry(
+      resolvedRoot,
+      leaseAuthority,
+      leasePathValue,
+      `strict shard signed cell lease ${index}`,
+    );
+    const lease = readJson(leasePath);
+    const validatedCell = verifyCellLease(lease, plan, { now: validationAt });
+    if (
+      leaseAuthority.cellId !== planCell.cellId
+      || leaseAuthority.leaseId !== planCell.leaseId
+      || validatedCell.cellId !== planCell.cellId
+      || lease.leaseId !== planCell.leaseId
+    ) {
+      throw new Error(`strict shard signed cell lease ${index} does not match canonical plan order`);
+    }
+    leases.push(lease);
+  }
+
+  const expectedAggregatePath = portableAuthorityPath(
+    executionRootRelative,
+    COORDINATOR_AGGREGATE_FILE,
+  );
+  const aggregatePath = validateFileAuthorityEntry(
+    resolvedRoot,
+    shardExecution.coordinatorAggregate,
+    expectedAggregatePath,
+    'strict shard coordinator aggregate',
+  );
+  const aggregate = validateCoordinatorAggregate(readJson(aggregatePath));
+  const validationAtMs = Number(validationAt instanceof Date ? validationAt.getTime() : validationAt);
+  if (!Number.isFinite(validationAtMs)) {
+    throw new Error('strict shard validationAt is missing or invalid');
+  }
+  const aggregateGeneratedAtMs = strictAuthorityTimestamp(
+    aggregate.generatedAt,
+    'strict shard coordinator aggregate generatedAt',
+  );
+  if (
+    aggregate.executionId !== plan.executionId
+    || aggregate.planDigest !== plan.planDigest
+    || canonicalJson(aggregate.provenance) !== canonicalJson(plan.provenance)
+    || canonicalJson(aggregate.providerPreflightAuthority)
+      !== canonicalJson(plan.providerPreflightAuthority)
+    || canonicalJson(aggregate.localIsolationAuthority)
+      !== canonicalJson(plan.localIsolationAuthority)
+    || !sameShardAuthorityInventory(
+      aggregate.authority?.implementationHashes,
+      currentImplementationHashes,
+    )
+    || !sameShardAuthorityInventory(
+      aggregate.authority?.runtimeBinaryHashes,
+      currentRuntimeBinaryHashes,
+    )
+    || !sameShardAuthorityInventory(
+      aggregate.authority?.shardOrchestrationImplementationHashes,
+      currentShardImplementationHashes,
+    )
+    || Number(aggregate.budget?.actualExternalAudioSamples) <= 0
+    || Number(aggregate.budget?.actualExternalAudioSamples)
+      > SHARD_MATRIX_MAX_EXTERNAL_AUDIO_SAMPLES
+    || Number(aggregate.budget?.actualExternalAudioSamples)
+      !== Number(externalProviderBudget?.actualProviderInputSamples)
+    || aggregateGeneratedAtMs > validationAtMs
+  ) {
+    throw new Error('strict shard coordinator aggregate does not bind the signed plan/current runtime budget');
+  }
+
+  if (!Array.isArray(shardExecution.shards) || shardExecution.shards.length !== expectedWorkerCount) {
+    throw new Error(`strict shard execution requires exactly ${expectedWorkerCount} guest shard manifests for its signed plan`);
+  }
+  const shardRoots = new Set();
+  const workers = new Set();
+  const validatedByCell = new Map();
+  for (let index = 0; index < shardExecution.shards.length; index += 1) {
+    const shardBinding = shardExecution.shards[index];
+    const shardRootRelative = String(shardBinding?.shardRoot ?? '').replaceAll('\\', '/');
+    const expectedShardPrefix = `${portableAuthorityPath(executionRootRelative, 'shards')}/`;
+    if (!shardRootRelative.startsWith(expectedShardPrefix)) {
+      throw new Error(`strict shard guest root ${index} is outside the staged execution shard directory`);
+    }
+    if (shardRoots.has(shardRootRelative)) {
+      throw new Error(`strict shard execution reuses guest shard root ${shardRootRelative}`);
+    }
+    shardRoots.add(shardRootRelative);
+    const shardRoot = resolveStrictAuthorityDirectory(
+      resolvedRoot,
+      shardRootRelative,
+      `strict shard guest root ${index}`,
+    );
+    const expectedManifestPath = portableAuthorityPath(shardRootRelative, SHARD_MANIFEST_FILE);
+    const shardManifestPath = validateFileAuthorityEntry(
+      resolvedRoot,
+      shardBinding.manifest,
+      expectedManifestPath,
+      `strict shard guest manifest ${index}`,
+    );
+    const validatedShard = validateShardManifest({
+      manifestPath: shardManifestPath,
+      shardRoot,
+      plan,
+      leases,
+      now: validationAt,
+    });
+    const workerId = validatedShard.manifest.workerId;
+    if (shardBinding.workerId !== workerId || workers.has(workerId)) {
+      throw new Error(`strict shard guest manifest ${index} has a duplicate or mismatched worker identity`);
+    }
+    workers.add(workerId);
+    const shardManifestGeneratedAtMs = strictAuthorityTimestamp(
+      validatedShard.manifest.generatedAt,
+      `strict shard guest manifest ${index} generatedAt`,
+    );
+    if (
+      shardManifestGeneratedAtMs > aggregateGeneratedAtMs
+      || validatedShard.manifest.manifestDigest
+        !== aggregate.shards.find((entry) => entry.workerId === workerId)?.manifestDigest
+    ) {
+      throw new Error(`strict shard guest manifest ${index} is not the manifest consumed by the coordinator aggregate`);
+    }
+    for (const validatedResult of validatedShard.validatedResults) {
+      const cellId = validatedResult.cell.cellId;
+      if (validatedByCell.has(cellId)) {
+        throw new Error(`strict shard guest manifests contain duplicate cell ${cellId}`);
+      }
+      const resultBinding = validatedShard.manifest.results.find((entry) => entry.cellId === cellId);
+      validatedByCell.set(cellId, {
+        shardBinding,
+        shardManifest: validatedShard.manifest,
+        shardManifestAuthority: shardBinding.manifest,
+        resultBinding,
+        ...validatedResult,
+      });
+    }
+  }
+  if (workers.size !== expectedWorkerCount || validatedByCell.size !== SHARD_MATRIX_CELL_COUNT) {
+    throw new Error(`strict shard guest manifests do not contain the signed ${expectedWorkerCount} workers and eight unique cells`);
+  }
+
+  const shardCellAuthorities = [];
+  for (let index = 0; index < releaseCells.length; index += 1) {
+    const matrixCell = manifest.cells[index];
+    const planCell = plan.cells[index];
+    const receipt = cellReceipts[index];
+    const validated = validatedByCell.get(planCell.cellId);
+    const aggregateCell = aggregate.cells[index];
+    if (!validated || planCell.cellId !== releaseCells[index].cellId) {
+      throw new Error(`strict shard cell ${index} does not match the canonical paid release order`);
+    }
+    const finalRunDirectory = resolveStrictAuthorityDirectory(
+      resolvedRoot,
+      matrixCell.runDirectory,
+      `strict shard cell ${index} final run directory`,
+    );
+    if (path.resolve(validated.runDirectory) !== finalRunDirectory) {
+      throw new Error(`strict shard cell ${index} matrix run directory is not its staged guest result directory`);
+    }
+    const grantedReadiness = preflightAuthorization.projection.workerReadiness.find((entry) => (
+      entry.workerId === planCell.workerId
+    ));
+    if (
+      !grantedReadiness
+      || validated.result.workerReadinessAuthority?.bytes !== grantedReadiness.bytes
+      || validated.result.workerReadinessAuthority?.sha256 !== grantedReadiness.sha256
+    ) {
+      throw new Error(`strict shard cell ${index} does not reuse its pre-provider signed worker readiness bytes`);
+    }
+    if (
+      !sameShardAuthorityInventory(validated.result.authority?.runtimeBinaryHashes, currentRuntimeBinaryHashes)
+      || !sameShardAuthorityInventory(validated.result.authority?.runtimeBinaryHashes, receipt.runtimeBinaryHashes)
+      || !sameShardAuthorityInventory(validated.result.authority?.implementationHashes, receipt.implementationHashes)
+      || canonicalJson(validated.result.provenance) !== canonicalJson(receipt.provenance)
+      || strictAuthorityTimestamp(
+        validated.result.generatedAt,
+        `strict shard cell ${index} guest result generatedAt`,
+      ) > strictAuthorityTimestamp(
+        validated.shardManifest.generatedAt,
+        `strict shard cell ${index} guest manifest generatedAt`,
+      )
+      || strictAuthorityTimestamp(
+        validated.shardManifest.generatedAt,
+        `strict shard cell ${index} guest manifest generatedAt`,
+      ) > strictAuthorityTimestamp(
+        receipt.generatedAt,
+        `strict shard cell ${index} receipt generatedAt`,
+      )
+    ) {
+      throw new Error(`strict shard cell ${index} guest result/runtime authority does not match its downstream cell receipt`);
+    }
+    if (
+      aggregateCell.cellId !== planCell.cellId
+      || aggregateCell.workerId !== planCell.workerId
+      || aggregateCell.vmIdentityDigest !== planCell.vmIdentityDigest
+      || aggregateCell.waveIndex !== planCell.waveIndex
+      || aggregateCell.leaseId !== validated.result.leaseId
+      || aggregateCell.leaseDigest !== validated.result.leaseDigest
+      || aggregateCell.shardManifestDigest !== validated.shardManifest.manifestDigest
+      || aggregateCell.resultDigest !== validated.result.resultDigest
+      || aggregateCell.runDirectory !== validated.result.runDirectory
+      || canonicalJson(aggregateCell.usageAuthority) !== canonicalJson(validated.result.usageAuthority)
+      || canonicalJson(aggregateCell.deviceAuthority) !== canonicalJson(validated.result.deviceAuthority)
+    ) {
+      throw new Error(`strict shard cell ${index} coordinator aggregate does not match the guest result`);
+    }
+    const stagedResultPath = path.join(validated.runDirectory, SHARD_CELL_RESULT_FILE);
+    const stagedResultRelativePath = portableAuthorityPath(
+      validated.shardBinding.shardRoot,
+      validated.result.runDirectory,
+      SHARD_CELL_RESULT_FILE,
+    );
+    const projection = buildStrictShardCellAuthorityProjection({
+      matrixCell,
+      planCell,
+      ...validated,
+      resultBinding: {
+        result: fileAuthorityEntry(stagedResultPath, stagedResultRelativePath),
+      },
+    });
+    assertExactObject(
+      matrixCell.shardAuthority,
+      projection,
+      `strict shard matrix cell ${index} guest authority`,
+    );
+    assertExactObject(
+      receipt.shardAuthority,
+      projection,
+      `strict shard cell receipt ${index} guest authority`,
+    );
+    shardCellAuthorities.push(projection);
+  }
+
+  const expectedMatrixIntegration = {
+    provenance: plan.provenance,
+    authorityImplementationHashes: plan.authority.implementationHashes,
+    authorityRuntimeBinaryHashes: plan.authority.runtimeBinaryHashes,
+    shardOrchestrationImplementationHashes:
+      plan.authority.shardOrchestrationImplementationHashes,
+    localIsolationAuthority: plan.localIsolationAuthority,
+    providerPreflightAuthority: plan.providerPreflightAuthority,
+    ...preflightAuthorization.projection,
+    releaseCells,
+    coordinatorAggregateDigest: aggregate.aggregateDigest,
+    cells: shardCellAuthorities,
+    externalProviderBudget: aggregate.budget,
+  };
+  assertExactObject(
+    matrixIntegration,
+    expectedMatrixIntegration,
+    'strict shard matrixIntegration',
+  );
+  return {
+    plan,
+    preflightAuthority,
+    leases,
+    aggregate,
+    shardCellAuthorities,
+    shardOrchestrationImplementationHashes: currentShardImplementationHashes,
+    executionRoot,
+  };
 }
 
 export function verifyStrictMatrixAuthority({
@@ -707,6 +2257,7 @@ export function verifyStrictMatrixAuthority({
   currentRuntimeBinaryHashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
   releaseCells = LIVE_LLM_CELLS,
   requireLocalIsolation = true,
+  validatePreflightEvidence = validateProviderPreflightRawAuthority,
 }) {
   const resolvedRoot = path.resolve(evidenceRoot);
   const resolvedManifestPath = path.resolve(manifestPath);
@@ -749,8 +2300,12 @@ export function verifyStrictMatrixAuthority({
     throw new Error(`strict authority collector must be ${LIVE_RUN_COLLECTOR_ID}`);
   }
   const currentImplementationHashes = currentAuthorityImplementationHashes({ workspaceRoot });
+  const currentPaidImplementationHashes = currentPaidAuthorityImplementationHashes({ workspaceRoot });
   if (!sameAuthorityInventory(manifest.authority?.implementationHashes, currentImplementationHashes)) {
     throw new Error('strict authority runner/collector implementation hashes do not match the current checkout');
+  }
+  if (!sameAuthorityInventory(manifest.authority?.paidImplementationHashes, currentPaidImplementationHashes)) {
+    throw new Error('strict authority paid implementation hashes do not match the current checkout');
   }
   if (!sameAuthorityInventory(manifest.authority?.runtimeBinaryHashes, currentRuntimeBinaryHashes)) {
     throw new Error('strict authority runtime binary hashes do not match the current release build');
@@ -763,6 +2318,15 @@ export function verifyStrictMatrixAuthority({
   }
   if (manifest.cells.length !== releaseCells.length) {
     throw new Error(`strict authority manifest must contain exactly ${releaseCells.length} paid live cells`);
+  }
+  const requiresShardAuthority = releaseCells.length === SHARD_MATRIX_CELL_COUNT
+    && canonicalJson(releaseCells.map((cell) => cell.cellId))
+      === canonicalJson(LIVE_LLM_CELLS.map((cell) => cell.cellId));
+  if (
+    requiresShardAuthority
+    && (!manifest.shardExecution || !manifest.matrixIntegration)
+  ) {
+    throw new Error('strict eight-cell paid matrix requires guest shardExecution/matrixIntegration authority');
   }
   const manifestGeneratedAtMs = Date.parse(manifest.generatedAt ?? '');
   if (!Number.isFinite(manifestGeneratedAtMs)) {
@@ -789,12 +2353,17 @@ export function verifyStrictMatrixAuthority({
     evidenceRoot: resolvedRoot,
     currentProvenance,
     implementationHashes: currentImplementationHashes,
+    paidImplementationHashes: currentPaidImplementationHashes,
     runtimeBinaryHashes: currentRuntimeBinaryHashes,
   });
 
   const authorizedReports = new Map();
+  const cellExternalProviderBudgets = [];
+  const translatedPcmLoopbackAuthorities = [];
+  const cellAuthorityReceipts = [];
   const runDirectories = [];
   const seenDirectories = new Set();
+  const seenProviderLeaseIds = new Set();
   for (let index = 0; index < manifest.cells.length; index += 1) {
     const cell = manifest.cells[index];
     const plannedCell = releaseCells[index];
@@ -850,6 +2419,9 @@ export function verifyStrictMatrixAuthority({
     if (!sameAuthorityInventory(receipt.implementationHashes, currentImplementationHashes)) {
       throw new Error(`strict matrix cell ${index} implementation hashes do not match the current checkout`);
     }
+    if (!sameAuthorityInventory(receipt.paidImplementationHashes, currentPaidImplementationHashes)) {
+      throw new Error(`strict matrix cell ${index} paid implementation hashes do not match the current checkout`);
+    }
     if (!sameAuthorityInventory(receipt.runtimeBinaryHashes, currentRuntimeBinaryHashes)) {
       throw new Error(`strict matrix cell ${index} runtime binary hashes do not match the current release build`);
     }
@@ -876,6 +2448,62 @@ export function verifyStrictMatrixAuthority({
         throw new Error(`strict matrix cell ${index} contains forbidden/unbound artifact ${forbiddenPath}`);
       }
     }
+    let cellExternalProviderBudget;
+    try {
+      cellExternalProviderBudget = assertCellExternalProviderBudget(runDirectory, {
+        cellId: plannedCell.cellId,
+        modelId: plannedCell.modelId,
+        feedbackLoopPrevention: plannedCell.feedbackLoopPrevention,
+        sessionCeilingSeconds: plannedCell.durationSeconds,
+      });
+    } catch (error) {
+      throw new Error(`strict matrix cell ${index} external provider budget authority failed: ${error.message}`);
+    }
+    const expectedProtocol = STRICT_PAID_MODEL_PROTOCOLS[plannedCell.modelId];
+    const leaseId = cellExternalProviderBudget.providerSendBoundary?.leaseId;
+    const cellSampleCap = Number(plannedCell.durationSeconds)
+      * EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ;
+    if (
+      cellExternalProviderBudget.calls?.mainRealtime !== 1
+      || cellExternalProviderBudget.providerSendBoundary?.protocol !== expectedProtocol
+      || !Number.isInteger(Number(cellExternalProviderBudget.actualProviderInputSamples))
+      || Number(cellExternalProviderBudget.actualProviderInputSamples) <= 0
+      || Number(cellExternalProviderBudget.actualProviderInputSamples) > cellSampleCap
+    ) {
+      throw new Error(
+        `strict matrix cell ${index} external provider authority does not bind the approved `
+        + `model/protocol or ${cellSampleCap}-sample Rust send ceiling`,
+      );
+    }
+    if (typeof leaseId !== 'string' || !leaseId.trim()) {
+      throw new Error(`strict matrix cell ${index} external provider authority is missing its Rust leaseId`);
+    }
+    if (seenProviderLeaseIds.has(leaseId)) {
+      throw new Error(`strict matrix cell ${index} reuses Rust provider leaseId ${leaseId}`);
+    }
+    seenProviderLeaseIds.add(leaseId);
+    cellExternalProviderBudgets.push(cellExternalProviderBudget);
+    if (cell.feedbackLoopPrevention !== 'echo-cancel') {
+      try {
+        const canonicalAuthority = validateRunCanonicalSourceAuthority({
+          runDirectory,
+          workspaceRoot,
+        });
+        assertPhysicalSourceWindowPrefix(runDirectory, canonicalAuthority, index);
+      } catch (error) {
+        throw new Error(
+          `strict matrix cell ${index} canonical source/physical waveform authority failed: `
+          + error.message,
+        );
+      }
+      translatedPcmLoopbackAuthorities.push(assertStrictTranslatedPcmLoopbackAuthority({
+        runDirectory,
+        cell,
+        cellExternalProviderBudget,
+        index,
+      }));
+    }
+    cellAuthorityReceipts.push(receipt);
     const rebuiltReport = rebuildReportFromDirectory(runDirectory, {
       mode: 'live',
       provenance: receipt.provenance,
@@ -921,11 +2549,40 @@ export function verifyStrictMatrixAuthority({
     runDirectories.push(runDirectory);
     authorizedReports.set(directoryIdentity, rebuiltReport);
   }
+  const externalProviderBudget = assertStrictMatrixExternalProviderBudget({
+    manifest,
+    evidenceRoot: resolvedRoot,
+    releaseCells,
+    cellLedgers: cellExternalProviderBudgets,
+  });
+  const hasShardAuthority = Boolean(manifest.shardExecution || manifest.matrixIntegration);
+  const shardAuthority = (requiresShardAuthority || hasShardAuthority)
+    ? verifyStrictShardMatrixAuthority({
+        manifest,
+        evidenceRoot: resolvedRoot,
+        releaseCells,
+        cellReceipts: cellAuthorityReceipts,
+        currentProvenance,
+        currentImplementationHashes,
+        currentRuntimeBinaryHashes,
+        externalProviderBudget,
+        workspaceRoot,
+        // Re-verification may happen days later. Validate that every signed
+        // guest result was valid at immutable matrix collection time rather
+        // than incorrectly treating a completed execution lease as reusable.
+        validationAt: new Date(manifestGeneratedAtMs),
+        validatePreflightEvidence,
+      })
+    : null;
   return {
     runDirectories,
     authorizedReports,
     implementationHashes: currentImplementationHashes,
+    paidImplementationHashes: currentPaidImplementationHashes,
     runtimeBinaryHashes: currentRuntimeBinaryHashes,
+    externalProviderBudget,
+    translatedPcmLoopbackAuthorities,
+    shardAuthority,
   };
 }
 

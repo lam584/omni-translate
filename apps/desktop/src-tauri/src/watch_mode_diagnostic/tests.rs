@@ -4,13 +4,29 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 use uuid::Uuid;
 
-use super::config::{configure_watch_mode, configure_watch_realtime_provider};
+use super::config::{
+    configure_watch_mode, configure_watch_realtime_provider,
+    configure_watch_realtime_provider_with_environment,
+};
 use super::{
     bounded_autostart_capture_duration_ms, build_debug_ipc_ping_response,
     parse_feedback_loop_prevention, should_run_idle_overlay_prewarm,
     wait_for_frontend_ipc_ready, write_report_atomic,
 };
 use crate::audio::state::AudioStateStore;
+
+fn strict_watch_environment(name: &str) -> Option<String> {
+    match name {
+        "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY" => Some("1".to_string()),
+        "OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID" => Some("provider-dashscope".to_string()),
+        _ => None,
+    }
+}
+
+fn default_watch_config() -> Value {
+    serde_json::from_str(include_str!("../../defaults/app-config.default.json"))
+        .expect("default Watch config should be valid JSON")
+}
 
 #[test]
 fn ipc_ping_exposes_runtime_diagnostic_authority_without_changing_legacy_prefix() {
@@ -116,7 +132,7 @@ fn echo_cancel_speech_model_diagnostic_replays_native_audio_on_default_output() 
 }
 
 #[test]
-fn virtual_driver_speech_model_diagnostic_stays_subtitle_only() {
+fn virtual_driver_native_diagnostic_routes_translation_through_bridge() {
     let mut config = json!({
         "devices": {
             "inboundRoute": {
@@ -138,15 +154,30 @@ fn virtual_driver_speech_model_diagnostic_stays_subtitle_only() {
     );
 
     assert_eq!(config["devices"]["outputDeviceId"], "default");
+    assert_eq!(config["devices"]["feedbackLoopPrevention"], "virtual-driver");
     assert_eq!(
         config["devices"]["inboundRoute"]["input"]["deviceId"],
         "persisted-physical-device"
     );
-    assert_eq!(config["devices"]["outputSpeechEnabled"], false);
-    assert_eq!(config["speech"]["localPlaybackEnabled"], false);
+    assert_eq!(config["devices"]["subtitleTranslationMode"], "native");
+    assert_eq!(config["devices"]["subtitleTranslationModelId"], "");
+    assert_eq!(config["devices"]["inboundSecondaryAudioModelId"], "");
+    assert_eq!(
+        config["devices"]["textToSpeechModelId"],
+        "template-dashscope-realtime::qwen3.5-omni-plus-realtime"
+    );
+    assert_eq!(config["speech"]["translationAudioSource"], "omni-native");
+    assert_eq!(config["devices"]["outputSpeechEnabled"], true);
+    assert_eq!(config["speech"]["localPlaybackEnabled"], true);
+    assert!(crate::audio::speech::bridge_translation_playback_enabled_for_config(
+        &config
+    ));
+    assert!(!crate::audio::speech::desktop_direct_playback_enabled_for_config(
+        &config
+    ));
     assert_eq!(
         config["devices"]["inboundRoute"]["mixControl"]["translatedAudioEnabled"],
-        false
+        true
     );
 }
 
@@ -284,6 +315,167 @@ fn explicit_dashscope_protocol_binds_model_to_dashscope_provider() {
             ["interactionCapabilities"],
         json!(["manual_commit", "streaming"])
     );
+}
+
+#[test]
+fn strict_paid_provider_selection_cannot_be_hijacked_by_an_earlier_dashscope_provider() {
+    let mut config = default_watch_config();
+    let exact = config["providers"][0].clone();
+    let mut alternate = exact.clone();
+    alternate["providerId"] = json!("provider-dashscope-alternate");
+    alternate["displayName"] = json!("alternate DashScope provider");
+    alternate["model"] = json!("alternate-stale-model");
+    config["providers"] = json!([alternate, exact]);
+
+    let effective = configure_watch_realtime_provider_with_environment(
+        &mut config,
+        "qwen3.5-omni-flash-realtime",
+        "dashscope-omni",
+        strict_watch_environment,
+    )
+    .expect("strict provider authority should select the exact provider id");
+
+    assert_eq!(
+        effective,
+        "template-dashscope-realtime::qwen3.5-omni-flash-realtime"
+    );
+    assert_eq!(config["providers"][0]["providerId"], "provider-dashscope");
+    assert_eq!(
+        config["providers"][0]["model"],
+        "qwen3.5-omni-flash-realtime"
+    );
+    assert_eq!(
+        config["providers"][0]["realtimeProtocol"],
+        "dashscope-omni"
+    );
+    assert_eq!(
+        config["providers"][1]["providerId"],
+        "provider-dashscope-alternate"
+    );
+    assert_eq!(config["providers"][1]["model"], "alternate-stale-model");
+
+    let resolved = crate::audio::events::resolve_model_provider_from_config_value(
+        &config,
+        &effective,
+    )
+    .expect("downstream route resolution should preserve the authorized provider");
+    assert_eq!(resolved.provider_id, "provider-dashscope");
+    assert_eq!(resolved.model, "qwen3.5-omni-flash-realtime");
+}
+
+#[test]
+fn strict_paid_provider_selection_fails_when_the_expected_provider_is_missing() {
+    let mut config = default_watch_config();
+    config["providers"][0]["providerId"] = json!("provider-dashscope-alternate");
+    let before = config.clone();
+
+    let error = configure_watch_realtime_provider_with_environment(
+        &mut config,
+        "qwen3.5-omni-flash-realtime",
+        "dashscope-omni",
+        strict_watch_environment,
+    )
+    .expect_err("strict provider authority must fail before selecting an alternate provider");
+
+    assert!(error.contains("providerId 'provider-dashscope' is missing before provider connect"));
+    assert_eq!(config, before);
+}
+
+#[test]
+fn strict_paid_provider_selection_requires_the_fixed_expected_provider_input() {
+    for (expected_provider_id, expected_error) in [
+        (
+            None,
+            "requires OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID before provider connect",
+        ),
+        (
+            Some("provider-dashscope-alternate"),
+            "requires OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID=provider-dashscope",
+        ),
+    ] {
+        let mut config = default_watch_config();
+        let before = config.clone();
+
+        let error = configure_watch_realtime_provider_with_environment(
+            &mut config,
+            "qwen3.5-omni-flash-realtime",
+            "dashscope-omni",
+            |name| match name {
+                "OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY" => Some("1".to_string()),
+                "OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID" => {
+                    expected_provider_id.map(str::to_string)
+                }
+                _ => None,
+            },
+        )
+        .expect_err("strict provider authority must require the fixed expected provider input");
+
+        assert!(error.contains(expected_error), "unexpected error: {error}");
+        assert_eq!(config, before);
+    }
+}
+
+#[test]
+fn strict_paid_provider_selection_rejects_kind_and_template_mismatches() {
+    for (field, wrong_value, expected_error) in [
+        (
+            "kind",
+            "openai-compatible",
+            "provider kind mismatch for provider-dashscope",
+        ),
+        (
+            "templateId",
+            "template-dashscope-alternate",
+            "provider templateId mismatch for provider-dashscope",
+        ),
+    ] {
+        let mut config = default_watch_config();
+        config["providers"][0][field] = json!(wrong_value);
+        let before = config.clone();
+
+        let error = configure_watch_realtime_provider_with_environment(
+            &mut config,
+            "qwen3.5-omni-flash-realtime",
+            "dashscope-omni",
+            strict_watch_environment,
+        )
+        .expect_err("strict provider authority must reject identity metadata mismatches");
+
+        assert!(error.contains(expected_error), "unexpected error: {error}");
+        assert_eq!(config, before);
+    }
+}
+
+#[test]
+fn non_strict_provider_selection_keeps_legacy_first_compatible_behavior() {
+    let mut config = default_watch_config();
+    let exact = config["providers"][0].clone();
+    let mut alternate = exact.clone();
+    alternate["providerId"] = json!("provider-dashscope-alternate");
+    alternate["model"] = json!("alternate-stale-model");
+    config["providers"] = json!([alternate, exact]);
+
+    let effective = configure_watch_realtime_provider_with_environment(
+        &mut config,
+        "qwen3.5-omni-flash-realtime",
+        "dashscope-omni",
+        |_| None,
+    )
+    .expect("ordinary diagnostics should retain compatibility selection");
+
+    assert_eq!(
+        effective,
+        "template-dashscope-realtime::qwen3.5-omni-flash-realtime"
+    );
+    assert_eq!(
+        config["providers"][0]["providerId"],
+        "provider-dashscope-alternate"
+    );
+    assert_eq!(
+        config["providers"][0]["model"],
+        "qwen3.5-omni-flash-realtime"
+    );
+    assert_eq!(config["providers"][1]["providerId"], "provider-dashscope");
 }
 
 #[test]

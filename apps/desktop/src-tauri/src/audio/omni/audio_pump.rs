@@ -32,6 +32,7 @@ pub(super) struct OmniAudioPumpState {
     pub(super) first_audio_sent_ms: Option<u64>,
     pub(super) pending_audio_buffer: Vec<i16>,
     pub(super) provider_input_dump: Option<ProviderInputPcmDump>,
+    pub(super) provider_input_budget: ProviderInputBudget,
     pub(super) chunks_sent_this_tick: usize,
     /// The send path replaced the socket via reconnect during this tick. The
     /// worker must reset the manual response gate tied to the old session.
@@ -47,6 +48,39 @@ fn provider_input_is_writable(
     defer_audio_until_response_done: bool,
 ) -> bool {
     session_ready_for_audio && !defer_audio_until_response_done
+}
+
+fn record_append_attempt_progress<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    store: &AudioStateStore,
+    session_started_at: &SystemTime,
+    chunk_count: u64,
+    buffer_size: u64,
+    sample_count: usize,
+) -> Option<u64> {
+    let first_audio_sent_ms = (chunk_count == 1).then(|| {
+        let elapsed = elapsed_ms_since(session_started_at);
+        store.watch_session_report.record_milestone_with_detail(
+            "first_audio_sent",
+            Some(format!("providerSessionElapsedMs={elapsed}")),
+        );
+        let _ = diag_log(
+            app,
+            "omni",
+            "info",
+            format!("[AUDIO] 首个音频块已发送 ({sample_count} samples @ 16kHz)"),
+        );
+        elapsed
+    });
+    if chunk_count.is_multiple_of(100) {
+        let _ = diag_log(
+            app,
+            "omni",
+            "debug",
+            format!("[AUDIO] 已发送 {chunk_count} 个音频块 ({buffer_size} 字节)"),
+        );
+    }
+    first_audio_sent_ms
 }
 
 impl OmniAudioPump {
@@ -114,6 +148,7 @@ impl OmniAudioPump {
             mut first_audio_sent_ms,
             mut pending_audio_buffer,
             mut provider_input_dump,
+            provider_input_budget,
             chunks_sent_this_tick: _,
             socket_reconnected: _,
         } = self.state;
@@ -220,61 +255,58 @@ impl OmniAudioPump {
                 silence_grace_chunks_sent = 0;
                 silence_chunks_skipped = 0;
             }
-            buffer_size = buffer_size.wrapping_add(raw_chunk.len() as u64);
-            chunk_count += 1;
-            chunks_sent_this_tick += 1;
-
-            if chunk_count == 1 {
-                let elapsed = elapsed_ms_since(&session_started_at);
-                first_audio_sent_ms = Some(elapsed);
-                store.watch_session_report.record_milestone_with_detail(
-                    "first_audio_sent",
-                    Some(format!("providerSessionElapsedMs={elapsed}")),
-                );
-                let _ = diag_log(
-                    &app,
-                    "omni",
-                    "info",
-                    format!(
-                        "[AUDIO] 首个音频块已发送 ({} samples @ 16kHz)",
-                        asr_chunk.len()
-                    ),
-                );
-            }
-            if chunk_count.is_multiple_of(100) {
-                let _ = diag_log(
-                    &app,
-                    "omni",
-                    "debug",
-                    format!(
-                        "[AUDIO] 已发送 {} 个音频块 ({} 字节)",
-                        chunk_count, buffer_size
-                    ),
-                );
-            }
-            if let Some(dump) = provider_input_dump.as_mut() {
-                dump.append(&app, &asr_chunk);
-            }
             let b64 = base64_encode_i16(&asr_chunk);
             let append = super::build_dashscope_audio_append(&b64);
-            trace_call.record_ws_send(
-                "input_audio_buffer.append",
-                json!({
-                  "type": "input_audio_buffer.append",
-                  "rawBytes": raw_chunk.len(),
-                  "resampledSamples": asr_chunk.len(),
-                  "audio": append["audio"].clone(),
-                  "chunkCount": chunk_count,
-                  "rms": chunk_rms,
-                }),
-            );
-            if let Err(error) = socket.send_message(Message::Text(append.to_string().into())) {
+            let next_chunk_count = chunk_count.saturating_add(1);
+            let send_result = provider_input_budget.attempt_send(
+                asr_chunk.len() as u64,
+                || {
+                    // Strict authority writes and flushes the exact charged
+                    // PCM before any trace/socket side effect. A dump failure
+                    // returns with the reservation consumed and no send.
+                    if let Some(dump) = provider_input_dump.as_mut() {
+                        dump.append(app, &asr_chunk)?;
+                    }
+                    buffer_size = buffer_size.wrapping_add(raw_chunk.len() as u64);
+                    chunk_count = next_chunk_count;
+                    chunks_sent_this_tick += 1;
+                    if let Some(elapsed) = record_append_attempt_progress(
+                        app,
+                        store,
+                        session_started_at,
+                        chunk_count,
+                        buffer_size,
+                        asr_chunk.len(),
+                    ) {
+                        first_audio_sent_ms = Some(elapsed);
+                    }
+                    trace_call.record_ws_send(
+                        "input_audio_buffer.append",
+                        json!({
+                          "type": "input_audio_buffer.append",
+                          "rawBytes": raw_chunk.len(),
+                          "resampledSamples": asr_chunk.len(),
+                          "audio": append["audio"].clone(),
+                          "chunkCount": chunk_count,
+                          "rms": chunk_rms,
+                        }),
+                    );
+                    Ok(())
+                },
+                || socket.send_message(Message::Text(append.to_string().into())),
+            )?;
+            if let Err(error) = send_result {
                 let _ = diag_log(
                     app,
                     "omni",
                     "warning",
                     format!("[AUDIO] 发送失败: {error}"),
                 );
+                // A failed append may already have reached the paid peer.
+                // Strict cells permit no replacement WebSocket, so persist a
+                // terminal rejection before `try_reconnect` can back off or
+                // invoke the connector. Ordinary sessions continue below.
+                provider_input_budget.authorize_reconnect_before_connect("send-failure")?;
                 match try_reconnect(
                     connector,
                     &mut reconnect_count,
@@ -292,6 +324,7 @@ impl OmniAudioPump {
                 ) {
                     Ok(new_socket) => {
                         *socket = new_socket;
+                        provider_input_budget.record_reconnect()?;
                         socket_reconnected = true;
                         // The replacement session has not confirmed its
                         // session.update yet: sending now races the provider's
@@ -308,6 +341,7 @@ impl OmniAudioPump {
                         continue;
                     }
                     Err(_) => {
+                        provider_input_budget.mark_terminal("send-reconnect-exhausted");
                         return Err(format!(
                             "Omni WebSocket 发送失败且重连次数已用尽: {error}"
                         ));
@@ -371,6 +405,7 @@ impl OmniAudioPump {
             first_audio_sent_ms,
             pending_audio_buffer,
             provider_input_dump,
+            provider_input_budget,
             chunks_sent_this_tick,
             socket_reconnected,
         })
@@ -396,12 +431,171 @@ pub(super) fn should_anchor_manual_turn_to_first_audible_append(
 
 #[cfg(test)]
 mod tests {
-    use super::provider_input_is_writable;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tauri::Manager;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    struct SendFailSocket;
+
+    impl RealtimeSocket for SendFailSocket {
+        fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
+            Err(tungstenite::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "test socket idle",
+            )))
+        }
+
+        fn send_message(&mut self, _message: Message) -> Result<(), tungstenite::Error> {
+            Err(tungstenite::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::BrokenPipe,
+                "scripted append failure",
+            )))
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingConnector {
+        attempts: AtomicUsize,
+    }
+
+    impl RealtimeSocketConnector for CountingConnector {
+        type Socket = SendFailSocket;
+
+        fn reconnect<R: tauri::Runtime>(
+            &self,
+            _app: &AppHandle<R>,
+            _provider: &ProviderDraftInput,
+            _voice: &str,
+            _instructions: &str,
+            _audio_mode: RealtimeAudioMode,
+            _output_mode: OmniOutputMode,
+            _target_language: &str,
+        ) -> Result<Self::Socket, String> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(SendFailSocket)
+        }
+    }
 
     #[test]
     fn manual_response_gate_keeps_provider_input_closed_until_response_done() {
         assert!(!provider_input_is_writable(false, false));
         assert!(!provider_input_is_writable(true, true));
         assert!(provider_input_is_writable(true, false));
+    }
+
+    #[test]
+    fn strict_send_failure_never_reaches_the_reconnect_connector() {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let directory = tempdir().expect("tempdir");
+        let ledger_path = directory.path().join("send-failure.json");
+        let budget = ProviderInputBudget::strict_for_test(&provider, &ledger_path)
+            .expect("strict budget fixture");
+        budget
+            .record_initial_connect_attempt()
+            .expect("one initial connect attempt");
+        let connector = CountingConnector::default();
+        let mut socket = SendFailSocket;
+        let recorder = crate::diagnostics::model_trace::ModelTraceRecorder::new(
+            handle.clone(),
+            crate::diagnostics::model_trace::ModelTraceContext::new(
+                &provider.provider_id,
+                &provider.model,
+                "strict-send-test",
+            ),
+        );
+        let mut trace_call = recorder.call("strict.send-failure");
+        let (audio_tx, audio_rx) = mpsc::channel();
+        let mut raw_chunk = Vec::with_capacity(960 * 8);
+        for _ in 0..960 {
+            raw_chunk.extend_from_slice(&0.25f32.to_le_bytes());
+            raw_chunk.extend_from_slice(&0.25f32.to_le_bytes());
+        }
+        audio_tx.send(raw_chunk).expect("audible chunk");
+
+        let result = OmniAudioPump::new(OmniAudioPumpState {
+            buffer_size: 0,
+            reconnect_count: 0,
+            chunk_count: 0,
+            sent_audio_since_commit: false,
+            audio_samples_since_commit: 0,
+            manual_turn_audio_after_response: false,
+            manual_turn_started_at: None,
+            manual_turn_started_during_playback: None,
+            session_ready_for_audio: true,
+            pre_session_audio_queue: VecDeque::new(),
+            pre_session_audio_dropped: 0,
+            silence_chunks_skipped: 0,
+            silence_grace_chunks_sent: 0,
+            has_sent_audible_audio: false,
+            total_input_chunks: 0,
+            first_audible_chunk_ms: None,
+            total_silence_skipped_before_first_audible: 0,
+            first_audio_sent_ms: None,
+            pending_audio_buffer: Vec::new(),
+            provider_input_dump: None,
+            provider_input_budget: budget,
+            chunks_sent_this_tick: 0,
+            socket_reconnected: false,
+        })
+        .pump(
+            &connector,
+            &handle,
+            &store,
+            &audio_rx,
+            &mut socket,
+            &mut trace_call,
+            &provider,
+            "Ethan",
+            "translate",
+            RealtimeAudioMode::Manual,
+            OmniOutputMode::TextAndAudio,
+            "zh-CN",
+            &SystemTime::now(),
+            false,
+        );
+
+        let error = match result {
+            Ok(_) => panic!("strict send reconnect must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("forbids reconnect after send-failure"), "{error}");
+        assert_eq!(connector.attempts.load(Ordering::SeqCst), 0);
+        let ledger: Value = serde_json::from_slice(
+            &std::fs::read(&ledger_path).expect("strict ledger must be readable"),
+        )
+        .expect("strict ledger must be valid JSON");
+        assert_eq!(ledger["initialConnectAttempts"], 1);
+        assert_eq!(ledger["sendFailures"], 1);
+        assert_eq!(ledger["reconnects"], 0);
+        assert_eq!(
+            ledger["terminalReason"],
+            "reconnect-forbidden-send-failure"
+        );
+        let journal_path = format!("{}.journal.jsonl", ledger_path.display());
+        let journal = std::fs::read_to_string(journal_path)
+            .expect("strict send journal must be readable");
+        let rejected: Value = journal
+            .lines()
+            .rev()
+            .map(|line| {
+                serde_json::from_str(line)
+                    .expect("strict send journal event must be valid JSON")
+            })
+            .find(|entry: &Value| entry["event"] == "reconnect_rejected")
+            .expect("strict send journal must record reconnect rejection");
+        assert_eq!(rejected["event"], "reconnect_rejected");
+        assert_eq!(
+            rejected["terminalReason"],
+            "reconnect-forbidden-send-failure"
+        );
     }
 }

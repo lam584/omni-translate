@@ -251,12 +251,13 @@ Do not type performance measurements into the pending JSON template. First run
 the canonical strict Watch matrix on the required default-speaker and separate
 USB endpoints. Bluetooth remains an optional diagnostic endpoint. Every live matrix cell now writes `system-metrics.json`
 with raw one-second samples for the Desktop process tree. The budget-balanced
-release plan first runs 6 five-minute local-isolation cells with the Provider
-disabled, then 6 four-minute-and-forty-five-second pairwise live cells and 2
-four-minute-and-forty-five-second model stability cells. The paid live budget
-is therefore 38 minutes. The pairwise
-extension leaves time for the native realtime translation tail to drain to the
-physical endpoint. After all
+release plan reuses the six zero-Provider local-isolation cells, then runs eight
+paid live cells with a hard three-minute Provider-input lease per cell. Source
+transcription, physical-output STT, secondary translation, and secondary TTS
+are forbidden in strict paid cells. The total external-audio ceiling is
+therefore 24 minutes (23,040,000 input samples at 16 kHz), while the single
+text-only Provider preflight has an independent 4,096-input/256-output-token
+ceiling and reports zero audio. After all
 authorities pass, assemble the baseline:
 
 ```powershell
@@ -274,7 +275,7 @@ receipt, the 6-cell zero-LLM local authority, and all 8 paid live
 count, and SHA-256. Validation rebuilds every authorized Watch report, derives
 the provider and subtitle p95 values from raw cue timestamps, and independently
 recomputes TTS latency, process-tree CPU p95, peak memory, dropout evidence, and
-the shorter duration of the two plan-authorized stability cells (currently three minutes each). Legacy canonical manifests, self-reported
+the three-minute lease bound of every paid cell. Legacy canonical manifests, self-reported
 canonical PASS, missing receipts/raw files, and rehashed aggregate summaries
 are rejected.
 
@@ -283,7 +284,7 @@ Evidence collection boundaries:
 | Artifact | Command or action | Prerequisites | Typical duration | Verifiable output |
 | --- | --- | --- | --- | --- |
 | Manual E2E | Run `collect:release-evidence:desktop` for the three Desktop-backed scenarios, `collect:release-evidence:real-device-audio` after the strict matrix, `collect:release-evidence:overlay` on an interactive Windows desktop, and `collect:release-evidence:virtual-mic` | Clean exact HEAD, release Desktop binary, configured live Provider credential for Provider scenarios, complete current-HEAD strict matrix, native virtual microphone ready, an installed Microsoft Edge WebView2 runtime, network access for the runner to install pinned `tauri-driver` 2.0.6 with `--locked` and fetch the exactly matching Microsoft-signed WebDriver into `artifacts/tooling/overlay-click-through`, and a named overlay operator on an unlocked interactive desktop | Desktop/diagnostics, vmic, and overlay take minutes; the real-device assembler takes seconds after the balanced matrix | Six independently validated scenario receipts; stable release requires all six |
-| Canonical performance source | `node ./scripts/testing/run-watch-mode-live-matrix.mjs --device-profiles <json> --skip-driver-repair` | Clean exact HEAD, production binaries, available DashScope credential, one verified default-speaker endpoint and one distinct USB endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | 68 minutes raw collection (30 zero-LLM + 38 paid live), normally 1.25–2 hours with build/readiness/post-processing | Canonical strict manifest, 6 local-isolation authorities, 8 passed live `report.json`, and 8 raw `system-metrics.json` files |
+| Canonical performance source | `npm run test:watch-mode-live:production-coordinator` | Clean exact HEAD, production binaries, available DashScope credential, one verified default-speaker endpoint and one distinct USB endpoint, a working virtual-driver route; elevation only when the installed driver/device requires it | At most 24 minutes of external audio; two workers execute four waves, with build/readiness/post-processing outside that audio budget | Canonical strict manifest, 6 reusable zero-Provider local-isolation authorities, 8 passed live `report.json`, and 8 raw `system-metrics.json` files |
 | Performance assembly | `node ./scripts/testing/assemble-performance-baseline.mjs --operator "<name>"` | The complete canonical matrix above, still on the same clean HEAD | Seconds to about one minute | Receipt-backed `desktop-perf-baseline-*.json`; CPU/memory/latency/dropout/duration are recomputed |
 | Install regression | `npm run test:install-regression`; then run each `collect:release-evidence:install:*` command and archive its returned package directory | Windows x64 UAC test machine, exact current-clean-HEAD canonical signed package, RFC3161 timestamps, and an older canonical signed package for upgrade | 20-40 minutes plus operator review | Five independently recomputed collector packages/receipts; schema-shaped files and prose cannot satisfy a scenario |
 
@@ -450,20 +451,32 @@ Run the live watch-mode diagnostic on Windows:
 npm run test:watch-mode-live
 ```
 
-Run the strict two-model, three-route, two-physical-device matrix on Windows. The
+Run the strict two-model, three-route, two-physical-device matrix through the
+signed two-or-three-worker production coordinator on Windows. The legacy
+single-process strict matrix command is intentionally fail-closed before any
+Provider call. The
 strict entry requires `--device-profiles` to explicitly contain exactly one
 `default-speaker` and one distinct `usb` profile; it never falls back
 to the default endpoint. Matrix options are double-dash Node flags (they
 survive `npm run ... --` on npm 11):
 
 ```powershell
-node .\scripts\testing\run-watch-mode-live-matrix.mjs --device-profiles .\artifacts\testing\watch-mode-device-profiles.json --skip-driver-repair --allow-elevated-desktop-launch
+npm run test:watch-mode-live:production-coordinator
 ```
 
-With npm 11 under PowerShell, forwarding these Node options through the npm
-alias requires two separators: `npm run test:watch-mode-live:matrix -- --
---device-profiles ...`. Invoking the Node entry point directly, as above,
-avoids npm-version-specific argument forwarding.
+Use the coordinator configuration to bind each worker to its device-profile
+instance. Do not invoke `run-watch-mode-live-matrix.mjs` for strict release
+evidence; that old entry exists only to give a pre-provider migration error.
+
+The evidence trust boundary includes the host coordinator, the pinned SSH
+control plane, the repository administrator, and the VM administrator. The
+interactive-session, process-lineage, executable-hash, raw-audio, and
+send-boundary ledgers detect ordinary routing, lifecycle, and collection
+failures inside that trusted environment. They are not TPM-backed remote
+attestation and do not claim resistance to a malicious administrator who can
+replace the repository, coordinator, VM state, or evidence files. A deployment
+that requires an administrator-adversarial guarantee must fail closed until a
+separately reviewed machine-key attestation service is available.
 
 The JSON file must contain `{"deviceProfiles":[...]}` with the two required device
 classes above. The USB profile requires an explicit MMDevice id and

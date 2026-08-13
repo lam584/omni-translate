@@ -4,9 +4,9 @@ import path from 'node:path';
 
 import { repoRoot } from '../lib/testing-common.mjs';
 
-export const STRICT_MATRIX_SCHEMA_VERSION = 3;
+export const STRICT_MATRIX_SCHEMA_VERSION = 4;
 export const STRICT_MATRIX_ARTIFACT_KIND = 'watch-mode-strict-matrix-authority';
-export const CELL_AUTHORITY_SCHEMA_VERSION = 2;
+export const CELL_AUTHORITY_SCHEMA_VERSION = 3;
 export const CELL_AUTHORITY_ARTIFACT_KIND = 'watch-mode-live-cell-authority';
 export const CELL_AUTHORITY_FILE = 'matrix-cell-authority.json';
 export const MATRIX_RUNNER_ID = 'scripts/testing/run-watch-mode-live-matrix.mjs';
@@ -31,6 +31,22 @@ export const AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/fixtures/watch-mode-en-original.zh-CN.txt',
 ]);
 
+// Paid-only inputs are deliberately kept out of AUTHORITY_IMPLEMENTATION_FILES.
+// That shared inventory is also used to decide whether an already completed
+// zero-Provider local-isolation layer can be reused across HEADs. Adding a new
+// paid implementation there would make an older local receipt appear to have
+// omitted a local implementation file even though the paid path never ran.
+export const PAID_AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
+  'scripts/testing/watch-mode-external-provider-budget.mjs',
+  'scripts/testing/watch-mode-canonical-source-authority.mjs',
+  'scripts/testing/watch-mode-translated-pcm-loopback.mjs',
+  'scripts/testing/release-manual-collector.mjs',
+  'scripts/testing/watch-mode-provider-preflight-authority.mjs',
+  'scripts/testing/fixtures/watch-mode-audio-fixtures.json',
+  'scripts/testing/fixtures/watch-mode-en-conversation.wav',
+  'scripts/testing/fixtures/watch-mode-en-technical.wav',
+]);
+
 export const AUTHORITY_RUNTIME_BINARY_FILES = Object.freeze([
   'target/release/omni-desktop-shell.exe',
   'target/release/omni-bridge-service.exe',
@@ -39,7 +55,6 @@ export const AUTHORITY_RUNTIME_BINARY_FILES = Object.freeze([
   'target/release/omni-tone-render-probe.exe',
   'target/release/omni-driver-audio-probe.exe',
   'target/release/omni-virtual-mic-target-capture.exe',
-  'target/debug/omni-realtime-diagnostic.exe',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.sys',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.cat',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.inf',
@@ -52,10 +67,14 @@ const COMMON_CELL_ARTIFACTS = Object.freeze([
   'bridge-source-probe.json',
   'virtual-driver-media-source-preflight.json',
   'driver.json',
+  'external-provider-budget.json',
   'physical-output-probe.json',
   'physical-playback-device.json',
   'playback.json',
   'provider-input-16k-mono.pcm',
+  'provider-input-budget-lease.json',
+  'provider-input-budget-ledger.json',
+  'provider-input-budget-ledger.json.journal.jsonl',
   'report.json',
   'report.md',
   'snapshots.json',
@@ -72,6 +91,9 @@ const PHYSICAL_CONTENT_ARTIFACTS = Object.freeze([
   'physical-output-recording.json',
   'physical-output-recording.wav',
   'source-media-transcript.json',
+  'translated-cue-pcm/translated-cue-pcm-authority.jsonl',
+  'translated-cue-pcm/translated-cue-pcm-summary.json',
+  'translated-pcm-loopback.stdout.json',
 ]);
 
 const PROCESS_EXCLUSION_ARTIFACTS = Object.freeze([
@@ -133,6 +155,13 @@ export function currentAuthorityImplementationHashes({ workspaceRoot = repoRoot 
   ));
 }
 
+export function currentPaidAuthorityImplementationHashes({ workspaceRoot = repoRoot } = {}) {
+  return PAID_AUTHORITY_IMPLEMENTATION_FILES.map((relativePath) => fileAuthorityEntry(
+    path.resolve(workspaceRoot, relativePath),
+    relativePath,
+  ));
+}
+
 export function currentAuthorityRuntimeBinaryHashes({ workspaceRoot = repoRoot } = {}) {
   return AUTHORITY_RUNTIME_BINARY_FILES.map((relativePath) => fileAuthorityEntry(
     path.resolve(workspaceRoot, relativePath),
@@ -175,6 +204,8 @@ export function writeCellAuthorityReceipt({
   matrixCell,
   provenance,
   implementationHashes = currentAuthorityImplementationHashes(),
+  paidImplementationHashes = currentPaidAuthorityImplementationHashes(),
+  shardAuthority = null,
   runtimeBinaryHashes = currentAuthorityRuntimeBinaryHashes(),
   now = new Date(),
 }) {
@@ -209,6 +240,8 @@ export function writeCellAuthorityReceipt({
       deviceProfileId: matrixCell.deviceProfileId,
     },
     implementationHashes,
+    paidImplementationHashes,
+    ...(shardAuthority ? { shardAuthority } : {}),
     runtimeBinaryHashes,
     artifacts,
   };
@@ -224,6 +257,7 @@ export function writeCellAuthorityReceipt({
     receiptPath: receiptAuthority.path,
     receiptBytes: receiptAuthority.bytes,
     receiptSha256: receiptAuthority.sha256,
+    ...(shardAuthority ? { shardAuthority } : {}),
   };
 }
 

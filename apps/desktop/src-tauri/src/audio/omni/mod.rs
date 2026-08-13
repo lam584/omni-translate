@@ -10,9 +10,20 @@ use std::time::{Duration, Instant, SystemTime};
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tauri::Manager;
-use tungstenite::client::IntoClientRequest;
+use tungstenite::client::{connect_with_config, IntoClientRequest};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Message};
+use tungstenite::Message;
+
+fn connect_without_redirects(
+    request: tungstenite::handshake::client::Request,
+) -> tungstenite::Result<(
+    tungstenite::WebSocket<tungstenite::stream::MaybeTlsStream<std::net::TcpStream>>,
+    tungstenite::handshake::client::Response,
+)> {
+    // Authentication is already attached to this request. A redirect must not
+    // replay that credential to another origin.
+    connect_with_config(request, None, 0)
+}
 
 use super::contracts::SubtitleDisplaySegmentRuntime;
 use super::diagnostics::{diag_log, diag_log_detail};
@@ -34,6 +45,7 @@ mod connection;
 mod connection_coordinator;
 mod event_processor;
 mod config;
+mod provider_input_budget;
 mod realtime_socket;
 pub(crate) use self::realtime_socket::{
     RealtimeSocket, RealtimeSocketConnector, TungsteniteConnector,
@@ -47,6 +59,7 @@ mod replay_tests;
 mod watch_report_replay_tests;
 mod session_worker;
 mod socket_event_processor;
+mod translated_pcm_authority;
 
 pub(crate) use self::session_worker::{start_omni, OmniHandle};
 use self::session_worker::reconnect_socket;
@@ -80,6 +93,7 @@ use self::event_processor::{
     OmniAudioOutputState, OmniEventProcessor, OmniReadinessState, OmniSubtitleEventState,
 };
 use self::config::OmniSessionConfig;
+use self::provider_input_budget::ProviderInputBudget;
 use self::session_errors::{
     classify_connect_error, classify_provider_error, split_error_markers, with_error_markers,
     SessionErrorCode,
@@ -111,40 +125,46 @@ const OMNI_ASR_SILENCE_GRACE_CHUNKS: u32 = 40;
 const OMNI_INTER_CHUNK_THROTTLE_MS: u64 = 18;
 const PROVIDER_INPUT_PCM_DUMP_MAX_SAMPLES: usize = 16_000 * 90;
 
+#[derive(Debug)]
 struct ProviderInputPcmDump {
     file: std::fs::File,
     path: String,
     samples_written: usize,
     max_samples: usize,
     write_failed: bool,
+    strict_paid_authority: bool,
 }
 
 impl ProviderInputPcmDump {
-    fn from_env<R: tauri::Runtime>(app: &AppHandle<R>) -> Option<Self> {
+    fn from_env<R: tauri::Runtime>(
+        app: &AppHandle<R>,
+        strict_budget_max_samples: Option<usize>,
+        strict_paid_authority: bool,
+    ) -> Result<Option<Self>, String> {
         let path = std::env::var("OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH")
             .ok()
             .map(|value| value.trim().to_string())
-            .filter(|value| !value.is_empty())?;
-        match OpenOptions::new()
-            .create(true)
-            .write(true)
-            .truncate(true)
-            .open(&path)
-        {
-            Ok(file) => {
+            .filter(|value| !value.is_empty());
+        let Some(path) = path else {
+            return if strict_paid_authority {
+                Err("strict paid provider authority requires OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH before connect".to_string())
+            } else {
+                Ok(None)
+            };
+        };
+        match Self::open_path(
+            path.clone(),
+            strict_budget_max_samples.unwrap_or(PROVIDER_INPUT_PCM_DUMP_MAX_SAMPLES),
+            strict_paid_authority,
+        ) {
+            Ok(dump) => {
                 let _ = diag_log(
                     app,
                     "omni",
                     "info",
                     format!("[WATCH] provider input PCM dump enabled: {path}"),
                 );
-                Some(Self {
-                    file,
-                    path,
-                    samples_written: 0,
-                    max_samples: PROVIDER_INPUT_PCM_DUMP_MAX_SAMPLES,
-                    write_failed: false,
-                })
+                Ok(Some(dump))
             }
             Err(error) => {
                 let _ = diag_log(
@@ -155,27 +175,60 @@ impl ProviderInputPcmDump {
                         "[WATCH] provider input PCM dump open failed: path={path} error={error}"
                     ),
                 );
-                None
+                if strict_paid_authority {
+                    Err(error)
+                } else {
+                    Ok(None)
+                }
             }
         }
     }
 
-    fn append<R: tauri::Runtime>(&mut self, app: &AppHandle<R>, samples: &[i16]) {
-        if self.write_failed || samples.is_empty() || self.samples_written >= self.max_samples {
-            return;
-        }
-        let remaining = self.max_samples - self.samples_written;
-        let samples = if samples.len() > remaining {
-            &samples[..remaining]
+    fn open_path(
+        path: String,
+        max_samples: usize,
+        strict_paid_authority: bool,
+    ) -> Result<Self, String> {
+        let mut options = OpenOptions::new();
+        options.write(true);
+        if strict_paid_authority {
+            options.create_new(true);
         } else {
-            samples
-        };
-        let mut bytes = Vec::with_capacity(samples.len() * 2);
-        for sample in samples {
-            bytes.extend_from_slice(&sample.to_le_bytes());
+            options.create(true).truncate(true);
         }
-        if let Err(error) = self.file.write_all(&bytes) {
-            self.write_failed = true;
+        let mut file = options.open(&path).map_err(|error| {
+            if strict_paid_authority {
+                format!(
+                    "strict paid provider input PCM dump must be a new exclusive file: path={path} error={error}"
+                )
+            } else {
+                format!("provider input PCM dump open failed: path={path} error={error}")
+            }
+        })?;
+        if strict_paid_authority {
+            file.flush().map_err(|error| {
+                format!(
+                    "strict paid provider input PCM dump initial flush failed: path={path} error={error}"
+                )
+            })?;
+        }
+        Ok(Self {
+            file,
+            path,
+            samples_written: 0,
+            max_samples,
+            write_failed: false,
+            strict_paid_authority,
+        })
+    }
+
+    fn append<R: tauri::Runtime>(
+        &mut self,
+        app: &AppHandle<R>,
+        samples: &[i16],
+    ) -> Result<(), String> {
+        let result = self.append_samples(samples);
+        if let Err(error) = &result {
             let _ = diag_log(
                 app,
                 "omni",
@@ -185,20 +238,53 @@ impl ProviderInputPcmDump {
                     self.path
                 ),
             );
-            return;
+        }
+        if self.strict_paid_authority {
+            result
+        } else {
+            Ok(())
+        }
+    }
+
+    fn append_samples(&mut self, samples: &[i16]) -> Result<(), String> {
+        if self.write_failed || samples.is_empty() || self.samples_written >= self.max_samples {
+            if self.strict_paid_authority && !samples.is_empty() {
+                return Err(format!(
+                    "strict paid provider input PCM dump is not writable: path={} samplesWritten={} maxSamples={}",
+                    self.path, self.samples_written, self.max_samples
+                ));
+            }
+            return Ok(());
+        }
+        let remaining = self.max_samples - self.samples_written;
+        let samples = if samples.len() > remaining && self.strict_paid_authority {
+            return Err(format!(
+                "strict paid provider input PCM dump would exceed its cap: path={} attemptedSamples={} remainingSamples={remaining}",
+                self.path,
+                samples.len()
+            ));
+        } else if samples.len() > remaining {
+            &samples[..remaining]
+        } else {
+            samples
+        };
+        let mut bytes = Vec::with_capacity(samples.len() * 2);
+        for sample in samples {
+            bytes.extend_from_slice(&sample.to_le_bytes());
+        }
+        let write_result = self.file.write_all(&bytes).and_then(|_| {
+            if self.strict_paid_authority {
+                self.file.flush()
+            } else {
+                Ok(())
+            }
+        });
+        if let Err(error) = write_result {
+            self.write_failed = true;
+            return Err(error.to_string());
         }
         self.samples_written += samples.len();
-        if self.samples_written >= self.max_samples {
-            let _ = diag_log(
-                app,
-                "omni",
-                "info",
-                format!(
-                    "[WATCH] provider input PCM dump reached cap: path={} samples={}",
-                    self.path, self.samples_written
-                ),
-            );
-        }
+        Ok(())
     }
 }
 
@@ -690,6 +776,7 @@ pub(crate) use self::protocol::{
     build_dashscope_response_create, build_dashscope_session_update, build_dashscope_text_item,
     build_omni_session_update_for_provider_with_output_mode, OmniOutputMode, OmniSpeechConfig,
 };
+use self::translated_pcm_authority::TranslatedPcmAuthority;
 use self::protocol::{
     check_vad_warning, elapsed_ms_since,
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,

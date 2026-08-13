@@ -830,6 +830,13 @@ mod tests {
     }
 
     #[test]
+    fn distributed_release_accepts_a_bridge_next_to_the_desktop_executable() {
+        let exe_dir = Path::new(r"E:\omni-paid-worker\target\release");
+        let candidates = installed_bridge_cli_candidates(exe_dir);
+        assert_eq!(candidates[0], exe_dir.join("omni-bridge-service.exe"));
+    }
+
+    #[test]
     fn assets_root_prefers_the_dev_checkout() {
         assert_eq!(
             assets_root(),

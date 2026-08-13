@@ -296,7 +296,11 @@ mod injector {
         // legacy friendly-name selector here can silently route media to the
         // virtual speaker while the live recorder captures a physical device.
         match requested_endpoint_id {
-            Some(requested) => requested == actual_endpoint_id,
+            // MMDevice GUID text is case-insensitive. PnP commonly exposes
+            // uppercase hex while WASAPI returns lowercase hex for the same
+            // endpoint, so a byte-sensitive comparison rejects a valid,
+            // explicitly selected device.
+            Some(requested) => requested.eq_ignore_ascii_case(actual_endpoint_id),
             None => actual_endpoint_name.contains(requested_endpoint_name),
         }
     }
@@ -508,6 +512,12 @@ mod injector {
                 Some("{physical-endpoint}"),
                 "{physical-endpoint}",
                 "Speakers (High Definition Audio Device)",
+                "Omni Translate Virtual Speaker",
+            ));
+            assert!(render_device_matches_request(
+                Some("{0.0.0.00000000}.{0FA47289-698C-4F9B-BBB2-6775530CE776}"),
+                "{0.0.0.00000000}.{0fa47289-698c-4f9b-bbb2-6775530ce776}",
+                "Speakers (Omni Translate Virtual Speaker)",
                 "Omni Translate Virtual Speaker",
             ));
             assert!(!render_device_matches_request(

@@ -521,6 +521,8 @@ export function remotePowerShellInvocation(body, payload) {
     ],
     input: [
       "$ErrorActionPreference = 'Stop'",
+      '[Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)',
+      '$OutputEncoding = [Console]::OutputEncoding',
       `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
       '$payload = $payloadJson | ConvertFrom-Json',
       body,

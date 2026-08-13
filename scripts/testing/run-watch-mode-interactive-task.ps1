@@ -45,6 +45,34 @@ function Write-ImmutableJson {
   }
 }
 
+function Invoke-Utf8JsonProcess {
+  param(
+    [Parameter(Mandatory = $true)][string]$FilePath,
+    [Parameter(Mandatory = $true)][string[]]$ArgumentList,
+    [Parameter(Mandatory = $true)][string]$FailureContext
+  )
+  # Windows PowerShell 5.1 otherwise decodes native stdout with the active
+  # console code page. The Rust probes emit UTF-8 JSON, so localized endpoint
+  # names would be mojibake before ConvertFrom-Json and fail exact authority
+  # matching even though the request and endpoint bytes were both correct.
+  $previousOutputEncoding = [Console]::OutputEncoding
+  try {
+    [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+    $output = @(& $FilePath @ArgumentList 2>&1)
+    $exitCode = $LASTEXITCODE
+  } finally {
+    [Console]::OutputEncoding = $previousOutputEncoding
+  }
+  if ($exitCode -ne 0) {
+    throw "$FailureContext`: $($output -join ' | ')"
+  }
+  try {
+    return (($output -join [Environment]::NewLine) | ConvertFrom-Json)
+  } catch {
+    throw "$FailureContext returned invalid UTF-8 JSON: $($_.Exception.Message)"
+  }
+}
+
 function Get-ProcessIdentity {
   param([Parameter(Mandatory = $true)][int]$ProcessId)
   $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop
@@ -270,9 +298,15 @@ if ($request.mode -eq 'endpoint-readiness') {
     if (($requested -eq 'default' -or [string]::IsNullOrWhiteSpace($requested)) -and [string]$profile.expectedPhysicalPlaybackDeviceName) {
       $requested = [string]$profile.expectedPhysicalPlaybackDeviceName
     }
-    $probeOutput = @(& ([string]$request.probeExecutable) '--bridge-exe' ([string]$request.bridgeExecutable) '--runtime-root' $profileRoot '--physical-playback-device-id' $requested '--physical-playback-level' '50' 2>&1)
-    if ($LASTEXITCODE -ne 0) { throw "interactive endpoint probe failed for $($profile.instanceId): $($probeOutput -join ' | ')" }
-    $probe = ($probeOutput -join [Environment]::NewLine) | ConvertFrom-Json
+    $probe = Invoke-Utf8JsonProcess `
+      -FilePath ([string]$request.probeExecutable) `
+      -ArgumentList @(
+        '--bridge-exe', ([string]$request.bridgeExecutable),
+        '--runtime-root', $profileRoot,
+        '--physical-playback-device-id', $requested,
+        '--physical-playback-level', '50'
+      ) `
+      -FailureContext "interactive endpoint probe failed for $($profile.instanceId)"
     if ($probe.passed -ne $true -or $probe.skipped -eq $true -or -not [string]$probe.resolvedPhysicalPlaybackDeviceId) {
       throw "interactive endpoint profile is unavailable: $($profile.instanceId)"
     }

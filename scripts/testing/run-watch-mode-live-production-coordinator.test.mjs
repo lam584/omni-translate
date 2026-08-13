@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -30,6 +31,12 @@ const CLEAN_PROVENANCE = {
   worktreeClean: true,
   dirtyEntryCount: 0,
 };
+
+const isWindows = process.platform === 'win32';
+
+function quotePowerShell(value) {
+  return `'${String(value).replaceAll("'", "''")}'`;
+}
 
 test('production coordinator rejects a noncanonical authorization root before any callback', async () => {
   const noncanonicalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-noncanonical-root-'));
@@ -230,6 +237,48 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-desktop-shell|DashScope|providerId/i);
 });
 
+test('interactive readiness decodes native UTF-8 endpoint JSON and restores console encoding', { skip: !isWindows }, () => {
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-readiness-utf8-'));
+  const emitterPath = path.join(tempRoot, 'emit-endpoint-json.mjs');
+  const launcherPath = path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1');
+  const endpointName = '扬声器 (High Definition Audio Device)';
+  fs.writeFileSync(
+    emitterPath,
+    `process.stdout.write(JSON.stringify({ passed: true, resolvedPhysicalPlaybackDeviceName: ${JSON.stringify(endpointName)} }));\n`,
+    'utf8',
+  );
+  const command = [
+    '$tokens = $null',
+    '$errors = $null',
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(${quotePowerShell(launcherPath)}, [ref]$tokens, [ref]$errors)`,
+    "if (@($errors).Count -ne 0) { throw 'launcher parse failed' }",
+    "$function = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Invoke-Utf8JsonProcess' }, $true))",
+    "if ($function.Count -ne 1) { throw 'UTF-8 JSON helper is missing or duplicated' }",
+    '. ([scriptblock]::Create($function[0].Extent.Text))',
+    '$original = [Console]::OutputEncoding',
+    '[Console]::OutputEncoding = [Text.Encoding]::GetEncoding(936)',
+    '$before = [Console]::OutputEncoding.CodePage',
+    `$result = Invoke-Utf8JsonProcess -FilePath ${quotePowerShell(process.execPath)} -ArgumentList @(${quotePowerShell(emitterPath)}) -FailureContext 'UTF-8 fixture failed'`,
+    '$nameBase64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$result.resolvedPhysicalPlaybackDeviceName))',
+    '$encodingRestored = ([Console]::OutputEncoding.CodePage -eq $before)',
+    '[Console]::OutputEncoding = $original',
+    '[ordered]@{ nameBase64 = $nameBase64; encodingRestored = $encodingRestored; exercisedCodePage = $before } | ConvertTo-Json -Compress',
+  ].join('; ');
+  try {
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const evidence = JSON.parse(result.stdout.trim());
+    assert.equal(evidence.nameBase64, Buffer.from(endpointName, 'utf8').toString('base64'));
+    assert.equal(evidence.encodingRestored, true);
+    assert.equal(evidence.exercisedCodePage, 936);
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test('interactive control projects readiness and paid-cell fields only inside their exact mode', () => {
   const control = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/invoke-watch-mode-interactive-task.ps1'),
@@ -289,10 +338,13 @@ test('remote PowerShell streams large scripts through SSH stdin instead of the W
   const marker = 'runtime-entry-marker-'.padEnd(128, 'x');
   const invocation = remotePowerShellInvocation(
     '[pscustomobject]@{ count = @($payload.entries).Count } | ConvertTo-Json -Compress',
-    { entries: Array.from({ length: 256 }, (_, index) => ({
-      path: `target/release/runtime-${index}.exe`,
-      sha256: marker,
-    })) },
+    {
+      localizedName: '扬声器 (High Definition Audio Device)',
+      entries: Array.from({ length: 256 }, (_, index) => ({
+        path: `target/release/runtime-${index}.exe`,
+        sha256: marker,
+      })),
+    },
   );
   assert.ok(invocation.input.length > 32_768);
   assert.ok(invocation.args.join(' ').length < 1_024);
@@ -303,6 +355,9 @@ test('remote PowerShell streams large scripts through SSH stdin instead of the W
   const streamedPayload = JSON.parse(Buffer.from(payloadMatch[1], 'base64').toString('utf8'));
   assert.equal(streamedPayload.entries.length, 256);
   assert.equal(streamedPayload.entries[0].sha256, marker);
+  assert.equal(streamedPayload.localizedName, '扬声器 (High Definition Audio Device)');
+  assert.match(invocation.input, /Console\]::OutputEncoding = \[Text\.UTF8Encoding\]::new\(\$false\)/);
+  assert.match(invocation.input, /\$OutputEncoding = \[Console\]::OutputEncoding/);
   const bootstrap = Buffer.from(invocation.args.at(-1), 'base64').toString('utf16le');
   assert.match(bootstrap, /\[Console\]::In\.ReadToEnd\(\)/);
   assert.match(bootstrap, /ScriptBlock/);

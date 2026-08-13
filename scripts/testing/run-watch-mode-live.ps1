@@ -54,6 +54,12 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+# The native Rust diagnostics emit UTF-8 JSON. Windows PowerShell 5.1 decodes
+# native stdout with Console.OutputEncoding, so make that byte boundary
+# explicit before any probe output is captured or parsed.
+[Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
+$OutputEncoding = [Console]::OutputEncoding
+
 if ($PhysicalPlaybackDeviceProfileId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
   throw "PhysicalPlaybackDeviceProfileId must contain only letters, digits, '.', '_', or '-'."
 }

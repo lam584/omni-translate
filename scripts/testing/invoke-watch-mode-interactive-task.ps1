@@ -269,13 +269,19 @@ try {
   $terminalVisibilityGraceMilliseconds = 5000
   while (-not (Test-Path -LiteralPath $terminalPath -PathType Leaf)) {
     if ([DateTime]::UtcNow -ge $deadline) { throw 'interactive task timed out before terminal authority' }
-    $taskState = (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop).State
+    $taskStateBeforeInfo = (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop).State
     $taskInfo = Get-ScheduledTaskInfo -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop
-    if ($taskState -eq 'Running') { $taskObservedRunning = $true }
+    $taskStateAfterInfo = (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop).State
+    $taskIsActive = @($taskStateBeforeInfo, $taskStateAfterInfo) | Where-Object {
+      $_ -in @('Running', 'Queued')
+    } | Select-Object -First 1
+    if ($taskStateBeforeInfo -eq 'Running' -or $taskStateAfterInfo -eq 'Running') {
+      $taskObservedRunning = $true
+    }
     if ($taskObservedRunning -or $taskInfo.LastRunTime -ne $taskInfoBeforeStart.LastRunTime) {
       $taskObservedStarted = $true
     }
-    $taskIsActive = $taskState -in @('Running', 'Queued')
+    if ($taskIsActive) { $successfulTaskExitObservedAt = $null }
     if (
       $taskObservedStarted -and
       -not $taskIsActive -and
@@ -293,7 +299,7 @@ try {
     }
     Start-Sleep -Milliseconds 250
   }
-  while ((Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName).State -eq 'Running') {
+  while ((Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName).State -in @('Running', 'Queued')) {
     if ([DateTime]::UtcNow -ge $deadline) { throw 'interactive task did not reach scheduler terminal state' }
     Start-Sleep -Milliseconds 250
   }

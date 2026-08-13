@@ -15,6 +15,7 @@ import {
   PRODUCTION_WORKER_READINESS_FINALIZE_BODY,
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
   parseProductionCoordinatorCliArgs,
+  remotePowerShellInvocation,
   runProductionCoordinator,
   scpBaseArgs,
   sshBaseArgs,
@@ -195,6 +196,29 @@ test('production runtime build embeds the coordinator key identity before prefli
   assert.match(source, /OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID: coordinatorKeyId/);
 });
 
+test('remote PowerShell streams large scripts through SSH stdin instead of the Windows command line', () => {
+  const marker = 'runtime-entry-marker-'.padEnd(128, 'x');
+  const invocation = remotePowerShellInvocation(
+    '[pscustomobject]@{ count = @($payload.entries).Count } | ConvertTo-Json -Compress',
+    { entries: Array.from({ length: 256 }, (_, index) => ({
+      path: `target/release/runtime-${index}.exe`,
+      sha256: marker,
+    })) },
+  );
+  assert.ok(invocation.input.length > 32_768);
+  assert.ok(invocation.args.join(' ').length < 1_024);
+  assert.equal(invocation.args.includes('-EncodedCommand'), true);
+  assert.equal(invocation.args.join(' ').includes(marker), false);
+  const payloadMatch = invocation.input.match(/FromBase64String\('([^']+)'\)/);
+  assert.ok(payloadMatch);
+  const streamedPayload = JSON.parse(Buffer.from(payloadMatch[1], 'base64').toString('utf8'));
+  assert.equal(streamedPayload.entries.length, 256);
+  assert.equal(streamedPayload.entries[0].sha256, marker);
+  const bootstrap = Buffer.from(invocation.args.at(-1), 'base64').toString('utf16le');
+  assert.match(bootstrap, /\[Console\]::In\.ReadToEnd\(\)/);
+  assert.match(bootstrap, /ScriptBlock/);
+});
+
 test('SSH transport finalizes manifests in the guest and cancellation is task/launch-authority bound', () => {
   const source = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/run-watch-mode-live-production-coordinator.mjs'),
@@ -205,6 +229,8 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.match(source, /validateShardManifest\(\{/);
   assert.doesNotMatch(source, /writeShardManifest\s*\(/);
   assert.doesNotMatch(source, /LEGACY_PRODUCTION_/);
+  assert.doesNotMatch(source, /encodedPowerShell/);
+  assert.match(source, /input: invocation\.input/);
   assert.doesNotMatch(source, /production three-VM strict evidence/);
   assert.match(source, /Get-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
   assert.match(source, /Stop-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);

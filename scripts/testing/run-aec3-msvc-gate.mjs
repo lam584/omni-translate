@@ -113,18 +113,17 @@ const cmake = findExecutable(join(downloadsRoot, 'tools'), 'cmake.exe');
 if (!cmake) {
   throw new Error(`vcpkg completed without an acquired cmake.exe under ${downloadsRoot}`);
 }
-const ninja = findExecutable(join(downloadsRoot, 'tools'), 'ninja.exe');
-if (!ninja) {
-  throw new Error(`vcpkg completed without an acquired ninja.exe under ${downloadsRoot}`);
-}
-
 const buildEnvironment = {
   ...process.env,
   VCPKG_ROOT: vcpkgRoot,
   VCPKG_INSTALLED_ROOT: installedRoot,
   CMAKE: cmake,
-  CMAKE_GENERATOR: 'Ninja',
-  CMAKE_MAKE_PROGRAM: ninja,
+  // The gate also runs from clean scheduled-task/CI shells where cl.exe is
+  // intentionally absent from PATH. Let CMake locate the installed MSVC
+  // toolchain through its Visual Studio generator instead of inheriting a
+  // developer-shell accident.
+  CMAKE_GENERATOR: 'Visual Studio 17 2022',
+  CMAKE_GENERATOR_PLATFORM: 'x64',
   // build.rs watches this nonce. A repeated local/CI gate therefore reruns
   // the native deterministic CTest instead of trusting Cargo's cached build
   // script output; failure prevents the linked feature from compiling.

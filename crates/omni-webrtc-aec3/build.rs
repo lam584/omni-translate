@@ -15,6 +15,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=VCPKG_INSTALLED_ROOT");
     println!("cargo:rerun-if-env-changed=CMAKE");
     println!("cargo:rerun-if-env-changed=CMAKE_GENERATOR");
+    println!("cargo:rerun-if-env-changed=CMAKE_GENERATOR_PLATFORM");
     println!("cargo:rerun-if-env-changed=CMAKE_MAKE_PROGRAM");
     // The release gate supplies a fresh nonce for every invocation so Cargo
     // cannot reuse an earlier build-script result without executing the
@@ -69,6 +70,7 @@ fn main() {
         .join("vcpkg.cmake");
     let cmake = env::var_os("CMAKE").unwrap_or_else(|| "cmake".into());
     let cmake_generator = env::var_os("CMAKE_GENERATOR");
+    let cmake_generator_platform = env::var_os("CMAKE_GENERATOR_PLATFORM");
     let cmake_make_program = env::var_os("CMAKE_MAKE_PROGRAM");
 
     let mut configure = Command::new(&cmake);
@@ -84,6 +86,9 @@ fn main() {
             .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()));
     if let Some(generator) = cmake_generator {
         configure.arg("-G").arg(generator);
+    }
+    if let Some(platform) = cmake_generator_platform {
+        configure.arg("-A").arg(platform);
     }
     if let Some(make_program) = cmake_make_program {
         configure.arg(format!("-DCMAKE_MAKE_PROGRAM={}", PathBuf::from(make_program).display()));

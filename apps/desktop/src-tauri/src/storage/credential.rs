@@ -434,9 +434,20 @@ mod tests {
         let vault = KeyringCredentialVault::new();
 
         let _ = delete_windows_credential(&super::normalize_reference(&reference));
-        vault
-            .upsert_secret(&reference, &secret)
-            .expect("native windows credential should be stored");
+        if let Err(error) = vault.upsert_secret(&reference, &secret) {
+            // Scheduled validation tasks can run without an interactive logon
+            // session, in which case CredWriteW deterministically returns
+            // ERROR_NO_SUCH_LOGON_SESSION (1312). That environment cannot
+            // exercise the native vault; every other Windows API failure is
+            // still a product/test failure.
+            if error.contains("(code=1312)") {
+                eprintln!(
+                    "native Windows credential roundtrip unavailable without a logon session: {error}"
+                );
+                return;
+            }
+            panic!("native windows credential should be stored: {error}");
+        }
 
         assert!(vault
             .has_secret(&reference)

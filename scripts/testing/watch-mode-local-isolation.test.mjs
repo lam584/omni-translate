@@ -158,12 +158,13 @@ dependencies = [
   assert.equal(LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes('Cargo.lock'), false);
 });
 
-test('attributes and signed orchestration files have eleven exact LF rules without a path-only reuse exception', () => {
-  const expected = ['.gitattributes text eol=lf', ...SHARD_ORCHESTRATION_IMPLEMENTATION_FILES.map(
+test('attributes and signed authority files have exact LF rules without a path-only reuse exception', () => {
+  const shardRules = ['.gitattributes text eol=lf', ...SHARD_ORCHESTRATION_IMPLEMENTATION_FILES.map(
     (entryPath) => `${entryPath} text eol=lf`,
   )];
-  assert.deepEqual(LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES, expected);
-  assert.equal(expected.length, 11);
+  const expected = LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES;
+  assert.deepEqual(expected.slice(0, shardRules.length), shardRules);
+  assert.equal(expected.length, 20);
   assert.equal(LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes('.gitattributes'), false);
   const attributes = fs.readFileSync(path.join(process.cwd(), '.gitattributes'), 'utf8');
   const lines = attributes.split('\n').filter(Boolean);
@@ -172,7 +173,7 @@ test('attributes and signed orchestration files have eleven exact LF rules witho
   }
 });
 
-test('.gitattributes reuse allows only appending the eleven fixed LF rules', () => {
+test('.gitattributes reuse allows only appending the fixed LF rules', () => {
   const source = [
     'drivers/windows-virtual-mic/sysvad/** linguist-vendored',
     'drivers/windows-virtual-mic/package/driver-package.json text eol=lf',
@@ -192,21 +193,21 @@ test('.gitattributes reuse allows only appending the eleven fixed LF rules', () 
         `${LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[0]} linguist-generated`,
       ),
     }),
-    /only the exact eleven/,
+    /only the exact fixed/,
   );
   assert.match(
     signedOrchestrationGitAttributesReuseFailure({
       sourceText: source,
       currentText: `${current}docs/** text eol=lf\n`,
     }),
-    /only the exact eleven/,
+    /only the exact fixed/,
   );
   assert.match(
     signedOrchestrationGitAttributesReuseFailure({
       sourceText: source,
       currentText: current.replace(`${LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[1]}\n`, ''),
     }),
-    /only the exact eleven/,
+    /only the exact fixed/,
   );
   assert.match(
     signedOrchestrationGitAttributesReuseFailure({
@@ -216,14 +217,14 @@ test('.gitattributes reuse allows only appending the eleven fixed LF rules', () 
         LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[2].replace('eol=lf', 'eol=crlf'),
       ),
     }),
-    /only the exact eleven/,
+    /only the exact fixed/,
   );
   assert.match(
     signedOrchestrationGitAttributesReuseFailure({
       sourceText: source,
       currentText: current.replace(`${source.split('\n')[0]}\n`, ''),
     }),
-    /only the exact eleven/,
+    /only the exact fixed/,
   );
   assert.match(
     signedOrchestrationGitAttributesReuseFailure({

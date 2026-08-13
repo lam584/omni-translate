@@ -44,6 +44,15 @@ export const LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES = Object.freeze([
   'scripts/testing/release-manual-collector.mjs text eol=lf',
   'scripts/testing/watch-mode-provider-preflight-authority.mjs text eol=lf',
   'scripts/testing/watch-mode-provider-preflight-authorization.mjs text eol=lf',
+  'scripts/testing/run-watch-mode-live-matrix.mjs text eol=lf',
+  'scripts/testing/run-watch-mode-live.ps1 text eol=lf',
+  'scripts/testing/watch-mode-report.mjs text eol=lf',
+  'scripts/testing/verify-watch-mode-evidence.mjs text eol=lf',
+  'scripts/testing/watch-mode-evidence-authority.mjs text eol=lf',
+  'scripts/testing/watch-mode-balanced-release-plan.mjs text eol=lf',
+  'scripts/testing/watch-mode-local-isolation.mjs text eol=lf',
+  'scripts/development/build-desktop-release.mjs text eol=lf',
+  'scripts/installer/build-sysvad-driver.ps1 text eol=lf',
 ]);
 export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   'AGENTS.md',
@@ -691,7 +700,7 @@ export function signedOrchestrationGitAttributesReuseFailure({ sourceText, curre
   }
   const expected = `${sourceText}${LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES.join('\n')}\n`;
   if (currentText !== expected) {
-    return '.gitattributes reuse permits only the exact eleven fixed text eol=lf additions';
+    return '.gitattributes reuse permits only the exact fixed text eol=lf additions';
   }
   return null;
 }

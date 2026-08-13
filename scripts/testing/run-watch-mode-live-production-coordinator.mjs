@@ -526,6 +526,7 @@ const REMOTE_POWERSHELL_STDIN_BOOTSTRAP = Buffer.from(
 ).toString('base64');
 
 export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
+export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS = 5 * 60 * 1000;
 
 export function remotePowerShellInvocation(body, payload) {
   const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
@@ -884,7 +885,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
             worker,
             PRODUCTION_WORKER_READINESS_FINALIZE_BODY,
             readinessPayload,
-            { timeoutMs: 45_000 },
+            { timeoutMs: PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS },
           ), `worker ${worker.workerId} zero-provider readiness finalization`);
         })();
     if (

@@ -108,6 +108,7 @@ export function buildLocalIsolationRuntime({
   workspaceRoot = repoRoot,
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
   run = spawnSync,
+  recordAecGate = () => {},
   provenanceReader = () => currentGitProvenance({ cwd: workspaceRoot }),
   runtimeHashesReader = () => currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
 } = {}) {
@@ -137,6 +138,7 @@ export function buildLocalIsolationRuntime({
     if (result.error || Number(result.status) !== 0) {
       throw new Error(`local isolation runtime build failed: npm ${args.join(' ')}`);
     }
+    if (args[1] === 'test:aec3-msvc') recordAecGate(result);
   }
   const realtimeDiagnostic = run('cargo', [
     'build',
@@ -634,6 +636,7 @@ export async function runLocalIsolationMatrix({
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
   now = () => Date.now(),
   runCell = runLocalIsolationCell,
+  preparedAecGate = null,
   runAecGate = ({ workspaceRoot: root }) => {
     const executable = process.platform === 'win32'
       ? (process.env.ComSpec || 'cmd.exe')
@@ -662,7 +665,7 @@ export async function runLocalIsolationMatrix({
     `${compactTimestamp(new Date(generatedAtMs))}-${provenance.headCommit.slice(0, 12)}`,
   );
   createLocalIsolationMatrixDirectory(matrixDirectory);
-  const aecGateResult = runAecGate({ workspaceRoot });
+  const aecGateResult = preparedAecGate ?? runAecGate({ workspaceRoot });
   const aecGateLogPath = path.join(matrixDirectory, 'aec3-msvc-gate.log');
   fs.writeFileSync(
     aecGateLogPath,
@@ -736,8 +739,17 @@ if (isMain(import.meta.url)) {
       defaults: { outputRoot: DEFAULT_OUTPUT_ROOT, deviceProfiles: '' },
     });
     const deviceProfiles = parseLocalIsolationDeviceProfiles(args.deviceProfiles);
-    buildLocalIsolationRuntime();
-    const result = await runLocalIsolationMatrix({ deviceProfiles, outputRoot: args.outputRoot });
+    let preparedAecGate = null;
+    buildLocalIsolationRuntime({
+      recordAecGate: (result) => {
+        preparedAecGate = result;
+      },
+    });
+    const result = await runLocalIsolationMatrix({
+      deviceProfiles,
+      outputRoot: args.outputRoot,
+      preparedAecGate,
+    });
     console.log(JSON.stringify(result, null, 2));
   } catch (error) {
     console.error(error.message);

@@ -224,6 +224,47 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-desktop-shell|DashScope|providerId/i);
 });
 
+test('interactive control projects readiness and paid-cell fields only inside their exact mode', () => {
+  const control = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/invoke-watch-mode-interactive-task.ps1'),
+    'utf8',
+  );
+  assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell'\)/);
+  const commandStart = control.indexOf('$command = [ordered]@{');
+  const commandEnd = control.indexOf('Write-ImmutableJson $commandPath $command');
+  assert.ok(commandStart >= 0 && commandEnd > commandStart);
+  const commandProjection = control.slice(commandStart, commandEnd);
+  assert.doesNotMatch(
+    commandProjection,
+    /\$payload\.(?:leaseId|leaseDigest|cellId|feedbackLoopPrevention|planPath|planSha256|leasePath|leaseSha256|readinessPath|readinessRequestDigest|profiles|probeExecutable|bridgeExecutable)/,
+  );
+  for (const field of [
+    'leaseId',
+    'leaseDigest',
+    'cellId',
+    'feedbackLoopPrevention',
+    'planPath',
+    'planSha256',
+    'leasePath',
+    'leaseSha256',
+    'readinessPath',
+  ]) {
+    assert.equal(
+      control.match(new RegExp(`\\$payload\\.${field}`, 'g'))?.length,
+      1,
+      `${field} must be read only while projecting a shard-cell request`,
+    );
+  }
+  for (const field of ['readinessRequestDigest', 'profiles', 'probeExecutable', 'bridgeExecutable']) {
+    assert.equal(
+      control.match(new RegExp(`\\$payload\\.${field}`, 'g'))?.length,
+      1,
+      `${field} must be read only while projecting endpoint readiness`,
+    );
+  }
+  assert.match(control, /if \(\$mode -eq 'shard-cell'\) \{[\s\S]*?\$taskTerminal\['leaseId'\]/);
+});
+
 test('production runtime build embeds the coordinator key identity before preflight', () => {
   const source = fs.readFileSync(
     path.join(repoRoot, 'scripts/testing/run-watch-mode-live-production-coordinator.mjs'),

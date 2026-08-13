@@ -115,6 +115,11 @@ if (!cmake) {
 }
 const buildEnvironment = {
   ...process.env,
+  // The linked Desktop test graph is large enough that full PDBs exhaust
+  // small clean Windows validation VMs. Debug symbols are not evidence for
+  // this execution gate; disable them without changing test/runtime behavior.
+  CARGO_PROFILE_DEV_DEBUG: '0',
+  CARGO_PROFILE_TEST_DEBUG: '0',
   VCPKG_ROOT: vcpkgRoot,
   VCPKG_INSTALLED_ROOT: installedRoot,
   CMAKE: cmake,

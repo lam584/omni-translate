@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -361,6 +362,36 @@ test('remote PowerShell streams large scripts through SSH stdin instead of the W
   const bootstrap = Buffer.from(invocation.args.at(-1), 'base64').toString('utf16le');
   assert.match(bootstrap, /\[Console\]::In\.ReadToEnd\(\)/);
   assert.match(bootstrap, /ScriptBlock/);
+});
+
+test('interactive remote wrapper accepts a successful PowerShell control with no native exit code', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-control-exit-'));
+  const scriptsRoot = path.join(root, 'scripts', 'testing');
+  const controlPath = path.join(scriptsRoot, 'invoke-watch-mode-interactive-task.ps1');
+  fs.mkdirSync(scriptsRoot, { recursive: true });
+  fs.writeFileSync(controlPath, [
+    'param([Parameter(Mandatory = $true)][string]$PayloadBase64)',
+    "$decoded = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($PayloadBase64)) | ConvertFrom-Json",
+    "[ordered]@{ status = 'passed'; marker = [string]$decoded.marker } | ConvertTo-Json -Compress",
+  ].join('\n'), 'utf8');
+  const invocation = remotePowerShellInvocation(PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY, {
+    workspaceRoot: root,
+    controlScriptSha256: crypto.createHash('sha256').update(fs.readFileSync(controlPath)).digest('hex'),
+    interactiveRequest: { marker: 'script-success-with-null-last-exit-code' },
+  });
+  try {
+    const result = spawnSync(invocation.args[0], invocation.args.slice(1), {
+      input: invocation.input,
+      encoding: 'utf8',
+      timeout: 30_000,
+    });
+    assert.equal(result.status, 0, result.stderr);
+    const evidence = JSON.parse(result.stdout.trim());
+    assert.equal(evidence.status, 'passed');
+    assert.equal(evidence.marker, 'script-success-with-null-last-exit-code');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('SSH transport finalizes manifests in the guest and cancellation is task/launch-authority bound', () => {

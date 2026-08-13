@@ -118,6 +118,9 @@ export function buildLocalIsolationRuntime({
   delete environment.CARGO_BUILD_TARGET;
   const npm = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm';
   for (const args of [
+    // The release Desktop enables AEC3. Install and verify the pinned native
+    // dependency before asking Tauri to link the authority executable.
+    ['run', 'test:aec3-msvc'],
     ['run', 'build:desktop-shell'],
     ['run', 'build:bridge-service-native'],
     ['run', 'driver:build-sysvad'],

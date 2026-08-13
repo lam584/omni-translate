@@ -15,6 +15,7 @@ import {
   PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
   PRODUCTION_PRESERVED_WORKER_READINESS_BODY,
   PRODUCTION_REMOTE_CELL_TIMEOUT_MS,
+  PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS,
   PRODUCTION_WORKER_READINESS_FINALIZE_BODY,
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
   parseProductionCoordinatorCliArgs,
@@ -36,6 +37,11 @@ const CLEAN_PROVENANCE = {
 };
 
 const isWindows = process.platform === 'win32';
+
+test('zero-provider readiness reserves enough time for signed driver reinstall and verification', () => {
+  assert.equal(PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS, 10 * 60_000);
+  assert.ok(PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS < PRODUCTION_REMOTE_CELL_TIMEOUT_MS);
+});
 
 test('remote runtime verification retries transient failures but never accepts a persistent failure', async () => {
   let calls = 0;

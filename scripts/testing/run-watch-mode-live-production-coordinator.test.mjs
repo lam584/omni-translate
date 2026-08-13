@@ -19,6 +19,7 @@ import {
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
   parseProductionCoordinatorCliArgs,
   remotePowerShellInvocation,
+  runRemoteJsonWithRetries,
   runProductionCoordinator,
   scpBaseArgs,
   sshBaseArgs,
@@ -35,6 +36,24 @@ const CLEAN_PROVENANCE = {
 };
 
 const isWindows = process.platform === 'win32';
+
+test('remote runtime verification retries transient failures but never accepts a persistent failure', async () => {
+  let calls = 0;
+  const recovered = await runRemoteJsonWithRetries(async () => {
+    calls += 1;
+    if (calls < 3) return { exitCode: 1, stdout: '', stderr: 'transient read failure' };
+    return { exitCode: 0, stdout: '{"passed":true}\n', stderr: '' };
+  }, 'runtime verification', { attempts: 3, delayMs: 0 });
+  assert.deepEqual(recovered, { passed: true });
+  assert.equal(calls, 3);
+
+  calls = 0;
+  await assert.rejects(runRemoteJsonWithRetries(async () => {
+    calls += 1;
+    return { exitCode: 1, stdout: '', stderr: 'persistent mismatch' };
+  }, 'runtime verification', { attempts: 3, delayMs: 0 }), /attempt 3 failed.*persistent mismatch/);
+  assert.equal(calls, 3);
+});
 
 function quotePowerShell(value) {
   return `'${String(value).replaceAll("'", "''")}'`;

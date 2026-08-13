@@ -571,6 +571,22 @@ function parseRemoteJson(result, label) {
   }
 }
 
+export async function runRemoteJsonWithRetries(operation, label, {
+  attempts = 3,
+  delayMs = 1_000,
+} = {}) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      return parseRemoteJson(await operation(attempt), `${label} attempt ${attempt}`);
+    } catch (error) {
+      lastError = error;
+      if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastError;
+}
+
 function safeRemoteChild(root, child, label) {
   const relative = path.win32.relative(path.win32.resolve(root), path.win32.resolve(child));
   if (!relative || relative.startsWith('..') || path.win32.isAbsolute(relative)) {
@@ -764,7 +780,7 @@ foreach ($directory in @($payload.runtimeDirectories)) {
     if (!reusePreparedWorkers) {
       for (const entry of runtimeEntries) await upload(worker, entry.localPath, entry.remotePath);
     }
-    const verification = parseRemoteJson(await runRemote(worker, `
+    const verification = await runRemoteJsonWithRetries((attempt) => runRemote(worker, `
 $actual = @()
 foreach ($entry in @($payload.entries)) {
   $target = [string]$entry.remotePath

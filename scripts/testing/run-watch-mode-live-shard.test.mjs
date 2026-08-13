@@ -209,10 +209,36 @@ test('worker request carries only its signed paid cell and never contains build/
   assert.equal(request.runnerOptions.strictPaidAuthority, true);
   assert.equal(request.runnerOptions.matrixCellId, cell.cellId);
   assert.equal(request.runnerOptions.subtitleTranslationMode, 'native');
+  assert.equal(path.basename(request.cellOutputRoot), 'c01');
+  assert.ok(request.cellOutputRoot.length < path.join(
+    path.join(os.tmpdir(), 'omni-request-only'),
+    'runs',
+    `01-${cell.cellId}`,
+  ).length);
   const argv = buildPowerShellRunnerArgv(request);
   assert.ok(argv.includes('-StrictPaidAuthority'));
   assert.ok(argv.includes('-MatrixCellId'));
   assert.equal(argv.some((arg) => /preflight|local-isolation|build/i.test(arg)), false);
+});
+
+test('validated worker readiness is forwarded to the strict live runner', async () => {
+  const value = fixture();
+  const cell = value.plan.cells[0];
+  const lease = value.leases[0];
+  const worker = value.plan.workers.find((entry) => entry.workerId === cell.workerId);
+  const request = buildShardCellExecutionRequest({
+    plan: value.plan,
+    lease,
+    workerId: worker.workerId,
+    vmIdentity: worker.vmIdentity,
+    shardRoot: path.join(os.tmpdir(), 'omni-readiness-forward'),
+    now: value.now,
+  });
+  request.runnerOptions.readinessReceiptPath = 'E:\\signed\\zero-provider-readiness.json';
+  const argv = buildPowerShellRunnerArgv(request);
+  const index = argv.indexOf('-WorkerReadinessReceiptPath');
+  assert.notEqual(index, -1);
+  assert.equal(argv[index + 1], request.runnerOptions.readinessReceiptPath);
 });
 
 test('worker executes exactly one coordinator lease, verifies continuity, and writes result/terminal authority', async () => {
@@ -315,7 +341,7 @@ test('worker discards a paid result when runtime hashes change during the cell',
       /runtime binary hashes/,
     );
     assert.equal(
-      fs.existsSync(path.join(shardRoot, 'runs', '01-pairwise-live-qwen3.5-omni-flash-realtime-process-exclusion-default-speaker', 'run-1', 'shard-cell-result.json')),
+      fs.existsSync(path.join(shardRoot, 'runs', 'c01', 'run-1', 'shard-cell-result.json')),
       false,
     );
   } finally {

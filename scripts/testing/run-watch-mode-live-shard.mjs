@@ -135,7 +135,11 @@ export function buildShardCellExecutionRequest({
   const cellOutputRoot = path.join(
     path.resolve(shardRoot),
     'runs',
-    `${String(cell.cellIndex + 1).padStart(2, '0')}-${sanitizeCellId(cell.cellId)}`,
+    // Keep the guest path below the legacy Win32 MAX_PATH boundary. The
+    // signed cellId remains in the lease, environment, receipts, and final
+    // manifest; repeating it in this directory made the longest required
+    // artifact names unwriteable on otherwise valid Windows guests.
+    `c${String(cell.cellIndex + 1).padStart(2, '0')}`,
   );
   const profile = cell.deviceProfileInstance;
   const protocol = WATCH_PROTOCOLS[cell.modelId];
@@ -167,6 +171,7 @@ export function buildShardCellExecutionRequest({
       feedbackMode: cell.feedbackLoopPrevention,
       strictPaidAuthority: true,
       matrixCellId: cell.cellId,
+      readinessReceiptPath: null,
     },
     environment: {
       OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY: '1',
@@ -191,7 +196,7 @@ export function buildShardCellExecutionRequest({
 
 export function buildPowerShellRunnerArgv(request) {
   const options = request.runnerOptions;
-  return [
+  const argv = [
     '-NoProfile',
     '-ExecutionPolicy', 'Bypass',
     '-File', SHARD_LIVE_RUNNER_SCRIPT,
@@ -213,6 +218,10 @@ export function buildPowerShellRunnerArgv(request) {
     '-StrictPaidAuthority',
     '-MatrixCellId', options.matrixCellId,
   ];
+  if (options.readinessReceiptPath) {
+    argv.push('-WorkerReadinessReceiptPath', options.readinessReceiptPath);
+  }
+  return argv;
 }
 
 function lastExistingRunDirectory(text, rootDirectory) {
@@ -364,6 +373,7 @@ export async function runLeasedShardCell({
       now: startedAt,
       authorityPath: path.basename(checkedReadinessSource),
     });
+    request.runnerOptions.readinessReceiptPath = checkedReadinessSource;
     if (!String(interactiveLaunchAuthorityPath ?? '').trim()) {
       throw new Error('signed production shard requires interactive launch authority before lease claim');
     }

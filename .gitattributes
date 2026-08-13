@@ -1,2 +1,13 @@
 drivers/windows-virtual-mic/sysvad/** linguist-vendored
 drivers/windows-virtual-mic/package/driver-package.json text eol=lf
+.gitattributes text eol=lf
+scripts/testing/watch-mode-shard-authority.mjs text eol=lf
+scripts/testing/run-watch-mode-live-shard.mjs text eol=lf
+scripts/testing/run-watch-mode-live-coordinator.mjs text eol=lf
+scripts/testing/run-watch-mode-live-production-coordinator.mjs text eol=lf
+scripts/testing/invoke-watch-mode-interactive-task.ps1 text eol=lf
+scripts/testing/run-watch-mode-interactive-task.ps1 text eol=lf
+scripts/testing/collect-watch-mode-interactive-process-authority.ps1 text eol=lf
+scripts/testing/release-manual-collector.mjs text eol=lf
+scripts/testing/watch-mode-provider-preflight-authority.mjs text eol=lf
+scripts/testing/watch-mode-provider-preflight-authorization.mjs text eol=lf

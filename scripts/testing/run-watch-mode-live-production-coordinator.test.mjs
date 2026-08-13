@@ -157,6 +157,43 @@ test('production worker config is exact, host-key pinned, UUID-bound, and comman
 
 test('worker readiness proves driver package and endpoint profiles without a Provider process', () => {
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /test-development-driver\.ps1/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /artifacts\\tooling\\devcon\.exe/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /Resolve-OmniDevconPath/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /driver package changed after signed runtime distribution/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /install-development-driver\.ps1/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /-ValidatePackageOnly/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /repair-driver\.ps1/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /-Action 'reinstall-driver'/);
+  assert.ok(
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('Resolve-OmniDevconPath')
+      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('driver package changed after signed runtime distribution'),
+    'DevCon authority must be established before exact package hashing',
+  );
+  assert.ok(
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('driver package changed after signed runtime distribution')
+      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('-ValidatePackageOnly'),
+    'signed runtime bytes must be rechecked before package validation',
+  );
+  assert.ok(
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('-ValidatePackageOnly')
+      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("-Action 'reinstall-driver'"),
+    'package validation must complete before destructive driver repair',
+  );
+  assert.ok(
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf("-Action 'reinstall-driver'")
+      < PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('$driverOutput = @(& $driverScript'),
+    'the exact rebuilt package must be installed before readiness is collected',
+  );
+  const driverRequiredBranch = PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.slice(
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('if ($driverRequired) {'),
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('} else {'),
+  );
+  const nonDriverBranch = PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.slice(
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('} else {'),
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY.indexOf('$control = [ordered]@{'),
+  );
+  assert.match(driverRequiredBranch, /repair-driver\.ps1/);
+  assert.doesNotMatch(nonDriverBranch, /repair-driver\.ps1|Resolve-OmniDevconPath|-Action 'reinstall-driver'/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /installedSysSha256/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /packageCatSha256/);
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-physical-output-probe\.exe/);

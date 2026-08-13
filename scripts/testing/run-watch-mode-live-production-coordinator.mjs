@@ -87,6 +87,41 @@ $expected = $payload.driver
 $driverScript = Join-Path $workspace 'scripts\installer\test-development-driver.ps1'
 $authority = $null
 if ($driverRequired) {
+  # A development Authenticode signature and the WDK-stamped DriverVer make a
+  # freshly rebuilt package byte-distinct even when the driver source did not
+  # change.  Synchronize the exact runtime package that this execution signed
+  # before collecting readiness; otherwise every new strict build would be
+  # compared with the preceding installed package and could never reach the
+  # Provider preflight.  Resolve and validate DevCon plus the package before
+  # the destructive repair begins.
+  $devconAuthorityScript = Join-Path $workspace 'scripts\installer\devcon-authority.ps1'
+  $installScript = Join-Path $workspace 'scripts\installer\install-development-driver.ps1'
+  $repairScript = Join-Path $workspace 'scripts\installer\repair-driver.ps1'
+  $devconCandidate = Join-Path $workspace 'artifacts\tooling\devcon.exe'
+  . $devconAuthorityScript
+  $devcon = Resolve-OmniDevconPath -WorkspaceRoot $workspace -ExplicitPath $devconCandidate
+  $driverRuntimeRoot = Join-Path $remoteRoot 'logs\driver-runtime-sync'
+  $packageRoot = Join-Path $workspace 'drivers\windows-virtual-mic\package'
+  $packageSysHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.sys') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $packageCatHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.cat') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $packageInfHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.inf') -Algorithm SHA256).Hash.ToLowerInvariant()
+  if (
+    $packageSysHash -ne [string]$expected.sysSha256 -or
+    $packageCatHash -ne [string]$expected.catSha256 -or
+    $packageInfHash -ne [string]$expected.infSha256
+  ) { throw 'driver package changed after signed runtime distribution' }
+  $driverArguments = @{
+    WorkspaceRoot = $workspace
+    RuntimeRoot = $driverRuntimeRoot
+    InstallChannel = 'development'
+    DriverVersion = '0.10.0-dev'
+    BridgeVersion = '0.1.0'
+    TargetDeviceId = 'virtual-mic-default'
+    DevconPath = $devcon
+  }
+  & $installScript @driverArguments -ValidatePackageOnly
+  & $repairScript @driverArguments -Action 'reinstall-driver'
+
   $driverEvidenceRoot = Join-Path $readinessRoot 'virtual-mic'
   $driverOutput = @(& $driverScript -WorkspaceRoot $workspace -VirtualMicEvidenceOutputDirectory $driverEvidenceRoot)
   $driver = $driverOutput | Where-Object { $_ -and $_.PSObject.Properties['InstalledDriverAuthority'] } | Select-Object -Last 1

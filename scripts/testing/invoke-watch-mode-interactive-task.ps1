@@ -258,7 +258,8 @@ try {
     [string]$recordedXml.Task.Actions.Exec.Command -cne 'powershell.exe' -or
     [string]$recordedXml.Task.Actions.Exec.Arguments -cne $arguments -or
     [string]$recordedXml.Task.Principals.Principal.UserId -cne $expectedSid -or
-    [string]$recordedXml.Task.Principals.Principal.LogonType -cne 'InteractiveToken'
+    [string]$recordedXml.Task.Principals.Principal.LogonType -cne 'InteractiveToken' -or
+    [string]$recordedXml.Task.Principals.Principal.RunLevel -cne 'LeastPrivilege'
   ) { throw 'registered interactive task does not match the immutable action/principal' }
   Start-ScheduledTask -TaskPath $taskPath -TaskName $taskName
   $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$payload.timeoutMs)

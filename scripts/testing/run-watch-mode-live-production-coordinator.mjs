@@ -525,6 +525,8 @@ const REMOTE_POWERSHELL_STDIN_BOOTSTRAP = Buffer.from(
   'utf16le',
 ).toString('base64');
 
+export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
+
 export function remotePowerShellInvocation(body, payload) {
   const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
   return {
@@ -800,6 +802,8 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
         path: entryPath, bytes, sha256, remotePath,
       })),
       planPath: remotePlanPath,
+    }, undefined, {
+      timeoutMs: PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
     }), `worker ${worker.workerId} runtime verification`);
     if (verification.planSha256 !== fileAuthorityEntry(planPath, path.basename(planPath)).sha256) {
       throw new Error(`worker ${worker.workerId} copied plan hash mismatch`);

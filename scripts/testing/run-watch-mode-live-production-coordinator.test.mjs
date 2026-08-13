@@ -21,11 +21,18 @@ import {
   parseProductionCoordinatorCliArgs,
   remotePowerShellInvocation,
   runRemoteJsonWithRetries,
+  PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
   runProductionCoordinator,
   scpBaseArgs,
   sshBaseArgs,
   validateProductionWorkerConfig,
 } from './run-watch-mode-live-production-coordinator.mjs';
+
+test('remote runtime verification has a bounded slow-disk timeout', () => {
+  assert.equal(PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS, 5 * 60 * 1000);
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  assert.match(source, /timeoutMs:\s*PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS/);
+});
 
 const CLEAN_PROVENANCE = {
   schemaVersion: 1,

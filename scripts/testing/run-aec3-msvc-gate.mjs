@@ -113,12 +113,18 @@ const cmake = findExecutable(join(downloadsRoot, 'tools'), 'cmake.exe');
 if (!cmake) {
   throw new Error(`vcpkg completed without an acquired cmake.exe under ${downloadsRoot}`);
 }
+const ninja = findExecutable(join(downloadsRoot, 'tools'), 'ninja.exe');
+if (!ninja) {
+  throw new Error(`vcpkg completed without an acquired ninja.exe under ${downloadsRoot}`);
+}
 
 const buildEnvironment = {
   ...process.env,
   VCPKG_ROOT: vcpkgRoot,
   VCPKG_INSTALLED_ROOT: installedRoot,
   CMAKE: cmake,
+  CMAKE_GENERATOR: 'Ninja',
+  CMAKE_MAKE_PROGRAM: ninja,
   // build.rs watches this nonce. A repeated local/CI gate therefore reruns
   // the native deterministic CTest instead of trusting Cargo's cached build
   // script output; failure prevents the linked feature from compiling.

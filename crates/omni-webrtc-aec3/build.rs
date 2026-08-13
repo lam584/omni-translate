@@ -14,6 +14,8 @@ fn main() {
     println!("cargo:rerun-if-env-changed=VCPKG_ROOT");
     println!("cargo:rerun-if-env-changed=VCPKG_INSTALLED_ROOT");
     println!("cargo:rerun-if-env-changed=CMAKE");
+    println!("cargo:rerun-if-env-changed=CMAKE_GENERATOR");
+    println!("cargo:rerun-if-env-changed=CMAKE_MAKE_PROGRAM");
     // The release gate supplies a fresh nonce for every invocation so Cargo
     // cannot reuse an earlier build-script result without executing the
     // native 15 dB CTest again. Ordinary release builds still execute CTest
@@ -66,10 +68,11 @@ fn main() {
         .join("buildsystems")
         .join("vcpkg.cmake");
     let cmake = env::var_os("CMAKE").unwrap_or_else(|| "cmake".into());
+    let cmake_generator = env::var_os("CMAKE_GENERATOR");
+    let cmake_make_program = env::var_os("CMAKE_MAKE_PROGRAM");
 
-    run(
-        Command::new(&cmake)
-            .arg("-S")
+    let mut configure = Command::new(&cmake);
+    configure.arg("-S")
             .arg(&source_dir)
             .arg("-B")
             .arg(&build_dir)
@@ -78,9 +81,14 @@ fn main() {
             .arg(format!("-DVCPKG_TARGET_TRIPLET={VCPKG_TRIPLET}"))
             .arg("-DVCPKG_MANIFEST_MODE=OFF")
             .arg("-DBUILD_TESTING=ON")
-            .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display())),
-        "configure the WebRTC AEC3 C ABI wrapper",
-    );
+            .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()));
+    if let Some(generator) = cmake_generator {
+        configure.arg("-G").arg(generator);
+    }
+    if let Some(make_program) = cmake_make_program {
+        configure.arg(format!("-DCMAKE_MAKE_PROGRAM={}", PathBuf::from(make_program).display()));
+    }
+    run(&mut configure, "configure the WebRTC AEC3 C ABI wrapper");
     run(
         Command::new(&cmake)
             .arg("--build")

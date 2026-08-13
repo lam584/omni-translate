@@ -60,6 +60,7 @@ export const PRODUCTION_WORKER_CONFIG_SCHEMA_VERSION = 1;
 export const PRODUCTION_WORKER_CONFIG_KIND = 'watch-mode-production-shard-workers';
 export const PRODUCTION_REMOTE_CELL_TIMEOUT_MS = 650_000;
 export const PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS = 15 * 60 * 1_000;
+export const PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS = 10 * 60 * 1_000;
 
 
 // The SSH process is control-plane only. The checked-in helper registers a
@@ -844,7 +845,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
             worker,
             PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
             readinessPayload,
-            { timeoutMs: 300_000 },
+            { timeoutMs: PRODUCTION_ZERO_PROVIDER_READINESS_TIMEOUT_MS },
           ), `worker ${worker.workerId} control-plane zero-provider readiness`);
           const runtimeByPathForReadiness = new Map(runtimeEntries.map((entry) => [entry.path, entry]));
           const probeEntry = runtimeByPathForReadiness.get('target/release/omni-physical-output-probe.exe');

@@ -455,13 +455,15 @@ Run the strict two-model, three-route, two-physical-device matrix through the
 signed two-or-three-worker production coordinator on Windows. The legacy
 single-process strict matrix command is intentionally fail-closed before any
 Provider call. The
-strict entry requires `--device-profiles` to explicitly contain exactly one
-`default-speaker` and one distinct `usb` profile; it never falls back
-to the default endpoint. Matrix options are double-dash Node flags (they
-survive `npm run ... --` on npm 11):
+strict entry requires a worker configuration with one canonical
+`default-speaker` profile and one distinct `usb` profile; it never falls back
+to an undeclared endpoint. npm 11 consumes option-looking arguments after the
+usual `npm run ... --` delimiter on Windows. Use the second literal delimiter
+below so the Node entrypoint receives the named options instead of only their
+values:
 
 ```powershell
-npm run test:watch-mode-live:production-coordinator
+npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-workers.json --reuse-local-isolation artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
 ```
 
 Use the coordinator configuration to bind each worker to its device-profile

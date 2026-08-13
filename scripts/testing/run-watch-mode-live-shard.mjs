@@ -76,17 +76,22 @@ function currentWindowsProcessIdentity() {
   if (process.platform !== 'win32') {
     throw new Error('production interactive shard identity is only available on Windows');
   }
+  // Windows PowerShell 5.1 does not reliably expose trailing native argv in
+  // $args when powershell.exe is invoked with -Command. process.pid is an
+  // integer owned by this process, so embed its decimal representation in the
+  // fixed script instead of depending on that ambiguous command-line boundary.
+  const processId = Number(process.pid);
   const script = [
-    "$p=Get-CimInstance Win32_Process -Filter ('ProcessId=' + $args[0]) -ErrorAction Stop",
+    `$p=Get-CimInstance Win32_Process -Filter 'ProcessId=${processId}' -ErrorAction Stop`,
     '$o=Invoke-CimMethod -InputObject $p -MethodName GetOwner -ErrorAction Stop',
     '$s=Invoke-CimMethod -InputObject $p -MethodName GetOwnerSid -ErrorAction Stop',
-    '$g=Get-Process -Id ([int]$args[0]) -ErrorAction Stop',
+    `$g=Get-Process -Id ${processId} -ErrorAction Stop`,
     "$h=(Get-FileHash -LiteralPath ([string]$p.ExecutablePath) -Algorithm SHA256).Hash.ToLowerInvariant()",
     '[ordered]@{pid=[int]$p.ProcessId;parentPid=[int]$p.ParentProcessId;sessionId=[int]$p.SessionId;imagePath=[IO.Path]::GetFullPath([string]$p.ExecutablePath);imageSha256=$h;startedAt=$g.StartTime.ToUniversalTime().ToString(\'o\');ownerUser=[string]$o.User;ownerDomain=[string]$o.Domain;ownerSid=[string]$s.Sid}|ConvertTo-Json -Compress',
   ].join(';');
   const result = spawnSync('powershell.exe', [
     '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-    '-Command', script, String(process.pid),
+    '-Command', script,
   ], { encoding: 'utf8', windowsHide: true, timeout: 15_000 });
   if ((result.status ?? 1) !== 0) {
     throw new Error(`failed to inspect interactive shard Node identity: ${result.stderr || result.error?.message}`);

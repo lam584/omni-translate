@@ -64,6 +64,16 @@ fn main() {
     let source_dir = manifest_dir.join("ffi");
     let build_dir = out_dir.join("cmake-build");
     let install_dir = out_dir.join("cmake-install");
+    // The linked gate intentionally reruns under clean and developer shells.
+    // A prior Cargo invocation may have selected a different CMake generator;
+    // never let its cache override the currently pinned generator/toolchain.
+    for directory in [&build_dir, &install_dir] {
+        if directory.exists() {
+            fs::remove_dir_all(directory).unwrap_or_else(|error| {
+                panic!("failed to clear stale AEC3 CMake directory {}: {error}", directory.display())
+            });
+        }
+    }
     let toolchain = vcpkg_root
         .join("scripts")
         .join("buildsystems")

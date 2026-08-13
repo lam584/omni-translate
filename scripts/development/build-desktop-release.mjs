@@ -64,6 +64,17 @@ if (!releaseEnvironment.CMAKE) {
   );
   if (acquiredCmake) releaseEnvironment.CMAKE = acquiredCmake;
 }
+releaseEnvironment.VCPKG_ROOT ||= path.join(workspaceRoot, 'target', 'aec3-msvc-vcpkg');
+releaseEnvironment.VCPKG_INSTALLED_ROOT ||= path.join(
+  workspaceRoot,
+  'target',
+  'aec3-msvc-vcpkg-installed',
+);
+// Clean scheduled-task shells do not have Ninja or cl.exe on PATH. Match the
+// AEC3 release gate's explicit MSVC generator so the tested dependency and
+// the shipped Desktop executable cannot diverge by launch environment.
+releaseEnvironment.CMAKE_GENERATOR ||= 'Visual Studio 17 2022';
+releaseEnvironment.CMAKE_GENERATOR_PLATFORM ||= 'x64';
 
 const isWindows = process.platform === 'win32';
 const executable = isWindows ? (process.env.ComSpec || 'cmd.exe') : 'npx';

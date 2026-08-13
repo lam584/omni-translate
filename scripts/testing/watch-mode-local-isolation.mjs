@@ -126,19 +126,29 @@ export function buildLocalIsolationRuntime({
     ['run', 'build:bridge-service-native'],
     ['run', 'driver:build-sysvad'],
   ]) {
+    const commandEnvironment = { ...environment };
+    const isAecGate = args[1] === 'test:aec3-msvc';
+    const aecCargoTarget = path.join(workspaceRoot, 'target', 'local-isolation-aec-gate');
+    if (isAecGate) commandEnvironment.CARGO_TARGET_DIR = aecCargoTarget;
     const commandArgs = process.platform === 'win32'
       ? ['/d', '/s', '/c', 'npm.cmd', ...args]
       : args;
     const result = run(npm, commandArgs, {
       cwd: workspaceRoot,
-      env: environment,
+      env: commandEnvironment,
       stdio: 'inherit',
       windowsHide: true,
     });
     if (result.error || Number(result.status) !== 0) {
       throw new Error(`local isolation runtime build failed: npm ${args.join(' ')}`);
     }
-    if (args[1] === 'test:aec3-msvc') recordAecGate(result);
+    if (isAecGate) {
+      recordAecGate(result);
+      // The gate's stdout/stderr is the evidence. Its multi-gigabyte Cargo
+      // graph is not runtime authority and would otherwise crowd out the
+      // release binaries on small clean validation VMs.
+      fs.rmSync(aecCargoTarget, { recursive: true, force: true });
+    }
   }
   const realtimeDiagnostic = run('cargo', [
     'build',

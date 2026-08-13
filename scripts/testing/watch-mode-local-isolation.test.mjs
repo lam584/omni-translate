@@ -80,7 +80,11 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
     [...npmPrefix, 'run', 'driver:build-sysvad'],
     ['build', '--manifest-path', 'scripts/diagnostics/omni-realtime/Cargo.toml'],
   ]);
-  assert.ok(calls.every(({ target }) => target === path.join(process.cwd(), 'target')));
+  assert.equal(
+    calls[0].target,
+    path.join(process.cwd(), 'target', 'local-isolation-aec-gate'),
+  );
+  assert.ok(calls.slice(1).every(({ target }) => target === path.join(process.cwd(), 'target')));
   assert.deepEqual(recordedAecGate, { status: 0 });
 });
 

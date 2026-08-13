@@ -32,8 +32,20 @@ export const LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS = Object.freeze([
   'watch-mode-balanced-v4',
   'watch-mode-balanced-v5',
 ]);
+export const LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES = Object.freeze([
+  '.gitattributes text eol=lf',
+  'scripts/testing/watch-mode-shard-authority.mjs text eol=lf',
+  'scripts/testing/run-watch-mode-live-shard.mjs text eol=lf',
+  'scripts/testing/run-watch-mode-live-coordinator.mjs text eol=lf',
+  'scripts/testing/run-watch-mode-live-production-coordinator.mjs text eol=lf',
+  'scripts/testing/invoke-watch-mode-interactive-task.ps1 text eol=lf',
+  'scripts/testing/run-watch-mode-interactive-task.ps1 text eol=lf',
+  'scripts/testing/collect-watch-mode-interactive-process-authority.ps1 text eol=lf',
+  'scripts/testing/release-manual-collector.mjs text eol=lf',
+  'scripts/testing/watch-mode-provider-preflight-authority.mjs text eol=lf',
+  'scripts/testing/watch-mode-provider-preflight-authorization.mjs text eol=lf',
+]);
 export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
-  '.gitattributes',
   'AGENTS.md',
   'package.json',
   'docs/项目/Watch Mode 真实链路自动化测试.md',
@@ -595,6 +607,16 @@ const gitText = (workspaceRoot, args) => {
   return String(result.stdout ?? '').trim();
 };
 
+const gitFileText = (workspaceRoot, args) => {
+  const result = spawnSync('git', args, {
+    cwd: workspaceRoot,
+    encoding: 'utf8',
+    windowsHide: true,
+  });
+  if (result.status !== 0) return null;
+  return String(result.stdout ?? '');
+};
+
 const reusableSourceChangedPaths = (workspaceRoot, sourceCommit, currentCommit) => {
   // Git's default quotePath mode escapes a Chinese documentation path on some
   // Windows installations, which makes a valid allow-listed path look like an
@@ -649,6 +671,31 @@ export function paidOnlyCargoLockReuseFailure({ sourceText, currentText }) {
   return null;
 }
 
+// The orchestration inventory is hashed from raw worktree bytes and then
+// checked again inside each Windows guest. A path-only .gitattributes reuse
+// exception would let unrelated filters or line-ending rules bypass the
+// recorded six-cell authority. Permit only this one migration: pin the
+// attributes file itself plus the ten signed orchestration files to LF while
+// preserving every pre-existing byte and rule.
+export function signedOrchestrationGitAttributesReuseFailure({ sourceText, currentText }) {
+  if (typeof sourceText !== 'string' || typeof currentText !== 'string') {
+    return '.gitattributes source/current text must both be readable';
+  }
+  if (
+    !sourceText.endsWith('\n')
+    || LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES.some((line) => (
+      sourceText.split('\n').includes(line)
+    ))
+  ) {
+    return '.gitattributes source must end with a newline and contain none of the new LF rules';
+  }
+  const expected = `${sourceText}${LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES.join('\n')}\n`;
+  if (currentText !== expected) {
+    return '.gitattributes reuse permits only the exact eleven fixed text eol=lf additions';
+  }
+  return null;
+}
+
 export function reusableLocalIsolationAuthorityFailure({
   manifest,
   provenance,
@@ -679,7 +726,9 @@ export function reusableLocalIsolationAuthorityFailure({
   if (
     (!exactHeadReuse && changedPaths.length === 0)
     || changedPaths.some((entry) => (
-      entry !== 'Cargo.lock' && !LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entry)
+      entry !== 'Cargo.lock'
+      && entry !== '.gitattributes'
+      && !LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entry)
     ))
   ) {
     return `local isolation reuse permits only orchestration files to change; changed=${changedPaths.join(',')}`;
@@ -697,6 +746,22 @@ export function reusableLocalIsolationAuthorityFailure({
       currentText: currentLock,
     });
     if (cargoLockFailure) return `local isolation reuse rejected Cargo.lock: ${cargoLockFailure}`;
+  }
+  if (!exactHeadReuse && changedPaths.includes('.gitattributes')) {
+    const sourceAttributes = gitFileText(workspaceRoot, ['show', `${sourceCommit}:.gitattributes`]);
+    let currentAttributes = null;
+    try {
+      currentAttributes = fs.readFileSync(path.join(workspaceRoot, '.gitattributes'), 'utf8');
+    } catch {
+      currentAttributes = null;
+    }
+    const attributesFailure = signedOrchestrationGitAttributesReuseFailure({
+      sourceText: sourceAttributes,
+      currentText: currentAttributes,
+    });
+    if (attributesFailure) {
+      return `local isolation reuse rejected .gitattributes: ${attributesFailure}`;
+    }
   }
   if (!exactHeadReuse) {
     const ancestor = gitText(workspaceRoot, ['merge-base', '--is-ancestor', sourceCommit, currentCommit]);

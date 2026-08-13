@@ -5,11 +5,13 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { LOCAL_ISOLATION_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { SHARD_ORCHESTRATION_IMPLEMENTATION_FILES } from './watch-mode-shard-authority.mjs';
 import {
   buildLocalIsolationRuntime,
   createLocalIsolationMatrixDirectory,
   localIsolationRuntimeInventory,
   LOCAL_ISOLATION_REUSE_ALLOWED_PATHS,
+  LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES,
   LOCAL_ISOLATION_REUSE_MODE,
   LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS,
   LOCAL_ISOLATION_RUNTIME_BINARY_PATHS,
@@ -17,6 +19,7 @@ import {
   runLocalIsolationProbeIteration,
   reusableLocalIsolationAuthorityFailure,
   runLocalIsolationCell,
+  signedOrchestrationGitAttributesReuseFailure,
 } from './watch-mode-local-isolation.mjs';
 
 const hashes = [];
@@ -153,6 +156,82 @@ dependencies = [
     /changed outside/,
   );
   assert.equal(LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes('Cargo.lock'), false);
+});
+
+test('attributes and signed orchestration files have eleven exact LF rules without a path-only reuse exception', () => {
+  const expected = ['.gitattributes text eol=lf', ...SHARD_ORCHESTRATION_IMPLEMENTATION_FILES.map(
+    (entryPath) => `${entryPath} text eol=lf`,
+  )];
+  assert.deepEqual(LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES, expected);
+  assert.equal(expected.length, 11);
+  assert.equal(LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes('.gitattributes'), false);
+  const attributes = fs.readFileSync(path.join(process.cwd(), '.gitattributes'), 'utf8');
+  const lines = attributes.split('\n').filter(Boolean);
+  for (const rule of expected) {
+    assert.equal(lines.filter((line) => line === rule).length, 1, rule);
+  }
+});
+
+test('.gitattributes reuse allows only appending the eleven fixed LF rules', () => {
+  const source = [
+    'drivers/windows-virtual-mic/sysvad/** linguist-vendored',
+    'drivers/windows-virtual-mic/package/driver-package.json text eol=lf',
+    '',
+  ].join('\n');
+  const additions = `${LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES.join('\n')}\n`;
+  const current = source + additions;
+  assert.equal(
+    signedOrchestrationGitAttributesReuseFailure({ sourceText: source, currentText: current }),
+    null,
+  );
+  assert.match(
+    signedOrchestrationGitAttributesReuseFailure({
+      sourceText: source,
+      currentText: current.replace(
+        LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[0],
+        `${LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[0]} linguist-generated`,
+      ),
+    }),
+    /only the exact eleven/,
+  );
+  assert.match(
+    signedOrchestrationGitAttributesReuseFailure({
+      sourceText: source,
+      currentText: `${current}docs/** text eol=lf\n`,
+    }),
+    /only the exact eleven/,
+  );
+  assert.match(
+    signedOrchestrationGitAttributesReuseFailure({
+      sourceText: source,
+      currentText: current.replace(`${LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[1]}\n`, ''),
+    }),
+    /only the exact eleven/,
+  );
+  assert.match(
+    signedOrchestrationGitAttributesReuseFailure({
+      sourceText: source,
+      currentText: current.replace(
+        LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[2],
+        LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[2].replace('eol=lf', 'eol=crlf'),
+      ),
+    }),
+    /only the exact eleven/,
+  );
+  assert.match(
+    signedOrchestrationGitAttributesReuseFailure({
+      sourceText: source,
+      currentText: current.replace(`${source.split('\n')[0]}\n`, ''),
+    }),
+    /only the exact eleven/,
+  );
+  assert.match(
+    signedOrchestrationGitAttributesReuseFailure({
+      sourceText: source + `${LOCAL_ISOLATION_REUSE_GITATTRIBUTES_LINES[0]}\n`,
+      currentText: current,
+    }),
+    /contain none of the new LF rules/,
+  );
 });
 
 test('verifier regression tests are explicit orchestration-only reuse changes', () => {

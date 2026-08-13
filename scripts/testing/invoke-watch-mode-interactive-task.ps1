@@ -50,6 +50,19 @@ function Write-ImmutableJson {
   }
 }
 
+function Assert-RequiredProperties {
+  param(
+    [Parameter(Mandatory = $true)]$Value,
+    [Parameter(Mandatory = $true)][string[]]$Names,
+    [Parameter(Mandatory = $true)][string]$Label
+  )
+  foreach ($name in $Names) {
+    if ($null -eq $Value.PSObject.Properties[$name]) {
+      throw "$Label is missing required property $name"
+    }
+  }
+}
+
 function Stop-GuardedNode {
   param([string]$LaunchPath)
   if (-not (Test-Path -LiteralPath $LaunchPath -PathType Leaf)) { return }
@@ -115,7 +128,47 @@ if ($explorers.Count -ne 1) { throw 'control plane requires exactly one Explorer
 $explorerSid = Invoke-CimMethod -InputObject $explorers[0] -MethodName GetOwnerSid -ErrorAction Stop
 if ([string]$explorerSid.Sid -cne $expectedSid) { throw 'console Explorer owner does not match configured VMUser' }
 
-$identity = if ([string]$payload.mode -eq 'shard-cell') { [string]$payload.leaseId } else { 'readiness' }
+$mode = [string]$payload.mode
+if ($mode -notin @('endpoint-readiness', 'shard-cell')) {
+  throw 'interactive task request mode is unsupported'
+}
+Assert-RequiredProperties $payload @(
+  'schemaVersion', 'artifactKind', 'mode', 'workspaceRoot', 'remoteRoot',
+  'executionId', 'planDigest', 'workerId', 'vmIdentityDigest',
+  'expectedVmUuidBios', 'user', 'timeoutMs', 'launcherSha256',
+  'processAuthorityCollectorSha256', 'shardRunnerSha256',
+  'expectedCredentialReference'
+) 'interactive task request'
+$shardFields = $null
+$endpointReadinessFields = $null
+if ($mode -eq 'shard-cell') {
+  Assert-RequiredProperties $payload @(
+    'leaseId', 'leaseDigest', 'cellId', 'feedbackLoopPrevention', 'planPath',
+    'planSha256', 'leasePath', 'leaseSha256', 'readinessPath'
+  ) 'interactive shard-cell request'
+  $shardFields = [ordered]@{
+    leaseId = [string]$payload.leaseId
+    leaseDigest = [string]$payload.leaseDigest
+    cellId = [string]$payload.cellId
+    feedbackLoopPrevention = [string]$payload.feedbackLoopPrevention
+    planPath = [string]$payload.planPath
+    planSha256 = [string]$payload.planSha256
+    leasePath = [string]$payload.leasePath
+    leaseSha256 = [string]$payload.leaseSha256
+    readinessPath = [string]$payload.readinessPath
+  }
+} else {
+  Assert-RequiredProperties $payload @(
+    'readinessRequestDigest', 'profiles', 'probeExecutable', 'bridgeExecutable'
+  ) 'interactive endpoint-readiness request'
+  $endpointReadinessFields = [ordered]@{
+    readinessRequestDigest = [string]$payload.readinessRequestDigest
+    profiles = @($payload.profiles)
+    probeExecutable = [string]$payload.probeExecutable
+    bridgeExecutable = [string]$payload.bridgeExecutable
+  }
+}
+$identity = if ($mode -eq 'shard-cell') { $shardFields.leaseId } else { 'readiness' }
 $authorityRoot = Join-Path $remoteRoot ('interactive\' + $identity)
 if (Test-Path -LiteralPath $authorityRoot) { throw 'interactive authority root already exists' }
 [void](New-Item -ItemType Directory -Path $authorityRoot)
@@ -137,13 +190,9 @@ $nodeExecutable = [IO.Path]::GetFullPath((Get-Command node.exe -ErrorAction Stop
 $command = [ordered]@{
   schemaVersion = 1
   artifactKind = 'watch-mode-interactive-task-command'
-  mode = [string]$payload.mode
+  mode = $mode
   executionId = [string]$payload.executionId
   planDigest = [string]$payload.planDigest
-  leaseId = [string]$payload.leaseId
-  leaseDigest = [string]$payload.leaseDigest
-  cellId = [string]$payload.cellId
-  feedbackLoopPrevention = [string]$payload.feedbackLoopPrevention
   workerId = [string]$payload.workerId
   vmIdentityDigest = [string]$payload.vmIdentityDigest
   expectedVmUuidBios = [string]$payload.expectedVmUuidBios
@@ -153,16 +202,7 @@ $command = [ordered]@{
   workspaceRoot = $workspace
   shardRoot = $remoteRoot
   authorityRoot = $authorityRoot
-  planPath = [string]$payload.planPath
-  planSha256 = [string]$payload.planSha256
-  leasePath = [string]$payload.leasePath
-  leaseSha256 = [string]$payload.leaseSha256
-  readinessPath = [string]$payload.readinessPath
-  readinessRequestDigest = [string]$payload.readinessRequestDigest
   expectedCredentialReference = [string]$payload.expectedCredentialReference
-  profiles = @($payload.profiles)
-  probeExecutable = [string]$payload.probeExecutable
-  bridgeExecutable = [string]$payload.bridgeExecutable
   launcherPath = $launcherPath
   launcherSha256 = [string]$payload.launcherSha256
   processAuthorityCollectorPath = $collectorPath
@@ -185,12 +225,15 @@ $command = [ordered]@{
   interactiveAuthorityPath = $interactiveAuthorityPath
   stdoutPath = $stdoutPath
   stderrPath = $stderrPath
-  requireRecorder = [string]$payload.feedbackLoopPrevention -ne 'echo-cancel'
 }
-if ($command.mode -eq 'shard-cell') {
+if ($mode -eq 'shard-cell') {
+  foreach ($name in $shardFields.Keys) { $command[$name] = $shardFields[$name] }
+  $command['requireRecorder'] = $shardFields.feedbackLoopPrevention -ne 'echo-cancel'
   if ((Get-Sha256 $command.planPath) -cne $command.planSha256 -or (Get-Sha256 $command.leasePath) -cne $command.leaseSha256) {
     throw 'interactive task plan/lease bytes do not match coordinator authority'
   }
+} else {
+  foreach ($name in $endpointReadinessFields.Keys) { $command[$name] = $endpointReadinessFields[$name] }
 }
 Write-ImmutableJson $commandPath $command
 $commandSha256 = Get-Sha256 $commandPath
@@ -229,13 +272,10 @@ try {
   $taskTerminal = [ordered]@{
     schemaVersion = 1
     artifactKind = 'watch-mode-interactive-scheduled-task-terminal'
-    mode = [string]$payload.mode
+    mode = $mode
     executionId = [string]$payload.executionId
     planDigest = [string]$payload.planDigest
     workerId = [string]$payload.workerId
-    leaseId = [string]$payload.leaseId
-    leaseDigest = [string]$payload.leaseDigest
-    cellId = [string]$payload.cellId
     vmIdentityDigest = [string]$payload.vmIdentityDigest
     commandSha256 = $commandSha256
     taskName = $taskName
@@ -248,6 +288,13 @@ try {
     lastTaskResult = [int]$taskInfo.LastTaskResult
     terminalSha256 = Get-Sha256 $terminalPath
     completedAt = [DateTime]::UtcNow.ToString('o')
+  }
+  if ($mode -eq 'shard-cell') {
+    $taskTerminal['leaseId'] = $shardFields.leaseId
+    $taskTerminal['leaseDigest'] = $shardFields.leaseDigest
+    $taskTerminal['cellId'] = $shardFields.cellId
+  } else {
+    $taskTerminal['readinessRequestDigest'] = $endpointReadinessFields.readinessRequestDigest
   }
   Write-ImmutableJson $taskTerminalPath $taskTerminal
   if ([int]$terminal.exitCode -ne 0 -or [int]$taskInfo.LastTaskResult -ne 0) {

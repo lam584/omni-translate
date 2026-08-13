@@ -59,6 +59,7 @@ test('local isolation creates its output root on a first clean-machine run', () 
 test('standalone local isolation rebuilds Bridge and driver from the exact clean HEAD', () => {
   const calls = [];
   let recordedAecGate = null;
+  let removedRelease = null;
   buildLocalIsolationRuntime({
     workspaceRoot: process.cwd(),
     provenance,
@@ -66,6 +67,9 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
     runtimeHashesReader: () => [],
     recordAecGate: (result) => {
       recordedAecGate = result;
+    },
+    removeRuntimeRelease: (releasePath) => {
+      removedRelease = releasePath;
     },
     run: (command, args, options) => {
       calls.push({ command, args, target: options.env.CARGO_TARGET_DIR });
@@ -86,6 +90,7 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
   );
   assert.ok(calls.slice(1).every(({ target }) => target === path.join(process.cwd(), 'target')));
   assert.deepEqual(recordedAecGate, { status: 0 });
+  assert.equal(removedRelease, path.join(process.cwd(), 'target', 'release'));
 });
 
 test('local isolation cell records five minutes and zero provider calls', async () => {

@@ -109,6 +109,10 @@ export function buildLocalIsolationRuntime({
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
   run = spawnSync,
   recordAecGate = () => {},
+  removeRuntimeRelease = (releasePath) => fs.rmSync(releasePath, {
+    recursive: true,
+    force: true,
+  }),
   provenanceReader = () => currentGitProvenance({ cwd: workspaceRoot }),
   runtimeHashesReader = () => currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
 } = {}) {
@@ -117,6 +121,10 @@ export function buildLocalIsolationRuntime({
   environment.CARGO_TARGET_DIR = path.join(workspaceRoot, 'target');
   environment.OMNI_BUILD_COMMIT = provenance.headCommit;
   delete environment.CARGO_BUILD_TARGET;
+  // Runtime authority must be rebuilt from this exact HEAD. Removing stale
+  // release output up front also prevents it from coexisting with the large,
+  // short-lived AEC3 linked-test graph on constrained validation VMs.
+  removeRuntimeRelease(path.join(workspaceRoot, 'target', 'release'));
   const npm = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm';
   for (const args of [
     // The release Desktop enables AEC3. Install and verify the pinned native
@@ -133,21 +141,25 @@ export function buildLocalIsolationRuntime({
     const commandArgs = process.platform === 'win32'
       ? ['/d', '/s', '/c', 'npm.cmd', ...args]
       : args;
-    const result = run(npm, commandArgs, {
-      cwd: workspaceRoot,
-      env: commandEnvironment,
-      stdio: 'inherit',
-      windowsHide: true,
-    });
-    if (result.error || Number(result.status) !== 0) {
-      throw new Error(`local isolation runtime build failed: npm ${args.join(' ')}`);
-    }
-    if (isAecGate) {
-      recordAecGate(result);
-      // The gate's stdout/stderr is the evidence. Its multi-gigabyte Cargo
-      // graph is not runtime authority and would otherwise crowd out the
-      // release binaries on small clean validation VMs.
-      fs.rmSync(aecCargoTarget, { recursive: true, force: true });
+    let result;
+    try {
+      result = run(npm, commandArgs, {
+        cwd: workspaceRoot,
+        env: commandEnvironment,
+        stdio: 'inherit',
+        windowsHide: true,
+      });
+      if (result.error || Number(result.status) !== 0) {
+        throw new Error(`local isolation runtime build failed: npm ${args.join(' ')}`);
+      }
+      if (isAecGate) recordAecGate(result);
+    } finally {
+      if (isAecGate) {
+        // The gate's stdout/stderr is the evidence. Its multi-gigabyte Cargo
+        // graph is not runtime authority and must be reclaimed on both pass
+        // and failure before the release runtime is built.
+        fs.rmSync(aecCargoTarget, { recursive: true, force: true });
+      }
     }
   }
   const realtimeDiagnostic = run('cargo', [

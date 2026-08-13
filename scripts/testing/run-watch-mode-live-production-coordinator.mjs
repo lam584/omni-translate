@@ -239,6 +239,14 @@ if (Test-Path -LiteralPath $receiptPath) { throw 'worker readiness receipt alrea
 $receipt | ConvertTo-Json -Depth 20 -Compress
 `;
 
+export const PRODUCTION_PRESERVED_WORKER_READINESS_BODY = String.raw`
+$receiptPath = Join-Path ([string]$payload.remoteRoot) 'readiness\zero-provider-readiness.json'
+if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'pre-provider readiness receipt is missing' }
+Get-Content -LiteralPath $receiptPath -Raw -Encoding UTF8 |
+  ConvertFrom-Json |
+  ConvertTo-Json -Depth 20 -Compress
+`;
+
 const SAFE_ID = /^[a-z0-9][a-z0-9._-]{0,127}$/i;
 const SAFE_HOST = /^(?:[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?|(?:\d{1,3}\.){3}\d{1,3})$/i;
 const SAFE_UUID = /^[a-z0-9][a-z0-9._:-]{3,127}$/i;
@@ -808,11 +816,11 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       profiles: worker.deviceProfileInstances,
     };
     const readiness = reusePreparedWorkers
-      ? parseRemoteJson(await runRemote(worker, `
-$receiptPath = Join-Path ([string]$payload.remoteRoot) 'readiness\\zero-provider-readiness.json'
-if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) { throw 'pre-provider readiness receipt is missing' }
-Get-Content -LiteralPath $receiptPath -Raw
-`, readinessPayload), `worker ${worker.workerId} preserved zero-provider readiness`)
+      ? parseRemoteJson(await runRemote(
+          worker,
+          PRODUCTION_PRESERVED_WORKER_READINESS_BODY,
+          readinessPayload,
+        ), `worker ${worker.workerId} preserved zero-provider readiness`)
       : await (async () => {
           parseRemoteJson(await runRemote(
             worker,

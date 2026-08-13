@@ -265,6 +265,8 @@ try {
   $deadline = [DateTime]::UtcNow.AddMilliseconds([int]$payload.timeoutMs)
   $taskObservedRunning = $false
   $taskObservedStarted = $false
+  $successfulTaskExitObservedAt = $null
+  $terminalVisibilityGraceMilliseconds = 5000
   while (-not (Test-Path -LiteralPath $terminalPath -PathType Leaf)) {
     if ([DateTime]::UtcNow -ge $deadline) { throw 'interactive task timed out before terminal authority' }
     $taskState = (Get-ScheduledTask -TaskPath $taskPath -TaskName $taskName -ErrorAction Stop).State
@@ -273,8 +275,21 @@ try {
     if ($taskObservedRunning -or $taskInfo.LastRunTime -ne $taskInfoBeforeStart.LastRunTime) {
       $taskObservedStarted = $true
     }
-    if ($taskObservedStarted -and $taskState -ne 'Running') {
-      throw "interactive task exited before terminal authority (LastTaskResult=$([int]$taskInfo.LastTaskResult))"
+    $taskIsActive = $taskState -in @('Running', 'Queued')
+    if (
+      $taskObservedStarted -and
+      -not $taskIsActive -and
+      -not (Test-Path -LiteralPath $terminalPath -PathType Leaf)
+    ) {
+      $lastTaskResult = [int]$taskInfo.LastTaskResult
+      if ($lastTaskResult -ne 0) {
+        throw "interactive task exited before terminal authority (LastTaskResult=$lastTaskResult)"
+      }
+      if ($null -eq $successfulTaskExitObservedAt) {
+        $successfulTaskExitObservedAt = [DateTime]::UtcNow
+      } elseif (([DateTime]::UtcNow - $successfulTaskExitObservedAt).TotalMilliseconds -ge $terminalVisibilityGraceMilliseconds) {
+        throw 'interactive task completed successfully without publishing terminal authority after the visibility grace period'
+      }
     }
     Start-Sleep -Milliseconds 250
   }

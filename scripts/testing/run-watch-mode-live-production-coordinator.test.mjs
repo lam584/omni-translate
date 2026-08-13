@@ -234,6 +234,10 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
   assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
   assert.match(control, /taskInfoBeforeStart/);
   assert.match(control, /taskObservedStarted/);
+  assert.match(control, /\$taskState -in @\('Running', 'Queued'\)/);
+  assert.match(control, /\$lastTaskResult -ne 0/);
+  assert.match(control, /\$terminalVisibilityGraceMilliseconds = 5000/);
+  assert.match(control, /completed successfully without publishing terminal authority after the visibility grace period/);
   assert.match(control, /interactive task exited before terminal authority/);
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-desktop-shell|DashScope|providerId/i);
 });

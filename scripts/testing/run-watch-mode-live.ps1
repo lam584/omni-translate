@@ -657,6 +657,7 @@ function Convert-DriverProbeToJsonFile {
 
 function Get-SignedWorkerReadinessDriverProbe {
   param([string]$ReceiptPath)
+  . (Join-Path $workspaceRoot 'scripts\installer\virtual-speaker-device.ps1')
   if ([string]::IsNullOrWhiteSpace($ReceiptPath)) {
     throw 'strict virtual-driver cell requires WorkerReadinessReceiptPath'
   }

@@ -89,10 +89,17 @@ namespace OmniCredentialStatus {
     public IntPtr UserName;
   }
 
+  public sealed class CredentialMetadata {
+    public bool Enumerated;
+    public Int32 ErrorCode;
+    public bool Found;
+    public UInt32 CredentialBlobBytes;
+  }
+
   public static class NativeMethods {
-    [DllImport("Advapi32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DllImport("Advapi32.dll", EntryPoint = "CredEnumerateW", CharSet = CharSet.Unicode, ExactSpelling = true, SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
-    public static extern bool CredEnumerateW(
+    private static extern bool CredEnumerate(
       string filter,
       UInt32 flags,
       out UInt32 count,
@@ -100,7 +107,41 @@ namespace OmniCredentialStatus {
     );
 
     [DllImport("Advapi32.dll")]
-    public static extern void CredFree(IntPtr buffer);
+    private static extern void CredFree(IntPtr buffer);
+
+    // Keep the native out parameters and allocation lifetime inside managed C#.
+    // Windows PowerShell 5.1 can incorrectly bind this P/Invoke through [ref]
+    // and report ERROR_NOT_FOUND even when the exact credential is present.
+    public static CredentialMetadata FindCredential(string targetName, UInt32 type) {
+      UInt32 count = 0;
+      IntPtr credentials = IntPtr.Zero;
+      CredentialMetadata result = new CredentialMetadata();
+      try {
+        result.Enumerated = CredEnumerate(null, 0, out count, out credentials);
+        result.ErrorCode = result.Enumerated ? 0 : Marshal.GetLastWin32Error();
+        if (!result.Enumerated) return result;
+        for (Int32 index = 0; index < checked((Int32)count); index += 1) {
+          IntPtr credentialPointer = Marshal.ReadIntPtr(credentials, IntPtr.Size * index);
+          if (credentialPointer == IntPtr.Zero) continue;
+          Credential credential = (Credential)Marshal.PtrToStructure(
+            credentialPointer,
+            typeof(Credential)
+          );
+          string actualTargetName = Marshal.PtrToStringUni(credential.TargetName);
+          if (
+            credential.Type == type
+            && String.Equals(actualTargetName, targetName, StringComparison.Ordinal)
+          ) {
+            result.Found = true;
+            result.CredentialBlobBytes = credential.CredentialBlobSize;
+            break;
+          }
+        }
+        return result;
+      } finally {
+        if (credentials != IntPtr.Zero) CredFree(credentials);
+      }
+    }
   }
 }
 '@
@@ -116,45 +157,13 @@ function Get-RequiredCredentialStatus {
   # Enumerate only Credential Manager metadata.  Do not call CredReadW and do
   # not dereference CredentialBlob: the check proves only backend availability
   # and the signed target/type pair in VMUser's interactive session.
-  [uint32]$count = 0
-  [IntPtr]$credentials = [IntPtr]::Zero
-  $found = $false
-  [uint32]$credentialBlobBytes = 0
-  try {
-    $enumerated = [OmniCredentialStatus.NativeMethods]::CredEnumerateW(
-      $null,
-      [uint32]0,
-      [ref]$count,
-      [ref]$credentials
-    )
-    if (-not $enumerated) {
-      $errorCode = [Runtime.InteropServices.Marshal]::GetLastWin32Error()
-      if ($errorCode -eq 1168) { throw "required Credential Manager target is absent: $TargetName" }
-      throw "CredEnumerateW failed with Win32 error $errorCode"
-    }
-    for ($index = 0; $index -lt [int]$count; $index += 1) {
-      $credentialPointer = [Runtime.InteropServices.Marshal]::ReadIntPtr(
-        $credentials,
-        [IntPtr]::Size * $index
-      )
-      if ($credentialPointer -eq [IntPtr]::Zero) { continue }
-      $credential = [Runtime.InteropServices.Marshal]::PtrToStructure(
-        $credentialPointer,
-        [type][OmniCredentialStatus.Credential]
-      )
-      $actualTargetName = [Runtime.InteropServices.Marshal]::PtrToStringUni($credential.TargetName)
-      if ([uint32]$credential.Type -eq $Type -and $actualTargetName -ceq $TargetName) {
-        $found = $true
-        $credentialBlobBytes = [uint32]$credential.CredentialBlobSize
-        break
-      }
-    }
-  } finally {
-    if ($credentials -ne [IntPtr]::Zero) {
-      [OmniCredentialStatus.NativeMethods]::CredFree($credentials)
-    }
+  $metadata = [OmniCredentialStatus.NativeMethods]::FindCredential($TargetName, $Type)
+  if (-not $metadata.Enumerated) {
+    if ($metadata.ErrorCode -eq 1168) { throw "required Credential Manager target is absent: $TargetName" }
+    throw "CredEnumerateW failed with Win32 error $($metadata.ErrorCode)"
   }
-  if (-not $found) { throw "required Credential Manager target/type is absent: $TargetName" }
+  if (-not $metadata.Found) { throw "required Credential Manager target/type is absent: $TargetName" }
+  [uint32]$credentialBlobBytes = $metadata.CredentialBlobBytes
   # CRED_MAX_CREDENTIAL_BLOB_SIZE is 5 * 512 bytes. Checking the size field
   # proves that the selected target is not an empty placeholder without ever
   # dereferencing CredentialBlob or exposing secret material.

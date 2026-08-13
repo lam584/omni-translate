@@ -207,8 +207,11 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'),
     'utf8',
   );
-  assert.match(launcher, /CredEnumerateW/);
+  assert.match(launcher, /EntryPoint = "CredEnumerateW"/);
+  assert.match(launcher, /ExactSpelling = true/);
+  assert.match(launcher, /FindCredential/);
   assert.match(launcher, /CredFree/);
+  assert.doesNotMatch(launcher, /\[ref\]\$credentials|\[ref\]\$count/);
   assert.doesNotMatch(launcher, /CredReadW\s*\(/);
   assert.match(launcher, /CredentialBlobSize/);
   assert.match(launcher, /credentialBlobBytes/);
@@ -221,6 +224,9 @@ test('worker readiness proves driver package and endpoint profiles without a Pro
     'utf8',
   );
   assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
+  assert.match(control, /taskInfoBeforeStart/);
+  assert.match(control, /taskObservedStarted/);
+  assert.match(control, /interactive task exited before terminal authority/);
   assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-desktop-shell|DashScope|providerId/i);
 });
 

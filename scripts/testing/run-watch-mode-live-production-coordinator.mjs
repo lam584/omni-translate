@@ -556,7 +556,9 @@ function remoteSpec(worker, remotePath) {
 
 function ensureSuccessful(result, label) {
   if (Number(result?.exitCode) !== 0) {
-    throw new Error(`${label} failed with exit ${result?.exitCode ?? 'unknown'}: ${String(result?.stderr ?? '').trim()}`);
+    const stderr = String(result?.stderr ?? '').trim();
+    const stdout = String(result?.stdout ?? '').trim();
+    throw new Error(`${label} failed with exit ${result?.exitCode ?? 'unknown'}: ${stderr || stdout || 'remote command produced no diagnostics'}`);
   }
   return result;
 }

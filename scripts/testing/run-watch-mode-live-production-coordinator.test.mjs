@@ -32,7 +32,14 @@ import {
 test('remote runtime verification has a bounded slow-disk timeout', () => {
   assert.equal(PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS, 5 * 60 * 1000);
   const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
-  assert.match(source, /timeoutMs:\s*PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS/);
+  assert.match(
+    source,
+    /planPath:\s*remotePlanPath,\s*},\s*{\s*timeoutMs:\s*PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,/s,
+  );
+  assert.doesNotMatch(
+    source,
+    /planPath:\s*remotePlanPath,\s*},\s*undefined,\s*{\s*timeoutMs:\s*PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,/s,
+  );
 });
 
 test('remote readiness finalization has a bounded slow-disk timeout', () => {

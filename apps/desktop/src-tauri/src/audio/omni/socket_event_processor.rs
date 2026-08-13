@@ -54,6 +54,7 @@ pub(super) struct OmniSocketEventContext<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) readiness_sent: &'a AtomicBool,
     pub(super) readiness_tx: &'a mpsc::Sender<Result<u64, String>>,
     pub(super) provider: &'a ProviderDraftInput,
+    pub(super) provider_input_budget: &'a ProviderInputBudget,
     pub(super) instructions: &'a str,
     pub(super) glossary: &'a GlossaryContext,
     pub(super) audio_mode: RealtimeAudioMode,
@@ -92,7 +93,7 @@ impl OmniSocketEventProcessor {
             subtitle_translate_active, native_translation_reuse_active,
             total_input_chunks, first_audio_sent_ms, first_audible_chunk_ms,
             chunk_count, total_silence_skipped_before_first_audible, playback_tx,
-            readiness_sent, readiness_tx, provider, instructions, glossary, audio_mode,
+            readiness_sent, readiness_tx, provider, provider_input_budget, instructions, glossary, audio_mode,
             output_mode, target_language, buffer_size, pre_session_audio_queue_len,
             pre_session_audio_dropped, echo_guard_enabled,
         } = context;
@@ -722,6 +723,7 @@ match socket.read_message() {
                             output_mode,
                             &target_language,
                             buffer_size,
+                            provider_input_budget,
                             &mut trace_call,
                             &evt,
                             &text,
@@ -765,6 +767,7 @@ match socket.read_message() {
                 output_mode,
                 &target_language,
                 buffer_size,
+                provider_input_budget,
             )?;
             socket = reconnect_state.socket;
             reconnect_count = reconnect_state.reconnect_count;
@@ -796,6 +799,7 @@ match socket.read_message() {
             &target_language,
             buffer_size,
             error,
+            provider_input_budget,
         )?;
         socket = reconnect_state.socket;
         reconnect_count = reconnect_state.reconnect_count;

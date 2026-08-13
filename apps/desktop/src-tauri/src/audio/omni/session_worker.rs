@@ -312,6 +312,23 @@ fn run_omni_worker(
     stop_rx: mpsc::Receiver<()>,
 ) -> Result<(), String> {
     let echo_guard_enabled = speech_config.echo_guard_enabled();
+    // Strict diagnostic budget binding must be validated, and its ledger must
+    // be exclusively created, before even the first provider connection.
+    let mut provider_input_budget =
+        ProviderInputBudget::from_env(&provider, &direction, session_generation)?;
+    let mut provider_input_dump = ProviderInputPcmDump::from_env(
+        &app,
+        provider_input_budget.max_samples(),
+        provider_input_budget.strict_paid_authority_enabled(),
+    )?;
+    // Create the translated-PCM evidence directory before connecting to the
+    // paid provider. A missing, stale, or non-exclusive authority path must
+    // fail without consuming any provider input.
+    let translated_pcm_authority = TranslatedPcmAuthority::from_env(
+        &provider,
+        &direction,
+        session_generation,
+    )?;
     let OmniConnectedSession {
         mut socket,
         mut trace_call,
@@ -334,6 +351,8 @@ fn run_omni_worker(
         &target_language,
         subtitle_translate_active,
         speech_config,
+        &provider_input_budget,
+        translated_pcm_authority,
         trace,
     )?;
     let OmniSessionRuntime {
@@ -378,8 +397,6 @@ fn run_omni_worker(
         mut first_audio_sent_ms,
         mut pending_audio_buffer,
     } = OmniSessionRuntime::new();
-    let mut provider_input_dump = ProviderInputPcmDump::from_env(&app);
-
     let connector = TungsteniteConnector;
     loop {
         if stop_rx.try_recv().is_ok() {
@@ -448,6 +465,7 @@ fn run_omni_worker(
             first_audio_sent_ms,
             pending_audio_buffer,
             provider_input_dump,
+            provider_input_budget,
             chunks_sent_this_tick: 0,
             socket_reconnected: false,
         })
@@ -488,6 +506,7 @@ fn run_omni_worker(
         first_audio_sent_ms = pump_state.first_audio_sent_ms;
         pending_audio_buffer = pump_state.pending_audio_buffer;
         provider_input_dump = pump_state.provider_input_dump;
+        provider_input_budget = pump_state.provider_input_budget;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
         // Both the pre-pump and post-poll reconnect paths must reset the exact
         // same manual-gate/turn/pre-session-audio locals. A local macro keeps
@@ -694,6 +713,7 @@ fn run_omni_worker(
                 readiness_sent: readiness_sent.as_ref(),
                 readiness_tx: &readiness_tx,
                 provider: &provider,
+                provider_input_budget: &provider_input_budget,
                 instructions: &instructions,
                 glossary: &glossary,
                 audio_mode,
@@ -736,6 +756,7 @@ fn run_omni_worker(
         audio_samples_since_commit = poll.state.audio_samples_since_commit;
         manual_turn_audio_after_response = poll.state.manual_turn_audio_after_response;
         if poll.socket_reconnected {
+            provider_input_budget.record_reconnect()?;
             reset_gate_after_reconnect!();
         }
         if poll.stop_worker {
@@ -771,6 +792,7 @@ fn run_omni_worker(
         thread::sleep(Duration::from_millis(10));
     }
 
+    provider_input_budget.finalize("worker-completed")?;
     Ok(())
 }
 

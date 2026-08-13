@@ -39,6 +39,9 @@ impl ProviderProbeService {
             latency_ms,
             smoke.fallback_applied,
         );
+        let input_tokens = smoke.input_tokens;
+        let output_tokens = smoke.output_tokens;
+        let audio_seconds = smoke.audio_seconds;
         let checks = vec![
             check(
                 &provider.provider_id,
@@ -95,6 +98,9 @@ impl ProviderProbeService {
             transport_requested: smoke.transport_requested,
             transport_effective: smoke.transport_effective,
             fallback_applied: smoke.fallback_applied,
+            input_tokens,
+            output_tokens,
+            audio_seconds,
             checks,
             guidance: routing::build_probe_guidance(verdict, &routing_decision, smoke.fallback_applied),
             routing_decision,

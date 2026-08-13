@@ -46,6 +46,7 @@ import {
   validateVirtualMicReleaseEmitter,
 } from './virtual-mic-release-evidence.mjs';
 import { validateVirtualMicFingerprintAuthority } from './virtual-mic-fingerprint-authority.mjs';
+import { validateProviderPreflightRawAuthority } from './watch-mode-provider-preflight-authority.mjs';
 
 export const RELEASE_MANUAL_COLLECTOR_SCHEMA_VERSION = 1;
 export const RELEASE_MANUAL_COLLECTOR_SCRIPT = 'scripts/testing/collect-release-manual-evidence.mjs';
@@ -948,6 +949,14 @@ const validateProviderProbe = (root, options) => {
   if (value?.source !== 'desktop-api-v2' || value?.productionMode !== true) {
     issues.push('provider probe must come from the production desktop-api-v2 runtime');
   }
+  if (
+    value?.operation !== 'text-translation-preflight'
+    || value?.inputMode !== 'text-only'
+    || Number(value?.externalAudioSamples) !== 0
+    || Number(value?.providerInvocationCount) !== 1
+  ) {
+    issues.push('provider probe must bind one text-only invocation with zero external audio samples');
+  }
   const timeIssue = timestampIssue(value?.checkedAt, 'provider probe checkedAt', options);
   if (timeIssue) issues.push(timeIssue);
   requirePositiveInteger(issues, value?.desktopProcessId, 'provider probe desktopProcessId');
@@ -1025,7 +1034,7 @@ const validateProviderProbe = (root, options) => {
     || JSON.stringify(checks.map((check) => check?.key)) !== JSON.stringify(Object.keys(expectedChecks))
     || checks.some((check) => (
       !Object.prototype.hasOwnProperty.call(expectedChecks, check?.key)
-      || check?.id !== `${value?.providerId}-${check?.key}`
+      || !String(check?.id ?? '').endsWith(`-${check?.key}`)
       || check?.status !== 'pass'
       || check?.label !== expectedChecks[check?.key]?.label
       || check?.summary !== expectedChecks[check?.key]?.summary
@@ -1060,8 +1069,9 @@ const validateProviderProbe = (root, options) => {
     {
       templateId: value?.templateId,
       providerId: value?.providerId,
-      model: value?.model,
+      model: value?.preflightAuthorization ? value?.configuredModel : value?.model,
       transport: value?.transportRequested,
+      streamEnabled: true,
       authRef: { reference: value?.credentialStatus?.reference },
     },
     {
@@ -1069,13 +1079,21 @@ const validateProviderProbe = (root, options) => {
       providerId: diagnosticsProvider.provider?.providerId,
       model: diagnosticsProvider.provider?.model,
       transport: diagnosticsProvider.provider?.transport,
+      streamEnabled: diagnosticsProvider.provider?.streamEnabled,
       authRef: { reference: diagnosticsProvider.provider?.authRef?.reference },
     },
-    ['templateId', 'providerId', 'model', 'transport', 'authRef'],
+    ['templateId', 'providerId', 'model', 'transport', 'streamEnabled', 'authRef'],
     'provider probe result',
   );
   try {
-    if (new URL(String(diagnosticsProvider.provider?.baseUrl ?? '')).hostname !== value?.endpointHost) {
+    const configuredUrl = new URL(String(diagnosticsProvider.provider?.baseUrl ?? ''));
+    if (
+      configuredUrl.protocol !== 'https:'
+      || configuredUrl.username
+      || configuredUrl.password
+      || configuredUrl.port
+      || configuredUrl.hostname !== value?.endpointHost
+    ) {
       issues.push('provider probe endpointHost does not match the diagnostics config baseUrl');
     }
   } catch {
@@ -1091,6 +1109,9 @@ const validateProviderProbe = (root, options) => {
     || !isDeepStrictEqual(value?.diagnosticsExport, emitter.diagnostics)
     || value?.credentialStatus?.backend !== 'windows-credential-manager'
     || value?.credentialStatus?.exists !== true
+    || value?.transportRequested !== 'websocket'
+    || value?.effectiveTransport !== 'websocket'
+    || value?.rawProbeResult?.fallbackApplied !== false
   ) issues.push('provider probe is not bound to the desktop emitter, credential status, and diagnostics invocation');
   return {
     issues,
@@ -1098,6 +1119,10 @@ const validateProviderProbe = (root, options) => {
     summary: {
       providerId: value?.providerId ?? null,
       model: value?.model ?? null,
+      operation: value?.operation ?? null,
+      inputMode: value?.inputMode ?? null,
+      externalAudioSamples: Number(value?.externalAudioSamples ?? -1),
+      providerInvocationCount: Number(value?.providerInvocationCount ?? 0),
       effectiveTransport: value?.effectiveTransport ?? null,
       latencyMs: Number(value?.latencyMs ?? 0),
       desktopProcessId: Number(value?.desktopProcessId ?? 0),
@@ -1669,7 +1694,27 @@ const validateInstallReleaseAuthority = (root, options, expectedScenarioId) => {
 
 const RAW_VALIDATORS = Object.freeze({
   'E2E-PROVIDER-CONFIG': validateProviderConfig,
-  'E2E-PROVIDER-PROBE': validateProviderProbe,
+  'E2E-PROVIDER-PROBE': (root, options) => {
+    const probe = readJson(path.join(root, 'provider-probe-result.json'));
+    const observedAuthorization = probe?.preflightAuthorization;
+    const selfBoundExpectedAuthorization = observedAuthorization
+      && typeof observedAuthorization === 'object'
+      && !Array.isArray(observedAuthorization)
+      ? Object.fromEntries(Object.entries(observedAuthorization).filter(([key]) => (
+          key !== 'authorizationObservedAt'
+        )))
+      : null;
+    const shared = validateProviderPreflightRawAuthority(root, {
+      ...options,
+      expectedAuthorization: options?.expectedAuthorization ?? selfBoundExpectedAuthorization,
+    });
+    const detailed = validateProviderProbe(root, options);
+    return {
+      ...detailed,
+      issues: [...new Set([...shared.issues, ...detailed.issues])],
+      summary: shared.summary ?? detailed.summary,
+    };
+  },
   'E2E-REAL-DEVICE-AUDIO': validateRealDeviceAudioEvidence,
   'E2E-OVERLAY-CLICK-THROUGH': validateOverlay,
   'E2E-DIAGNOSTICS-EXPORT': validateDiagnosticsBundle,
@@ -1706,6 +1751,7 @@ export function validateRawReleaseManualEvidence(
     implementationRoot = repoRoot,
     currentProvenance = currentGitProvenance({ cwd: workspaceRoot }),
     testOnlyRealDeviceAuthorityResolver,
+    expectedAuthorization,
   } = {},
 ) {
   const profileValue = RELEASE_MANUAL_COLLECTOR_PROFILES[scenarioId];
@@ -1734,6 +1780,7 @@ export function validateRawReleaseManualEvidence(
       workspaceRoot,
       implementationRoot,
       currentProvenance,
+      expectedAuthorization,
       ...(scenarioId === 'E2E-REAL-DEVICE-AUDIO' && testOnlyRealDeviceAuthorityResolver
         ? { authorityResolver: testOnlyRealDeviceAuthorityResolver }
         : {}),

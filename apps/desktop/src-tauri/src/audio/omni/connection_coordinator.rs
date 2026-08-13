@@ -185,6 +185,7 @@ impl OmniConnectionCoordinator {
         output_mode: OmniOutputMode,
         target_language: &str,
         buffer_size: u64,
+        provider_input_budget: &ProviderInputBudget,
         trace_call: &mut crate::diagnostics::model_trace::ModelTraceCall<R>,
         evt: &Value,
         raw_text: &str,
@@ -226,6 +227,8 @@ impl OmniConnectionCoordinator {
                 output_mode,
                 target_language,
                 buffer_size,
+                provider_input_budget,
+                "voice-fallback",
                 &format!("provider rejected voice: {err_msg}"),
             ) {
                 Ok(new_socket) => {
@@ -291,6 +294,7 @@ impl OmniConnectionCoordinator {
         output_mode: OmniOutputMode,
         target_language: &str,
         buffer_size: u64,
+        provider_input_budget: &ProviderInputBudget,
     ) -> Result<OmniReconnectState<C::Socket>, String> {
         let _ = diag_log(app, "omni", "warning", "[SOCKET] WebSocket closed");
         state.socket = Self::reconnect_socket(
@@ -304,6 +308,8 @@ impl OmniConnectionCoordinator {
             output_mode,
             target_language,
             buffer_size,
+            provider_input_budget,
+            "socket-close",
             "provider closed the WebSocket",
         )?;
         state.socket_reconnected = true;
@@ -323,6 +329,7 @@ impl OmniConnectionCoordinator {
         target_language: &str,
         buffer_size: u64,
         error: tungstenite::Error,
+        provider_input_budget: &ProviderInputBudget,
     ) -> Result<OmniReconnectState<C::Socket>, String> {
         let err_str = error.to_string();
         if err_str.contains("timed out")
@@ -360,9 +367,21 @@ impl OmniConnectionCoordinator {
             output_mode,
             target_language,
             buffer_size,
+            provider_input_budget,
+            "read-error",
             &format!("WebSocket read failed: {error}"),
         )
-        .map_err(|_| format!("Omni WebSocket read failed and reconnect limit exhausted: {error}"))?;
+        .map_err(|reconnect_error| {
+            if provider_input_budget.strict_paid_authority_enabled() {
+                format!(
+                    "Omni WebSocket read failed and reconnect was rejected: {error}; {reconnect_error}"
+                )
+            } else {
+                format!(
+                    "Omni WebSocket read failed and reconnect limit exhausted: {error}"
+                )
+            }
+        })?;
         state.socket_reconnected = true;
         Ok(state)
     }
@@ -382,8 +401,11 @@ impl OmniConnectionCoordinator {
         output_mode: OmniOutputMode,
         target_language: &str,
         buffer_size: u64,
+        provider_input_budget: &ProviderInputBudget,
+        reconnect_trigger: &str,
         reason: &str,
     ) -> Result<C::Socket, String> {
+        provider_input_budget.authorize_reconnect_before_connect(reconnect_trigger)?;
         try_reconnect(
             connector,
             &mut state.reconnect_count,
@@ -922,6 +944,235 @@ mod manual_response_gate_tests {
     }
 }
 
+#[cfg(test)]
+mod strict_reconnect_authority_tests {
+    use std::path::Path;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use tauri::Manager;
+    use tempfile::tempdir;
+
+    use super::*;
+
+    struct CountingSocket;
+
+    impl RealtimeSocket for CountingSocket {
+        fn read_message(&mut self) -> Result<Message, tungstenite::Error> {
+            Err(tungstenite::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "test socket idle",
+            )))
+        }
+
+        fn send_message(&mut self, _message: Message) -> Result<(), tungstenite::Error> {
+            Ok(())
+        }
+    }
+
+    #[derive(Default)]
+    struct CountingConnector {
+        attempts: AtomicUsize,
+    }
+
+    impl RealtimeSocketConnector for CountingConnector {
+        type Socket = CountingSocket;
+
+        fn reconnect<R: tauri::Runtime>(
+            &self,
+            _app: &AppHandle<R>,
+            _provider: &ProviderDraftInput,
+            _voice: &str,
+            _instructions: &str,
+            _audio_mode: RealtimeAudioMode,
+            _output_mode: OmniOutputMode,
+            _target_language: &str,
+        ) -> Result<Self::Socket, String> {
+            self.attempts.fetch_add(1, Ordering::SeqCst);
+            Ok(CountingSocket)
+        }
+    }
+
+    fn mock_app() -> tauri::App<tauri::test::MockRuntime> {
+        let app = tauri::test::mock_builder()
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("mock tauri app");
+        app.manage(AudioStateStore::new());
+        app
+    }
+
+    fn reconnect_state(active_voice: &str) -> OmniReconnectState<CountingSocket> {
+        OmniReconnectState {
+            socket: CountingSocket,
+            reconnect_count: 0,
+            pending_audio_buffer: vec![1, 2, 3],
+            active_voice: active_voice.to_string(),
+            voice_fallback_applied: false,
+            socket_reconnected: false,
+        }
+    }
+
+    fn strict_budget(
+        provider: &ProviderDraftInput,
+        ledger_path: &Path,
+    ) -> ProviderInputBudget {
+        let budget = ProviderInputBudget::strict_for_test(provider, ledger_path)
+            .expect("strict budget fixture");
+        budget
+            .record_initial_connect_attempt()
+            .expect("one initial connect attempt");
+        budget
+    }
+
+    fn assert_reconnect_was_blocked(
+        result: Result<OmniReconnectState<CountingSocket>, String>,
+        connector: &CountingConnector,
+        ledger_path: &Path,
+        trigger: &str,
+    ) {
+        let error = match result {
+            Ok(_) => panic!("strict reconnect must fail closed"),
+            Err(error) => error,
+        };
+        assert!(error.contains("forbids reconnect"), "{error}");
+        assert_eq!(connector.attempts.load(Ordering::SeqCst), 0);
+        let ledger: Value = serde_json::from_slice(
+            &std::fs::read(ledger_path).expect("strict ledger must be readable"),
+        )
+        .expect("strict ledger must be valid JSON");
+        assert_eq!(ledger["initialConnectAttempts"], 1);
+        assert_eq!(ledger["reconnects"], 0);
+        assert_eq!(
+            ledger["terminalReason"],
+            format!("reconnect-forbidden-{trigger}")
+        );
+        let journal_path = format!("{}.journal.jsonl", ledger_path.display());
+        let journal = std::fs::read_to_string(journal_path)
+            .expect("strict reconnect journal must be readable");
+        let rejected: Value = journal
+            .lines()
+            .rev()
+            .map(|line| {
+                serde_json::from_str(line)
+                    .expect("strict reconnect journal event must be valid JSON")
+            })
+            .find(|entry: &Value| entry["event"] == "reconnect_rejected")
+            .expect("strict reconnect journal must record reconnect rejection");
+        assert_eq!(rejected["event"], "reconnect_rejected");
+        assert_eq!(
+            rejected["terminalReason"],
+            format!("reconnect-forbidden-{trigger}")
+        );
+    }
+
+    #[test]
+    fn strict_socket_close_never_reaches_the_reconnect_connector() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let directory = tempdir().expect("tempdir");
+        let ledger_path = directory.path().join("socket-close.json");
+        let budget = strict_budget(&provider, &ledger_path);
+        let connector = CountingConnector::default();
+
+        let result = OmniConnectionCoordinator::reconnect_after_close(
+            reconnect_state("Ethan"),
+            &connector,
+            &handle,
+            &store,
+            &provider,
+            "translate",
+            RealtimeAudioMode::Manual,
+            OmniOutputMode::TextAndAudio,
+            "zh-CN",
+            0,
+            &budget,
+        );
+
+        assert_reconnect_was_blocked(result, &connector, &ledger_path, "socket-close");
+    }
+
+    #[test]
+    fn strict_read_error_never_reaches_the_reconnect_connector() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let directory = tempdir().expect("tempdir");
+        let ledger_path = directory.path().join("read-error.json");
+        let budget = strict_budget(&provider, &ledger_path);
+        let connector = CountingConnector::default();
+        let read_error = tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionReset,
+            "connection reset by peer",
+        ));
+
+        let result = OmniConnectionCoordinator::recover_read_error(
+            reconnect_state("Ethan"),
+            &connector,
+            &handle,
+            &store,
+            &provider,
+            "translate",
+            RealtimeAudioMode::Manual,
+            OmniOutputMode::TextAndAudio,
+            "zh-CN",
+            0,
+            read_error,
+            &budget,
+        );
+
+        assert_reconnect_was_blocked(result, &connector, &ledger_path, "read-error");
+    }
+
+    #[test]
+    fn strict_voice_fallback_never_reaches_the_reconnect_connector() {
+        let app = mock_app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        let provider = ProviderInputBudget::strict_provider_for_test();
+        let directory = tempdir().expect("tempdir");
+        let ledger_path = directory.path().join("voice-fallback.json");
+        let budget = strict_budget(&provider, &ledger_path);
+        let connector = CountingConnector::default();
+        let recorder = crate::diagnostics::model_trace::ModelTraceRecorder::new(
+            handle.clone(),
+            crate::diagnostics::model_trace::ModelTraceContext::new(
+                &provider.provider_id,
+                &provider.model,
+                "strict-reconnect-test",
+            ),
+        );
+        let mut trace_call = recorder.call("strict.voice-fallback");
+        let event = json!({
+            "type": "error",
+            "error": {
+                "code": "invalid_value",
+                "message": "Unsupported voice Ethan"
+            }
+        });
+
+        let result = OmniConnectionCoordinator::handle_provider_error(
+            reconnect_state("Ethan"),
+            &connector,
+            &handle,
+            &store,
+            &provider,
+            "translate",
+            RealtimeAudioMode::Manual,
+            OmniOutputMode::TextAndAudio,
+            "zh-CN",
+            0,
+            &budget,
+            &mut trace_call,
+            &event,
+            &event.to_string(),
+        );
+
+        assert_reconnect_was_blocked(result, &connector, &ledger_path, "voice-fallback");
+    }
+}
+
 impl OmniConnectionCoordinator {
     pub(super) fn maintain_manual_commit<S: RealtimeSocket, R: tauri::Runtime>(
         state: OmniCommitState,
@@ -1064,6 +1315,8 @@ impl OmniConnectionCoordinator {
         target_language: &str,
         subtitle_translate_active: bool,
         speech_config: OmniSpeechConfig,
+        provider_input_budget: &ProviderInputBudget,
+        translated_pcm_authority: TranslatedPcmAuthority,
         trace: ModelTraceRecorder,
     ) -> Result<OmniConnectedSession, String> {
         let mut trace_call = trace.call("omni.websocket_session");
@@ -1095,23 +1348,30 @@ impl OmniConnectionCoordinator {
             .record_milestone_now("preconnect_started");
         let initial_connect_started = SystemTime::now();
         let mut initial_attempt = 0usize;
+        let initial_connect_retries = if provider_input_budget.strict_paid_authority_enabled() {
+            0
+        } else {
+            OMNI_INITIAL_CONNECT_RETRIES
+        };
         let (socket, _) = loop {
             initial_attempt += 1;
-            match connect(request.clone()) {
+            provider_input_budget.record_initial_connect_attempt()?;
+            match connect_without_redirects(request.clone()) {
                 Ok(connected) => break connected,
-                Err(error) if initial_attempt <= OMNI_INITIAL_CONNECT_RETRIES => {
+                Err(error) if initial_attempt <= initial_connect_retries => {
                     let _ = diag_log(
                         &app,
                         "omni",
                         "warning",
                         format!(
                             "[CONNECT] Omni 初次连接失败，准备重试: attempt={initial_attempt}/{} error={error}",
-                            OMNI_INITIAL_CONNECT_RETRIES + 1
+                            initial_connect_retries + 1
                         ),
                     );
                     thread::sleep(initial_connect_backoff(initial_attempt));
                 }
                 Err(error) => {
+                    provider_input_budget.mark_terminal("initial-connect-failed");
                     let elapsed_ms = initial_connect_started
                         .elapsed()
                         .map(|elapsed| elapsed.as_millis())
@@ -1221,7 +1481,12 @@ impl OmniConnectionCoordinator {
         // re-reads it for every Play command.
         let shared_speech_config = store.register_omni_speech_config(speech_config);
         let (playback_tx, playback_stop_requested, playback_join) =
-            start_omni_playback(app.clone(), shared_speech_config, direction.to_string());
+            start_omni_playback(
+                app.clone(),
+                shared_speech_config,
+                direction.to_string(),
+                translated_pcm_authority,
+            );
         Ok(OmniConnectedSession {
             socket,
             trace_call,

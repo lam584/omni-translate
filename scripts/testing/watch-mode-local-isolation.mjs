@@ -30,23 +30,59 @@ export const LOCAL_ISOLATION_REUSE_MODE = 'orchestration-only';
 export const LOCAL_ISOLATION_REUSABLE_LEGACY_PLAN_IDS = Object.freeze([
   'watch-mode-balanced-v2',
   'watch-mode-balanced-v4',
+  'watch-mode-balanced-v5',
 ]);
 export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   '.gitattributes',
+  'AGENTS.md',
   'package.json',
   'docs/项目/Watch Mode 真实链路自动化测试.md',
+  'docs/项目/Watch Mode 短 CJK 回声拦截与 AEC 迭代方案.md',
+  'docs/项目/测试与质量门禁.md',
   'apps/bridge-service-native/src/bin/omni-watch-media-injector.rs',
+  'apps/desktop/src-tauri/Cargo.toml',
+  'apps/desktop/src-tauri/build.rs',
+  'apps/desktop/src/pages/providers/ProviderCatalogComponents.test.tsx',
+  'apps/desktop/src/runtime/preview-desktop-api.ts',
+  'apps/desktop/src/schema/generated/provider-runtime.ts',
+  'apps/desktop/src/utils/provider-probe.test.ts',
+  'scripts/development/build-desktop-release.mjs',
   'scripts/installer/build-sysvad-driver.ps1',
   'scripts/testing/README.md',
+  'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
+  'scripts/testing/invoke-watch-mode-interactive-task.ps1',
+  'scripts/testing/real-device-audio-release-evidence-test-helpers.mjs',
+  'scripts/testing/real-device-audio-release-evidence.test.mjs',
+  'scripts/testing/run-quality-gate.test.mjs',
+  'scripts/testing/run-watch-mode-interactive-task.ps1',
   'scripts/testing/run-watch-mode-live-matrix.mjs',
   'scripts/testing/run-watch-mode-live-matrix.test.mjs',
+  'scripts/testing/run-watch-mode-live-coordinator.mjs',
+  'scripts/testing/run-watch-mode-live-coordinator.test.mjs',
+  'scripts/testing/run-watch-mode-live-production-coordinator.mjs',
+  'scripts/testing/run-watch-mode-live-production-coordinator.test.mjs',
+  'scripts/testing/run-watch-mode-live-shard.mjs',
+  'scripts/testing/run-watch-mode-live-shard.test.mjs',
   'scripts/testing/run-watch-mode-live.ps1',
   'scripts/testing/run-watch-mode-live.test.mjs',
+  'scripts/testing/release-manual-collector.mjs',
+  'scripts/testing/watch-mode-provider-preflight-authority.mjs',
+  'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
   'scripts/testing/watch-mode-balanced-release-plan.mjs',
   'scripts/testing/watch-mode-balanced-release-plan.test.mjs',
+  'scripts/testing/watch-mode-canonical-source-authority.mjs',
+  'scripts/testing/watch-mode-canonical-source-authority.test.mjs',
+  'scripts/testing/watch-mode-evidence-authority.mjs',
+  'scripts/testing/watch-mode-external-provider-budget.mjs',
+  'scripts/testing/watch-mode-external-provider-budget.test.mjs',
+  'scripts/testing/watch-mode-translated-pcm-loopback.mjs',
+  'scripts/testing/watch-mode-translated-pcm-loopback.test.mjs',
+  'scripts/testing/watch-mode-shard-authority.mjs',
+  'scripts/testing/watch-mode-shard-authority.test.mjs',
   'scripts/testing/watch-mode-report-content.test.mjs',
   'scripts/testing/watch-mode-report.mjs',
   'scripts/testing/verify-watch-mode-evidence.mjs',
+  'scripts/testing/verify-watch-mode-evidence.test.mjs',
   'scripts/testing/watch-mode-local-isolation.mjs',
   'scripts/testing/watch-mode-local-isolation.test.mjs',
   // The local layer disables Provider access (`providerCalls === 0`) and does
@@ -55,6 +91,40 @@ export const LOCAL_ISOLATION_REUSE_ALLOWED_PATHS = Object.freeze([
   // Bridge/probe/driver isolation cells. Runtime hashes below still have to
   // match byte-for-byte before this reuse is accepted.
   'apps/desktop/src-tauri/src/storage/credential.rs',
+  // Watch diagnostic configuration is exercised only by paid cells after the
+  // Desktop shell starts. The zero-Provider isolation cells invoke Bridge and
+  // probe executables directly, and the scoped runtime authority below omits
+  // the Desktop binary, so these paid-path config changes cannot alter a
+  // previously recorded local-isolation result.
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/config.rs',
+  'apps/desktop/src-tauri/src/watch_mode_diagnostic/tests.rs',
+  // The provider-input ledger and translated-PCM authority are constructed by
+  // the paid Desktop session only. The local six-cell layer never launches
+  // the Desktop executable; it binds only its separately scoped Bridge/probe
+  // runtime inventory before allowing reuse.
+  'apps/desktop/src-tauri/src/audio/engine/bridge_source_io.rs',
+  'apps/desktop/src-tauri/src/audio/engine/mod.rs',
+  'apps/desktop/src-tauri/src/audio/engine/workers.rs',
+  'apps/desktop/src-tauri/src/audio/omni/audio_pump.rs',
+  'apps/desktop/src-tauri/src/audio/omni/connection_coordinator.rs',
+  'apps/desktop/src-tauri/src/audio/omni/mod.rs',
+  'apps/desktop/src-tauri/src/audio/omni/protocol.rs',
+  'apps/desktop/src-tauri/src/audio/omni/provider_input_budget.rs',
+  'apps/desktop/src-tauri/src/audio/omni/replay_tests.rs',
+  'apps/desktop/src-tauri/src/audio/omni/session_worker.rs',
+  'apps/desktop/src-tauri/src/audio/omni/session_worker/reconnect.rs',
+  'apps/desktop/src-tauri/src/audio/omni/socket_event_processor.rs',
+  'apps/desktop/src-tauri/src/audio/omni/translated_pcm_authority.rs',
+  'apps/desktop/src-tauri/src/diagnostics/events.rs',
+  'apps/desktop/src-tauri/src/provider/contracts.rs',
+  'apps/desktop/src-tauri/src/provider/events.rs',
+  'apps/desktop/src-tauri/src/provider/gateway_parts/probe.rs',
+  'apps/desktop/src-tauri/src/provider/gateway_parts/transport.rs',
+  'apps/desktop/src-tauri/src/provider/state.rs',
+  'apps/desktop/src-tauri/src/release_evidence_diagnostic.rs',
+  'apps/desktop/src-tauri/src/release_evidence_diagnostic/artifacts.rs',
+  'apps/desktop/src-tauri/src/release_evidence_diagnostic/provider_preflight_authority.rs',
+  'apps/desktop/src-tauri/src/release_evidence_diagnostic/provider_selection.rs',
 ]);
 
 // The zero-LLM layer invokes only these probe/runtime artifacts.  The paid
@@ -535,6 +605,50 @@ const reusableSourceChangedPaths = (workspaceRoot, sourceCommit, currentCommit) 
   return output ? output.split(/\r?\n/).map((entry) => entry.trim()).filter(Boolean).sort() : [];
 };
 
+const normalizedLockText = (value) => String(value ?? '')
+  .replace(/^\uFEFF/, '')
+  .replace(/\r\n/g, '\n')
+  .trimEnd();
+
+const desktopPackageBlock = (lockText) => {
+  const marker = '[[package]]\nname = "omni-desktop-shell"\n';
+  const start = lockText.indexOf(marker);
+  if (start < 0 || lockText.indexOf(marker, start + marker.length) >= 0) return null;
+  const next = lockText.indexOf('\n[[package]]\n', start + marker.length);
+  const end = next < 0 ? lockText.length : next + 1;
+  return { start, end, text: lockText.slice(start, end) };
+};
+
+// Cargo.lock is workspace-global, so a permanent path-only exception would
+// also admit future Bridge or driver dependency changes. The current paid
+// Desktop authority needs ring for Ed25519 verification, while ring is already
+// present in the source lockfile transitively. Permit only that one dependency
+// edge in the omni-desktop-shell package; every other lockfile byte remains
+// source-identical.
+export function paidOnlyCargoLockReuseFailure({ sourceText, currentText }) {
+  const source = normalizedLockText(sourceText);
+  const current = normalizedLockText(currentText);
+  const sourceBlock = desktopPackageBlock(source);
+  const currentBlock = desktopPackageBlock(current);
+  if (!sourceBlock || !currentBlock) {
+    return 'Cargo.lock must contain exactly one omni-desktop-shell package';
+  }
+  const dependencyLine = '\n "ring",';
+  if (
+    sourceBlock.text.includes(dependencyLine)
+    || currentBlock.text.split(dependencyLine).length !== 2
+  ) {
+    return 'Cargo.lock reuse permits only a newly added omni-desktop-shell ring dependency';
+  }
+  const strippedCurrent = current.slice(0, currentBlock.start)
+    + currentBlock.text.replace(dependencyLine, '')
+    + current.slice(currentBlock.end);
+  if (strippedCurrent !== source) {
+    return 'Cargo.lock changed outside the paid-only omni-desktop-shell ring dependency';
+  }
+  return null;
+}
+
 export function reusableLocalIsolationAuthorityFailure({
   manifest,
   provenance,
@@ -564,9 +678,25 @@ export function reusableLocalIsolationAuthorityFailure({
   if (!changedPaths) return 'local isolation reuse could not inspect the source-to-current diff';
   if (
     (!exactHeadReuse && changedPaths.length === 0)
-    || changedPaths.some((entry) => !LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entry))
+    || changedPaths.some((entry) => (
+      entry !== 'Cargo.lock' && !LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entry)
+    ))
   ) {
     return `local isolation reuse permits only orchestration files to change; changed=${changedPaths.join(',')}`;
+  }
+  if (!exactHeadReuse && changedPaths.includes('Cargo.lock')) {
+    const sourceLock = gitText(workspaceRoot, ['show', `${sourceCommit}:Cargo.lock`]);
+    let currentLock = null;
+    try {
+      currentLock = fs.readFileSync(path.join(workspaceRoot, 'Cargo.lock'), 'utf8');
+    } catch {
+      currentLock = null;
+    }
+    const cargoLockFailure = paidOnlyCargoLockReuseFailure({
+      sourceText: sourceLock,
+      currentText: currentLock,
+    });
+    if (cargoLockFailure) return `local isolation reuse rejected Cargo.lock: ${cargoLockFailure}`;
   }
   if (!exactHeadReuse) {
     const ancestor = gitText(workspaceRoot, ['merge-base', '--is-ancestor', sourceCommit, currentCommit]);

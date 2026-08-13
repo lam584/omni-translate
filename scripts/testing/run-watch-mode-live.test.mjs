@@ -5,6 +5,9 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { forbiddenCellArtifactPaths } from './watch-mode-evidence-authority.mjs';
+import { buildCanonicalReferencePcm } from './watch-mode-canonical-source-authority.mjs';
+
 // This suite executes the runner instead of grepping its source. Earlier
 // versions asserted on string positions inside the .ps1, which validated
 // wording rather than behavior (a reworded script broke the tests, a broken
@@ -140,6 +143,49 @@ function extractedSpeechSegmentationFunctions() {
   );
 }
 
+function extractedStrictPaidSourceAuthorityFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @('Invoke-CanonicalSourceAuthorityNode','Get-CanonicalSourceMediaReference','Get-SourceMediaReferenceTranscript') ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedStrictPaidProviderFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @(` +
+        `'Enter-StrictPaidProviderEnvironment',` +
+        `'Exit-StrictPaidProviderEnvironment',` +
+        `'Set-WatchModelOnConfig'` +
+      `) ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedCuePlaybackAuthorityFunctions() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$functions = $ast.FindAll({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -in @('Get-LogTextAfterMarker','Read-TranslatedCuePlaybackAuthority') ` +
+    `}, $true); ` +
+    `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
 test('native Bridge queued and started statuses count as physical speech evidence', { skip: !isWindows }, () => {
   const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-native-speech-evidence-'));
   const logPath = path.join(tempRoot, 'app.log');
@@ -162,6 +208,229 @@ test('native Bridge queued and started statuses count as physical speech evidenc
   }
 });
 
+test('strict paid source authority uses canonical hashes, fixture texts, and injector PCM without remote STT', { skip: !isWindows }, () => {
+  const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-canonical-source-'));
+  const referencePcmPath = path.join(outputDirectory, 'source-media-reference-16k-mono.pcm');
+  fs.writeFileSync(referencePcmPath, buildCanonicalReferencePcm({ workspaceRoot: path.resolve('.') }));
+  try {
+    const canonicalMedia = path.resolve('scripts/testing/fixtures/watch-mode-en-original.wav');
+    const command = `${extractedStrictPaidSourceAuthorityFunctions()} ` +
+      `$workspaceRoot = ${quotePowerShell(path.resolve('.'))}; ` +
+      `$StrictPaidAuthority = $true; ` +
+      `function Get-PhysicalOutputSttApiKey { throw 'remote credential path must not execute' }; ` +
+      `function Build-OmniRealtimeDiagnostic { throw 'remote diagnostic path must not execute' }; ` +
+      `Get-SourceMediaReferenceTranscript ${quotePowerShell(outputDirectory)} ${quotePowerShell(canonicalMedia)} | ConvertTo-Json -Depth 4 -Compress`;
+    const result = runPowerShell(['-Command', command]);
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const authority = JSON.parse(result.stdout.trim());
+    assert.equal(authority.passed, true);
+    assert.equal(authority.authorityMode, 'canonical-fixture-local-v2');
+    assert.equal(authority.remoteProviderCalls, 0);
+    assert.equal(authority.externalAudioSeconds, 0);
+    assert.equal(authority.mediaPath, 'scripts/testing/fixtures/watch-mode-en-original.wav');
+    assert.equal(authority.referencePcm.path, 'source-media-reference-16k-mono.pcm');
+    assert.equal(authority.mediaSha256, 'cf4990ecdc23622d12de3e62adad442755c9e84c4612787798655ee00c85fb2f');
+    assert.equal(authority.referencePcm.samples, 2_013_045);
+    assert.equal(typeof authority.source, 'string', JSON.stringify(authority.source));
+    assert.equal(typeof authority.translation, 'string', JSON.stringify(authority.translation));
+    assert.equal(
+      authority.source.replaceAll('\r\n', '\n'),
+      fs.readFileSync(path.resolve('scripts/testing/fixtures/watch-mode-en-original.txt'), 'utf8').replaceAll('\r\n', '\n'),
+    );
+    assert.equal(
+      authority.translation.replaceAll('\r\n', '\n'),
+      fs.readFileSync(path.resolve('scripts/testing/fixtures/watch-mode-en-original.zh-CN.txt'), 'utf8').replaceAll('\r\n', '\n'),
+    );
+
+    const forged = fs.readFileSync(referencePcmPath);
+    forged.writeInt16LE(forged.readInt16LE(0) ^ 1, 0);
+    fs.writeFileSync(referencePcmPath, forged);
+    const rejected = runPowerShell(['-Command', command]);
+    assert.equal(rejected.status, 0, rejected.stderr || rejected.stdout);
+    const rejectedAuthority = JSON.parse(rejected.stdout.trim());
+    assert.equal(rejectedAuthority.passed, false);
+    assert.match(rejectedAuthority.error, /not byte-for-byte the injector reconstruction/);
+  } finally {
+    fs.rmSync(outputDirectory, { recursive: true, force: true });
+  }
+});
+
+test('strict paid provider selection ignores a preceding alternate and rejects forged canonical identity', { skip: !isWindows }, () => {
+  const providers = [{
+    providerId: 'provider-alternate',
+    templateId: 'template-alternate',
+    kind: 'dashscope',
+    model: 'alternate-before-canonical',
+    baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+    streamEnabled: true,
+    authRef: {
+      kind: 'credential-ref', reference: 'credential://provider/dashscope/default',
+      headerName: 'Authorization', scheme: 'bearer',
+    },
+    customHeaders: [],
+    systemPromptTemplate: 'game-live-translation-cn',
+    timeoutMs: 12_000,
+    temperature: 0.2,
+    maxOutputTokens: 256,
+    responseModalities: ['text'],
+    localModelCapabilityRegistry: [],
+  }, {
+    providerId: 'provider-dashscope',
+    templateId: 'template-dashscope-realtime',
+    kind: 'dashscope',
+    model: 'persisted-model',
+    baseUrl: 'https://dashscope.aliyuncs.com/api/v1',
+    streamEnabled: true,
+    authRef: {
+      kind: 'credential-ref', reference: 'credential://provider/dashscope/default',
+      headerName: 'Authorization', scheme: 'bearer',
+    },
+    customHeaders: [],
+    systemPromptTemplate: 'game-live-translation-cn',
+    timeoutMs: 12_000,
+    temperature: 0.2,
+    maxOutputTokens: 256,
+    responseModalities: ['text'],
+    localModelCapabilityRegistry: [],
+  }];
+  const run = (strict, mutate = '') => {
+    const command = `${extractedStrictPaidProviderFunctions()} ` +
+      `$config = ${quotePowerShell(JSON.stringify({ providers }))} | ConvertFrom-Json; ` +
+      `${mutate} ` +
+      `Set-WatchModelOnConfig $config 'qwen3.5-omni-flash-realtime' 'dashscope-omni' $${strict ? 'true' : 'false'}; ` +
+      `$config | ConvertTo-Json -Depth 10 -Compress`;
+    return runPowerShell(['-Command', command]);
+  };
+  const strict = run(true);
+  assert.equal(strict.status, 0, strict.stderr || strict.stdout);
+  const strictConfig = JSON.parse(strict.stdout.trim());
+  assert.equal(strictConfig.providers[0].model, 'alternate-before-canonical');
+  assert.equal(strictConfig.providers[1].model, 'qwen3.5-omni-flash-realtime');
+
+  const legacy = run(false);
+  assert.equal(legacy.status, 0, legacy.stderr || legacy.stdout);
+  const legacyConfig = JSON.parse(legacy.stdout.trim());
+  // Non-strict mode retains the prior best-effort selection semantics. This
+  // test only locks that strict provider pinning does not mutate that branch.
+  assert.equal(legacyConfig.providers[0].model, 'alternate-before-canonical');
+  assert.equal(legacyConfig.providers[1].model, 'persisted-model');
+
+  const forged = run(true, `$config.providers[1].authRef.reference = 'credential://provider/attacker/default';`);
+  assert.notEqual(forged.status, 0, 'forged strict provider credential reference must fail');
+  assert.match(forged.stderr, /identity, endpoint, or credential reference/);
+  const streamDisabled = run(true, '$config.providers[1].streamEnabled = $false;');
+  assert.notEqual(streamDisabled.status, 0, 'strict provider must reject disabled streaming');
+  for (const mutation of [
+    `$config.providers[1].authRef.headerName = 'X-Api-Key';`,
+    `$config.providers[1].authRef.scheme = 'Basic';`,
+    `$config.providers[1].customHeaders = @([pscustomobject]@{ name='Authorization'; value='caller' });`,
+    `$config.providers[1].systemPromptTemplate = 'caller-authored';`,
+    `$config.providers[1].timeoutMs = 30000;`,
+    `$config.providers[1].temperature = 0.8;`,
+    `$config.providers[1].maxOutputTokens = 1024;`,
+    `$config.providers[1].responseModalities = @('text','audio');`,
+  ]) {
+    const invalid = run(true, mutation);
+    assert.notEqual(invalid.status, 0, `strict provider must reject ${mutation}`);
+    assert.match(invalid.stderr, /identity, endpoint, or credential reference/);
+  }
+  for (const baseUrl of [
+    'http://dashscope.aliyuncs.com/api/v1',
+    'https://dashscope.aliyuncs.com:80/api/v1',
+    'https://attacker@dashscope.aliyuncs.com/api/v1',
+  ]) {
+    const escaped = baseUrl.replaceAll("'", "''");
+    const invalid = run(true, `$config.providers[1].baseUrl = '${escaped}';`);
+    assert.notEqual(invalid.status, 0, `strict provider must reject ${baseUrl}`);
+    assert.match(invalid.stderr, /identity, endpoint, or credential reference/);
+  }
+});
+
+test('strict paid provider environment is exact, elevation-forwardable, non-strict inert, and restored', { skip: !isWindows }, () => {
+  const command = `${extractedStrictPaidProviderFunctions()} ` +
+    `$names = @(` +
+      `'OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY',` +
+      `'OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID',` +
+      `'OMNI_WATCH_MODE_EXPECTED_PROVIDER_TEMPLATE_ID',` +
+      `'OMNI_WATCH_MODE_EXPECTED_PROVIDER_KIND',` +
+      `'OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST',` +
+      `'OMNI_WATCH_MODE_EXPECTED_PROVIDER_CREDENTIAL_REFERENCE'` +
+    `); ` +
+    `foreach ($name in $names) { [Environment]::SetEnvironmentVariable($name, ('before-' + $name), 'Process') }; ` +
+    `$nonStrict = Enter-StrictPaidProviderEnvironment $false; ` +
+    `$nonStrictValues = @{}; foreach ($name in $names) { $nonStrictValues[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; ` +
+    `Exit-StrictPaidProviderEnvironment $nonStrict; ` +
+    `$strict = Enter-StrictPaidProviderEnvironment $true; ` +
+    `$normal = @{}; foreach ($name in $strict.names) { $normal[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; ` +
+    `$elevatedLaunchEnvironment = @{}; foreach ($name in $strict.names) { $elevatedLaunchEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; ` +
+    `Exit-StrictPaidProviderEnvironment $strict; ` +
+    `$restored = @{}; foreach ($name in $names) { $restored[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }; ` +
+    `[pscustomobject]@{ names=@($strict.names); expected=$strict.values; nonStrict=$nonStrictValues; normal=$normal; elevated=$elevatedLaunchEnvironment; restored=$restored } | ConvertTo-Json -Depth 8 -Compress`;
+  const result = runPowerShell(['-Command', command]);
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const authority = JSON.parse(result.stdout.trim());
+  assert.equal(authority.names.length, 6);
+  assert.deepEqual(authority.normal, authority.expected);
+  assert.deepEqual(authority.elevated, authority.expected);
+  for (const name of authority.names) {
+    assert.equal(authority.nonStrict[name], `before-${name}`);
+    assert.equal(authority.restored[name], `before-${name}`);
+  }
+});
+
+test('local translated-audio lifecycle requires each rendered cue to reach queued, started, and completed exactly once in order', { skip: !isWindows }, () => {
+  const outputDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-cue-playback-'));
+  const appLogPath = path.join(outputDirectory, 'app.log');
+  const marker = 'run-marker-local-cue';
+  fs.writeFileSync(path.join(outputDirectory, 'watch-session-report.json'), JSON.stringify({
+    cues: [{
+      cueId: 'omni-cue-123',
+      comparisonStatus: 'exact',
+      llmText: '译文',
+      publishedText: '译文',
+      renderedText: '译文',
+    }],
+  }), 'utf8');
+  fs.writeFileSync(path.join(outputDirectory, 'physical-playback-device.json'), JSON.stringify({
+    verified: true,
+    resolvedDeviceId: 'endpoint-1',
+    resolvedDeviceName: 'Speakers',
+  }), 'utf8');
+  try {
+    const run = (cueId, extraLines = []) => {
+      fs.writeFileSync(appLogPath, [
+        marker,
+        `event=translation_playback_status | cueId=${cueId} status=queued reason=accepted`,
+        `event=translation_playback_status | cueId=${cueId} status=started reason=physical-playback-started`,
+        `event=translation_playback_status | cueId=${cueId} status=completed reason=physical-playback-completed`,
+        ...extraLines,
+      ].join('\n'), 'utf8');
+      const command = `${extractedCuePlaybackAuthorityFunctions()} ` +
+        `Read-TranslatedCuePlaybackAuthority ${quotePowerShell(outputDirectory)} ${quotePowerShell(appLogPath)} ${quotePowerShell(marker)} | ConvertTo-Json -Depth 8 -Compress`;
+      const result = runPowerShell(['-Command', command]);
+      assert.equal(result.status, 0, result.stderr || result.stdout);
+      assert.ok(result.stdout.trim(), result.stderr || 'PowerShell returned no cue lifecycle JSON');
+      return JSON.parse(result.stdout.trim());
+    };
+    const passed = run('omni-cue-123');
+    assert.equal(passed.passed, true);
+    assert.deepEqual(passed.matchedCueIds, ['omni-cue-123']);
+    assert.equal(passed.resolvedPhysicalDeviceId, 'endpoint-1');
+
+    const mismatched = run('omni-cue-other');
+    assert.equal(mismatched.passed, false);
+    assert.equal(mismatched.matchedCueCount, 0);
+
+    const duplicated = run('omni-cue-123', [
+      'event=translation_playback_status | cueId=omni-cue-123 status=completed reason=duplicate',
+    ]);
+    assert.equal(duplicated.passed, false);
+    assert.equal(duplicated.invalidCues[0].completedCount, 2);
+  } finally {
+    fs.rmSync(outputDirectory, { recursive: true, force: true });
+  }
+});
+
 function extractedPhysicalOutputContentPolicyFunctions() {
   return (
     `$errors = $null; ` +
@@ -172,6 +441,19 @@ function extractedPhysicalOutputContentPolicyFunctions() {
       `$node.Name -eq 'Get-PhysicalOutputContentSkipReason' ` +
     `}, $true); ` +
     `foreach ($function in $functions) { . ([scriptblock]::Create($function.Extent.Text)) }; `
+  );
+}
+
+function extractedSaveWatchModeRunArtifactsFunction() {
+  return (
+    `$errors = $null; ` +
+    `$ast = [System.Management.Automation.Language.Parser]::ParseFile(` +
+      `${quotePowerShell(path.resolve(scriptPath))}, [ref]$null, [ref]$errors); ` +
+    `$function = $ast.Find({ param($node) ` +
+      `$node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and ` +
+      `$node.Name -eq 'Save-WatchModeRunArtifacts' ` +
+    `}, $true); ` +
+    `. ([scriptblock]::Create($function.Extent.Text)); `
   );
 }
 
@@ -350,6 +632,56 @@ test('echo-cancel skips virtual-driver physical-output content recording', { ski
   ]);
 
   assert.equal(policy.status, 0, policy.stderr || policy.stdout);
+});
+
+test('artifact saving omits echo-cancel physical-content placeholders but preserves non-echo skip diagnostics', { skip: !isWindows }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-content-artifact-policy-'));
+  const echoDirectory = path.join(root, 'echo-cancel');
+  const virtualDirectory = path.join(root, 'virtual-driver');
+  fs.mkdirSync(echoDirectory);
+  fs.mkdirSync(virtualDirectory);
+  try {
+    const probe = runPowerShell([
+      '-Command',
+      extractedSaveWatchModeRunArtifactsFunction() +
+        `$RuntimeRoot = ${quotePowerShell(root)}; ` +
+        `function Copy-IfExists { return $null }; ` +
+        `function Build-SnapshotsFile { return $null }; ` +
+        `function Invoke-ReportGenerator { }; ` +
+        `$steps = @([pscustomobject]@{ ` +
+          `name = 'transcribe and compare physical output content'; ` +
+          `ok = $true; ` +
+          `result = [pscustomobject]@{ skipped = $true; reason = 'policy skip' }; ` +
+          `error = $null ` +
+        `}); ` +
+        `$FeedbackLoopPrevention = 'echo-cancel'; ` +
+        `Save-WatchModeRunArtifacts ` +
+          `-OutputDirectory ${quotePowerShell(echoDirectory)} ` +
+          `-DriverProbe $null -PlaybackStep $null -Steps $steps ` +
+          `-RunMarker 'echo-marker' -StartedAtLocal '2026-08-13 00:00:00'; ` +
+        `$FeedbackLoopPrevention = 'virtual-driver'; ` +
+        `Save-WatchModeRunArtifacts ` +
+          `-OutputDirectory ${quotePowerShell(virtualDirectory)} ` +
+          `-DriverProbe $null -PlaybackStep $null -Steps $steps ` +
+          `-RunMarker 'virtual-marker' -StartedAtLocal '2026-08-13 00:00:00'`,
+    ]);
+
+    assert.equal(probe.status, 0, probe.stderr || probe.stdout);
+    assert.ok(
+      forbiddenCellArtifactPaths('echo-cancel').includes('physical-output-content.json'),
+      'the collector test must stay aligned with the strict authority exclusion',
+    );
+    assert.equal(
+      fs.existsSync(path.join(echoDirectory, 'physical-output-content.json')),
+      false,
+      'echo-cancel must not emit an artifact forbidden by strict authority',
+    );
+    const virtualArtifact = readJsonArtifact(path.join(virtualDirectory, 'physical-output-content.json'));
+    assert.equal(virtualArtifact.skipped, true);
+    assert.equal(virtualArtifact.reason, 'policy skip');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('physical output STT falls back to the current-user DashScope credential without persisting it', { skip: !isWindows }, () => {

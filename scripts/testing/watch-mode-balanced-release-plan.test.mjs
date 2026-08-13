@@ -16,6 +16,19 @@ import {
 
 test('balanced release plan caps paid LLM time at 24 minutes', () => {
   assert.equal(BALANCED_RELEASE_PLAN.paidLlmSeconds, 24 * 60);
+  assert.equal(BALANCED_RELEASE_PLAN.paidProviderSessionCeilingSeconds, 24 * 60);
+  assert.deepEqual(BALANCED_RELEASE_PLAN.externalProviderBudget, {
+    scope: 'strict-paid-realtime-session-window',
+    cellCeilingSeconds: 180,
+    matrixCeilingSeconds: 1_440,
+    inputSampleRateHz: 16_000,
+    sourceTranscriptCalls: 0,
+    physicalOutputSttCalls: 0,
+    secondaryTranslationCalls: 0,
+    secondaryTtsCalls: 0,
+    auxiliaryExternalAudioSeconds: 0,
+    subtitleTranslationMode: 'native',
+  });
   assert.equal(LOCAL_ISOLATION_CELLS.length, 6);
   assert.equal(PAIRWISE_LIVE_CELLS.length, 6);
   assert.equal(MODEL_STABILITY_CELLS.length, 2);
@@ -57,6 +70,11 @@ test('pairwise live cells cover every model/route pair and every route on both r
     );
   }
   assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => entry.durationSeconds === 180));
+  assert.ok(PAIRWISE_LIVE_CELLS.every((entry) => (
+    entry.externalProviderSessionCeilingSeconds === 180
+    && entry.auxiliaryExternalAudioSeconds === 0
+    && entry.subtitleTranslationMode === 'native'
+  )));
 });
 
 test('model stability uses one three-minute cell per model', () => {
@@ -76,4 +94,12 @@ test('balanced plan rejects duration and provider-mode weakening', () => {
   const paidLocal = structuredClone(BALANCED_RELEASE_PLAN);
   paidLocal.cells[0].providerMode = 'live-dashscope';
   assert.match(balancedReleasePlanFailure(paidLocal), /providerMode/);
+
+  const auxiliaryStt = structuredClone(BALANCED_RELEASE_PLAN);
+  auxiliaryStt.externalProviderBudget.physicalOutputSttCalls = 1;
+  assert.match(balancedReleasePlanFailure(auxiliaryStt), /external provider budget/);
+
+  const secondary = structuredClone(BALANCED_RELEASE_PLAN);
+  secondary.cells[6].subtitleTranslationMode = 'secondary';
+  assert.match(balancedReleasePlanFailure(secondary), /subtitleTranslationMode/);
 });

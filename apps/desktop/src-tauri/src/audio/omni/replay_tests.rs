@@ -269,6 +269,7 @@ impl ReplayHarness {
         );
 
         let glossary = GlossaryContext::default();
+        let provider_input_budget = ProviderInputBudget::disabled_for_test();
         let poll = OmniSocketEventProcessor::poll(
             OmniSocketEventState {
                 socket,
@@ -318,6 +319,7 @@ impl ReplayHarness {
                 readiness_sent: &self.readiness_sent,
                 readiness_tx: &self.readiness_tx,
                 provider: &self.provider,
+                provider_input_budget: &provider_input_budget,
                 instructions: "",
                 glossary: &glossary,
                 audio_mode: self.audio_mode,

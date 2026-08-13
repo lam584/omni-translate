@@ -2587,6 +2587,7 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
     route_direction: &str,
     playback_queue: &OmniPlaybackQueue,
     active_stream_instances: &mut std::collections::HashMap<String, String>,
+    translated_pcm_authority: &mut TranslatedPcmAuthority,
     command: OmniPlaybackCommand,
 ) {
     let OmniPlaybackCommand::Stream {
@@ -2594,6 +2595,7 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         chunk_index, stream_state, ..
     } = command else { unreachable!() };
     if stream_state == omni_bridge_protocol::TranslationStreamState::Abort {
+        let _ = translated_pcm_authority.abort_stream(&cue_id, "playback-command-abort");
         let started_instance = active_stream_instances.remove(&cue_id);
         let current_instance = app
             .state::<crate::bridge::state::BridgeStateStore>()
@@ -2633,6 +2635,7 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
     ) && active_stream_instances.get(&cue_id) != bridge_snapshot.bridge_instance_id.as_ref()
     {
         active_stream_instances.remove(&cue_id);
+        let _ = translated_pcm_authority.abort_stream(&cue_id, "bridge-generation-changed");
         playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
         audio_state.watch_session_report.record_session_issue(
             "output",
@@ -2643,6 +2646,7 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         return;
     }
     if !output_route.write_to_bridge_playback {
+        let _ = translated_pcm_authority.abort_stream(&cue_id, "bridge-output-bypass");
         playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
         audio_state.watch_session_report.record_session_issue(
             "output", "bridge.translation-output-bypass", "error",
@@ -2659,6 +2663,7 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
             &bridge_snapshot,
         );
         active_stream_instances.remove(&cue_id);
+        let _ = translated_pcm_authority.abort_stream(&cue_id, "bridge-route-violation");
         playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
         let error_code = crate::audio::speech::translation_output_route_error_code(&error);
         audio_state.watch_session_report.record_session_issue(
@@ -2687,8 +2692,32 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         &cue_id, &request_id, route_direction, &output_samples, sample_rate_hz, 1,
         created_at_ms, estimated_duration_ms, chunk_index, stream_state,
     ) {
-        Ok(_) => true,
+        Ok(accepted_frames) => match translated_pcm_authority.accept_stream_write(
+            &cue_id,
+            &request_id,
+            &output_samples,
+            sample_rate_hz,
+            1,
+            accepted_frames,
+            chunk_index,
+            stream_state,
+            created_at_ms,
+        ) {
+            Ok(()) => true,
+            Err(error) => {
+                playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
+                audio_state.watch_session_report.record_session_issue(
+                    "output",
+                    "translated-pcm-authority-failed",
+                    "error",
+                    &error,
+                );
+                false
+            }
+        },
         Err(error) => {
+            let _ = translated_pcm_authority
+                .abort_stream(&cue_id, "bridge-translation-write-failed");
             playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
             audio_state.watch_session_report.record_session_issue(
                 "output", "bridge-translation-write-failed", "error", &error,
@@ -2726,12 +2755,117 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
+fn write_native_bridge_or_virtual_output<R: tauri::Runtime>(
+    app: &AppHandle<R>,
+    audio_state: &AudioStateStore,
+    translated_pcm_authority: &mut TranslatedPcmAuthority,
+    output_route: &crate::audio::speech::SpeechOutputRoutePlan,
+    cue_id: &str,
+    route_direction: &str,
+    output_samples: &[i16],
+    sample_rate_hz: u32,
+    created_at_ms: u64,
+    estimated_duration_ms: u64,
+) -> u64 {
+    if !output_route.write_to_virtual_mic && !output_route.write_to_bridge_playback {
+        return 0;
+    }
+    let (sink_label, failure_code) = if output_route.write_to_bridge_playback {
+        ("bridge translation playback", "bridge-translation-write-failed")
+    } else {
+        ("virtual mic", "virtual-mic-write-failed")
+    };
+    let request_id = format!("omni-play-{}", unix_ms());
+    let writer = BridgeAudioWriter::new(app);
+    let result = if output_route.write_to_bridge_playback {
+        writer.write_process_playback_cue(
+            cue_id,
+            &request_id,
+            route_direction,
+            output_samples,
+            sample_rate_hz,
+            1,
+            created_at_ms,
+            estimated_duration_ms,
+        )
+    } else {
+        writer.write_virtual_mic_frame(
+            cue_id,
+            &request_id,
+            route_direction,
+            output_samples,
+            sample_rate_hz,
+            1,
+            created_at_ms,
+            estimated_duration_ms,
+        )
+    };
+    let frames = match result {
+        Ok(frames) => frames,
+        Err(error) => {
+            audio_state.watch_session_report.record_session_issue(
+                "output",
+                failure_code,
+                "error",
+                &error,
+            );
+            let _ = diag_log(
+                app,
+                "omni",
+                "error",
+                format!(
+                    "[AUDIO] {sink_label} write failed: cue_id={cue_id} request_id={request_id} error={error}"
+                ),
+            );
+            return 0;
+        }
+    };
+    if output_route.write_to_bridge_playback {
+        if let Err(error) = translated_pcm_authority.accept_complete_cue(
+            cue_id,
+            &request_id,
+            output_samples,
+            sample_rate_hz,
+            1,
+            frames,
+            created_at_ms,
+        ) {
+            audio_state.watch_session_report.record_session_issue(
+                "output",
+                "translated-pcm-authority-failed",
+                "error",
+                &error,
+            );
+            let _ = diag_log(
+                app,
+                "omni",
+                "error",
+                format!(
+                    "[AUDIO] translated PCM authority failed: cue_id={cue_id} request_id={request_id} error={error}"
+                ),
+            );
+            return 0;
+        }
+    }
+    let _ = diag_log(
+        app,
+        "omni",
+        "info",
+        format!(
+            "[AUDIO] {sink_label} write accepted: cue_id={cue_id} request_id={request_id} frames={frames} sample_rate_hz={sample_rate_hz}"
+        ),
+    );
+    frames
+}
+
 fn run_omni_playback_worker<R: tauri::Runtime>(
     app: AppHandle<R>,
     speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
     route_direction: String,
     playback_worker_queue: OmniPlaybackQueue,
     playback_stop_requested: Arc<AtomicBool>,
+    mut translated_pcm_authority: TranslatedPcmAuthority,
 ) {
     let audio_state = app.state::<AudioStateStore>(); let mut active_stream_instances = std::collections::HashMap::new();
     loop {
@@ -2771,6 +2905,7 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                             &route_direction,
                             &playback_worker_queue,
                             &mut active_stream_instances,
+                            &mut translated_pcm_authority,
                             command,
                         );
                     }
@@ -2935,65 +3070,18 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
                             0
                         };
 
-                        let bridge_or_virtual_frames = if output_route.write_to_virtual_mic
-                            || output_route.write_to_bridge_playback
-                        {
-                            let (sink_label, failure_code) = if output_route.write_to_bridge_playback {
-                                ("bridge translation playback", "bridge-translation-write-failed")
-                            } else {
-                                ("virtual mic", "virtual-mic-write-failed")
-                            };
-                            let req_id = format!("omni-play-{}", unix_ms());
-                            let writer = BridgeAudioWriter::new(&app);
-                            let write_result = if output_route.write_to_bridge_playback {
-                                writer.write_process_playback_cue(
-                                    &cue_id,
-                                    &req_id,
-                                    &route_direction,
-                                    &output_samples,
-                                    sample_rate_hz,
-                                    1,
-                                    created_at_ms,
-                                    estimated_duration_ms,
-                                )
-                            } else {
-                                writer.write_virtual_mic_frame(
-                                    &cue_id,
-                                    &req_id,
-                                    &route_direction,
-                                    &output_samples,
-                                    sample_rate_hz,
-                                    1,
-                                    created_at_ms,
-                                    estimated_duration_ms,
-                                )
-                            };
-                            match write_result
-                            {
-                                Ok(frames) => {
-                                    let _ = diag_log(&app, "omni", "info",
-                                        format!(
-                                            "[AUDIO] {sink_label} write accepted: cue_id={cue_id} request_id={req_id} frames={frames} sample_rate_hz={sample_rate_hz}"
-                                        ));
-                                    frames
-                                }
-                                Err(error) => {
-                                    audio_state.watch_session_report.record_session_issue(
-                                        "output",
-                                        failure_code,
-                                        "error",
-                                        &error,
-                                    );
-                                    let _ = diag_log(&app, "omni", "error",
-                                        format!(
-                                            "[AUDIO] {sink_label} write failed: cue_id={cue_id} request_id={req_id} error={error}"
-                                        ));
-                                    0
-                                }
-                            }
-                        } else {
-                            0
-                        };
+                        let bridge_or_virtual_frames = write_native_bridge_or_virtual_output(
+                            &app,
+                            &audio_state,
+                            &mut translated_pcm_authority,
+                            &output_route,
+                            &cue_id,
+                            &route_direction,
+                            &output_samples,
+                            sample_rate_hz,
+                            created_at_ms,
+                            estimated_duration_ms,
+                        );
                         let vmic_frames = if output_route.write_to_virtual_mic {
                             bridge_or_virtual_frames
                         } else {
@@ -3024,12 +3112,21 @@ fn run_omni_playback_worker<R: tauri::Runtime>(
         s.current_cue_id = None;
     });
     let _ = emit_audio_snapshot(&app, &audio_state);
+    if let Err(error) = translated_pcm_authority.finalize("worker-completed") {
+        audio_state.watch_session_report.record_session_issue(
+            "output",
+            "translated-pcm-authority-finalize-failed",
+            "error",
+            &error,
+        );
+    }
 }
 
 pub(super) fn start_omni_playback<R: tauri::Runtime>(
     app: AppHandle<R>,
     speech_config: Arc<std::sync::RwLock<OmniSpeechConfig>>,
     route_direction: String,
+    translated_pcm_authority: TranslatedPcmAuthority,
 ) -> (
     OmniPlaybackQueue,
     Arc<AtomicBool>,
@@ -3048,6 +3145,7 @@ pub(super) fn start_omni_playback<R: tauri::Runtime>(
                 route_direction,
                 playback_worker_queue,
                 playback_stop_requested,
+                translated_pcm_authority,
             );
         })
         .expect("failed to spawn omni-playback thread");
@@ -3199,7 +3297,12 @@ mod omni_playback_tests {
             .register_omni_speech_config(OmniSpeechConfig::from_config(&speaker_config));
         assert!(shared.read().expect("shared config readable").any_output());
         let (tx, stop_requested, join) =
-            start_omni_playback(handle.clone(), shared, "diagnostics".to_string());
+            start_omni_playback(
+                handle.clone(),
+                shared,
+                "diagnostics".to_string(),
+                TranslatedPcmAuthority::disabled(),
+            );
 
         let wait_for = |description: &str,
                         predicate: &dyn Fn(&crate::audio::contracts::SpeechRuntimeSnapshot) -> bool| {
@@ -3275,7 +3378,12 @@ mod omni_playback_tests {
             })),
         );
         let (tx, stop_requested, join) =
-            start_omni_playback(handle.clone(), shared, "inbound".to_string());
+            start_omni_playback(
+                handle.clone(),
+                shared,
+                "inbound".to_string(),
+                TranslatedPcmAuthority::disabled(),
+            );
         assert_eq!(tx.enqueue(OmniPlaybackCommand::Play {
             // An empty buffer exercises routing without opening a physical
             // speaker in the unit test. The playback worker still reaches its

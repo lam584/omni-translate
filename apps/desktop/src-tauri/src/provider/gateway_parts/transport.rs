@@ -4,9 +4,9 @@ use std::time::Duration;
 
 use reqwest::blocking::{Client, Response};
 use serde_json::Value;
-use tungstenite::client::IntoClientRequest;
+use tungstenite::client::{connect_with_config, IntoClientRequest};
 use tungstenite::stream::MaybeTlsStream;
-use tungstenite::{connect, Error as WebSocketError, Message, WebSocket};
+use tungstenite::{Error as WebSocketError, Message, WebSocket};
 use url::Url;
 
 use super::super::contracts::{ProviderDraftInput, ProviderRuntimeError};
@@ -45,7 +45,9 @@ impl WebSocketTransport {
             })?;
         apply_ws_auth(provider, request.headers_mut())?;
         apply_ws_custom_headers(provider, request.headers_mut())?;
-        let (mut socket, _) = connect(request).map_err(|error| {
+        // Provider credentials are attached to the initial request. Never let
+        // tungstenite replay those headers to a redirected origin.
+        let (mut socket, _) = connect_with_config(request, None, 0).map_err(|error| {
             ProviderRuntimeError::new(
                 "transport.unavailable",
                 format!("WebSocket 建链失败: {error}"),

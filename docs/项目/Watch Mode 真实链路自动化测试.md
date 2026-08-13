@@ -32,13 +32,13 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "& { . .\scripts\test
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-watch-mode-live.ps1 -SkipDriverRepair -AllowElevatedDesktopLaunch -WatchModelId qwen3.5-omni-flash-realtime -PlaybackSeconds 0 -PostPlaybackWaitSeconds 120 -SessionReadyTimeoutSeconds 90 -MediaPath .\scripts\testing\fixtures\watch-mode-en-original.wav
 ```
 
-双模型 × 三路线 × 两个真实物理设备严格矩阵：
+双模型 × 三路线 × 两个真实物理设备严格矩阵必须通过已签的两或三 worker production coordinator：
 
 ```powershell
-node .\scripts\testing\run-watch-mode-live-matrix.mjs --device-profiles .\artifacts\testing\watch-mode-device-profiles.json --skip-driver-repair --allow-elevated-desktop-launch
+npm run test:watch-mode-live:production-coordinator
 ```
 
-PowerShell 下使用 npm 11 转发参数时需要两层 `--`：`npm run test:watch-mode-live:matrix -- -- --device-profiles ...`。上面直接执行 Node 入口可避免 npm 版本对参数转发语义的差异。
+旧 `test:watch-mode-live:matrix` / `run-watch-mode-live-matrix.mjs` strict 入口已在 build、preflight 和任何 Provider 调用前 fail-closed，只用于提示迁移；不能再用于生成发布证据。
 
 严格入口必须显式传入 `--device-profiles`，JSON 中必须恰好各有一个 `default-speaker` 与独立 `usb` profile；USB 必须写明真实 MMDevice id 和预期端点名称。Bluetooth 是可选诊断端点，不能用 USB 端点伪装。缺失 profile 时矩阵直接失败，绝不退化成默认扬声器单设备。matrix 默认对每个模型跑 `process-exclusion`、`virtual-driver` 和 `echo-cancel` 三个 `feedbackLoopPrevention` 变体，并把本次 14 个 run directory 写入唯一 manifest；verifier 只读取该 manifest，不扫描 output root 中的历史报告。支持 Windows build 20348 及以上时，`process-exclusion` 是推荐路线；能力探测失败时该变体必须明确失败或跳过为不支持，不能静默改跑其他后端。单设备调试请直接运行 `run-watch-mode-live.ps1`，或显式使用 `--diagnostic-single-device`；其结果属于 non-strict，不能发布 release manifest。单独跑 process-exclusion 变体：
 
@@ -58,15 +58,15 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\scripts\testing\run-wa
 npm run test:watch-mode-evidence:strict
 ```
 
-该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。发布验证采用预算平衡方案：6 个零 LLM 本地隔离格（3 路线 × 2 个真实物理设备类，每格 5 分钟）、6 个 live 配对格（每格 4 分钟）和 2 个模型稳定格（每格 7 分钟）。只有这 14 个格子的固定 authority 全部通过，本次 scoped verifier 才会原子替换 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。matrix 明确拒绝 `-DryRun`，脚本 fixture 自测只能使用 `npm run test:watch-mode-live:dry-run`，其报告保持 `mode=dry-run`，不会进入 strict 验收。
+该命令固定读取 `artifacts/testing/watch-mode-live/latest-successful-watch-mode-strict-matrix.json`。发布验证采用预算平衡方案：复用 6 个零 LLM 本地隔离 authority（3 路线 × 2 个真实物理设备类），再运行 8 个严格付费格（每格 Provider 输入最多 3 分钟）。只有这 14 个格子的固定 authority 全部通过，本次 scoped verifier 才会原子替换 canonical manifest；失败、中断、single-device diagnostic 和 `-DryRun` 都不能覆盖它。旧的单进程 strict matrix 入口会在任何 Provider 调用前 fail-closed；正式入口是 `npm run test:watch-mode-live:production-coordinator`。
 
-付费 live 层固定为 38 LLM 分钟，而不是原来的 18 × 30 分钟：
+付费 live 层固定为最多 24 分钟外部音频，而不是原来的 18 × 30 分钟：
 
-- `pairwise-live`：6 个模型/路线/设备配对格 × 4 分 45 秒，共 28 分 30 秒；保证每个模型、每条路线和每类设备在组合层都出现，并为实时翻译的尾段物理播放预留排空时间。
-- `model-stability`：2 个模型 × 4 分 45 秒，共 9 分 30 秒；固定使用 `process-exclusion/default-speaker`。全部付费格统一时长，避免把尾段排空风险转移到稳定性格。
-- `local-isolation`：6 个格 × 5 分钟，Provider 完全禁用，`providerCalls=0`，不消耗 LLM token。
+- `pairwise-live` + `model-stability`：共 8 格，每格 Rust 发送边界最多 2,880,000 个 16 kHz 样本（3 分钟），矩阵总上限 23,040,000 个样本（24 分钟）。
+- strict paid 格只允许一次主实时 Provider 连接；source transcript、physical-output STT、secondary translation 和 secondary TTS 的远程调用均为 0。
+- `local-isolation`：复用 6 个已验证格，Provider 完全禁用，`providerCalls=0`，不消耗 LLM token。
 
-矩阵在构建完成后、任何本地格或付费格开始前，会先对 `provider-dashscope` 执行 production provider preflight；若凭据、entitlement、streaming 或翻译文本不可用，整次运行立即 fail-closed，避免产生长时设备占用或付费调用。
+正式协调器的固定顺序是：一次 release build → 2 或 3 个 worker 的零 Provider readiness（clean HEAD/runtime、按分配要求检查驱动、session-1 endpoint/profile、Credential Manager 引用存在且 blob 非空）→ 复核可复用的 6 格 local-isolation authority → 签发 preflight grant 与 8 个唯一预算 reservation → 对 `provider-dashscope` 执行一次 text-only、0-audio production preflight → 签发 completion/final plan → 按波次执行 8 个付费格。任何 readiness、凭据、有效期余量或本地 authority 失败都会在 preflight 前停止；preflight 的输入/输出 token 上限为 4096/256，成功后也不会重新分配 lease。
 
 Strict matrix 启动前要求 Git 工作树完全 clean（包括未跟踪源码），并固定当时的精确 `HEAD`。每份 `report.json`、本次 matrix manifest 和 canonical manifest 都记录 `provenance`（`headCommit`、`worktreeClean`、`dirtyEntryCount`）；matrix 结束、scoped verifier 和 canonical 发布会再次读取当前 checkout。只有生成时与验证时均 clean 且 `headCommit` 与当前 `HEAD` 完全相等才通过；旧 ancestor commit 即使可达也不能作为当前发布证据。运行期间提交、修改或新增未跟踪源码会使整次 strict matrix 失效，必须在 clean checkout 上重跑。
 

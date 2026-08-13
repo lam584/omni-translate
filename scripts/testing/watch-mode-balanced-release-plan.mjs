@@ -1,8 +1,10 @@
 // v2 is intentionally incompatible with the former three-device matrix.  A
 // strict receipt must never make the now-unavailable Bluetooth class look
 // covered by the two independently verified physical endpoint classes.
-export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v5';
-export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 5;
+export const BALANCED_RELEASE_PLAN_ID = 'watch-mode-balanced-v6-paid-budget';
+export const BALANCED_RELEASE_PLAN_SCHEMA_VERSION = 6;
+export const PAID_PROVIDER_SESSION_CEILING_SECONDS = 24 * 60;
+export const PAID_PROVIDER_CELL_CEILING_SECONDS = 3 * 60;
 
 export const RELEASE_MODELS = Object.freeze([
   'qwen3.5-omni-flash-realtime',
@@ -35,6 +37,11 @@ const cell = ({ tier, modelId = null, feedbackLoopPrevention, deviceClass }) => 
   tier,
   providerMode: tier === 'local-isolation' ? 'disabled' : 'live-dashscope',
   durationSeconds: RELEASE_TIER_DURATIONS_SECONDS[tier],
+  externalProviderSessionCeilingSeconds: tier === 'local-isolation'
+    ? 0
+    : RELEASE_TIER_DURATIONS_SECONDS[tier],
+  auxiliaryExternalAudioSeconds: 0,
+  subtitleTranslationMode: tier === 'local-isolation' ? 'disabled' : 'native',
   modelId,
   feedbackLoopPrevention,
   deviceClass,
@@ -136,6 +143,22 @@ export const BALANCED_RELEASE_PLAN = Object.freeze({
   ]),
   cells: BALANCED_RELEASE_CELLS,
   paidLlmSeconds: LIVE_LLM_CELLS.reduce((total, entry) => total + entry.durationSeconds, 0),
+  paidProviderSessionCeilingSeconds: LIVE_LLM_CELLS.reduce(
+    (total, entry) => total + entry.externalProviderSessionCeilingSeconds,
+    0,
+  ),
+  externalProviderBudget: Object.freeze({
+    scope: 'strict-paid-realtime-session-window',
+    cellCeilingSeconds: PAID_PROVIDER_CELL_CEILING_SECONDS,
+    matrixCeilingSeconds: PAID_PROVIDER_SESSION_CEILING_SECONDS,
+    inputSampleRateHz: 16_000,
+    sourceTranscriptCalls: 0,
+    physicalOutputSttCalls: 0,
+    secondaryTranslationCalls: 0,
+    secondaryTtsCalls: 0,
+    auxiliaryExternalAudioSeconds: 0,
+    subtitleTranslationMode: 'native',
+  }),
 });
 
 export const expectedBalancedCellIds = () => BALANCED_RELEASE_CELLS.map(({ cellId }) => cellId);
@@ -160,6 +183,9 @@ export function balancedReleasePlanFailure(plan) {
       'tier',
       'providerMode',
       'durationSeconds',
+      'externalProviderSessionCeilingSeconds',
+      'auxiliaryExternalAudioSeconds',
+      'subtitleTranslationMode',
       'modelId',
       'feedbackLoopPrevention',
       'deviceClass',
@@ -171,6 +197,12 @@ export function balancedReleasePlanFailure(plan) {
   }
   if (Number(plan.paidLlmSeconds) !== BALANCED_RELEASE_PLAN.paidLlmSeconds) {
     return 'balanced release validation plan paid LLM budget is inconsistent';
+  }
+  if (
+    Number(plan.paidProviderSessionCeilingSeconds) !== PAID_PROVIDER_SESSION_CEILING_SECONDS
+    || JSON.stringify(plan.externalProviderBudget) !== JSON.stringify(BALANCED_RELEASE_PLAN.externalProviderBudget)
+  ) {
+    return 'balanced release validation plan external provider budget is inconsistent';
   }
   return null;
 }

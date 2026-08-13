@@ -1435,6 +1435,7 @@ mod tests {
                 status: "route-failed".to_string(),
                 reason: "physical-output-open-failed".to_string(),
                 error_code: Some("bridge.translation-playback-failed".to_string()),
+                timestamp_ms: 1,
             }
         );
     }

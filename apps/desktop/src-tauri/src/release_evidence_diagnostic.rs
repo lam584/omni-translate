@@ -11,21 +11,27 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
-use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Manager};
 use uuid::Uuid;
 
 mod artifacts;
+mod provider_preflight_authority;
+mod provider_selection;
 
 use artifacts::{
-    copy_directory, hash_artifact, hash_file, read_json, walk_files, write_json, ArtifactHash,
+    copy_directory, env_value, hash_artifact, hash_file, now, read_json, walk_files, write_json,
+    ArtifactHash,
 };
+use provider_preflight_authority::{
+    current_desktop_executable_path, ProviderPreflightAuthorization,
+    PROVIDER_ID as AUTHORIZED_PROVIDER_ID,
+};
+use provider_selection::{select_provider, select_provider_by_id};
 
 use crate::diagnostics::events::{append_diagnostics_log, export_diagnostics_bundle};
 use crate::diagnostics::state::DiagnosticsStateStore;
-use crate::provider::contracts::ProviderDraftInput;
 use crate::provider::events::probe_provider;
 use crate::storage::events::{
     get_secret_ref_status, load_config_draft, save_config_draft,
@@ -114,21 +120,22 @@ struct EmitterResult {
     desktop_executable: String,
     desktop_executable_sha256: String,
     source_head_commit: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    preflight_authorization: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_connect_started_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    provider_connect_completed_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    audio_seconds: Option<f64>,
     diagnostics_export: Option<DiagnosticsAuthority>,
     timeline: Vec<Value>,
     artifacts: Vec<ArtifactHash>,
     error: Option<String>,
-}
-
-fn now() -> String {
-    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-fn env_value(name: &str) -> Option<String> {
-    std::env::var(name)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
 }
 
 fn compiled_build_commit() -> Option<&'static str> {
@@ -242,7 +249,7 @@ async fn run(app: &AppHandle) -> Result<(), String> {
 
     let invocation_id = Uuid::now_v7().to_string();
     let started_at = now();
-    let executable = std::env::current_exe().map_err(|error| error.to_string())?;
+    let executable = current_desktop_executable_path()?;
     let executable_sha256 = hash_file(&executable)?;
     let mut timeline = Vec::new();
     push_timeline(
@@ -299,6 +306,11 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         .iter()
         .map(|relative| hash_artifact(&staging.join(relative), relative))
         .collect::<Result<Vec<_>, _>>()?;
+    let provider_result = if scenario == EvidenceScenario::ProviderProbe {
+        Some(read_json::<Value>(&staging.join("provider-probe-result.json"))?)
+    } else {
+        None
+    };
     let result = EmitterResult {
         schema_version: 1,
         artifact_kind: "desktop-release-evidence-emitter-result",
@@ -313,6 +325,33 @@ async fn run(app: &AppHandle) -> Result<(), String> {
         desktop_executable: executable.to_string_lossy().to_string(),
         desktop_executable_sha256: executable_sha256,
         source_head_commit,
+        preflight_authorization: provider_result
+            .as_ref()
+            .and_then(|value| value.get("preflightAuthorization"))
+            .filter(|value| !value.is_null())
+            .cloned(),
+        provider_connect_started_at: provider_result
+            .as_ref()
+            .and_then(|value| value.get("providerConnectStartedAt"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        provider_connect_completed_at: provider_result
+            .as_ref()
+            .and_then(|value| value.get("providerConnectCompletedAt"))
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        input_tokens: provider_result
+            .as_ref()
+            .and_then(|value| value.get("inputTokens"))
+            .and_then(Value::as_u64),
+        output_tokens: provider_result
+            .as_ref()
+            .and_then(|value| value.get("outputTokens"))
+            .and_then(Value::as_u64),
+        audio_seconds: provider_result
+            .as_ref()
+            .and_then(|value| value.get("audioSeconds"))
+            .and_then(Value::as_f64),
         diagnostics_export: Some(diagnostics),
         timeline,
         artifacts,
@@ -343,7 +382,8 @@ async fn collect_provider_config(
         Some("storage_events::load_config_draft"),
     );
     let before = load_config_draft(app.clone(), app.state::<StorageStateStore>())?;
-    let (provider_before, provider) = select_provider(&before)?;
+    let (provider_before, provider) =
+        select_provider(&before, env_value(PROVIDER_ID_ENV).as_deref())?;
     push_timeline(
         timeline,
         "configuration-loaded",
@@ -439,7 +479,13 @@ async fn collect_provider_probe(
     timeline: &mut Vec<Value>,
 ) -> Result<DiagnosticsAuthority, String> {
     let config = load_config_draft(app.clone(), app.state::<StorageStateStore>())?;
-    let (_, provider) = select_provider(&config)?;
+    let mut authorization = ProviderPreflightAuthorization::load_required(source_head_commit)?;
+    let (_, mut provider) = select_provider_by_id(&config, AUTHORIZED_PROVIDER_ID)?;
+    let configured_model = authorization.apply_to_provider(&mut provider)?;
+    let protocol = crate::audio::events::resolve_realtime_profile(&provider, &provider.model)
+        .protocol_dialect
+        .map(|value| value.as_str().to_string())
+        .ok_or_else(|| "provider preflight did not resolve a realtime protocol".to_string())?;
     let credential = get_secret_ref_status(app.clone(), provider.auth_ref.reference.clone()).await?;
     if credential.backend != "windows-credential-manager" || !credential.has_secret {
         return Err(format!(
@@ -447,6 +493,7 @@ async fn collect_provider_probe(
             credential.reference
         ));
     }
+    authorization.claim_before_connect()?;
     push_timeline(
         timeline,
         "provider-loaded-and-credential-checked",
@@ -460,7 +507,10 @@ async fn collect_provider_probe(
         "production-handler-invoked",
         Some("provider_events::probe_provider"),
     );
+    let provider_connect_started_at = now();
     let probe = probe_provider(app.clone(), provider.clone()).await;
+    let provider_connect_completed_at = now();
+    let probe_checked_at = provider_connect_completed_at.clone();
     if probe.verdict != "available" {
         return Err(format!(
             "production provider probe did not report available: verdict={} error={}",
@@ -486,6 +536,38 @@ async fn collect_provider_probe(
         .ok()
         .and_then(|url| url.host_str().map(str::to_string))
         .ok_or_else(|| "provider baseUrl has no valid endpoint host".to_string())?;
+    let preflight_authorization = Some(authorization.authority.clone());
+    if probe.provider_id != provider.provider_id {
+        return Err("authorized provider probe returned a different provider identity".to_string());
+    }
+    let input_tokens = probe
+        .input_tokens
+        .ok_or_else(|| "authorized provider probe omitted input token usage".to_string())?;
+    let output_tokens = probe
+        .output_tokens
+        .ok_or_else(|| "authorized provider probe omitted output token usage".to_string())?;
+    if input_tokens > 4_096
+        || output_tokens > provider.max_output_tokens
+        || probe.audio_seconds.is_some_and(|seconds| seconds != 0.0)
+    {
+        return Err("authorized provider probe exceeded its signed text-only token/audio budget".to_string());
+    }
+    if let Some(store) = app.try_state::<crate::provider::state::ProviderStateStore>() {
+        store.record_probe(crate::provider::state::ProviderProbeSummary {
+            verdict: probe.verdict.clone(),
+            checked_at: probe_checked_at.clone(),
+            transport_effective: probe.transport_effective.clone(),
+            configured_model: Some(configured_model.clone()),
+            model: Some(provider.model.clone()),
+            protocol: Some(protocol.clone()),
+            preflight_authorization: preflight_authorization.clone(),
+            provider_connect_started_at: Some(provider_connect_started_at.clone()),
+            provider_connect_completed_at: Some(provider_connect_completed_at.clone()),
+            input_tokens: Some(input_tokens),
+            output_tokens: Some(output_tokens),
+            audio_seconds: probe.audio_seconds,
+        });
+    }
     let diagnostics = capture_full_diagnostics(
         app,
         staging,
@@ -495,6 +577,25 @@ async fn collect_provider_probe(
         timeline,
     )
     .await?;
+    let mut raw_probe_result = serde_json::to_value(&probe).map_err(|error| error.to_string())?;
+    if let Some(object) = raw_probe_result.as_object_mut() {
+        object.insert("configuredModel".to_string(), json!(configured_model));
+        object.insert("checkedAt".to_string(), json!(probe_checked_at));
+        object.insert("model".to_string(), json!(provider.model));
+        object.insert("protocol".to_string(), json!(protocol));
+        object.insert(
+            "preflightAuthorization".to_string(),
+            preflight_authorization.clone().unwrap_or(Value::Null),
+        );
+        object.insert(
+            "providerConnectStartedAt".to_string(),
+            json!(provider_connect_started_at),
+        );
+        object.insert(
+            "providerConnectCompletedAt".to_string(),
+            json!(provider_connect_completed_at),
+        );
+    }
     let result = json!({
         "schemaVersion": 1,
         "artifactKind": "provider-production-probe-result",
@@ -503,12 +604,24 @@ async fn collect_provider_probe(
         "invocationId": invocation_id,
         "source": "desktop-api-v2",
         "productionMode": true,
-        "checkedAt": probe.checked_at,
+        "operation": "text-translation-preflight",
+        "inputMode": "text-only",
+        "externalAudioSamples": 0,
+        "providerInvocationCount": 1,
+        "inputTokens": input_tokens,
+        "outputTokens": output_tokens,
+        "audioSeconds": probe.audio_seconds,
+        "checkedAt": probe_checked_at,
         "desktopProcessId": std::process::id(),
         "sourceHeadCommit": source_head_commit,
         "templateId": provider.template_id,
         "providerId": provider.provider_id,
+        "configuredModel": configured_model,
         "model": provider.model,
+        "protocol": protocol,
+        "preflightAuthorization": preflight_authorization,
+        "providerConnectStartedAt": provider_connect_started_at,
+        "providerConnectCompletedAt": provider_connect_completed_at,
         "transportRequested": probe.transport_requested,
         "effectiveTransport": probe.transport_effective,
         "endpointHost": endpoint_host,
@@ -523,7 +636,7 @@ async fn collect_provider_probe(
             "exists": credential.has_secret,
             "reference": credential.reference,
         },
-        "rawProbeResult": probe,
+        "rawProbeResult": raw_probe_result,
         "diagnosticsExport": diagnostics,
     });
     write_json(&staging.join("provider-probe-result.json"), &result)?;
@@ -680,55 +793,6 @@ fn validate_bundle_identity(
     Ok(())
 }
 
-fn select_provider(config: &Value) -> Result<(Value, ProviderDraftInput), String> {
-    if let Some(provider_id) = env_value(PROVIDER_ID_ENV) {
-        return select_provider_by_id(config, &provider_id);
-    }
-    let providers = config
-        .get("providers")
-        .and_then(Value::as_array)
-        .ok_or_else(|| "persisted configuration has no providers array".to_string())?;
-    let active_template = config
-        .get("activeProviderTemplateId")
-        .and_then(Value::as_str);
-    let selected = active_template
-        .and_then(|template| {
-            providers.iter().find(|provider| {
-                provider.get("templateId").and_then(Value::as_str) == Some(template)
-            })
-        })
-        .or_else(|| providers.first())
-        .ok_or_else(|| "persisted configuration contains no provider".to_string())?;
-    parse_provider(selected.clone())
-}
-
-fn select_provider_by_id(
-    config: &Value,
-    provider_id: &str,
-) -> Result<(Value, ProviderDraftInput), String> {
-    let selected = config
-        .get("providers")
-        .and_then(Value::as_array)
-        .and_then(|providers| {
-            providers.iter().find(|provider| {
-                provider.get("providerId").and_then(Value::as_str) == Some(provider_id)
-            })
-        })
-        .ok_or_else(|| format!("persisted provider '{provider_id}' was not found"))?;
-    parse_provider(selected.clone())
-}
-
-fn parse_provider(value: Value) -> Result<(Value, ProviderDraftInput), String> {
-    let provider: ProviderDraftInput = serde_json::from_value(value.clone())
-        .map_err(|error| format!("persisted provider contract is invalid: {error}"))?;
-    if provider.auth_ref.kind != "credential-ref"
-        || !provider.auth_ref.reference.starts_with("credential://")
-    {
-        return Err("release provider must use a credential:// credential-ref".to_string());
-    }
-    Ok((value, provider))
-}
-
 fn log_authority_event(
     app: &AppHandle,
     scenario: EvidenceScenario,
@@ -864,8 +928,9 @@ mod tests {
                 }
             ]
         });
-        let (_, provider) = select_provider(&config).unwrap();
+        let (_, provider) = select_provider(&config, None).unwrap();
         assert_eq!(provider.provider_id, "provider-b");
         assert_eq!(provider.auth_ref.reference, "credential://b");
     }
+
 }

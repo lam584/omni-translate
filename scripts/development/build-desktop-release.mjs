@@ -57,6 +57,14 @@ if (gitHead.status !== 0 || !/^[a-f0-9]{40}$/i.test(buildCommit)) {
   process.exit(1);
 }
 releaseEnvironment.OMNI_BUILD_COMMIT = buildCommit;
+const coordinatorKeyId = String(
+  releaseEnvironment.OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID ?? '',
+).trim().toLowerCase();
+if (coordinatorKeyId && !/^[a-f0-9]{64}$/.test(coordinatorKeyId)) {
+  console.error('OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID must be a lowercase SHA-256 key ID');
+  process.exit(1);
+}
+releaseEnvironment.OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID = coordinatorKeyId;
 if (!releaseEnvironment.CMAKE) {
   const acquiredCmake = findExecutable(
     path.join(workspaceRoot, 'target', 'aec3-msvc-vcpkg-downloads', 'tools'),

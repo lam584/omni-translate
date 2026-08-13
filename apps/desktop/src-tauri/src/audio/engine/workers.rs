@@ -636,6 +636,7 @@ fn run_bridge_source_route_worker(
                     status,
                     reason,
                     error_code,
+                    timestamp_ms,
                 }) => {
                     let active_session_id = app
                         .state::<BridgeStateStore>()
@@ -656,6 +657,7 @@ fn run_bridge_source_route_worker(
                             &status,
                             &reason,
                             error_code.as_deref(),
+                            timestamp_ms,
                         );
                     } else {
                         diag_log_detail(

@@ -391,7 +391,7 @@ npm run test:watch-mode-report
 
 本轮有 `3` 次 `native-playback-queue-expired` 警告（最长排队 `5373 ms`），它们不表示 AEC 或字幕失败，已作为后续播放队列调度优化项保留。
 
-`npm run test:watch-mode-evidence:strict` 是发布前的预算平衡矩阵门禁，只读取最近一次成功 strict matrix 原子发布的 canonical manifest：6 个 5 分钟零 LLM 本地隔离格覆盖三路线与两类已验证物理端点（默认扬声器、独立 USB），6 个 3 分钟 live 配对格覆盖两个模型/三路线，并让每条路线跨两个端点类得到覆盖，另有两个 10 分钟模型稳定格。蓝牙在本轮仅作可选诊断，不能由 USB 伪装。付费 live 总时长固定为 38 分钟；单独验证 `echo-cancel` 不能替代完整发布矩阵。
+`npm run test:watch-mode-evidence:strict` 是发布前的预算平衡矩阵门禁，只读取最近一次成功 strict matrix 原子发布的 canonical manifest：6 个 5 分钟零 LLM 本地隔离格覆盖三路线与两类已验证物理端点（默认扬声器、独立 USB），6 个 3 分钟 live 配对格覆盖两个模型/三路线，并让每条路线跨两个端点类得到覆盖，另有两个 3 分钟模型稳定格。蓝牙在本轮仅作可选诊断，不能由 USB 伪装。8 个付费 live 格的单格外部音频上限为 3 分钟，矩阵总上限固定为 24 分钟；单独验证 `echo-cancel` 不能替代完整发布矩阵。
 
 如果改动跨进程协议或配置契约，还需按仓库核心边界规则执行对应的 contracts 和 bridge 验证。
 

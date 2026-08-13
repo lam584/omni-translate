@@ -80,6 +80,7 @@
     "audit:worktree-groups": "node ./scripts/testing/audit-worktree-groups.mjs",
     "test:watch-mode-live": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/run-watch-mode-live.ps1",
     "test:watch-mode-live:matrix": "node ./scripts/testing/run-watch-mode-live-matrix.mjs",
+    "test:watch-mode-live:production-coordinator": "node ./scripts/testing/run-watch-mode-live-production-coordinator.mjs",
     "test:watch-mode-live:dry-run": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./scripts/testing/run-watch-mode-live.ps1 -DryRun",
     "quality:desktop-shell": "npm run check:desktop-shell && npm run test:desktop-shell",
     "quality:gate": "npm run quality:gate:release",

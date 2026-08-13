@@ -284,7 +284,7 @@ function buildAuthorizedFixture({
     else writeText(candidate, 'authorized raw evidence\n');
   }
   const receipt = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     artifactKind: 'watch-mode-live-cell-authority',
     generatedAt: '2026-08-10T09:35:00.000Z',
     provenance,
@@ -297,7 +297,7 @@ function buildAuthorizedFixture({
   const receiptPath = path.join(runDirectory, 'matrix-cell-authority.json');
   writeJson(receiptPath, receipt);
   const manifest = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',
@@ -366,7 +366,7 @@ test('canonical release grid binds each device class to its declared profileId',
     bluetooth: 'headset-a2dp',
   };
   const manifest = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     artifactKind: 'watch-mode-strict-matrix-authority',
     strict: true,
     evidenceMode: 'live',

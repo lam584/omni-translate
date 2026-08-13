@@ -275,6 +275,9 @@ describe('provider catalog components', () => {
       transportRequested: activeProbe.transportRequested,
       transportEffective: activeProbe.transportEffective,
       fallbackApplied: activeProbe.fallbackApplied,
+      inputTokens: null,
+      outputTokens: null,
+      audioSeconds: null,
       checks: [],
       guidance: activeProbe.guidance,
       routingDecision: { subtitlePriority: 'subtitle-first', speechDisposition: 'ready', rationale: 'ok' },
@@ -425,6 +428,9 @@ describe('provider catalog components', () => {
     const probeResult: ProviderProbeProfileRuntime = {
       ...activeProbe,
       verdict: 'unavailable' as const,
+      inputTokens: null,
+      outputTokens: null,
+      audioSeconds: null,
       routingDecision: { subtitlePriority: 'balanced', speechDisposition: 'deferred', rationale: 'failed' },
       error: { code: 'failed', message: 'no suggestion', retriable: false, httpStatus: null, providerCode: null, suggestion: null },
     };

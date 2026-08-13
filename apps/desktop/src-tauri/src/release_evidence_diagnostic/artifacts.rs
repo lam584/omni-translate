@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
@@ -12,6 +13,17 @@ pub(super) struct ArtifactHash {
     pub(super) sha256: String,
     pub(super) file_count: usize,
     pub(super) byte_count: u64,
+}
+
+pub(super) fn now() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
+}
+
+pub(super) fn env_value(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 pub(super) fn write_json(path: &Path, value: &impl Serialize) -> Result<(), String> {

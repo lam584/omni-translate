@@ -16,7 +16,8 @@ pub(in crate::audio::omni) fn reconnect_socket<R: tauri::Runtime>(
         ));
     }
     let request = build_dashscope_ws_request(provider)?;
-    let (mut socket, _) = connect(request).map_err(|error| format!("无法重新连接 Omni 服务: {error}"))?;
+    let (mut socket, _) = connect_without_redirects(request)
+        .map_err(|error| format!("无法重新连接 Omni 服务: {error}"))?;
     set_socket_write_timeout(&mut socket);
     set_socket_read_timeout(&mut socket);
     let session_cfg = build_omni_session_update_for_provider_with_output_mode(

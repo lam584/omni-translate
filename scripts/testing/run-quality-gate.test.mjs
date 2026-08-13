@@ -759,10 +759,17 @@ const writeDesktopEmitterFixture = (
           templateId: payload.rawProbeResult.templateId,
           providerId: payload.providerId,
           kind: 'dashscope',
-          model: payload.model,
+          model: payload.configuredModel ?? payload.model,
           baseUrl: `https://${payload.endpointHost}/api/v1`,
-          transport: payload.rawProbeResult.transportRequested,
-          authRef: {
+           transport: payload.rawProbeResult.transportRequested,
+           streamEnabled: true,
+           systemPromptTemplate: 'game-live-translation-cn',
+           responseModalities: ['text'],
+           customHeaders: [],
+           timeoutMs: 12_000,
+           temperature: 0.2,
+           maxOutputTokens: 256,
+           authRef: {
             kind: 'credential-ref',
             reference: payload.credentialStatus.reference,
             headerName: 'Authorization',
@@ -771,6 +778,45 @@ const writeDesktopEmitterFixture = (
         }
       : undefined;
   writeDiagnosticsBundle(rawDirectory, { invocationId, processId, sourceHeadCommit, provider });
+  if (scenarioId === 'E2E-PROVIDER-PROBE') {
+    const bundleRoot = path.join(rawDirectory, 'diagnostics-bundle');
+    const summaryPath = path.join(bundleRoot, 'snapshots', 'extra', 'provider-probe-summary.json');
+    fs.mkdirSync(path.dirname(summaryPath), { recursive: true });
+    writeJson(summaryPath, {
+      configuredModel: payload.configuredModel,
+      model: payload.model,
+      protocol: payload.protocol,
+       preflightAuthorization: payload.preflightAuthorization,
+       providerConnectStartedAt: payload.providerConnectStartedAt,
+       providerConnectCompletedAt: payload.providerConnectCompletedAt,
+       transportEffective: payload.effectiveTransport,
+       inputTokens: payload.inputTokens,
+       outputTokens: payload.outputTokens,
+       audioSeconds: payload.audioSeconds,
+    });
+    const manifestPath = path.join(bundleRoot, 'bundle-manifest.json');
+    const manifest = readJson(manifestPath);
+    manifest.payloadFiles.push({
+      path: 'snapshots/extra/provider-probe-summary.json',
+      kind: 'snapshot',
+      bytes: fs.statSync(summaryPath).size,
+    });
+    manifest.payloadFiles.sort((left, right) => left.path.localeCompare(right.path));
+    manifest.totals.payloadFileCount = manifest.payloadFiles.length;
+    manifest.totals.fileCount = manifest.payloadFiles.length + 1;
+    manifest.totals.payloadBytes = manifest.payloadFiles.reduce((sum, entry) => sum + entry.bytes, 0);
+    let manifestBytes = manifest.totals.manifestBytes;
+    let text = '';
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      manifest.totals.manifestBytes = manifestBytes;
+      manifest.totals.bundleBytes = manifest.totals.payloadBytes + manifestBytes;
+      text = `${JSON.stringify(manifest, null, 2)}\n`;
+      const next = Buffer.byteLength(text);
+      if (next === manifestBytes) break;
+      manifestBytes = next;
+    }
+    fs.writeFileSync(manifestPath, text, 'utf8');
+  }
   const bundleRoot = path.join(rawDirectory, 'diagnostics-bundle');
   const bundleHash = hashEvidenceArtifact(bundleRoot);
   const diagnosticsExport = {
@@ -790,6 +836,14 @@ const writeDesktopEmitterFixture = (
     desktopProcessId: processId,
     sourceHeadCommit,
     diagnosticsExport,
+    ...(scenarioId === 'E2E-PROVIDER-PROBE' ? {
+       preflightAuthorization: payload.preflightAuthorization,
+       providerConnectStartedAt: payload.providerConnectStartedAt,
+       providerConnectCompletedAt: payload.providerConnectCompletedAt,
+       inputTokens: payload.inputTokens,
+       outputTokens: payload.outputTokens,
+       audioSeconds: payload.audioSeconds,
+    } : {}),
   });
   const payloadPaths = [payloadFile, 'diagnostics-bundle'];
   writeJson(path.join(rawDirectory, 'emitter-result.json'), {
@@ -807,6 +861,14 @@ const writeDesktopEmitterFixture = (
     desktopExecutableSha256,
     sourceHeadCommit,
     diagnosticsExport,
+    ...(scenarioId === 'E2E-PROVIDER-PROBE' ? {
+       preflightAuthorization: payload.preflightAuthorization,
+       providerConnectStartedAt: payload.providerConnectStartedAt,
+       providerConnectCompletedAt: payload.providerConnectCompletedAt,
+       inputTokens: payload.inputTokens,
+       outputTokens: payload.outputTokens,
+       audioSeconds: payload.audioSeconds,
+    } : {}),
     timeline: DESKTOP_FIXTURE_TIMELINES[scenarioId].map((event, index) => ({
       event,
       invocationId,
@@ -924,17 +986,88 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         },
       }, fixtureOptions);
       break;
-    case 'E2E-PROVIDER-PROBE':
+    case 'E2E-PROVIDER-PROBE': {
+      const grantGeneratedAt = new Date(TEST_NOW.getTime() - 10_000).toISOString();
+      const reservationIssuedAts = Array.from({ length: 8 }, (_, index) => (
+        new Date(TEST_NOW.getTime() - 9_500 + index).toISOString()
+      ));
+      const authorizationObservedAt = new Date(TEST_NOW.getTime() - 2_000).toISOString();
+      const consumptionClaimedAt = new Date(TEST_NOW.getTime() - 1_750).toISOString();
+      const providerConnectStartedAt = new Date(TEST_NOW.getTime() - 1_500).toISOString();
+      const providerConnectCompletedAt = TEST_NOW.toISOString();
+      const leaseReservations = Array.from({ length: 8 }, (_, index) => ({
+        cellIndex: index,
+        cellId: `paid-cell-${index + 1}`,
+        workerId: `vm${(index % 2) + 1}`,
+        waveIndex: Math.floor(index / 2),
+        leaseId: `lease-${index + 1}`,
+        maxExternalAudioSamples: 2_880_000,
+        digest: `${index + 1}`.repeat(64),
+        issuedAt: reservationIssuedAts[index],
+      }));
+      const preflightAuthorization = {
+        schemaVersion: 1,
+        artifactKind: 'watch-mode-provider-preflight-authorization-consumption',
+        executionId: 'watch-quality-provider-preflight-fixture',
+        grantDigest: 'a'.repeat(64),
+        leaseReservationDigests: leaseReservations.map((entry) => entry.digest),
+        authorizationDigest: 'b'.repeat(64),
+        providerId: 'provider-dashscope',
+        model: 'qwen3.5-omni-flash-realtime',
+        protocol: 'dashscope-omni',
+        operation: 'text-translation-preflight',
+        inputMode: 'text-only',
+        invocationCount: 1,
+        externalAudioSamples: 0,
+        tokenBudget: {
+          maxInputTokens: 4_096,
+          maxOutputTokens: 256,
+        },
+        leaseReservations,
+        grantGeneratedAt,
+        reservationIssuedAts,
+        consumptionClaim: {
+          schemaVersion: 1,
+          artifactKind: 'watch-mode-provider-preflight-consumption-claim',
+          executionId: 'watch-quality-provider-preflight-fixture',
+          grantDigest: 'a'.repeat(64),
+          authorizationDigest: 'b'.repeat(64),
+          coordinatorKeyId: 'c'.repeat(64),
+          claimedAt: consumptionClaimedAt,
+          desktopProcessId: 5101,
+          desktopExecutablePath: 'C:\\Program Files\\Omni Translate\\omni-desktop-shell.exe',
+          desktopExecutableRelativePath: 'target/release/omni-desktop-shell.exe',
+          desktopExecutableBytes: 123_456,
+          desktopExecutableSha256: 'd'.repeat(64),
+          retryPolicy: 'new-execution-required',
+          path: 'provider-preflight-consumption-claim.json',
+          bytes: 1_024,
+          sha256: 'e'.repeat(64),
+        },
+        authorizationObservedAt,
+      };
       writeDesktopEmitterFixture(rawDirectory, scenarioId, 'provider-probe-result.json', {
         schemaVersion: 1,
         artifactKind: 'provider-production-probe-result',
         source: 'desktop-api-v2',
         productionMode: true,
+        operation: 'text-translation-preflight',
+        inputMode: 'text-only',
+        externalAudioSamples: 0,
+        providerInvocationCount: 1,
+        inputTokens: 64,
+        outputTokens: 12,
+        audioSeconds: null,
         checkedAt: TEST_NOW.toISOString(),
         desktopProcessId: 5101,
-        templateId: 'template-dashscope',
-        providerId: 'dashscope',
-        model: 'qwen3.5-plus',
+        templateId: 'template-dashscope-realtime',
+        providerId: 'provider-dashscope',
+        configuredModel: 'qwen3.5-omni-plus-realtime',
+        model: preflightAuthorization.model,
+        protocol: preflightAuthorization.protocol,
+        preflightAuthorization,
+        providerConnectStartedAt,
+        providerConnectCompletedAt,
         transportRequested: 'websocket',
         effectiveTransport: 'websocket',
         endpointHost: 'dashscope.aliyuncs.com',
@@ -951,8 +1084,17 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         },
         rawProbeResult: {
           id: 'probe-fixture',
-          templateId: 'template-dashscope',
-          providerId: 'dashscope',
+          templateId: 'template-dashscope-realtime',
+          providerId: 'provider-dashscope',
+          configuredModel: 'qwen3.5-omni-plus-realtime',
+          model: preflightAuthorization.model,
+          protocol: preflightAuthorization.protocol,
+          preflightAuthorization,
+          providerConnectStartedAt,
+          providerConnectCompletedAt,
+          inputTokens: 64,
+          outputTokens: 12,
+          audioSeconds: null,
           verdict: 'available',
           checkedAt: TEST_NOW.toISOString(),
           measuredLatencyMs: 420,
@@ -982,6 +1124,7 @@ const writeScenarioRawEvidence = (rawDirectory, scenarioId, fixtureOptions = {})
         },
       }, fixtureOptions);
       break;
+    }
     case 'E2E-REAL-DEVICE-AUDIO': {
       return materializeRealDeviceAudioRawFixture({
         rawDirectory,
@@ -2382,6 +2525,74 @@ test('Provider probe validator cross-checks raw result, top-level fields, and di
       },
       expected: /routingDecision\/guidance is not the production available route/,
     },
+    {
+      name: 'missing-input-token-usage',
+      mutate(value) {
+        value.inputTokens = null;
+      },
+      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+    },
+    {
+      name: 'output-token-budget-exceeded',
+      mutate(value) {
+        value.outputTokens = 257;
+      },
+      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+    },
+    {
+      name: 'text-preflight-reports-audio',
+      mutate(value) {
+        value.audioSeconds = 0.01;
+      },
+      expected: /token\/audio usage exceeds or omits the signed text-only budget/,
+    },
+    {
+      name: 'http-endpoint',
+      mutate(_value, rawDirectory) {
+        const configPath = path.join(rawDirectory, 'diagnostics-bundle', 'snapshots', 'config.json');
+        const config = readJson(configPath);
+        config.providers[0].baseUrl = 'http://dashscope.aliyuncs.com/api/v1';
+        writeJson(configPath, config);
+      },
+      expected: /endpoint host does not match configured base URL/,
+    },
+    {
+      name: 'explicit-endpoint-port',
+      mutate(_value, rawDirectory) {
+        const configPath = path.join(rawDirectory, 'diagnostics-bundle', 'snapshots', 'config.json');
+        const config = readJson(configPath);
+        config.providers[0].baseUrl = 'https://dashscope.aliyuncs.com:80/api/v1';
+        writeJson(configPath, config);
+      },
+      expected: /endpoint host does not match configured base URL/,
+    },
+    {
+      name: 'endpoint-userinfo',
+      mutate(_value, rawDirectory) {
+        const configPath = path.join(rawDirectory, 'diagnostics-bundle', 'snapshots', 'config.json');
+        const config = readJson(configPath);
+        config.providers[0].baseUrl = 'https://caller:secret@dashscope.aliyuncs.com/api/v1';
+        writeJson(configPath, config);
+      },
+      expected: /endpoint host does not match configured base URL/,
+    },
+    {
+      name: 'stream-disabled',
+      mutate(_value, rawDirectory) {
+        const configPath = path.join(rawDirectory, 'diagnostics-bundle', 'snapshots', 'config.json');
+        const config = readJson(configPath);
+        config.providers[0].streamEnabled = false;
+        writeJson(configPath, config);
+      },
+      expected: /does not match diagnostics provider configuration/,
+    },
+    {
+      name: 'transport-fallback',
+      mutate(value) {
+        value.rawProbeResult.fallbackApplied = true;
+      },
+      expected: /fixed DashScope provider\/credential identity is invalid/,
+    },
   ];
   for (const testCase of cases) {
     const rawDirectory = makeTempDir();
@@ -2389,7 +2600,7 @@ test('Provider probe validator cross-checks raw result, top-level fields, and di
       writeScenarioRawEvidence(rawDirectory, 'E2E-PROVIDER-PROBE');
       const probePath = path.join(rawDirectory, 'provider-probe-result.json');
       const probe = readJson(probePath);
-      testCase.mutate(probe);
+      testCase.mutate(probe, rawDirectory);
       writeJson(probePath, probe);
       const checked = validateRawReleaseManualEvidence(rawDirectory, 'E2E-PROVIDER-PROBE', {
         now: TEST_NOW.getTime(),
@@ -2715,7 +2926,7 @@ test('production performance authority rejects a legacy schema-v1 canonical mani
       manifestPath: fixture.manifestPath,
       currentProvenance: TEST_PROVENANCE,
       now: TEST_NOW.getTime(),
-    }), /schemaVersion=3/);
+    }), /schemaVersion=4/);
   } finally {
     fs.rmSync(fixture.workspaceRoot, { recursive: true, force: true });
   }

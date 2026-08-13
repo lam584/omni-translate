@@ -18,6 +18,7 @@ pub(super) enum BridgeSourceEnvelope {
         status: String,
         reason: String,
         error_code: Option<String>,
+        timestamp_ms: u64,
     },
     Ignored(String),
 }
@@ -137,10 +138,11 @@ pub(super) fn record_bridge_translation_status(
     status: &str,
     reason: &str,
     error_code: Option<&str>,
+    timestamp_ms: u64,
 ) {
     let detail = format!(
-        "statusId={status_id} cueId={cue_id} status={status} reason={reason} errorCode={}",
-        error_code.unwrap_or("-")
+        "statusId={status_id} cueId={cue_id} status={status} reason={reason} errorCode={} timestampMs={timestamp_ms}",
+        error_code.unwrap_or("-"),
     );
     let level = if status == "route-failed" {
         "error"
@@ -244,6 +246,7 @@ pub(super) fn read_bridge_source_payload(
             status: status.playback_status.as_str().to_string(),
             reason: status.reason,
             error_code: status.error_code,
+            timestamp_ms: status.timestamp_ms,
         });
     }
     let header: BridgeTranslationFrameHeader =

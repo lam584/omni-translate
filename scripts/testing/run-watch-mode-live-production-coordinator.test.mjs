@@ -1,0 +1,410 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import { repoRoot } from '../lib/testing-common.mjs';
+import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { createWorkerReadinessRequest, fileAuthorityEntry } from './watch-mode-shard-authority.mjs';
+import {
+  PRODUCTION_WORKER_CONFIG_KIND,
+  PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY,
+  PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
+  PRODUCTION_REMOTE_CELL_TIMEOUT_MS,
+  PRODUCTION_WORKER_READINESS_FINALIZE_BODY,
+  PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
+  parseProductionCoordinatorCliArgs,
+  runProductionCoordinator,
+  scpBaseArgs,
+  sshBaseArgs,
+  validateProductionWorkerConfig,
+} from './run-watch-mode-live-production-coordinator.mjs';
+
+const CLEAN_PROVENANCE = {
+  schemaVersion: 1,
+  source: 'git',
+  captureStatus: 'captured',
+  headCommit: 'a'.repeat(40),
+  worktreeClean: true,
+  dirtyEntryCount: 0,
+};
+
+test('production coordinator rejects a noncanonical authorization root before any callback', async () => {
+  const noncanonicalRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-noncanonical-root-'));
+  let callbackCalls = 0;
+  try {
+    await assert.rejects(runProductionCoordinator({
+      workerConfig: null,
+      reuseLocalIsolation: 'unused.json',
+      coordinatorOutputRoot: noncanonicalRoot,
+      operations: {
+        prepareCoordinatorExecution: async () => { callbackCalls += 1; },
+      },
+    }), /canonical coordinator authorization root/);
+    assert.equal(callbackCalls, 0);
+  } finally {
+    fs.rmSync(noncanonicalRoot, { recursive: true, force: true });
+  }
+});
+
+function rawWorkerConfig(root) {
+  const identityFile = path.join(root, 'id_rsa');
+  const knownHostsFile = path.join(root, 'known_hosts');
+  fs.writeFileSync(identityFile, 'fixture-private-key\n', 'utf8');
+  fs.writeFileSync(knownHostsFile, [
+    'vm-one ssh-ed25519 AAAAfixture1',
+    'vm-two ssh-ed25519 AAAAfixture2',
+    'vm-three ssh-ed25519 AAAAfixture3',
+  ].join('\n'), 'utf8');
+  const defaultProfile = (workerId) => ({
+    instanceId: `${workerId}-default`,
+    profileId: 'vmware-hda-default',
+    deviceClass: 'default-speaker',
+    physicalPlaybackDeviceId: 'default',
+    expectedPhysicalPlaybackDeviceName: '',
+  });
+  return {
+    schemaVersion: 1,
+    artifactKind: PRODUCTION_WORKER_CONFIG_KIND,
+    sshExecutable: 'ssh.exe',
+    scpExecutable: 'scp.exe',
+    workers: [
+      {
+        workerId: 'vm1', host: '192.0.2.11', port: 22, user: 'VMUser',
+        identityFile, knownHostsFile, hostKeyAlias: 'vm-one',
+        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-shards',
+        vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
+        deviceProfileInstances: [defaultProfile('vm1')],
+      },
+      {
+        workerId: 'vm2', host: '192.0.2.12', port: 2222, user: 'VMUser',
+        identityFile, knownHostsFile, hostKeyAlias: 'vm-two',
+        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-shards',
+        vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-2' },
+        deviceProfileInstances: [defaultProfile('vm2'), {
+          instanceId: 'vm2-usb', profileId: 'realtek-usb-spdif', deviceClass: 'usb',
+          physicalPlaybackDeviceId: '{usb-endpoint}', expectedPhysicalPlaybackDeviceName: 'Realtek USB Test',
+        }],
+      },
+      {
+        workerId: 'vm3', host: '192.0.2.13', port: 22, user: 'VMUser',
+        identityFile, knownHostsFile, hostKeyAlias: 'vm-three',
+        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-shards',
+        vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-3' },
+        deviceProfileInstances: [defaultProfile('vm3')],
+      },
+    ],
+  };
+}
+
+test('production worker config is exact, host-key pinned, UUID-bound, and command-injection closed', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-config-'));
+  try {
+    const raw = rawWorkerConfig(root);
+    const parsed = validateProductionWorkerConfig(raw, { configDirectory: root });
+    assert.equal(parsed.workers.length, 3);
+    const twoWorkers = structuredClone(raw);
+    twoWorkers.workers = twoWorkers.workers.slice(0, 2);
+    assert.equal(validateProductionWorkerConfig(twoWorkers, { configDirectory: root }).workers.length, 2);
+    for (const [field, value] of [
+      ['profileId', 'different-default-profile'],
+      ['physicalPlaybackDeviceId', '{different-default-endpoint}'],
+    ]) {
+      const inconsistentDefaults = structuredClone(raw);
+      inconsistentDefaults.workers[2].deviceProfileInstances[0][field] = value;
+      assert.throws(
+        () => validateProductionWorkerConfig(inconsistentDefaults, { configDirectory: root }),
+        /production worker assignments disagree on default-speaker matrix profile identity/,
+      );
+    }
+    const oneWorker = structuredClone(raw);
+    oneWorker.workers = oneWorker.workers.slice(0, 1);
+    assert.throws(() => validateProductionWorkerConfig(oneWorker, { configDirectory: root }), /two or three workers/);
+    const fourWorkers = structuredClone(raw);
+    fourWorkers.workers.push({
+      ...structuredClone(fourWorkers.workers[0]),
+      workerId: 'vm4', host: '192.0.2.14', hostKeyAlias: 'vm-three',
+      vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-4' },
+    });
+    assert.throws(() => validateProductionWorkerConfig(fourWorkers, { configDirectory: root }), /two or three workers/);
+    assert.deepEqual(parsed.workers.map((worker) => worker.workerId), ['vm1', 'vm2', 'vm3']);
+    const ssh = sshBaseArgs(parsed.workers[1]);
+    const scp = scpBaseArgs(parsed.workers[1]);
+    for (const args of [ssh, scp]) {
+      assert.ok(args.includes('StrictHostKeyChecking=yes'));
+      assert.ok(args.includes(`UserKnownHostsFile=${path.join(root, 'known_hosts')}`));
+      assert.ok(args.includes('HostKeyAlias=vm-two'));
+      assert.ok(args.includes(path.join(root, 'id_rsa')));
+    }
+    assert.equal(ssh[ssh.indexOf('-p') + 1], '2222');
+    assert.equal(scp[scp.indexOf('-P') + 1], '2222');
+
+    const injected = structuredClone(raw);
+    injected.workers[0].host = 'vm1;whoami';
+    assert.throws(() => validateProductionWorkerConfig(injected, { configDirectory: root }), /invalid or duplicate host/);
+    const unpinned = structuredClone(raw);
+    unpinned.workers[0].hostKeyAlias = 'missing-host-key';
+    assert.throws(() => validateProductionWorkerConfig(unpinned, { configDirectory: root }), /known_hosts does not pin/);
+    const extraKey = structuredClone(raw);
+    extraKey.workers[0].remoteCommand = 'anything';
+    assert.throws(() => validateProductionWorkerConfig(extraKey, { configDirectory: root }), /keys must be exactly/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('worker readiness proves driver package and endpoint profiles without a Provider process', () => {
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /test-development-driver\.ps1/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /installedSysSha256/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /packageCatSha256/);
+  assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-physical-output-probe\.exe/);
+  assert.match(PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY, /invoke-watch-mode-interactive-task\.ps1/);
+  assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /interactive-readiness\.json/);
+  assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /profiles = @\(\$interactive\.profiles\)/);
+  assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /credentialStatus = \$interactive\.credentialStatus/);
+  assert.match(PRODUCTION_WORKER_READINESS_FINALIZE_BODY, /windows-credential-manager/);
+  assert.match(PRODUCTION_INTERACTIVE_SESSION_LAUNCH_BODY, /invoke-watch-mode-interactive-task\.ps1/);
+  const launcher = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/run-watch-mode-interactive-task.ps1'),
+    'utf8',
+  );
+  assert.match(launcher, /CredEnumerateW/);
+  assert.match(launcher, /CredFree/);
+  assert.doesNotMatch(launcher, /CredReadW\s*\(/);
+  assert.match(launcher, /CredentialBlobSize/);
+  assert.match(launcher, /credentialBlobBytes/);
+  assert.match(launcher, /blobNonEmpty/);
+  assert.match(launcher, /-gt 2560/);
+  assert.match(launcher, /credential:\/\/provider\/dashscope\/default/);
+  assert.match(launcher, /OmniTranslate:credential___provider_dashscope_default/);
+  const control = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/invoke-watch-mode-interactive-task.ps1'),
+    'utf8',
+  );
+  assert.match(control, /expectedCredentialReference = \[string\]\$payload\.expectedCredentialReference/);
+  assert.doesNotMatch(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /omni-desktop-shell|DashScope|providerId/i);
+});
+
+test('production runtime build embeds the coordinator key identity before preflight', () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/run-watch-mode-live-production-coordinator.mjs'),
+    'utf8',
+  );
+  assert.match(source, /async \(\{ coordinatorKeyId \}\) => buildStrictRuntimeAuthority/);
+  assert.match(source, /OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID: coordinatorKeyId/);
+});
+
+test('SSH transport finalizes manifests in the guest and cancellation is task/launch-authority bound', () => {
+  const source = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/run-watch-mode-live-production-coordinator.mjs'),
+    'utf8',
+  );
+  assert.match(source, /--finalize-worker-request/);
+  assert.match(source, /watch-mode-worker-shard-finalization-request/);
+  assert.match(source, /validateShardManifest\(\{/);
+  assert.doesNotMatch(source, /writeShardManifest\s*\(/);
+  assert.doesNotMatch(source, /LEGACY_PRODUCTION_/);
+  assert.doesNotMatch(source, /production three-VM strict evidence/);
+  assert.match(source, /Get-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
+  assert.match(source, /Stop-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
+  assert.match(source, /Unregister-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
+  assert.match(source, /launch\.nodeProcess\.startedAt/);
+  assert.match(source, /launch\.nodeProcess\.imageSha256/);
+  assert.match(source, /launch\.nodeProcess\.imagePath/);
+  assert.doesNotMatch(source, /logs\\\\" \+ \[string\]\$payload\.leaseId \+ '\\.pid'/);
+});
+
+test('production coordinator drives three signed waves through stage, verify, and publish without the legacy path', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-production-orchestrator-'));
+  const config = rawWorkerConfig(root);
+  const normalized = validateProductionWorkerConfig(config, { configDirectory: root });
+  const profilesByWorker = new Map(normalized.workers.map((worker) => [
+    worker.workerId,
+    new Map(worker.deviceProfileInstances.map((profile) => [profile.deviceClass, profile])),
+  ]));
+  const placements = [
+    ['vm1', 0], ['vm2', 0], ['vm3', 0], ['vm2', 1],
+    ['vm1', 1], ['vm2', 2], ['vm1', 2], ['vm3', 1],
+  ];
+  const cells = LIVE_LLM_CELLS.map((cell, index) => {
+    const [workerId, waveIndex] = placements[index];
+    return {
+      ...cell,
+      cellIndex: index,
+      workerId,
+      waveIndex,
+      leaseId: `lease-${index}`,
+      vmIdentityDigest: String(index % 3 + 1).repeat(64),
+      deviceProfileInstance: profilesByWorker.get(workerId).get(cell.deviceClass),
+    };
+  });
+  const plan = {
+    executionId: 'production-test-execution',
+    provenance: CLEAN_PROVENANCE,
+    authority: { runtimeBinaryHashes: [] },
+    localIsolationAuthority: { manifestPath: 'local.json', path: 'local.json', bytes: 1, sha256: 'b'.repeat(64), providerCalls: 0 },
+    workers: normalized.workers.map(({ workerId, vmIdentity, deviceProfileInstances }) => ({ workerId, vmIdentity, deviceProfileInstances })),
+    cells,
+    waves: [0, 1, 2].map((waveIndex) => ({
+      waveIndex,
+      cellIds: cells.filter((cell) => cell.waveIndex === waveIndex).map((cell) => cell.cellId),
+    })),
+  };
+  const leases = cells.map((cell) => ({ leaseId: cell.leaseId, cellId: cell.cellId }));
+  const runDirectories = cells.map((cell, index) => {
+    const directory = path.join(root, 'staged', `cell-${index}`);
+    fs.mkdirSync(directory, { recursive: true });
+    return directory;
+  });
+  const calls = [];
+  try {
+    const result = await runProductionCoordinator({
+      workerConfig: config,
+      reuseLocalIsolation: 'local.json',
+      coordinatorOutputRoot: path.join(
+        repoRoot,
+        'artifacts',
+        'testing',
+        'watch-mode-live-coordinator',
+      ),
+      evidenceOutputRoot: path.join(root, 'evidence'),
+      operations: {
+        runZeroProviderWorkerReadiness: async (context) => {
+          calls.push('zero-provider-readiness');
+          fs.mkdirSync(context.executionRoot, { recursive: true });
+          const workerReadinessRequest = createWorkerReadinessRequest(context);
+          const requestPath = path.join(context.executionRoot, 'worker-readiness-request.json');
+          fs.writeFileSync(requestPath, JSON.stringify(workerReadinessRequest));
+          return {
+            workerReadinessRequest,
+            requestAuthority: fileAuthorityEntry(requestPath, 'worker-readiness-request.json'),
+            workers: context.workers.map((worker) => ({ workerId: worker.workerId, providerCalls: 0 })),
+          };
+        },
+        runProviderPreflight: async () => {
+          calls.push('provider-preflight');
+          return {
+            providerId: 'provider-dashscope',
+            operation: 'text-translation-preflight',
+            inputMode: 'text-only',
+            providerInvocationCount: 1,
+            externalAudioSamples: 0,
+            status: 'completed',
+            evidenceDirectory: path.join(root, 'unused-preflight'),
+          };
+        },
+        prepareCoordinatorExecution: async (options) => {
+          calls.push('prepare');
+          assert.equal(typeof options.buildRuntimeAuthority, 'function');
+          assert.equal(typeof options.runProviderPreflight, 'function');
+          assert.equal(typeof options.runZeroProviderWorkerReadiness, 'function');
+          assert.equal(
+            options.minimumRemainingExecutionMs,
+            3 * PRODUCTION_REMOTE_CELL_TIMEOUT_MS
+              + PRODUCTION_POST_PREFLIGHT_EVIDENCE_MARGIN_MS,
+          );
+          const workerReadiness = await options.runZeroProviderWorkerReadiness({
+            executionId: plan.executionId,
+            executionRoot: path.join(root, 'execution'),
+            generatedAt: new Date(),
+            provenance: CLEAN_PROVENANCE,
+            runtimeBinaryHashes: [{ path: 'runtime/a.exe', bytes: 1, sha256: 'a'.repeat(64) }],
+            workers: plan.workers,
+            assignments: plan.cells.map((cell) => ({
+              cellId: cell.cellId,
+              workerId: cell.workerId,
+              waveIndex: cell.waveIndex,
+              deviceProfileInstanceId: cell.deviceProfileInstance.instanceId,
+            })),
+          });
+          await options.runProviderPreflight({ provenance: CLEAN_PROVENANCE });
+          plan.workerReadinessRequest = workerReadiness.workerReadinessRequest;
+          return {
+            plan,
+            leases,
+            leasePaths: cells.map((_, index) => path.join(root, `lease-${index}.json`)),
+            planPath: path.join(root, 'plan.json'),
+            executionRoot: path.join(root, 'execution'),
+          };
+        },
+        createTransport: async () => ({
+          prepareWorker: async ({ worker }) => { calls.push(`ready:${worker.workerId}`); },
+          dispatchCell: async ({ cell }) => {
+            calls.push(`paid:${cell.cellIndex}`);
+            return { result: { verdict: 'passed', resultDigest: String(cell.cellIndex).repeat(64), runDirectory: `runs/${cell.cellIndex}` } };
+          },
+          cancelCell: async () => {},
+          collectWorker: async ({ worker }) => ({ workerId: worker.workerId, shardRoot: path.join(root, worker.workerId), manifestPath: path.join(root, `${worker.workerId}.json`) }),
+        }),
+        runCoordinatorWaves: async ({ plan: signedPlan, assertWorkerReady, dispatchCell }) => {
+          for (const worker of signedPlan.workers) await assertWorkerReady({ worker });
+          const results = new Map();
+          for (const wave of signedPlan.waves) {
+            calls.push(`wave:${wave.waveIndex}`);
+            await Promise.all(wave.cellIds.map(async (cellId) => {
+              const cell = signedPlan.cells.find((entry) => entry.cellId === cellId);
+              const outcome = await dispatchCell({ cell, lease: leases[cell.cellIndex], signal: new AbortController().signal });
+              results.set(cellId, outcome);
+            }));
+          }
+          return { results };
+        },
+        writeCoordinatorAggregate: () => ({
+          aggregatePath: path.join(root, 'aggregate.json'),
+          matrixIntegration: { cells: [] },
+        }),
+        stageShardMatrixIntegration: () => ({
+          runDirectories,
+          shardExecution: { executionRoot: 'staged' },
+          matrixIntegration: { cells },
+          finalExecutionRoot: path.join(root, 'staged'),
+        }),
+        assertCellExternalProviderBudget: (_directory, expected) => ({
+          passed: true,
+          cellId: expected.cellId,
+          modelId: expected.modelId,
+          feedbackLoopPrevention: expected.feedbackLoopPrevention,
+          actualProviderInputSamples: 1,
+          providerSendBoundary: { leaseId: cells.find((cell) => cell.cellId === expected.cellId).leaseId },
+          calls: { sourceTranscript: 0, physicalOutputStt: 0, secondaryTranslation: 0, secondaryTts: 0 },
+        }),
+        writeMatrixExternalProviderBudget: (outputRoot) => {
+          fs.mkdirSync(outputRoot, { recursive: true });
+          const filePath = path.join(outputRoot, 'budget.json');
+          fs.writeFileSync(filePath, '{"passed":true}\n', 'utf8');
+          return { filePath, ledger: { passed: true } };
+        },
+        writeMatrixRunManifest: () => {
+          calls.push('write-manifest');
+          return { manifestPath: path.join(root, 'manifest.json') };
+        },
+        runVerifier: async () => { calls.push('verify'); return { status: 0 }; },
+        publishSuccessfulStrictMatrixManifest: () => {
+          calls.push('publish');
+          return { canonicalPath: path.join(root, 'canonical.json') };
+        },
+      },
+    });
+    assert.deepEqual(calls.filter((entry) => entry.startsWith('wave:')), ['wave:0', 'wave:1', 'wave:2']);
+    assert.ok(calls.indexOf('zero-provider-readiness') < calls.indexOf('provider-preflight'));
+    assert.equal(calls.filter((entry) => entry.startsWith('paid:')).length, 8);
+    assert.ok(calls.indexOf('verify') < calls.indexOf('publish'));
+    assert.equal(result.workerCount, 3);
+    assert.equal(result.waveCount, 3);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('coordinator CLI exposes only the production config, local receipt, and output roots', () => {
+  const parsed = parseProductionCoordinatorCliArgs([
+    '--workers-config', 'workers.json',
+    '--reuse-local-isolation', 'local-isolation-manifest.json',
+    '--execution-id', 'fixed-execution',
+  ]);
+  assert.equal(parsed.workersConfig, 'workers.json');
+  assert.equal(parsed.reuseLocalIsolation, 'local-isolation-manifest.json');
+  assert.equal(parsed.executionId, 'fixed-execution');
+  assert.throws(() => parseProductionCoordinatorCliArgs(['--remote-command', 'whoami']), /Unknown flag/);
+});

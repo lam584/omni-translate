@@ -1,0 +1,324 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import test from 'node:test';
+
+import {
+  PROVIDER_INPUT_BUDGET_JOURNAL_FILE,
+  PROVIDER_INPUT_BUDGET_LEASE_FILE,
+  PROVIDER_INPUT_BUDGET_LEASE_KIND,
+  PROVIDER_INPUT_BUDGET_LEDGER_FILE,
+  PROVIDER_INPUT_BUDGET_LEDGER_KIND,
+  SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+  createSignedExecutionPlan,
+  generateCoordinatorSigningKeyPair,
+  issueCellLeases,
+} from './watch-mode-shard-authority.mjs';
+import {
+  buildPowerShellRunnerArgv,
+  buildShardCellExecutionRequest,
+  runLeasedShardCell,
+} from './run-watch-mode-live-shard.mjs';
+import { defaultThreeVmAssignments } from './run-watch-mode-live-coordinator.mjs';
+
+const SHA_A = 'a'.repeat(64);
+const SHA_B = 'b'.repeat(64);
+const PROVENANCE = Object.freeze({
+  schemaVersion: 1,
+  source: 'git',
+  captureStatus: 'captured',
+  headCommit: '2'.repeat(40),
+  worktreeClean: true,
+  dirtyEntryCount: 0,
+});
+
+const inventory = (name, sha) => [{ path: `${name}/binary`, bytes: 11, sha256: sha }];
+
+function fixture() {
+  const now = new Date();
+  const generatedAt = new Date(now.getTime() - 1_000);
+  const workers = [
+    {
+      workerId: 'vm1', vmIdentity: { provider: 'vmware', uuidBios: 'uuid-1' },
+      deviceProfileInstances: [{
+        instanceId: 'vm1-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+        physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
+      }],
+    },
+    {
+      workerId: 'vm2', vmIdentity: { provider: 'vmware', uuidBios: 'uuid-2' },
+      deviceProfileInstances: [
+        {
+          instanceId: 'vm2-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+          physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
+        },
+        {
+          instanceId: 'vm2-usb', profileId: 'realtek-usb-spdif', deviceClass: 'usb',
+          physicalPlaybackDeviceId: '{usb}', expectedPhysicalPlaybackDeviceName: 'Realtek USB Test',
+        },
+      ],
+    },
+    {
+      workerId: 'vm3', vmIdentity: { provider: 'vmware', uuidBios: 'uuid-3' },
+      deviceProfileInstances: [{
+        instanceId: 'vm3-default', profileId: 'vmware-hda-default', deviceClass: 'default-speaker',
+        physicalPlaybackDeviceId: 'default', expectedPhysicalPlaybackDeviceName: '',
+      }],
+    },
+  ];
+  const keys = generateCoordinatorSigningKeyPair();
+  const snapshot = {
+    provenance: PROVENANCE,
+    authorityImplementationHashes: inventory('matrix', SHA_A),
+    runtimeBinaryHashes: inventory('runtime', SHA_B),
+    shardOrchestrationImplementationHashes: inventory('shard', SHA_A),
+  };
+  const plan = createSignedExecutionPlan({
+    executionId: 'watch-shard-worker-test',
+    generatedAt,
+    expiresAt: new Date(now.getTime() + 3_600_000),
+    provenance: PROVENANCE,
+    ...snapshot,
+    localIsolationAuthority: { path: 'local.json', bytes: 1, sha256: SHA_A, providerCalls: 0 },
+    providerPreflightAuthority: {
+      path: 'preflight.json', bytes: 1, sha256: SHA_B, status: 'completed',
+      operation: 'text-translation-preflight', externalAudioSamples: 0, invocationCount: 1,
+      tokenBudget: { maxInputTokens: 4_096, maxOutputTokens: 256 },
+      inputTokens: 64, outputTokens: 12, audioSeconds: null,
+    },
+    workers,
+    assignments: defaultThreeVmAssignments(workers),
+    ...keys,
+  });
+  return {
+    now,
+    workers,
+    snapshot,
+    plan,
+    leases: issueCellLeases(plan, keys.privateKeyPem, { issuedAt: generatedAt }),
+  };
+}
+
+function writeJson(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, `${JSON.stringify(value)}\n`, 'utf8');
+}
+
+function writeSuccessfulRun(runDirectory, cell, lease) {
+  fs.mkdirSync(runDirectory, { recursive: true });
+  const runMarker = `watch_mode_diagnostic.run_id=${cell.cellIndex}`;
+  const identity = {
+    schemaVersion: 1,
+    artifactKind: PROVIDER_INPUT_BUDGET_LEDGER_KIND,
+    cellId: cell.cellId,
+    leaseId: lease.leaseId,
+    runMarker,
+    sessionGeneration: 1,
+    direction: 'inbound',
+    strictPaidAuthority: true,
+    providerId: 'provider-dashscope',
+    templateId: 'template-dashscope-realtime',
+    providerKind: 'dashscope',
+    endpointHost: 'dashscope.aliyuncs.com',
+    credentialReference: 'credential://provider/dashscope/default',
+    authHeaderName: 'Authorization',
+    authScheme: 'bearer',
+    customHeaderCount: 0,
+    model: cell.modelId,
+    protocol: cell.modelId.includes('livetranslate') ? 'dashscope-livetranslate' : 'dashscope-omni',
+  };
+  writeJson(path.join(runDirectory, 'report.json'), { verdict: 'passed' });
+  writeJson(path.join(runDirectory, 'physical-playback-device.json'), {
+    profileId: cell.deviceProfileInstance.profileId,
+    deviceClass: cell.deviceClass,
+    requestedDeviceId: cell.deviceProfileInstance.physicalPlaybackDeviceId,
+    resolvedDeviceId: `{resolved-${cell.cellIndex}}`,
+    resolvedDeviceName: cell.deviceProfileInstance.expectedPhysicalPlaybackDeviceName || 'VMware HDA Test',
+    verified: true,
+    fixtureOnly: false,
+  });
+  writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEASE_FILE), {
+    schemaVersion: 1,
+    artifactKind: PROVIDER_INPUT_BUDGET_LEASE_KIND,
+    cellId: cell.cellId,
+    leaseId: lease.leaseId,
+    runMarker,
+    maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+  });
+  writeJson(path.join(runDirectory, PROVIDER_INPUT_BUDGET_LEDGER_FILE), {
+    ...identity,
+    maxSamples: SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
+    totalAttemptedSamples: 16_000,
+    appendAttempts: 1,
+    sendFailures: 0,
+    initialConnectAttempts: 1,
+    reconnects: 0,
+    budgetExceeded: false,
+    finalized: true,
+    terminalReason: 'worker-completed',
+  });
+  const events = [
+    { ...identity, sequence: 1, event: 'initialized', initialConnectAttempts: 0, finalized: false },
+    { ...identity, sequence: 2, event: 'initial_connect_attempt', initialConnectAttempts: 1, finalized: false },
+    { ...identity, sequence: 3, event: 'reserved', initialConnectAttempts: 1, attemptedSamples: 16_000, finalized: false },
+    { ...identity, sequence: 4, event: 'finalized', initialConnectAttempts: 1, finalized: true },
+  ];
+  fs.writeFileSync(
+    path.join(runDirectory, PROVIDER_INPUT_BUDGET_JOURNAL_FILE),
+    `${events.map(JSON.stringify).join('\n')}\n`,
+    'utf8',
+  );
+}
+
+test('worker request carries only its signed paid cell and never contains build/preflight/local work', () => {
+  const value = fixture();
+  const cell = value.plan.cells[0];
+  const lease = value.leases[0];
+  const worker = value.plan.workers.find((entry) => entry.workerId === cell.workerId);
+  const request = buildShardCellExecutionRequest({
+    plan: value.plan,
+    lease,
+    workerId: worker.workerId,
+    vmIdentity: worker.vmIdentity,
+    shardRoot: path.join(os.tmpdir(), 'omni-request-only'),
+    now: value.now,
+  });
+  assert.equal(request.leaseId, lease.leaseId);
+  assert.equal(request.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID, lease.leaseId);
+  assert.deepEqual({
+    strict: request.environment.OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY,
+    providerId: request.environment.OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID,
+    templateId: request.environment.OMNI_WATCH_MODE_EXPECTED_PROVIDER_TEMPLATE_ID,
+    providerKind: request.environment.OMNI_WATCH_MODE_EXPECTED_PROVIDER_KIND,
+    endpointHost: request.environment.OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST,
+    credentialReference:
+      request.environment.OMNI_WATCH_MODE_EXPECTED_PROVIDER_CREDENTIAL_REFERENCE,
+  }, {
+    strict: '1',
+    providerId: 'provider-dashscope',
+    templateId: 'template-dashscope-realtime',
+    providerKind: 'dashscope',
+    endpointHost: 'dashscope.aliyuncs.com',
+    credentialReference: 'credential://provider/dashscope/default',
+  });
+  assert.equal(
+    request.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES,
+    String(SHARD_CELL_MAX_EXTERNAL_AUDIO_SAMPLES),
+  );
+  assert.equal(request.runnerOptions.strictPaidAuthority, true);
+  assert.equal(request.runnerOptions.matrixCellId, cell.cellId);
+  assert.equal(request.runnerOptions.subtitleTranslationMode, 'native');
+  const argv = buildPowerShellRunnerArgv(request);
+  assert.ok(argv.includes('-StrictPaidAuthority'));
+  assert.ok(argv.includes('-MatrixCellId'));
+  assert.equal(argv.some((arg) => /preflight|local-isolation|build/i.test(arg)), false);
+});
+
+test('worker executes exactly one coordinator lease, verifies continuity, and writes result/terminal authority', async () => {
+  const value = fixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-worker-run-'));
+  try {
+    const cell = value.plan.cells[0];
+    const lease = value.leases[0];
+    const worker = value.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    let executions = 0;
+    const outcome = await runLeasedShardCell({
+      plan: value.plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      shardRoot,
+      authoritySnapshot: value.snapshot,
+      readAuthoritySnapshot: () => value.snapshot,
+      now: () => value.now,
+      executeCell: async (request) => {
+        executions += 1;
+        assert.equal(request.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID, lease.leaseId);
+        const runDirectory = path.join(request.cellOutputRoot, 'run-1');
+        writeSuccessfulRun(runDirectory, cell, lease);
+        return { exitCode: 0, runDirectory };
+      },
+    });
+    assert.equal(executions, 1);
+    assert.equal(outcome.result.verdict, 'passed');
+    assert.equal(outcome.result.usageAuthority.leaseId, lease.leaseId);
+    assert.equal(JSON.parse(fs.readFileSync(outcome.terminalPath, 'utf8')).status, 'passed');
+    assert.ok(fs.existsSync(outcome.resultPath));
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('a failed paid attempt consumes its lease and cannot be retried after process restart', async () => {
+  const value = fixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-worker-fail-'));
+  try {
+    const cell = value.plan.cells[0];
+    const lease = value.leases[0];
+    const worker = value.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    let executions = 0;
+    const options = {
+      plan: value.plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      shardRoot,
+      authoritySnapshot: value.snapshot,
+      now: () => value.now,
+      executeCell: async () => {
+        executions += 1;
+        return { exitCode: 9, runDirectory: null };
+      },
+    };
+    await assert.rejects(runLeasedShardCell(options), /exited with 9/);
+    await assert.rejects(runLeasedShardCell(options), /refusing to overwrite immutable authority file/);
+    assert.equal(executions, 1);
+    const terminal = JSON.parse(fs.readFileSync(
+      path.join(shardRoot, 'lease-terminals', `${lease.leaseId}.json`),
+      'utf8',
+    ));
+    assert.equal(terminal.status, 'failed');
+    assert.equal(terminal.leaseId, lease.leaseId);
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});
+
+test('worker discards a paid result when runtime hashes change during the cell', async () => {
+  const value = fixture();
+  const shardRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-worker-continuity-'));
+  try {
+    const cell = value.plan.cells[0];
+    const lease = value.leases[0];
+    const worker = value.plan.workers.find((entry) => entry.workerId === cell.workerId);
+    const changedSnapshot = {
+      ...value.snapshot,
+      runtimeBinaryHashes: inventory('runtime', SHA_A),
+    };
+    await assert.rejects(
+      runLeasedShardCell({
+        plan: value.plan,
+        lease,
+        workerId: worker.workerId,
+        vmIdentity: worker.vmIdentity,
+        shardRoot,
+        authoritySnapshot: value.snapshot,
+        readAuthoritySnapshot: () => changedSnapshot,
+        now: () => value.now,
+        executeCell: async (request) => {
+          const runDirectory = path.join(request.cellOutputRoot, 'run-1');
+          writeSuccessfulRun(runDirectory, cell, lease);
+          return { exitCode: 0, runDirectory };
+        },
+      }),
+      /runtime binary hashes/,
+    );
+    assert.equal(
+      fs.existsSync(path.join(shardRoot, 'runs', '01-pairwise-live-qwen3.5-omni-flash-realtime-process-exclusion-default-speaker', 'run-1', 'shard-cell-result.json')),
+      false,
+    );
+  } finally {
+    fs.rmSync(shardRoot, { recursive: true, force: true });
+  }
+});

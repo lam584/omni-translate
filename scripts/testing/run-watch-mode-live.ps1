@@ -29,6 +29,9 @@ param(
   # access DashScope. Source-reference and physical-output authority are built
   # from canonical fixture hashes, local PCM, cue receipts, and playback logs.
   [switch]$StrictPaidAuthority,
+  # A signed Plus incident replay uses the same audio budget boundary but is
+  # deliberately distinct from the immutable eight-cell release matrix.
+  [switch]$IncidentReplayAuthority,
   [string]$MatrixCellId = "",
   # A production shard has already validated this signed, zero-provider
   # readiness receipt before claiming its lease. Virtual-driver cells consume
@@ -64,6 +67,18 @@ $ErrorActionPreference = 'Stop'
 # explicit before any probe output is captured or parsed.
 [Console]::OutputEncoding = New-Object Text.UTF8Encoding($false)
 $OutputEncoding = [Console]::OutputEncoding
+
+if ($StrictPaidAuthority -and $IncidentReplayAuthority) {
+  throw "StrictPaidAuthority and IncidentReplayAuthority are mutually exclusive."
+}
+$paidAuthorityEnabled = [bool]$StrictPaidAuthority -or [bool]$IncidentReplayAuthority
+$providerAuthorityMode = if ($StrictPaidAuthority) {
+  "strict-paid"
+} elseif ($IncidentReplayAuthority) {
+  "incident-replay-plus"
+} else {
+  "none"
+}
 
 if ($PhysicalPlaybackDeviceProfileId -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
   throw "PhysicalPlaybackDeviceProfileId must contain only letters, digits, '.', '_', or '-'."
@@ -777,14 +792,23 @@ function Ensure-ValueProperty {
 }
 
 function Enter-StrictPaidProviderEnvironment {
-  param([bool]$Enabled)
+  param(
+    [bool]$Enabled,
+    [bool]$IncidentReplay = $false
+  )
   $fixed = [ordered]@{
-    OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY = "1"
     OMNI_WATCH_MODE_EXPECTED_PROVIDER_ID = "provider-dashscope"
     OMNI_WATCH_MODE_EXPECTED_PROVIDER_TEMPLATE_ID = "template-dashscope-realtime"
     OMNI_WATCH_MODE_EXPECTED_PROVIDER_KIND = "dashscope"
     OMNI_WATCH_MODE_EXPECTED_PROVIDER_ENDPOINT_HOST = "dashscope.aliyuncs.com"
     OMNI_WATCH_MODE_EXPECTED_PROVIDER_CREDENTIAL_REFERENCE = "credential://provider/dashscope/default"
+  }
+  if ($Enabled) {
+    $fixed.OMNI_WATCH_MODE_STRICT_PAID_AUTHORITY = "1"
+  }
+  if ($IncidentReplay) {
+    $fixed.OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY = "1"
+    $fixed.OMNI_WATCH_MODE_INCIDENT_ID = "watch-mode-loss-incident-plus-v1"
   }
   $previous = [ordered]@{}
   foreach ($entry in $fixed.GetEnumerator()) {
@@ -792,7 +816,7 @@ function Enter-StrictPaidProviderEnvironment {
       $entry.Key,
       [EnvironmentVariableTarget]::Process
     )
-    if ($Enabled) {
+    if ($Enabled -or $IncidentReplay) {
       [Environment]::SetEnvironmentVariable(
         $entry.Key,
         [string]$entry.Value,
@@ -801,7 +825,7 @@ function Enter-StrictPaidProviderEnvironment {
     }
   }
   return [pscustomobject]@{
-    enabled = $Enabled
+    enabled = $Enabled -or $IncidentReplay
     names = @($fixed.Keys)
     values = $fixed
     previous = $previous
@@ -1526,6 +1550,8 @@ function Start-WatchModeDesktopShell {
   $previousProviderInputLedgerPath = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH
   $previousProviderInputCellId = $env:OMNI_WATCH_MODE_CELL_ID
   $previousProviderInputLeaseId = $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID
+  $previousIncidentReplayAuthority = $env:OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY
+  $previousIncidentId = $env:OMNI_WATCH_MODE_INCIDENT_ID
   $previousTranslatedPcmAuthorityDir = $env:OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR
   $previousWatchModelId = $env:OMNI_WATCH_MODE_MODEL_ID
   $previousWatchRealtimeProtocol = $env:OMNI_WATCH_MODE_REALTIME_PROTOCOL
@@ -1541,7 +1567,9 @@ function Start-WatchModeDesktopShell {
   $elevatedLaunch = $null
   $strictPaidProviderEnvironment = $null
   try {
-    $strictPaidProviderEnvironment = Enter-StrictPaidProviderEnvironment ([bool]$StrictPaidAuthority)
+    $strictPaidProviderEnvironment = Enter-StrictPaidProviderEnvironment `
+      -Enabled $StrictPaidAuthority `
+      -IncidentReplay $IncidentReplayAuthority
     $env:OMNI_WATCH_MODE_AUTOSTART = "1"
     $env:OMNI_WATCH_MODE_RUN_MARKER = $RunMarker
     $diagnosticOutputDeviceId = if ($PhysicalDeviceId) { $PhysicalDeviceId } else { "default" }
@@ -1554,7 +1582,7 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_SUBTITLE_TRANSLATION_MODE = $diagnosticSubtitleTranslationMode
     $env:OMNI_WATCH_MODE_TRANSLATION_AUDIO_SOURCE = if ($SubtitleTranslationMode -eq "native") { "omni-native" } else { "subtitle-tts" }
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_PCM_PATH = $providerInputPcmPath
-    if ($StrictPaidAuthority) {
+    if ($paidAuthorityEnabled) {
       $env:OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES = "$($WatchAutoStopAfterSeconds * 16000)"
       $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH = Join-Path $OutputDirectory "provider-input-budget-ledger.json"
       $env:OMNI_WATCH_MODE_CELL_ID = $MatrixCellId
@@ -1603,7 +1631,7 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_AUTO_STOP_AFTER_MS = $liveScenarioEnvironment.autoStopAfterMs
     $env:OMNI_WATCH_MODE_REPORT_PATH = $watchSessionReportPath
     $env:OMNI_WATCH_MODE_EXIT_AFTER_REPORT = "1"
-    if ($StrictPaidAuthority) {
+    if ($paidAuthorityEnabled) {
       # Debug model-trace summaries and the PCM dump cross-check the Rust
       # send-boundary ledger, which remains the paid-input authority.
       $env:OMNI_LOG_LEVEL = "debug"
@@ -1621,6 +1649,8 @@ function Start-WatchModeDesktopShell {
         "OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH",
         "OMNI_WATCH_MODE_CELL_ID",
         "OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID",
+        "OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY",
+        "OMNI_WATCH_MODE_INCIDENT_ID",
         "OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR",
         "OMNI_WATCH_MODE_MODEL_ID",
         "OMNI_WATCH_MODE_REALTIME_PROTOCOL",
@@ -1634,7 +1664,7 @@ function Start-WatchModeDesktopShell {
         "OMNI_WATCH_MODE_EXIT_AFTER_REPORT",
         "OMNI_LOG_LEVEL"
       )
-      if ($StrictPaidAuthority) {
+      if ($paidAuthorityEnabled) {
         $watchEnvironmentNames += @($strictPaidProviderEnvironment.names)
       }
       $launchEnvironment = @{}
@@ -1674,6 +1704,8 @@ function Start-WatchModeDesktopShell {
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEDGER_PATH = $previousProviderInputLedgerPath
     $env:OMNI_WATCH_MODE_CELL_ID = $previousProviderInputCellId
     $env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID = $previousProviderInputLeaseId
+    $env:OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY = $previousIncidentReplayAuthority
+    $env:OMNI_WATCH_MODE_INCIDENT_ID = $previousIncidentId
     Exit-StrictPaidProviderEnvironment $strictPaidProviderEnvironment
     $env:OMNI_WATCH_MODE_TRANSLATED_PCM_AUTHORITY_DIR = $previousTranslatedPcmAuthorityDir
     $env:OMNI_WATCH_MODE_MODEL_ID = $previousWatchModelId
@@ -1863,7 +1895,7 @@ function Invoke-StartWatchModeViaTauriCli {
     $config | Add-Member -NotePropertyName speech -NotePropertyValue ([pscustomobject]@{})
   }
   $config.speech.translationAudioSource = "subtitle-tts"
-  Set-WatchModelOnConfig $config $WatchModelId $WatchRealtimeProtocol ([bool]$StrictPaidAuthority)
+  Set-WatchModelOnConfig $config $WatchModelId $WatchRealtimeProtocol $paidAuthorityEnabled
   Set-WatchModeSecondaryConfig $config $SubtitleTranslationModelId $InboundSecondaryAudioModelId $FeedbackLoopPrevention $SubtitleTranslationMode
   if ($PhysicalDeviceId) {
     $config.devices.outputDeviceId = $PhysicalDeviceId
@@ -3894,7 +3926,10 @@ function Get-LocalPhysicalOutputContentAuthority {
 
 function Get-SourceMediaReferenceTranscript {
   param([string]$OutputDirectory, [string]$MediaPath)
-  if ($StrictPaidAuthority) {
+  # Both paid authorities must remain self-contained: the Plus incident replay
+  # has the same zero-auxiliary-provider-audio rule as the strict release
+  # matrix, while retaining a separate signing and result authority.
+  if ($StrictPaidAuthority -or $IncidentReplayAuthority) {
     return Get-CanonicalSourceMediaReference $OutputDirectory $MediaPath
   }
   $resultPath = Join-Path $OutputDirectory "source-media-transcript.json"
@@ -3983,7 +4018,7 @@ function Invoke-PhysicalOutputContentStt {
     [pscustomobject]@{ passed = $false; error = "physical output recording did not run" } | ConvertTo-Json -Depth 8 | Set-Content -Path $resultPath -Encoding UTF8
     return Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
   }
-  if ($StrictPaidAuthority) {
+  if ($paidAuthorityEnabled) {
     return Get-LocalPhysicalOutputContentAuthority `
       $OutputDirectory `
       $Recording `
@@ -4381,7 +4416,8 @@ function Write-StrictPaidCellBudget {
     "--model-id", $WatchModelId,
     "--feedback-mode", $FeedbackLoopPrevention,
     "--translation-mode", $SubtitleTranslationMode,
-    "--session-ceiling-seconds", "$WatchAutoStopAfterSeconds"
+    "--session-ceiling-seconds", "$WatchAutoStopAfterSeconds",
+    "--authority-mode", $providerAuthorityMode
   )
   $output = @(& node @arguments 2>&1 | ForEach-Object { "$_" })
   $exitCode = $LASTEXITCODE
@@ -4402,39 +4438,44 @@ function Write-StrictPaidCellBudget {
 $workspaceRoot = (Resolve-Path (Join-Path $PSScriptRoot "../..")).Path
 Set-Location $workspaceRoot
 
-if ($StrictPaidAuthority) {
-  if ($DryRun) { throw "StrictPaidAuthority is only valid for a live paid cell" }
-  if ($RecoverPhysicalOutputContentRunDirectory) { throw "StrictPaidAuthority forbids paid physical-output STT recovery" }
-  if ($WatchModelId -notin @("qwen3.5-omni-flash-realtime", "qwen3.5-livetranslate-flash-realtime")) {
-    throw "StrictPaidAuthority allows only the two budget-approved Watch models; got '$WatchModelId'"
+if ($paidAuthorityEnabled) {
+  if ($DryRun) { throw "$providerAuthorityMode authority is only valid for a live paid cell" }
+  if ($RecoverPhysicalOutputContentRunDirectory) { throw "$providerAuthorityMode authority forbids paid physical-output STT recovery" }
+  $approvedAuthorityModels = if ($StrictPaidAuthority) {
+    @("qwen3.5-omni-flash-realtime", "qwen3.5-livetranslate-flash-realtime")
+  } else {
+    @("qwen3.5-omni-plus-realtime")
+  }
+  if ($WatchModelId -notin $approvedAuthorityModels) {
+    throw "$providerAuthorityMode allows only its signed Watch models; got '$WatchModelId'"
   }
   if ([string]::IsNullOrWhiteSpace($MatrixCellId)) {
-    throw "StrictPaidAuthority requires MatrixCellId before provider launch"
+    throw "$providerAuthorityMode requires MatrixCellId before provider launch"
   }
   if ([string]::IsNullOrWhiteSpace($env:OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID)) {
-    throw "StrictPaidAuthority requires a coordinator-issued OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID before provider launch"
+    throw "$providerAuthorityMode requires a coordinator-issued OMNI_WATCH_MODE_PROVIDER_INPUT_LEASE_ID before provider launch"
   }
   if ($SubtitleTranslationMode -ne "native") {
-    throw "StrictPaidAuthority forbids secondary translation/TTS; SubtitleTranslationMode must be native"
+    throw "$providerAuthorityMode forbids secondary translation/TTS; SubtitleTranslationMode must be native"
   }
   if ($WatchAutoStopAfterSeconds -ne 180) {
-    throw "StrictPaidAuthority requires a 180-second provider session ceiling; got $WatchAutoStopAfterSeconds"
+    throw "$providerAuthorityMode requires a 180-second provider session ceiling; got $WatchAutoStopAfterSeconds"
   }
   if ($PlaybackSeconds -ne 0) {
-    throw "StrictPaidAuthority requires complete canonical media playback; PlaybackSeconds must be 0"
+    throw "$providerAuthorityMode requires complete canonical media playback; PlaybackSeconds must be 0"
   }
   if ($SkipPhysicalOutputContentStt) {
-    throw "StrictPaidAuthority does not permit skipping local physical-output authority"
+    throw "$providerAuthorityMode does not permit skipping local physical-output authority"
   }
   $strictCanonicalMedia = (Resolve-Path -LiteralPath (Join-Path $workspaceRoot "scripts/testing/fixtures/watch-mode-en-original.wav") -ErrorAction Stop).Path
   $strictRequestedMedia = (Resolve-Path -LiteralPath $MediaPath -ErrorAction Stop).Path
   if (-not $strictRequestedMedia.Equals($strictCanonicalMedia, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "StrictPaidAuthority requires canonical media: $strictCanonicalMedia"
+    throw "$providerAuthorityMode requires canonical media: $strictCanonicalMedia"
   }
   $strictDeclaredHash = ((Get-Content -LiteralPath (Join-Path $workspaceRoot "scripts/testing/fixtures/watch-mode-en-original.sha256") -Raw -Encoding UTF8).Trim() -split '\s+')[0].ToLowerInvariant()
   $strictActualHash = (Get-FileHash -LiteralPath $strictRequestedMedia -Algorithm SHA256).Hash.ToLowerInvariant()
   if ($strictActualHash -ne $strictDeclaredHash) {
-    throw "StrictPaidAuthority canonical media checksum mismatch before provider launch"
+    throw "$providerAuthorityMode canonical media checksum mismatch before provider launch"
   }
 }
 
@@ -4512,7 +4553,7 @@ if ($DryRun) {
   $defaultConfigPath = Join-Path $workspaceRoot "apps/desktop/src-tauri/defaults/app-config.default.json"
   foreach ($mode in @("process-exclusion", "virtual-driver", "echo-cancel")) {
     $probeConfig = Get-Content -LiteralPath $defaultConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json
-    Set-WatchModelOnConfig $probeConfig $WatchModelId $WatchRealtimeProtocol ([bool]$StrictPaidAuthority)
+    Set-WatchModelOnConfig $probeConfig $WatchModelId $WatchRealtimeProtocol $paidAuthorityEnabled
     Set-WatchModeSecondaryConfig $probeConfig $SubtitleTranslationModelId $InboundSecondaryAudioModelId $mode $SubtitleTranslationMode
     $injected = $probeConfig.devices.feedbackLoopPrevention
     if ($injected -ne $mode) {
@@ -4710,7 +4751,7 @@ try {
     } -ContinueOnError
   }
   if (Test-UsesVirtualDriverBackend $FeedbackLoopPrevention) {
-    if ($StrictPaidAuthority) {
+    if ($paidAuthorityEnabled) {
       $driverProbe = Invoke-Step "driver probe from signed worker readiness" {
         Get-SignedWorkerReadinessDriverProbe $WorkerReadinessReceiptPath
       } -ContinueOnError
@@ -5094,7 +5135,7 @@ try {
     throw "same-process Watch report did not complete within the desktop launch deadline: $($reportWaitStep.error)"
   }
 
-  if ($StrictPaidAuthority) {
+  if ($paidAuthorityEnabled) {
     $strictBudgetStep = Invoke-Step "validate strict paid external provider budget" {
       Write-StrictPaidCellBudget $outputDir $appLogBeforePlayback $runMarker
     } -ContinueOnError

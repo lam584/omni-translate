@@ -29,6 +29,11 @@ export const STRICT_PAID_MODEL_PROTOCOLS = Object.freeze({
   'qwen3.5-omni-flash-realtime': 'dashscope-omni',
   'qwen3.5-livetranslate-flash-realtime': 'dashscope-livetranslate',
 });
+export const INCIDENT_REPLAY_PLUS_MODEL = 'qwen3.5-omni-plus-realtime';
+export const INCIDENT_REPLAY_PLUS_ID = 'watch-mode-loss-incident-plus-v1';
+export const INCIDENT_REPLAY_PLUS_MODEL_PROTOCOLS = Object.freeze({
+  [INCIDENT_REPLAY_PLUS_MODEL]: 'dashscope-omni',
+});
 export const STRICT_PAID_PROVIDER_IDENTITY = Object.freeze({
   strictPaidAuthority: true,
   providerId: 'provider-dashscope',
@@ -39,6 +44,12 @@ export const STRICT_PAID_PROVIDER_IDENTITY = Object.freeze({
   authHeaderName: 'Authorization',
   authScheme: 'bearer',
   customHeaderCount: 0,
+});
+export const INCIDENT_REPLAY_PLUS_PROVIDER_IDENTITY = Object.freeze({
+  ...STRICT_PAID_PROVIDER_IDENTITY,
+  strictPaidAuthority: false,
+  incidentReplayAuthority: true,
+  incidentId: INCIDENT_REPLAY_PLUS_ID,
 });
 
 export const FORBIDDEN_REMOTE_AUXILIARY_ARTIFACTS = Object.freeze([
@@ -113,6 +124,8 @@ function validateSendBoundaryAuthority({
   runMarker,
   modelId,
   maxSamples,
+  modelProtocols = STRICT_PAID_MODEL_PROTOCOLS,
+  providerIdentity = STRICT_PAID_PROVIDER_IDENTITY,
 }) {
   const ledgerPath = path.join(runDirectory, PROVIDER_SEND_BOUNDARY_LEDGER_FILE);
   const journalPath = path.join(runDirectory, PROVIDER_SEND_BOUNDARY_JOURNAL_FILE);
@@ -128,8 +141,8 @@ function validateSendBoundaryAuthority({
     runMarker,
     direction: 'inbound',
     model: modelId,
-    protocol: STRICT_PAID_MODEL_PROTOCOLS[modelId],
-    ...STRICT_PAID_PROVIDER_IDENTITY,
+    protocol: modelProtocols[modelId],
+    ...providerIdentity,
   };
   for (const [key, expected] of Object.entries(expectedIdentity)) {
     if (ledger?.[key] !== expected) violations.push(`send-boundary final ledger ${key} mismatch`);
@@ -339,6 +352,10 @@ export function buildCellExternalProviderBudget({
   translationMode = 'native',
   sessionCeilingSeconds = STRICT_PAID_CELL_CEILING_SECONDS,
   generatedAt = new Date(),
+  approvedModels = RELEASE_MODELS,
+  modelProtocols = STRICT_PAID_MODEL_PROTOCOLS,
+  providerIdentity = STRICT_PAID_PROVIDER_IDENTITY,
+  authorityMode = 'strict-paid',
 }) {
   const resolvedRunDirectory = path.resolve(runDirectory);
   const violations = [];
@@ -347,8 +364,11 @@ export function buildCellExternalProviderBudget({
   const feedbackMode = String(feedbackLoopPrevention ?? '').trim();
   const ceilingSeconds = Number(sessionCeilingSeconds);
 
-  if (!RELEASE_MODELS.includes(normalizedModel)) {
-    violations.push(`model ${normalizedModel || '(missing)'} is not in the approved strict paid model set`);
+  if (!Array.isArray(approvedModels) || !approvedModels.includes(normalizedModel)) {
+    violations.push(`model ${normalizedModel || '(missing)'} is not in the approved ${authorityMode} model set`);
+  }
+  if (!modelProtocols[normalizedModel]) {
+    violations.push(`model ${normalizedModel || '(missing)'} has no approved ${authorityMode} realtime protocol`);
   }
   if (!normalizedCellId) violations.push('strict paid cellId is missing');
   if (translationMode !== 'native') {
@@ -401,6 +421,8 @@ export function buildCellExternalProviderBudget({
       runMarker,
       modelId: normalizedModel,
       maxSamples: inputCeilingSamples,
+      modelProtocols,
+      providerIdentity,
     });
     violations.push(...sendBoundaryAuthority.violations);
   } catch (error) {
@@ -474,7 +496,7 @@ export function buildCellExternalProviderBudget({
         cellId: normalizedCellId,
         leaseId: sendBoundaryAuthority?.leaseId,
         modelId: normalizedModel,
-        protocol: STRICT_PAID_MODEL_PROTOCOLS[normalizedModel],
+        protocol: modelProtocols[normalizedModel],
       });
       if (
         physicalAuthority.passed !== true
@@ -516,13 +538,18 @@ export function buildCellExternalProviderBudget({
     artifactKind: CELL_EXTERNAL_PROVIDER_BUDGET_KIND,
     generatedAt: generatedAt instanceof Date ? generatedAt.toISOString() : String(generatedAt),
     passed: violations.length === 0,
-    scope: 'strict-paid-realtime-session-window',
+    scope: authorityMode === 'strict-paid'
+      ? 'strict-paid-realtime-session-window'
+      : `${authorityMode}-realtime-session-window`,
     runMarker: String(runMarker ?? ''),
     cellId: normalizedCellId,
     modelId: normalizedModel,
     feedbackLoopPrevention: feedbackMode,
     translationMode,
-    approvedModels: [...RELEASE_MODELS],
+    approvedModels: [...approvedModels],
+    ...(authorityMode === 'strict-paid' ? {} : {
+      incidentId: providerIdentity.incidentId,
+    }),
     sessionCeilingSeconds: ceilingSeconds,
     inputSampleRateHz: EXTERNAL_PROVIDER_INPUT_SAMPLE_RATE_HZ,
     inputCeilingSamples,
@@ -587,6 +614,10 @@ export function assertCellExternalProviderBudget(runDirectory, expected = {}) {
     translationMode: recorded.translationMode,
     sessionCeilingSeconds: expected.sessionCeilingSeconds ?? recorded.sessionCeilingSeconds,
     generatedAt: recorded.generatedAt,
+    approvedModels: expected.approvedModels ?? recorded.approvedModels ?? RELEASE_MODELS,
+    modelProtocols: expected.modelProtocols ?? STRICT_PAID_MODEL_PROTOCOLS,
+    providerIdentity: expected.providerIdentity ?? STRICT_PAID_PROVIDER_IDENTITY,
+    authorityMode: expected.authorityMode ?? recorded.authorityMode ?? 'strict-paid',
   });
   // The marker prevents a copied ledger from selecting an unrelated
   // historical model trace from the same app.log.
@@ -718,10 +749,32 @@ if (isMain(import.meta.url)) {
   try {
     const options = parseCliArgs(process.argv.slice(2), {
       defaults: {
+        runDirectory: '',
+        appLog: '',
+        runMarker: '',
+        cellId: '',
+        modelId: '',
+        feedbackMode: '',
         translationMode: 'native',
         sessionCeilingSeconds: STRICT_PAID_CELL_CEILING_SECONDS,
+        authorityMode: 'strict-paid',
       },
     });
+    for (const [key, value] of Object.entries({
+      runDirectory: options.runDirectory,
+      appLog: options.appLog,
+      runMarker: options.runMarker,
+      cellId: options.cellId,
+      modelId: options.modelId,
+      feedbackMode: options.feedbackMode,
+    })) {
+      if (!String(value ?? '').trim()) throw new Error(`--${key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`)} is required`);
+    }
+    const authorityMode = String(options.authorityMode ?? '').trim();
+    const incidentReplay = authorityMode === 'incident-replay-plus';
+    if (!['strict-paid', 'incident-replay-plus'].includes(authorityMode)) {
+      throw new Error(`unsupported provider budget authority mode: ${authorityMode || '(missing)'}`);
+    }
     const { filePath, ledger } = writeCellExternalProviderBudget({
       runDirectory: options.runDirectory,
       appLogPath: options.appLog,
@@ -731,6 +784,12 @@ if (isMain(import.meta.url)) {
       feedbackLoopPrevention: options.feedbackMode,
       translationMode: options.translationMode,
       sessionCeilingSeconds: Number(options.sessionCeilingSeconds),
+      authorityMode,
+      ...(incidentReplay ? {
+        approvedModels: [INCIDENT_REPLAY_PLUS_MODEL],
+        modelProtocols: INCIDENT_REPLAY_PLUS_MODEL_PROTOCOLS,
+        providerIdentity: INCIDENT_REPLAY_PLUS_PROVIDER_IDENTITY,
+      } : {}),
     });
     if (!ledger.passed) {
       console.error(`strict paid-cell provider budget failed: ${ledger.violations.join('; ')}`);

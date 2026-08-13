@@ -39,6 +39,10 @@ const WIRE_PARSER_FILES = [
   'src-tauri/src/audio/omni/',
   'src-tauri/src/provider/gateway_parts/',
   'src-tauri/src/benchmark/',
+  // Release-evidence preflight grants/reservations are signed external
+  // authority documents, not persisted app config.  This module parses their
+  // wire shape before any Provider connection.
+  'src-tauri/src/release_evidence_diagnostic/provider_preflight_authority.rs',
 ];
 
 // Wire-payload path prefixes (OpenAI realtime `session`/`response`, Gemini
@@ -50,7 +54,7 @@ const WIRE_PREFIXES = [
   '/choices', '/code', '/data', '/delta', '/error', '/event', '/goAway',
   '/input_tokens', '/message', '/models', '/output', '/output_tokens',
   '/response', '/serverContent', '/session', '/setup', '/text', '/transcript',
-  '/type', '/usage',
+  '/type', '/usage', '/artifactKind',
 ];
 
 // Reads of config sections the schema does not have: they always fall through

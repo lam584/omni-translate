@@ -34,6 +34,23 @@ const CONSUMPTION_KIND: &str = "watch-mode-provider-preflight-authorization-cons
 const CONSUMPTION_CLAIM_KIND: &str =
     "watch-mode-provider-preflight-consumption-claim";
 const AUTHORIZATION_SET_KIND: &str = "watch-mode-provider-preflight-authorization-set";
+const INCIDENT_GRANT_FILE: &str = "incident-plus-preflight-grant.json";
+const INCIDENT_AUTHORIZATION_DIRECTORY: &str = "preflight-authorization";
+const INCIDENT_AUTHORIZATION_PARENT_RELATIVE_PATH: [&str; 3] =
+    ["artifacts", "testing", "watch-mode-incident-plus"];
+const INCIDENT_RESERVATION_DIRECTORY: &str = "incident-plus-preflight-lease-reservations";
+const INCIDENT_CONSUMPTION_CLAIM_FILE: &str =
+    "incident-plus-preflight-consumption-claim.json";
+const INCIDENT_RESERVATION_KIND: &str =
+    "watch-mode-incident-plus-preflight-lease-reservation";
+const INCIDENT_GRANT_KIND: &str = "watch-mode-incident-plus-preflight-grant";
+const INCIDENT_CONSUMPTION_KIND: &str =
+    "watch-mode-incident-plus-preflight-authorization-consumption";
+const INCIDENT_CONSUMPTION_CLAIM_KIND: &str =
+    "watch-mode-incident-plus-preflight-consumption-claim";
+const INCIDENT_AUTHORIZATION_SET_KIND: &str =
+    "watch-mode-incident-plus-preflight-authorization-set";
+const INCIDENT_ID: &str = "watch-mode-loss-incident-plus-v1";
 pub(super) const PROVIDER_ID: &str = "provider-dashscope";
 const PROVIDER_TEMPLATE_ID: &str = "template-dashscope-realtime";
 const PROVIDER_KIND: &str = "dashscope";
@@ -41,8 +58,11 @@ const PROVIDER_ENDPOINT_HOST: &str = "dashscope.aliyuncs.com";
 const PROVIDER_CREDENTIAL_REFERENCE: &str = "credential://provider/dashscope/default";
 const PREFLIGHT_MODEL: &str = "qwen3.5-omni-flash-realtime";
 const PREFLIGHT_PROTOCOL: &str = "dashscope-omni";
+const INCIDENT_PREFLIGHT_MODEL: &str = "qwen3.5-omni-plus-realtime";
+const INCIDENT_PREFLIGHT_PROTOCOL: &str = "dashscope-omni";
 const CELL_MAX_SAMPLES: u64 = 2_880_000;
 const MATRIX_MAX_SAMPLES: u64 = 23_040_000;
+const INCIDENT_MATRIX_MAX_SAMPLES: u64 = 8_640_000;
 const PREFLIGHT_MAX_INPUT_TOKENS: u64 = 4_096;
 const PREFLIGHT_MAX_OUTPUT_TOKENS: u64 = 256;
 
@@ -77,6 +97,99 @@ const CELL_DEVICE_CLASSES: [&str; 8] = [
     "default-speaker",
 ];
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PreflightAuthorityProfile {
+    StrictReleaseMatrix,
+    IncidentPlusReplay,
+}
+
+impl PreflightAuthorityProfile {
+    fn from_grant(grant: &Value) -> Result<Self, String> {
+        match grant.pointer("/artifactKind").and_then(Value::as_str) {
+            Some(GRANT_KIND) => Ok(Self::StrictReleaseMatrix),
+            Some(INCIDENT_GRANT_KIND) => Ok(Self::IncidentPlusReplay),
+            _ => Err("provider preflight grant has an unsupported authority kind".to_string()),
+        }
+    }
+
+    fn grant_file(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => GRANT_FILE,
+            Self::IncidentPlusReplay => INCIDENT_GRANT_FILE,
+        }
+    }
+
+    fn reservation_directory(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => RESERVATION_DIRECTORY,
+            Self::IncidentPlusReplay => INCIDENT_RESERVATION_DIRECTORY,
+        }
+    }
+
+    fn consumption_claim_file(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => CONSUMPTION_CLAIM_FILE,
+            Self::IncidentPlusReplay => INCIDENT_CONSUMPTION_CLAIM_FILE,
+        }
+    }
+
+    fn reservation_kind(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => RESERVATION_KIND,
+            Self::IncidentPlusReplay => INCIDENT_RESERVATION_KIND,
+        }
+    }
+
+    fn consumption_kind(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => CONSUMPTION_KIND,
+            Self::IncidentPlusReplay => INCIDENT_CONSUMPTION_KIND,
+        }
+    }
+
+    fn consumption_claim_kind(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => CONSUMPTION_CLAIM_KIND,
+            Self::IncidentPlusReplay => INCIDENT_CONSUMPTION_CLAIM_KIND,
+        }
+    }
+
+    fn authorization_set_kind(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => AUTHORIZATION_SET_KIND,
+            Self::IncidentPlusReplay => INCIDENT_AUTHORIZATION_SET_KIND,
+        }
+    }
+
+    fn preflight_model(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => PREFLIGHT_MODEL,
+            Self::IncidentPlusReplay => INCIDENT_PREFLIGHT_MODEL,
+        }
+    }
+
+    fn preflight_protocol(self) -> &'static str {
+        match self {
+            Self::StrictReleaseMatrix => PREFLIGHT_PROTOCOL,
+            Self::IncidentPlusReplay => INCIDENT_PREFLIGHT_PROTOCOL,
+        }
+    }
+
+    fn cell_count(self) -> usize {
+        match self {
+            Self::StrictReleaseMatrix => 8,
+            Self::IncidentPlusReplay => 3,
+        }
+    }
+
+    fn matrix_max_samples(self) -> u64 {
+        match self {
+            Self::StrictReleaseMatrix => MATRIX_MAX_SAMPLES,
+            Self::IncidentPlusReplay => INCIDENT_MATRIX_MAX_SAMPLES,
+        }
+    }
+}
+
 pub(super) struct ProviderPreflightAuthorization {
     pub(super) authority: Value,
     pub(super) model: String,
@@ -85,6 +198,7 @@ pub(super) struct ProviderPreflightAuthorization {
     grant: Value,
     authorization_digest: String,
     expires_at: DateTime<Utc>,
+    profile: PreflightAuthorityProfile,
 }
 
 impl ProviderPreflightAuthorization {
@@ -103,20 +217,22 @@ impl ProviderPreflightAuthorization {
         let grant_path = PathBuf::from(values[0].as_deref().unwrap_or_default());
         let reservation_directory = PathBuf::from(values[1].as_deref().unwrap_or_default());
         let expected_authorization_digest = values[2].as_deref().unwrap_or_default();
-        if !grant_path.is_absolute()
-            || grant_path.file_name().and_then(|value| value.to_str()) != Some(GRANT_FILE)
-            || !reservation_directory.is_absolute()
-        {
+        if !grant_path.is_absolute() || !reservation_directory.is_absolute() {
             return Err("provider preflight authority paths must be absolute and canonical-named".to_string());
         }
 
         let grant = read_regular_json(&grant_path, "provider preflight grant")?;
+        let profile = PreflightAuthorityProfile::from_grant(&grant)?;
+        if grant_path.file_name().and_then(|value| value.to_str()) != Some(profile.grant_file()) {
+            return Err("provider preflight authority paths must use the canonical grant filename".to_string());
+        }
         verify_signed_authority(&grant, None, "provider preflight grant")?;
-        validate_grant(&grant, source_head_commit)?;
+        validate_grant(&grant, source_head_commit, profile)?;
         let authorization_root = validate_authorization_paths(
             &grant_path,
             &reservation_directory,
             &grant,
+            profile,
         )?;
         let public_key = required_str(&grant, "/coordinator/publicKeyPem", "grant public key")?;
 
@@ -158,7 +274,10 @@ impl ProviderPreflightAuthorization {
             })
             .collect::<Result<BTreeSet<_>, String>>()?;
         if actual_files != expected_files.iter().cloned().collect() {
-            return Err("provider preflight reservation directory is not the exact eight-file set".to_string());
+            return Err(format!(
+                "provider preflight reservation directory is not the exact {}-file set",
+                profile.cell_count()
+            ));
         }
 
         let grant_generated_at = parse_time(
@@ -174,9 +293,9 @@ impl ProviderPreflightAuthorization {
             return Err("provider preflight grant is outside its authorized time window".to_string());
         }
 
-        let mut reservations = Vec::with_capacity(8);
-        let mut reservation_digests = Vec::with_capacity(8);
-        let mut reservation_issued_at = Vec::with_capacity(8);
+        let mut reservations = Vec::with_capacity(profile.cell_count());
+        let mut reservation_digests = Vec::with_capacity(profile.cell_count());
+        let mut reservation_issued_at = Vec::with_capacity(profile.cell_count());
         for (index, file_name) in expected_files.iter().enumerate() {
             let reservation = read_regular_json(
                 &reservation_directory.join(file_name),
@@ -187,7 +306,14 @@ impl ProviderPreflightAuthorization {
                 Some(public_key),
                 &format!("provider preflight reservation {index}"),
             )?;
-            validate_reservation(&reservation, &grant, index, grant_generated_at, grant_expires_at)?;
+            validate_reservation(
+                &reservation,
+                &grant,
+                index,
+                grant_generated_at,
+                grant_expires_at,
+                profile,
+            )?;
             let issued_at = required_str(&reservation, "/issuedAt", "reservation issuedAt")?;
             if parse_time(issued_at, "reservation issuedAt")? >= observed_at {
                 return Err(format!(
@@ -211,7 +337,7 @@ impl ProviderPreflightAuthorization {
 
         let authorization_digest = sha256_canonical(&json!({
             "schemaVersion": 1,
-            "artifactKind": AUTHORIZATION_SET_KIND,
+            "artifactKind": profile.authorization_set_kind(),
             "executionId": required_str(&grant, "/executionId", "grant executionId")?,
             "grantDigest": required_str(&grant, "/digest", "grant digest")?,
             "leaseReservationDigests": reservation_digests,
@@ -221,16 +347,16 @@ impl ProviderPreflightAuthorization {
         {
             return Err("provider preflight authorization digest mismatch".to_string());
         }
-        let authority = json!({
+        let mut authority = json!({
             "schemaVersion": 1,
-            "artifactKind": CONSUMPTION_KIND,
+            "artifactKind": profile.consumption_kind(),
             "executionId": required_str(&grant, "/executionId", "grant executionId")?,
             "grantDigest": required_str(&grant, "/digest", "grant digest")?,
             "leaseReservationDigests": reservation_digests,
             "authorizationDigest": authorization_digest,
             "providerId": PROVIDER_ID,
-            "model": PREFLIGHT_MODEL,
-            "protocol": PREFLIGHT_PROTOCOL,
+            "model": profile.preflight_model(),
+            "protocol": profile.preflight_protocol(),
             "operation": "text-translation-preflight",
             "inputMode": "text-only",
             "invocationCount": 1,
@@ -243,15 +369,23 @@ impl ProviderPreflightAuthorization {
             "grantGeneratedAt": required_str(&grant, "/generatedAt", "grant generatedAt")?,
             "reservationIssuedAts": reservation_issued_at,
             "authorizationObservedAt": observed_at.to_rfc3339_opts(SecondsFormat::Millis, true),
-        });
+        })
+        .as_object()
+        .cloned()
+        .ok_or_else(|| "provider preflight authority cannot be represented as an object".to_string())?;
+        if profile == PreflightAuthorityProfile::IncidentPlusReplay {
+            authority.insert("incidentId".to_string(), Value::String(INCIDENT_ID.to_string()));
+        }
+        let authority = Value::Object(authority);
         Ok(Self {
             authority,
-            model: PREFLIGHT_MODEL.to_string(),
-            protocol: PREFLIGHT_PROTOCOL.to_string(),
+            model: profile.preflight_model().to_string(),
+            protocol: profile.preflight_protocol().to_string(),
             authorization_root,
             grant,
             authorization_digest,
             expires_at: grant_expires_at,
+            profile,
         })
     }
 
@@ -282,6 +416,7 @@ impl ProviderPreflightAuthorization {
             &self.grant,
             &self.authorization_digest,
             claimed_at,
+            self.profile,
         )?;
         self.authority
             .as_object_mut()
@@ -345,6 +480,7 @@ fn validate_authorization_paths(
     grant_path: &Path,
     reservation_directory: &Path,
     grant: &Value,
+    profile: PreflightAuthorityProfile,
 ) -> Result<PathBuf, String> {
     let executable = current_desktop_executable_path()?;
     if executable.file_name().and_then(|value| value.to_str())
@@ -374,10 +510,17 @@ fn validate_authorization_paths(
             "provider preflight Desktop executable is not under target/release".to_string()
         })?;
     let execution_id = required_str(grant, "/executionId", "grant executionId")?;
-    let expected_root = AUTHORIZATION_PARENT_RELATIVE_PATH
-        .iter()
-        .fold(repo_root.to_path_buf(), |root, segment| root.join(segment))
-        .join(format!("{execution_id}{AUTHORIZATION_ROOT_SUFFIX}"));
+    let expected_root = match profile {
+        PreflightAuthorityProfile::StrictReleaseMatrix => AUTHORIZATION_PARENT_RELATIVE_PATH
+            .iter()
+            .fold(repo_root.to_path_buf(), |root, segment| root.join(segment))
+            .join(format!("{execution_id}{AUTHORIZATION_ROOT_SUFFIX}")),
+        PreflightAuthorityProfile::IncidentPlusReplay => INCIDENT_AUTHORIZATION_PARENT_RELATIVE_PATH
+            .iter()
+            .fold(repo_root.to_path_buf(), |root, segment| root.join(segment))
+            .join(execution_id)
+            .join(INCIDENT_AUTHORIZATION_DIRECTORY),
+    };
     reject_reparse_points(repo_root, &expected_root)?;
     let expected_root = fs::canonicalize(&expected_root).map_err(|error| {
         format!(
@@ -395,7 +538,7 @@ fn validate_authorization_paths(
         format!("provider preflight reservation directory is unavailable: {error}")
     })?;
     reject_reparse_points(repo_root, reservation_directory)?;
-    let expected_reservations = fs::canonicalize(actual_root.join(RESERVATION_DIRECTORY))
+    let expected_reservations = fs::canonicalize(actual_root.join(profile.reservation_directory()))
         .map_err(|error| {
             format!("canonical provider preflight reservation directory is unavailable: {error}")
         })?;
@@ -443,13 +586,14 @@ fn create_consumption_claim(
     grant: &Value,
     authorization_digest: &str,
     claimed_at: DateTime<Utc>,
+    profile: PreflightAuthorityProfile,
 ) -> Result<Value, String> {
     let executable = current_desktop_executable_path()?;
     let executable_bytes = fs::read(&executable)
         .map_err(|error| format!("provider preflight Desktop executable cannot be read: {error}"))?;
-    let claim = json!({
+    let mut claim = json!({
         "schemaVersion": 1,
-        "artifactKind": CONSUMPTION_CLAIM_KIND,
+        "artifactKind": profile.consumption_claim_kind(),
         "executionId": required_str(grant, "/executionId", "grant executionId")?,
         "grantDigest": required_str(grant, "/digest", "grant digest")?,
         "authorizationDigest": authorization_digest,
@@ -461,11 +605,18 @@ fn create_consumption_claim(
         "desktopExecutableBytes": executable_bytes.len(),
         "desktopExecutableSha256": sha256_bytes(&executable_bytes),
         "retryPolicy": "new-execution-required",
-    });
+    })
+    .as_object()
+    .cloned()
+    .ok_or_else(|| "provider preflight consumption claim cannot be represented as an object".to_string())?;
+    if profile == PreflightAuthorityProfile::IncidentPlusReplay {
+        claim.insert("incidentId".to_string(), Value::String(INCIDENT_ID.to_string()));
+    }
+    let claim = Value::Object(claim);
     let mut bytes = serde_json::to_vec_pretty(&claim)
         .map_err(|error| format!("provider preflight consumption claim cannot serialize: {error}"))?;
     bytes.push(b'\n');
-    let claim_path = authorization_root.join(CONSUMPTION_CLAIM_FILE);
+    let claim_path = authorization_root.join(profile.consumption_claim_file());
     let mut options = OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(windows)]
@@ -495,7 +646,7 @@ fn create_consumption_claim(
         .ok_or_else(|| "provider preflight consumption claim must be an object".to_string())?;
     projected.insert(
         "path".to_string(),
-        Value::String(CONSUMPTION_CLAIM_FILE.to_string()),
+        Value::String(profile.consumption_claim_file().to_string()),
     );
     projected.insert("bytes".to_string(), json!(bytes.len()));
     projected.insert("sha256".to_string(), Value::String(sha256_bytes(&bytes)));
@@ -534,9 +685,17 @@ fn portable_executable_path(executable: PathBuf) -> Result<PathBuf, String> {
     }
 }
 
-fn validate_grant(grant: &Value, source_head_commit: &str) -> Result<(), String> {
+fn validate_grant(
+    grant: &Value,
+    source_head_commit: &str,
+    profile: PreflightAuthorityProfile,
+) -> Result<(), String> {
     if required_u64(grant, "/schemaVersion", "grant schemaVersion")? != 1
-        || required_str(grant, "/artifactKind", "grant artifactKind")? != GRANT_KIND
+        || required_str(grant, "/artifactKind", "grant artifactKind")?
+            != match profile {
+                PreflightAuthorityProfile::StrictReleaseMatrix => GRANT_KIND,
+                PreflightAuthorityProfile::IncidentPlusReplay => INCIDENT_GRANT_KIND,
+            }
         || required_str(grant, "/provenance/source", "grant provenance source")? != "git"
         || required_str(grant, "/provenance/captureStatus", "grant capture status")? != "captured"
         || grant
@@ -554,16 +713,22 @@ fn validate_grant(grant: &Value, source_head_commit: &str) -> Result<(), String>
         || required_u64(grant, "/localIsolationAuthority/providerCalls", "local provider calls")? != 0
         || required_u64(grant, "/budget/inputSampleRateHz", "budget sample rate")? != 16_000
         || required_u64(grant, "/budget/cellMaxExternalAudioSamples", "cell budget")? != CELL_MAX_SAMPLES
-        || required_u64(grant, "/budget/matrixMaxExternalAudioSamples", "matrix budget")? != MATRIX_MAX_SAMPLES
+        || required_u64(grant, "/budget/matrixMaxExternalAudioSamples", "matrix budget")?
+            != profile.matrix_max_samples()
         || required_str(grant, "/budget/reclaimPolicy", "budget reclaim policy")? != "never-within-execution"
         || required_str(grant, "/budget/retryPolicy", "budget retry policy")? != "new-execution-required"
     {
         return Err("provider preflight grant worker/local/budget authority is invalid".to_string());
     }
+    if profile == PreflightAuthorityProfile::IncidentPlusReplay
+        && required_str(grant, "/incidentId", "incident grant incidentId")? != INCIDENT_ID
+    {
+        return Err("incident Plus preflight grant incident binding is invalid".to_string());
+    }
     for (pointer, expected) in [
         ("/authorization/providerId", PROVIDER_ID),
-        ("/authorization/model", PREFLIGHT_MODEL),
-        ("/authorization/protocol", PREFLIGHT_PROTOCOL),
+        ("/authorization/model", profile.preflight_model()),
+        ("/authorization/protocol", profile.preflight_protocol()),
         ("/authorization/operation", "text-translation-preflight"),
         ("/authorization/inputMode", "text-only"),
         ("/authorization/systemPromptTemplate", "game-live-translation-cn"),
@@ -599,32 +764,59 @@ fn validate_grant(grant: &Value, source_head_commit: &str) -> Result<(), String>
     let cells = required_array(grant, "/cells", "grant cells")?;
     let mut lease_ids = HashSet::new();
     let mut worker_wave_slots = HashSet::new();
-    if cells.len() != 8 {
-        return Err("provider preflight grant must contain exactly eight cells".to_string());
+    if cells.len() != profile.cell_count() {
+        return Err(format!(
+            "provider preflight grant must contain exactly {} cells",
+            profile.cell_count()
+        ));
     }
     for (index, cell) in cells.iter().enumerate() {
-        let tier = if index < 6 { "pairwise-live" } else { "model-stability" };
-        let expected_id = format!(
-            "{tier}::{}::{}::{}",
-            CELL_MODELS[index], CELL_FEEDBACK_MODES[index], CELL_DEVICE_CLASSES[index]
-        );
-        let expected_protocol = if CELL_MODELS[index].contains("livetranslate") {
-            "dashscope-livetranslate"
-        } else {
-            "dashscope-omni"
-        };
+        let (expected_id, expected_model, expected_protocol, expected_feedback, expected_device) =
+            match profile {
+                PreflightAuthorityProfile::StrictReleaseMatrix => {
+                    let tier = if index < 6 { "pairwise-live" } else { "model-stability" };
+                    (
+                        format!(
+                            "{tier}::{}::{}::{}",
+                            CELL_MODELS[index], CELL_FEEDBACK_MODES[index], CELL_DEVICE_CLASSES[index]
+                        ),
+                        CELL_MODELS[index],
+                        if CELL_MODELS[index].contains("livetranslate") {
+                            "dashscope-livetranslate"
+                        } else {
+                            "dashscope-omni"
+                        },
+                        CELL_FEEDBACK_MODES[index],
+                        CELL_DEVICE_CLASSES[index],
+                    )
+                }
+                PreflightAuthorityProfile::IncidentPlusReplay => {
+                    const MODES: [&str; 3] = ["process-exclusion", "virtual-driver", "echo-cancel"];
+                    const DEVICES: [&str; 3] = ["default-speaker", "usb", "default-speaker"];
+                    (
+                        format!(
+                            "incident-plus::{INCIDENT_PREFLIGHT_MODEL}::{}::{}",
+                            MODES[index], DEVICES[index]
+                        ),
+                        INCIDENT_PREFLIGHT_MODEL,
+                        INCIDENT_PREFLIGHT_PROTOCOL,
+                        MODES[index],
+                        DEVICES[index],
+                    )
+                }
+            };
         let worker_id = required_str(cell, "/workerId", "grant cell workerId")?;
         let wave_index = required_u64(cell, "/waveIndex", "grant cell waveIndex")?;
         let lease_id = required_str(cell, "/leaseId", "grant cell leaseId")?;
         if required_u64(cell, "/cellIndex", "grant cellIndex")? != index as u64
             || required_str(cell, "/cellId", "grant cellId")? != expected_id
             || required_str(cell, "/providerId", "grant cell providerId")? != PROVIDER_ID
-            || required_str(cell, "/modelId", "grant cell modelId")? != CELL_MODELS[index]
+            || required_str(cell, "/modelId", "grant cell modelId")? != expected_model
             || required_str(cell, "/protocol", "grant cell protocol")? != expected_protocol
             || required_str(cell, "/feedbackLoopPrevention", "grant feedback mode")?
-                != CELL_FEEDBACK_MODES[index]
+                != expected_feedback
             || required_str(cell, "/deviceClass", "grant device class")?
-                != CELL_DEVICE_CLASSES[index]
+                != expected_device
             || required_u64(cell, "/maxExternalAudioSamples", "grant cell budget")?
                 != CELL_MAX_SAMPLES
             || !worker_ids.contains(worker_id)
@@ -658,6 +850,7 @@ fn validate_reservation(
     index: usize,
     grant_generated_at: DateTime<Utc>,
     grant_expires_at: DateTime<Utc>,
+    profile: PreflightAuthorityProfile,
 ) -> Result<(), String> {
     let cell = required_array(grant, "/cells", "grant cells")?
         .get(index)
@@ -671,7 +864,7 @@ fn validate_reservation(
         "reservation expiresAt",
     )?;
     for (pointer, expected) in [
-        ("/artifactKind", RESERVATION_KIND),
+        ("/artifactKind", profile.reservation_kind()),
         (
             "/executionId",
             required_str(grant, "/executionId", "grant executionId")?,
@@ -1014,7 +1207,13 @@ mod tests {
                 let barrier = Arc::clone(&barrier);
                 std::thread::spawn(move || {
                     barrier.wait();
-                    create_consumption_claim(&root, &grant, &digest, Utc::now())
+                    create_consumption_claim(
+                        &root,
+                        &grant,
+                        &digest,
+                        Utc::now(),
+                        PreflightAuthorityProfile::StrictReleaseMatrix,
+                    )
                 })
             })
             .collect::<Vec<_>>();

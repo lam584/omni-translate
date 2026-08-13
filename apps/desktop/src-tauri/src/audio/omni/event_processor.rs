@@ -446,23 +446,24 @@ impl OmniEventProcessor {
                 estimated_duration_ms: duration_ms,
             }) {
                 OmniPlaybackEnqueueOutcome::Queued => "queued",
-                OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped_cue_ids } => {
+                OmniPlaybackEnqueueOutcome::QueuedAfterDroppingStale { dropped } => {
                     record_native_playback_stale(
                         app,
                         &audio_state,
-                        &dropped_cue_ids,
+                        &dropped,
                         "realtime-budget-at-enqueue",
                     );
                     "queued_after_stale_drop"
                 }
                 OmniPlaybackEnqueueOutcome::Overflow {
                     reason,
-                    dropped_cue_ids,
+                    dropped,
+                    projected_start_delay_ms,
                 } => {
                     record_native_playback_stale(
                         app,
                         &audio_state,
-                        &dropped_cue_ids,
+                        &dropped,
                         "realtime-budget-at-enqueue",
                     );
                     let reason = match reason {
@@ -471,6 +472,9 @@ impl OmniEventProcessor {
                             "projected-start-outside-realtime-budget"
                         }
                     };
+                    let reason = format!(
+                        "{reason} predictedStartMs={projected_start_delay_ms}"
+                    );
                     audio_state.watch_session_report.record_session_issue(
                         "output",
                         "native-playback-queue-overflow",
@@ -893,7 +897,8 @@ mod audio_done_tests {
             &handle,
             &OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
-                dropped_cue_ids: Vec::new(),
+                dropped: Vec::new(),
+                projected_start_delay_ms: 5_001,
             },
             "new cue is outside the realtime playback budget",
         );

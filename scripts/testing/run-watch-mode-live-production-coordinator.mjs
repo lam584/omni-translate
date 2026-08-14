@@ -557,7 +557,6 @@ export function remotePowerShellInvocation(body, payload) {
     `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
     '$payload = $payloadJson | ConvertFrom-Json',
     body,
-    `Write-Output '${REMOTE_POWERSHELL_COMPLETION_MARKER}'`,
   ].join('\n');
   // Windows OpenSSH on the evidence VMs does not forward stdin into a
   // non-interactive remote PowerShell session.  Passing source through stdin
@@ -573,7 +572,7 @@ export function remotePowerShellInvocation(body, payload) {
     '$gzip = [IO.Compression.GZipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)',
     '$reader = [IO.StreamReader]::new($gzip, [Text.UTF8Encoding]::new($false))',
     'try { $source = $reader.ReadToEnd() } finally { $reader.Dispose(); $gzip.Dispose(); $input.Dispose() }',
-    'try { & ([ScriptBlock]::Create($source)); exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }',
+    `try { & ([ScriptBlock]::Create($source)); Write-Output '${REMOTE_POWERSHELL_COMPLETION_MARKER}'; exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
   ].join('; ');
   const encodedCommand = Buffer.from(bootstrap, 'utf16le').toString('base64');
   if (encodedCommand.length >= 32_000) {

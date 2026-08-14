@@ -432,10 +432,11 @@ test('remote PowerShell uses a compressed encoded command without SSH stdin', ()
   assert.equal(streamedPayload.localizedName, '扬声器 (High Definition Audio Device)');
   assert.match(streamedSource, /Console\]::OutputEncoding = \[Text\.UTF8Encoding\]::new\(\$false\)/);
   assert.match(streamedSource, /\$OutputEncoding = \[Console\]::OutputEncoding/);
-  assert.match(streamedSource, /__OMNI_REMOTE_COMPLETE_V1__/);
+  assert.doesNotMatch(streamedSource, /__OMNI_REMOTE_COMPLETE_V1__/);
   assert.match(bootstrap, /GZipStream/);
   assert.match(bootstrap, /ReadToEnd/);
   assert.match(bootstrap, /ScriptBlock/);
+  assert.match(bootstrap, /__OMNI_REMOTE_COMPLETE_V1__/);
   assert.match(bootstrap, /exit 0/);
   assert.match(bootstrap, /exit 1/);
 });

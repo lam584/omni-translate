@@ -107,6 +107,7 @@ drivers/windows-virtual-mic/package/*.inf
 drivers/windows-virtual-mic/package/*.sys
 drivers/windows-virtual-mic/package/*.cat
 drivers/windows-virtual-mic/package/*.cer
+drivers/windows-virtual-mic/package/driver-package.json
 drivers/windows-virtual-mic/sysvad/**/x64/
 drivers/windows-virtual-mic/sysvad/TabletAudioSample/x64/
 

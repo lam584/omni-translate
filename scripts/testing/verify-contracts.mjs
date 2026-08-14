@@ -124,7 +124,7 @@ assertJsonValue(
   'desktop default config protocol',
 );
 assertJsonValue(
-  path.join('drivers', 'windows-virtual-mic', 'package', 'driver-package.json'),
+  path.join('drivers', 'windows-virtual-mic', 'src', 'driver_package_contract.json'),
   ['protocolVersion'],
   protocolVersion,
   'driver package protocol',

@@ -24,8 +24,22 @@ const manifest = JSON.parse(
 );
 const kernelImportMinimumBuilds = readFixture('kernel-import-minimum-builds.json');
 const driverPackageMetadata = JSON.parse(
-  readRepoText('drivers', 'windows-virtual-mic', 'package', 'driver-package.json'),
+  readRepoText('drivers', 'windows-virtual-mic', 'src', 'driver_package_contract.json'),
 );
+
+test('driver package separates the tracked source contract from the generated signer receipt', () => {
+  const buildScript = readRepoText('scripts', 'installer', 'build-sysvad-driver.ps1');
+  const gitignore = readRepoText('.gitignore');
+  const attributes = readRepoText('.gitattributes');
+
+  assert.match(buildScript, /\$stagedMetadata = Join-Path \$packageRoot 'driver-package\.json'/);
+  assert.match(gitignore, /^drivers\/windows-virtual-mic\/package\/driver-package\.json$/m);
+  assert.match(
+    attributes,
+    /^drivers\/windows-virtual-mic\/src\/driver_package_contract\.json text eol=lf$/m,
+  );
+  assert.equal(Object.hasOwn(driverPackageMetadata, 'signerThumbprint'), false);
+});
 
 // Fields the desktop shell deserializes (DriverInstallStateFile) plus the
 // backend/device identity fields the bridge and probe script rely on.

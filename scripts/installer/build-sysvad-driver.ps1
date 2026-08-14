@@ -176,6 +176,9 @@ $stagedInf = Join-Path $packageRoot 'omni-virtual-speaker.inf'
 $stagedSys = Join-Path $packageRoot 'omni-virtual-speaker.sys'
 $stagedCat = Join-Path $packageRoot 'omni-virtual-speaker.cat'
 $stagedPublicCertificate = Join-Path $packageRoot 'omni-translate-development-driver.cer'
+# This is a generated signer receipt, not a source manifest. Development
+# certificates are workspace-local, so tracking the receipt would make an
+# otherwise exact clean-HEAD build dirty and bind authority to another machine.
 $stagedMetadata = Join-Path $packageRoot 'driver-package.json'
 Copy-Item -LiteralPath (Join-Path $buildOutput 'ComponentizedAudioSample.inf') -Destination $stagedInf -Force
 Copy-Item -LiteralPath (Join-Path $buildOutput 'omni-virtual-speaker.sys') -Destination $stagedSys -Force

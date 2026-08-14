@@ -1,5 +1,5 @@
 drivers/windows-virtual-mic/sysvad/** linguist-vendored
-drivers/windows-virtual-mic/package/driver-package.json text eol=lf
+drivers/windows-virtual-mic/src/driver_package_contract.json text eol=lf
 .gitattributes text eol=lf
 scripts/testing/watch-mode-shard-authority.mjs text eol=lf
 scripts/testing/run-watch-mode-live-shard.mjs text eol=lf

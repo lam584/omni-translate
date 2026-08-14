@@ -9,5 +9,9 @@ The INF is decorated for Windows 10 build `19041` and newer.
 
 The development package contains the public test certificate. The private PFX
 and password remain under the ignored `artifacts/driver-signing` directory.
-`driver-package.json` records the audited/import minimum Windows build and
-whether the staged package is development-test or release-injected signed.
+`../src/driver_package_contract.json` is the tracked source contract for the
+protocol, platform, and audited/import minimum Windows build. The build writes
+the ignored `driver-package.json` runtime receipt next to the staged binaries. That receipt
+records the actual signer and whether the package is development-test or
+release-injected signed; installer and release evidence must consume the receipt,
+not the template.

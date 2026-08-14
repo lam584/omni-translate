@@ -1,0 +1,7 @@
+{
+  "protocolVersion": "2026-08-13-audio-routing-v7",
+  "configuration": "Release",
+  "platform": "x64",
+  "minimumWindowsBuild": 19041,
+  "kernelImportMinimumWindowsBuild": 19041
+}

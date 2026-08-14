@@ -40,6 +40,7 @@ import {
   prepareIncidentPlusExecution,
   parseIncidentPlusCliArgs,
   runIncidentPlusProductionCoordinator,
+  stageIncidentPlusCellAuthority,
 } from './run-watch-mode-incident-plus.mjs';
 import {
   buildIncidentPlusPowerShellRunnerArgv,
@@ -220,6 +221,30 @@ test('Plus coordinator requires an explicit dispatch switch before it can reach 
     '--dispatch',
   ]);
   assert.equal(dispatched.dispatch, true);
+});
+
+test('Plus cell staging uploads the signed plan before its cell lease', async () => {
+  const uploads = [];
+  const staged = await stageIncidentPlusCellAuthority({
+    upload: async (_worker, source, target) => uploads.push({ source, target }),
+    worker: { workerId: 'vm1-default' },
+    planPath: 'C:\\authority\\plan.json',
+    leasePath: 'C:\\authority\\lease.json',
+    remoteRoot: 'E:\\incident\\vm1-default',
+    cellIndex: 0,
+  });
+  assert.deepEqual(uploads, [
+    {
+      source: 'C:\\authority\\plan.json',
+      target: 'E:\\incident\\vm1-default\\shard-execution-plan.json',
+    },
+    {
+      source: 'C:\\authority\\lease.json',
+      target: 'E:\\incident\\vm1-default\\leases\\1.json',
+    },
+  ]);
+  assert.equal(staged.remotePlanPath, uploads[0].target);
+  assert.equal(staged.remoteLeasePath, uploads[1].target);
 });
 
 function healthyWatchReport() {

@@ -562,7 +562,7 @@ export function remotePowerShellInvocation(body, payload) {
     '$gzip = [IO.Compression.GZipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)',
     '$reader = [IO.StreamReader]::new($gzip, [Text.UTF8Encoding]::new($false))',
     'try { $source = $reader.ReadToEnd() } finally { $reader.Dispose(); $gzip.Dispose(); $input.Dispose() }',
-    '& ([ScriptBlock]::Create($source))',
+    'try { & ([ScriptBlock]::Create($source)); exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }',
   ].join('; ');
   const encodedCommand = Buffer.from(bootstrap, 'utf16le').toString('base64');
   if (encodedCommand.length >= 32_000) {

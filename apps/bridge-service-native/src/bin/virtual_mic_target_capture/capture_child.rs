@@ -3,7 +3,7 @@ use crate::artifacts::{
 };
 use omni_bridge_service::probe_support::{for_each_capture_packet, open_capture_stream};
 use serde::{Deserialize, Serialize};
-use std::fs::OpenOptions;
+use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::PathBuf;
 use std::thread;
@@ -244,14 +244,69 @@ fn write_json_new(path: &PathBuf, value: &impl Serialize) -> Result<(), String> 
 }
 
 fn write_bytes_new(path: &PathBuf, bytes: &[u8]) -> Result<(), String> {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| format!("evidence path has no UTF-8 file name: {}", path.display()))?;
+    let temporary_path = path.with_file_name(format!(
+        ".{file_name}.tmp-{}",
+        std::process::id()
+    ));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
-        .open(path)
+        .open(&temporary_path)
         .map_err(error_text)?;
-    file.write_all(bytes).map_err(error_text)
+    let published = (|| {
+        file.write_all(bytes).map_err(error_text)?;
+        file.sync_all().map_err(error_text)?;
+        drop(file);
+        fs::rename(&temporary_path, path).map_err(error_text)
+    })();
+    if published.is_err() {
+        let _ = fs::remove_file(&temporary_path);
+    }
+    published
 }
 
 fn error_text(error: impl std::fmt::Display) -> String {
     error.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn json_evidence_is_published_complete_without_a_temporary_file() {
+        let root = std::env::temp_dir().join(format!(
+            "omni-capture-child-atomic-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let path = root.join("ready.json");
+        let ready = CaptureChildReady {
+            schema_version: 1,
+            artifact_kind: "virtual-mic-target-capture-ready".to_string(),
+            process_id: 42,
+            application_name: TARGET_APPLICATION_NAME.to_string(),
+            capture_api: "WASAPI".to_string(),
+            endpoint_id: "endpoint-id".to_string(),
+            endpoint_name: "endpoint-name".to_string(),
+            sample_rate_hz: SAMPLE_RATE_HZ,
+            channel_count: CHANNEL_COUNT,
+            bits_per_sample: BITS_PER_SAMPLE,
+        };
+
+        write_json_new(&path, &ready).unwrap();
+
+        let decoded: CaptureChildReady = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+        assert_eq!(decoded.process_id, ready.process_id);
+        assert_eq!(fs::read_dir(&root).unwrap().count(), 1);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

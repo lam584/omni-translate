@@ -718,6 +718,14 @@ export function createSshProductionTransport({
 
   const runRemote = async (worker, body, payload, options = {}) => {
     const invocation = remotePowerShellInvocation(body, payload);
+    if (isCoordinatorLocalWorker(worker)) {
+      return runProcess(invocation.args[0], invocation.args.slice(1), {
+        ...options,
+        cwd: worker.workspaceRoot,
+        input: invocation.input,
+        completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
+      });
+    }
     return runProcess(config.sshExecutable, [
       ...sshBaseArgs(worker),
       `${worker.user}@${worker.host}`,

@@ -49,8 +49,11 @@ import {
 import { generateCoordinatorSigningKeyPair } from './watch-mode-shard-authority.mjs';
 import { INCIDENT_REPLAY_PLUS_ID } from './watch-mode-external-provider-budget.mjs';
 
-const fixedNow = new Date('2026-08-14T03:00:00.000Z');
-const fixedFuture = new Date('2026-08-14T05:00:00.000Z');
+// This suite exercises signed-plan expiry separately. Keep the normal fixture
+// window safely in the future so ordinary verification does not depend on the
+// wall clock of the machine running the tests.
+const fixedNow = new Date('2035-08-14T03:00:00.000Z');
+const fixedFuture = new Date('2035-08-14T05:00:00.000Z');
 const provenance = Object.freeze({
   source: 'git',
   captureStatus: 'captured',
@@ -264,7 +267,7 @@ function readinessReceipt(plan, request) {
     schemaVersion: 1,
     artifactKind: 'watch-mode-incident-plus-worker-zero-provider-readiness',
     incidentId: INCIDENT_REPLAY_PLUS_ID,
-    generatedAt: '2026-08-14T03:10:00.000Z',
+    generatedAt: '2035-08-14T03:10:00.000Z',
     executionId: plan.executionId,
     planDigest: plan.planDigest,
     requestDigest: request.requestDigest,
@@ -353,7 +356,7 @@ function syntheticValidatedBudget(runDirectory, options) {
   return {
     schemaVersion: 1,
     artifactKind: 'watch-mode-paid-cell-external-provider-budget',
-    generatedAt: '2026-08-14T03:30:00.000Z',
+    generatedAt: '2035-08-14T03:30:00.000Z',
     passed: true,
     scope: 'incident-replay-plus-realtime-session-window',
     runMarker: `run-${cell.cellId}`,
@@ -399,8 +402,8 @@ test('incident Plus plan is fixed to three Plus cells, two VMs, and two waves', 
 
 test('incident Plus preflight authority is a separate three-reservation Plus-only grant', () => {
   const { plan, leases, signingKeys } = planFixture();
-  const grantAt = new Date('2026-08-14T03:00:01.000Z');
-  const reservationAt = new Date('2026-08-14T03:00:02.000Z');
+  const grantAt = new Date('2035-08-14T03:00:01.000Z');
+  const reservationAt = new Date('2035-08-14T03:00:02.000Z');
   const grant = createIncidentPlusPreflightGrant({
     plan,
     leases,
@@ -528,7 +531,7 @@ test('incident Plus cell runner uses the bounded Plus authority without entering
       authoritySnapshot: snapshot,
       readAuthoritySnapshot: () => snapshot,
       interactiveExecutionReceiptPath: interactiveReceiptPath,
-      now: () => new Date('2026-08-14T03:30:00.000Z'),
+      now: () => new Date('2035-08-14T03:30:00.000Z'),
       assertExternalProviderBudget: syntheticValidatedBudget,
       executeCell: async (cellRequest) => {
         const argv = buildIncidentPlusPowerShellRunnerArgv(cellRequest);
@@ -565,7 +568,7 @@ test('incident Plus cell runner uses the bounded Plus authority without entering
         readinessRequestPath: path.join(executionRoot, `worker-readiness-request-${worker.workerId}.json`),
       },
       authoritySnapshot: snapshot,
-      now: new Date('2026-08-14T03:30:00.000Z'),
+      now: new Date('2035-08-14T03:30:00.000Z'),
       assertExternalProviderBudget: syntheticValidatedBudget,
     });
     assert.equal(finalized.resultPath, outcome.resultPath);
@@ -602,7 +605,7 @@ test('Plus production coordinator keeps the signed two-wave incident sequence ou
       localIsolationAuthority,
       executionRoot: root,
       executionId: prepared.plan.executionId,
-      now: () => new Date('2026-08-14T03:30:00.000Z'),
+      now: () => new Date('2035-08-14T03:30:00.000Z'),
       operations: {
         prepareExecution: () => prepared,
         createPreparationTransport: ({ plan }) => {
@@ -672,10 +675,10 @@ test('incident Plus result and final manifest bind preflight, readiness, budget,
       return filePath;
     });
     const grant = createIncidentPlusPreflightGrant({
-      plan, leases, generatedAt: new Date('2026-08-14T03:15:00.000Z'), signingKeys,
+      plan, leases, generatedAt: new Date('2035-08-14T03:15:00.000Z'), signingKeys,
     });
     const leaseReservations = createIncidentPlusPreflightLeaseReservations({
-      grant, plan, issuedAt: new Date('2026-08-14T03:15:01.000Z'), signingKeys,
+      grant, plan, issuedAt: new Date('2035-08-14T03:15:01.000Z'), signingKeys,
     });
     const preflightAuthorization = writeIncidentPlusPreflightAuthorizationPackage({
       executionRoot, plan, grant, leaseReservations,
@@ -685,7 +688,7 @@ test('incident Plus result and final manifest bind preflight, readiness, budget,
       schemaVersion: 1,
       artifactKind: 'watch-mode-incident-plus-preflight-consumption-claim',
       incidentId: INCIDENT_REPLAY_PLUS_ID,
-      claimedAt: '2026-08-14T03:15:02.000Z',
+      claimedAt: '2035-08-14T03:15:02.000Z',
       executionId: plan.executionId,
       grantDigest: grant.digest,
       authorizationDigest: consumed.authorizationDigest,
@@ -708,7 +711,7 @@ test('incident Plus result and final manifest bind preflight, readiness, budget,
       leaseReservations,
       authorizationRoot: preflightAuthorization.authorizationRoot,
       evidenceDirectory: preflightEvidenceDirectory,
-      completedAt: new Date('2026-08-14T03:20:00.000Z'),
+      completedAt: new Date('2035-08-14T03:20:00.000Z'),
       signingKeys,
       workspaceRoot,
       validateRawEvidence: (_evidenceDirectory, { expectedAuthorization }) => ({
@@ -742,20 +745,20 @@ test('incident Plus result and final manifest bind preflight, readiness, budget,
         executionRoot, runDirectory,
         readinessReceiptPath: readinessPaths.find((candidate) => candidate.endsWith(`${cell.workerId}.json`)),
         readinessRequest: readinessRequests.find((request) => request.workerId === cell.workerId),
-        generatedAt: new Date('2026-08-14T03:30:00.000Z'),
+        generatedAt: new Date('2035-08-14T03:30:00.000Z'),
         assertExternalProviderBudget: syntheticValidatedBudget,
       }).resultPath;
     });
     const manifest = writeIncidentPlusManifest({
       plan, leases, preflight, executionRoot, resultPaths, readinessReceiptPaths: readinessPaths,
-      readinessRequests, generatedAt: new Date('2026-08-14T03:40:00.000Z'), signingKeys,
+      readinessRequests, generatedAt: new Date('2035-08-14T03:40:00.000Z'), signingKeys,
       assertExternalProviderBudget: syntheticValidatedBudget,
     });
     assert.equal(path.basename(manifest.manifestPath), INCIDENT_PLUS_MANIFEST_FILE);
     assert.equal(fs.existsSync(path.join(executionRoot, INCIDENT_PLUS_EXTERNAL_BUDGET_FILE)), true);
     const receipt = writeIncidentPlusVerificationReceipt({
       manifestPath: manifest.manifestPath, plan, leases, executionRoot, readinessReceiptPaths: readinessPaths,
-      readinessRequests, generatedAt: new Date('2026-08-14T03:45:00.000Z'), signingKeys,
+      readinessRequests, generatedAt: new Date('2035-08-14T03:45:00.000Z'), signingKeys,
       assertExternalProviderBudget: syntheticValidatedBudget,
     });
     assert.equal(path.basename(receipt.receiptPath), INCIDENT_PLUS_VERIFICATION_RECEIPT_FILE);
@@ -770,7 +773,7 @@ test('incident Plus result and final manifest bind preflight, readiness, budget,
       executionRoot,
       readinessReceiptPaths: readinessPaths,
       readinessRequests,
-      generatedAt: new Date('2026-08-14T03:45:01.000Z'),
+      generatedAt: new Date('2035-08-14T03:45:01.000Z'),
       signingKeys,
       assertExternalProviderBudget: syntheticValidatedBudget,
     }), /raw evidence hash\/size no longer matches disk/);

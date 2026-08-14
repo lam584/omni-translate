@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
+import { repoRoot } from '../lib/testing-common.mjs';
 import {
   INCIDENT_PLUS_CELL_RESULT_FILE,
   INCIDENT_PLUS_CELLS,
@@ -34,7 +35,15 @@ import {
   writeIncidentPlusPreflightAuthorizationPackage,
   writeIncidentPlusVerificationReceipt,
 } from './watch-mode-incident-plus-authority.mjs';
-import { prepareIncidentPlusExecution } from './run-watch-mode-incident-plus.mjs';
+import {
+  prepareCurrentIncidentPlusExecution,
+  prepareIncidentPlusExecution,
+} from './run-watch-mode-incident-plus.mjs';
+import {
+  buildIncidentPlusPowerShellRunnerArgv,
+  finalizeInteractiveIncidentPlusCell,
+  runLeasedIncidentPlusCell,
+} from './run-watch-mode-incident-plus-cell.mjs';
 import { generateCoordinatorSigningKeyPair } from './watch-mode-shard-authority.mjs';
 import { INCIDENT_REPLAY_PLUS_ID } from './watch-mode-external-provider-budget.mjs';
 
@@ -110,6 +119,50 @@ function planFixture({ runtimeBinaryHashes = inventory('runtime') } = {}) {
   const readinessRequests = createIncidentPlusReadinessRequests(plan, signingKeys, { generatedAt: fixedNow });
   return { plan, leases, readinessRequests, signingKeys };
 }
+
+test('current Plus preparation compiles the coordinator key before it signs preflight authority', () => {
+  const root = tempRoot();
+  const signingKeys = generateCoordinatorSigningKeyPair();
+  const calls = [];
+  const result = prepareCurrentIncidentPlusExecution({
+    workerConfig: workers,
+    localIsolationAuthority,
+    executionRoot: root,
+    executionId: 'incident-plus-current-preparation',
+    generatedAt: fixedNow,
+    expiresAt: fixedFuture,
+    signingKeys,
+    environment: { KEEP_ME: 'yes', CARGO_TARGET_DIR: 'stale-target' },
+    buildRuntimeAuthority: ({ environment }) => {
+      calls.push(environment);
+      return inventory('rebuilt-runtime');
+    },
+    captureProvenance: () => provenance,
+    captureAuthorityImplementationHashes: () => inventory('current-implementation'),
+    captureIncidentImplementationHashes: () => inventory('current-incident'),
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].KEEP_ME, 'yes');
+  assert.equal(calls[0].CARGO_TARGET_DIR, path.join(repoRoot, 'target'));
+  assert.match(String(calls[0].OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID), /^[a-f0-9]{64}$/);
+  assert.deepEqual(result.plan.authority.runtimeBinaryHashes, inventory('rebuilt-runtime'));
+  assert.deepEqual(result.plan.authority.implementationHashes, inventory('current-implementation'));
+  assert.deepEqual(result.plan.authority.incidentImplementationHashes, inventory('current-incident'));
+  assert.equal(result.plan.coordinator.publicKeyPem, signingKeys.publicKeyPem);
+});
+
+test('current Plus preparation refuses to sign after a runtime build dirties the evidence worktree', () => {
+  assert.throws(() => prepareCurrentIncidentPlusExecution({
+    workerConfig: workers,
+    localIsolationAuthority,
+    executionRoot: tempRoot(),
+    executionId: 'incident-plus-dirty-runtime',
+    generatedAt: fixedNow,
+    expiresAt: fixedFuture,
+    buildRuntimeAuthority: () => inventory('rebuilt-runtime'),
+    captureProvenance: () => ({ ...provenance, worktreeClean: false, dirtyEntryCount: 1 }),
+  }), /runtime build changed the evidence worktree/);
+});
 
 function healthyWatchReport() {
   return {
@@ -389,6 +442,81 @@ test('incident verifier rejects historical echo gates, normal queue loss, and un
     validateIncidentPlusWatchReport({ report: unhealthyAec, watchSessionReport: healthyWatchReport(), cell: aecCell }).violations.join('; '),
     /AEC underrun/,
   );
+});
+
+test('incident Plus cell runner uses the bounded Plus authority without entering the strict release matrix', async () => {
+  const root = tempRoot();
+  try {
+    const { plan, leases, readinessRequests } = planFixture();
+    const executionRoot = path.join(root, plan.executionId);
+    writeIncidentPlusExecutionPlan({ executionRoot, plan, leases, readinessRequests });
+    const worker = plan.workers[0];
+    const request = readinessRequests.find((entry) => entry.workerId === worker.workerId);
+    const readinessPath = path.join(executionRoot, 'readiness', `${worker.workerId}.json`);
+    writeJson(readinessPath, readinessReceipt(plan, request));
+    const lease = leases[0];
+    const snapshot = {
+      provenance,
+      authorityImplementationHashes: inventory('implementation'),
+      runtimeBinaryHashes: inventory('runtime'),
+      incidentImplementationHashes: inventory('incident'),
+    };
+    const interactiveReceiptPath = path.join(executionRoot, 'interactive-execution.json');
+    const outcome = await runLeasedIncidentPlusCell({
+      plan,
+      lease,
+      workerId: worker.workerId,
+      vmIdentity: worker.vmIdentity,
+      executionRoot,
+      readinessReceiptPath: readinessPath,
+      readinessRequest: request,
+      authoritySnapshot: snapshot,
+      readAuthoritySnapshot: () => snapshot,
+      interactiveExecutionReceiptPath: interactiveReceiptPath,
+      now: () => new Date('2026-08-14T03:30:00.000Z'),
+      assertExternalProviderBudget: syntheticValidatedBudget,
+      executeCell: async (cellRequest) => {
+        const argv = buildIncidentPlusPowerShellRunnerArgv(cellRequest);
+        assert.equal(argv.includes('-IncidentReplayAuthority'), true);
+        assert.equal(argv.includes('-StrictPaidAuthority'), false);
+        assert.equal(cellRequest.environment.OMNI_WATCH_MODE_INCIDENT_REPLAY_AUTHORITY, '1');
+        assert.equal(cellRequest.environment.OMNI_WATCH_MODE_PROVIDER_INPUT_MAX_SAMPLES, '2880000');
+        const runDirectory = path.join(cellRequest.cellOutputRoot, 'completed');
+        writeJson(path.join(runDirectory, 'report.json'), healthyReport(cellRequest.cell));
+        writeJson(path.join(runDirectory, 'watch-session-report.json'), healthyWatchReport());
+        writeBudgetArtifacts(runDirectory, cellRequest.cell, lease);
+        writeJson(
+          path.join(runDirectory, 'external-provider-budget.json'),
+          syntheticValidatedBudget(runDirectory, { cellId: cellRequest.cell.cellId }),
+        );
+        return { exitCode: 0, runDirectory };
+      },
+    });
+    assert.equal(path.basename(outcome.resultPath), INCIDENT_PLUS_CELL_RESULT_FILE);
+    const interactive = JSON.parse(fs.readFileSync(interactiveReceiptPath, 'utf8'));
+    assert.equal(interactive.artifactKind, 'watch-mode-interactive-incident-plus-cell-execution');
+    assert.equal(interactive.leaseId, lease.leaseId);
+    const finalized = finalizeInteractiveIncidentPlusCell({
+      request: {
+        schemaVersion: 1,
+        artifactKind: 'watch-mode-interactive-cell-finalization-request',
+        planPath: path.join(executionRoot, 'incident-plus-execution-plan.json'),
+        leasePath: path.join(executionRoot, 'leases', '1.json'),
+        workerId: worker.workerId,
+        vmUuidBios: worker.vmIdentity.uuidBios,
+        shardRoot: executionRoot,
+        executionReceiptPath: interactiveReceiptPath,
+        readinessReceiptPath: readinessPath,
+        readinessRequestPath: path.join(executionRoot, `worker-readiness-request-${worker.workerId}.json`),
+      },
+      authoritySnapshot: snapshot,
+      now: new Date('2026-08-14T03:30:00.000Z'),
+      assertExternalProviderBudget: syntheticValidatedBudget,
+    });
+    assert.equal(finalized.resultPath, outcome.resultPath);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('incident Plus result and final manifest bind preflight, readiness, budget, and raw reports', () => {

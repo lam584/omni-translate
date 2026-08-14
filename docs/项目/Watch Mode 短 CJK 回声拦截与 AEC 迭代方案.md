@@ -442,4 +442,6 @@ npm run test:watch-mode-report
 
 `qwen3.5-omni-plus-realtime` 的三格事故专项是独立签名 authority：process-exclusion/default-speaker、virtual-driver/USB、echo-cancel/default-speaker 各 180 秒，合计最多 8,640,000 个 16 kHz 输入样本。它只证明这次事故在 Plus 与三种反馈治理路径中未复现，并且每次 text-only preflight 都绑定三份 lease、消费 claim、当前二进制哈希和原始预检证据。
 
+专项计划必须在本轮 coordinator 公钥 ID 已编入 Desktop release binary 后才写入磁盘；随后只允许由签名 lease、当前 commit/runtime hash、Plus zero-provider readiness 和受控 Session 1 `incident-plus-cell` 入口共同启动。它使用 `IncidentReplayAuthority`，不会设置或借用 strict 八格的 `StrictPaidAuthority`。virtual-driver 格另行消费同一零 Provider 检查产生的驱动兼容性 receipt，只用于把已验证的驱动身份交给 limited session；它不能替代专项自己的 Plus readiness receipt。
+
 严格发布矩阵仍固定为两个 release 模型、六个 pairwise-live 格和两个 model-stability 格，共八格。Plus 专项不能替代、扩充或改变其 `LIVE_LLM_CELLS`、签名计划、预算或 verifier；只有 Plus 专项先全部通过，才允许开始固定八格矩阵。

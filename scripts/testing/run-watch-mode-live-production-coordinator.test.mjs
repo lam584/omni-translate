@@ -435,6 +435,8 @@ test('remote PowerShell uses a compressed encoded command without SSH stdin', ()
   assert.match(bootstrap, /GZipStream/);
   assert.match(bootstrap, /ReadToEnd/);
   assert.match(bootstrap, /ScriptBlock/);
+  assert.match(bootstrap, /exit 0/);
+  assert.match(bootstrap, /exit 1/);
 });
 
 test('preserved worker readiness is decoded as UTF-8 and returned as one compact JSON line', { skip: !isWindows }, () => {

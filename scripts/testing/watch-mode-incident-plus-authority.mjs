@@ -834,7 +834,7 @@ export function createIncidentPlusPreflightGrant({
     runtimeBinaryHashes: structuredClone(plan.authority.runtimeBinaryHashes),
     runtimeBundleDigest: plan.authority.runtimeBundleDigest,
     incidentImplementationHashes: structuredClone(plan.authority.incidentImplementationHashes),
-    localIsolationAuthority: structuredClone(plan.authority.localIsolationAuthority),
+    localIsolationAuthority: structuredClone(plan.localIsolationAuthority),
     workers: structuredClone(plan.workers),
     cells,
     budget: {
@@ -880,7 +880,7 @@ export function verifyIncidentPlusPreflightGrant(grant, plan) {
     || canonicalJson(grant.runtimeBinaryHashes) !== canonicalJson(plan.authority.runtimeBinaryHashes)
     || grant.runtimeBundleDigest !== plan.authority.runtimeBundleDigest
     || canonicalJson(grant.incidentImplementationHashes) !== canonicalJson(plan.authority.incidentImplementationHashes)
-    || canonicalJson(grant.localIsolationAuthority) !== canonicalJson(plan.authority.localIsolationAuthority)
+    || canonicalJson(grant.localIsolationAuthority) !== canonicalJson(plan.localIsolationAuthority)
     || canonicalJson(grant.workers) !== canonicalJson(plan.workers)
     || canonicalJson(grant.cells) !== canonicalJson(cells)
     || canonicalJson(grant.budget) !== canonicalJson({

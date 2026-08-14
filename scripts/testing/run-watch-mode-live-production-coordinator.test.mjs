@@ -348,7 +348,7 @@ test('interactive control projects readiness and paid-cell fields only inside th
     path.join(repoRoot, 'scripts/testing/invoke-watch-mode-interactive-task.ps1'),
     'utf8',
   );
-  assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell'\)/);
+  assert.match(control, /\$mode -notin @\('endpoint-readiness', 'shard-cell', 'incident-plus-cell'\)/);
   const commandStart = control.indexOf('$command = [ordered]@{');
   const commandEnd = control.indexOf('Write-ImmutableJson $commandPath $command');
   assert.ok(commandStart >= 0 && commandEnd > commandStart);
@@ -374,6 +374,11 @@ test('interactive control projects readiness and paid-cell fields only inside th
       `${field} must be read only while projecting a shard-cell request`,
     );
   }
+  assert.equal(
+    control.match(/\$payload\.readinessRequestPath/g)?.length,
+    1,
+    'incident-plus-cell must read its additional readiness request only while projecting the signed cell request',
+  );
   for (const field of ['readinessRequestDigest', 'profiles', 'probeExecutable', 'bridgeExecutable']) {
     assert.equal(
       control.match(new RegExp(`\\$payload\\.${field}`, 'g'))?.length,
@@ -381,7 +386,7 @@ test('interactive control projects readiness and paid-cell fields only inside th
       `${field} must be read only while projecting endpoint readiness`,
     );
   }
-  assert.match(control, /if \(\$mode -eq 'shard-cell'\) \{[\s\S]*?\$taskTerminal\['leaseId'\]/);
+  assert.match(control, /if \(\$mode -in @\('shard-cell', 'incident-plus-cell'\)\) \{[\s\S]*?\$taskTerminal\['leaseId'\]/);
   assert.match(control, /Export-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
   assert.match(control, /recordedXml\.Task\.Principals\.Principal\.UserId -cne \$expectedSid/);
   assert.match(control, /recordedXml\.Task\.Principals\.Principal\.LogonType -cne 'InteractiveToken'/);

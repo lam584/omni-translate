@@ -775,7 +775,7 @@ function incidentPreflightCells(plan) {
     deviceClass: cell.deviceClass,
     workerId: cell.workerId,
     waveIndex: cell.waveIndex,
-    deviceProfileInstanceId: cell.deviceProfileInstanceId,
+    deviceProfileInstanceId: cell.deviceProfileInstance.instanceId,
     leaseId: cell.leaseId,
     maxExternalAudioSamples: INCIDENT_PLUS_CELL_MAX_EXTERNAL_AUDIO_SAMPLES,
   }));

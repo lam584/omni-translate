@@ -294,8 +294,15 @@ function validateSendBoundaryAuthority({
 function scopedRunLog(appLogText, runMarker) {
   const marker = String(runMarker ?? '').trim();
   if (!marker) throw new Error('strict paid-cell budget requires a run marker');
-  const markerIndex = appLogText.lastIndexOf(marker);
-  if (markerIndex < 0) throw new Error(`strict paid-cell app.log does not contain run marker ${marker}`);
+  let markerIndex = -1;
+  let offset = 0;
+  for (const line of appLogText.split(/(?<=\n)/)) {
+    if (line.replace(/\r?\n$/, '') === marker) markerIndex = offset;
+    offset += line.length;
+  }
+  if (markerIndex < 0) {
+    throw new Error(`strict paid-cell app.log does not contain standalone run marker ${marker}`);
+  }
   return appLogText.slice(markerIndex);
 }
 

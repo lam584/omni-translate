@@ -478,6 +478,7 @@ function runChildProcess(executable, args, {
   timeoutMs = 60_000,
   environment = process.env,
   input = '',
+  completionMarker = null,
 } = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(executable, args, {
@@ -502,7 +503,17 @@ function runChildProcess(executable, args, {
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
     child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+      if (completionMarker && stderr.includes(completionMarker)) {
+        // Windows OpenSSH in the nested VM path can retain the local client
+        // after the remote command has completed. The signed remote wrapper
+        // emits this marker only after its body returns, so it is safe to
+        // reclaim that stuck client without extending the operation deadline.
+        finish(() => resolve({ exitCode: 0, stdout, stderr }));
+        child.kill('SIGTERM');
+      }
+    });
     child.stdin.once('error', (error) => {
       // A remote process can fail and close stdin before ssh has consumed the
       // entire script. Its exit code/stderr remain the useful failure signal.
@@ -537,6 +548,7 @@ function runChildProcess(executable, args, {
 
 export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
 export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS = 5 * 60 * 1000;
+const REMOTE_POWERSHELL_COMPLETION_MARKER = '__OMNI_REMOTE_COMPLETE_V1__';
 
 export function remotePowerShellInvocation(body, payload) {
   const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
@@ -547,6 +559,7 @@ export function remotePowerShellInvocation(body, payload) {
     `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
     '$payload = $payloadJson | ConvertFrom-Json',
     body,
+    `[Console]::Error.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
   ].join('\n');
   // Windows OpenSSH on the evidence VMs does not forward stdin into a
   // non-interactive remote PowerShell session.  Passing source through stdin
@@ -710,6 +723,7 @@ export function createSshProductionTransport({
     ], {
       ...options,
       input: invocation.input,
+      completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
     });
   };
   const upload = async (worker, localPath, remotePath, options = {}) => {

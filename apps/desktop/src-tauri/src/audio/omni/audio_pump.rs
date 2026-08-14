@@ -1,5 +1,15 @@
 use super::*;
 
+// A continuously fed receiver must yield back to the session worker so it can
+// poll provider events and run the manual-commit timer. Without this bound,
+// `try_recv()` can drain an entire long media stream in one call and postpone
+// the first commit/final transcript until the session is already stopping.
+const OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK: usize = 8;
+
+fn audio_pump_should_yield(chunks_sent_this_tick: usize) -> bool {
+    chunks_sent_this_tick >= OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK
+}
+
 pub(super) struct OmniAudioPumpState {
     pub(super) buffer_size: u64,
     pub(super) reconnect_count: usize,
@@ -383,6 +393,9 @@ impl OmniAudioPump {
             if chunks_sent_this_tick > 1 {
                 thread::sleep(Duration::from_millis(OMNI_INTER_CHUNK_THROTTLE_MS));
             }
+            if audio_pump_should_yield(chunks_sent_this_tick) {
+                break;
+            }
         }
         Ok(OmniAudioPumpState {
             buffer_size,
@@ -484,6 +497,13 @@ mod tests {
         assert!(!provider_input_is_writable(false, false));
         assert!(!provider_input_is_writable(true, true));
         assert!(provider_input_is_writable(true, false));
+    }
+
+    #[test]
+    fn continuous_audio_pump_yields_to_commit_and_socket_polling() {
+        assert!(!audio_pump_should_yield(OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK - 1));
+        assert!(audio_pump_should_yield(OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK));
+        assert!(audio_pump_should_yield(OMNI_AUDIO_PUMP_MAX_CHUNKS_PER_TICK + 1));
     }
 
     #[test]

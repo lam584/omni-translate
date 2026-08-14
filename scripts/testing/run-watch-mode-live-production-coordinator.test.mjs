@@ -466,7 +466,8 @@ test('preserved worker readiness is decoded as UTF-8 and returned as one compact
       timeout: 30_000,
     });
     assert.equal(result.status, 0, result.stderr);
-    const nonEmptyLines = result.stdout.split(/\r?\n/).filter((line) => line.trim());
+    const nonEmptyLines = result.stdout.split(/\r?\n/)
+      .filter((line) => line.trim() && line.trim() !== '__OMNI_REMOTE_COMPLETE_V1__');
     assert.equal(nonEmptyLines.length, 1);
     assert.deepEqual(JSON.parse(nonEmptyLines[0]), readiness);
   } finally {
@@ -496,7 +497,8 @@ test('interactive remote wrapper accepts a successful PowerShell control with no
       timeout: 30_000,
     });
     assert.equal(result.status, 0, result.stderr);
-    const evidence = JSON.parse(result.stdout.trim());
+    const evidence = JSON.parse(result.stdout.split(/\r?\n/)
+      .filter((line) => line.trim() && line.trim() !== '__OMNI_REMOTE_COMPLETE_V1__').join('\n'));
     assert.equal(evidence.status, 'passed');
     assert.equal(evidence.marker, 'script-success-with-null-last-exit-code');
   } finally {

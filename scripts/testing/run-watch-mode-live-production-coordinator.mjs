@@ -502,17 +502,15 @@ function runChildProcess(executable, args, {
     const abort = () => child.kill('SIGKILL');
     child.stdout.setEncoding('utf8');
     child.stderr.setEncoding('utf8');
-    child.stdout.on('data', (chunk) => { stdout += chunk; });
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk;
-      if (completionMarker && stderr.includes(completionMarker)) {
-        // Windows OpenSSH in the nested VM path can retain the local client
-        // after the remote command has completed. The signed remote wrapper
-        // emits this marker only after its body returns, so it is safe to
-        // reclaim that stuck client without extending the operation deadline.
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+      if (completionMarker && stdout.includes(completionMarker)) {
         finish(() => resolve({ exitCode: 0, stdout, stderr }));
         child.kill('SIGTERM');
       }
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
     });
     child.stdin.once('error', (error) => {
       // A remote process can fail and close stdin before ssh has consumed the
@@ -559,7 +557,7 @@ export function remotePowerShellInvocation(body, payload) {
     `$payloadJson = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${payloadBase64}'))`,
     '$payload = $payloadJson | ConvertFrom-Json',
     body,
-    `[Console]::Error.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
+    `Write-Output '${REMOTE_POWERSHELL_COMPLETION_MARKER}'`,
   ].join('\n');
   // Windows OpenSSH on the evidence VMs does not forward stdin into a
   // non-interactive remote PowerShell session.  Passing source through stdin
@@ -591,7 +589,8 @@ export function remotePowerShellInvocation(body, payload) {
 }
 
 function lastNonEmptyLine(text) {
-  return String(text ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+  return String(text ?? '').split(/\r?\n/).map((line) => line.trim())
+    .filter((line) => line && line !== REMOTE_POWERSHELL_COMPLETION_MARKER).at(-1);
 }
 
 function remotePathForScp(remotePath) {

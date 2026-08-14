@@ -414,6 +414,11 @@ test('incident Plus preflight authority is a separate three-reservation Plus-onl
   assert.equal(grant.incidentId, INCIDENT_REPLAY_PLUS_ID);
   assert.equal(grant.authorization.model, 'qwen3.5-omni-plus-realtime');
   assert.equal(grant.cells.length, 3);
+  assert.deepEqual(
+    grant.cells.map((cell) => cell.deviceProfileInstanceId),
+    plan.cells.map((cell) => cell.deviceProfileInstance.instanceId),
+  );
+  assert.ok(grant.cells.every((cell) => String(cell.deviceProfileInstanceId).length > 0));
   assert.equal(grant.budget.matrixMaxExternalAudioSamples, 8_640_000);
   assert.deepEqual(grant.localIsolationAuthority, plan.localIsolationAuthority);
   assert.equal(grant.localIsolationAuthority.providerCalls, 0);

@@ -400,6 +400,16 @@ function makeIncidentInteractiveRequest({ plan, worker, cell, lease, remoteRoot,
   return request;
 }
 
+export async function stageIncidentPlusCellAuthority({
+  upload, worker, planPath, leasePath, remoteRoot, cellIndex, signal,
+}) {
+  const remotePlanPath = path.win32.join(remoteRoot, 'shard-execution-plan.json');
+  const remoteLeasePath = path.win32.join(remoteRoot, 'leases', `${cellIndex + 1}.json`);
+  await upload(worker, planPath, remotePlanPath, { signal, timeoutMs: 60_000 });
+  await upload(worker, leasePath, remoteLeasePath, { signal, timeoutMs: 60_000 });
+  return { remotePlanPath, remoteLeasePath };
+}
+
 /**
  * Execute the signed Plus incident replay on the two configured Windows VMs.
  * The implementation deliberately reuses only the no-provider driver/session
@@ -600,15 +610,16 @@ $receipt | ConvertTo-Json -Depth 12 -Compress
     const worker = requirePlanWorker(config, plan.workers.find((entry) => entry.workerId === cell.workerId));
     const remoteRoot = remoteRoots.get(worker.workerId);
     const leasePath = leasePaths[cell.cellIndex];
-    const remoteLeasePath = path.win32.join(remoteRoot, 'leases', `${cell.cellIndex + 1}.json`);
-    await upload(worker, leasePath, remoteLeasePath, { signal, timeoutMs: 60_000 });
+    const { remotePlanPath } = await stageIncidentPlusCellAuthority({
+      upload, worker, planPath, leasePath, remoteRoot, cellIndex: cell.cellIndex, signal,
+    });
     const interactiveRequest = makeIncidentInteractiveRequest({
       plan,
       worker,
       cell,
       lease,
       remoteRoot,
-      remotePlanPath: path.win32.join(remoteRoot, 'shard-execution-plan.json'),
+      remotePlanPath,
     });
     // Hash the coordinator-copied exact bytes just before the InteractiveToken
     // task is registered.  The control script independently hashes both files

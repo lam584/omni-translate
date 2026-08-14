@@ -415,6 +415,8 @@ test('incident Plus preflight authority is a separate three-reservation Plus-onl
   assert.equal(grant.authorization.model, 'qwen3.5-omni-plus-realtime');
   assert.equal(grant.cells.length, 3);
   assert.equal(grant.budget.matrixMaxExternalAudioSamples, 8_640_000);
+  assert.deepEqual(grant.localIsolationAuthority, plan.localIsolationAuthority);
+  assert.equal(grant.localIsolationAuthority.providerCalls, 0);
   verifyIncidentPlusPreflightGrant(grant, plan);
 
   const reservations = createIncidentPlusPreflightLeaseReservations({

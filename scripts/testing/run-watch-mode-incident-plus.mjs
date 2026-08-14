@@ -449,7 +449,7 @@ export async function runIncidentPlusProductionCoordinator({
     worker.workerId,
     path.win32.join(worker.guestExecutionRoot, plan.executionId, worker.workerId),
   ]));
-  const remote = async (worker, body, payload, options = {}) => {
+  const legacyRemote = async (worker, body, payload, options = {}) => {
     const invocation = remotePowerShellInvocation(body, payload);
     return runProcess(config.sshExecutable, [
       ...sshBaseArgs(worker),
@@ -457,19 +457,27 @@ export async function runIncidentPlusProductionCoordinator({
       ...invocation.args,
     ], { ...options, input: invocation.input });
   };
-  const upload = async (worker, localPath, remotePath, options = {}) => {
+  const legacyUpload = async (worker, localPath, remotePath, options = {}) => {
     const result = await runProcess(config.scpExecutable, [
       ...scpBaseArgs(worker), localPath, remoteSpec(worker, remotePath),
     ], options);
     return requireRemoteSuccess(result, `upload to ${worker.workerId}`);
   };
-  const download = async (worker, remotePath, localDirectory, options = {}) => {
+  const legacyDownload = async (worker, remotePath, localDirectory, options = {}) => {
     fs.mkdirSync(localDirectory, { recursive: true });
     const result = await runProcess(config.scpExecutable, [
       ...scpBaseArgs(worker), '-r', remoteSpec(worker, remotePath), localDirectory,
     ], options);
     return requireRemoteSuccess(result, `download from ${worker.workerId}`);
   };
+  // Production must use the same bounded transport that prepared the worker.
+  // Besides keeping host-key and completion-marker behavior consistent, this
+  // avoids Windows self-SCP and OpenSSH command-line limits for Plus-specific
+  // readiness, preflight, dispatch, and evidence collection. The fallbacks
+  // keep injected unit-test transports intentionally small.
+  const remote = compatibilityTransport.executeRemote ?? legacyRemote;
+  const upload = compatibilityTransport.uploadFile ?? legacyUpload;
+  const download = compatibilityTransport.downloadTree ?? legacyDownload;
 
   const prepareWorkers = operations.prepareWorkers ?? (async () => {
     const completed = await Promise.all(plan.workers.map(async (planWorker) => {

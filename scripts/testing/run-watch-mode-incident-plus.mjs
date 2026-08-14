@@ -228,9 +228,11 @@ const INTERACTIVE_ENDPOINT_RUNNER = 'scripts/testing/run-watch-mode-live-shard.m
 const INTERACTIVE_INCIDENT_RUNNER = 'scripts/testing/run-watch-mode-incident-plus-cell.mjs';
 const INCIDENT_PLUS_PREFLIGHT_FILE = 'incident-plus-preflight.json';
 const INCIDENT_PLUS_REMOTE_CELL_TIMEOUT_MS = 650_000;
+const REMOTE_POWERSHELL_COMPLETION_MARKER = '__OMNI_REMOTE_COMPLETE_V1__';
 
 function lastNonEmptyLine(text) {
-  return String(text ?? '').split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1);
+  return String(text ?? '').split(/\r?\n/).map((line) => line.trim())
+    .filter((line) => line && line !== REMOTE_POWERSHELL_COMPLETION_MARKER).at(-1);
 }
 
 function requireRemoteSuccess(result, label) {

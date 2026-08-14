@@ -578,6 +578,11 @@ test('incident Plus cell runner uses the bounded Plus authority without entering
 });
 
 test('Plus production coordinator keeps the signed two-wave incident sequence outside the strict matrix', async () => {
+  const coordinatorSource = fs.readFileSync(
+    path.join(repoRoot, 'scripts/testing/run-watch-mode-incident-plus.mjs'),
+    'utf8',
+  );
+  assert.match(coordinatorSource, /line !== REMOTE_POWERSHELL_COMPLETION_MARKER/);
   const root = tempRoot();
   try {
     const config = twoVmProductionConfig(root);

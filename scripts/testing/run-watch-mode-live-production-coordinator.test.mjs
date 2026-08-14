@@ -522,6 +522,9 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.match(source, /isCoordinatorLocalWorker\(worker\)/);
   assert.match(source, /runProcess\(invocation\.args\[0\], invocation\.args\.slice\(1\)/);
   assert.match(source, /cwd: worker\.workspaceRoot/);
+  assert.match(source, /fs\.writeFileSync\(localScriptPath, invocation\.script, 'utf8'\)/);
+  assert.match(source, /'-File', remoteScriptPath/);
+  assert.match(source, /Remove-Item -LiteralPath '\$\{remoteScriptPath\}' -Force/);
   assert.match(source, /fs\.copyFileSync\(localPath, remotePath\)/);
   assert.match(source, /fs\.cpSync\(remotePath, localDestination/);
   assert.doesNotMatch(source, /production three-VM strict evidence/);

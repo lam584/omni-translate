@@ -579,6 +579,7 @@ export function remotePowerShellInvocation(body, payload) {
     throw new Error('remote PowerShell payload exceeds the Windows encoded-command budget');
   }
   return {
+    script: bootstrap,
     args: [
       'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-EncodedCommand', encodedCommand,
@@ -726,15 +727,45 @@ export function createSshProductionTransport({
         completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
       });
     }
-    return runProcess(config.sshExecutable, [
-      ...sshBaseArgs(worker),
-      `${worker.user}@${worker.host}`,
-      ...invocation.args,
-    ], {
-      ...options,
-      input: invocation.input,
-      completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
-    });
+    const transportRoot = path.join(coordinatorExecutionRoot, '.transport', worker.workerId);
+    fs.mkdirSync(transportRoot, { recursive: true });
+    const scriptName = `command-${crypto.randomBytes(12).toString('hex')}.ps1`;
+    const localScriptPath = path.join(transportRoot, scriptName);
+    const remoteScriptPath = path.win32.join(
+      'C:\\Users', worker.user, 'AppData', 'Local', 'Temp', scriptName,
+    );
+    fs.writeFileSync(localScriptPath, invocation.script, 'utf8');
+    let uploaded = false;
+    try {
+      const uploadResult = await runProcess(
+        config.scpExecutable,
+        [...scpBaseArgs(worker), localScriptPath, remoteSpec(worker, remoteScriptPath)],
+        options,
+      );
+      ensureSuccessful(uploadResult, `command upload to ${worker.workerId}`);
+      uploaded = true;
+      return await runProcess(config.sshExecutable, [
+        ...sshBaseArgs(worker),
+        `${worker.user}@${worker.host}`,
+        'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+        '-File', remoteScriptPath,
+      ], {
+        ...options,
+        input: '',
+        completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
+      });
+    } finally {
+      fs.rmSync(localScriptPath, { force: true });
+      if (uploaded) {
+        const cleanupResult = await runProcess(config.sshExecutable, [
+          ...sshBaseArgs(worker),
+          `${worker.user}@${worker.host}`,
+          'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+          `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
+        ], { timeoutMs: 30_000 });
+        ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
+      }
+    }
   };
   const upload = async (worker, localPath, remotePath, options = {}) => {
     if (isCoordinatorLocalWorker(worker)) {

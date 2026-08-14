@@ -254,6 +254,19 @@ test('actual provider input uses sent-sample trace summaries instead of the 90-s
   });
 });
 
+test('paid budget scopes from the standalone marker, not a later runMarker field', () => {
+  const runDirectory = createRunDirectory({
+    extraLog: `watch_mode.diagnostic_report_saved | runMarker=${MARKER}`,
+  });
+  try {
+    const budget = buildCellExternalProviderBudget(buildOptions(runDirectory));
+    assert.equal(budget.passed, true, budget.violations.join('; '));
+    assert.equal(budget.actualProviderInputSamples, 2_016_000);
+  } finally {
+    fs.rmSync(runDirectory, { recursive: true, force: true });
+  }
+});
+
 test('staged physical receipts retain guest absolute roots but bind fixed staged artifact basenames', () => {
   assert.equal(isAbsoluteEvidencePathForFixedFile(
     'E:\\omni-shards\\execution-a\\vm2\\run\\physical-output-recording-16k-mono.pcm',

@@ -2897,6 +2897,7 @@ function Complete-PhysicalOutputContentRecorder {
   if ($quality) {
     $parsed | Add-Member -NotePropertyName audioQuality -NotePropertyValue $quality -Force
   }
+  $parsed | Add-Member -NotePropertyName recordingStartedAtEpochMs -NotePropertyValue ([int64]$Recorder.startedAtEpochMs) -Force
   $parsed | ConvertTo-Json -Depth 12 | Set-Content -Path (Join-Path (Split-Path -Parent $Recorder.recordingPath) "physical-output-recording.json") -Encoding UTF8
   return $parsed
 }
@@ -3197,7 +3198,6 @@ function Read-SubtitleQueueTimeline {
   foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*speech\.segment_playback_written\s+\|\s+cue=(omni-cue-\d+)\s+segmentIndex=(\d+)', [Text.RegularExpressions.RegexOptions]::Multiline)) {
     [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "segment_playback_written"; cueId = $match.Groups[2].Value; rank = $null; seq = [int]$match.Groups[3].Value; text = "" })
   }
-  $parsed | Add-Member -NotePropertyName recordingStartedAtEpochMs -NotePropertyValue ([int64]$Recorder.startedAtEpochMs) -Force
   foreach ($match in [regex]::Matches($raw, '(?m)^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2})[^\r\n]*event=translation_playback_status\s+\|[^\r\n]*cueId=(omni-cue-\d+)[^\r\n]*\bstatus=completed\b[^\r\n]*\breason=physical-playback-completed\b', [Text.RegularExpressions.RegexOptions]::Multiline)) {
     [void]$events.Add([pscustomobject]@{ index = $match.Index; at = $match.Groups[1].Value; kind = "bridge_playback_completed"; cueId = $match.Groups[2].Value; rank = $null; seq = $null; text = "" })
   }
@@ -4400,7 +4400,8 @@ function Save-WatchModeRunArtifacts {
       -Path (Join-Path $OutputDirectory "physical-output-content.json") -Encoding UTF8
   }
   Build-SnapshotsFile $OutputDirectory $effectiveDriverProbe (Join-Path $OutputDirectory "app.log") (Join-Path $OutputDirectory "bridge-service.log") $RunMarker $StartedAtLocal $playbackSnapshot | Out-Null
-  @($Steps) | ConvertTo-Json -Depth 8 | Set-Content -Path (Join-Path $OutputDirectory "steps.json") -Encoding UTF8
+  $serializableSteps = if ($null -eq $Steps) { @() } else { @($Steps) }
+  ConvertTo-Json -InputObject $serializableSteps -Depth 8 | Set-Content -Path (Join-Path $OutputDirectory "steps.json") -Encoding UTF8
   Invoke-ReportGenerator $OutputDirectory "live"
 }
 

@@ -38,6 +38,8 @@ import {
 import {
   prepareCurrentIncidentPlusExecution,
   prepareIncidentPlusExecution,
+  parseIncidentPlusCliArgs,
+  runIncidentPlusProductionCoordinator,
 } from './run-watch-mode-incident-plus.mjs';
 import {
   buildIncidentPlusPowerShellRunnerArgv,
@@ -89,6 +91,45 @@ const workers = Object.freeze([
 
 function tempRoot() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'omni-incident-plus-'));
+}
+
+function twoVmProductionConfig(root) {
+  const identityFile = path.join(root, 'id_rsa');
+  const knownHostsFile = path.join(root, 'known_hosts');
+  writeText(identityFile, 'fixture-key');
+  writeText(knownHostsFile, [
+    'incident-vm-default ssh-ed25519 AAAAfixture1',
+    'incident-vm-usb ssh-ed25519 AAAAfixture2',
+  ].join('\n'));
+  const defaultProfile = (workerId) => ({
+    instanceId: `${workerId}-default`,
+    profileId: 'default-speaker-profile',
+    deviceClass: 'default-speaker',
+    physicalPlaybackDeviceId: 'default',
+    expectedPhysicalPlaybackDeviceName: '',
+  });
+  return {
+    schemaVersion: 1,
+    artifactKind: 'watch-mode-production-shard-workers',
+    sshExecutable: 'ssh.exe',
+    scpExecutable: 'scp.exe',
+    workers: [
+      {
+        workerId: 'worker-default', host: '192.0.2.41', port: 22, user: 'runner',
+        identityFile, knownHostsFile, hostKeyAlias: 'incident-vm-default',
+        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-incident',
+        vmIdentity: workers[0].vmIdentity,
+        deviceProfileInstances: [defaultProfile('worker-default')],
+      },
+      {
+        workerId: 'worker-usb', host: '192.0.2.42', port: 22, user: 'runner',
+        identityFile, knownHostsFile, hostKeyAlias: 'incident-vm-usb',
+        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-incident',
+        vmIdentity: workers[1].vmIdentity,
+        deviceProfileInstances: [defaultProfile('worker-usb'), workers[1].deviceProfileInstances[0]],
+      },
+    ],
+  };
 }
 
 function writeJson(filePath, value) {
@@ -162,6 +203,20 @@ test('current Plus preparation refuses to sign after a runtime build dirties the
     buildRuntimeAuthority: () => inventory('rebuilt-runtime'),
     captureProvenance: () => ({ ...provenance, worktreeClean: false, dirtyEntryCount: 1 }),
   }), /runtime build changed the evidence worktree/);
+});
+
+test('Plus coordinator requires an explicit dispatch switch before it can reach a Provider', () => {
+  const prepared = parseIncidentPlusCliArgs([
+    '--workers-config', 'workers.json',
+    '--local-isolation-authority', 'local.json',
+  ]);
+  assert.equal(prepared.dispatch, undefined);
+  const dispatched = parseIncidentPlusCliArgs([
+    '--workers-config', 'workers.json',
+    '--local-isolation-authority', 'local.json',
+    '--dispatch',
+  ]);
+  assert.equal(dispatched.dispatch, true);
 });
 
 function healthyWatchReport() {
@@ -514,6 +569,81 @@ test('incident Plus cell runner uses the bounded Plus authority without entering
       assertExternalProviderBudget: syntheticValidatedBudget,
     });
     assert.equal(finalized.resultPath, outcome.resultPath);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Plus production coordinator keeps the signed two-wave incident sequence outside the strict matrix', async () => {
+  const root = tempRoot();
+  try {
+    const config = twoVmProductionConfig(root);
+    const prepared = prepareIncidentPlusExecution({
+      workerConfig: config,
+      localIsolationAuthority,
+      executionRoot: root,
+      executionId: 'incident-plus-coordinator-test',
+      generatedAt: fixedNow,
+      expiresAt: fixedFuture,
+      provenance,
+      authorityImplementationHashes: inventory('implementation'),
+      runtimeBinaryHashes: inventory('runtime'),
+      incidentImplementationHashes: [
+        'scripts/testing/invoke-watch-mode-interactive-task.ps1',
+        'scripts/testing/run-watch-mode-interactive-task.ps1',
+        'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
+        'scripts/testing/run-watch-mode-live-shard.mjs',
+        'scripts/testing/run-watch-mode-incident-plus-cell.mjs',
+      ].map((entry, index) => ({ path: entry, bytes: index + 1, sha256: `${index + 1}`.repeat(64) })),
+    });
+    const calls = [];
+    const result = await runIncidentPlusProductionCoordinator({
+      workerConfig: config,
+      localIsolationAuthority,
+      executionRoot: root,
+      executionId: prepared.plan.executionId,
+      now: () => new Date('2026-08-14T03:30:00.000Z'),
+      operations: {
+        prepareExecution: () => prepared,
+        createPreparationTransport: ({ plan }) => {
+          calls.push(`transport:${plan.cells.length}`);
+          assert.equal(plan.artifactKind, 'watch-mode-incident-plus-execution-plan');
+          assert.equal(plan.authority.shardOrchestrationImplementationHashes.length, 4);
+          return { cancelCell: async () => {} };
+        },
+        prepareWorkers: async () => {
+          calls.push('readiness');
+          return prepared.plan.workers.map((worker) => ({ workerId: worker.workerId, readiness: {} }));
+        },
+        runPreflight: async () => {
+          calls.push('preflight');
+          return { preflight: { incidentId: INCIDENT_REPLAY_PLUS_ID }, preflightPath: path.join(root, 'preflight.json') };
+        },
+        dispatchCell: async ({ cell }) => {
+          calls.push(`dispatch:${cell.cellIndex}`);
+          return { resultPath: path.join(root, `cell-${cell.cellIndex}.json`) };
+        },
+        writeManifest: ({ plan, resultPaths, preflight }) => {
+          calls.push('manifest');
+          assert.equal(plan.cells.length, 3);
+          assert.deepEqual(resultPaths, [
+            path.join(root, 'cell-0.json'), path.join(root, 'cell-1.json'), path.join(root, 'cell-2.json'),
+          ]);
+          assert.equal(preflight.incidentId, INCIDENT_REPLAY_PLUS_ID);
+          return { manifestPath: path.join(root, 'incident-plus-manifest.json') };
+        },
+        writeVerification: ({ manifestPath }) => {
+          calls.push('verification');
+          assert.equal(manifestPath, path.join(root, 'incident-plus-manifest.json'));
+          return { receiptPath: path.join(root, 'incident-plus-verification-receipt.json') };
+        },
+      },
+    });
+    assert.deepEqual(calls, [
+      'transport:3', 'readiness', 'preflight', 'dispatch:0', 'dispatch:1', 'dispatch:2',
+      'manifest', 'verification',
+    ]);
+    assert.equal(result.verificationReceiptPath, path.join(root, 'incident-plus-verification-receipt.json'));
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

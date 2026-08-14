@@ -4,6 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import test from 'node:test';
 
 import { repoRoot } from '../lib/testing-common.mjs';
@@ -403,7 +404,7 @@ test('production runtime build embeds the coordinator key identity before prefli
   assert.match(source, /OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID: coordinatorKeyId/);
 });
 
-test('remote PowerShell streams large scripts through SSH stdin instead of the Windows command line', () => {
+test('remote PowerShell uses a compressed encoded command without SSH stdin', () => {
   const marker = 'runtime-entry-marker-'.padEnd(128, 'x');
   const invocation = remotePowerShellInvocation(
     '[pscustomobject]@{ count = @($payload.entries).Count } | ConvertTo-Json -Compress',
@@ -415,14 +416,14 @@ test('remote PowerShell streams large scripts through SSH stdin instead of the W
       })),
     },
   );
-  assert.ok(invocation.input.length > 32_768);
-  assert.ok(invocation.args.join(' ').length < 4_096);
+  assert.equal(invocation.input, '');
+  assert.ok(invocation.args.join(' ').length < 32_768);
   assert.equal(invocation.args.includes('-EncodedCommand'), true);
   assert.equal(invocation.args.join(' ').includes(marker), false);
-  const framedLines = invocation.input.trimEnd().split('\n');
-  assert.equal(framedLines.at(-1), '__OMNI_REMOTE_SCRIPT_END_V1__');
-  assert.ok(framedLines.slice(0, -1).every((line) => line.length <= 4096));
-  const streamedSource = Buffer.from(framedLines.slice(0, -1).join(''), 'base64').toString('utf8');
+  const bootstrap = Buffer.from(invocation.args.at(-1), 'base64').toString('utf16le');
+  const compressedMatch = bootstrap.match(/FromBase64String\('([^']+)'\)/);
+  assert.ok(compressedMatch);
+  const streamedSource = zlib.gunzipSync(Buffer.from(compressedMatch[1], 'base64')).toString('utf8');
   const payloadMatch = streamedSource.match(/FromBase64String\('([^']+)'\)/);
   assert.ok(payloadMatch);
   const streamedPayload = JSON.parse(Buffer.from(payloadMatch[1], 'base64').toString('utf8'));
@@ -431,10 +432,8 @@ test('remote PowerShell streams large scripts through SSH stdin instead of the W
   assert.equal(streamedPayload.localizedName, '扬声器 (High Definition Audio Device)');
   assert.match(streamedSource, /Console\]::OutputEncoding = \[Text\.UTF8Encoding\]::new\(\$false\)/);
   assert.match(streamedSource, /\$OutputEncoding = \[Console\]::OutputEncoding/);
-  const bootstrap = Buffer.from(invocation.args.at(-1), 'base64').toString('utf16le');
-  assert.match(bootstrap, /\[Console\]::In\.ReadLine\(\)/);
-  assert.match(bootstrap, /__OMNI_REMOTE_SCRIPT_END_V1__/);
-  assert.doesNotMatch(bootstrap, /ReadToEnd/);
+  assert.match(bootstrap, /GZipStream/);
+  assert.match(bootstrap, /ReadToEnd/);
   assert.match(bootstrap, /ScriptBlock/);
 });
 

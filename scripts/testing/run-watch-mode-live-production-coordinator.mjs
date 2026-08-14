@@ -2,6 +2,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import zlib from 'node:zlib';
 
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
@@ -534,22 +535,6 @@ function runChildProcess(executable, args, {
   });
 }
 
-const REMOTE_POWERSHELL_STDIN_TERMINATOR = '__OMNI_REMOTE_SCRIPT_END_V1__';
-const REMOTE_POWERSHELL_STDIN_BOOTSTRAP = Buffer.from(
-  [
-    '$chunks = [Text.StringBuilder]::new()',
-    'while ($true) {',
-    '  $line = [Console]::In.ReadLine()',
-    "  if ($null -eq $line) { throw 'stdin ended before the remote script terminator' }",
-    `  if ($line -ceq '${REMOTE_POWERSHELL_STDIN_TERMINATOR}') { break }`,
-    '  [void]$chunks.Append($line)',
-    '}',
-    '$source = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($chunks.ToString()))',
-    '& ([ScriptBlock]::Create($source))',
-  ].join('; '),
-  'utf16le',
-).toString('base64');
-
 export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
 export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS = 5 * 60 * 1000;
 
@@ -563,14 +548,32 @@ export function remotePowerShellInvocation(body, payload) {
     '$payload = $payloadJson | ConvertFrom-Json',
     body,
   ].join('\n');
-  const encodedSource = Buffer.from(source, 'utf8').toString('base64');
-  const framedSource = encodedSource.match(/.{1,4096}/g) ?? [];
+  // Windows OpenSSH on the evidence VMs does not forward stdin into a
+  // non-interactive remote PowerShell session.  Passing source through stdin
+  // therefore deadlocks before a worker can return its readiness receipt.
+  // Compress the UTF-8 source, then send a compact self-contained bootstrap
+  // as PowerShell's UTF-16LE EncodedCommand instead.  This preserves strict
+  // host-key/authentication semantics and stays below Windows' command-line
+  // limit for the signed runtime inventory payloads.
+  const compressedSource = zlib.gzipSync(Buffer.from(source, 'utf8')).toString('base64');
+  const bootstrap = [
+    `$compressed = [Convert]::FromBase64String('${compressedSource}')`,
+    '$input = [IO.MemoryStream]::new($compressed, $false)',
+    '$gzip = [IO.Compression.GZipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)',
+    '$reader = [IO.StreamReader]::new($gzip, [Text.UTF8Encoding]::new($false))',
+    'try { $source = $reader.ReadToEnd() } finally { $reader.Dispose(); $gzip.Dispose(); $input.Dispose() }',
+    '& ([ScriptBlock]::Create($source))',
+  ].join('; ');
+  const encodedCommand = Buffer.from(bootstrap, 'utf16le').toString('base64');
+  if (encodedCommand.length >= 32_000) {
+    throw new Error('remote PowerShell payload exceeds the Windows encoded-command budget');
+  }
   return {
     args: [
       'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
-      '-EncodedCommand', REMOTE_POWERSHELL_STDIN_BOOTSTRAP,
+      '-EncodedCommand', encodedCommand,
     ],
-    input: `${framedSource.join('\n')}\n${REMOTE_POWERSHELL_STDIN_TERMINATOR}\n`,
+    input: '',
   };
 }
 

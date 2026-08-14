@@ -620,7 +620,11 @@ $receipt | ConvertTo-Json -Depth 12 -Compress
       workspaceRoot: worker.workspaceRoot,
       controlScriptSha256: interactiveRequest.controlScriptSha256,
       interactiveRequest,
-    }, { signal, timeoutMs: INCIDENT_PLUS_REMOTE_CELL_TIMEOUT_MS }), `incident Plus cell ${cell.cellId}`);
+    }, {
+      signal,
+      timeoutMs: INCIDENT_PLUS_REMOTE_CELL_TIMEOUT_MS,
+      requireControlPlane: true,
+    }), `incident Plus cell ${cell.cellId}`);
     if (
       response.terminal?.leaseId !== lease.leaseId
       || Number(response.terminal?.exitCode) !== 0

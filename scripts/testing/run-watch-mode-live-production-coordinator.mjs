@@ -718,10 +718,11 @@ export function createSshProductionTransport({
   );
 
   const runRemote = async (worker, body, payload, options = {}) => {
+    const { requireControlPlane = false, ...processOptions } = options;
     const invocation = remotePowerShellInvocation(body, payload);
-    if (isCoordinatorLocalWorker(worker)) {
+    if (isCoordinatorLocalWorker(worker) && !requireControlPlane) {
       return runProcess(invocation.args[0], invocation.args.slice(1), {
-        ...options,
+        ...processOptions,
         cwd: worker.workspaceRoot,
         input: invocation.input,
         completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
@@ -737,12 +738,16 @@ export function createSshProductionTransport({
     fs.writeFileSync(localScriptPath, invocation.script, 'utf8');
     let uploaded = false;
     try {
-      const uploadResult = await runProcess(
-        config.scpExecutable,
-        [...scpBaseArgs(worker), localScriptPath, remoteSpec(worker, remoteScriptPath)],
-        options,
-      );
-      ensureSuccessful(uploadResult, `command upload to ${worker.workerId}`);
+      if (isCoordinatorLocalWorker(worker)) {
+        fs.copyFileSync(localScriptPath, remoteScriptPath);
+      } else {
+        const uploadResult = await runProcess(
+          config.scpExecutable,
+          [...scpBaseArgs(worker), localScriptPath, remoteSpec(worker, remoteScriptPath)],
+          processOptions,
+        );
+        ensureSuccessful(uploadResult, `command upload to ${worker.workerId}`);
+      }
       uploaded = true;
       return await runProcess(config.sshExecutable, [
         ...sshBaseArgs(worker),
@@ -750,20 +755,24 @@ export function createSshProductionTransport({
         'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
         '-File', remoteScriptPath,
       ], {
-        ...options,
+        ...processOptions,
         input: '',
         completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
       });
     } finally {
       fs.rmSync(localScriptPath, { force: true });
       if (uploaded) {
-        const cleanupResult = await runProcess(config.sshExecutable, [
-          ...sshBaseArgs(worker),
-          `${worker.user}@${worker.host}`,
-          'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
-          `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
-        ], { timeoutMs: 30_000 });
-        ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
+        if (isCoordinatorLocalWorker(worker)) {
+          fs.rmSync(remoteScriptPath, { force: true });
+        } else {
+          const cleanupResult = await runProcess(config.sshExecutable, [
+            ...sshBaseArgs(worker),
+            `${worker.user}@${worker.host}`,
+            'powershell.exe', '-NoProfile', '-NonInteractive', '-Command',
+            `Remove-Item -LiteralPath '${remoteScriptPath}' -Force -ErrorAction SilentlyContinue`,
+          ], { timeoutMs: 30_000 });
+          ensureSuccessful(cleanupResult, `command cleanup on ${worker.workerId}`);
+        }
       }
     }
   };
@@ -979,7 +988,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
               controlScriptSha256: interactiveRequest.controlScriptSha256,
               interactiveRequest,
             },
-            { timeoutMs: 330_000 },
+            { timeoutMs: 330_000, requireControlPlane: true },
           ), `worker ${worker.workerId} interactive endpoint readiness`);
           return parseRemoteJson(await runRemote(
             worker,
@@ -1039,7 +1048,7 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       workspaceRoot: worker.workspaceRoot,
       controlScriptSha256: interactiveRequest.controlScriptSha256,
       interactiveRequest,
-    }, { signal, timeoutMs: PRODUCTION_REMOTE_CELL_TIMEOUT_MS });
+    }, { signal, timeoutMs: PRODUCTION_REMOTE_CELL_TIMEOUT_MS, requireControlPlane: true });
     ensureSuccessful(result, `remote paid cell ${cell.cellId}`);
     const interactive = JSON.parse(lastNonEmptyLine(result.stdout));
     const interactiveTerminal = interactive.terminal;

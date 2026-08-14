@@ -1275,7 +1275,15 @@ if ($manifestPath -cne [IO.Path]::GetFullPath([string]$payload.expectedManifestP
     return { workerId: planWorker.workerId, shardRoot: finalShardRoot, manifestPath };
   }
 
-  return { prepareWorker, dispatchCell, cancelCell, collectWorker };
+  return {
+    prepareWorker,
+    dispatchCell,
+    cancelCell,
+    collectWorker,
+    executeRemote: runRemote,
+    uploadFile: upload,
+    downloadTree,
+  };
 }
 
 function productionDeviceProfiles(plan) {

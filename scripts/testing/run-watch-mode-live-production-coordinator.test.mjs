@@ -527,6 +527,8 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.match(source, /Remove-Item -LiteralPath '\$\{remoteScriptPath\}' -Force/);
   assert.match(source, /fs\.copyFileSync\(localPath, remotePath\)/);
   assert.match(source, /fs\.cpSync\(remotePath, localDestination/);
+  assert.match(source, /executeRemote: runRemote/);
+  assert.match(source, /uploadFile: upload/);
   assert.doesNotMatch(source, /production three-VM strict evidence/);
   assert.match(source, /Get-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
   assert.match(source, /Stop-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);

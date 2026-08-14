@@ -358,7 +358,7 @@ if ($request.mode -eq 'endpoint-readiness') {
   exit 0
 }
 
-if ($request.mode -ne 'shard-cell') { throw 'interactive task mode is unsupported' }
+if ($request.mode -notin @('shard-cell', 'incident-plus-cell')) { throw 'interactive task mode is unsupported' }
 if ((Get-Sha256 ([string]$request.nodeExecutable)) -cne [string]$request.nodeSha256) {
   throw 'interactive task Node executable hash mismatch'
 }
@@ -378,9 +378,20 @@ $arguments = @(
   '--plan', [string]$request.planPath,
   '--lease', [string]$request.leasePath,
   '--worker-id', [string]$request.workerId,
-  '--vm-uuid-bios', [string]$request.expectedVmUuidBios,
-  '--shard-root', [string]$request.shardRoot
+  '--vm-uuid-bios', [string]$request.expectedVmUuidBios
 )
+if ($request.mode -eq 'incident-plus-cell') {
+  $arguments += @(
+    '--execution-root', [string]$request.shardRoot,
+    '--readiness-receipt', [string]$request.readinessPath,
+    '--readiness-request', [string]$request.readinessRequestPath
+  )
+  if ($request.PSObject.Properties['driverReadinessPath'] -and -not [string]::IsNullOrWhiteSpace([string]$request.driverReadinessPath)) {
+    $arguments += @('--driver-readiness-receipt', [string]$request.driverReadinessPath)
+  }
+} else {
+  $arguments += @('--shard-root', [string]$request.shardRoot)
+}
 $node = Start-Process -FilePath ([string]$request.nodeExecutable) `
   -ArgumentList $arguments `
   -WorkingDirectory ([string]$request.workspaceRoot) `

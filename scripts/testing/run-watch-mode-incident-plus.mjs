@@ -5,6 +5,10 @@ import path from 'node:path';
 import { isMain, parseCliArgs, repoRoot } from '../lib/testing-common.mjs';
 import { currentGitProvenance } from './git-provenance.mjs';
 import {
+  buildStrictRuntimeAuthority,
+  strictRuntimeEnvironment,
+} from './run-watch-mode-live-matrix.mjs';
+import {
   currentAuthorityImplementationHashes,
   currentAuthorityRuntimeBinaryHashes,
 } from './watch-mode-evidence-authority.mjs';
@@ -19,7 +23,10 @@ import {
   writeIncidentPlusPreflightAuthorizationPackage,
   writeIncidentPlusExecutionPlan,
 } from './watch-mode-incident-plus-authority.mjs';
-import { generateCoordinatorSigningKeyPair } from './watch-mode-shard-authority.mjs';
+import {
+  coordinatorKeyIdForPublicKey,
+  generateCoordinatorSigningKeyPair,
+} from './watch-mode-shard-authority.mjs';
 
 export const INCIDENT_PLUS_RUNNER_ID = 'scripts/testing/run-watch-mode-incident-plus.mjs';
 
@@ -114,6 +121,61 @@ export function prepareIncidentPlusExecution({
   };
 }
 
+/**
+ * Build the Desktop authority binary before writing an execution plan.  The
+ * text-only preflight grant is deliberately signed by a fresh coordinator
+ * key, and the Desktop verifier only accepts that grant when the same public
+ * key identity was compiled into the release binary.  Keeping the build
+ * before plan issuance prevents a superficially valid, but unusable, Plus
+ * incident authority from ever reaching a Provider call.
+ *
+ * This remains separate from `prepareIncidentPlusExecution` so fixtures and
+ * offline authority tests can inject deterministic inventories without
+ * rebuilding native binaries.
+ */
+export function prepareCurrentIncidentPlusExecution({
+  workerConfig,
+  localIsolationAuthority,
+  executionRoot = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-incident-plus'),
+  executionId = `incident-plus-${crypto.randomUUID()}`,
+  generatedAt = new Date(),
+  expiresAt = new Date(generatedAt.getTime() + 6 * 60 * 60 * 1_000),
+  signingKeys = generateCoordinatorSigningKeyPair(),
+  buildRuntimeAuthority = buildStrictRuntimeAuthority,
+  captureProvenance = () => currentGitProvenance({ cwd: repoRoot }),
+  captureAuthorityImplementationHashes = () => currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }),
+  captureIncidentImplementationHashes = () => currentIncidentPlusImplementationHashes({ workspaceRoot: repoRoot }),
+  environment = process.env,
+}) {
+  const coordinatorKeyId = coordinatorKeyIdForPublicKey(signingKeys.publicKeyPem);
+  const runtimeBinaryHashes = buildRuntimeAuthority({
+    environment: {
+      ...strictRuntimeEnvironment(environment),
+      OMNI_PROVIDER_PREFLIGHT_COORDINATOR_KEY_ID: coordinatorKeyId,
+    },
+  });
+  // The build is a mandatory provenance boundary.  In particular, do not
+  // issue leases if a generated package, external edit, or stale checkout
+  // made the evidence worktree dirty while compiling the signed runtime.
+  const provenance = captureProvenance();
+  if (provenance?.worktreeClean !== true || Number(provenance?.dirtyEntryCount) !== 0) {
+    throw new Error('incident Plus runtime build changed the evidence worktree; refuse to issue a signed plan');
+  }
+  return prepareIncidentPlusExecution({
+    workerConfig,
+    localIsolationAuthority,
+    executionRoot,
+    executionId,
+    generatedAt,
+    expiresAt,
+    signingKeys,
+    provenance,
+    authorityImplementationHashes: captureAuthorityImplementationHashes(),
+    runtimeBinaryHashes,
+    incidentImplementationHashes: captureIncidentImplementationHashes(),
+  });
+}
+
 export function parseIncidentPlusCliArgs(argv) {
   return parseCliArgs(argv, {
     defaults: {
@@ -135,7 +197,7 @@ if (isMain(import.meta.url)) {
       path.resolve(repoRoot, options.localIsolationAuthority),
       'incident Plus local isolation authority',
     );
-    const result = prepareIncidentPlusExecution({
+    const result = prepareCurrentIncidentPlusExecution({
       workerConfig: workers,
       localIsolationAuthority,
       executionRoot: path.resolve(repoRoot, options.executionRoot),

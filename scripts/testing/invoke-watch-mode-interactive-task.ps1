@@ -104,7 +104,16 @@ $workspace = [IO.Path]::GetFullPath([string]$payload.workspaceRoot)
 $remoteRoot = [IO.Path]::GetFullPath([string]$payload.remoteRoot)
 $launcherPath = Join-Path $workspace 'scripts\testing\run-watch-mode-interactive-task.ps1'
 $collectorPath = Join-Path $workspace 'scripts\testing\collect-watch-mode-interactive-process-authority.ps1'
-$runnerPath = Join-Path $workspace 'scripts\testing\run-watch-mode-live-shard.mjs'
+$mode = [string]$payload.mode
+if ($mode -notin @('endpoint-readiness', 'shard-cell', 'incident-plus-cell')) {
+  throw 'interactive task request mode is unsupported'
+}
+$runnerRelativePath = if ($mode -eq 'incident-plus-cell') {
+  'scripts\testing\run-watch-mode-incident-plus-cell.mjs'
+} else {
+  'scripts\testing\run-watch-mode-live-shard.mjs'
+}
+$runnerPath = Join-Path $workspace $runnerRelativePath
 foreach ($entry in @(
   @($launcherPath, [string]$payload.launcherSha256, 'interactive launcher'),
   @($collectorPath, [string]$payload.processAuthorityCollectorSha256, 'process authority collector'),
@@ -128,10 +137,6 @@ if ($explorers.Count -ne 1) { throw 'control plane requires exactly one Explorer
 $explorerSid = Invoke-CimMethod -InputObject $explorers[0] -MethodName GetOwnerSid -ErrorAction Stop
 if ([string]$explorerSid.Sid -cne $expectedSid) { throw 'console Explorer owner does not match configured VMUser' }
 
-$mode = [string]$payload.mode
-if ($mode -notin @('endpoint-readiness', 'shard-cell')) {
-  throw 'interactive task request mode is unsupported'
-}
 Assert-RequiredProperties $payload @(
   'schemaVersion', 'artifactKind', 'mode', 'workspaceRoot', 'remoteRoot',
   'executionId', 'planDigest', 'workerId', 'vmIdentityDigest',
@@ -139,14 +144,14 @@ Assert-RequiredProperties $payload @(
   'processAuthorityCollectorSha256', 'shardRunnerSha256',
   'expectedCredentialReference'
 ) 'interactive task request'
-$shardFields = $null
+$cellFields = $null
 $endpointReadinessFields = $null
-if ($mode -eq 'shard-cell') {
+if ($mode -in @('shard-cell', 'incident-plus-cell')) {
   Assert-RequiredProperties $payload @(
     'leaseId', 'leaseDigest', 'cellId', 'feedbackLoopPrevention', 'planPath',
     'planSha256', 'leasePath', 'leaseSha256', 'readinessPath'
-  ) 'interactive shard-cell request'
-  $shardFields = [ordered]@{
+  ) 'interactive cell request'
+  $cellFields = [ordered]@{
     leaseId = [string]$payload.leaseId
     leaseDigest = [string]$payload.leaseDigest
     cellId = [string]$payload.cellId
@@ -156,6 +161,13 @@ if ($mode -eq 'shard-cell') {
     leasePath = [string]$payload.leasePath
     leaseSha256 = [string]$payload.leaseSha256
     readinessPath = [string]$payload.readinessPath
+  }
+  if ($mode -eq 'incident-plus-cell') {
+    Assert-RequiredProperties $payload @('readinessRequestPath') 'interactive incident-plus-cell request'
+    $cellFields['readinessRequestPath'] = [string]$payload.readinessRequestPath
+    if ($null -ne $payload.PSObject.Properties['driverReadinessPath']) {
+      $cellFields['driverReadinessPath'] = [string]$payload.driverReadinessPath
+    }
   }
 } else {
   Assert-RequiredProperties $payload @(
@@ -168,7 +180,7 @@ if ($mode -eq 'shard-cell') {
     bridgeExecutable = [string]$payload.bridgeExecutable
   }
 }
-$identity = if ($mode -eq 'shard-cell') { $shardFields.leaseId } else { 'readiness' }
+$identity = if ($mode -in @('shard-cell', 'incident-plus-cell')) { $cellFields.leaseId } else { 'readiness' }
 $authorityRoot = Join-Path $remoteRoot ('interactive\' + $identity)
 if (Test-Path -LiteralPath $authorityRoot) { throw 'interactive authority root already exists' }
 [void](New-Item -ItemType Directory -Path $authorityRoot)
@@ -226,9 +238,9 @@ $command = [ordered]@{
   stdoutPath = $stdoutPath
   stderrPath = $stderrPath
 }
-if ($mode -eq 'shard-cell') {
-  foreach ($name in $shardFields.Keys) { $command[$name] = $shardFields[$name] }
-  $command['requireRecorder'] = $shardFields.feedbackLoopPrevention -ne 'echo-cancel'
+if ($mode -in @('shard-cell', 'incident-plus-cell')) {
+  foreach ($name in $cellFields.Keys) { $command[$name] = $cellFields[$name] }
+  $command['requireRecorder'] = $cellFields.feedbackLoopPrevention -ne 'echo-cancel'
   if ((Get-Sha256 $command.planPath) -cne $command.planSha256 -or (Get-Sha256 $command.leasePath) -cne $command.leaseSha256) {
     throw 'interactive task plan/lease bytes do not match coordinator authority'
   }
@@ -325,10 +337,10 @@ try {
     terminalSha256 = Get-Sha256 $terminalPath
     completedAt = [DateTime]::UtcNow.ToString('o')
   }
-  if ($mode -eq 'shard-cell') {
-    $taskTerminal['leaseId'] = $shardFields.leaseId
-    $taskTerminal['leaseDigest'] = $shardFields.leaseDigest
-    $taskTerminal['cellId'] = $shardFields.cellId
+  if ($mode -in @('shard-cell', 'incident-plus-cell')) {
+    $taskTerminal['leaseId'] = $cellFields.leaseId
+    $taskTerminal['leaseDigest'] = $cellFields.leaseDigest
+    $taskTerminal['cellId'] = $cellFields.cellId
   } else {
     $taskTerminal['readinessRequestDigest'] = $endpointReadinessFields.readinessRequestDigest
   }
@@ -336,7 +348,7 @@ try {
   if ([int]$terminal.exitCode -ne 0 -or [int]$taskInfo.LastTaskResult -ne 0) {
     throw 'interactive task terminal or Task Scheduler result failed'
   }
-  if ($command.mode -eq 'shard-cell') {
+  if ($command.mode -in @('shard-cell', 'incident-plus-cell')) {
     if ($terminal.executionReceiptObserved -ne $true -or -not (Test-Path -LiteralPath $executionReceiptPath -PathType Leaf)) {
       throw 'interactive shard did not publish its execution receipt'
     }
@@ -356,6 +368,12 @@ try {
       processAuthorityPath = $processAuthorityPath
       terminalPath = $terminalPath
       taskTerminalPath = $taskTerminalPath
+    }
+    if ($command.mode -eq 'incident-plus-cell') {
+      $finalizationRequest['readinessRequestPath'] = [string]$command.readinessRequestPath
+      if ($command.PSObject.Properties['driverReadinessPath']) {
+        $finalizationRequest['driverReadinessPath'] = [string]$command.driverReadinessPath
+      }
     }
     Write-ImmutableJson $finalizationRequestPath $finalizationRequest
     $finalizerOutput = @(& $nodeExecutable $runnerPath '--finalize-interactive-request' $finalizationRequestPath 2>&1)

@@ -1898,6 +1898,15 @@ export function currentIncidentPlusImplementationHashes({ workspaceRoot = repoRo
   const files = [
     'scripts/testing/watch-mode-incident-plus-authority.mjs',
     'scripts/testing/run-watch-mode-incident-plus.mjs',
+    'scripts/testing/run-watch-mode-incident-plus-cell.mjs',
+    'scripts/testing/invoke-watch-mode-interactive-task.ps1',
+    'scripts/testing/run-watch-mode-interactive-task.ps1',
+    'scripts/testing/collect-watch-mode-interactive-process-authority.ps1',
+    // Endpoint readiness never launches a paid shard, but the immutable
+    // InteractiveToken controller still hashes this legacy runner before it
+    // permits the readiness task.  Bind that exact byte sequence here rather
+    // than letting the Plus coordinator borrow an unhashed strict artifact.
+    'scripts/testing/run-watch-mode-live-shard.mjs',
     'scripts/testing/run-watch-mode-live.ps1',
     'scripts/testing/watch-mode-external-provider-budget.mjs',
     'scripts/testing/watch-mode-provider-preflight-authority.mjs',

@@ -519,6 +519,9 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.doesNotMatch(source, /LEGACY_PRODUCTION_/);
   assert.doesNotMatch(source, /encodedPowerShell/);
   assert.match(source, /input: invocation\.input/);
+  assert.match(source, /isCoordinatorLocalWorker\(worker\)/);
+  assert.match(source, /fs\.copyFileSync\(localPath, remotePath\)/);
+  assert.match(source, /fs\.cpSync\(remotePath, localDestination/);
   assert.doesNotMatch(source, /production three-VM strict evidence/);
   assert.match(source, /Get-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);
   assert.match(source, /Stop-ScheduledTask -TaskPath \$taskPath -TaskName \$taskName/);

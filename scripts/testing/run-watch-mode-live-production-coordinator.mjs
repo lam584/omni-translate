@@ -711,6 +711,10 @@ export function createSshProductionTransport({
   ]));
   const remoteLeasePaths = new Map();
   const completedRemoteResults = new Map();
+  const coordinatorWorkspace = path.win32.resolve(workspaceRoot).toLowerCase();
+  const isCoordinatorLocalWorker = (worker) => (
+    path.win32.resolve(worker.workspaceRoot).toLowerCase() === coordinatorWorkspace
+  );
 
   const runRemote = async (worker, body, payload, options = {}) => {
     const invocation = remotePowerShellInvocation(body, payload);
@@ -725,6 +729,11 @@ export function createSshProductionTransport({
     });
   };
   const upload = async (worker, localPath, remotePath, options = {}) => {
+    if (isCoordinatorLocalWorker(worker)) {
+      fs.mkdirSync(path.win32.dirname(remotePath), { recursive: true });
+      fs.copyFileSync(localPath, remotePath);
+      return;
+    }
     const result = await runProcess(
       config.scpExecutable,
       [...scpBaseArgs(worker), localPath, remoteSpec(worker, remotePath)],
@@ -734,6 +743,15 @@ export function createSshProductionTransport({
   };
   const downloadTree = async (worker, remotePath, localParent, options = {}) => {
     fs.mkdirSync(localParent, { recursive: true });
+    if (isCoordinatorLocalWorker(worker)) {
+      const localDestination = path.join(localParent, path.win32.basename(remotePath));
+      fs.cpSync(remotePath, localDestination, {
+        recursive: true,
+        force: false,
+        errorOnExist: true,
+      });
+      return;
+    }
     const result = await runProcess(
       config.scpExecutable,
       [...scpBaseArgs(worker), '-r', remoteSpec(worker, remotePath), localParent],

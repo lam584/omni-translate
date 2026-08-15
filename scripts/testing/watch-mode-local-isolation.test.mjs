@@ -104,8 +104,10 @@ test('all non-Desktop paid orchestration and metadata reuse paths are explicitly
     'scripts/testing/real-device-audio-release-evidence.test.mjs',
     'scripts/testing/run-quality-gate.test.mjs',
     'scripts/testing/run-watch-mode-interactive-task.ps1',
+    'scripts/testing/run-watch-mode-incident-plus.mjs',
     'scripts/testing/watch-mode-canonical-source-authority.mjs',
     'scripts/testing/watch-mode-canonical-source-authority.test.mjs',
+    'scripts/testing/watch-mode-incident-plus-authority.test.mjs',
     'scripts/testing/watch-mode-provider-preflight-authorization.mjs',
   ]) {
     assert.equal(LOCAL_ISOLATION_REUSE_ALLOWED_PATHS.includes(entryPath), true, entryPath);

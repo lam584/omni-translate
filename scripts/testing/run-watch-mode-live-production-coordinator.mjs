@@ -848,6 +848,29 @@ $uuid = [string](Get-CimInstance Win32_ComputerSystemProduct).UUID
     await queryWorker(worker);
     const remoteRoot = remoteRoots.get(worker.workerId);
     const remotePlanPath = path.win32.join(remoteRoot, SHARD_EXECUTION_PLAN_FILE);
+    const implementationEntriesByPath = new Map();
+    for (const entry of [
+      ...(plan.authority.implementationHashes ?? []),
+      ...(plan.authority.incidentImplementationHashes ?? []),
+    ]) {
+      const existing = implementationEntriesByPath.get(entry.path);
+      if (existing && (existing.bytes !== entry.bytes || existing.sha256 !== entry.sha256)) {
+        throw new Error(`signed implementation inventories disagree for ${entry.path}`);
+      }
+      implementationEntriesByPath.set(entry.path, entry);
+    }
+    const implementationEntries = [...implementationEntriesByPath.values()].map((entry) => {
+      const localPath = resolveAuthorityPath(workspaceRoot, entry.path, 'implementation authority entry');
+      const current = fileAuthorityEntry(localPath, entry.path);
+      if (current.bytes !== entry.bytes || current.sha256 !== entry.sha256) {
+        throw new Error(`coordinator implementation changed before worker distribution: ${entry.path}`);
+      }
+      return {
+        ...entry,
+        localPath,
+        remotePath: path.win32.join(worker.workspaceRoot, ...entry.path.split('/')),
+      };
+    });
     const runtimeEntries = plan.authority.runtimeBinaryHashes.map((entry) => {
       const localPath = resolveAuthorityPath(workspaceRoot, entry.path, 'runtime bundle entry');
       const current = fileAuthorityEntry(localPath, entry.path);
@@ -903,13 +926,32 @@ foreach ($directory in @($payload.runtimeDirectories)) {
 }
 `, {
       remoteRoot,
-      runtimeDirectories: [...new Set(runtimeEntries.map((entry) => path.win32.dirname(entry.remotePath)))],
+      runtimeDirectories: [...new Set([
+        ...implementationEntries.map((entry) => path.win32.dirname(entry.remotePath)),
+        ...runtimeEntries.map((entry) => path.win32.dirname(entry.remotePath)),
+      ])],
     }), `worker ${worker.workerId} isolated-root initialization`);
     await upload(worker, planPath, remotePlanPath);
     if (!reusePreparedWorkers) {
+      // Git may report a clean Windows checkout while core.autocrlf has changed
+      // the working-tree bytes of signed PowerShell/text authority files.  The
+      // shard validates the bytes it will actually execute, so normalize every
+      // signed implementation entry from the coordinator before any readiness
+      // or Provider preflight.  Re-checking git state below still rejects real
+      // source divergence because these bytes are the exact signed Git content.
+      for (const entry of implementationEntries) await upload(worker, entry.localPath, entry.remotePath);
       for (const entry of runtimeEntries) await upload(worker, entry.localPath, entry.remotePath);
     }
     const verification = await runRemoteJsonWithRetries((attempt) => runRemote(worker, `
+$implementation = @()
+foreach ($entry in @($payload.implementationEntries)) {
+  $target = [string]$entry.remotePath
+  if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "implementation missing: $target" }
+  $item = Get-Item -LiteralPath $target
+  $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
+  if ($item.Length -ne [int64]$entry.bytes -or $hash -ne [string]$entry.sha256) { throw "implementation mismatch: $target" }
+  $implementation += [pscustomobject]@{ path = [string]$entry.path; bytes = [int64]$item.Length; sha256 = $hash }
+}
 $actual = @()
 foreach ($entry in @($payload.entries)) {
   $target = [string]$entry.remotePath
@@ -920,8 +962,11 @@ foreach ($entry in @($payload.entries)) {
   $actual += [pscustomobject]@{ path = [string]$entry.path; bytes = [int64]$item.Length; sha256 = $hash }
 }
 $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SHA256).Hash.ToLowerInvariant()
-[pscustomobject]@{ runtime = $actual; planSha256 = $planHash } | ConvertTo-Json -Depth 5 -Compress
+[pscustomobject]@{ implementation = $implementation; runtime = $actual; planSha256 = $planHash } | ConvertTo-Json -Depth 5 -Compress
 `, {
+      implementationEntries: implementationEntries.map(({ path: entryPath, bytes, sha256, remotePath }) => ({
+        path: entryPath, bytes, sha256, remotePath,
+      })),
       entries: runtimeEntries.map(({ path: entryPath, bytes, sha256, remotePath }) => ({
         path: entryPath, bytes, sha256, remotePath,
       })),
@@ -932,9 +977,13 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
     if (verification.planSha256 !== fileAuthorityEntry(planPath, path.basename(planPath)).sha256) {
       throw new Error(`worker ${worker.workerId} copied plan hash mismatch`);
     }
-    // Runtime targets are the only workspace writes. Re-check exact HEAD and a
-    // clean tree afterward so a tracked package change or concurrent source
-    // edit blocks every lease before the first paid cell.
+    if ((verification.implementation ?? []).length !== implementationEntries.length) {
+      throw new Error(`worker ${worker.workerId} implementation verification returned an incomplete inventory`);
+    }
+    // Runtime targets and byte-normalized signed implementation targets are
+    // the only workspace writes. Re-check exact HEAD and a clean tree afterward
+    // so a real tracked change or concurrent source edit blocks every lease
+    // before the first paid cell.
     await queryWorker(worker);
     const runtimeByPath = new Map(runtimeEntries.map((entry) => [entry.path, entry]));
     const driver = {

@@ -615,6 +615,8 @@ test('Plus production coordinator keeps the signed two-wave incident sequence ou
     'utf8',
   );
   assert.match(coordinatorSource, /line !== REMOTE_POWERSHELL_COMPLETION_MARKER/);
+  assert.match(coordinatorSource, /child process timed out after/);
+  assert.match(coordinatorSource, /exitCode: 124/);
   const root = tempRoot();
   try {
     const config = twoVmProductionConfig(root);

@@ -44,6 +44,13 @@ test('remote runtime verification has a bounded slow-disk timeout', () => {
   );
 });
 
+test('a killed Windows child settles the transport timeout without waiting for an exit event', () => {
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  assert.match(source, /child process timed out after/);
+  assert.match(source, /exitCode: 124/);
+  assert.match(source, /timer = setTimeout\(\(\) => \{[\s\S]*finish\(\(\) => resolve\(/);
+});
+
 test('worker preparation normalizes and verifies signed implementation bytes before readiness', () => {
   const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
   assert.match(source, /plan\.authority\.implementationHashes/);

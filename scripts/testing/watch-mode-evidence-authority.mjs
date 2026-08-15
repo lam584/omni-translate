@@ -59,6 +59,7 @@ export const AUTHORITY_RUNTIME_BINARY_FILES = Object.freeze([
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.cat',
   'drivers/windows-virtual-mic/package/omni-virtual-speaker.inf',
   'drivers/windows-virtual-mic/package/driver-package.json',
+  'drivers/windows-virtual-mic/package/omni-translate-development-driver.cer',
 ]);
 
 const COMMON_CELL_ARTIFACTS = Object.freeze([

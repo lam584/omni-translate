@@ -111,11 +111,25 @@ if ($driverRequired) {
   $packageSysHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.sys') -Algorithm SHA256).Hash.ToLowerInvariant()
   $packageCatHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.cat') -Algorithm SHA256).Hash.ToLowerInvariant()
   $packageInfHash = (Get-FileHash -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.inf') -Algorithm SHA256).Hash.ToLowerInvariant()
+  $packageCertificatePath = Join-Path $packageRoot 'omni-translate-development-driver.cer'
+  $packageCertificateHash = (Get-FileHash -LiteralPath $packageCertificatePath -Algorithm SHA256).Hash.ToLowerInvariant()
   if (
     $packageSysHash -ne [string]$expected.sysSha256 -or
     $packageCatHash -ne [string]$expected.catSha256 -or
-    $packageInfHash -ne [string]$expected.infSha256
+    $packageInfHash -ne [string]$expected.infSha256 -or
+    $packageCertificateHash -ne [string]$expected.cerSha256
   ) { throw 'driver package changed after signed runtime distribution' }
+  $packageCertificate = [Security.Cryptography.X509Certificates.X509Certificate2]::new($packageCertificatePath)
+  $packageCatalogSignature = Get-AuthenticodeSignature -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.cat')
+  $packageSysSignature = Get-AuthenticodeSignature -LiteralPath (Join-Path $packageRoot 'omni-virtual-speaker.sys')
+  $packageMetadata = Get-Content -LiteralPath (Join-Path $packageRoot 'driver-package.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+  if (
+    -not $packageCatalogSignature.SignerCertificate -or
+    -not $packageSysSignature.SignerCertificate -or
+    [string]$packageCatalogSignature.SignerCertificate.Thumbprint -ne [string]$packageCertificate.Thumbprint -or
+    [string]$packageSysSignature.SignerCertificate.Thumbprint -ne [string]$packageCertificate.Thumbprint -or
+    [string]$packageMetadata.signerThumbprint -ne [string]$packageCertificate.Thumbprint
+  ) { throw 'driver trust certificate does not match the signed runtime package signer' }
   $driverArguments = @{
     WorkspaceRoot = $workspace
     RuntimeRoot = $driverRuntimeRoot
@@ -927,9 +941,10 @@ $planHash = (Get-FileHash -LiteralPath ([string]$payload.planPath) -Algorithm SH
       sysSha256: runtimeByPath.get('drivers/windows-virtual-mic/package/omni-virtual-speaker.sys')?.sha256,
       catSha256: runtimeByPath.get('drivers/windows-virtual-mic/package/omni-virtual-speaker.cat')?.sha256,
       infSha256: runtimeByPath.get('drivers/windows-virtual-mic/package/omni-virtual-speaker.inf')?.sha256,
+      cerSha256: runtimeByPath.get('drivers/windows-virtual-mic/package/omni-translate-development-driver.cer')?.sha256,
     };
     if (Object.values(driver).some((value) => !/^[a-f0-9]{64}$/.test(String(value ?? '')))) {
-      throw new Error(`worker ${worker.workerId} signed runtime lacks driver SYS/CAT/INF readiness bindings`);
+      throw new Error(`worker ${worker.workerId} signed runtime lacks driver SYS/CAT/INF/CER readiness bindings`);
     }
     const readinessPayload = {
       workspaceRoot: worker.workspaceRoot,

@@ -9,6 +9,7 @@ import test from 'node:test';
 
 import { repoRoot } from '../lib/testing-common.mjs';
 import { LIVE_LLM_CELLS } from './watch-mode-balanced-release-plan.mjs';
+import { AUTHORITY_RUNTIME_BINARY_FILES } from './watch-mode-evidence-authority.mjs';
 import { createWorkerReadinessRequest, fileAuthorityEntry } from './watch-mode-shard-authority.mjs';
 import {
   PRODUCTION_WORKER_CONFIG_KIND,
@@ -220,10 +221,23 @@ test('production worker config is exact, host-key pinned, UUID-bound, and comman
 });
 
 test('worker readiness proves driver package and endpoint profiles without a Provider process', () => {
+  assert.ok(
+    AUTHORITY_RUNTIME_BINARY_FILES.includes(
+      'drivers/windows-virtual-mic/package/omni-translate-development-driver.cer',
+    ),
+    'the trust certificate must be hash-bound and distributed with the signed runtime package',
+  );
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /test-development-driver\.ps1/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /artifacts\\tooling\\devcon\.exe/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /Resolve-OmniDevconPath/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /driver package changed after signed runtime distribution/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /packageCertificateHash/);
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /expected\.cerSha256/);
+  assert.match(
+    PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
+    /driver trust certificate does not match the signed runtime package signer/,
+  );
+  assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /packageMetadata\.signerThumbprint/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /install-development-driver\.ps1/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /-ValidatePackageOnly/);
   assert.match(PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY, /repair-driver\.ps1/);

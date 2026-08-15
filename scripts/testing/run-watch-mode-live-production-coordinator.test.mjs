@@ -44,6 +44,23 @@ test('remote runtime verification has a bounded slow-disk timeout', () => {
   );
 });
 
+test('worker preparation normalizes and verifies signed implementation bytes before readiness', () => {
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  assert.match(source, /plan\.authority\.implementationHashes/);
+  assert.match(source, /plan\.authority\.incidentImplementationHashes/);
+  assert.match(
+    source,
+    /for \(const entry of implementationEntries\) await upload\(worker, entry\.localPath, entry\.remotePath\)/,
+  );
+  assert.match(source, /implementation mismatch: \$target/);
+  assert.match(source, /implementation verification returned an incomplete inventory/);
+  assert.ok(
+    source.indexOf('implementation verification returned an incomplete inventory')
+      < source.lastIndexOf('PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY'),
+    'signed implementation verification must precede zero-provider readiness and Provider preflight',
+  );
+});
+
 test('remote readiness finalization has a bounded slow-disk timeout', () => {
   assert.equal(PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS, 5 * 60 * 1000);
   const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');

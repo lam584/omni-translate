@@ -828,10 +828,17 @@ $workspace = [string]$payload.workspaceRoot
 if (-not (Test-Path -LiteralPath $workspace -PathType Container)) { throw 'workspace is missing' }
 $head = (& git.exe -C $workspace rev-parse HEAD 2>&1 | Select-Object -Last 1).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'git HEAD query failed' }
-$dirty = @(& git.exe -C $workspace status --porcelain=v1 --untracked-files=all 2>&1)
-if ($LASTEXITCODE -ne 0) { throw 'git status query failed' }
+& git.exe -C $workspace diff --quiet --ignore-submodules --
+$unstagedExit = $LASTEXITCODE
+if ($unstagedExit -ne 0 -and $unstagedExit -ne 1) { throw 'git unstaged diff query failed' }
+& git.exe -C $workspace diff --cached --quiet --ignore-submodules --
+$stagedExit = $LASTEXITCODE
+if ($stagedExit -ne 0 -and $stagedExit -ne 1) { throw 'git staged diff query failed' }
+$untracked = @(& git.exe -C $workspace ls-files --others --exclude-standard 2>&1)
+if ($LASTEXITCODE -ne 0) { throw 'git untracked query failed' }
+$dirtyEntryCount = @($untracked).Count + [int]($unstagedExit -eq 1) + [int]($stagedExit -eq 1)
 $uuid = [string](Get-CimInstance Win32_ComputerSystemProduct).UUID
-[pscustomobject]@{ headCommit = $head.ToLowerInvariant(); dirtyEntries = @($dirty).Count; uuidBios = $uuid.ToLowerInvariant() } | ConvertTo-Json -Compress
+[pscustomobject]@{ headCommit = $head.ToLowerInvariant(); dirtyEntries = $dirtyEntryCount; uuidBios = $uuid.ToLowerInvariant() } | ConvertTo-Json -Compress
 `, { workspaceRoot: worker.workspaceRoot }, { timeoutMs: 45_000 });
     const state = parseRemoteJson(result, `worker ${worker.workerId} readiness`);
     if (

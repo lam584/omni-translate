@@ -188,8 +188,7 @@ mod injector {
         let total_frames = target_samples.len() / TARGET_CHANNELS;
         let mut pending = VecDeque::from(target_samples);
         let started = Instant::now();
-        let timeout =
-            Duration::from_secs_f64(total_frames as f64 / render_sample_rate_hz as f64 + 8.0);
+        let timeout = render_timeout(total_frames, render_sample_rate_hz);
         let mut rendered_frames = 0usize;
         while !pending.is_empty() {
             rendered_frames += render.write_available(&mut pending)?;
@@ -313,6 +312,18 @@ mod injector {
             Some(requested) => requested.eq_ignore_ascii_case(actual_endpoint_id),
             None => actual_endpoint_name.contains(requested_endpoint_name),
         }
+    }
+
+    fn render_timeout(total_frames: usize, render_sample_rate_hz: u32) -> Duration {
+        let media_seconds = total_frames as f64 / render_sample_rate_hz.max(1) as f64;
+        // A shared-mode WASAPI endpoint may expose nominal 48 kHz while its
+        // virtual/hardware clock drains a little slower. A fixed eight-second
+        // allowance truncated the tail of the 125.8 s canonical Watch source
+        // on a real VM. Keep the timeout bounded, but scale its scheduling
+        // allowance for long media so a current stream is not mistaken for a
+        // stalled endpoint.
+        let scheduling_allowance_seconds = (media_seconds * 0.15).clamp(15.0, 30.0);
+        Duration::from_secs_f64(media_seconds + scheduling_allowance_seconds)
     }
 
     fn decode_media(path: &Path) -> Result<DecodedAudio, String> {
@@ -551,6 +562,14 @@ mod injector {
             let rendered_48k = resample_to_render_stereo(&source, 24_000, 1, 48_000);
             assert_eq!(rendered_16k.len(), 16_000 * TARGET_CHANNELS);
             assert_eq!(rendered_48k.len(), 48_000 * TARGET_CHANNELS);
+        }
+
+        #[test]
+        fn long_media_timeout_allows_slow_shared_mode_clock_without_becoming_unbounded() {
+            let canonical = render_timeout(6_039_136, 48_000).as_secs_f64();
+            assert!(canonical > 144.0 && canonical < 145.0);
+            assert_eq!(render_timeout(48_000, 48_000), Duration::from_secs(16));
+            assert_eq!(render_timeout(48_000 * 600, 48_000), Duration::from_secs(630));
         }
     }
 

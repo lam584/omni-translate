@@ -380,6 +380,27 @@ npm run quality:gate:release
 
 收尾 manifest 必须同时引用当前 commit 的 local-isolation manifest、worker readiness、Provider preflight receipt、Plus incident manifest/receipt、八格 shard manifest/strict verification receipt、运行时二进制哈希和两套预算账本。
 
+### 2026-08-16 首轮失败证据如何重放
+
+首轮 Plus 第一波不是发布通过证据。它证明了运行 180 秒不等于向 Provider 连续发送 180 秒：process-exclusion 与 virtual-driver 两格的 send-boundary ledger 只有约 48–50 秒输入，内容也只覆盖 canonical source 前段。当前零费用回归必须覆盖“manual response pending 时，ready websocket 继续接收 input audio”；只有 `commit/response.create` 被串行化，音频输入不能回退到会溢出的 pre-session queue。新付费 execution 必须重新生成 clean-commit local authority、readiness、preflight 和 lease，不能修补或拼接旧 execution。
+
+物理内容 authority 的原声 matcher 现在按以下不变量重建：
+
+- canonical reference、source-window 与完整 physical recording 都必须是受哈希约束的普通文件，source-window 必须是完整录音的精确前缀，不能复用 reference 路径或字节；
+- 仍使用九个固定、互不重叠的时间锚点并至少通过七个，同时保留统一极性、错误参考 margin、能量范围和波形/一阶导数门槛；
+- 全局 lag 只作为身份和极性锚点。每个锚点允许在 `±200 ms` 真实端点时钟范围内选择一个 200 ms 片段，输出 `anchorLagSamples`、`localLagSamples` 和 `localLagDeltaSamples`；
+- 两份首轮真实 PCM 离线重建分别通过 `7/9`、`8/9`，而三锚点稀疏复制、同包络异频音、纯译音 tone、噪声、错误参考和伪造前缀仍必须失败。
+
+`translated-pcm-loopback-correlation` 对不完整 cue 采用“严格失败但继续诊断”：缺少唯一有序 queued/started/completed 的 cue 仍写 violation，其他完整 cue 继续产生相关性、wrong-cue margin 和物理时间窗结果。排查时先看 `translated-cue-pcm-summary.json` 的 finalized/terminalReason/active/aborted 状态，再看逐 cue lifecycle；不能把 `matchedCueCount=0` 当作唯一结论。
+
+真实执行的优先字段顺序为：
+
+1. `provider-input-budget-ledger.json` 与 Rust send-boundary ledger 的 `totalSamples`、`finalized`、`terminalReason`、model/protocol/lease identity；
+2. Watch report 中 canonical coverage、完整可见 cue 数、`historicalRegressionChecks` 和历史三类文本回声原因；
+3. `native-playback-queue-expired`、`native-playback-queue-overflow`、`native-playback-stream-stale-dropped` 的 cue、预测开始时间和实际年龄；
+4. translated PCM summary/journal、逐 cue 物理 matcher、原声九锚点 candidate 与 wrong-reference margin；
+5. echo-cancel 的 render submit position、endpoint padding、capture QPC age、AEC reset/underrun 和 ASR deleted chunks。
+
 ## 2026-06-05 迭代约束
 
 > 以下 2026-06-05/2026-07-26 条目是历史行为记录；其中“两变体默认矩阵”、文本回声门控和旧 AEC 抑制规则已被上面的 2026-08-10 三路线约束取代。

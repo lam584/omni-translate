@@ -445,3 +445,18 @@ npm run test:watch-mode-report
 专项计划必须在本轮 coordinator 公钥 ID 已编入 Desktop release binary 后才写入磁盘；随后只允许由签名 lease、当前 commit/runtime hash、Plus zero-provider readiness 和受控 Session 1 `incident-plus-cell` 入口共同启动。它使用 `IncidentReplayAuthority`，不会设置或借用 strict 八格的 `StrictPaidAuthority`。virtual-driver 格另行消费同一零 Provider 检查产生的驱动兼容性 receipt，只用于把已验证的驱动身份交给 limited session；它不能替代专项自己的 Plus readiness receipt。
 
 严格发布矩阵仍固定为两个 release 模型、六个 pairwise-live 格和两个 model-stability 格，共八格。Plus 专项不能替代、扩充或改变其 `LIVE_LLM_CELLS`、签名计划、预算或 verifier；只有 Plus 专项先全部通过，才允许开始固定八格矩阵。
+
+### 15.4 2026-08-16 首轮 Plus 失败反查与当前行为
+
+首轮 Plus 三格专项在第一波停止，失败 execution 的签名计划、lease、预算账本、日志、报告、PCM 和 VM 诊断均原样保留，未被当作通过证据复用。两格各运行约 180 秒，但 Rust send-boundary ledger 只记录约 48–50 秒的 Provider 输入，严格内容只推进到素材前段。沿 `capture chunk → audio pump → websocket append → manual response` 反查后确认：会话 ready 后，只要 `response_pending=true`，旧实现仍把 Provider 输入判为不可写；连续音频被塞回有界的 pre-session queue，响应密集时旧 chunk 被淘汰。当前实现只序列化 `commit/response.create`，不再在手动响应期间关闭已经 ready 的 Provider 输入；回归测试明确断言响应进行中音频仍可写，而空文本、重复 completed、旧 owner 和停止会话的拒绝规则不变。
+
+同一失败 execution 还暴露了证据算法的真实端点时钟假设。旧物理原声 authority 要求九个分布式一秒窗口共用一个固定 sample lag；独立 media render 与 loopback capture 时钟、重采样和密集译音叠加会让合法原声只显示 `1/9`。当前 authority 仍固定九个时间锚点、要求至少 `7/9`、使用统一全局极性、错误参考 margin、能量范围和非重叠检查，但允许每个锚点在全局 lag 周围 `±200 ms` 内寻找一个 200 ms 原声片段。两份已保留的真实录音在不改原始字节的离线重建中分别达到 `7/9` 和 `8/9`；只复制三个有利锚点、纯译音 tone、确定性噪声、错误参考及伪造 source-window prefix 仍被拒绝。
+
+译音声学校验过去还存在诊断遮蔽：任一尾部 cue 缺少 `completed` 会使整张 playback lifecycle map 失效，前面所有完整 cue 均显示为零匹配。当前校验仍因该尾部 cue 严格失败，但会继续计算并报告其他生命周期完整 cue 的逐项相关性，避免把“一个终态缺失”误诊成“整段物理译音不存在”。
+
+后续诊断优先查看：
+
+1. `provider-input-budget-ledger.json` 的 `finalized`、`terminalReason`、`totalSamples`，并与 Rust send-boundary/model trace 输入样本数对照；180 秒 wall clock 不能替代实际发送样本证据。
+2. `translated-cue-pcm-summary.json` 的 `finalized`、`terminalReason`、`activeStreamCount`、`abortedStreamCount`，以及每个 cue 的 queued/started/completed lifecycle；尾部失败不得掩盖较早 cue 的 matcher 结果。
+3. 物理原声 authority 的 `globalLagSamples`、各 candidate 的 `anchorLagSamples`、`localLagSamples`、`localLagDeltaSamples`、波形/导数相关性、能量比、`passingCandidateCount` 和 `wrongReferenceMargin`；不得仅凭一个有利窗口放行。
+4. Watch report 的 `historicalRegressionChecks`、三类历史回声原因、native queue stale/overflow/expired 事件，以及 AEC reset、underrun、padding、QPC age、ASR 删除计数。

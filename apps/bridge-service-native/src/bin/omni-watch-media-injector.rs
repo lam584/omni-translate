@@ -31,7 +31,6 @@ mod injector {
         SampleType, WaveFormat,
     };
 
-    const TARGET_SAMPLE_RATE: usize = 48_000;
     const TARGET_CHANNELS: usize = 2;
     const BYTES_PER_SAMPLE: usize = std::mem::size_of::<f32>();
     const BYTES_PER_FRAME: usize = TARGET_CHANNELS * BYTES_PER_SAMPLE;
@@ -48,6 +47,7 @@ mod injector {
         pub finished_at_ms: u64,
         pub source_sample_rate_hz: u32,
         pub source_channels: usize,
+        pub render_sample_rate_hz: u32,
         pub rendered_frames: usize,
         pub rendered_seconds: f64,
         pub detail: Option<String>,
@@ -65,6 +65,7 @@ mod injector {
                 finished_at_ms: unix_ms(),
                 source_sample_rate_hz: 0,
                 source_channels: 0,
+                render_sample_rate_hz: 0,
                 rendered_frames: 0,
                 rendered_seconds: 0.0,
                 detail: Some(detail),
@@ -137,13 +138,15 @@ mod injector {
                 args.media_path.display()
             ));
         }
-        let target_samples = resample_to_48k_stereo(
+        let render_sample_rate_hz = decoded.source_sample_rate_hz.max(1);
+        let target_samples = resample_to_render_stereo(
             &decoded.samples,
             decoded.source_sample_rate_hz,
             decoded.source_channels,
+            render_sample_rate_hz,
         );
         let max_samples = args.max_seconds.map(|seconds| {
-            (seconds.max(0.1) * TARGET_SAMPLE_RATE as f64) as usize * TARGET_CHANNELS
+            (seconds.max(0.1) * render_sample_rate_hz as f64) as usize * TARGET_CHANNELS
         });
         let target_samples = match max_samples {
             Some(limit) => target_samples.into_iter().take(limit).collect::<Vec<_>>(),
@@ -172,7 +175,7 @@ mod injector {
             32,
             32,
             &SampleType::Float,
-            TARGET_SAMPLE_RATE,
+            render_sample_rate_hz as usize,
             TARGET_CHANNELS,
             None,
         );
@@ -181,7 +184,7 @@ mod injector {
         let mut pending = VecDeque::from(target_samples);
         let started = Instant::now();
         let timeout =
-            Duration::from_secs_f64(total_frames as f64 / TARGET_SAMPLE_RATE as f64 + 8.0);
+            Duration::from_secs_f64(total_frames as f64 / render_sample_rate_hz as f64 + 8.0);
         let mut rendered_frames = 0usize;
         while !pending.is_empty() {
             rendered_frames += render.write_available(&mut pending)?;
@@ -204,8 +207,9 @@ mod injector {
             finished_at_ms: unix_ms(),
             source_sample_rate_hz: decoded.source_sample_rate_hz,
             source_channels: decoded.source_channels,
+            render_sample_rate_hz,
             rendered_frames,
-            rendered_seconds: rendered_frames as f64 / TARGET_SAMPLE_RATE as f64,
+            rendered_seconds: rendered_frames as f64 / render_sample_rate_hz as f64,
             detail: None,
         })
     }
@@ -464,7 +468,7 @@ mod injector {
         }
         Ok(DecodedAudio {
             samples,
-            source_sample_rate_hz: source_sample_rate_hz.unwrap_or(TARGET_SAMPLE_RATE as u32),
+            source_sample_rate_hz: source_sample_rate_hz.unwrap_or(48_000),
             source_channels: source_channels.unwrap_or(1),
         })
     }
@@ -533,17 +537,29 @@ mod injector {
                 "Omni Translate Virtual Speaker",
             ));
         }
+
+        #[test]
+        fn render_resampling_preserves_duration_at_the_source_clock() {
+            let source = vec![0.25_f32; 24_000];
+            let rendered = resample_to_render_stereo(&source, 24_000, 1, 24_000);
+            assert_eq!(rendered.len(), 24_000 * TARGET_CHANNELS);
+        }
     }
 
-    fn resample_to_48k_stereo(samples: &[f32], sample_rate_hz: u32, channels: usize) -> Vec<f32> {
+    fn resample_to_render_stereo(
+        samples: &[f32],
+        sample_rate_hz: u32,
+        channels: usize,
+        render_sample_rate_hz: u32,
+    ) -> Vec<f32> {
         if samples.is_empty() {
             return Vec::new();
         }
         let channels = channels.max(1);
         let source_frames = samples.len() / channels;
-        let target_frames =
-            source_frames.saturating_mul(TARGET_SAMPLE_RATE) / sample_rate_hz.max(1) as usize;
-        let ratio = sample_rate_hz.max(1) as f64 / TARGET_SAMPLE_RATE as f64;
+        let target_frames = source_frames.saturating_mul(render_sample_rate_hz.max(1) as usize)
+            / sample_rate_hz.max(1) as usize;
+        let ratio = sample_rate_hz.max(1) as f64 / render_sample_rate_hz.max(1) as f64;
         let mut output = Vec::with_capacity(target_frames * TARGET_CHANNELS);
         for target_index in 0..target_frames {
             let source_index = ((target_index as f64) * ratio).floor() as usize;

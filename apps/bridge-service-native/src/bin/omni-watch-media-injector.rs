@@ -138,7 +138,21 @@ mod injector {
                 args.media_path.display()
             ));
         }
-        let render_sample_rate_hz = decoded.source_sample_rate_hz.max(1);
+        initialize_mta().ok().map_err(error_text)?;
+        let enumerator = DeviceEnumerator::new().map_err(error_text)?;
+        let device = find_render_device(
+            &enumerator,
+            args.endpoint_id.as_deref(),
+            &args.endpoint_name,
+        )?;
+        let endpoint_id = device.get_id().map_err(error_text)?;
+        let endpoint_name = device.get_friendlyname().map_err(error_text)?;
+        let render_sample_rate_hz = device
+            .get_iaudioclient()
+            .and_then(|client| client.get_mixformat())
+            .map_err(error_text)?
+            .get_samplespersec()
+            .max(1);
         let target_samples = resample_to_render_stereo(
             &decoded.samples,
             decoded.source_sample_rate_hz,
@@ -162,15 +176,6 @@ mod injector {
             write_pcm16le(path, &reference_samples)?;
         }
 
-        initialize_mta().ok().map_err(error_text)?;
-        let enumerator = DeviceEnumerator::new().map_err(error_text)?;
-        let device = find_render_device(
-            &enumerator,
-            args.endpoint_id.as_deref(),
-            &args.endpoint_name,
-        )?;
-        let endpoint_id = device.get_id().map_err(error_text)?;
-        let endpoint_name = device.get_friendlyname().map_err(error_text)?;
         let format = WaveFormat::new(
             32,
             32,
@@ -190,7 +195,8 @@ mod injector {
             rendered_frames += render.write_available(&mut pending)?;
             if started.elapsed() > timeout {
                 return Err(format!(
-                    "timed out rendering media: renderedFrames={rendered_frames} totalFrames={total_frames}"
+                    "timed out rendering media: renderedFrames={rendered_frames} totalFrames={total_frames} sourceSampleRateHz={} renderSampleRateHz={render_sample_rate_hz}",
+                    decoded.source_sample_rate_hz,
                 ));
             }
             thread::sleep(Duration::from_millis(2));
@@ -539,10 +545,12 @@ mod injector {
         }
 
         #[test]
-        fn render_resampling_preserves_duration_at_the_source_clock() {
+        fn render_resampling_preserves_duration_across_endpoint_clocks() {
             let source = vec![0.25_f32; 24_000];
-            let rendered = resample_to_render_stereo(&source, 24_000, 1, 24_000);
-            assert_eq!(rendered.len(), 24_000 * TARGET_CHANNELS);
+            let rendered_16k = resample_to_render_stereo(&source, 24_000, 1, 16_000);
+            let rendered_48k = resample_to_render_stereo(&source, 24_000, 1, 48_000);
+            assert_eq!(rendered_16k.len(), 16_000 * TARGET_CHANNELS);
+            assert_eq!(rendered_48k.len(), 48_000 * TARGET_CHANNELS);
         }
     }
 

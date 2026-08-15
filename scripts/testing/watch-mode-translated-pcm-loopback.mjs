@@ -276,6 +276,7 @@ function playbackLifecycle(scopedLog, requiredCueIds) {
     events.push({ cueId, status, index, occurredAtMs: parseLogTimestamp(line) });
   }
   const byCue = new Map();
+  const violations = [];
   for (const cueId of requiredCueIds) {
     const cueEvents = events.filter((entry) => entry.cueId === cueId);
     const queued = cueEvents.filter((entry) => entry.status === 'queued');
@@ -287,10 +288,13 @@ function playbackLifecycle(scopedLog, requiredCueIds) {
       || ![queued[0], started[0], completed[0]].every((entry) => Number.isFinite(entry.occurredAtMs))
       || !(queued[0].occurredAtMs <= started[0].occurredAtMs
         && started[0].occurredAtMs <= completed[0].occurredAtMs)
-    ) throw new Error(`cue ${cueId} does not have exactly one ordered timestamped queued/started/completed lifecycle`);
+    ) {
+      violations.push(`cue ${cueId} does not have exactly one ordered timestamped queued/started/completed lifecycle`);
+      continue;
+    }
     byCue.set(cueId, { queued: queued[0], started: started[0], completed: completed[0] });
   }
-  return byCue;
+  return { byCue, violations };
 }
 
 function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
@@ -404,7 +408,9 @@ export function buildTranslatedPcmLoopbackAuthority({
     // lifecycle events are not discarded when the report-save event repeats it.
     const markerIndex = log.indexOf(runMarker);
     if (markerIndex < 0) throw new Error('run marker is absent from app.log');
-    lifecycle = playbackLifecycle(log.slice(markerIndex), requiredCueIds);
+    const parsedLifecycle = playbackLifecycle(log.slice(markerIndex), requiredCueIds);
+    lifecycle = parsedLifecycle.byCue;
+    violations.push(...parsedLifecycle.violations);
   } catch (error) {
     violations.push(error.message);
   }

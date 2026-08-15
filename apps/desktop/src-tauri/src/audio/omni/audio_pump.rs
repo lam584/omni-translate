@@ -55,9 +55,14 @@ pub(super) struct OmniAudioPump {
 
 fn provider_input_is_writable(
     session_ready_for_audio: bool,
-    defer_audio_until_response_done: bool,
+    _response_pending: bool,
 ) -> bool {
-    session_ready_for_audio && !defer_audio_until_response_done
+    // Manual mode serializes commit/response.create, not input audio.  Audio
+    // captured while the previous response streams belongs to the next turn;
+    // deferring append here makes a high-frequency provider response consume
+    // the bounded pre-session queue faster than it can drain and silently
+    // drops the live source.
+    session_ready_for_audio
 }
 
 fn record_append_attempt_progress<R: tauri::Runtime>(
@@ -493,9 +498,9 @@ mod tests {
     }
 
     #[test]
-    fn manual_response_gate_keeps_provider_input_closed_until_response_done() {
+    fn manual_response_gate_keeps_ready_provider_input_open_during_response() {
         assert!(!provider_input_is_writable(false, false));
-        assert!(!provider_input_is_writable(true, true));
+        assert!(provider_input_is_writable(true, true));
         assert!(provider_input_is_writable(true, false));
     }
 

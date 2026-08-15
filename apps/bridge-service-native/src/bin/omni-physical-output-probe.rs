@@ -40,7 +40,7 @@ mod probe {
     use serde_json::{json, Value};
     use std::f32::consts::TAU;
     use std::fs::{self, File, OpenOptions};
-    use std::io::{BufRead, BufReader, Read, Write};
+    use std::io::{BufRead, BufReader, BufWriter, Read, Write};
     use std::path::PathBuf;
     use std::process::{Child, Command, Stdio};
     use std::sync::{
@@ -823,11 +823,12 @@ mod probe {
         }
         let mono = first_channel_samples(samples);
         let resampled = resample_mono_to_16k_i16(&mono, SAMPLE_RATE as u32);
-        let mut file = File::create(path).map_err(error_text)?;
+        let file = File::create(path).map_err(error_text)?;
+        let mut writer = BufWriter::new(file);
         for sample in resampled {
-            file.write_all(&sample.to_le_bytes()).map_err(error_text)?;
+            writer.write_all(&sample.to_le_bytes()).map_err(error_text)?;
         }
-        Ok(())
+        writer.flush().map_err(error_text)
     }
 
     fn resample_mono_to_16k_i16(samples: &[f32], source_rate: u32) -> Vec<i16> {

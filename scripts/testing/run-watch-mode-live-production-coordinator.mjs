@@ -1501,9 +1501,10 @@ export async function runProductionCoordinator({
         leasePaths: [],
         coordinatorExecutionRoot: executionRoot,
       });
-      const completed = await Promise.all(readinessPlan.workers.map((worker) => (
-        readinessTransport.prepareWorker({ worker })
-      )));
+      const completed = [];
+      for (const worker of readinessPlan.workers) {
+        completed.push(await readinessTransport.prepareWorker({ worker }));
+      }
       const readinessAuthorityRoot = path.join(executionRoot, 'worker-readiness');
       return {
         workerReadinessRequest,

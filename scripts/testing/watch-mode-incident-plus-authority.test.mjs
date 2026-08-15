@@ -38,6 +38,7 @@ import {
 import {
   prepareCurrentIncidentPlusExecution,
   prepareIncidentPlusExecution,
+  mapIncidentPlusWorkersSerially,
   parseIncidentPlusCliArgs,
   runIncidentPlusProductionCoordinator,
   stageIncidentPlusCellAuthority,
@@ -49,6 +50,27 @@ import {
 } from './run-watch-mode-incident-plus-cell.mjs';
 import { generateCoordinatorSigningKeyPair } from './watch-mode-shard-authority.mjs';
 import { INCIDENT_REPLAY_PLUS_ID } from './watch-mode-external-provider-budget.mjs';
+
+test('incident Plus prepares worker runtime bundles serially before paid dispatch', async () => {
+  let active = 0;
+  let maximumActive = 0;
+  const order = [];
+  const completed = await mapIncidentPlusWorkersSerially(
+    [{ workerId: 'vm1' }, { workerId: 'vm2' }],
+    async (worker) => {
+      active += 1;
+      maximumActive = Math.max(maximumActive, active);
+      order.push(`start:${worker.workerId}`);
+      await new Promise((resolve) => setImmediate(resolve));
+      order.push(`finish:${worker.workerId}`);
+      active -= 1;
+      return worker.workerId;
+    },
+  );
+  assert.equal(maximumActive, 1);
+  assert.deepEqual(order, ['start:vm1', 'finish:vm1', 'start:vm2', 'finish:vm2']);
+  assert.deepEqual(completed, ['vm1', 'vm2']);
+});
 
 // This suite exercises signed-plan expiry separately. Keep the normal fixture
 // window safely in the future so ordinary verification does not depend on the

@@ -35,8 +35,19 @@ pub(super) struct AcceptedTranslatedCue {
     relative_path: String,
     accepted_frames: u64,
     chunk_count: u32,
+    chunks: Vec<AcceptedTranslatedChunk>,
     created_at_ms: u64,
     completed_at_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AcceptedTranslatedChunk {
+    chunk_index: u32,
+    request_id: String,
+    sample_offset: usize,
+    sample_count: usize,
+    accepted_at_ms: u64,
 }
 
 #[derive(Debug)]
@@ -47,6 +58,7 @@ struct PendingTranslatedStream {
     channel_count: u16,
     samples: Vec<i16>,
     accepted_frames: u64,
+    chunks: Vec<AcceptedTranslatedChunk>,
     next_chunk_index: u32,
     created_at_ms: u64,
 }
@@ -244,6 +256,13 @@ impl TranslatedPcmAuthority {
             channel_count,
             accepted_frames,
             1,
+            vec![AcceptedTranslatedChunk {
+                chunk_index: 0,
+                request_id: request_id.to_string(),
+                sample_offset: 0,
+                sample_count: samples.len(),
+                accepted_at_ms: now_unix_ms(),
+            }],
             created_at_ms,
         )?;
         self.write_event("bridge_write_accepted", Some(&record))?;
@@ -293,6 +312,13 @@ impl TranslatedPcmAuthority {
                         channel_count,
                         samples: samples.to_vec(),
                         accepted_frames,
+                        chunks: vec![AcceptedTranslatedChunk {
+                            chunk_index,
+                            request_id: request_id.to_string(),
+                            sample_offset: 0,
+                            sample_count: samples.len(),
+                            accepted_at_ms: now_unix_ms(),
+                        }],
                         next_chunk_index: 1,
                         created_at_ms,
                     },
@@ -318,6 +344,13 @@ impl TranslatedPcmAuthority {
                     ));
                 }
                 pending.samples.extend_from_slice(samples);
+                pending.chunks.push(AcceptedTranslatedChunk {
+                    chunk_index,
+                    request_id: request_id.to_string(),
+                    sample_offset: next_len - samples.len(),
+                    sample_count: samples.len(),
+                    accepted_at_ms: now_unix_ms(),
+                });
                 pending.request_ids.push(request_id.to_string());
                 pending.accepted_frames = pending
                     .accepted_frames
@@ -351,6 +384,7 @@ impl TranslatedPcmAuthority {
                     pending.channel_count,
                     pending.accepted_frames,
                     pending.next_chunk_index,
+                    pending.chunks,
                     pending.created_at_ms,
                 )?;
                 self.write_event("bridge_write_accepted", Some(&record))?;
@@ -558,6 +592,7 @@ fn persist_accepted_cue(
     channel_count: u16,
     accepted_frames: u64,
     chunk_count: u32,
+    chunks: Vec<AcceptedTranslatedChunk>,
     created_at_ms: u64,
 ) -> Result<AcceptedTranslatedCue, String> {
     if enabled.accepted_cue_ids.contains(cue_id) {
@@ -591,6 +626,7 @@ fn persist_accepted_cue(
         relative_path: format!("cue-pcm/{file_name}"),
         accepted_frames,
         chunk_count,
+        chunks,
         created_at_ms,
         completed_at_ms: now_unix_ms(),
     };
@@ -675,6 +711,9 @@ mod tests {
         assert_eq!(summary["cueCount"], 1);
         assert_eq!(summary["acceptedCues"][0]["cueId"], "cue-1");
         assert_eq!(summary["acceptedCues"][0]["acceptedFrames"], 4);
+        assert_eq!(summary["acceptedCues"][0]["chunks"][0]["chunkIndex"], 0);
+        assert_eq!(summary["acceptedCues"][0]["chunks"][0]["sampleOffset"], 0);
+        assert_eq!(summary["acceptedCues"][0]["chunks"][0]["sampleCount"], 4);
         assert_eq!(summary["activeStreamCount"], 0);
         assert_eq!(summary["finalized"], true);
         let relative = summary["acceptedCues"][0]["relativePath"]
@@ -753,6 +792,10 @@ mod tests {
         .expect("summary JSON");
         assert_eq!(summary["acceptedCues"][0]["sampleCount"], 5);
         assert_eq!(summary["acceptedCues"][0]["chunkCount"], 2);
+        assert_eq!(summary["acceptedCues"][0]["chunks"].as_array().unwrap().len(), 2);
+        assert_eq!(summary["acceptedCues"][0]["chunks"][1]["chunkIndex"], 1);
+        assert_eq!(summary["acceptedCues"][0]["chunks"][1]["sampleOffset"], 2);
+        assert_eq!(summary["acceptedCues"][0]["chunks"][1]["sampleCount"], 3);
         assert_eq!(summary["acceptedCues"][0]["requestIds"].as_array().unwrap().len(), 3);
     }
 

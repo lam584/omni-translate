@@ -151,7 +151,7 @@ function segmentStarts(sampleCount, segmentLength) {
   return [...new Set([0.08, 0.5, 0.9].map((fraction) => Math.round(maximum * fraction)))];
 }
 
-function matchReferenceAtExpectedStart(reference, recording, expectedStart) {
+export function matchReferenceAtExpectedStart(reference, recording, expectedStart) {
   const segmentLength = Math.min(reference.length, Math.round(0.7 * LOOPBACK_SAMPLE_RATE_HZ));
   if (segmentLength < Math.floor(0.4 * LOOPBACK_SAMPLE_RATE_HZ)) {
     return { passed: false, score: 0, segmentMatches: [], reason: 'translated cue is shorter than 400 ms' };
@@ -197,13 +197,29 @@ function matchReferenceAtExpectedStart(reference, recording, expectedStart) {
     if (candidate && (!best || candidate.score > best.score)) best = candidate;
   };
   const radius = Math.round(1.5 * LOOPBACK_SAMPLE_RATE_HZ);
-  const coarseStep = Math.round(0.01 * LOOPBACK_SAMPLE_RATE_HZ);
-  for (let lag = -radius; lag <= radius; lag += coarseStep) consider(lag);
+  const prefilterLength = Math.min(segmentLength, Math.round(0.2 * LOOPBACK_SAMPLE_RATE_HZ));
+  const prefilterReferenceStart = starts[0];
+  const candidates = [];
+  for (let lag = -radius; lag <= radius; lag += 1) {
+    const recordingStart = expectedStart + lag + prefilterReferenceStart;
+    if (recordingStart < 0 || recordingStart + prefilterLength > recording.length) continue;
+    const waveform = pearsonAt(
+      reference, recording, recordingStart, prefilterReferenceStart, prefilterLength, 8, false,
+    );
+    const derivative = pearsonAt(
+      reference, recording, recordingStart, prefilterReferenceStart, prefilterLength, 8, true,
+    );
+    const score = Math.abs(waveform) + Math.abs(derivative);
+    if (candidates.length < 12 || score > candidates[0].score) {
+      candidates.push({ lag, score });
+      candidates.sort((left, right) => left.score - right.score);
+      if (candidates.length > 12) candidates.shift();
+    }
+  }
+  for (const candidate of candidates) consider(candidate.lag);
   if (!best) return { passed: false, score: 0, segmentMatches: [], reason: 'no complete physical search window' };
   const coarseLag = best.lagSamples;
-  const fineRadius = Math.round(0.012 * LOOPBACK_SAMPLE_RATE_HZ);
-  const fineStep = Math.max(1, Math.round(0.001 * LOOPBACK_SAMPLE_RATE_HZ));
-  for (let lag = coarseLag - fineRadius; lag <= coarseLag + fineRadius; lag += fineStep) consider(lag);
+  for (let lag = coarseLag - 2; lag <= coarseLag + 2; lag += 1) consider(lag);
   const timingErrorSeconds = best.lagSamples / LOOPBACK_SAMPLE_RATE_HZ;
   const matches = best.segments.map((entry) => ({
     referenceOffsetSeconds: rounded(entry.referenceStart / LOOPBACK_SAMPLE_RATE_HZ),
@@ -333,6 +349,26 @@ function validateTranslatedAuthority({ authorityDirectory, expectedIdentity }) {
     if (!Number.isInteger(channelCount) || channelCount <= 0 || channelCount > 2) violations.push(`translated PCM cue ${cue.cueId} channel count is invalid`);
     if (!Number.isInteger(sampleCount) || sampleCount <= 0 || bytes !== sampleCount * 2) violations.push(`translated PCM cue ${cue.cueId} sample/byte count mismatch`);
     if (frameCount !== sampleCount / channelCount || Number(cue.acceptedFrames) !== frameCount) violations.push(`translated PCM cue ${cue.cueId} frame/ACK count mismatch`);
+    const chunks = Array.isArray(cue.chunks) ? cue.chunks : [];
+    if (chunks.length !== Number(cue.chunkCount) || chunks.length === 0) {
+      violations.push(`translated PCM cue ${cue.cueId} chunk metadata is missing or inconsistent`);
+    }
+    let nextSampleOffset = 0;
+    for (const [chunkPosition, chunk] of chunks.entries()) {
+      const chunkSampleCount = Number(chunk.sampleCount);
+      if (
+        Number(chunk.chunkIndex) !== chunkPosition
+        || Number(chunk.sampleOffset) !== nextSampleOffset
+        || !Number.isInteger(chunkSampleCount)
+        || chunkSampleCount <= 0
+        || !String(chunk.requestId ?? '').trim()
+        || chunk.requestId !== cue.requestIds?.[chunkPosition]
+        || !Number.isSafeInteger(Number(chunk.acceptedAtMs))
+        || Number(chunk.acceptedAtMs) <= 0
+      ) violations.push(`translated PCM cue ${cue.cueId} chunk ${chunkPosition} metadata is invalid`);
+      nextSampleOffset += Number.isInteger(chunkSampleCount) && chunkSampleCount > 0 ? chunkSampleCount : 0;
+    }
+    if (nextSampleOffset !== sampleCount) violations.push(`translated PCM cue ${cue.cueId} chunk sample coverage mismatch`);
     let pcmPath;
     try {
       pcmPath = resolveChild(authorityDirectory, cue.relativePath, `translated PCM cue ${cue.cueId}`);
@@ -434,7 +470,19 @@ export function buildTranslatedPcmLoopbackAuthority({
     }
     try {
       const mono = monoFrames(pcm16FromBuffer(cue.pcmBytes), Number(cue.channelCount));
-      references.set(cueId, renderBridgeReferenceToLoopback(mono, Number(cue.sampleRateHz)));
+      references.set(cueId, {
+        whole: renderBridgeReferenceToLoopback(mono, Number(cue.sampleRateHz)),
+        chunks: cue.chunks.map((chunk) => {
+          const start = Number(chunk.sampleOffset) / Number(cue.channelCount);
+          const end = start + Number(chunk.sampleCount) / Number(cue.channelCount);
+          return {
+            ...chunk,
+            reference: renderBridgeReferenceToLoopback(
+              mono.slice(start, end), Number(cue.sampleRateHz),
+            ),
+          };
+        }),
+      });
     } catch (error) {
       violations.push(`cue ${cueId}: ${error.message}`);
     }
@@ -442,17 +490,66 @@ export function buildTranslatedPcmLoopbackAuthority({
 
   const matches = [];
   for (const cueId of requiredCueIds) {
-    const reference = references.get(cueId);
+    const referenceSet = references.get(cueId);
     const startedAtMs = lifecycle.get(cueId)?.started?.occurredAtMs;
-    if (!reference || !Number.isFinite(startedAtMs) || recording.length === 0 || !Number.isFinite(recordingStart)) continue;
+    if (!referenceSet || !Number.isFinite(startedAtMs) || recording.length === 0 || !Number.isFinite(recordingStart)) continue;
+    const { whole: reference, chunks } = referenceSet;
     const expectedStart = Math.round((startedAtMs - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000);
+    if (chunks.length > 1) {
+      const chunkMatches = chunks.map((chunk, chunkPosition) => {
+        const chunkExpectedStart = Math.round(
+          (Number(chunk.acceptedAtMs) - recordingStart) * LOOPBACK_SAMPLE_RATE_HZ / 1000,
+        );
+        const diagonal = matchReferenceAtExpectedStart(
+          chunk.reference, recording, chunkExpectedStart,
+        );
+        let strongestWrongChunkScore = 0;
+        for (const [otherCueId, otherSet] of references.entries()) {
+          if (otherCueId === cueId || otherSet.chunks.length === 0) continue;
+          const otherChunk = otherSet.chunks[Math.min(chunkPosition, otherSet.chunks.length - 1)];
+          strongestWrongChunkScore = Math.max(
+            strongestWrongChunkScore,
+            matchReferenceAtExpectedStart(
+              otherChunk.reference, recording, chunkExpectedStart,
+            ).score,
+          );
+        }
+        const identityMargin = diagonal.score - strongestWrongChunkScore;
+        return {
+          chunkIndex: Number(chunk.chunkIndex),
+          expectedPlaybackStartSeconds: rounded(chunkExpectedStart / LOOPBACK_SAMPLE_RATE_HZ),
+          strongestWrongChunkScore: rounded(strongestWrongChunkScore),
+          identityMargin: rounded(identityMargin),
+          ...diagonal,
+          passed: diagonal.passed && identityMargin >= 0.08,
+        };
+      });
+      const requiredChunkMatches = Math.max(2, Math.ceil(chunks.length * 0.7));
+      const passingChunks = chunkMatches.filter((entry) => entry.passed);
+      const ordered = passingChunks.every((entry, index) => (
+        index === 0 || entry.matchedStartSample >= passingChunks[index - 1].matchedEndSample
+      ));
+      const passed = passingChunks.length >= requiredChunkMatches && ordered;
+      matches.push({
+        cueId,
+        streamChunkCount: chunks.length,
+        requiredChunkMatches,
+        matchedChunkCount: passingChunks.length,
+        chunkMatches,
+        matchedStartSample: passingChunks[0]?.matchedStartSample ?? null,
+        matchedEndSample: passingChunks.at(-1)?.matchedEndSample ?? null,
+        passed,
+      });
+      if (!passed) violations.push(`translated stream cue ${cueId} did not correlate enough ordered physical chunks`);
+      continue;
+    }
     const diagonal = matchReferenceAtExpectedStart(reference, recording, expectedStart);
     let strongestWrongCueScore = 0;
     for (const [otherCueId, otherReference] of references.entries()) {
       if (otherCueId === cueId) continue;
       strongestWrongCueScore = Math.max(
         strongestWrongCueScore,
-        matchReferenceAtExpectedStart(otherReference, recording, expectedStart).score,
+        matchReferenceAtExpectedStart(otherReference.whole, recording, expectedStart).score,
       );
     }
     const identityMargin = diagonal.score - strongestWrongCueScore;

@@ -351,6 +351,9 @@ test('rejects a self-consistently rehashed wrong cue and a missing completed lif
     authority = build(fixture);
     assert.equal(authority.passed, false);
     assert.match(authority.violations.join('; '), /exactly one ordered timestamped/);
+    assert.equal(authority.matches.length, 1, 'a bad terminal cue must not hide diagnostics for valid earlier cues');
+    assert.equal(authority.matches[0].cueId, 'omni-cue-test-1');
+    assert.equal(authority.matches[0].passed, true);
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }

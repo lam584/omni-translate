@@ -140,6 +140,18 @@ function sparseThreeOfNine(reference, { lag = 1_600, gain = 0.72 } = {}) {
   return output;
 }
 
+function clockSkewedDenseMix(reference, { initialLag = 1_600, driftSamples = 2_400 } = {}) {
+  const output = new Int16Array(reference.length + initialLag + driftSamples + 2_000);
+  const interference = unrelatedTone(reference, 997);
+  for (let index = 0; index < reference.length; index += 1) {
+    const lag = initialLag + Math.round(driftSamples * index / Math.max(1, reference.length - 1));
+    const target = index + lag;
+    const mixed = output[target] + reference[index] * 0.42 + interference[index] * 0.58;
+    output[target] = Math.trunc(Math.max(-32_768, Math.min(32_767, mixed)));
+  }
+  return output;
+}
+
 function unrelatedTone(reference, frequencyHz) {
   const output = new Int16Array(reference.length);
   for (let index = 0; index < output.length; index += 1) {
@@ -307,6 +319,25 @@ test('accepts three independent segments using one global lag and polarity with 
   assert.equal(authority.independentNonOverlappingSegmentCount, 3);
   assert.ok(authority.wrongReferenceMargin >= authority.thresholds.wrongReferenceMargin);
   assert.ok(authority.segments.every((entry) => entry.waveformCorrelation > 0.99 && entry.derivativeCorrelation > 0.99));
+});
+
+test('accepts distributed source fragments under bounded endpoint-clock drift and dense overlap', () => {
+  const reference = deterministicSpeechLike(14);
+  const fixture = physicalFixture({
+    reference,
+    recorded: clockSkewedDenseMix(reference),
+    wrong: [unrelatedTone(reference, 733), unrelatedTone(reference, 1_211)],
+  });
+  const authority = buildPhysicalSourceWaveformAuthority({
+    runDirectory: fixture.directory,
+    referencePcmPath: fixture.referencePath,
+    sourceWindowPath: fixture.sourceWindowPath,
+    wrongReferencePcmPaths: fixture.wrongReferencePcmPaths,
+  });
+  assert.equal(authority.passed, true, authority.violations.join('; '));
+  assert.ok(authority.passingCandidateCount >= authority.thresholds.minimumPassingCandidateCount);
+  assert.ok(authority.candidates.some((entry) => entry.localLagDeltaSamples !== 0));
+  assert.ok(authority.candidates.every((entry) => Math.abs(entry.localLagDeltaSamples) <= 3_200));
 });
 
 test('rejects same-envelope different-frequency audio using signed waveform and derivative checks', () => {

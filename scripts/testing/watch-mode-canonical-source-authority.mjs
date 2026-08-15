@@ -38,12 +38,16 @@ const waveformThresholds = Object.freeze({
   medianSegmentWaveformCorrelation: 0.16,
   medianSegmentDerivativeCorrelation: 0.07,
   wrongReferenceMargin: 0.08,
-  minimumCandidateWaveformCorrelation: 0.08,
-  minimumCandidateDerivativeCorrelation: 0.025,
+  minimumCandidateWaveformCorrelation: 0.20,
+  minimumCandidateDerivativeCorrelation: 0.015,
   minimumCandidateEnergyRatio: 0.02,
   maximumCandidateEnergyRatio: 20,
   minimumPassingCandidateCount: 7,
 });
+
+const physicalFragmentSamples = Math.round(CANONICAL_SOURCE_SAMPLE_RATE_HZ * 0.2);
+const physicalFragmentOffsetStep = Math.round(CANONICAL_SOURCE_SAMPLE_RATE_HZ * 0.05);
+const physicalLocalLagRadiusSamples = Math.round(CANONICAL_SOURCE_SAMPLE_RATE_HZ * 0.2);
 
 const sha256Buffer = (buffer) => crypto.createHash('sha256').update(buffer).digest('hex');
 const portable = (value) => String(value).split(path.sep).join('/');
@@ -439,9 +443,8 @@ function segmentPlan(referenceLength) {
     throw new Error('source reference needs at least three seconds for independent waveform segments');
   }
   // Translation audio can overlap an otherwise exact source passthrough. Use
-  // a fixed grid of candidates, then require three independently matching
-  // windows under one lag/polarity rather than letting one mixed interval veto
-  // the actual original signal or reusing one favorable window.
+  // a fixed grid of candidates so one favorable interval cannot be reused or
+  // substituted for distributed evidence across the source timeline.
   const candidateCount = 9;
   const segmentSamples = Math.min(CANONICAL_SOURCE_SAMPLE_RATE_HZ, Math.floor(referenceLength / (candidateCount + 2)));
   const available = referenceLength - segmentSamples;
@@ -495,6 +498,104 @@ function findGlobalLag(reference, recorded, segments) {
   return { ...best, maximumLag };
 }
 
+function bestClockBoundFragment(reference, recorded, segment, anchorLag, polarity) {
+  // The media renderer and physical loopback capture are different hardware
+  // clocks. Keep the global lag as the signed identity/polarity anchor, but
+  // permit a tightly bounded local correction and a short fragment inside each
+  // fixed one-second candidate. This retains 7/9 distributed coverage while
+  // preventing dense translated speech from vetoing the original waveform.
+  const minimumLag = Math.max(0, anchorLag - physicalLocalLagRadiusSamples);
+  const maximumLag = Math.min(
+    anchorLag + physicalLocalLagRadiusSamples,
+    recorded.length - (segment.referenceStartSample + physicalFragmentSamples),
+  );
+  let best = null;
+  const evaluate = (referenceOffsetSample, lag, stride) => {
+    const referenceStartSample = segment.referenceStartSample + referenceOffsetSample;
+    const recordedStartSample = referenceStartSample + lag;
+    if (
+      recordedStartSample < 0
+      || referenceStartSample + physicalFragmentSamples > reference.length
+      || recordedStartSample + physicalFragmentSamples > recorded.length
+    ) return;
+    const waveform = pearson(
+      reference,
+      recorded,
+      referenceStartSample,
+      recordedStartSample,
+      physicalFragmentSamples,
+      stride,
+      false,
+    ) * polarity;
+    const derivative = pearson(
+      reference,
+      recorded,
+      referenceStartSample,
+      recordedStartSample,
+      physicalFragmentSamples,
+      stride,
+      true,
+    ) * polarity;
+    const score = Math.max(0, waveform) * 0.65 + Math.max(0, derivative) * 0.35;
+    if (!best || score > best.score) {
+      best = { referenceOffsetSample, referenceStartSample, recordedStartSample, lag, waveform, derivative, score };
+    }
+  };
+  for (
+    let referenceOffsetSample = 0;
+    referenceOffsetSample <= segment.samples - physicalFragmentSamples;
+    referenceOffsetSample += physicalFragmentOffsetStep
+  ) {
+    for (let lag = minimumLag; lag <= maximumLag; lag += 80) {
+      evaluate(referenceOffsetSample, lag, 8);
+    }
+  }
+  if (!best) throw new Error('physical waveform candidate has no complete clock-bounded fragment');
+  const coarse = best;
+  for (let lag = Math.max(minimumLag, coarse.lag - 80); lag <= Math.min(maximumLag, coarse.lag + 80); lag += 4) {
+    evaluate(coarse.referenceOffsetSample, lag, 4);
+  }
+  const refined = best;
+  for (let lag = Math.max(minimumLag, refined.lag - 4); lag <= Math.min(maximumLag, refined.lag + 4); lag += 1) {
+    evaluate(refined.referenceOffsetSample, lag, 2);
+  }
+  return best;
+}
+
+function adaptiveCandidateAuthorities(reference, recorded, segments, global) {
+  return segments.map((segment) => {
+    const fragment = bestClockBoundFragment(reference, recorded, segment, global.lag, global.polarity);
+    const energyRatio = rmsRatio(
+      reference,
+      recorded,
+      fragment.referenceStartSample,
+      fragment.recordedStartSample,
+      physicalFragmentSamples,
+    );
+    const coveragePassed = (
+      fragment.waveform >= waveformThresholds.minimumCandidateWaveformCorrelation
+      && fragment.derivative >= waveformThresholds.minimumCandidateDerivativeCorrelation
+      && energyRatio >= waveformThresholds.minimumCandidateEnergyRatio
+      && energyRatio <= waveformThresholds.maximumCandidateEnergyRatio
+    );
+    return {
+      index: segment.index,
+      anchorReferenceStartSample: segment.referenceStartSample,
+      referenceOffsetSample: fragment.referenceOffsetSample,
+      referenceStartSample: fragment.referenceStartSample,
+      recordedStartSample: fragment.recordedStartSample,
+      samples: physicalFragmentSamples,
+      anchorLagSamples: global.lag,
+      localLagSamples: fragment.lag,
+      localLagDeltaSamples: fragment.lag - global.lag,
+      waveformCorrelation: rounded(fragment.waveform),
+      derivativeCorrelation: rounded(fragment.derivative),
+      energyRatio: rounded(energyRatio),
+      coveragePassed,
+    };
+  });
+}
+
 const median = (values) => [...values].sort((left, right) => left - right)[Math.floor(values.length / 2)];
 const rounded = (value) => Number(value.toFixed(6));
 
@@ -507,7 +608,16 @@ function scoreWrongReference(wrong, recorded) {
   // Give each negative control its own best possible lag. The margin therefore
   // cannot be manufactured by evaluating a wrong source at an unfavorable
   // offset chosen for the canonical source.
-  return findGlobalLag(wrong, recorded, plan).score;
+  const global = findGlobalLag(wrong, recorded, plan);
+  const candidates = adaptiveCandidateAuthorities(wrong, recorded, plan, global)
+    .sort((left, right) => (
+      (right.waveformCorrelation * 0.65 + right.derivativeCorrelation * 0.35)
+      - (left.waveformCorrelation * 0.65 + left.derivativeCorrelation * 0.35)
+    ))
+    .slice(0, 3);
+  const waveform = median(candidates.map((entry) => entry.waveformCorrelation));
+  const derivative = median(candidates.map((entry) => entry.derivativeCorrelation));
+  return Math.max(0, waveform) * 0.65 + Math.max(0, derivative) * 0.35;
 }
 
 export function buildPhysicalSourceWaveformAuthority({
@@ -559,34 +669,12 @@ export function buildPhysicalSourceWaveformAuthority({
   );
   const segments = segmentPlan(comparisonLength);
   const global = findGlobalLag(reference.samples, recorded.samples, segments);
-  const candidateAuthorities = segments.map((segment) => {
-    const recordedStartSample = segment.referenceStartSample + global.lag;
-    const waveform = pearson(reference.samples, recorded.samples, segment.referenceStartSample, recordedStartSample, segment.samples, 1, false) * global.polarity;
-    const derivative = pearson(reference.samples, recorded.samples, segment.referenceStartSample, recordedStartSample, segment.samples, 1, true) * global.polarity;
-    const energyRatio = rmsRatio(
-      reference.samples,
-      recorded.samples,
-      segment.referenceStartSample,
-      recordedStartSample,
-      segment.samples,
-    );
-    const coveragePassed = (
-      waveform >= waveformThresholds.minimumCandidateWaveformCorrelation
-      && derivative >= waveformThresholds.minimumCandidateDerivativeCorrelation
-      && energyRatio >= waveformThresholds.minimumCandidateEnergyRatio
-      && energyRatio <= waveformThresholds.maximumCandidateEnergyRatio
-    );
-    return {
-      index: segment.index,
-      referenceStartSample: segment.referenceStartSample,
-      recordedStartSample,
-      samples: segment.samples,
-      waveformCorrelation: rounded(waveform),
-      derivativeCorrelation: rounded(derivative),
-      energyRatio: rounded(energyRatio),
-      coveragePassed,
-    };
-  });
+  const candidateAuthorities = adaptiveCandidateAuthorities(
+    reference.samples,
+    recorded.samples,
+    segments,
+    global,
+  );
   const segmentAuthorities = [...candidateAuthorities]
     .sort((left, right) => (
       (right.waveformCorrelation * 0.65 + right.derivativeCorrelation * 0.35)

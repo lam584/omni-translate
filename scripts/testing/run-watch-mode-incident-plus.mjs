@@ -60,6 +60,12 @@ function readRegularJson(filePath, label) {
   return JSON.parse(fs.readFileSync(resolved, 'utf8').replace(/^\uFEFF/, ''));
 }
 
+export async function mapIncidentPlusWorkersSerially(workers, prepareWorker) {
+  const completed = [];
+  for (const worker of workers) completed.push(await prepareWorker(worker));
+  return completed;
+}
+
 export function normalizeIncidentPlusWorkers(workerConfig) {
   const workers = Array.isArray(workerConfig?.workers) ? workerConfig.workers : workerConfig;
   if (!Array.isArray(workers)) throw new Error('incident Plus worker configuration requires a workers array');
@@ -500,7 +506,7 @@ export async function runIncidentPlusProductionCoordinator({
   const download = compatibilityTransport.downloadTree ?? legacyDownload;
 
   const prepareWorkers = operations.prepareWorkers ?? (async () => {
-    const completed = await Promise.all(plan.workers.map(async (planWorker) => {
+    const completed = await mapIncidentPlusWorkersSerially(plan.workers, async (planWorker) => {
       const worker = requirePlanWorker(config, planWorker);
       const prepared = await compatibilityTransport.prepareWorker({ worker: planWorker });
       const remoteRoot = remoteRoots.get(worker.workerId);
@@ -575,7 +581,7 @@ $receipt | ConvertTo-Json -Depth 12 -Compress
         { timeoutMs: 60_000 },
       );
       return { workerId: worker.workerId, readiness: plusReadiness };
-    }));
+    });
     return completed;
   });
   const workerReadiness = await prepareWorkers();

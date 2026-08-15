@@ -87,7 +87,7 @@ impl OmniSocketEventProcessor {
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
     ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
-        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut pending_audio_stream_cue_id, mut pending_audio_stream_chunk_index, mut pending_audio_stream_created_at_ms, mut pending_audio_stream_aborted, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, mut sent_audio_since_commit, mut audio_samples_since_commit, mut manual_turn_audio_after_response } = state;
+        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut pending_audio_stream_cue_id, mut pending_audio_stream_chunk_index, mut pending_audio_stream_created_at_ms, mut pending_audio_stream_aborted, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, sent_audio_since_commit, audio_samples_since_commit, manual_turn_audio_after_response } = state;
         let OmniSocketEventContext {
             app, store, direction, session_generation, session_started_at,
             subtitle_translate_active, native_translation_reuse_active,
@@ -661,20 +661,24 @@ match socket.read_message() {
                             manual_response_pending = false;
                             manual_response_requested = false;
                             manual_response_item_id = None;
-                            // Audio arriving during the response is held in
-                            // the Desktop pre-session queue and has not been
-                            // appended to this provider buffer. Clear any
-                            // defensive stale accounting here; the next pump
-                            // drains the held raw frames, re-arms the audible
-                            // counter, and commits only provider-accepted PCM.
-                            sent_audio_since_commit = false;
-                            audio_samples_since_commit = 0;
-                            manual_turn_audio_after_response = false;
+                            // The audio pump remains writable while a response
+                            // streams. Its accepted PCM already belongs to the
+                            // provider's next input buffer, so preserve the
+                            // matching counters here. The next worker tick can
+                            // commit that bounded turn now that response.create
+                            // serialization is released. Clearing the counters
+                            // used to strand the accepted PCM until another
+                            // second arrived, making each later response absorb
+                            // the entire previous response window.
                             let _ = diag_log(
                                 app,
                                 "omni",
                                 "debug",
-                                "event=manual_response_gate state=response_done_released providerBufferReset=true",
+                                format!(
+                                    "event=manual_response_gate state=response_done_released providerBufferReset=false bufferedSamples={} bufferedAudible={}",
+                                    audio_samples_since_commit,
+                                    sent_audio_since_commit,
+                                ),
                             );
                         }
                     }

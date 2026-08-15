@@ -172,6 +172,7 @@ const PHYSICAL_PROBE_EXE = 'target/release/omni-physical-output-probe.exe';
 const DRIVER_PROBE_EXE = 'target/release/omni-driver-audio-probe.exe';
 const TONE_PROBE_EXE = 'target/release/omni-tone-render-probe.exe';
 const TRANSIENT_ENDPOINT_CREATE_FAILED = '0x8889000f';
+const TRANSIENT_ENDPOINT_NOT_FOUND = 'physical playback device was not found:';
 const TRANSIENT_ENDPOINT_CREATE_MAX_ATTEMPTS = 3;
 const TRANSIENT_ENDPOINT_CREATE_RETRY_DELAY_MS = 750;
 
@@ -332,11 +333,17 @@ const waitForTransientEndpointRetry = (delayMs) => {
   Atomics.wait(signal, 0, 0, delayMs);
 };
 
-const isTransientEndpointCreateFailure = (result) => [
+const endpointAvailabilityDiagnostic = (result) => [
   result?.stdout,
   result?.stderr,
   result?.error,
-].filter(Boolean).join('\n').toLowerCase().includes(TRANSIENT_ENDPOINT_CREATE_FAILED);
+].filter(Boolean).join('\n').toLowerCase();
+
+const isRetryableEndpointAvailabilityFailure = (result) => {
+  const diagnostic = endpointAvailabilityDiagnostic(result);
+  return diagnostic.includes(TRANSIENT_ENDPOINT_CREATE_FAILED)
+    || diagnostic.includes(TRANSIENT_ENDPOINT_NOT_FOUND);
+};
 
 const parseProbeJson = (result, label) => {
   if (result.exitCode !== 0 || result.error) {
@@ -375,12 +382,14 @@ export function runLocalIsolationProbeIteration({
         environment,
         timeoutMs,
       });
-      const retryable = isTransientEndpointCreateFailure(result);
+      const retryable = isRetryableEndpointAvailabilityFailure(result);
       if (retryable && attempts < TRANSIENT_ENDPOINT_CREATE_MAX_ATTEMPTS) {
         // AUDCLNT_E_ENDPOINT_CREATE_FAILED (0x8889000F) can be returned by a
         // just-released shared endpoint after many short WASAPI probe streams.
-        // Preserve each failed attempt, then retry only this documented
-        // transient condition; every other failure remains fail-closed.
+        // Windows can also briefly omit that same endpoint from enumeration
+        // while the development driver settles between consecutive probes.
+        // Preserve each failed attempt, then retry only these endpoint
+        // availability conditions; every other failure remains fail-closed.
         fs.writeFileSync(path.join(iterationDirectory, `${label}.attempt-${attempts}.stdout.log`), result.stdout || '\n', 'utf8');
         fs.writeFileSync(path.join(iterationDirectory, `${label}.attempt-${attempts}.stderr.log`), result.stderr || '\n', 'utf8');
         waitForRetry(TRANSIENT_ENDPOINT_CREATE_RETRY_DELAY_MS);

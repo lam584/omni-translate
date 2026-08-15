@@ -363,7 +363,7 @@ test('local isolation cell refuses a clock that does not reach its duration', as
   );
 });
 
-test('local isolation retries only transient WASAPI endpoint creation failures', () => {
+test('local isolation retries transient WASAPI endpoint creation failures', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-retry-'));
   const cellDirectory = path.join(root, 'cell');
   const calls = [];
@@ -405,6 +405,92 @@ test('local isolation retries only transient WASAPI endpoint creation failures',
     fs.existsSync(path.join(cellDirectory, 'iterations', '0001', 'process-exclusion.attempt-1.stdout.log')),
     true,
   );
+});
+
+test('local isolation retries a briefly missing physical endpoint but keeps the requested id', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-missing-endpoint-'));
+  const cellDirectory = path.join(root, 'cell');
+  const calls = [];
+  const waits = [];
+  const requestedDeviceId = '{0.0.0.00000000}.{usb-endpoint}';
+  const result = runLocalIsolationProbeIteration({
+    cell: { ...LOCAL_ISOLATION_CELLS[0], feedbackLoopPrevention: 'virtual-driver' },
+    profile: {
+      profileId: 'usb-speaker',
+      deviceClass: 'usb',
+      physicalPlaybackDeviceId: requestedDeviceId,
+      expectedPhysicalPlaybackDeviceName: 'USB Audio',
+    },
+    cellDirectory,
+    iteration: 1,
+    workspaceRoot: root,
+    waitForRetry: (delayMs) => waits.push(delayMs),
+    run: (command, args) => {
+      calls.push({ command, args });
+      if (calls.length === 1) {
+        return {
+          exitCode: 0,
+          stdout: '{"passed":true,"endpointName":"Omni Translate Virtual Speaker"}\n',
+          stderr: '',
+          error: null,
+        };
+      }
+      if (calls.length === 2) {
+        return {
+          exitCode: 1,
+          stdout: `${JSON.stringify({ passed: false, detail: `physical playback device was not found: ${requestedDeviceId}` })}\n`,
+          stderr: '',
+          error: null,
+        };
+      }
+      return {
+        exitCode: 0,
+        stdout: '{"passed":true,"resolvedPhysicalPlaybackDeviceName":"SPDIF (USB Audio)"}\n',
+        stderr: '',
+        error: null,
+      };
+    },
+  });
+  assert.equal(calls.length, 3);
+  assert.deepEqual(waits, [750]);
+  assert.equal(result.probes[1].attempts, 2);
+  assert.ok(calls[1].args.includes(requestedDeviceId));
+  assert.ok(calls[2].args.includes(requestedDeviceId));
+  assert.equal(
+    fs.existsSync(path.join(cellDirectory, 'iterations', '0001', 'physical-output.attempt-1.stdout.log')),
+    true,
+  );
+});
+
+test('local isolation does not retry unrelated probe failures', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-local-isolation-nonretryable-'));
+  const calls = [];
+  assert.throws(
+    () => runLocalIsolationProbeIteration({
+      cell: LOCAL_ISOLATION_CELLS[0],
+      profile: {
+        profileId: 'default-speaker',
+        deviceClass: 'default-speaker',
+        physicalPlaybackDeviceId: 'default',
+        expectedPhysicalPlaybackDeviceName: '',
+      },
+      cellDirectory: path.join(root, 'cell'),
+      iteration: 1,
+      workspaceRoot: root,
+      waitForRetry: () => assert.fail('unrelated failure must not wait for retry'),
+      run: () => {
+        calls.push('probe');
+        return {
+          exitCode: 1,
+          stdout: '{"passed":false,"detail":"bridge rejected physical output tone"}\n',
+          stderr: '',
+          error: null,
+        };
+      },
+    }),
+    /process-exclusion failed/,
+  );
+  assert.deepEqual(calls, ['probe']);
 });
 
 test('local isolation reuse is explicit and cannot silently fall back to exact reuse', () => {

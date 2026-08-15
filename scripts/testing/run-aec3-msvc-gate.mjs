@@ -68,6 +68,53 @@ function findExecutable(root, fileName) {
   return null;
 }
 
+function loadMsvcEnvironment() {
+  const programFilesX86 = process.env['ProgramFiles(x86)'] ?? 'C:\\Program Files (x86)';
+  const vswhereCandidates = [
+    join(programFilesX86, 'Microsoft', 'Visual Studio', 'Installer', 'vswhere.exe'),
+    // Some development VMs install the bootstrapper under this legacy
+    // single-directory layout. GitHub-hosted runners use the standard path.
+    join(programFilesX86, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe'),
+  ];
+  const vswhere = vswhereCandidates.find((candidate) => existsSync(candidate));
+  if (!vswhere) {
+    throw new Error(`vswhere.exe was not found in: ${vswhereCandidates.join(', ')}`);
+  }
+  const installationPath = output(vswhere, [
+    '-latest',
+    '-products', '*',
+    '-requires', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
+    '-property', 'installationPath',
+  ]);
+  if (!installationPath) {
+    throw new Error('vswhere found no Visual Studio installation with the MSVC x64 toolchain');
+  }
+  const developerShell = join(installationPath, 'Common7', 'Tools', 'VsDevCmd.bat');
+  if (!existsSync(developerShell)) {
+    throw new Error(`Visual Studio developer shell was not found at ${developerShell}`);
+  }
+  const result = spawnSync(
+    `call "${developerShell}" -arch=x64 -host_arch=x64 >nul && set`,
+    [],
+    {
+      cwd: workspace,
+      env: process.env,
+      encoding: 'utf8',
+      shell: process.env.ComSpec ?? 'cmd.exe',
+    },
+  );
+  if (result.error) throw result.error;
+  if (result.status !== 0) {
+    throw new Error(result.stderr || `failed to initialize the MSVC developer environment (exit ${result.status})`);
+  }
+  const environment = { ...process.env };
+  for (const line of result.stdout.split(/\r?\n/u)) {
+    const separator = line.indexOf('=');
+    if (separator > 0) environment[line.slice(0, separator)] = line.slice(separator + 1);
+  }
+  return environment;
+}
+
 function assertPinnedVcpkgTool(executable) {
   if (!existsSync(executable)) return false;
   const sha256 = crypto.createHash('sha256').update(readFileSync(executable)).digest('hex');
@@ -113,8 +160,13 @@ const cmake = findExecutable(join(downloadsRoot, 'tools'), 'cmake.exe');
 if (!cmake) {
   throw new Error(`vcpkg completed without an acquired cmake.exe under ${downloadsRoot}`);
 }
+const ninja = findExecutable(join(downloadsRoot, 'tools'), 'ninja.exe');
+if (!ninja) {
+  throw new Error(`vcpkg completed without an acquired ninja.exe under ${downloadsRoot}`);
+}
+const msvcEnvironment = loadMsvcEnvironment();
 const buildEnvironment = {
-  ...process.env,
+  ...msvcEnvironment,
   // The linked Desktop test graph is large enough that full PDBs exhaust
   // small clean Windows validation VMs. Debug symbols are not evidence for
   // this execution gate; disable them without changing test/runtime behavior.
@@ -123,17 +175,17 @@ const buildEnvironment = {
   VCPKG_ROOT: vcpkgRoot,
   VCPKG_INSTALLED_ROOT: installedRoot,
   CMAKE: cmake,
-  // The gate also runs from clean scheduled-task/CI shells where cl.exe is
-  // intentionally absent from PATH. Let CMake locate the installed MSVC
-  // toolchain through its Visual Studio generator instead of inheriting a
-  // developer-shell accident.
-  CMAKE_GENERATOR: 'Visual Studio 17 2022',
-  CMAKE_GENERATOR_PLATFORM: 'x64',
+  // windows-latest may move to a newer Visual Studio major version. The
+  // discovered developer environment plus Ninja avoids coupling this gate to
+  // a versioned CMake Visual Studio generator name.
+  CMAKE_GENERATOR: 'Ninja',
+  CMAKE_MAKE_PROGRAM: ninja,
   // build.rs watches this nonce. A repeated local/CI gate therefore reruns
   // the native deterministic CTest instead of trusting Cargo's cached build
   // script output; failure prevents the linked feature from compiling.
   OMNI_AEC3_LINKED_GATE_RUN: `${Date.now()}-${process.pid}`,
 };
+delete buildEnvironment.CMAKE_GENERATOR_PLATFORM;
 run('cargo', [
   'test',
   '-p',

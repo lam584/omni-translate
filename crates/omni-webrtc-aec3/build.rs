@@ -93,6 +93,10 @@ fn main() {
             .arg(format!("-DVCPKG_TARGET_TRIPLET={VCPKG_TRIPLET}"))
             .arg("-DVCPKG_MANIFEST_MODE=OFF")
             .arg("-DBUILD_TESTING=ON")
+            // Required by single-config generators such as Ninja. Multi-config
+            // Visual Studio generators ignore this and still consume the
+            // explicit --config Release used below.
+            .arg(format!("-DCMAKE_BUILD_TYPE={cmake_config}"))
             .arg(format!("-DCMAKE_INSTALL_PREFIX={}", install_dir.display()));
     if let Some(generator) = cmake_generator {
         configure.arg("-G").arg(generator);

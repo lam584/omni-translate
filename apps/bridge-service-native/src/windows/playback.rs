@@ -220,7 +220,7 @@ fn run_playback_worker(
             &mut physical_stream,
             &mut cancelled_physical_streams,
         );
-        finish_completed_physical_stream(&output, &state, &mut physical_stream);
+        finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
         finish_completed_translation(&output, &state, &translation_queue);
 
         let disconnected = match playback_rx.recv_timeout(Duration::from_millis(
@@ -289,6 +289,8 @@ fn play_physical_translation_stream(
         if active.as_ref().is_some_and(|current| current.cue_id == cue_id) {
             if let Some(output) = output.as_mut() {
                 output.translation_player.clear();
+                output.stream_ducking = false;
+                output.source_player.set_volume(output.source_volume);
             }
             *active = None;
             let mut current = state.lock().unwrap();
@@ -352,6 +354,14 @@ fn play_physical_translation_stream(
         current.monitor_playback_state = "playing".to_string();
         current.emit_translation_status(Some(&cue_id), TranslationPlaybackStatusKind::Queued, "accepted-stream", None);
         current.emit_translation_status(Some(&cue_id), TranslationPlaybackStatusKind::Started, "physical-playback-stream-started", None);
+        if job.ducking_enabled {
+            let output = output.as_mut().expect("physical output was opened before stream start");
+            output.stream_ducking = true;
+            output.source_player.set_volume(ducked_source_volume(
+                output.source_volume,
+                job.ducking_depth_percent,
+            ));
+        }
     }
     let Some(stream) = active.as_mut().filter(|current| {
         current.cue_id == cue_id && current.translation_generation == job.translation_generation
@@ -393,6 +403,8 @@ fn apply_playback_control_commands(
             if physical_stream.as_ref().is_some_and(|stream| stream.cue_id == cue_id) {
                 if let Some(output) = output.as_mut() {
                     output.translation_player.clear();
+                    output.stream_ducking = false;
+                    output.source_player.set_volume(output.source_volume);
                 }
                 *physical_stream = None;
             }
@@ -418,6 +430,8 @@ fn apply_playback_control_commands(
             if stops_current_translation {
                 output.translation_player.clear();
                 output.translation_generation = None;
+                output.stream_ducking = false;
+                output.source_player.set_volume(output.source_volume);
             }
         }
         *physical_stream = None;
@@ -599,15 +613,17 @@ fn play_source_job(
         current.stale_source_frames_dropped += frames;
         return;
     }
-    if output
-        .duck_until
-        .map(|deadline| Instant::now() >= deadline)
-        .unwrap_or(false)
+    output.source_volume = job.volume;
+    if !output.stream_ducking
+        && output
+            .duck_until
+            .map(|deadline| Instant::now() >= deadline)
+            .unwrap_or(false)
     {
         output.source_player.set_volume(job.volume);
         output.duck_until = None;
     }
-    if output.duck_until.is_none() {
+    if output.duck_until.is_none() && !output.stream_ducking {
         output.source_player.set_volume(job.volume);
     }
     output.source_pending_samples.extend(job.samples);
@@ -738,9 +754,10 @@ fn start_next_translation(
         job.samples,
     );
     if job.ducking_enabled {
-        output.source_player.set_volume(
-            job.volume * 10.0_f32.powf(-(job.ducking_depth_percent as f32) / 200.0),
-        );
+        output.source_player.set_volume(ducked_source_volume(
+            output.source_volume,
+            job.ducking_depth_percent,
+        ));
         output.duck_until = Some(
             Instant::now()
                 + Duration::from_secs_f64(frames as f64 / INTERNAL_SAMPLE_RATE_HZ as f64),
@@ -755,6 +772,10 @@ fn start_next_translation(
 
 fn playback_volume(output_level: u64) -> f32 {
     output_level.min(100) as f32 / 100.0
+}
+
+fn ducked_source_volume(source_volume: f32, ducking_depth_percent: u64) -> f32 {
+    source_volume * 10.0_f32.powf(-(ducking_depth_percent as f32) / 200.0)
 }
 
 fn flush_source_pending(output: &mut PlaybackOutput) {
@@ -822,7 +843,9 @@ fn open_playback_output(device_id: &str) -> Result<PlaybackOutput, String> {
         source_player,
         translation_player,
         source_pending_samples: Vec::new(),
+        source_volume: 1.0,
         duck_until: None,
+        stream_ducking: false,
         translation_generation: None,
     })
 }

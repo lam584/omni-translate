@@ -384,7 +384,9 @@ struct PlaybackOutput {
     source_player: Player,
     translation_player: Player,
     source_pending_samples: Vec<f32>,
+    source_volume: f32,
     duck_until: Option<Instant>,
+    stream_ducking: bool,
     translation_generation: Option<u64>,
 }
 
@@ -894,7 +896,7 @@ mod tests {
         end_source_subscription,
         capture_route_is_ready, classify_process_loopback_capability,
         fail_process_loopback_route, handle_control, handle_process_loopback_probe,
-        is_omni_virtual_playback_device_name,
+        ducked_source_volume, is_omni_virtual_playback_device_name,
         monitor_source_queue_needs_drop, normalized_device_name, playback_volume,
         process_source_route_failure, publish_diagnostic_file, record_source_read_result,
         sanitize_capture_sample,
@@ -978,6 +980,12 @@ mod tests {
         assert_eq!(playback_volume(66), 0.66);
         assert_eq!(playback_volume(100), 1.0);
         assert_eq!(playback_volume(101), 1.0);
+    }
+
+    #[test]
+    fn stream_ducking_uses_the_source_volume_and_configured_depth() {
+        assert!((ducked_source_volume(0.5, 60) - 0.250_593_6).abs() < 0.000_001);
+        assert_eq!(ducked_source_volume(0.5, 0), 0.5);
     }
 
     #[test]

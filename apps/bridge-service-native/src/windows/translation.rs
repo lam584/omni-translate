@@ -72,7 +72,7 @@ struct ActivePhysicalTranslationStream {
 }
 
 fn finish_completed_physical_stream(
-    output: &Option<PlaybackOutput>,
+    output: &mut Option<PlaybackOutput>,
     state: &Arc<Mutex<BridgeState>>,
     active: &mut Option<ActivePhysicalTranslationStream>,
 ) {
@@ -86,6 +86,10 @@ fn finish_completed_physical_stream(
         return;
     }
     let completed = active.take().unwrap();
+    if let Some(output) = output.as_mut() {
+        output.stream_ducking = false;
+        output.source_player.set_volume(output.source_volume);
+    }
     let now_ms = unix_ms();
     let mut current = state.lock().unwrap();
     current.physical_translation_stream_ledger.finish(&completed.cue_id);

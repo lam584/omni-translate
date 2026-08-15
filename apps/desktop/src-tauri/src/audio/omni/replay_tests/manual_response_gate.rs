@@ -59,15 +59,21 @@ fn replay_manual_gate_serializes_response_create_until_response_done() {
     let socket = harness.tick(socket, &mut slice);
     assert!(!slice.manual_response_pending, "response.done releases the next manual turn");
     assert!(!slice.manual_response_requested);
-    assert!(!slice.sent_audio_since_commit, "response.done discards stale provider-buffer accounting");
-    assert!(!slice.manual_turn_audio_after_response);
-    assert_eq!(slice.audio_samples_since_commit, 0);
+    assert!(
+        slice.sent_audio_since_commit,
+        "response.done must preserve audible PCM already accepted into the next provider buffer",
+    );
+    assert!(slice.manual_turn_audio_after_response);
+    assert_eq!(slice.audio_samples_since_commit, MANUAL_COMMIT_MIN_AUDIO_SAMPLES);
     let _socket = harness.tick(socket, &mut slice);
     assert_eq!(
         harness.sent_types().iter().filter(|kind| kind.as_str() == "input_audio_buffer.commit").count(),
-        0,
-        "response.done must not commit audio that the provider did not retain",
+        1,
+        "response.done must release one commit for PCM retained by the provider during the response",
     );
+    assert!(slice.manual_response_pending, "the retained turn now awaits its correlated ASR final");
+    assert!(!slice.sent_audio_since_commit);
+    assert_eq!(slice.audio_samples_since_commit, 0);
 }
 
 fn response_create_count(harness: &ReplayHarness) -> usize {

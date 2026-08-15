@@ -61,6 +61,19 @@ test('worker preparation normalizes and verifies signed implementation bytes bef
   );
 });
 
+test('worker clean-state checks content and untracked files instead of racy porcelain metadata', () => {
+  const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');
+  const queryWorker = source.slice(
+    source.indexOf('async function queryWorker'),
+    source.indexOf('async function prepareWorker'),
+  );
+  assert.match(queryWorker, /diff --quiet --ignore-submodules --/);
+  assert.match(queryWorker, /diff --cached --quiet --ignore-submodules --/);
+  assert.match(queryWorker, /ls-files --others --exclude-standard/);
+  assert.match(queryWorker, /\$dirtyEntryCount = @\(\$untracked\)\.Count/);
+  assert.doesNotMatch(queryWorker, /status --porcelain=v1 --untracked-files=all/);
+});
+
 test('remote readiness finalization has a bounded slow-disk timeout', () => {
   assert.equal(PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS, 5 * 60 * 1000);
   const source = fs.readFileSync(new URL('./run-watch-mode-live-production-coordinator.mjs', import.meta.url), 'utf8');

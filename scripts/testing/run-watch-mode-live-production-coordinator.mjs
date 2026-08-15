@@ -537,7 +537,18 @@ function runChildProcess(executable, args, {
       stdout,
       stderr,
     })));
-    timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
+    timer = setTimeout(() => {
+      const timeoutDetail = `child process timed out after ${timeoutMs}ms`;
+      child.kill('SIGKILL');
+      // OpenSSH for Windows can reap a killed remote PowerShell child without
+      // delivering an observable exit event to Node.  Settle at the timeout
+      // boundary instead of leaving the coordinator Promise pending forever.
+      finish(() => resolve({
+        exitCode: 124,
+        stdout,
+        stderr: [stderr, timeoutDetail].filter(Boolean).join('\n'),
+      }));
+    }, timeoutMs);
     signal?.addEventListener('abort', abort, { once: true });
     if (signal?.aborted) abort();
     void (async () => {

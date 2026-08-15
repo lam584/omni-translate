@@ -156,14 +156,26 @@ run(vcpkgExecutable, [
   `--x-install-root=${installedRoot}`,
 ], { env: { ...process.env, VCPKG_DOWNLOADS: downloadsRoot } });
 
-const cmake = findExecutable(join(downloadsRoot, 'tools'), 'cmake.exe');
-if (!cmake) {
-  throw new Error(`vcpkg completed without an acquired cmake.exe under ${downloadsRoot}`);
+function requireVcpkgTool(toolName, fileName) {
+  const toolsRoot = join(downloadsRoot, 'tools');
+  let executable = findExecutable(toolsRoot, fileName);
+  if (!executable) {
+    // A restored installed-tree cache can make `vcpkg install` a no-op while
+    // the downloads/tools cache is absent. Fetch build tools explicitly so a
+    // clean VM and a partially restored CI cache have identical behavior.
+    run(vcpkgExecutable, ['fetch', toolName, '--x-stderr-status'], {
+      env: { ...process.env, VCPKG_DOWNLOADS: downloadsRoot },
+    });
+    executable = findExecutable(toolsRoot, fileName);
+  }
+  if (!executable) {
+    throw new Error(`vcpkg did not acquire ${fileName} under ${downloadsRoot}`);
+  }
+  return executable;
 }
-const ninja = findExecutable(join(downloadsRoot, 'tools'), 'ninja.exe');
-if (!ninja) {
-  throw new Error(`vcpkg completed without an acquired ninja.exe under ${downloadsRoot}`);
-}
+
+const cmake = requireVcpkgTool('cmake', 'cmake.exe');
+const ninja = requireVcpkgTool('ninja', 'ninja.exe');
 const msvcEnvironment = loadMsvcEnvironment();
 const buildEnvironment = {
   ...msvcEnvironment,

@@ -45,6 +45,13 @@ function Get-Sha256 {
   }
 }
 
+function Format-CollectionError {
+  param([Parameter(Mandatory = $true)]$ErrorRecord)
+  $position = [string]$ErrorRecord.InvocationInfo.PositionMessage
+  $errorId = [string]$ErrorRecord.FullyQualifiedErrorId
+  return "$($ErrorRecord.Exception.Message) | errorId=$errorId | $position"
+}
+
 function Get-DescendantProcesses {
   param([int]$RootId)
   $all = @(Get-CimInstance Win32_Process -ErrorAction Stop)
@@ -69,7 +76,10 @@ function Get-DescendantProcesses {
       foreach ($child in $byParent[$processId]) { $queue.Enqueue([int]$child.ProcessId) }
     }
   }
-  return @($result)
+  # Windows PowerShell 5.1 can throw System.ArgumentException ("type
+  # mismatch") while expanding a generic List[object] through @(...).
+  # Materialize the list with its strongly typed API before returning it.
+  return [object[]]$result.ToArray()
 }
 
 function Get-Role {
@@ -133,12 +143,12 @@ try {
         }
       }
     } catch {
-      [void]$errors.Add($_.Exception.Message)
+      [void]$errors.Add((Format-CollectionError $_))
     }
     Start-Sleep -Milliseconds $SampleIntervalMs
   }
 } catch {
-  [void]$errors.Add($_.Exception.Message)
+  [void]$errors.Add((Format-CollectionError $_))
 }
 
 $processes = @($observed.Values | Sort-Object @{ Expression = { $_.firstSeenAt } }, @{ Expression = { $_.pid } })

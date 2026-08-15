@@ -213,6 +213,22 @@ test('matches every hashed Bridge-accepted translated cue in ordered physical lo
   }
 });
 
+test('keeps playback lifecycle events when later diagnostics repeat the run marker', () => {
+  const fixture = createFixture();
+  try {
+    fs.appendFileSync(
+      path.join(fixture.runDirectory, 'app.log'),
+      `${localTimestamp(fixture.recordingStartedAtEpochMs + 15_000)} [NORMAL] diagnostic_report_saved | runMarker=${RUN_MARKER}\n`,
+      'utf8',
+    );
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, authority.violations.join('; '));
+    assert.equal(authority.matchedCueCount, fixture.summary.acceptedCues.length);
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
 test('CLI accepts the complete strict runner argument contract', () => {
   const fixture = createFixture();
   try {

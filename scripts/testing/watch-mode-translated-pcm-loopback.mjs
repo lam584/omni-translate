@@ -399,7 +399,10 @@ export function buildTranslatedPcmLoopbackAuthority({
   let lifecycle = new Map();
   try {
     const log = readRegularFile(appLogPath, 'run app.log').bytes.toString('utf8');
-    const markerIndex = log.lastIndexOf(runMarker);
+    // The run marker is intentionally repeated by later diagnostic events.
+    // Scope from its first occurrence in this per-run app.log so playback
+    // lifecycle events are not discarded when the report-save event repeats it.
+    const markerIndex = log.indexOf(runMarker);
     if (markerIndex < 0) throw new Error('run marker is absent from app.log');
     lifecycle = playbackLifecycle(log.slice(markerIndex), requiredCueIds);
   } catch (error) {

@@ -126,7 +126,7 @@ fn stop_existing_inbound_pipeline(
     }
     if !keep_omni {
         if let Some(handle) = state.take_omni_handle("inbound") {
-            let _ = handle.stop_tx.send(());
+            handle.stop_and_join("inbound")?;
         }
     }
     let _ = subtitle_translate::stop_subtitle_translate(app.clone(), state);
@@ -155,7 +155,7 @@ fn stop_existing_route_pipeline(
     }
     if !keep_omni {
         if let Some(handle) = state.take_omni_handle(direction) {
-            let _ = handle.stop_tx.send(());
+            handle.stop_and_join(direction)?;
         }
     }
     Ok(())

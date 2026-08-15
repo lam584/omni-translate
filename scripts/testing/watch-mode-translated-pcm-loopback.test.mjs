@@ -8,6 +8,7 @@ import test from 'node:test';
 
 import {
   buildTranslatedPcmLoopbackAuthority,
+  matchReferenceAtExpectedStart,
   renderBridgeReferenceToLoopback,
 } from './watch-mode-translated-pcm-loopback.mjs';
 
@@ -18,6 +19,17 @@ const MODEL_ID = 'qwen3.5-omni-flash-realtime';
 const PROTOCOL = 'dashscope-omni';
 
 const sha256 = (bytes) => crypto.createHash('sha256').update(bytes).digest('hex');
+
+test('finds broadband PCM at a sub-millisecond WASAPI phase offset', () => {
+  const reference = deterministicCue(73, { sampleRateHz: 16_000, seconds: 0.9 });
+  const recording = new Float32Array(40_000);
+  const expectedStart = 8_000;
+  const actualStart = expectedStart + 5;
+  recording.set(reference, actualStart);
+  const match = matchReferenceAtExpectedStart(reference, recording, expectedStart);
+  assert.equal(match.passed, true, JSON.stringify(match));
+  assert.equal(match.globalLagSamples, 5);
+});
 
 function pcmBuffer(samples) {
   const bytes = Buffer.alloc(samples.length * 2);
@@ -75,6 +87,7 @@ function createFixture({
   recordingMode = 'full',
   playbackOffsetsSeconds: providedOffsets = [3.2, 9.4],
   renderedPlaybackOffsetsSeconds = providedOffsets,
+  streamChunkGapSeconds = 0,
 } = {}) {
   const runDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'translated-loopback-'));
   const authorityDirectory = path.join(runDirectory, 'translated-cue-pcm');
@@ -96,16 +109,32 @@ function createFixture({
       : recordingMode === 'tone-only'
         ? deterministicCue(cueSeed, { noiseScale: 0 })
         : samples;
-    const loopback = renderBridgeReferenceToLoopback(renderedSamples, 24_000);
-    const start = Math.round(renderedPlaybackOffsetsSeconds[index] * 16_000);
-    for (let offset = 0; offset < loopback.length; offset += 1) {
-      const rendered = recordingMode === 'source-only' ? 0 : loopback[offset] * 0.55;
-      recording[start + offset] = Math.max(-0.99, Math.min(0.99, recording[start + offset] + rendered));
+    const chunkLength = streamChunkGapSeconds > 0 ? Math.ceil(samples.length / 3) : samples.length;
+    const chunks = [];
+    for (let sampleOffset = 0, chunkIndex = 0; sampleOffset < samples.length; sampleOffset += chunkLength, chunkIndex += 1) {
+      const sampleCount = Math.min(chunkLength, samples.length - sampleOffset);
+      const chunkStartSeconds = renderedPlaybackOffsetsSeconds[index]
+        + sampleOffset / 24_000 + chunkIndex * streamChunkGapSeconds;
+      const loopback = renderBridgeReferenceToLoopback(
+        renderedSamples.slice(sampleOffset, sampleOffset + sampleCount), 24_000,
+      );
+      const start = Math.round(chunkStartSeconds * 16_000);
+      for (let offset = 0; offset < loopback.length; offset += 1) {
+        const rendered = recordingMode === 'source-only' ? 0 : loopback[offset] * 0.55;
+        recording[start + offset] = Math.max(-0.99, Math.min(0.99, recording[start + offset] + rendered));
+      }
+      chunks.push({
+        chunkIndex,
+        requestId: `request-${index}-${chunkIndex}`,
+        sampleOffset,
+        sampleCount,
+        acceptedAtMs: Math.round(recordingStartedAtEpochMs + chunkStartSeconds * 1_000),
+      });
     }
     acceptedCues.push({
       sequence: index + 1,
       cueId: cueIds[index],
-      requestIds: [`request-${index}`],
+      requestIds: chunks.map((chunk) => chunk.requestId),
       sampleRateHz: 24_000,
       channelCount: 1,
       sampleCount: samples.length,
@@ -114,7 +143,8 @@ function createFixture({
       sha256: sha256(bytes),
       relativePath,
       acceptedFrames: samples.length,
-      chunkCount: 1,
+      chunkCount: chunks.length,
+      chunks,
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
       completedAtMs: recordingStartedAtEpochMs + (playbackOffsetsSeconds[index] + 2.6) * 1_000,
     });
@@ -208,6 +238,18 @@ test('matches every hashed Bridge-accepted translated cue in ordered physical lo
     assert.equal(authority.matchedCueCount, 2);
     assert.ok(authority.matches.every((match) => match.identityMargin >= 0.08));
     assert.deepEqual(authority.matches.map((match) => match.cueId), fixture.summary.acceptedCues.map((cue) => cue.cueId));
+  } finally {
+    fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
+  }
+});
+
+test('matches streamed PCM by ACK-bound chunks across scheduler gaps', () => {
+  const fixture = createFixture({ streamChunkGapSeconds: 0.08 });
+  try {
+    const authority = build(fixture);
+    assert.equal(authority.passed, true, JSON.stringify(authority.matches));
+    assert.ok(authority.matches.every((match) => match.streamChunkCount === 3));
+    assert.ok(authority.matches.every((match) => match.matchedChunkCount === 3));
   } finally {
     fs.rmSync(fixture.runDirectory, { recursive: true, force: true });
   }

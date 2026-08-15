@@ -404,6 +404,13 @@ function writeTranslatedPcmLoopbackFixture(runDirectory, {
       relativePath,
       acceptedFrames: samples.length,
       chunkCount: 1,
+      chunks: [{
+        chunkIndex: 0,
+        requestId: `request-${index + 1}`,
+        sampleOffset: 0,
+        sampleCount: samples.length,
+        acceptedAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000,
+      }],
       createdAtMs: recordingStartedAtEpochMs + playbackOffsetsSeconds[index] * 1_000 - 50,
       completedAtMs: recordingStartedAtEpochMs
         + (playbackOffsetsSeconds[index] + samples.length / 24_000) * 1_000,

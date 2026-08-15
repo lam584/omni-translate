@@ -7,6 +7,36 @@ pub(crate) struct OmniHandle {
     pub join_handle: JoinHandle<()>,
 }
 
+impl OmniHandle {
+    pub(crate) fn stop_and_join(self, direction: &str) -> Result<(), String> {
+        let _ = self.stop_tx.send(());
+        self.join_handle
+            .join()
+            .map_err(|_| format!("Omni {direction} worker panicked during route stop"))
+    }
+}
+
+#[cfg(test)]
+mod handle_shutdown_tests {
+    use super::*;
+    use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+
+    #[test]
+    fn stop_and_join_waits_for_worker_finalization() {
+        let (stop_tx, stop_rx) = mpsc::channel();
+        let finalized = Arc::new(AtomicBool::new(false));
+        let worker_finalized = finalized.clone();
+        let join_handle = thread::spawn(move || {
+            stop_rx.recv().expect("stop signal");
+            worker_finalized.store(true, Ordering::SeqCst);
+        });
+        OmniHandle { stop_tx, join_handle }
+            .stop_and_join("inbound")
+            .expect("joined stop");
+        assert!(finalized.load(Ordering::SeqCst));
+    }
+}
+
 struct OmniSessionWorker {
     app: AppHandle,
     config: OmniSessionConfig,

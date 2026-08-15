@@ -34,7 +34,7 @@ mod probe {
         BRIDGE_PROTOCOL_VERSION,
     };
     use omni_bridge_protocol::{
-        TranslationPlaybackStatusAck, TranslationPlaybackStatusEvent,
+        TranslationPlaybackStatusAck, TranslationPlaybackStatusEvent, TranslationStreamState,
     };
     use serde::Serialize;
     use serde_json::{json, Value};
@@ -71,6 +71,7 @@ mod probe {
     const TONE_FREQUENCY_HZ: f32 = 1_000.0;
     const TONE_AMPLITUDE: f32 = 0.24;
     const TONE_SECONDS: f32 = 2.0;
+    const STREAM_TONE_FREQUENCIES_HZ: [f32; 4] = [700.0, 900.0, 1_100.0, 1_300.0];
     const MIN_OUTPUT_RMS: f32 = 0.015;
     const MIN_OUTPUT_COMPONENT: f32 = 0.015;
     include!("omni_physical_output_probe/process_exclusion.rs");
@@ -172,6 +173,7 @@ mod probe {
         transcription_pcm_path: Option<PathBuf>,
         record_seconds: f32,
         process_exclusion_fingerprint: bool,
+        streaming_tone: bool,
         tone_player_exe: Option<PathBuf>,
     }
 
@@ -272,7 +274,16 @@ mod probe {
         let before_frames = before["playbackFramesWritten"].as_u64().unwrap_or(0);
         let capture = LoopbackCapture::start(&capture_device)?;
         thread::sleep(Duration::from_millis(250));
-        send_translation_tone(&pipe_name, &session_id)?;
+        let sender_pipe_name = pipe_name.clone();
+        let sender_session_id = session_id.clone();
+        let streaming_tone = args.streaming_tone;
+        let sender = thread::spawn(move || {
+            if streaming_tone {
+                send_streaming_translation_tone(&sender_pipe_name, &sender_session_id)
+            } else {
+                send_translation_tone(&sender_pipe_name, &sender_session_id)
+            }
+        });
         let mut metrics = CaptureMetrics::default();
         let started = Instant::now();
         while started.elapsed() < Duration::from_millis(2600) {
@@ -280,6 +291,9 @@ mod probe {
             thread::sleep(Duration::from_millis(2));
         }
         capture.collect_available(&mut metrics)?;
+        sender
+            .join()
+            .map_err(|_| "physical output probe sender thread panicked".to_string())??;
         let after = control(
             &pipe_name,
             json!({
@@ -298,7 +312,14 @@ mod probe {
         let rms = metrics.rms();
         let analysis_samples = first_channel_samples(&metrics.samples);
         let tone_frequency = estimate_dominant_frequency(&analysis_samples);
-        let tone_component = component_amplitude(&analysis_samples, TONE_FREQUENCY_HZ);
+        let tone_component = if args.streaming_tone {
+            STREAM_TONE_FREQUENCIES_HZ
+                .iter()
+                .map(|frequency| component_amplitude(&analysis_samples, *frequency))
+                .fold(f32::INFINITY, f32::min)
+        } else {
+            component_amplitude(&analysis_samples, TONE_FREQUENCY_HZ)
+        };
         let mut failures = Vec::new();
         if after_frames <= before_frames {
             failures.push("bridge playbackFramesWritten did not increase".to_string());
@@ -361,6 +382,7 @@ mod probe {
         let mut transcription_pcm_path: Option<PathBuf> = None;
         let mut record_seconds = 30.0_f32;
         let mut process_exclusion_fingerprint = false;
+        let mut streaming_tone = false;
         let mut tone_player_exe = None;
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -396,6 +418,7 @@ mod probe {
                         .map_err(|error| format!("invalid --record-seconds '{raw}': {error}"))?;
                 }
                 "--process-exclusion-fingerprint" => process_exclusion_fingerprint = true,
+                "--streaming-tone" => streaming_tone = true,
                 "--tone-player-exe" => {
                     tone_player_exe = Some(PathBuf::from(next_arg(&mut args, "--tone-player-exe")?))
                 }
@@ -421,6 +444,7 @@ mod probe {
             transcription_pcm_path,
             record_seconds,
             process_exclusion_fingerprint,
+            streaming_tone,
             tone_player_exe,
         })
     }
@@ -584,6 +608,57 @@ mod probe {
         )
     }
 
+    fn send_streaming_translation_tone(pipe_name: &str, session_id: &str) -> Result<(), String> {
+        let chunk_seconds = 0.5;
+        for (chunk_index, frequency_hz) in STREAM_TONE_FREQUENCIES_HZ.iter().enumerate() {
+            send_translation_tone_stream_frame(
+                pipe_name,
+                session_id,
+                *frequency_hz,
+                chunk_seconds,
+                chunk_index as u32,
+                if chunk_index == 0 {
+                    TranslationStreamState::Start
+                } else {
+                    TranslationStreamState::Chunk
+                },
+            )?;
+            thread::sleep(Duration::from_millis(500));
+        }
+        send_translation_tone_stream_frame(
+            pipe_name,
+            session_id,
+            TONE_FREQUENCY_HZ,
+            0.0,
+            4,
+            TranslationStreamState::End,
+        )
+    }
+
+    fn send_translation_tone_stream_frame(
+        pipe_name: &str,
+        session_id: &str,
+        frequency_hz: f32,
+        seconds: f32,
+        chunk_index: u32,
+        stream_state: TranslationStreamState,
+    ) -> Result<(), String> {
+        let payload = if stream_state == TranslationStreamState::End {
+            Vec::new()
+        } else {
+            tone_pcm16le_at(frequency_hz, TONE_AMPLITUDE, seconds)
+        };
+        send_translation_frame(
+            pipe_name,
+            session_id,
+            payload,
+            "physical-output-stream",
+            Some(chunk_index),
+            Some(stream_state),
+            (seconds.max(0.0) * 1_000.0).ceil() as u64,
+        )
+    }
+
     fn send_translation_tone_at(
         pipe_name: &str,
         session_id: &str,
@@ -592,11 +667,31 @@ mod probe {
         seconds: f32,
         label: &str,
     ) -> Result<(), String> {
+        let payload = tone_pcm16le_at(frequency_hz, amplitude, seconds);
+        let duration_ms = (seconds.max(0.0) * 1_000.0).ceil() as u64;
+        send_translation_frame(
+            pipe_name,
+            session_id,
+            payload,
+            label,
+            None,
+            None,
+            duration_ms,
+        )
+    }
+
+    fn send_translation_frame(
+        pipe_name: &str,
+        session_id: &str,
+        payload: Vec<u8>,
+        label: &str,
+        chunk_index: Option<u32>,
+        stream_state: Option<TranslationStreamState>,
+        duration_ms: u64,
+    ) -> Result<(), String> {
         let path = format!(r"\\.\pipe\{pipe_name}-audio");
         let mut pipe = open_pipe(&path)?;
-        let payload = tone_pcm16le_at(frequency_hz, amplitude, seconds);
         let created_at_ms = unix_ms();
-        let duration_ms = (seconds.max(0.0) * 1_000.0).ceil() as u64;
         let header = AudioFrameHeader {
             event_type: "bridge.translation.frame".to_string(),
             request_id: format!("{label}-frame-{created_at_ms}"),
@@ -616,9 +711,9 @@ mod probe {
             cue_id: Some(format!("{label}-cue")),
             created_at_ms: Some(created_at_ms),
             estimated_duration_ms: Some(duration_ms),
-            chunk_index: None,
+            chunk_index,
             chunk_count: None,
-            stream_state: None,
+            stream_state,
             translated_audio_enhancement_applied: false,
             translation_sink: Some(TranslationAudioSink::PhysicalPlayback),
             route_direction: Some(AudioRouteDirection::Inbound),

@@ -197,7 +197,9 @@ if (process.env.OMNI_AEC3_USE_GIT_PERL === 'true') {
   // Git for Windows includes a compatible Perl. Limit this PATH adjustment to
   // vcpkg so clean VM smoke runs do not need to fetch Strawberry Perl solely
   // to build the pinned AOM dependency.
-  vcpkgInstallEnvironment.PATH = `${gitPerlDirectory};${vcpkgInstallEnvironment.PATH ?? ''}`;
+  const pathKey = Object.keys(vcpkgInstallEnvironment)
+    .find((key) => key.toUpperCase() === 'PATH') ?? 'Path';
+  vcpkgInstallEnvironment[pathKey] = `${gitPerlDirectory};${vcpkgInstallEnvironment[pathKey] ?? ''}`;
 }
 runWithRetries(vcpkgExecutable, [
   'install',

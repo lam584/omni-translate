@@ -54,6 +54,32 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
     environment.TMPDIR = temporaryRoot;
     environment.NPM_CONFIG_CACHE = path.join(temporaryRoot, 'npm-cache');
   }
+  const requiresElevation = process.platform === 'win32'
+    && (script === 'driver:install' || script === 'driver:test');
+  if (requiresElevation) {
+    const quotedWorkspace = `'${repoRoot.replaceAll("'", "''")}'`;
+    const quotedScript = `'${script.replaceAll("'", "''")}'`;
+    const command = [
+      "$ErrorActionPreference = 'Stop'",
+      `$process = Start-Process -FilePath $env:ComSpec -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotedWorkspace} -ArgumentList @('/d', '/s', '/c', 'npm.cmd', 'run', ${quotedScript})`,
+      'exit $process.ExitCode',
+    ].join('; ');
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+      cwd: repoRoot,
+      env: environment,
+      encoding: 'utf8',
+      timeout,
+      windowsHide: true,
+    });
+    return {
+      command: `elevated npm run ${script}`,
+      status: result.status ?? 1,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+      passed: !result.error && result.status === 0,
+      error: result.error?.message ?? null,
+    };
+  }
   const result = spawnSync(process.env.ComSpec || 'cmd.exe', [
     '/d', '/s', '/c', 'npm.cmd', 'run', script,
   ], {

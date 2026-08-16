@@ -85,8 +85,11 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
       `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotePowerShell(repoRoot)} -ArgumentList @('-NoProfile', '-EncodedCommand', ${quotePowerShell(childEncodedCommand)})`,
       'exit $process.ExitCode',
     ].join('; ');
-    const parentEncodedCommand = Buffer.from(parentCommand, 'utf16le').toString('base64');
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', parentEncodedCommand], {
+    // Do not encode the parent elevation request.  Windows PowerShell emits
+    // CLIXML and returns a non-zero status for the nested encoded host under
+    // this VM's UAC policy, whereas a direct -Command elevation preserves the
+    // child process exit code (the only authoritative status here).
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', parentCommand], {
       cwd: repoRoot,
       env: environment,
       encoding: 'utf8',

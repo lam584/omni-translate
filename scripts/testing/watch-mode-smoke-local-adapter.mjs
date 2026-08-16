@@ -97,7 +97,6 @@ export async function runPreflight({ executionRoot }) {
   }
   const originalProtocol = process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL;
   const originalOffline = process.env.CARGO_NET_OFFLINE;
-  const originalGitPerl = process.env.OMNI_AEC3_USE_GIT_PERL;
   const originalTemp = process.env.TEMP;
   const originalTmp = process.env.TMP;
   const originalTmpDir = process.env.TMPDIR;
@@ -107,7 +106,6 @@ export async function runPreflight({ executionRoot }) {
   const originalCargoIncremental = process.env.CARGO_INCREMENTAL;
   process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse';
   process.env.CARGO_NET_OFFLINE = 'true';
-  process.env.OMNI_AEC3_USE_GIT_PERL = 'true';
   process.env.TEMP = temporaryRoot;
   process.env.TMP = temporaryRoot;
   process.env.TMPDIR = temporaryRoot;
@@ -122,8 +120,6 @@ export async function runPreflight({ executionRoot }) {
     else process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = originalProtocol;
     if (originalOffline === undefined) delete process.env.CARGO_NET_OFFLINE;
     else process.env.CARGO_NET_OFFLINE = originalOffline;
-    if (originalGitPerl === undefined) delete process.env.OMNI_AEC3_USE_GIT_PERL;
-    else process.env.OMNI_AEC3_USE_GIT_PERL = originalGitPerl;
     if (originalTemp === undefined) delete process.env.TEMP;
     else process.env.TEMP = originalTemp;
     if (originalTmp === undefined) delete process.env.TMP;

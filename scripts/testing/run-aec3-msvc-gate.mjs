@@ -188,29 +188,7 @@ if (!assertPinnedVcpkgTool(vcpkgExecutable)) {
     throw new Error(`bootstrapped vcpkg tool does not match pinned SHA-256 ${VCPKG_TOOL_SHA256}`);
   }
 }
-const vcpkgInstallEnvironment = {
-  ...process.env,
-  VCPKG_DOWNLOADS: downloadsRoot,
-  // Git for Windows ships a lean Perl distribution. OpenSSL's Configure path
-  // requires Locale::Maketext::Simple, so make the cached pure-Perl fallback
-  // available without installing anything globally on a clean validation VM.
-  PERL5LIB: join(downloadsRoot, 'perl-extra'),
-};
-if (process.env.OMNI_AEC3_USE_GIT_PERL === 'true') {
-  const gitPerlDirectory = resolve(
-    process.env.OMNI_AEC3_GIT_PERL_DIRECTORY ?? 'C:\\Program Files\\Git\\usr\\bin',
-  );
-  const gitPerl = join(gitPerlDirectory, 'perl.exe');
-  if (!existsSync(gitPerl)) {
-    throw new Error(`OMNI_AEC3_USE_GIT_PERL requires ${gitPerl}`);
-  }
-  // Git for Windows includes a compatible Perl. Limit this PATH adjustment to
-  // vcpkg so clean VM smoke runs do not need to fetch Strawberry Perl solely
-  // to build the pinned AOM dependency.
-  const pathKey = Object.keys(vcpkgInstallEnvironment)
-    .find((key) => key.toUpperCase() === 'PATH') ?? 'Path';
-  vcpkgInstallEnvironment[pathKey] = `${gitPerlDirectory};${vcpkgInstallEnvironment[pathKey] ?? ''}`;
-}
+const vcpkgInstallEnvironment = { ...process.env, VCPKG_DOWNLOADS: downloadsRoot };
 runWithRetries(vcpkgExecutable, [
   'install',
   `webrtc:${TRIPLET}`,

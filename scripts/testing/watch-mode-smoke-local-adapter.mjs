@@ -42,6 +42,11 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
     // offline prevents a transient registry stall from masking a local result.
     CARGO_NET_OFFLINE: 'true',
     CARGO_HOME: VM3_CARGO_HOME,
+    // VM3 has constrained commit memory while its system drive is full. A
+    // single non-incremental Cargo job keeps the smoke preflight below that
+    // limit without weakening any of the compiled checks.
+    CARGO_BUILD_JOBS: '1',
+    CARGO_INCREMENTAL: '0',
   };
   if (temporaryRoot) {
     environment.TEMP = temporaryRoot;
@@ -98,6 +103,8 @@ export async function runPreflight({ executionRoot }) {
   const originalTmpDir = process.env.TMPDIR;
   const originalNpmCache = process.env.NPM_CONFIG_CACHE;
   const originalCargoHome = process.env.CARGO_HOME;
+  const originalCargoJobs = process.env.CARGO_BUILD_JOBS;
+  const originalCargoIncremental = process.env.CARGO_INCREMENTAL;
   process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse';
   process.env.CARGO_NET_OFFLINE = 'true';
   process.env.OMNI_AEC3_USE_GIT_PERL = 'true';
@@ -106,6 +113,8 @@ export async function runPreflight({ executionRoot }) {
   process.env.TMPDIR = temporaryRoot;
   process.env.NPM_CONFIG_CACHE = path.join(temporaryRoot, 'npm-cache');
   process.env.CARGO_HOME = VM3_CARGO_HOME;
+  process.env.CARGO_BUILD_JOBS = '1';
+  process.env.CARGO_INCREMENTAL = '0';
   try {
     runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
   } finally {
@@ -125,6 +134,10 @@ export async function runPreflight({ executionRoot }) {
     else process.env.NPM_CONFIG_CACHE = originalNpmCache;
     if (originalCargoHome === undefined) delete process.env.CARGO_HOME;
     else process.env.CARGO_HOME = originalCargoHome;
+    if (originalCargoJobs === undefined) delete process.env.CARGO_BUILD_JOBS;
+    else process.env.CARGO_BUILD_JOBS = originalCargoJobs;
+    if (originalCargoIncremental === undefined) delete process.env.CARGO_INCREMENTAL;
+    else process.env.CARGO_INCREMENTAL = originalCargoIncremental;
   }
   const driverInstall = runNpm('driver:install', 900_000, temporaryRoot);
   checks.push(driverInstall);

@@ -72,24 +72,34 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
         '-TargetDeviceId', 'virtual-mic-default',
       ]
       : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', driverScript];
+    const temporaryOutputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-smoke-elevated-driver-'));
+    const outputLog = path.join(temporaryOutputRoot, 'driver.log');
     const quotePowerShell = (value) => `'${String(value).replaceAll("'", "''")}'`;
-    const command = [
+    const childCommand = [
       "$ErrorActionPreference = 'Stop'",
-      `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotePowerShell(repoRoot)} -ArgumentList @(${driverArguments.map(quotePowerShell).join(', ')})`,
+      `& ${quotePowerShell(driverScript)} ${driverArguments.map(quotePowerShell).join(' ')} *>> ${quotePowerShell(outputLog)}`,
+      'exit $LASTEXITCODE',
+    ].join('; ');
+    const childEncodedCommand = Buffer.from(childCommand, 'utf16le').toString('base64');
+    const parentCommand = [
+      "$ErrorActionPreference = 'Stop'",
+      `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotePowerShell(repoRoot)} -ArgumentList @('-NoProfile', '-EncodedCommand', ${quotePowerShell(childEncodedCommand)})`,
       'exit $process.ExitCode',
     ].join('; ');
-    const encodedCommand = Buffer.from(command, 'utf16le').toString('base64');
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', encodedCommand], {
+    const parentEncodedCommand = Buffer.from(parentCommand, 'utf16le').toString('base64');
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', parentEncodedCommand], {
       cwd: repoRoot,
       env: environment,
       encoding: 'utf8',
       timeout,
       windowsHide: true,
     });
+    const elevatedOutput = fs.existsSync(outputLog) ? fs.readFileSync(outputLog, 'utf8') : '';
+    fs.rmSync(temporaryOutputRoot, { recursive: true, force: true });
     return {
       command: `elevated npm run ${script}`,
       status: result.status ?? 1,
-      stdout: result.stdout ?? '',
+      stdout: elevatedOutput,
       stderr: result.stderr ?? '',
       passed: !result.error && result.status === 0,
       error: result.error?.message ?? null,

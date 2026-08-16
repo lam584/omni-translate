@@ -58,52 +58,22 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
   const requiresElevation = process.platform === 'win32'
     && (script === 'driver:install' || script === 'driver:test');
   if (requiresElevation) {
-    const driverScript = script === 'driver:install'
-      ? path.join(repoRoot, 'scripts', 'installer', 'install-development-driver.ps1')
-      : path.join(repoRoot, 'scripts', 'installer', 'test-development-driver.ps1');
-    const driverScriptArguments = script === 'driver:install'
-      ? [
-        '-WorkspaceRoot', repoRoot,
-        '-RuntimeRoot', path.join(repoRoot, 'artifacts', 'diagnostics', 'logs'),
-        '-InstallChannel', 'development',
-        '-DriverVersion', '0.10.0-dev',
-        '-BridgeVersion', '0.1.0',
-        '-TargetDeviceId', 'virtual-mic-default',
-      ]
-      : [];
-    const temporaryOutputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-smoke-elevated-driver-'));
-    const outputLog = path.join(temporaryOutputRoot, 'driver.log');
-    const quotePowerShell = (value) => `'${String(value).replaceAll("'", "''")}'`;
-    const childCommand = [
-      "$ErrorActionPreference = 'Stop'",
-      `& ${quotePowerShell(driverScript)} ${driverScriptArguments.map(quotePowerShell).join(' ')} *>> ${quotePowerShell(outputLog)}`,
-      'exit $LASTEXITCODE',
-    ].join('; ');
-    const childEncodedCommand = Buffer.from(childCommand, 'utf16le').toString('base64');
-    const parentCommand = [
-      "$ErrorActionPreference = 'Stop'",
-      `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotePowerShell(repoRoot)} -ArgumentList @('-NoProfile', '-EncodedCommand', ${quotePowerShell(childEncodedCommand)})`,
-      'exit $process.ExitCode',
-    ].join('; ');
-    // Do not encode the parent elevation request.  Windows PowerShell emits
-    // CLIXML and returns a non-zero status for the nested encoded host under
-    // this VM's UAC policy, whereas a direct -Command elevation preserves the
-    // child process exit code (the only authoritative status here).
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-Command', parentCommand], {
+    const launcher = path.join(repoRoot, 'scripts', 'testing', 'run-elevated-driver.ps1');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher,
+      '-Action', script === 'driver:install' ? 'install' : 'test',
+      '-WorkspaceRoot', repoRoot,
+    ], {
       cwd: repoRoot,
       env: environment,
       encoding: 'utf8',
       timeout,
-      // UAC cannot reliably consent from a hidden parent process on VM3.
-      // Keep the elevated child hidden, but leave this consent host visible.
       windowsHide: false,
     });
-    const elevatedOutput = fs.existsSync(outputLog) ? fs.readFileSync(outputLog, 'utf8') : '';
-    fs.rmSync(temporaryOutputRoot, { recursive: true, force: true });
     return {
       command: `elevated npm run ${script}`,
       status: result.status ?? 1,
-      stdout: elevatedOutput,
+      stdout: result.stdout ?? '',
       stderr: result.stderr ?? '',
       passed: !result.error && result.status === 0,
       error: result.error?.message ?? null,

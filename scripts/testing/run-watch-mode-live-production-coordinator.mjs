@@ -611,16 +611,11 @@ export function remotePowerShellInvocation(body, payload) {
   return {
     script: bootstrap,
     fileScript: [
-      'try {',
+      '$omniRemoteOutput = @(',
       source,
-      `  [Console]::Out.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
-      '  [Console]::Out.Flush()',
-      '  exit 0',
-      '} catch {',
-      '  [Console]::Error.WriteLine($_.Exception.Message)',
-      '  [Console]::Error.Flush()',
-      '  exit 1',
-      '}',
+      ')',
+      `$omniRemoteCombined = (@($omniRemoteOutput) -join [Environment]::NewLine) + [Environment]::NewLine + '${REMOTE_POWERSHELL_COMPLETION_MARKER}'`,
+      'Write-Output $omniRemoteCombined',
     ].join('\n'),
     args: [
       'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',

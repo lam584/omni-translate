@@ -495,9 +495,10 @@ test('remote PowerShell uses a compressed encoded command without SSH stdin', ()
   assert.match(invocation.fileScript, /ConvertTo-Json -Compress/);
   assert.match(invocation.fileScript, /__OMNI_REMOTE_COMPLETE_V1__/);
   assert.doesNotMatch(invocation.fileScript, /ScriptBlock|GZipStream/);
-  assert.match(invocation.fileScript, /Console\]::Out\.Flush\(\)/);
-  assert.match(invocation.fileScript, /exit 0/);
-  assert.match(invocation.fileScript, /exit 1/);
+  assert.match(invocation.fileScript, /\$omniRemoteOutput = @\(/);
+  assert.match(invocation.fileScript, /\$omniRemoteCombined = \(@\(\$omniRemoteOutput\) -join \[Environment\]::NewLine\)/);
+  assert.match(invocation.fileScript, /Write-Output \$omniRemoteCombined/);
+  assert.doesNotMatch(invocation.fileScript, /Console\]::Out\.(?:Write|Flush)|try \{|exit [01]/);
 });
 
 test('preserved worker readiness is decoded as UTF-8 and returned as one compact JSON line', { skip: !isWindows }, () => {

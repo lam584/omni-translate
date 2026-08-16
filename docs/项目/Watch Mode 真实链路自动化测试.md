@@ -371,6 +371,8 @@ Plus 专项每格除既有报告层和 canonical source 严格内容校验外，
 
 任一零费用门禁失败时停止进入 Provider 阶段，沿 `ASR final → manual gate → cue lifecycle → response.create → subtitle/translation` 或 `audio delta → stream batch → playback queue → Bridge receipt → Watch report` 调用链复现并补最小回归。任一付费格失败时停止该 execution 的后续 dispatch，保留计划、lease、日志、trace、预算和 VM 诊断；修复后从新的 clean commit、新 execution ID、新本地 authority/readiness/preflight 开始，完整重跑受影响的专项三格或严格八格，不能拼接旧结果。
 
+`incident-plus-20260816-c7c2503-closeout-e` 是失败证据而非通过证据：第一波 virtual-driver/USB 在 Provider 返回 `<50002> InternalError.Algo.ModelServingError` 并关闭 socket 后严格拒绝重连，只发送约 12.8 秒输入；同波 process-exclusion 虽完成 180 秒输入和 8 个可见 cue，却在前一个长译音仍播放时把新的 stream `Start` 记录为 `native-playback-stream-stale-dropped`。反查后，stream 起点只按自身创建年龄执行五秒实时准入，不能用前序当前流的预计播放结束时间把新流判旧；独立 `Play` 仍按预计开始时间过期，队列容量仍受界。Provider delta 必须拆成最多一秒的 stream 命令，不能用 `take()` 把 1.28 秒或更大的瞬时缓冲当成“一秒批次”。对应零费用回归同时覆盖当前 Start 在长前序流后仍入队、真正旧 Start 仍拒绝、超大 delta 精确分批和 stale 诊断四个字段。
+
 最后执行：
 
 ```text

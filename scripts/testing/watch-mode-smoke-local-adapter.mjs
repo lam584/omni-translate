@@ -32,10 +32,17 @@ export const workerCapabilities = Object.freeze([
 let runtimeAuthority = null;
 
 function runNpm(script, timeout = 900_000) {
+  const environment = {
+    ...process.env,
+    // VM3 reaches the sparse index reliably while the legacy git index can
+    // remain stalled for several minutes before Cargo reports a timeout.
+    CARGO_REGISTRIES_CRATES_IO_PROTOCOL: 'sparse',
+  };
   const result = spawnSync(process.env.ComSpec || 'cmd.exe', [
     '/d', '/s', '/c', 'npm.cmd', 'run', script,
   ], {
     cwd: repoRoot,
+    env: environment,
     encoding: 'utf8',
     timeout,
     windowsHide: true,
@@ -70,7 +77,14 @@ export async function runPreflight({ executionRoot }) {
       return { passed: false, providerCalls: 0, checks, failure: `${result.command} failed` };
     }
   }
-  runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
+  const originalProtocol = process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL;
+  process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse';
+  try {
+    runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
+  } finally {
+    if (originalProtocol === undefined) delete process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL;
+    else process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = originalProtocol;
+  }
   return {
     passed: true,
     providerCalls: 0,

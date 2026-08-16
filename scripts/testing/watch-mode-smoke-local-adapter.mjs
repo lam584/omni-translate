@@ -194,7 +194,7 @@ function runPowerShell(argv, timeoutMs) {
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher,
       '-WorkspaceRoot', repoRoot,
       '-OutputLog', outputLog,
-      ...argv,
+      '-RunnerArgumentsJson', JSON.stringify(argv),
     ], {
       cwd: repoRoot,
       windowsHide: false,

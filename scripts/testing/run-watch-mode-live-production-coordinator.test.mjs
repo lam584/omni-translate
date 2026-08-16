@@ -488,8 +488,9 @@ test('remote PowerShell uses a compressed encoded command without SSH stdin', ()
   assert.match(bootstrap, /ReadToEnd/);
   assert.match(bootstrap, /ScriptBlock/);
   assert.match(bootstrap, /__OMNI_REMOTE_COMPLETE_V1__/);
-  assert.match(bootstrap, /exit 0/);
-  assert.match(bootstrap, /exit 1/);
+  assert.doesNotMatch(bootstrap, /(?:^|[;{}]\s*)exit\s+[01](?:\s*[;} ]|$)/u);
+  assert.match(bootstrap, /\[Console\]::Out\.Flush\(\); \[Environment\]::Exit\(0\)/);
+  assert.match(bootstrap, /\[Console\]::Error\.Flush\(\); \[Environment\]::Exit\(1\)/);
 });
 
 test('preserved worker readiness is decoded as UTF-8 and returned as one compact JSON line', { skip: !isWindows }, () => {

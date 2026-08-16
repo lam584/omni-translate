@@ -4,11 +4,12 @@ param(
   [string]$WorkspaceRoot,
   [Parameter(Mandatory)]
   [string]$OutputLog,
-  [Parameter(ValueFromRemainingArguments = $true)]
-  [string[]]$RunnerArguments
+  [Parameter(Mandatory)]
+  [string]$RunnerArgumentsJson
 )
 
 $ErrorActionPreference = 'Stop'
 $runner = Join-Path $WorkspaceRoot 'scripts\testing\run-watch-mode-live.ps1'
+$RunnerArguments = @($RunnerArgumentsJson | ConvertFrom-Json)
 & $runner @RunnerArguments *>> $OutputLog
 exit $LASTEXITCODE

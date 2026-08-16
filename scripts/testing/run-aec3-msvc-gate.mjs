@@ -164,7 +164,10 @@ if (!successful('git', ['-C', vcpkgRoot, 'rev-parse', '--verify', '--quiet', 'HE
   run('git', ['-C', vcpkgRoot, 'init']);
   run('git', ['-C', vcpkgRoot, 'remote', 'add', 'origin', 'https://github.com/microsoft/vcpkg.git']);
 }
-run('git', ['-C', vcpkgRoot, 'fetch', '--depth', '1', 'origin', BASELINE]);
+const localBaseline = successful('git', ['-C', vcpkgRoot, 'cat-file', '-e', `${BASELINE}^{commit}`]);
+if (!localBaseline) {
+  run('git', ['-C', vcpkgRoot, 'fetch', '--depth', '1', 'origin', BASELINE]);
+}
 run('git', ['-C', vcpkgRoot, 'checkout', '--detach', BASELINE]);
 const actualBaseline = output('git', ['-C', vcpkgRoot, 'rev-parse', 'HEAD']);
 if (actualBaseline !== BASELINE) {

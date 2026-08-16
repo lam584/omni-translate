@@ -94,7 +94,9 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
       env: environment,
       encoding: 'utf8',
       timeout,
-      windowsHide: true,
+      // UAC cannot reliably consent from a hidden parent process on VM3.
+      // Keep the elevated child hidden, but leave this consent host visible.
+      windowsHide: false,
     });
     const elevatedOutput = fs.existsSync(outputLog) ? fs.readFileSync(outputLog, 'utf8') : '';
     fs.rmSync(temporaryOutputRoot, { recursive: true, force: true });
@@ -232,7 +234,7 @@ function runPowerShell(argv, timeoutMs) {
     const parentEncodedCommand = Buffer.from(parentCommand, 'utf16le').toString('base64');
     const child = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', parentEncodedCommand], {
       cwd: repoRoot,
-      windowsHide: true,
+      windowsHide: false,
       stdio: ['ignore', 'ignore', 'pipe'],
     });
     let stderr = '';

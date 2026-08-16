@@ -1,5 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 
 import { repoRoot } from '../lib/testing-common.mjs';
@@ -202,25 +203,37 @@ export async function runPreflight({ executionRoot }) {
 
 function runPowerShell(argv, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const child = spawn('powershell.exe', [
-      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
-      path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1'),
-      ...argv,
-    ], {
+    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-smoke-elevated-live-'));
+    const outputLog = path.join(temporaryRoot, 'runner.log');
+    const quotePowerShell = (value) => `'${String(value).replaceAll("'", "''")}'`;
+    const childCommand = [
+      "$ErrorActionPreference = 'Stop'",
+      `& ${quotePowerShell(path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1'))} ${argv.map(quotePowerShell).join(' ')} *>> ${quotePowerShell(outputLog)}`,
+      'exit $LASTEXITCODE',
+    ].join('; ');
+    const childEncodedCommand = Buffer.from(childCommand, 'utf16le').toString('base64');
+    const parentCommand = [
+      "$ErrorActionPreference = 'Stop'",
+      `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotePowerShell(repoRoot)} -ArgumentList @('-NoProfile', '-EncodedCommand', ${quotePowerShell(childEncodedCommand)})`,
+      'exit $process.ExitCode',
+    ].join('; ');
+    const parentEncodedCommand = Buffer.from(parentCommand, 'utf16le').toString('base64');
+    const child = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', parentEncodedCommand], {
       cwd: repoRoot,
       windowsHide: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ['ignore', 'ignore', 'pipe'],
     });
-    let stdout = '';
     let stderr = '';
     const timeout = setTimeout(() => {
       spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
     }, timeoutMs);
-    child.stdout.on('data', (chunk) => { stdout += chunk; process.stderr.write(chunk); });
     child.stderr.on('data', (chunk) => { stderr += chunk; process.stderr.write(chunk); });
     child.once('error', reject);
     child.once('exit', (exitCode) => {
       clearTimeout(timeout);
+      const stdout = fs.existsSync(outputLog) ? fs.readFileSync(outputLog, 'utf8') : '';
+      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+      process.stderr.write(stdout);
       resolve({ exitCode: exitCode ?? 1, stdout, stderr });
     });
   });

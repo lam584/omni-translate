@@ -185,7 +185,14 @@ if (!assertPinnedVcpkgTool(vcpkgExecutable)) {
     throw new Error(`bootstrapped vcpkg tool does not match pinned SHA-256 ${VCPKG_TOOL_SHA256}`);
   }
 }
-const vcpkgInstallEnvironment = { ...process.env, VCPKG_DOWNLOADS: downloadsRoot };
+const vcpkgInstallEnvironment = {
+  ...process.env,
+  VCPKG_DOWNLOADS: downloadsRoot,
+  // Git for Windows ships a lean Perl distribution. OpenSSL's Configure path
+  // requires Locale::Maketext::Simple, so make the cached pure-Perl fallback
+  // available without installing anything globally on a clean validation VM.
+  PERL5LIB: join(downloadsRoot, 'perl-extra'),
+};
 if (process.env.OMNI_AEC3_USE_GIT_PERL === 'true') {
   const gitPerlDirectory = resolve(
     process.env.OMNI_AEC3_GIT_PERL_DIRECTORY ?? 'C:\\Program Files\\Git\\usr\\bin',

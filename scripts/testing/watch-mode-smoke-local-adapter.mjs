@@ -61,9 +61,8 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
     const driverScript = script === 'driver:install'
       ? path.join(repoRoot, 'scripts', 'installer', 'install-development-driver.ps1')
       : path.join(repoRoot, 'scripts', 'installer', 'test-development-driver.ps1');
-    const driverArguments = script === 'driver:install'
+    const driverScriptArguments = script === 'driver:install'
       ? [
-        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', driverScript,
         '-WorkspaceRoot', repoRoot,
         '-RuntimeRoot', path.join(repoRoot, 'artifacts', 'diagnostics', 'logs'),
         '-InstallChannel', 'development',
@@ -71,13 +70,13 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
         '-BridgeVersion', '0.1.0',
         '-TargetDeviceId', 'virtual-mic-default',
       ]
-      : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', driverScript];
+      : [];
     const temporaryOutputRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-smoke-elevated-driver-'));
     const outputLog = path.join(temporaryOutputRoot, 'driver.log');
     const quotePowerShell = (value) => `'${String(value).replaceAll("'", "''")}'`;
     const childCommand = [
       "$ErrorActionPreference = 'Stop'",
-      `& ${quotePowerShell(driverScript)} ${driverArguments.map(quotePowerShell).join(' ')} *>> ${quotePowerShell(outputLog)}`,
+      `& ${quotePowerShell(driverScript)} ${driverScriptArguments.map(quotePowerShell).join(' ')} *>> ${quotePowerShell(outputLog)}`,
       'exit $LASTEXITCODE',
     ].join('; ');
     const childEncodedCommand = Buffer.from(childCommand, 'utf16le').toString('base64');

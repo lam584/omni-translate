@@ -39,6 +39,24 @@ function run(command, args, options = {}) {
   }
 }
 
+function runWithRetries(command, args, options = {}, attempts = 3) {
+  let lastError;
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      run(command, args, options);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt === attempts) break;
+      // Tool archives are fetched from GitHub on clean Windows VMs. The
+      // downloader can lose a single long-lived TLS stream; a fresh vcpkg
+      // invocation verifies the archive hash before it is ever used.
+      console.warn(`attempt ${attempt}/${attempts} failed; retrying: ${error.message}`);
+    }
+  }
+  throw lastError;
+}
+
 function output(command, args) {
   const result = spawnSync(command, args, {
     cwd: workspace,
@@ -167,7 +185,7 @@ if (!assertPinnedVcpkgTool(vcpkgExecutable)) {
     throw new Error(`bootstrapped vcpkg tool does not match pinned SHA-256 ${VCPKG_TOOL_SHA256}`);
   }
 }
-run(vcpkgExecutable, [
+runWithRetries(vcpkgExecutable, [
   'install',
   `webrtc:${TRIPLET}`,
   `--x-install-root=${installedRoot}`,

@@ -69,7 +69,6 @@ export async function runPreflight({ executionRoot }) {
     'test:desktop-shell',
     'test:integration:bridge-contract',
     'test:contracts',
-    'driver:test',
   ]) {
     const result = runNpm(script);
     checks.push(result);
@@ -91,6 +90,22 @@ export async function runPreflight({ executionRoot }) {
     else process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = originalProtocol;
     if (originalOffline === undefined) delete process.env.CARGO_NET_OFFLINE;
     else process.env.CARGO_NET_OFFLINE = originalOffline;
+  }
+  const driverInstall = runNpm('driver:install');
+  checks.push(driverInstall);
+  fs.writeFileSync(path.join(preflightRoot, 'driver-install.log'), [
+    driverInstall.stdout, driverInstall.stderr,
+  ].join('\n'), 'utf8');
+  if (!driverInstall.passed) {
+    return { passed: false, providerCalls: 0, checks, failure: 'npm run driver:install failed' };
+  }
+  const driverProbe = runNpm('driver:test');
+  checks.push(driverProbe);
+  fs.writeFileSync(path.join(preflightRoot, 'driver-test.log'), [
+    driverProbe.stdout, driverProbe.stderr,
+  ].join('\n'), 'utf8');
+  if (!driverProbe.passed) {
+    return { passed: false, providerCalls: 0, checks, failure: 'npm run driver:test failed' };
   }
   return {
     passed: true,

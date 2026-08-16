@@ -466,6 +466,38 @@ values:
 npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-workers.json --reuse-local-isolation artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
 ```
 
+### Non-authoritative 30-minute smoke matrix
+
+Before a release-shaped run, generate the fixed smoke plan with:
+
+```powershell
+npm run test:watch-mode-live:smoke
+```
+
+The VM3 smoke coordinator covers exactly 17 cells: six zero-provider local cells
+at 30 seconds, three `qwen3.5-omni-plus-realtime` cells at 45 seconds, and
+the fixed eight release cell identities at 45 seconds. The single-VM variant
+executes all cells serially on VM3's available default speaker. Each cell keeps
+its original `sourceDeviceClass` (`default-speaker` or `usb`) for coverage
+traceability, but this smoke does not claim USB hardware authority. It writes
+each execution beneath
+`artifacts/testing/watch-mode-smoke/<execution-id>/smoke-manifest.json`.
+Executions use a VM-aware adapter that exports `workerCapabilities`, `runCell`,
+and optionally `runPreflight`:
+
+```powershell
+node scripts/testing/run-watch-mode-smoke.mjs --adapter <adapter.mjs> --execution-id <execution-id>
+```
+
+The adapter must report a failure class (`product`, `device`,
+`orchestration`, `ci`, or `provider-external`) for every failed cell. The
+coordinator never retries a cell in the same execution and continues later
+independent waves to retain all diagnostic evidence. Smoke manifests are
+explicitly marked `watch-mode-non-authoritative-smoke`; strict evidence,
+release closeout, and PR merge checks reject them. A product, device,
+orchestration/CI failure sets `blocksAuthoritativeRun` and requires a new
+clean-commit smoke execution before the full authority workflow can begin.
+
 Use the coordinator configuration to bind each worker to its device-profile
 instance. Do not invoke `run-watch-mode-live-matrix.mjs` for strict release
 evidence; that old entry exists only to give a pre-provider migration error.

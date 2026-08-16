@@ -302,6 +302,12 @@ export function readRunManifest(manifestPath, { baseDirectory = process.cwd() } 
   if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
     throw new Error(`run manifest must contain a JSON object: ${resolvedManifestPath}`);
   }
+  if (
+    manifest.artifactKind === 'watch-mode-non-authoritative-smoke'
+    || manifest.smokeOnly === true
+  ) {
+    throw new Error(`smoke manifest is non-authoritative and cannot be used as Watch Mode evidence: ${resolvedManifestPath}`);
+  }
   if (![1, STRICT_MATRIX_SCHEMA_VERSION].includes(manifest.schemaVersion)) {
     throw new Error(`unsupported run manifest schemaVersion=${manifest.schemaVersion ?? 'missing'}: ${resolvedManifestPath}`);
   }

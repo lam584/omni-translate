@@ -14,9 +14,10 @@ param(
   [int]$PostPlaybackWaitSeconds = 120,
   [ValidateRange(1, 100)]
   [int]$SessionReadyTimeoutSeconds = 90,
-  # The budget-approved paid release plan assigns an exact 180-second ceiling
-  # to every cell. Longer values remain available only to non-strict diagnostics.
-  [ValidateRange(180, 7200)]
+  # Non-authoritative smoke cells deliberately exercise the same path for 30
+  # or 45 seconds. Paid authority still enforces its immutable 180-second
+  # ceiling below, before a Provider session can start.
+  [ValidateRange(30, 7200)]
   [int]$WatchAutoStopAfterSeconds = 180,
   [switch]$SkipDesktopLaunch,
   [switch]$SkipDriverRepair,
@@ -1484,7 +1485,7 @@ function Get-WatchModeLiveScenarioEnvironment {
     [ValidateSet('virtual-driver', 'process-exclusion', 'echo-cancel')]
     [string]$FeedbackMode,
     [Parameter(Mandatory = $true)]
-    [ValidateRange(180000, 7200000)]
+    [ValidateRange(30000, 7200000)]
     [int64]$AutoStopAfterMs
   )
   return [pscustomobject]@{

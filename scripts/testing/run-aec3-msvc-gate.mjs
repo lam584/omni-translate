@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, readdirSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import process from 'node:process';
@@ -50,6 +50,15 @@ function output(command, args) {
     throw new Error(result.stderr || `${command} failed with exit code ${result.status}`);
   }
   return result.stdout.trim();
+}
+
+function successful(command, args) {
+  const result = spawnSync(command, args, {
+    cwd: workspace,
+    env: process.env,
+    encoding: 'utf8',
+  });
+  return !result.error && result.status === 0;
 }
 
 function findExecutable(root, fileName) {
@@ -127,9 +136,17 @@ function assertPinnedVcpkgTool(executable) {
 }
 
 mkdirSync(resolve(workspace, 'target'), { recursive: true });
-if (!existsSync(join(vcpkgRoot, '.git'))) {
-  run('git', ['clone', 'https://github.com/microsoft/vcpkg.git', vcpkgRoot]);
+// vcpkg's history is large and a full clone can spend many minutes unpacking
+// commits that the pinned AEC3 gate never reads. Fetch just the approved
+// baseline. A failed clone leaves a .git directory behind, so require a real
+// HEAD before reusing the directory.
+if (!successful('git', ['-C', vcpkgRoot, 'rev-parse', '--verify', '--quiet', 'HEAD^{commit}'])) {
+  rmSync(vcpkgRoot, { recursive: true, force: true });
+  mkdirSync(vcpkgRoot, { recursive: true });
+  run('git', ['-C', vcpkgRoot, 'init']);
+  run('git', ['-C', vcpkgRoot, 'remote', 'add', 'origin', 'https://github.com/microsoft/vcpkg.git']);
 }
+run('git', ['-C', vcpkgRoot, 'fetch', '--depth', '1', 'origin', BASELINE]);
 run('git', ['-C', vcpkgRoot, 'checkout', '--detach', BASELINE]);
 const actualBaseline = output('git', ['-C', vcpkgRoot, 'rev-parse', 'HEAD']);
 if (actualBaseline !== BASELINE) {

@@ -3,7 +3,7 @@ param(
   [ValidateSet('Debug', 'Release')][string]$Configuration = 'Release',
   [ValidateSet('x64')][string]$Platform = 'x64',
   [string]$WindowsKitVersion = '10.0.26100.0',
-  [string]$VisualStudioRoot = 'C:\Program Files\Microsoft Visual Studio\2022\Community',
+  [string]$VisualStudioRoot = '',
   [string]$SigningPfxPath = '',
   [string]$SigningPfxPasswordPath = '',
   [string]$SigningTimestampUrl = '',
@@ -11,6 +11,21 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ([string]::IsNullOrWhiteSpace($VisualStudioRoot)) {
+  $vswhereCandidates = @(
+    'C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe',
+    'C:\Program Files (x86)\Microsoft\Visual Studio\Installer\vswhere.exe'
+  )
+  $vswhere = $vswhereCandidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+  if (-not $vswhere) {
+    throw 'Visual Studio root was not supplied and vswhere.exe was not found.'
+  }
+  $VisualStudioRoot = (& $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Out-String).Trim()
+  if ([string]::IsNullOrWhiteSpace($VisualStudioRoot)) {
+    throw 'vswhere found no Visual Studio installation with the x64 MSVC toolchain.'
+  }
+}
 
 function Assert-File([string]$Path, [string]$Description) {
   if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -301,12 +316,40 @@ $signingCertificate = New-Object System.Security.Cryptography.X509Certificates.X
 $isDevelopmentTestSigner = $useDevelopmentSigningCredential -or
   $signingCertificate.Subject -eq 'CN=Omni Translate Development Driver Test Signing'
 foreach ($signedPath in @($stagedSys, $stagedCat)) {
-  $signature = Get-AuthenticodeSignature -LiteralPath $signedPath
-  if (-not $signature.SignerCertificate -or $signature.SignerCertificate.Thumbprint -ne $signingCertificate.Thumbprint) {
+  # Do not use Get-AuthenticodeSignature here: on minimal PowerShell installs it
+  # can fail to autoload Microsoft.PowerShell.Security after signing has succeeded.
+  # SignTool is already a required WDK dependency for this workflow and validates
+  # both the signed file and, for release signing, its RFC3161 timestamp.
+  $verifyArguments = @('verify', '/pa', '/v')
+  if (-not $useDevelopmentSigningCredential) {
+    $verifyArguments += '/tw'
+  }
+  # A deliberately untrusted development root makes SignTool write to stderr.
+  # Capture that expected diagnostic without allowing the script-wide Stop policy
+  # to terminate before its exit code and signer details can be checked below.
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {
+    $verifyOutput = (& $signtool @($verifyArguments + @($signedPath)) 2>&1 | Out-String)
+    $verifyExitCode = $LASTEXITCODE
+  }
+  finally {
+    $ErrorActionPreference = $previousErrorActionPreference
+  }
+  $expectedThumbprint = $signingCertificate.Thumbprint.ToUpperInvariant()
+  if ($verifyOutput -notmatch [regex]::Escape($expectedThumbprint)) {
     throw "Unexpected Authenticode signer for $signedPath"
   }
-  if (-not $useDevelopmentSigningCredential -and -not $signature.TimeStamperCertificate) {
-    throw "Release-injected signature is missing an RFC3161 timestamp for $signedPath"
+  if ($useDevelopmentSigningCredential) {
+    # The disposable development certificate is intentionally not installed as a
+    # trusted root. Its only expected verification failure is that trust-chain
+    # warning; the signer thumbprint above still binds the package to this run.
+    if ($verifyExitCode -ne 1) {
+      throw "Development signature verification failed for $signedPath. ExitCode=$verifyExitCode`n$verifyOutput"
+    }
+  }
+  elseif ($verifyExitCode -ne 0) {
+    throw "Release signature verification failed for $signedPath. ExitCode=$verifyExitCode`n$verifyOutput"
   }
 }
 

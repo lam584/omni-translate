@@ -341,10 +341,10 @@ foreach ($signedPath in @($stagedSys, $stagedCat)) {
     throw "Unexpected Authenticode signer for $signedPath"
   }
   if ($useDevelopmentSigningCredential) {
-    # The disposable development certificate is intentionally not installed as a
-    # trusted root. Its only expected verification failure is that trust-chain
-    # warning; the signer thumbprint above still binds the package to this run.
-    if ($verifyExitCode -ne 1) {
+    # The disposable development certificate may be untrusted before its first
+    # installation (exit 1) or trusted after it is installed locally (exit 0).
+    # The signer thumbprint above binds the package to this run in either case.
+    if ($verifyExitCode -notin @(0, 1)) {
       throw "Development signature verification failed for $signedPath. ExitCode=$verifyExitCode`n$verifyOutput"
     }
   }

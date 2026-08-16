@@ -2900,6 +2900,15 @@ test('strict production verifier rebuilds the staged eight-cell authority from t
         writeProcessExclusionRestartFixture(runDirectory);
       }
       writeDirectoryReport({ inputDir: runDirectory, outputDir: runDirectory, mode: 'live' });
+      // Bind the stored report to the fixture timeline. Reclassification uses
+      // the wall clock, so leaving generatedAt at Date.now() makes this test
+      // race its deliberately fixed receipt timestamp under parallel load.
+      const reportPath = path.join(runDirectory, 'report.json');
+      const storedFixtureReport = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+      storedFixtureReport.generatedAt = new Date(
+        baseMs + cell.waveIndex * 3_000 + 250,
+      ).toISOString();
+      fs.writeFileSync(reportPath, `${JSON.stringify(storedFixtureReport, null, 2)}\n`, 'utf8');
       const written = writeShardCellResult({
         plan,
         lease,

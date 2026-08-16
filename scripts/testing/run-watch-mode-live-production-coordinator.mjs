@@ -572,6 +572,41 @@ function runChildProcess(executable, args, {
 export const PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS = 5 * 60 * 1000;
 export const PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS = 5 * 60 * 1000;
 const REMOTE_POWERSHELL_COMPLETION_MARKER = '__OMNI_REMOTE_COMPLETE_V1__';
+const REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX = '__OMNI_REMOTE_OUTPUT_V1__';
+
+export function decodeRemotePowerShellFileOutput(result) {
+  const lines = String(result?.stdout ?? '').split(/\r?\n/);
+  const frames = lines.filter((line) => line.startsWith(REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX));
+  if (frames.length === 0) return result;
+  const unexpected = lines.filter((line) => (
+    line.trim()
+    && line !== REMOTE_POWERSHELL_COMPLETION_MARKER
+    && !line.startsWith(REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX)
+  ));
+  if (unexpected.length > 0) {
+    return {
+      ...result,
+      exitCode: 1,
+      stderr: [result?.stderr, 'remote PowerShell output contained data outside the framed envelope']
+        .filter(Boolean).join('\n'),
+    };
+  }
+  try {
+    const encoded = frames.map((line) => line.slice(REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX.length)).join('');
+    if (!/^[A-Za-z0-9+/]+={0,2}$/u.test(encoded) || encoded.length % 4 !== 0) {
+      throw new Error('base64 framing is malformed');
+    }
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    return { ...result, stdout: `${decoded}\n${REMOTE_POWERSHELL_COMPLETION_MARKER}\n` };
+  } catch (error) {
+    return {
+      ...result,
+      exitCode: 1,
+      stderr: [result?.stderr, `remote PowerShell output envelope is invalid: ${error.message}`]
+        .filter(Boolean).join('\n'),
+    };
+  }
+}
 
 export function remotePowerShellInvocation(body, payload) {
   const payloadBase64 = Buffer.from(JSON.stringify(payload), 'utf8').toString('base64');
@@ -614,8 +649,15 @@ export function remotePowerShellInvocation(body, payload) {
       '$omniRemoteOutput = @(',
       source,
       ')',
-      `$omniRemoteCombined = (@($omniRemoteOutput) -join [Environment]::NewLine) + [Environment]::NewLine + '${REMOTE_POWERSHELL_COMPLETION_MARKER}'`,
-      'Write-Output $omniRemoteCombined',
+      '$omniRemoteBytes = [Text.Encoding]::UTF8.GetBytes((@($omniRemoteOutput) -join [Environment]::NewLine))',
+      '$omniRemoteEncoded = [Convert]::ToBase64String($omniRemoteBytes)',
+      'for ($offset = 0; $offset -lt $omniRemoteEncoded.Length; $offset += 160) {',
+      '  $length = [Math]::Min(160, $omniRemoteEncoded.Length - $offset)',
+      `  [Console]::Out.WriteLine('${REMOTE_POWERSHELL_OUTPUT_FRAME_PREFIX}' + $omniRemoteEncoded.Substring($offset, $length))`,
+      '  [Console]::Out.Flush()',
+      '}',
+      `[Console]::Out.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
+      '[Console]::Out.Flush()',
     ].join('\n'),
     args: [
       'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
@@ -790,7 +832,7 @@ export function createSshProductionTransport({
         ensureSuccessful(uploadResult, `command upload to ${worker.workerId}`);
       }
       uploaded = true;
-      return await runProcess(config.sshExecutable, [
+      const remoteResult = await runProcess(config.sshExecutable, [
         ...sshBaseArgs(worker),
         `${worker.user}@${worker.host}`,
         'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
@@ -800,6 +842,7 @@ export function createSshProductionTransport({
         input: '',
         completionMarker: REMOTE_POWERSHELL_COMPLETION_MARKER,
       });
+      return decodeRemotePowerShellFileOutput(remoteResult);
     } finally {
       fs.rmSync(localScriptPath, { force: true });
       if (uploaded) {

@@ -22,6 +22,7 @@ import {
   PRODUCTION_WORKER_ZERO_PROVIDER_READINESS_BODY,
   parseProductionCoordinatorCliArgs,
   remotePowerShellInvocation,
+  decodeRemotePowerShellFileOutput,
   runRemoteJsonWithRetries,
   PRODUCTION_REMOTE_RUNTIME_VERIFICATION_TIMEOUT_MS,
   PRODUCTION_REMOTE_READINESS_FINALIZATION_TIMEOUT_MS,
@@ -496,9 +497,28 @@ test('remote PowerShell uses a compressed encoded command without SSH stdin', ()
   assert.match(invocation.fileScript, /__OMNI_REMOTE_COMPLETE_V1__/);
   assert.doesNotMatch(invocation.fileScript, /ScriptBlock|GZipStream/);
   assert.match(invocation.fileScript, /\$omniRemoteOutput = @\(/);
-  assert.match(invocation.fileScript, /\$omniRemoteCombined = \(@\(\$omniRemoteOutput\) -join \[Environment\]::NewLine\)/);
-  assert.match(invocation.fileScript, /Write-Output \$omniRemoteCombined/);
-  assert.doesNotMatch(invocation.fileScript, /Console\]::Out\.(?:Write|Flush)|try \{|exit [01]/);
+  assert.match(invocation.fileScript, /ToBase64String/);
+  assert.match(invocation.fileScript, /__OMNI_REMOTE_OUTPUT_V1__/);
+  assert.match(invocation.fileScript, /offset \+= 160/);
+  assert.match(invocation.fileScript, /Console\]::Out\.WriteLine/);
+  assert.doesNotMatch(invocation.fileScript, /try \{|exit [01]/);
+});
+
+test('remote PowerShell file output reconstructs framed payloads larger than 256 bytes', () => {
+  const payload = JSON.stringify({ entries: Array.from({ length: 12 }, (_, index) => ({
+    path: `target/release/runtime-${index}.exe`,
+    sha256: 'a'.repeat(64),
+  })) });
+  assert.ok(Buffer.byteLength(payload, 'utf8') > 256);
+  const encoded = Buffer.from(payload, 'utf8').toString('base64');
+  const frames = encoded.match(/.{1,160}/gu).map((frame) => `__OMNI_REMOTE_OUTPUT_V1__${frame}`);
+  const decoded = decodeRemotePowerShellFileOutput({
+    exitCode: 0,
+    stdout: `${frames.join('\r\n')}\r\n__OMNI_REMOTE_COMPLETE_V1__\r\n`,
+    stderr: '',
+  });
+  assert.equal(decoded.exitCode, 0);
+  assert.equal(decoded.stdout, `${payload}\n__OMNI_REMOTE_COMPLETE_V1__\n`);
 });
 
 test('preserved worker readiness is decoded as UTF-8 and returned as one compact JSON line', { skip: !isWindows }, () => {

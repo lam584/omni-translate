@@ -81,8 +81,10 @@ export async function runPreflight({ executionRoot }) {
   }
   const originalProtocol = process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL;
   const originalOffline = process.env.CARGO_NET_OFFLINE;
+  const originalGitPerl = process.env.OMNI_AEC3_USE_GIT_PERL;
   process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse';
   process.env.CARGO_NET_OFFLINE = 'true';
+  process.env.OMNI_AEC3_USE_GIT_PERL = 'true';
   try {
     runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
   } finally {
@@ -90,6 +92,8 @@ export async function runPreflight({ executionRoot }) {
     else process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = originalProtocol;
     if (originalOffline === undefined) delete process.env.CARGO_NET_OFFLINE;
     else process.env.CARGO_NET_OFFLINE = originalOffline;
+    if (originalGitPerl === undefined) delete process.env.OMNI_AEC3_USE_GIT_PERL;
+    else process.env.OMNI_AEC3_USE_GIT_PERL = originalGitPerl;
   }
   const driverInstall = runNpm('driver:install');
   checks.push(driverInstall);

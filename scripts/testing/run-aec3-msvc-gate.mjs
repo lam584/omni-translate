@@ -185,11 +185,25 @@ if (!assertPinnedVcpkgTool(vcpkgExecutable)) {
     throw new Error(`bootstrapped vcpkg tool does not match pinned SHA-256 ${VCPKG_TOOL_SHA256}`);
   }
 }
+const vcpkgInstallEnvironment = { ...process.env, VCPKG_DOWNLOADS: downloadsRoot };
+if (process.env.OMNI_AEC3_USE_GIT_PERL === 'true') {
+  const gitPerlDirectory = resolve(
+    process.env.OMNI_AEC3_GIT_PERL_DIRECTORY ?? 'C:\\Program Files\\Git\\usr\\bin',
+  );
+  const gitPerl = join(gitPerlDirectory, 'perl.exe');
+  if (!existsSync(gitPerl)) {
+    throw new Error(`OMNI_AEC3_USE_GIT_PERL requires ${gitPerl}`);
+  }
+  // Git for Windows includes a compatible Perl. Limit this PATH adjustment to
+  // vcpkg so clean VM smoke runs do not need to fetch Strawberry Perl solely
+  // to build the pinned AOM dependency.
+  vcpkgInstallEnvironment.PATH = `${gitPerlDirectory};${vcpkgInstallEnvironment.PATH ?? ''}`;
+}
 runWithRetries(vcpkgExecutable, [
   'install',
   `webrtc:${TRIPLET}`,
   `--x-install-root=${installedRoot}`,
-], { env: { ...process.env, VCPKG_DOWNLOADS: downloadsRoot } });
+], { env: vcpkgInstallEnvironment });
 
 function requireVcpkgTool(toolName, fileName) {
   const toolsRoot = join(downloadsRoot, 'tools');

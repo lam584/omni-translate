@@ -30,6 +30,7 @@ export const workerCapabilities = Object.freeze([
 ]);
 
 let runtimeAuthority = null;
+const VM3_CARGO_HOME = path.join(repoRoot, 'artifacts', 'testing', 'cargo-home');
 
 function runNpm(script, timeout = 900_000, temporaryRoot) {
   const environment = {
@@ -40,6 +41,7 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
     // Preflight has already fetched the lockfile closure. Keeping the smoke
     // offline prevents a transient registry stall from masking a local result.
     CARGO_NET_OFFLINE: 'true',
+    CARGO_HOME: VM3_CARGO_HOME,
   };
   if (temporaryRoot) {
     environment.TEMP = temporaryRoot;
@@ -71,6 +73,7 @@ export async function runPreflight({ executionRoot }) {
   const temporaryRoot = path.join(executionRoot, 'temporary');
   fs.mkdirSync(preflightRoot, { recursive: true });
   fs.mkdirSync(temporaryRoot, { recursive: true });
+  fs.mkdirSync(VM3_CARGO_HOME, { recursive: true });
   const checks = [];
   for (const script of [
     'test:watch-mode-report',
@@ -94,6 +97,7 @@ export async function runPreflight({ executionRoot }) {
   const originalTmp = process.env.TMP;
   const originalTmpDir = process.env.TMPDIR;
   const originalNpmCache = process.env.NPM_CONFIG_CACHE;
+  const originalCargoHome = process.env.CARGO_HOME;
   process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse';
   process.env.CARGO_NET_OFFLINE = 'true';
   process.env.OMNI_AEC3_USE_GIT_PERL = 'true';
@@ -101,6 +105,7 @@ export async function runPreflight({ executionRoot }) {
   process.env.TMP = temporaryRoot;
   process.env.TMPDIR = temporaryRoot;
   process.env.NPM_CONFIG_CACHE = path.join(temporaryRoot, 'npm-cache');
+  process.env.CARGO_HOME = VM3_CARGO_HOME;
   try {
     runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
   } finally {
@@ -118,6 +123,8 @@ export async function runPreflight({ executionRoot }) {
     else process.env.TMPDIR = originalTmpDir;
     if (originalNpmCache === undefined) delete process.env.NPM_CONFIG_CACHE;
     else process.env.NPM_CONFIG_CACHE = originalNpmCache;
+    if (originalCargoHome === undefined) delete process.env.CARGO_HOME;
+    else process.env.CARGO_HOME = originalCargoHome;
   }
   const driverInstall = runNpm('driver:install', 900_000, temporaryRoot);
   checks.push(driverInstall);

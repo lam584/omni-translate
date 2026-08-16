@@ -570,7 +570,7 @@ test('physical endpoint evidence accepts USB and Bluetooth signals and rejects a
   assert.equal(result.mismatchRejected, true);
 });
 
-test('live runner duration binder accepts the 180-second pairwise floor and rejects shorter or oversized runs', { skip: !isWindows }, () => {
+test('live runner duration binder accepts the 30-second smoke floor and rejects shorter or oversized runs', { skip: !isWindows }, () => {
   const probe = runPowerShell([
     '-Command',
     `$errors = $null; ` +
@@ -580,14 +580,14 @@ test('live runner duration binder accepts the 180-second pairwise floor and reje
       `$durationProbe = [scriptblock]::Create(` +
         `$ast.ParamBlock.Extent.Text + [Environment]::NewLine + '$WatchAutoStopAfterSeconds'` +
       `); ` +
-      `$accepted = & $durationProbe -WatchAutoStopAfterSeconds 180; ` +
+      `$accepted = & $durationProbe -WatchAutoStopAfterSeconds 30; ` +
       `$shortRejected = $false; ` +
-      `try { & $durationProbe -WatchAutoStopAfterSeconds 179 -ErrorAction Stop | Out-Null } ` +
+      `try { & $durationProbe -WatchAutoStopAfterSeconds 29 -ErrorAction Stop | Out-Null } ` +
       `catch { $shortRejected = $true }; ` +
       `$oversizedRejected = $false; ` +
       `try { & $durationProbe -WatchAutoStopAfterSeconds 7201 -ErrorAction Stop | Out-Null } ` +
       `catch { $oversizedRejected = $true }; ` +
-      `if ($accepted -eq 180 -and $shortRejected -and $oversizedRejected) { exit 0 }; ` +
+      `if ($accepted -eq 30 -and $shortRejected -and $oversizedRejected) { exit 0 }; ` +
       `Write-Error "duration validation mismatch: accepted=$accepted shortRejected=$shortRejected oversizedRejected=$oversizedRejected"; exit 1`,
   ]);
 

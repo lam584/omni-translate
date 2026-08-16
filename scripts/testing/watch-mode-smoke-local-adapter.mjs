@@ -1,0 +1,182 @@
+import { spawn, spawnSync } from 'node:child_process';
+import fs from 'node:fs';
+import path from 'node:path';
+
+import { repoRoot } from '../lib/testing-common.mjs';
+import { currentGitProvenance } from './git-provenance.mjs';
+import {
+  buildRunnerArgv,
+  lastRunDirectoryLine,
+  resolveWatchRealtimeProtocol,
+} from './run-watch-mode-live-matrix.mjs';
+import {
+  buildLocalIsolationRuntime,
+  runLocalIsolationCell,
+} from './watch-mode-local-isolation.mjs';
+import {
+  currentAuthorityImplementationHashes,
+  currentAuthorityRuntimeBinaryHashes,
+} from './watch-mode-evidence-authority.mjs';
+
+const PROFILE = Object.freeze({
+  profileId: 'vm3-hda-default',
+  deviceClass: 'default-speaker',
+  physicalPlaybackDeviceId: '{0.0.0.00000000}.{a609dee5-4ffd-49d6-b7f2-705cfa934363}',
+  expectedPhysicalPlaybackDeviceName: '扬声器 (High Definition Audio Device)',
+});
+
+export const workerCapabilities = Object.freeze([
+  Object.freeze({ workerId: 'vm3-local', deviceClasses: ['default-speaker'] }),
+]);
+
+let runtimeAuthority = null;
+
+function runNpm(script, timeout = 900_000) {
+  const result = spawnSync(process.env.ComSpec || 'cmd.exe', [
+    '/d', '/s', '/c', 'npm.cmd', 'run', script,
+  ], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    timeout,
+    windowsHide: true,
+  });
+  return {
+    command: `npm run ${script}`,
+    status: result.status ?? 1,
+    stdout: result.stdout ?? '',
+    stderr: result.stderr ?? '',
+    passed: !result.error && result.status === 0,
+    error: result.error?.message ?? null,
+  };
+}
+
+export async function runPreflight({ executionRoot }) {
+  const preflightRoot = path.join(executionRoot, 'preflight');
+  fs.mkdirSync(preflightRoot, { recursive: true });
+  const checks = [];
+  for (const script of [
+    'test:watch-mode-report',
+    'test:desktop-shell',
+    'test:integration:bridge-contract',
+    'test:contracts',
+    'driver:test',
+  ]) {
+    const result = runNpm(script);
+    checks.push(result);
+    fs.writeFileSync(path.join(preflightRoot, `${script.replaceAll(':', '-')}.log`), [
+      result.stdout, result.stderr,
+    ].join('\n'), 'utf8');
+    if (!result.passed) {
+      return { passed: false, providerCalls: 0, checks, failure: `${result.command} failed` };
+    }
+  }
+  runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
+  return {
+    passed: true,
+    providerCalls: 0,
+    checks,
+    runtimeBinaryCount: runtimeAuthority.length,
+    deviceProfile: PROFILE,
+  };
+}
+
+function runPowerShell(argv, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const child = spawn('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1'),
+      ...argv,
+    ], {
+      cwd: repoRoot,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stdout = '';
+    let stderr = '';
+    const timeout = setTimeout(() => {
+      spawnSync('taskkill.exe', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true });
+    }, timeoutMs);
+    child.stdout.on('data', (chunk) => { stdout += chunk; process.stderr.write(chunk); });
+    child.stderr.on('data', (chunk) => { stderr += chunk; process.stderr.write(chunk); });
+    child.once('error', reject);
+    child.once('exit', (exitCode) => {
+      clearTimeout(timeout);
+      resolve({ exitCode: exitCode ?? 1, stdout, stderr });
+    });
+  });
+}
+
+function classifyReport(report) {
+  const layer = String(report?.failureLayer ?? '').toLowerCase();
+  const reason = String(report?.failureReason ?? '');
+  if (layer === 'provider' && /(?:50002|\b5\d\d\b|429|rate.?limit|timeout)/i.test(reason)) return 'provider-external';
+  if (['driver', 'wasapi', 'physicaloutput', 'physicaloutputcontent'].includes(layer)) return 'device';
+  if (layer === 'ci') return 'ci';
+  return 'product';
+}
+
+export async function runCell({ cell, executionRoot }) {
+  if (!runtimeAuthority) throw new Error('VM3 smoke runtime was not built by preflight');
+  if (cell.providerMode === 'disabled') {
+    const outputRoot = path.join(executionRoot, 'local-cells');
+    fs.mkdirSync(outputRoot, { recursive: true });
+    const result = await runLocalIsolationCell({
+      cell,
+      profile: PROFILE,
+      outputRoot,
+      provenance: currentGitProvenance({ cwd: repoRoot }),
+      implementationHashes: currentAuthorityImplementationHashes({ workspaceRoot: repoRoot }),
+      runtimeBinaryHashes: runtimeAuthority,
+      workspaceRoot: repoRoot,
+    });
+    return { passed: result.verdict === 'passed', evidence: result.runDirectory, providerCalls: 0 };
+  }
+
+  const outputRoot = path.join(executionRoot, 'live-cells');
+  fs.mkdirSync(outputRoot, { recursive: true });
+  const argv = buildRunnerArgv({
+    model: cell.modelId,
+    watchRealtimeProtocol: resolveWatchRealtimeProtocol(cell.modelId),
+    subtitleTranslationMode: 'native',
+    feedbackMode: cell.feedbackLoopPrevention,
+    outputRoot,
+    warmupSeconds: 5,
+    playbackSeconds: 0,
+    postPlaybackWaitSeconds: 20,
+    sessionReadyTimeoutSeconds: 60,
+    watchAutoStopAfterSeconds: cell.durationSeconds,
+    physicalPlaybackDeviceId: PROFILE.physicalPlaybackDeviceId,
+    physicalPlaybackDeviceClass: PROFILE.deviceClass,
+    physicalPlaybackDeviceProfileId: PROFILE.profileId,
+    expectedPhysicalPlaybackDeviceName: PROFILE.expectedPhysicalPlaybackDeviceName,
+    skipDriverRepair: true,
+    useDefaultEndpointPlayback: true,
+    stopDesktopAfterPlayback: true,
+    cellId: cell.cellId,
+  });
+  const processResult = await runPowerShell(argv, 5 * 60 * 1_000);
+  const runDirectory = lastRunDirectoryLine(processResult.stdout, repoRoot);
+  const reportPath = runDirectory ? path.join(runDirectory, 'report.json') : null;
+  let report = null;
+  if (reportPath && fs.existsSync(reportPath)) {
+    report = JSON.parse(fs.readFileSync(reportPath, 'utf8').replace(/^\uFEFF/, ''));
+  }
+  const passed = processResult.exitCode === 0 && report?.verdict === 'passed';
+  return {
+    passed,
+    ...(passed ? {} : { classification: report ? classifyReport(report) : 'orchestration' }),
+    evidence: runDirectory ?? null,
+    reportPath,
+    exitCode: processResult.exitCode,
+    failureLayer: report?.failureLayer ?? null,
+    failureReason: report?.failureReason ?? (processResult.stderr.trim() || 'live runner failed without a report'),
+  };
+}
+
+export function currentVm3Profile() {
+  return structuredClone(PROFILE);
+}
+
+export function currentRuntimeAuthority() {
+  return runtimeAuthority ?? currentAuthorityRuntimeBinaryHashes({ workspaceRoot: repoRoot });
+}

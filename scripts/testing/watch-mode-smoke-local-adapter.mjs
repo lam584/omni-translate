@@ -189,20 +189,13 @@ function runPowerShell(argv, timeoutMs) {
   return new Promise((resolve, reject) => {
     const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-smoke-elevated-live-'));
     const outputLog = path.join(temporaryRoot, 'runner.log');
-    const quotePowerShell = (value) => `'${String(value).replaceAll("'", "''")}'`;
-    const childCommand = [
-      "$ErrorActionPreference = 'Stop'",
-      `& ${quotePowerShell(path.join(repoRoot, 'scripts', 'testing', 'run-watch-mode-live.ps1'))} ${argv.map(quotePowerShell).join(' ')} *>> ${quotePowerShell(outputLog)}`,
-      'exit $LASTEXITCODE',
-    ].join('; ');
-    const childEncodedCommand = Buffer.from(childCommand, 'utf16le').toString('base64');
-    const parentCommand = [
-      "$ErrorActionPreference = 'Stop'",
-      `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotePowerShell(repoRoot)} -ArgumentList @('-NoProfile', '-EncodedCommand', ${quotePowerShell(childEncodedCommand)})`,
-      'exit $process.ExitCode',
-    ].join('; ');
-    const parentEncodedCommand = Buffer.from(parentCommand, 'utf16le').toString('base64');
-    const child = spawn('powershell.exe', ['-NoProfile', '-EncodedCommand', parentEncodedCommand], {
+    const launcher = path.join(repoRoot, 'scripts', 'testing', 'run-elevated-watch-mode-live.ps1');
+    const child = spawn('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', launcher,
+      '-WorkspaceRoot', repoRoot,
+      '-OutputLog', outputLog,
+      ...argv,
+    ], {
       cwd: repoRoot,
       windowsHide: false,
       stdio: ['ignore', 'ignore', 'pipe'],

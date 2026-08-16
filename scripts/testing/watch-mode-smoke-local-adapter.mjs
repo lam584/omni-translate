@@ -31,7 +31,7 @@ export const workerCapabilities = Object.freeze([
 
 let runtimeAuthority = null;
 
-function runNpm(script, timeout = 900_000) {
+function runNpm(script, timeout = 900_000, temporaryRoot) {
   const environment = {
     ...process.env,
     // VM3 reaches the sparse index reliably while the legacy git index can
@@ -41,6 +41,11 @@ function runNpm(script, timeout = 900_000) {
     // offline prevents a transient registry stall from masking a local result.
     CARGO_NET_OFFLINE: 'true',
   };
+  if (temporaryRoot) {
+    environment.TEMP = temporaryRoot;
+    environment.TMP = temporaryRoot;
+    environment.TMPDIR = temporaryRoot;
+  }
   const result = spawnSync(process.env.ComSpec || 'cmd.exe', [
     '/d', '/s', '/c', 'npm.cmd', 'run', script,
   ], {
@@ -62,7 +67,9 @@ function runNpm(script, timeout = 900_000) {
 
 export async function runPreflight({ executionRoot }) {
   const preflightRoot = path.join(executionRoot, 'preflight');
+  const temporaryRoot = path.join(executionRoot, 'temporary');
   fs.mkdirSync(preflightRoot, { recursive: true });
+  fs.mkdirSync(temporaryRoot, { recursive: true });
   const checks = [];
   for (const script of [
     'test:watch-mode-report',
@@ -70,7 +77,7 @@ export async function runPreflight({ executionRoot }) {
     'test:integration:bridge-contract',
     'test:contracts',
   ]) {
-    const result = runNpm(script);
+    const result = runNpm(script, 900_000, temporaryRoot);
     checks.push(result);
     fs.writeFileSync(path.join(preflightRoot, `${script.replaceAll(':', '-')}.log`), [
       result.stdout, result.stderr,
@@ -82,9 +89,15 @@ export async function runPreflight({ executionRoot }) {
   const originalProtocol = process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL;
   const originalOffline = process.env.CARGO_NET_OFFLINE;
   const originalGitPerl = process.env.OMNI_AEC3_USE_GIT_PERL;
+  const originalTemp = process.env.TEMP;
+  const originalTmp = process.env.TMP;
+  const originalTmpDir = process.env.TMPDIR;
   process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse';
   process.env.CARGO_NET_OFFLINE = 'true';
   process.env.OMNI_AEC3_USE_GIT_PERL = 'true';
+  process.env.TEMP = temporaryRoot;
+  process.env.TMP = temporaryRoot;
+  process.env.TMPDIR = temporaryRoot;
   try {
     runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
   } finally {
@@ -94,8 +107,14 @@ export async function runPreflight({ executionRoot }) {
     else process.env.CARGO_NET_OFFLINE = originalOffline;
     if (originalGitPerl === undefined) delete process.env.OMNI_AEC3_USE_GIT_PERL;
     else process.env.OMNI_AEC3_USE_GIT_PERL = originalGitPerl;
+    if (originalTemp === undefined) delete process.env.TEMP;
+    else process.env.TEMP = originalTemp;
+    if (originalTmp === undefined) delete process.env.TMP;
+    else process.env.TMP = originalTmp;
+    if (originalTmpDir === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = originalTmpDir;
   }
-  const driverInstall = runNpm('driver:install');
+  const driverInstall = runNpm('driver:install', 900_000, temporaryRoot);
   checks.push(driverInstall);
   fs.writeFileSync(path.join(preflightRoot, 'driver-install.log'), [
     driverInstall.stdout, driverInstall.stderr,
@@ -103,7 +122,7 @@ export async function runPreflight({ executionRoot }) {
   if (!driverInstall.passed) {
     return { passed: false, providerCalls: 0, checks, failure: 'npm run driver:install failed' };
   }
-  const driverProbe = runNpm('driver:test');
+  const driverProbe = runNpm('driver:test', 900_000, temporaryRoot);
   checks.push(driverProbe);
   fs.writeFileSync(path.join(preflightRoot, 'driver-test.log'), [
     driverProbe.stdout, driverProbe.stderr,

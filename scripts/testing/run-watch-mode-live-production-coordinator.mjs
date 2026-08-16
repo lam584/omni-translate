@@ -610,6 +610,18 @@ export function remotePowerShellInvocation(body, payload) {
   }
   return {
     script: bootstrap,
+    fileScript: [
+      'try {',
+      source,
+      `  [Console]::Out.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}')`,
+      '  [Console]::Out.Flush()',
+      '  exit 0',
+      '} catch {',
+      '  [Console]::Error.WriteLine($_.Exception.Message)',
+      '  [Console]::Error.Flush()',
+      '  exit 1',
+      '}',
+    ].join('\n'),
     args: [
       'powershell.exe', '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
       '-EncodedCommand', encodedCommand,
@@ -765,7 +777,11 @@ export function createSshProductionTransport({
     const remoteScriptPath = path.win32.join(
       'C:\\Users', worker.user, 'AppData', 'Local', 'Temp', scriptName,
     );
-    fs.writeFileSync(localScriptPath, invocation.script, 'utf8');
+    // The remote path is already an uploaded .ps1 file, so execute the plain
+    // source directly. Re-running the compressed source through a dynamic
+    // ScriptBlock here can leave the nested Windows OpenSSH channel alive
+    // until the readiness timeout even after the command has produced JSON.
+    fs.writeFileSync(localScriptPath, invocation.fileScript, 'utf8');
     let uploaded = false;
     try {
       if (isCoordinatorLocalWorker(worker)) {

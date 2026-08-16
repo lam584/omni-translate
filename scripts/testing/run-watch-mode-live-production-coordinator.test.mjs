@@ -491,6 +491,13 @@ test('remote PowerShell uses a compressed encoded command without SSH stdin', ()
   assert.doesNotMatch(bootstrap, /(?:^|[;{}]\s*)exit\s+[01](?:\s*[;} ]|$)/u);
   assert.match(bootstrap, /\[Console\]::Out\.Flush\(\); \[Environment\]::Exit\(0\)/);
   assert.match(bootstrap, /\[Console\]::Error\.Flush\(\); \[Environment\]::Exit\(1\)/);
+  assert.match(invocation.fileScript, /\$payloadJson =/);
+  assert.match(invocation.fileScript, /ConvertTo-Json -Compress/);
+  assert.match(invocation.fileScript, /__OMNI_REMOTE_COMPLETE_V1__/);
+  assert.doesNotMatch(invocation.fileScript, /ScriptBlock|GZipStream/);
+  assert.match(invocation.fileScript, /Console\]::Out\.Flush\(\)/);
+  assert.match(invocation.fileScript, /exit 0/);
+  assert.match(invocation.fileScript, /exit 1/);
 });
 
 test('preserved worker readiness is decoded as UTF-8 and returned as one compact JSON line', { skip: !isWindows }, () => {
@@ -576,7 +583,7 @@ test('SSH transport finalizes manifests in the guest and cancellation is task/la
   assert.match(source, /cwd: worker\.workspaceRoot/);
   assert.match(source, /requireControlPlane = false/);
   assert.match(source, /requireControlPlane: true/);
-  assert.match(source, /fs\.writeFileSync\(localScriptPath, invocation\.script, 'utf8'\)/);
+  assert.match(source, /fs\.writeFileSync\(localScriptPath, invocation\.fileScript, 'utf8'\)/);
   assert.match(source, /'-File', remoteScriptPath/);
   assert.match(source, /Remove-Item -LiteralPath '\$\{remoteScriptPath\}' -Force/);
   assert.match(source, /fs\.copyFileSync\(localPath, remotePath\)/);

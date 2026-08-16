@@ -32,27 +32,36 @@ impl OmniEventProcessor {
     fn record_stream_enqueue_rejection<R: tauri::Runtime>(
         app: &AppHandle<R>,
         outcome: &OmniPlaybackEnqueueOutcome,
+        cue_id: &str,
+        created_at_ms: u64,
         detail: &str,
     ) {
         let report = &app.state::<AudioStateStore>().watch_session_report;
+        let observed_queue_age_ms = unix_ms().saturating_sub(created_at_ms);
         match outcome {
             OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
+                projected_start_delay_ms,
                 ..
             } => report.record_session_issue(
                 "output",
                 "native-playback-stream-stale-dropped",
                 "warning",
-                detail,
+                &format!(
+                    "{detail} cueId={cue_id} predictedStartMs={projected_start_delay_ms} observedQueueAgeMs={observed_queue_age_ms} reason=stream-start-expired"
+                ),
             ),
             OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::QueueFull,
+                projected_start_delay_ms,
                 ..
             } => report.record_session_issue(
                 "output",
                 "native-playback-stream-overflow",
                 "error",
-                detail,
+                &format!(
+                    "{detail} cueId={cue_id} predictedStartMs={projected_start_delay_ms} observedQueueAgeMs={observed_queue_age_ms} reason=queue-full"
+                ),
             ),
             OmniPlaybackEnqueueOutcome::Stopped => report.record_session_issue(
                 "output",
@@ -224,8 +233,12 @@ impl OmniEventProcessor {
                             } else {
                                 let created_at_ms = *pending_audio_stream_created_at_ms
                                     .get_or_insert_with(unix_ms);
-                                if pending_audio_buffer.len() >= Self::BRIDGE_STREAM_BATCH_SAMPLES {
-                                    let raw = std::mem::take(&mut pending_audio_buffer);
+                                while pending_audio_buffer.len() >= Self::BRIDGE_STREAM_BATCH_SAMPLES
+                                    && !pending_audio_stream_aborted
+                                {
+                                    let tail = pending_audio_buffer
+                                        .split_off(Self::BRIDGE_STREAM_BATCH_SAMPLES);
+                                    let raw = std::mem::replace(&mut pending_audio_buffer, tail);
                                     let stream_state = if pending_audio_stream_cue_id.is_none() {
                                         omni_bridge_protocol::TranslationStreamState::Start
                                     } else {
@@ -261,6 +274,8 @@ impl OmniEventProcessor {
                                         Self::record_stream_enqueue_rejection(
                                             app,
                                             &enqueue,
+                                            cue_id,
+                                            created_at_ms,
                                             "Native audio stream could not enter the bounded realtime playback scheduler.",
                                         );
                                     }
@@ -359,6 +374,8 @@ impl OmniEventProcessor {
                     Self::record_stream_enqueue_rejection(
                         app,
                         &result,
+                        &stream_cue_id,
+                        created_at_ms,
                         "Native audio stream tail could not enter the bounded realtime playback scheduler.",
                     );
                 } else {
@@ -388,6 +405,8 @@ impl OmniEventProcessor {
                     Self::record_stream_enqueue_rejection(
                         app,
                         &result,
+                        cue_id.unwrap_or("unknown-native-cue"),
+                        created_at_ms,
                         "Native audio stream end could not enter the bounded realtime playback scheduler.",
                     );
                 }
@@ -900,12 +919,19 @@ mod audio_done_tests {
                 dropped: Vec::new(),
                 projected_start_delay_ms: 5_001,
             },
+            "cue-current",
+            unix_ms().saturating_sub(250),
             "new cue is outside the realtime playback budget",
         );
 
         let report = store.watch_session_report.snapshot().expect("watch report");
         assert!(report.issues.iter().any(|issue| {
-            issue.code == "native-playback-stream-stale-dropped" && issue.severity == "warning"
+            issue.code == "native-playback-stream-stale-dropped"
+                && issue.severity == "warning"
+                && issue.message.contains("cueId=cue-current")
+                && issue.message.contains("predictedStartMs=5001")
+                && issue.message.contains("observedQueueAgeMs=")
+                && issue.message.contains("reason=stream-start-expired")
         }));
         assert!(!report
             .issues
@@ -963,6 +989,48 @@ mod audio_done_tests {
         );
         assert!(state.pending_audio_buffer.is_empty());
         assert_eq!(queue.pending_cue_ids(), ["cue-long", "cue-long", "cue-long"]);
+    }
+
+    #[test]
+    fn oversized_provider_delta_is_split_into_exact_one_second_stream_batches() {
+        let app = app();
+        let handle = app.handle().clone();
+        let store = handle.state::<AudioStateStore>();
+        store.register_omni_speech_config(OmniSpeechConfig::from_config(&json!({
+            "speech": { "enabled": true, "provider": "omni-native" },
+            "devices": {
+                "outputSpeechEnabled": true,
+                "feedbackLoopPrevention": "process-exclusion"
+            }
+        })));
+        let queue = OmniPlaybackQueue::new(8);
+        let samples = vec![7i16; OmniEventProcessor::BRIDGE_STREAM_BATCH_SAMPLES * 5 / 2];
+        let state = OmniEventProcessor::process_audio_delta(
+            OmniAudioOutputState {
+                pending_audio_delta_count: 0,
+                pending_audio_delta_base64_bytes: 0,
+                pending_audio_response_id: None,
+                pending_audio_buffer: Vec::new(),
+                pending_audio_stream_cue_id: None,
+                pending_audio_stream_chunk_index: 0,
+                pending_audio_stream_created_at_ms: None,
+                pending_audio_stream_aborted: false,
+            },
+            &handle,
+            &json!({
+                "delta": base64_encode_i16(&samples),
+                "response_id": "response-oversized"
+            }),
+            "inbound",
+            Some("cue-oversized"),
+            &queue,
+        );
+        assert_eq!(queue.pending_cue_ids(), ["cue-oversized", "cue-oversized"]);
+        assert_eq!(
+            state.pending_audio_buffer.len(),
+            OmniEventProcessor::BRIDGE_STREAM_BATCH_SAMPLES / 2,
+        );
+        assert_eq!(state.pending_audio_stream_chunk_index, 2);
     }
 
     #[test]

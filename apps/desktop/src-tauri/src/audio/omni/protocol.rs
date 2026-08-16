@@ -2141,15 +2141,16 @@ impl OmniPlaybackQueue {
                 projected_start_delay_ms,
             };
         }
-        let requires_realtime_start = matches!(
-            &command,
-            OmniPlaybackCommand::Play { .. }
-                | OmniPlaybackCommand::Stream {
-                    stream_state: omni_bridge_protocol::TranslationStreamState::Start,
-                    ..
-                }
-        );
-        if requires_realtime_start && omni_playback_queue_age_expired(projected_start_delay) {
+        let realtime_start_age = match &command {
+            OmniPlaybackCommand::Play { .. } => Some(projected_start_delay),
+            OmniPlaybackCommand::Stream {
+                created_at_ms,
+                stream_state: omni_bridge_protocol::TranslationStreamState::Start,
+                ..
+            } => Some(Duration::from_millis(unix_ms().saturating_sub(*created_at_ms))),
+            _ => None,
+        };
+        if realtime_start_age.is_some_and(omni_playback_queue_age_expired) {
             return OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
                 dropped,
@@ -3560,7 +3561,7 @@ mod omni_playback_tests {
     }
 
     #[test]
-    fn a_new_stream_start_still_obeys_the_five_second_start_budget() {
+    fn a_current_stream_start_is_not_mistaken_for_stale_due_to_prior_playback() {
         let queue = OmniPlaybackQueue::new(260);
         for index in 0..251 {
             assert!(matches!(
@@ -3571,6 +3572,20 @@ mod omni_playback_tests {
         }
         assert!(matches!(
             queue.enqueue(queued_stream("next", 0, Duration::from_millis(20))),
+            OmniPlaybackEnqueueOutcome::Queued
+        ));
+    }
+
+    #[test]
+    fn an_old_stream_start_still_obeys_the_five_second_start_budget() {
+        let queue = OmniPlaybackQueue::new(8);
+        let mut command = queued_stream("old", 0, Duration::from_millis(20));
+        let OmniPlaybackCommand::Stream { created_at_ms, .. } = &mut command else {
+            unreachable!("stream helper")
+        };
+        *created_at_ms = unix_ms().saturating_sub(6_000);
+        assert!(matches!(
+            queue.enqueue(command),
             OmniPlaybackEnqueueOutcome::Overflow {
                 reason: OmniPlaybackOverflowReason::RealtimeBudget,
                 ..

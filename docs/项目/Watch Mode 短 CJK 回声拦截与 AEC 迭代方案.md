@@ -454,6 +454,8 @@ npm run test:watch-mode-report
 
 译音声学校验过去还存在诊断遮蔽：任一尾部 cue 缺少 `completed` 会使整张 playback lifecycle map 失效，前面所有完整 cue 均显示为零匹配。当前校验仍因该尾部 cue 严格失败，但会继续计算并报告其他生命周期完整 cue 的逐项相关性，避免把“一个终态缺失”误诊成“整段物理译音不存在”。
 
+后续绑定 `c7c2503` 的 Plus 第一波又区分出两个独立故障。virtual-driver/USB 格收到 Provider 明确的 `<50002> InternalError.Algo.ModelServingError` 后由远端关闭 websocket；严格 authority 正确拒绝重连并以 `reconnect-forbidden-socket-close` 收口，这类外部失败不能通过自动重试、拼接旧 lease 或伪造连续输入掩盖。process-exclusion 格则在前一个长译音仍播放时，把刚生成的新 stream `Start` 按“预计等候前序播放的时长”误判为 stale，并且旧 delta 批处理会把超过一秒的整个缓冲一次取走。当前实现把 stream 起点的实时年龄定义为该 stream 自身从首个 audio delta 到入队的年龄；前序当前流不会把新流伪装成旧流，真正超过五秒才入队的旧 stream 仍拒绝。独立 `Play` 继续使用预计开始时间保护，队列容量保护不变；每个 stream 命令严格拆成最多一秒，拒绝诊断必须包含 `cueId`、`predictedStartMs`、`observedQueueAgeMs` 和原因。
+
 后续诊断优先查看：
 
 1. `provider-input-budget-ledger.json` 的 `finalized`、`terminalReason`、`totalSamples`，并与 Rust send-boundary/model trace 输入样本数对照；180 秒 wall clock 不能替代实际发送样本证据。

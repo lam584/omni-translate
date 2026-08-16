@@ -597,7 +597,12 @@ export function remotePowerShellInvocation(body, payload) {
     '$gzip = [IO.Compression.GZipStream]::new($input, [IO.Compression.CompressionMode]::Decompress)',
     '$reader = [IO.StreamReader]::new($gzip, [Text.UTF8Encoding]::new($false))',
     'try { $source = $reader.ReadToEnd() } finally { $reader.Dispose(); $gzip.Dispose(); $input.Dispose() }',
-    `try { & ([ScriptBlock]::Create($source)); Write-Output '${REMOTE_POWERSHELL_COMPLETION_MARKER}'; exit 0 } catch { [Console]::Error.WriteLine($_.Exception.Message); exit 1 }`,
+    // A dynamically invoked ScriptBlock leaves the nested Windows OpenSSH
+    // channel alive for roughly 30 seconds even after ordinary `return` or
+    // PowerShell `exit`. Flush an unambiguous raw marker/error, then terminate
+    // the one-shot bootstrap process at the CLR boundary. The caller already
+    // treats the marker as completion and still performs remote-file cleanup.
+    `try { & ([ScriptBlock]::Create($source)); [Console]::Out.WriteLine('${REMOTE_POWERSHELL_COMPLETION_MARKER}'); [Console]::Out.Flush(); [Environment]::Exit(0) } catch { [Console]::Error.WriteLine($_.Exception.Message); [Console]::Error.Flush(); [Environment]::Exit(1) }`,
   ].join('; ');
   const encodedCommand = Buffer.from(bootstrap, 'utf16le').toString('base64');
   if (encodedCommand.length >= 32_000) {

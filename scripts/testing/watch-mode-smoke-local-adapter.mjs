@@ -37,6 +37,9 @@ function runNpm(script, timeout = 900_000) {
     // VM3 reaches the sparse index reliably while the legacy git index can
     // remain stalled for several minutes before Cargo reports a timeout.
     CARGO_REGISTRIES_CRATES_IO_PROTOCOL: 'sparse',
+    // Preflight has already fetched the lockfile closure. Keeping the smoke
+    // offline prevents a transient registry stall from masking a local result.
+    CARGO_NET_OFFLINE: 'true',
   };
   const result = spawnSync(process.env.ComSpec || 'cmd.exe', [
     '/d', '/s', '/c', 'npm.cmd', 'run', script,
@@ -78,12 +81,16 @@ export async function runPreflight({ executionRoot }) {
     }
   }
   const originalProtocol = process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL;
+  const originalOffline = process.env.CARGO_NET_OFFLINE;
   process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse';
+  process.env.CARGO_NET_OFFLINE = 'true';
   try {
     runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
   } finally {
     if (originalProtocol === undefined) delete process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL;
     else process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = originalProtocol;
+    if (originalOffline === undefined) delete process.env.CARGO_NET_OFFLINE;
+    else process.env.CARGO_NET_OFFLINE = originalOffline;
   }
   return {
     passed: true,

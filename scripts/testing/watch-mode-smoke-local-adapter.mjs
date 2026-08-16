@@ -57,14 +57,28 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
   const requiresElevation = process.platform === 'win32'
     && (script === 'driver:install' || script === 'driver:test');
   if (requiresElevation) {
-    const quotedWorkspace = `'${repoRoot.replaceAll("'", "''")}'`;
-    const quotedScript = `'${script.replaceAll("'", "''")}'`;
+    const driverScript = script === 'driver:install'
+      ? path.join(repoRoot, 'scripts', 'installer', 'install-development-driver.ps1')
+      : path.join(repoRoot, 'scripts', 'installer', 'test-development-driver.ps1');
+    const driverArguments = script === 'driver:install'
+      ? [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', driverScript,
+        '-WorkspaceRoot', repoRoot,
+        '-RuntimeRoot', path.join(repoRoot, 'artifacts', 'diagnostics', 'logs'),
+        '-InstallChannel', 'development',
+        '-DriverVersion', '0.10.0-dev',
+        '-BridgeVersion', '0.1.0',
+        '-TargetDeviceId', 'virtual-mic-default',
+      ]
+      : ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', driverScript];
+    const quotePowerShell = (value) => `'${String(value).replaceAll("'", "''")}'`;
     const command = [
       "$ErrorActionPreference = 'Stop'",
-      `$process = Start-Process -FilePath $env:ComSpec -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotedWorkspace} -ArgumentList @('/d', '/s', '/c', 'npm.cmd', 'run', ${quotedScript})`,
+      `$process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -PassThru -Wait -WindowStyle Hidden -WorkingDirectory ${quotePowerShell(repoRoot)} -ArgumentList @(${driverArguments.map(quotePowerShell).join(', ')})`,
       'exit $process.ExitCode',
     ].join('; ');
-    const result = spawnSync('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command], {
+    const encodedCommand = Buffer.from(command, 'utf16le').toString('base64');
+    const result = spawnSync('powershell.exe', ['-NoProfile', '-EncodedCommand', encodedCommand], {
       cwd: repoRoot,
       env: environment,
       encoding: 'utf8',

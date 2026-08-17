@@ -48,6 +48,10 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
     // limit without weakening any of the compiled checks.
     CARGO_BUILD_JOBS: '1',
     CARGO_INCREMENTAL: '0',
+    // The desktop-shell test links a very large Windows binary. Debug symbols
+    // alone exceed VM3's available commit budget even with one Cargo job; the
+    // smoke still compiles and executes the identical test code without them.
+    CARGO_PROFILE_TEST_DEBUG: '0',
   };
   if (temporaryRoot) {
     environment.TEMP = temporaryRoot;
@@ -129,6 +133,7 @@ export async function runPreflight({ executionRoot }) {
   const originalCargoHome = process.env.CARGO_HOME;
   const originalCargoJobs = process.env.CARGO_BUILD_JOBS;
   const originalCargoIncremental = process.env.CARGO_INCREMENTAL;
+  const originalCargoProfileTestDebug = process.env.CARGO_PROFILE_TEST_DEBUG;
   process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = 'sparse';
   process.env.CARGO_NET_OFFLINE = 'true';
   process.env.TEMP = temporaryRoot;
@@ -138,6 +143,7 @@ export async function runPreflight({ executionRoot }) {
   process.env.CARGO_HOME = VM3_CARGO_HOME;
   process.env.CARGO_BUILD_JOBS = '1';
   process.env.CARGO_INCREMENTAL = '0';
+  process.env.CARGO_PROFILE_TEST_DEBUG = '0';
   try {
     runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
   } finally {
@@ -159,6 +165,8 @@ export async function runPreflight({ executionRoot }) {
     else process.env.CARGO_BUILD_JOBS = originalCargoJobs;
     if (originalCargoIncremental === undefined) delete process.env.CARGO_INCREMENTAL;
     else process.env.CARGO_INCREMENTAL = originalCargoIncremental;
+    if (originalCargoProfileTestDebug === undefined) delete process.env.CARGO_PROFILE_TEST_DEBUG;
+    else process.env.CARGO_PROFILE_TEST_DEBUG = originalCargoProfileTestDebug;
   }
   const driverInstall = runNpm('driver:install', 900_000, temporaryRoot);
   checks.push(driverInstall);

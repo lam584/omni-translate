@@ -2887,6 +2887,11 @@ function Complete-PhysicalOutputContentRecorder {
   $exited = $Recorder.process.WaitForExit($timeoutMs)
   if (-not $exited) {
     Stop-Process -Id $Recorder.pid -Force -ErrorAction SilentlyContinue
+    # A successful Stop-Process request is asynchronous.  Do not allow the
+    # next serialized matrix cell to start while its physical-output recorder
+    # may still retain the endpoint; that would contaminate the single-device
+    # evidence window.
+    $Recorder.process.WaitForExit(5000) | Out-Null
   }
   $text = if (Test-Path -LiteralPath $Recorder.stdout -PathType Leaf) {
     Get-Content -LiteralPath $Recorder.stdout -Raw -ErrorAction SilentlyContinue

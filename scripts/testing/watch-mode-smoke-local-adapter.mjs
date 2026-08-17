@@ -216,7 +216,7 @@ function runPowerShell(argv, timeoutMs) {
     child.once('error', reject);
     child.once('exit', (exitCode) => {
       clearTimeout(timeout);
-      const stdout = fs.existsSync(outputLog) ? fs.readFileSync(outputLog, 'utf8') : '';
+      const stdout = fs.existsSync(outputLog) ? readPowerShellOutputLog(outputLog) : '';
       try {
         fs.rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
       } catch {
@@ -227,6 +227,17 @@ function runPowerShell(argv, timeoutMs) {
       resolve({ exitCode: exitCode ?? 1, stdout, stderr });
     });
   });
+}
+
+function readPowerShellOutputLog(outputLog) {
+  const content = fs.readFileSync(outputLog);
+  // Out-File in the elevated PowerShell wrapper can emit UTF-16LE on Windows.
+  // Decode it before handing lines to lastRunDirectoryLine; UTF-8 decoding
+  // leaves embedded NULs and hides the authoritative run directory.
+  if (content.length >= 2 && content[0] === 0xff && content[1] === 0xfe) {
+    return content.subarray(2).toString('utf16le');
+  }
+  return content.toString('utf8').replace(/^\uFEFF/, '');
 }
 
 function classifyReport(report) {

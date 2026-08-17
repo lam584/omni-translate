@@ -2751,8 +2751,19 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
             let _ = translated_pcm_authority
                 .abort_stream(&cue_id, "bridge-translation-write-failed");
             playback_queue.abort_stream(&cue_id, chunk_index, created_at_ms);
+            let route_is_transitioning = bridge_route_is_transitioning(
+                current_config.bridge_capture_mode,
+                &bridge_snapshot,
+            );
             audio_state.watch_session_report.record_session_issue(
-                "output", "bridge-translation-write-failed", "error", &error,
+                "output",
+                if route_is_transitioning {
+                    "native-playback-stream-route-transition"
+                } else {
+                    "bridge-translation-write-failed"
+                },
+                if route_is_transitioning { "warning" } else { "error" },
+                &error,
             );
             false
         }

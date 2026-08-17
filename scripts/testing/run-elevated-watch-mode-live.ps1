@@ -30,7 +30,9 @@ $RunnerArguments = @(
 )
 "elevated=$([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))" |
   Set-Content -LiteralPath $OutputLog -Encoding UTF8
-& $runner @RunnerArguments *>> $OutputLog
+# The runner terminates with `exit`; execute it in a child PowerShell so that
+# its exit cannot bypass this wrapper's recorder cleanup below.
+& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $runner @RunnerArguments *>> $OutputLog
 $runnerExitCode = $LASTEXITCODE
 
 # The Node smoke coordinator may start the next single-device cell as soon as

@@ -2468,6 +2468,7 @@ function Invoke-BridgeSourceProbe {
   if (-not (Test-Path -LiteralPath $bridgeExe -PathType Leaf)) {
     throw "Bridge executable not found: $bridgeExe"
   }
+  New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
   $probeRuntimeRoot = Join-Path $OutputDirectory "bridge-source-probe-runtime"
   New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
   $installStateJson = [ordered]@{

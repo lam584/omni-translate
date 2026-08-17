@@ -2483,7 +2483,10 @@ function Invoke-BridgeSourceProbe {
     throw "Bridge executable not found: $bridgeExe"
   }
   New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
-  $probeRuntimeRoot = Join-Path $OutputDirectory "bridge-source-probe-runtime"
+  # Keep the bridge's mutable runtime state out of the deeply nested evidence
+  # tree.  Windows file APIs used by the bridge can otherwise fail while
+  # creating nested state files under a long smoke-cell path.
+  $probeRuntimeRoot = Join-Path ([System.IO.Path]::GetTempPath()) "omni-bridge-source-probe-$PID"
   New-Item -ItemType Directory -Force -Path $probeRuntimeRoot | Out-Null
   $installStateJson = [ordered]@{
     protocolVersion = '2026-08-13-audio-routing-v7'
@@ -2679,7 +2682,8 @@ function Invoke-VirtualDriverMediaSourcePreflight {
     }
   }
 
-  $preflightRoot = Join-Path $OutputDirectory "virtual-driver-media-source-preflight-runtime"
+  # See Invoke-BridgeSourceProbe: runtime state needs a short Windows path.
+  $preflightRoot = Join-Path ([System.IO.Path]::GetTempPath()) "omni-virtual-driver-preflight-$PID"
   New-Item -ItemType Directory -Force -Path $preflightRoot | Out-Null
   $installStateJson = [ordered]@{
     protocolVersion = '2026-08-13-audio-routing-v7'

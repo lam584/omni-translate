@@ -22,7 +22,7 @@ import {
 
 const workers = [{ workerId: 'vm3', deviceClasses: ['default-speaker'] }];
 
-test('smoke plan locks the 6 + 3 + 8 coverage, durations, and 30 minute budget', () => {
+test('smoke plan locks the 6 + 3 + 8 coverage, full-media durations, and one-hour budget', () => {
   const plan = createWatchModeSmokePlan({ executionId: 'smoke-plan-test' });
   assert.equal(smokePlanFailure(plan), null);
   assert.equal(SMOKE_LOCAL_CELLS.length, 6);
@@ -33,7 +33,7 @@ test('smoke plan locks the 6 + 3 + 8 coverage, durations, and 30 minute budget',
   assert.equal(plan.artifactKind, WATCH_MODE_SMOKE_ARTIFACT_KIND);
   assert.equal(plan.smokeOnly, true);
   assert.deepEqual(new Set(SMOKE_LOCAL_CELLS.map((cell) => cell.durationSeconds)), new Set([30]));
-  assert.deepEqual(new Set([...SMOKE_PLUS_CELLS, ...SMOKE_RELEASE_CELLS].map((cell) => cell.durationSeconds)), new Set([45]));
+  assert.deepEqual(new Set([...SMOKE_PLUS_CELLS, ...SMOKE_RELEASE_CELLS].map((cell) => cell.durationSeconds)), new Set([180]));
   assert.deepEqual(new Set(plan.cells.map((cell) => cell.deviceClass)), new Set(['default-speaker']));
   assert.deepEqual(new Set(plan.cells.map((cell) => cell.sourceDeviceClass)), new Set(['default-speaker', 'usb']));
 });

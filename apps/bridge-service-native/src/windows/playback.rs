@@ -211,6 +211,10 @@ fn run_playback_worker(
     let mut output: Option<PlaybackOutput> = None;
     let mut physical_stream: Option<ActivePhysicalTranslationStream> = None;
     let mut cancelled_physical_streams = std::collections::HashSet::new();
+    // Provider cue boundaries can overlap slightly. Buffer the next cue until
+    // the current one has drained, preserving stream order at the one physical
+    // playback sink without rejecting the new cue's valid start frame.
+    let mut pending_physical_streams = VecDeque::new();
     loop {
         apply_playback_control_commands(
             &playback_control_rx,
@@ -219,9 +223,23 @@ fn run_playback_worker(
             &translation_queue,
             &mut physical_stream,
             &mut cancelled_physical_streams,
+            &mut pending_physical_streams,
         );
         finish_completed_physical_stream(&mut output, &state, &mut physical_stream);
         finish_completed_translation(&output, &state, &translation_queue);
+
+        if physical_stream.is_none() {
+            if let Some(command) = pending_physical_streams.pop_front() {
+                play_physical_translation_stream(
+                    command,
+                    &mut output,
+                    &state,
+                    &mut physical_stream,
+                    &mut cancelled_physical_streams,
+                );
+                continue;
+            }
+        }
 
         let disconnected = match playback_rx.recv_timeout(Duration::from_millis(
             PLAYBACK_WORKER_POLL_INTERVAL_MS,
@@ -241,13 +259,21 @@ fn run_playback_worker(
                 false
             }
             Ok(PlaybackCommand::TranslationStream(command)) => {
-                play_physical_translation_stream(
-                    command,
-                    &mut output,
-                    &state,
-                    &mut physical_stream,
-                    &mut cancelled_physical_streams,
-                );
+                let cue_id = command.job.cue_id.as_deref().unwrap_or_default();
+                if physical_stream
+                    .as_ref()
+                    .is_some_and(|active| active.cue_id != cue_id)
+                {
+                    pending_physical_streams.push_back(command);
+                } else {
+                    play_physical_translation_stream(
+                        command,
+                        &mut output,
+                        &state,
+                        &mut physical_stream,
+                        &mut cancelled_physical_streams,
+                    );
+                }
                 false
             }
             Ok(PlaybackCommand::TranslationQueued) | Err(mpsc::RecvTimeoutError::Timeout) => false,
@@ -263,6 +289,7 @@ fn run_playback_worker(
             &translation_queue,
             &mut physical_stream,
             &mut cancelled_physical_streams,
+            &mut pending_physical_streams,
         );
         if physical_stream.is_none() {
             start_next_translation(&mut output, &state, &translation_queue);
@@ -396,6 +423,7 @@ fn apply_playback_control_commands(
     translation_queue: &Arc<Mutex<TranslationPlaybackQueue>>,
     physical_stream: &mut Option<ActivePhysicalTranslationStream>,
     cancelled_physical_streams: &mut std::collections::HashSet<String>,
+    pending_physical_streams: &mut VecDeque<PhysicalTranslationStreamCommand>,
 ) {
     while let Ok(command) = playback_control_rx.try_recv() {
         let PlaybackControlCommand::StopAll(request) = command else {
@@ -408,6 +436,9 @@ fn apply_playback_control_commands(
                 }
                 *physical_stream = None;
             }
+            pending_physical_streams.retain(|pending| {
+                pending.job.cue_id.as_deref() != Some(cue_id.as_str())
+            });
             let mut current = state.lock().unwrap();
             cancelled_physical_streams.insert(cue_id.clone());
             current.physical_translation_stream_ledger.finish(&cue_id);
@@ -436,6 +467,7 @@ fn apply_playback_control_commands(
         }
         *physical_stream = None;
         cancelled_physical_streams.clear();
+        pending_physical_streams.clear();
         if request.recreate_output {
             *output = None;
         }

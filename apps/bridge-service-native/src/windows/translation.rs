@@ -231,8 +231,11 @@ impl PhysicalTranslationStreamLedger {
         }
         match state {
             TranslationStreamState::Start => {
-                if chunk_index != 0 || !self.active.is_empty() {
+                if chunk_index != 0 {
                     return Err("physical stream start must be the first chunk");
+                }
+                if self.active.contains_key(cue_id) {
+                    return Ok(PhysicalStreamAdmission::Duplicate);
                 }
                 self.active.insert(
                     cue_id.to_string(),
@@ -364,20 +367,24 @@ mod physical_stream_tests {
     }
 
     #[test]
-    fn physical_stream_rejects_a_second_cue_until_the_active_cue_ends() {
+    fn physical_stream_tracks_interleaved_cues_by_their_own_chunk_sequence() {
         let mut ledger = PhysicalTranslationStreamLedger::default();
         assert_eq!(
             ledger.admit("first", 0, TranslationStreamState::Start),
             Ok(PhysicalStreamAdmission::Start)
         );
-        assert!(ledger
-            .admit("second", 0, TranslationStreamState::Start)
-            .is_err());
-        assert_eq!(ledger.active_cue_ids(), ["first"]);
-        ledger.reset();
         assert_eq!(
             ledger.admit("second", 0, TranslationStreamState::Start),
             Ok(PhysicalStreamAdmission::Start)
+        );
+        assert_eq!(ledger.active_cue_ids().len(), 2);
+        assert_eq!(
+            ledger.admit("first", 1, TranslationStreamState::End),
+            Ok(PhysicalStreamAdmission::End)
+        );
+        assert_eq!(
+            ledger.admit("second", 1, TranslationStreamState::End),
+            Ok(PhysicalStreamAdmission::End)
         );
     }
 

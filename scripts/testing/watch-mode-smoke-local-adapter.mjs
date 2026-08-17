@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -35,9 +36,34 @@ const VM3_CARGO_HOME = path.join(repoRoot, 'artifacts', 'testing', 'cargo-home')
 const VM3_PREFLIGHT_CACHE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-smoke', 'preflight-cache');
 const VM3_PREFLIGHT_CACHE_FILE = path.join(VM3_PREFLIGHT_CACHE_ROOT, 'vm3-runtime-preflight.json');
 const VM3_PREFLIGHT_CACHE_SCHEMA_VERSION = 1;
+const VM3_SHORT_LIVE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-smoke-runtime');
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function shortLiveOutputRoot(executionRoot) {
+  const executionKey = crypto
+    .createHash('sha256')
+    .update(path.resolve(executionRoot))
+    .digest('hex')
+    .slice(0, 16);
+  return path.join(VM3_SHORT_LIVE_ROOT, executionKey);
+}
+
+function linkLogicalLiveArtifacts(executionRoot, shortOutputRoot) {
+  const logicalOutputRoot = path.join(executionRoot, 'live-cells');
+  if (fs.existsSync(logicalOutputRoot)) return logicalOutputRoot;
+  fs.mkdirSync(path.dirname(logicalOutputRoot), { recursive: true });
+  try {
+    fs.symlinkSync(shortOutputRoot, logicalOutputRoot, 'junction');
+  } catch (error) {
+    // The physical short path remains authoritative. A junction is a
+    // convenience for browsing from the execution manifest, and should not
+    // turn a live result into an orchestration failure on restricted hosts.
+    if (error?.code !== 'EEXIST') return shortOutputRoot;
+  }
+  return logicalOutputRoot;
 }
 
 function readReusablePreflight() {
@@ -358,8 +384,13 @@ export async function runCell({ cell, executionRoot }) {
     return { passed: result.verdict === 'passed', evidence: result.runDirectory, providerCalls: 0 };
   }
 
-  const outputRoot = path.join(executionRoot, 'live-cells');
+  // The smoke execution id and cell names together exceed MAX_PATH once the
+  // live runner appends authority artifact filenames. Give PowerShell a short
+  // physical root, then expose it beneath the normal execution tree through a
+  // junction for artifact browsing.
+  const outputRoot = shortLiveOutputRoot(executionRoot);
   fs.mkdirSync(outputRoot, { recursive: true });
+  const logicalOutputRoot = linkLogicalLiveArtifacts(executionRoot, outputRoot);
   // Elevated PowerShell output is not a dependable transport for the run path:
   // its encoding and the wrapper's final cleanup can both obscure the final
   // Write-Output line.  Snapshot the serial worker's output root instead, so
@@ -405,8 +436,12 @@ export async function runCell({ cell, executionRoot }) {
   return {
     passed,
     ...(passed ? {} : { classification: report ? classifyReport(report) : 'orchestration' }),
-    evidence: runDirectory ?? null,
-    reportPath,
+    evidence: runDirectory
+      ? path.join(logicalOutputRoot, path.basename(runDirectory))
+      : null,
+    reportPath: runDirectory
+      ? path.join(logicalOutputRoot, path.basename(runDirectory), 'report.json')
+      : null,
     exitCode: processResult.exitCode,
     failureLayer: report?.failureLayer ?? null,
     failureReason: report?.failureReason ?? (processResult.stderr.trim() || 'live runner failed without a report'),

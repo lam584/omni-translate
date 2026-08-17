@@ -1224,6 +1224,24 @@ try {
     PassThru = `$true
   }
   `$desktopProcess = Start-Process @desktopStartArguments
+  # On this VM the initial executable can hand off to the actual UI process
+  # and exit immediately.  Track that real shell, otherwise lease expiry only
+  # kills the short-lived launcher and a stale UI process can consume the next
+  # cell's autostart environment and report path.
+  `$desktopProcessName = [System.IO.Path]::GetFileNameWithoutExtension($executableLiteral)
+  `$desktopLaunchDeadline = [DateTime]::UtcNow.AddSeconds(5)
+  do {
+    `$desktopCandidates = @(
+      Get-Process -Name `$desktopProcessName -ErrorAction SilentlyContinue |
+        Where-Object { `$_.StartTime.ToUniversalTime() -ge `$desktopProcess.StartTime.ToUniversalTime().AddSeconds(-2) } |
+        Sort-Object StartTime -Descending
+    )
+    if (`$desktopCandidates.Count -gt 0) {
+      `$desktopProcess = `$desktopCandidates[0]
+      break
+    }
+    Start-Sleep -Milliseconds 100
+  } while ([DateTime]::UtcNow -lt `$desktopLaunchDeadline)
   Write-LaunchReceipt -Ok `$true
 
   while (-not `$desktopProcess.HasExited) {

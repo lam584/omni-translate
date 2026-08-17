@@ -6,10 +6,11 @@ use super::*;
 pub(super) const MANUAL_COMMIT_INTERVAL_SECS: u64 = 1;
 pub(super) const MANUAL_SILENCE_COMMIT_MIN_MS: u64 = 1_000;
 // DashScope rejects an input_audio_buffer.commit when the new buffer contains
-// only a short tail. A production Flash run rejected 4,800 samples (300 ms),
-// so require one second of actual 16 kHz PCM accepted by the current socket.
-// This does not delay the normal silence path: it already waits at least 1 s.
-pub(super) const MANUAL_COMMIT_MIN_AUDIO_SAMPLES: u64 = 16_000;
+// only a short tail. A production Flash run also rejected the exact one-second
+// boundary, so require one additional 20 ms PCM frame beyond one second of
+// audio accepted by the current socket. This keeps the normal silence path
+// effectively one second while avoiding the provider's boundary ambiguity.
+pub(super) const MANUAL_COMMIT_MIN_AUDIO_SAMPLES: u64 = 16_320;
 pub(super) const MANUAL_RESPONSE_TIMEOUT_SECS: u64 = 30;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -540,6 +541,11 @@ mod manual_response_gate_tests {
             manual_commit_reason(elapsed, false, 4_800),
             None,
             "the 300 ms tail rejected by Flash must never be committed",
+        );
+        assert_eq!(
+            manual_commit_reason(elapsed, false, 16_000),
+            None,
+            "the exact one-second boundary is rejected by Flash and must not be committed",
         );
         assert_eq!(
             manual_commit_reason(elapsed, false, MANUAL_COMMIT_MIN_AUDIO_SAMPLES),

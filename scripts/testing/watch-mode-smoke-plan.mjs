@@ -8,11 +8,16 @@ import {
 
 export const WATCH_MODE_SMOKE_SCHEMA_VERSION = 1;
 export const WATCH_MODE_SMOKE_ARTIFACT_KIND = 'watch-mode-non-authoritative-smoke';
-export const WATCH_MODE_SMOKE_PLAN_ID = 'watch-mode-smoke-v1-30-minute-full-coverage';
-export const WATCH_MODE_SMOKE_BUDGET_SECONDS = 30 * 60;
+// Live cells use the canonical 90-second media fixture and the runner's
+// strict content verifier.  A 45-second cutoff cannot reach the fixture's
+// final reference clauses, so it deterministically produces a false content
+// failure.  Keep the quick plan non-authoritative, but make every dispatched
+// live cell capable of producing valid evidence.
+export const WATCH_MODE_SMOKE_PLAN_ID = 'watch-mode-smoke-v2-full-media-coverage';
+export const WATCH_MODE_SMOKE_BUDGET_SECONDS = 60 * 60;
 export const WATCH_MODE_SMOKE_LOCAL_DURATION_SECONDS = 30;
-export const WATCH_MODE_SMOKE_PLUS_DURATION_SECONDS = 45;
-export const WATCH_MODE_SMOKE_RELEASE_DURATION_SECONDS = 45;
+export const WATCH_MODE_SMOKE_PLUS_DURATION_SECONDS = 180;
+export const WATCH_MODE_SMOKE_RELEASE_DURATION_SECONDS = 180;
 export const WATCH_MODE_SMOKE_PLUS_MODEL = 'qwen3.5-omni-plus-realtime';
 
 const clone = (value) => structuredClone(value);
@@ -69,9 +74,9 @@ export const WATCH_MODE_SMOKE_CELLS = Object.freeze([
 export const WATCH_MODE_SMOKE_PHASES = Object.freeze([
   Object.freeze({ name: 'zero-cost-regression-and-readiness', budgetSeconds: 5 * 60 }),
   Object.freeze({ name: 'local-isolation', budgetSeconds: 4 * 60 }),
-  Object.freeze({ name: 'incident-plus', budgetSeconds: 6 * 60 }),
-  Object.freeze({ name: 'release-matrix', budgetSeconds: 10 * 60 }),
-  Object.freeze({ name: 'report-collection', budgetSeconds: 5 * 60 }),
+  Object.freeze({ name: 'incident-plus', budgetSeconds: 15 * 60 }),
+  Object.freeze({ name: 'release-matrix', budgetSeconds: 30 * 60 }),
+  Object.freeze({ name: 'report-collection', budgetSeconds: 6 * 60 }),
 ]);
 
 export function smokePlanFailure(plan) {

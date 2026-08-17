@@ -254,11 +254,21 @@ function Get-WatchSessionReportDeadlineUtc {
 function Set-Utf8NoBomContent {
   param([string]$Path, [string]$Value)
   $parentDirectory = Split-Path -Parent $Path
-  if ($parentDirectory) {
-    New-Item -ItemType Directory -Force -Path $parentDirectory | Out-Null
-  }
   $encoding = [System.Text.UTF8Encoding]::new($false)
-  [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+  for ($attempt = 1; $attempt -le 3; $attempt++) {
+    if ($parentDirectory) {
+      [System.IO.Directory]::CreateDirectory($parentDirectory) | Out-Null
+    }
+    try {
+      [System.IO.File]::WriteAllText($Path, $Value, $encoding)
+      return
+    } catch [System.IO.DirectoryNotFoundException] {
+      if ($attempt -eq 3) {
+        throw
+      }
+      Start-Sleep -Milliseconds 50
+    }
+  }
 }
 
 function Test-IsAdministrator {

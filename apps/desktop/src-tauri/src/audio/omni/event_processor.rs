@@ -231,11 +231,16 @@ impl OmniEventProcessor {
                                     "A second native audio cue started before the active Bridge playback stream ended.",
                                 );
                             } else {
-                                let created_at_ms = *pending_audio_stream_created_at_ms
-                                    .get_or_insert_with(unix_ms);
                                 while pending_audio_buffer.len() >= Self::BRIDGE_STREAM_BATCH_SAMPLES
                                     && !pending_audio_stream_aborted
                                 {
+                                    // The realtime budget measures time after a stream is
+                                    // admitted to playback.  Audio may arrive in several
+                                    // provider deltas before it forms the first bridge batch;
+                                    // recording the timestamp before that point incorrectly
+                                    // treats provider generation time as queue age.
+                                    let created_at_ms = *pending_audio_stream_created_at_ms
+                                        .get_or_insert_with(unix_ms);
                                     let tail = pending_audio_buffer
                                         .split_off(Self::BRIDGE_STREAM_BATCH_SAMPLES);
                                     let raw = std::mem::replace(&mut pending_audio_buffer, tail);
@@ -976,6 +981,12 @@ mod audio_done_tests {
                 &queue,
             );
             assert!(!state.pending_audio_stream_aborted, "delta {index}");
+            if index == 0 {
+                assert!(
+                    state.pending_audio_stream_created_at_ms.is_none(),
+                    "a partial provider delta has not entered the playback queue"
+                );
+            }
         }
         assert_eq!(queue.pending_cue_ids(), ["cue-long"]);
         assert_eq!(state.pending_audio_buffer.len(), half_batch.len());

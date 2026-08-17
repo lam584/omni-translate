@@ -320,6 +320,27 @@ function classifyReport(report) {
   return 'product';
 }
 
+function createdReportDirectories(outputRoot, directoriesBeforeRun) {
+  return fs.readdirSync(outputRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !directoriesBeforeRun.has(entry.name))
+    .map((entry) => path.join(outputRoot, entry.name))
+    .filter((directory) => fs.existsSync(path.join(directory, 'report.json')))
+    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
+}
+
+async function waitForCreatedReportDirectory(outputRoot, directoriesBeforeRun, {
+  timeoutMs = 120_000,
+  pollIntervalMs = 500,
+} = {}) {
+  const deadline = Date.now() + timeoutMs;
+  do {
+    const reportDirectory = createdReportDirectories(outputRoot, directoriesBeforeRun)[0];
+    if (reportDirectory) return reportDirectory;
+    if (Date.now() >= deadline) return null;
+    await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+  } while (true);
+}
+
 export async function runCell({ cell, executionRoot }) {
   if (!runtimeAuthority) throw new Error('VM3 smoke runtime was not built by preflight');
   if (cell.providerMode === 'disabled') {
@@ -370,12 +391,11 @@ export async function runCell({ cell, executionRoot }) {
   });
   const processResult = await runPowerShell(argv, 5 * 60 * 1_000);
   const outputRunDirectory = lastRunDirectoryLine(processResult.stdout, repoRoot);
-  const createdRunDirectories = fs.readdirSync(outputRoot, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !directoriesBeforeRun.has(entry.name))
-    .map((entry) => path.join(outputRoot, entry.name))
-    .filter((directory) => fs.existsSync(path.join(directory, 'report.json')))
-    .sort((left, right) => fs.statSync(right).mtimeMs - fs.statSync(left).mtimeMs);
-  const runDirectory = createdRunDirectories[0] ?? outputRunDirectory ?? null;
+  // The elevated launcher can exit before the child-side report writer flushes
+  // its final JSON. This is completion waiting, not a cell retry: retain the
+  // same invocation's report if it appears during the bounded grace period.
+  const settledReportDirectory = await waitForCreatedReportDirectory(outputRoot, directoriesBeforeRun);
+  const runDirectory = settledReportDirectory ?? outputRunDirectory ?? null;
   const reportPath = runDirectory ? path.join(runDirectory, 'report.json') : null;
   let report = null;
   if (reportPath && fs.existsSync(reportPath)) {

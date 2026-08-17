@@ -1,6 +1,5 @@
 use super::connection_coordinator::{
     is_idle_preconnect_session, is_released_empty_audio_commit_error, provider_error_code, provider_error_message,
-    MANUAL_COMMIT_MIN_AUDIO_SAMPLES,
 };
 use super::session_errors::is_provider_idle_timeout_error;
 use super::*;
@@ -82,13 +81,78 @@ pub(super) struct OmniSocketPollResult<S: RealtimeSocket, R: tauri::Runtime = ta
 
 pub(super) struct OmniSocketEventProcessor;
 
+fn is_rejected_empty_manual_commit(
+    audio_mode: RealtimeAudioMode,
+    manual_response_pending: bool,
+    manual_response_requested: bool,
+    manual_response_item_id: Option<&str>,
+    sent_audio_since_commit: bool,
+    audio_samples_since_commit: u64,
+    provider_error_code: &str,
+    provider_error_message: &str,
+) -> bool {
+    audio_mode.uses_manual_commit()
+        // A successfully transmitted commit clears the local counters and
+        // arms this state while we wait for its ASR item. DashScope can reject
+        // that exact tail commit because it has already cleared the input
+        // buffer after response.done.
+        && manual_response_pending
+        && !manual_response_requested
+        && manual_response_item_id.is_none()
+        && !sent_audio_since_commit
+        && audio_samples_since_commit == 0
+        && is_released_empty_audio_commit_error(provider_error_code, provider_error_message)
+}
+
+#[cfg(test)]
+mod empty_commit_tests {
+    use super::*;
+
+    const EMPTY_COMMIT_MESSAGE: &str =
+        "Error committing input audio buffer: buffer too small, or have no audio.";
+
+    #[test]
+    fn releases_only_a_rejected_commit_that_is_waiting_for_its_asr_item() {
+        assert!(is_rejected_empty_manual_commit(
+            RealtimeAudioMode::Manual,
+            true,
+            false,
+            None,
+            false,
+            0,
+            "invalid_request_error",
+            EMPTY_COMMIT_MESSAGE,
+        ));
+        assert!(!is_rejected_empty_manual_commit(
+            RealtimeAudioMode::Manual,
+            true,
+            true,
+            None,
+            false,
+            0,
+            "invalid_request_error",
+            EMPTY_COMMIT_MESSAGE,
+        ));
+        assert!(!is_rejected_empty_manual_commit(
+            RealtimeAudioMode::Manual,
+            true,
+            false,
+            None,
+            true,
+            0,
+            "invalid_request_error",
+            EMPTY_COMMIT_MESSAGE,
+        ));
+    }
+}
+
 impl OmniSocketEventProcessor {
     pub(super) fn poll<C: RealtimeSocketConnector, R: tauri::Runtime>(
         state: OmniSocketEventState<C::Socket, R>,
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
     ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
-        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut pending_audio_stream_cue_id, mut pending_audio_stream_chunk_index, mut pending_audio_stream_created_at_ms, mut pending_audio_stream_aborted, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, mut sent_audio_since_commit, mut audio_samples_since_commit, mut manual_turn_audio_after_response } = state;
+        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut pending_audio_stream_cue_id, mut pending_audio_stream_chunk_index, mut pending_audio_stream_created_at_ms, mut pending_audio_stream_aborted, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, sent_audio_since_commit, audio_samples_since_commit, manual_turn_audio_after_response } = state;
         let OmniSocketEventContext {
             app, store, direction, session_generation, session_started_at,
             subtitle_translate_active, native_translation_reuse_active,
@@ -704,27 +768,27 @@ match socket.read_message() {
                         }
                         let provider_error_code = provider_error_code(&evt);
                         let provider_error_message = provider_error_message(&evt);
-                        let ignored_released_empty_commit = audio_mode.uses_manual_commit()
-                            && !manual_response_pending
-                            && !manual_response_requested
-                            && sent_audio_since_commit
-                            && audio_samples_since_commit
-                                >= MANUAL_COMMIT_MIN_AUDIO_SAMPLES
-                            && is_released_empty_audio_commit_error(
-                                provider_error_code,
-                                provider_error_message,
-                            );
+                        let ignored_released_empty_commit = is_rejected_empty_manual_commit(
+                            audio_mode,
+                            manual_response_pending,
+                            manual_response_requested,
+                            manual_response_item_id.as_deref(),
+                            sent_audio_since_commit,
+                            audio_samples_since_commit,
+                            provider_error_code,
+                            provider_error_message,
+                        );
                         if ignored_released_empty_commit {
-                            // The current response is already complete and
-                            // DashScope has cleared its next-turn buffer. Do
-                            // not turn this late no-op into a session failure,
-                            // and discard the stale local accounting so it
-                            // cannot issue the same commit again.
-                            sent_audio_since_commit = false;
-                            audio_samples_since_commit = 0;
-                            manual_turn_audio_after_response = false;
+                            // This commit was accepted locally and rejected as
+                            // empty by the provider before it created an ASR
+                            // item. Release the gate so normal later audio can
+                            // form the next turn; no model response exists for
+                            // this rejected commit.
+                            manual_response_pending = false;
+                            manual_response_requested = false;
+                            manual_response_item_id = None;
                             let detail = format!(
-                                "Provider cleared the released manual input buffer; stale empty commit was ignored. code={provider_error_code} message={provider_error_message}"
+                                "Provider rejected an already-cleared manual input buffer; released the empty commit gate. code={provider_error_code} message={provider_error_message}"
                             );
                             store.watch_session_report.record_session_issue(
                                 "model",

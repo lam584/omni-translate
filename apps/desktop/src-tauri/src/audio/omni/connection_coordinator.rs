@@ -155,6 +155,15 @@ pub(super) fn provider_error_message(evt: &Value) -> &str {
         .unwrap_or("DashScope realtime model error")
 }
 
+/// DashScope can acknowledge the final response, clear its input buffer, and
+/// then reject the client's now-stale manual commit.  It is a no-op only after
+/// the response gate has fully released; callers must not use this predicate
+/// to hide an in-flight request failure.
+pub(super) fn is_released_empty_audio_commit_error(code: &str, message: &str) -> bool {
+    code.eq_ignore_ascii_case("invalid_request_error")
+        && message.contains("Error committing input audio buffer: buffer too small, or have no audio.")
+}
+
 /// A parked preconnect is still represented by the normal Omni worker. Use
 /// the route snapshot, rather than worker lifetime alone, to distinguish it
 /// from a session that has already been handed to an active capture route.
@@ -482,6 +491,22 @@ mod manual_response_gate_tests {
         });
         assert_eq!(provider_error_code(&typed), "invalid_request_error");
         assert_eq!(provider_error_code(&json!({"type": "error"})), "provider.error");
+    }
+
+    #[test]
+    fn identifies_only_the_provider_empty_commit_response() {
+        assert!(is_released_empty_audio_commit_error(
+            "invalid_request_error",
+            "Error committing input audio buffer: buffer too small, or have no audio.",
+        ));
+        assert!(!is_released_empty_audio_commit_error(
+            "server_error",
+            "Error committing input audio buffer: buffer too small, or have no audio.",
+        ));
+        assert!(!is_released_empty_audio_commit_error(
+            "invalid_request_error",
+            "request body is invalid",
+        ));
     }
 
     #[test]

@@ -253,6 +253,10 @@ function Get-WatchSessionReportDeadlineUtc {
 
 function Set-Utf8NoBomContent {
   param([string]$Path, [string]$Value)
+  $parentDirectory = Split-Path -Parent $Path
+  if ($parentDirectory) {
+    New-Item -ItemType Directory -Force -Path $parentDirectory | Out-Null
+  }
   $encoding = [System.Text.UTF8Encoding]::new($false)
   [System.IO.File]::WriteAllText($Path, $Value, $encoding)
 }

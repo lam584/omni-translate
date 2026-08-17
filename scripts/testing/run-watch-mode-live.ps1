@@ -1693,6 +1693,26 @@ function Start-WatchModeDesktopShell {
         throw
       }
     }
+
+    # On this VM Windows can return a short-lived launcher process when the
+    # desktop executable transitions into its actual UI process.  Keep the
+    # real shell PID for readiness and metric collection: it is the process
+    # which owns the same-process frontend IPC, rather than treating the
+    # launcher's normal exit as an infrastructure failure.
+    $desktopProcessName = [System.IO.Path]::GetFileNameWithoutExtension($exe)
+    $desktopProcessDeadline = [DateTime]::UtcNow.AddSeconds(5)
+    do {
+      $desktopCandidates = @(
+        Get-Process -Name $desktopProcessName -ErrorAction SilentlyContinue |
+          Where-Object { $_.StartTime.ToUniversalTime() -ge $desktopLaunchedAtUtc.AddSeconds(-2) } |
+          Sort-Object StartTime -Descending
+      )
+      if ($desktopCandidates.Count -gt 0) {
+        $process = $desktopCandidates[0]
+        break
+      }
+      Start-Sleep -Milliseconds 100
+    } while ([DateTime]::UtcNow -lt $desktopProcessDeadline)
   } finally {
     $env:OMNI_WATCH_MODE_AUTOSTART = $previousAutostart
     $env:OMNI_WATCH_MODE_RUN_MARKER = $previousRunMarker

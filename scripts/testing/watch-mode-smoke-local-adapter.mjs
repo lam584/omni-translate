@@ -209,7 +209,12 @@ function runPowerShell(argv, timeoutMs) {
     child.once('exit', (exitCode) => {
       clearTimeout(timeout);
       const stdout = fs.existsSync(outputLog) ? fs.readFileSync(outputLog, 'utf8') : '';
-      fs.rmSync(temporaryRoot, { recursive: true, force: true });
+      try {
+        fs.rmSync(temporaryRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 250 });
+      } catch {
+        // The elevated child can retain a short-lived handle to its log.
+        // Retaining this temporary evidence is safer than obscuring its result.
+      }
       process.stderr.write(stdout);
       resolve({ exitCode: exitCode ?? 1, stdout, stderr });
     });

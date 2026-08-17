@@ -66,12 +66,21 @@ export async function runWatchModeSmoke({
   outputRoot = SMOKE_OUTPUT_ROOT,
   runCell,
   runPreflight = async () => ({ passed: true, providerCalls: 0 }),
+  cellIds,
+  selectionReason,
   now = () => new Date(),
 }) {
   if (typeof runCell !== 'function') throw new Error('smoke coordinator requires a runCell adapter');
   const plan = createWatchModeSmokePlan({ executionId });
+  const selectedCellIds = cellIds === undefined
+    ? plan.cells.map((cell) => cell.cellId)
+    : [...new Set(cellIds.map((cellId) => String(cellId)))];
+  if (selectedCellIds.length === 0) throw new Error('smoke targeted execution requires at least one cell');
+  const unknownCellId = selectedCellIds.find((cellId) => !plan.cells.some((cell) => cell.cellId === cellId));
+  if (unknownCellId) throw new Error(`smoke targeted execution selected an unknown cell: ${unknownCellId}`);
+  const selectedCells = plan.cells.filter((cell) => selectedCellIds.includes(cell.cellId));
   const startedAt = now().toISOString();
-  const assignments = createSmokeAssignments(plan.cells, workerCapabilities);
+  const assignments = createSmokeAssignments(selectedCells, workerCapabilities);
   const executionRoot = path.resolve(outputRoot, plan.executionId);
   if (fs.existsSync(executionRoot)) throw new Error(`smoke execution directory already exists: ${executionRoot}`);
   fs.mkdirSync(executionRoot, { recursive: true });
@@ -83,7 +92,7 @@ export async function runWatchModeSmoke({
   for (const waveIndex of [...new Set(assignments.map((entry) => entry.waveIndex))]) {
     const wave = assignments.filter((entry) => entry.waveIndex === waveIndex);
     const settled = await Promise.allSettled(wave.map(async (assignment) => {
-      const cell = plan.cells.find((entry) => entry.cellId === assignment.cellId);
+      const cell = selectedCells.find((entry) => entry.cellId === assignment.cellId);
       const result = await runCell({ plan, cell, assignment, executionRoot });
       return { ...assignment, result };
     }));
@@ -110,10 +119,15 @@ export async function runWatchModeSmoke({
     completedAt,
     totalBudgetSeconds: WATCH_MODE_SMOKE_BUDGET_SECONDS,
     plan,
+    selection: {
+      mode: selectedCells.length === plan.cells.length ? 'full' : 'targeted',
+      cellIds: selectedCellIds,
+      ...(selectedCells.length === plan.cells.length ? {} : { reason: String(selectionReason ?? '').trim() || 'unspecified' }),
+    },
     assignments,
     preflight,
     outcomes,
-    passed: outcomes.length === plan.cells.length && outcomes.every((entry) => entry.status === 'passed'),
+    passed: outcomes.length === selectedCells.length && outcomes.every((entry) => entry.status === 'passed'),
     blocksAuthoritativeRun: outcomes.some((entry) => (
       entry.status === 'failed' && entry.classification !== 'provider-external'
     )),
@@ -127,14 +141,16 @@ if (isMain(import.meta.url)) {
   const args = process.argv.slice(2);
   const adapterFlag = args.indexOf('--adapter');
   const executionFlag = args.indexOf('--execution-id');
+  const cellsFlag = args.indexOf('--cells');
+  const selectionReasonFlag = args.indexOf('--selection-reason');
   if (args.includes('--plan')) {
     if (args.length !== 1) throw new Error('--plan cannot be combined with other smoke coordinator flags');
     console.log(JSON.stringify(createWatchModeSmokePlan(), null, 2));
   } else {
     if (adapterFlag < 0 || !args[adapterFlag + 1] || args.some((arg, index) => (
-      arg.startsWith('--') && !['--adapter', '--execution-id'].includes(arg)
+      arg.startsWith('--') && !['--adapter', '--execution-id', '--cells', '--selection-reason'].includes(arg)
     ))) {
-      throw new Error('Usage: run-watch-mode-smoke.mjs --plan | --adapter <vm-aware-adapter.mjs> [--execution-id <id>]');
+      throw new Error('Usage: run-watch-mode-smoke.mjs --plan | --adapter <vm-aware-adapter.mjs> [--execution-id <id>] [--cells <id,id>] [--selection-reason <text>]');
     }
     const adapterPath = path.resolve(repoRoot, args[adapterFlag + 1]);
     const adapter = await import(`${pathToFileURL(adapterPath).href}?execution=${Date.now()}`);
@@ -145,6 +161,8 @@ if (isMain(import.meta.url)) {
       executionId: executionFlag < 0 ? undefined : args[executionFlag + 1],
       workerCapabilities: adapter.workerCapabilities,
       runCell: adapter.runCell,
+      ...(cellsFlag < 0 ? {} : { cellIds: String(args[cellsFlag + 1] ?? '').split(',').map((entry) => entry.trim()).filter(Boolean) }),
+      ...(selectionReasonFlag < 0 ? {} : { selectionReason: args[selectionReasonFlag + 1] }),
       ...(typeof adapter.runPreflight === 'function' ? { runPreflight: adapter.runPreflight } : {}),
     });
     console.log(JSON.stringify({ manifestPath: result.manifestPath, passed: result.manifest.passed }, null, 2));

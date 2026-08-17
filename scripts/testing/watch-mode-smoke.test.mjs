@@ -91,6 +91,32 @@ test('smoke refuses a paid preflight before any cell dispatch', async () => {
   }), /preflight failed or made a Provider call/);
 });
 
+test('smoke targeted execution dispatches only selected cells and records its reason', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-targeted-'));
+  const selected = [SMOKE_PLUS_CELLS[0].cellId, SMOKE_RELEASE_CELLS[1].cellId];
+  const calls = [];
+  try {
+    const result = await runWatchModeSmoke({
+      executionId: 'smoke-targeted-test',
+      workerCapabilities: workers,
+      outputRoot: root,
+      cellIds: selected,
+      selectionReason: 'verify bridge lifecycle repair',
+      runCell: async ({ cell }) => {
+        calls.push(cell.cellId);
+        return { passed: true, evidence: `evidence/${cell.cellId}` };
+      },
+    });
+    assert.deepEqual(calls, selected);
+    assert.equal(result.manifest.selection.mode, 'targeted');
+    assert.deepEqual(result.manifest.selection.cellIds, selected);
+    assert.equal(result.manifest.selection.reason, 'verify bridge lifecycle repair');
+    assert.equal(result.manifest.passed, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('VM3 local adapter binds the present default speaker and one local worker', () => {
   assert.deepEqual(localWorkerCapabilities, [
     { workerId: 'vm3-local', deviceClasses: ['default-speaker'] },

@@ -32,6 +32,54 @@ export const workerCapabilities = Object.freeze([
 
 let runtimeAuthority = null;
 const VM3_CARGO_HOME = path.join(repoRoot, 'artifacts', 'testing', 'cargo-home');
+const VM3_PREFLIGHT_CACHE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-smoke', 'preflight-cache');
+const VM3_PREFLIGHT_CACHE_FILE = path.join(VM3_PREFLIGHT_CACHE_ROOT, 'vm3-runtime-preflight.json');
+const VM3_PREFLIGHT_CACHE_SCHEMA_VERSION = 1;
+
+function sameJson(left, right) {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function readReusablePreflight() {
+  if (!fs.existsSync(VM3_PREFLIGHT_CACHE_FILE)) return null;
+  let cached;
+  try {
+    cached = JSON.parse(fs.readFileSync(VM3_PREFLIGHT_CACHE_FILE, 'utf8'));
+  } catch {
+    return null;
+  }
+  const provenance = currentGitProvenance({ cwd: repoRoot });
+  if (
+    cached?.schemaVersion !== VM3_PREFLIGHT_CACHE_SCHEMA_VERSION
+    || cached?.passed !== true
+    || Number(cached?.providerCalls) !== 0
+    || cached?.provenance?.headCommit !== provenance.headCommit
+    || provenance.worktreeClean !== true
+    || Number(provenance.dirtyEntryCount) !== 0
+    || !sameJson(cached?.deviceProfile, PROFILE)
+  ) return null;
+  const hashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot: repoRoot });
+  if (!sameJson(cached?.runtimeAuthority, hashes)) return null;
+  return { cached, runtimeAuthority: hashes };
+}
+
+function writeReusablePreflight({ checks, runtimeAuthority: authority }) {
+  fs.mkdirSync(VM3_PREFLIGHT_CACHE_ROOT, { recursive: true });
+  const temporary = `${VM3_PREFLIGHT_CACHE_FILE}.${process.pid}.tmp`;
+  const cache = {
+    schemaVersion: VM3_PREFLIGHT_CACHE_SCHEMA_VERSION,
+    passed: true,
+    providerCalls: 0,
+    completedAt: new Date().toISOString(),
+    provenance: currentGitProvenance({ cwd: repoRoot }),
+    deviceProfile: PROFILE,
+    runtimeAuthority: authority,
+    checks: checks.map(({ command, status, passed }) => ({ command, status, passed })),
+  };
+  fs.writeFileSync(temporary, `${JSON.stringify(cache, null, 2)}\n`, 'utf8');
+  fs.renameSync(temporary, VM3_PREFLIGHT_CACHE_FILE);
+  return cache;
+}
 
 function runNpm(script, timeout = 900_000, temporaryRoot) {
   const environment = {
@@ -108,6 +156,23 @@ export async function runPreflight({ executionRoot }) {
   fs.mkdirSync(preflightRoot, { recursive: true });
   fs.mkdirSync(temporaryRoot, { recursive: true });
   fs.mkdirSync(VM3_CARGO_HOME, { recursive: true });
+  const reusable = readReusablePreflight();
+  if (reusable) {
+    runtimeAuthority = reusable.runtimeAuthority;
+    return {
+      passed: true,
+      providerCalls: 0,
+      checks: reusable.cached.checks,
+      runtimeBinaryCount: runtimeAuthority.length,
+      deviceProfile: PROFILE,
+      preflightReuse: {
+        reused: true,
+        cacheFile: VM3_PREFLIGHT_CACHE_FILE,
+        completedAt: reusable.cached.completedAt,
+        headCommit: reusable.cached.provenance.headCommit,
+      },
+    };
+  }
   const checks = [];
   for (const script of [
     'test:watch-mode-report',
@@ -184,12 +249,18 @@ export async function runPreflight({ executionRoot }) {
   if (!driverProbe.passed) {
     return { passed: false, providerCalls: 0, checks, failure: 'npm run driver:test failed' };
   }
+  const cache = writeReusablePreflight({ checks, runtimeAuthority });
   return {
     passed: true,
     providerCalls: 0,
     checks,
     runtimeBinaryCount: runtimeAuthority.length,
     deviceProfile: PROFILE,
+    preflightReuse: {
+      reused: false,
+      cacheFile: VM3_PREFLIGHT_CACHE_FILE,
+      headCommit: cache.provenance.headCommit,
+    },
   };
 }
 

@@ -27,5 +27,7 @@ $RunnerArguments = @(
   [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String($RunnerArgumentsBase64)) |
     ConvertFrom-Json
 )
+"elevated=$([Security.Principal.WindowsPrincipal]::new([Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator))" |
+  Set-Content -LiteralPath $OutputLog -Encoding UTF8
 & $runner @RunnerArguments *>> $OutputLog
 exit $LASTEXITCODE

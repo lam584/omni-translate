@@ -2891,7 +2891,10 @@ function Complete-PhysicalOutputContentRecorder {
     # next serialized matrix cell to start while its physical-output recorder
     # may still retain the endpoint; that would contaminate the single-device
     # evidence window.
-    $Recorder.process.WaitForExit(5000) | Out-Null
+    $exited = $Recorder.process.WaitForExit(5000)
+    if (-not $exited) {
+      throw "physical output recorder did not exit after forced stop; refusing to start another serialized matrix cell (Pid=$($Recorder.pid))"
+    }
   }
   $text = if (Test-Path -LiteralPath $Recorder.stdout -PathType Leaf) {
     Get-Content -LiteralPath $Recorder.stdout -Raw -ErrorAction SilentlyContinue

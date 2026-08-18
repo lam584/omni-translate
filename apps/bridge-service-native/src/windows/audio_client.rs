@@ -243,14 +243,38 @@ pub(super) fn handle_physical_translation_frame(
         return;
     }
     if current.physical_translation_stream_active() {
-        let ack = rejected_audio_frame_ack(
-            header,
-            "bridge.queue-overflow",
-            "complete translation cues cannot enter playback while an open-ended physical stream is active",
-        );
-        drop(current);
-        let _ = write_framed_json(handle, &ack);
-        return;
+        let superseded_cues = current.supersede_physical_translation_streams();
+        for cue_id in superseded_cues {
+            if playback_control_tx
+                .send(PlaybackControlCommand::TerminateTranslationStream {
+                    cue_id: cue_id.clone(),
+                    terminal: TranslationCueTerminal {
+                        cue_id: Some(cue_id.clone()),
+                        status: TranslationPlaybackStatusKind::StaleDropped,
+                        reason: "physical-playback-stream-superseded-by-complete-cue".to_string(),
+                        error_code: None,
+                    },
+                })
+                .is_err()
+            {
+                let ack = rejected_audio_frame_ack(
+                    header,
+                    "bridge.translation-playback-failed",
+                    "playback worker is unavailable to finish an open physical translation stream",
+                );
+                drop(current);
+                let _ = write_framed_json(handle, &ack);
+                return;
+            }
+            service_log(
+                LogLevel::Warning,
+                &header.request_id,
+                &format!(
+                    "event=translation_stream status=superseded cueId={cue_id} replacementCueId={}",
+                    header.cue_id.as_deref().unwrap_or("-"),
+                ),
+            );
+        }
     }
     if let Some(reason) = translation_non_playback_reason(
         current.translation_playback_enabled,
@@ -489,10 +513,14 @@ fn handle_physical_translation_stream_frame(
     }
     if stream_state == TranslationStreamState::Abort {
         current.physical_translation_stream_ledger.finish(cue_id);
-        let _ = playback_control_tx.send(PlaybackControlCommand::AbortTranslationStream {
+        let _ = playback_control_tx.send(PlaybackControlCommand::TerminateTranslationStream {
             cue_id: cue_id.to_string(),
-            reason: "physical-playback-stream-aborted".to_string(),
-            error_code: "bridge.translation-playback-failed".to_string(),
+            terminal: TranslationCueTerminal {
+                cue_id: Some(cue_id.to_string()),
+                status: TranslationPlaybackStatusKind::RouteFailed,
+                reason: "physical-playback-stream-aborted".to_string(),
+                error_code: Some("bridge.translation-playback-failed".to_string()),
+            },
         });
         let ack = accepted_audio_frame_ack(header, current.playback_frames_written);
         drop(current);

@@ -427,7 +427,7 @@ fn apply_playback_control_commands(
 ) {
     while let Ok(command) = playback_control_rx.try_recv() {
         let PlaybackControlCommand::StopAll(request) = command else {
-            let PlaybackControlCommand::AbortTranslationStream { cue_id, reason, error_code } = command else { unreachable!() };
+            let PlaybackControlCommand::TerminateTranslationStream { cue_id, terminal } = command else { unreachable!() };
             if physical_stream.as_ref().is_some_and(|stream| stream.cue_id == cue_id) {
                 if let Some(output) = output.as_mut() {
                     output.translation_player.clear();
@@ -444,10 +444,10 @@ fn apply_playback_control_commands(
             current.physical_translation_stream_ledger.finish(&cue_id);
             current.monitor_playback_state = "ready".to_string();
             current.emit_translation_status(
-                Some(&cue_id),
-                TranslationPlaybackStatusKind::RouteFailed,
-                &reason,
-                Some(&error_code),
+                terminal.cue_id.as_deref(),
+                terminal.status,
+                &terminal.reason,
+                terminal.error_code.as_deref(),
             );
             continue;
         };

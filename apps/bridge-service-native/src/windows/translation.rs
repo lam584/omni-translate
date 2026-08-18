@@ -47,10 +47,9 @@ struct PlaybackStopRequest {
 
 enum PlaybackControlCommand {
     StopAll(PlaybackStopRequest),
-    AbortTranslationStream {
+    TerminateTranslationStream {
         cue_id: String,
-        reason: String,
-        error_code: String,
+        terminal: TranslationCueTerminal,
     },
 }
 
@@ -305,6 +304,14 @@ impl BridgeState {
     fn physical_translation_stream_active(&self) -> bool {
         !self.physical_translation_stream_ledger.active.is_empty()
     }
+
+    fn supersede_physical_translation_streams(&mut self) -> Vec<String> {
+        let cue_ids = self.physical_translation_stream_ledger.active_cue_ids();
+        for cue_id in &cue_ids {
+            self.physical_translation_stream_ledger.finish(cue_id);
+        }
+        cue_ids
+    }
 }
 
 fn prepare_physical_stream_admission(
@@ -407,6 +414,36 @@ mod physical_stream_tests {
         assert_eq!(
             ledger.admit("long-cue", 1_001, TranslationStreamState::End),
             Ok(PhysicalStreamAdmission::End)
+        );
+    }
+
+    #[test]
+    fn superseding_open_streams_finishes_them_and_absorbs_late_frames() {
+        let mut state = BridgeState::default();
+        state
+            .physical_translation_stream_ledger
+            .admit("first", 0, TranslationStreamState::Start)
+            .expect("first stream start");
+        state
+            .physical_translation_stream_ledger
+            .admit("second", 0, TranslationStreamState::Start)
+            .expect("second stream start");
+
+        let mut superseded = state.supersede_physical_translation_streams();
+        superseded.sort();
+        assert_eq!(superseded, ["first", "second"]);
+        assert!(!state.physical_translation_stream_active());
+        assert_eq!(
+            state
+                .physical_translation_stream_ledger
+                .admit("first", 1, TranslationStreamState::Chunk),
+            Ok(PhysicalStreamAdmission::Duplicate)
+        );
+        assert_eq!(
+            state
+                .physical_translation_stream_ledger
+                .admit("second", 1, TranslationStreamState::End),
+            Ok(PhysicalStreamAdmission::Duplicate)
         );
     }
 

@@ -532,7 +532,11 @@ export async function runCell({ cell, executionRoot }) {
   if (reportPath && fs.existsSync(reportPath)) {
     report = JSON.parse(fs.readFileSync(reportPath, 'utf8').replace(/^\uFEFF/, ''));
   }
-  const passed = processResult.exitCode === 0 && report?.verdict === 'passed';
+  // The elevated wrapper can return a non-zero cleanup status after the live
+  // runner has already written its authoritative report.  A complete passing
+  // report is the cell result; retain the launcher exit code below only as
+  // diagnostic evidence instead of converting that pass into a product bug.
+  const passed = report?.verdict === 'passed';
   return {
     passed,
     ...(passed ? {} : { classification: report ? classifyReport(report) : 'orchestration' }),

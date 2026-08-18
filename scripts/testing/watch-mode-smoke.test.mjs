@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -151,4 +152,28 @@ test('VM3 local adapter binds the present default speaker and one local worker',
   assert.equal(profile.deviceClass, 'default-speaker');
   assert.match(profile.physicalPlaybackDeviceId, /^\{0\.0\.0\.00000000\}\.\{[a-f0-9-]+\}$/i);
   assert.match(profile.expectedPhysicalPlaybackDeviceName, /High Definition Audio Device/);
+});
+
+test('Windows timebox terminates its owned child process tree', { skip: process.platform !== 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-timebox-'));
+  try {
+    const payload = Buffer.from(JSON.stringify({
+      command: 'cmd.exe',
+      arguments: ['/d', '/s', '/c', 'ping.exe -n 20 127.0.0.1'],
+      cwd: process.cwd(),
+      environment: { Path: process.env.Path ?? '' },
+    }), 'utf8').toString('base64');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      path.join(process.cwd(), 'scripts', 'testing', 'run-timeboxed-command.ps1'),
+      '-PayloadBase64', payload,
+      '-TimeoutMs', '500',
+      '-StdoutPath', path.join(root, 'stdout.log'),
+      '-StderrPath', path.join(root, 'stderr.log'),
+    ], { encoding: 'utf8', timeout: 10_000, windowsHide: true });
+    assert.equal(result.status, 124);
+    assert.equal(result.error, undefined);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

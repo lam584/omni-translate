@@ -437,10 +437,18 @@ function readPowerShellOutputLog(outputLog) {
   return content.toString('utf8').replace(/^\uFEFF/, '');
 }
 
-function classifyReport(report) {
+export function classifyReport(report) {
   const layer = String(report?.failureLayer ?? '').toLowerCase();
   const reason = String(report?.failureReason ?? '');
-  if (layer === 'provider' && /(?:50002|\b5\d\d\b|429|rate.?limit|timeout)/i.test(reason)) return 'provider-external';
+  // The live runner promotes cue issues to the app layer so that a missing
+  // translation remains a hard failure. Keep that verdict, but inspect the
+  // attached cue evidence before assigning responsibility: a DashScope 50002
+  // is a provider outage even when the resulting cue also has model-no-output.
+  const providerEvidence = JSON.stringify(report?.watchSessionReport ?? report ?? '');
+  if (
+    /(?:50002|\b5\d\d\b|429|rate.?limit|timeout)/i.test(`${reason}\n${providerEvidence}`)
+    && (layer === 'provider' || /providerCode=|ModelServingError|provider-error/i.test(providerEvidence))
+  ) return 'provider-external';
   if (['driver', 'wasapi', 'physicaloutput', 'physicaloutputcontent'].includes(layer)) return 'device';
   if (layer === 'ci') return 'ci';
   return 'product';

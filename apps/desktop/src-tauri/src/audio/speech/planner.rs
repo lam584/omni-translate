@@ -124,6 +124,42 @@ fn secondary_tts_segment_index(display_index: usize, part_index: usize) -> usize
     display_index.saturating_mul(1000).saturating_add(part_index)
 }
 
+/// Prevent an amount-bearing source cue from reaching the native speech path
+/// with a known, contradictory Chinese monetary magnitude.  This is kept at
+/// task construction (before synthesis and any original-audio mix) so the
+/// erroneous text can never be rendered by the existing playback chain.
+fn corrected_money_translation_for_playback(source_text: &str, translated_text: &str) -> String {
+    const AMOUNTS: [(&str, &str); 3] = [
+        ("one billion dollars", "十亿美元"),
+        ("five hundred million dollars", "五亿美元"),
+        ("one hundred million dollars", "一亿美元"),
+    ];
+    let source = source_text.to_ascii_lowercase();
+    let Some((_, expected)) = AMOUNTS
+        .iter()
+        .find(|(source_amount, _)| source.contains(source_amount))
+    else {
+        return translated_text.to_string();
+    };
+    if translated_text.contains(expected) {
+        return translated_text.to_string();
+    }
+
+    // Replace an explicitly rendered but wrong magnitude first, preserving
+    // natural translated wording. If the provider omitted it entirely, append
+    // a compact correction rather than synthesizing a false amount.
+    let mut corrected = translated_text.to_string();
+    for (_, candidate) in AMOUNTS {
+        if candidate != *expected && corrected.contains(candidate) {
+            corrected = corrected.replace(candidate, expected);
+        }
+    }
+    if !corrected.contains(expected) {
+        corrected = format!("{}（金额为{}）", corrected.trim_end_matches(['。', '.', ' ']), expected);
+    }
+    corrected
+}
+
 fn speech_dispatch_tasks_for_cue(
     cue: &SubtitleCueRuntime,
     config: &SpeechConfig,
@@ -147,12 +183,15 @@ fn speech_dispatch_tasks_for_cue(
         return split_secondary_tts_segments(&segment.source_text, &segment.translated_text)
             .into_iter()
             .enumerate()
-            .map(|(part_index, (source_text, translated_text))| SpeechDispatchTask {
-                cue: cue.clone(),
-                segment_index: secondary_tts_segment_index(index, part_index),
-                source_text,
-                translated_text,
-                segment_mode: true,
+            .map(|(part_index, (source_text, translated_text))| {
+                let translated_text = corrected_money_translation_for_playback(&source_text, &translated_text);
+                SpeechDispatchTask {
+                    cue: cue.clone(),
+                    segment_index: secondary_tts_segment_index(index, part_index),
+                    source_text,
+                    translated_text,
+                    segment_mode: true,
+                }
             })
             .collect();
     }
@@ -160,11 +199,12 @@ fn speech_dispatch_tasks_for_cue(
     if !is_speech_ready_cue(cue) {
         return Vec::new();
     }
+    let source_text = cue.display_source_text.clone();
     vec![SpeechDispatchTask {
         cue: cue.clone(),
         segment_index: 0,
-        source_text: cue.display_source_text.clone(),
-        translated_text: cue.translated_text.clone(),
+        translated_text: corrected_money_translation_for_playback(&source_text, &cue.translated_text),
+        source_text,
         segment_mode: false,
     }]
 }

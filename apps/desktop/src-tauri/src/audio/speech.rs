@@ -1344,6 +1344,29 @@ mod tests {
     }
 
     #[test]
+    fn playback_money_guard_corrects_a_wrong_native_amount_before_tts() {
+        let source = "Its construction budget is five hundred million dollars.";
+        let corrected = corrected_money_translation_for_playback(source, "建设预算是一亿美元。");
+        assert_eq!(corrected, "建设预算是五亿美元。");
+        assert_eq!(
+            corrected_money_translation_for_playback(source, "建设预算是五亿美元。"),
+            "建设预算是五亿美元。"
+        );
+    }
+
+    #[test]
+    fn planner_uses_corrected_money_text_for_native_playback() {
+        let config = planner_test_config();
+        let mut cue = planner_test_cue("cue-money", "建设预算是一亿美元。", true, true);
+        cue.display_source_text = "Its construction budget is five hundred million dollars.".to_string();
+
+        let tasks = speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new());
+
+        assert_eq!(tasks.len(), 1);
+        assert_eq!(tasks[0].translated_text, "建设预算是五亿美元。");
+    }
+
+    #[test]
     fn remember_committed_cue_played_evicts_oldest() {
         let mut committed_played = HashSet::new();
         let mut order = VecDeque::new();

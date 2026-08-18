@@ -101,7 +101,10 @@ try {
       }
       $elapsedMs = ($current.capturedAt - $previous.capturedAt).TotalMilliseconds
       if ($elapsedMs -le 0) {
-        throw 'system metrics sample clock did not advance'
+        # Windows can return two identical wall-clock ticks at this polling
+        # cadence. Keep the prior baseline and wait for a later sample rather
+        # than invalidating an otherwise live process-transition artifact.
+        continue
       }
       $cpuDeltaMs = 0.0
       foreach ($entry in $current.cpuByProcess.GetEnumerator()) {

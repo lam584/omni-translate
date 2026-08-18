@@ -84,30 +84,37 @@ export async function runWatchModeSmoke({
   const executionRoot = path.resolve(outputRoot, plan.executionId);
   if (fs.existsSync(executionRoot)) throw new Error(`smoke execution directory already exists: ${executionRoot}`);
   fs.mkdirSync(executionRoot, { recursive: true });
-  const preflight = await runPreflight({ plan, executionRoot });
-  if (preflight?.passed !== true || Number(preflight?.providerCalls ?? 0) !== 0) {
-    throw new Error('smoke zero-cost preflight failed or made a Provider call');
-  }
   const outcomes = [];
-  for (const waveIndex of [...new Set(assignments.map((entry) => entry.waveIndex))]) {
-    const wave = assignments.filter((entry) => entry.waveIndex === waveIndex);
-    const settled = await Promise.allSettled(wave.map(async (assignment) => {
-      const cell = selectedCells.find((entry) => entry.cellId === assignment.cellId);
-      const result = await runCell({ plan, cell, assignment, executionRoot });
-      return { ...assignment, result };
-    }));
-    // Continue independent waves, retaining all failure evidence for one diagnostic pass.
-    outcomes.push(...settled.map((entry, index) => {
-      if (entry.status === 'rejected') {
-        return { ...wave[index], status: 'failed', classification: 'orchestration', error: String(entry.reason?.message ?? entry.reason) };
-      }
-      const passed = entry.value.result?.passed === true;
-      const classification = entry.value.result?.classification;
-      if (!passed && !SMOKE_FAILURE_CLASSES.includes(classification)) {
-        return { ...entry.value, status: 'failed', classification: 'orchestration', error: 'runner returned a failed cell without a valid failure classification' };
-      }
-      return { ...entry.value, status: passed ? 'passed' : 'failed', ...(passed ? {} : { classification }) };
-    }));
+  let preflight;
+  try {
+    preflight = await runPreflight({ plan, executionRoot });
+  } catch (error) {
+    // A preflight crash is still an execution result.  Persisting it prevents
+    // a stalled build from being mistaken for an unrecorded smoke run.
+    preflight = { passed: false, providerCalls: 0, failure: String(error?.message ?? error), classification: 'orchestration' };
+  }
+  const preflightPassed = preflight?.passed === true && Number(preflight?.providerCalls ?? 0) === 0;
+  if (preflightPassed) {
+    for (const waveIndex of [...new Set(assignments.map((entry) => entry.waveIndex))]) {
+      const wave = assignments.filter((entry) => entry.waveIndex === waveIndex);
+      const settled = await Promise.allSettled(wave.map(async (assignment) => {
+        const cell = selectedCells.find((entry) => entry.cellId === assignment.cellId);
+        const result = await runCell({ plan, cell, assignment, executionRoot });
+        return { ...assignment, result };
+      }));
+      // Continue independent waves, retaining all failure evidence for one diagnostic pass.
+      outcomes.push(...settled.map((entry, index) => {
+        if (entry.status === 'rejected') {
+          return { ...wave[index], status: 'failed', classification: 'orchestration', error: String(entry.reason?.message ?? entry.reason) };
+        }
+        const passed = entry.value.result?.passed === true;
+        const classification = entry.value.result?.classification;
+        if (!passed && !SMOKE_FAILURE_CLASSES.includes(classification)) {
+          return { ...entry.value, status: 'failed', classification: 'orchestration', error: 'runner returned a failed cell without a valid failure classification' };
+        }
+        return { ...entry.value, status: passed ? 'passed' : 'failed', ...(passed ? {} : { classification }) };
+      }));
+    }
   }
   const completedAt = now().toISOString();
   const manifest = {
@@ -127,8 +134,8 @@ export async function runWatchModeSmoke({
     assignments,
     preflight,
     outcomes,
-    passed: outcomes.length === selectedCells.length && outcomes.every((entry) => entry.status === 'passed'),
-    blocksAuthoritativeRun: outcomes.some((entry) => (
+    passed: preflightPassed && outcomes.length === selectedCells.length && outcomes.every((entry) => entry.status === 'passed'),
+    blocksAuthoritativeRun: !preflightPassed || outcomes.some((entry) => (
       entry.status === 'failed' && entry.classification !== 'provider-external'
     )),
     nonAuthoritativeReason: 'Smoke artifacts cannot be used for release, closeout, or PR merge evidence.',

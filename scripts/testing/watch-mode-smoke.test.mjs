@@ -82,13 +82,39 @@ test('smoke retains partial failures, does not retry, and writes a non-authorita
   }
 });
 
-test('smoke refuses a paid preflight before any cell dispatch', async () => {
-  await assert.rejects(() => runWatchModeSmoke({
+test('smoke records a failed or paid preflight before any cell dispatch', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-'));
+  const result = await runWatchModeSmoke({
     executionId: 'smoke-preflight-test', workerCapabilities: workers,
-    outputRoot: fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-')),
+    outputRoot: root,
     runPreflight: async () => ({ passed: true, providerCalls: 1 }),
     runCell: async () => { throw new Error('must not execute'); },
-  }), /preflight failed or made a Provider call/);
+  });
+  try {
+    assert.equal(result.manifest.passed, false);
+    assert.equal(result.manifest.blocksAuthoritativeRun, true);
+    assert.equal(result.manifest.outcomes.length, 0);
+    assert.equal(result.manifest.preflight.providerCalls, 1);
+    assert.equal(fs.existsSync(result.manifestPath), true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('smoke writes a failed manifest when preflight throws', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-'));
+  try {
+    const result = await runWatchModeSmoke({
+      executionId: 'smoke-preflight-crash-test', workerCapabilities: workers, outputRoot: root,
+      runPreflight: async () => { throw new Error('runtime build timed out'); },
+      runCell: async () => { throw new Error('must not execute'); },
+    });
+    assert.equal(result.manifest.passed, false);
+    assert.equal(result.manifest.preflight.failure, 'runtime build timed out');
+    assert.equal(result.manifest.outcomes.length, 0);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('smoke targeted execution dispatches only selected cells and records its reason', async () => {

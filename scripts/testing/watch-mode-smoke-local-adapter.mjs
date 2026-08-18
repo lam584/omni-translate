@@ -37,6 +37,14 @@ const VM3_PREFLIGHT_CACHE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'wa
 const VM3_PREFLIGHT_CACHE_FILE = path.join(VM3_PREFLIGHT_CACHE_ROOT, 'vm3-runtime-preflight.json');
 const VM3_PREFLIGHT_CACHE_SCHEMA_VERSION = 1;
 const VM3_SHORT_LIVE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-smoke-runtime');
+const VM3_PREFLIGHT_BUILD_SETTINGS = Object.freeze({
+  cargoRegistryProtocol: 'sparse',
+  cargoOffline: true,
+  cargoBuildJobs: 1,
+  cargoIncremental: false,
+  cargoProfileTestDebug: 0,
+  commandTimeoutMs: 900_000,
+});
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
@@ -83,6 +91,7 @@ function readReusablePreflight() {
     || provenance.worktreeClean !== true
     || Number(provenance.dirtyEntryCount) !== 0
     || !sameJson(cached?.deviceProfile, PROFILE)
+    || !sameJson(cached?.buildSettings, VM3_PREFLIGHT_BUILD_SETTINGS)
   ) return null;
   const hashes = currentAuthorityRuntimeBinaryHashes({ workspaceRoot: repoRoot });
   if (!sameJson(cached?.runtimeAuthority, hashes)) return null;
@@ -99,8 +108,11 @@ function writeReusablePreflight({ checks, runtimeAuthority: authority }) {
     completedAt: new Date().toISOString(),
     provenance: currentGitProvenance({ cwd: repoRoot }),
     deviceProfile: PROFILE,
+    buildSettings: VM3_PREFLIGHT_BUILD_SETTINGS,
     runtimeAuthority: authority,
-    checks: checks.map(({ command, status, passed }) => ({ command, status, passed })),
+    checks: checks.map(({ command, status, passed, startedAt, completedAt, durationMs, timedOut, logFile }) => ({
+      command, status, passed, startedAt, completedAt, durationMs, timedOut, logFile,
+    })),
   };
   fs.writeFileSync(temporary, `${JSON.stringify(cache, null, 2)}\n`, 'utf8');
   fs.renameSync(temporary, VM3_PREFLIGHT_CACHE_FILE);
@@ -108,6 +120,8 @@ function writeReusablePreflight({ checks, runtimeAuthority: authority }) {
 }
 
 function runNpm(script, timeout = 900_000, temporaryRoot) {
+  const startedAt = new Date().toISOString();
+  const startedMs = Date.now();
   const environment = {
     ...process.env,
     // VM3 reaches the sparse index reliably while the legacy git index can
@@ -155,6 +169,10 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
       stderr: result.stderr ?? '',
       passed: !result.error && result.status === 0,
       error: result.error?.message ?? null,
+      timedOut: result.error?.code === 'ETIMEDOUT',
+      startedAt,
+      completedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedMs,
     };
   }
   const result = spawnSync(process.env.ComSpec || 'cmd.exe', [
@@ -173,6 +191,61 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
     stderr: result.stderr ?? '',
     passed: !result.error && result.status === 0,
     error: result.error?.message ?? null,
+    timedOut: result.error?.code === 'ETIMEDOUT',
+    startedAt,
+    completedAt: new Date().toISOString(),
+    durationMs: Date.now() - startedMs,
+  };
+}
+
+function writePreflightLog(preflightRoot, name, result) {
+  const logFile = path.join(preflightRoot, `${name}.log`);
+  fs.writeFileSync(logFile, [result.stdout ?? '', result.stderr ?? ''].join('\n'), 'utf8');
+  result.logFile = logFile;
+  return result;
+}
+
+function createRuntimeBuildRunner({ checks, preflightRoot }) {
+  let lastDiskCheckMs = 0;
+  const checkDiskSpace = () => {
+    // The C: guard is intentionally sampled before the first build command
+    // and then hourly.  It prevents a new build step when VM3 is below the
+    // plan's 5 GB floor; the coordinator will persist the resulting failure.
+    if (process.platform !== 'win32' || Date.now() - lastDiskCheckMs < 60 * 60 * 1_000) return;
+    lastDiskCheckMs = Date.now();
+    const probe = spawnSync('powershell.exe', ['-NoProfile', '-Command', '(Get-PSDrive -Name C).Free'], {
+      encoding: 'utf8', windowsHide: true, timeout: 30_000,
+    });
+    const freeBytes = Number.parseInt(String(probe.stdout ?? '').trim(), 10);
+    if (!Number.isFinite(freeBytes) || freeBytes <= 5 * 1024 ** 3) {
+      throw new Error(`VM3 C: free space is at or below the 5 GB smoke floor (${Number.isFinite(freeBytes) ? freeBytes : 'unavailable'} bytes)`);
+    }
+  };
+  return (command, args, options) => {
+    checkDiskSpace();
+    const startedAt = new Date().toISOString();
+    const startedMs = Date.now();
+    const result = spawnSync(command, args, {
+      ...options,
+      encoding: 'utf8',
+      stdio: 'pipe',
+      timeout: 900_000,
+      windowsHide: true,
+    });
+    const check = writePreflightLog(preflightRoot, `runtime-build-${checks.length + 1}`, {
+      command: [command, ...args].join(' '),
+      status: result.status ?? 1,
+      stdout: result.stdout ?? '',
+      stderr: result.stderr ?? '',
+      passed: !result.error && result.status === 0,
+      error: result.error?.message ?? null,
+      timedOut: result.error?.code === 'ETIMEDOUT',
+      startedAt,
+      completedAt: new Date().toISOString(),
+      durationMs: Date.now() - startedMs,
+    });
+    checks.push(check);
+    return result;
   };
 }
 
@@ -207,10 +280,7 @@ export async function runPreflight({ executionRoot }) {
     'test:contracts',
   ]) {
     const result = runNpm(script, 900_000, temporaryRoot);
-    checks.push(result);
-    fs.writeFileSync(path.join(preflightRoot, `${script.replaceAll(':', '-')}.log`), [
-      result.stdout, result.stderr,
-    ].join('\n'), 'utf8');
+    checks.push(writePreflightLog(preflightRoot, script.replaceAll(':', '-'), result));
     if (!result.passed) {
       return { passed: false, providerCalls: 0, checks, failure: `${result.command} failed` };
     }
@@ -236,7 +306,17 @@ export async function runPreflight({ executionRoot }) {
   process.env.CARGO_INCREMENTAL = '0';
   process.env.CARGO_PROFILE_TEST_DEBUG = '0';
   try {
-    runtimeAuthority = buildLocalIsolationRuntime({ workspaceRoot: repoRoot });
+    runtimeAuthority = buildLocalIsolationRuntime({
+      workspaceRoot: repoRoot,
+      run: createRuntimeBuildRunner({ checks, preflightRoot }),
+    });
+  } catch (error) {
+    return {
+      passed: false,
+      providerCalls: 0,
+      checks,
+      failure: `local isolation runtime build failed: ${String(error?.message ?? error)}`,
+    };
   } finally {
     if (originalProtocol === undefined) delete process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL;
     else process.env.CARGO_REGISTRIES_CRATES_IO_PROTOCOL = originalProtocol;
@@ -260,18 +340,12 @@ export async function runPreflight({ executionRoot }) {
     else process.env.CARGO_PROFILE_TEST_DEBUG = originalCargoProfileTestDebug;
   }
   const driverInstall = runNpm('driver:install', 900_000, temporaryRoot);
-  checks.push(driverInstall);
-  fs.writeFileSync(path.join(preflightRoot, 'driver-install.log'), [
-    driverInstall.stdout, driverInstall.stderr,
-  ].join('\n'), 'utf8');
+  checks.push(writePreflightLog(preflightRoot, 'driver-install', driverInstall));
   if (!driverInstall.passed) {
     return { passed: false, providerCalls: 0, checks, failure: 'npm run driver:install failed' };
   }
   const driverProbe = runNpm('driver:test', 900_000, temporaryRoot);
-  checks.push(driverProbe);
-  fs.writeFileSync(path.join(preflightRoot, 'driver-test.log'), [
-    driverProbe.stdout, driverProbe.stderr,
-  ].join('\n'), 'utf8');
+  checks.push(writePreflightLog(preflightRoot, 'driver-test', driverProbe));
   if (!driverProbe.passed) {
     return { passed: false, providerCalls: 0, checks, failure: 'npm run driver:test failed' };
   }

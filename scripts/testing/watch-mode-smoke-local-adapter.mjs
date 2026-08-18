@@ -205,7 +205,7 @@ function writePreflightLog(preflightRoot, name, result) {
   return result;
 }
 
-function createRuntimeBuildRunner({ checks, preflightRoot }) {
+function createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }) {
   let lastDiskCheckMs = 0;
   const checkDiskSpace = () => {
     // The C: guard is intentionally sampled before the first build command
@@ -225,13 +225,35 @@ function createRuntimeBuildRunner({ checks, preflightRoot }) {
     checkDiskSpace();
     const startedAt = new Date().toISOString();
     const startedMs = Date.now();
-    const result = spawnSync(command, args, {
-      ...options,
+    const processRoot = fs.mkdtempSync(path.join(temporaryRoot, 'timeboxed-build-'));
+    const stdoutPath = path.join(processRoot, 'stdout.log');
+    const stderrPath = path.join(processRoot, 'stderr.log');
+    const payload = Buffer.from(JSON.stringify({
+      command,
+      arguments: args,
+      cwd: options.cwd,
+      environment: options.env,
+    }), 'utf8').toString('base64');
+    const wrapper = spawnSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      path.join(repoRoot, 'scripts', 'testing', 'run-timeboxed-command.ps1'),
+      '-PayloadBase64', payload,
+      '-TimeoutMs', '900000',
+      '-StdoutPath', stdoutPath,
+      '-StderrPath', stderrPath,
+    ], {
       encoding: 'utf8',
       stdio: 'pipe',
-      timeout: 900_000,
+      timeout: 960_000,
       windowsHide: true,
     });
+    const result = {
+      status: wrapper.status,
+      error: wrapper.error,
+      stdout: fs.existsSync(stdoutPath) ? fs.readFileSync(stdoutPath, 'utf8') : wrapper.stdout,
+      stderr: fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, 'utf8') : wrapper.stderr,
+      timedOut: wrapper.status === 124 || wrapper.error?.code === 'ETIMEDOUT',
+    };
     const check = writePreflightLog(preflightRoot, `runtime-build-${checks.length + 1}`, {
       command: [command, ...args].join(' '),
       status: result.status ?? 1,
@@ -239,7 +261,7 @@ function createRuntimeBuildRunner({ checks, preflightRoot }) {
       stderr: result.stderr ?? '',
       passed: !result.error && result.status === 0,
       error: result.error?.message ?? null,
-      timedOut: result.error?.code === 'ETIMEDOUT',
+      timedOut: result.timedOut,
       startedAt,
       completedAt: new Date().toISOString(),
       durationMs: Date.now() - startedMs,
@@ -308,7 +330,7 @@ export async function runPreflight({ executionRoot }) {
   try {
     runtimeAuthority = buildLocalIsolationRuntime({
       workspaceRoot: repoRoot,
-      run: createRuntimeBuildRunner({ checks, preflightRoot }),
+      run: createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }),
     });
   } catch (error) {
     return {

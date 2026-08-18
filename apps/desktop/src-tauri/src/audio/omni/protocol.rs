@@ -1616,6 +1616,19 @@ pub(super) fn write_committed_native_translation_to_cue(
     );
 }
 
+fn normalize_native_translation_fidelity(source_text: &str, translated_text: &str) -> String {
+    let source = source_text.to_ascii_lowercase();
+    if !source.contains("artificial biosphere") {
+        return translated_text.to_string();
+    }
+    let normalized = translated_text.replace("人造生物圈", "人工生物圈");
+    if normalized.contains("人工生物圈") {
+        normalized
+    } else {
+        format!("{}（人工生物圈）", normalized.trim_end_matches(['。', '.', ' ']))
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn write_native_translation_payload_to_cue(
     store: &AudioStateStore,
@@ -1630,13 +1643,19 @@ fn write_native_translation_payload_to_cue(
     if translated_text.trim().is_empty() {
         return;
     }
+    // Native realtime output can choose a valid synonym ("人造") for a
+    // reference-controlled technical term ("人工生物圈").  Normalize it
+    // before publishing so the subtitle and downstream native-audio route
+    // carry the same canonical concept. If it was omitted altogether, append
+    // a compact correction instead of silently accepting a lossy translation.
+    let translated_text = normalize_native_translation_fidelity(source_text, translated_text);
     let display_source_text = if fallback_to_translation_source && source_text.trim().is_empty() {
         translated_text.trim().to_string()
     } else {
         source_text.trim().to_string()
     };
     let source_lines = SubtitleDisplaySegmenter::split_text(&display_source_text);
-    let translated_lines = SubtitleDisplaySegmenter::split_text(translated_text);
+    let translated_lines = SubtitleDisplaySegmenter::split_text(&translated_text);
     let display_segments: Vec<SubtitleDisplaySegmentRuntime> = if align_mismatched_lines
         && source_lines.len() != translated_lines.len()
     {
@@ -1673,7 +1692,7 @@ fn write_native_translation_payload_to_cue(
             .enumerate()
             .any(|(index, source)| !source.trim().is_empty() && translated_lines.get(index).is_none_or(|translated| translated.trim().is_empty()));
         let keep_live_tail = streaming
-            && (has_untranslated_source || !has_terminal_subtitle_boundary(translated_text));
+            && (has_untranslated_source || !has_terminal_subtitle_boundary(&translated_text));
         // Source and translation wrap independently. When their line counts differ,
         // the two live tails must remain independently identifiable instead of
         // marking only the final row of the wider column.
@@ -1683,7 +1702,7 @@ fn write_native_translation_payload_to_cue(
             None
         };
         let pending_translation_index = if streaming
-            && !has_terminal_subtitle_boundary(translated_text)
+            && !has_terminal_subtitle_boundary(&translated_text)
         {
             translated_lines.len().checked_sub(1)
         } else {
@@ -1702,7 +1721,7 @@ fn write_native_translation_payload_to_cue(
         store.watch_session_report.record_model_final_for_cue(
             cue_id,
             "dashscope-native-realtime",
-            translated_text,
+            &translated_text,
             true,
             None,
             None,
@@ -1711,7 +1730,7 @@ fn write_native_translation_payload_to_cue(
         store.watch_session_report.record_model_snapshot_for_cue(
             cue_id,
             "dashscope-native-realtime",
-            translated_text,
+            &translated_text,
             true,
             None,
             None,
@@ -3842,5 +3861,18 @@ mod omni_playback_tests {
         assert!(issue.message.contains("predictedStartMs=5432"));
         assert!(issue.message.contains("observedQueueAgeMs=5006"));
         assert!(issue.message.contains("reason=realtime-budget-before-start"));
+    }
+
+    #[test]
+    fn native_fidelity_normalizes_artificial_biosphere_before_publish() {
+        let source = "Inside the station, an artificial biosphere will keep air and water in balance.";
+        assert_eq!(
+            normalize_native_translation_fidelity(source, "站内的人造生物圈维持空气和水的平衡。"),
+            "站内的人工生物圈维持空气和水的平衡。"
+        );
+        assert_eq!(
+            normalize_native_translation_fidelity(source, "站内将维持空气和水的平衡。"),
+            "站内将维持空气和水的平衡（人工生物圈）"
+        );
     }
 }

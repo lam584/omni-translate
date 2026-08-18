@@ -65,6 +65,17 @@ fn replay_manual_gate_serializes_response_create_until_response_done() {
     );
     assert!(slice.manual_turn_audio_after_response);
     assert_eq!(slice.audio_samples_since_commit, MANUAL_COMMIT_MIN_AUDIO_SAMPLES);
+    let socket = harness.tick(socket, &mut slice);
+    assert_no_next_commit(&harness);
+    assert!(
+        slice.sent_audio_since_commit,
+        "the response-release settle window must retain the next provider buffer"
+    );
+    slice.manual_response_released_at = Some(
+        SystemTime::now()
+            .checked_sub(Duration::from_millis(300))
+            .expect("settle timestamp"),
+    );
     let _socket = harness.tick(socket, &mut slice);
     assert_eq!(
         harness.sent_types().iter().filter(|kind| kind.as_str() == "input_audio_buffer.commit").count(),

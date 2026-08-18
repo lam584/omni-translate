@@ -458,6 +458,10 @@ pub(super) struct OmniCommitState {
     /// completion can create a concurrent response and corrupt cue ordering.
     pub(super) manual_response_requested: bool,
     pub(super) manual_response_item_id: Option<String>,
+    /// The most recent response.done that released the manual gate. DashScope
+    /// needs a brief server-side settle interval before it accepts the next
+    /// input_audio_buffer.commit.
+    pub(super) manual_response_released_at: Option<SystemTime>,
     pub(super) manual_turn_timed_out: bool,
     pub(super) committed_source_started_during_playback: Option<bool>,
 }
@@ -1224,6 +1228,7 @@ impl OmniConnectionCoordinator {
             mut manual_response_pending,
             mut manual_response_requested,
             mut manual_response_item_id,
+            mut manual_response_released_at,
             manual_turn_timed_out: _,
             committed_source_started_during_playback: _,
         } = state;
@@ -1248,7 +1253,10 @@ impl OmniConnectionCoordinator {
                     );
                 } else if let Some((turn_elapsed, commit_reason)) = (!manual_response_pending
                     && manual_turn_audio_after_response
-                    && sent_audio_since_commit)
+                    && sent_audio_since_commit
+                    && manual_response_released_at
+                        .and_then(|released_at| released_at.elapsed().ok())
+                        .is_none_or(|elapsed| elapsed >= Duration::from_millis(250)))
                     .then(|| {
                         manual_turn_started_at
                             .and_then(|started_at| started_at.elapsed().ok())
@@ -1294,6 +1302,7 @@ impl OmniConnectionCoordinator {
                         manual_response_pending = true;
                         manual_response_requested = false;
                         manual_response_item_id = None;
+                        manual_response_released_at = None;
                         let _ = diag_log(
                             app,
                             "omni",
@@ -1314,6 +1323,7 @@ impl OmniConnectionCoordinator {
             manual_response_pending,
             manual_response_requested,
             manual_response_item_id,
+            manual_response_released_at,
             manual_turn_timed_out,
             committed_source_started_during_playback,
         }

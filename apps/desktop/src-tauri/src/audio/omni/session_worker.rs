@@ -59,6 +59,7 @@ struct OmniSessionRuntime {
     manual_response_pending: bool,
     manual_response_requested: bool,
     manual_response_item_id: Option<String>,
+    manual_response_released_at: Option<SystemTime>,
     manual_turn_audio_after_response: bool,
     last_vad_event_time: SystemTime,
     vad_event_count: u64,
@@ -104,6 +105,7 @@ impl OmniSessionRuntime {
             manual_response_pending: false,
             manual_response_requested: false,
             manual_response_item_id: None,
+            manual_response_released_at: None,
             manual_turn_audio_after_response: false,
             last_vad_event_time: SystemTime::now(),
             vad_event_count: 0,
@@ -397,6 +399,7 @@ fn run_omni_worker(
         mut manual_response_pending,
         mut manual_response_requested,
         mut manual_response_item_id,
+        mut manual_response_released_at,
         mut manual_turn_audio_after_response,
         mut last_vad_event_time,
         mut vad_event_count,
@@ -604,6 +607,7 @@ fn run_omni_worker(
                 manual_response_pending,
                 manual_response_requested,
                 manual_response_item_id,
+                manual_response_released_at,
                 manual_turn_timed_out: false,
                 committed_source_started_during_playback: None,
             },
@@ -623,6 +627,7 @@ fn run_omni_worker(
         manual_response_pending = commit_state.manual_response_pending;
         manual_response_requested = commit_state.manual_response_requested;
         manual_response_item_id = commit_state.manual_response_item_id;
+        manual_response_released_at = commit_state.manual_response_released_at;
         if let Some(started_during_playback) =
             commit_state.committed_source_started_during_playback
         {
@@ -722,6 +727,7 @@ fn run_omni_worker(
                 manual_response_pending,
                 manual_response_requested,
                 manual_response_item_id,
+                manual_response_released_at,
                 sent_audio_since_commit,
                 audio_samples_since_commit,
                 manual_turn_audio_after_response,
@@ -782,6 +788,7 @@ fn run_omni_worker(
         manual_response_pending = poll.state.manual_response_pending;
         manual_response_requested = poll.state.manual_response_requested;
         manual_response_item_id = poll.state.manual_response_item_id;
+        manual_response_released_at = poll.state.manual_response_released_at;
         sent_audio_since_commit = poll.state.sent_audio_since_commit;
         audio_samples_since_commit = poll.state.audio_samples_since_commit;
         manual_turn_audio_after_response = poll.state.manual_turn_audio_after_response;

@@ -71,6 +71,7 @@ struct WorkerSlice {
     manual_response_pending: bool,
     manual_response_requested: bool,
     manual_response_item_id: Option<String>,
+    manual_response_released_at: Option<SystemTime>,
     last_vad_event_time: SystemTime,
     vad_event_count: u64,
     last_commit_time: SystemTime,
@@ -102,6 +103,7 @@ impl WorkerSlice {
             manual_response_pending: false,
             manual_response_requested: false,
             manual_response_item_id: None,
+            manual_response_released_at: None,
             last_vad_event_time: SystemTime::now(),
             vad_event_count: 0,
             last_commit_time: SystemTime::now(),
@@ -211,6 +213,7 @@ impl ReplayHarness {
                 manual_response_pending: slice.manual_response_pending,
                 manual_response_requested: slice.manual_response_requested,
                 manual_response_item_id: slice.manual_response_item_id.clone(),
+                manual_response_released_at: slice.manual_response_released_at,
                 manual_turn_timed_out: false,
                 committed_source_started_during_playback: None,
             },
@@ -230,6 +233,7 @@ impl ReplayHarness {
         slice.manual_response_pending = commit_state.manual_response_pending;
         slice.manual_response_requested = commit_state.manual_response_requested;
         slice.manual_response_item_id = commit_state.manual_response_item_id;
+        slice.manual_response_released_at = commit_state.manual_response_released_at;
         if let Some(started_during_playback) =
             commit_state.committed_source_started_during_playback
         {
@@ -299,6 +303,7 @@ impl ReplayHarness {
                 manual_response_pending: slice.manual_response_pending,
                 manual_response_requested: slice.manual_response_requested,
                 manual_response_item_id: slice.manual_response_item_id.clone(),
+                manual_response_released_at: slice.manual_response_released_at,
                 sent_audio_since_commit: slice.sent_audio_since_commit,
                 audio_samples_since_commit: slice.audio_samples_since_commit,
                 manual_turn_audio_after_response: slice.manual_turn_audio_after_response,
@@ -356,6 +361,7 @@ impl ReplayHarness {
         slice.manual_response_pending = state.manual_response_pending;
         slice.manual_response_requested = state.manual_response_requested;
         slice.manual_response_item_id = state.manual_response_item_id;
+        slice.manual_response_released_at = state.manual_response_released_at;
         slice.sent_audio_since_commit = state.sent_audio_since_commit;
         slice.audio_samples_since_commit = state.audio_samples_since_commit;
         slice.manual_turn_audio_after_response = state.manual_turn_audio_after_response;

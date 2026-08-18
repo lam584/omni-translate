@@ -32,6 +32,7 @@ pub(super) struct OmniSocketEventState<S: RealtimeSocket, R: tauri::Runtime = ta
     pub(super) manual_response_pending: bool,
     pub(super) manual_response_requested: bool,
     pub(super) manual_response_item_id: Option<String>,
+    pub(super) manual_response_released_at: Option<SystemTime>,
     pub(super) sent_audio_since_commit: bool,
     pub(super) audio_samples_since_commit: u64,
     pub(super) manual_turn_audio_after_response: bool,
@@ -152,7 +153,7 @@ impl OmniSocketEventProcessor {
         context: OmniSocketEventContext<'_, R>,
         connector: &C,
     ) -> Result<OmniSocketPollResult<C::Socket, R>, String> {
-        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut pending_audio_stream_cue_id, mut pending_audio_stream_chunk_index, mut pending_audio_stream_created_at_ms, mut pending_audio_stream_aborted, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, sent_audio_since_commit, audio_samples_since_commit, manual_turn_audio_after_response } = state;
+        let OmniSocketEventState { mut socket, mut trace_call, mut reconnect_count, mut pending_audio_buffer, mut active_voice, mut voice_fallback_applied, mut session_ready_for_audio, mut event_diagnostics, mut current_cue_id, mut pending_source_text, mut pending_translated_text, mut st_skip_logged, mut pending_audio_delta_count, mut pending_audio_delta_base64_bytes, mut pending_audio_response_id, mut pending_audio_stream_cue_id, mut pending_audio_stream_chunk_index, mut pending_audio_stream_created_at_ms, mut pending_audio_stream_aborted, mut last_vad_event_time, mut vad_event_count, mut transcription_completed_flag, mut transcription_completed_at, mut manual_response_pending, mut manual_response_requested, mut manual_response_item_id, mut manual_response_released_at, sent_audio_since_commit, audio_samples_since_commit, manual_turn_audio_after_response } = state;
         let OmniSocketEventContext {
             app, store, direction, session_generation, session_started_at,
             subtitle_translate_active, native_translation_reuse_active,
@@ -197,6 +198,7 @@ let mut stop_worker = false;
                         manual_response_pending,
                         manual_response_requested,
                         manual_response_item_id,
+                        manual_response_released_at,
                         sent_audio_since_commit,
                         audio_samples_since_commit,
                         manual_turn_audio_after_response,
@@ -726,6 +728,7 @@ match socket.read_message() {
                             manual_response_pending = false;
                             manual_response_requested = false;
                             manual_response_item_id = None;
+                            manual_response_released_at = Some(SystemTime::now());
                             // The audio pump remains writable while a response
                             // streams. Its accepted PCM already belongs to the
                             // provider's next input buffer, so preserve the

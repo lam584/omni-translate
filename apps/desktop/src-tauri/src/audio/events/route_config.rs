@@ -252,7 +252,7 @@ impl ResolvedRoutePlan {
         // smaller magnitude. This is a translation requirement, not a Watch
         // fixture hint: preserve every number, unit, date and monetary amount
         // exactly in the target language for every Omni route.
-        let numeric_fidelity_instruction = "Preserve every numerical value, date, unit, currency amount, percentage, and magnitude exactly. Never round, shorten, or change a number's scale.";
+        let numeric_fidelity_instruction = "Preserve every numerical value, date, unit, currency amount, percentage, and magnitude exactly. Never round, shorten, or change a number's scale. For Chinese output, retain the monetary scale explicitly: one billion dollars = 十亿美元, one hundred million dollars = 一亿美元, and five hundred million dollars = 五亿美元.";
         Self {
             direction: direction.to_string(),
             requested_voice_model: requested_voice_model.clone(),

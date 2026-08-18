@@ -466,7 +466,7 @@ values:
 npm run test:watch-mode-live:production-coordinator -- -- --workers-config artifacts/testing/watch-mode-workers.json --reuse-local-isolation artifacts/testing/watch-mode-local-isolation/<run>/local-isolation-manifest.json
 ```
 
-### Non-authoritative 30-minute smoke matrix
+### Non-authoritative 60-minute smoke matrix
 
 Before a release-shaped run, generate the fixed smoke plan with:
 
@@ -475,8 +475,8 @@ npm run test:watch-mode-live:smoke
 ```
 
 The VM3 smoke coordinator covers exactly 17 cells: six zero-provider local cells
-at 30 seconds, three `qwen3.5-omni-plus-realtime` cells at 45 seconds, and
-the fixed eight release cell identities at 45 seconds. The single-VM variant
+at 30 seconds, three `qwen3.5-omni-plus-realtime` cells at 180 seconds, and
+the fixed eight release cell identities at 180 seconds. The single-VM variant
 executes all cells serially on VM3's available default speaker. Each cell keeps
 its original `sourceDeviceClass` (`default-speaker` or `usb`) for coverage
 traceability, but this smoke does not claim USB hardware authority. It writes
@@ -497,6 +497,13 @@ explicitly marked `watch-mode-non-authoritative-smoke`; strict evidence,
 release closeout, and PR merge checks reject them. A product, device,
 orchestration/CI failure sets `blocksAuthoritativeRun` and requires a new
 clean-commit smoke execution before the full authority workflow can begin.
+
+The VM3 adapter records a complete zero-provider preflight result before any
+cell dispatch. Cache reuse is permitted only when the clean commit, runtime
+binary hashes, driver/device profile, and build settings still match; otherwise
+each build child records its command, timing, exit status, stdout/stderr log,
+and hard timeout result. A failed or timed-out preflight writes a failed smoke
+manifest with no dispatched cells, rather than leaving an unaccounted run.
 
 Use the coordinator configuration to bind each worker to its device-profile
 instance. Do not invoke `run-watch-mode-live-matrix.mjs` for strict release

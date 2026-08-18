@@ -43,7 +43,11 @@ const VM3_PREFLIGHT_BUILD_SETTINGS = Object.freeze({
   cargoBuildJobs: 1,
   cargoIncremental: false,
   cargoProfileTestDebug: 0,
-  commandTimeoutMs: 900_000,
+  // A cold Tauri release link legitimately exceeds 15 minutes on VM3. Keep
+  // an enforceable bound, but do not classify a progressing local build as a
+  // hang before it can emit the authority executable.
+  runtimeBuildTimeoutMs: 1_800_000,
+  regressionCommandTimeoutMs: 900_000,
 });
 
 function sameJson(left, right) {
@@ -238,13 +242,13 @@ function createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }) {
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
       path.join(repoRoot, 'scripts', 'testing', 'run-timeboxed-command.ps1'),
       '-PayloadBase64', payload,
-      '-TimeoutMs', '900000',
+      '-TimeoutMs', String(VM3_PREFLIGHT_BUILD_SETTINGS.runtimeBuildTimeoutMs),
       '-StdoutPath', stdoutPath,
       '-StderrPath', stderrPath,
     ], {
       encoding: 'utf8',
       stdio: 'pipe',
-      timeout: 960_000,
+      timeout: VM3_PREFLIGHT_BUILD_SETTINGS.runtimeBuildTimeoutMs + 60_000,
       windowsHide: true,
     });
     const result = {

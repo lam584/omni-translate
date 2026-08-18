@@ -2612,6 +2612,11 @@ fn bridge_route_is_transitioning(
             || snapshot.lifecycle_state == "initializing")
 }
 
+fn is_retryable_bridge_audio_pipe_open_error(error: &str) -> bool {
+    error.starts_with("Bridge audio pipe open failed:")
+        && (error.contains("os error 2") || error.contains("系统找不到指定的文件"))
+}
+
 fn process_omni_stream_playback_command<R: tauri::Runtime>(
     app: &AppHandle<R>,
     audio_state: &AudioStateStore,
@@ -2720,10 +2725,21 @@ fn process_omni_stream_playback_command<R: tauri::Runtime>(
         ).0
     };
     let request_id = format!("omni-stream-{cue_id}-{chunk_index}");
-    let write_succeeded = match BridgeAudioWriter::new(app).write_process_playback_stream(
+    let write_result = BridgeAudioWriter::new(app).write_process_playback_stream(
         &cue_id, &request_id, route_direction, &output_samples, sample_rate_hz, 1,
         created_at_ms, estimated_duration_ms, chunk_index, stream_state,
-    ) {
+    );
+    let write_result = match write_result {
+        Err(error) if is_retryable_bridge_audio_pipe_open_error(&error) => {
+            thread::sleep(Duration::from_millis(150));
+            BridgeAudioWriter::new(app).write_process_playback_stream(
+                &cue_id, &request_id, route_direction, &output_samples, sample_rate_hz, 1,
+                created_at_ms, estimated_duration_ms, chunk_index, stream_state,
+            )
+        }
+        result => result,
+    };
+    let write_succeeded = match write_result {
         Ok(accepted_frames) => match translated_pcm_authority.accept_stream_write(
             &cue_id,
             &request_id,
@@ -3693,6 +3709,16 @@ mod omni_playback_tests {
         assert!(!bridge_route_is_transitioning(
             Some(crate::bridge::contracts::SourceCaptureMode::ProcessExclusion),
             &snapshot,
+        ));
+    }
+
+    #[test]
+    fn retries_only_missing_bridge_audio_pipe_open_errors() {
+        assert!(is_retryable_bridge_audio_pipe_open_error(
+            "Bridge audio pipe open failed: 系统找不到指定的文件。 (os error 2)"
+        ));
+        assert!(!is_retryable_bridge_audio_pipe_open_error(
+            "Bridge audio pipe write failed: broken pipe"
         ));
     }
 

@@ -20,6 +20,12 @@ const downloadsRoot = resolve(
   process.env.OMNI_AEC3_VCPKG_DOWNLOADS
     ?? join(workspace, 'target', 'aec3-msvc-vcpkg-downloads'),
 );
+// MSVC, CMake, Ninja, and vcpkg do not consistently inherit Node's temporary
+// directory on Windows. Keep every disposable build file on the workspace
+// volume so the VM's small C: drive never becomes a hidden build target.
+const temporaryRoot = resolve(
+  process.env.OMNI_AEC3_TEMP_ROOT ?? join(workspace, 'artifacts', 'tmp', 'aec3-msvc'),
+);
 
 if (process.platform !== 'win32' || process.arch !== 'x64') {
   throw new Error('AEC3 MSVC gate requires Windows x64');
@@ -154,6 +160,7 @@ function assertPinnedVcpkgTool(executable) {
 }
 
 mkdirSync(resolve(workspace, 'target'), { recursive: true });
+mkdirSync(temporaryRoot, { recursive: true });
 // vcpkg's history is large and a full clone can spend many minutes unpacking
 // commits that the pinned AEC3 gate never reads. Fetch just the approved
 // baseline. A failed clone leaves a .git directory behind, so require a real
@@ -188,7 +195,13 @@ if (!assertPinnedVcpkgTool(vcpkgExecutable)) {
     throw new Error(`bootstrapped vcpkg tool does not match pinned SHA-256 ${VCPKG_TOOL_SHA256}`);
   }
 }
-const vcpkgInstallEnvironment = { ...process.env, VCPKG_DOWNLOADS: downloadsRoot };
+const vcpkgInstallEnvironment = {
+  ...process.env,
+  VCPKG_DOWNLOADS: downloadsRoot,
+  TEMP: temporaryRoot,
+  TMP: temporaryRoot,
+  TMPDIR: temporaryRoot,
+};
 runWithRetries(vcpkgExecutable, [
   'install',
   `webrtc:${TRIPLET}`,
@@ -231,6 +244,9 @@ const buildEnvironment = {
   // a versioned CMake Visual Studio generator name.
   CMAKE_GENERATOR: 'Ninja',
   CMAKE_MAKE_PROGRAM: ninja,
+  TEMP: temporaryRoot,
+  TMP: temporaryRoot,
+  TMPDIR: temporaryRoot,
   // build.rs watches this nonce. A repeated local/CI gate therefore reruns
   // the native deterministic CTest instead of trusting Cargo's cached build
   // script output; failure prevents the linked feature from compiling.

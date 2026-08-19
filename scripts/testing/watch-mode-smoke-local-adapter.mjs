@@ -1,7 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 
 import { repoRoot } from '../lib/testing-common.mjs';
@@ -393,7 +392,12 @@ export async function runPreflight({ executionRoot }) {
 
 function runPowerShell(argv, timeoutMs) {
   return new Promise((resolve, reject) => {
-    const temporaryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'omni-smoke-elevated-live-'));
+    // Do not inherit the desktop process' C: TEMP. Live-runner logs and
+    // physical-audio windows can be sizable on VM3, whose system drive has a
+    // hard 5 GiB smoke floor.
+    const smokeTempRoot = path.join(repoRoot, 'artifacts', 'tmp');
+    fs.mkdirSync(smokeTempRoot, { recursive: true });
+    const temporaryRoot = fs.mkdtempSync(path.join(smokeTempRoot, 'omni-smoke-elevated-live-'));
     const outputLog = path.join(temporaryRoot, 'runner.log');
     const launcher = path.join(repoRoot, 'scripts', 'testing', 'run-elevated-watch-mode-live.ps1');
     const child = spawn('powershell.exe', [

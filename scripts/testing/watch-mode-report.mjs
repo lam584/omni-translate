@@ -1039,6 +1039,11 @@ function bridgeLayerFailed(bridge, bridgeLog, feedbackLoopPrevention = 'virtual-
   if (
     bridge?.sourceSubscriberActive === false
     && !bridgeLogShowsActiveSource(bridgeLog)
+    // A bridge.source.frame is emitted only after the source-pipe client has
+    // subscribed. The snapshot is taken during preflight and can therefore
+    // still read waiting-subscriber while this run subsequently delivered a
+    // frame to the probe.
+    && asNumber(bridge?.sourceFramePayloadBytes) === 0
   ) {
     return 'bridge source subscriber is not active';
   }

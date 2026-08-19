@@ -245,6 +245,7 @@ function createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }) {
       '-TimeoutMs', String(VM3_PREFLIGHT_BUILD_SETTINGS.runtimeBuildTimeoutMs),
       '-StdoutPath', stdoutPath,
       '-StderrPath', stderrPath,
+      '-MinCFreeBytes', String(5 * 1024 ** 3),
     ], {
       encoding: 'utf8',
       stdio: 'pipe',
@@ -256,7 +257,7 @@ function createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }) {
       error: wrapper.error,
       stdout: fs.existsSync(stdoutPath) ? fs.readFileSync(stdoutPath, 'utf8') : wrapper.stdout,
       stderr: fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, 'utf8') : wrapper.stderr,
-      timedOut: wrapper.status === 124 || wrapper.error?.code === 'ETIMEDOUT',
+      timedOut: wrapper.status === 124 || wrapper.status === 125 || wrapper.error?.code === 'ETIMEDOUT',
     };
     const check = writePreflightLog(preflightRoot, `runtime-build-${checks.length + 1}`, {
       command: [command, ...args].join(' '),

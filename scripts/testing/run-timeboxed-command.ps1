@@ -2,7 +2,8 @@ param(
   [Parameter(Mandatory = $true)][string]$PayloadBase64,
   [Parameter(Mandatory = $true)][int]$TimeoutMs,
   [Parameter(Mandatory = $true)][string]$StdoutPath,
-  [Parameter(Mandatory = $true)][string]$StderrPath
+  [Parameter(Mandatory = $true)][string]$StderrPath,
+  [long]$MinCFreeBytes = 0
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,9 +18,17 @@ foreach ($entry in $payload.environment.PSObject.Properties) {
 $process = Start-Process -FilePath $payload.command -ArgumentList @($payload.arguments) `
   -WorkingDirectory $payload.cwd -RedirectStandardOutput $StdoutPath `
   -RedirectStandardError $StderrPath -PassThru
-if (-not $process.WaitForExit($TimeoutMs)) {
-  & taskkill.exe /PID $process.Id /T /F | Out-Null
-  $process.WaitForExit()
-  exit 124
+$deadline = [Diagnostics.Stopwatch]::StartNew()
+while (-not $process.WaitForExit(5000)) {
+  if ($MinCFreeBytes -gt 0 -and (Get-PSDrive -Name C).Free -le $MinCFreeBytes) {
+    & taskkill.exe /PID $process.Id /T /F | Out-Null
+    $process.WaitForExit()
+    exit 125
+  }
+  if ($deadline.ElapsedMilliseconds -ge $TimeoutMs) {
+    & taskkill.exe /PID $process.Id /T /F | Out-Null
+    $process.WaitForExit()
+    exit 124
+  }
 }
 exit $process.ExitCode

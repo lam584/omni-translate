@@ -504,6 +504,10 @@ binary hashes, driver/device profile, and build settings still match; otherwise
 each build child records its command, timing, exit status, stdout/stderr log,
 and hard timeout result. A failed or timed-out preflight writes a failed smoke
 manifest with no dispatched cells, rather than leaving an unaccounted run.
+Before either a cached or cold preflight begins, VM3 must have at least 7 GiB
+free on C:. During a smoke-owned build the existing 5 GiB floor remains the
+hard stop line. Both checks are recorded in the preflight result; neither is a
+substitute for the required E: temporary environment.
 
 Use the coordinator configuration to bind each worker to its device-profile
 instance. Do not invoke `run-watch-mode-live-matrix.mjs` for strict release

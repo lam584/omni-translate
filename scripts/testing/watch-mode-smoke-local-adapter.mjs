@@ -36,6 +36,8 @@ const VM3_PREFLIGHT_CACHE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'wa
 const VM3_PREFLIGHT_CACHE_FILE = path.join(VM3_PREFLIGHT_CACHE_ROOT, 'vm3-runtime-preflight.json');
 const VM3_PREFLIGHT_CACHE_SCHEMA_VERSION = 1;
 const VM3_SHORT_LIVE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-smoke-runtime');
+export const VM3_SMOKE_START_MIN_C_FREE_BYTES = 7 * 1024 ** 3;
+const VM3_SMOKE_STOP_MIN_C_FREE_BYTES = 5 * 1024 ** 3;
 const VM3_PREFLIGHT_BUILD_SETTINGS = Object.freeze({
   cargoRegistryProtocol: 'sparse',
   cargoOffline: true,
@@ -51,6 +53,23 @@ const VM3_PREFLIGHT_BUILD_SETTINGS = Object.freeze({
 
 function sameJson(left, right) {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+export function vm3SmokeStartSpaceFailure(freeBytes) {
+  if (!Number.isFinite(freeBytes)) return 'VM3 C: free space is unavailable; refusing to start smoke preflight';
+  if (freeBytes < VM3_SMOKE_START_MIN_C_FREE_BYTES) {
+    return `VM3 C: free space is below the 7 GB smoke start buffer (${freeBytes} bytes)`;
+  }
+  return null;
+}
+
+function readVm3CFreeBytes(run = spawnSync) {
+  if (process.platform !== 'win32') return null;
+  const probe = run('powershell.exe', ['-NoProfile', '-Command', '(Get-PSDrive -Name C).Free'], {
+    encoding: 'utf8', windowsHide: true, timeout: 30_000,
+  });
+  if (probe?.error || probe?.status !== 0) return Number.NaN;
+  return Number.parseInt(String(probe.stdout ?? '').trim(), 10);
 }
 
 function shortLiveOutputRoot(executionRoot) {
@@ -220,7 +239,7 @@ function createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }) {
       encoding: 'utf8', windowsHide: true, timeout: 30_000,
     });
     const freeBytes = Number.parseInt(String(probe.stdout ?? '').trim(), 10);
-    if (!Number.isFinite(freeBytes) || freeBytes <= 5 * 1024 ** 3) {
+    if (!Number.isFinite(freeBytes) || freeBytes <= VM3_SMOKE_STOP_MIN_C_FREE_BYTES) {
       throw new Error(`VM3 C: free space is at or below the 5 GB smoke floor (${Number.isFinite(freeBytes) ? freeBytes : 'unavailable'} bytes)`);
     }
   };
@@ -244,7 +263,7 @@ function createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }) {
       '-TimeoutMs', String(VM3_PREFLIGHT_BUILD_SETTINGS.runtimeBuildTimeoutMs),
       '-StdoutPath', stdoutPath,
       '-StderrPath', stderrPath,
-      '-MinCFreeBytes', String(5 * 1024 ** 3),
+      '-MinCFreeBytes', String(VM3_SMOKE_STOP_MIN_C_FREE_BYTES),
     ], {
       encoding: 'utf8',
       stdio: 'pipe',
@@ -281,6 +300,30 @@ export async function runPreflight({ executionRoot }) {
   fs.mkdirSync(preflightRoot, { recursive: true });
   fs.mkdirSync(temporaryRoot, { recursive: true });
   fs.mkdirSync(VM3_CARGO_HOME, { recursive: true });
+  const startFreeBytes = readVm3CFreeBytes();
+  const startSpaceFailure = vm3SmokeStartSpaceFailure(startFreeBytes);
+  if (startSpaceFailure) {
+    const check = writePreflightLog(preflightRoot, 'c-drive-start-buffer', {
+      command: 'Get-PSDrive -Name C | Select-Object -ExpandProperty Free',
+      status: 1,
+      stdout: Number.isFinite(startFreeBytes) ? `${startFreeBytes}\n` : '',
+      stderr: startSpaceFailure,
+      passed: false,
+      error: null,
+      timedOut: false,
+      startedAt: new Date().toISOString(),
+      completedAt: new Date().toISOString(),
+      durationMs: 0,
+    });
+    return {
+      passed: false,
+      providerCalls: 0,
+      checks: [check],
+      failure: startSpaceFailure,
+      classification: 'orchestration',
+      diskSpace: { cFreeBytes: Number.isFinite(startFreeBytes) ? startFreeBytes : null, requiredStartBytes: VM3_SMOKE_START_MIN_C_FREE_BYTES },
+    };
+  }
   const reusable = readReusablePreflight();
   if (reusable) {
     runtimeAuthority = reusable.runtimeAuthority;

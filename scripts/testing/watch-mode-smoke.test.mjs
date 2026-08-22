@@ -19,6 +19,8 @@ import {
 import {
   classifyReport,
   currentVm3Profile,
+  VM3_SMOKE_START_MIN_C_FREE_BYTES,
+  vm3SmokeStartSpaceFailure,
   workerCapabilities as localWorkerCapabilities,
 } from './watch-mode-smoke-local-adapter.mjs';
 
@@ -153,6 +155,12 @@ test('VM3 local adapter binds the present default speaker and one local worker',
   assert.equal(profile.deviceClass, 'default-speaker');
   assert.match(profile.physicalPlaybackDeviceId, /^\{0\.0\.0\.00000000\}\.\{[a-f0-9-]+\}$/i);
   assert.match(profile.expectedPhysicalPlaybackDeviceName, /High Definition Audio Device/);
+});
+
+test('VM3 smoke preflight requires the seven-GiB C-drive start buffer', () => {
+  assert.match(vm3SmokeStartSpaceFailure(VM3_SMOKE_START_MIN_C_FREE_BYTES - 1), /7 GB smoke start buffer/);
+  assert.match(vm3SmokeStartSpaceFailure(Number.NaN), /free space is unavailable/);
+  assert.equal(vm3SmokeStartSpaceFailure(VM3_SMOKE_START_MIN_C_FREE_BYTES), null);
 });
 
 test('smoke adapter classifies provider 50002 cue evidence as external even when the runner layer is app', () => {

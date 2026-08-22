@@ -6,7 +6,23 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+trap {
+  Write-Error $_
+  exit 1
+}
 . (Join-Path $PSScriptRoot 'virtual-speaker-device.ps1')
+
+function Get-OmniSha256 {
+  param([Parameter(Mandatory)][string]$LiteralPath)
+  $stream = [System.IO.File]::OpenRead($LiteralPath)
+  $algorithm = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $algorithm.Dispose()
+    $stream.Dispose()
+  }
+}
 
 function Get-OmniInstalledDriverAuthority {
   param([string]$WorkspacePath, [string]$RootInstanceId)
@@ -38,10 +54,10 @@ function Get-OmniInstalledDriverAuthority {
     throw "Installed Omni driver binary is missing: $installedSysPath"
   }
 
-  $packageSysSha256 = (Get-FileHash -LiteralPath $packageSysPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  $packageCatSha256 = (Get-FileHash -LiteralPath $packageCatPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  $packageInfSha256 = (Get-FileHash -LiteralPath $packageInfPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  $installedSysSha256 = (Get-FileHash -LiteralPath $installedSysPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $packageSysSha256 = Get-OmniSha256 -LiteralPath $packageSysPath
+  $packageCatSha256 = Get-OmniSha256 -LiteralPath $packageCatPath
+  $packageInfSha256 = Get-OmniSha256 -LiteralPath $packageInfPath
+  $installedSysSha256 = Get-OmniSha256 -LiteralPath $installedSysPath
   if ($packageSysSha256 -ne $installedSysSha256) {
     throw "Installed Omni driver binary does not match the current-HEAD package: installed=$installedSysSha256 package=$packageSysSha256 path=$installedSysPath"
   }
@@ -120,9 +136,9 @@ function Get-OmniInstalledDriverAuthority {
       throw "Installed DriverStore authority file is missing: $requiredPath"
     }
   }
-  $driverStoreInfSha256 = (Get-FileHash -LiteralPath $driverStoreInfPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  $driverStoreCatSha256 = (Get-FileHash -LiteralPath $driverStoreCatPath -Algorithm SHA256).Hash.ToLowerInvariant()
-  $driverStoreSysSha256 = (Get-FileHash -LiteralPath $driverStoreSysPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $driverStoreInfSha256 = Get-OmniSha256 -LiteralPath $driverStoreInfPath
+  $driverStoreCatSha256 = Get-OmniSha256 -LiteralPath $driverStoreCatPath
+  $driverStoreSysSha256 = Get-OmniSha256 -LiteralPath $driverStoreSysPath
   if (
     $driverStoreInfSha256 -ne $packageInfSha256 -or
     $driverStoreCatSha256 -ne $packageCatSha256 -or

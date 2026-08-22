@@ -25,6 +25,10 @@ function Assert-OmniMicrosoftSignedDevcon {
     throw "DevCon authority requires an .exe file: $Path"
   }
 
+  $signatureCommand = Get-Command Get-AuthenticodeSignature -ErrorAction SilentlyContinue
+  if (-not $signatureCommand) {
+    throw "DevCon must have a valid Microsoft Authenticode signature: signature inspection is unavailable for $Path"
+  }
   $signature = Get-AuthenticodeSignature -LiteralPath $Path
   $subject = if ($signature.SignerCertificate) {
     [string]$signature.SignerCertificate.Subject

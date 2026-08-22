@@ -24,6 +24,18 @@ function ConvertTo-OmniEvidenceJson {
   return ($Value | ConvertTo-Json -Depth 32 -Compress)
 }
 
+function Get-OmniEvidenceSha256 {
+  param([Parameter(Mandatory = $true)][string]$LiteralPath)
+  $stream = [System.IO.File]::OpenRead($LiteralPath)
+  $algorithm = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    return ([System.BitConverter]::ToString($algorithm.ComputeHash($stream))).Replace('-', '').ToLowerInvariant()
+  } finally {
+    $algorithm.Dispose()
+    $stream.Dispose()
+  }
+}
+
 function Invoke-OmniVirtualMicFingerprintAuthority {
   param(
     [Parameter(Mandatory = $true)][string]$CaptureProbePath,
@@ -233,7 +245,7 @@ function Assert-OmniVirtualMicCaptureAuthority {
     [Text.Encoding]::ASCII.GetString($wavBytes, 36, 4) -eq 'data' -and
     [BitConverter]::ToUInt32($wavBytes, 40) -eq ($capturedFrames * 2)
   ) 'capture WAV header/frame count is not canonical PCM16 evidence'
-  $wavSha256 = (Get-FileHash -LiteralPath $CaptureWavPath -Algorithm SHA256).Hash.ToLowerInvariant()
+  $wavSha256 = Get-OmniEvidenceSha256 -LiteralPath $CaptureWavPath
   Assert-OmniVirtualMicEvidenceCondition ($CaptureProbe.captureWavSha256 -ceq $wavSha256) 'capture WAV SHA-256 does not match the raw WAV'
 
   foreach ($property in @('id', 'detected', 'frequencyHz', 'startFrame', 'frameCount', 'expectedPcmHex', 'expectedPcmSha256')) {

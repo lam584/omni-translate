@@ -10,6 +10,14 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$testTempRoot = Join-Path $WorkspaceRoot 'artifacts\testing\temp'
+New-Item -ItemType Directory -Path $testTempRoot -Force | Out-Null
+$env:TEMP = $testTempRoot
+$env:TMP = $testTempRoot
+$env:TMPDIR = $testTempRoot
+$env:NPM_CONFIG_CACHE = Join-Path $testTempRoot 'npm-cache'
+$env:CARGO_HOME = Join-Path $WorkspaceRoot 'artifacts\testing\cargo-home'
+$env:CARGO_TARGET_DIR = Join-Path $WorkspaceRoot 'target'
 $self = $MyInvocation.MyCommand.Path
 if (-not $Elevated) {
   $process = Start-Process -FilePath powershell.exe -Verb RunAs -PassThru -Wait -WindowStyle Hidden `

@@ -59,8 +59,17 @@ nul
 # Logs & diagnostics
 # =============================================================================
 *.log
+scripts/diagnostics/omni-benchmark/benchmark-report*.json
 scripts/diagnostics/CODEX_PLUGIN_REPAIR.md
 scripts/diagnostics/repair-codex-app-plugins.ps1
+
+# Generated-on-demand Watch Mode audio (the canonical original remains tracked)
+scripts/testing/fixtures/watch-mode-en-conversation.wav
+scripts/testing/fixtures/watch-mode-en-conversation.sha256
+scripts/testing/fixtures/watch-mode-en-technical.wav
+scripts/testing/fixtures/watch-mode-en-technical.sha256
+scripts/testing/fixtures/multilingual/*.wav
+scripts/testing/fixtures/multilingual/*.wav.sha256
 
 # =============================================================================
 # Temporary, cache & local config files

@@ -25,7 +25,7 @@ jobs:
           node-version: 24
 
       - name: Audit tracked files
-        run: node ./scripts/testing/audit-repository-hygiene.mjs
+        run: npm run audit:repository-hygiene
 
   secrets:
     name: Full-history secret scan

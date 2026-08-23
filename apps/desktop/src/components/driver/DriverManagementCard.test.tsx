@@ -104,7 +104,7 @@ describe('DriverManagementCard', () => {
       action: 'install',
       errorCode: 'driver.audio-probe-failed',
       summary: refreshedSnapshot.bridge.driverDetail,
-      logPath: 'E:\\omni-translate\\artifacts\\diagnostics\\logs\\driver-operations\\wasapi.log',
+      logPath: 'X:\\fixture-workspace\\artifacts\\diagnostics\\logs\\driver-operations\\wasapi.log',
     });
     startBridgeServiceRuntimeMock.mockRejectedValue(new Error('bridge failed'));
     refreshBridgeRuntimeMock.mockResolvedValue(refreshedSnapshot);

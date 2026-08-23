@@ -2,6 +2,7 @@
   "generatedAt": "2026-07-31T15:44:14.195Z",
   "template": "../watch-mode-en-original.txt",
   "englishAudio": "../watch-mode-en-original.wav",
+  "audioDistribution": "generated-on-demand",
   "translationModel": "qwen3.6-flash",
   "fixtures": [
     {

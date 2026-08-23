@@ -25,14 +25,18 @@ import {
   SMOKE_PROVIDER_SESSION_AUTHORITY_FILE,
   SMOKE_PROVIDER_SESSION_AUTHORITY_KIND,
   buildVm3PaidSmokeRunnerArgv,
+  classifyTimeboxedCommandOutcome,
   classifyReport,
+  createRuntimeBuildRunner,
   currentVm3Profile,
   evaluateSmokeProviderSessionAuthority,
   readSmokeProviderSessionAuthority,
   resolveVm3SmokeLiveTimeoutMs,
   smokeLiveReportCompletenessFailure,
+  timeboxedCommandOutcomeFailure,
   VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS,
   VM3_SMOKE_START_MIN_C_FREE_BYTES,
+  vm3RuntimeBuildSpaceFailure,
   vm3SmokeStartSpaceFailure,
   workerCapabilities as localWorkerCapabilities,
 } from './watch-mode-smoke-local-adapter.mjs';
@@ -603,6 +607,242 @@ test('VM3 smoke preflight requires the seven-GiB C-drive start buffer', () => {
   assert.equal(vm3SmokeStartSpaceFailure(VM3_SMOKE_START_MIN_C_FREE_BYTES), null);
 });
 
+test('runtime build disk and timeout outcomes remain distinct', () => {
+  assert.match(vm3RuntimeBuildSpaceFailure(VM3_SMOKE_STOP_MIN_C_FREE_BYTES), /5 GB smoke floor/);
+  assert.match(vm3RuntimeBuildSpaceFailure(Number.NaN), /unavailable before runtime build/);
+  assert.equal(vm3RuntimeBuildSpaceFailure(VM3_SMOKE_STOP_MIN_C_FREE_BYTES + 1), null);
+  assert.deepEqual(classifyTimeboxedCommandOutcome({
+    status: 125,
+    errorCode: null,
+    outcome: { reason: 'c-drive-floor' },
+  }), {
+    terminationReason: 'c-drive-floor',
+    timedOut: false,
+    diskFloorReached: true,
+  });
+  assert.deepEqual(classifyTimeboxedCommandOutcome({
+    status: 125,
+    errorCode: null,
+    outcome: { reason: 'child-exit' },
+  }), {
+    terminationReason: 'child-exit',
+    timedOut: false,
+    diskFloorReached: false,
+  });
+  assert.deepEqual(classifyTimeboxedCommandOutcome({
+    status: 124,
+    errorCode: null,
+    outcome: { reason: 'timeout' },
+  }), {
+    terminationReason: 'timeout',
+    timedOut: true,
+    diskFloorReached: false,
+  });
+});
+
+test('timeboxed outcome semantics reject forged disk, timestamp, minimum, and trigger claims', () => {
+  const startedAt = '2026-08-24T00:00:00.000Z';
+  const sampledAt = '2026-08-24T00:00:00.500Z';
+  const completedAt = '2026-08-24T00:00:01.000Z';
+  const floorSample = {
+    sampledAt,
+    freeBytes: VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+    error: null,
+  };
+  const validFloor = {
+    schemaVersion: 1,
+    artifactKind: 'timeboxed-command-outcome',
+    reason: 'c-drive-floor',
+    exitCode: 125,
+    thresholdBytes: VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+    trigger: floorSample,
+    minimumCFreeBytes: VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+    samples: [floorSample],
+    childProcessId: 123,
+    startedAt,
+    completedAt,
+    durationMs: 1_000,
+    failure: null,
+  };
+  const copy = (value) => JSON.parse(JSON.stringify(value));
+  assert.equal(timeboxedCommandOutcomeFailure(validFloor, { status: 125 }), null);
+
+  const wrongThreshold = copy(validFloor);
+  wrongThreshold.thresholdBytes += 1;
+  assert.match(timeboxedCommandOutcomeFailure(wrongThreshold, { status: 125 }), /threshold must equal/);
+
+  const missingTrigger = copy(validFloor);
+  missingTrigger.trigger = null;
+  assert.match(timeboxedCommandOutcomeFailure(missingTrigger, { status: 125 }), /requires a trigger/);
+
+  const aboveFloorTrigger = copy(validFloor);
+  aboveFloorTrigger.trigger.freeBytes += 1;
+  aboveFloorTrigger.samples[0].freeBytes += 1;
+  aboveFloorTrigger.minimumCFreeBytes += 1;
+  assert.match(timeboxedCommandOutcomeFailure(aboveFloorTrigger, { status: 125 }), /at or below the threshold/);
+
+  const wrongMinimum = copy(validFloor);
+  wrongMinimum.minimumCFreeBytes -= 1;
+  assert.match(timeboxedCommandOutcomeFailure(wrongMinimum, { status: 125 }), /does not match sampled minimum/);
+
+  const invalidTimestamp = copy(validFloor);
+  invalidTimestamp.samples[0].sampledAt = 'not-a-timestamp';
+  invalidTimestamp.trigger.sampledAt = 'not-a-timestamp';
+  assert.match(timeboxedCommandOutcomeFailure(invalidTimestamp, { status: 125 }), /sample timestamp/);
+
+  const negativeDuration = copy(validFloor);
+  negativeDuration.durationMs = -1;
+  assert.match(timeboxedCommandOutcomeFailure(negativeDuration, { status: 125 }), /non-negative finite/);
+
+  const healthySample = {
+    sampledAt,
+    freeBytes: VM3_SMOKE_STOP_MIN_C_FREE_BYTES + 1,
+    error: null,
+  };
+  const validTimeout = {
+    ...copy(validFloor),
+    reason: 'timeout',
+    exitCode: 124,
+    trigger: null,
+    minimumCFreeBytes: healthySample.freeBytes,
+    samples: [healthySample],
+  };
+  assert.equal(timeboxedCommandOutcomeFailure(validTimeout, { status: 124 }), null);
+  const timeoutWithTrigger = copy(validTimeout);
+  timeoutWithTrigger.trigger = healthySample;
+  assert.match(timeboxedCommandOutcomeFailure(timeoutWithTrigger, { status: 124 }), /must not contain a trigger/);
+
+  const validChild125 = {
+    ...copy(validFloor),
+    reason: 'child-exit',
+    exitCode: 125,
+    trigger: null,
+    minimumCFreeBytes: null,
+    samples: [],
+  };
+  assert.equal(timeboxedCommandOutcomeFailure(validChild125, { status: 125 }), null);
+  const childWithTrigger = copy(validChild125);
+  childWithTrigger.trigger = healthySample;
+  assert.match(timeboxedCommandOutcomeFailure(childWithTrigger, { status: 125 }), /must not contain a trigger/);
+});
+
+test('runtime build runner samples C before every command and refuses the second command at the floor', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-runtime-build-floor-'));
+  const preflightRoot = path.join(root, 'preflight');
+  const temporaryRoot = path.join(root, 'temporary');
+  fs.mkdirSync(preflightRoot, { recursive: true });
+  fs.mkdirSync(temporaryRoot, { recursive: true });
+  const checks = [];
+  const freeBytes = [VM3_SMOKE_STOP_MIN_C_FREE_BYTES + 1, VM3_SMOKE_STOP_MIN_C_FREE_BYTES];
+  const wrapperCalls = [];
+  try {
+    const runWrapper = (command, args) => {
+      wrapperCalls.push({ command, args });
+      const outcomePath = args[args.indexOf('-OutcomePath') + 1];
+      fs.writeFileSync(outcomePath, `${JSON.stringify({
+        schemaVersion: 1,
+        artifactKind: 'timeboxed-command-outcome',
+        reason: 'child-exit',
+        exitCode: 0,
+        thresholdBytes: VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+        trigger: null,
+        minimumCFreeBytes: null,
+        samples: [],
+        childProcessId: 123,
+        startedAt: new Date().toISOString(),
+        completedAt: new Date().toISOString(),
+        durationMs: 1,
+        failure: null,
+      })}\n`, 'utf8');
+      return { status: 0, stdout: '', stderr: '' };
+    };
+    const run = createRuntimeBuildRunner({
+      checks,
+      preflightRoot,
+      temporaryRoot,
+      platform: 'win32',
+      sampleCFreeBytes: () => freeBytes.shift(),
+      runWrapper,
+    });
+    const first = run('cmd.exe', ['/d', '/c', 'exit', '0'], {
+      cwd: process.cwd(),
+      env: process.env,
+    });
+    assert.equal(first.status, 0);
+    assert.equal(first.terminationReason, 'child-exit');
+    assert.throws(() => run('cmd.exe', ['/d', '/c', 'exit', '0'], {
+      cwd: process.cwd(),
+      env: process.env,
+    }), /at or below the 5 GB smoke floor/);
+    assert.equal(wrapperCalls.length, 1, 'the command at the floor must never launch');
+    assert.equal(checks.length, 2);
+    assert.equal(checks[0].cFreeBytesBeforeStart, VM3_SMOKE_STOP_MIN_C_FREE_BYTES + 1);
+    assert.equal(checks[1].cFreeBytesBeforeStart, VM3_SMOKE_STOP_MIN_C_FREE_BYTES);
+    assert.equal(checks[1].status, 125);
+    assert.equal(checks[1].timedOut, false);
+    assert.equal(checks[1].diskFloorReached, true);
+    assert.equal(checks[1].timeboxOutcome.reason, 'c-drive-floor');
+    assert.equal(checks[1].timeboxOutcome.trigger.freeBytes, VM3_SMOKE_STOP_MIN_C_FREE_BYTES);
+    assert.equal(fs.existsSync(checks[1].timeboxOutcomeFile), true);
+    assert.equal(timeboxedCommandOutcomeFailure(checks[1].timeboxOutcome, { status: 125 }), null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('runtime build runner rejects a semantically forged disk-floor receipt', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-runtime-build-forged-floor-'));
+  const preflightRoot = path.join(root, 'preflight');
+  const temporaryRoot = path.join(root, 'temporary');
+  fs.mkdirSync(preflightRoot, { recursive: true });
+  fs.mkdirSync(temporaryRoot, { recursive: true });
+  const checks = [];
+  try {
+    const run = createRuntimeBuildRunner({
+      checks,
+      preflightRoot,
+      temporaryRoot,
+      platform: 'win32',
+      sampleCFreeBytes: () => VM3_SMOKE_STOP_MIN_C_FREE_BYTES + 2,
+      runWrapper: (_command, args) => {
+        const outcomePath = args[args.indexOf('-OutcomePath') + 1];
+        const sampledAt = new Date().toISOString();
+        const forgedFreeBytes = VM3_SMOKE_STOP_MIN_C_FREE_BYTES + 1;
+        const sample = { sampledAt, freeBytes: forgedFreeBytes, error: null };
+        fs.writeFileSync(outcomePath, `${JSON.stringify({
+          schemaVersion: 1,
+          artifactKind: 'timeboxed-command-outcome',
+          reason: 'c-drive-floor',
+          exitCode: 125,
+          thresholdBytes: VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+          trigger: sample,
+          minimumCFreeBytes: forgedFreeBytes,
+          samples: [sample],
+          childProcessId: 123,
+          startedAt: sampledAt,
+          completedAt: sampledAt,
+          durationMs: 0,
+          failure: null,
+        })}\n`, 'utf8');
+        return { status: 125, stdout: '', stderr: '' };
+      },
+    });
+    const result = run('cmd.exe', ['/d', '/c', 'exit', '0'], {
+      cwd: process.cwd(),
+      env: process.env,
+    });
+    assert.equal(result.status, 125);
+    assert.match(result.error?.message ?? '', /at or below the threshold/);
+    assert.equal(result.terminationReason, 'unknown');
+    assert.equal(result.diskFloorReached, false);
+    assert.equal(checks.length, 1);
+    assert.equal(checks[0].passed, false);
+    assert.equal(checks[0].timeboxOutcome, null);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('VM3 live smoke timeout covers a 180-second cell lifecycle and remains hard-capped', () => {
   const timeoutMs = resolveVm3SmokeLiveTimeoutMs({
     durationSeconds: 180,
@@ -641,6 +881,7 @@ test('smoke adapter classifies provider 50002 cue evidence as external even when
 test('Windows timebox terminates its owned child process tree', { skip: process.platform !== 'win32' }, () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-timebox-'));
   try {
+    const outcomePath = path.join(root, 'outcome.json');
     const payload = Buffer.from(JSON.stringify({
       command: 'cmd.exe',
       arguments: ['/d', '/s', '/c', 'ping.exe -n 20 127.0.0.1'],
@@ -654,9 +895,75 @@ test('Windows timebox terminates its owned child process tree', { skip: process.
       '-TimeoutMs', '500',
       '-StdoutPath', path.join(root, 'stdout.log'),
       '-StderrPath', path.join(root, 'stderr.log'),
+      '-OutcomePath', outcomePath,
+      '-PollIntervalMs', '50',
     ], { encoding: 'utf8', timeout: 10_000, windowsHide: true });
     assert.equal(result.status, 124);
     assert.equal(result.error, undefined);
+    const outcome = JSON.parse(fs.readFileSync(outcomePath, 'utf8'));
+    assert.equal(outcome.reason, 'timeout');
+    assert.equal(outcome.exitCode, 124);
+    assert.equal(outcome.thresholdBytes, 0);
+    assert.equal(outcome.trigger, null);
+    assert.equal(outcome.minimumCFreeBytes, null);
+    assert.deepEqual(outcome.samples, []);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('Windows timebox records a disk-floor receipt and removes its descendant process', { skip: process.platform !== 'win32' }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-disk-timebox-'));
+  const childScript = path.join(root, 'child.ps1');
+  const descendantPidPath = path.join(root, 'descendant.pid');
+  const outcomePath = path.join(root, 'outcome.json');
+  try {
+    fs.writeFileSync(childScript, [
+      'param([Parameter(Mandatory = $true)][string]$PidPath)',
+      "$child = Start-Process -FilePath 'ping.exe' -ArgumentList @('-n', '30', '127.0.0.1') -PassThru",
+      '[IO.File]::WriteAllText($PidPath, [string]$child.Id)',
+      '$child.WaitForExit()',
+      '',
+    ].join('\r\n'), 'utf8');
+    const payload = Buffer.from(JSON.stringify({
+      command: 'powershell.exe',
+      arguments: [
+        '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', childScript,
+        '-PidPath', descendantPidPath,
+      ],
+      cwd: process.cwd(),
+      environment: { Path: process.env.Path ?? '', SystemRoot: process.env.SystemRoot ?? 'C:\\Windows' },
+    }), 'utf8').toString('base64');
+    const result = spawnSync('powershell.exe', [
+      '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
+      path.join(process.cwd(), 'scripts', 'testing', 'run-timeboxed-command.ps1'),
+      '-PayloadBase64', payload,
+      '-TimeoutMs', '6000',
+      '-StdoutPath', path.join(root, 'stdout.log'),
+      '-StderrPath', path.join(root, 'stderr.log'),
+      '-OutcomePath', outcomePath,
+      '-MinCFreeBytes', String(Number.MAX_SAFE_INTEGER),
+      '-PollIntervalMs', '2000',
+    ], { encoding: 'utf8', timeout: 10_000, windowsHide: true });
+    assert.equal(result.status, 125, result.stderr);
+    assert.equal(result.error, undefined);
+    const outcome = JSON.parse(fs.readFileSync(outcomePath, 'utf8'));
+    assert.equal(outcome.reason, 'c-drive-floor');
+    assert.equal(outcome.exitCode, 125);
+    assert.equal(outcome.thresholdBytes, Number.MAX_SAFE_INTEGER);
+    assert.ok(outcome.samples.length >= 1);
+    assert.equal(outcome.trigger.freeBytes, outcome.minimumCFreeBytes);
+    assert.ok(outcome.trigger.freeBytes > 0);
+    assert.equal(fs.existsSync(descendantPidPath), true, 'the descendant must start before the disk guard kills the tree');
+    const descendantPid = Number.parseInt(fs.readFileSync(descendantPidPath, 'utf8'), 10);
+    assert.ok(Number.isInteger(descendantPid) && descendantPid > 0);
+    for (const processId of [outcome.childProcessId, descendantPid]) {
+      const probe = spawnSync('powershell.exe', [
+        '-NoProfile', '-Command',
+        `if (Get-Process -Id ${processId} -ErrorAction SilentlyContinue) { exit 1 } else { exit 0 }`,
+      ], { encoding: 'utf8', timeout: 5_000, windowsHide: true });
+      assert.equal(probe.status, 0, `process ${processId} survived the disk-floor tree kill`);
+    }
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

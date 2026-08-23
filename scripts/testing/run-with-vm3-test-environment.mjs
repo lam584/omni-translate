@@ -8,13 +8,47 @@ const TEMP_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'temp');
 const CARGO_HOME = path.join(repoRoot, 'artifacts', 'testing', 'cargo-home');
 const CARGO_TARGET_DIR = path.join(repoRoot, 'target');
 const RUSTUP_HOME = path.join(repoRoot, 'artifacts', 'testing', 'rustup-home');
+const VM3_RUSTUP_OPT_IN = 'OMNI_VM3_USE_REPO_RUSTUP_HOME';
 
 function usage() {
   throw new Error('Usage: run-with-vm3-test-environment.mjs -- <command> [arguments...]');
 }
 
-export function createVm3TestEnvironment({ baseEnvironment = process.env, temporaryRoot }) {
-  return {
+export function isInitializedRustupHome(rustupHome) {
+  try {
+    const settings = fs.statSync(path.join(rustupHome, 'settings.toml'));
+    const toolchains = fs.readdirSync(path.join(rustupHome, 'toolchains'), { withFileTypes: true });
+    if (!settings.isFile()) return false;
+    return toolchains.some((entry) => {
+      if (!entry.isDirectory() && !entry.isSymbolicLink()) return false;
+      const binaryRoot = path.join(rustupHome, 'toolchains', entry.name, 'bin');
+      const hasCompiler = ['rustc', 'rustc.exe'].some((name) => {
+        try {
+          return fs.statSync(path.join(binaryRoot, name)).isFile();
+        } catch {
+          return false;
+        }
+      });
+      const hasCargo = ['cargo', 'cargo.exe'].some((name) => {
+        try {
+          return fs.statSync(path.join(binaryRoot, name)).isFile();
+        } catch {
+          return false;
+        }
+      });
+      return hasCompiler && hasCargo;
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function createVm3TestEnvironment({
+  baseEnvironment = process.env,
+  temporaryRoot,
+  rustupHome = RUSTUP_HOME,
+}) {
+  const environment = {
     ...baseEnvironment,
     TEMP: temporaryRoot,
     TMP: temporaryRoot,
@@ -22,8 +56,11 @@ export function createVm3TestEnvironment({ baseEnvironment = process.env, tempor
     NPM_CONFIG_CACHE: path.join(TEMP_ROOT, 'npm-cache'),
     CARGO_HOME,
     CARGO_TARGET_DIR,
-    RUSTUP_HOME,
   };
+  if (baseEnvironment[VM3_RUSTUP_OPT_IN] === '1' || isInitializedRustupHome(rustupHome)) {
+    environment.RUSTUP_HOME = rustupHome;
+  }
+  return environment;
 }
 
 export function cleanVm3TemporaryRoot(temporaryRoot) {

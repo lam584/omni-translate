@@ -8,7 +8,7 @@
 # Windows Kits layout (C:\Program Files (x86)\Windows Kits\10) and a Visual
 # Studio installation root. The EWDK is a ~12 GB ISO with a different mounted
 # layout, so using it in CI would require modifying the production build
-# script. The windows-2025 runner image already ships VS 2022 with the
+# script. The pinned windows-2022 runner image ships VS 2022 with the
 # Windows Driver Kit component (10.0.26100), Windows 11 SDK 26100 and the x64
 # Spectre-mitigated runtimes; when the Kits layout is incomplete on a given
 # image revision, the step below silently installs WDK 10.0.26100.6584 — the
@@ -41,7 +41,7 @@ concurrency:
 jobs:
   build-sysvad:
     name: SYSVAD compile signal
-    runs-on: windows-latest
+    runs-on: windows-2022
     timeout-minutes: 30
 
     steps:

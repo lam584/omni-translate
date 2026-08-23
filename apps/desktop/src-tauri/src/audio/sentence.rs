@@ -2,13 +2,21 @@ use std::collections::VecDeque;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use unicode_segmentation::UnicodeSegmentation;
+
 use super::time_utils::unix_ms;
 
-const MAX_PENDING_DURATION: Duration = Duration::from_millis(700);
+const STABLE_PREFIX_AGE: Duration = Duration::from_millis(250);
+const FORCED_REPEAT_INTERVAL: Duration = Duration::from_millis(500);
+const INITIAL_HYPOTHESIS_INTERVAL_MS: f64 = 100.0;
+const HYPOTHESIS_INTERVAL_EMA_ALPHA: f64 = 0.2;
 const MAX_CONTEXT_SENTENCES: usize = 3;
-const MIN_FORCE_CHARS: usize = 28;
-const MIN_FORCE_WORDS: usize = 6;
-const MIN_FORCE_GROWTH_CHARS: usize = 18;
+const MIN_NORMAL_WORDS: usize = 4;
+const MIN_NORMAL_GRAPHEMES: usize = 8;
+const MIN_FORCED_WORDS: usize = 4;
+const MIN_FORCED_GRAPHEMES: usize = 4;
+const MIN_FORCE_GROWTH_WORDS: usize = 3;
+const MIN_FORCE_GROWTH_GRAPHEMES: usize = 6;
 const MAX_SUBTITLE_CHARS: usize = 120;
 const MAX_CJK_SUBTITLE_CHARS: usize = 42;
 const MAX_SUBTITLE_WORDS: usize = 22;
@@ -39,7 +47,25 @@ pub(crate) struct SentenceSplitter {
     context: VecDeque<String>,
     split_endings: Vec<char>,
     active_forced_pending: Option<ForcedPending>,
+    last_hypothesis: String,
+    agreement_prefix: String,
+    agreement_since: Option<Instant>,
+    last_distinct_hypothesis_at: Option<Instant>,
+    hypothesis_interval_ema_ms: f64,
+    last_forced_at: Option<Instant>,
     clock: Arc<dyn SentenceClock>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HypothesisFinality {
+    Partial,
+    ProviderFinal,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FeedMode {
+    Hypothesis(HypothesisFinality),
+    LegacyStablePunctuation,
 }
 
 #[derive(Debug, Clone)]
@@ -77,6 +103,12 @@ impl SentenceSplitter {
             context: VecDeque::new(),
             split_endings: vec!['.', '!', '?', ';', '。', '！', '？', '；', '\n'],
             active_forced_pending: None,
+            last_hypothesis: String::new(),
+            agreement_prefix: String::new(),
+            agreement_since: None,
+            last_distinct_hypothesis_at: None,
+            hypothesis_interval_ema_ms: INITIAL_HYPOTHESIS_INTERVAL_MS,
+            last_forced_at: None,
             clock,
         }
     }
@@ -87,6 +119,20 @@ impl SentenceSplitter {
     }
 
     pub(crate) fn feed_with_revision(&mut self, full_text: &str) -> SentenceFeedResult {
+        self.feed_internal(full_text, FeedMode::LegacyStablePunctuation)
+    }
+
+    pub(crate) fn feed_hypothesis(
+        &mut self,
+        full_text: &str,
+        finality: HypothesisFinality,
+    ) -> SentenceFeedResult {
+        self.feed_internal(full_text, FeedMode::Hypothesis(finality))
+    }
+
+    fn feed_internal(&mut self, full_text: &str, mode: FeedMode) -> SentenceFeedResult {
+        let now = self.clock.now();
+        let full_text = normalize_hypothesis(full_text);
         let mut results = Vec::new();
         let mut revision_reset = false;
         let mut previous_committed = String::new();
@@ -97,7 +143,7 @@ impl SentenceSplitter {
             self.reset();
         }
 
-        if full_text.len() <= self.committed.len() {
+        if full_text.len() < self.committed.len() {
             return SentenceFeedResult {
                 sentences: results,
                 revision_reset,
@@ -106,14 +152,22 @@ impl SentenceSplitter {
         }
 
         let old_committed_len = self.committed.len();
-        self.buffer = full_text.to_string();
+        self.buffer = full_text;
+        self.observe_hypothesis(now);
+
+        let provider_final = matches!(mode, FeedMode::Hypothesis(HypothesisFinality::ProviderFinal));
+        let stable_end = match mode {
+            FeedMode::Hypothesis(HypothesisFinality::ProviderFinal) => self.buffer.len(),
+            FeedMode::Hypothesis(HypothesisFinality::Partial) => self.stable_prefix_end(now),
+            FeedMode::LegacyStablePunctuation => self.buffer.len(),
+        };
 
         let char_byte_map: Vec<(usize, char)> = self.buffer.char_indices().collect();
         let mut last_split = old_committed_len;
         let mut new_sentences = Vec::new();
 
         for (char_i, &(byte_i, ch)) in char_byte_map.iter().enumerate() {
-            if byte_i < old_committed_len {
+            if byte_i < old_committed_len || byte_i >= stable_end {
                 continue;
             }
             if self.split_endings.contains(&ch) {
@@ -145,14 +199,41 @@ impl SentenceSplitter {
                 }
                 let end_byte = byte_i + ch.len_utf8();
                 let sentence = self.buffer[last_split..end_byte].trim().to_string();
-                if is_incomplete_final_clause(&sentence) {
-                    continue;
-                }
-                let sentence = drop_leading_incomplete_clause(&sentence);
                 if !sentence.is_empty() {
                     new_sentences.push(sentence);
                 }
                 last_split = end_byte;
+            }
+        }
+
+        let pending_elapsed = self
+            .pending_start
+            .map(|start| now.saturating_duration_since(start))
+            .unwrap_or_default();
+        let soft_deadline = self.soft_deadline();
+        let hard_deadline = self.hard_deadline();
+        let stable_suffix = self.buffer[last_split..stable_end].trim();
+
+        if provider_final && stable_end > last_split {
+            if !stable_suffix.is_empty() {
+                new_sentences.push(stable_suffix.to_string());
+                last_split = stable_end;
+            }
+        } else if !stable_suffix.is_empty()
+            && (pending_elapsed >= soft_deadline
+                || needs_subtitle_split_with_limits(
+                    stable_suffix,
+                    MAX_SUBTITLE_CHARS,
+                    MAX_CJK_SUBTITLE_CHARS,
+                    MAX_SUBTITLE_WORDS,
+                ))
+        {
+            if let Some(relative_end) = soft_commit_boundary(stable_suffix) {
+                let sentence = stable_suffix[..relative_end].trim().to_string();
+                if !sentence.is_empty() && is_normal_segment(&sentence) {
+                    last_split += byte_end_after_trimmed_prefix(&self.buffer[last_split..stable_end], relative_end);
+                    new_sentences.push(sentence);
+                }
             }
         }
 
@@ -189,17 +270,28 @@ impl SentenceSplitter {
             }
 
             self.active_forced_pending = None;
+            self.last_forced_at = None;
         }
 
-        if results.is_empty() && !self.buffer.is_empty() {
+        if self.buffer.len() > self.committed.len() {
             if self.pending_start.is_none() {
-                self.pending_start = Some(self.clock.now());
+                self.pending_start = Some(now);
             }
-            if let Some(start) = self.pending_start {
+            if results.is_empty() {
                 let pending_text = self.buffer[self.committed.len()..].trim().to_string();
+                let elapsed = self
+                    .pending_start
+                    .map(|start| now.saturating_duration_since(start))
+                    .unwrap_or_default();
+                let legacy_force = mode == FeedMode::LegacyStablePunctuation
+                    && elapsed >= self.soft_deadline();
+                let hard_force = elapsed >= self.hard_deadline();
                 if !pending_text.is_empty()
-                    && start.elapsed() >= MAX_PENDING_DURATION
-                    && is_readable_pending_fragment(&pending_text)
+                    && (legacy_force || hard_force)
+                    && is_forced_segment(&pending_text)
+                    && self
+                        .last_forced_at
+                        .is_none_or(|last| now.saturating_duration_since(last) >= FORCED_REPEAT_INTERVAL)
                     && should_emit_forced_pending(
                         self.active_forced_pending
                             .as_ref()
@@ -212,6 +304,7 @@ impl SentenceSplitter {
                         id: pending_id.clone(),
                         text: pending_text.clone(),
                     });
+                    self.last_forced_at = Some(now);
                     results.push(SentenceResult {
                         sentence: pending_text,
                         context: self.context.iter().cloned().collect(),
@@ -221,6 +314,8 @@ impl SentenceSplitter {
                     });
                 }
             }
+        } else {
+            self.pending_start = None;
         }
 
         SentenceFeedResult {
@@ -230,12 +325,62 @@ impl SentenceSplitter {
         }
     }
 
+    fn observe_hypothesis(&mut self, now: Instant) {
+        if self.buffer == self.last_hypothesis {
+            return;
+        }
+        if let Some(previous_at) = self.last_distinct_hypothesis_at {
+            let interval_ms = now.saturating_duration_since(previous_at).as_secs_f64() * 1000.0;
+            self.hypothesis_interval_ema_ms = HYPOTHESIS_INTERVAL_EMA_ALPHA * interval_ms
+                + (1.0 - HYPOTHESIS_INTERVAL_EMA_ALPHA) * self.hypothesis_interval_ema_ms;
+        }
+        self.last_distinct_hypothesis_at = Some(now);
+
+        let agreement = grapheme_common_prefix(&self.last_hypothesis, &self.buffer);
+        let candidate = retain_unstable_tail(&agreement);
+        if candidate != self.agreement_prefix {
+            // Every expansion must earn its own stability interval. Reusing
+            // the timestamp of a shorter prefix would allow newly agreed text
+            // to become committable immediately.
+            self.agreement_since = Some(now);
+            self.agreement_prefix = candidate;
+        }
+        self.last_hypothesis.clone_from(&self.buffer);
+    }
+
+    fn stable_prefix_end(&self, now: Instant) -> usize {
+        if self
+            .agreement_since
+            .is_some_and(|since| now.saturating_duration_since(since) >= STABLE_PREFIX_AGE)
+        {
+            self.agreement_prefix.len()
+        } else {
+            self.committed.len()
+        }
+    }
+
+    fn soft_deadline(&self) -> Duration {
+        let millis = (600.0 + 2.0 * self.hypothesis_interval_ema_ms).clamp(700.0, 1200.0);
+        Duration::from_millis(millis.round() as u64)
+    }
+
+    fn hard_deadline(&self) -> Duration {
+        let millis = (self.soft_deadline().as_millis() as f64 + 700.0).clamp(1400.0, 1900.0);
+        Duration::from_millis(millis.round() as u64)
+    }
+
     pub(crate) fn reset(&mut self) {
         self.buffer.clear();
         self.committed.clear();
         self.pending_start = None;
         self.context.clear();
         self.active_forced_pending = None;
+        self.last_hypothesis.clear();
+        self.agreement_prefix.clear();
+        self.agreement_since = None;
+        self.last_distinct_hypothesis_at = None;
+        self.hypothesis_interval_ema_ms = INITIAL_HYPOTHESIS_INTERVAL_MS;
+        self.last_forced_at = None;
     }
 
     pub(crate) fn diagnostics(&self) -> SentenceSplitterDiagnostics {
@@ -265,55 +410,102 @@ impl SentenceSplitter {
     pub(crate) fn age_pending_for_test(&mut self, duration: Duration) {
         self.pending_start = Some(self.clock.now() - duration);
     }
+
+    #[cfg(test)]
+    pub(crate) fn age_agreement_for_test(&mut self, duration: Duration) {
+        self.agreement_since = Some(self.clock.now() - duration);
+    }
 }
 
-fn is_readable_pending_fragment(text: &str) -> bool {
-    text.chars().count() >= MIN_FORCE_CHARS || text.split_whitespace().count() >= MIN_FORCE_WORDS
+fn normalize_hypothesis(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn drop_leading_incomplete_clause(text: &str) -> String {
-    let Some((head, tail)) = text.split_once(". ") else {
-        return text.trim().to_string();
-    };
-    let head_with_period = format!("{head}.");
-    if is_incomplete_final_clause(&head_with_period) {
-        return tail.trim().to_string();
+fn grapheme_common_prefix(left: &str, right: &str) -> String {
+    let mut prefix = String::new();
+    for (left, right) in left.graphemes(true).zip(right.graphemes(true)) {
+        if left != right {
+            break;
+        }
+        prefix.push_str(left);
     }
-    text.trim().to_string()
+    prefix
 }
 
-fn is_incomplete_final_clause(text: &str) -> bool {
-    let normalized = text
-        .trim()
-        .trim_end_matches(|ch: char| matches!(ch, '.' | '!' | '?' | ';' | ':' | ',' | '，'))
-        .to_ascii_lowercase()
-        .replace('’', "'");
-    if normalized.ends_with("about to be") && normalized.contains(" how ") {
-        return false;
+fn retain_unstable_tail(prefix: &str) -> String {
+    if prefix.trim().is_empty() {
+        return String::new();
     }
-    let words: Vec<&str> = normalized.split_whitespace().collect();
-    if words.len() <= 4
-        && words
-            .last()
-            .is_some_and(|word| matches!(*word, "a" | "an" | "the" | "one" | "of"))
-    {
-        return true;
+    if prefix.chars().any(char::is_whitespace) {
+        let words: Vec<&str> = prefix.split_whitespace().collect();
+        let stable_words = words.len().saturating_sub(2);
+        return words[..stable_words].join(" ");
     }
-    if words.len() < 3 {
-        return false;
+    let graphemes: Vec<&str> = prefix.graphemes(true).collect();
+    graphemes[..graphemes.len().saturating_sub(4)].concat()
+}
+
+fn segment_counts(text: &str) -> (usize, usize) {
+    (text.split_whitespace().count(), text.graphemes(true).count())
+}
+
+fn is_normal_segment(text: &str) -> bool {
+    let (words, graphemes) = segment_counts(text);
+    if text.chars().any(char::is_whitespace) {
+        words >= MIN_NORMAL_WORDS
+    } else {
+        graphemes >= MIN_NORMAL_GRAPHEMES
     }
-    let endings = [
-        "about to be",
-        "going to",
-        "will",
-        "to",
-        "how",
-        "see how",
-        "show you how",
-        "going to bring",
-        "going to show",
-    ];
-    endings.iter().any(|ending| normalized.ends_with(ending))
+}
+
+fn is_forced_segment(text: &str) -> bool {
+    let (words, graphemes) = segment_counts(text);
+    if text.chars().any(char::is_whitespace) {
+        words >= MIN_FORCED_WORDS
+    } else {
+        graphemes >= MIN_FORCED_GRAPHEMES
+    }
+}
+
+fn soft_commit_boundary(text: &str) -> Option<usize> {
+    let max_end = byte_after_grapheme_count(
+        text,
+        if text.chars().any(is_cjk_caption_character) {
+            MAX_CJK_SUBTITLE_CHARS
+        } else {
+            MAX_SUBTITLE_CHARS
+        },
+    )?;
+    text[..max_end]
+        .char_indices()
+        .filter_map(|(index, character)| {
+            matches!(character, ',' | '，' | ':' | '：' | '-' | '—' | '、')
+                .then_some(index + character.len_utf8())
+        })
+        .last()
+        .or_else(|| {
+            if text[..max_end].split_whitespace().count() >= MAX_SUBTITLE_WORDS {
+                text[..max_end]
+                    .char_indices()
+                    .filter_map(|(index, character)| character.is_whitespace().then_some(index))
+                    .nth(MAX_SUBTITLE_WORDS.saturating_sub(1))
+            } else if max_end < text.len() {
+                Some(max_end)
+            } else {
+                None
+            }
+        })
+}
+
+fn byte_end_after_trimmed_prefix(text: &str, prefix_end: usize) -> usize {
+    text[..prefix_end].trim_end().len()
+}
+
+fn byte_after_grapheme_count(text: &str, max_graphemes: usize) -> Option<usize> {
+    text.grapheme_indices(true)
+        .nth(max_graphemes)
+        .map(|(index, _)| index)
+        .or(Some(text.len()))
 }
 
 fn needs_subtitle_split_with_limits(
@@ -639,7 +831,9 @@ fn should_emit_forced_pending(previous: Option<&str>, pending_text: &str) -> boo
     if previous == pending_text || pending_text.len() <= previous.len() {
         return false;
     }
-    pending_text.len() - previous.len() >= MIN_FORCE_GROWTH_CHARS
+    let growth = pending_text.strip_prefix(previous).unwrap_or(pending_text);
+    let (words, graphemes) = segment_counts(growth);
+    words >= MIN_FORCE_GROWTH_WORDS || graphemes >= MIN_FORCE_GROWTH_GRAPHEMES
 }
 
 #[derive(Debug, Clone)]
@@ -776,6 +970,7 @@ mod tests {
         assert!(splitter.feed(first_text).is_empty());
         splitter.age_pending_for_test(Duration::from_millis(800));
         let first = splitter.feed(first_text);
+        splitter.last_forced_at = Some(Instant::now() - FORCED_REPEAT_INTERVAL);
         let second = splitter.feed(
             "This is a long enough fragment that should translate before punctuation and keeps growing with many more words",
         );
@@ -976,31 +1171,100 @@ mod tests {
     }
 
     #[test]
-    fn test_hanging_english_clause_is_not_finalized() {
+    fn provider_final_flushes_unpunctuated_text() {
         let mut splitter = SentenceSplitter::new();
 
-        let results = splitter.feed("Teacher is about to be.");
+        let result = splitter.feed_hypothesis(
+            "Teacher is about to be",
+            HypothesisFinality::ProviderFinal,
+        );
 
-        assert!(results.is_empty());
+        assert_eq!(result.sentences.len(), 1);
+        assert_eq!(result.sentences[0].sentence, "Teacher is about to be");
+        assert!(!result.sentences[0].is_forced);
     }
 
     #[test]
-    fn test_short_article_fragment_is_not_finalized() {
+    fn local_agreement_waits_for_stable_age_before_committing() {
         let mut splitter = SentenceSplitter::new();
 
-        let results = splitter.feed("This is a one.");
+        assert!(splitter
+            .feed_hypothesis(
+                "Hello world. A mutable ending one",
+                HypothesisFinality::Partial,
+            )
+            .sentences
+            .is_empty());
+        assert!(splitter
+            .feed_hypothesis(
+                "Hello world. A mutable ending two",
+                HypothesisFinality::Partial,
+            )
+            .sentences
+            .is_empty());
 
-        assert!(results.is_empty());
+        splitter.age_agreement_for_test(Duration::from_millis(249));
+        assert!(splitter
+            .feed_hypothesis(
+                "Hello world. A mutable ending two",
+                HypothesisFinality::Partial,
+            )
+            .sentences
+            .is_empty());
+
+        splitter.age_agreement_for_test(Duration::from_millis(250));
+        let result = splitter.feed_hypothesis(
+            "Hello world. A mutable ending two",
+            HypothesisFinality::Partial,
+        );
+        assert_eq!(result.sentences.len(), 1);
+        assert_eq!(result.sentences[0].sentence, "Hello world.");
     }
 
     #[test]
-    fn test_hanging_english_prefix_is_dropped_when_next_sentence_arrives() {
+    fn local_agreement_retains_four_graphemes_for_unspaced_scripts() {
+        for (first, second, expected) in [
+            ("你好世界。今天下雨甲", "你好世界。今天下雨乙", "你好世界。"),
+            ("こんにちは。今日は雨甲", "こんにちは。今日は雨乙", "こんにちは。"),
+            ("안녕하세요。오늘비가갑", "안녕하세요。오늘비가을", "안녕하세요。"),
+        ] {
+            let mut splitter = SentenceSplitter::new();
+            assert!(splitter
+                .feed_hypothesis(first, HypothesisFinality::Partial)
+                .sentences
+                .is_empty());
+            assert!(splitter
+                .feed_hypothesis(second, HypothesisFinality::Partial)
+                .sentences
+                .is_empty());
+            splitter.age_agreement_for_test(Duration::from_millis(250));
+            let result = splitter.feed_hypothesis(second, HypothesisFinality::Partial);
+            assert_eq!(result.sentences.len(), 1, "input={second}");
+            assert_eq!(result.sentences[0].sentence, expected, "input={second}");
+        }
+    }
+
+    #[test]
+    fn hard_deadline_emits_replaceable_preview_instead_of_final() {
         let mut splitter = SentenceSplitter::new();
+        let text = "This hypothesis has no punctuation and remains replaceable";
+        assert!(splitter
+            .feed_hypothesis(text, HypothesisFinality::Partial)
+            .sentences
+            .is_empty());
+        splitter.age_pending_for_test(Duration::from_millis(1_900));
 
-        let results = splitter.feed("Teacher is about to be. Oh my God!");
+        let result = splitter.feed_hypothesis(text, HypothesisFinality::Partial);
 
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].sentence, "Oh my God!");
+        assert_eq!(result.sentences.len(), 1);
+        assert!(result.sentences[0].is_forced);
+        assert!(result.sentences[0].pending_id.is_some());
+    }
+
+    #[test]
+    fn stable_prefix_uses_unicode_graphemes() {
+        assert_eq!(grapheme_common_prefix("ábc", "ábd"), "áb");
+        assert_eq!(retain_unstable_tail("你好👨‍👩‍👧‍👦世界天气"), "你好👨‍👩‍👧‍👦");
     }
 
     #[test]

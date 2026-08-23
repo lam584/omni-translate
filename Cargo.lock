@@ -3751,6 +3751,7 @@ dependencies = [
  "tokio",
  "ts-rs",
  "tungstenite",
+ "unicode-segmentation",
  "url",
  "uuid",
  "wasapi",

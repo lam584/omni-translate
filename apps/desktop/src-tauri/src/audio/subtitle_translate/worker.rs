@@ -124,7 +124,14 @@ fn process_translation_cues(
             );
         }
 
-        let feed_result = cue_state.splitter.feed_with_revision(&source_text);
+        let finality = if store.subtitle_source_is_final(&cue.cue_id) {
+            HypothesisFinality::ProviderFinal
+        } else {
+            HypothesisFinality::Partial
+        };
+        let feed_result = cue_state
+            .splitter
+            .feed_hypothesis(&source_text, finality);
         if feed_result.revision_reset {
             cue_state.reset_for_revision();
             scheduler.drop_queued_for_cue(&cue.cue_id);
@@ -424,24 +431,24 @@ impl SubtitleTranslationWorker {
         }
 
         let snapshot = store.snapshot();
-        let uncommitted_cues: Vec<_> = snapshot
+        let untranslated_cues: Vec<_> = snapshot
             .subtitle_overlay
             .recent_cues
             .iter()
             .filter(|cue| {
-                !cue.committed
+                !cue.translation_committed
                     && store.subtitle_cue_translation_allowed(&cue.cue_id)
             })
             .collect();
-        let uncommitted_ids: HashSet<String> = uncommitted_cues
+        let untranslated_ids: HashSet<String> = untranslated_cues
             .iter()
             .map(|cue| cue.cue_id.clone())
             .collect();
         cue_states.retain(|cue_id, _| {
-            uncommitted_ids.contains(cue_id) || scheduler.has_work_for_cue(cue_id)
+            untranslated_ids.contains(cue_id) || scheduler.has_work_for_cue(cue_id)
         });
 
-        let is_idle = uncommitted_cues.is_empty()
+        let is_idle = untranslated_cues.is_empty()
             && scheduler.queued.is_empty()
             && scheduler.in_flight.is_empty();
 
@@ -453,7 +460,7 @@ impl SubtitleTranslationWorker {
 
         if should_log_loop {
             let (queued_forced, queued_replacement, queued_final) = scheduler.counts_by_kind();
-            let cue_summary: Vec<String> = uncommitted_cues
+            let cue_summary: Vec<String> = untranslated_cues
                 .iter()
                 .map(|cue| {
                     format!(
@@ -471,7 +478,7 @@ impl SubtitleTranslationWorker {
                 "debug",
                 format!(
                     "[LOOP#{loop_count}] uncommitted={} queued={} forced={} repl={} final={} in_flight={} cue_states={} cues=[{}]",
-                    uncommitted_cues.len(),
+                    untranslated_cues.len(),
                     scheduler.queued.len(),
                     queued_forced,
                     queued_replacement,
@@ -486,7 +493,7 @@ impl SubtitleTranslationWorker {
         process_translation_cues(
             &app,
             store,
-            &uncommitted_cues,
+            &untranslated_cues,
             &mut cue_states,
             &mut scheduler,
             &fatal_provider_error,
@@ -508,7 +515,7 @@ impl SubtitleTranslationWorker {
                 .recent_cues
                 .iter()
                 .any(|cue| {
-                    !cue.committed
+                    !cue.translation_committed
                         && store.subtitle_cue_translation_allowed(&cue.cue_id)
                 });
 
@@ -526,7 +533,7 @@ impl SubtitleTranslationWorker {
                 .recent_cues
                 .iter()
                 .filter(|cue| {
-                    !cue.committed
+                    !cue.translation_committed
                         && store.subtitle_cue_translation_allowed(&cue.cue_id)
                 })
                 .count();

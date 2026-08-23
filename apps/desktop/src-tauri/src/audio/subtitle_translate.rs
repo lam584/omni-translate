@@ -13,7 +13,9 @@ use crate::provider::gateway::ProviderGateway;
 use super::contracts::{AudioRuntimeSnapshot, SubtitleCueRuntime, SubtitleDisplaySegmentRuntime};
 use super::engine::emit_audio_snapshot;
 use super::glossary::GlossaryCatalog;
-use super::sentence::{detect_language, is_target_language, SentenceResult, SentenceSplitter};
+use super::sentence::{
+    detect_language, is_target_language, HypothesisFinality, SentenceResult, SentenceSplitter,
+};
 use super::state::{AudioRouteHandle, AudioStateStore};
 use super::translation_scheduler::{
     max_translation_attempts, normalize_sentence_key, rate_limit_retry_delay,

@@ -6,6 +6,7 @@ import test from 'node:test';
 import { repoRoot } from '../lib/testing-common.mjs';
 import {
   createVm3TestEnvironment,
+  isInitializedRustupHome,
   resolveVm3TestCommand,
 } from './run-with-vm3-test-environment.mjs';
 
@@ -55,4 +56,89 @@ test('Windows npm command shims execute through the current npm CLI without a sh
     argumentsToRun: ['E:\\node\\npm-cli.js', 'run', 'check:desktop-shell'],
     shell: false,
   });
+});
+
+test('CI keeps its default rustup home when the repository rustup home is uninitialized', (t) => {
+  const testRoot = path.join(repoRoot, 'artifacts', 'testing', 'temp');
+  fs.mkdirSync(testRoot, { recursive: true });
+  const rustupHome = fs.mkdtempSync(path.join(testRoot, 'rustup-home-uninitialized-'));
+  t.after(() => fs.rmSync(rustupHome, { recursive: true, force: true }));
+
+  const environment = createVm3TestEnvironment({
+    baseEnvironment: { RUSTUP_HOME: 'C:\\hostedtoolcache\\rustup' },
+    temporaryRoot: path.join(testRoot, 'unit-test-ci'),
+    rustupHome,
+  });
+
+  assert.equal(isInitializedRustupHome(rustupHome), false);
+  assert.equal(environment.RUSTUP_HOME, 'C:\\hostedtoolcache\\rustup');
+
+  const environmentWithoutRustupOverride = createVm3TestEnvironment({
+    baseEnvironment: { CI: 'true' },
+    temporaryRoot: path.join(testRoot, 'unit-test-ci-default'),
+    rustupHome,
+  });
+  assert.equal(Object.hasOwn(environmentWithoutRustupOverride, 'RUSTUP_HOME'), false);
+});
+
+test('initialized repository rustup home remains authoritative for VM3', (t) => {
+  const testRoot = path.join(repoRoot, 'artifacts', 'testing', 'temp');
+  fs.mkdirSync(testRoot, { recursive: true });
+  const rustupHome = fs.mkdtempSync(path.join(testRoot, 'rustup-home-initialized-'));
+  t.after(() => fs.rmSync(rustupHome, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(rustupHome, 'settings.toml'), 'default_toolchain = "stable"\n', 'utf8');
+  const binaryRoot = path.join(rustupHome, 'toolchains', 'stable-x86_64-pc-windows-msvc', 'bin');
+  fs.mkdirSync(binaryRoot, {
+    recursive: true,
+  });
+  fs.writeFileSync(path.join(binaryRoot, 'rustc.exe'), 'test compiler', 'utf8');
+  fs.writeFileSync(path.join(binaryRoot, 'cargo.exe'), 'test cargo', 'utf8');
+
+  const environment = createVm3TestEnvironment({
+    baseEnvironment: { RUSTUP_HOME: 'C:\\hostedtoolcache\\rustup' },
+    temporaryRoot: path.join(testRoot, 'unit-test-vm3'),
+    rustupHome,
+  });
+
+  assert.equal(isInitializedRustupHome(rustupHome), true);
+  assert.equal(environment.RUSTUP_HOME, rustupHome);
+});
+
+test('settings with an empty or partial toolchain keep the base rustup home', (t) => {
+  const testRoot = path.join(repoRoot, 'artifacts', 'testing', 'temp');
+  fs.mkdirSync(testRoot, { recursive: true });
+  const rustupHome = fs.mkdtempSync(path.join(testRoot, 'rustup-home-partial-'));
+  t.after(() => fs.rmSync(rustupHome, { recursive: true, force: true }));
+  fs.writeFileSync(path.join(rustupHome, 'settings.toml'), 'default_toolchain = "stable"\n', 'utf8');
+  const binaryRoot = path.join(rustupHome, 'toolchains', 'stable-x86_64-pc-windows-msvc', 'bin');
+  fs.mkdirSync(binaryRoot, { recursive: true });
+
+  assert.equal(isInitializedRustupHome(rustupHome), false);
+  fs.writeFileSync(path.join(binaryRoot, 'rustc.exe'), 'partial compiler', 'utf8');
+  assert.equal(isInitializedRustupHome(rustupHome), false);
+
+  const environment = createVm3TestEnvironment({
+    baseEnvironment: { RUSTUP_HOME: 'C:\\hostedtoolcache\\rustup' },
+    temporaryRoot: path.join(testRoot, 'unit-test-partial'),
+    rustupHome,
+  });
+  assert.equal(environment.RUSTUP_HOME, 'C:\\hostedtoolcache\\rustup');
+});
+
+test('explicit VM3 rustup opt-in selects the repository home before initialization', (t) => {
+  const testRoot = path.join(repoRoot, 'artifacts', 'testing', 'temp');
+  fs.mkdirSync(testRoot, { recursive: true });
+  const rustupHome = fs.mkdtempSync(path.join(testRoot, 'rustup-home-opt-in-'));
+  t.after(() => fs.rmSync(rustupHome, { recursive: true, force: true }));
+
+  const environment = createVm3TestEnvironment({
+    baseEnvironment: {
+      OMNI_VM3_USE_REPO_RUSTUP_HOME: '1',
+      RUSTUP_HOME: 'C:\\hostedtoolcache\\rustup',
+    },
+    temporaryRoot: path.join(testRoot, 'unit-test-opt-in'),
+    rustupHome,
+  });
+
+  assert.equal(environment.RUSTUP_HOME, rustupHome);
 });

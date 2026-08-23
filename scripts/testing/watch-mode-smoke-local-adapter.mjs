@@ -83,6 +83,142 @@ export function vm3SmokeStartSpaceFailure(freeBytes) {
   return null;
 }
 
+export function vm3RuntimeBuildSpaceFailure(freeBytes) {
+  if (!Number.isFinite(freeBytes)) return 'VM3 C: free space is unavailable before runtime build';
+  if (freeBytes <= VM3_SMOKE_STOP_MIN_C_FREE_BYTES) {
+    return `VM3 C: free space is at or below the 5 GB smoke floor (${freeBytes} bytes)`;
+  }
+  return null;
+}
+
+export function timeboxedCommandOutcomeFailure(outcome, {
+  status = null,
+  expectedThresholdBytes = VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+} = {}) {
+  if (outcome?.schemaVersion !== 1 || outcome?.artifactKind !== 'timeboxed-command-outcome') {
+    return 'receipt schema identity is invalid';
+  }
+  const allowedReasons = new Set([
+    'child-exit',
+    'timeout',
+    'c-drive-floor',
+    'c-drive-probe-failure',
+    'wrapper-failure',
+  ]);
+  if (!allowedReasons.has(outcome?.reason)) return `receipt reason is invalid: ${String(outcome?.reason)}`;
+  if (!Number.isInteger(outcome?.exitCode)) return 'receipt exitCode must be an integer';
+  if (Number.isInteger(status) && outcome.exitCode !== status) {
+    return `receipt exit code ${outcome.exitCode} does not match wrapper status ${status}`;
+  }
+  if (outcome?.thresholdBytes !== expectedThresholdBytes) {
+    return `receipt threshold must equal ${expectedThresholdBytes} bytes`;
+  }
+  const fixedReasonExitCodes = new Map([
+    ['timeout', 124],
+    ['c-drive-floor', 125],
+    ['c-drive-probe-failure', 126],
+    ['wrapper-failure', 1],
+  ]);
+  if (fixedReasonExitCodes.has(outcome.reason) && fixedReasonExitCodes.get(outcome.reason) !== outcome.exitCode) {
+    return `receipt reason ${outcome.reason} does not match exit code ${outcome.exitCode}`;
+  }
+  const timestampPattern = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,7})?(?:Z|[+-]\d{2}:\d{2})$/u;
+  const parseTimestamp = (value) => (
+    typeof value === 'string' && timestampPattern.test(value) ? Date.parse(value) : Number.NaN
+  );
+  const startedAtMs = parseTimestamp(outcome?.startedAt);
+  const completedAtMs = parseTimestamp(outcome?.completedAt);
+  if (!Number.isFinite(startedAtMs) || !Number.isFinite(completedAtMs) || completedAtMs < startedAtMs) {
+    return 'receipt startedAt/completedAt timestamps are invalid';
+  }
+  if (!Number.isFinite(outcome?.durationMs) || outcome.durationMs < 0) {
+    return 'receipt durationMs must be a non-negative finite number';
+  }
+  if (!Array.isArray(outcome?.samples)) return 'receipt samples must be an array';
+  for (const sample of outcome.samples) {
+    const sampledAtMs = parseTimestamp(sample?.sampledAt);
+    if (!Number.isFinite(sampledAtMs) || sampledAtMs < startedAtMs || sampledAtMs > completedAtMs) {
+      return 'receipt sample timestamp is invalid or outside the command interval';
+    }
+    if (sample?.freeBytes !== null && (!Number.isFinite(sample?.freeBytes) || sample.freeBytes < 0)) {
+      return 'receipt sample freeBytes must be null or a non-negative finite number';
+    }
+    if (Number.isFinite(sample?.freeBytes) && sample?.error !== null) {
+      return 'receipt sample with freeBytes must not contain a probe error';
+    }
+    if (sample?.freeBytes === null && (typeof sample?.error !== 'string' || sample.error.length === 0)) {
+      return 'receipt sample without freeBytes must contain a probe error';
+    }
+  }
+  const numericSamples = outcome.samples
+    .map((sample) => sample.freeBytes)
+    .filter((freeBytes) => Number.isFinite(freeBytes));
+  if (
+    outcome.reason !== 'c-drive-probe-failure'
+    && numericSamples.length !== outcome.samples.length
+  ) return `${outcome.reason} receipt cannot contain a failed C-drive probe sample`;
+  const expectedMinimum = numericSamples.length > 0 ? Math.min(...numericSamples) : null;
+  if (outcome?.minimumCFreeBytes !== expectedMinimum) {
+    return `receipt minimumCFreeBytes does not match sampled minimum ${String(expectedMinimum)}`;
+  }
+  const triggerMatchesSample = outcome?.trigger !== null && outcome.samples.some((sample) => (
+    sample.sampledAt === outcome.trigger?.sampledAt
+    && sample.freeBytes === outcome.trigger?.freeBytes
+    && sample.error === outcome.trigger?.error
+  ));
+  const finalSample = outcome.samples[outcome.samples.length - 1];
+  const triggerMatchesFinalSample = outcome?.trigger !== null && finalSample !== undefined
+    && finalSample.sampledAt === outcome.trigger?.sampledAt
+    && finalSample.freeBytes === outcome.trigger?.freeBytes
+    && finalSample.error === outcome.trigger?.error;
+  if (
+    (outcome.reason === 'timeout' || outcome.reason === 'child-exit')
+    && numericSamples.some((freeBytes) => freeBytes <= outcome.thresholdBytes)
+  ) return `${outcome.reason} receipt cannot contain a sample at or below the C-drive floor`;
+  if (outcome.reason === 'c-drive-floor') {
+    if (!triggerMatchesSample) return 'c-drive-floor receipt requires a trigger that matches one recorded sample';
+    if (!triggerMatchesFinalSample) return 'c-drive-floor trigger must be the final recorded sample';
+    if (!Number.isFinite(outcome.trigger?.freeBytes) || outcome.trigger.freeBytes > outcome.thresholdBytes) {
+      return 'c-drive-floor trigger freeBytes must be finite and at or below the threshold';
+    }
+    if (outcome.trigger.freeBytes !== expectedMinimum) {
+      return 'c-drive-floor trigger freeBytes must equal the sampled minimum';
+    }
+    if (numericSamples.filter((freeBytes) => freeBytes <= outcome.thresholdBytes).length !== 1) {
+      return 'c-drive-floor receipt must contain exactly one sample at or below the threshold';
+    }
+    if (outcome.trigger?.error !== null) return 'c-drive-floor trigger must not contain a probe error';
+  } else if (outcome.reason === 'c-drive-probe-failure') {
+    if (!triggerMatchesSample) return 'c-drive-probe-failure receipt requires a matching trigger sample';
+    if (!triggerMatchesFinalSample) return 'c-drive-probe-failure trigger must be the final recorded sample';
+    if (outcome.trigger?.freeBytes !== null || typeof outcome.trigger?.error !== 'string' || outcome.trigger.error.length === 0) {
+      return 'c-drive-probe-failure trigger must contain only a probe error';
+    }
+  } else if (outcome?.trigger !== null) {
+    return `${outcome.reason} receipt must not contain a trigger`;
+  }
+  return null;
+}
+
+export function classifyTimeboxedCommandOutcome({ status, errorCode, outcome }) {
+  if (errorCode === 'ETIMEDOUT') {
+    return { terminationReason: 'wrapper-timeout', timedOut: true, diskFloorReached: false };
+  }
+  if (outcome?.reason === 'timeout') {
+    return { terminationReason: 'timeout', timedOut: true, diskFloorReached: false };
+  }
+  if (outcome?.reason === 'c-drive-floor') {
+    return { terminationReason: 'c-drive-floor', timedOut: false, diskFloorReached: true };
+  }
+  if (typeof outcome?.reason === 'string' && outcome.reason.length > 0) {
+    return { terminationReason: outcome.reason, timedOut: false, diskFloorReached: false };
+  }
+  if (status === 124) {
+    return { terminationReason: 'timeout-without-receipt', timedOut: true, diskFloorReached: false };
+  }
+  return { terminationReason: 'unknown', timedOut: false, diskFloorReached: false };
+}
+
 function readVm3CFreeBytes(run = spawnSync) {
   if (process.platform !== 'win32') return null;
   const probe = run('powershell.exe', ['-NoProfile', '-Command', '(Get-PSDrive -Name C).Free'], {
@@ -160,8 +296,14 @@ function writeReusablePreflight({ checks, runtimeAuthority: authority }) {
     deviceProfile: PROFILE,
     buildSettings: VM3_PREFLIGHT_BUILD_SETTINGS,
     runtimeAuthority: authority,
-    checks: checks.map(({ command, status, passed, startedAt, completedAt, durationMs, timedOut, logFile }) => ({
-      command, status, passed, startedAt, completedAt, durationMs, timedOut, logFile,
+    checks: checks.map(({
+      command, status, passed, startedAt, completedAt, durationMs, timedOut,
+      diskFloorReached, terminationReason, cFreeBytesBeforeStart,
+      timeboxOutcomeFile, timeboxOutcome, logFile,
+    }) => ({
+      command, status, passed, startedAt, completedAt, durationMs, timedOut,
+      diskFloorReached, terminationReason, cFreeBytesBeforeStart,
+      timeboxOutcomeFile, timeboxOutcome, logFile,
     })),
   };
   fs.writeFileSync(temporary, `${JSON.stringify(cache, null, 2)}\n`, 'utf8');
@@ -261,42 +403,109 @@ function writePreflightLog(preflightRoot, name, result) {
   return result;
 }
 
-function createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }) {
-  let lastDiskCheckMs = 0;
-  const checkDiskSpace = () => {
-    // The C: guard is intentionally sampled before the first build command
-    // and then hourly.  It prevents a new build step when VM3 is below the
-    // plan's 5 GB floor; the coordinator will persist the resulting failure.
-    if (process.platform !== 'win32' || Date.now() - lastDiskCheckMs < 60 * 60 * 1_000) return;
-    lastDiskCheckMs = Date.now();
-    const probe = spawnSync('powershell.exe', ['-NoProfile', '-Command', '(Get-PSDrive -Name C).Free'], {
-      encoding: 'utf8', windowsHide: true, timeout: 30_000,
+function readTimeboxedCommandOutcome(outcomePath, status) {
+  try {
+    const outcome = JSON.parse(fs.readFileSync(outcomePath, 'utf8'));
+    const failure = timeboxedCommandOutcomeFailure(outcome, { status });
+    if (failure) throw new Error(failure);
+    return { outcome, error: null };
+  } catch (error) {
+    return {
+      outcome: null,
+      error: new Error(`timeboxed command outcome is missing or invalid at ${outcomePath}: ${String(error?.message ?? error)}`),
+    };
+  }
+}
+
+function writeRejectedRuntimeBuildOutcome({ outcomePath, freeBytes, sampledAt, failure }) {
+  const diskFloorReached = Number.isFinite(freeBytes);
+  const sample = {
+    sampledAt,
+    freeBytes: diskFloorReached ? freeBytes : null,
+    error: diskFloorReached ? null : failure,
+  };
+  const outcome = {
+    schemaVersion: 1,
+    artifactKind: 'timeboxed-command-outcome',
+    reason: diskFloorReached ? 'c-drive-floor' : 'c-drive-probe-failure',
+    exitCode: diskFloorReached ? 125 : 126,
+    thresholdBytes: VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
+    trigger: sample,
+    minimumCFreeBytes: diskFloorReached ? freeBytes : null,
+    samples: [sample],
+    childProcessId: null,
+    startedAt: sampledAt,
+    completedAt: sampledAt,
+    durationMs: 0,
+    failure,
+  };
+  fs.writeFileSync(outcomePath, `${JSON.stringify(outcome, null, 2)}\n`, 'utf8');
+  return outcome;
+}
+
+export function createRuntimeBuildRunner({
+  checks,
+  preflightRoot,
+  temporaryRoot,
+  platform = process.platform,
+  sampleCFreeBytes = readVm3CFreeBytes,
+  runWrapper = spawnSync,
+}) {
+  const checkDiskSpace = (command, args) => {
+    if (platform !== 'win32') return null;
+    const sampledAt = new Date().toISOString();
+    const freeBytes = sampleCFreeBytes();
+    const failure = vm3RuntimeBuildSpaceFailure(freeBytes);
+    if (!failure) return freeBytes;
+    const outcomePath = path.join(preflightRoot, `runtime-build-${checks.length + 1}.outcome.json`);
+    const outcome = writeRejectedRuntimeBuildOutcome({
+      outcomePath, freeBytes, sampledAt, failure,
     });
-    const freeBytes = Number.parseInt(String(probe.stdout ?? '').trim(), 10);
-    if (!Number.isFinite(freeBytes) || freeBytes <= VM3_SMOKE_STOP_MIN_C_FREE_BYTES) {
-      throw new Error(`VM3 C: free space is at or below the 5 GB smoke floor (${Number.isFinite(freeBytes) ? freeBytes : 'unavailable'} bytes)`);
-    }
+    const classification = classifyTimeboxedCommandOutcome({
+      status: outcome.exitCode,
+      errorCode: null,
+      outcome,
+    });
+    const check = writePreflightLog(preflightRoot, `runtime-build-${checks.length + 1}`, {
+      command: [command, ...args].join(' '),
+      status: outcome.exitCode,
+      stdout: '',
+      stderr: failure,
+      passed: false,
+      error: failure,
+      ...classification,
+      cFreeBytesBeforeStart: Number.isFinite(freeBytes) ? freeBytes : null,
+      timeboxOutcomeFile: outcomePath,
+      timeboxOutcome: outcome,
+      startedAt: sampledAt,
+      completedAt: sampledAt,
+      durationMs: 0,
+    });
+    checks.push(check);
+    throw new Error(failure);
   };
   return (command, args, options) => {
-    checkDiskSpace();
+    const cFreeBytesBeforeStart = checkDiskSpace(command, args);
     const startedAt = new Date().toISOString();
     const startedMs = Date.now();
     const processRoot = fs.mkdtempSync(path.join(temporaryRoot, 'timeboxed-build-'));
     const stdoutPath = path.join(processRoot, 'stdout.log');
     const stderrPath = path.join(processRoot, 'stderr.log');
+    const outcomePath = path.join(processRoot, 'outcome.json');
     const payload = Buffer.from(JSON.stringify({
       command,
       arguments: args,
       cwd: options.cwd,
       environment: options.env,
     }), 'utf8').toString('base64');
-    const wrapper = spawnSync('powershell.exe', [
+    const wrapper = runWrapper('powershell.exe', [
       '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File',
       path.join(repoRoot, 'scripts', 'testing', 'run-timeboxed-command.ps1'),
       '-PayloadBase64', payload,
       '-TimeoutMs', String(VM3_PREFLIGHT_BUILD_SETTINGS.runtimeBuildTimeoutMs),
       '-StdoutPath', stdoutPath,
       '-StderrPath', stderrPath,
+      '-OutcomePath', outcomePath,
       '-MinCFreeBytes', String(VM3_SMOKE_STOP_MIN_C_FREE_BYTES),
     ], {
       encoding: 'utf8',
@@ -304,21 +513,34 @@ function createRuntimeBuildRunner({ checks, preflightRoot, temporaryRoot }) {
       timeout: VM3_PREFLIGHT_BUILD_SETTINGS.runtimeBuildTimeoutMs + 60_000,
       windowsHide: true,
     });
+    const receipt = readTimeboxedCommandOutcome(outcomePath, wrapper.status);
+    const classification = classifyTimeboxedCommandOutcome({
+      status: wrapper.status,
+      errorCode: wrapper.error?.code,
+      outcome: receipt.outcome,
+    });
     const result = {
       status: wrapper.status,
-      error: wrapper.error,
+      error: wrapper.error ?? receipt.error ?? undefined,
       stdout: fs.existsSync(stdoutPath) ? fs.readFileSync(stdoutPath, 'utf8') : wrapper.stdout,
       stderr: fs.existsSync(stderrPath) ? fs.readFileSync(stderrPath, 'utf8') : wrapper.stderr,
-      timedOut: wrapper.status === 124 || wrapper.status === 125 || wrapper.error?.code === 'ETIMEDOUT',
+      ...classification,
+      timeboxOutcomeFile: outcomePath,
+      timeboxOutcome: receipt.outcome,
     };
     const check = writePreflightLog(preflightRoot, `runtime-build-${checks.length + 1}`, {
       command: [command, ...args].join(' '),
       status: result.status ?? 1,
       stdout: result.stdout ?? '',
       stderr: result.stderr ?? '',
-      passed: !result.error && result.status === 0,
+      passed: !result.error && result.status === 0 && result.terminationReason === 'child-exit',
       error: result.error?.message ?? null,
       timedOut: result.timedOut,
+      diskFloorReached: result.diskFloorReached,
+      terminationReason: result.terminationReason,
+      cFreeBytesBeforeStart,
+      timeboxOutcomeFile: result.timeboxOutcomeFile,
+      timeboxOutcome: result.timeboxOutcome,
       startedAt,
       completedAt: new Date().toISOString(),
       durationMs: Date.now() - startedMs,

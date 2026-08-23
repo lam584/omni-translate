@@ -899,6 +899,27 @@ mod tests {
     }
 
     #[test]
+    fn terminal_translation_error_is_never_enqueued_for_tts() {
+        let config = secondary_subtitle_tts_config();
+        let cue = subtitle_cue_runtime(
+            "cue-error",
+            "hello",
+            "hello",
+            vec![subtitle_segment(
+                "hello",
+                "[翻译失败] 本地翻译队列过载",
+                false,
+            )],
+            "[翻译失败] 本地翻译队列过载",
+            true,
+            true,
+        );
+
+        assert!(!is_speech_ready_cue(&cue));
+        assert!(speech_dispatch_tasks_for_cue(&cue, &config, &HashSet::new()).is_empty());
+    }
+
+    #[test]
     fn native_route_uses_single_cue_task_without_segment_tts() {
         let config = SpeechConfig::from_value(&json!({
             "speech": {

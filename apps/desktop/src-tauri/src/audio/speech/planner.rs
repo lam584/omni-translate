@@ -60,13 +60,20 @@ fn remember_committed_cue_played(
 }
 
 fn is_speech_ready_cue(cue: &SubtitleCueRuntime) -> bool {
-    if !cue.translation_committed || cue.translated_text.trim().is_empty() {
+    if !cue.translation_committed
+        || cue.translated_text.trim().is_empty()
+        || is_terminal_translation_error(&cue.translated_text)
+    {
         return false;
     }
     cue.display_segments
         .iter()
         .filter(|segment| !segment.translated_text.trim().is_empty())
         .all(|segment| !segment.pending)
+}
+
+fn is_terminal_translation_error(translated_text: &str) -> bool {
+    translated_text.trim_start().starts_with("[翻译失败]")
 }
 
 fn split_tts_clauses(text: &str) -> Vec<String> {
@@ -163,7 +170,7 @@ fn speech_dispatch_tasks_for_cue(
     if cue.committed && is_committed_cue_already_played(&cue.cue_id, committed_played) {
         return Vec::new();
     }
-    if !cue.translation_committed {
+    if !cue.translation_committed || is_terminal_translation_error(&cue.translated_text) {
         return Vec::new();
     }
     if config.secondary_segment_tts_enabled {

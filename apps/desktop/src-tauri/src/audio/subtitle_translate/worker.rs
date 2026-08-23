@@ -23,6 +23,27 @@ fn cue_target_language<'a>(
     }
 }
 
+fn mark_translation_queue_rejection(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    cue_id: &str,
+) {
+    store.watch_session_report.record_model_error_for_cue(
+        cue_id,
+        "secondary-text-translation",
+        "translation.queue-rejected",
+        "translation queue capacity/deadline rejected a final segment",
+        true,
+        None,
+    );
+    store.update_subtitle_cue_translation(
+        cue_id,
+        "[翻译失败] 本地翻译队列过载".to_string(),
+        true,
+    );
+    let _ = emit_audio_snapshot(app, store);
+}
+
 fn process_translation_cues(
     app: &AppHandle,
     store: &AudioStateStore,
@@ -317,20 +338,7 @@ fn process_translation_cues(
                     | TranslationEnqueueResult::RejectedExpired
             ) && !result.is_forced
             {
-                store.watch_session_report.record_model_error_for_cue(
-                    &cue.cue_id,
-                    "secondary-text-translation",
-                    "translation.queue-rejected",
-                    "translation queue capacity/deadline rejected a final segment",
-                    true,
-                    None,
-                );
-                store.update_subtitle_cue_translation(
-                    &cue.cue_id,
-                    "[翻译失败] 本地翻译队列过载".to_string(),
-                    true,
-                );
-                let _ = emit_audio_snapshot(app, store);
+                mark_translation_queue_rejection(app, store, &cue.cue_id);
             }
         }
     }

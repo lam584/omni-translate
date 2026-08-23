@@ -307,10 +307,7 @@ fn run_stt_worker(
             break;
         }
 
-        for _ in 0..MAX_AUDIO_CHUNKS_PER_TICK {
-            let Ok(raw_chunk) = audio_rx.try_recv() else {
-                break;
-            };
+        for raw_chunk in audio_rx.try_iter().take(MAX_AUDIO_CHUNKS_PER_TICK) {
             let asr_chunk = resample_capture_to_mono_i16(&raw_chunk, 16_000);
 
             if asr_chunk.is_empty() {

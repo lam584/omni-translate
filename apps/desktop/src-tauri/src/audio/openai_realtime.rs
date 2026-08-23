@@ -704,10 +704,7 @@ fn run_openai_worker(
         // Drain captured audio: resample to 24k mono pcm16, gate silence,
         // send when the session is ready, otherwise queue (bounded).
         let mut send_failed = false;
-        for _ in 0..MAX_AUDIO_CHUNKS_PER_TICK {
-            let Ok(chunk) = audio_rx.try_recv() else {
-                break;
-            };
+        for chunk in audio_rx.try_iter().take(MAX_AUDIO_CHUNKS_PER_TICK) {
             let samples = resample_capture_to_mono_i16(&chunk, input_rate);
             if samples.is_empty() {
                 continue;

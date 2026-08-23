@@ -508,10 +508,7 @@ fn run_gemini_worker(
         // Drain captured audio: 48k stereo f32 -> 16k mono pcm16, gate
         // silence, queue until setupComplete.
         let mut transport_failed = false;
-        for _ in 0..MAX_AUDIO_CHUNKS_PER_TICK {
-            let Ok(chunk) = audio_rx.try_recv() else {
-                break;
-            };
+        for chunk in audio_rx.try_iter().take(MAX_AUDIO_CHUNKS_PER_TICK) {
             let samples = resample_capture_to_mono_i16(&chunk, GEMINI_INPUT_SAMPLE_RATE_HZ);
             if samples.is_empty() {
                 continue;

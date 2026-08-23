@@ -23,6 +23,9 @@ mod cue_lifecycle;
 mod report_publish;
 mod deferred_translation;
 mod echo_backend;
+mod source_finality;
+
+use self::source_finality::SourceFinalityStore;
 mod bridge_source_evidence;
 mod omni_sessions;
 mod omni_session_lifecycle;
@@ -130,7 +133,7 @@ pub(crate) struct AudioStateStore {
     /// Provider-owned transcription finality. `SubtitleCueRuntime::committed`
     /// is also touched by legacy translation completion paths, so it cannot be
     /// used as the source-hypothesis finality signal for local agreement.
-    source_final_cues: Mutex<HashSet<String>>,
+    source_final_cues: SourceFinalityStore,
     session_registry: SessionRegistry,
     omni_sessions: OmniSessionStore,
     audio_cache: AudioCacheStore,
@@ -185,7 +188,7 @@ impl AudioStateStore {
             inner: Mutex::new(preview),
             metrics: AudioMetricsStore::new(),
             subtitles: SubtitleStore::new(subtitle_preview),
-            source_final_cues: Mutex::new(HashSet::new()),
+            source_final_cues: SourceFinalityStore::default(),
             session_registry: SessionRegistry::new(),
             omni_sessions: OmniSessionStore::new(),
             audio_cache: AudioCacheStore::new(),
@@ -400,16 +403,7 @@ impl AudioStateStore {
     }
 
     pub(crate) fn update_or_push_stt_cue(&self, cue_id: &str, source_text: &str, committed: bool) {
-        let mut source_final_cues = self
-            .source_final_cues
-            .lock()
-            .expect("source finality store poisoned");
-        if committed {
-            source_final_cues.insert(cue_id.to_string());
-        } else {
-            source_final_cues.remove(cue_id);
-        }
-        drop(source_final_cues);
+        self.source_final_cues.set(cue_id, committed);
         let route_direction = route_direction_from_cue_id(cue_id).to_string();
         self.subtitles.update(|overlay| {
             let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
@@ -466,10 +460,7 @@ impl AudioStateStore {
     }
 
     pub(crate) fn commit_stt_cue(&self, cue_id: &str, source_text: &str, direction: &str) {
-        self.source_final_cues
-            .lock()
-            .expect("source finality store poisoned")
-            .insert(cue_id.to_string());
+        self.source_final_cues.insert(cue_id);
         self.subtitles.update(|overlay| {
             let exists = overlay.recent_cues.iter().any(|c| c.cue_id == cue_id);
             if exists {
@@ -611,16 +602,7 @@ impl AudioStateStore {
     }
 
     pub(crate) fn push_subtitle_cue(&self, mut cue: SubtitleCueRuntime) {
-        let mut source_final_cues = self
-            .source_final_cues
-            .lock()
-            .expect("source finality store poisoned");
-        if cue.committed {
-            source_final_cues.insert(cue.cue_id.clone());
-        } else {
-            source_final_cues.remove(&cue.cue_id);
-        }
-        drop(source_final_cues);
+        self.source_final_cues.set(&cue.cue_id, cue.committed);
         if cue.committed {
             finalize_cue_display_segments(&mut cue);
         }
@@ -664,10 +646,7 @@ impl AudioStateStore {
             self.reset_first_translation_latency(overlay);
         });
         self.deferred_subtitle_translation_cues.clear();
-        self.source_final_cues
-            .lock()
-            .expect("source finality store poisoned")
-            .clear();
+        self.source_final_cues.clear();
         self.audio_cache.clear();
         let mut state = self.inner.lock().expect("audio state poisoned");
         state.speech = SpeechRuntimeSnapshot::preview();
@@ -706,10 +685,7 @@ impl AudioStateStore {
 
     pub(crate) fn discard_uncommitted_subtitle_cue(&self, cue_id: &str) {
         self.deferred_subtitle_translation_cues.remove(cue_id);
-        self.source_final_cues
-            .lock()
-            .expect("source finality store poisoned")
-            .remove(cue_id);
+        self.source_final_cues.remove(cue_id);
         self.subtitles.update(|overlay| {
             overlay
                 .recent_cues
@@ -736,10 +712,7 @@ impl AudioStateStore {
     }
 
     pub(crate) fn subtitle_source_is_final(&self, cue_id: &str) -> bool {
-        self.source_final_cues
-            .lock()
-            .expect("source finality store poisoned")
-            .contains(cue_id)
+        self.source_final_cues.contains(cue_id)
     }
 
     /// Removes deferred-translation entries whose last defer touch is at least

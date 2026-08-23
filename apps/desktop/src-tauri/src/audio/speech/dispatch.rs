@@ -54,35 +54,12 @@ impl SpeechDispatchWorker {
                     .unwrap_or_else(|_| self.initial_config.clone())
             };
             let config = SpeechConfig::from_value(&config_value)?;
-            let snapshot = store.snapshot();
-            let discovered_tasks: Vec<SpeechDispatchTask> = if config.enabled {
-                snapshot
-                    .subtitle_overlay
-                    .recent_cues
-                    .iter()
-                    .rev()
-                    .flat_map(|cue| {
-                        speech_dispatch_tasks_for_cue(
-                            cue,
-                            &config,
-                            &self.queue.committed_played,
-                        )
-                    })
-                    .filter(|task| !self.queue.contains(task))
-                    .collect()
-            } else {
-                Vec::new()
-            };
-            let (pending_tasks, overflow_tasks) = self.queue.admit(discovered_tasks);
-            for task in overflow_tasks {
-                record_speech_skip(
-                    &self.app,
-                    store,
-                    &task,
-                    "speech.tts-queue-overflow",
-                    "TTS 队列超过 32 项，已跳过尚未开始的过期语音。",
-                )?;
-            }
+            let pending_tasks = discover_pending_speech_tasks(
+                &self.app,
+                store,
+                &config,
+                &mut self.queue,
+            )?;
             let ptt_gate_open =
                 !config.outbound_ptt_enabled || config.outbound_ptt_state == "recording";
 
@@ -339,6 +316,38 @@ impl SpeechDispatchWorker {
 
         Ok(())
     }
+}
+
+fn discover_pending_speech_tasks(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    config: &SpeechConfig,
+    queue: &mut SpeechDispatchQueue,
+) -> Result<Vec<SpeechDispatchTask>, String> {
+    let discovered: Vec<SpeechDispatchTask> = if config.enabled {
+        store
+            .snapshot()
+            .subtitle_overlay
+            .recent_cues
+            .iter()
+            .rev()
+            .flat_map(|cue| speech_dispatch_tasks_for_cue(cue, config, &queue.committed_played))
+            .filter(|task| !queue.contains(task))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    let (pending, overflow) = queue.admit(discovered);
+    for task in overflow {
+        record_speech_skip(
+            app,
+            store,
+            &task,
+            "speech.tts-queue-overflow",
+            "TTS 队列超过 32 项，已跳过尚未开始的过期语音。",
+        )?;
+    }
+    Ok(pending)
 }
 
 #[derive(Default)]

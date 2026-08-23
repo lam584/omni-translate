@@ -19,6 +19,7 @@ use super::time_utils::{ms_marker, unix_ms};
 use super::watch_session_report::WatchSessionReportStore;
 mod translation_latency;
 mod audio_cache;
+mod constructor;
 mod cue_lifecycle;
 mod report_publish;
 mod deferred_translation;
@@ -177,42 +178,6 @@ pub(crate) struct AudioStateStore {
     history: crate::history::HistoryStateStore,
 }
 impl AudioStateStore {
-    #[cfg(test)]
-    pub(crate) fn new() -> Self {
-        Self::with_history(crate::history::HistoryStateStore::new())
-    }
-
-    pub(crate) fn with_history(history: crate::history::HistoryStateStore) -> Self {
-        let preview = AudioRuntimeSnapshot::preview();
-        let subtitle_preview = preview.subtitle_overlay.clone();
-        Self {
-            inner: Mutex::new(preview),
-            metrics: AudioMetricsStore::new(),
-            subtitles: SubtitleStore::new(subtitle_preview),
-            source_final_cues: SourceFinalityStore::default(),
-            session_registry: SessionRegistry::new(),
-            omni_sessions: OmniSessionStore::new(),
-            audio_cache: AudioCacheStore::new(),
-            desktop_playback_ownership: DesktopPlaybackOwnership::default(),
-            echo_canceller: Mutex::new(None),
-            echo_render_clock: Mutex::new(EchoRenderClock::default()),
-            speaker_playback_last_active_at: Mutex::new(None),
-            deferred_subtitle_translation_cues: DeferredTranslationStore::new(),
-            active_omni_speech_config: Mutex::new(None),
-            warmer: CaptureRouteWarmer::new(),
-            stt_session_epoch: std::sync::atomic::AtomicU64::new(0),
-            reconnect_generation: std::sync::atomic::AtomicU64::new(0),
-            bridge_translation_status_receipts: Mutex::new(
-                BridgeTranslationStatusReceipts::default(),
-            ),
-            bridge_source_runtime_evidence: Mutex::new(
-                BridgeSourceRuntimeEvidence::default(),
-            ),
-            snapshot_seq: std::sync::atomic::AtomicU64::new(0),
-            watch_session_report: WatchSessionReportStore::new(),
-            history,
-        }
-    }
     /// Shared pre-warmer that pre-opens capture devices during idle time so a
     /// later `start_route` only has to `start_stream`.
     pub(crate) fn warmer(&self) -> &CaptureRouteWarmer {

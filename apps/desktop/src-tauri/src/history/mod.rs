@@ -227,6 +227,27 @@ impl HistoryStateStore {
     }
 }
 
+pub(crate) fn initialize<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<(), String> {
+    let history = app.state::<HistoryStateStore>();
+    let history_path = history.ensure_initialized(app)?;
+    if let Some(reason) = history.unavailable_reason() {
+        crate::log_warn!(
+            app,
+            "runtime",
+            "加密字幕历史不可用，实时翻译继续运行",
+            format!("db={history_path} reason={reason}")
+        );
+    } else {
+        crate::log_info!(
+            app,
+            "runtime",
+            "加密字幕历史初始化完成",
+            format!("db={history_path}")
+        );
+    }
+    Ok(())
+}
+
 pub(crate) fn begin_route_session<R: tauri::Runtime>(app: &AppHandle<R>) {
     if let Err(error) = app.state::<HistoryStateStore>().begin_session() {
         log::warn!("[omni][history] session archive could not start: {error}");

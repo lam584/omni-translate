@@ -334,25 +334,7 @@ fn main() {
                 .ensure_initialized(&app_handle)
                 .map_err(std::io::Error::other)?;
 
-            let history_path = app
-                .state::<HistoryStateStore>()
-                .ensure_initialized(&app_handle)
-                .map_err(std::io::Error::other)?;
-            if let Some(reason) = app.state::<HistoryStateStore>().unavailable_reason() {
-                log_warn!(
-                    &app_handle,
-                    "runtime",
-                    "加密字幕历史不可用，实时翻译继续运行",
-                    format!("db={history_path} reason={reason}")
-                );
-            } else {
-                log_info!(
-                    &app_handle,
-                    "runtime",
-                    "加密字幕历史初始化完成",
-                    format!("db={history_path}")
-                );
-            }
+            history::initialize(&app_handle).map_err(std::io::Error::other)?;
 
             log_info!(
                 &app_handle,

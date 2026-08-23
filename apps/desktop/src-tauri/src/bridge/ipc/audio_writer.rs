@@ -1,3 +1,64 @@
+const BRIDGE_TRANSLATION_GENERATION_ENDED: &str = "bridge.translation-generation-ended";
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct BridgeTranslationSinkOwner {
+    session_id: String,
+    bridge_instance_id: String,
+}
+
+impl BridgeTranslationSinkOwner {
+    pub(crate) fn from_snapshot(snapshot: &BridgeRuntimeSnapshot) -> Option<Self> {
+        Some(Self {
+            session_id: snapshot.session_id.clone()?,
+            bridge_instance_id: snapshot.bridge_instance_id.clone()?,
+        })
+    }
+
+    fn evidence(&self) -> String {
+        format!(
+            "sessionId={} bridgeInstanceId={}",
+            self.session_id, self.bridge_instance_id
+        )
+    }
+}
+
+fn translation_sink_owner_changed(
+    expected: &BridgeTranslationSinkOwner,
+    current: &BridgeRuntimeSnapshot,
+) -> bool {
+    BridgeTranslationSinkOwner::from_snapshot(current).as_ref() != Some(expected)
+}
+
+fn translation_write_error_for_owner(
+    expected: Option<&BridgeTranslationSinkOwner>,
+    current: &BridgeRuntimeSnapshot,
+    error: String,
+) -> String {
+    let Some(expected) = expected.filter(|owner| translation_sink_owner_changed(owner, current))
+    else {
+        return error;
+    };
+    translation_generation_ended_error(expected, current, error)
+}
+
+fn translation_generation_ended_error(
+    expected: &BridgeTranslationSinkOwner,
+    current: &BridgeRuntimeSnapshot,
+    error: String,
+) -> String {
+    let current = BridgeTranslationSinkOwner::from_snapshot(current)
+        .map(|owner| owner.evidence())
+        .unwrap_or_else(|| "sessionId=- bridgeInstanceId=-".to_string());
+    format!(
+        "{BRIDGE_TRANSLATION_GENERATION_ENDED}: expectedOwner=[{}] currentOwner=[{current}] cause={error}",
+        expected.evidence()
+    )
+}
+
+pub(crate) fn is_bridge_translation_generation_ended_error(error: &str) -> bool {
+    error.starts_with(BRIDGE_TRANSLATION_GENERATION_ENDED)
+}
+
 pub(crate) fn write_virtual_mic_frame<R: tauri::Runtime>(
     app: &AppHandle<R>,
     cue_id: &str,
@@ -39,6 +100,7 @@ pub(crate) fn write_virtual_mic_frame<R: tauri::Runtime>(
             Some(index as u32),
             Some(chunks.len() as u32),
             None,
+            None,
         )?;
     }
     Ok(accepted_frames)
@@ -74,6 +136,7 @@ pub(crate) fn write_process_playback_cue<R: tauri::Runtime>(
         None,
         None,
         None,
+        None,
     )
 }
 
@@ -90,6 +153,7 @@ pub(crate) fn write_process_playback_stream<R: tauri::Runtime>(
     estimated_duration_ms: u64,
     chunk_index: u32,
     stream_state: TranslationStreamState,
+    expected_owner: &BridgeTranslationSinkOwner,
 ) -> Result<u64, String> {
     validate_translation_audio_format(samples, sample_rate_hz, channel_count)?;
     write_bridge_audio_frame(
@@ -107,6 +171,7 @@ pub(crate) fn write_process_playback_stream<R: tauri::Runtime>(
         Some(chunk_index),
         None,
         Some(stream_state),
+        Some(expected_owner),
     )
 }
 
@@ -188,6 +253,8 @@ fn translation_frame_header(
     chunk_index: Option<u32>,
     chunk_count: Option<u32>,
     stream_state: Option<TranslationStreamState>,
+    bridge_process_id: Option<u32>,
+    bridge_instance_id: Option<String>,
 ) -> BridgeTranslationFrameHeader {
     BridgeTranslationFrameHeader {
         event_type: event_type.to_string(),
@@ -201,8 +268,8 @@ fn translation_frame_header(
         frame_count,
         timestamp_ms: now_unix_ms(),
         payload_bytes,
-        bridge_process_id: None,
-        bridge_instance_id: None,
+        bridge_process_id,
+        bridge_instance_id,
         source_generation: None,
         source_generation_token: None,
         cue_id: Some(cue_id.to_string()),
@@ -242,10 +309,20 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
     chunk_index: Option<u32>,
     chunk_count: Option<u32>,
     stream_state: Option<TranslationStreamState>,
+    expected_owner: Option<&BridgeTranslationSinkOwner>,
 ) -> Result<u64, String> {
     let route_direction = parse_route_direction(route_direction)?;
     let bridge_state = app.state::<BridgeStateStore>();
     let snapshot = bridge_state.snapshot();
+    if let Some(expected_owner) = expected_owner {
+        if translation_sink_owner_changed(expected_owner, &snapshot) {
+            return Err(translation_write_error_for_owner(
+                Some(expected_owner),
+                &snapshot,
+                "translation write reached a superseded Bridge owner before pipe open".to_string(),
+            ));
+        }
+    }
     if snapshot.process_status != "running" || snapshot.bridge_state != "running" {
         log_error!(
             app,
@@ -290,31 +367,77 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         chunk_index,
         chunk_count,
         stream_state,
+        snapshot.bridge_process_id,
+        snapshot.bridge_instance_id.clone(),
     );
     let header_bytes = serde_json::to_vec(&header).map_err(|error| error.to_string())?;
     let mut audio_pipe = OpenOptions::new()
         .read(true)
         .write(true)
         .open(&snapshot.audio_pipe_path)
-        .map_err(|error| format!("Bridge audio pipe open failed: {}", error))?;
+        .map_err(|error| {
+            translation_write_error_for_owner(
+                expected_owner,
+                &bridge_state.snapshot(),
+                format!("Bridge audio pipe open failed: {}", error),
+            )
+        })?;
     audio_pipe
         .write_all(&(header_bytes.len() as u32).to_le_bytes())
         .and_then(|_| audio_pipe.write_all(&header_bytes))
         .and_then(|_| audio_pipe.write_all(&bytes))
         .and_then(|_| audio_pipe.flush())
-        .map_err(|error| format!("Bridge audio pipe write failed: {}", error))?;
+        .map_err(|error| {
+            translation_write_error_for_owner(
+                expected_owner,
+                &bridge_state.snapshot(),
+                format!("Bridge audio pipe write failed: {}", error),
+            )
+        })?;
     let mut ack_size = [0_u8; 4];
     audio_pipe
         .read_exact(&mut ack_size)
-        .map_err(|error| format!("Bridge audio pipe ack size read failed: {}", error))?;
+        .map_err(|error| {
+            translation_write_error_for_owner(
+                expected_owner,
+                &bridge_state.snapshot(),
+                format!("Bridge audio pipe ack size read failed: {}", error),
+            )
+        })?;
     let mut ack_bytes = vec![0_u8; u32::from_le_bytes(ack_size) as usize];
     audio_pipe
         .read_exact(&mut ack_bytes)
-        .map_err(|error| format!("Bridge audio pipe ack read failed: {}", error))?;
+        .map_err(|error| {
+            translation_write_error_for_owner(
+                expected_owner,
+                &bridge_state.snapshot(),
+                format!("Bridge audio pipe ack read failed: {}", error),
+            )
+        })?;
     let ack: BridgeTranslationFrameAck =
         serde_json::from_slice(&ack_bytes).map_err(|error| error.to_string())?;
 
+    if let Some(expected_owner) = expected_owner {
+        let current = bridge_state.snapshot();
+        if translation_sink_owner_changed(expected_owner, &current) {
+            return Err(translation_write_error_for_owner(
+                Some(expected_owner),
+                &current,
+                "translation acknowledgement arrived after the Bridge owner changed".to_string(),
+            ));
+        }
+    }
+
     if let Some(error_code) = ack.error_code.as_deref() {
+        if error_code == "bridge.session-mismatch" {
+            if let Some(expected_owner) = expected_owner {
+                return Err(translation_generation_ended_error(
+                    expected_owner,
+                    &bridge_state.snapshot(),
+                    accepted_translation_frames(&ack).unwrap_err(),
+                ));
+            }
+        }
         bridge_state.update_snapshot(|current| {
             current.last_error_code = Some(error_code.to_string());
             reconcile_bridge_snapshot(current);
@@ -322,6 +445,19 @@ fn write_bridge_audio_frame<R: tauri::Runtime>(
         return accepted_translation_frames(&ack);
     }
     let accepted_frames = accepted_translation_frames(&ack)?;
+    if stream_state == Some(TranslationStreamState::Start) {
+        let owner = expected_owner
+            .map(BridgeTranslationSinkOwner::evidence)
+            .unwrap_or_else(|| "sessionId=- bridgeInstanceId=-".to_string());
+        log_info!(
+            app,
+            "bridge",
+            "event=translation_stream_first_write_accepted",
+            format!(
+                "cueId={cue_id} requestId={request_id} {owner} acceptedFrames={accepted_frames}"
+            )
+        );
+    }
     bridge_state.update_snapshot(|current| {
         current.translated_frames_accepted += ack.accepted_frames as u64;
         current.playback_frames_written = ack.playback_frames_written;

@@ -87,15 +87,12 @@ fn handle_source_subscriber(
                 );
                 break;
             }
-            source_rx.try_recv()
+            source_rx.recv_timeout(Duration::from_millis(25))
         };
         let (event_type, payload) = match payload {
             Ok(payload) => ("bridge.source.frame", payload),
-            Err(mpsc::TryRecvError::Empty) => {
-                thread::sleep(Duration::from_millis(25));
-                ("bridge.source.heartbeat", Vec::new())
-            }
-            Err(mpsc::TryRecvError::Disconnected) => break,
+            Err(mpsc::RecvTimeoutError::Timeout) => ("bridge.source.heartbeat", Vec::new()),
+            Err(mpsc::RecvTimeoutError::Disconnected) => break,
         };
         let current = state.lock().unwrap();
         if !source_subscription_is_owner(&current, my_generation) {
@@ -168,6 +165,7 @@ fn begin_source_subscription(state: &mut BridgeState) -> (u64, u64) {
     let previous_generation = state.source_generation;
     state.source_generation = state.source_generation.wrapping_add(1);
     state.source_subscriber_active = true;
+    state.update_progress("subscriber-connected");
     (state.source_generation, previous_generation)
 }
 
@@ -181,6 +179,7 @@ fn end_source_subscription(state: &mut BridgeState, generation: u64) -> bool {
     }
     state.source_subscriber_active = false;
     state.source_generation = state.source_generation.wrapping_add(1);
+    state.update_progress("waiting-subscriber");
     true
 }
 

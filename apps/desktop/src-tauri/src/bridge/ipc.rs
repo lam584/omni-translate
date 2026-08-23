@@ -15,7 +15,7 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_TERMINATE,
 };
 
-use crate::log_error;
+use crate::{log_error, log_info};
 use crate::runtime::events::emit_runtime_snapshot;
 
 use super::contracts::{
@@ -1058,6 +1058,8 @@ mod tests {
             None,
             None,
             None,
+            Some(4242),
+            Some("bridge-instance-timing".to_string()),
         );
 
         assert_eq!(header.cue_id.as_deref(), Some("cue-timing"));
@@ -1072,6 +1074,104 @@ mod tests {
         assert_eq!(header.payload_bytes, 192_000);
         assert_eq!(header.chunk_index, None);
         assert_eq!(header.chunk_count, None);
+        assert_eq!(header.bridge_process_id, Some(4242));
+        assert_eq!(
+            header.bridge_instance_id.as_deref(),
+            Some("bridge-instance-timing")
+        );
         assert!(header.timestamp_ms >= header.created_at_ms.unwrap());
+    }
+
+    fn translation_owner_snapshot(
+        session_id: Option<&str>,
+        bridge_instance_id: Option<&str>,
+    ) -> BridgeRuntimeSnapshot {
+        BridgeRuntimeSnapshot {
+            process_status: "running".to_string(),
+            bridge_state: "running".to_string(),
+            lifecycle_state: "ready".to_string(),
+            session_id: session_id.map(str::to_string),
+            bridge_instance_id: bridge_instance_id.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn translation_owner_change_marks_late_old_generation_write_as_terminated() {
+        let old = translation_owner_snapshot(Some("session-old"), Some("instance-old"));
+        let expected = BridgeTranslationSinkOwner::from_snapshot(&old).unwrap();
+        let new = translation_owner_snapshot(Some("session-new"), Some("instance-new"));
+
+        let error = translation_write_error_for_owner(
+            Some(&expected),
+            &new,
+            "Bridge audio pipe write failed: broken pipe".to_string(),
+        );
+
+        assert!(is_bridge_translation_generation_ended_error(&error));
+        assert!(error.contains("session-old"));
+        assert!(error.contains("instance-new"));
+    }
+
+    #[test]
+    fn stopped_restart_window_terminates_the_previous_translation_owner() {
+        let old = translation_owner_snapshot(Some("session-old"), Some("instance-old"));
+        let expected = BridgeTranslationSinkOwner::from_snapshot(&old).unwrap();
+        let stopped = translation_owner_snapshot(None, Some("instance-old"));
+
+        let error = translation_write_error_for_owner(
+            Some(&expected),
+            &stopped,
+            "Bridge Service was stopped before the late chunk".to_string(),
+        );
+
+        assert!(is_bridge_translation_generation_ended_error(&error));
+        assert!(error.contains("currentOwner=[sessionId=- bridgeInstanceId=-]"));
+    }
+
+    #[test]
+    fn current_translation_owner_write_failure_remains_hard() {
+        let current = translation_owner_snapshot(Some("session-current"), Some("instance-current"));
+        let expected = BridgeTranslationSinkOwner::from_snapshot(&current).unwrap();
+        let cause = "Bridge audio pipe write failed: access denied".to_string();
+
+        let error = translation_write_error_for_owner(Some(&expected), &current, cause.clone());
+
+        assert_eq!(error, cause);
+        assert!(!is_bridge_translation_generation_ended_error(&error));
+    }
+
+    #[test]
+    fn session_mismatch_nack_proves_the_pipe_owner_superseded_the_snapshot() {
+        let stale = translation_owner_snapshot(Some("session-stale"), Some("instance-stale"));
+        let expected = BridgeTranslationSinkOwner::from_snapshot(&stale).unwrap();
+
+        let error = translation_generation_ended_error(
+            &expected,
+            &stale,
+            "bridge.session-mismatch: wrong session".to_string(),
+        );
+
+        assert!(is_bridge_translation_generation_ended_error(&error));
+        assert!(error.contains("bridge.session-mismatch"));
+    }
+
+    #[test]
+    fn translation_owner_requires_both_ready_connection_identifiers() {
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&translation_owner_snapshot(
+            Some("session"),
+            Some("instance")
+        ))
+        .is_some());
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&translation_owner_snapshot(
+            Some("session"),
+            None
+        ))
+        .is_none());
+        assert!(BridgeTranslationSinkOwner::from_snapshot(&translation_owner_snapshot(
+            None,
+            Some("instance")
+        ))
+        .is_none());
     }
 }

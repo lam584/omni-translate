@@ -7,7 +7,7 @@ use super::ipc::{
     ensure_bridge_runtime_root, flush_bridge_source, initialize_bridge, query_state,
     probe_process_loopback, query_state_fast, stop_bridge_process, terminate_stale_bridge_process,
     write_process_playback_cue, write_process_playback_stream, write_virtual_mic_frame,
-    BridgeInitializationFailure,
+    BridgeInitializationFailure, BridgeTranslationSinkOwner,
 };
 
 /// Typed client for all named-pipe operations bound to one Bridge runtime.
@@ -163,6 +163,7 @@ impl<'a, R: tauri::Runtime> BridgeAudioWriter<'a, R> {
         estimated_duration_ms: u64,
         chunk_index: u32,
         stream_state: omni_bridge_protocol::TranslationStreamState,
+        expected_owner: &BridgeTranslationSinkOwner,
     ) -> Result<u64, String> {
         write_process_playback_stream(
             self.app,
@@ -176,6 +177,7 @@ impl<'a, R: tauri::Runtime> BridgeAudioWriter<'a, R> {
             estimated_duration_ms,
             chunk_index,
             stream_state,
+            expected_owner,
         )
     }
 }

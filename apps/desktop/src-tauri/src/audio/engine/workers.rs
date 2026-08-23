@@ -400,10 +400,7 @@ fn accept_bridge_source_identity(
     );
     let authoritative = bridge_state.update_snapshot(|current| {
         disposition = bridge_source_identity_disposition(current, identity);
-        if disposition == BridgeSourceIdentityDisposition::Rebind {
-            current.source_generation = identity.source_generation;
-            current.source_generation_token = Some(identity.source_generation_token.clone());
-        }
+        apply_bridge_source_identity_observation(current, identity, &disposition, is_pcm_frame);
     });
     match disposition {
         BridgeSourceIdentityDisposition::Current => {

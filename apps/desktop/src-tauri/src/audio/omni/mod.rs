@@ -782,7 +782,7 @@ use self::protocol::{
     ensure_transcription_cue_id, handle_response_done, handle_session_ready_event,
     manual_turn_response_stream_active,
     native_response_id_from_event, next_omni_cue_id, record_native_playback_stale,
-    request_omni_playback_stop, reset_manual_turn_input_state, reset_omni_turn_state,
+    reset_manual_turn_input_state, reset_omni_turn_state,
     resolve_completed_transcription, resolve_native_response_source_text,
     response_stream_owns_current_cue,
     extract_response_done_text,
@@ -791,7 +791,7 @@ use self::protocol::{
     write_native_output_preview_to_cue, write_native_translation_to_cue,
     update_native_response_cue_source,
     OmniEventDiagnostics, OmniPlaybackCommand, OmniPlaybackEnqueueOutcome,
-    OmniPlaybackOverflowReason, OmniPlaybackQueue,
+    OmniPlaybackOverflowReason, OmniPlaybackQueue, OmniPlaybackWorker,
 };
 #[cfg(test)]
 use protocol::{build_omni_session_update, build_omni_session_update_with_output_mode};

@@ -369,8 +369,7 @@ fn run_omni_worker(
         mut voice_fallback_applied,
         native_translation_reuse_active,
         playback_tx,
-        playback_stop_requested,
-        playback_join,
+        mut playback_worker,
     } = OmniConnectionCoordinator::connect_initial(
         &app,
         store,
@@ -471,8 +470,7 @@ fn run_omni_worker(
             if store.is_current_omni_session(&direction, session_generation) {
                 store.discard_uncommitted_subtitle_cues_by_direction(&direction);
             }
-            request_omni_playback_stop(&playback_stop_requested, &playback_tx);
-            let _ = playback_join.join();
+            playback_worker.shutdown_gracefully()?;
             emit_audio_snapshot(&app, store)?;
             break;
         }
@@ -807,8 +805,7 @@ fn run_omni_worker(
                     "[PRECONNECT] parked Omni worker stopped after provider idle timeout, sentAudioChunks={chunk_count}"
                 ),
             );
-            request_omni_playback_stop(&playback_stop_requested, &playback_tx);
-            let _ = playback_join.join();
+            playback_worker.shutdown_gracefully()?;
             emit_audio_snapshot(&app, store)?;
             break;
         }

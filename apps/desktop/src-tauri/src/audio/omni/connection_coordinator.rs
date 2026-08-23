@@ -1338,8 +1338,7 @@ pub(super) struct OmniConnectedSession {
     pub(super) voice_fallback_applied: bool,
     pub(super) native_translation_reuse_active: bool,
     pub(super) playback_tx: OmniPlaybackQueue,
-    pub(super) playback_stop_requested: Arc<AtomicBool>,
-    pub(super) playback_join: JoinHandle<()>,
+    pub(super) playback_worker: OmniPlaybackWorker,
 }
 
 impl OmniConnectionCoordinator {
@@ -1521,13 +1520,12 @@ impl OmniConnectionCoordinator {
         // during the session update it in place, and the playback thread
         // re-reads it for every Play command.
         let shared_speech_config = store.register_omni_speech_config(speech_config);
-        let (playback_tx, playback_stop_requested, playback_join) =
-            start_omni_playback(
-                app.clone(),
-                shared_speech_config,
-                direction.to_string(),
-                translated_pcm_authority,
-            );
+        let (playback_tx, playback_worker) = start_omni_playback(
+            app.clone(),
+            shared_speech_config,
+            direction.to_string(),
+            translated_pcm_authority,
+        );
         Ok(OmniConnectedSession {
             socket,
             trace_call,
@@ -1536,8 +1534,7 @@ impl OmniConnectionCoordinator {
             voice_fallback_applied,
             native_translation_reuse_active,
             playback_tx,
-            playback_stop_requested,
-            playback_join,
+            playback_worker,
         })
     }
 }

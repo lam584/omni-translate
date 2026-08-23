@@ -24,6 +24,12 @@ const driverRing = readRepoText(
   'sysvad',
   'omni_bridge_ring.cpp',
 );
+const portableRing = readRepoText(
+  'drivers',
+  'windows-virtual-mic',
+  'include',
+  'omni_ring_core.h',
+);
 // The ioctl codes, device path and status base size live in probe_support
 // (src/lib.rs) since the bridge/probe dedup refactor.
 const bridgeProbeSupport = readRepoText('apps', 'bridge-service-native', 'src', 'lib.rs');
@@ -202,6 +208,28 @@ test('frame geometry matches the bridge source chunk constant', () => {
     bridgeMod.includes(`${framesPerChunk} * INTERNAL_CHANNEL_COUNT as usize * 2`),
     'bridge mod.rs no longer derives OMNI_SOURCE_CHUNK_BYTES from 20 ms at 48 kHz stereo',
   );
+});
+
+test('bridge source ring absorbs event-mode startup pre-roll without changing loopback latency', () => {
+  const { sampleRateHz, channelCount, bytesPerSample, chunkBytes } = contract.frameGeometry;
+  const { maxBufferedMilliseconds } = contract.bridgeSourceGeometry;
+  const maxBufferedBytes =
+    (sampleRateHz * channelCount * bytesPerSample * maxBufferedMilliseconds) / 1000;
+  assert.equal(maxBufferedBytes, 96000);
+  assert.ok(driverRing.includes(`#define OMNI_BRIDGE_MAX_BUFFERED_BYTES ${maxBufferedBytes}`));
+  assert.ok(driverRing.includes('#define OMNI_LOOPBACK_RING_CAPACITY 19200'));
+  assert.ok(portableRing.includes(`kDefaultMaxBuffered = ${maxBufferedBytes}`));
+
+  const startupFrames = 10; // 200 ms of committed event-mode packets.
+  const ring = new BridgeRingSimulator(maxBufferedBytes, Number(contract.abiVersion));
+  for (let index = 0; index < startupFrames; index += 1) ring.writeFrame(chunkBytes);
+  const beforeDrain = ring.queryStatus();
+  assert.equal(beforeDrain.BufferedBytes, startupFrames * chunkBytes);
+  assert.equal(beforeDrain.DroppedBytes, 0);
+  assert.equal(ring.readPcm(startupFrames * chunkBytes), startupFrames * chunkBytes);
+  const drained = ring.queryStatus();
+  assert.equal(drained.DroppedBytes, 0);
+  assert.equal(drained.CapturedBytes, drained.DeliveredBytes);
 });
 
 test('simulated ring preserves the status counter conservation invariant', () => {

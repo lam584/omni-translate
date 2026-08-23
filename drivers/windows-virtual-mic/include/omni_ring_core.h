@@ -18,7 +18,9 @@ namespace omni::ring {
 class RingBuffer {
 public:
     static constexpr uint32_t kDefaultCapacity = 4 * 1024 * 1024;
-    static constexpr uint32_t kDefaultMaxBuffered = 19200;
+    // 500 ms of 48 kHz stereo PCM16. The kernel render-source ring uses the
+    // same startup-jitter budget; steady-state readers still drain at once.
+    static constexpr uint32_t kDefaultMaxBuffered = 96000;
 
     RingBuffer() = default;
 

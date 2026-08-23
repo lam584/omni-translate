@@ -145,6 +145,37 @@ static void test_overwrite_counters() {
     ASSERT_EQ(ring.deliveredBytes(), 8u);
 }
 
+// --- Test: event-mode startup pre-roll fits without dropping source audio ---
+static void test_startup_preroll_fits_default_budget() {
+    const uint32_t frameBytes = 3840; // 20 ms, 48 kHz stereo PCM16.
+    const uint32_t prerollFrames = 10; // 200 ms startup burst.
+    ASSERT_EQ(RingBuffer::kDefaultMaxBuffered, 96000u);
+
+    std::vector<uint8_t> storage(RingBuffer::kDefaultMaxBuffered, 0);
+    RingBuffer ring;
+    ring.Initialize(
+        storage.data(),
+        static_cast<uint32_t>(storage.size()),
+        RingBuffer::kDefaultMaxBuffered);
+
+    std::vector<uint8_t> expected(frameBytes * prerollFrames);
+    for (uint32_t index = 0; index < expected.size(); ++index) {
+        expected[index] = static_cast<uint8_t>(index % 251);
+    }
+    for (uint32_t frame = 0; frame < prerollFrames; ++frame) {
+        const uint8_t* payload = expected.data() + frame * frameBytes;
+        ring.Write(payload, frameBytes);
+        ring.RecordCapture(frameBytes);
+    }
+
+    ASSERT_EQ(ring.bufferedBytes(), frameBytes * prerollFrames);
+    ASSERT_EQ(ring.droppedBytes(), 0u);
+    std::vector<uint8_t> actual(expected.size(), 0);
+    ASSERT_EQ(ring.Read(actual.data(), static_cast<uint32_t>(actual.size())), expected.size());
+    ASSERT_TRUE(actual == expected);
+    ASSERT_EQ(ring.capturedBytes(), ring.deliveredBytes());
+}
+
 // --- Test: loopback ring and bridge ring state isolation ---
 static void test_ring_isolation() {
     std::vector<uint8_t> storageA(256, 0);
@@ -236,6 +267,7 @@ int main() {
     RUN_TEST(test_wraparound);
     RUN_TEST(test_overwrite_keeps_newest);
     RUN_TEST(test_overwrite_counters);
+    RUN_TEST(test_startup_preroll_fits_default_budget);
     RUN_TEST(test_ring_isolation);
     RUN_TEST(test_reset_all);
     RUN_TEST(test_virtual_mic_generation_boundary);

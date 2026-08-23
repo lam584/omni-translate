@@ -565,7 +565,173 @@ export function readSmokeProviderSessionAuthority(runDirectory) {
   }
 }
 
-export function evaluateSmokeProviderSessionAuthority({ report, authority, readFailure = null }) {
+const SMOKE_LIVE_REPORT_LAYERS = Object.freeze([
+  'environment',
+  'driver',
+  'wasapi',
+  'bridge',
+  'physicalOutput',
+  'physicalOutputContent',
+  'aec',
+  'speechSegmentation',
+  'strictContent',
+  'app',
+  'provider',
+]);
+
+function isJsonObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isNonNegativeSafeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 0;
+}
+
+export function smokeLiveReportCompletenessFailure(report, {
+  expectedModelId = null,
+  expectedFeedbackLoopPrevention = null,
+  minimumDurationMs = 180_000,
+} = {}) {
+  if (!isJsonObject(report)) return 'live report is not a JSON object';
+  if (report.schemaVersion !== 1) return 'live report has the wrong schemaVersion';
+  if (!isNonEmptyString(report.generatedAt) || !Number.isFinite(Date.parse(report.generatedAt))) {
+    return 'live report is missing a valid generatedAt timestamp';
+  }
+  if (report.mode !== 'live') return `live report mode is ${String(report.mode)}, expected live`;
+  if (!isNonEmptyString(report.modelId)) return 'live report is missing modelId';
+  if (expectedModelId && report.modelId !== expectedModelId) {
+    return `live report modelId is ${String(report.modelId)}, expected ${expectedModelId}`;
+  }
+  if (!isNonEmptyString(report.feedbackLoopPrevention)) {
+    return 'live report is missing feedbackLoopPrevention';
+  }
+  if (
+    expectedFeedbackLoopPrevention
+    && report.feedbackLoopPrevention !== expectedFeedbackLoopPrevention
+  ) {
+    return `live report feedbackLoopPrevention is ${String(report.feedbackLoopPrevention)}, expected ${expectedFeedbackLoopPrevention}`;
+  }
+  if (report.translationRoute !== 'native') {
+    return `live report translationRoute is ${String(report.translationRoute)}, expected native`;
+  }
+  if (!['passed', 'failed', 'blocked', 'inconclusive'].includes(report.verdict)) {
+    return `live report verdict is ${String(report.verdict)}, expected passed, failed, blocked, or inconclusive`;
+  }
+  if (!isJsonObject(report.provenance)) return 'live report is missing provenance';
+  if (!isJsonObject(report.layers)) return 'live report is missing layers';
+  const missingLayers = SMOKE_LIVE_REPORT_LAYERS.filter(
+    (layer) => !isNonEmptyString(report.layers[layer]?.status),
+  );
+  if (missingLayers.length > 0) {
+    return `live report is missing layer status for ${missingLayers.join(', ')}`;
+  }
+  if (!isJsonObject(report.diagnostics)) return 'live report is missing diagnostics';
+  if (!isJsonObject(report.artifacts)) return 'live report is missing artifacts';
+
+  const watch = report.watchSessionReport;
+  if (!isJsonObject(watch)) return 'live report is missing watchSessionReport';
+  if (!isNonEmptyString(watch.sessionId)) return 'watchSessionReport is missing sessionId';
+  if (watch.status !== 'completed') {
+    return `watchSessionReport status is ${String(watch.status)}, expected completed`;
+  }
+  if (watch.routeMode !== 'watch') {
+    return `watchSessionReport routeMode is ${String(watch.routeMode)}, expected watch`;
+  }
+  if (!isNonEmptyString(watch.providerId)) return 'watchSessionReport is missing providerId';
+  if (!isNonEmptyString(watch.model)) return 'watchSessionReport is missing model';
+  if (expectedModelId && watch.model !== expectedModelId) {
+    return `watchSessionReport model is ${String(watch.model)}, expected ${expectedModelId}`;
+  }
+  if (!isNonEmptyString(watch.startedAt) || !isNonEmptyString(watch.endedAt)) {
+    return 'watchSessionReport is missing startedAt or endedAt';
+  }
+  if (!isNonNegativeSafeInteger(watch.elapsedMs)) {
+    return 'watchSessionReport elapsedMs must be a non-negative safe integer';
+  }
+  if (!isJsonObject(watch.summary)) return 'watchSessionReport is missing summary';
+  for (const field of [
+    'durationMs',
+    'cueCount',
+    'completeCueCount',
+    'visibleRenderCueCount',
+    'unrenderedCueCount',
+    'issueCount',
+    'issueOccurrenceCount',
+  ]) {
+    if (!isNonNegativeSafeInteger(watch.summary[field])) {
+      return `watchSessionReport summary.${field} must be a non-negative safe integer`;
+    }
+  }
+  if (!Array.isArray(watch.cues) || !Array.isArray(watch.events) || !Array.isArray(watch.issues)) {
+    return 'watchSessionReport cues, events, and issues must be arrays';
+  }
+  if (!isNonNegativeSafeInteger(watch.droppedCueCount) || !isNonNegativeSafeInteger(watch.droppedEventCount)) {
+    return 'watchSessionReport dropped cue/event counts must be non-negative safe integers';
+  }
+
+  if (report.verdict !== 'passed') {
+    if (!isNonEmptyString(report.failureLayer) || !isNonEmptyString(report.failureReason)) {
+      return 'non-passing live report is missing failureLayer or failureReason';
+    }
+    return null;
+  }
+  if (report.failureLayer !== null || report.failureReason !== null) {
+    return 'passing live report must have null failureLayer and failureReason';
+  }
+  if (watch.droppedCueCount !== 0 || watch.droppedEventCount !== 0) {
+    return `passing watchSessionReport dropped evidence: cues=${watch.droppedCueCount} events=${watch.droppedEventCount}`;
+  }
+  if (watch.elapsedMs < minimumDurationMs || watch.summary.durationMs < minimumDurationMs) {
+    return `watchSessionReport duration is too short: elapsedMs=${watch.elapsedMs} summary.durationMs=${watch.summary.durationMs} minimum=${minimumDurationMs}`;
+  }
+  if (Math.abs(watch.elapsedMs - watch.summary.durationMs) > 1_000) {
+    return `watchSessionReport duration fields disagree: elapsedMs=${watch.elapsedMs} summary.durationMs=${watch.summary.durationMs}`;
+  }
+  const acceptedContentCues = watch.cues.filter((cue) => (
+    isJsonObject(cue)
+    && isNonEmptyString(cue.cueId)
+    && cue.comparisonStatus !== 'superseded'
+    && [cue.sourceText, cue.llmText, cue.publishedText, cue.renderedText]
+      .some(isNonEmptyString)
+  ));
+  const completeCues = acceptedContentCues.filter((cue) => (
+    Number.isFinite(cue.llmFirstAtMs)
+    && Number.isFinite(cue.publishedFirstAtMs)
+    && Number.isFinite(cue.renderedFirstAtMs)
+    && Number.isFinite(cue.llmFirstToRenderMs)
+    && cue.llmFirstToRenderMs >= 0
+    && Number.isFinite(cue.publishToRenderMs)
+    && cue.publishToRenderMs >= 0
+  ));
+  if (completeCues.length === 0 || watch.summary.completeCueCount === 0) {
+    return 'watchSessionReport has no complete model → publish → visible-render cue';
+  }
+  if (
+    completeCues.length !== acceptedContentCues.length
+    || watch.summary.completeCueCount < acceptedContentCues.length
+  ) {
+    const incompleteCueIds = acceptedContentCues
+      .filter((cue) => !completeCues.includes(cue))
+      .map((cue) => cue.cueId)
+      .join(', ');
+    return `watchSessionReport has incomplete accepted cue lifecycle(s): ${incompleteCueIds || '(summary mismatch)'}`;
+  }
+  if (watch.summary.unrenderedCueCount !== 0) {
+    return `watchSessionReport has ${watch.summary.unrenderedCueCount} published cue(s) without visible rendering`;
+  }
+  return null;
+}
+
+export function evaluateSmokeProviderSessionAuthority({
+  report,
+  authority,
+  readFailure = null,
+  expectedCell = null,
+}) {
   const hasPrimarySessionCount = Number.isSafeInteger(authority?.providerSessions)
     && authority.providerSessions >= 0;
   const hasAuxiliarySessionCount = Number.isSafeInteger(authority?.auxiliaryProviderSessions)
@@ -595,14 +761,26 @@ export function evaluateSmokeProviderSessionAuthority({ report, authority, readF
                 ? `${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE} recorded ${String(authority.auxiliaryProviderSessions)} auxiliary Provider sessions; expected 0`
                 : null
   );
-  const passed = report?.verdict === 'passed' && authorityFailure === null;
+  const reportFailure = smokeLiveReportCompletenessFailure(report, {
+    expectedModelId: expectedCell?.modelId ?? null,
+    expectedFeedbackLoopPrevention: expectedCell?.feedbackLoopPrevention ?? null,
+    minimumDurationMs: Number.isFinite(Number(expectedCell?.durationSeconds))
+      ? Number(expectedCell.durationSeconds) * 1_000
+      : 180_000,
+  });
+  const passed = report?.verdict === 'passed'
+    && reportFailure === null
+    && authorityFailure === null;
   return {
     passed,
     providerCalls,
     authorityFailure,
+    reportFailure,
     classification: passed
       ? null
-      : (authorityFailure ? 'orchestration' : (report ? classifyReport(report) : 'orchestration')),
+      : (authorityFailure || reportFailure
+          ? 'orchestration'
+          : (report ? classifyReport(report) : 'orchestration')),
   };
 }
 
@@ -718,6 +896,7 @@ export async function runCell({ cell, executionRoot }) {
     report,
     authority: authorityResult.authority,
     readFailure: authorityResult.failure,
+    expectedCell: cell,
   });
   const passed = authorityEvaluation.passed;
   return {
@@ -733,6 +912,7 @@ export async function runCell({ cell, executionRoot }) {
     exitCode: processResult.exitCode,
     failureLayer: report?.failureLayer ?? null,
     failureReason: authorityEvaluation.authorityFailure
+      ?? authorityEvaluation.reportFailure
       ?? report?.failureReason
       ?? (processResult.stderr.trim() || 'live runner failed without a report'),
     providerSessionAuthorityPath: runDirectory

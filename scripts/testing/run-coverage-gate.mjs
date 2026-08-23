@@ -58,7 +58,11 @@ export const runCoverageGate = ({ outputRoot = defaultOutputRoot, full = false }
       'desktop-shell-rust',
       `cargo +${nightlyToolchain} llvm-cov --manifest-path apps/desktop/src-tauri/Cargo.toml --branch --json --output-path "${desktopShellReport}"`,
     );
-    assertRustCoverage('desktop-shell-rust', desktopShellReport);
+    assertRustCoverage(
+      'desktop-shell-rust',
+      desktopShellReport,
+      coverageBaseline['desktop-shell-rust'],
+    );
   }
 
   const nativeBridgeReport = path.join(outputDir, 'native-bridge.json');

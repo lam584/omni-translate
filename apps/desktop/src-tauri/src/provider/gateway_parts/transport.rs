@@ -187,7 +187,7 @@ pub(crate) fn normalize_websocket_read_error(
     }
 }
 
-pub(super) fn build_client(timeout_ms: u64) -> Result<Client, ProviderRuntimeError> {
+pub(in crate::provider) fn build_client(timeout_ms: u64) -> Result<Client, ProviderRuntimeError> {
     Client::builder()
         .timeout(Duration::from_millis(timeout_ms.max(1000)))
         .redirect(redirect::Policy::custom(|attempt| {
@@ -209,7 +209,7 @@ pub(super) fn build_client(timeout_ms: u64) -> Result<Client, ProviderRuntimeErr
         })
 }
 
-pub(super) fn redirect_target_is_same_origin(next: &Url, previous: &[Url]) -> bool {
+pub(in crate::provider) fn redirect_target_is_same_origin(next: &Url, previous: &[Url]) -> bool {
     let Some(initial) = previous.first() else {
         return false;
     };
@@ -320,7 +320,9 @@ pub(crate) fn to_websocket_url(base_url: &str, model: &str) -> Result<Url, Provi
     Ok(url)
 }
 
-pub(super) fn normalize_transport_error(error: reqwest::Error) -> ProviderRuntimeError {
+pub(in crate::provider) fn normalize_transport_error(
+    error: reqwest::Error,
+) -> ProviderRuntimeError {
     if error.is_timeout() {
         return ProviderRuntimeError::new("timeout", format!("上游请求超时: {error}"))
             .retriable(true)

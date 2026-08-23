@@ -351,6 +351,7 @@ mod tests {
     use std::thread;
     use std::time::Duration;
     use tungstenite::{accept, Message};
+    use url::Url;
 
     /// Build a `ProviderDraftInput` for tests, filling in the auth/tuning fields
     /// that every fixture shares (credential-ref auth, streaming enabled, 5s

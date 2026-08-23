@@ -30,6 +30,7 @@ import {
   evaluateSmokeProviderSessionAuthority,
   readSmokeProviderSessionAuthority,
   resolveVm3SmokeLiveTimeoutMs,
+  smokeLiveReportCompletenessFailure,
   VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS,
   VM3_SMOKE_START_MIN_C_FREE_BYTES,
   vm3SmokeStartSpaceFailure,
@@ -358,7 +359,80 @@ test('VM3 paid smoke runner enables the bare local canonical content authority s
   assert.equal(argv.some((entry) => entry.startsWith('-LocalCanonicalContentAuthority:')), false);
 });
 
+function completePaidSmokeReport(cell = SMOKE_PLUS_CELLS[0]) {
+  return {
+    schemaVersion: 1,
+    generatedAt: '2026-08-24T00:00:00.000Z',
+    commit: '0123456789abcdef',
+    provenance: { headCommit: '0123456789abcdef', worktreeClean: true },
+    buildHash: null,
+    mode: 'live',
+    modelId: cell.modelId,
+    feedbackLoopPrevention: cell.feedbackLoopPrevention,
+    deviceEvidence: {},
+    realtimeSession: {},
+    translationRoute: 'native',
+    watchSessionReport: {
+      sessionId: 'watch-session-smoke-test',
+      status: 'completed',
+      routeMode: 'watch',
+      providerId: 'provider-dashscope',
+      model: cell.modelId,
+      startedAt: 'unix-ms:1000',
+      endedAt: 'unix-ms:181000',
+      elapsedMs: cell.durationSeconds * 1_000,
+      summary: {
+        durationMs: cell.durationSeconds * 1_000,
+        cueCount: 1,
+        completeCueCount: 1,
+        visibleRenderCueCount: 1,
+        unrenderedCueCount: 0,
+        issueCount: 0,
+        issueOccurrenceCount: 0,
+      },
+      cues: [{
+        cueId: 'cue-1',
+        comparisonStatus: 'exact',
+        sourceText: 'complete source cue',
+        llmText: '完整译文',
+        publishedText: '完整译文',
+        renderedText: '完整译文',
+        llmFirstAtMs: 1,
+        publishedFirstAtMs: 2,
+        renderedFirstAtMs: 3,
+        llmFirstToRenderMs: 2,
+        publishToRenderMs: 1,
+      }],
+      events: [],
+      issues: [],
+      droppedCueCount: 0,
+      droppedEventCount: 0,
+    },
+    verdict: 'passed',
+    failureLayer: null,
+    failureReason: null,
+    suspectFiles: [],
+    layers: Object.fromEntries([
+      'environment',
+      'driver',
+      'wasapi',
+      'bridge',
+      'physicalOutput',
+      'physicalOutputContent',
+      'aec',
+      'speechSegmentation',
+      'strictContent',
+      'app',
+      'provider',
+    ].map((layer) => [layer, { status: 'passed', reason: null, reasons: [], data: {} }])),
+    diagnostics: {},
+    artifacts: {},
+  };
+}
+
 test('VM3 paid smoke passes only with one primary and zero auxiliary Provider sessions', () => {
+  const cell = SMOKE_PLUS_CELLS[0];
+  const report = completePaidSmokeReport(cell);
   const authority = {
     schemaVersion: 1,
     artifactKind: SMOKE_PROVIDER_SESSION_AUTHORITY_KIND,
@@ -368,45 +442,148 @@ test('VM3 paid smoke passes only with one primary and zero auxiliary Provider se
     auxiliaryProviderSessions: 0,
   };
   assert.deepEqual(
-    evaluateSmokeProviderSessionAuthority({ report: { verdict: 'passed' }, authority }),
-    { passed: true, providerCalls: 1, authorityFailure: null, classification: null },
+    evaluateSmokeProviderSessionAuthority({ report, authority, expectedCell: cell }),
+    {
+      passed: true,
+      providerCalls: 1,
+      authorityFailure: null,
+      reportFailure: null,
+      classification: null,
+    },
   );
   assert.equal(
-    evaluateSmokeProviderSessionAuthority({ report: { verdict: 'failed' }, authority }).passed,
+    evaluateSmokeProviderSessionAuthority({
+      report: {
+        ...report,
+        verdict: 'failed',
+        failureLayer: 'provider',
+        failureReason: 'provider returned an error',
+      },
+      authority,
+      expectedCell: cell,
+    }).passed,
     false,
   );
   assert.match(
     evaluateSmokeProviderSessionAuthority({
-      report: { verdict: 'passed' },
+      report,
       authority: { ...authority, schemaVersion: 2 },
+      expectedCell: cell,
     }).authorityFailure,
     /wrong schemaVersion/,
   );
   const auxiliary = evaluateSmokeProviderSessionAuthority({
-    report: { verdict: 'passed' },
+    report,
     authority: { ...authority, auxiliaryProviderSessions: 1 },
+    expectedCell: cell,
   });
   assert.equal(auxiliary.passed, false);
   assert.equal(auxiliary.providerCalls, 2);
   assert.match(auxiliary.authorityFailure, /auxiliary Provider sessions; expected 0/);
 });
 
+test('VM3 paid smoke report completeness fails closed before a passing verdict can count', () => {
+  const cell = SMOKE_PLUS_CELLS[0];
+  const report = completePaidSmokeReport(cell);
+  assert.equal(smokeLiveReportCompletenessFailure(report, {
+    expectedModelId: cell.modelId,
+    expectedFeedbackLoopPrevention: cell.feedbackLoopPrevention,
+    minimumDurationMs: cell.durationSeconds * 1_000,
+  }), null);
+
+  assert.match(
+    smokeLiveReportCompletenessFailure({ verdict: 'passed' }),
+    /wrong schemaVersion/,
+  );
+  assert.match(
+    smokeLiveReportCompletenessFailure({
+      ...report,
+      watchSessionReport: { ...report.watchSessionReport, elapsedMs: 179_999 },
+    }),
+    /duration is too short/,
+  );
+  assert.match(
+    smokeLiveReportCompletenessFailure({
+      ...report,
+      watchSessionReport: { ...report.watchSessionReport, droppedEventCount: 1 },
+    }),
+    /dropped evidence/,
+  );
+  assert.match(
+    smokeLiveReportCompletenessFailure({
+      ...report,
+      watchSessionReport: {
+        ...report.watchSessionReport,
+        cues: [],
+        summary: { ...report.watchSessionReport.summary, completeCueCount: 0 },
+      },
+    }),
+    /no complete model/,
+  );
+  assert.match(
+    smokeLiveReportCompletenessFailure({
+      ...report,
+      watchSessionReport: {
+        ...report.watchSessionReport,
+        cues: [
+          ...report.watchSessionReport.cues,
+          {
+            cueId: 'cue-incomplete-tail',
+            comparisonStatus: 'not-published',
+            sourceText: 'accepted source tail without model output',
+            llmText: '',
+            publishedText: '',
+            renderedText: '',
+          },
+        ],
+      },
+    }),
+    /incomplete accepted cue lifecycle.*cue-incomplete-tail/,
+  );
+  assert.equal(smokeLiveReportCompletenessFailure({
+    ...report,
+    verdict: 'blocked',
+    failureLayer: 'environment',
+    failureReason: 'runtime precondition failed',
+  }), null, 'a complete non-passing report must retain its own failure classification');
+  const mismatchedCell = SMOKE_PLUS_CELLS[1];
+  const mismatched = evaluateSmokeProviderSessionAuthority({
+    report,
+    authority: {
+      schemaVersion: 1,
+      artifactKind: SMOKE_PROVIDER_SESSION_AUTHORITY_KIND,
+      nonAuthoritative: true,
+      passed: true,
+      providerSessions: 1,
+      auxiliaryProviderSessions: 0,
+    },
+    expectedCell: mismatchedCell,
+  });
+  assert.equal(mismatched.passed, false);
+  assert.equal(mismatched.classification, 'orchestration');
+  assert.match(mismatched.reportFailure, /feedbackLoopPrevention/);
+});
+
 test('VM3 paid smoke authority read fails closed for missing and invalid receipts', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-authority-'));
+  const cell = SMOKE_PLUS_CELLS[0];
+  const report = completePaidSmokeReport(cell);
   try {
     const missing = readSmokeProviderSessionAuthority(root);
     assert.equal(missing.authority, null);
     assert.match(missing.failure, /missing smoke-provider-session-authority\.json/);
     assert.deepEqual(
       evaluateSmokeProviderSessionAuthority({
-        report: { verdict: 'passed' },
+        report,
         authority: missing.authority,
         readFailure: missing.failure,
+        expectedCell: cell,
       }),
       {
         passed: false,
         providerCalls: 1,
         authorityFailure: missing.failure,
+        reportFailure: null,
         classification: 'orchestration',
       },
     );

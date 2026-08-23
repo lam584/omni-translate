@@ -7,7 +7,10 @@ use super::super::contracts::AudioRuntimeSnapshot;
 use super::super::state::AudioStateStore;
 use super::super::{gemini_live, omni, openai_realtime, tencent_speech_translate};
 use super::route_config::{resolve_model_provider_from_config, resolve_realtime_profile, ResolvedRoutePlan};
-use super::{OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT};
+use super::{
+    OMNI_PRECONNECT_COMMAND_TIMEOUT, OMNI_PRECONNECT_SESSION_READINESS_TIMEOUT,
+    OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
+};
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::audio::glossary::GlossaryContext;
 use crate::provider::contracts::ProviderDraftInput;
@@ -278,6 +281,33 @@ pub(super) fn start_or_reuse_omni_session(
         }
     }
     Ok((omni_sender, session_generation))
+}
+
+pub(super) fn start_or_reuse_route_omni_session(
+    app: &AppHandle,
+    state: &AudioStateStore,
+    direction: &str,
+    subtitle_translate_active: bool,
+    plan: &ResolvedRoutePlan,
+) -> Result<(std::sync::mpsc::Sender<Vec<u8>>, u64), String> {
+    start_or_reuse_omni_session(
+        app,
+        state,
+        plan.provider.clone(),
+        direction,
+        "route",
+        subtitle_translate_active,
+        &plan.session_reuse_key.source_language,
+        &plan.session_reuse_key.target_language,
+        &plan.realtime_audio_mode,
+        plan.voice.clone(),
+        plan.instructions.clone(),
+        plan.glossary.clone(),
+        plan.session_reuse_key.contract_signature,
+        plan.session_reuse_key.output_mode,
+        plan.omni_speech_config.clone(),
+        OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
+    )
 }
 
 pub(super) fn apply_native_subtitle_translate_fallback(config: &mut Value) {

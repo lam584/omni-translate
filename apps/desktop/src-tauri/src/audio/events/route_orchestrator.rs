@@ -12,7 +12,7 @@ use super::super::state::AudioStateStore;
 use super::super::{speech, stt, subtitle_translate};
 use super::realtime_session::{
     apply_native_subtitle_translate_fallback, start_or_reuse_gemini_live_session,
-    start_or_reuse_omni_session, start_or_reuse_openai_realtime_session,
+    start_or_reuse_openai_realtime_session, start_or_reuse_route_omni_session,
     start_or_reuse_tencent_speech_translate_session, stop_preconnected_omni_session,
 };
 use super::route_config::{
@@ -22,7 +22,6 @@ use super::route_config::{
 use super::{
     route_command_timeout, route_command_timeout_message, start_route_with_overlay,
     stop_existing_inbound_pipeline, stop_existing_route_pipeline,
-    OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
 };
 use crate::diagnostics::events::append_diagnostics_log;
 
@@ -359,7 +358,6 @@ fn start_omni_inbound_route(
     plan: ResolvedRoutePlan,
 ) -> Result<AudioRuntimeSnapshot, String> {
     let mut omni_route_config = config;
-    let voice_provider = plan.provider.clone();
     let subtitle_translate_mode = match plan.subtitle_fallback_policy {
         SubtitleFallbackPolicy::Secondary => "secondary",
         SubtitleFallbackPolicy::Native => "native",
@@ -457,7 +455,8 @@ fn start_omni_inbound_route(
     }
     let speech_enabled = plan.speech_output_enabled;
     let translation_audio_source = plan.translation_audio_source;
-    let should_start_speech_dispatch = plan.speech_dispatch_policy == SpeechDispatchPolicy::SubtitleTtsWhenIdle
+    let should_start_speech_dispatch = plan.speech_dispatch_policy
+        == SpeechDispatchPolicy::SubtitleTtsWhenIdle
         && speech_dispatch_state == "idle";
     let _ = append_diagnostics_log(
         &app,
@@ -481,16 +480,12 @@ fn start_omni_inbound_route(
         None,
         None,
     );
-    let (omni_sender, _) = start_or_reuse_omni_session(
+    let (omni_sender, _) = start_or_reuse_route_omni_session(
         &app,
         &state,
-        voice_provider.clone(),
-        &direction, "route", st_active,
-        &plan.session_reuse_key.source_language, &plan.session_reuse_key.target_language,
-        &plan.realtime_audio_mode, plan.voice.clone(), plan.instructions.clone(),
-        plan.glossary.clone(), plan.session_reuse_key.contract_signature,
-        plan.session_reuse_key.output_mode, plan.omni_speech_config.clone(),
-        OMNI_ROUTE_SESSION_READINESS_TIMEOUT,
+        &direction,
+        st_active,
+        &plan,
     )?;
     state.watch_session_report.record_milestone_now("route_started");
 

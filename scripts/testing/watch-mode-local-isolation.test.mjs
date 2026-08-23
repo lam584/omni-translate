@@ -283,6 +283,7 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
     provenance,
     provenanceReader: () => provenance,
     runtimeHashesReader: () => [],
+    runtimeArtifactExists: () => true,
     recordAecGate: (result) => {
       recordedAecGate = result;
     },
@@ -309,6 +310,29 @@ test('standalone local isolation rebuilds Bridge and driver from the exact clean
   assert.ok(calls.slice(1).every(({ target }) => target === path.join(process.cwd(), 'target')));
   assert.deepEqual(recordedAecGate, { status: 0 });
   assert.equal(removedRelease, path.join(process.cwd(), 'target', 'release'));
+});
+
+test('local isolation stops before later runtime builds when the Desktop authority artifact is absent', () => {
+  const calls = [];
+  assert.throws(
+    () => buildLocalIsolationRuntime({
+      workspaceRoot: process.cwd(),
+      provenance,
+      provenanceReader: () => provenance,
+      runtimeArtifactExists: () => false,
+      removeRuntimeRelease: () => {},
+      run: (command, args, options) => {
+        calls.push({ command, args, options });
+        return { status: 0 };
+      },
+    }),
+    /authority artifact target\/release\/omni-desktop-shell\.exe is missing/,
+  );
+  const npmPrefix = process.platform === 'win32' ? ['/d', '/s', '/c', 'npm.cmd'] : [];
+  assert.deepEqual(calls.map(({ args }) => args), [
+    [...npmPrefix, 'run', 'test:aec3-msvc'],
+    [...npmPrefix, 'run', 'build:desktop-shell'],
+  ]);
 });
 
 test('local isolation cell records five minutes and zero provider calls', async () => {

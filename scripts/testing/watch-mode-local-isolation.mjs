@@ -207,6 +207,7 @@ export function buildLocalIsolationRuntime({
     recursive: true,
     force: true,
   }),
+  runtimeArtifactExists = fs.existsSync,
   provenanceReader = () => currentGitProvenance({ cwd: workspaceRoot }),
   runtimeHashesReader = () => currentAuthorityRuntimeBinaryHashes({ workspaceRoot }),
 } = {}) {
@@ -245,6 +246,21 @@ export function buildLocalIsolationRuntime({
       });
       if (result.error || Number(result.status) !== 0) {
         throw new Error(`local isolation runtime build failed: npm ${args.join(' ')}`);
+      }
+      // Tauri can return a successful wrapper exit code even when its Cargo
+      // child was interrupted.  Fail immediately instead of spending time on
+      // Bridge, driver, and diagnostic builds before the authority inventory
+      // notices that the Desktop executable was never produced.
+      if (args[1] === 'build:desktop-shell') {
+        const desktopExecutable = path.join(
+          workspaceRoot,
+          'target',
+          'release',
+          'omni-desktop-shell.exe',
+        );
+        if (!runtimeArtifactExists(desktopExecutable)) {
+          throw new Error(`local isolation runtime build failed: authority artifact target/release/omni-desktop-shell.exe is missing: ${desktopExecutable}`);
+        }
       }
       if (isAecGate) recordAecGate(result);
     } finally {

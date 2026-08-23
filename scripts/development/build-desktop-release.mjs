@@ -106,5 +106,22 @@ child.once('exit', (code, signal) => {
     process.exitCode = 1;
     return;
   }
-  process.exitCode = code ?? 1;
+  if (code !== 0) {
+    process.exitCode = code ?? 1;
+    return;
+  }
+  // On Windows the command wrapper can report success after an interrupted
+  // Cargo descendant.  The executable is the actual build contract used by
+  // every release-evidence coordinator, so make its absence a build failure
+  // at the source rather than allowing later preflight work to proceed.
+  const targetDirectory = releaseEnvironment.CARGO_TARGET_DIR
+    ? path.resolve(releaseEnvironment.CARGO_TARGET_DIR)
+    : path.join(workspaceRoot, 'target');
+  const desktopExecutable = path.join(targetDirectory, 'release', 'omni-desktop-shell.exe');
+  if (!existsSync(desktopExecutable)) {
+    console.error(`Tauri release build completed without ${desktopExecutable}`);
+    process.exitCode = 1;
+    return;
+  }
+  process.exitCode = 0;
 });

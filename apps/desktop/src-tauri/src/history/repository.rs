@@ -15,8 +15,8 @@ pub(crate) struct HistorySessionSummary {
     pub started_at_ms: i64,
     pub ended_at_ms: Option<i64>,
     pub status: String,
-    pub cue_count: u64,
-    pub audio_bytes: u64,
+    pub cue_count: i64,
+    pub audio_bytes: i64,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -31,8 +31,8 @@ pub(crate) struct HistorySessionPage {
 pub(crate) struct HistoryCue {
     pub id: String,
     pub cue_id: String,
-    pub sequence: u64,
-    pub revision: u64,
+    pub sequence: i64,
+    pub revision: i64,
     pub route_direction: String,
     pub source_text: String,
     pub translated_text: String,
@@ -58,9 +58,9 @@ pub(crate) struct HistoryCuePage {
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct HistoryStatistics {
-    pub session_count: u64,
-    pub cue_count: u64,
-    pub audio_bytes: u64,
+    pub session_count: i64,
+    pub cue_count: i64,
+    pub audio_bytes: i64,
 }
 
 pub(super) struct HistoryRepository {
@@ -202,10 +202,6 @@ impl HistoryRepository {
         Ok(repository)
     }
 
-    pub(super) fn database_path(&self) -> &Path {
-        &self.database_path
-    }
-
     pub(super) fn create_session(&self, id: &str, started_at_ms: i64) -> Result<(), String> {
         self.open()?
             .execute(
@@ -226,7 +222,34 @@ impl HistoryRepository {
         Ok(())
     }
 
+    #[cfg(test)]
     pub(super) fn upsert_cue(&self, cue: CueWrite<'_>, updated_at_ms: i64) -> Result<(), String> {
+        let connection = self.open()?;
+        self.upsert_cue_on(&connection, &cue, updated_at_ms)
+    }
+
+    pub(super) fn upsert_cues_batch(
+        &self,
+        cues: &[CueWrite<'_>],
+        updated_at_ms: i64,
+    ) -> Result<(), String> {
+        if cues.is_empty() {
+            return Ok(());
+        }
+        let mut connection = self.open()?;
+        let transaction = connection.transaction().map_err(|error| error.to_string())?;
+        for cue in cues {
+            self.upsert_cue_on(&transaction, cue, updated_at_ms)?;
+        }
+        transaction.commit().map_err(|error| error.to_string())
+    }
+
+    fn upsert_cue_on(
+        &self,
+        connection: &Connection,
+        cue: &CueWrite<'_>,
+        updated_at_ms: i64,
+    ) -> Result<(), String> {
         let source_aad = format!("history/v1:{0}:{1}:source", cue.session_id, cue.cue_id);
         let translated_aad = format!("history/v1:{0}:{1}:translated", cue.session_id, cue.cue_id);
         let source = self
@@ -235,7 +258,6 @@ impl HistoryRepository {
         let translated = self
             .cipher
             .encrypt(cue.translated_text.as_bytes(), translated_aad.as_bytes())?;
-        let connection = self.open()?;
         let existing: Option<(String, i64, i64)> = connection
             .query_row(
                 "SELECT id, sequence, revision FROM subtitle_cues WHERE session_id = ?1 AND cue_id = ?2",
@@ -383,8 +405,8 @@ impl HistoryRepository {
                 Ok((
                     row.get::<_, String>(0)?,
                     row.get::<_, String>(1)?,
-                    row.get::<_, u64>(2)?,
-                    row.get::<_, u64>(3)?,
+                    row.get::<_, i64>(2)?,
+                    row.get::<_, i64>(3)?,
                     row.get::<_, String>(4)?,
                     row.get::<_, Vec<u8>>(5)?,
                     row.get::<_, Vec<u8>>(6)?,
@@ -449,9 +471,9 @@ impl HistoryRepository {
         Ok(changed > 0)
     }
 
-    pub(super) fn clear(&self) -> Result<u64, String> {
+    pub(super) fn clear(&self) -> Result<i64, String> {
         let connection = self.open()?;
-        let count: u64 = connection
+        let count: i64 = connection
             .query_row("SELECT COUNT(*) FROM subtitle_sessions WHERE ended_at_ms IS NOT NULL", [], |row| row.get(0))
             .map_err(|error| error.to_string())?;
         connection
@@ -496,10 +518,10 @@ fn decode_session_cursor(cursor: Option<&str>) -> Result<(Option<i64>, Option<St
     Ok((Some(time), Some(id.to_string())))
 }
 
-fn decode_cue_cursor(cursor: Option<&str>) -> Result<Option<u64>, String> {
+fn decode_cue_cursor(cursor: Option<&str>) -> Result<Option<i64>, String> {
     cursor
         .filter(|value| !value.is_empty())
-        .map(|value| value.parse::<u64>().map_err(|_| "无效的历史 cue 游标".to_string()))
+        .map(|value| value.parse::<i64>().map_err(|_| "无效的历史 cue 游标".to_string()))
         .transpose()
 }
 

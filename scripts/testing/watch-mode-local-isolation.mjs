@@ -203,8 +203,7 @@ export function buildLocalIsolationRuntime({
   provenance = currentGitProvenance({ cwd: workspaceRoot }),
   run = spawnSync,
   recordAecGate = () => {},
-  removeRuntimeRelease = (releasePath) => fs.rmSync(releasePath, {
-    recursive: true,
+  removeRuntimeAuthorityExecutable = (executablePath) => fs.rmSync(executablePath, {
     force: true,
   }),
   runtimeArtifactExists = fs.existsSync,
@@ -216,10 +215,18 @@ export function buildLocalIsolationRuntime({
   environment.CARGO_TARGET_DIR = path.join(workspaceRoot, 'target');
   environment.OMNI_BUILD_COMMIT = provenance.headCommit;
   delete environment.CARGO_BUILD_TARGET;
-  // Runtime authority must be rebuilt from this exact HEAD. Removing stale
-  // release output up front also prevents it from coexisting with the large,
-  // short-lived AEC3 linked-test graph on constrained validation VMs.
-  removeRuntimeRelease(path.join(workspaceRoot, 'target', 'release'));
+  // Runtime authority must be rebuilt from this exact HEAD. Remove the
+  // authority executable (not the complete Cargo release graph): Cargo must
+  // relink it from the current source while its dependency graph remains on
+  // E: for a fingerprint-compatible VM3 preflight. Cargo still validates all
+  // retained dependency inputs before linking.
+  const desktopExecutable = path.join(
+    workspaceRoot,
+    'target',
+    'release',
+    'omni-desktop-shell.exe',
+  );
+  removeRuntimeAuthorityExecutable(desktopExecutable);
   const npm = process.platform === 'win32' ? (process.env.ComSpec || 'cmd.exe') : 'npm';
   for (const args of [
     // The release Desktop enables AEC3. Install and verify the pinned native
@@ -252,12 +259,6 @@ export function buildLocalIsolationRuntime({
       // Bridge, driver, and diagnostic builds before the authority inventory
       // notices that the Desktop executable was never produced.
       if (args[1] === 'build:desktop-shell') {
-        const desktopExecutable = path.join(
-          workspaceRoot,
-          'target',
-          'release',
-          'omni-desktop-shell.exe',
-        );
         if (!runtimeArtifactExists(desktopExecutable)) {
           throw new Error(`local isolation runtime build failed: authority artifact target/release/omni-desktop-shell.exe is missing: ${desktopExecutable}`);
         }

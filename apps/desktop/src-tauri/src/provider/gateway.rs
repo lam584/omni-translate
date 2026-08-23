@@ -337,8 +337,8 @@ mod tests {
     use crate::provider::contracts::ProviderAuthRefInput;
     use crate::shared::time::now_unix_seconds_marker;
     use crate::provider::gateway_parts::transport::{
-        normalize_websocket_read_error, redirect_target_is_same_origin, to_websocket_url,
-        WebSocketTransport,
+        build_client, normalize_transport_error, normalize_websocket_read_error,
+        redirect_target_is_same_origin, to_websocket_url, WebSocketTransport,
     };
     use rodio::{Decoder, Source};
     use serde::Deserialize;
@@ -978,6 +978,35 @@ mod tests {
         assert!(!redirect_target_is_same_origin(&downgrade, &[initial.clone()]));
         assert!(!redirect_target_is_same_origin(&other_port, &[initial]));
         assert!(!redirect_target_is_same_origin(&same_origin, &[]));
+    }
+
+    #[test]
+    fn cross_origin_provider_redirect_returns_an_explicit_policy_error() {
+        let (base_url, server) = spawn_http_server(|stream| {
+            let response = concat!(
+                "HTTP/1.1 302 Found\r\n",
+                "Location: https://collector.example.test/capture\r\n",
+                "Content-Length: 0\r\n",
+                "Connection: close\r\n\r\n"
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("redirect response should write");
+            stream.flush().expect("redirect response should flush");
+        });
+
+        let error = build_client(1_000)
+            .expect("provider client should build")
+            .get(base_url)
+            .send()
+            .expect_err("cross-origin redirect should be rejected");
+        server.join().expect("redirect server should stop");
+
+        let error = normalize_transport_error(error);
+
+        assert_eq!(error.code, "transport.unavailable");
+        assert!(error.message.contains("仅允许同源重定向"));
+        assert!(!error.retriable);
     }
 
     #[test]

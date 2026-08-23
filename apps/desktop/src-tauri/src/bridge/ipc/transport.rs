@@ -2,16 +2,26 @@
 /// the pipe and forwards the result over a channel, returning the receiver so
 /// callers can apply their own `recv_timeout` handling. Shared by the retrying
 /// and quiet writers, which previously repeated this spawn verbatim.
+fn control_response_payload_len(response: &str) -> usize {
+    match response.strip_suffix('\n') {
+        Some(line) => line.strip_suffix('\r').unwrap_or(line).len(),
+        None => response.len(),
+    }
+}
+
 fn spawn_pipe_line_reader(pipe: fs::File) -> mpsc::Receiver<std::io::Result<String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
         let reader = BufReader::new(pipe);
         let mut response = String::new();
+        // The protocol limit covers the JSON payload, not its LF/CRLF delimiter.
         let result = reader
-            .take((omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES + 1) as u64)
+            .take((omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES + 2) as u64)
             .read_line(&mut response)
             .and_then(|_| {
-                if response.len() > omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES {
+                if control_response_payload_len(&response)
+                    > omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES
+                {
                     Err(std::io::Error::new(
                         std::io::ErrorKind::InvalidData,
                         "Bridge Service IPC response exceeds protocol limit",

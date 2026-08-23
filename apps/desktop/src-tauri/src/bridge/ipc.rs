@@ -525,6 +525,24 @@ mod tests {
     }
 
     #[test]
+    fn control_response_limit_excludes_the_line_terminator() {
+        let maximum_payload = "x".repeat(omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES);
+
+        assert_eq!(
+            control_response_payload_len(&format!("{maximum_payload}\n")),
+            omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES
+        );
+        assert_eq!(
+            control_response_payload_len(&format!("{maximum_payload}\r\n")),
+            omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES
+        );
+        assert_eq!(
+            control_response_payload_len(&format!("{maximum_payload}x\n")),
+            omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES + 1
+        );
+    }
+
+    #[test]
     fn fast_state_query_does_not_retry_a_missing_pipe() {
         let started_at = std::time::Instant::now();
         let result = query_state_fast(r"\\.\pipe\omni-bridge-missing-fast-test-pipe");

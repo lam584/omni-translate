@@ -41,6 +41,21 @@ export function cleanVm3TemporaryRoot(temporaryRoot) {
   }
 }
 
+export function resolveVm3TestCommand({
+  command,
+  argumentsToRun,
+  environment = process.env,
+  platform = process.platform,
+  nodeExecutable = process.execPath,
+}) {
+  const windowsCommandShim = platform === 'win32' && /\.(?:cmd|bat)$/i.test(command);
+  const npmCli = environment.npm_execpath;
+  if (windowsCommandShim && /^npm\.cmd$/i.test(path.basename(command)) && npmCli) {
+    return { command: nodeExecutable, argumentsToRun: [npmCli, ...argumentsToRun], shell: false };
+  }
+  return { command, argumentsToRun, shell: windowsCommandShim };
+}
+
 if (isMain(import.meta.url)) {
   const separator = process.argv.indexOf('--');
   if (separator < 0 || separator === process.argv.length - 1) usage();
@@ -48,11 +63,17 @@ if (isMain(import.meta.url)) {
   fs.mkdirSync(TEMP_ROOT, { recursive: true });
   fs.mkdirSync(CARGO_HOME, { recursive: true });
   const temporaryRoot = fs.mkdtempSync(path.join(TEMP_ROOT, 'watch-mode-test-'));
-  const result = spawnSync(command, argumentsToRun, {
+  const environment = createVm3TestEnvironment({ temporaryRoot });
+  const invocation = resolveVm3TestCommand({ command, argumentsToRun, environment });
+  const result = spawnSync(invocation.command, invocation.argumentsToRun, {
     cwd: repoRoot,
-    env: createVm3TestEnvironment({ temporaryRoot }),
+    env: environment,
     stdio: 'inherit',
     windowsHide: true,
+    // Windows cannot execute npm.cmd (or another command shim) directly via
+    // CreateProcess. Route only those explicit shim files through ComSpec;
+    // native executables continue to avoid an unnecessary shell layer.
+    shell: invocation.shell,
   });
   const cleanupRecord = cleanVm3TemporaryRoot(temporaryRoot);
   if (cleanupRecord) console.warn(`VM3 test temporary cleanup is pending: ${cleanupRecord}`);

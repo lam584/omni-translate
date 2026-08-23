@@ -4,7 +4,10 @@ import path from 'node:path';
 import test from 'node:test';
 
 import { repoRoot } from '../lib/testing-common.mjs';
-import { createVm3TestEnvironment } from './run-with-vm3-test-environment.mjs';
+import {
+  createVm3TestEnvironment,
+  resolveVm3TestCommand,
+} from './run-with-vm3-test-environment.mjs';
 
 test('VM3 Watch test environment keeps disposable paths on the workspace volume', () => {
   const temporaryRoot = path.join(repoRoot, 'artifacts', 'testing', 'temp', 'unit-test');
@@ -36,4 +39,20 @@ test('elevated Watch and driver wrappers reset the VM3 temporary environment', (
     }
     assert.match(script, /artifacts\\testing\\temp/u);
   }
+});
+
+test('Windows npm command shims execute through the current npm CLI without a shell', () => {
+  const invocation = resolveVm3TestCommand({
+    command: 'npm.cmd',
+    argumentsToRun: ['run', 'check:desktop-shell'],
+    environment: { npm_execpath: 'E:\\node\\npm-cli.js' },
+    platform: 'win32',
+    nodeExecutable: 'E:\\node\\node.exe',
+  });
+
+  assert.deepEqual(invocation, {
+    command: 'E:\\node\\node.exe',
+    argumentsToRun: ['E:\\node\\npm-cli.js', 'run', 'check:desktop-shell'],
+    shell: false,
+  });
 });

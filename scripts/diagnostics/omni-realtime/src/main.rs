@@ -4,6 +4,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use base64::Engine;
+use rodio::{Decoder, Source};
 use serde_json::{json, Value};
 use tungstenite::client::IntoClientRequest;
 use tungstenite::{connect, Message};
@@ -324,36 +325,17 @@ fn read_pcm_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
 fn read_mp3_samples(path: &PathBuf) -> Result<Vec<i16>, String> {
     let file = std::fs::File::open(path)
         .map_err(|error| format!("failed to open MP3 file '{}': {error}", path.display()))?;
-    let mut decoder = minimp3::Decoder::new(file);
-    let mut mono = Vec::new();
-    let mut sample_rate: Option<u32> = None;
+    let decoder = Decoder::try_from(file)
+        .map_err(|error| format!("failed to decode MP3 file '{}': {error}", path.display()))?;
+    let sample_rate = decoder.sample_rate().get();
+    let channels = decoder.channels().get() as usize;
+    let interleaved = decoder.collect::<Vec<f32>>();
+    let mono = interleaved
+        .chunks(channels)
+        .map(|frame| frame.iter().copied().sum::<f32>() / frame.len().max(1) as f32)
+        .collect::<Vec<_>>();
 
-    loop {
-        let frame = match decoder.next_frame() {
-            Ok(frame) => frame,
-            Err(minimp3::Error::Eof) => break,
-            Err(error) => {
-                return Err(format!(
-                    "failed to decode MP3 file '{}': {error}",
-                    path.display()
-                ));
-            }
-        };
-        sample_rate.get_or_insert(frame.sample_rate.max(1) as u32);
-        let channels = frame.channels.max(1);
-        for interleaved in frame.data.chunks(channels) {
-            let sum: f32 = interleaved
-                .iter()
-                .map(|&sample| sample as f32 / i16::MAX as f32)
-                .sum();
-            mono.push(sum / interleaved.len().max(1) as f32);
-        }
-    }
-
-    Ok(resample_mono_to_16k_i16(
-        &mono,
-        sample_rate.unwrap_or(16_000),
-    ))
+    Ok(resample_mono_to_16k_i16(&mono, sample_rate))
 }
 
 fn resample_mono_to_16k_i16(samples: &[f32], source_rate: u32) -> Vec<i16> {
@@ -378,7 +360,11 @@ fn resample_mono_to_16k_i16(samples: &[f32], source_rate: u32) -> Vec<i16> {
     resampled
 }
 
-fn session_update(protocol: DashscopeProtocol, mode: RealtimeMode, input_audio_format: &str) -> Value {
+fn session_update(
+    protocol: DashscopeProtocol,
+    mode: RealtimeMode,
+    input_audio_format: &str,
+) -> Value {
     let turn_detection = match mode {
         RealtimeMode::Manual => Value::Null,
         RealtimeMode::ServerVad => json!({

@@ -7,11 +7,10 @@ license = "Apache-2.0"
 [dependencies]
 chrono = "0.4"
 cpal = "0.17.3"
-minimp3 = "0.6"
 omni-audio-dsp = { path = "../../crates/omni-audio-dsp" }
 omni-bridge-protocol = { path = "../../crates/omni-bridge-protocol" }
 omni-logging = { path = "../../crates/omni-logging" }
-rodio = { version = "0.22.2", default-features = false, features = ["playback"] }
+rodio = { version = "0.22.2", default-features = false, features = ["mp3", "playback"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
@@ -20,6 +19,7 @@ wasapi = "0.23.0"
 windows-sys = { version = "0.61.2", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Security_Authorization",
   "Win32_Storage_FileSystem",
   "Win32_System_SystemInformation",
   "Win32_System_Diagnostics_ToolHelp",

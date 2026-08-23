@@ -5,9 +5,21 @@
 fn spawn_pipe_line_reader(pipe: fs::File) -> mpsc::Receiver<std::io::Result<String>> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let mut reader = BufReader::new(pipe);
+        let reader = BufReader::new(pipe);
         let mut response = String::new();
-        let result = reader.read_line(&mut response).map(|_| response);
+        let result = reader
+            .take((omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES + 1) as u64)
+            .read_line(&mut response)
+            .and_then(|_| {
+                if response.len() > omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES {
+                    Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "Bridge Service IPC response exceeds protocol limit",
+                    ))
+                } else {
+                    Ok(response)
+                }
+            });
         let _ = tx.send(result);
     });
     rx
@@ -42,6 +54,9 @@ fn write_command_with_retry(
                     );
                     error.to_string()
                 })?;
+                if payload.len() > omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES {
+                    return Err("Bridge Service IPC command exceeds protocol limit.".to_string());
+                }
                 pipe.write_all(payload.as_bytes()).map_err(|error| {
                     log::error!(
                         "[omni][bridge-ipc] pipe write failed pipe={} err={}",
@@ -142,6 +157,9 @@ fn write_command_once_quiet(
         .open(pipe_path)
         .map_err(|error| error.to_string())?;
     let payload = serde_json::to_string(command).map_err(|error| error.to_string())?;
+    if payload.len() > omni_bridge_protocol::MAX_CONTROL_MESSAGE_BYTES {
+        return Err("Bridge Service IPC command exceeds protocol limit.".to_string());
+    }
     pipe.write_all(payload.as_bytes())
         .map_err(|error| error.to_string())?;
     pipe.write_all(b"\n").map_err(|error| error.to_string())?;

@@ -223,8 +223,8 @@ Microphone
 | Tests frontend | Vitest 4.x, jsdom 29.x, ESLint 10.x |
 | Runtime Rust | Rust 2021, Serde, Tauri commands/events |
 | Réseau provider | reqwest 0.13, tungstenite 0.29, rustls |
-| Stockage et identifiants | rusqlite 0.40 bundled SQLite, keyring 4, Windows Credential Manager |
-| Audio | cpal 0.17, rodio 0.22, wasapi 0.23, hound, minimp3 |
+| Stockage et identifiants | rusqlite 0.40 bundled SQLite, Windows Credential Manager |
+| Audio | cpal 0.17, rodio 0.22, wasapi 0.23, hound |
 | APIs système | windows-sys 0.61 |
 | Native Bridge | Rust sidecar, WASAPI, Named Pipe, IOCTL ABI |
 | Pilote | Pilote audio virtuel Windows SYSVAD WaveRT |

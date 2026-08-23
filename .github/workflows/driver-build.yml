@@ -46,7 +46,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       # build-sysvad-driver.ps1 asserts these exact files before building
       # (WDK build props, Inf2Cat, SignTool, InfVerif). Install the WDK only
@@ -71,6 +71,16 @@ jobs:
           $setup = Join-Path $env:RUNNER_TEMP 'wdksetup.exe'
           $logPath = Join-Path $env:RUNNER_TEMP 'wdksetup.log'
           Invoke-WebRequest -Uri 'https://go.microsoft.com/fwlink/?linkid=2335869' -OutFile $setup
+          $expectedSha256 = 'ed82c46bd98e0f1d07fd6e5075900e42aedc3fa5e68c06a8764b3dc5303cff1b'
+          $actualSha256 = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "WDK bootstrap hash mismatch. expected=$expectedSha256 actual=$actualSha256"
+          }
+          $signature = Get-AuthenticodeSignature -LiteralPath $setup
+          if ($signature.Status -ne 'Valid' -or
+              $signature.SignerCertificate.Subject -notmatch '(^|, )O=Microsoft Corporation(,|$)') {
+            throw "WDK bootstrap signature is not a valid Microsoft signature. status=$($signature.Status) subject=$($signature.SignerCertificate.Subject)"
+          }
           $process = Start-Process -FilePath $setup `
             -ArgumentList '/features', '+', '/quiet', '/norestart', '/log', $logPath `
             -Wait -PassThru
@@ -102,7 +112,7 @@ jobs:
             -SkipSigning
 
       - name: Upload staged driver package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: sysvad-driver-package-unsigned
           path: drivers/windows-virtual-mic/package/

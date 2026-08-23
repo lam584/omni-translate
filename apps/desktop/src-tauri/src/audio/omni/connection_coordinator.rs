@@ -13,6 +13,22 @@ pub(super) const MANUAL_SILENCE_COMMIT_MIN_MS: u64 = 1_000;
 pub(super) const MANUAL_COMMIT_MIN_AUDIO_SAMPLES: u64 = 16_320;
 pub(super) const MANUAL_RESPONSE_TIMEOUT_SECS: u64 = 30;
 
+fn matching_manual_asr_progress_age_ms(
+    session_started_at: &SystemTime,
+    event_diagnostics: &OmniEventDiagnostics,
+    manual_response_item_id: Option<&str>,
+) -> Option<u64> {
+    let expected_item_id = manual_response_item_id?.trim();
+    if expected_item_id.is_empty()
+        || event_diagnostics.last_asr_delta_item_id.as_deref() != Some(expected_item_id)
+    {
+        return None;
+    }
+    event_diagnostics
+        .last_asr_delta_at_ms
+        .map(|progress_at_ms| elapsed_ms_since(session_started_at).saturating_sub(progress_at_ms))
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ManualCommitReason {
     SilenceBoundary,
@@ -1217,6 +1233,8 @@ impl OmniConnectionCoordinator {
         audio_mode: RealtimeAudioMode,
         chunk_count: u64,
         silence_boundary_reached: bool,
+        session_started_at: &SystemTime,
+        event_diagnostics: &OmniEventDiagnostics,
     ) -> OmniCommitState {
         let OmniCommitState {
             mut last_commit_time,
@@ -1236,12 +1254,19 @@ impl OmniConnectionCoordinator {
         let mut committed_source_started_during_playback = None;
         if audio_mode.uses_manual_commit() {
             if let Ok(elapsed) = last_commit_time.elapsed() {
+                let matching_asr_progress_age_ms = matching_manual_asr_progress_age_ms(
+                    session_started_at,
+                    event_diagnostics,
+                    manual_response_item_id.as_deref(),
+                );
                 if manual_response_pending
                     && !manual_response_requested
                     && elapsed.as_secs() >= MANUAL_RESPONSE_TIMEOUT_SECS
+                    && matching_asr_progress_age_ms.is_none_or(|age_ms| {
+                        age_ms >= MANUAL_RESPONSE_TIMEOUT_SECS.saturating_mul(1_000)
+                    })
                 {
                     manual_response_pending = false;
-                    manual_response_item_id = None;
                     manual_turn_timed_out = true;
                     last_commit_time = SystemTime::now();
                     manual_turn_started_during_playback = None;
@@ -1249,8 +1274,15 @@ impl OmniConnectionCoordinator {
                         app,
                         "omni",
                         "warning",
-                        "event=manual_response_gate_timeout action=drop_pending_response",
+                        format!(
+                            "event=manual_response_gate_timeout action=drop_pending_response expectedItemId={} matchingAsrProgressAgeMs={}",
+                            manual_response_item_id.as_deref().unwrap_or("(none)"),
+                            matching_asr_progress_age_ms
+                                .map(|age_ms| age_ms.to_string())
+                                .unwrap_or_else(|| "(none)".to_string()),
+                        ),
                     );
+                    manual_response_item_id = None;
                 } else if let Some((turn_elapsed, commit_reason)) = (!manual_response_pending
                     && manual_turn_audio_after_response
                     && sent_audio_since_commit

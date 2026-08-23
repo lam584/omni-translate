@@ -1,5 +1,69 @@
 use super::*;
 
+/// A long committed item can take more than thirty seconds to finish ASR while
+/// still emitting correlated deltas. That active provider work must keep the
+/// gate alive so its complete source reaches response.create.
+#[test]
+fn replay_matching_asr_progress_extends_the_manual_response_gate() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
+    let mut slice = WorkerSlice::new();
+    slice.manual_response_pending = true;
+    slice.manual_response_item_id = Some("item-long".to_string());
+    slice.last_commit_time = backdated(MANUAL_RESPONSE_TIMEOUT_SECS + 1);
+    slice.event_diagnostics.last_asr_delta_item_id = Some("item-long".to_string());
+    slice.event_diagnostics.last_asr_delta_at_ms =
+        Some(elapsed_ms_since(&harness.session_started_at));
+    slice.sent_audio_since_commit = true;
+    slice.manual_turn_audio_after_response = true;
+    slice.audio_samples_since_commit = MANUAL_COMMIT_MIN_AUDIO_SAMPLES;
+    slice.manual_turn_started_at = Some(backdated(MANUAL_COMMIT_INTERVAL_SECS + 1));
+
+    let socket = ScriptedRealtimeSocket::new(
+        vec![ScriptStep::Event(json!({
+            "type": "conversation.item.input_audio_transcription.completed",
+            "item_id": "item-long",
+            "transcript": "the complete middle translation source"
+        }))],
+        harness.shared.clone(),
+    );
+    let _socket = harness.tick(socket, &mut slice);
+
+    assert!(slice.manual_response_pending);
+    assert!(slice.manual_response_requested);
+    assert_eq!(response_create_count(&harness), 1);
+    assert_no_next_commit(&harness);
+    let snapshot = harness.store().snapshot();
+    let completed_cue = snapshot
+        .subtitle_overlay
+        .recent_cues
+        .iter()
+        .find(|cue| cue.source_text == "the complete middle translation source")
+        .expect("completed source cue");
+    assert!(
+        !completed_cue.committed,
+        "ASR completed source stays open until response/translation terminal"
+    );
+}
+
+#[test]
+fn replay_unrelated_asr_progress_does_not_extend_the_manual_response_gate() {
+    let harness = ReplayHarness::new(RealtimeAudioMode::Manual, Vec::new());
+    let mut slice = WorkerSlice::new();
+    slice.manual_response_pending = true;
+    slice.manual_response_item_id = Some("item-stalled".to_string());
+    slice.last_commit_time = backdated(MANUAL_RESPONSE_TIMEOUT_SECS + 1);
+    slice.event_diagnostics.last_asr_delta_item_id = Some("item-other".to_string());
+    slice.event_diagnostics.last_asr_delta_at_ms =
+        Some(elapsed_ms_since(&harness.session_started_at));
+
+    let socket = ScriptedRealtimeSocket::new(vec![ScriptStep::Idle], harness.shared.clone());
+    let _socket = harness.tick(socket, &mut slice);
+
+    assert!(!slice.manual_response_pending);
+    assert!(slice.manual_response_item_id.is_none());
+    assert_eq!(response_create_count(&harness), 0);
+}
+
 /// A completed transcription starts the model response but must not release
 /// the next manual commit until response.done. The production Flash ordering
 /// previously overlapped response.create calls and ended in InternalError.

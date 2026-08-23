@@ -284,6 +284,7 @@ match socket.read_message() {
                             | "conversation.item.input_audio_transcription.text"
                             | "conversation.item.input_audio_transcription.completed"
                     ) => {
+                        let mut routed_uncorrelated_completed_transcription = false;
                         if audio_mode.uses_manual_commit()
                             && event_type
                                 == "conversation.item.input_audio_transcription.completed"
@@ -297,6 +298,7 @@ match socket.read_message() {
                                 if should_route_uncorrelated_completed_transcription(
                                     evt["transcript"].as_str(),
                                 ) {
+                                    routed_uncorrelated_completed_transcription = true;
                                     // The gate timed out (or reset), but this
                                     // completed item still carries the tail of
                                     // the user's turn. Fall through so the ASR
@@ -353,6 +355,7 @@ match socket.read_message() {
                             audio_mode.uses_manual_commit()
                                 && subtitle_translate_active
                                 && !native_translation_reuse_active,
+                            routed_uncorrelated_completed_transcription,
                             total_input_chunks,
                             first_audio_sent_ms,
                             first_audible_chunk_ms,
@@ -368,9 +371,9 @@ match socket.read_message() {
                         transcription_completed_flag = output.state.transcription_completed_flag;
                         transcription_completed_at = output.state.transcription_completed_at;
                         event_diagnostics = output.state.event_diagnostics;
+                        let completed_source_text = output.completed_source_text.as_deref();
+                        let completed_cue_id = output.completed_cue_id.as_deref();
                         if audio_mode.uses_manual_commit() {
-                            let completed_source_text = output.completed_source_text.as_deref();
-                            let completed_cue_id = output.completed_cue_id.as_deref();
                             if let Some(decision) = completed_manual_response_decision_for_gate(
                                 manual_response_pending,
                                 manual_response_requested,
@@ -514,6 +517,45 @@ match socket.read_message() {
                                         "event=manual_response_gate state=awaiting_response_done",
                                     );
                                 }
+                            }
+                        }
+                        if routed_uncorrelated_completed_transcription {
+                            let late_cue_id = completed_cue_id.map(str::to_owned);
+                            let late_completion_owns_current_cue = late_cue_id.as_deref().is_some()
+                                && late_cue_id.as_deref() == current_cue_id.as_deref();
+                            let response_stream_active = manual_turn_response_stream_active(
+                                pending_audio_delta_count,
+                                pending_audio_buffer.len(),
+                                pending_audio_response_id.as_deref(),
+                                &pending_translated_text,
+                            );
+                            if late_completion_owns_current_cue
+                                && !response_stream_owns_current_cue(
+                                    response_stream_active,
+                                    subtitle_translate_active,
+                                    native_translation_reuse_active,
+                                )
+                            {
+                                // The late final remains visible in the cue store, but it
+                                // must not keep the mutable input pointer that belongs to
+                                // the newer pending manual turn. Otherwise that turn's
+                                // final can overwrite the late source cue.
+                                reset_manual_turn_input_state(
+                                    &mut current_cue_id,
+                                    &mut pending_source_text,
+                                    &mut transcription_completed_flag,
+                                    &mut transcription_completed_at,
+                                    &mut event_diagnostics,
+                                );
+                                let _ = diag_log(
+                                    app,
+                                    "omni",
+                                    "debug",
+                                    format!(
+                                        "event=manual_response_gate action=release_late_transcription_cue cueId={}",
+                                        late_cue_id.as_deref().unwrap_or("(none)"),
+                                    ),
+                                );
                             }
                         }
                         if output.skip_tick {
@@ -674,7 +716,24 @@ match socket.read_message() {
                             // stream whose output must remain attached to the
                             // source cue that caused it. The secondary worker
                             // owns publication, but not response identity.
-                            let item_id = event_diagnostics.last_asr_delta_item_id.clone();
+                            let authoritative_item_id = evt["item_id"]
+                                .as_str()
+                                .map(str::trim)
+                                .filter(|item_id| !item_id.is_empty())
+                                .map(str::to_string);
+                            let item_id = authoritative_item_id
+                                .or_else(|| event_diagnostics.current_vad_item_id.clone())
+                                .or_else(|| event_diagnostics.last_asr_delta_item_id.clone());
+                            event_diagnostics.current_vad_item_id = item_id.clone();
+                            if let Some(item_id) = item_id.as_deref() {
+                                // speech_stopped carries the provider item that
+                                // will own both the ASR final and automatic
+                                // response. Prefer it over delta timing, while
+                                // retaining the prior delta-derived fallback
+                                // for compatible providers that omit item_id.
+                                event_diagnostics
+                                    .record_asr_cue_owner(item_id, cue_id.clone());
+                            }
                             event_diagnostics.capture_native_response_owner(
                                 cue_id.clone(),
                                 item_id.clone(),

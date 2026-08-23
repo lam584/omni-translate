@@ -615,6 +615,8 @@ fn run_omni_worker(
             audio_mode,
             chunk_count,
             silence_grace_chunks_sent >= OMNI_ASR_SILENCE_GRACE_CHUNKS,
+            &session_started_at,
+            &event_diagnostics,
         );
         last_commit_time = commit_state.last_commit_time;
         manual_turn_started_at = commit_state.manual_turn_started_at;

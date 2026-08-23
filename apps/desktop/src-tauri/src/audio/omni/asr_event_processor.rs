@@ -46,6 +46,7 @@ impl OmniAsrEventProcessor {
         subtitle_translate_active: bool,
         native_translation_reuse_active: bool,
         defer_secondary_translation: bool,
+        isolate_unmapped_completed_transcription: bool,
         total_input_chunks: u64,
         first_audio_sent_ms: Option<u64>,
         first_audible_chunk_ms: Option<u64>,
@@ -72,6 +73,7 @@ impl OmniAsrEventProcessor {
                     app,
                     store,
                     direction,
+                    evt,
                     session_started_at,
                     subtitle_translate_active,
                     total_input_chunks,
@@ -105,14 +107,17 @@ impl OmniAsrEventProcessor {
                 let completed_item_id = evt["item_id"].as_str();
                 let asr_cue_id = completed_item_id
                     .and_then(|item_id| event_diagnostics.asr_cue_for_input_item(item_id));
+                let isolate_unmapped_completion =
+                    isolate_unmapped_completed_transcription && asr_cue_id.is_none();
                 let pending_matches_completed_item = completed_item_id.is_some()
                     && event_diagnostics.last_asr_delta_item_id.as_deref()
                         == completed_item_id;
                 let current_input_text = pending_source_text.clone();
-                let completion_targets_current_cue = asr_cue_id
-                    .as_deref()
-                    .map(|cue_id| current_cue_id.as_deref() == Some(cue_id))
-                    .unwrap_or(true);
+                let completion_targets_current_cue = !isolate_unmapped_completion
+                    && asr_cue_id
+                        .as_deref()
+                        .map(|cue_id| current_cue_id.as_deref() == Some(cue_id))
+                        .unwrap_or(true);
                 let mapped_cue_source = if completion_targets_current_cue {
                     None
                 } else {
@@ -159,8 +164,17 @@ impl OmniAsrEventProcessor {
                 );
                 let routed_native_response_cue = native_lineage.response_cue_id;
                 let merged_asr_cue_id = native_lineage.merged_asr_cue_id;
+                let isolated_unmapped_cue_id = if isolate_unmapped_completion
+                    && routed_native_response_cue.is_none()
+                    && !completion_source_text.trim().is_empty()
+                {
+                    Some(next_omni_cue_id(direction))
+                } else {
+                    None
+                };
                 let preserved_unresolved_cue_id = if !subtitle_translate_active
                     && routed_native_response_cue.is_none()
+                    && isolated_unmapped_cue_id.is_none()
                     && asr_cue_id.is_none()
                     && current_cue_id.is_none()
                     && !completion_source_text.trim().is_empty()
@@ -175,6 +189,8 @@ impl OmniAsrEventProcessor {
                 if let Some(cue_id) = completed_native_cue {
                     completed_cue_id = Some(cue_id.clone());
                 } else if let Some(cue_id) = asr_cue_id.as_ref() {
+                    completed_cue_id = Some(cue_id.clone());
+                } else if let Some(cue_id) = isolated_unmapped_cue_id.as_ref() {
                     completed_cue_id = Some(cue_id.clone());
                 } else if let Some(cue_id) = preserved_unresolved_cue_id {
                     completed_cue_id = Some(cue_id);
@@ -228,6 +244,24 @@ impl OmniAsrEventProcessor {
                         transcription_completed_flag = true;
                         transcription_completed_at = Some(SystemTime::now());
                     }
+                } else if let Some(cue_id) = isolated_unmapped_cue_id.as_deref() {
+                    // A completed item that cannot be correlated to the live
+                    // cue must never overwrite that cue. In secondary subtitle
+                    // mode keep the isolated final open for the worker; without
+                    // a secondary worker it is a display-only final.
+                    store.update_or_push_stt_cue(
+                        cue_id,
+                        &completion_source_text,
+                        !subtitle_translate_active,
+                    );
+                    let _ = diag_log(
+                        &app,
+                        "omni",
+                        "info",
+                        format!(
+                            "[EVENT] transcription.completed -> ISOLATED_LATE_ASR_CUE cue_id={cue_id} source=\"{source}\""
+                        ),
+                    );
                 } else if !completion_targets_current_cue
                     && !completion_source_text.trim().is_empty()
                 {
@@ -493,6 +527,7 @@ impl OmniAsrEventProcessor {
         app: &AppHandle<R>,
         store: &AudioStateStore,
         direction: &str,
+        evt: &Value,
         session_started_at: &SystemTime,
         subtitle_translate_active: bool,
         total_input_chunks: u64,
@@ -548,6 +583,17 @@ impl OmniAsrEventProcessor {
         store.update_or_push_stt_cue(&cue_id, "", false);
         *current_cue_id = Some(cue_id.clone());
         event_diagnostics.current_cue_origin = Some("speech_started".to_string());
+        event_diagnostics.current_vad_item_id = evt["item_id"]
+            .as_str()
+            .map(str::trim)
+            .filter(|item_id| !item_id.is_empty())
+            .map(str::to_string);
+        if let Some(item_id) = event_diagnostics.current_vad_item_id.clone() {
+            // Server VAD assigns the provider input item at speech start. Keep
+            // that authoritative lineage even if ASR deltas begin only after
+            // speech_stopped (or never arrive before response.done).
+            event_diagnostics.record_asr_cue_owner(&item_id, cue_id.clone());
+        }
         event_diagnostics.last_asr_delta_item_id = None;
         pending_source_text.clear();
         // Output state belongs to the prior native response and must survive.

@@ -105,6 +105,7 @@ fn real_watch_timing_replay_runs_through_asr_processor_and_keeps_every_source() 
             true,
             false,
             false,
+            false,
             0,
             None,
             None,

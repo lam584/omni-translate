@@ -60,18 +60,13 @@ fn remember_committed_cue_played(
 }
 
 fn is_speech_ready_cue(cue: &SubtitleCueRuntime) -> bool {
-    if cue.translated_text.trim().is_empty() {
+    if !cue.translation_committed || cue.translated_text.trim().is_empty() {
         return false;
     }
-    if cue.committed {
-        return true;
-    }
-    !cue.display_segments.is_empty()
-        && cue
-            .display_segments
-            .iter()
-            .filter(|segment| !segment.translated_text.trim().is_empty())
-            .all(|segment| !segment.pending)
+    cue.display_segments
+        .iter()
+        .filter(|segment| !segment.translated_text.trim().is_empty())
+        .all(|segment| !segment.pending)
 }
 
 fn split_tts_clauses(text: &str) -> Vec<String> {
@@ -168,7 +163,7 @@ fn speech_dispatch_tasks_for_cue(
     if cue.committed && is_committed_cue_already_played(&cue.cue_id, committed_played) {
         return Vec::new();
     }
-    if !cue.committed && !cue.translation_committed {
+    if !cue.translation_committed {
         return Vec::new();
     }
     if config.secondary_segment_tts_enabled {
@@ -191,6 +186,7 @@ fn speech_dispatch_tasks_for_cue(
                     source_text,
                     translated_text,
                     segment_mode: true,
+                    queued_at: Instant::now(),
                 }
             })
             .collect();
@@ -206,6 +202,7 @@ fn speech_dispatch_tasks_for_cue(
         translated_text: corrected_money_translation_for_playback(&source_text, &cue.translated_text),
         source_text,
         segment_mode: false,
+        queued_at: Instant::now(),
     }]
 }
 

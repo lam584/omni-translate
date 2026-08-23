@@ -55,14 +55,34 @@ impl SpeechDispatchWorker {
             };
             let config = SpeechConfig::from_value(&config_value)?;
             let snapshot = store.snapshot();
-            let pending_tasks: Vec<SpeechDispatchTask> = snapshot
-                .subtitle_overlay
-                .recent_cues
-                .iter()
-                .rev()
-                .flat_map(|cue| speech_dispatch_tasks_for_cue(cue, &config, &self.queue.committed_played))
-                .filter(|task| !self.queue.contains(task))
-                .collect();
+            let discovered_tasks: Vec<SpeechDispatchTask> = if config.enabled {
+                snapshot
+                    .subtitle_overlay
+                    .recent_cues
+                    .iter()
+                    .rev()
+                    .flat_map(|cue| {
+                        speech_dispatch_tasks_for_cue(
+                            cue,
+                            &config,
+                            &self.queue.committed_played,
+                        )
+                    })
+                    .filter(|task| !self.queue.contains(task))
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            let (pending_tasks, overflow_tasks) = self.queue.admit(discovered_tasks);
+            for task in overflow_tasks {
+                record_speech_skip(
+                    &self.app,
+                    store,
+                    &task,
+                    "speech.tts-queue-overflow",
+                    "TTS 队列超过 32 项，已跳过尚未开始的过期语音。",
+                )?;
+            }
             let ptt_gate_open =
                 !config.outbound_ptt_enabled || config.outbound_ptt_state == "recording";
 
@@ -96,6 +116,19 @@ impl SpeechDispatchWorker {
                 // Spawn synthesis tasks up to the concurrency limit.
                 while pending_count < MAX_CONCURRENT_SYNTHESIS {
                     let Some(task) = task_iter.next() else { break };
+
+                    if task.queued_at.elapsed() >= TTS_START_DEADLINE {
+                        let dispatch_key = task.dispatch_key();
+                        self.queue.remember(&task, &dispatch_key);
+                        record_speech_skip(
+                            &self.app,
+                            store,
+                            &task,
+                            "speech.tts-start-expired",
+                            "TTS 任务排队超过 5 秒，已跳过语音；字幕保持不变。",
+                        )?;
+                        continue;
+                    }
 
                     // PTT gate: outbound tasks block until recording is active.
                     if task.cue.route_direction == "outbound"
@@ -158,6 +191,19 @@ impl SpeechDispatchWorker {
                         match synth_result.result {
                             Ok(synthesis_output) => {
                                 let task = &synth_result.task;
+                                let playback_wait_ms = crate::shared::time::now_unix_millis()
+                                    .saturating_sub(synthesis_output.created_at_ms);
+                                if playback_wait_ms > PLAYBACK_START_DEADLINE_MS {
+                                    self.queue.remember(task, &dispatch_key);
+                                    record_speech_skip(
+                                        &self.app,
+                                        store,
+                                        task,
+                                        "speech.playback-start-expired",
+                                        "播放队列积压超过 4 秒，已按整条 cue 跳过语音；字幕保持不变。",
+                                    )?;
+                                    continue;
+                                }
                                 match SpeechTaskProcessor::new(
                                     &self.app,
                                     store,
@@ -303,9 +349,31 @@ struct SpeechDispatchQueue {
     processed_segment_slot_order: VecDeque<String>,
     committed_played: HashSet<String>,
     committed_played_order: VecDeque<String>,
+    queued_at: HashMap<String, Instant>,
 }
 
 impl SpeechDispatchQueue {
+    fn admit(
+        &mut self,
+        mut tasks: Vec<SpeechDispatchTask>,
+    ) -> (Vec<SpeechDispatchTask>, Vec<SpeechDispatchTask>) {
+        let now = Instant::now();
+        let current_keys: HashSet<String> = tasks.iter().map(SpeechDispatchTask::dispatch_key).collect();
+        self.queued_at.retain(|key, _| current_keys.contains(key));
+        for task in &mut tasks {
+            let dispatch_key = task.dispatch_key();
+            task.queued_at = *self.queued_at.entry(dispatch_key).or_insert(now);
+        }
+
+        let overflow_count = tasks.len().saturating_sub(MAX_TTS_QUEUE_DEPTH);
+        let overflow: Vec<_> = tasks.drain(..overflow_count).collect();
+        for task in &overflow {
+            let dispatch_key = task.dispatch_key();
+            self.remember(task, &dispatch_key);
+        }
+        (tasks, overflow)
+    }
+
     fn contains(&self, task: &SpeechDispatchTask) -> bool {
         if task.cue.committed
             && is_committed_cue_already_played(&task.cue.cue_id, &self.committed_played)
@@ -316,6 +384,7 @@ impl SpeechDispatchQueue {
     }
 
     fn remember(&mut self, task: &SpeechDispatchTask, dispatch_key: &str) {
+        self.queued_at.remove(dispatch_key);
         remember_processed(&mut self.processed, &mut self.processed_order, dispatch_key);
         remember_segment_slot_processed(
             task,
@@ -339,6 +408,7 @@ struct SpeechDispatchTask {
     source_text: String,
     translated_text: String,
     segment_mode: bool,
+    queued_at: Instant,
 }
 
 impl SpeechDispatchTask {
@@ -600,4 +670,38 @@ fn run_pipeline_synthesis(
     task: &SpeechDispatchTask,
 ) -> Result<SynthesisOutput, String> {
     SpeechTaskProcessor::new(app, store, gateway, config).synthesize_pcm(task)
+}
+
+fn record_speech_skip(
+    app: &AppHandle,
+    store: &AudioStateStore,
+    task: &SpeechDispatchTask,
+    kind: &str,
+    summary: &str,
+) -> Result<(), String> {
+    store.update_speech(|speech| {
+        speech.dispatch_state = "waiting-subtitle".to_string();
+        speech.current_cue_id = None;
+        speech.current_request_id = None;
+        push_event(
+            speech,
+            kind,
+            summary.to_string(),
+            Some(task.cue.cue_id.clone()),
+            None,
+        );
+    });
+    let _ = append_diagnostics_log(
+        app,
+        "audio",
+        "warning",
+        kind,
+        Some(format!(
+            "cue={} segmentIndex={}",
+            task.cue.cue_id, task.segment_index
+        )),
+        None,
+        None,
+    );
+    emit_audio_snapshot(app, store)
 }

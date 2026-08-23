@@ -1,4 +1,4 @@
-use std::collections::{hash_map::DefaultHasher, HashSet, VecDeque};
+use std::collections::{hash_map::DefaultHasher, HashMap, HashSet, VecDeque};
 use std::hash::{Hash, Hasher};
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -23,6 +23,9 @@ const SPEECH_POLL_INTERVAL_MS: u64 = 120;
 const SPEECH_DISPATCH_IDLE_INTERVAL_MS: u64 = 40;
 const MAX_PROCESSED_CUES: usize = 128;
 const PROMPT_TONE_MS: u32 = 90;
+const MAX_TTS_QUEUE_DEPTH: usize = 32;
+const TTS_START_DEADLINE: Duration = Duration::from_secs(5);
+const PLAYBACK_START_DEADLINE_MS: u64 = 4_000;
 
 mod playback_engine;
 mod aec_live_scenario;
@@ -866,7 +869,7 @@ mod tests {
     }
 
     #[test]
-    fn speech_ready_accepts_final_secondary_translation_before_cue_commit() {
+    fn speech_ready_rejects_nonfinal_translation_even_when_segment_is_stable() {
         let cue = subtitle_cue_runtime(
             "cue-1",
             "hello",
@@ -877,7 +880,7 @@ mod tests {
             false,
         );
 
-        assert!(is_speech_ready_cue(&cue));
+        assert!(!is_speech_ready_cue(&cue));
     }
 
     #[test]
@@ -1027,6 +1030,7 @@ mod tests {
             source_text: "hello".to_string(),
             translated_text: "hello translated".to_string(),
             segment_mode: true,
+            queued_at: Instant::now(),
         };
         let replacement = SpeechDispatchTask {
             cue,
@@ -1034,6 +1038,7 @@ mod tests {
             source_text: "hello there".to_string(),
             translated_text: "hello there translated".to_string(),
             segment_mode: true,
+            queued_at: Instant::now(),
         };
         let mut processed = HashSet::new();
         let mut processed_order = VecDeque::new();
@@ -1052,6 +1057,73 @@ mod tests {
             &processed,
             &processed_slots
         ));
+    }
+
+    #[test]
+    fn tts_admission_keeps_only_the_newest_32_tasks() {
+        let cue = subtitle_cue_runtime(
+            "cue-base",
+            "hello",
+            "hello",
+            Vec::new(),
+            "你好",
+            true,
+            true,
+        );
+        let tasks: Vec<_> = (0..MAX_TTS_QUEUE_DEPTH + 3)
+            .map(|index| SpeechDispatchTask {
+                cue: SubtitleCueRuntime {
+                    cue_id: format!("cue-{index}"),
+                    ..cue.clone()
+                },
+                segment_index: 0,
+                source_text: format!("source-{index}"),
+                translated_text: format!("translated-{index}"),
+                segment_mode: false,
+                queued_at: Instant::now(),
+            })
+            .collect();
+        let mut queue = SpeechDispatchQueue::default();
+
+        let (admitted, overflow) = queue.admit(tasks);
+
+        assert_eq!(admitted.len(), MAX_TTS_QUEUE_DEPTH);
+        assert_eq!(overflow.len(), 3);
+        assert_eq!(admitted.first().unwrap().cue.cue_id, "cue-3");
+        assert!(overflow
+            .iter()
+            .all(|task| queue.contains(task)));
+    }
+
+    #[test]
+    fn tts_admission_preserves_original_queue_age() {
+        let cue = subtitle_cue_runtime(
+            "cue-aged",
+            "hello",
+            "hello",
+            Vec::new(),
+            "你好",
+            true,
+            true,
+        );
+        let task = SpeechDispatchTask {
+            cue,
+            segment_index: 0,
+            source_text: "hello".to_string(),
+            translated_text: "你好".to_string(),
+            segment_mode: false,
+            queued_at: Instant::now(),
+        };
+        let key = task.dispatch_key();
+        let original = Instant::now() - TTS_START_DEADLINE;
+        let mut queue = SpeechDispatchQueue::default();
+        queue.queued_at.insert(key, original);
+
+        let (admitted, overflow) = queue.admit(vec![task]);
+
+        assert!(overflow.is_empty());
+        assert!(admitted[0].queued_at <= original + Duration::from_millis(1));
+        assert!(admitted[0].queued_at.elapsed() >= TTS_START_DEADLINE);
     }
 
     #[test]

@@ -143,14 +143,14 @@ function twoVmProductionConfig(root) {
       {
         workerId: 'worker-default', host: '192.0.2.41', port: 22, user: 'runner',
         identityFile, knownHostsFile, hostKeyAlias: 'incident-vm-default',
-        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-incident',
+        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-incident',
         vmIdentity: workers[0].vmIdentity,
         deviceProfileInstances: [defaultProfile('worker-default')],
       },
       {
         workerId: 'worker-usb', host: '192.0.2.42', port: 22, user: 'runner',
         identityFile, knownHostsFile, hostKeyAlias: 'incident-vm-usb',
-        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-incident',
+        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-incident',
         vmIdentity: workers[1].vmIdentity,
         deviceProfileInstances: [defaultProfile('worker-usb'), workers[1].deviceProfileInstances[0]],
       },

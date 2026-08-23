@@ -177,14 +177,14 @@ function rawWorkerConfig(root) {
       {
         workerId: 'vm1', host: '192.0.2.11', port: 22, user: 'VMUser',
         identityFile, knownHostsFile, hostKeyAlias: 'vm-one',
-        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-shards',
+        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
         vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-1' },
         deviceProfileInstances: [defaultProfile('vm1')],
       },
       {
         workerId: 'vm2', host: '192.0.2.12', port: 2222, user: 'VMUser',
         identityFile, knownHostsFile, hostKeyAlias: 'vm-two',
-        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-shards',
+        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
         vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-2' },
         deviceProfileInstances: [defaultProfile('vm2'), {
           instanceId: 'vm2-usb', profileId: 'realtek-usb-spdif', deviceClass: 'usb',
@@ -194,7 +194,7 @@ function rawWorkerConfig(root) {
       {
         workerId: 'vm3', host: '192.0.2.13', port: 22, user: 'VMUser',
         identityFile, knownHostsFile, hostKeyAlias: 'vm-three',
-        workspaceRoot: 'E:\\omni-translate', guestExecutionRoot: 'E:\\omni-shards',
+        workspaceRoot: 'E:\\watch-worker', guestExecutionRoot: 'E:\\omni-shards',
         vmIdentity: { provider: 'vmware', uuidBios: '56-4d-vm-3' },
         deviceProfileInstances: [defaultProfile('vm3')],
       },

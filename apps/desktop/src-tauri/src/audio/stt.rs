@@ -5,8 +5,8 @@ use std::time::Duration;
 use serde_json::{json, Value};
 use tauri::AppHandle;
 use tauri::Manager;
-use tungstenite::{connect, Message};
 use tungstenite::client::IntoClientRequest;
+use tungstenite::{connect, Message};
 
 use crate::diagnostics::events::append_diagnostics_log;
 use crate::provider::contracts::ProviderDraftInput;
@@ -25,6 +25,7 @@ use super::time_utils::{ms_marker, unix_ms};
 const ASR_MODEL: &str = "qwen3-asr-flash-realtime";
 const STT_RECONNECT_MAX_RETRIES: usize = 5;
 const STT_WRITE_TIMEOUT_SECS: u64 = 10;
+const MAX_AUDIO_CHUNKS_PER_TICK: usize = 8;
 
 fn notify_reconnecting(store: &AudioStateStore, attempt: usize) {
     realtime_ws::push_reconnecting_cue(
@@ -306,7 +307,10 @@ fn run_stt_worker(
             break;
         }
 
-        while let Ok(raw_chunk) = audio_rx.try_recv() {
+        for _ in 0..MAX_AUDIO_CHUNKS_PER_TICK {
+            let Ok(raw_chunk) = audio_rx.try_recv() else {
+                break;
+            };
             let asr_chunk = resample_capture_to_mono_i16(&raw_chunk, 16_000);
 
             if asr_chunk.is_empty() {

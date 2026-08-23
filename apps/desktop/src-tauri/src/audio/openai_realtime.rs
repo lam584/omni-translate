@@ -29,6 +29,7 @@ const OPENAI_WRITE_TIMEOUT_SECS: u64 = 10;
 const OPENAI_MANUAL_COMMIT_INTERVAL_SECS: u64 = 10;
 const OPENAI_INPUT_SAMPLE_RATE_HZ: u32 = 24_000;
 const OPENAI_ASR_MIN_CHUNK_RMS: f32 = 0.002;
+const MAX_AUDIO_CHUNKS_PER_TICK: usize = 8;
 const OPENAI_ASR_SILENCE_GRACE_CHUNKS: u32 = 60;
 const OPENAI_PRE_SESSION_AUDIO_QUEUE_LIMIT: usize = 500;
 const OPENAI_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;
@@ -703,7 +704,10 @@ fn run_openai_worker(
         // Drain captured audio: resample to 24k mono pcm16, gate silence,
         // send when the session is ready, otherwise queue (bounded).
         let mut send_failed = false;
-        while let Ok(chunk) = audio_rx.try_recv() {
+        for _ in 0..MAX_AUDIO_CHUNKS_PER_TICK {
+            let Ok(chunk) = audio_rx.try_recv() else {
+                break;
+            };
             let samples = resample_capture_to_mono_i16(&chunk, input_rate);
             if samples.is_empty() {
                 continue;

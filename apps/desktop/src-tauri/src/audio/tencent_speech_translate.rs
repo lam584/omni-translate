@@ -53,6 +53,7 @@ const TENCENT_PRE_SESSION_AUDIO_DRAIN_PER_TICK: usize = 4;
 const TENCENT_RECONNECT_MAX_RETRIES: usize = 5;
 const TENCENT_END_DRAIN_TIMEOUT_MS: u64 = 1_000;
 const TENCENT_AUDIBLE_MIN_CHUNK_RMS: f32 = 0.002;
+const MAX_AUDIO_CHUNKS_PER_TICK: usize = 8;
 const TENCENT_DEFAULT_TRANS_MODEL: &str = "hunyuan-translation";
 
 type TencentSocket = realtime_ws::WsSocket;
@@ -573,7 +574,10 @@ fn run_tencent_worker(
         // Drain captured audio: 48k stereo f32 -> 16k mono pcm16, batched
         // into ~200 ms binary frames. No silence gate (see module docs).
         let mut transport_failed = false;
-        while let Ok(chunk) = audio_rx.try_recv() {
+        for _ in 0..MAX_AUDIO_CHUNKS_PER_TICK {
+            let Ok(chunk) = audio_rx.try_recv() else {
+                break;
+            };
             let samples = resample_capture_to_mono_i16(&chunk, TENCENT_INPUT_SAMPLE_RATE_HZ);
             if samples.is_empty() {
                 continue;

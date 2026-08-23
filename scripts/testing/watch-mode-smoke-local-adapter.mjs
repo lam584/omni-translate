@@ -37,6 +37,8 @@ const VM3_PREFLIGHT_CACHE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'wa
 const VM3_PREFLIGHT_CACHE_FILE = path.join(VM3_PREFLIGHT_CACHE_ROOT, 'vm3-runtime-preflight.json');
 const VM3_PREFLIGHT_CACHE_SCHEMA_VERSION = 1;
 const VM3_SHORT_LIVE_ROOT = path.join(repoRoot, 'artifacts', 'testing', 'watch-mode-smoke-runtime');
+export const SMOKE_PROVIDER_SESSION_AUTHORITY_FILE = 'smoke-provider-session-authority.json';
+export const SMOKE_PROVIDER_SESSION_AUTHORITY_KIND = 'watch-mode-smoke-provider-session-authority';
 export const VM3_SMOKE_START_MIN_C_FREE_BYTES = 7 * 1024 ** 3;
 export const VM3_SMOKE_STOP_MIN_C_FREE_BYTES = 5 * 1024 ** 3;
 export const VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS = 15 * 60 * 1_000;
@@ -540,6 +542,70 @@ export function classifyReport(report) {
   return 'product';
 }
 
+export function readSmokeProviderSessionAuthority(runDirectory) {
+  const authorityPath = runDirectory
+    ? path.join(runDirectory, SMOKE_PROVIDER_SESSION_AUTHORITY_FILE)
+    : null;
+  if (!authorityPath || !fs.existsSync(authorityPath)) {
+    return {
+      authority: null,
+      authorityPath,
+      failure: `missing ${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE}`,
+    };
+  }
+  try {
+    const authority = JSON.parse(fs.readFileSync(authorityPath, 'utf8').replace(/^\uFEFF/, ''));
+    return { authority, authorityPath, failure: null };
+  } catch (error) {
+    return {
+      authority: null,
+      authorityPath,
+      failure: `invalid ${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE}: ${String(error?.message ?? error)}`,
+    };
+  }
+}
+
+export function evaluateSmokeProviderSessionAuthority({ report, authority, readFailure = null }) {
+  const hasPrimarySessionCount = Number.isSafeInteger(authority?.providerSessions)
+    && authority.providerSessions >= 0;
+  const hasAuxiliarySessionCount = Number.isSafeInteger(authority?.auxiliaryProviderSessions)
+    && authority.auxiliaryProviderSessions >= 0;
+  // This evaluator is reached only after the coordinator dispatched one paid
+  // cell. Preserve that reserved call in a failed manifest when the child-side
+  // receipt is missing or corrupt; recording zero would undercount a session
+  // that may already have reached the network. A readable receipt remains the
+  // source of the exact primary plus auxiliary count.
+  const providerCalls = hasPrimarySessionCount && hasAuxiliarySessionCount
+    ? authority.providerSessions + authority.auxiliaryProviderSessions
+    : 1;
+  const authorityFailure = readFailure ?? (
+    !authority || typeof authority !== 'object' || Array.isArray(authority)
+      ? `${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE} is not a JSON object`
+      : authority.schemaVersion !== 1
+        ? `${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE} has the wrong schemaVersion`
+        : authority.artifactKind !== SMOKE_PROVIDER_SESSION_AUTHORITY_KIND
+        ? `${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE} has the wrong artifactKind`
+        : authority.nonAuthoritative !== true
+          ? `${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE} must be non-authoritative`
+          : authority.passed !== true
+            ? `${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE} did not pass`
+            : authority.providerSessions !== 1
+              ? `${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE} recorded ${String(authority.providerSessions)} primary Provider sessions; expected 1`
+              : authority.auxiliaryProviderSessions !== 0
+                ? `${SMOKE_PROVIDER_SESSION_AUTHORITY_FILE} recorded ${String(authority.auxiliaryProviderSessions)} auxiliary Provider sessions; expected 0`
+                : null
+  );
+  const passed = report?.verdict === 'passed' && authorityFailure === null;
+  return {
+    passed,
+    providerCalls,
+    authorityFailure,
+    classification: passed
+      ? null
+      : (authorityFailure ? 'orchestration' : (report ? classifyReport(report) : 'orchestration')),
+  };
+}
+
 function createdReportDirectories(outputRoot, directoriesBeforeRun) {
   return fs.readdirSync(outputRoot, { withFileTypes: true })
     .filter((entry) => entry.isDirectory() && !directoriesBeforeRun.has(entry.name))
@@ -559,6 +625,30 @@ async function waitForCreatedReportDirectory(outputRoot, directoriesBeforeRun, {
     if (Date.now() >= deadline) return null;
     await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
   } while (true);
+}
+
+export function buildVm3PaidSmokeRunnerArgv({ cell, outputRoot, liveTiming }) {
+  return buildRunnerArgv({
+    model: cell.modelId,
+    watchRealtimeProtocol: resolveWatchRealtimeProtocol(cell.modelId),
+    subtitleTranslationMode: 'native',
+    feedbackMode: cell.feedbackLoopPrevention,
+    outputRoot,
+    warmupSeconds: liveTiming.warmupSeconds,
+    playbackSeconds: liveTiming.playbackSeconds,
+    postPlaybackWaitSeconds: liveTiming.postPlaybackWaitSeconds,
+    sessionReadyTimeoutSeconds: liveTiming.sessionReadyTimeoutSeconds,
+    watchAutoStopAfterSeconds: liveTiming.durationSeconds,
+    physicalPlaybackDeviceId: PROFILE.physicalPlaybackDeviceId,
+    physicalPlaybackDeviceClass: PROFILE.deviceClass,
+    physicalPlaybackDeviceProfileId: PROFILE.profileId,
+    expectedPhysicalPlaybackDeviceName: PROFILE.expectedPhysicalPlaybackDeviceName,
+    skipDriverRepair: true,
+    useDefaultEndpointPlayback: true,
+    stopDesktopAfterPlayback: true,
+    localCanonicalContentAuthority: true,
+    cellId: cell.cellId,
+  });
 }
 
 export async function runCell({ cell, executionRoot }) {
@@ -601,26 +691,7 @@ export async function runCell({ cell, executionRoot }) {
     postPlaybackWaitSeconds: 20,
     sessionReadyTimeoutSeconds: 60,
   });
-  const argv = buildRunnerArgv({
-    model: cell.modelId,
-    watchRealtimeProtocol: resolveWatchRealtimeProtocol(cell.modelId),
-    subtitleTranslationMode: 'native',
-    feedbackMode: cell.feedbackLoopPrevention,
-    outputRoot,
-    warmupSeconds: liveTiming.warmupSeconds,
-    playbackSeconds: liveTiming.playbackSeconds,
-    postPlaybackWaitSeconds: liveTiming.postPlaybackWaitSeconds,
-    sessionReadyTimeoutSeconds: liveTiming.sessionReadyTimeoutSeconds,
-    watchAutoStopAfterSeconds: liveTiming.durationSeconds,
-    physicalPlaybackDeviceId: PROFILE.physicalPlaybackDeviceId,
-    physicalPlaybackDeviceClass: PROFILE.deviceClass,
-    physicalPlaybackDeviceProfileId: PROFILE.profileId,
-    expectedPhysicalPlaybackDeviceName: PROFILE.expectedPhysicalPlaybackDeviceName,
-    skipDriverRepair: true,
-    useDefaultEndpointPlayback: true,
-    stopDesktopAfterPlayback: true,
-    cellId: cell.cellId,
-  });
+  const argv = buildVm3PaidSmokeRunnerArgv({ cell, outputRoot, liveTiming });
   // Reuse the strict matrix lifecycle budget: readiness plus the longer of
   // Watch report completion and recorder completion, followed by STT/report
   // post-processing. Smoke adds its explicit warmup and enforces a final hard
@@ -638,14 +709,21 @@ export async function runCell({ cell, executionRoot }) {
     report = JSON.parse(fs.readFileSync(reportPath, 'utf8').replace(/^\uFEFF/, ''));
   }
   // The elevated wrapper can return a non-zero cleanup status after the live
-  // runner has already written its authoritative report.  A complete passing
-  // report is the cell result; retain the launcher exit code below only as
-  // diagnostic evidence instead of converting that pass into a product bug.
-  const passed = report?.verdict === 'passed';
+  // runner has already written its report and Provider session authority. A
+  // complete passing report plus exactly one primary Provider session is the
+  // cell result; retain the launcher exit code below only as diagnostic
+  // evidence instead of converting that pass into a product bug.
+  const authorityResult = readSmokeProviderSessionAuthority(runDirectory);
+  const authorityEvaluation = evaluateSmokeProviderSessionAuthority({
+    report,
+    authority: authorityResult.authority,
+    readFailure: authorityResult.failure,
+  });
+  const passed = authorityEvaluation.passed;
   return {
     passed,
-    providerCalls: 1,
-    ...(passed ? {} : { classification: report ? classifyReport(report) : 'orchestration' }),
+    providerCalls: authorityEvaluation.providerCalls,
+    ...(passed ? {} : { classification: authorityEvaluation.classification }),
     evidence: runDirectory
       ? path.join(logicalOutputRoot, path.basename(runDirectory))
       : null,
@@ -654,7 +732,12 @@ export async function runCell({ cell, executionRoot }) {
       : null,
     exitCode: processResult.exitCode,
     failureLayer: report?.failureLayer ?? null,
-    failureReason: report?.failureReason ?? (processResult.stderr.trim() || 'live runner failed without a report'),
+    failureReason: authorityEvaluation.authorityFailure
+      ?? report?.failureReason
+      ?? (processResult.stderr.trim() || 'live runner failed without a report'),
+    providerSessionAuthorityPath: runDirectory
+      ? path.join(logicalOutputRoot, path.basename(runDirectory), SMOKE_PROVIDER_SESSION_AUTHORITY_FILE)
+      : null,
   };
 }
 

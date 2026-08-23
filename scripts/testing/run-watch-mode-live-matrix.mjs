@@ -437,6 +437,7 @@ export const buildRunnerArgv = ({
   allowElevatedDesktopLaunch = false,
   skipPhysicalOutputContentStt = false,
   strictPaidAuthority = false,
+  localCanonicalContentAuthority = false,
   cellId = '',
   runnerArgs = [],
 }) => {
@@ -465,6 +466,7 @@ export const buildRunnerArgv = ({
   if (allowElevatedDesktopLaunch) argv.push('-AllowElevatedDesktopLaunch');
   if (skipPhysicalOutputContentStt) argv.push('-SkipPhysicalOutputContentStt');
   if (strictPaidAuthority) argv.push('-StrictPaidAuthority');
+  if (localCanonicalContentAuthority) argv.push('-LocalCanonicalContentAuthority');
   if (cellId) argv.push('-MatrixCellId', cellId);
   return [...argv, ...runnerArgs];
 };

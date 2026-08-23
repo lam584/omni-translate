@@ -22,8 +22,13 @@ import {
   smokePlanFailure,
 } from './watch-mode-smoke-plan.mjs';
 import {
+  SMOKE_PROVIDER_SESSION_AUTHORITY_FILE,
+  SMOKE_PROVIDER_SESSION_AUTHORITY_KIND,
+  buildVm3PaidSmokeRunnerArgv,
   classifyReport,
   currentVm3Profile,
+  evaluateSmokeProviderSessionAuthority,
+  readSmokeProviderSessionAuthority,
   resolveVm3SmokeLiveTimeoutMs,
   VM3_SMOKE_LIVE_TIMEOUT_HARD_CAP_MS,
   VM3_SMOKE_START_MIN_C_FREE_BYTES,
@@ -335,6 +340,84 @@ test('VM3 local adapter binds the present default speaker and one local worker',
   assert.equal(profile.deviceClass, 'default-speaker');
   assert.match(profile.physicalPlaybackDeviceId, /^\{0\.0\.0\.00000000\}\.\{[a-f0-9-]+\}$/i);
   assert.match(profile.expectedPhysicalPlaybackDeviceName, /High Definition Audio Device/);
+});
+
+test('VM3 paid smoke runner enables the bare local canonical content authority switch', () => {
+  const argv = buildVm3PaidSmokeRunnerArgv({
+    cell: SMOKE_PLUS_CELLS[0],
+    outputRoot: 'artifacts/testing/watch-mode-smoke-runtime/test',
+    liveTiming: {
+      durationSeconds: 180,
+      warmupSeconds: 5,
+      playbackSeconds: 0,
+      postPlaybackWaitSeconds: 20,
+      sessionReadyTimeoutSeconds: 60,
+    },
+  });
+  assert.equal(argv.filter((entry) => entry === '-LocalCanonicalContentAuthority').length, 1);
+  assert.equal(argv.some((entry) => entry.startsWith('-LocalCanonicalContentAuthority:')), false);
+});
+
+test('VM3 paid smoke passes only with one primary and zero auxiliary Provider sessions', () => {
+  const authority = {
+    schemaVersion: 1,
+    artifactKind: SMOKE_PROVIDER_SESSION_AUTHORITY_KIND,
+    nonAuthoritative: true,
+    passed: true,
+    providerSessions: 1,
+    auxiliaryProviderSessions: 0,
+  };
+  assert.deepEqual(
+    evaluateSmokeProviderSessionAuthority({ report: { verdict: 'passed' }, authority }),
+    { passed: true, providerCalls: 1, authorityFailure: null, classification: null },
+  );
+  assert.equal(
+    evaluateSmokeProviderSessionAuthority({ report: { verdict: 'failed' }, authority }).passed,
+    false,
+  );
+  assert.match(
+    evaluateSmokeProviderSessionAuthority({
+      report: { verdict: 'passed' },
+      authority: { ...authority, schemaVersion: 2 },
+    }).authorityFailure,
+    /wrong schemaVersion/,
+  );
+  const auxiliary = evaluateSmokeProviderSessionAuthority({
+    report: { verdict: 'passed' },
+    authority: { ...authority, auxiliaryProviderSessions: 1 },
+  });
+  assert.equal(auxiliary.passed, false);
+  assert.equal(auxiliary.providerCalls, 2);
+  assert.match(auxiliary.authorityFailure, /auxiliary Provider sessions; expected 0/);
+});
+
+test('VM3 paid smoke authority read fails closed for missing and invalid receipts', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-authority-'));
+  try {
+    const missing = readSmokeProviderSessionAuthority(root);
+    assert.equal(missing.authority, null);
+    assert.match(missing.failure, /missing smoke-provider-session-authority\.json/);
+    assert.deepEqual(
+      evaluateSmokeProviderSessionAuthority({
+        report: { verdict: 'passed' },
+        authority: missing.authority,
+        readFailure: missing.failure,
+      }),
+      {
+        passed: false,
+        providerCalls: 1,
+        authorityFailure: missing.failure,
+        classification: 'orchestration',
+      },
+    );
+
+    fs.writeFileSync(path.join(root, SMOKE_PROVIDER_SESSION_AUTHORITY_FILE), '{invalid\n', 'utf8');
+    const invalid = readSmokeProviderSessionAuthority(root);
+    assert.equal(invalid.authority, null);
+    assert.match(invalid.failure, /invalid smoke-provider-session-authority\.json/);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test('VM3 smoke preflight requires the seven-GiB C-drive start buffer', () => {

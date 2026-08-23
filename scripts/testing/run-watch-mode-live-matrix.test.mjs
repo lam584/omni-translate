@@ -137,6 +137,7 @@ const RUNNER_SWITCHES = [
   'AllowElevatedDesktopLaunch',
   'SkipPhysicalOutputContentStt',
   'StrictPaidAuthority',
+  'LocalCanonicalContentAuthority',
 ];
 
 function writeAuthorityPlaceholderArtifacts(runDirectory, feedbackMode) {
@@ -256,6 +257,7 @@ test('every forwarded parameter exists in the live runner param block', () => {
     allowElevatedDesktopLaunch: true,
     skipPhysicalOutputContentStt: true,
     strictPaidAuthority: true,
+    localCanonicalContentAuthority: true,
   });
   for (const entry of argv) {
     if (!entry.startsWith('-')) {
@@ -281,6 +283,7 @@ test('switch parameters are appended bare, only when enabled, in guard order', (
     allowElevatedDesktopLaunch: true,
     skipPhysicalOutputContentStt: true,
     strictPaidAuthority: true,
+    localCanonicalContentAuthority: true,
   });
   assert.deepEqual(allOn.slice(28), RUNNER_SWITCHES.map((name) => `-${name}`));
 

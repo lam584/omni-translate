@@ -1396,6 +1396,7 @@ impl OmniConnectionCoordinator {
         instructions: &str,
         audio_mode: RealtimeAudioMode,
         output_mode: OmniOutputMode,
+        source_language: &str,
         target_language: &str,
         subtitle_translate_active: bool,
         speech_config: OmniSpeechConfig,

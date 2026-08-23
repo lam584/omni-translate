@@ -119,6 +119,10 @@ $msbuildArgs = @(
   "/p:Configuration=$Configuration",
   "/p:Platform=$Platform",
   "/p:WindowsTargetPlatformVersion=$WindowsKitVersion",
+  # The WDK 10.0.26100 package ships VS2022 (17.x) build tasks. Newer
+  # MSBuild hosts otherwise infer their own major version and look for a
+  # non-existent Microsoft.DriverKit.Build.Tasks.<major>.0.dll.
+  '/p:VisualStudioVersion=17.0',
   '/p:SkipPackageVerification=true',
   "/p:VCTargetsPath=$overlayRoot\"
 )

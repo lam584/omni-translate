@@ -1,6 +1,8 @@
 use super::*;
 use crate::audio::glossary::GlossaryContext;
 
+use self::livetranslate_shutdown::LivetranslateShutdown;
+
 pub(crate) struct OmniHandle {
     pub stop_tx: mpsc::Sender<()>,
     #[allow(dead_code, reason = "join handle is retained for supervised shutdown on supported runners")]
@@ -362,7 +364,7 @@ fn run_omni_worker(
         session_generation,
     )?;
     let OmniConnectedSession {
-        mut socket,
+        socket,
         mut trace_call,
         session_started_at,
         mut active_voice,
@@ -429,50 +431,72 @@ fn run_omni_worker(
         mut first_audio_sent_ms,
         mut pending_audio_buffer,
     } = OmniSessionRuntime::new();
-    let connector = TungsteniteConnector;
+    let mut livetranslate_shutdown = LivetranslateShutdown::for_provider(&provider);
+    let mut socket = livetranslate_shutdown.wrap_socket(socket);
+    let connector = livetranslate_shutdown.wrap_connector(TungsteniteConnector);
     loop {
         if stop_rx.try_recv().is_ok() {
-            let _ = socket.close(None);
-            store.set_stt_connected(false, buffer_size);
-            let _ = diag_log(
-                &app,
-                "omni",
-                "info",
-                format!(
-                    "[STOP] Omni worker 已停止, 共发送 {} 个音频块, {} 字节",
-                    chunk_count, buffer_size
-                ),
-            );
-            check_vad_warning(
-                &app,
-                audio_mode,
-                &last_vad_event_time,
-                chunk_count,
-                vad_event_count,
-                buffer_size,
-            );
-            // In-flight deferred cues can never be approved once the worker
-            // stops; flush them with the same semantics as a gate timeout so
-            // the overlay does not keep cues the subtitle worker skips forever.
-            for cue_id in store.discard_expired_deferred_subtitle_cues(Duration::ZERO) {
+            if livetranslate_shutdown.request(Instant::now()) {
+                let _ = diag_log(
+                    &app,
+                    "omni",
+                    "info",
+                    "event=livetranslate_shutdown action=drain_audio_before_session_finish",
+                );
+            } else {
+                let _ = socket.close();
+                store.set_stt_connected(false, buffer_size);
                 let _ = diag_log(
                     &app,
                     "omni",
                     "info",
                     format!(
-                        "event=manual_response_gate action=discard_deferred_on_stop cueId={cue_id}"
+                        "[STOP] Omni worker 已停止, 共发送 {} 个音频块, {} 字节",
+                        chunk_count, buffer_size
                     ),
                 );
+                check_vad_warning(
+                    &app,
+                    audio_mode,
+                    &last_vad_event_time,
+                    chunk_count,
+                    vad_event_count,
+                    buffer_size,
+                );
+                // In-flight deferred cues can never be approved once the worker
+                // stops; flush them with the same semantics as a gate timeout so
+                // the overlay does not keep cues the subtitle worker skips forever.
+                for cue_id in store.discard_expired_deferred_subtitle_cues(Duration::ZERO) {
+                    let _ = diag_log(
+                        &app,
+                        "omni",
+                        "info",
+                        format!(
+                            "event=manual_response_gate action=discard_deferred_on_stop cueId={cue_id}"
+                        ),
+                    );
+                }
+                // A stopped realtime session cannot produce another response for
+                // its live tail. Remove only this route's unfinished cues so the
+                // queue does not keep showing a terminal session as translating.
+                if store.is_current_omni_session(&direction, session_generation) {
+                    store.discard_uncommitted_subtitle_cues_by_direction(&direction);
+                }
+                playback_worker.shutdown_gracefully()?;
+                emit_audio_snapshot(&app, store)?;
+                break;
             }
-            // A stopped realtime session cannot produce another response for
-            // its live tail. Remove only this route's unfinished cues so the
-            // queue does not keep showing a terminal session as translating.
-            if store.is_current_omni_session(&direction, session_generation) {
-                store.discard_uncommitted_subtitle_cues_by_direction(&direction);
-            }
-            playback_worker.shutdown_gracefully()?;
-            emit_audio_snapshot(&app, store)?;
-            break;
+        }
+        if let Some((reason, error)) = livetranslate_shutdown.deadline_error(Instant::now()) {
+            provider_input_budget.mark_terminal(reason);
+            let _ = diag_log(
+                &app,
+                "omni",
+                "error",
+                format!("event=livetranslate_shutdown action=fail_closed reason={reason}"),
+            );
+            let _ = socket.close();
+            return Err(error);
         }
 
         let pump_state = OmniAudioPump::new(OmniAudioPumpState {
@@ -515,7 +539,23 @@ fn run_omni_worker(
             &target_language,
             &session_started_at,
             audio_mode.uses_manual_commit() && manual_response_pending,
-        )?;
+        );
+        let pump_state = match pump_state {
+            Ok(state) => state,
+            Err(error) if livetranslate_shutdown.is_requested() => {
+                let _ = diag_log(
+                    &app,
+                    "omni",
+                    "error",
+                    "event=livetranslate_shutdown action=fail_closed reason=write_failed",
+                );
+                let _ = socket.close();
+                return Err(format!(
+                    "LiveTranslate fail-closed while draining the existing session: {error}"
+                ));
+            }
+            Err(error) => return Err(error),
+        };
         buffer_size = pump_state.buffer_size;
         reconnect_count = pump_state.reconnect_count;
         chunk_count = pump_state.chunk_count;
@@ -539,6 +579,39 @@ fn run_omni_worker(
         provider_input_dump = pump_state.provider_input_dump;
         provider_input_budget = pump_state.provider_input_budget;
         let chunks_sent_this_tick = pump_state.chunks_sent_this_tick;
+        if livetranslate_shutdown
+            .should_send_finish(chunks_sent_this_tick, pre_session_audio_queue.is_empty())
+        {
+            let finish_event = livetranslate_shutdown.finish_event(&format!(
+                "event_session_finish_{}",
+                unix_ms()
+            ));
+            trace_call.record_ws_send("session.finish", finish_event.clone());
+            if let Err(error) = socket.send_message(Message::Text(
+                finish_event.to_string().into(),
+            )) {
+                provider_input_budget.mark_terminal("livetranslate-session-finish-send-failed");
+                let _ = diag_log(
+                    &app,
+                    "omni",
+                    "error",
+                    format!(
+                        "event=livetranslate_shutdown action=fail_closed reason=session_finish_send_failed error={error}"
+                    ),
+                );
+                let _ = socket.close();
+                return Err(format!(
+                    "LiveTranslate fail-closed: session.finish send failed on the existing socket: {error}"
+                ));
+            }
+            livetranslate_shutdown.record_finish_sent(Instant::now());
+            let _ = diag_log(
+                &app,
+                "omni",
+                "info",
+                "event=livetranslate_shutdown action=session_finish_sent awaiting=session.finished",
+            );
+        }
         // Both the pre-pump and post-poll reconnect paths must reset the exact
         // same manual-gate/turn/pre-session-audio locals. A local macro keeps
         // that 18-argument call in one place without threading the locals
@@ -761,7 +834,23 @@ fn run_omni_worker(
                 echo_guard_enabled,
             },
             &connector,
-        )?;
+        );
+        let poll = match poll {
+            Ok(poll) => poll,
+            Err(error) if livetranslate_shutdown.is_requested() => {
+                provider_input_budget.mark_terminal("livetranslate-shutdown-poll-failed");
+                let _ = diag_log(
+                    &app,
+                    "omni",
+                    "error",
+                    "event=livetranslate_shutdown action=fail_closed reason=poll_failed",
+                );
+                return Err(format!(
+                    "LiveTranslate fail-closed while awaiting session.finished on the existing socket: {error}"
+                ));
+            }
+            Err(error) => return Err(error),
+        };
         socket = poll.state.socket;
         trace_call = poll.state.trace_call;
         reconnect_count = poll.state.reconnect_count;
@@ -796,8 +885,44 @@ fn run_omni_worker(
             provider_input_budget.record_reconnect()?;
             reset_gate_after_reconnect!();
         }
+        if livetranslate_shutdown.session_finished_received() {
+            let _ = socket.close();
+            store.set_stt_connected(false, buffer_size);
+            let _ = diag_log(
+                &app,
+                "omni",
+                "info",
+                format!(
+                    "event=livetranslate_shutdown action=session_finished_received sentAudioChunks={chunk_count} sentAudioBytes={buffer_size}"
+                ),
+            );
+            check_vad_warning(
+                &app,
+                audio_mode,
+                &last_vad_event_time,
+                chunk_count,
+                vad_event_count,
+                buffer_size,
+            );
+            // `session.finished` is ordered after the provider's final ASR and
+            // translation events. Those events were passed through the normal
+            // processor above; do not apply the immediate-stop discard policy
+            // here, because a final cue may intentionally remain visible as
+            // incomplete evidence rather than being silently erased.
+            playback_worker.shutdown_gracefully()?;
+            emit_audio_snapshot(&app, store)?;
+            break;
+        }
         if poll.stop_worker {
-            let _ = socket.close(None);
+            if livetranslate_shutdown.is_requested() {
+                provider_input_budget.mark_terminal("livetranslate-session-ended-before-finished");
+                let _ = socket.close();
+                return Err(
+                    "LiveTranslate fail-closed: provider ended the session before session.finished"
+                        .to_string(),
+                );
+            }
+            let _ = socket.close();
             store.set_stt_connected(false, buffer_size);
             let _ = diag_log(
                 &app,
@@ -910,6 +1035,9 @@ pub(super) fn reset_manual_gate_after_reconnect<R: tauri::Runtime>(
 #[cfg(test)]
 #[path = "session_worker/reconnect_reset_tests.rs"]
 mod reconnect_reset_tests;
+
+#[path = "session_worker/livetranslate_shutdown.rs"]
+mod livetranslate_shutdown;
 
 #[path = "session_worker/reconnect.rs"]
 mod reconnect;

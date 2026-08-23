@@ -89,7 +89,9 @@ test('smoke retains partial failures, does not retry, and writes a non-authorita
     assert.equal(result.manifest.artifactKind, WATCH_MODE_SMOKE_ARTIFACT_KIND);
     assert.equal(result.manifest.smokeOnly, true);
     assert.equal(result.manifest.selection.reason, 'full 17-cell VM3 smoke');
+    assert.equal(result.manifest.selection.stopOnFirstFailure, false);
     assert.equal(result.manifest.providerCalls, 11);
+    assert.equal(result.manifest.dispatch.startedCount, 17);
     assert.deepEqual(result.manifest.dispatch.duplicateCellIds, []);
     assert.throws(() => readRunManifest(result.manifestPath), /smoke manifest is non-authoritative/);
   } finally {
@@ -153,6 +155,82 @@ test('smoke targeted execution dispatches only selected cells and records its re
     assert.deepEqual(result.manifest.selection.cellIds, selected);
     assert.equal(result.manifest.selection.reason, 'verify bridge lifecycle repair');
     assert.equal(result.manifest.passed, true);
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('smoke checkpoints an active paid dispatch before its outcome settles', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-active-ledger-'));
+  const selected = [SMOKE_PLUS_CELLS[0].cellId, SMOKE_PLUS_CELLS[1].cellId];
+  let releaseSecond;
+  const secondBlocked = new Promise((resolve) => { releaseSecond = resolve; });
+  let notifySecondStarted;
+  const secondStarted = new Promise((resolve) => { notifySecondStarted = resolve; });
+  try {
+    const running = runWatchModeSmoke({
+      executionId: 'smoke-active-ledger-test',
+      workerCapabilities: workers,
+      outputRoot: root,
+      cellIds: selected,
+      selectionReason: 'prove active Provider reservation',
+      runCell: async ({ cell }) => {
+        if (cell.cellId === selected[1]) {
+          notifySecondStarted();
+          await secondBlocked;
+        }
+        return { passed: true, evidence: `evidence/${cell.cellId}`, providerCalls: 1 };
+      },
+    });
+    await secondStarted;
+    const checkpoint = JSON.parse(fs.readFileSync(path.join(root, 'smoke-active-ledger-test', 'smoke-manifest.json'), 'utf8'));
+    assert.equal(checkpoint.activeCellId, selected[1]);
+    assert.equal(checkpoint.providerCalls, 2);
+    assert.equal(checkpoint.dispatch.startedCount, 2);
+    assert.equal(checkpoint.dispatch.completedCount, 1);
+    assert.deepEqual(checkpoint.dispatch.active, {
+      cellId: selected[1], workerId: 'vm3', providerCalls: 1,
+    });
+    releaseSecond();
+    const result = await running;
+    assert.equal(result.manifest.providerCalls, 2);
+    assert.equal(result.manifest.dispatch.startedCount, 2);
+    assert.equal(result.manifest.dispatch.completedCount, 2);
+  } finally {
+    releaseSecond?.();
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('targeted smoke can stop after its first failed cell without changing full-smoke defaults', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'watch-mode-smoke-first-failure-'));
+  const selected = [SMOKE_PLUS_CELLS[0].cellId, SMOKE_PLUS_CELLS[1].cellId, SMOKE_PLUS_CELLS[2].cellId];
+  const calls = [];
+  try {
+    const result = await runWatchModeSmoke({
+      executionId: 'smoke-first-failure-test',
+      workerCapabilities: workers,
+      outputRoot: root,
+      cellIds: selected,
+      selectionReason: 'prove directed stop policy',
+      stopOnFirstFailure: true,
+      runCell: async ({ cell }) => {
+        calls.push(cell.cellId);
+        return { passed: false, classification: 'product', providerCalls: 1 };
+      },
+    });
+    assert.deepEqual(calls, [selected[0]]);
+    assert.equal(result.manifest.selection.stopOnFirstFailure, true);
+    assert.equal(result.manifest.providerCalls, 1);
+    assert.equal(result.manifest.dispatch.startedCount, 1);
+    assert.match(result.manifest.stopReason, /stopped after failed cell/);
+    await assert.rejects(runWatchModeSmoke({
+      executionId: 'smoke-full-first-failure-rejected',
+      workerCapabilities: workers,
+      outputRoot: root,
+      stopOnFirstFailure: true,
+      runCell: async () => ({ passed: true, providerCalls: 0 }),
+    }), /allowed only for targeted execution/);
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }

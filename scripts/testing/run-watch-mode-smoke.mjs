@@ -72,6 +72,7 @@ export async function runWatchModeSmoke({
   stopMinFreeBytes = VM3_SMOKE_STOP_MIN_C_FREE_BYTES,
   cellIds,
   selectionReason,
+  stopOnFirstFailure = false,
   now = () => new Date(),
 }) {
   if (typeof runCell !== 'function') throw new Error('smoke coordinator requires a runCell adapter');
@@ -83,6 +84,10 @@ export async function runWatchModeSmoke({
   const unknownCellId = selectedCellIds.find((cellId) => !plan.cells.some((cell) => cell.cellId === cellId));
   if (unknownCellId) throw new Error(`smoke targeted execution selected an unknown cell: ${unknownCellId}`);
   const selectedCells = plan.cells.filter((cell) => selectedCellIds.includes(cell.cellId));
+  const selectionMode = selectedCells.length === plan.cells.length ? 'full' : 'targeted';
+  if (stopOnFirstFailure && selectionMode !== 'targeted') {
+    throw new Error('smoke stop-on-first-failure is allowed only for targeted execution');
+  }
   const startedAt = now().toISOString();
   const assignments = createSmokeAssignments(selectedCells, workerCapabilities);
   const executionRoot = path.resolve(outputRoot, plan.executionId);
@@ -148,15 +153,28 @@ export async function runWatchModeSmoke({
   if (preflightPassed && !stopReason) stopReason = await recordDiskSpace('first-cell');
 
   const selection = {
-    mode: selectedCells.length === plan.cells.length ? 'full' : 'targeted',
+    mode: selectionMode,
     cellIds: selectedCellIds,
     reason: String(selectionReason ?? '').trim()
       || (selectedCells.length === plan.cells.length ? 'full 17-cell VM3 smoke' : 'unspecified'),
+    stopOnFirstFailure,
   };
   const manifestPath = path.join(executionRoot, SMOKE_MANIFEST_FILE);
   const writeManifest = ({ executionStatus, completedAt = null, activeCellId = null } = {}) => {
-    const providerCalls = outcomes.reduce((sum, entry) => sum + Number(entry.providerCalls ?? 0), 0);
+    const completedProviderCalls = outcomes.reduce((sum, entry) => sum + Number(entry.providerCalls ?? 0), 0);
+    const activeCell = activeCellId
+      ? selectedCells.find((cell) => cell.cellId === activeCellId)
+      : null;
+    // A paid cell is reserved in the ledger before its adapter starts. This
+    // deliberately survives process termination, where no settled outcome can
+    // report the Provider invocation that was already dispatched.
+    const activeProviderCalls = activeCell?.providerMode === 'disabled' ? 0 : (activeCell ? 1 : 0);
+    const providerCalls = completedProviderCalls + activeProviderCalls;
     const allSelectedCellsCompleted = outcomes.length === selectedCells.length;
+    const dispatchedCellIds = [
+      ...outcomes.map((entry) => entry.cellId),
+      ...(activeCellId ? [activeCellId] : []),
+    ];
     const manifest = {
       schemaVersion: 1,
       artifactKind: WATCH_MODE_SMOKE_ARTIFACT_KIND,
@@ -180,9 +198,17 @@ export async function runWatchModeSmoke({
       outcomes,
       providerCalls,
       dispatch: {
+        startedCount: dispatchedCellIds.length,
         completedCount: outcomes.length,
-        duplicateCellIds: outcomes
-          .map((entry) => entry.cellId)
+        providerCallAccounting: activeCellId ? 'completed-plus-active-reservation' : 'completed',
+        ...(activeCellId ? {
+          active: {
+            cellId: activeCellId,
+            workerId: assignments.find((entry) => entry.cellId === activeCellId)?.workerId ?? null,
+            providerCalls: activeProviderCalls,
+          },
+        } : {}),
+        duplicateCellIds: dispatchedCellIds
           .filter((cellId, index, values) => values.indexOf(cellId) !== index),
       },
       ...(activeCellId ? { activeCellId } : {}),
@@ -216,12 +242,12 @@ export async function runWatchModeSmoke({
       }));
       // Continue independent waves, retaining all failure evidence for one diagnostic pass.
       outcomes.push(...settled.map((entry, index) => {
+        const expectedProviderCalls = selectedCells.find((cell) => cell.cellId === wave[index].cellId)?.providerMode === 'disabled' ? 0 : 1;
         if (entry.status === 'rejected') {
-          return { ...wave[index], status: 'failed', classification: 'orchestration', providerCalls: 0, error: String(entry.reason?.message ?? entry.reason) };
+          return { ...wave[index], status: 'failed', classification: 'orchestration', providerCalls: expectedProviderCalls, error: String(entry.reason?.message ?? entry.reason) };
         }
         const passed = entry.value.result?.passed === true;
         const classification = entry.value.result?.classification;
-        const expectedProviderCalls = selectedCells.find((cell) => cell.cellId === entry.value.cellId)?.providerMode === 'disabled' ? 0 : 1;
         const providerCalls = Number(entry.value.result?.providerCalls);
         if (!Number.isInteger(providerCalls) || providerCalls !== expectedProviderCalls) {
           return {
@@ -240,6 +266,13 @@ export async function runWatchModeSmoke({
       writeManifest({ executionStatus: 'in-progress' });
       stopReason = await recordDiskSpace(`cell:${activeCellId}:complete`);
       if (stopReason) break;
+      if (stopOnFirstFailure) {
+        const failedOutcome = outcomes.find((entry) => entry.status === 'failed');
+        if (failedOutcome) {
+          stopReason = `targeted execution stopped after failed cell ${failedOutcome.cellId}`;
+          break;
+        }
+      }
     }
   }
   const completedAt = now().toISOString();
@@ -253,14 +286,15 @@ if (isMain(import.meta.url)) {
   const executionFlag = args.indexOf('--execution-id');
   const cellsFlag = args.indexOf('--cells');
   const selectionReasonFlag = args.indexOf('--selection-reason');
+  const stopOnFirstFailure = args.includes('--stop-on-first-failure');
   if (args.includes('--plan')) {
     if (args.length !== 1) throw new Error('--plan cannot be combined with other smoke coordinator flags');
     console.log(JSON.stringify(createWatchModeSmokePlan(), null, 2));
   } else {
     if (adapterFlag < 0 || !args[adapterFlag + 1] || args.some((arg, index) => (
-      arg.startsWith('--') && !['--adapter', '--execution-id', '--cells', '--selection-reason'].includes(arg)
+      arg.startsWith('--') && !['--adapter', '--execution-id', '--cells', '--selection-reason', '--stop-on-first-failure'].includes(arg)
     ))) {
-      throw new Error('Usage: run-watch-mode-smoke.mjs --plan | --adapter <vm-aware-adapter.mjs> [--execution-id <id>] [--cells <id,id>] [--selection-reason <text>]');
+      throw new Error('Usage: run-watch-mode-smoke.mjs --plan | --adapter <vm-aware-adapter.mjs> [--execution-id <id>] [--cells <id,id>] [--selection-reason <text>] [--stop-on-first-failure]');
     }
     const adapterPath = path.resolve(repoRoot, args[adapterFlag + 1]);
     const adapter = await import(`${pathToFileURL(adapterPath).href}?execution=${Date.now()}`);
@@ -273,6 +307,7 @@ if (isMain(import.meta.url)) {
       runCell: adapter.runCell,
       ...(cellsFlag < 0 ? {} : { cellIds: String(args[cellsFlag + 1] ?? '').split(',').map((entry) => entry.trim()).filter(Boolean) }),
       ...(selectionReasonFlag < 0 ? {} : { selectionReason: args[selectionReasonFlag + 1] }),
+      stopOnFirstFailure,
       ...(typeof adapter.runPreflight === 'function' ? { runPreflight: adapter.runPreflight } : {}),
       ...(typeof adapter.sampleDiskSpace === 'function' ? { sampleDiskSpace: adapter.sampleDiskSpace } : {}),
     });

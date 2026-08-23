@@ -206,6 +206,12 @@ function runNpm(script, timeout = 900_000, temporaryRoot) {
     timeout,
     windowsHide: true,
   });
+  // spawnSync's timeout stops its direct cmd.exe child but Windows can retain
+  // Cargo/rustc descendants. A preflight timeout must end the smoke-owned
+  // process tree, otherwise the coordinator never reaches its failed manifest.
+  if (result.error?.code === 'ETIMEDOUT' && Number.isInteger(result.pid) && result.pid > 0) {
+    spawnSync('taskkill.exe', ['/PID', String(result.pid), '/T', '/F'], { windowsHide: true, timeout: 30_000 });
+  }
   return {
     command: `npm run ${script}`,
     status: result.status ?? 1,

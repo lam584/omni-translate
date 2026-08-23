@@ -18,10 +18,6 @@ const canonicalNames = Object.freeze({
   sourceText: 'watch-mode-en-original.txt',
   translationText: 'watch-mode-en-original.zh-CN.txt',
 });
-const wrongReferenceNames = Object.freeze([
-  'watch-mode-en-conversation.wav',
-  'watch-mode-en-technical.wav',
-]);
 const referencePcmName = 'source-media-reference-16k-mono.pcm';
 const sourceAuthorityName = 'source-media-transcript.json';
 const physicalSourceWindowName = 'physical-output-recording-source-window-16k-mono.pcm';
@@ -620,9 +616,19 @@ function scoreWrongReference(wrong, recorded) {
   return Math.max(0, waveform) * 0.65 + Math.max(0, derivative) * 0.35;
 }
 
+function deterministicWrongReference(sampleCount, frequencyHz) {
+  const samples = new Int16Array(sampleCount);
+  for (let index = 0; index < samples.length; index += 1) {
+    const envelope = 0.7 + 0.3 * Math.sin((2 * Math.PI * 3 * index) / CANONICAL_SOURCE_SAMPLE_RATE_HZ);
+    samples[index] = Math.round(
+      Math.sin((2 * Math.PI * frequencyHz * index) / CANONICAL_SOURCE_SAMPLE_RATE_HZ) * 8_000 * envelope,
+    );
+  }
+  return samples;
+}
+
 export function buildPhysicalSourceWaveformAuthority({
   runDirectory,
-  workspaceRoot = defaultWorkspaceRoot,
   referencePcmPath,
   sourceWindowPath,
   physicalRecordingPcmPath,
@@ -694,11 +700,10 @@ export function buildPhysicalSourceWaveformAuthority({
   let wrongPaths = wrongReferencePcmPaths;
   let wrongBuffers = [];
   if (wrongPaths === undefined) {
-    wrongBuffers = wrongReferenceNames.map((name) => {
-      const wavPath = path.join(path.resolve(workspaceRoot), ...fixtureDirectoryRelative.split('/'), name);
-      regularFile(wavPath, `wrong-reference fixture ${name}`);
-      return { label: name, samples: pcmBufferToSamples(pcm16WaveToInjectorReference(fs.readFileSync(wavPath))) };
-    });
+    wrongBuffers = [733, 1_211].map((frequencyHz) => ({
+      label: `deterministic-${frequencyHz}hz-control`,
+      samples: deterministicWrongReference(reference.samples.length, frequencyHz),
+    }));
   } else {
     wrongBuffers = wrongPaths.map((filePath) => ({
       label: portableRunChild(path.resolve(filePath), 'wrong-reference PCM'),

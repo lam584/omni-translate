@@ -33,6 +33,14 @@ const forbiddenPaths = [
 const authorizedWatchAudio = loadAuthorizedWatchAudioFixtures();
 
 const violations = [];
+const trackedFileSet = new Set(trackedFiles);
+for (const file of authorizedWatchAudio.keys()) {
+  if (!trackedFileSet.has(file)) {
+    violations.push(`${file}: bundled Watch Mode audio fixture must be tracked`);
+  } else if (!fs.existsSync(file)) {
+    violations.push(`${file}: bundled Watch Mode audio fixture is missing`);
+  }
+}
 for (const entry of untrackedEntries) {
   if (untrackedGeneratedPattern.test(entry)) {
     violations.push(`${entry}: untracked generated or agent-local artifact missing from .gitignore`);

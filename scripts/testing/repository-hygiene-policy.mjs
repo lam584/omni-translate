@@ -4,6 +4,7 @@ import path from 'node:path';
 
 export const DEFAULT_TRACKED_FILE_LIMIT_BYTES = 5 * 1024 * 1024;
 export const AUTHORIZED_WATCH_AUDIO_LIMIT_BYTES = 8 * 1024 * 1024;
+const WATCH_AUDIO_DISTRIBUTIONS = new Set(['bundled', 'generated-on-demand']);
 
 const WATCH_AUDIO_MANIFESTS = Object.freeze([
   Object.freeze({
@@ -31,11 +32,16 @@ export function loadAuthorizedWatchAudioFixtures({ workspaceRoot = process.cwd()
       throw new Error(`${definition.manifest}: fixtures must be a non-empty array`);
     }
     for (const fixture of manifest.fixtures) {
+      const distribution = String(fixture?.distribution ?? manifest.audioDistribution ?? '');
       const audio = normalizeRepositoryPath(String(fixture?.audio ?? ''));
       const sha256 = String(fixture?.sha256 ?? '').toLowerCase();
-      if (!/^[^/]+\.wav$/i.test(audio) || !/^[a-f0-9]{64}$/.test(sha256)) {
-        throw new Error(`${definition.manifest}: every authorized fixture requires a basename-only WAV path and SHA256`);
+      if (!WATCH_AUDIO_DISTRIBUTIONS.has(distribution)) {
+        throw new Error(`${definition.manifest}: every fixture requires a supported distribution`);
       }
+      if (!/^[^/]+\.wav$/i.test(audio) || !/^[a-f0-9]{64}$/.test(sha256)) {
+        throw new Error(`${definition.manifest}: every fixture requires a basename-only WAV path and SHA256`);
+      }
+      if (distribution !== 'bundled') continue;
       const repositoryPath = path.posix.join(definition.audioRoot, audio);
       if (authorized.has(repositoryPath)) {
         throw new Error(`${definition.manifest}: duplicate authorized fixture ${repositoryPath}`);

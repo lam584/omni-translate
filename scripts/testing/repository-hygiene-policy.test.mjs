@@ -15,9 +15,11 @@ import {
 
 const windowsSeparator = String.fromCharCode(92);
 
-test('the 22 manifest-bound Watch Mode WAV fixtures have valid size and SHA256 authority', () => {
+test('only the bundled canonical Watch Mode WAV has size and SHA256 authority', () => {
   const authorized = loadAuthorizedWatchAudioFixtures({ workspaceRoot: repoRoot });
-  assert.equal(authorized.size, 22);
+  assert.deepEqual([...authorized.keys()], [
+    'scripts/testing/fixtures/watch-mode-en-original.wav',
+  ]);
   for (const [repositoryPath, expectedSha256] of authorized) {
     const absolutePath = path.join(repoRoot, ...repositoryPath.split('/'));
     const size = fs.statSync(absolutePath).size;
@@ -25,6 +27,8 @@ test('the 22 manifest-bound Watch Mode WAV fixtures have valid size and SHA256 a
     assert.ok(size <= AUTHORIZED_WATCH_AUDIO_LIMIT_BYTES);
     assert.equal(sha256File(absolutePath), expectedSha256);
   }
+  assert.equal(authorized.has('scripts/testing/fixtures/watch-mode-en-conversation.wav'), false);
+  assert.equal(authorized.has('scripts/testing/fixtures/multilingual/watch-mode-general.zh-CN.wav'), false);
 });
 
 test('an unlisted tracked file remains limited to 5 MiB', () => {

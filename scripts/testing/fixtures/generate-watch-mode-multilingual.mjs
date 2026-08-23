@@ -4,6 +4,12 @@ import path from 'node:path';
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 
+import {
+  inspectPcm16MonoWav,
+  normalizeStreamingWavHeader,
+  resamplePcm16MonoWav,
+} from './wav-fixture-utils.mjs';
+
 const fixtureRoot = path.dirname(fileURLToPath(import.meta.url));
 const multilingualRoot = path.join(fixtureRoot, 'multilingual');
 const repoRoot = path.resolve(fixtureRoot, '..', '..', '..');
@@ -136,60 +142,6 @@ async function ensureTranslation(apiKey, sourceText, language, refreshText) {
   return translated;
 }
 
-function normalizeStreamingWavHeader(buffer) {
-  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF'
-    || buffer.toString('ascii', 8, 12) !== 'WAVE') return;
-  buffer.writeUInt32LE(buffer.length - 8, 4);
-  let offset = 12;
-  while (offset + 8 <= buffer.length) {
-    const id = buffer.toString('ascii', offset, offset + 4);
-    const declared = buffer.readUInt32LE(offset + 4);
-    const start = offset + 8;
-    if (id === 'data') {
-      const actual = buffer.length - start;
-      if (declared > actual) buffer.writeUInt32LE(actual, offset + 4);
-      return;
-    }
-    if (start + declared > buffer.length) return;
-    offset = start + declared + (declared % 2);
-  }
-}
-
-function inspectWav(buffer) {
-  normalizeStreamingWavHeader(buffer);
-  if (buffer.length < 44 || buffer.toString('ascii', 0, 4) !== 'RIFF') {
-    throw new Error('Downloaded DashScope payload is not a WAV file.');
-  }
-  let offset = 12;
-  let byteRate = 0;
-  let sampleRate = 0;
-  let channels = 0;
-  let bitsPerSample = 0;
-  let dataBytes = 0;
-  while (offset + 8 <= buffer.length) {
-    const id = buffer.toString('ascii', offset, offset + 4);
-    const size = buffer.readUInt32LE(offset + 4);
-    const start = offset + 8;
-    if (start + size > buffer.length) break;
-    if (id === 'fmt ' && size >= 16) {
-      channels = buffer.readUInt16LE(start + 2);
-      sampleRate = buffer.readUInt32LE(start + 4);
-      byteRate = buffer.readUInt32LE(start + 8);
-      bitsPerSample = buffer.readUInt16LE(start + 14);
-    } else if (id === 'data') {
-      dataBytes += size;
-    }
-    offset = start + size + (size % 2);
-  }
-  if (!byteRate || !dataBytes) throw new Error('WAV format or data chunk is missing.');
-  return {
-    durationSeconds: Number((dataBytes / byteRate).toFixed(3)),
-    sampleRate,
-    channels,
-    bitsPerSample,
-  };
-}
-
 async function requestQwenAudio(apiKey, text, language) {
   const input = {
     text,
@@ -230,8 +182,10 @@ async function writeChecksum(targetPath, buffer) {
 async function generateAudio(apiKey, text, language) {
   const target = audioPath(language);
   process.stdout.write(`Generating ${language.code} with ${ttsModel}/${ttsVoice}...\n`);
-  const buffer = await requestQwenAudio(apiKey, text, language);
-  const audio = inspectWav(buffer);
+  const providerBuffer = await requestQwenAudio(apiKey, text, language);
+  normalizeStreamingWavHeader(providerBuffer);
+  const buffer = resamplePcm16MonoWav(providerBuffer);
+  const audio = inspectPcm16MonoWav(buffer);
   await fs.writeFile(target, buffer);
   const sha256 = await writeChecksum(target, buffer);
   process.stdout.write(`Generated ${path.basename(target)}: ${audio.durationSeconds}s\n`);
@@ -245,6 +199,7 @@ async function generateAudio(apiKey, text, language) {
     voice: ttsVoice,
     rate: language.rate ?? 0.95,
     languageHint: language.hint ?? null,
+    distribution: 'generated-on-demand',
     sha256,
     ...audio,
   };
@@ -302,6 +257,7 @@ async function main() {
     generatedAt: new Date().toISOString(),
     template: '../watch-mode-en-original.txt',
     englishAudio: '../watch-mode-en-original.wav',
+    audioDistribution: 'generated-on-demand',
     translationModel,
     fixtures: languages.map((language) => {
       const fixture = byCode.get(language.code);

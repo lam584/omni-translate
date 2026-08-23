@@ -43,8 +43,6 @@ export const PAID_AUTHORITY_IMPLEMENTATION_FILES = Object.freeze([
   'scripts/testing/release-manual-collector.mjs',
   'scripts/testing/watch-mode-provider-preflight-authority.mjs',
   'scripts/testing/fixtures/watch-mode-audio-fixtures.json',
-  'scripts/testing/fixtures/watch-mode-en-conversation.wav',
-  'scripts/testing/fixtures/watch-mode-en-technical.wav',
 ]);
 
 export const AUTHORITY_RUNTIME_BINARY_FILES = Object.freeze([

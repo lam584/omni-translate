@@ -1,0 +1,47 @@
+name: Dependency license audit
+
+on:
+  pull_request:
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "**/package.json"
+      - "package-lock.json"
+      - "scripts/testing/audit-dependency-licenses.mjs"
+      - "scripts/testing/audit-dependency-licenses.test.mjs"
+      - ".github/workflows/dependency-license-audit.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**/Cargo.toml"
+      - "Cargo.lock"
+      - "**/package.json"
+      - "package-lock.json"
+      - "scripts/testing/audit-dependency-licenses.mjs"
+      - "scripts/testing/audit-dependency-licenses.test.mjs"
+      - ".github/workflows/dependency-license-audit.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Test license policy
+        run: node --test scripts/testing/audit-dependency-licenses.test.mjs
+      - name: Audit locked dependency licenses
+        run: node scripts/testing/audit-dependency-licenses.mjs --output artifacts/reports/dependency-license-audit.md
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-license-audit
+          path: artifacts/reports/dependency-license-audit.md
+          if-no-files-found: error

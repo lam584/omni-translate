@@ -321,6 +321,21 @@ test('accepts three independent segments using one global lag and polarity with 
   assert.ok(authority.segments.every((entry) => entry.waveformCorrelation > 0.99 && entry.derivativeCorrelation > 0.99));
 });
 
+test('uses deterministic negative controls without optional WAV fixtures', () => {
+  const reference = deterministicSpeechLike();
+  const fixture = physicalFixture({ reference, recorded: transformed(reference), wrong: [] });
+  const authority = buildPhysicalSourceWaveformAuthority({
+    runDirectory: fixture.directory,
+    referencePcmPath: fixture.referencePath,
+    sourceWindowPath: fixture.sourceWindowPath,
+  });
+  assert.equal(authority.passed, true, authority.violations.join('; '));
+  assert.deepEqual(
+    authority.wrongReferences.map((entry) => entry.label),
+    ['deterministic-733hz-control', 'deterministic-1211hz-control'],
+  );
+});
+
 test('accepts distributed source fragments under bounded endpoint-clock drift and dense overlap', () => {
   const reference = deterministicSpeechLike(14);
   const fixture = physicalFixture({

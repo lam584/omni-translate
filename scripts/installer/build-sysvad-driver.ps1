@@ -42,7 +42,10 @@ $windowsKitsRoot = 'C:\Program Files (x86)\Windows Kits\10'
 $wdkBuildRoot = Join-Path $windowsKitsRoot "build\$WindowsKitVersion"
 $wdkBinRoot = Join-Path $windowsKitsRoot "bin\$WindowsKitVersion"
 $wdkToolsRoot = Join-Path $windowsKitsRoot "Tools\$WindowsKitVersion\x64"
-$msbuild = Join-Path $VisualStudioRoot 'MSBuild\Current\Bin\MSBuild.exe'
+$msbuild = Join-Path $VisualStudioRoot 'MSBuild\Current\Bin\amd64\MSBuild.exe'
+if (-not (Test-Path -LiteralPath $msbuild -PathType Leaf)) {
+  $msbuild = Join-Path $VisualStudioRoot 'MSBuild\Current\Bin\MSBuild.exe'
+}
 $vcTargetsRoot = Join-Path $VisualStudioRoot 'MSBuild\Microsoft\VC\v170'
 $vcToolsRoot = Get-ChildItem -LiteralPath (Join-Path $VisualStudioRoot 'VC\Tools\MSVC') -Directory |
   Sort-Object Name -Descending |
@@ -123,6 +126,9 @@ $msbuildArgs = @(
   # MSBuild hosts otherwise infer their own major version and look for a
   # non-existent Microsoft.DriverKit.Build.Tasks.<major>.0.dll.
   '/p:VisualStudioVersion=17.0',
+  # The 24H2 WDK no longer supports x86 kernel-driver tooling. Running the
+  # 64-bit MSBuild host and preferring x64 tools keeps ApiValidator on x64.
+  '/p:PreferredToolArchitecture=x64',
   '/p:SkipPackageVerification=true',
   "/p:VCTargetsPath=$overlayRoot\"
 )
